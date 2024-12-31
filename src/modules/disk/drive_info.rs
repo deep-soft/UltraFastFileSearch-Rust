@@ -9,10 +9,14 @@ use sysinfo::Disks;
 
 use crate::modules::utils::string_utils::to_wide_string_with_null;
 use std::ffi::{OsStr, OsString};
+#[cfg(windows)]
 use std::os::windows::ffi::OsStringExt;
+#[cfg(windows)]
 use std::os::windows::prelude::OsStrExt;
 
+#[cfg(windows)]
 use windows::core::PCWSTR;
+#[cfg(windows)]
 use windows::Win32::Foundation::GetLastError;
 
 fn get_drive_letter(path: &Path) -> Option<OsString> {
@@ -357,7 +361,9 @@ fn convert_to_device_path(mount_point: &OsStr) -> OsString {
 }
 
 use serde::Deserialize;
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::QueryDosDeviceW;
+#[cfg(windows)]
 use wmi::{COMLibrary, WMIConnection};
 
 #[derive(Deserialize, Debug)]

@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use sysinfo::DiskKind;
+#[cfg(windows)]
 use windows::Win32::System::Ioctl::MEDIA_TYPE;
 
 // Define a wrapper around MEDIA_TYPE
