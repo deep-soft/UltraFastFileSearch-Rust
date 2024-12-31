@@ -29,7 +29,7 @@ use UltraFastFileSearch::utils::utils_impl::{
 };
 
 fn main_bench() -> std::io::Result<()> {
-    // Initialize the logger
+    // Initialize the logging
     let _guard = init_logger();
 
     info!("Application started...");
@@ -133,7 +133,7 @@ fn main_bench() -> std::io::Result<()> {
 }
 //
 // fn main() -> IoResult<()> {
-//     // Initialize the logger
+//     // Initialize the logging
 //     let _guard = init_logger();
 //
 //     info!("Application started...");

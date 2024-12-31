@@ -11,28 +11,28 @@ use tracing::info;
 use UltraFastFileSearch_library::config::constants::{
     BLOCKING_THREADS, MAX_TEMP_FILES_HDD_BATCH, WORKER_THREADS,
 };
-use UltraFastFileSearch_library::modules::directory_reader::directory_reader_impl::ReadDirectories1;
-use UltraFastFileSearch_library::modules::directory_reader::directory_reader_impl::ReadDirectories2;
-use UltraFastFileSearch_library::modules::directory_reader::directory_reader_impl::ReadDirectories3;
-use UltraFastFileSearch_library::modules::directory_reader::directory_reader_impl::ReadDirectories4;
-use UltraFastFileSearch_library::modules::disk_reader::disk_reader_impl::init_drives;
-use UltraFastFileSearch_library::modules::disk_reader::disk_reader_impl::process_all_disks;
-use UltraFastFileSearch_library::modules::logger::logger_impl::init_logger;
-use UltraFastFileSearch_library::modules::utils::temp_files_dirs_impl::{
-    create_temp_dir_with_files_hdd, UffsTempDir,
-};
+// use UltraFastFileSearch_library::modules::directory_reader::directory_reader_impl::ReadDirectories1;
+// use UltraFastFileSearch_library::modules::directory_reader::directory_reader_impl::ReadDirectories2;
+// use UltraFastFileSearch_library::modules::directory_reader::directory_reader_impl::ReadDirectories3;
+// use UltraFastFileSearch_library::modules::directory_reader::directory_reader_impl::ReadDirectories4;
+// use UltraFastFileSearch_library::modules::disk_reader::disk_reader_impl::init_drives;
+// use UltraFastFileSearch_library::modules::disk_reader::disk_reader_impl::process_all_disks;
+use UltraFastFileSearch_library::modules::logging::logger::init_logger;
+// use UltraFastFileSearch_library::modules::utils::temp_files_dirs_impl::{
+//     create_temp_dir_with_files_hdd, UffsTempDir,
+// };
 
-use UltraFastFileSearch_library::modules::utils::temp_files_dirs_impl::{
-    create_temp_dir_with_files_hdd_tokio, create_temp_dir_with_files_ssd,
-};
-use UltraFastFileSearch_library::modules::utils::utils_impl::measure_time_normal;
-use UltraFastFileSearch_library::modules::utils::utils_impl::measure_time_tokio;
-use UltraFastFileSearch_library::modules::utils::utils_impl::optimize_parameter;
-use UltraFastFileSearch_library::modules::utils::utils_impl::read_directory_all_at_once;
-use UltraFastFileSearch_library::modules::utils::utils_impl::{
-    count_disk_entries_all_at_once, count_files_in_dir, format_duration, generate_fibonacci,
-    measure_time_normal_bench, measure_time_tokio_bench, optimize_parameter_tokio,
-};
+// use UltraFastFileSearch_library::modules::utils::temp_files_dirs_impl::{
+//     create_temp_dir_with_files_hdd_tokio, create_temp_dir_with_files_ssd,
+// };
+// use UltraFastFileSearch_library::modules::utils::utils_impl::measure_time_normal;
+// use UltraFastFileSearch_library::modules::utils::utils_impl::measure_time_tokio;
+// use UltraFastFileSearch_library::modules::utils::utils_impl::optimize_parameter;
+// use UltraFastFileSearch_library::modules::utils::utils_impl::read_directory_all_at_once;
+// use UltraFastFileSearch_library::modules::utils::utils_impl::{
+//     count_disk_entries_all_at_once, count_files_in_dir, format_duration, generate_fibonacci,
+//     measure_time_normal_bench, measure_time_tokio_bench, optimize_parameter_tokio,
+// };
 
 use colored::Colorize;
 use log::error;
@@ -46,84 +46,307 @@ use tempfile::TempDir;
 use tokio::sync::RwLock;
 use tokio::time::Instant;
 use tracing::warn;
-use winapi::shared::minwindef::DWORD;
-use winapi::shared::winerror::{ERROR_ACCESS_DENIED, ERROR_NO_MORE_FILES};
-use winapi::um::errhandlingapi::GetLastError;
-use winapi::um::fileapi::{FindClose, FindFirstFileW, FindNextFileW};
-use winapi::um::handleapi::INVALID_HANDLE_VALUE;
-use winapi::um::minwinbase::WIN32_FIND_DATAW;
-use winapi::um::winnt::FILE_ATTRIBUTE_DIRECTORY;
-use UltraFastFileSearch_library::modules::utils::tree_printer::print_directory_tree;
+use UltraFastFileSearch_library::modules::disk::drive_info::{get_drive_info, print_drive_info_table};
+use UltraFastFileSearch_library::modules::disk::wim_defrag_analysis::query_defrag_analysis;
+use UltraFastFileSearch_library::modules::disk::wim_disk_quota::query_disk_quota;
+use UltraFastFileSearch_library::modules::disk::wmi_disk_drive::query_disk_drives;
+use UltraFastFileSearch_library::modules::disk::wmi_disk_partition::query_disk_partitions;
+use UltraFastFileSearch_library::modules::disk::wmi_encryptable_volume::query_encryptable_volumes;
+use UltraFastFileSearch_library::modules::disk::wmi_logical_disk::query_logical_disk;
+use UltraFastFileSearch_library::modules::disk::wmi_mount_point::query_mount_point;
+use UltraFastFileSearch_library::modules::disk::wmi_msft_disk::query_msft_disks;
+use UltraFastFileSearch_library::modules::disk::wmi_msft_partition::query_msft_partition;
+use UltraFastFileSearch_library::modules::disk::wmi_perf_disk_physical_disk::query_perf_disk_physical_disk;
+use UltraFastFileSearch_library::modules::disk::wmi_physical_media::query_physical_media;
+use UltraFastFileSearch_library::modules::disk::wmi_quota_setting::query_quota_setting;
+use UltraFastFileSearch_library::modules::disk::wmi_shadow_copy::query_shadow_copy;
+use UltraFastFileSearch_library::modules::disk::wmi_volume::query_volumes;
+// use UltraFastFileSearch_library::modules::disk::wmi_volume_change_event::{subscribe_to_volume_change_events, Win32VolumeChangeEvent};
+use UltraFastFileSearch_library::modules::entities::disk::ColumnLengths;
+use UltraFastFileSearch_library::modules::utils::tree_printer_utils::print_directory_tree;
+use UltraFastFileSearch_library::modules::utils::time_utils::format_duration;
+use UltraFastFileSearch_library::modules::errors::errors_impl::UFFSError;
+use UltraFastFileSearch_library::modules::disk::wmi_volume_quota::query_volume_quota;
+// use UltraFastFileSearch_library::modules::utils::initialization::{
+//     initialize_app, run_app, set_threads_count,
+// };
+// use UltraFastFileSearch_library::modules::utils::utils_impl::hello;
 
-use UltraFastFileSearch_library::modules::utils::initialization::{
-    initialize_app, run_app, set_threads_count,
-};
-use UltraFastFileSearch_library::modules::utils::utils_impl::hello;
+fn main() -> anyhow::Result<(), UFFSError> {
 
-fn main() -> IoResult<()> {
-    initialize_app();
+    // let project_path = Path::new("C:\\Users\\rnio\\GitHub\\UltraFastFileSearch-Rust");
+    // print_directory_tree(project_path);
 
-    run_app();
+    // Slow
+    match query_disk_quota() {
+        Ok(results) => {
+            for disk_quota in results {
+                println!("Disk Quota: \n\n{}", disk_quota);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
 
+    println!("UULTRA-FAST-FILE START");
+    
+    match query_defrag_analysis() {
+        Ok(results) => {
+            for defrag_analysis in results {
+                println!("defrag_analysis: \n\n{}", defrag_analysis);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+
+    println!("UULTRA-FAST-FILE START");
+
+    match query_defrag_analysis() {
+        Ok(results) => {
+            for defrag_analysis in results {
+                println!("defrag_analysis: \n\n{}", defrag_analysis);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+
+    // Define the callback function
+    // let callback = |event: Win32VolumeChangeEvent| {
+    //     println!("Received volume change event:");
+    //     println!("{}", event);
+    // };
+    // 
+    // // Start the event subscription
+    // subscribe_to_volume_change_events(callback)?;
+
+        
+        
+    match query_volume_quota() {
+        Ok(results) => {
+            for quota in results {
+                println!("Volume Quota: \n\n{}", quota);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    match query_mount_point() {
+        Ok(results) => {
+            for mount_point in results {
+                println!("Mount Point: \n\n{}", mount_point);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    // SLOW 
+    match query_quota_setting() {
+        Ok(results) => {
+            for quota_setting in results {
+                println!("Quota Setting: \n\n{}", quota_setting);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    match query_shadow_copy() {
+        Ok(results) => {
+            for shadow_copy in results {
+                println!("Shadow Copy: \n\n{}", shadow_copy);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    match query_perf_disk_physical_disk() {
+        Ok(results) => {
+            for perf_disk_physical_disk in results {
+                println!("perf_disk_physical_disk: \n\n{}", perf_disk_physical_disk);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    match query_msft_partition() {
+        Ok(results) => {
+            for msft_partition in results {
+                println!("msft_partition: \n\n{}", msft_partition);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    match query_volumes() {
+        Ok(results) => {
+            for volumes in results {
+                println!("volumes: \n\n{}", volumes);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    // Slow
+    match query_logical_disk() {
+        Ok(results) => {
+            for logical_disk in results {
+                println!("logical_disk: \n\n{}", logical_disk);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    match query_disk_partitions() {
+        Ok(results) => {
+            for disk_partitions in results {
+                println!("disk_partitions: \n\n{}", disk_partitions);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    match query_disk_drives() {
+        Ok(results) => {
+            for disk_drives in results {
+                println!("disk_drives: \n\n{}", disk_drives);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    match query_msft_disks() {
+        Ok(results) => {
+            for msft_disks in results {
+                println!("msft_disks: \n\n{}", msft_disks);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    // little Slow
+    match query_physical_media() {
+        Ok(results) => {
+            for physical_media in results {
+                println!("physical_media: \n\n{}", physical_media);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    match query_encryptable_volumes() {
+        Ok(results) => {
+            for encryptable_volumes in results {
+                println!("encryptable_volumes: \n\n{}", encryptable_volumes);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+        }
+    }
+    
+    if (true) {exit(0)};
+
+    let start = Instant::now();
+
+    // Get the drive info
+    let mut drives = get_drive_info()?;
+
+    let total_duration = start.elapsed();
+
+    // Print the table
+    print_drive_info_table(&mut drives, total_duration);
+    
+    // initialize_app();
+    // 
+    // run_app();
+    
     info!("Application finished.");
 
     Ok(())
 }
 
-fn find_best_configuration(configurations: Vec<(usize, usize)>) -> (usize, usize) {
-    let mut best_duration = Duration::MAX;
-    let mut best_config = (0, 0);
-
-    for (worker_threads, blocking_threads) in configurations {
-        let duration = run_with_configuration(worker_threads, blocking_threads);
-        println!(
-            "Configuration with {} worker threads and {} blocking threads took {:?}",
-            worker_threads,
-            blocking_threads,
-            format_duration(duration)
-        );
-
-        if duration < best_duration {
-            best_duration = duration;
-            best_config = (worker_threads, blocking_threads);
-        }
-    }
-
-    best_config
-}
-
-fn run_with_configuration(worker_threads: usize, blocking_threads: usize) -> Duration {
-    let mut time_used = Default::default();
-    // Configure Tokio runtime with optimized settings for high-performance system
-    let runtime = Builder::new_multi_thread()
-        .worker_threads(worker_threads)
-        .max_blocking_threads(blocking_threads)
-        .enable_all()
-        .build()
-        .expect("Failed to create Tokio runtime");
-
-    // Run the async function using the configured runtime
-    runtime.block_on(async {
-        let start = Instant::now();
-
-        let separator1 = "=".repeat(50).green().to_string();
-        let separator2 = "-".repeat(50).red().to_string();
-
-        println!("{}", separator1);
-        println!("\nReadDirectories4\n");
-        println!("{}", separator2);
-
-        let directory_reader = Arc::new(ReadDirectories4);
-
-        process_all_disks(directory_reader).await;
-
-        time_used = Instant::now() - start;
-    });
-
-    info!("Application finished.");
-
-    time_used
-}
+// fn find_best_configuration(configurations: Vec<(usize, usize)>) -> (usize, usize) {
+//     let mut best_duration = Duration::MAX;
+//     let mut best_config = (0, 0);
+// 
+//     for (worker_threads, blocking_threads) in configurations {
+//         let duration = run_with_configuration(worker_threads, blocking_threads);
+//         println!(
+//             "Configuration with {} worker threads and {} blocking threads took {:?}",
+//             worker_threads,
+//             blocking_threads,
+//             format_duration(duration)
+//         );
+// 
+//         if duration < best_duration {
+//             best_duration = duration;
+//             best_config = (worker_threads, blocking_threads);
+//         }
+//     }
+// 
+//     best_config
+// }
+// 
+// fn run_with_configuration(worker_threads: usize, blocking_threads: usize) -> Duration {
+//     let mut time_used = Default::default();
+//     // Configure Tokio runtime with optimized settings for high-performance system
+//     let runtime = Builder::new_multi_thread()
+//         .worker_threads(worker_threads)
+//         .max_blocking_threads(blocking_threads)
+//         .enable_all()
+//         .build()
+//         .expect("Failed to create Tokio runtime");
+// 
+//     // Run the async function using the configured runtime
+//     runtime.block_on(async {
+//         let start = Instant::now();
+// 
+//         let separator1 = "=".repeat(50).green().to_string();
+//         let separator2 = "-".repeat(50).red().to_string();
+// 
+//         println!("{}", separator1);
+//         println!("\nReadDirectories4\n");
+//         println!("{}", separator2);
+// 
+//         let directory_reader = Arc::new(ReadDirectories4);
+// 
+//         process_all_disks(directory_reader).await;
+// 
+//         time_used = Instant::now() - start;
+//     });
+// 
+//     info!("Application finished.");
+// 
+//     time_used
+// }
 
 // fn main_opti(WORKER_THREADS: usize, BLOCKING_THREADS: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
 //     // Configure Tokio runtime with optimized settings for high-performance system
@@ -154,7 +377,7 @@ fn run_with_configuration(worker_threads: usize, blocking_threads: usize) -> Dur
 // }
 
 // fn main_opti(WORKER_THREADS: usize, BLOCKING_THREADS: usize) -> std::io::Result<()> {
-//     // Initialize the logger
+//     // Initialize the logging
 //     let _guard = init_logger();
 //
 //     info!("Application started...");

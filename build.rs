@@ -234,7 +234,7 @@ fn main() -> std::io::Result<()> {
         )
     });
 
-    // Initialize the logger with custom configuration
+    // Initialize the logging with custom configuration
     CombinedLogger::init(vec![
         TermLogger::new(
             current_log_level,
