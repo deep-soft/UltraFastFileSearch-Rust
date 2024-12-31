@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+#[cfg(windows)]
 use wmi::{COMLibrary, WMIConnection};
 use crate::modules::errors::UFFSError;
 

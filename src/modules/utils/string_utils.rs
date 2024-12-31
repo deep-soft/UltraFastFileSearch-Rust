@@ -1,4 +1,5 @@
 use std::ffi::{OsStr, OsString};
+#[cfg(windows)]
 use std::os::windows::prelude::OsStrExt;
 
 
