@@ -1,6 +1,7 @@
 pub mod app_configs;
 pub mod constants;
 pub mod worker_threads;
+pub mod cli_args;
 
 pub(crate) use app_configs::config;
 
@@ -16,3 +17,7 @@ pub(crate) use constants::MAX_TEMP_FILES_HDD_BATCH;
 pub(crate) use constants::WORKER_THREADS;
 
 pub(crate) use worker_threads::CURRENT_WORKER_THREADS;
+
+pub(crate) use cli_args::Cli;
+pub(crate) use cli_args::parse_cli;
+pub(crate) use cli_args::Columns;

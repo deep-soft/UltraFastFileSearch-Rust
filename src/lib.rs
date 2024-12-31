@@ -1,3 +1,6 @@
+#![feature(os_str_display)]
+#![feature(structural_match)]
+
 pub mod config;
 pub mod modules;
 

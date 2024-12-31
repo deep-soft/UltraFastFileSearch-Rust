@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, RwLock};
 use crate::config::constants::{MAX_TEMP_FILES, MAX_TEMP_FILES_HDD_BATCH};
 use crate::modules::utils::temp_files_dirs_impl::UffsTempDir;
 use tempfile::TempDir;
+use tokio::fs::DirEntry;
 use tokio::runtime::Runtime;
 use tokio::task;
 use tokio_stream::wrappers::ReadDirStream;
@@ -34,55 +35,15 @@ use winapi::um::fileapi::{FindClose, FindFirstFileW, FindNextFileW};
 use winapi::um::handleapi::INVALID_HANDLE_VALUE;
 use winapi::um::minwinbase::WIN32_FIND_DATAW;
 use winapi::um::winnt::FILE_ATTRIBUTE_DIRECTORY;
+use crate::config::MAX_FILES;
 
 static SHOULD_PRINT: Lazy<RwLock<bool>> = Lazy::new(|| RwLock::new(true));
 
-pub fn measure_time_normal<F, R>(func: F) -> (R, Duration)
-where
-    F: FnOnce() -> R,
-{
-    let start = Instant::now();
-    let result = func();
-    let duration = start.elapsed();
-    (result, duration)
-}
-
-pub async fn measure_time_tokio<F, Fut, R>(func: F) -> (R, Duration)
-where
-    F: FnOnce() -> Fut + Send,
-    Fut: Future<Output = R> + Send,
-{
-    let start = Instant::now();
-    let result = func().await;
-    let duration = start.elapsed();
-    (result, duration)
-}
-
-pub fn measure_time_normal_bench<F, R>(func: F) -> Duration
-where
-    F: Fn() -> Result<R, Box<dyn std::error::Error>>,
-{
-    let start = Instant::now();
-    let _ = func();
-    let duration = start.elapsed();
-    duration
-}
-
-pub async fn measure_time_tokio_bench<F, Fut>(func: F) -> Duration
-where
-    F: FnOnce() -> Fut,
-    Fut: Future,
-{
-    let start = Instant::now();
-    let _ = func().await;
-    start.elapsed()
-}
-
 pub async fn read_directory_all_at_once(
     start_path: &PathBuf,
-) -> Result<(Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>), io::Error> {
+) -> Result<(Vec<DirEntry>, Vec<DirEntry>, Vec<PathBuf>), io::Error> {
     // Create Arc<Mutex<_>> for thread-safe shared data
-    let max_files = 100_000;
+    let max_files = MAX_FILES;
     let max_dirs = 18_000;
 
     let files = Arc::new(Mutex::new(Vec::with_capacity(max_files)));
@@ -103,15 +64,22 @@ pub async fn read_directory_all_at_once(
         let dirs = Arc::clone(&dirs);
         let new_dirs_paths = Arc::clone(&new_dirs_paths);
 
+        use std::io::{self, Write};
+
         let task = task::spawn(async move {
             if file_type.is_dir() {
                 let mut dirs = dirs.lock().unwrap();
                 let mut new_dirs_paths = new_dirs_paths.lock().unwrap();
-                dirs.push(path.clone());
+                dirs.push(entry);
                 new_dirs_paths.push(path);
             } else {
                 let mut files = files.lock().unwrap();
-                files.push(path);
+                // Simulate printing to null by writing to std::io::sink()
+                // let mut null_output = std::io::sink();
+                // writeln!(null_output, "{:?}", path).unwrap(); // Redirects to "null" instead of printing
+
+                // println!("{:?}",path);
+                files.push(entry);
             }
         });
 
@@ -137,8 +105,8 @@ pub async fn read_directory_all_at_once(
 /// Async function to read directory entries and partition them into local vectors
 pub(crate) async fn read_directory_entries(
     start_path: &PathBuf,
-    files: &mut Vec<PathBuf>,
-    dirs: &mut Vec<PathBuf>,
+    files: &mut Vec<DirEntry>,
+    dirs: &mut Vec<DirEntry>,
     new_dirs_paths: &mut Vec<PathBuf>,
 ) -> Result<(), io::Error> {
     // pub(crate) async fn read_directory_entries(
@@ -150,15 +118,12 @@ pub(crate) async fn read_directory_entries(
 
     if let Ok(mut entries) = tokio::fs::read_dir(start_path).await {
         while let Some(entry) = entries.next_entry().await? {
-            // let entry_path = entry.path();
             let file_type = entry.file_type().await?;
             if file_type.is_dir() {
-                dirs.push(entry.path());
-                // dirs.push(entry);
-                new_dirs_paths.push(entry.path())
+                new_dirs_paths.push(entry.path());
+                dirs.push(entry);
             } else {
-                files.push(entry.path());
-                // files.push(entry);
+                files.push(entry);
             }
         }
     }
@@ -492,16 +457,6 @@ pub(crate) fn get_unix_path() -> std::io::Result<PathBuf> {
 
     Ok(path)
 }
-
-pub(crate) fn format_size(size: u64) -> String {
-    let size_gb = size as f64 / (1024.0 * 1024.0 * 1024.0);
-    if size_gb >= 1024.0 {
-        format!("{:>9.2} TB", size_gb / 1024.0)
-    } else {
-        format!("{:>9.2} GB", size_gb)
-    }
-}
-
 pub(crate) fn get_root_path(path: &Path) -> &Path {
     match path.components().next() {
         Some(Component::Prefix(prefix)) => Path::new(prefix.as_os_str()),
@@ -510,12 +465,6 @@ pub(crate) fn get_root_path(path: &Path) -> &Path {
         _ => path,
     }
 }
-
-pub(crate) fn format_number(number: usize, width: usize) -> String {
-    let formatted_number = number.to_formatted_string(&Locale::en);
-    format!("{:>width$}", formatted_number)
-}
-
 pub(crate) fn get_number_of_cpu_cores() -> usize {
     let mut cpu_cores = num_cpus::get();
     debug!("{}",cpu_cores);
@@ -524,34 +473,6 @@ pub(crate) fn get_number_of_cpu_cores() -> usize {
         cpu_cores = 4
     }
     cpu_cores
-}
-
-pub fn format_duration(duration: Duration) -> String {
-    let total_seconds = duration.as_secs();
-    let seconds = total_seconds % 60;
-    let minutes = (total_seconds / 60) % 60;
-    let hours = (total_seconds / 3600) % 24;
-    let days = total_seconds / 86400;
-
-    let milliseconds = duration.subsec_millis();
-    let microseconds = duration.subsec_micros() % 1_000;
-    let nanoseconds = duration.subsec_nanos() % 1_000;
-
-    if days > 0 {
-        format!("{:>2}d {:>2}h {:>2}m {:>2}s", days, hours, minutes, seconds)
-    } else if hours > 0 {
-        format!("{:>2}h {:>2}m {:>2}s", hours, minutes, seconds)
-    } else if minutes > 0 {
-        format!("{:>3} m  {:>3} s ", minutes, seconds)
-    } else if seconds > 0 {
-        format!("{:>3} s  {:>3} ms", seconds, milliseconds)
-    } else if milliseconds > 0 {
-        format!("{:>3} ms {:>3} μs", milliseconds, microseconds)
-    } else if microseconds > 0 {
-        format!("{:>3} μs {:>3} ns", microseconds, nanoseconds)
-    } else {
-        format!("{:>3}ns", nanoseconds)
-    }
 }
 
 pub(crate) fn get_drive_letter(path: &PathBuf) -> Option<String> {

@@ -15,6 +15,7 @@ use chrono::Local;
 use colored::*;
 use futures::future::join_all;
 pub(crate) use sysinfo::Disks;
+use tokio::fs::DirEntry;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio::task;
@@ -80,12 +81,12 @@ where
     // let disk_info = get_disk_info();
     let original_data = [
         ("C:\\", "SSD", 1932735217664u64),
-        ("D:\\", "HDD", 8001427599360u64),
-        ("D:\\Google Drive\\", "Unknown(-1)", 1932735217664u64),
-        ("E:\\", "HDD", 1000202039296u64),
-        ("F:\\", "SSD", 918905880576u64),
-        ("M:\\", "HDD", 4000650883072u64),
-        ("S:\\", "HDD", 8001545039872u64),
+        // ("D:\\", "HDD", 8001427599360u64),
+        // ("D:\\Google Drive\\", "Unknown(-1)", 1932735217664u64),
+        // ("E:\\", "HDD", 1000202039296u64),
+        // ("F:\\", "SSD", 918905880576u64),
+        // ("M:\\", "HDD", 4000650883072u64),
+        // ("S:\\", "HDD", 8001545039872u64),
     ];
     // Convert to Vec<(String, String, u64)>
     let disk_info: Vec<(String, String, u64)> = original_data
@@ -238,8 +239,8 @@ pub(crate) async fn list_files_and_dirs<T>(
     disk_info: &[(String, String, u64)],
     directory_reader: Arc<T>,
 ) -> (
-    Vec<PathBuf>,
-    Vec<PathBuf>,
+    Vec<DirEntry>,
+    Vec<DirEntry>,
     std::time::Duration,
     String,
     String,

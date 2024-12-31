@@ -34,8 +34,8 @@ use tracing::info;
 pub(crate) trait DirectoryReader {
     async fn read_directories(
         &self,
-        files: &Arc<RwLock<Vec<PathBuf>>>,
-        dirs: &Arc<RwLock<Vec<PathBuf>>>,
+        files: &Arc<RwLock<Vec<DirEntry>>>,
+        dirs: &Arc<RwLock<Vec<DirEntry>>>,
         paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
     );
 }
@@ -46,8 +46,8 @@ pub struct ReadDirectories1;
 impl DirectoryReader for ReadDirectories1 {
     async fn read_directories(
         &self,
-        files: &Arc<RwLock<Vec<PathBuf>>>,
-        dirs: &Arc<RwLock<Vec<PathBuf>>>,
+        files: &Arc<RwLock<Vec<DirEntry>>>,
+        dirs: &Arc<RwLock<Vec<DirEntry>>>,
         paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
     ) {
         read_directories_1(files, dirs, paths_queue).await;
@@ -56,8 +56,8 @@ impl DirectoryReader for ReadDirectories1 {
 
 #[async_recursion]
 pub(crate) async fn read_directories_1(
-    files: &Arc<RwLock<Vec<PathBuf>>>,
-    dirs: &Arc<RwLock<Vec<PathBuf>>>,
+    files: &Arc<RwLock<Vec<DirEntry>>>,
+    dirs: &Arc<RwLock<Vec<DirEntry>>>,
     paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
 ) {
     // info!("Started: read_directories_1");
@@ -121,8 +121,8 @@ pub struct ReadDirectories2;
 impl DirectoryReader for ReadDirectories2 {
     async fn read_directories(
         &self,
-        files: &Arc<RwLock<Vec<PathBuf>>>,
-        dirs: &Arc<RwLock<Vec<PathBuf>>>,
+        files: &Arc<RwLock<Vec<DirEntry>>>,
+        dirs: &Arc<RwLock<Vec<DirEntry>>>,
         paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
     ) {
         read_directories_2(files, dirs, paths_queue).await;
@@ -131,8 +131,8 @@ impl DirectoryReader for ReadDirectories2 {
 
 #[async_recursion]
 pub(crate) async fn read_directories_2(
-    files: &Arc<RwLock<Vec<PathBuf>>>,
-    dirs: &Arc<RwLock<Vec<PathBuf>>>,
+    files: &Arc<RwLock<Vec<DirEntry>>>,
+    dirs: &Arc<RwLock<Vec<DirEntry>>>,
     paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
 ) {
     // info!("Started: read_directories_2");
@@ -169,48 +169,48 @@ pub(crate) async fn read_directories_2(
 }
 
 pub struct ReadDirectories3;
-
-#[async_trait]
-impl DirectoryReader for ReadDirectories3 {
-    async fn read_directories(
-        &self,
-        files: &Arc<RwLock<Vec<PathBuf>>>,
-        dirs: &Arc<RwLock<Vec<PathBuf>>>,
-        paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
-    ) {
-        read_directories_3(files, dirs, paths_queue).await;
-    }
-}
-
-#[async_recursion]
-pub(crate) async fn read_directories_3(
-    files: &Arc<RwLock<Vec<PathBuf>>>,
-    dirs: &Arc<RwLock<Vec<PathBuf>>>,
-    paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
-) {
-    // info!("Started: read_directories_3");
-    while let Some(start_path) = {
-        let mut queue_guard = paths_queue.write().await;
-        queue_guard.pop()
-    } {
-        for entry in WalkDir::new(start_path).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path().to_path_buf();
-            if path.is_dir() {
-                {
-                    let mut dirs_lock = dirs.write().await;
-                    dirs_lock.push(path.clone());
-                }
-                {
-                    let mut paths_queue_lock = paths_queue.write().await;
-                    paths_queue_lock.push(path);
-                }
-            } else {
-                let mut files_lock = files.write().await;
-                files_lock.push(path);
-            }
-        }
-    }
-}
+// 
+// #[async_trait]
+// impl DirectoryReader for ReadDirectories3 {
+//     async fn read_directories(
+//         &self,
+//         files: &Arc<RwLock<Vec<PathBuf>>>,
+//         dirs: &Arc<RwLock<Vec<PathBuf>>>,
+//         paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
+//     ) {
+//         read_directories_3(files, dirs, paths_queue).await;
+//     }
+// }
+// 
+// #[async_recursion]
+// pub(crate) async fn read_directories_3(
+//     files: &Arc<RwLock<Vec<PathBuf>>>,
+//     dirs: &Arc<RwLock<Vec<PathBuf>>>,
+//     paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
+// ) {
+//     // info!("Started: read_directories_3");
+//     while let Some(start_path) = {
+//         let mut queue_guard = paths_queue.write().await;
+//         queue_guard.pop()
+//     } {
+//         for entry in WalkDir::new(start_path).into_iter().filter_map(|e| e.ok()) {
+//             let path = entry.path().to_path_buf();
+//             if path.is_dir() {
+//                 {
+//                     let mut dirs_lock = dirs.write().await;
+//                     dirs_lock.push(path.clone());
+//                 }
+//                 {
+//                     let mut paths_queue_lock = paths_queue.write().await;
+//                     paths_queue_lock.push(path);
+//                 }
+//             } else {
+//                 let mut files_lock = files.write().await;
+//                 files_lock.push(path);
+//             }
+//         }
+//     }
+// }
 
 pub struct ReadDirectories4;
 
@@ -218,8 +218,8 @@ pub struct ReadDirectories4;
 impl DirectoryReader for crate::modules::directory_reader::ReadDirectories4 {
     async fn read_directories(
         &self,
-        files: &Arc<RwLock<Vec<PathBuf>>>,
-        dirs: &Arc<RwLock<Vec<PathBuf>>>,
+        files: &Arc<RwLock<Vec<DirEntry>>>,
+        dirs: &Arc<RwLock<Vec<DirEntry>>>,
         paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
     ) {
         crate::modules::directory_reader::directory_reader_impl::read_directories_4(
@@ -233,8 +233,8 @@ impl DirectoryReader for crate::modules::directory_reader::ReadDirectories4 {
 
 #[async_recursion]
 pub(crate) async fn read_directories_4(
-    files: &Arc<RwLock<Vec<PathBuf>>>,
-    dirs: &Arc<RwLock<Vec<PathBuf>>>,
+    files: &Arc<RwLock<Vec<DirEntry>>>,
+    dirs: &Arc<RwLock<Vec<DirEntry>>>,
     paths_queue: &Arc<RwLock<Vec<PathBuf>>>,
 ) {
     // info!("Started: read_directories_4");
