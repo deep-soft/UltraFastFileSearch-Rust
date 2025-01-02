@@ -16,4 +16,4 @@ pub mod fs;
 pub mod platform;
 pub mod disk;
 pub mod config;
-mod directory;
+pub mod directory;
