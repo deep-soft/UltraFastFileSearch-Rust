@@ -1616,23 +1616,17 @@ impl MftIndex {
             return;
         };
 
-        // Get parent record - bounds already validated by frs_to_idx_opt
-        let Some(parent_rec) = self.records.get_mut(parent_idx) else {
-            return;
-        };
-
         // Create child entry
         let child_idx = self.children.len() as u32;
-        let old_first_child = parent_rec.first_child;
-
-        // Update parent's first_child before pushing to children
-        parent_rec.first_child = child_idx;
+        let old_first_child = self.records[parent_idx].first_child;
 
         self.children.push(ChildInfo {
             next_entry: old_first_child,
             child_frs,
             name_index,
         });
+
+        self.records[parent_idx].first_child = child_idx;
     }
 
     /// Sort children within each directory by filename (case-insensitive).
@@ -1802,34 +1796,18 @@ impl MftIndex {
 
     /// Compute tree metrics with optional debug output.
     ///
-    /// When `debug` is true, prints detailed information about hardlink
-    /// handling to stdout for debugging purposes.
+    /// When `debug` is true, prints detailed information about hardlink handling
+    /// to stdout for debugging purposes.
     #[allow(clippy::print_stdout)]
     pub fn compute_tree_metrics_debug(&mut self) {
         self.compute_tree_metrics_impl(true);
     }
 
-    /// Internal implementation of tree metrics computation.
-    ///
-    /// This method implements the C++ tree metrics algorithm using a Kahn-style
-    /// leaf-peeling approach. It computes descendants, treesize, and
-    /// `tree_allocated` for each record by processing leaves first and
-    /// propagating values up to parents.
-    ///
-    /// # Arguments
-    /// * `debug` - If true, prints detailed debug information during
-    ///   computation
     #[allow(
         clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         clippy::cognitive_complexity,
-        clippy::float_arithmetic,
-        clippy::map_unwrap_or,
-        clippy::min_ident_chars,
-        clippy::print_stdout,
         clippy::too_many_lines,
-        clippy::uninlined_format_args,
-        clippy::unnecessary_sort_by
+        clippy::print_stdout
     )]
     fn compute_tree_metrics_impl(&mut self, debug: bool) {
         let n = self.records.len();
@@ -1877,20 +1855,17 @@ impl MftIndex {
                 let mut total_allocated = record.first_stream.size.allocated;
 
                 let mut next_entry = record.first_stream.next_entry;
-                let mut stream_idx = 0_u32;
+                let mut stream_idx = 0;
                 while next_entry != NO_ENTRY {
                     if let Some(stream) = self.streams.get(next_entry as usize) {
                         // Debug: log additional streams for FRS 5
                         if record.frs == 5 {
-                            println!(
-                                "FRS 5: Additional stream {}: size={}, next_entry={}",
-                                stream_idx, stream.size.length, stream.next_entry
-                            );
+                            println!("FRS 5: Additional stream {}: size={}, next_entry={}", stream_idx, stream.size.length, stream.next_entry);
                         }
                         total_size = total_size.saturating_add(stream.size.length);
                         total_allocated = total_allocated.saturating_add(stream.size.allocated);
                         next_entry = stream.next_entry;
-                        stream_idx += 1_u32;
+                        stream_idx += 1;
                     } else {
                         break;
                     }
@@ -1898,19 +1873,10 @@ impl MftIndex {
 
                 // Debug: log total size for FRS 5
                 if record.frs == 5 {
-                    println!(
-                        "FRS 5: first_stream.size={}, total_size={}, stream_count={}",
-                        record.first_stream.size.length, total_size, stream_count
-                    );
+                    println!("FRS 5: first_stream.size={}, total_size={}, stream_count={}", record.first_stream.size.length, total_size, stream_count);
                 }
 
-                (
-                    is_directory,
-                    stream_count,
-                    name_count,
-                    total_size,
-                    total_allocated,
-                )
+                (is_directory, stream_count, name_count, total_size, total_allocated)
             })
             .collect();
 
@@ -1940,10 +1906,10 @@ impl MftIndex {
 
         // Phase 3: Initialize records with base metrics
         // Files: descendants = 0, treesize = own size, tree_allocated = own allocated
-        // Directories: descendants = 1, treesize = own index size, tree_allocated = own
-        // allocated Note: C++ includes ALL records in tree metrics (including
-        // system metafiles). System metafiles are just not output to CSV, but
-        // their sizes ARE included in the root's treesize.
+        // Directories: descendants = 1, treesize = own index size, tree_allocated = own allocated
+        // Note: C++ includes ALL records in tree metrics (including system metafiles).
+        // System metafiles are just not output to CSV, but their sizes ARE included
+        // in the root's treesize.
 
         for (idx, (is_directory, stream_count, _name_count, size, allocated)) in
             base_metrics.iter().enumerate()
@@ -1958,14 +1924,18 @@ impl MftIndex {
                 // So a directory with stream_count=2 contributes 2 to its own treesize
                 // (plus children's treesize). We initialize descendants to stream_count
                 // for directories to match this behavior.
-                // Directories start with stream_count as descendants (C++ parity)
-                // Files start with 0 descendants
                 record.descendants = if *is_directory { *stream_count } else { 0 };
-                // Both directories and files have their own size in treesize
-                // Directories: size comes from $INDEX_ROOT + $INDEX_ALLOCATION + $BITMAP
-                // Files: size comes from $DATA stream(s)
-                record.treesize = *size;
-                record.tree_allocated = *allocated;
+                if *is_directory {
+                    // Directories include their own index size in treesize (C++ parity)
+                    // The directory's size comes from $INDEX_ROOT + $INDEX_ALLOCATION + $BITMAP
+                    record.treesize = *size;
+                    record.tree_allocated = *allocated;
+                } else {
+                    // Files (including system metafiles) have their own size
+                    // (will be divided when contributing to parent)
+                    record.treesize = *size;
+                    record.tree_allocated = *allocated;
+                }
             }
         }
 
@@ -2001,7 +1971,7 @@ impl MftIndex {
                 .iter()
                 .filter(|(_, _, name_count, _, _)| *name_count > 1)
                 .count();
-            let total_parent_entries: usize = child_to_parents.iter().map(Vec::len).sum();
+            let total_parent_entries: usize = child_to_parents.iter().map(|p| p.len()).sum();
 
             println!();
             println!("=== HARDLINK STATISTICS ===");
@@ -2013,13 +1983,11 @@ impl MftIndex {
             // Show first 10 records with hardlinks
             println!();
             println!("=== SAMPLE HARDLINKS (first 10) ===");
-            let mut shown = 0_u32;
+            let mut shown = 0;
             for (idx, (_, _, name_count, size, _)) in base_metrics.iter().enumerate() {
-                if *name_count > 1 && shown < 10_u32 {
-                    let Some(parents) = child_to_parents.get(idx) else {
-                        continue;
-                    };
-                    let frs = self.records.get(idx).map_or(0, |rec| rec.frs);
+                if *name_count > 1 && shown < 10 {
+                    let parents = &child_to_parents[idx];
+                    let frs = self.records.get(idx).map(|r| r.frs).unwrap_or(0);
                     println!(
                         "  FRS {}: name_count={}, size={}, parent_entries={}",
                         frs,
@@ -2027,13 +1995,11 @@ impl MftIndex {
                         size,
                         parents.len()
                     );
-                    for (parent_i, (parent_idx, name_index)) in parents.iter().enumerate() {
-                        let parent_frs = self.records.get(*parent_idx).map_or(0, |rec| rec.frs);
-                        println!(
-                            "    [{parent_i}] parent_idx={parent_idx} (FRS {parent_frs}), name_index={name_index}"
-                        );
+                    for (pi, (parent_idx, name_index)) in parents.iter().enumerate() {
+                        let parent_frs = self.records.get(*parent_idx).map(|r| r.frs).unwrap_or(0);
+                        println!("    [{pi}] parent_idx={parent_idx} (FRS {parent_frs}), name_index={name_index}");
                     }
-                    shown += 1_u32;
+                    shown += 1;
                 }
             }
         }
@@ -2062,12 +2028,7 @@ impl MftIndex {
             };
             let (child_frs, child_descendants, child_treesize, child_tree_allocated) =
                 if let Some(child) = self.records.get(child_idx) {
-                    (
-                        child.frs,
-                        child.descendants,
-                        child.treesize,
-                        child.tree_allocated,
-                    )
+                    (child.frs, child.descendants, child.treesize, child.tree_allocated)
                 } else {
                     continue;
                 };
@@ -2075,13 +2036,11 @@ impl MftIndex {
             // Calculate contribution for descendants
             // C++ counts each stream as +1 to parent's treesize (line 879)
             // Files: contribute stream_count (each stream = +1)
-            // Directories: contribute their descendants (which already includes
-            // stream_count)
+            // Directories: contribute their descendants (which already includes stream_count)
             let descendants_contribution = if child_descendants == 0 {
                 stream_count
             } else {
-                // Directory: descendants already includes stream_count for this directory's
-                // streams
+                // Directory: descendants already includes stream_count for this directory's streams
                 child_descendants
             };
 
@@ -2129,8 +2088,7 @@ impl MftIndex {
         if debug && !debug_hardlink_contributions.is_empty() {
             println!();
             println!("=== HARDLINK CONTRIBUTIONS (first 20) ===");
-            for (frs, name_index, name_count, size_share, alloc_share) in
-                &debug_hardlink_contributions
+            for (frs, name_index, name_count, size_share, alloc_share) in &debug_hardlink_contributions
             {
                 let name_info = name_count.saturating_sub(1).saturating_sub(*name_index);
                 println!(
@@ -2161,34 +2119,18 @@ impl MftIndex {
             // Show size distribution of base metrics
             let total_size: u64 = base_metrics.iter().map(|(_, _, _, s, _)| *s).sum();
             let total_alloc: u64 = base_metrics.iter().map(|(_, _, _, _, a)| *a).sum();
-            let file_count = base_metrics
-                .iter()
-                .filter(|(is_dir, _, _, _, _)| !*is_dir)
-                .count();
-            let dir_count = base_metrics
-                .iter()
-                .filter(|(is_dir, _, _, _, _)| *is_dir)
-                .count();
+            let file_count = base_metrics.iter().filter(|(is_dir, _, _, _, _)| !*is_dir).count();
+            let dir_count = base_metrics.iter().filter(|(is_dir, _, _, _, _)| *is_dir).count();
 
             println!();
             println!("=== BASE METRICS SUMMARY ===");
             println!("  Files: {file_count}");
             println!("  Directories: {dir_count}");
-            println!(
-                "  Total base size: {} ({:.2} MB)",
-                total_size,
-                total_size as f64 / 1_000_000.0_f64
-            );
-            println!(
-                "  Total base allocated: {} ({:.2} MB)",
-                total_alloc,
-                total_alloc as f64 / 1_000_000.0_f64
-            );
+            println!("  Total base size: {} ({:.2} MB)", total_size, total_size as f64 / 1_000_000.0);
+            println!("  Total base allocated: {} ({:.2} MB)", total_alloc, total_alloc as f64 / 1_000_000.0);
 
             // Show top 10 files by allocated size
-            let mut by_alloc: Vec<_> = base_metrics
-                .iter()
-                .enumerate()
+            let mut by_alloc: Vec<_> = base_metrics.iter().enumerate()
                 .filter(|(_, (is_dir, _, _, _, _))| !*is_dir)
                 .map(|(idx, (_, _, _, size, alloc))| (idx, *size, *alloc))
                 .collect();
@@ -2207,16 +2149,8 @@ impl MftIndex {
                 if let Some(root) = self.records.get(root_idx) {
                     println!("  FRS: {}", root.frs);
                     println!("  Descendants: {}", root.descendants);
-                    println!(
-                        "  Treesize: {} ({:.2} MB)",
-                        root.treesize,
-                        root.treesize as f64 / 1_000_000.0_f64
-                    );
-                    println!(
-                        "  Tree Allocated: {} ({:.2} MB)",
-                        root.tree_allocated,
-                        root.tree_allocated as f64 / 1_000_000.0_f64
-                    );
+                    println!("  Treesize: {} ({:.2} MB)", root.treesize, root.treesize as f64 / 1_000_000.0);
+                    println!("  Tree Allocated: {} ({:.2} MB)", root.tree_allocated, root.tree_allocated as f64 / 1_000_000.0);
                 }
             } else {
                 println!("  Root not found!");

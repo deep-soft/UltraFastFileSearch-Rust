@@ -640,12 +640,7 @@ fn parse_data_attribute_full(
             allocated_size.max(0) as u64
         };
 
-        (
-            effective_size,
-            effective_allocated,
-            is_sparse,
-            is_compressed,
-        )
+        (effective_size, effective_allocated, is_sparse, is_compressed)
     };
 
     Some(StreamInfo {
@@ -734,7 +729,7 @@ impl Default for PrimaryNameTracker {
 #[must_use]
 // Required: ptr::read for packed NTFS structs
 // 101 lines: just over limit due to P2 reparse_tag extraction; splitting would hurt readability
-#[allow(unsafe_code, clippy::cognitive_complexity, clippy::too_many_lines)]
+#[allow(unsafe_code, clippy::too_many_lines)]
 pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
     use core::mem::size_of;
 
@@ -848,7 +843,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                             unsafe { core::ptr::read(data[rp_offset..].as_ptr().cast()) };
                         reparse_tag = rp_header.reparse_tag;
                     }
-                    (value_length, 0_u64, true)
+                    (value_length, 0u64, true)
                 } else {
                     // Non-resident reparse point (rare - large reparse data)
                     // Use DataSize from non-resident header (at offset+32, NOT 40)
@@ -866,7 +861,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                         );
                         (ds.max(0) as u64, alloc.max(0) as u64)
                     } else {
-                        (0_u64, 0_u64)
+                        (0u64, 0u64)
                     };
                     reparse_size = data_size;
                     // Note: Can't easily read reparse_tag from non-resident
@@ -887,13 +882,19 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     is_resident,
                 });
             }
-            Some(
-                AttributeType::IndexRoot | AttributeType::IndexAllocation | AttributeType::Bitmap,
-            ) => {
+            Some(AttributeType::IndexRoot)
+            | Some(AttributeType::IndexAllocation)
+            | Some(AttributeType::Bitmap) => {
                 // C++ includes $INDEX_ROOT, $INDEX_ALLOCATION, and $BITMAP with name $I30
                 // in directory size (all merged into a single stream)
-                // For non-$I30 indexes (like $SDH, $SII, $O, $Q, $R), C++ counts them as
-                // streams
+                // For non-$I30 indexes (like $SDH, $SII, $O, $Q, $R), C++ counts them as streams
+                let attr_type = AttributeType::from_u32(attr_header.type_code);
+                if frs == 42 {
+                    println!(
+                        "  FRS 42: attr_type={:?}, name_length={}, is_non_resident={}",
+                        attr_type, attr_header.name_length, attr_header.is_non_resident
+                    );
+                }
 
                 // Extract attribute name
                 let (is_i30, attr_name) = if attr_header.name_length > 0 {
@@ -902,19 +903,22 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         // Check for "$I30" in UTF-16LE
-                        let is_i30 =
-                            attr_header.name_length == 4 && name_bytes == b"$\x00I\x003\x000\x00";
+                        let is_i30 = attr_header.name_length == 4 && name_bytes == b"$\x00I\x003\x000\x00";
+                        if frs == 42 && attr_header.name_length == 4 {
+                            println!(
+                                "  FRS 42: name_bytes={:02x?}, expected={:02x?}, match={}",
+                                name_bytes, b"$\x00I\x003\x000\x00", is_i30
+                            );
+                        }
                         // Decode name for non-$I30 indexes
-                        let name = if is_i30 {
-                            String::new()
-                        } else {
+                        let name = if !is_i30 {
                             let name_u16: smallvec::SmallVec<[u16; 64]> = name_bytes
                                 .chunks_exact(2)
-                                .filter_map(|chunk| {
-                                    <[u8; 2]>::try_from(chunk).ok().map(u16::from_le_bytes)
-                                })
+                                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                                 .collect();
                             String::from_utf16(&name_u16).unwrap_or_default()
+                        } else {
+                            String::new()
                         };
                         (is_i30, name)
                     } else {
@@ -933,6 +937,9 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                                 .and_then(|b| b.try_into().ok())
                                 .unwrap_or([0; 4]),
                         ) as u64;
+                        if frs == 42 {
+                            println!("  FRS 42: resident value_length={}", value_length);
+                        }
                         dir_index_size += value_length;
                         // Resident attributes have no allocated size
                     } else {
@@ -949,6 +956,12 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                                     .try_into()
                                     .unwrap_or([0; 8]),
                             );
+                            if frs == 42 {
+                                println!(
+                                    "  FRS 42: non-resident allocated={}, data_size={}",
+                                    allocated, data_size
+                                );
+                            }
                             dir_index_size += data_size.max(0) as u64;
                             dir_index_allocated += allocated.max(0) as u64;
                         }
@@ -963,7 +976,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                                 .and_then(|b| b.try_into().ok())
                                 .unwrap_or([0; 4]),
                         ) as u64;
-                        (value_length, 0_u64, true)
+                        (value_length, 0u64, true)
                     } else {
                         let nr_offset = offset + 16;
                         if nr_offset + 48 <= data.len() {
@@ -979,7 +992,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                             );
                             (data_size.max(0) as u64, allocated.max(0) as u64, false)
                         } else {
-                            (0_u64, 0_u64, false)
+                            (0u64, 0u64, false)
                         }
                     };
                     // Use attribute type name if no explicit name
@@ -987,9 +1000,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                         match AttributeType::from_u32(attr_header.type_code) {
                             Some(AttributeType::Bitmap) => String::from("$BITMAP"),
                             Some(AttributeType::IndexRoot) => String::from("$INDEX_ROOT"),
-                            Some(AttributeType::IndexAllocation) => {
-                                String::from("$INDEX_ALLOCATION")
-                            }
+                            Some(AttributeType::IndexAllocation) => String::from("$INDEX_ALLOCATION"),
                             _ => String::new(),
                         }
                     } else {
@@ -1014,19 +1025,18 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
             // - $EA_INFORMATION (0xD0)
             // - $LOGGED_UTILITY_STREAM (0x100) - falls through to default: case in C++
             // - And any other attribute type (default case)
-            Some(
-                AttributeType::ObjectId
-                | AttributeType::VolumeName
-                | AttributeType::VolumeInformation
-                | AttributeType::PropertySet
-                | AttributeType::Ea
-                | AttributeType::EaInformation
-                | AttributeType::LoggedUtilityStream,
-            ) => {
+            Some(AttributeType::ObjectId)
+            | Some(AttributeType::VolumeName)
+            | Some(AttributeType::VolumeInformation)
+            | Some(AttributeType::PropertySet)
+            | Some(AttributeType::Ea)
+            | Some(AttributeType::EaInformation)
+            | Some(AttributeType::LoggedUtilityStream) => {
                 // Note: LoggedUtilityStream IS counted as a stream in C++ via the default: case
-                // The commented out line 589 just means it's not an explicit case, so it falls
-                // through
-
+                // The commented out line 589 just means it's not an explicit case, so it falls through
+                if frs == 31 {
+                    println!("FRS 31: Found attribute type {:?}, name_length={}", AttributeType::from_u32(attr_header.type_code), attr_header.name_length);
+                }
                 // Extract attribute name (if any)
                 let attr_name = if attr_header.name_length > 0 {
                     let name_offset = offset + attr_header.name_offset as usize;
@@ -1035,9 +1045,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: smallvec::SmallVec<[u16; 64]> = name_bytes
                             .chunks_exact(2)
-                            .filter_map(|chunk| {
-                                <[u8; 2]>::try_from(chunk).ok().map(u16::from_le_bytes)
-                            })
+                            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                             .collect();
                         String::from_utf16(&name_u16).unwrap_or_default()
                     } else {
@@ -1054,7 +1062,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                             .and_then(|b| b.try_into().ok())
                             .unwrap_or([0; 4]),
                     ) as u64;
-                    (value_length, 0_u64, true)
+                    (value_length, 0u64, true)
                 } else {
                     let nr_offset = offset + 16;
                     if nr_offset + 48 <= data.len() {
@@ -1070,33 +1078,28 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                         );
                         (data_size.max(0) as u64, allocated.max(0) as u64, false)
                     } else {
-                        (0_u64, 0_u64, false)
+                        (0u64, 0u64, false)
                     }
                 };
 
                 // Create a stream name that identifies the attribute type
-                // Note: LoggedUtilityStream (0x100) must have a synthetic name to survive
-                // the named_streams filter in index.rs - otherwise its size is dropped
-                // while still being counted, causing the 48-byte parity gap with C++.
                 let stream_name = if attr_name.is_empty() {
                     match AttributeType::from_u32(attr_header.type_code) {
                         Some(AttributeType::ObjectId) => String::from("$OBJECT_ID"),
                         Some(AttributeType::VolumeName) => String::from("$VOLUME_NAME"),
-                        Some(AttributeType::VolumeInformation) => {
-                            String::from("$VOLUME_INFORMATION")
-                        }
+                        Some(AttributeType::VolumeInformation) => String::from("$VOLUME_INFORMATION"),
                         Some(AttributeType::PropertySet) => String::from("$PROPERTY_SET"),
                         Some(AttributeType::Ea) => String::from("$EA"),
                         Some(AttributeType::EaInformation) => String::from("$EA_INFORMATION"),
-                        Some(AttributeType::LoggedUtilityStream) => {
-                            String::from("$LOGGED_UTILITY_STREAM")
-                        }
                         _ => String::new(),
                     }
                 } else {
                     attr_name
                 };
 
+                if frs == 31 {
+                    println!("FRS 31: Adding stream '{}' with size={}", stream_name, size);
+                }
                 streams.push(StreamInfo {
                     name: stream_name,
                     size,
@@ -1106,27 +1109,25 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     is_resident,
                 });
             }
-            // Skip known non-stream attributes silently
-            Some(
-                AttributeType::StandardInformation
-                | AttributeType::FileName
-                | AttributeType::AttributeList
-                | AttributeType::SecurityDescriptor,
-            ) => {}
             _ => {
-                // Unknown attribute type - log at trace level for debugging
-                // Copy fields from packed struct to avoid unaligned reference
-                let type_code = attr_header.type_code;
+                // Debug: Log unhandled attribute types for ALL records
+                let attr_type_code = attr_header.type_code;
+                let attr_type = AttributeType::from_u32(attr_type_code);
                 let name_len = attr_header.name_length;
-                debug!(
-                    frs,
-                    attr_type_code = type_code,
-                    name_length = name_len,
-                    "Unknown attribute type"
-                );
+                // Skip known non-stream attributes
+                if !matches!(attr_type, Some(AttributeType::StandardInformation) | Some(AttributeType::FileName) | Some(AttributeType::AttributeList) | Some(AttributeType::SecurityDescriptor)) {
+                    println!("FRS {}: Unhandled attribute type {:?} (0x{:X}), name_length={}", frs, attr_type, attr_type_code, name_len);
+                }
             }
         }
         offset += attr_header.length as usize;
+    }
+
+    if frs == 31 || frs == 5 || frs == 32 || frs == 0 || frs == 3 || frs == 9 || frs == 10 || frs == 188 || frs == 244 || frs == 252 {
+        println!("FRS {}: Total streams after parsing: {}, is_directory={}", frs, streams.len(), header.is_directory());
+        for (i, s) in streams.iter().enumerate() {
+            println!("  FRS {}: Stream {}: name='{}', size={}", frs, i, s.name, s.size);
+        }
     }
 
     // Handle extension records
@@ -1149,8 +1150,20 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
     // stream
     // For directories, C++ includes $INDEX_ROOT + $INDEX_ALLOCATION size
     let is_directory = header.is_directory();
+    if frs == 42 {
+        println!(
+            "  FRS 42: is_directory={}, dir_index_size={}, dir_index_allocated={}",
+            is_directory, dir_index_size, dir_index_allocated
+        );
+    }
     let (size, allocated_size) = if is_directory && dir_index_size > 0 {
         // Directory with index allocation - use index size (C++ parity)
+        if frs == 42 {
+            println!(
+                "  FRS 42: using dir_index_size={}, dir_index_allocated={}",
+                dir_index_size, dir_index_allocated
+            );
+        }
         (dir_index_size, dir_index_allocated)
     } else {
         streams.iter().find(|s| s.name.is_empty()).map_or_else(
@@ -1395,7 +1408,7 @@ pub fn parse_record_forensic(
                             unsafe { core::ptr::read(data[rp_offset..].as_ptr().cast()) };
                         reparse_tag = rp_header.reparse_tag;
                     }
-                    (value_length, 0_u64, true)
+                    (value_length, 0u64, true)
                 } else {
                     // Non-resident reparse point (rare - large reparse data)
                     // Use DataSize from non-resident header (at offset+32, NOT 40)
@@ -1413,7 +1426,7 @@ pub fn parse_record_forensic(
                         );
                         (ds.max(0) as u64, alloc.max(0) as u64)
                     } else {
-                        (0_u64, 0_u64)
+                        (0u64, 0u64)
                     };
                     reparse_size = data_size;
                     // Note: Can't easily read reparse_tag from non-resident
@@ -1431,13 +1444,12 @@ pub fn parse_record_forensic(
                     is_resident,
                 });
             }
-            Some(
-                AttributeType::IndexRoot | AttributeType::IndexAllocation | AttributeType::Bitmap,
-            ) => {
+            Some(AttributeType::IndexRoot)
+            | Some(AttributeType::IndexAllocation)
+            | Some(AttributeType::Bitmap) => {
                 // C++ includes $INDEX_ROOT, $INDEX_ALLOCATION, and $BITMAP with name $I30
                 // in directory size (all merged into a single stream)
-                // For non-$I30 indexes (like $SDH, $SII, $O, $Q, $R), C++ counts them as
-                // streams
+                // For non-$I30 indexes (like $SDH, $SII, $O, $Q, $R), C++ counts them as streams
 
                 // Extract attribute name
                 let (is_i30, attr_name) = if attr_header.name_length > 0 {
@@ -1446,19 +1458,16 @@ pub fn parse_record_forensic(
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         // Check for "$I30" in UTF-16LE
-                        let is_i30 =
-                            attr_header.name_length == 4 && name_bytes == b"$\x00I\x003\x000\x00";
+                        let is_i30 = attr_header.name_length == 4 && name_bytes == b"$\x00I\x003\x000\x00";
                         // Decode name for non-$I30 indexes
-                        let name = if is_i30 {
-                            String::new()
-                        } else {
+                        let name = if !is_i30 {
                             let name_u16: smallvec::SmallVec<[u16; 64]> = name_bytes
                                 .chunks_exact(2)
-                                .filter_map(|chunk| {
-                                    <[u8; 2]>::try_from(chunk).ok().map(u16::from_le_bytes)
-                                })
+                                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                                 .collect();
                             String::from_utf16(&name_u16).unwrap_or_default()
+                        } else {
+                            String::new()
                         };
                         (is_i30, name)
                     } else {
@@ -1507,7 +1516,7 @@ pub fn parse_record_forensic(
                                 .and_then(|b| b.try_into().ok())
                                 .unwrap_or([0; 4]),
                         ) as u64;
-                        (value_length, 0_u64, true)
+                        (value_length, 0u64, true)
                     } else {
                         let nr_offset = offset + 16;
                         if nr_offset + 48 <= data.len() {
@@ -1523,7 +1532,7 @@ pub fn parse_record_forensic(
                             );
                             (data_size.max(0) as u64, allocated.max(0) as u64, false)
                         } else {
-                            (0_u64, 0_u64, false)
+                            (0u64, 0u64, false)
                         }
                     };
                     // Use attribute type name if no explicit name
@@ -1531,9 +1540,7 @@ pub fn parse_record_forensic(
                         match AttributeType::from_u32(attr_header.type_code) {
                             Some(AttributeType::Bitmap) => String::from("$BITMAP"),
                             Some(AttributeType::IndexRoot) => String::from("$INDEX_ROOT"),
-                            Some(AttributeType::IndexAllocation) => {
-                                String::from("$INDEX_ALLOCATION")
-                            }
+                            Some(AttributeType::IndexAllocation) => String::from("$INDEX_ALLOCATION"),
                             _ => String::new(),
                         }
                     } else {
@@ -1556,16 +1563,13 @@ pub fn parse_record_forensic(
             // - $PROPERTY_SET (0xF0)
             // - $EA (0xE0)
             // - $EA_INFORMATION (0xD0)
-            // - $LOGGED_UTILITY_STREAM (0x100) - falls through to default: case in C++
-            Some(
-                AttributeType::ObjectId
-                | AttributeType::VolumeName
-                | AttributeType::VolumeInformation
-                | AttributeType::PropertySet
-                | AttributeType::Ea
-                | AttributeType::EaInformation
-                | AttributeType::LoggedUtilityStream,
-            ) => {
+            // Note: LoggedUtilityStream is NOT counted as a stream in C++ (commented out at line 589)
+            Some(AttributeType::ObjectId)
+            | Some(AttributeType::VolumeName)
+            | Some(AttributeType::VolumeInformation)
+            | Some(AttributeType::PropertySet)
+            | Some(AttributeType::Ea)
+            | Some(AttributeType::EaInformation) => {
                 // Extract attribute name (if any)
                 let attr_name = if attr_header.name_length > 0 {
                     let name_offset = offset + attr_header.name_offset as usize;
@@ -1574,9 +1578,7 @@ pub fn parse_record_forensic(
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: smallvec::SmallVec<[u16; 64]> = name_bytes
                             .chunks_exact(2)
-                            .filter_map(|chunk| {
-                                <[u8; 2]>::try_from(chunk).ok().map(u16::from_le_bytes)
-                            })
+                            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                             .collect();
                         String::from_utf16(&name_u16).unwrap_or_default()
                     } else {
@@ -1593,7 +1595,7 @@ pub fn parse_record_forensic(
                             .and_then(|b| b.try_into().ok())
                             .unwrap_or([0; 4]),
                     ) as u64;
-                    (value_length, 0_u64, true)
+                    (value_length, 0u64, true)
                 } else {
                     let nr_offset = offset + 16;
                     if nr_offset + 48 <= data.len() {
@@ -1609,27 +1611,19 @@ pub fn parse_record_forensic(
                         );
                         (data_size.max(0) as u64, allocated.max(0) as u64, false)
                     } else {
-                        (0_u64, 0_u64, false)
+                        (0u64, 0u64, false)
                     }
                 };
 
                 // Create a stream name that identifies the attribute type
-                // Note: LoggedUtilityStream (0x100) must have a synthetic name to survive
-                // the named_streams filter in index.rs - otherwise its size is dropped
-                // while still being counted, causing the 48-byte parity gap with C++.
                 let stream_name = if attr_name.is_empty() {
                     match AttributeType::from_u32(attr_header.type_code) {
                         Some(AttributeType::ObjectId) => String::from("$OBJECT_ID"),
                         Some(AttributeType::VolumeName) => String::from("$VOLUME_NAME"),
-                        Some(AttributeType::VolumeInformation) => {
-                            String::from("$VOLUME_INFORMATION")
-                        }
+                        Some(AttributeType::VolumeInformation) => String::from("$VOLUME_INFORMATION"),
                         Some(AttributeType::PropertySet) => String::from("$PROPERTY_SET"),
                         Some(AttributeType::Ea) => String::from("$EA"),
                         Some(AttributeType::EaInformation) => String::from("$EA_INFORMATION"),
-                        Some(AttributeType::LoggedUtilityStream) => {
-                            String::from("$LOGGED_UTILITY_STREAM")
-                        }
                         _ => String::new(),
                     }
                 } else {
@@ -1997,9 +1991,8 @@ impl MftRecordMerger {
         }
 
         // Recalculate sizes from merged streams
-        // BUT: Don't overwrite directory sizes - they come from
-        // $INDEX_ROOT/$INDEX_ALLOCATION which are already correctly set during
-        // parsing
+        // BUT: Don't overwrite directory sizes - they come from $INDEX_ROOT/$INDEX_ALLOCATION
+        // which are already correctly set during parsing
         for record in self.base_records.iter_mut().flatten() {
             if !record.is_directory {
                 if let Some(default_stream) = record.streams.iter().find(|s| s.name.is_empty()) {
