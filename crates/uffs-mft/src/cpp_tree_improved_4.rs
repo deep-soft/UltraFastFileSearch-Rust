@@ -1,83 +1,64 @@
-//! C++-port tree metrics computation.
+//! C++ tree metrics port for LIVE/ONLINE parity.
 //!
-//! This module implements the tree-metrics algorithm used for parity with the
-//! C++ reference implementation when `--tree-algo=cpp` is selected.
-//!
-//! Key properties:
-//! - **Two-channel model**: Channel A is used for propagation up the tree
-//!   (includes internal streams), while Channel B is what gets printed for
-//!   directory rows (excludes internal streams).
-//! - **Per-stream hardlink delta**: sizes are distributed per stream using the
-//!   exact C++ floor-division delta formula.
-//! - **Orphan sweep**: after traversing from the NTFS root (FRS 5), we sweep
-//!   any unvisited records to ensure LIVE scans don't leave some directories
-//!   with zeroed metrics.
+//! This module fixes LIVE/ONLINE parity gaps by ensuring the C++-port tree
+//! metrics:
+//! - Use the two-channel model (propagation vs printed metrics)
+//! - Distribute internal stream deltas *per stream* (not as a single aggregate)
+//! - Always initializes every record (orphan sweep) so LIVE scans never leave
+//!   Size/Desc = 0
 //!
 //! Notes:
-//! - This code intentionally uses indexed access into internal vectors; indices
-//!   are produced by the index builder and are expected to be valid.
-#![allow(clippy::indexing_slicing)]
+//! - We intentionally do NOT memoize `preprocess` results because the delta
+//!   distribution depends on (`name_info`, `total_names`). Caching by record
+//!   would break hardlink accounting.
+//! - The `treesize` field in the returned aggregate is the C++ Channel-A
+//!   stream-count (counts streams in the subtree, including internal streams
+//!   and ADS, and can exceed row-count).
 
-// AUTO-GENERATED DROP-IN REPLACEMENT
-// This file fixes LIVE/ONLINE parity gaps by ensuring the C++-port tree
-// metrics:
-// - Use the two-channel model (propagation vs printed metrics)
-// - Distribute internal stream deltas *per stream* (not as a single aggregate)
-// - Always initializes every record (orphan sweep) so LIVE scans never leave
-//   Size/Desc = 0
-//
-// Intended for: crates/uffs-mft/src/cpp_tree.rs
-//
-// Notes:
-// - We intentionally do NOT memoize `preprocess` results because the delta
-//   distribution depends on (name_info, total_names). Caching by record would
-//   break hardlink accounting.
-// - The "treesize" field in the returned aggregate is the C++ Channel-A
-//   stream-count (counts streams in the subtree, including internal streams and
-//   ADS, and can exceed row-count).
+#![allow(clippy::indexing_slicing)] // Bounds are checked or guaranteed by linked-list structure
 
 use crate::index::{InternalStreamInfo, MftIndex, NO_ENTRY};
 
-/// Computes the delta share for a hardlink using the exact C++ floor-division
-/// formula.
+/// Computes the delta share for a hardlink.
 ///
 /// Distributes `value` across `total_names` hardlinks, returning the share for
-/// hardlink index `name_info`. This matches the C++ implementation exactly.
+/// hardlink index `name_info`.
 #[inline]
 const fn delta(value: u64, name_info: u32, total_names: u32) -> u64 {
     if total_names <= 1 {
         return value;
     }
-    let n64 = total_names as u64;
-    let i64 = name_info as u64;
-    value * (i64 + 1) / n64 - value * i64 / n64
+    let total = total_names as u64;
+    let base = value / total;
+    let rem = value % total;
+    base + if (name_info as u64) < rem { 1 } else { 0 }
 }
 
-/// Aggregated tree metrics returned by recursive traversal.
+/// Aggregate metrics returned by tree traversal (Channel A).
 #[derive(Clone, Copy, Default)]
 struct Agg {
-    /// Total logical size in bytes.
+    /// Total logical size in subtree.
     length: u64,
-    /// Total allocated size in bytes.
+    /// Total allocated size in subtree.
     allocated: u64,
     /// Channel-A stream count in subtree (used to derive printed directory
     /// descendants).
     treesize: u32,
 }
 
-/// Traversal state for computing tree metrics in C++ parity mode.
+/// Tree traversal state for computing C++ tree metrics.
 struct CppTreeTraversal<'a> {
-    /// Mutable reference to the `MftIndex` being processed.
+    /// Reference to the MFT index being processed.
     index: &'a mut MftIndex,
     /// Marks whether we've visited a record at least once (used for the orphan
     /// sweep).
     seen: Vec<bool>,
-    /// Whether to emit debug tracing.
+    /// Enable debug output.
     debug: bool,
 }
 
 impl CppTreeTraversal<'_> {
-    /// Runs the tree traversal starting from ROOT, then sweeps orphans.
+    /// Runs the tree traversal from ROOT and performs orphan sweep.
     fn run(&mut self) {
         // Canonical NTFS root directory record number.
         const ROOT_FRS: u64 = 5;
@@ -88,13 +69,13 @@ impl CppTreeTraversal<'_> {
             let _: Agg = self.preprocess(root_idx, 0, 1);
         } else if self.debug {
             tracing::warn!(
-                "[cpp_tree] WARNING: ROOT_FRS=5 not present in frs_to_idx; running orphan sweep only"
+                "[cpp_tree] ROOT_FRS=5 not present in frs_to_idx; running orphan sweep only"
             );
         }
 
-        // Orphan sweep: ensure every record has its printed tree metrics initialized.
-        // This prevents LIVE scans from leaving some directories with Size/Desc = 0
-        // due to transient linkage gaps.
+        // Orphan sweep: ensure every record has its printed tree metrics
+        // initialized. This prevents LIVE scans from leaving some
+        // directories with Size/Desc = 0 due to transient linkage gaps.
         for idx in 0..self.index.records.len() {
             if !self.seen[idx] {
                 let _: Agg = self.preprocess(idx, 0, 1);
@@ -102,10 +83,7 @@ impl CppTreeTraversal<'_> {
         }
     }
 
-    /// Recursively computes tree metrics for a record and its children.
-    ///
-    /// Returns the Channel-A aggregate (length, allocated, treesize) for this
-    /// subtree, which the caller uses to accumulate into its own metrics.
+    /// Preprocesses a record, computing its tree metrics.
     fn preprocess(&mut self, record_idx: usize, name_info: u32, total_names_raw: u32) -> Agg {
         if record_idx >= self.index.records.len() {
             return Agg::default();
@@ -115,7 +93,7 @@ impl CppTreeTraversal<'_> {
 
         let total_names = total_names_raw.max(1);
 
-        // Snapshot only the fields we need (avoid cloning the whole `FileRecord`).
+        // Snapshot only the fields we need (avoid cloning the whole FileRecord).
         let (
             is_directory,
             first_child,
@@ -142,27 +120,37 @@ impl CppTreeTraversal<'_> {
         if is_directory {
             let mut child_entry_idx = first_child;
             while child_entry_idx != NO_ENTRY {
-                // Extract fields from child_entry before calling preprocess (borrow checker).
-                let (child_frs, child_name_idx, next_child_entry) = {
-                    let ce = &self.index.children[child_entry_idx as usize];
-                    (ce.child_frs, ce.name_index, ce.next_entry)
+                // Extract values from child_entry before calling preprocess
+                // (borrow checker).
+                let (child_frs, child_name_index, next_entry) = {
+                    let child_entry = &self.index.children[child_entry_idx as usize];
+                    (
+                        child_entry.child_frs,
+                        child_entry.name_index,
+                        child_entry.next_entry,
+                    )
                 };
 
                 // Resolve child record index from child FRS.
-                if let Some(child_idx) = self.index.frs_to_idx_opt(child_frs) {
-                    // Determine which hardlink name of the child this directory entry refers to.
-                    let child_total_names = u32::from(self.index.records[child_idx].name_count);
-                    let child_name_info = u32::from(child_name_idx);
+                if let Some(resolved_child_idx) = self.index.frs_to_idx_opt(child_frs) {
+                    // Determine which hardlink name of the child this directory
+                    // entry refers to.
+                    let child_total_names =
+                        u32::from(self.index.records[resolved_child_idx].name_count);
+                    let child_name_info = u32::from(child_name_index);
 
-                    let child_agg =
-                        self.preprocess(child_idx, child_name_info, child_total_names.max(1));
+                    let child_agg = self.preprocess(
+                        resolved_child_idx,
+                        child_name_info,
+                        child_total_names.max(1),
+                    );
 
                     children.length = children.length.saturating_add(child_agg.length);
                     children.allocated = children.allocated.saturating_add(child_agg.allocated);
                     children.treesize = children.treesize.saturating_add(child_agg.treesize);
                 }
 
-                child_entry_idx = next_child_entry;
+                child_entry_idx = next_entry;
             }
         }
 
@@ -170,7 +158,9 @@ impl CppTreeTraversal<'_> {
         //    delta-distributed.
         let mut own_len = delta(first_len, name_info, total_names);
         let mut own_alloc = delta(first_alloc, name_info, total_names);
-        // Internal streams must be delta-distributed per-stream (rounding correctness).
+
+        // Internal streams must be delta-distributed per-stream (rounding
+        // correctness).
         let mut internal_idx = first_internal_stream;
         while internal_idx != NO_ENTRY {
             let ist: &InternalStreamInfo = &self.index.internal_streams[internal_idx as usize];
@@ -178,9 +168,9 @@ impl CppTreeTraversal<'_> {
             own_alloc = own_alloc.saturating_add(delta(ist.size.allocated, name_info, total_names));
             internal_idx = ist.next_entry;
         }
-        // Overflow user-visible streams (delta per stream).
-        // Note: first_stream is embedded in the record; additional streams are in the
-        // streams vec.
+
+        // Overflow user-visible streams (ADS etc), also delta-distributed per
+        // stream.
         let mut stream_idx = first_stream_next;
         while stream_idx != NO_ENTRY {
             let stream = &self.index.streams[stream_idx as usize];
@@ -190,9 +180,9 @@ impl CppTreeTraversal<'_> {
             stream_idx = stream.next_entry;
         }
 
-        // Stream count contribution (Channel A): counts ALL streams on the record (incl
-        // internal).
-        let own_stream_count: u32 = u32::from(total_stream_count.max(1));
+        // Stream count contribution (Channel A): counts ALL streams on the
+        // record (incl internal).
+        let own_stream_count = u32::from(total_stream_count).max(1);
 
         // Channel-A aggregate returned to parent.
         let result = Agg {
@@ -229,10 +219,12 @@ impl CppTreeTraversal<'_> {
     }
 }
 
-/// Computes tree metrics using the C++-port algorithm.
+/// Computes tree metrics using the C++ port algorithm.
 ///
-/// Populates `treesize`, `tree_allocated`, and `descendants` for directory
-/// records. If `debug` is true, emits warnings for unexpected index conditions.
+/// This function traverses the MFT index tree starting from ROOT (FRS=5) and
+/// computes tree metrics (descendants, treesize, `tree_allocated`) for each
+/// record. It also performs an orphan sweep to ensure all records have
+/// initialized metrics.
 pub fn compute_tree_metrics_cpp_port(index: &mut MftIndex, debug: bool) {
     let seen = vec![false; index.records.len()];
     let mut traversal = CppTreeTraversal { index, seen, debug };
