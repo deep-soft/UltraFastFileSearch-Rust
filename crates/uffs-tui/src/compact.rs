@@ -116,6 +116,9 @@ pub struct DriveCompactIndex {
     pub names_lower: Vec<u8>,
     /// Trigram inverted index built on `names_lower`.
     pub trigram: super::backend::TrigramIndex,
+    /// Children index: `children[i]` = compact indices of directory i's children.
+    /// Empty vec for files. Built from `parent_idx` in a single pass.
+    pub children: Vec<Vec<u32>>,
     /// Where this index was loaded from (for future refresh).
     pub source: IndexSource,
 }
@@ -219,6 +222,23 @@ pub fn build_compact_index(
     let trigram = build_name_trigram(&records, &names_lower);
     let tri_elapsed = tri_start.elapsed().as_millis();
 
+    // Phase 5: Build children index from parent_idx (single pass).
+    let mut children: Vec<Vec<u32>> = vec![Vec::new(); records.len()];
+    for (idx, rec) in records.iter().enumerate() {
+        let parent = rec.parent_idx;
+        if parent != u32::MAX {
+            if let Some(child_list) = children.get_mut(parent as usize) {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "record count bounded by NTFS limits, always fits u32"
+                )]
+                {
+                    child_list.push(idx as u32);
+                }
+            }
+        }
+    }
+
     (
         DriveCompactIndex {
             letter: drive_letter,
@@ -226,6 +246,7 @@ pub fn build_compact_index(
             names,
             names_lower,
             trigram,
+            children,
             source: IndexSource::MftFile(PathBuf::from(format!("{drive_letter}:"))),
         },
         compact_elapsed,
@@ -268,10 +289,6 @@ fn build_name_trigram(
 /// Resolve a record's full path by walking the parent chain in the compact index.
 ///
 /// Returns lowercase path like `c:\users\photos\beach.jpg`.
-#[expect(
-    clippy::single_call_fn,
-    reason = "public API called from backend search; separation keeps path logic isolated"
-)]
 pub fn resolve_path(
     drive: &DriveCompactIndex,
     record_idx: usize,
@@ -321,6 +338,238 @@ pub fn resolve_path(
     }
 
     path
+}
+
+// ============================================================================
+// Phase 3b: Tree-based path search
+// ============================================================================
+
+/// Returns `true` if the pattern contains a path separator (`\` or `/`),
+/// indicating it should be handled by tree search rather than name trigram.
+#[must_use]
+#[expect(
+    clippy::single_call_fn,
+    reason = "public API called from backend::search; separation keeps detection logic isolated"
+)]
+pub fn is_path_pattern(pattern: &str) -> bool {
+    pattern.contains('\\') || pattern.contains('/')
+}
+
+/// Search using tree traversal for path patterns like `\photos\*.jpg`.
+///
+/// Strategy:
+/// 1. Split pattern on path separators into segments
+/// 2. Find directories matching intermediate segments via trigram + name verify
+/// 3. Collect children of those directories
+/// 4. Filter leaf matches on the final segment
+///
+/// Falls back to name search if the pattern can't be decomposed.
+#[expect(
+    clippy::single_call_fn,
+    reason = "public API called from backend; separation keeps tree search isolated"
+)]
+pub fn tree_search(
+    drive: &DriveCompactIndex,
+    pattern_lower: &str,
+    limit: usize,
+) -> Vec<u32> {
+    // Normalize separators to backslash, strip leading separator
+    let normalized = pattern_lower.replace('/', "\\");
+    let stripped = normalized.strip_prefix('\\').unwrap_or(&normalized);
+
+    let segments: Vec<&str> = stripped.split('\\').filter(|seg| !seg.is_empty()).collect();
+
+    if segments.is_empty() {
+        return Vec::new();
+    }
+
+    // Single segment = just a name search, no tree walk needed
+    let Some(first_segment) = segments.first() else {
+        return Vec::new();
+    };
+    if segments.len() == 1 {
+        return name_search(drive, first_segment, limit);
+    }
+
+    // Multi-segment: find directories matching all but the last segment,
+    // then filter children by the last segment.
+    //
+    // Example: "photos\*.jpg" → find dirs named "photos", get their children,
+    //          filter by "*.jpg" (or substring match)
+    let Some(leaf_pattern) = segments.last() else {
+        return Vec::new();
+    };
+    let dir_segments = segments.get(..segments.len() - 1).unwrap_or(&[]);
+
+    // Start with all directories matching the first segment
+    let mut candidate_dirs = find_dirs_by_name(drive, first_segment);
+
+    // Walk through intermediate segments: for each candidate dir,
+    // find children that are directories matching the next segment
+    for &segment in dir_segments.get(1..).unwrap_or(&[]) {
+        let mut next_dirs = Vec::new();
+        for &dir_idx in &candidate_dirs {
+            let dir_children = drive.children.get(dir_idx as usize).map_or(&[][..], Vec::as_slice);
+            for &child_idx in dir_children {
+                if let Some(child_rec) = drive.records.get(child_idx as usize) {
+                    if child_rec.is_directory() {
+                        let child_name = child_rec.name(&drive.names_lower);
+                        if name_matches(child_name, segment) {
+                            next_dirs.push(child_idx);
+                        }
+                    }
+                }
+            }
+        }
+        candidate_dirs = next_dirs;
+        if candidate_dirs.is_empty() {
+            return Vec::new();
+        }
+    }
+
+    // Now collect children of all matched directories, filtering by leaf pattern
+    let mut results = Vec::new();
+    for &dir_idx in &candidate_dirs {
+        let dir_children = drive.children.get(dir_idx as usize).map_or(&[][..], Vec::as_slice);
+        for &child_idx in dir_children {
+            if let Some(child_rec) = drive.records.get(child_idx as usize) {
+                let child_name = child_rec.name(&drive.names_lower);
+                if name_matches(child_name, leaf_pattern) {
+                    results.push(child_idx);
+                    if results.len() >= limit {
+                        return results;
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+/// Find all directory compact indices whose name matches a pattern.
+#[expect(
+    clippy::single_call_fn,
+    reason = "separated for readability; directory search is a distinct concern"
+)]
+fn find_dirs_by_name(drive: &DriveCompactIndex, pattern: &str) -> Vec<u32> {
+    // Try trigram first for 3+ char patterns
+    let candidates = drive.trigram.search(pattern);
+
+    if let Some(candidate_indices) = candidates {
+        candidate_indices
+            .iter()
+            .filter(|&&idx| {
+                let rec_idx = idx as usize;
+                let Some(rec) = drive.records.get(rec_idx) else {
+                    return false;
+                };
+                if !rec.is_directory() {
+                    return false;
+                }
+                let dir_name = rec.name(&drive.names_lower);
+                name_matches(dir_name, pattern)
+            })
+            .copied()
+            .collect()
+    } else {
+        // Short pattern: linear scan for matching directories
+        drive
+            .records
+            .iter()
+            .enumerate()
+            .filter(|(_, rec)| {
+                if !rec.is_directory() {
+                    return false;
+                }
+                let dir_name = rec.name(&drive.names_lower);
+                name_matches(dir_name, pattern)
+            })
+            .map(|(idx, _)| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "record count bounded by NTFS limits"
+                )]
+                {
+                    idx as u32
+                }
+            })
+            .collect()
+    }
+}
+
+/// Simple name search by substring (used as single-segment fallback).
+#[expect(
+    clippy::single_call_fn,
+    reason = "separated for readability; name search is a distinct concern"
+)]
+fn name_search(drive: &DriveCompactIndex, needle: &str, limit: usize) -> Vec<u32> {
+    let candidates = drive.trigram.search(needle);
+
+    if let Some(candidate_indices) = candidates {
+        candidate_indices
+            .iter()
+            .filter(|&&idx| {
+                let rec_idx = idx as usize;
+                let Some(rec) = drive.records.get(rec_idx) else {
+                    return false;
+                };
+                let name = rec.name(&drive.names_lower);
+                !name.is_empty() && name.contains(needle)
+            })
+            .take(limit)
+            .copied()
+            .collect()
+    } else {
+        drive
+            .records
+            .iter()
+            .enumerate()
+            .filter(|(_, rec)| {
+                let name = rec.name(&drive.names_lower);
+                !name.is_empty() && name != "." && name.contains(needle)
+            })
+            .take(limit)
+            .map(|(idx, _)| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "record count bounded by NTFS limits"
+                )]
+                {
+                    idx as u32
+                }
+            })
+            .collect()
+    }
+}
+
+/// Check if a name matches a pattern (substring or simple glob).
+///
+/// Supports:
+/// - Substring: `"photos"` matches any name containing "photos"
+/// - `*` prefix/suffix: `"*.jpg"` matches names ending in ".jpg"
+/// - Plain `*`: matches everything
+fn name_matches(name: &str, pattern: &str) -> bool {
+    if name.is_empty() || name == "." {
+        return false;
+    }
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        if let Some(prefix) = suffix.strip_suffix('*') {
+            // *xxx* → contains
+            return name.contains(prefix);
+        }
+        // *.jpg → ends with
+        return name.ends_with(suffix);
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        // photos* → starts with
+        return name.starts_with(prefix);
+    }
+    // Exact substring match
+    name.contains(pattern)
 }
 
 /// Load an MFT file and build a compact index (cross-platform).

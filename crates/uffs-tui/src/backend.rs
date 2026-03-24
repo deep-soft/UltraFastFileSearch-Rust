@@ -118,7 +118,7 @@ impl TrigramIndex {
     ///
     /// For queries < 3 chars, returns None (caller should fall back to linear
     /// scan).
-    fn search(&self, needle_lower: &str) -> Option<Vec<u32>> {
+    pub(crate) fn search(&self, needle_lower: &str) -> Option<Vec<u32>> {
         let bytes = needle_lower.as_bytes();
         if bytes.len() < 3 {
             return None; // too short for trigram search
@@ -276,8 +276,8 @@ impl MultiDriveBackend {
 
     /// Search across all loaded drives.
     ///
-    /// Searches compact index names via trigram, resolves paths on-demand
-    /// only for matched results.
+    /// Detects path patterns (containing `\` or `/`) and uses tree search.
+    /// Otherwise uses trigram name search. Paths resolved on-demand.
     pub fn search(&mut self, pattern: &str, _name_only: bool) -> SearchResult {
         let start = Instant::now();
         let mut rows = Vec::new();
@@ -299,11 +299,18 @@ impl MultiDriveBackend {
         };
 
         let needle_lower = pattern.to_ascii_lowercase();
+        let is_path = compact::is_path_pattern(&needle_lower);
 
         let drive_results: Vec<Vec<DisplayRow>> = self
             .drives
             .par_iter()
-            .map(|drive| search_compact_drive(drive, &needle_lower, limit))
+            .map(|drive| {
+                if is_path {
+                    search_compact_drive_tree(drive, &needle_lower, limit)
+                } else {
+                    search_compact_drive(drive, &needle_lower, limit)
+                }
+            })
             .collect();
         for drive_rows in drive_results {
             rows.extend(drive_rows);
@@ -415,6 +422,44 @@ fn search_compact_drive(
                 return None;
             }
             let path = compact::resolve_path(drive, record_idx, &volume_prefix);
+            Some(DisplayRow {
+                drive: drive.letter,
+                path,
+                name: name.to_owned(),
+                size: rec.size,
+                is_directory: rec.is_directory(),
+                modified: rec.modified,
+            })
+        })
+        .collect()
+}
+
+/// Search a single drive using tree-based path traversal.
+///
+/// For patterns containing `\` or `/`, decomposes the pattern into path
+/// segments and walks the directory tree instead of flat name search.
+#[expect(
+    clippy::single_call_fn,
+    reason = "called from MultiDriveBackend::search via rayon; separation keeps per-drive logic isolated"
+)]
+fn search_compact_drive_tree(
+    drive: &DriveCompactIndex,
+    pattern_lower: &str,
+    limit: usize,
+) -> Vec<DisplayRow> {
+    let volume_prefix = format!("{}:\\", drive.letter);
+
+    let match_indices = compact::tree_search(drive, pattern_lower, limit);
+
+    match_indices
+        .iter()
+        .filter_map(|&record_idx| {
+            let rec = drive.records.get(record_idx as usize)?;
+            let name = rec.name(&drive.names);
+            if name.is_empty() || name == "." {
+                return None;
+            }
+            let path = compact::resolve_path(drive, record_idx as usize, &volume_prefix);
             Some(DisplayRow {
                 drive: drive.letter,
                 path,

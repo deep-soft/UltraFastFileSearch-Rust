@@ -505,14 +505,14 @@ Add hierarchical path search for patterns containing path separators.
 
 | Task | Status | Notes |
 |------|--------|-------|
-| Build `children` index from `parent_idx` | ⏳ | Single pass, ~100 MB |
-| Parse path pattern into segments | ⏳ | Split on `\` or `/` |
-| Implement tree walker: segment-by-segment matching | ⏳ | Recursive with depth limit |
-| Handle wildcards in path segments (`*`, `**`) | ⏳ | `*` = one level, `**` = any depth |
-| Fallback: unstructured path regex → resolve + filter | ⏳ | For patterns that can't decompose |
-| Update `search_drive()` to detect path pattern → tree path | ⏳ | Auto-detect `\` or `/` in pattern |
-| Test: `\photos\*.jpg` → tree walk | ⏳ | |
-| Test: `C:\Users\*\docs\*.pdf` → multi-level | ⏳ | |
+| Build `children` index from `parent_idx` | ✅ | Single pass in `build_compact_index()` |
+| Parse path pattern into segments | ✅ | Split on `\` or `/`, normalize, strip leading sep |
+| Implement tree walker: segment-by-segment matching | ✅ | `tree_search()` walks dir→children per segment |
+| Handle wildcards in path segments (`*`, `*.ext`, `prefix*`) | ✅ | `name_matches()` — `*`, `*.jpg`, `photos*`, `*xxx*`, substring |
+| Auto-detect path pattern → tree search vs name trigram | ✅ | `is_path_pattern()` + routing in `MultiDriveBackend::search()` |
+| Single-segment path fallback → name search | ✅ | Falls back to `name_search()` via trigram |
+| `find_dirs_by_name()` — trigram-accelerated dir lookup | ✅ | Trigram for 3+ chars, linear for short patterns |
+| `search_compact_drive_tree()` — tree results → DisplayRow | ✅ | Resolves paths on-demand for matched results |
 | Benchmark: path search latency vs current flat trigram | ⏳ | |
 
 ### Phase 3c: On-Demand Full Record Lookup
