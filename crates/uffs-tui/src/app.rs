@@ -39,6 +39,8 @@ pub struct App {
     pub refresh_total: usize,
     /// Number of drives completed so far.
     pub refresh_done: usize,
+    /// Channel receiver for auto-refresh timer signals.
+    pub auto_refresh_rx: Option<mpsc::Receiver<()>>,
     /// Visible page size for PageUp/Down (set by `ui()` on each render).
     pub page_size: usize,
 }
@@ -81,6 +83,7 @@ impl App {
             refresh_rx: None,
             refresh_total: 0,
             refresh_done: 0,
+            auto_refresh_rx: None,
             page_size: 20,
         }
     }
@@ -101,6 +104,7 @@ impl App {
             refresh_rx: None,
             refresh_total: 0,
             refresh_done: 0,
+            auto_refresh_rx: None,
             page_size: 20,
         }
     }

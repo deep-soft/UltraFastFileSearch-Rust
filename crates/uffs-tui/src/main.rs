@@ -102,6 +102,13 @@ struct Cli {
     /// Bypass cache and read MFT fresh (default: use cache + USN updates)
     #[arg(long)]
     no_cache: bool,
+
+    /// Auto-refresh interval in seconds (0 = disabled, default: 60)
+    ///
+    /// Reloads all drives in the background every N seconds to pick up
+    /// file changes. Uses `.uffs` cache + USN journal on Windows.
+    #[arg(long, default_value = "60")]
+    refresh_interval: u64,
 }
 
 /// Initialize logging with terminal + file support.
@@ -443,6 +450,21 @@ fn main() -> Result<()> {
         }
     }
 
+    // Spawn auto-refresh timer thread (if interval > 0)
+    let refresh_interval = cli.refresh_interval;
+    if refresh_interval > 0 && app.has_data() {
+        let (timer_tx, timer_rx) = std::sync::mpsc::channel();
+        app.auto_refresh_rx = Some(timer_rx);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(core::time::Duration::from_secs(refresh_interval));
+                if timer_tx.send(()).is_err() {
+                    break; // Receiver dropped (app exited)
+                }
+            }
+        });
+    }
+
     let res = run_app(&mut terminal, &mut app);
 
     // Restore terminal
@@ -612,6 +634,13 @@ where
         // 0. Poll for background refresh completions
         if app.refreshing {
             poll_refresh(&mut *app);
+        }
+
+        // 0b. Check auto-refresh timer
+        if let Some(timer_rx) = &app.auto_refresh_rx {
+            if timer_rx.try_recv().is_ok() && !app.refreshing {
+                start_refresh(app);
+            }
         }
 
         // 1. Always render first — input box is always up-to-date

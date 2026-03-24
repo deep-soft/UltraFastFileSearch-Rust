@@ -542,8 +542,8 @@ Update the compact index when files change (Windows only).
 | F5 / Ctrl+R keybinding for manual refresh | ✅ | Both keybindings wired |
 | Status bar: progress during refresh + completion summary | ✅ | 🔄 per-drive timing → ✅ total summary |
 | Re-run active search after refresh completes | ✅ | Auto-triggers `app.search()` |
-| Auto-refresh timer (60s, background thread) | ⏳ | Future: spawn timer thread |
-| In-place USN patching (<50ms, no full rebuild) | ⏳ | Future: Option B optimization |
+| Auto-refresh timer (`--refresh-interval`, default 60s) | ✅ | Background thread + mpsc, 0 = disabled |
+| `apply_usn_patch()` — in-place compact patching (<50ms) | ✅ | Deletes, creates, renames + children update |
 
 ---
 

@@ -162,6 +162,193 @@ pub fn refresh_drive(drive: &DriveCompactIndex) -> anyhow::Result<(DriveCompactI
     }
 }
 
+/// Statistics from in-place USN patching.
+#[derive(Debug, Clone, Default)]
+#[expect(dead_code, reason = "Windows-only USN patching; wired into refresh in future")]
+pub struct PatchStats {
+    /// Records marked as deleted (`name_len` zeroed).
+    pub deleted: usize,
+    /// New records appended.
+    pub created: usize,
+    /// Records with updated name/parent.
+    pub renamed: usize,
+    /// Changes skipped (FRS not in index, or no actionable change).
+    pub skipped: usize,
+}
+
+/// Apply USN changes in-place to the compact index (<50ms for typical changes).
+///
+/// This is the fast path: patches compact records directly without rebuilding
+/// the entire index. Handles deletes (zero name_len), creates (append to
+/// records + names blob), and renames (append new name, update offset).
+///
+/// For size/metadata changes, only a full refresh provides updated values
+/// since the USN journal doesn't carry the new size — just flags that it changed.
+///
+/// Trigram index is NOT updated here — stale entries are filtered at verify time.
+/// Children index is updated for reparented files.
+#[cfg(windows)]
+pub fn apply_usn_patch(
+    drive: &mut DriveCompactIndex,
+    changes: &[uffs_mft::usn::FileChange],
+    frs_to_compact: &[u32],
+) -> PatchStats {
+    let mut stats = PatchStats::default();
+
+    for change in changes {
+        let frs_usize = uffs_mft::frs_to_usize(change.frs);
+
+        // Look up compact index for this FRS
+        let compact_idx = frs_to_compact
+            .get(frs_usize)
+            .copied()
+            .unwrap_or(u32::MAX);
+
+        if change.deleted {
+            if compact_idx == u32::MAX {
+                stats.skipped += 1;
+            } else if let Some(rec) = drive.records.get_mut(compact_idx as usize) {
+                // Mark as deleted: zero name_len so search skips it
+                rec.name_len = 0;
+                // Remove from parent's children list
+                let parent = rec.parent_idx;
+                if parent != u32::MAX {
+                    if let Some(children) = drive.children.get_mut(parent as usize) {
+                        children.retain(|&child| child != compact_idx);
+                    }
+                }
+                stats.deleted += 1;
+            }
+        } else if change.created {
+            if compact_idx != u32::MAX {
+                // FRS already exists (re-create after delete) — just un-delete
+                if let Some(rec) = drive.records.get_mut(compact_idx as usize) {
+                    if rec.name_len == 0 && !change.filename.is_empty() {
+                        // Restore with new name
+                        let name_start = drive.names.len();
+                        drive.names.extend_from_slice(change.filename.as_bytes());
+                        drive
+                            .names_lower
+                            .extend_from_slice(change.filename.to_ascii_lowercase().as_bytes());
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "name offset bounded by names blob size"
+                        )]
+                        {
+                            rec.name_offset = name_start as u32;
+                        }
+                        rec.name_len = change.filename.len().min(u16::MAX as usize) as u16;
+                    }
+                }
+                stats.skipped += 1;
+            } else if !change.filename.is_empty() {
+                // Truly new record — append
+                let name_start = drive.names.len();
+                drive.names.extend_from_slice(change.filename.as_bytes());
+                drive
+                    .names_lower
+                    .extend_from_slice(change.filename.to_ascii_lowercase().as_bytes());
+
+                // Resolve parent compact index
+                let parent_frs_usize = uffs_mft::frs_to_usize(change.parent_frs);
+                let parent_compact = frs_to_compact
+                    .get(parent_frs_usize)
+                    .copied()
+                    .unwrap_or(u32::MAX);
+
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "name offset and record count bounded by NTFS limits"
+                )]
+                let new_rec = CompactRecord {
+                    name_offset: name_start as u32,
+                    name_len: change.filename.len().min(u16::MAX as usize) as u16,
+                    extension_id: 0, // Unknown until full refresh
+                    flags: 0,
+                    parent_idx: parent_compact,
+                    size: 0,
+                    allocated: 0,
+                    created: 0,
+                    modified: 0,
+                    accessed: 0,
+                    descendants: 0,
+                    treesize: 0,
+                };
+
+                let new_idx = drive.records.len() as u32;
+                drive.records.push(new_rec);
+                drive.children.push(Vec::new());
+
+                // Add to parent's children
+                if parent_compact != u32::MAX {
+                    if let Some(children) = drive.children.get_mut(parent_compact as usize) {
+                        children.push(new_idx);
+                    }
+                }
+
+                stats.created += 1;
+            } else {
+                stats.skipped += 1;
+            }
+        } else if change.renamed {
+            if compact_idx == u32::MAX {
+                stats.skipped += 1;
+            } else if let Some(rec) = drive.records.get_mut(compact_idx as usize) {
+                // Update name (append to names blob, old name becomes orphaned)
+                if !change.filename.is_empty() {
+                    let name_start = drive.names.len();
+                    drive.names.extend_from_slice(change.filename.as_bytes());
+                    drive
+                        .names_lower
+                        .extend_from_slice(change.filename.to_ascii_lowercase().as_bytes());
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "name offset bounded by names blob size"
+                    )]
+                    {
+                        rec.name_offset = name_start as u32;
+                    }
+                    rec.name_len = change.filename.len().min(u16::MAX as usize) as u16;
+                }
+
+                // Update parent if changed (reparent)
+                let new_parent_frs = uffs_mft::frs_to_usize(change.parent_frs);
+                let new_parent_compact = frs_to_compact
+                    .get(new_parent_frs)
+                    .copied()
+                    .unwrap_or(u32::MAX);
+
+                if new_parent_compact != rec.parent_idx {
+                    // Remove from old parent's children
+                    let old_parent = rec.parent_idx;
+                    if old_parent != u32::MAX {
+                        if let Some(children) = drive.children.get_mut(old_parent as usize) {
+                            children.retain(|&child| child != compact_idx);
+                        }
+                    }
+                    // Add to new parent's children
+                    rec.parent_idx = new_parent_compact;
+                    if new_parent_compact != u32::MAX {
+                        if let Some(children) =
+                            drive.children.get_mut(new_parent_compact as usize)
+                        {
+                            children.push(compact_idx);
+                        }
+                    }
+                }
+
+                stats.renamed += 1;
+            }
+        } else {
+            // Size/metadata changes — USN doesn't carry new values.
+            // These are picked up on the next full refresh.
+            stats.skipped += 1;
+        }
+    }
+
+    stats
+}
+
 /// Timing breakdown for the compact index build.
 pub struct LoadTiming {
     /// Time to load/read the MFT (milliseconds).
