@@ -1,16 +1,14 @@
-//! Search backend: direct MftIndex search without DataFrame/Polars.
+//! Search backend: compact-index search for the TUI.
 //!
-//! Walks `MftIndex.records` with pattern matching and filters,
-//! collecting results into `Vec<DisplayRow>` for the UI.
+//! Searches `DriveCompactIndex` records (68 bytes each) with trigram
+//! name matching, collecting results into `Vec<DisplayRow>` for the UI.
+//! Full `MftIndex` is dropped after compact build — key memory savings.
 
-use core::sync::atomic::AtomicBool;
-use std::path::PathBuf;
 use std::time::Instant;
 
 use rayon::prelude::*;
-use uffs_core::index_search::{IndexPattern, compile_parsed_pattern};
-use uffs_core::pattern::ParsedPattern;
-use uffs_mft::index::MftIndex;
+
+use crate::compact::{self, DriveCompactIndex};
 
 /// Maximum results returned per search (prevents UI lag on broad patterns).
 /// 1K is plenty for a terminal display — keeps search under ~50ms.
@@ -36,22 +34,6 @@ pub struct DisplayRow {
     pub modified: i64,
 }
 
-/// A loaded drive with its `MftIndex` and trigram search index.
-pub struct DriveIndex {
-    /// Drive letter (e.g., 'C').
-    pub letter: char,
-    /// The in-memory MFT index (core data — untouched).
-    pub index: MftIndex,
-    /// Trigram inverted index for fast substring search.
-    pub trigram: TrigramIndex,
-    /// Pre-resolved lowercase full paths for each record (for verification +
-    /// display). `paths_lower[i]` = lowercase full path for record `i`.
-    pub paths_lower: Vec<String>,
-    /// Where this index was loaded from (used for refresh in Wave 3).
-    #[expect(dead_code, reason = "stored for future refresh feature (Wave 3)")]
-    pub source: IndexSource,
-}
-
 /// Trigram inverted index: maps 3-byte sequences to sorted lists of record
 /// indices.
 ///
@@ -67,9 +49,9 @@ impl TrigramIndex {
     /// Build a trigram index from pre-lowered paths.
     #[expect(
         clippy::single_call_fn,
-        reason = "constructor called once per DriveIndex load; separation improves readability"
+        reason = "constructor called once per drive load; separation improves readability"
     )]
-    fn build(paths_lower: &[String]) -> Self {
+    pub(crate) fn build(paths_lower: &[String]) -> Self {
         use rayon::prelude::*;
 
         const CHUNK_SIZE: usize = 64 * 1024;
@@ -209,16 +191,6 @@ fn intersect_sorted(list_a: &[u32], list_b: &[u32]) -> Vec<u32> {
     result
 }
 
-/// Where a drive index was loaded from.
-#[expect(
-    dead_code,
-    reason = "variants store source paths for future refresh feature (Wave 3)"
-)]
-pub enum IndexSource {
-    /// Raw/IOCP/compressed MFT file.
-    MftFile(PathBuf),
-}
-
 /// Result of a search operation.
 pub struct SearchResult {
     /// Matching rows.
@@ -229,10 +201,10 @@ pub struct SearchResult {
     pub records_scanned: usize,
 }
 
-/// Multi-drive search backend.
+/// Multi-drive search backend backed by compact indices.
 pub struct MultiDriveBackend {
-    /// Loaded drives.
-    pub drives: Vec<DriveIndex>,
+    /// Loaded drives (compact index, ~68 bytes/record).
+    pub drives: Vec<DriveCompactIndex>,
     /// Last search results (kept for re-sorting without re-searching).
     pub last_results: Vec<DisplayRow>,
     /// Current sort column.
@@ -290,7 +262,7 @@ impl MultiDriveBackend {
     /// Total record count across all loaded drives.
     #[must_use]
     pub fn total_records(&self) -> usize {
-        self.drives.iter().map(|dr| dr.index.records.len()).sum()
+        self.drives.iter().map(|dr| dr.records.len()).sum()
     }
 
     /// List loaded drives with record counts.
@@ -298,15 +270,15 @@ impl MultiDriveBackend {
     pub fn drive_summary(&self) -> Vec<(char, usize)> {
         self.drives
             .iter()
-            .map(|dr| (dr.letter, dr.index.records.len()))
+            .map(|dr| (dr.letter, dr.records.len()))
             .collect()
     }
 
     /// Search across all loaded drives.
     ///
-    /// Compiles the pattern once, then walks each drive's `MftIndex`
-    /// collecting matching records into `DisplayRow`s.
-    pub fn search(&mut self, pattern: &str, name_only: bool) -> SearchResult {
+    /// Searches compact index names via trigram, resolves paths on-demand
+    /// only for matched results.
+    pub fn search(&mut self, pattern: &str, _name_only: bool) -> SearchResult {
         let start = Instant::now();
         let mut rows = Vec::new();
 
@@ -320,26 +292,6 @@ impl MultiDriveBackend {
             };
         }
 
-        let Ok(parsed) = ParsedPattern::parse(pattern) else {
-            self.last_results.clear();
-            return SearchResult {
-                rows: Vec::new(),
-                duration: start.elapsed(),
-                records_scanned: 0,
-            };
-        };
-
-        let Ok(compiled) = compile_parsed_pattern(&parsed) else {
-            self.last_results.clear();
-            return SearchResult {
-                rows: Vec::new(),
-                duration: start.elapsed(),
-                records_scanned: 0,
-            };
-        };
-
-        let is_path_pattern = parsed.is_path_pattern() && !name_only;
-
         let limit = if pattern.len() <= 2 {
             SHORT_PATTERN_LIMIT
         } else {
@@ -347,106 +299,21 @@ impl MultiDriveBackend {
         };
 
         let needle_lower = pattern.to_ascii_lowercase();
-        let cancelled = AtomicBool::new(false);
 
         let drive_results: Vec<Vec<DisplayRow>> = self
             .drives
             .par_iter()
-            .map(|drive| {
-                search_drive(
-                    drive,
-                    &compiled,
-                    &needle_lower,
-                    is_path_pattern,
-                    limit,
-                    &cancelled,
-                )
-            })
+            .map(|drive| search_compact_drive(drive, &needle_lower, limit))
             .collect();
         for drive_rows in drive_results {
             rows.extend(drive_rows);
         }
         rows.truncate(limit);
-        let scanned = self.drives.iter().map(|dr| dr.index.records.len()).sum();
+        let scanned = self.drives.iter().map(|dr| dr.records.len()).sum();
 
         sort_rows(&mut rows, self.sort_column, self.sort_desc);
 
         self.last_results.clone_from(&rows);
-        SearchResult {
-            rows,
-            duration: start.elapsed(),
-            records_scanned: scanned,
-        }
-    }
-
-    /// Search without mutating self — safe for concurrent read-only access.
-    ///
-    /// Used by the background search thread via `Arc<MultiDriveBackend>`.
-    #[expect(
-        dead_code,
-        reason = "public API for future async background search thread"
-    )]
-    pub fn search_readonly(&self, pattern: &str, name_only: bool) -> SearchResult {
-        let start = Instant::now();
-        let mut rows = Vec::new();
-
-        if pattern.is_empty() {
-            return SearchResult {
-                rows: Vec::new(),
-                duration: start.elapsed(),
-                records_scanned: 0,
-            };
-        }
-
-        let Ok(parsed) = ParsedPattern::parse(pattern) else {
-            return SearchResult {
-                rows: Vec::new(),
-                duration: start.elapsed(),
-                records_scanned: 0,
-            };
-        };
-
-        let Ok(compiled) = compile_parsed_pattern(&parsed) else {
-            return SearchResult {
-                rows: Vec::new(),
-                duration: start.elapsed(),
-                records_scanned: 0,
-            };
-        };
-
-        let is_path_pattern = parsed.is_path_pattern() && !name_only;
-        let limit = if pattern.len() <= 2 {
-            SHORT_PATTERN_LIMIT
-        } else {
-            DEFAULT_RESULT_LIMIT
-        };
-
-        let needle_lower = pattern.to_ascii_lowercase();
-        let cancelled = AtomicBool::new(false);
-
-        let drive_results: Vec<Vec<DisplayRow>> = self
-            .drives
-            .par_iter()
-            .map(|drive| {
-                search_drive(
-                    drive,
-                    &compiled,
-                    &needle_lower,
-                    is_path_pattern,
-                    limit,
-                    &cancelled,
-                )
-            })
-            .collect();
-
-        for drive_rows in drive_results {
-            rows.extend(drive_rows);
-        }
-        rows.truncate(limit);
-        let scanned = self.drives.iter().map(|dr| dr.index.records.len()).sum();
-
-        sort_rows(&mut rows, self.sort_column, self.sort_desc);
-
         SearchResult {
             rows,
             duration: start.elapsed(),
@@ -486,161 +353,78 @@ impl MultiDriveBackend {
     }
 }
 
-/// Search a single drive's `MftIndex`, returning matching `DisplayRow`s.
+/// Search a single drive's compact index, returning matching `DisplayRow`s.
 ///
-/// Performance: matches against filenames first (zero allocation), then
-/// resolves full paths only for the final result set.
-fn search_drive(
-    drive_index: &DriveIndex,
-    _pattern: &IndexPattern,
-    needle_lower: &str,
-    _is_path_pattern: bool,
-    limit: usize,
-    cancelled: &AtomicBool,
-) -> Vec<DisplayRow> {
-    let volume_prefix = format!("{}:\\", drive_index.letter);
-    // Always use trigram fast path — trigram index is built on full paths
-    // so it handles both filename-only and path patterns.
-    search_drive_fast(drive_index, needle_lower, &volume_prefix, limit, cancelled)
-}
-
-/// Ultra-fast path: trigram-indexed search on full paths.
-///
-/// For 3+ char patterns: uses trigram posting list intersection to find
-/// candidates in O(matches), then verifies with `str::contains`.
-/// For 1-2 char patterns: linear scan on `paths_lower` (hits limit fast).
+/// Uses trigram index on names for 3+ char patterns, linear scan for shorter.
+/// Paths are resolved on-demand only for matched results.
 #[expect(
     clippy::single_call_fn,
-    reason = "called from search_drive; separation keeps search strategy logic isolated"
+    reason = "called from MultiDriveBackend::search via rayon; separation keeps per-drive logic isolated"
 )]
-fn search_drive_fast(
-    drive_idx: &DriveIndex,
+fn search_compact_drive(
+    drive: &DriveCompactIndex,
     needle_lower: &str,
-    _volume_prefix: &str,
     limit: usize,
-    _cancelled: &AtomicBool,
 ) -> Vec<DisplayRow> {
     if needle_lower.is_empty() {
         return Vec::new();
     }
 
-    let index = &drive_idx.index;
-    let drive = drive_idx.letter;
-    let paths = &drive_idx.paths_lower;
+    let volume_prefix = format!("{}:\\", drive.letter);
 
     // Try trigram search first (3+ chars)
-    let candidates = drive_idx.trigram.search(needle_lower);
+    let candidates = drive.trigram.search(needle_lower);
 
     let match_indices: Vec<usize> = if let Some(candidate_indices) = candidates {
-        // Trigram hit: verify candidates with actual substring check
+        // Trigram hit: verify candidates with actual substring check on name
         candidate_indices
             .iter()
             .filter(|&&idx| {
                 let rec_idx = idx as usize;
-                paths
-                    .get(rec_idx)
-                    .is_some_and(|path| path.contains(needle_lower))
+                let Some(rec) = drive.records.get(rec_idx) else {
+                    return false;
+                };
+                let name = rec.name(&drive.names_lower);
+                !name.is_empty() && name.contains(needle_lower)
             })
             .take(limit)
             .map(|&idx| idx as usize)
             .collect()
     } else {
-        // Short pattern (<3 chars): linear scan on paths_lower
-        paths
+        // Short pattern (<3 chars): linear scan on names_lower
+        drive
+            .records
             .iter()
             .enumerate()
-            .filter(|(_, path)| !path.is_empty() && path.contains(needle_lower))
+            .filter(|(_, rec)| {
+                let name = rec.name(&drive.names_lower);
+                !name.is_empty() && name != "." && name.contains(needle_lower)
+            })
             .take(limit)
             .map(|(idx, _)| idx)
             .collect()
     };
 
-    // Build DisplayRows from match indices
+    // Build DisplayRows: resolve paths on-demand (only for matches)
     match_indices
         .iter()
         .filter_map(|&record_idx| {
-            let record = index.records.get(record_idx)?;
-            let name = index.get_name(&record.first_name.name);
+            let rec = drive.records.get(record_idx)?;
+            let name = rec.name(&drive.names);
             if name.is_empty() || name == "." {
                 return None;
             }
+            let path = compact::resolve_path(drive, record_idx, &volume_prefix);
             Some(DisplayRow {
-                drive,
-                path: paths.get(record_idx).cloned().unwrap_or_default(),
+                drive: drive.letter,
+                path,
                 name: name.to_owned(),
-                size: record.first_stream.size.length,
-                is_directory: record.is_directory(),
-                modified: record.stdinfo.modified,
+                size: rec.size,
+                is_directory: rec.is_directory(),
+                modified: rec.modified,
             })
         })
         .collect()
-}
-
-/// Resolve a record's full path by walking the parent chain.
-#[expect(
-    clippy::single_call_fn,
-    reason = "called from load_mft_file path resolution loop; separation keeps path logic isolated"
-)]
-fn resolve_path(index: &MftIndex, record_idx: usize, volume_prefix: &str) -> String {
-    let mut components = Vec::with_capacity(8);
-    let mut current_idx = record_idx;
-    let mut depth = 0_i32;
-
-    loop {
-        if depth > 256_i32 {
-            break; // Prevent infinite loops
-        }
-
-        let Some(record) = index.records.get(current_idx) else {
-            break;
-        };
-        let name = index.get_name(&record.first_name.name);
-
-        if name == "." || name.is_empty() {
-            break;
-        }
-
-        components.push(name.to_owned());
-
-        let parent_frs = record.first_name.parent_frs;
-        if parent_frs == record.frs || parent_frs == u64::from(uffs_mft::NO_ENTRY) {
-            break;
-        }
-
-        // Look up parent record index
-        let parent_usize = uffs_mft::frs_to_usize(parent_frs);
-        let Some(&parent_record_idx) = index.frs_to_idx.get(parent_usize) else {
-            break;
-        };
-        if parent_record_idx == uffs_mft::NO_ENTRY {
-            break;
-        }
-        current_idx = parent_record_idx as usize;
-
-        // Check for root directory (FRS 5)
-        if parent_frs == uffs_mft::ROOT_FRS {
-            break;
-        }
-
-        depth += 1_i32;
-    }
-
-    // Build path from components (reversed, since we walked child→parent)
-    components.reverse();
-
-    let mut path = String::with_capacity(
-        volume_prefix.len() + components.iter().map(|comp| comp.len() + 1).sum::<usize>(),
-    );
-    path.push_str(volume_prefix);
-    for (idx, component) in components.iter().enumerate() {
-        path.push_str(component);
-        // Add backslash separator, and trailing backslash for directories
-        if idx < components.len() - 1 {
-            path.push('\\');
-        }
-    }
-
-    path
 }
 
 /// Maximally distinct color palettes for 1–10 drives.
@@ -736,7 +520,7 @@ const PALETTES: &[&[(u8, u8, u8)]] = &[
     reason = "public API: intentionally a standalone function for reuse and clarity"
 )]
 pub fn build_drive_colors(
-    drives: &[DriveIndex],
+    drives: &[DriveCompactIndex],
 ) -> std::collections::HashMap<char, ratatui::style::Color> {
     use ratatui::style::Color;
 
@@ -800,164 +584,4 @@ pub fn apply_filter(rows: &mut Vec<DisplayRow>, filter: FilterMode) {
         FilterMode::FilesOnly => rows.retain(|row| !row.is_directory),
         FilterMode::DirsOnly => rows.retain(|row| row.is_directory),
     }
-}
-
-/// Load a live NTFS drive using the same flow as `uffs.exe`:
-/// detect → use cache → apply USN journal → return `MftIndex`.
-///
-/// Uses `MftReader::read_index_cached()` which is the recommended API.
-/// Requires Windows and Administrator privileges.
-/// Timing info returned alongside a loaded `DriveIndex`.
-pub struct LoadTiming {
-    /// Time to load/read the MFT (milliseconds).
-    pub mft: u128,
-    /// Time to resolve all paths (milliseconds).
-    pub path: u128,
-    /// Time to build trigram index (milliseconds).
-    pub trigram: u128,
-}
-
-#[cfg(windows)]
-pub fn load_live_drive(
-    drive_letter: char,
-    no_cache: bool,
-) -> anyhow::Result<(DriveIndex, LoadTiming)> {
-    use anyhow::Context;
-
-    /// Cache TTL in seconds (10 minutes, same as CLI).
-    const INDEX_TTL_SECONDS: u64 = 600;
-
-    let mft_start = Instant::now();
-    let rt = tokio::runtime::Runtime::new()?;
-    let index = rt.block_on(async {
-        let reader = uffs_mft::MftReader::open(drive_letter)
-            .with_context(|| format!("Failed to open drive {drive_letter}:"))?;
-        if no_cache {
-            reader
-                .read_all_index()
-                .await
-                .with_context(|| format!("Failed to read MFT fresh for drive {drive_letter}:"))
-        } else {
-            reader
-                .read_index_cached(INDEX_TTL_SECONDS)
-                .await
-                .with_context(|| format!("Failed to read MFT for drive {drive_letter}:"))
-        }
-    })?;
-    let mft_elapsed = mft_start.elapsed().as_millis();
-
-    let (drive_index, path_elapsed, tri_elapsed) = build_drive_index(drive_letter, index);
-    Ok((
-        drive_index,
-        LoadTiming {
-            mft: mft_elapsed,
-            path: path_elapsed,
-            trigram: tri_elapsed,
-        },
-    ))
-}
-
-/// Build a `DriveIndex` from a loaded `MftIndex` (shared by live + file paths).
-///
-/// Returns `(DriveIndex, path_resolve_ms, trigram_build_ms)`.
-/// Called from both `load_live_drive` (cfg(windows)) and `load_mft_file`,
-/// so two call sites exist even though only one is visible per platform.
-#[expect(
-    clippy::single_call_fn,
-    reason = "called from both load_live_drive (cfg(windows)) and load_mft_file"
-)]
-fn build_drive_index(drive_letter: char, index: MftIndex) -> (DriveIndex, u128, u128) {
-    let volume_prefix = format!("{drive_letter}:\\");
-    let record_count = index.records.len();
-
-    let path_start = Instant::now();
-    let paths_lower: Vec<String> = (0..record_count)
-        .map(|record_idx| {
-            let Some(record) = index.records.get(record_idx) else {
-                return String::new();
-            };
-            if !record.first_name.name.is_valid() {
-                return String::new();
-            }
-            let name = index.get_name(&record.first_name.name);
-            if name.is_empty() || name == "." {
-                return String::new();
-            }
-            resolve_path(&index, record_idx, &volume_prefix).to_ascii_lowercase()
-        })
-        .collect();
-    let path_elapsed = path_start.elapsed().as_millis();
-
-    let tri_start = Instant::now();
-    let trigram = TrigramIndex::build(&paths_lower);
-    let tri_elapsed = tri_start.elapsed().as_millis();
-
-    (
-        DriveIndex {
-            letter: drive_letter,
-            index,
-            trigram,
-            paths_lower,
-            source: IndexSource::MftFile(PathBuf::from(format!("{drive_letter}:"))),
-        },
-        path_elapsed,
-        tri_elapsed,
-    )
-}
-
-/// Load an MFT file (raw, IOCP capture, or compressed) into a `DriveIndex`.
-///
-/// Auto-detects the file format. If no drive letter is provided, infers it
-/// from the filename.
-#[expect(
-    clippy::single_call_fn,
-    reason = "public API called from main.rs async loader; separation keeps file loading isolated"
-)]
-pub fn load_mft_file(
-    mft_path: &std::path::Path,
-    drive: Option<char>,
-) -> anyhow::Result<(DriveIndex, LoadTiming)> {
-    use uffs_mft::parse::{MftRecordMerger, apply_fixup, parse_record_full};
-
-    let drive_letter = drive.unwrap_or_else(|| {
-        let stem = mft_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("X");
-        stem.chars()
-            .next()
-            .filter(char::is_ascii_alphabetic)
-            .map_or('X', |ch| ch.to_ascii_uppercase())
-    });
-
-    let mft_start = Instant::now();
-    let options = uffs_mft::raw::LoadRawOptions::default();
-    let raw = uffs_mft::raw::load_raw_mft(mft_path, &options)?;
-    let capacity = uffs_mft::frs_to_usize(raw.header.record_count);
-    let mut merger = MftRecordMerger::with_capacity(capacity);
-
-    for (frs, record_data) in raw.iter_records() {
-        let mut record_buf = record_data.to_vec();
-        if !apply_fixup(&mut record_buf) {
-            continue;
-        }
-        merger.add_result(parse_record_full(&record_buf, frs));
-    }
-
-    let records = merger.merge();
-    let index = MftIndex::from_parsed_records(drive_letter, records);
-    let mft_elapsed = mft_start.elapsed().as_millis();
-
-    let (drive_index, path_elapsed, tri_elapsed) = build_drive_index(drive_letter, index);
-    Ok((
-        DriveIndex {
-            source: IndexSource::MftFile(mft_path.to_path_buf()),
-            ..drive_index
-        },
-        LoadTiming {
-            mft: mft_elapsed,
-            path: path_elapsed,
-            trigram: tri_elapsed,
-        },
-    ))
 }

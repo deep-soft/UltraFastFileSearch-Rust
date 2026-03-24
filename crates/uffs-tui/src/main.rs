@@ -54,8 +54,10 @@ use tracing_subscriber::{EnvFilter, Layer};
 
 /// Application state and search logic.
 mod app;
-/// Search backend: MftIndex-backed multi-drive search.
+/// Search backend: compact-index multi-drive search.
 mod backend;
+/// Compact in-memory index (68 bytes/record, replaces full MftIndex).
+mod compact;
 
 use app::App;
 
@@ -276,7 +278,7 @@ fn main() -> Result<()> {
                         let thread_path = file_path.clone();
                         let thread_drive = *drive_opt;
                         scope.spawn(move || {
-                            let result = backend::load_mft_file(&thread_path, thread_drive);
+                            let result = compact::load_mft_file(&thread_path, thread_drive);
                             let file_name = thread_path
                                 .file_name()
                                 .and_then(|name| name.to_str())
@@ -320,11 +322,11 @@ fn main() -> Result<()> {
                     Ok((drive_index, timing)) => {
                         let fc = |n: usize| uffs_mft::format_number_commas(n as u64);
                         let msg = format!(
-                            "✅ {}:  {:>10} rec  │  mft:{:>7}  paths:{:>7}  tri:{:>7}  │  {:>6} trigrams  ({})",
+                            "✅ {}:  {:>10} rec  │  mft:{:>7}  compact:{:>7}  tri:{:>7}  │  {:>6} trigrams  ({})",
                             drive_index.letter,
-                            fc(drive_index.index.records.len()),
+                            fc(drive_index.records.len()),
                             format_ms_compact(timing.mft),
-                            format_ms_compact(timing.path),
+                            format_ms_compact(timing.compact),
                             format_ms_compact(timing.trigram),
                             fc(drive_index.trigram.posting_count()),
                             file_name,
@@ -890,20 +892,20 @@ fn ui(frame: &mut Frame, app: &mut App) {
 fn load_live_drive_impl(
     drive_letter: char,
     no_cache: bool,
-) -> anyhow::Result<(backend::DriveIndex, backend::LoadTiming)> {
-    backend::load_live_drive(drive_letter, no_cache)
+) -> anyhow::Result<(compact::DriveCompactIndex, compact::LoadTiming)> {
+    compact::load_live_drive(drive_letter, no_cache)
 }
 
 /// Load a live NTFS drive — not available on non-Windows.
 #[cfg(not(windows))]
 #[expect(
     clippy::single_call_fn,
-    reason = "platform-specific stub; Windows version in backend::load_live_drive"
+    reason = "platform-specific stub; Windows version in compact::load_live_drive"
 )]
 fn load_live_drive_impl(
     drive_letter: char,
     _no_cache: bool,
-) -> Result<(backend::DriveIndex, backend::LoadTiming)> {
+) -> Result<(compact::DriveCompactIndex, compact::LoadTiming)> {
     anyhow::bail!("Live drive loading requires Windows (drive {drive_letter}:)")
 }
 

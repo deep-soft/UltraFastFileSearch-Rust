@@ -2,7 +2,7 @@
 
 > **Status**: Design — Wave 3  
 > **Date**: 2026-03-24  
-> **Goal**: Reduce TUI memory from ~7.5 GB to ~2.0 GB, startup from 40-70s to ~3s
+> **Goal**: Reduce TUI memory from ~7.5 GB to ~2.1 GB, startup from 40-70s to ~3s
 
 ---
 
@@ -17,7 +17,7 @@ traversal instead of flat string search.
 
 | Metric | Current (Wave 2) | Target (Wave 3) |
 |--------|------------------|-----------------|
-| **RAM (25M records, 7 drives)** | ~7.5 GB | ~2.0 GB |
+| **RAM (25M records, 7 drives)** | ~7.5 GB | ~2.1 GB |
 | **Startup (cached)** | ~40s (path resolve + trigram) | ~3s (build compact + trigram) |
 | **Startup (cold, Windows)** | ~70s | ~30s (MFT I/O + build) |
 | **Search latency** | <10ms | <10ms (unchanged) |
@@ -34,11 +34,11 @@ traversal instead of flat string search.
 | `links/streams/children` overflow | 200 MB | — (not loaded) |
 | `paths_lower: Vec<String>` | 1.5 GB | — (eliminated) |
 | Trigram index (on full paths) | 300 MB | — (replaced) |
-| **Compact records** (68 bytes × 25M) | — | **1.70 GB** (new) |
+| **Compact records** (72 bytes × 25M) | — | **1.80 GB** (new) |
 | **Trigram index** (on names only) | — | **~100 MB** (new, smaller) |
 | **Parent chain** (in CompactRecord.parent_idx) | — | **(included above)** |
 | **Children index** | — | **~100 MB** (new) |
-| **Total** | **~7.5 GB** | **~2.0 GB** |
+| **Total** | **~7.5 GB** | **~2.1 GB** |
 
 ---
 
@@ -61,12 +61,13 @@ traversal instead of flat string search.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### CompactRecord Layout (68 bytes, `#[repr(C)]`)
+### CompactRecord Layout (72 bytes, `#[repr(C)]`)
 
-The "full" compact layout at 68 bytes covers **100% of sortable and
-filterable columns**. At 25M records this costs 1.70 GB — only 350 MB
-more than a minimal 54-byte layout that would miss descendants and
-treesize. The extra 350 MB eliminates ALL fallback-to-disk for sort/filter.
+The "full" compact layout at 72 bytes (68 data + 4 tail padding for
+8-byte struct alignment) covers **100% of sortable and filterable
+columns**. At 25M records this costs 1.80 GB — only ~450 MB more than
+a minimal 54-byte layout that would miss descendants and treesize.
+The extra memory eliminates ALL fallback-to-disk for sort/filter.
 
 ```rust
 /// Compact per-record data for in-memory search, filter, and sort.
@@ -484,17 +485,17 @@ works identically. Path resolution is on-demand.
 
 | Task | Status | Notes |
 |------|--------|-------|
-| Define `CompactRecord` struct (54 bytes, `#[repr(C)]`) | ⏳ | In `backend.rs` or new `compact.rs` |
-| Build `CompactRecord` array from `MftIndex` | ⏳ | Extract fields during load |
-| Copy names blob from `MftIndex::names` | ⏳ | Zero-copy reference or clone |
-| Build `parent_idx: Vec<u32>` from `frs_to_idx` + parent chain | ⏳ | Map FRS → compact index |
-| Build trigram index on names blob (not paths) | ⏳ | Reuse existing `TrigramIndex::build` |
-| Implement `resolve_path()` using `parent_idx` + names blob | ⏳ | Walk parent chain → join segments |
-| Drop `MftIndex` after compact build | ⏳ | Free ~5 GB |
-| Update `search_drive_fast()` to use compact + names | ⏳ | Same trigram logic, different data |
-| Update `DisplayRow` builder to use compact + resolve_path | ⏳ | |
-| Update sort to use compact fields directly | ⏳ | Already have size, modified, flags |
-| Verify: all existing tests pass | ⏳ | |
+| Define `CompactRecord` struct (72 bytes, `#[repr(C)]`) | ✅ | `compact.rs` — 72 bytes with alignment padding |
+| Build `CompactRecord` array from `MftIndex` | ✅ | `build_compact_index()` extracts all fields |
+| Copy names blob from `MftIndex::names` | ✅ | Plus `names_lower` for case-insensitive search |
+| Build `parent_idx` inside `CompactRecord` | ✅ | FRS → compact index via `frs_to_idx` |
+| Build trigram index on names blob (not paths) | ✅ | `build_name_trigram()` reuses `TrigramIndex::build` |
+| Implement `resolve_path()` using `parent_idx` + names blob | ✅ | Walk parent chain → join segments |
+| Drop `MftIndex` after compact build | ✅ | `index` dropped after `build_compact_index()` returns |
+| Update search to use compact + names trigram | ✅ | `search_compact_drive()` in `backend.rs` |
+| Update `DisplayRow` builder to use compact + resolve_path | ✅ | On-demand path resolution for matches only |
+| Update sort to use compact fields directly | ✅ | size, modified, flags all in compact record |
+| Verify: all existing tests pass | ✅ | 6/6 tests pass, clippy clean |
 | Benchmark: memory usage before/after | ⏳ | Target: ~2 GB for 7 drives |
 | Benchmark: search latency before/after | ⏳ | Target: <10ms unchanged |
 
@@ -710,8 +711,8 @@ crates/uffs-tui/
 
 | | Everything | UFFS TUI (Compact) |
 |--|-----------|-------------------|
-| **Bytes/record** | ~50 | 68 |
-| **RAM (25M)** | ~1.2 GB | ~2.0 GB |
+| **Bytes/record** | ~50 | 72 |
+| **RAM (25M)** | ~1.2 GB | ~2.1 GB |
 | **Timestamps** | 3 | 3 |
 | **Size fields** | 1 (size) | 2 (size + allocated) |
 | **Attributes** | u32 flags | u32 flags (all 25 attributes) |
