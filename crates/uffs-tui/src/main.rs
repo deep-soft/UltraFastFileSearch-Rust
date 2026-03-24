@@ -286,8 +286,9 @@ fn main() -> Result<()> {
                         let thread_sender = sender.clone();
                         let thread_path = file_path.clone();
                         let thread_drive = *drive_opt;
+                        let no_cache_flag = cli_no_cache;
                         scope.spawn(move || {
-                            let result = compact::load_mft_file(&thread_path, thread_drive);
+                            let result = compact::load_mft_file(&thread_path, thread_drive, no_cache_flag);
                             let file_name = thread_path
                                 .file_name()
                                 .and_then(|name| name.to_str())
@@ -444,10 +445,8 @@ fn main() -> Result<()> {
             uffs_mft::format_duration(elapsed),
         );
 
-        // If user typed a pattern during loading, search immediately
-        if !app.input_text().is_empty() {
-            app.search();
-        }
+        // Search immediately — empty box shows '*' (all files, newest first)
+        app.search();
     }
 
     // Spawn auto-refresh timer thread (if interval > 0)
@@ -1012,10 +1011,24 @@ fn ui(frame: &mut Frame, app: &mut App) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " Results ({}) ",
-        app.results.len()
-    )))
+    .block(Block::default().borders(Borders::ALL).title({
+        let sort_label = match app.sort_column() {
+            backend::SortColumn::Name => "Name",
+            backend::SortColumn::Size => "Size",
+            backend::SortColumn::Modified => "Modified",
+            backend::SortColumn::Path => "Path",
+            backend::SortColumn::Drive => "Drive",
+            backend::SortColumn::Extension => "Extension",
+            backend::SortColumn::Type => "Type",
+        };
+        let dir_label = if app.sort_desc() { "▼" } else { "▲" };
+        let filter_label = app.filter_label();
+        let mode_label = if app.input_text().is_empty() { " │ ALL" } else { "" };
+        format!(
+            " Results ({}) │ Sort: {sort_label} {dir_label}{filter_label}{mode_label} ",
+            app.results.len()
+        )
+    }))
     .row_highlight_style(
         Style::default()
             .bg(Color::DarkGray)

@@ -157,7 +157,7 @@ pub fn refresh_drive(drive: &DriveCompactIndex) -> anyhow::Result<(DriveCompactI
                 }
             }
             // MFT file path — re-parse
-            load_mft_file(path, Some(drive.letter))
+            load_mft_file(path, Some(drive.letter), false)
         }
     }
 }
@@ -788,13 +788,22 @@ fn name_matches(name: &str, pattern: &str) -> bool {
     name.contains(pattern)
 }
 
+/// Cache TTL in seconds (10 minutes — same as Windows CLI).
+const INDEX_TTL_SECONDS: u64 = 600;
+
 /// Load an MFT file and build a compact index (cross-platform).
+///
+/// Mirrors the Windows `.uffs` cache flow:
+/// 1. Check `.uffs` cache for this drive → if fresh, load from cache (fast)
+/// 2. If stale/missing → parse raw MFT → `MftIndex` → **save `.uffs` cache** → compact
+/// 3. On subsequent loads, step 1 hits and skips the expensive MFT parse
+///
+/// This makes the Mac/Linux flow identical to Windows (except the MFT source).
 pub fn load_mft_file(
     mft_path: &std::path::Path,
     drive: Option<char>,
+    no_cache: bool,
 ) -> anyhow::Result<(DriveCompactIndex, LoadTiming)> {
-    use uffs_mft::parse::{MftRecordMerger, apply_fixup, parse_record_full};
-
     let drive_letter = drive.unwrap_or_else(|| {
         let stem = mft_path
             .file_name()
@@ -807,6 +816,81 @@ pub fn load_mft_file(
     });
 
     let mft_start = Instant::now();
+
+    // Step 1: Try loading from .uffs cache (same as Windows), unless --no-cache
+    let cached = if no_cache {
+        None
+    } else {
+        uffs_mft::cache::load_cached_index(drive_letter, INDEX_TTL_SECONDS)
+    };
+
+    let mft_index = if let Some((cached_index, _header)) = cached {
+        tracing::info!(
+            drive = %drive_letter,
+            records = cached_index.records.len(),
+            "📦 Cache hit — loaded .uffs cache"
+        );
+        cached_index
+    } else {
+        // Step 2: Cache miss (or --no-cache) — parse raw MFT file
+        tracing::info!(
+            drive = %drive_letter,
+            path = %mft_path.display(),
+            "📖 Parsing MFT file"
+        );
+        let parsed = parse_raw_mft_to_index(mft_path, drive_letter)?;
+
+        // Step 3: Save .uffs cache for next time (mirrors Windows flow)
+        if let Err(err) =
+            uffs_mft::cache::save_to_cache(&parsed, drive_letter, 0, 0, 0)
+        {
+            tracing::warn!(
+                drive = %drive_letter,
+                error = %err,
+                "Failed to save .uffs cache"
+            );
+        } else {
+            let cache_path = uffs_mft::cache::cache_file_path(drive_letter);
+            tracing::info!(
+                drive = %drive_letter,
+                path = %cache_path.display(),
+                "💾 Saved .uffs cache"
+            );
+        }
+
+        parsed
+    };
+    let mft_elapsed = mft_start.elapsed().as_millis();
+
+    // Build compact index from MftIndex, then MftIndex is dropped (key savings!)
+    let (mut compact, compact_elapsed, tri_elapsed) =
+        build_compact_index(drive_letter, &mft_index);
+    compact.source = IndexSource::MftFile(mft_path.to_path_buf());
+    // `mft_index` dropped here — frees ~800 MB per drive
+
+    Ok((
+        compact,
+        LoadTiming {
+            mft: mft_elapsed,
+            compact: compact_elapsed,
+            trigram: tri_elapsed,
+        },
+    ))
+}
+
+/// Parse a raw MFT file into an `MftIndex`.
+///
+/// Handles raw, IOCP capture, and compressed formats.
+#[expect(
+    clippy::single_call_fn,
+    reason = "separated for readability; MFT parsing is a distinct concern from cache logic"
+)]
+fn parse_raw_mft_to_index(
+    mft_path: &std::path::Path,
+    drive_letter: char,
+) -> anyhow::Result<MftIndex> {
+    use uffs_mft::parse::{MftRecordMerger, apply_fixup, parse_record_full};
+
     let options = uffs_mft::raw::LoadRawOptions::default();
     let raw = uffs_mft::raw::load_raw_mft(mft_path, &options)?;
     let capacity = uffs_mft::frs_to_usize(raw.header.record_count);
@@ -821,23 +905,7 @@ pub fn load_mft_file(
     }
 
     let records = merger.merge();
-    let index = MftIndex::from_parsed_records(drive_letter, records);
-    let mft_elapsed = mft_start.elapsed().as_millis();
-
-    // Build compact index from MftIndex, then MftIndex is dropped (key savings!)
-    let (mut compact, compact_elapsed, tri_elapsed) =
-        build_compact_index(drive_letter, &index);
-    compact.source = IndexSource::MftFile(mft_path.to_path_buf());
-    // `index` dropped here — frees ~800 MB per drive
-
-    Ok((
-        compact,
-        LoadTiming {
-            mft: mft_elapsed,
-            compact: compact_elapsed,
-            trigram: tri_elapsed,
-        },
-    ))
+    Ok(MftIndex::from_parsed_records(drive_letter, records))
 }
 
 /// Load a live NTFS drive and build a compact index (Windows only).

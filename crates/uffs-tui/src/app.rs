@@ -182,35 +182,22 @@ impl App {
     }
 
     /// Execute search with current input.
+    ///
+    /// When the search box is empty, searches for `*` (all files) to show
+    /// the first 1,000 entries — the TUI always has something visible.
     pub fn search(&mut self) {
         self.error = None;
         let input = self.input_text();
 
-        if input.is_empty() {
-            self.results.clear();
-            let fc = |n: usize| uffs_mft::format_number_commas(n as u64);
-            let drive_info: String = self
-                .backend
-                .drive_summary()
-                .iter()
-                .map(|(letter, count)| format!("{letter}:{}", fc(*count)))
-                .collect::<Vec<_>>()
-                .join("  ");
-            self.status = format!(
-                "Loaded {} records  │  {} drives  [{}]",
-                fc(self.backend.total_records()),
-                self.backend.drives.len(),
-                drive_info,
-            );
-            return;
-        }
+        // Empty search box → show all files (first 1,000)
+        let pattern = if input.is_empty() { "*".to_owned() } else { input };
 
         if !self.has_data() {
             self.error = Some("No drives loaded. Use --mft-file or --drive.".to_owned());
             return;
         }
 
-        let result = self.backend.search(&input, self.name_only);
+        let result = self.backend.search(&pattern, self.name_only);
         self.last_search_ms = result.duration.as_millis();
         self.results = result.rows;
         crate::backend::apply_filter(&mut self.results, self.filter_mode);
@@ -249,17 +236,33 @@ impl App {
     }
 
     /// Cycle sort column and re-sort results.
+    ///
+    /// When the search box is empty (match-all), this re-runs the full
+    /// global scan so the top-N is correct for the new sort column
+    /// (e.g., Tab from Modified to Size → show 1000 biggest, not 1000
+    /// newest re-sorted by size).
     pub fn cycle_sort(&mut self) {
         self.backend.cycle_sort();
-        self.results = self.backend.last_results.clone();
-        crate::backend::apply_filter(&mut self.results, self.filter_mode);
+        if self.input_text().is_empty() {
+            self.search(); // re-scan all 25M for new sort column
+        } else {
+            self.results = self.backend.last_results.clone();
+            crate::backend::apply_filter(&mut self.results, self.filter_mode);
+        }
     }
 
     /// Toggle sort direction and re-sort results.
+    ///
+    /// When the search box is empty (match-all), this re-runs the full
+    /// global scan for the reversed direction.
     pub fn toggle_sort_direction(&mut self) {
         self.backend.toggle_sort_direction();
-        self.results = self.backend.last_results.clone();
-        crate::backend::apply_filter(&mut self.results, self.filter_mode);
+        if self.input_text().is_empty() {
+            self.search(); // re-scan all 25M for reversed direction
+        } else {
+            self.results = self.backend.last_results.clone();
+            crate::backend::apply_filter(&mut self.results, self.filter_mode);
+        }
     }
 
     /// Get the current sort column.
@@ -377,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_search_clears_results() {
+    fn test_empty_search_shows_all() {
         let mut app = App::new();
         app.results = vec![DisplayRow {
             drive: 'C',
@@ -387,8 +390,9 @@ mod tests {
             is_directory: false,
             modified: 0,
         }];
-        // textarea starts empty by default, search should clear results
+        // textarea starts empty → searches for "*" (all files)
+        // With no drives loaded, this triggers the "no drives" error
         app.search();
-        assert!(app.results.is_empty());
+        assert!(app.error.is_some());
     }
 }
