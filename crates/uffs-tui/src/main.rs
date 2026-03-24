@@ -467,6 +467,128 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Start a background refresh of all loaded drives.
+///
+/// Spawns threads that reload each drive from its original source
+/// (`.uffs` cache with USN delta on Windows, raw MFT re-parse on Mac/Linux).
+/// Results are received via `app.refresh_rx` channel during the event loop.
+fn start_refresh(app: &mut App) {
+    if app.refreshing || app.backend.drives.is_empty() {
+        return;
+    }
+
+    let drive_count = app.backend.drives.len();
+    let (sender, receiver) = std::sync::mpsc::channel();
+
+    // Collect drive info for refresh threads (letter + source path)
+    let drive_info: Vec<(char, compact::IndexSource)> = app
+        .backend
+        .drives
+        .iter()
+        .map(|dr| {
+            let source = match &dr.source {
+                compact::IndexSource::MftFile(path) => {
+                    compact::IndexSource::MftFile(path.clone())
+                }
+            };
+            (dr.letter, source)
+        })
+        .collect();
+
+    // Spawn refresh threads
+    std::thread::spawn(move || {
+        std::thread::scope(|scope| {
+            for (letter, source) in &drive_info {
+                let thread_sender = sender.clone();
+                let thread_letter = *letter;
+                let thread_source = match source {
+                    compact::IndexSource::MftFile(path) => path.clone(),
+                };
+                scope.spawn(move || {
+                    let label = format!("{thread_letter}:");
+                    // Build a temporary DriveCompactIndex just for refresh_drive
+                    let temp = compact::DriveCompactIndex {
+                        letter: thread_letter,
+                        records: Vec::new(),
+                        names: Vec::new(),
+                        names_lower: Vec::new(),
+                        trigram: backend::TrigramIndex::empty(),
+                        children: Vec::new(),
+                        source: compact::IndexSource::MftFile(thread_source),
+                    };
+                    let result = compact::refresh_drive(&temp);
+                    drop(thread_sender.send((label, result)));
+                });
+            }
+        });
+    });
+
+    app.refreshing = true;
+    app.refresh_rx = Some(receiver);
+    app.refresh_total = drive_count;
+    app.refresh_done = 0;
+    app.status = format!("🔄 Refreshing {drive_count} drive(s)...");
+}
+
+/// Poll for completed drive refreshes and swap them into the backend.
+///
+/// Called from the event loop on each iteration while `app.refreshing` is true.
+#[expect(
+    clippy::single_call_fn,
+    reason = "separated from event loop for readability; refresh polling is a distinct concern"
+)]
+fn poll_refresh(app: &mut App) {
+    let Some(receiver) = &app.refresh_rx else {
+        return;
+    };
+
+    while let Ok((label, result)) = receiver.try_recv() {
+        app.refresh_done += 1;
+        match result {
+            Ok((new_drive, timing)) => {
+                // Find and replace the matching drive in the backend
+                if let Some(existing) = app
+                    .backend
+                    .drives
+                    .iter_mut()
+                    .find(|dr| dr.letter == new_drive.letter)
+                {
+                    *existing = new_drive;
+                } else {
+                    app.backend.drives.push(new_drive);
+                }
+                app.status = format!(
+                    "🔄 Refreshed {label} ({}/{}) — mft:{} compact:{} tri:{}",
+                    app.refresh_done,
+                    app.refresh_total,
+                    format_ms_compact(timing.mft),
+                    format_ms_compact(timing.compact),
+                    format_ms_compact(timing.trigram),
+                );
+            }
+            Err(err) => {
+                app.status = format!("❌ Refresh {label} failed: {err}");
+            }
+        }
+    }
+
+    // Check if all drives are done
+    if app.refresh_done >= app.refresh_total {
+        app.refreshing = false;
+        app.refresh_rx = None;
+        let fc = |n: usize| uffs_mft::format_number_commas(n as u64);
+        app.status = format!(
+            "✅ Refreshed {} drive(s), {} records — type to search",
+            app.backend.drives.len(),
+            fc(app.backend.total_records()),
+        );
+        // Re-run search if user has a pattern
+        if !app.input_text().is_empty() {
+            app.search();
+        }
+    }
+}
+
 /// Run the TUI event loop, handling key input and rendering.
 #[expect(
     clippy::single_call_fn,
@@ -487,6 +609,11 @@ where
     let mut needs_search = false;
 
     loop {
+        // 0. Poll for background refresh completions
+        if app.refreshing {
+            poll_refresh(&mut *app);
+        }
+
         // 1. Always render first — input box is always up-to-date
         terminal.draw(|frame| ui(frame, &mut *app))?;
 
@@ -574,10 +701,13 @@ where
                             app.search();
                             continue;
                         }
-                        // Ctrl+R: refresh (Wave 3 — full USN + trigram rebuild)
+                        // Ctrl+R / F5: refresh all drives (reload .uffs + USN + rebuild compact)
                         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            "🔄 Refresh: planned for Wave 3 (USN + incremental trigram update)"
-                                .clone_into(&mut app.status);
+                            start_refresh(app);
+                            continue;
+                        }
+                        KeyCode::F(5) => {
+                            start_refresh(app);
                             continue;
                         }
                         // Ctrl+U: clear line (unix-style)
@@ -880,7 +1010,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
         Span::raw(" Name-only  "),
         Span::styled("F3", Style::default().fg(Color::Green)),
         Span::raw(" Filter  "),
-        Span::styled("Ctrl+R", Style::default().fg(Color::Green)),
+        Span::styled("F5", Style::default().fg(Color::Green)),
         Span::raw(" Refresh  "),
         Span::styled("Ctrl+Q", Style::default().fg(Color::Green)),
         Span::raw(" Quit"),

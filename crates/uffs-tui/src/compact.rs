@@ -124,13 +124,42 @@ pub struct DriveCompactIndex {
 }
 
 /// Where a drive index was loaded from.
-#[expect(
-    dead_code,
-    reason = "variants store source paths for future refresh feature (Wave 3)"
-)]
 pub enum IndexSource {
     /// Raw/IOCP/compressed MFT file.
     MftFile(PathBuf),
+}
+
+/// Refresh a drive by reloading from its original source.
+///
+/// On Windows with `.uffs` cache: reloads cache + applies USN delta.
+/// On Mac/Linux with MFT files: re-parses the raw MFT file.
+///
+/// Returns the new `DriveCompactIndex` with updated data + timing.
+#[expect(
+    clippy::single_call_fn,
+    reason = "public API called from main.rs refresh thread"
+)]
+pub fn refresh_drive(drive: &DriveCompactIndex) -> anyhow::Result<(DriveCompactIndex, LoadTiming)> {
+    match &drive.source {
+        IndexSource::MftFile(path) => {
+            if path.to_string_lossy().len() <= 2 {
+                // Windows live drive (stored as "C:" placeholder) — reload via cache
+                #[cfg(windows)]
+                {
+                    return load_live_drive(drive.letter, false);
+                }
+                #[cfg(not(windows))]
+                {
+                    anyhow::bail!(
+                        "Cannot refresh live drive {}: on non-Windows",
+                        drive.letter
+                    );
+                }
+            }
+            // MFT file path — re-parse
+            load_mft_file(path, Some(drive.letter))
+        }
+    }
 }
 
 /// Timing breakdown for the compact index build.
@@ -573,10 +602,6 @@ fn name_matches(name: &str, pattern: &str) -> bool {
 }
 
 /// Load an MFT file and build a compact index (cross-platform).
-#[expect(
-    clippy::single_call_fn,
-    reason = "public API called from main.rs loader thread"
-)]
 pub fn load_mft_file(
     mft_path: &std::path::Path,
     drive: Option<char>,

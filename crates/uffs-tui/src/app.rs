@@ -1,9 +1,15 @@
-//! TUI Application state — MftIndex-backed search.
+//! TUI Application state — compact-index search.
+
+use std::sync::mpsc;
 
 use ratatui::widgets::TableState;
 use ratatui_textarea::TextArea;
 
 use crate::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
+use crate::compact::{DriveCompactIndex, LoadTiming};
+
+/// Result type for a single drive refresh (label + result).
+type RefreshResult = (String, anyhow::Result<(DriveCompactIndex, LoadTiming)>);
 
 /// Application state.
 pub struct App {
@@ -25,9 +31,14 @@ pub struct App {
     pub name_only: bool,
     /// Filter mode: `All`, `FilesOnly`, or `DirsOnly`.
     pub filter_mode: FilterMode,
-    /// Whether a search is currently running in background (Wave 4: spinner).
-    #[expect(dead_code, reason = "will be used for UI loading spinner in Wave 4")]
-    pub searching: bool,
+    /// Whether a refresh is in progress (background thread).
+    pub refreshing: bool,
+    /// Channel receiver for completed drive refreshes.
+    pub refresh_rx: Option<mpsc::Receiver<RefreshResult>>,
+    /// Number of drives being refreshed (for progress tracking).
+    pub refresh_total: usize,
+    /// Number of drives completed so far.
+    pub refresh_done: usize,
     /// Visible page size for PageUp/Down (set by `ui()` on each render).
     pub page_size: usize,
 }
@@ -66,7 +77,10 @@ impl App {
             last_search_ms: 0,
             name_only: false,
             filter_mode: FilterMode::All,
-            searching: false,
+            refreshing: false,
+            refresh_rx: None,
+            refresh_total: 0,
+            refresh_done: 0,
             page_size: 20,
         }
     }
@@ -83,7 +97,10 @@ impl App {
             last_search_ms: 0,
             name_only: false,
             filter_mode: FilterMode::All,
-            searching: false,
+            refreshing: false,
+            refresh_rx: None,
+            refresh_total: 0,
+            refresh_done: 0,
             page_size: 20,
         }
     }

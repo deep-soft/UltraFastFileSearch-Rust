@@ -536,14 +536,14 @@ Update the compact index when files change (Windows only).
 
 | Task | Status | Notes |
 |------|--------|-------|
-| Query USN Journal for changes since last checkpoint | ⏳ | Existing `query_usn_journal` API |
-| Apply USN delta to `.uffs` cache (existing flow) | ⏳ | `apply_usn_changes` |
-| Extract updated compact records from delta | ⏳ | Only changed FRS numbers |
-| Update `parent_idx` and `children` for reparented files | ⏳ | |
-| Append new trigrams to posting lists | ⏳ | Stale entries filtered at verify |
-| Auto-refresh timer (60s, background thread) | ⏳ | |
-| Manual refresh (F5 keybinding) | ⏳ | |
-| Status bar indicator during refresh | ⏳ | |
+| `refresh_drive()` — reload from original source | ✅ | Windows: .uffs + USN; Mac: re-parse MFT file |
+| `start_refresh()` — spawn background threads per drive | ✅ | Parallel refresh via `std::thread::scope` + mpsc |
+| `poll_refresh()` — poll channel, swap drives into backend | ✅ | Hot-swap without blocking UI |
+| F5 / Ctrl+R keybinding for manual refresh | ✅ | Both keybindings wired |
+| Status bar: progress during refresh + completion summary | ✅ | 🔄 per-drive timing → ✅ total summary |
+| Re-run active search after refresh completes | ✅ | Auto-triggers `app.search()` |
+| Auto-refresh timer (60s, background thread) | ⏳ | Future: spawn timer thread |
+| In-place USN patching (<50ms, no full rebuild) | ⏳ | Future: Option B optimization |
 
 ---
 

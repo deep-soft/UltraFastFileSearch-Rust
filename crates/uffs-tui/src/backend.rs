@@ -46,10 +46,22 @@ pub struct TrigramIndex {
 }
 
 impl TrigramIndex {
+    /// Create an empty trigram index (no postings).
+    #[must_use]
+    #[expect(
+        clippy::single_call_fn,
+        reason = "public API used by refresh; separation keeps constructor isolated"
+    )]
+    pub(crate) fn empty() -> Self {
+        Self {
+            postings: std::collections::HashMap::new(),
+        }
+    }
+
     /// Build a trigram index from pre-lowered paths.
     #[expect(
         clippy::single_call_fn,
-        reason = "constructor called once per drive load; separation improves readability"
+        reason = "called from compact::build_name_trigram; separation keeps trigram logic isolated"
     )]
     pub(crate) fn build(paths_lower: &[String]) -> Self {
         use rayon::prelude::*;
