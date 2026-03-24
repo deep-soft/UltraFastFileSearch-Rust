@@ -521,12 +521,14 @@ Support "max view" (all 25 columns) by reading from `.uffs` on demand.
 
 | Task | Status | Notes |
 |------|--------|-------|
-| Store `.uffs` file path in `DriveCompactIndex` | ⏳ | Already stored in `IndexSource` |
-| Implement record offset calculation from compact index | ⏳ | Header size + record_idx × record_size |
-| Implement `load_full_record()` — seek + read from `.uffs` | ⏳ | |
-| Add LRU cache for recently accessed full records | ⏳ | 256-entry cache, ~50 KB |
-| Wire up "max view" columns to full record lookup | ⏳ | Created, Accessed, Descendants, etc. |
-| Test: display 25 columns for selected row | ⏳ | |
+| `.uffs` path available via `IndexSource` + `cache_file_path()` | ✅ | Windows: auto-derived; Mac/Linux: returns None |
+| `FullRecordReader::open()` — parse .uffs header, calc offsets | ✅ | Reads 96-byte header + frs_to_idx_len |
+| Record offset: `header + frs_table + idx × record_size` | ✅ | Supports v3-v8 (121-195 bytes/record) |
+| `read_record_from_disk()` — seek + read single record | ✅ | One file open + seek per read |
+| `parse_extra_fields()` — extract forensic/reparse/$FN fields | ✅ | Version-conditional, mirrors deserialize.rs |
+| `ExtraRecordFields` struct — 13 fields not in CompactRecord | ✅ | reparse_tag, seq#, namespace, LSN, $FN timestamps |
+| 512-entry cache for recently accessed records | ✅ | Simple HashMap with clear-on-full eviction |
+| Wire up "max view" columns to full record lookup | ⏳ | Future UI feature — infrastructure ready |
 
 ### Phase 3d: Incremental USN Refresh
 

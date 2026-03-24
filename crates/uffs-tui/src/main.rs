@@ -56,8 +56,10 @@ use tracing_subscriber::{EnvFilter, Layer};
 mod app;
 /// Search backend: compact-index multi-drive search.
 mod backend;
-/// Compact in-memory index (68 bytes/record, replaces full MftIndex).
+/// Compact in-memory index (72 bytes/record, replaces full MftIndex).
 mod compact;
+/// On-demand full record lookup from `.uffs` cache files.
+mod full_record;
 
 use app::App;
 
