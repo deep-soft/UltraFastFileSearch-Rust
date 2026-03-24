@@ -1,8 +1,8 @@
 # TUI Architecture Design
 
-> **Status**: Implemented — Wave 1 ✅, Wave 2 ✅
+> **Status**: Implemented — Wave 1 ✅, Wave 2 ✅, Wave 3 ✅, Wave 5 ✅
 > **Date**: 2026-03-24
-> **Decision**: Option 1 (load all drives into RAM) for Phase 1
+> **Decision**: Compact index (72 bytes/record) — ~2.1 GB for 25M records
 
 ---
 
@@ -390,16 +390,18 @@ Tab cycles through 7 sort columns, Shift+Tab toggles direction.
 ```
 crates/uffs-tui/
 ├── src/
-│   ├── main.rs       # CLI args (clap), terminal setup, event loop, UI rendering
-│   │                 # Includes: ui(), run_app(), highlight_matches(), devicon_color(),
-│   │                 # format_size(), truncate_path(), find_best_mft_file(),
-│   │                 # init_logging() (dual terminal+file with rotation)
-│   ├── app.rs        # App state, TextArea, search dispatch, navigation,
-│   │                 # sort cycling, name-only toggle
-│   └── backend.rs    # MultiDriveBackend, DriveIndex, TrigramIndex, DisplayRow,
-│                     # SortColumn, search_drive(), resolve_path(), load_mft_file(),
-│                     # load_live_drive() (cfg(windows)), build_drive_colors(),
-│                     # PALETTES (1-10 drive color palettes)
+│   ├── main.rs          # CLI args (--refresh-interval), terminal, event loop,
+│   │                     # Table UI rendering, start_refresh(), poll_refresh(),
+│   │                     # auto-refresh timer, highlight_matches(), devicon_color()
+│   ├── app.rs           # App state, TableState, FilterMode, refresh channels
+│   ├── backend.rs       # MultiDriveBackend (Vec<DriveCompactIndex>),
+│   │                     # TrigramIndex, search routing (name vs tree),
+│   │                     # sort/filter/palette
+│   ├── compact.rs       # CompactRecord (72 bytes), DriveCompactIndex,
+│   │                     # build_compact_index(), resolve_path(), tree_search(),
+│   │                     # apply_usn_patch(), load_mft_file(), refresh_drive()
+│   └── full_record.rs   # FullRecordReader, ExtraRecordFields (13 fields),
+│                         # targeted .uffs seek+read, 512-entry cache
 └── Cargo.toml
 ```
 
@@ -623,16 +625,24 @@ specific part is `build_drive_index` (paths_lower + trigram).
 | `--attr` filter toggle panel | ⏳ | Deferred to Wave 3+ |
 | Column visibility toggle (F4) | ⏳ | Deferred — Table widget now supports it |
 
-### Wave 3: Refresh + Live
+### Wave 3: Compact Index + Refresh ✅
 
 | Task | Status | Notes |
 |------|--------|-------|
-| Incremental USN refresh (delta trigram update) | ⏳ | <50ms per refresh cycle |
-| Auto-refresh timer (60s default) | ⏳ | Background thread |
-| Manual refresh (F5) | ⏳ | |
-| Cache indicator (cached/fresh) in loading display | ⏳ | |
-| Fix USN `created=0` for new files with reused FRS | ⏳ | `aggregate_changes` bug |
-| `.uffs-tui` sidecar cache for trigram + paths_lower | ⏳ | Skip path resolve on cached restart |
+| **Phase 3a**: `CompactRecord` (72 bytes, `#[repr(C)]`) | ✅ | Replaces 224-byte `FileRecord` — 100% column coverage |
+| **Phase 3a**: Build compact from `MftIndex`, DROP `MftIndex` | ✅ | Key memory savings: ~5 GB freed per load |
+| **Phase 3a**: Trigram index on names only (not full paths) | ✅ | ~5× smaller postings, same <10ms search |
+| **Phase 3a**: On-demand path resolution via `parent_idx` | ✅ | Only for displayed rows (~200μs for 200 rows) |
+| **Phase 3b**: Children index (`Vec<Vec<u32>>`) | ✅ | Single pass from `parent_idx`, ~100 MB |
+| **Phase 3b**: Tree-based path search (`tree_search()`) | ✅ | `\photos\*.jpg` → find dirs → walk children → filter |
+| **Phase 3b**: `name_matches()` — `*`, `*.ext`, `prefix*`, substring | ✅ | Auto-detect path pattern → tree vs name trigram |
+| **Phase 3c**: `FullRecordReader` — targeted `.uffs` seek+read | ✅ | 13 extra fields, 512-entry cache, v3-v8 support |
+| **Phase 3d**: `refresh_drive()` — reload from original source | ✅ | Windows: `.uffs` + USN; Mac: re-parse MFT |
+| **Phase 3d**: F5 / Ctrl+R manual refresh (background threads) | ✅ | Parallel refresh, hot-swap, auto re-search |
+| **Phase 3d**: Auto-refresh timer (`--refresh-interval`, 60s) | ✅ | Background thread + mpsc, 0 = disabled |
+| **Phase 3d**: `apply_usn_patch()` — in-place compact patching | ✅ | Deletes, creates, renames + children update (<50ms) |
+| Memory: 7.5 GB → ~2.1 GB (72% reduction) | ✅ | See `COMPACT_INDEX_DESIGN.md` |
+| `.uffs-tui` sidecar cache | ❌ skipped | Not needed — 3s rebuild from `.uffs` is fast enough |
 
 ### Wave 4: UX Polish
 
@@ -641,16 +651,19 @@ specific part is `build_drive_index` (paths_lower + trigram).
 | Enter → show path in status bar | ✅ | `📋 C:\path\to\file` |
 | Enter → copy path to clipboard | ⏳ | |
 | Enter → open file/folder in explorer | ⏳ | Windows only |
-| Detail panel (expand selected row) | ⏳ | All record fields |
+| Detail panel (expand selected row) | ⏳ | All 25 columns via `FullRecordReader` |
+| Column visibility toggle (F4) | ⏳ | Table widget supports it |
+| `--attr` filter toggle panel | ⏳ | |
 | Extension stats panel | ⏳ | Top extensions by count/size |
 | Tree view mode | ⏳ | Navigate directory hierarchy |
 | Regex/glob mode indicator | ⏳ | Show pattern type in search bar |
 
-### Wave 5: Memory Optimization (if needed)
+### Wave 5: Memory Optimization — DONE via Compact Index ✅
 
 | Task | Status | Notes |
 |------|--------|-------|
-| LRU drive eviction (Approach A) | ⏳ | Cap at 2-3 drives in RAM |
-| Zero-copy mmap index (Approach B) | ⏳ | Requires new storage format |
-| Lightweight name index (Approach C) | ⏳ | ~200 MB for all drives |
-| Benchmark memory vs search latency tradeoffs | ⏳ | |
+| Compact index (72 bytes/record) | ✅ | Replaced Approach C (lightweight name index) |
+| On-demand path resolution | ✅ | Eliminated `paths_lower` (1.5 GB) |
+| Name-only trigrams | ✅ | Eliminated full-path trigrams (300 MB → 100 MB) |
+| MftIndex dropped after compact build | ✅ | Eliminated 5 GB heap allocation |
+| Total: ~7.5 GB → ~2.1 GB | ✅ | Comparable to Everything.exe (~1.2 GB for 25M) |

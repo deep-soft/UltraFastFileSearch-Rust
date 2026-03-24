@@ -1,6 +1,6 @@
 # Compact Index + Tree Search Architecture
 
-> **Status**: Design — Wave 3  
+> **Status**: Implemented — Wave 3 ✅  
 > **Date**: 2026-03-24  
 > **Goal**: Reduce TUI memory from ~7.5 GB to ~2.1 GB, startup from 40-70s to ~3s
 
@@ -9,7 +9,7 @@
 ## Executive Summary
 
 Replace the full `MftIndex` + pre-resolved `paths_lower` with a **compact in-memory
-index** (~54 bytes/record) and **on-demand tree-based path resolution**. Search uses
+index** (72 bytes/record) and **on-demand tree-based path resolution**. Search uses
 trigrams on the names blob (not full paths). Path queries use hierarchical tree
 traversal instead of flat string search.
 
@@ -50,14 +50,12 @@ traversal instead of flat string search.
 ┌─────────────────────────────────────────────────────────────────────┐
 │ DriveCompactIndex (one per loaded drive)                           │
 │                                                                     │
-│  compact: Vec<CompactRecord>     ← 54 bytes × N records (flat)     │
-│  names: Vec<u8>                  ← all filenames concatenated       │
-│  parent_idx: Vec<u32>            ← frs → compact index of parent   │
-│  trigram: TrigramIndex           ← trigrams on names (not paths)    │
-│  children: Vec<Vec<u32>>         ← dir idx → child compact indices  │
-│  extensions: ExtensionTable      ← extension interning (shared)     │
-│                                                                     │
-│  uffs_cache_path: PathBuf        ← path to .uffs file for fallback │
+│  records: Vec<CompactRecord>    ← 72 bytes × N records (flat)      │
+│  names: Vec<u8>                 ← all filenames (original case)     │
+│  names_lower: Vec<u8>           ← lowercase copy for search         │
+│  trigram: TrigramIndex          ← trigrams on names_lower           │
+│  children: Vec<Vec<u32>>        ← dir idx → child compact indices   │
+│  source: IndexSource            ← MFT file path (for refresh)       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -70,74 +68,26 @@ a minimal 54-byte layout that would miss descendants and treesize.
 The extra memory eliminates ALL fallback-to-disk for sort/filter.
 
 ```rust
-/// Compact per-record data for in-memory search, filter, and sort.
-///
-/// Contains EVERY field needed for sort, filter, and display:
-/// - Name, Extension, Path (via parent chain)
-/// - Size, Size on Disk
-/// - Created, Last Written, Last Accessed
-/// - Descendants, Treesize (for folder analysis)
-/// - ALL NTFS boolean attributes (u32 covers bits 0-20)
-///
-/// Only fields NOT included (resolved from .uffs on demand):
-/// - Alternate Data Streams (ADS)
-/// - Reparse tag (u32 — rare filter target)
-/// - Forensic fields (sequence_number, LSN, base_frs)
-/// - $FILE_NAME timestamps (fn_created, fn_modified, etc.)
-/// - Internal stream sizes
-#[derive(Debug, Clone, Copy, Default)]
+/// Actual field order in compact.rs (optimized for zero padding):
 #[repr(C)]
-pub struct CompactRecord {
-    // ── Name reference (6 bytes) ──────────────────────────────────
-    /// Byte offset into the names blob.
-    pub name_offset: u32,
-    /// UTF-8 byte length of the filename (max 1023).
-    pub name_len: u16,
-
-    // ── Classification (6 bytes) ──────────────────────────────────
-    /// Interned extension ID (0 = no extension). For O(1) extension
-    /// filtering and grouping.
-    pub extension_id: u16,
-    /// NTFS attribute flags (full u32 from $STANDARD_INFORMATION):
-    ///   bit 0:  read_only        bit 11: compressed
-    ///   bit 1:  hidden           bit 12: offline
-    ///   bit 2:  system           bit 13: not_content_indexed
-    ///   bit 4:  directory        bit 14: encrypted
-    ///   bit 5:  archive          bit 15: integrity_stream
-    ///   bit 8:  temporary        bit 17: no_scrub_data
-    ///   bit 9:  sparse           bit 19: pinned
-    ///   bit 10: reparse_point    bit 20: unpinned
-    pub flags: u32,
-
-    // ── Parent reference (4 bytes) ────────────────────────────────
-    /// Index into compact array of the parent directory.
-    /// `u32::MAX` = root or orphan. Used for on-demand path resolution
-    /// by walking the parent chain.
-    pub parent_idx: u32,
-
-    // ── Sizes (16 bytes) ──────────────────────────────────────────
-    /// Logical file size in bytes.
-    pub size: u64,
-    /// Allocated size on disk in bytes ("Size on Disk" column).
-    pub allocated: u64,
-
-    // ── Timestamps (24 bytes) ─────────────────────────────────────
-    /// Creation time (Unix microseconds).
-    pub created: i64,
-    /// Last write time (Unix microseconds).
-    pub modified: i64,
-    /// Last access time (Unix microseconds).
-    pub accessed: i64,
-
-    // ── Tree metrics (12 bytes) ───────────────────────────────────
-    /// Count of all descendants (files + subdirectories) in subtree.
-    /// 0 for files.
-    pub descendants: u32,
-    /// Sum of logical file sizes in entire subtree. Enables
-    /// "biggest folders" sort without touching the .uffs file.
-    pub treesize: u64,
+pub struct CompactRecord {       // 72 bytes (68 data + 4 tail padding)
+    // u64 fields first (8-byte aligned)
+    pub size: u64,                // Logical file size
+    pub allocated: u64,           // Size on Disk
+    pub treesize: u64,            // Subtree size sum
+    pub created: i64,             // Creation time (Unix μs)
+    pub modified: i64,            // Last write time (Unix μs)
+    pub accessed: i64,            // Last access time (Unix μs)
+    // u32 fields (no padding after u64 block)
+    pub name_offset: u32,         // Byte offset into names blob
+    pub flags: u32,               // NTFS attributes (bits 0-20)
+    pub parent_idx: u32,          // Parent dir compact index
+    pub descendants: u32,         // Subtree file+dir count
+    // u16 fields (+ 4 bytes tail padding for struct alignment)
+    pub name_len: u16,            // UTF-8 byte length
+    pub extension_id: u16,        // Interned extension (0=none)
 }
-// static_assert: size_of::<CompactRecord>() == 68
+// static_assert: size_of::<CompactRecord>() == 72
 ```
 
 ### Column Coverage: 100%
@@ -353,7 +303,7 @@ faster.
 **The `.uffs` cache is STILL NEEDED and STILL USED.** Here's why:
 
 1. **The `.uffs` file is the source of truth.** The compact index is
-   **derived from** it. We load the `.uffs` file, extract 54 bytes per
+   **derived from** it. We load the `.uffs` file, extract 72 bytes per
    record into `CompactRecord`, and discard the rest.
 
 2. **USN incremental updates** need the full `MftIndex` temporarily.
@@ -449,30 +399,41 @@ time. Future optimization: save `.uffs` cache alongside MFT files.
 
 ---
 
-## On-Demand Full Record Lookup
+## On-Demand Full Record Lookup (Implemented)
 
-When the user views all 25 columns or needs data not in the compact record
-(descendants, treesize, reparse tag, ADS, forensic fields), we load
-individual records from the `.uffs` file:
+When the user needs data not in the compact record (reparse tag, forensic
+fields, `$FILE_NAME` timestamps), `FullRecordReader` reads individual
+records directly from the `.uffs` file:
 
 ```rust
-impl DriveCompactIndex {
-    /// Load full metadata for a single record from the .uffs cache file.
-    ///
-    /// Reads the .uffs file, seeks to the record's position, and
-    /// deserializes just that one FileRecord. Uses a small LRU cache
-    /// to avoid repeated reads for the same record.
-    fn load_full_record(&self, compact_idx: u32) -> Option<FileRecord> {
-        // Option 1: Keep the .uffs file memory-mapped (lazy, OS-managed)
-        // Option 2: Read + deserialize on demand (simple, slightly slower)
-        // Option 3: LRU cache of recently accessed full records
-    }
+// full_record.rs — implemented
+pub struct FullRecordReader {
+    path: PathBuf,              // .uffs file path
+    version: u32,               // format version (v3-v8)
+    records_offset: u64,        // byte offset where records start
+    record_byte_size: u64,      // 121-195 bytes depending on version
+    cache: HashMap<u32, ExtraRecordFields>,  // 512-entry cache
+}
+
+pub struct ExtraRecordFields {  // 13 fields NOT in CompactRecord
+    pub reparse_tag: u32,
+    pub sequence_number: u16,
+    pub namespace: u8,
+    pub forensic_flags: u8,
+    pub lsn: u64,
+    pub base_frs: u64,
+    pub stdinfo_usn: u64,
+    pub security_id: u32,
+    pub owner_id: u32,
+    pub fn_created: i64,
+    pub fn_modified: i64,
+    pub fn_accessed: i64,
+    pub fn_mft_changed: i64,
 }
 ```
 
-For displaying 50 rows in "max view", this means 50 individual record
-lookups. With the record offset pre-computed, each lookup is a single
-seek + 195-byte read. **Total: <5ms** even without mmap.
+Each lookup: one `File::open` + `seek` + read 195 bytes + parse.
+512-entry cache avoids repeated reads. **<5ms** for 50 rows.
 
 ---
 
@@ -693,17 +654,25 @@ accesses. Each access is a single `parent_idx[i]` lookup in a contiguous
 
 ---
 
-## File Structure (planned)
+## File Structure (implemented)
 
 ```
 crates/uffs-tui/
 ├── src/
-│   ├── main.rs          # CLI args, terminal, event loop, UI rendering
-│   ├── app.rs           # App state, search dispatch, navigation
-│   ├── backend.rs       # MultiDriveBackend, search strategies, sort
-│   ├── compact.rs       # CompactRecord, DriveCompactIndex, build logic  ← NEW
-│   ├── tree_search.rs   # Path pattern → tree traversal engine           ← NEW
-│   └── full_record.rs   # On-demand .uffs record lookup + LRU cache      ← NEW
+│   ├── main.rs          # CLI args (--refresh-interval), terminal, event loop,
+│   │                     # UI rendering (Table widget), start_refresh(),
+│   │                     # poll_refresh(), auto-refresh timer
+│   ├── app.rs           # App state, TableState, FilterMode, refresh channels
+│   ├── backend.rs       # MultiDriveBackend (Vec<DriveCompactIndex>),
+│   │                     # TrigramIndex, search routing (name vs tree),
+│   │                     # sort/filter/palette
+│   ├── compact.rs       # CompactRecord (72 bytes), DriveCompactIndex,
+│   │                     # build_compact_index(), resolve_path(),
+│   │                     # tree_search(), apply_usn_patch(),
+│   │                     # load_mft_file(), load_live_drive(),
+│   │                     # refresh_drive()
+│   └── full_record.rs   # FullRecordReader, ExtraRecordFields (13 fields),
+│                         # targeted .uffs seek+read, 512-entry cache
 └── Cargo.toml
 ```
 
@@ -730,10 +699,12 @@ crates/uffs-tui/
 
 ## Migration Checklist
 
-- [ ] **Phase 3a**: CompactRecord + name trigrams (core refactor)
-- [ ] **Phase 3b**: Tree-based path search
-- [ ] **Phase 3c**: On-demand full record lookup (max view)
-- [ ] **Phase 3d**: Incremental USN refresh on compact index
+- [x] **Phase 3a**: CompactRecord + name trigrams (core refactor)
+- [x] **Phase 3b**: Tree-based path search with children index
+- [x] **Phase 3c**: On-demand full record lookup from `.uffs`
+- [x] **Phase 3d**: Incremental USN refresh + in-place patching
+- [x] Auto-refresh timer (`--refresh-interval`, default 60s)
+- [x] In-place USN patching (`apply_usn_patch`, <50ms)
 - [ ] Update `TUI_ARCHITECTURE.md` wave tracker
 - [ ] Benchmark: memory, startup, search latency (before/after)
 - [ ] Update `CHANGELOG.md`
