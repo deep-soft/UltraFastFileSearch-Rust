@@ -60,6 +60,8 @@ mod backend;
 mod compact;
 /// On-demand full record lookup from `.uffs` cache files.
 mod full_record;
+/// Centralized keybinding definitions.
+mod keys;
 
 use app::App;
 
@@ -623,6 +625,10 @@ fn poll_refresh(app: &mut App) {
     clippy::too_many_lines,
     reason = "event loop is a single cohesive state machine; splitting would fragment control flow"
 )]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "keybinding dispatch is an inherently flat if-else chain; splitting would obscure flow"
+)]
 fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 where
     <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
@@ -686,107 +692,77 @@ where
                         return Ok(());
                     }
 
-                    // Intercept our custom action keys BEFORE textarea
-                    match key.code {
-                        KeyCode::Down => {
-                            app.next();
-                            continue;
+                    // Intercept action keys BEFORE textarea.
+                    // All keybindings defined in keys.rs — single source of truth.
+                    let key_ev = *key;
+                    if keys::matches(key_ev, keys::NAV_DOWN) {
+                        app.next();
+                        continue;
+                    } else if keys::matches(key_ev, keys::NAV_UP) {
+                        app.previous();
+                        continue;
+                    } else if keys::matches(key_ev, keys::NAV_PAGE_DOWN) {
+                        app.page_down();
+                        continue;
+                    } else if keys::matches(key_ev, keys::NAV_PAGE_UP) {
+                        app.page_up();
+                        continue;
+                    } else if keys::matches(key_ev, keys::SHOW_PATH) {
+                        if let Some(path) = app.selected_path() {
+                            app.status = format!("📋 {path}");
                         }
-                        KeyCode::Up => {
-                            app.previous();
-                            continue;
-                        }
-                        KeyCode::PageDown => {
-                            app.page_down();
-                            continue;
-                        }
-                        KeyCode::PageUp => {
-                            app.page_up();
-                            continue;
-                        }
-                        KeyCode::Enter => {
-                            // Show selected path in status bar
-                            if let Some(path) = app.selected_path() {
-                                app.status = format!("📋 {path}");
-                            }
-                            continue;
-                        }
-                        KeyCode::Tab => {
-                            app.cycle_sort();
-                            continue;
-                        }
-                        KeyCode::BackTab => {
-                            app.toggle_sort_direction();
-                            continue;
-                        }
-                        KeyCode::F(2) => {
-                            app.toggle_name_only();
-                            needs_search = true;
-                            continue;
-                        }
-                        KeyCode::F(3) => {
-                            app.cycle_filter();
-                            app.search();
-                            continue;
-                        }
-                        // Alt+C: toggle case-sensitive search
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::ALT) => {
-                            app.toggle_case_sensitive();
-                            app.search();
-                            continue;
-                        }
-                        // Alt+W: toggle whole-word search
-                        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::ALT) => {
-                            app.toggle_whole_word();
-                            app.search();
-                            continue;
-                        }
-                        // Ctrl+P: previous search in history
-                        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.history_back();
-                            needs_search = true;
-                            continue;
-                        }
-                        // Ctrl+N: next search in history
-                        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.history_forward();
-                            needs_search = true;
-                            continue;
-                        }
-                        // Ctrl+R / F5: refresh all drives (reload .uffs + USN + rebuild compact)
-                        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            start_refresh(app);
-                            continue;
-                        }
-                        KeyCode::F(5) => {
-                            start_refresh(app);
-                            continue;
-                        }
-                        // Ctrl+U: clear line (unix-style)
-                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.textarea.select_all();
-                            app.textarea.cut();
-                            app.search();
-                            continue;
-                        }
-                        // Ctrl+Z: undo (Windows/Linux convention)
-                        KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.textarea.undo();
-                            needs_search = true;
-                            continue;
-                        }
-                        // Ctrl+Y: redo (Windows/Linux convention)
-                        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.textarea.redo();
-                            needs_search = true;
-                            continue;
-                        }
-                        // Ctrl+A: select all
-                        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.textarea.select_all();
-                            continue;
-                        }
-                        _ => {}
+                        continue;
+                    } else if keys::matches(key_ev, keys::SORT_CYCLE) {
+                        app.cycle_sort();
+                        continue;
+                    } else if keys::matches(key_ev, keys::SORT_DIRECTION) {
+                        app.toggle_sort_direction();
+                        continue;
+                    } else if keys::matches(key_ev, keys::TOGGLE_NAME_ONLY) {
+                        app.toggle_name_only();
+                        needs_search = true;
+                        continue;
+                    } else if keys::matches(key_ev, keys::TOGGLE_FILTER) {
+                        app.cycle_filter();
+                        app.search();
+                        continue;
+                    } else if keys::matches(key_ev, keys::TOGGLE_CASE_SENSITIVE) {
+                        app.toggle_case_sensitive();
+                        app.search();
+                        continue;
+                    } else if keys::matches(key_ev, keys::TOGGLE_WHOLE_WORD) {
+                        app.toggle_whole_word();
+                        app.search();
+                        continue;
+                    } else if keys::matches(key_ev, keys::HISTORY_BACK) {
+                        app.history_back();
+                        needs_search = true;
+                        continue;
+                    } else if keys::matches(key_ev, keys::HISTORY_FORWARD) {
+                        app.history_forward();
+                        needs_search = true;
+                        continue;
+                    } else if keys::matches(key_ev, keys::REFRESH)
+                        || keys::matches(key_ev, keys::REFRESH_ALT)
+                    {
+                        start_refresh(app);
+                        continue;
+                    } else if keys::matches(key_ev, keys::CLEAR_LINE) {
+                        app.textarea.select_all();
+                        app.textarea.cut();
+                        app.search();
+                        continue;
+                    } else if keys::matches(key_ev, keys::UNDO) {
+                        app.textarea.undo();
+                        needs_search = true;
+                        continue;
+                    } else if keys::matches(key_ev, keys::REDO) {
+                        app.textarea.redo();
+                        needs_search = true;
+                        continue;
+                    } else if keys::matches(key_ev, keys::SELECT_ALL) {
+                        app.textarea.select_all();
+                        continue;
                     }
                 }
                 _ => {}
@@ -812,8 +788,7 @@ where
 /// Returns whether the given key event should terminate the TUI.
 #[must_use]
 const fn is_exit_key(key: KeyEvent) -> bool {
-    // Ctrl+Q exits — Esc and regular keys go to the textarea
-    key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('q'))
+    keys::matches(key, keys::QUIT)
 }
 
 /// Render the TUI layout: search bar, status, results list, and help bar.
