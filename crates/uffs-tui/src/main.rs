@@ -34,7 +34,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -56,6 +56,8 @@ pub(crate) mod backend;
 mod compact;
 /// On-demand full record lookup from `.uffs` cache files.
 mod full_record;
+/// Search history: entry type, file format, CLI command roundtrip.
+mod history;
 /// Centralized keybinding definitions.
 mod keys;
 /// Drive refresh and loading helpers.
@@ -67,7 +69,7 @@ mod tree;
 /// TUI rendering — layout, table, help bar, and text highlighting.
 mod ui;
 
-use app::App;
+use app::{App, Focus};
 use keys::Action;
 
 /// UFFS (Ultra Fast File Search) Terminal UI
@@ -125,6 +127,13 @@ struct Cli {
     /// After switching, you can hand-edit the file for further customization.
     #[arg(long)]
     keys: Option<String>,
+
+    /// Reset search history to the built-in defaults.
+    ///
+    /// Overwrites the history file with the pre-populated example searches
+    /// that ship with UFFS. Any user-added history entries will be lost.
+    #[arg(long)]
+    reset_history: bool,
 }
 
 /// Initialize logging with terminal + file support.
@@ -212,6 +221,10 @@ fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
     clippy::too_many_lines,
     reason = "main function orchestrates TUI setup, async loading, and event loop; splitting would fragment cohesive logic"
 )]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "main orchestrates CLI flags, loading, and event loop dispatch"
+)]
 fn main() -> Result<()> {
     // Check for -v/--verbose flag early
     let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
@@ -220,6 +233,15 @@ fn main() -> Result<()> {
     let _guard = init_logging(verbose);
 
     let cli = Cli::parse();
+
+    // Handle --reset-history: reset the file, then continue launching the TUI
+    if cli.reset_history {
+        history::reset_history();
+        tracing::info!("Search history reset to built-in defaults");
+        if let Some(path) = history::history_file_path() {
+            tracing::info!(path = %path.display(), "History file location");
+        }
+    }
 
     // Discover MFT files from --data-dir if specified
     let mut mft_files = cli.mft_file;
@@ -413,6 +435,10 @@ fn main() -> Result<()> {
                             app.textarea.redo();
                         } else if app.keymap.matches(key, Action::SelectAll) {
                             app.textarea.select_all();
+                        } else if app.keymap.matches(key, Action::Copy) {
+                            app.textarea.copy();
+                        } else if app.keymap.matches(key, Action::Paste) {
+                            app.textarea.paste();
                         } else {
                             app.textarea.input(key);
                         }
@@ -483,14 +509,6 @@ fn main() -> Result<()> {
     clippy::wildcard_enum_match_arm,
     reason = "only specific keys are handled; wildcard is idiomatic for key dispatch"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "event loop is a single cohesive state machine; splitting would fragment control flow"
-)]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "keybinding dispatch is an inherently flat if-else chain; splitting would obscure flow"
-)]
 fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 where
     <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
@@ -556,92 +574,50 @@ where
                         return Ok(());
                     }
 
-                    // Intercept action keys BEFORE textarea.
-                    // All keybindings dispatched via app.keymap — single source of truth.
+                    // ESC toggles focus between SearchBox and Results.
                     let key_ev = *key;
+                    if key_ev.code == KeyCode::Esc {
+                        app.toggle_focus();
+                        continue;
+                    }
+
+                    // Global keys — work regardless of focus.
                     if app.keymap.matches(key_ev, Action::HelpCycle) {
                         const HELP_PAGES: u8 = 4;
                         app.help_page = (app.help_page + 1) % HELP_PAGES;
                         continue;
-                    } else if app.keymap.matches(key_ev, Action::NavDown) {
-                        app.next();
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::NavUp) {
-                        app.previous();
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::PageDown) {
-                        app.page_down();
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::PageUp) {
-                        app.page_up();
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::ShowPath) {
-                        if let Some(path) = app.selected_path() {
-                            app.status = format!("📋 {path}");
-                        }
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::SortCycle) {
-                        app.cycle_sort();
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::SortDirection) {
-                        app.toggle_sort_direction();
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::ToggleNameOnly) {
-                        app.toggle_name_only();
-                        needs_search = true;
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::ToggleFilter) {
-                        app.cycle_filter();
-                        app.search();
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::ToggleCaseSensitive) {
-                        app.toggle_case_sensitive();
-                        app.search();
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::ToggleWholeWord) {
-                        app.toggle_whole_word();
-                        app.search();
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::HistoryBack) {
-                        app.history_back();
-                        needs_search = true;
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::HistoryForward) {
-                        app.history_forward();
-                        needs_search = true;
-                        continue;
                     } else if app.keymap.matches(key_ev, Action::Refresh) {
                         refresh::start_refresh(app);
                         continue;
-                    } else if app.keymap.matches(key_ev, Action::ClearLine) {
-                        app.textarea.select_all();
-                        app.textarea.cut();
-                        app.search();
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::Undo) {
-                        app.textarea.undo();
-                        needs_search = true;
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::Redo) {
-                        app.textarea.redo();
-                        needs_search = true;
-                        continue;
-                    } else if app.keymap.matches(key_ev, Action::SelectAll) {
-                        app.textarea.select_all();
-                        continue;
+                    }
+
+                    // Focus-specific dispatch.
+                    match app.focus {
+                        Focus::SearchBox => {
+                            if handle_search_box_key(app, key_ev, &mut needs_search) {
+                                continue;
+                            }
+                        }
+                        Focus::Results => {
+                            if handle_results_key(app, key_ev, &mut needs_search) {
+                                continue;
+                            }
+                        }
                     }
                 }
                 _ => {}
             }
 
-            // Forward ALL other events to textarea (keys, mouse, etc.)
-            let before = app.input_text();
-            app.textarea.input(ev);
-            let after = app.input_text();
-            if before != after {
-                // User typed something manually → exit history browsing mode
-                app.history_idx = None;
-                needs_search = true;
+            // Forward unhandled events to textarea only when SearchBox
+            // is focused (typing, cursor movement, mouse, etc.)
+            if app.focus == Focus::SearchBox {
+                let before = app.input_text();
+                app.textarea.input(ev);
+                let after = app.input_text();
+                if before != after {
+                    app.history_idx = None;
+                    needs_search = true;
+                }
             }
         } else if needs_search {
             // Debounce expired — no more typing, run search
@@ -649,6 +625,101 @@ where
             needs_search = false;
         }
     }
+}
+
+/// Handle a key event when the **search box** has focus.
+///
+/// Returns `true` if the key was consumed (caller should `continue`).
+#[expect(
+    clippy::single_call_fn,
+    reason = "focus-specific handler extracted for readability"
+)]
+fn handle_search_box_key(app: &mut App, key: KeyEvent, needs_search: &mut bool) -> bool {
+    // Search toggles
+    if app.keymap.matches(key, Action::ToggleNameOnly) {
+        app.toggle_name_only();
+        *needs_search = true;
+    } else if app.keymap.matches(key, Action::ToggleFilter) {
+        app.cycle_filter();
+        app.search();
+    } else if app.keymap.matches(key, Action::ToggleCaseSensitive) {
+        app.toggle_case_sensitive();
+        app.search();
+    } else if app.keymap.matches(key, Action::ToggleWholeWord) {
+        app.toggle_whole_word();
+        app.search();
+    // History — Up/Down browse history when search box is focused
+    } else if app.keymap.matches(key, Action::HistoryBack) || key.code == KeyCode::Up {
+        app.history_back();
+        *needs_search = true;
+    } else if app.keymap.matches(key, Action::HistoryForward) || key.code == KeyCode::Down {
+        app.history_forward();
+        *needs_search = true;
+    // Text editing
+    } else if app.keymap.matches(key, Action::ClearLine) {
+        app.textarea.select_all();
+        app.textarea.cut();
+        app.search();
+    } else if app.keymap.matches(key, Action::Undo) {
+        app.textarea.undo();
+        *needs_search = true;
+    } else if app.keymap.matches(key, Action::Redo) {
+        app.textarea.redo();
+        *needs_search = true;
+    } else if app.keymap.matches(key, Action::SelectAll) {
+        app.textarea.select_all();
+    } else if app.keymap.matches(key, Action::Copy) {
+        app.textarea.copy();
+    } else if app.keymap.matches(key, Action::Paste) {
+        app.textarea.paste();
+        *needs_search = true;
+    } else {
+        return false; // not consumed — let textarea handle it
+    }
+    true
+}
+
+/// Handle a key event when the **results panel** has focus.
+///
+/// Returns `true` if the key was consumed (caller should `continue`).
+#[expect(
+    clippy::single_call_fn,
+    reason = "focus-specific handler extracted for readability"
+)]
+fn handle_results_key(app: &mut App, key: KeyEvent, needs_search: &mut bool) -> bool {
+    if app.keymap.matches(key, Action::NavDown) || key.code == KeyCode::Down {
+        app.next();
+    } else if app.keymap.matches(key, Action::NavUp) || key.code == KeyCode::Up {
+        app.previous();
+    } else if app.keymap.matches(key, Action::PageDown) {
+        app.page_down();
+    } else if app.keymap.matches(key, Action::PageUp) {
+        app.page_up();
+    } else if app.keymap.matches(key, Action::ShowPath) {
+        if let Some(path) = app.selected_path() {
+            app.status = format!("📋 {path}");
+        }
+    } else if app.keymap.matches(key, Action::SortCycle) {
+        app.cycle_sort();
+    } else if app.keymap.matches(key, Action::SortDirection) {
+        app.toggle_sort_direction();
+    // Search toggles also work from results panel
+    } else if app.keymap.matches(key, Action::ToggleNameOnly) {
+        app.toggle_name_only();
+        *needs_search = true;
+    } else if app.keymap.matches(key, Action::ToggleFilter) {
+        app.cycle_filter();
+        app.search();
+    } else if app.keymap.matches(key, Action::ToggleCaseSensitive) {
+        app.toggle_case_sensitive();
+        app.search();
+    } else if app.keymap.matches(key, Action::ToggleWholeWord) {
+        app.toggle_whole_word();
+        app.search();
+    } else {
+        return false;
+    }
+    true
 }
 
 /// Returns whether the given key event should terminate the TUI.

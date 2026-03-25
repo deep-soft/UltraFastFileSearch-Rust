@@ -36,26 +36,34 @@ pub type KeyBind = (KeyCode, KeyModifiers);
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Windows-style keybindings (default).
+///
+/// Priority: common Windows convention first, Everything (file search) backup.
 const PRESET_WINDOWS: &str = r#"# UFFS TUI Keybindings — Windows preset
 # Edit this file to customize. Use `uffs_tui --keys emacs` to switch presets.
 # Delete this file to reset to defaults on next launch.
+# New keys added in future versions are auto-filled from this preset.
+#
+# Priority: common Windows convention → Everything (file search tool) backup.
+
+[meta]
+preset = "windows"
 
 [app]
 quit = ["ctrl+q"]
-refresh = ["f5", "ctrl+r"]
-help_cycle = ["f1"]
+refresh = ["ctrl+r"]
+help_cycle = ["alt+h", "ctrl+g", "f1"]
 
 [search_box]
 clear_line = ["ctrl+u"]
 undo = ["ctrl+z"]
 redo = ["ctrl+y"]
 select_all = ["ctrl+a"]
-history_back = ["ctrl+p"]
-history_forward = ["ctrl+n"]
-toggle_name_only = ["f2"]
-toggle_filter = ["f3"]
-toggle_case_sensitive = ["f7"]
-toggle_whole_word = ["f8"]
+copy = ["ctrl+c"]
+paste = ["ctrl+v"]
+toggle_name_only = ["alt+n", "ctrl+f"]
+toggle_filter = ["alt+t", "ctrl+t"]
+toggle_case_sensitive = ["alt+c", "tab"]
+toggle_whole_word = ["alt+w", "ctrl+w"]
 
 [results]
 nav_down = ["down"]
@@ -63,40 +71,48 @@ nav_up = ["up"]
 page_down = ["pagedown"]
 page_up = ["pageup"]
 show_path = ["enter"]
-sort_cycle = ["tab"]
-sort_direction = ["shift+tab"]
+sort_cycle = ["ctrl+shift+s"]
+sort_direction = ["ctrl+shift+d"]
 "#;
 
 /// Emacs-style keybindings.
+///
+/// Priority: Emacs convention first, common Alt-key alternatives as backup.
 const PRESET_EMACS: &str = r#"# UFFS TUI Keybindings — Emacs preset
 # Edit this file to customize. Use `uffs_tui --keys windows` to switch presets.
 # Delete this file to reset to defaults on next launch.
+# New keys added in future versions are auto-filled from this preset.
+#
+# Priority: Emacs convention → common Alt-key alternatives as backup.
+
+[meta]
+preset = "emacs"
 
 [app]
 quit = ["ctrl+q"]
-refresh = ["f5", "ctrl+r"]
-help_cycle = ["f1"]
+refresh = ["ctrl+r"]
+help_cycle = ["alt+h", "f1"]
 
 [search_box]
 clear_line = ["ctrl+k"]
 undo = ["ctrl+/"]
 redo = ["ctrl+shift+/"]
 select_all = ["ctrl+a"]
-history_back = ["ctrl+p"]
-history_forward = ["ctrl+n"]
-toggle_name_only = ["f2"]
-toggle_filter = ["f3"]
-toggle_case_sensitive = ["f7"]
-toggle_whole_word = ["f8"]
+copy = ["ctrl+c"]
+paste = ["ctrl+v"]
+toggle_name_only = ["alt+n", "ctrl+f"]
+toggle_filter = ["alt+t", "ctrl+t"]
+toggle_case_sensitive = ["alt+c", "tab"]
+toggle_whole_word = ["alt+w", "ctrl+w"]
 
 [results]
 nav_down = ["down", "ctrl+j"]
 nav_up = ["up", "ctrl+k"]
-page_down = ["pagedown", "ctrl+v"]
+page_down = ["pagedown"]
 page_up = ["pageup", "alt+v"]
 show_path = ["enter"]
-sort_cycle = ["tab"]
-sort_direction = ["shift+tab"]
+sort_cycle = ["ctrl+shift+s"]
+sort_direction = ["ctrl+shift+d"]
 "#;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -123,6 +139,10 @@ pub enum Action {
     Redo,
     /// Select all text.
     SelectAll,
+    /// Copy selected text to internal clipboard.
+    Copy,
+    /// Paste from internal clipboard.
+    Paste,
     /// Previous search in history.
     HistoryBack,
     /// Next search in history.
@@ -167,6 +187,8 @@ fn action_from_name(group: &str, name: &str) -> Option<Action> {
         ("search_box", "undo") => Some(Action::Undo),
         ("search_box", "redo") => Some(Action::Redo),
         ("search_box", "select_all") => Some(Action::SelectAll),
+        ("search_box", "copy") => Some(Action::Copy),
+        ("search_box", "paste") => Some(Action::Paste),
         ("search_box", "history_back") => Some(Action::HistoryBack),
         ("search_box", "history_forward") => Some(Action::HistoryForward),
         ("search_box", "toggle_name_only") => Some(Action::ToggleNameOnly),
@@ -203,26 +225,31 @@ impl Keymap {
             .is_some_and(|binds| binds.iter().any(|bind| matches_bind(key, *bind)))
     }
 
-    /// Get the human-readable label for the primary binding of an action.
+    /// Get the compact, human-readable label for the best binding of an
+    /// action.
+    ///
+    /// On macOS, Alt-modified bindings are skipped (the Option key sends
+    /// special characters in most terminals) and the next available binding
+    /// is returned instead.
     #[must_use]
-    #[expect(
-        dead_code,
-        reason = "public API for help bar rendering; wired in a future phase"
-    )]
     pub fn label(&self, action: Action) -> String {
-        self.bindings
-            .get(&action)
-            .and_then(|binds| binds.first())
-            .map_or_else(|| "?".to_owned(), |bind| format_key_bind(*bind))
+        let Some(binds) = self.bindings.get(&action) else {
+            return "?".to_owned();
+        };
+        let best = pick_platform_bind(binds);
+        best.map_or_else(|| "?".to_owned(), |bind| format_key_display(*bind))
     }
 }
 
 impl Default for Keymap {
     /// Build the default keymap by parsing the embedded Windows preset.
     fn default() -> Self {
-        parse_toml(PRESET_WINDOWS).unwrap_or_else(|_| Self {
-            bindings: HashMap::new(),
-        })
+        parse_toml(PRESET_WINDOWS).map_or_else(
+            |_| Self {
+                bindings: HashMap::new(),
+            },
+            |(km, _)| km,
+        )
     }
 }
 
@@ -239,10 +266,6 @@ fn config_file_path() -> Option<std::path::PathBuf> {
 }
 
 /// Get the embedded TOML content for a preset name.
-#[expect(
-    clippy::single_call_fn,
-    reason = "preset lookup kept separate for readability"
-)]
 fn preset_toml(name: &str) -> Option<&'static str> {
     match name {
         "windows" => Some(PRESET_WINDOWS),
@@ -270,7 +293,9 @@ pub fn load_or_create_keymap(preset_override: Option<&str>) -> (Keymap, String) 
                 }
                 drop(std::fs::write(&path, toml_content));
             }
-            let keymap = parse_toml(toml_content).unwrap_or_default();
+            let keymap = parse_toml(toml_content)
+                .map(|(km, _)| km)
+                .unwrap_or_default();
             let msg = format!("Keybindings: {name} preset (written to config)");
             return (keymap, msg);
         }
@@ -288,8 +313,16 @@ pub fn load_or_create_keymap(preset_override: Option<&str>) -> (Keymap, String) 
         if path.exists() {
             match std::fs::read_to_string(&path) {
                 Ok(content) => match parse_toml(&content) {
-                    Ok(keymap) => {
-                        let msg = format!("Keybindings loaded from {}", path.display());
+                    Ok((mut keymap, preset_name)) => {
+                        // Backfill any missing actions from the matching
+                        // default preset so new keys added in future
+                        // versions appear automatically.
+                        let origin = preset_name.as_deref().unwrap_or("windows");
+                        backfill_from_preset(&mut keymap.bindings, origin);
+                        let msg = format!(
+                            "Keybindings loaded from {} (preset: {origin})",
+                            path.display()
+                        );
                         return (keymap, msg);
                     }
                     Err(err) => {
@@ -321,9 +354,20 @@ pub fn load_or_create_keymap(preset_override: Option<&str>) -> (Keymap, String) 
 // TOML parsing
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Metadata section in the TOML config file.
+#[derive(Deserialize, Default)]
+struct MetaConfig {
+    /// Which preset this config was originally created from.
+    #[serde(default)]
+    preset: Option<String>,
+}
+
 /// TOML structure for keybinding config file.
 #[derive(Deserialize)]
 struct KeyConfig {
+    /// Metadata — tracks which preset this config originated from.
+    #[serde(default)]
+    meta: MetaConfig,
     /// App-level keybindings (quit, refresh, help).
     #[serde(default)]
     app: HashMap<String, Vec<String>>,
@@ -336,14 +380,22 @@ struct KeyConfig {
 }
 
 /// Parse a TOML string into a `Keymap`.
-fn parse_toml(toml_str: &str) -> Result<Keymap, String> {
+///
+/// Returns the keymap and the preset name (if present in `[meta]`).
+fn parse_toml(toml_str: &str) -> Result<(Keymap, Option<String>), String> {
     let config: KeyConfig =
         toml::from_str(toml_str).map_err(|err| format!("TOML parse error: {err}"))?;
 
+    let preset_name = config.meta.preset.clone();
+    let bindings = bindings_from_config(&config);
+
+    Ok((Keymap { bindings }, preset_name))
+}
+
+/// Extract action→keybind map from a parsed `KeyConfig`.
+fn bindings_from_config(config: &KeyConfig) -> HashMap<Action, Vec<KeyBind>> {
     let mut bindings = HashMap::new();
 
-    // Use a fixed-order array of groups to avoid non-deterministic HashMap
-    // iteration.
     let groups: [(&str, &HashMap<String, Vec<String>>); 3] = [
         ("app", &config.app),
         ("search_box", &config.search_box),
@@ -354,7 +406,7 @@ fn parse_toml(toml_str: &str) -> Result<Keymap, String> {
         sorted_actions.sort_by_key(|(name, _)| name.as_str());
         for (action_name, key_strings) in sorted_actions {
             let Some(action) = action_from_name(group_name, action_name) else {
-                continue; // skip unknown action names gracefully
+                continue;
             };
             let mut keybinds = Vec::new();
             for key_str in key_strings {
@@ -373,7 +425,47 @@ fn parse_toml(toml_str: &str) -> Result<Keymap, String> {
         }
     }
 
-    Ok(Keymap { bindings })
+    bindings
+}
+
+/// Backfill missing actions from the default preset that matches the user's
+/// config origin.
+///
+/// If the user's `keys.toml` was created from the "windows" preset and a new
+/// version adds a `copy` action, this fills it in from the embedded Windows
+/// preset — without overwriting anything the user has customized.
+#[expect(
+    clippy::single_call_fn,
+    reason = "backfill logic kept separate for clarity; called from load_or_create_keymap"
+)]
+fn backfill_from_preset(bindings: &mut HashMap<Action, Vec<KeyBind>>, preset_name: &str) {
+    let Some(default_toml) = preset_toml(preset_name) else {
+        return;
+    };
+    let Ok(default_config): Result<KeyConfig, _> = toml::from_str(default_toml) else {
+        return;
+    };
+    let defaults = bindings_from_config(&default_config);
+    let mut filled = Vec::new();
+    // Collect keys to insert first, then apply — avoids iterating a HashMap
+    // directly (clippy::iter_over_hash_type).
+    let missing: Vec<_> = defaults
+        .iter()
+        .filter(|(action, _)| !bindings.contains_key(action))
+        .map(|(action, keybinds)| (*action, keybinds.clone()))
+        .collect();
+    for (action, keybinds) in missing {
+        filled.push(format!("{action:?}"));
+        bindings.insert(action, keybinds);
+    }
+    if !filled.is_empty() {
+        filled.sort();
+        tracing::info!(
+            "Backfilled {} missing key(s) from \"{preset_name}\" preset: {}",
+            filled.len(),
+            filled.join(", ")
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -454,9 +546,13 @@ fn parse_key_string(input: &str) -> Option<KeyBind> {
     Some((code, modifiers))
 }
 
-/// Format a `KeyBind` as a human-readable string (for TOML output / help bar).
-// allow: single-call in bin target, multi-call in test target (called from unit tests)
-#[allow(clippy::single_call_fn)]
+/// Format a `KeyBind` as a human-readable string (for TOML roundtrip / tests).
+// allow: used from unit tests; format_key_display is the compact variant for UI
+#[cfg(test)]
+#[expect(
+    clippy::single_call_fn,
+    reason = "test-only helper for roundtrip verification"
+)]
 fn format_key_bind(bind: KeyBind) -> String {
     let mut parts = Vec::new();
     if bind.1.contains(KeyModifiers::CONTROL) {
@@ -507,6 +603,84 @@ fn format_key_bind(bind: KeyBind) -> String {
     } else {
         format!("{}+{key}", parts.join("+"))
     }
+}
+
+/// Pick the best keybinding for the current platform.
+///
+/// On macOS, Alt-modified bindings are skipped because the Option key sends
+/// special characters in most terminal emulators. Returns the first
+/// non-Alt binding, or falls back to the first binding if all use Alt.
+#[expect(
+    clippy::single_call_fn,
+    reason = "platform-aware bind selection kept separate for clarity"
+)]
+fn pick_platform_bind(binds: &[KeyBind]) -> Option<&KeyBind> {
+    if cfg!(target_os = "macos") {
+        // Prefer non-Alt bindings on macOS
+        let non_alt = binds
+            .iter()
+            .find(|bind| !bind.1.contains(KeyModifiers::ALT));
+        non_alt.or_else(|| binds.first())
+    } else {
+        binds.first()
+    }
+}
+
+/// Format a `KeyBind` as a compact display string for the help bar.
+///
+/// Uses short notation: `^Q` for Ctrl+Q, `Tab`, `F1`, `Alt+C`, `^S+S` for
+/// Ctrl+Shift+S, `↑` / `↓` for arrow keys.
+#[expect(
+    clippy::single_call_fn,
+    reason = "compact key display formatter kept separate for clarity"
+)]
+fn format_key_display(bind: KeyBind) -> String {
+    let ctrl = bind.1.contains(KeyModifiers::CONTROL);
+    let alt = bind.1.contains(KeyModifiers::ALT);
+    let shift = bind.1.contains(KeyModifiers::SHIFT) && !matches!(bind.0, KeyCode::BackTab);
+
+    let prefix = match (ctrl, alt, shift) {
+        (true, false, true) => "Ctrl+Shift+",
+        (true, false, false) => "Ctrl+",
+        (false, true, true) => "Alt+Shift+",
+        (false, true, false) => "Alt+",
+        (true, true, false) => "Ctrl+Alt+",
+        (true, true, true) => "Ctrl+Alt+Shift+",
+        (false, false, true) => "Shift+",
+        (false, false, false) => "",
+    };
+
+    let key = match bind.0 {
+        KeyCode::Char(ch) => ch.to_ascii_uppercase().to_string(),
+        KeyCode::F(n) => return format!("F{n}"),
+        KeyCode::Up => "↑".to_owned(),
+        KeyCode::Down => "↓".to_owned(),
+        KeyCode::Left => "←".to_owned(),
+        KeyCode::Right => "→".to_owned(),
+        KeyCode::PageUp => "PgUp".to_owned(),
+        KeyCode::PageDown => "PgDn".to_owned(),
+        KeyCode::Home => "Home".to_owned(),
+        KeyCode::End => "End".to_owned(),
+        KeyCode::Enter => "Enter".to_owned(),
+        KeyCode::Tab => "Tab".to_owned(),
+        KeyCode::BackTab => return "Shift+Tab".to_owned(),
+        KeyCode::Backspace => "Bksp".to_owned(),
+        KeyCode::Delete => "Del".to_owned(),
+        KeyCode::Esc => "Esc".to_owned(),
+        KeyCode::Insert
+        | KeyCode::Null
+        | KeyCode::CapsLock
+        | KeyCode::ScrollLock
+        | KeyCode::NumLock
+        | KeyCode::PrintScreen
+        | KeyCode::Pause
+        | KeyCode::Menu
+        | KeyCode::KeypadBegin
+        | KeyCode::Modifier(_)
+        | KeyCode::Media(_) => "?".to_owned(),
+    };
+
+    format!("{prefix}{key}")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -624,7 +798,8 @@ mod tests {
 
     #[test]
     fn test_windows_preset_parses() {
-        let keymap = parse_toml(PRESET_WINDOWS).expect("Windows preset should parse");
+        let (keymap, preset) = parse_toml(PRESET_WINDOWS).expect("Windows preset should parse");
+        assert_eq!(preset.as_deref(), Some("windows"));
         assert!(
             keymap.matches(
                 KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
@@ -634,16 +809,38 @@ mod tests {
         );
         assert!(
             keymap.matches(
-                KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
                 Action::Refresh
             ),
-            "F5 should match Refresh"
+            "Ctrl+R should match Refresh"
+        );
+        assert!(
+            keymap.matches(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
+                Action::ToggleCaseSensitive
+            ),
+            "Alt+C should match ToggleCaseSensitive"
+        );
+        assert!(
+            keymap.matches(
+                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT),
+                Action::ToggleWholeWord
+            ),
+            "Alt+W should match ToggleWholeWord"
+        );
+        assert!(
+            keymap.matches(
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                Action::Paste
+            ),
+            "Ctrl+V should match Paste"
         );
     }
 
     #[test]
     fn test_emacs_preset_parses() {
-        let keymap = parse_toml(PRESET_EMACS).expect("Emacs preset should parse");
+        let (keymap, preset) = parse_toml(PRESET_EMACS).expect("Emacs preset should parse");
+        assert_eq!(preset.as_deref(), Some("emacs"));
         assert!(
             keymap.matches(
                 KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),

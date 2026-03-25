@@ -7,10 +7,20 @@ use ratatui_textarea::TextArea;
 
 use crate::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
 use crate::compact::{DriveCompactIndex, LoadTiming};
+use crate::history::{HistoryEntry, SearchState};
 use crate::keys::Keymap;
 
 /// Result type for a single drive refresh (label + result).
 type RefreshResult = (String, anyhow::Result<(DriveCompactIndex, LoadTiming)>);
+
+/// Which pane currently has keyboard focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    /// Search box — typing edits the query, ↑/↓ browse history.
+    SearchBox,
+    /// Results panel — ↑/↓ navigate rows, Enter shows path.
+    Results,
+}
 
 /// Application state.
 #[expect(
@@ -18,6 +28,8 @@ type RefreshResult = (String, anyhow::Result<(DriveCompactIndex, LoadTiming)>);
     reason = "App state struct — independent toggle flags are clearest as bools"
 )]
 pub struct App {
+    /// Which pane currently has keyboard focus.
+    pub focus: Focus,
     /// Runtime keymap (action → key bindings).
     pub keymap: Keymap,
     /// Search input text area (full editing: cursor, selection, clipboard).
@@ -53,7 +65,7 @@ pub struct App {
     /// Channel receiver for auto-refresh timer signals.
     pub auto_refresh_rx: Option<mpsc::Receiver<()>>,
     /// Search history (most recent last).
-    pub search_history: Vec<String>,
+    pub search_history: Vec<HistoryEntry>,
     /// Current position in search history (`None` = not browsing history).
     pub history_idx: Option<usize>,
     /// Saved current input before browsing history.
@@ -68,6 +80,14 @@ pub struct App {
 }
 
 impl App {
+    /// Toggle focus between `SearchBox` and `Results`.
+    pub const fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            Focus::SearchBox => Focus::Results,
+            Focus::Results => Focus::SearchBox,
+        };
+    }
+
     /// Get the current search text from the textarea.
     pub fn input_text(&self) -> String {
         self.textarea
@@ -92,6 +112,7 @@ impl App {
         let status = format!("Loaded {total} records [{drive_info}]");
 
         Self {
+            focus: Focus::SearchBox,
             keymap: Keymap::default(),
             textarea: make_search_textarea(),
             results: Vec::new(),
@@ -122,6 +143,7 @@ impl App {
     #[expect(clippy::single_call_fn, reason = "public constructor called from main")]
     pub fn with_keymap(keymap: Keymap) -> Self {
         Self {
+            focus: Focus::SearchBox,
             keymap,
             textarea: make_search_textarea(),
             results: Vec::new(),
@@ -153,6 +175,7 @@ impl App {
     #[allow(clippy::single_call_fn)]
     pub fn new() -> Self {
         Self {
+            focus: Focus::SearchBox,
             keymap: Keymap::default(),
             textarea: make_search_textarea(),
             results: Vec::new(),
@@ -266,10 +289,7 @@ impl App {
             // Box just cleared → commit peak_search to history
             if !self.peak_search.is_empty() {
                 let peak = core::mem::take(&mut self.peak_search);
-                if self.search_history.last().is_none_or(|last| *last != peak) {
-                    self.search_history.push(peak.clone());
-                    Self::save_history_entry(&peak);
-                }
+                self.save_history_entry(&peak);
             }
             self.history_idx = None;
             "*".to_owned()
@@ -403,9 +423,7 @@ impl App {
             }
         };
         self.history_idx = Some(new_idx);
-        if let Some(entry) = self.search_history.get(new_idx).cloned() {
-            self.set_input(&entry);
-        }
+        self.apply_history_entry(new_idx);
     }
 
     /// Navigate to the next search in history (Down arrow).
@@ -418,14 +436,30 @@ impl App {
         if idx + 1 < self.search_history.len() {
             let new_idx = idx + 1;
             self.history_idx = Some(new_idx);
-            if let Some(entry) = self.search_history.get(new_idx).cloned() {
-                self.set_input(&entry);
-            }
+            self.apply_history_entry(new_idx);
         } else {
             // Past the end → restore saved input
             self.history_idx = None;
             let saved = self.history_saved_input.clone();
             self.set_input(&saved);
+        }
+    }
+
+    /// Get the comment for the currently browsed history entry, if any.
+    #[must_use]
+    pub fn current_history_comment(&self) -> Option<&str> {
+        let idx = self.history_idx?;
+        self.search_history.get(idx)?.comment.as_deref()
+    }
+
+    /// Apply a history entry at the given index: set pattern + restore toggles.
+    fn apply_history_entry(&mut self, idx: usize) {
+        if let Some(entry) = self.search_history.get(idx).cloned() {
+            self.set_input(&entry.pattern);
+            self.case_sensitive = entry.state.case_sensitive;
+            self.whole_word = entry.state.whole_word;
+            self.name_only = entry.state.name_only;
+            self.filter_mode = entry.state.filter;
         }
     }
 
@@ -436,37 +470,28 @@ impl App {
         self.textarea.insert_str(text);
     }
 
-    /// Load search history from disk.
+    /// Load search history from disk (new CLI-command format).
     pub fn load_history(&mut self) {
-        if let Some(path) = history_file_path() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                self.search_history = content
-                    .lines()
-                    .filter(|line| !line.is_empty())
-                    .map(ToOwned::to_owned)
-                    .collect();
-            }
-        }
+        self.search_history = crate::history::load_history();
     }
 
-    /// Append a single entry to the history file on disk.
-    #[expect(
-        clippy::single_call_fn,
-        reason = "separated for readability; persistence is a distinct concern"
-    )]
-    fn save_history_entry(entry: &str) {
-        use std::io::Write;
-        if let Some(path) = history_file_path() {
-            if let Some(parent) = path.parent() {
-                drop(std::fs::create_dir_all(parent));
-            }
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                drop(writeln!(file, "{entry}"));
-            }
+    /// Capture the current search state and persist a history entry.
+    #[allow(clippy::single_call_fn)] // persistence concern separated for readability
+    fn save_history_entry(&mut self, pattern: &str) {
+        let entry = HistoryEntry {
+            comment: None, // user-generated entries have no comment
+            pattern: pattern.to_owned(),
+            state: SearchState {
+                case_sensitive: self.case_sensitive,
+                whole_word: self.whole_word,
+                name_only: self.name_only,
+                filter: self.filter_mode,
+            },
+        };
+        // Avoid duplicates (same pattern + same state)
+        if self.search_history.last().is_none_or(|last| *last != entry) {
+            crate::history::append_history_entry(&entry);
+            self.search_history.push(entry);
         }
     }
 
@@ -503,16 +528,6 @@ impl App {
             FilterMode::DirsOnly => " [DIRS]",
         }
     }
-}
-
-/// Path to the persistent search history file.
-///
-/// Uses the platform-appropriate config directory:
-/// - macOS: `~/Library/Application Support/uffs/search_history.txt`
-/// - Windows: `%APPDATA%\uffs\search_history.txt`
-/// - Linux: `~/.config/uffs/search_history.txt`
-fn history_file_path() -> Option<std::path::PathBuf> {
-    dirs_next::config_dir().map(|config| config.join("uffs").join("search_history.txt"))
 }
 
 /// Create a configured single-line `TextArea` for the search box.

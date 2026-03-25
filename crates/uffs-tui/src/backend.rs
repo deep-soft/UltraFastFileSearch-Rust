@@ -261,9 +261,10 @@ impl SortColumn {
 }
 
 /// Filter mode for file/directory results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FilterMode {
     /// Show all results.
+    #[default]
     All,
     /// Show only files.
     FilesOnly,
