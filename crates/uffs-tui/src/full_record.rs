@@ -16,7 +16,10 @@ use std::path::{Path, PathBuf};
 /// These are the columns visible in "max view" that require on-demand
 /// lookup from the `.uffs` cache file.
 #[derive(Debug, Clone, Default)]
-#[expect(dead_code, reason = "infrastructure for Phase 3c; wired into UI in future wave")]
+#[expect(
+    dead_code,
+    reason = "infrastructure for Phase 3c; wired into UI in future wave"
+)]
 pub struct ExtraRecordFields {
     /// Reparse tag from `$REPARSE_POINT` (0 if not a reparse point).
     pub reparse_tag: u32,
@@ -68,7 +71,10 @@ pub struct FullRecordReader {
 /// `.uffs` header size: 12 fields, all little-endian.
 const HEADER_SIZE: u64 = 96;
 
-#[expect(dead_code, reason = "infrastructure for Phase 3c; wired into UI in future wave")]
+#[expect(
+    dead_code,
+    reason = "infrastructure for Phase 3c; wired into UI in future wave"
+)]
 impl FullRecordReader {
     /// Open a `.uffs` cache file and read its header.
     ///
@@ -124,7 +130,8 @@ impl FullRecordReader {
 
     /// Try to open a `.uffs` cache file for a drive letter.
     ///
-    /// Uses the standard cache path: `{TEMP}/uffs_index_cache/{DRIVE}_index.uffs`.
+    /// Uses the standard cache path:
+    /// `{TEMP}/uffs_index_cache/{DRIVE}_index.uffs`.
     #[must_use]
     pub fn open_for_drive(drive_letter: char) -> Option<Self> {
         let path = uffs_mft::cache::cache_file_path(drive_letter);
@@ -236,7 +243,12 @@ impl FullRecordReader {
         // forensic_flags: u8 (v4+)
         let forensic_flags = if self.version >= 4 { read_u8!() } else { 0 };
         // lsn: u64 (v5+)
-        let lsn = if self.version >= 5 { read_u64!() } else { skip!(0); 0 };
+        let lsn = if self.version >= 5 {
+            read_u64!()
+        } else {
+            skip!(0);
+            0
+        };
         // reparse_tag: u32 (v6+)
         let reparse_tag = if self.version >= 6 { read_u32!() } else { 0 };
         // base_frs: u64 (v7+)
@@ -257,9 +269,11 @@ impl FullRecordReader {
         }
         // first_child: u32
         skip!(4);
-        // first_name (LinkInfo): next_entry(4) + name.offset(4) + name.meta(4) + parent_frs(8)
+        // first_name (LinkInfo): next_entry(4) + name.offset(4) + name.meta(4) +
+        // parent_frs(8)
         skip!(20);
-        // first_stream: size.length(8) + size.allocated(8) + next_entry(4) + name.offset(4) + name.meta(4) + flags(1)
+        // first_stream: size.length(8) + size.allocated(8) + next_entry(4) +
+        // name.offset(4) + name.meta(4) + flags(1)
         skip!(29);
         // tree metrics (v3+): descendants(4) + treesize(8) + tree_allocated(8)
         if self.version >= 3 {

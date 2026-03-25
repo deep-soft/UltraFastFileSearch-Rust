@@ -367,13 +367,13 @@ impl MultiDriveBackend {
     /// - **Size, Modified** → descending (biggest/newest first)
     pub fn cycle_sort(&mut self) {
         let (new_column, new_desc) = match self.sort_column {
-            SortColumn::Name => (SortColumn::Size, true),          // biggest first
-            SortColumn::Size => (SortColumn::Modified, true),      // newest first
-            SortColumn::Modified => (SortColumn::Path, false),     // A→Z
-            SortColumn::Path => (SortColumn::Drive, false),        // A→Z
-            SortColumn::Drive => (SortColumn::Extension, false),   // A→Z
-            SortColumn::Extension => (SortColumn::Type, false),    // A→Z
-            SortColumn::Type => (SortColumn::Name, false),         // A→Z
+            SortColumn::Name => (SortColumn::Size, true), // biggest first
+            SortColumn::Size => (SortColumn::Modified, true), // newest first
+            SortColumn::Modified => (SortColumn::Path, false), // A→Z
+            SortColumn::Path => (SortColumn::Drive, false), // A→Z
+            SortColumn::Drive => (SortColumn::Extension, false), // A→Z
+            SortColumn::Extension => (SortColumn::Type, false), // A→Z
+            SortColumn::Type => (SortColumn::Name, false), // A→Z
         };
         self.sort_column = new_column;
         self.sort_desc = new_desc;
@@ -412,9 +412,7 @@ fn collect_global_top_n(
             collect_global_top_n_numeric(drives, limit, sort_column, sort_desc)
         }
         // Path: hierarchical depth-first tree walk — instant, touches ~N records
-        SortColumn::Path => {
-            collect_path_sorted(drives, limit, sort_desc)
-        }
+        SortColumn::Path => collect_path_sorted(drives, limit, sort_desc),
         // Extension/Type: routed to numeric (extension_id) inside collect_name_sorted
         //   Same extension_id = same devicons icon type, so grouping is correct.
         // Name: text comparison on names blob
@@ -449,7 +447,9 @@ fn collect_path_sorted(
     });
 
     for &drive_idx in &drive_order {
-        let Some(drive) = drives.get(drive_idx) else { continue };
+        let Some(drive) = drives.get(drive_idx) else {
+            continue;
+        };
         let volume_prefix = format!("{}:\\", drive.letter);
 
         // Find root-level records (parent_idx == u32::MAX)
@@ -463,7 +463,9 @@ fn collect_path_sorted(
                     clippy::cast_possible_truncation,
                     reason = "record index bounded by NTFS limits"
                 )]
-                { idx as u32 }
+                {
+                    idx as u32
+                }
             })
             .collect();
 
@@ -514,9 +516,13 @@ fn collect_path_sorted(
 /// Sort a slice of compact indices by their name in the names blob.
 fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactIndex, desc: bool) {
     indices.sort_unstable_by(|&idx_a, &idx_b| {
-        let name_a = drive.records.get(idx_a as usize)
+        let name_a = drive
+            .records
+            .get(idx_a as usize)
             .map_or("", |rec| rec.name(&drive.names_lower));
-        let name_b = drive.records.get(idx_b as usize)
+        let name_b = drive
+            .records
+            .get(idx_b as usize)
             .map_or("", |rec| rec.name(&drive.names_lower));
         let ord = name_a.cmp(name_b);
         if desc { ord.reverse() } else { ord }

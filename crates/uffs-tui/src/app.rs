@@ -190,7 +190,11 @@ impl App {
         let input = self.input_text();
 
         // Empty search box → show all files (first 1,000)
-        let pattern = if input.is_empty() { "*".to_owned() } else { input };
+        let pattern = if input.is_empty() {
+            "*".to_owned()
+        } else {
+            input
+        };
 
         if !self.has_data() {
             self.error = Some("No drives loaded. Use --mft-file or --drive.".to_owned());

@@ -95,9 +95,10 @@ impl CompactRecord {
     }
 }
 
-// Compile-time size assertion: 6×u64 (48) + 4×u32 (16) + 2×u16 (4) + 4 padding = 72 bytes.
-// The 4 bytes tail padding is required by #[repr(C)] to align the struct to 8 bytes
-// (its largest member is u64). 72 bytes × 25M records = 1.80 GB — still excellent.
+// Compile-time size assertion: 6×u64 (48) + 4×u32 (16) + 2×u16 (4) + 4 padding
+// = 72 bytes. The 4 bytes tail padding is required by #[repr(C)] to align the
+// struct to 8 bytes (its largest member is u64). 72 bytes × 25M records = 1.80
+// GB — still excellent.
 const _: () = assert!(
     size_of::<CompactRecord>() == 72,
     "CompactRecord must be exactly 72 bytes"
@@ -116,8 +117,9 @@ pub struct DriveCompactIndex {
     pub names_lower: Vec<u8>,
     /// Trigram inverted index built on `names_lower`.
     pub trigram: super::backend::TrigramIndex,
-    /// Children index: `children[i]` = compact indices of directory i's children.
-    /// Empty vec for files. Built from `parent_idx` in a single pass.
+    /// Children index: `children[i]` = compact indices of directory i's
+    /// children. Empty vec for files. Built from `parent_idx` in a single
+    /// pass.
     pub children: Vec<Vec<u32>>,
     /// Where this index was loaded from (for future refresh).
     pub source: IndexSource,
@@ -150,10 +152,7 @@ pub fn refresh_drive(drive: &DriveCompactIndex) -> anyhow::Result<(DriveCompactI
                 }
                 #[cfg(not(windows))]
                 {
-                    anyhow::bail!(
-                        "Cannot refresh live drive {}: on non-Windows",
-                        drive.letter
-                    );
+                    anyhow::bail!("Cannot refresh live drive {}: on non-Windows", drive.letter);
                 }
             }
             // MFT file path — re-parse
@@ -164,7 +163,10 @@ pub fn refresh_drive(drive: &DriveCompactIndex) -> anyhow::Result<(DriveCompactI
 
 /// Statistics from in-place USN patching.
 #[derive(Debug, Clone, Default)]
-#[expect(dead_code, reason = "Windows-only USN patching; wired into refresh in future")]
+#[expect(
+    dead_code,
+    reason = "Windows-only USN patching; wired into refresh in future"
+)]
 pub struct PatchStats {
     /// Records marked as deleted (`name_len` zeroed).
     pub deleted: usize,
@@ -183,10 +185,11 @@ pub struct PatchStats {
 /// records + names blob), and renames (append new name, update offset).
 ///
 /// For size/metadata changes, only a full refresh provides updated values
-/// since the USN journal doesn't carry the new size — just flags that it changed.
+/// since the USN journal doesn't carry the new size — just flags that it
+/// changed.
 ///
-/// Trigram index is NOT updated here — stale entries are filtered at verify time.
-/// Children index is updated for reparented files.
+/// Trigram index is NOT updated here — stale entries are filtered at verify
+/// time. Children index is updated for reparented files.
 #[cfg(windows)]
 pub fn apply_usn_patch(
     drive: &mut DriveCompactIndex,
@@ -199,10 +202,7 @@ pub fn apply_usn_patch(
         let frs_usize = uffs_mft::frs_to_usize(change.frs);
 
         // Look up compact index for this FRS
-        let compact_idx = frs_to_compact
-            .get(frs_usize)
-            .copied()
-            .unwrap_or(u32::MAX);
+        let compact_idx = frs_to_compact.get(frs_usize).copied().unwrap_or(u32::MAX);
 
         if change.deleted {
             if compact_idx == u32::MAX {
@@ -329,8 +329,7 @@ pub fn apply_usn_patch(
                     // Add to new parent's children
                     rec.parent_idx = new_parent_compact;
                     if new_parent_compact != u32::MAX {
-                        if let Some(children) =
-                            drive.children.get_mut(new_parent_compact as usize)
+                        if let Some(children) = drive.children.get_mut(new_parent_compact as usize)
                         {
                             children.push(compact_idx);
                         }
@@ -502,14 +501,11 @@ fn build_name_trigram(
     super::backend::TrigramIndex::build(&name_strings)
 }
 
-/// Resolve a record's full path by walking the parent chain in the compact index.
+/// Resolve a record's full path by walking the parent chain in the compact
+/// index.
 ///
 /// Returns lowercase path like `c:\users\photos\beach.jpg`.
-pub fn resolve_path(
-    drive: &DriveCompactIndex,
-    record_idx: usize,
-    volume_prefix: &str,
-) -> String {
+pub fn resolve_path(drive: &DriveCompactIndex, record_idx: usize, volume_prefix: &str) -> String {
     let mut components = Vec::with_capacity(8);
     let mut current_idx = record_idx;
     let mut depth = 0_u32;
@@ -584,11 +580,7 @@ pub fn is_path_pattern(pattern: &str) -> bool {
     clippy::single_call_fn,
     reason = "public API called from backend; separation keeps tree search isolated"
 )]
-pub fn tree_search(
-    drive: &DriveCompactIndex,
-    pattern_lower: &str,
-    limit: usize,
-) -> Vec<u32> {
+pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize) -> Vec<u32> {
     // Normalize separators to backslash, strip leading separator
     let normalized = pattern_lower.replace('/', "\\");
     let stripped = normalized.strip_prefix('\\').unwrap_or(&normalized);
@@ -625,7 +617,10 @@ pub fn tree_search(
     for &segment in dir_segments.get(1..).unwrap_or(&[]) {
         let mut next_dirs = Vec::new();
         for &dir_idx in &candidate_dirs {
-            let dir_children = drive.children.get(dir_idx as usize).map_or(&[][..], Vec::as_slice);
+            let dir_children = drive
+                .children
+                .get(dir_idx as usize)
+                .map_or(&[][..], Vec::as_slice);
             for &child_idx in dir_children {
                 if let Some(child_rec) = drive.records.get(child_idx as usize) {
                     if child_rec.is_directory() {
@@ -646,7 +641,10 @@ pub fn tree_search(
     // Now collect children of all matched directories, filtering by leaf pattern
     let mut results = Vec::new();
     for &dir_idx in &candidate_dirs {
-        let dir_children = drive.children.get(dir_idx as usize).map_or(&[][..], Vec::as_slice);
+        let dir_children = drive
+            .children
+            .get(dir_idx as usize)
+            .map_or(&[][..], Vec::as_slice);
         for &child_idx in dir_children {
             if let Some(child_rec) = drive.records.get(child_idx as usize) {
                 let child_name = child_rec.name(&drive.names_lower);
@@ -795,7 +793,8 @@ const INDEX_TTL_SECONDS: u64 = 600;
 ///
 /// Mirrors the Windows `.uffs` cache flow:
 /// 1. Check `.uffs` cache for this drive → if fresh, load from cache (fast)
-/// 2. If stale/missing → parse raw MFT → `MftIndex` → **save `.uffs` cache** → compact
+/// 2. If stale/missing → parse raw MFT → `MftIndex` → **save `.uffs` cache** →
+///    compact
 /// 3. On subsequent loads, step 1 hits and skips the expensive MFT parse
 ///
 /// This makes the Mac/Linux flow identical to Windows (except the MFT source).
@@ -841,9 +840,7 @@ pub fn load_mft_file(
         let parsed = parse_raw_mft_to_index(mft_path, drive_letter)?;
 
         // Step 3: Save .uffs cache for next time (mirrors Windows flow)
-        if let Err(err) =
-            uffs_mft::cache::save_to_cache(&parsed, drive_letter, 0, 0, 0)
-        {
+        if let Err(err) = uffs_mft::cache::save_to_cache(&parsed, drive_letter, 0, 0, 0) {
             tracing::warn!(
                 drive = %drive_letter,
                 error = %err,
@@ -863,8 +860,7 @@ pub fn load_mft_file(
     let mft_elapsed = mft_start.elapsed().as_millis();
 
     // Build compact index from MftIndex, then MftIndex is dropped (key savings!)
-    let (mut compact, compact_elapsed, tri_elapsed) =
-        build_compact_index(drive_letter, &mft_index);
+    let (mut compact, compact_elapsed, tri_elapsed) = build_compact_index(drive_letter, &mft_index);
     compact.source = IndexSource::MftFile(mft_path.to_path_buf());
     // `mft_index` dropped here — frees ~800 MB per drive
 
@@ -937,8 +933,7 @@ pub fn load_live_drive(
     })?;
     let mft_elapsed = mft_start.elapsed().as_millis();
 
-    let (compact, compact_elapsed, tri_elapsed) =
-        build_compact_index(drive_letter, &index);
+    let (compact, compact_elapsed, tri_elapsed) = build_compact_index(drive_letter, &index);
     // `index` dropped here — frees ~800 MB per drive
 
     Ok((

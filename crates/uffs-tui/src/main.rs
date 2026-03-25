@@ -288,7 +288,8 @@ fn main() -> Result<()> {
                         let thread_drive = *drive_opt;
                         let no_cache_flag = cli_no_cache;
                         scope.spawn(move || {
-                            let result = compact::load_mft_file(&thread_path, thread_drive, no_cache_flag);
+                            let result =
+                                compact::load_mft_file(&thread_path, thread_drive, no_cache_flag);
                             let file_name = thread_path
                                 .file_name()
                                 .and_then(|name| name.to_str())
@@ -508,9 +509,7 @@ fn start_refresh(app: &mut App) {
         .iter()
         .map(|dr| {
             let source = match &dr.source {
-                compact::IndexSource::MftFile(path) => {
-                    compact::IndexSource::MftFile(path.clone())
-                }
+                compact::IndexSource::MftFile(path) => compact::IndexSource::MftFile(path.clone()),
             };
             (dr.letter, source)
         })
@@ -878,7 +877,8 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::ALL).title(" Status "));
     frame.render_widget(status_bar, chunks[1]);
 
-    // Update page size from actual results area height (minus 3 for borders + header)
+    // Update page size from actual results area height (minus 3 for borders +
+    // header)
     app.page_size = chunks[2].height.saturating_sub(3) as usize;
 
     // Sort indicator helper — appends ▲/▼ to the active column header
@@ -893,10 +893,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    sort_arrow.to_owned(),
-                    Style::default().fg(Color::Yellow),
-                ),
+                Span::styled(sort_arrow.to_owned(), Style::default().fg(Color::Yellow)),
             ])
         } else {
             Line::from(Span::styled(
@@ -996,18 +993,24 @@ fn ui(frame: &mut Frame, app: &mut App) {
             );
             let path_cell = Cell::from(Line::from(path_spans));
 
-            Row::new(vec![drive_cell, name_cell, size_cell, modified_cell, path_cell])
+            Row::new(vec![
+                drive_cell,
+                name_cell,
+                size_cell,
+                modified_cell,
+                path_cell,
+            ])
         })
         .collect();
 
     let table = Table::new(
         rows,
         [
-            Constraint::Length(3),    // Drive
-            Constraint::Min(20),      // Name (flexible, takes remaining space)
-            Constraint::Length(12),    // Size
-            Constraint::Length(19),    // Modified
-            Constraint::Length(62),    // Path
+            Constraint::Length(3),  // Drive
+            Constraint::Min(20),    // Name (flexible, takes remaining space)
+            Constraint::Length(12), // Size
+            Constraint::Length(19), // Modified
+            Constraint::Length(62), // Path
         ],
     )
     .header(header)
@@ -1023,7 +1026,11 @@ fn ui(frame: &mut Frame, app: &mut App) {
         };
         let dir_label = if app.sort_desc() { "▼" } else { "▲" };
         let filter_label = app.filter_label();
-        let mode_label = if app.input_text().is_empty() { " │ ALL" } else { "" };
+        let mode_label = if app.input_text().is_empty() {
+            " │ ALL"
+        } else {
+            ""
+        };
         format!(
             " Results ({}) │ Sort: {sort_label} {dir_label}{filter_label}{mode_label} ",
             app.results.len()
