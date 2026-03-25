@@ -78,7 +78,8 @@ pub enum OutputColumn {
 /// Column order matching C++ output exactly (25 columns).
 ///
 /// Used by `--parity-compat` to produce output that matches the C++ baseline.
-/// The Attributes column here outputs `parity_attributes()` (masked to 15 bits).
+/// The Attributes column here outputs `parity_attributes()` (masked to 15
+/// bits).
 pub const PARITY_COLUMN_ORDER: &[OutputColumn] = &[
     OutputColumn::Path,
     OutputColumn::Name,
@@ -123,22 +124,22 @@ pub const CPP_COLUMN_ORDER: &[OutputColumn] = &[
     OutputColumn::Accessed,
     OutputColumn::Descendants,
     // ── Boolean attributes in NTFS flag value order ─────────────────
-    OutputColumn::ReadOnly,          // 0x0001
-    OutputColumn::Hidden,            // 0x0002
-    OutputColumn::System,            // 0x0004
-    OutputColumn::DirectoryFlag,     // 0x0010
-    OutputColumn::Archive,           // 0x0020
-    OutputColumn::Sparse,            // 0x0200
-    OutputColumn::Reparse,           // 0x0400
-    OutputColumn::Compressed,        // 0x0800
-    OutputColumn::Offline,           // 0x1000
-    OutputColumn::NotIndexed,        // 0x2000
-    OutputColumn::Encrypted,         // 0x4000
-    OutputColumn::Integrity,         // 0x8000
-    OutputColumn::NoScrub,           // 0x20000
-    OutputColumn::RecallOnOpen,      // 0x40000
-    OutputColumn::Pinned,            // 0x80000
-    OutputColumn::Unpinned,          // 0x100000
+    OutputColumn::ReadOnly,           // 0x0001
+    OutputColumn::Hidden,             // 0x0002
+    OutputColumn::System,             // 0x0004
+    OutputColumn::DirectoryFlag,      // 0x0010
+    OutputColumn::Archive,            // 0x0020
+    OutputColumn::Sparse,             // 0x0200
+    OutputColumn::Reparse,            // 0x0400
+    OutputColumn::Compressed,         // 0x0800
+    OutputColumn::Offline,            // 0x1000
+    OutputColumn::NotIndexed,         // 0x2000
+    OutputColumn::Encrypted,          // 0x4000
+    OutputColumn::Integrity,          // 0x8000
+    OutputColumn::NoScrub,            // 0x20000
+    OutputColumn::RecallOnOpen,       // 0x40000
+    OutputColumn::Pinned,             // 0x80000
+    OutputColumn::Unpinned,           // 0x100000
     OutputColumn::RecallOnDataAccess, // 0x400000
     // ── Raw aggregate ───────────────────────────────────────────────
     OutputColumn::Attributes,
@@ -263,7 +264,7 @@ impl OutputColumn {
             Self::Modified => "Last Written",
             Self::Accessed => "Last Accessed",
             Self::Type => "Type",
-            Self::Attributes => "Attributes",
+            Self::Attributes | Self::ParityAttributes => "Attributes",
             Self::AttributeValue => "AttributeValue",
             Self::Hidden => "Hidden",
             Self::System => "System",
@@ -288,7 +289,6 @@ impl OutputColumn {
             Self::DirectoryFlag => "Directory Flag",
             Self::RecallOnOpen => "Recall on open",
             Self::RecallOnDataAccess => "Recall on data access",
-            Self::ParityAttributes => "Attributes",
         }
     }
 

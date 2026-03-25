@@ -498,7 +498,11 @@ fn write_row_columns(
                 row_buffer.push_str(OutputColumn::Bulkiness.default_value());
             }
             OutputColumn::RecallOnOpen => {
-                append_bool(row_buffer, output_config, record.stdinfo.is_recall_on_open());
+                append_bool(
+                    row_buffer,
+                    output_config,
+                    record.stdinfo.is_recall_on_open(),
+                );
             }
             OutputColumn::RecallOnDataAccess => {
                 append_bool(

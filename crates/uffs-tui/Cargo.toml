@@ -55,6 +55,10 @@ devicons.workspace = true
 # Regex search (patterns starting with >)
 regex.workspace = true
 
+# Config (keybinding presets)
+serde.workspace = true
+toml.workspace = true
+
 # Error handling
 anyhow.workspace = true
 

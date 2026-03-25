@@ -7,6 +7,7 @@ use ratatui_textarea::TextArea;
 
 use crate::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
 use crate::compact::{DriveCompactIndex, LoadTiming};
+use crate::keys::Keymap;
 
 /// Result type for a single drive refresh (label + result).
 type RefreshResult = (String, anyhow::Result<(DriveCompactIndex, LoadTiming)>);
@@ -17,6 +18,8 @@ type RefreshResult = (String, anyhow::Result<(DriveCompactIndex, LoadTiming)>);
     reason = "App state struct — independent toggle flags are clearest as bools"
 )]
 pub struct App {
+    /// Runtime keymap (action → key bindings).
+    pub keymap: Keymap,
     /// Search input text area (full editing: cursor, selection, clipboard).
     pub textarea: TextArea<'static>,
     /// Search results (from last search).
@@ -89,6 +92,7 @@ impl App {
         let status = format!("Loaded {total} records [{drive_info}]");
 
         Self {
+            keymap: Keymap::default(),
             textarea: make_search_textarea(),
             results: Vec::new(),
             table_state: TableState::default(),
@@ -114,9 +118,39 @@ impl App {
         }
     }
 
-    /// Create an empty application (no drives loaded).
+    /// Create an empty application with a pre-loaded keymap.
+    pub fn with_keymap(keymap: Keymap) -> Self {
+        Self {
+            keymap,
+            textarea: make_search_textarea(),
+            results: Vec::new(),
+            table_state: TableState::default(),
+            backend: MultiDriveBackend::new(),
+            status: "No drives loaded. Use --mft-file or --drive to load data.".to_owned(),
+            error: None,
+            last_search_ms: 0,
+            name_only: false,
+            case_sensitive: false,
+            whole_word: false,
+            filter_mode: FilterMode::All,
+            refreshing: false,
+            refresh_rx: None,
+            refresh_total: 0,
+            refresh_done: 0,
+            auto_refresh_rx: None,
+            search_history: Vec::new(),
+            history_idx: None,
+            history_saved_input: String::new(),
+            peak_search: String::new(),
+            help_page: 0,
+            page_size: 20,
+        }
+    }
+
+    /// Create an empty application (no drives loaded, default keymap).
     pub fn new() -> Self {
         Self {
+            keymap: Keymap::default(),
             textarea: make_search_textarea(),
             results: Vec::new(),
             table_state: TableState::default(),
