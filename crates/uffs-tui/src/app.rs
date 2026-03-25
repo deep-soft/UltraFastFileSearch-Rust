@@ -47,6 +47,9 @@ pub struct App {
     pub history_idx: Option<usize>,
     /// Saved current input before browsing history.
     pub history_saved_input: String,
+    /// Longest search pattern in the current typing session.
+    /// Pushed to history when the search box is cleared.
+    pub peak_search: String,
     /// Visible page size for PageUp/Down (set by `ui()` on each render).
     pub page_size: usize,
 }
@@ -93,6 +96,7 @@ impl App {
             search_history: Vec::new(),
             history_idx: None,
             history_saved_input: String::new(),
+            peak_search: String::new(),
             page_size: 20,
         }
     }
@@ -117,6 +121,7 @@ impl App {
             search_history: Vec::new(),
             history_idx: None,
             history_saved_input: String::new(),
+            peak_search: String::new(),
             page_size: 20,
         }
     }
@@ -202,13 +207,23 @@ impl App {
         let input = self.input_text();
 
         // Empty search box → show all files (first 1,000)
+        // History: track the longest pattern during typing. Save to history
+        // only when the box is cleared (user finished their search).
         let pattern = if input.is_empty() {
+            // Box just cleared → commit peak_search to history
+            if !self.peak_search.is_empty() {
+                let peak = core::mem::take(&mut self.peak_search);
+                if self.search_history.last().is_none_or(|last| *last != peak) {
+                    self.search_history.push(peak.clone());
+                    Self::save_history_entry(&peak);
+                }
+            }
+            self.history_idx = None;
             "*".to_owned()
         } else {
-            // Push to history (avoid consecutive duplicates), persist to disk
-            if self.search_history.last().is_none_or(|last| *last != input) {
-                self.search_history.push(input.clone());
-                Self::save_history_entry(&input);
+            // Track the longest pattern in this typing session
+            if input.len() > self.peak_search.len() {
+                self.peak_search.clone_from(&input);
             }
             self.history_idx = None;
             input
