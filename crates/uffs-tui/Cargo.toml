@@ -52,6 +52,9 @@ ratatui-textarea.workspace = true
 # File type icons (Nerd Font glyphs)
 devicons.workspace = true
 
+# Regex search (patterns starting with >)
+regex.workspace = true
+
 # Error handling
 anyhow.workspace = true
 

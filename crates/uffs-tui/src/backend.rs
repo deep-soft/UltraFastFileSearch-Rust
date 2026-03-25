@@ -304,8 +304,12 @@ impl MultiDriveBackend {
 
     /// Search across all loaded drives.
     ///
-    /// Detects path patterns (containing `\` or `/`) and uses tree search.
-    /// Otherwise uses trigram name search. Paths resolved on-demand.
+    /// Pattern modes:
+    /// - `*` → show all files (global top-N by sort column)
+    /// - `>regex` → regex match on filenames (case-insensitive)
+    /// - `\path\pattern` → tree-based path search
+    /// - `*glob*` → glob pattern with `*` and `?` wildcards
+    /// - `text` → substring match (trigram-accelerated)
     pub fn search(&mut self, pattern: &str, _name_only: bool) -> SearchResult {
         let start = Instant::now();
         let mut rows = Vec::new();
@@ -322,6 +326,8 @@ impl MultiDriveBackend {
 
         // "*" = show all files (first 1,000)
         let is_match_all = pattern == "*";
+        // ">" prefix = regex mode
+        let is_regex = pattern.starts_with('>') && pattern.len() > 1;
         let limit = if is_match_all {
             DEFAULT_RESULT_LIMIT
         } else if pattern.len() <= 2 {
@@ -331,12 +337,40 @@ impl MultiDriveBackend {
         };
 
         let needle_lower = pattern.to_ascii_lowercase();
-        let is_path = !is_match_all && compact::is_path_pattern(&needle_lower);
+        let is_path = !is_match_all && !is_regex && compact::is_path_pattern(&needle_lower);
 
         if is_match_all {
             // Global top-N: scan ALL records across ALL drives, pick the
             // best N by sort column, THEN resolve paths only for those.
             rows = collect_global_top_n(&self.drives, limit, self.sort_column, self.sort_desc);
+        } else if is_regex {
+            // Regex mode: compile pattern (strip leading >) and search
+            let regex_pattern = needle_lower.strip_prefix('>').unwrap_or(&needle_lower);
+            match regex::RegexBuilder::new(regex_pattern)
+                .case_insensitive(true)
+                .build()
+            {
+                Ok(compiled_re) => {
+                    let drive_results: Vec<Vec<DisplayRow>> = self
+                        .drives
+                        .par_iter()
+                        .map(|drive| search_compact_drive_regex(drive, &compiled_re, limit))
+                        .collect();
+                    for drive_rows in drive_results {
+                        rows.extend(drive_rows);
+                    }
+                    sort_rows(&mut rows, self.sort_column, self.sort_desc);
+                    rows.truncate(limit);
+                }
+                Err(_err) => {
+                    self.last_results.clear();
+                    return SearchResult {
+                        rows: Vec::new(),
+                        duration: start.elapsed(),
+                        records_scanned: 0,
+                    };
+                }
+            }
         } else {
             let drive_results: Vec<Vec<DisplayRow>> = self
                 .drives
@@ -659,6 +693,72 @@ fn collect_global_top_n_numeric(
     rows
 }
 
+/// Search a single drive using regex matching on filenames.
+///
+/// Linear scan — regex can't leverage trigram index. But typically still
+/// fast (<500ms for 25M) because regex matching is optimized by the `regex` crate.
+#[expect(
+    clippy::single_call_fn,
+    reason = "called from MultiDriveBackend::search via rayon; separation keeps regex logic isolated"
+)]
+fn search_compact_drive_regex(
+    drive: &DriveCompactIndex,
+    compiled_re: &regex::Regex,
+    limit: usize,
+) -> Vec<DisplayRow> {
+    let volume_prefix = format!("{}:\\", drive.letter);
+
+    let match_indices: Vec<usize> = drive
+        .records
+        .iter()
+        .enumerate()
+        .filter(|(_, rec)| {
+            let name = rec.name(&drive.names);
+            !name.is_empty() && name != "." && compiled_re.is_match(name)
+        })
+        .take(limit)
+        .map(|(idx, _)| idx)
+        .collect();
+
+    match_indices
+        .iter()
+        .filter_map(|&record_idx| {
+            let rec = drive.records.get(record_idx)?;
+            let name = rec.name(&drive.names);
+            if name.is_empty() || name == "." {
+                return None;
+            }
+            let path = compact::resolve_path(drive, record_idx, &volume_prefix);
+            Some(DisplayRow {
+                drive: drive.letter,
+                path,
+                name: name.to_owned(),
+                size: rec.size,
+                is_directory: rec.is_directory(),
+                modified: rec.modified,
+            })
+        })
+        .collect()
+}
+
+/// Extract the longest literal (non-wildcard) substring from a glob pattern.
+///
+/// Used to find a trigram-searchable needle within glob patterns:
+/// - `*sex*ge*` → `"sex"` (longest literal segment)
+/// - `*.jpg` → `".jpg"`
+/// - `photo?.*` → `"photo"`
+#[expect(
+    clippy::single_call_fn,
+    reason = "separated for readability; literal extraction is a distinct concern"
+)]
+fn longest_literal(pattern: &str) -> String {
+    pattern
+        .split(['*', '?'])
+        .max_by_key(|seg| seg.len())
+        .unwrap_or("")
+        .to_owned()
+}
+
 /// Search a single drive's compact index, returning matching `DisplayRow`s.
 ///
 /// Uses trigram index on names for 3+ char patterns, linear scan for shorter.
@@ -677,12 +777,25 @@ fn search_compact_drive(
     }
 
     let volume_prefix = format!("{}:\\", drive.letter);
+    let is_glob = needle_lower.contains('*') || needle_lower.contains('?');
 
-    // Try trigram search first (3+ chars)
-    let candidates = drive.trigram.search(needle_lower);
+    // For glob patterns, extract the longest literal substring for trigram lookup.
+    // E.g., "*sex*ge*" → trigram search for "sex", then verify with full glob.
+    let trigram_needle = if is_glob {
+        longest_literal(needle_lower)
+    } else {
+        needle_lower.to_owned()
+    };
+
+    // Try trigram search first (3+ chars in the literal part)
+    let candidates = if trigram_needle.len() >= 3 {
+        drive.trigram.search(&trigram_needle)
+    } else {
+        None
+    };
 
     let match_indices: Vec<usize> = if let Some(candidate_indices) = candidates {
-        // Trigram hit: verify candidates with actual substring check on name
+        // Trigram hit: verify candidates with glob or substring match
         candidate_indices
             .iter()
             .filter(|&&idx| {
@@ -691,20 +804,20 @@ fn search_compact_drive(
                     return false;
                 };
                 let name = rec.name(&drive.names_lower);
-                !name.is_empty() && name.contains(needle_lower)
+                compact::name_matches(name, needle_lower)
             })
             .take(limit)
             .map(|&idx| idx as usize)
             .collect()
     } else {
-        // Short pattern (<3 chars): linear scan on names_lower
+        // Short pattern or no trigram-able literals: linear scan
         drive
             .records
             .iter()
             .enumerate()
             .filter(|(_, rec)| {
                 let name = rec.name(&drive.names_lower);
-                !name.is_empty() && name != "." && name.contains(needle_lower)
+                compact::name_matches(name, needle_lower)
             })
             .take(limit)
             .map(|(idx, _)| idx)

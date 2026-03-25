@@ -44,18 +44,17 @@ pub struct CompactRecord {
     // ── u32 fields (4-byte aligned, no padding after u64 block) ───
     /// Byte offset into the names blob.
     pub name_offset: u32,
-    /// NTFS attribute flags (full `u32` from `$STANDARD_INFORMATION`).
+    /// Raw NTFS `FILE_ATTRIBUTE_*` flags (via `StandardInfo::to_attributes()`).
     ///
-    /// Bit layout matches NTFS `FILE_ATTRIBUTE_*` constants:
+    /// Standard NTFS bit layout:
     /// ```text
-    ///   bit 0:  read_only        bit 11: compressed
-    ///   bit 1:  hidden           bit 12: offline
-    ///   bit 2:  system           bit 13: not_content_indexed
-    ///   bit 4:  directory        bit 14: encrypted
-    ///   bit 5:  archive          bit 15: integrity_stream
-    ///   bit 8:  temporary        bit 17: no_scrub_data
-    ///   bit 9:  sparse           bit 19: pinned
-    ///   bit 10: reparse_point    bit 20: unpinned
+    ///   0x0001  read_only          0x0800  compressed
+    ///   0x0002  hidden             0x1000  offline
+    ///   0x0004  system             0x2000  not_content_indexed
+    ///   0x0010  directory          0x4000  encrypted
+    ///   0x0020  archive            0x8000  integrity_stream
+    ///   0x0200  sparse             0x20000 no_scrub_data
+    ///   0x0400  reparse_point      0x80000 pinned
     /// ```
     pub flags: u32,
     /// Index into the compact array of the parent directory.
@@ -72,7 +71,7 @@ pub struct CompactRecord {
 }
 
 impl CompactRecord {
-    /// Directory flag bit in the NTFS attributes.
+    /// Directory flag bit in raw NTFS `FILE_ATTRIBUTE_DIRECTORY`.
     const DIRECTORY_BIT: u32 = 0x0010;
 
     /// Returns `true` if this record is a directory.
@@ -411,7 +410,7 @@ pub fn build_compact_index(
             name_offset: name_ref.offset,
             name_len: name_ref.length(),
             extension_id: name_ref.extension_id(),
-            flags: record.stdinfo.flags,
+            flags: record.stdinfo.to_attributes(),
             parent_idx,
             size: record.first_stream.size.length,
             allocated: record.first_stream.size.allocated,
@@ -757,33 +756,74 @@ fn name_search(drive: &DriveCompactIndex, needle: &str, limit: usize) -> Vec<u32
     }
 }
 
-/// Check if a name matches a pattern (substring or simple glob).
+/// Check if a name matches a glob pattern (case-insensitive, both already lowercase).
 ///
 /// Supports:
-/// - Substring: `"photos"` matches any name containing "photos"
-/// - `*` prefix/suffix: `"*.jpg"` matches names ending in ".jpg"
-/// - Plain `*`: matches everything
-fn name_matches(name: &str, pattern: &str) -> bool {
+/// - `*`: matches any sequence of characters (including empty)
+/// - `?`: matches exactly one character
+/// - Multiple wildcards: `*sex*Ge*` matches "I want your Sex - George Michael"
+/// - No wildcards: plain substring match
+///
+/// Uses a simple iterative algorithm (no regex, no allocations).
+pub fn name_matches(name: &str, pattern: &str) -> bool {
     if name.is_empty() || name == "." {
         return false;
     }
+    // Fast paths
     if pattern == "*" {
         return true;
     }
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        if let Some(prefix) = suffix.strip_suffix('*') {
-            // *xxx* → contains
-            return name.contains(prefix);
+    if !pattern.contains('*') && !pattern.contains('?') {
+        // No wildcards → substring match
+        return name.contains(pattern);
+    }
+    // Full glob match using iterative two-pointer algorithm
+    glob_match(name.as_bytes(), pattern.as_bytes())
+}
+
+/// Iterative glob matching: `*` matches any sequence, `?` matches one byte.
+///
+/// Handles patterns like `*sex*ge*`, `*.jpg`, `photo?.*` correctly.
+#[expect(
+    clippy::single_call_fn,
+    reason = "separated for readability; glob matching is a distinct concern"
+)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "all index accesses are bounds-checked by the while/if conditions"
+)]
+fn glob_match(text: &[u8], pattern: &[u8]) -> bool {
+    let mut ti = 0_usize; // text index
+    let mut pi = 0_usize; // pattern index
+    let mut last_star_p = usize::MAX; // last '*' position in pattern
+    let mut last_star_t = 0_usize; // text position when last '*' was hit
+
+    while ti < text.len() {
+        if pi < pattern.len() && (pattern[pi] == b'?' || pattern[pi] == text[ti]) {
+            // Character match or '?' wildcard
+            ti += 1;
+            pi += 1;
+        } else if pi < pattern.len() && pattern[pi] == b'*' {
+            // '*' wildcard — remember position and try matching zero chars
+            last_star_p = pi;
+            last_star_t = ti;
+            pi += 1;
+        } else if last_star_p != usize::MAX {
+            // Mismatch — backtrack to last '*' and consume one more text char
+            pi = last_star_p + 1;
+            last_star_t += 1;
+            ti = last_star_t;
+        } else {
+            return false;
         }
-        // *.jpg → ends with
-        return name.ends_with(suffix);
     }
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        // photos* → starts with
-        return name.starts_with(prefix);
+
+    // Consume trailing '*' in pattern
+    while pi < pattern.len() && pattern[pi] == b'*' {
+        pi += 1;
     }
-    // Exact substring match
-    name.contains(pattern)
+
+    pi == pattern.len()
 }
 
 /// Cache TTL in seconds (10 minutes — same as Windows CLI).
