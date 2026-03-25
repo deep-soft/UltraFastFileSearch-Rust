@@ -10,9 +10,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::app::App;
-use crate::backend;
-use crate::compact;
-use crate::ui;
+use crate::{backend, compact, ui};
 
 /// Start a background refresh of all loaded drives.
 ///

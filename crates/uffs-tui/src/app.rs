@@ -119,6 +119,7 @@ impl App {
     }
 
     /// Create an empty application with a pre-loaded keymap.
+    #[expect(clippy::single_call_fn, reason = "public constructor called from main")]
     pub fn with_keymap(keymap: Keymap) -> Self {
         Self {
             keymap,
@@ -148,6 +149,8 @@ impl App {
     }
 
     /// Create an empty application (no drives loaded, default keymap).
+    // allow: single-call in bin target, multi-call in test target (called from unit tests)
+    #[allow(clippy::single_call_fn)]
     pub fn new() -> Self {
         Self {
             keymap: Keymap::default(),

@@ -1,10 +1,10 @@
 //! TUI rendering — layout, table, help bar, and text highlighting.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
-use ratatui::Frame;
 
 use crate::app::App;
 use crate::backend;

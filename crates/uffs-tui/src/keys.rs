@@ -154,6 +154,10 @@ pub enum Action {
 }
 
 /// Map a TOML key name to an `Action`.
+#[expect(
+    clippy::single_call_fn,
+    reason = "lookup table kept separate for clarity and testability"
+)]
 fn action_from_name(group: &str, name: &str) -> Option<Action> {
     match (group, name) {
         ("app", "quit") => Some(Action::Quit),
@@ -186,6 +190,7 @@ fn action_from_name(group: &str, name: &str) -> Option<Action> {
 
 /// Runtime keymap — maps actions to one or more key bindings.
 pub struct Keymap {
+    /// Map from action to its configured key bindings.
     bindings: HashMap<Action, Vec<KeyBind>>,
 }
 
@@ -195,7 +200,7 @@ impl Keymap {
     pub fn matches(&self, key: KeyEvent, action: Action) -> bool {
         self.bindings
             .get(&action)
-            .is_some_and(|binds| binds.iter().any(|b| matches_bind(key, *b)))
+            .is_some_and(|binds| binds.iter().any(|bind| matches_bind(key, *bind)))
     }
 
     /// Get the human-readable label for the primary binding of an action.
@@ -234,6 +239,10 @@ fn config_file_path() -> Option<std::path::PathBuf> {
 }
 
 /// Get the embedded TOML content for a preset name.
+#[expect(
+    clippy::single_call_fn,
+    reason = "preset lookup kept separate for readability"
+)]
 fn preset_toml(name: &str) -> Option<&'static str> {
     match name {
         "windows" => Some(PRESET_WINDOWS),
@@ -247,6 +256,10 @@ fn preset_toml(name: &str) -> Option<&'static str> {
 ///
 /// If `preset_override` is `Some("emacs")`, the config file is overwritten
 /// with that preset before loading.
+#[expect(
+    clippy::single_call_fn,
+    reason = "public API entry point; called from main"
+)]
 pub fn load_or_create_keymap(preset_override: Option<&str>) -> (Keymap, String) {
     // If --keys <preset> was given, write that preset to disk
     if let Some(name) = preset_override {
@@ -276,23 +289,16 @@ pub fn load_or_create_keymap(preset_override: Option<&str>) -> (Keymap, String) 
             match std::fs::read_to_string(&path) {
                 Ok(content) => match parse_toml(&content) {
                     Ok(keymap) => {
-                        let msg = format!(
-                            "Keybindings loaded from {}",
-                            path.display()
-                        );
+                        let msg = format!("Keybindings loaded from {}", path.display());
                         return (keymap, msg);
                     }
                     Err(err) => {
-                        let msg = format!(
-                            "⚠ keys.toml parse error: {err} — using defaults"
-                        );
+                        let msg = format!("⚠ keys.toml parse error: {err} — using defaults");
                         return (Keymap::default(), msg);
                     }
                 },
                 Err(err) => {
-                    let msg = format!(
-                        "⚠ Failed to read keys.toml: {err} — using defaults"
-                    );
+                    let msg = format!("⚠ Failed to read keys.toml: {err} — using defaults");
                     return (Keymap::default(), msg);
                 }
             }
@@ -305,7 +311,10 @@ pub fn load_or_create_keymap(preset_override: Option<&str>) -> (Keymap, String) 
         drop(std::fs::write(&path, PRESET_WINDOWS));
     }
 
-    (Keymap::default(), "Keybindings: windows (default)".to_owned())
+    (
+        Keymap::default(),
+        "Keybindings: windows (default)".to_owned(),
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -315,10 +324,13 @@ pub fn load_or_create_keymap(preset_override: Option<&str>) -> (Keymap, String) 
 /// TOML structure for keybinding config file.
 #[derive(Deserialize)]
 struct KeyConfig {
+    /// App-level keybindings (quit, refresh, help).
     #[serde(default)]
     app: HashMap<String, Vec<String>>,
+    /// Search-box keybindings (text editing, history, toggles).
     #[serde(default)]
     search_box: HashMap<String, Vec<String>>,
+    /// Results-panel keybindings (navigation, sorting).
     #[serde(default)]
     results: HashMap<String, Vec<String>>,
 }
@@ -330,12 +342,17 @@ fn parse_toml(toml_str: &str) -> Result<Keymap, String> {
 
     let mut bindings = HashMap::new();
 
-    for (group_name, group_map) in [
+    // Use a fixed-order array of groups to avoid non-deterministic HashMap
+    // iteration.
+    let groups: [(&str, &HashMap<String, Vec<String>>); 3] = [
         ("app", &config.app),
         ("search_box", &config.search_box),
         ("results", &config.results),
-    ] {
-        for (action_name, key_strings) in group_map {
+    ];
+    for (group_name, group_map) in groups {
+        let mut sorted_actions: Vec<_> = group_map.iter().collect();
+        sorted_actions.sort_by_key(|(name, _)| name.as_str());
+        for (action_name, key_strings) in sorted_actions {
             let Some(action) = action_from_name(group_name, action_name) else {
                 continue; // skip unknown action names gracefully
             };
@@ -370,13 +387,11 @@ fn parse_toml(toml_str: &str) -> Result<Keymap, String> {
 /// - `"f1"` .. `"f12"`
 /// - `"enter"`, `"tab"`, `"shift+tab"`, `"up"`, `"down"`, `"pageup"`, etc.
 /// - `"ctrl+/"` (single-char keys)
-#[expect(
-    clippy::too_many_lines,
-    reason = "flat match table for all supported key names; splitting would fragment the parser"
-)]
-fn parse_key_string(s: &str) -> Option<KeyBind> {
-    let s = s.trim().to_lowercase();
-    let parts: Vec<&str> = s.split('+').collect();
+// allow: single-call in bin target, multi-call in test target (called from unit tests)
+#[allow(clippy::single_call_fn)]
+fn parse_key_string(input: &str) -> Option<KeyBind> {
+    let normalized = input.trim().to_lowercase();
+    let parts: Vec<&str> = normalized.split('+').collect();
 
     let mut modifiers = KeyModifiers::NONE;
     let mut key_part = None;
@@ -432,7 +447,7 @@ fn parse_key_string(s: &str) -> Option<KeyBind> {
         "escape" | "esc" => KeyCode::Esc,
         "space" => KeyCode::Char(' '),
         // Single character
-        c if c.len() == 1 => KeyCode::Char(c.chars().next()?),
+        ch if ch.len() == 1 => KeyCode::Char(ch.chars().next()?),
         _ => return None,
     };
 
@@ -440,6 +455,8 @@ fn parse_key_string(s: &str) -> Option<KeyBind> {
 }
 
 /// Format a `KeyBind` as a human-readable string (for TOML output / help bar).
+// allow: single-call in bin target, multi-call in test target (called from unit tests)
+#[allow(clippy::single_call_fn)]
 fn format_key_bind(bind: KeyBind) -> String {
     let mut parts = Vec::new();
     if bind.1.contains(KeyModifiers::CONTROL) {
@@ -472,7 +489,17 @@ fn format_key_bind(bind: KeyBind) -> String {
         KeyCode::Backspace => "backspace",
         KeyCode::Delete => "delete",
         KeyCode::Esc => "escape",
-        _ => "?",
+        KeyCode::Insert
+        | KeyCode::Null
+        | KeyCode::CapsLock
+        | KeyCode::ScrollLock
+        | KeyCode::NumLock
+        | KeyCode::PrintScreen
+        | KeyCode::Pause
+        | KeyCode::Menu
+        | KeyCode::KeypadBegin
+        | KeyCode::Modifier(_)
+        | KeyCode::Media(_) => "?",
     };
 
     if parts.is_empty() {
@@ -488,16 +515,26 @@ fn format_key_bind(bind: KeyBind) -> String {
 
 /// Check if a key event matches a single keybinding.
 #[inline]
-fn matches_bind(key: KeyEvent, bind: KeyBind) -> bool {
+#[expect(
+    clippy::single_call_fn,
+    reason = "matching logic kept separate for clarity"
+)]
+const fn matches_bind(key: KeyEvent, bind: KeyBind) -> bool {
     matches_code(key.code, bind.0) && key.modifiers.contains(bind.1)
 }
 
 /// Compare key codes (handles Char case for control keys).
 #[inline]
+#[expect(
+    clippy::single_call_fn,
+    reason = "code comparison kept separate for clarity"
+)]
 const fn matches_code(actual: KeyCode, expected: KeyCode) -> bool {
     match (actual, expected) {
-        (KeyCode::Char(a), KeyCode::Char(b)) => a as u32 == b as u32,
-        (KeyCode::F(a), KeyCode::F(b)) => a == b,
+        (KeyCode::Char(actual_ch), KeyCode::Char(expected_ch)) => {
+            actual_ch as u32 == expected_ch as u32
+        }
+        (KeyCode::F(actual_n), KeyCode::F(expected_n)) => actual_n == expected_n,
         (KeyCode::Down, KeyCode::Down)
         | (KeyCode::Up, KeyCode::Up)
         | (KeyCode::Left, KeyCode::Left)
@@ -576,13 +613,7 @@ mod tests {
 
     #[test]
     fn test_format_key_bind_roundtrip() {
-        let cases = [
-            "ctrl+q",
-            "f5",
-            "enter",
-            "down",
-            "pageup",
-        ];
+        let cases = ["ctrl+q", "f5", "enter", "down", "pageup"];
         for case in cases {
             let bind = parse_key_string(case).unwrap();
             let formatted = format_key_bind(bind);

@@ -39,8 +39,8 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use tracing_appender::non_blocking::NonBlocking;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::time::UtcTime;
@@ -51,19 +51,19 @@ use tracing_subscriber::{EnvFilter, Layer};
 /// Application state and search logic.
 mod app;
 /// Search backend: compact-index multi-drive search.
-mod backend;
+pub(crate) mod backend;
 /// Compact in-memory index (72 bytes/record, replaces full MftIndex).
 mod compact;
 /// On-demand full record lookup from `.uffs` cache files.
 mod full_record;
 /// Centralized keybinding definitions.
 mod keys;
+/// Drive refresh and loading helpers.
+mod refresh;
 /// Search functions for compact-index drives.
 mod search;
 /// Tree-based path search, glob matching, and path resolution.
 mod tree;
-/// Drive refresh and loading helpers.
-mod refresh;
 /// TUI rendering — layout, table, help bar, and text highlighting.
 mod ui;
 
@@ -667,33 +667,33 @@ mod tests {
     #[test]
     fn test_is_exit_key_accepts_ctrl_q() {
         let keymap = Keymap::default();
-        assert!(is_exit_key(&keymap, KeyEvent::new(
-            KeyCode::Char('q'),
-            KeyModifiers::CONTROL,
-        )));
+        assert!(is_exit_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL,)
+        ));
     }
 
     #[test]
     fn test_is_exit_key_rejects_regular_input() {
         let keymap = Keymap::default();
         // Plain 'q' types the letter, doesn't exit
-        assert!(!is_exit_key(&keymap, KeyEvent::new(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE,
-        )));
+        assert!(!is_exit_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE,)
+        ));
         // Esc goes to textarea, doesn't exit
-        assert!(!is_exit_key(&keymap, KeyEvent::new(
-            KeyCode::Esc,
-            KeyModifiers::NONE
-        )));
+        assert!(!is_exit_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+        ));
         // Ctrl+C goes to textarea, doesn't exit
-        assert!(!is_exit_key(&keymap, KeyEvent::new(
-            KeyCode::Char('c'),
-            KeyModifiers::CONTROL,
-        )));
-        assert!(!is_exit_key(&keymap, KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        )));
+        assert!(!is_exit_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)
+        ));
+        assert!(!is_exit_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE,)
+        ));
     }
 }

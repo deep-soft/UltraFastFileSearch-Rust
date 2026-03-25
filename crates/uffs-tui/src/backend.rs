@@ -274,10 +274,6 @@ pub enum FilterMode {
 impl MultiDriveBackend {
     /// Create a new empty backend.
     #[must_use]
-    #[expect(
-        clippy::single_call_fn,
-        reason = "constructor called from App::new; separation keeps backend initialization isolated"
-    )]
     pub const fn new() -> Self {
         Self {
             drives: Vec::new(),
@@ -352,7 +348,12 @@ impl MultiDriveBackend {
         if is_match_all {
             // Global top-N: scan ALL records across ALL drives, pick the
             // best N by sort column, THEN resolve paths only for those.
-            rows = crate::search::collect_global_top_n(&self.drives, limit, self.sort_column, self.sort_desc);
+            rows = crate::search::collect_global_top_n(
+                &self.drives,
+                limit,
+                self.sort_column,
+                self.sort_desc,
+            );
         } else if is_regex {
             // Regex mode: compile pattern (strip leading >) and search
             let regex_pattern = needle.strip_prefix('>').unwrap_or(&needle);
@@ -364,7 +365,9 @@ impl MultiDriveBackend {
                     let drive_results: Vec<Vec<DisplayRow>> = self
                         .drives
                         .par_iter()
-                        .map(|drive| crate::search::search_compact_drive_regex(drive, &compiled_re, limit))
+                        .map(|drive| {
+                            crate::search::search_compact_drive_regex(drive, &compiled_re, limit)
+                        })
                         .collect();
                     for drive_rows in drive_results {
                         rows.extend(drive_rows);
@@ -389,7 +392,13 @@ impl MultiDriveBackend {
                     if is_path {
                         crate::search::search_compact_drive_tree(drive, &needle, limit)
                     } else {
-                        crate::search::search_compact_drive(drive, &needle, limit, case_sensitive, whole_word)
+                        crate::search::search_compact_drive(
+                            drive,
+                            &needle,
+                            limit,
+                            case_sensitive,
+                            whole_word,
+                        )
                     }
                 })
                 .collect();
@@ -570,7 +579,7 @@ pub fn build_drive_colors(
 }
 
 /// Sort display rows by the given column with name as secondary tiebreaker.
-pub(crate) fn sort_rows(rows: &mut [DisplayRow], column: SortColumn, descending: bool) {
+pub fn sort_rows(rows: &mut [DisplayRow], column: SortColumn, descending: bool) {
     rows.sort_unstable_by(|row_a, row_b| {
         let primary = match column {
             SortColumn::Name => row_a.name.to_lowercase().cmp(&row_b.name.to_lowercase()),

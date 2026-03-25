@@ -3,8 +3,8 @@
 //! Per-drive search (trigram, regex, tree) and global top-N collection
 //! for match-all queries. Called by `MultiDriveBackend::search()`.
 
-use crate::compact::{self, DriveCompactIndex};
 use crate::backend::{DisplayRow, SortColumn};
+use crate::compact::{self, DriveCompactIndex};
 
 /// Collect the global top-N records across ALL drives for `*` match-all.
 ///

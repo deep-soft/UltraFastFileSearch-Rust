@@ -501,7 +501,8 @@ fn build_name_trigram(
 }
 
 // Tree search, glob matching, and path resolution extracted to tree.rs.
-// Re-export public APIs so existing callers (backend.rs, search.rs) work unchanged.
+// Re-export public APIs so existing callers (backend.rs, search.rs) work
+// unchanged.
 pub use crate::tree::{is_path_pattern, name_matches, resolve_path, tree_search};
 
 /// Cache TTL in seconds (10 minutes — same as Windows CLI).
