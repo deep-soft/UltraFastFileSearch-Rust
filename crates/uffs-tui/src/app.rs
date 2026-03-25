@@ -41,6 +41,12 @@ pub struct App {
     pub refresh_done: usize,
     /// Channel receiver for auto-refresh timer signals.
     pub auto_refresh_rx: Option<mpsc::Receiver<()>>,
+    /// Search history (most recent last).
+    pub search_history: Vec<String>,
+    /// Current position in search history (`None` = not browsing history).
+    pub history_idx: Option<usize>,
+    /// Saved current input before browsing history.
+    pub history_saved_input: String,
     /// Visible page size for PageUp/Down (set by `ui()` on each render).
     pub page_size: usize,
 }
@@ -84,6 +90,9 @@ impl App {
             refresh_total: 0,
             refresh_done: 0,
             auto_refresh_rx: None,
+            search_history: Vec::new(),
+            history_idx: None,
+            history_saved_input: String::new(),
             page_size: 20,
         }
     }
@@ -105,6 +114,9 @@ impl App {
             refresh_total: 0,
             refresh_done: 0,
             auto_refresh_rx: None,
+            search_history: Vec::new(),
+            history_idx: None,
+            history_saved_input: String::new(),
             page_size: 20,
         }
     }
@@ -193,6 +205,12 @@ impl App {
         let pattern = if input.is_empty() {
             "*".to_owned()
         } else {
+            // Push to history (avoid consecutive duplicates), persist to disk
+            if self.search_history.last().is_none_or(|last| *last != input) {
+                self.search_history.push(input.clone());
+                Self::save_history_entry(&input);
+            }
+            self.history_idx = None;
             input
         };
 
@@ -292,6 +310,95 @@ impl App {
         self.backend.sort_desc
     }
 
+    /// Navigate to the previous search in history (Up arrow).
+    ///
+    /// First call saves the current input, then walks backward through history.
+    pub fn history_back(&mut self) {
+        if self.search_history.is_empty() {
+            return;
+        }
+        let new_idx = match self.history_idx {
+            None => {
+                // First press: save current input and jump to most recent
+                self.history_saved_input = self.input_text();
+                self.search_history.len() - 1
+            }
+            Some(idx) => {
+                if idx > 0 {
+                    idx - 1
+                } else {
+                    return; // already at oldest
+                }
+            }
+        };
+        self.history_idx = Some(new_idx);
+        if let Some(entry) = self.search_history.get(new_idx).cloned() {
+            self.set_input(&entry);
+        }
+    }
+
+    /// Navigate to the next search in history (Down arrow).
+    ///
+    /// At the end of history, restores the saved input from before browsing.
+    pub fn history_forward(&mut self) {
+        let Some(idx) = self.history_idx else {
+            return; // not browsing history
+        };
+        if idx + 1 < self.search_history.len() {
+            let new_idx = idx + 1;
+            self.history_idx = Some(new_idx);
+            if let Some(entry) = self.search_history.get(new_idx).cloned() {
+                self.set_input(&entry);
+            }
+        } else {
+            // Past the end → restore saved input
+            self.history_idx = None;
+            let saved = self.history_saved_input.clone();
+            self.set_input(&saved);
+        }
+    }
+
+    /// Replace the textarea content with the given string.
+    fn set_input(&mut self, text: &str) {
+        self.textarea.select_all();
+        self.textarea.cut();
+        self.textarea.insert_str(text);
+    }
+
+    /// Load search history from disk.
+    pub fn load_history(&mut self) {
+        if let Some(path) = history_file_path() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                self.search_history = content
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect();
+            }
+        }
+    }
+
+    /// Append a single entry to the history file on disk.
+    #[expect(
+        clippy::single_call_fn,
+        reason = "separated for readability; persistence is a distinct concern"
+    )]
+    fn save_history_entry(entry: &str) {
+        use std::io::Write;
+        if let Some(path) = history_file_path() {
+            if let Some(parent) = path.parent() {
+                drop(std::fs::create_dir_all(parent));
+            }
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                drop(writeln!(file, "{entry}"));
+            }
+        }
+    }
+
     /// Toggle name-only matching mode.
     pub const fn toggle_name_only(&mut self) {
         self.name_only = !self.name_only;
@@ -315,6 +422,16 @@ impl App {
             FilterMode::DirsOnly => " [DIRS]",
         }
     }
+}
+
+/// Path to the persistent search history file.
+///
+/// Uses the platform-appropriate config directory:
+/// - macOS: `~/Library/Application Support/uffs/search_history.txt`
+/// - Windows: `%APPDATA%\uffs\search_history.txt`
+/// - Linux: `~/.config/uffs/search_history.txt`
+fn history_file_path() -> Option<std::path::PathBuf> {
+    dirs_next::config_dir().map(|config| config.join("uffs").join("search_history.txt"))
 }
 
 /// Create a configured single-line `TextArea` for the search box.

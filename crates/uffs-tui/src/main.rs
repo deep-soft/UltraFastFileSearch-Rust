@@ -257,8 +257,9 @@ fn main() -> Result<()> {
     let ratatui_backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(ratatui_backend)?;
 
-    // Create app and start loading MFT files on background threads
+    // Create app and load search history from disk
     let mut app = App::new();
+    app.load_history();
 
     let total_to_load = mft_files.len() + live_drives.len();
     let cli_no_cache = cli.no_cache;
@@ -728,6 +729,18 @@ where
                             app.search();
                             continue;
                         }
+                        // Ctrl+P: previous search in history
+                        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.history_back();
+                            needs_search = true;
+                            continue;
+                        }
+                        // Ctrl+N: next search in history
+                        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.history_forward();
+                            needs_search = true;
+                            continue;
+                        }
                         // Ctrl+R / F5: refresh all drives (reload .uffs + USN + rebuild compact)
                         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             start_refresh(app);
@@ -918,7 +931,19 @@ fn ui(frame: &mut Frame, app: &mut App) {
     )
     .bottom_margin(0);
 
-    let search_term = app.input_text().to_lowercase();
+    // Extract literal words from the pattern for highlighting.
+    // *\documents\*.txt → ["documents", "txt"]
+    // *sex*ge* → ["sex", "ge"]
+    // >regex → [] (regex too complex to highlight)
+    let raw_input = app.input_text().to_lowercase();
+    let highlight_terms: Vec<&str> = if raw_input.starts_with('>') {
+        Vec::new() // regex — don't highlight
+    } else {
+        raw_input
+            .split(['*', '?', '\\', '/', '.'])
+            .filter(|seg| !seg.is_empty())
+            .collect()
+    };
 
     // Build table rows from results
     let rows: Vec<Row> = app
@@ -959,9 +984,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
                 Span::styled(icon_str, Style::default().fg(icon_color)),
                 Span::raw(" "),
             ];
-            name_spans.extend(highlight_matches(
+            name_spans.extend(highlight_multi(
                 &row.name,
-                &search_term,
+                &highlight_terms,
                 Style::default().fg(Color::Cyan),
                 Style::default()
                     .fg(Color::White)
@@ -983,9 +1008,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
 
             // Path column (highlighted, truncated)
             let path_display = truncate_path(&row.path, 60);
-            let path_spans = highlight_matches(
+            let path_spans = highlight_multi(
                 &path_display,
-                &search_term,
+                &highlight_terms,
                 Style::default().fg(Color::DarkGray),
                 Style::default()
                     .fg(Color::White)
@@ -1114,6 +1139,47 @@ fn find_best_mft_file(dir: &std::path::Path) -> Option<PathBuf> {
     }
 
     best.map(|(path, _)| path)
+}
+
+/// Highlight multiple terms in text. Each term is highlighted independently.
+///
+/// For `*\documents\*.txt` → highlights "documents" and "txt" separately.
+fn highlight_multi(
+    text: &str,
+    terms: &[&str],
+    normal_style: Style,
+    highlight_style: Style,
+) -> Vec<Span<'static>> {
+    if terms.is_empty() {
+        return vec![Span::styled(text.to_owned(), normal_style)];
+    }
+    // Apply first term, then apply subsequent terms to the non-highlighted spans
+    let Some(&first_term) = terms.first() else {
+        return vec![Span::styled(text.to_owned(), normal_style)];
+    };
+    let mut spans = highlight_matches(text, first_term, normal_style, highlight_style);
+    for &term in terms.get(1..).unwrap_or(&[]) {
+        if term.is_empty() {
+            continue;
+        }
+        let mut new_spans = Vec::new();
+        for span in spans {
+            if span.style == highlight_style {
+                // Already highlighted — keep as-is
+                new_spans.push(span);
+            } else {
+                // Not highlighted — apply next term
+                new_spans.extend(highlight_matches(
+                    span.content.as_ref(),
+                    term,
+                    normal_style,
+                    highlight_style,
+                ));
+            }
+        }
+        spans = new_spans;
+    }
+    spans
 }
 
 /// Split text into spans, highlighting case-insensitive matches of `needle`.

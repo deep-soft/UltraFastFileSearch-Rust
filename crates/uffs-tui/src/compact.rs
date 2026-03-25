@@ -598,23 +598,86 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
         return name_search(drive, first_segment, limit);
     }
 
-    // Multi-segment: find directories matching all but the last segment,
-    // then filter children by the last segment.
+    // Multi-segment path search with ** support.
     //
-    // Example: "photos\*.jpg" → find dirs named "photos", get their children,
-    //          filter by "*.jpg" (or substring match)
+    // Segments are processed left to right, maintaining a set of candidate
+    // directories. Each segment narrows or expands the candidates:
+    //   - "**" → expand to ALL descendants (recursive)
+    //   - "*"  → direct children directories only
+    //   - "name" → direct children matching "name"
+    //
+    // The last segment is the leaf filter applied to files+dirs in candidates.
+
     let Some(leaf_pattern) = segments.last() else {
         return Vec::new();
     };
     let dir_segments = segments.get(..segments.len() - 1).unwrap_or(&[]);
 
-    // Start with all directories matching the first segment
-    let mut candidate_dirs = find_dirs_by_name(drive, first_segment);
+    // Start: first segment determines initial candidate dirs
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "record count bounded by NTFS limits, fits u32"
+    )]
+    let mut candidate_dirs: Vec<u32> = if *first_segment == "**" {
+        // ** at start = all directories in the drive
+        drive
+            .records
+            .iter()
+            .enumerate()
+            .filter(|(_, rec)| rec.is_directory() && rec.name_len > 0)
+            .map(|(idx, _)| idx as u32)
+            .collect()
+    } else {
+        find_dirs_by_name(drive, first_segment)
+    };
 
-    // Walk through intermediate segments: for each candidate dir,
-    // find children that are directories matching the next segment
+    // Walk through intermediate dir segments
     for &segment in dir_segments.get(1..).unwrap_or(&[]) {
-        let mut next_dirs = Vec::new();
+        if segment == "**" {
+            // ** = collect ALL descendant directories recursively
+            let mut all_descendants = Vec::new();
+            for &dir_idx in &candidate_dirs {
+                collect_descendant_dirs(drive, dir_idx, &mut all_descendants, limit * 10);
+            }
+            candidate_dirs = all_descendants;
+        } else {
+            // Regular segment: find matching children directories
+            let mut next_dirs = Vec::new();
+            for &dir_idx in &candidate_dirs {
+                let dir_children = drive
+                    .children
+                    .get(dir_idx as usize)
+                    .map_or(&[][..], Vec::as_slice);
+                for &child_idx in dir_children {
+                    if let Some(child_rec) = drive.records.get(child_idx as usize) {
+                        if child_rec.is_directory() {
+                            let child_name = child_rec.name(&drive.names_lower);
+                            if name_matches(child_name, segment) {
+                                next_dirs.push(child_idx);
+                            }
+                        }
+                    }
+                }
+            }
+            candidate_dirs = next_dirs;
+        }
+        if candidate_dirs.is_empty() {
+            return Vec::new();
+        }
+    }
+
+    // Collect results: if leaf is **, collect ALL descendants; otherwise filter
+    let mut results = Vec::new();
+    if *leaf_pattern == "**" {
+        // ** at end = all descendants of matched directories
+        for &dir_idx in &candidate_dirs {
+            collect_all_descendants(drive, dir_idx, &mut results, limit);
+            if results.len() >= limit {
+                break;
+            }
+        }
+    } else {
+        // Regular leaf: filter children by pattern
         for &dir_idx in &candidate_dirs {
             let dir_children = drive
                 .children
@@ -622,35 +685,12 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
                 .map_or(&[][..], Vec::as_slice);
             for &child_idx in dir_children {
                 if let Some(child_rec) = drive.records.get(child_idx as usize) {
-                    if child_rec.is_directory() {
-                        let child_name = child_rec.name(&drive.names_lower);
-                        if name_matches(child_name, segment) {
-                            next_dirs.push(child_idx);
+                    let child_name = child_rec.name(&drive.names_lower);
+                    if name_matches(child_name, leaf_pattern) {
+                        results.push(child_idx);
+                        if results.len() >= limit {
+                            return results;
                         }
-                    }
-                }
-            }
-        }
-        candidate_dirs = next_dirs;
-        if candidate_dirs.is_empty() {
-            return Vec::new();
-        }
-    }
-
-    // Now collect children of all matched directories, filtering by leaf pattern
-    let mut results = Vec::new();
-    for &dir_idx in &candidate_dirs {
-        let dir_children = drive
-            .children
-            .get(dir_idx as usize)
-            .map_or(&[][..], Vec::as_slice);
-        for &child_idx in dir_children {
-            if let Some(child_rec) = drive.records.get(child_idx as usize) {
-                let child_name = child_rec.name(&drive.names_lower);
-                if name_matches(child_name, leaf_pattern) {
-                    results.push(child_idx);
-                    if results.len() >= limit {
-                        return results;
                     }
                 }
             }
@@ -658,6 +698,65 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
     }
 
     results
+}
+
+/// Recursively collect all descendant DIRECTORY indices from a directory.
+fn collect_descendant_dirs(
+    drive: &DriveCompactIndex,
+    dir_idx: u32,
+    out: &mut Vec<u32>,
+    max: usize,
+) {
+    if out.len() >= max {
+        return;
+    }
+    let dir_children = drive
+        .children
+        .get(dir_idx as usize)
+        .map_or(&[][..], Vec::as_slice);
+    for &child_idx in dir_children {
+        if let Some(child_rec) = drive.records.get(child_idx as usize) {
+            if child_rec.is_directory() && child_rec.name_len > 0 {
+                out.push(child_idx);
+                if out.len() >= max {
+                    return;
+                }
+                collect_descendant_dirs(drive, child_idx, out, max);
+            }
+        }
+    }
+}
+
+/// Recursively collect ALL descendants (files + dirs) from a directory.
+fn collect_all_descendants(
+    drive: &DriveCompactIndex,
+    dir_idx: u32,
+    out: &mut Vec<u32>,
+    max: usize,
+) {
+    if out.len() >= max {
+        return;
+    }
+    let dir_children = drive
+        .children
+        .get(dir_idx as usize)
+        .map_or(&[][..], Vec::as_slice);
+    for &child_idx in dir_children {
+        if let Some(child_rec) = drive.records.get(child_idx as usize) {
+            if child_rec.name_len > 0 {
+                let name = child_rec.name(&drive.names_lower);
+                if !name.is_empty() && name != "." {
+                    out.push(child_idx);
+                    if out.len() >= max {
+                        return;
+                    }
+                }
+                if child_rec.is_directory() {
+                    collect_all_descendants(drive, child_idx, out, max);
+                }
+            }
+        }
+    }
 }
 
 /// Find all directory compact indices whose name matches a pattern.
