@@ -410,7 +410,7 @@ pub fn build_compact_index(
             name_offset: name_ref.offset,
             name_len: name_ref.length(),
             extension_id: name_ref.extension_id(),
-            flags: record.stdinfo.to_attributes(),
+            flags: record.stdinfo.flags,
             parent_idx,
             size: record.first_stream.size.length,
             allocated: record.first_stream.size.allocated,

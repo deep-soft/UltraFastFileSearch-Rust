@@ -33,40 +33,50 @@ pub struct StandardInfo {
 }
 
 impl StandardInfo {
-    /// Read-only file attribute flag.
-    pub const IS_READONLY: u32 = 1 << 0;
-    /// Archive file attribute flag.
-    pub const IS_ARCHIVE: u32 = 1 << 1;
-    /// System file attribute flag.
-    pub const IS_SYSTEM: u32 = 1 << 2;
-    /// Hidden file attribute flag.
-    pub const IS_HIDDEN: u32 = 1 << 3;
-    /// Offline file attribute flag.
-    pub const IS_OFFLINE: u32 = 1 << 4;
-    /// Not content indexed attribute flag.
-    pub const IS_NOT_INDEXED: u32 = 1 << 5;
-    /// No scrub data attribute flag.
-    pub const IS_NO_SCRUB_DATA: u32 = 1 << 6;
-    /// Integrity stream attribute flag.
-    pub const IS_INTEGRITY_STREAM: u32 = 1 << 7;
-    /// Pinned attribute flag.
-    pub const IS_PINNED: u32 = 1 << 8;
-    /// Unpinned attribute flag.
-    pub const IS_UNPINNED: u32 = 1 << 9;
-    /// Directory attribute flag.
-    pub const IS_DIRECTORY: u32 = 1 << 10;
-    /// Compressed file attribute flag.
-    pub const IS_COMPRESSED: u32 = 1 << 11;
-    /// Encrypted file attribute flag.
-    pub const IS_ENCRYPTED: u32 = 1 << 12;
-    /// Sparse file attribute flag.
-    pub const IS_SPARSE: u32 = 1 << 13;
-    /// Reparse point attribute flag.
-    pub const IS_REPARSE: u32 = 1 << 14;
-    /// Temporary file attribute flag.
-    pub const IS_TEMPORARY: u32 = 1 << 15;
-    /// Virtual file attribute flag.
-    pub const IS_VIRTUAL: u32 = 1 << 16;
+    // ─── Raw NTFS FILE_ATTRIBUTE_* constants ───────────────────────
+    // These match the standard Windows NTFS bit layout exactly.
+    // See: https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants
+    //
+    // RULE: Always use these named constants — never raw hex values.
+
+    /// `FILE_ATTRIBUTE_READONLY` (0x0001)
+    pub const IS_READONLY: u32 = 0x0001;
+    /// `FILE_ATTRIBUTE_HIDDEN` (0x0002)
+    pub const IS_HIDDEN: u32 = 0x0002;
+    /// `FILE_ATTRIBUTE_SYSTEM` (0x0004)
+    pub const IS_SYSTEM: u32 = 0x0004;
+    /// `FILE_ATTRIBUTE_DIRECTORY` (0x0010)
+    pub const IS_DIRECTORY: u32 = 0x0010;
+    /// `FILE_ATTRIBUTE_ARCHIVE` (0x0020)
+    pub const IS_ARCHIVE: u32 = 0x0020;
+    /// `FILE_ATTRIBUTE_DEVICE` (0x0040)
+    pub const IS_DEVICE: u32 = 0x0040;
+    /// `FILE_ATTRIBUTE_NORMAL` (0x0080)
+    pub const IS_NORMAL: u32 = 0x0080;
+    /// `FILE_ATTRIBUTE_TEMPORARY` (0x0100)
+    pub const IS_TEMPORARY: u32 = 0x0100;
+    /// `FILE_ATTRIBUTE_SPARSE_FILE` (0x0200)
+    pub const IS_SPARSE: u32 = 0x0200;
+    /// `FILE_ATTRIBUTE_REPARSE_POINT` (0x0400)
+    pub const IS_REPARSE: u32 = 0x0400;
+    /// `FILE_ATTRIBUTE_COMPRESSED` (0x0800)
+    pub const IS_COMPRESSED: u32 = 0x0800;
+    /// `FILE_ATTRIBUTE_OFFLINE` (0x1000)
+    pub const IS_OFFLINE: u32 = 0x1000;
+    /// `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` (0x2000)
+    pub const IS_NOT_INDEXED: u32 = 0x2000;
+    /// `FILE_ATTRIBUTE_ENCRYPTED` (0x4000)
+    pub const IS_ENCRYPTED: u32 = 0x4000;
+    /// `FILE_ATTRIBUTE_INTEGRITY_STREAM` (0x8000)
+    pub const IS_INTEGRITY_STREAM: u32 = 0x8000;
+    /// `FILE_ATTRIBUTE_VIRTUAL` (0x10000)
+    pub const IS_VIRTUAL: u32 = 0x0001_0000;
+    /// `FILE_ATTRIBUTE_NO_SCRUB_DATA` (0x20000)
+    pub const IS_NO_SCRUB_DATA: u32 = 0x0002_0000;
+    /// `FILE_ATTRIBUTE_PINNED` (0x80000)
+    pub const IS_PINNED: u32 = 0x0008_0000;
+    /// `FILE_ATTRIBUTE_UNPINNED` (0x100000)
+    pub const IS_UNPINNED: u32 = 0x0010_0000;
 
     /// Create from [`ExtendedStandardInfo`] - the canonical conversion point.
     ///
@@ -150,66 +160,16 @@ impl StandardInfo {
 
     /// Create directly from raw NTFS `FILE_ATTRIBUTE_*` flags.
     ///
-    /// This is the **fast path** for the unified parser hot loop.  It maps
-    /// the raw NTFS attribute bitmask directly to our compact `flags` field
-    /// in a single pass — no intermediate `ExtendedStandardInfo` struct.
+    /// Since `StandardInfo` constants now match raw NTFS bit layout,
+    /// this is a direct store — no remapping needed.
     ///
     /// Timestamps, USN, security/owner IDs must be set separately by the
     /// caller.
     #[inline]
     #[must_use]
     pub const fn from_raw_ntfs_flags(attrs: u32) -> Self {
-        let mut flags = 0_u32;
-        if attrs & 0x0001 != 0 {
-            flags |= Self::IS_READONLY;
-        }
-        if attrs & 0x0002 != 0 {
-            flags |= Self::IS_HIDDEN;
-        }
-        if attrs & 0x0004 != 0 {
-            flags |= Self::IS_SYSTEM;
-        }
-        if attrs & 0x0020 != 0 {
-            flags |= Self::IS_ARCHIVE;
-        }
-        if attrs & 0x0100 != 0 {
-            flags |= Self::IS_TEMPORARY;
-        }
-        if attrs & 0x0200 != 0 {
-            flags |= Self::IS_SPARSE;
-        }
-        if attrs & 0x0400 != 0 {
-            flags |= Self::IS_REPARSE;
-        }
-        if attrs & 0x0800 != 0 {
-            flags |= Self::IS_COMPRESSED;
-        }
-        if attrs & 0x1000 != 0 {
-            flags |= Self::IS_OFFLINE;
-        }
-        if attrs & 0x2000 != 0 {
-            flags |= Self::IS_NOT_INDEXED;
-        }
-        if attrs & 0x4000 != 0 {
-            flags |= Self::IS_ENCRYPTED;
-        }
-        if attrs & 0x8000 != 0 {
-            flags |= Self::IS_INTEGRITY_STREAM;
-        }
-        if attrs & 0x0001_0000 != 0 {
-            flags |= Self::IS_VIRTUAL;
-        }
-        if attrs & 0x0002_0000 != 0 {
-            flags |= Self::IS_NO_SCRUB_DATA;
-        }
-        if attrs & 0x0008_0000 != 0 {
-            flags |= Self::IS_PINNED;
-        }
-        if attrs & 0x0010_0000 != 0 {
-            flags |= Self::IS_UNPINNED;
-        }
         Self {
-            flags,
+            flags: attrs,
             ..Self::DEFAULT
         }
     }
@@ -226,119 +186,25 @@ impl StandardInfo {
         owner_id: 0,
     };
 
-    /// Create from Windows `FILE_ATTRIBUTE_*` flags.
+    /// Create from raw NTFS `FILE_ATTRIBUTE_*` flags.
     ///
-    /// # Deprecated
-    ///
-    /// This method is **incomplete** - it does not parse all NTFS 3.1+ flags
-    /// (integrity, `no_scrub`, pinned, unpinned, virtual). Use the canonical
-    /// two-step approach instead:
-    ///
-    /// ```ignore
-    /// let ext = ExtendedStandardInfo::from_attributes(raw_attrs);
-    /// let info = StandardInfo::from_extended(&ext);
-    /// ```
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use StandardInfo::from_extended(&ExtendedStandardInfo::from_attributes(attrs)) instead"
-    )]
+    /// Since `StandardInfo` constants now match raw NTFS bit layout,
+    /// this is a direct store — no remapping needed.
     #[must_use]
-    pub fn from_attributes(attrs: u32) -> Self {
-        let mut flags = 0_u32;
-        if attrs & 0x0001 != 0 {
-            flags |= Self::IS_READONLY;
-        }
-        if attrs & 0x0020 != 0 {
-            flags |= Self::IS_ARCHIVE;
-        }
-        if attrs & 0x0004 != 0 {
-            flags |= Self::IS_SYSTEM;
-        }
-        if attrs & 0x0002 != 0 {
-            flags |= Self::IS_HIDDEN;
-        }
-        if attrs & 0x1000 != 0 {
-            flags |= Self::IS_OFFLINE;
-        }
-        if attrs & 0x2000 != 0 {
-            flags |= Self::IS_NOT_INDEXED;
-        }
-        if attrs & 0x0001_0000 != 0 {
-            flags |= Self::IS_DIRECTORY;
-        }
-        if attrs & 0x0800 != 0 {
-            flags |= Self::IS_COMPRESSED;
-        }
-        if attrs & 0x4000 != 0 {
-            flags |= Self::IS_ENCRYPTED;
-        }
-        if attrs & 0x0200 != 0 {
-            flags |= Self::IS_SPARSE;
-        }
-        if attrs & 0x0400 != 0 {
-            flags |= Self::IS_REPARSE;
-        }
-        if attrs & 0x0100 != 0 {
-            flags |= Self::IS_TEMPORARY;
-        }
+    pub const fn from_attributes(attrs: u32) -> Self {
         Self {
-            flags,
-            ..Default::default()
+            flags: attrs,
+            ..Self::DEFAULT
         }
     }
 
-    /// Convert back to Windows `FILE_ATTRIBUTE_*` flags.
+    /// Convert to raw NTFS `FILE_ATTRIBUTE_*` flags.
+    ///
+    /// Since `StandardInfo.flags` now stores raw NTFS bits directly,
+    /// this is an identity operation.
     #[must_use]
     pub const fn to_attributes(&self) -> u32 {
-        let mut attrs = 0_u32;
-        if self.is_readonly() {
-            attrs |= 0x0001;
-        }
-        if self.is_hidden() {
-            attrs |= 0x0002;
-        }
-        if self.is_system() {
-            attrs |= 0x0004;
-        }
-        if self.is_directory() {
-            attrs |= 0x0010;
-        }
-        if self.is_archive() {
-            attrs |= 0x0020;
-        }
-        // Note: TEMPORARY (0x0100) is intentionally NOT included here.
-        // The serialized attribute view intentionally skips FILE_ATTRIBUTE_TEMPORARY.
-        if self.is_sparse() {
-            attrs |= 0x0200;
-        }
-        if self.is_reparse() {
-            attrs |= 0x0400;
-        }
-        if self.is_compressed() {
-            attrs |= 0x0800;
-        }
-        if self.is_offline() {
-            attrs |= 0x1000;
-        }
-        if self.is_not_indexed() {
-            attrs |= 0x2000;
-        }
-        if self.is_encrypted() {
-            attrs |= 0x4000;
-        }
-        if self.is_integrity_stream() {
-            attrs |= 0x8000;
-        }
-        if self.is_no_scrub_data() {
-            attrs |= 0x0002_0000;
-        }
-        if self.is_pinned() {
-            attrs |= 0x0008_0000;
-        }
-        if self.is_unpinned() {
-            attrs |= 0x0010_0000;
-        }
-        attrs
+        self.flags
     }
 
     /// Returns true if the read-only flag is set.

@@ -175,7 +175,7 @@ impl MftIndex {
             5 => 181,
             6 => 185,
             7 => 193,
-            8 => 195,
+            8 | 9 => 195,
             _ => return Err("Unsupported index version"),
         };
         let record_bytes =
@@ -207,7 +207,14 @@ impl MftIndex {
             let modified = read_i64!();
             let accessed = read_i64!();
             let mft_changed = read_i64!();
-            let flags = read_u32!();
+            let raw_flags = read_u32!();
+            // v8 and earlier: flags used a remapped internal bit layout.
+            // v9+: flags store raw NTFS FILE_ATTRIBUTE_* bits directly.
+            let flags = if version <= 8 {
+                v8_flags_to_raw_ntfs(raw_flags)
+            } else {
+                raw_flags
+            };
             // Version 5+: NTFS 3.0+ forensic fields
             let usn = if version >= 5 { read_u64!() } else { 0 };
             let security_id = if version >= 5 { read_u32!() } else { 0 };
@@ -498,4 +505,70 @@ impl MftIndex {
 
         Ok((index, header))
     }
+}
+
+/// Convert v8 (and earlier) remapped `StandardInfo` flags to raw NTFS
+/// `FILE_ATTRIBUTE_*` bits.
+///
+/// Input: old v8 bit positions (frozen format values).
+/// Output: raw NTFS constants via `StandardInfo::IS_*`.
+const fn v8_flags_to_raw_ntfs(old: u32) -> u32 {
+    let mut ntfs = 0_u32;
+    // v8 bit position → raw NTFS constant
+    if old & (1 << 0) != 0 {
+        ntfs |= StandardInfo::IS_READONLY;
+    }
+    if old & (1 << 1) != 0 {
+        ntfs |= StandardInfo::IS_ARCHIVE;
+    }
+    if old & (1 << 2) != 0 {
+        ntfs |= StandardInfo::IS_SYSTEM;
+    }
+    if old & (1 << 3) != 0 {
+        ntfs |= StandardInfo::IS_HIDDEN;
+    }
+    if old & (1 << 4) != 0 {
+        ntfs |= StandardInfo::IS_OFFLINE;
+    }
+    if old & (1 << 5) != 0 {
+        ntfs |= StandardInfo::IS_NOT_INDEXED;
+    }
+    if old & (1 << 6) != 0 {
+        ntfs |= StandardInfo::IS_NO_SCRUB_DATA;
+    }
+    if old & (1 << 7) != 0 {
+        ntfs |= StandardInfo::IS_INTEGRITY_STREAM;
+    }
+    if old & (1 << 8) != 0 {
+        ntfs |= StandardInfo::IS_PINNED;
+    }
+    if old & (1 << 9) != 0 {
+        ntfs |= StandardInfo::IS_UNPINNED;
+    }
+    if old & (1 << 10) != 0 {
+        ntfs |= StandardInfo::IS_DIRECTORY;
+    }
+    if old & (1 << 11) != 0 {
+        ntfs |= StandardInfo::IS_COMPRESSED;
+    }
+    if old & (1 << 12) != 0 {
+        ntfs |= StandardInfo::IS_ENCRYPTED;
+    }
+    if old & (1 << 13) != 0 {
+        ntfs |= StandardInfo::IS_SPARSE;
+    }
+    if old & (1 << 14) != 0 {
+        ntfs |= StandardInfo::IS_REPARSE;
+    }
+    if old & (1 << 15) != 0 {
+        ntfs |= StandardInfo::IS_TEMPORARY;
+    }
+    if old & (1 << 16) != 0 {
+        ntfs |= StandardInfo::IS_VIRTUAL;
+    }
+    // Preserve DELETED_FLAG (bit 31) — internal USN marker, not an NTFS attribute
+    if old & 0x8000_0000 != 0 {
+        ntfs |= 0x8000_0000;
+    }
+    ntfs
 }
