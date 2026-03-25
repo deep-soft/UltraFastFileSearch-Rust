@@ -785,6 +785,8 @@ where
             app.textarea.input(ev);
             let after = app.input_text();
             if before != after {
+                // User typed something manually → exit history browsing mode
+                app.history_idx = None;
                 needs_search = true;
             }
         } else if needs_search {

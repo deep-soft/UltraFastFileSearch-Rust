@@ -225,7 +225,8 @@ impl App {
             if input.len() > self.peak_search.len() {
                 self.peak_search.clone_from(&input);
             }
-            self.history_idx = None;
+            // Don't reset history_idx here — it's managed by
+            // history_back/history_forward and reset_history_browsing()
             input
         };
 
