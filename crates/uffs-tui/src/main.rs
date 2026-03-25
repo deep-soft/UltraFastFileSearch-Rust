@@ -695,7 +695,11 @@ where
                     // Intercept action keys BEFORE textarea.
                     // All keybindings defined in keys.rs — single source of truth.
                     let key_ev = *key;
-                    if keys::matches(key_ev, keys::NAV_DOWN) {
+                    if keys::matches(key_ev, keys::HELP_CYCLE) {
+                        const HELP_PAGES: u8 = 4;
+                        app.help_page = (app.help_page + 1) % HELP_PAGES;
+                        continue;
+                    } else if keys::matches(key_ev, keys::NAV_DOWN) {
                         app.next();
                         continue;
                     } else if keys::matches(key_ev, keys::NAV_UP) {
@@ -1077,26 +1081,82 @@ fn ui(frame: &mut Frame, app: &mut App) {
 
     frame.render_stateful_widget(table, chunks[2], &mut app.table_state.clone());
 
-    // Help bar
-    let help = Paragraph::new(Line::from(vec![
-        Span::styled("↑↓", Style::default().fg(Color::Green)),
-        Span::raw(" Nav  "),
-        Span::styled("PgUp/Dn", Style::default().fg(Color::Green)),
-        Span::raw(" Page  "),
-        Span::styled("Enter", Style::default().fg(Color::Green)),
-        Span::raw(" Path  "),
-        Span::styled("Tab", Style::default().fg(Color::Green)),
-        Span::raw(" Sort  "),
-        Span::styled("F2", Style::default().fg(Color::Green)),
-        Span::raw(" Name-only  "),
-        Span::styled("F3", Style::default().fg(Color::Green)),
-        Span::raw(" Filter  "),
-        Span::styled("F5", Style::default().fg(Color::Green)),
-        Span::raw(" Refresh  "),
-        Span::styled("Ctrl+Q", Style::default().fg(Color::Green)),
-        Span::raw(" Quit"),
-    ]))
-    .block(Block::default().borders(Borders::ALL).title(" Help "));
+    // Dynamic help bar — F1 cycles pages
+    let key_style = Style::default().fg(Color::Green);
+    let help_spans: Vec<Span> = match app.help_page {
+        0 => vec![
+            Span::styled("↑↓", key_style),
+            Span::raw(" Nav  "),
+            Span::styled("PgUp/Dn", key_style),
+            Span::raw(" Page  "),
+            Span::styled("Enter", key_style),
+            Span::raw(" Path  "),
+            Span::styled("Tab", key_style),
+            Span::raw(" Sort  "),
+            Span::styled("S-Tab", key_style),
+            Span::raw(" Reverse  "),
+            Span::styled("Ctrl+Q", key_style),
+            Span::raw(" Quit  "),
+            Span::styled("F1", Style::default().fg(Color::DarkGray)),
+            Span::raw(" More…"),
+        ],
+        1 => vec![
+            Span::styled("F2", key_style),
+            Span::raw(" Name-only  "),
+            Span::styled("F3", key_style),
+            Span::raw(" Filter  "),
+            Span::styled("F5", key_style),
+            Span::raw(" Refresh  "),
+            Span::styled("F7", key_style),
+            Span::raw(" Case  "),
+            Span::styled("F8", key_style),
+            Span::raw(" Word  "),
+            Span::styled("F1", Style::default().fg(Color::DarkGray)),
+            Span::raw(" More…"),
+        ],
+        2 => vec![
+            Span::styled("Ctrl+U", key_style),
+            Span::raw(" Clear  "),
+            Span::styled("Ctrl+Z", key_style),
+            Span::raw(" Undo  "),
+            Span::styled("Ctrl+Y", key_style),
+            Span::raw(" Redo  "),
+            Span::styled("Ctrl+A", key_style),
+            Span::raw(" Select  "),
+            Span::styled("Ctrl+P", key_style),
+            Span::raw(" Prev  "),
+            Span::styled("Ctrl+N", key_style),
+            Span::raw(" Next  "),
+            Span::styled("Ctrl+R", key_style),
+            Span::raw(" Refresh  "),
+            Span::styled("F1", Style::default().fg(Color::DarkGray)),
+            Span::raw(" More…"),
+        ],
+        _ => vec![
+            Span::styled("text", key_style),
+            Span::raw(" substring  "),
+            Span::styled("*glob*", key_style),
+            Span::raw(" wildcard  "),
+            Span::styled("?", key_style),
+            Span::raw(" single char  "),
+            Span::styled("\\path\\*", key_style),
+            Span::raw(" tree  "),
+            Span::styled("**", key_style),
+            Span::raw(" recursive  "),
+            Span::styled(">regex", key_style),
+            Span::raw("  "),
+            Span::styled("F1", Style::default().fg(Color::DarkGray)),
+            Span::raw(" More…"),
+        ],
+    };
+    let page_labels = ["Nav", "Toggles", "Ctrl", "Patterns"];
+    let page_label = page_labels
+        .get(app.help_page as usize)
+        .unwrap_or(&"Help");
+    let help = Paragraph::new(Line::from(help_spans))
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            " Help ({page_label}) — F1 to cycle "
+        )));
     frame.render_widget(help, chunks[3]);
 }
 

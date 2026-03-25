@@ -58,6 +58,8 @@ pub struct App {
     /// Longest search pattern in the current typing session.
     /// Pushed to history when the search box is cleared.
     pub peak_search: String,
+    /// Current help bar page (F1 cycles through pages).
+    pub help_page: u8,
     /// Visible page size for PageUp/Down (set by `ui()` on each render).
     pub page_size: usize,
 }
@@ -107,6 +109,7 @@ impl App {
             history_idx: None,
             history_saved_input: String::new(),
             peak_search: String::new(),
+            help_page: 0,
             page_size: 20,
         }
     }
@@ -134,6 +137,7 @@ impl App {
             history_idx: None,
             history_saved_input: String::new(),
             peak_search: String::new(),
+            help_page: 0,
             page_size: 20,
         }
     }

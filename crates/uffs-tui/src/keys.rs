@@ -34,6 +34,11 @@ pub const SORT_CYCLE: KeyBind = (KeyCode::Tab, KeyModifiers::NONE);
 /// Toggle sort direction (ascending ↔ descending).
 pub const SORT_DIRECTION: KeyBind = (KeyCode::BackTab, KeyModifiers::SHIFT);
 
+// ─── Help ───────────────────────────────────────────────────────────────
+
+/// Cycle help bar pages (Nav → Toggles → Ctrl → Search modes).
+pub const HELP_CYCLE: KeyBind = (KeyCode::F(1), KeyModifiers::NONE);
+
 // ─── Search mode toggles ───────────────────────────────────────────────
 
 /// Toggle name-only matching.
