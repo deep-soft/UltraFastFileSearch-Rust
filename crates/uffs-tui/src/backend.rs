@@ -244,6 +244,22 @@ pub enum SortColumn {
     Type,
 }
 
+impl SortColumn {
+    /// Human-readable label for status bar display.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::Size => "Size",
+            Self::Modified => "Modified",
+            Self::Path => "Path",
+            Self::Drive => "Drive",
+            Self::Extension => "Extension",
+            Self::Type => "Type",
+        }
+    }
+}
+
 /// Filter mode for file/directory results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterMode {

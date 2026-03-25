@@ -1015,15 +1015,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     )
     .header(header)
     .block(Block::default().borders(Borders::ALL).title({
-        let sort_label = match app.sort_column() {
-            backend::SortColumn::Name => "Name",
-            backend::SortColumn::Size => "Size",
-            backend::SortColumn::Modified => "Modified",
-            backend::SortColumn::Path => "Path",
-            backend::SortColumn::Drive => "Drive",
-            backend::SortColumn::Extension => "Extension",
-            backend::SortColumn::Type => "Type",
-        };
+        let sort_label = app.sort_column().label();
         let dir_label = if app.sort_desc() { "▼" } else { "▲" };
         let filter_label = app.filter_label();
         let mode_label = if app.input_text().is_empty() {

@@ -201,12 +201,23 @@ impl App {
             return;
         }
 
+        // Show working indicator (visible if UI renders before search completes)
+        let fc = |n: usize| uffs_mft::format_number_commas(n as u64);
+        let sort_label = self.sort_column().label();
+        if pattern == "*" {
+            self.status = format!(
+                "⏳ Scanning {} records — Sort: {sort_label}...",
+                fc(self.backend.total_records())
+            );
+        } else {
+            self.status = format!("⏳ Searching for \"{pattern}\"...");
+        }
+
         let result = self.backend.search(&pattern, self.name_only);
         self.last_search_ms = result.duration.as_millis();
         self.results = result.rows;
         crate::backend::apply_filter(&mut self.results, self.filter_mode);
 
-        let fc = |n: usize| uffs_mft::format_number_commas(n as u64);
         let total_trigrams: usize = self
             .backend
             .drives
@@ -248,7 +259,7 @@ impl App {
     pub fn cycle_sort(&mut self) {
         self.backend.cycle_sort();
         if self.input_text().is_empty() {
-            self.search(); // re-scan all 25M for new sort column
+            self.search(); // re-scan all 25M for new sort column (status set inside)
         } else {
             self.results = self.backend.last_results.clone();
             crate::backend::apply_filter(&mut self.results, self.filter_mode);
@@ -262,7 +273,7 @@ impl App {
     pub fn toggle_sort_direction(&mut self) {
         self.backend.toggle_sort_direction();
         if self.input_text().is_empty() {
-            self.search(); // re-scan all 25M for reversed direction
+            self.search(); // re-scan all 25M for reversed direction (status set inside)
         } else {
             self.results = self.backend.last_results.clone();
             crate::backend::apply_filter(&mut self.results, self.filter_mode);
