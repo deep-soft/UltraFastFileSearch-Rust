@@ -77,6 +77,10 @@ impl StandardInfo {
     pub const IS_PINNED: u32 = 0x0008_0000;
     /// `FILE_ATTRIBUTE_UNPINNED` (0x100000)
     pub const IS_UNPINNED: u32 = 0x0010_0000;
+    /// `FILE_ATTRIBUTE_RECALL_ON_OPEN` (0x40000)
+    pub const IS_RECALL_ON_OPEN: u32 = 0x0004_0000;
+    /// `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` (0x400000)
+    pub const IS_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
 
     /// Create from [`ExtendedStandardInfo`] - the canonical conversion point.
     ///
@@ -308,6 +312,40 @@ impl StandardInfo {
     #[must_use]
     pub const fn is_virtual(&self) -> bool {
         self.flags & Self::IS_VIRTUAL != 0
+    }
+    /// Returns true if the recall-on-open flag is set (tiered storage).
+    #[inline]
+    #[must_use]
+    pub const fn is_recall_on_open(&self) -> bool {
+        self.flags & Self::IS_RECALL_ON_OPEN != 0
+    }
+    /// Returns true if the recall-on-data-access flag is set (tiered storage).
+    #[inline]
+    #[must_use]
+    pub const fn is_recall_on_data_access(&self) -> bool {
+        self.flags & Self::IS_RECALL_ON_DATA_ACCESS != 0
+    }
+
+    /// Convert to raw NTFS attributes masked to the 15 bits the C++ baseline
+    /// tracks. Used by `--parity-compat` to produce output matching C++ SHA256.
+    #[must_use]
+    pub const fn parity_attributes(&self) -> u32 {
+        self.flags
+            & (Self::IS_READONLY
+                | Self::IS_HIDDEN
+                | Self::IS_SYSTEM
+                | Self::IS_DIRECTORY
+                | Self::IS_ARCHIVE
+                | Self::IS_SPARSE
+                | Self::IS_REPARSE
+                | Self::IS_COMPRESSED
+                | Self::IS_OFFLINE
+                | Self::IS_NOT_INDEXED
+                | Self::IS_ENCRYPTED
+                | Self::IS_INTEGRITY_STREAM
+                | Self::IS_NO_SCRUB_DATA
+                | Self::IS_PINNED
+                | Self::IS_UNPINNED)
     }
 
     /// Sets or clears the directory flag.

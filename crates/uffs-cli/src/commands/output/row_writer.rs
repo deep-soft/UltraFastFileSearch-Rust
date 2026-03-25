@@ -497,6 +497,19 @@ fn write_row_columns(
             OutputColumn::Bulkiness => {
                 row_buffer.push_str(OutputColumn::Bulkiness.default_value());
             }
+            OutputColumn::RecallOnOpen => {
+                append_bool(row_buffer, output_config, record.stdinfo.is_recall_on_open());
+            }
+            OutputColumn::RecallOnDataAccess => {
+                append_bool(
+                    row_buffer,
+                    output_config,
+                    record.stdinfo.is_recall_on_data_access(),
+                );
+            }
+            OutputColumn::ParityAttributes => {
+                row_buffer.push_str(itoa_buf.format(record.stdinfo.parity_attributes()));
+            }
         }
     }
 }

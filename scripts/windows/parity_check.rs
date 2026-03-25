@@ -67,7 +67,7 @@ fn check(cfg: &Config, drv: &str) -> bool {
     print!("  [1/4] C++ scan..."); flush();
     let c = scan(&cfg.cpp, &[&cfg.pattern, &cpp_drives_arg], &cpp_f); pres(&c);
     print!("  [2/4] Rust scan..."); flush();
-    let mut rust_args: Vec<&str> = vec![&cfg.pattern, "--drive", drv, "--no-cache", "--format", "custom"];
+    let mut rust_args: Vec<&str> = vec![&cfg.pattern, "--drive", drv, "--no-cache", "--format", "custom", "--parity-compat"];
     if cfg.name_only { rust_args.push("--name-only"); }
     let r = scan(&cfg.rust, &rust_args, &rust_f); pres(&r);
 

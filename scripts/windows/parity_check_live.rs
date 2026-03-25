@@ -289,6 +289,7 @@ fn run_drive_parity(
         "--no-cache",
         "--format",
         "custom",
+        "--parity-compat",
     ];
     if name_only {
         rust_args.push("--name-only");

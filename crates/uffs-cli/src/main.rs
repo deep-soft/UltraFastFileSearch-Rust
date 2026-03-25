@@ -279,7 +279,7 @@ async fn run() -> Result<()> {
                     cli.sort_desc,
                     cli.ext.as_deref(),
                     &cli.out,
-                    &cli.columns,
+                    if cli.parity_compat { "parity" } else { &cli.columns },
                     &cli.sep,
                     &cli.quotes,
                     cli.header,

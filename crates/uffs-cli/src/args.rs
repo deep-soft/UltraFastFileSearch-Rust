@@ -290,6 +290,12 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub chaos_seed: Option<u64>,
 
+    /// C++ parity-compatible output: use original 25 columns with masked
+    /// attributes (15 baseline bits only). For SHA256 verification against
+    /// C++ golden baseline.
+    #[arg(long)]
+    pub parity_compat: bool,
+
     /// NTFS reserved cluster bytes to add to root directory's `Size on Disk`.
     ///
     /// C++ adds `(TotalReserved + MftZoneEnd - MftZoneStart) *

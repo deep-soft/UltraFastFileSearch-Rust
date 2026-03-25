@@ -67,12 +67,19 @@ pub enum OutputColumn {
     NoScrub,
     /// Directory flag (boolean, separate from Type).
     DirectoryFlag,
+    /// Recall on open attribute (tiered/cloud storage).
+    RecallOnOpen,
+    /// Recall on data access attribute (tiered/cloud storage).
+    RecallOnDataAccess,
+    /// Raw attribute flags masked to 15 C++ baseline bits (for parity).
+    ParityAttributes,
 }
 
-/// Default column order matching C++ output exactly.
+/// Column order matching C++ output exactly (25 columns).
 ///
-/// This is the order used when `--columns all` is specified.
-pub const CPP_COLUMN_ORDER: &[OutputColumn] = &[
+/// Used by `--parity-compat` to produce output that matches the C++ baseline.
+/// The Attributes column here outputs `parity_attributes()` (masked to 15 bits).
+pub const PARITY_COLUMN_ORDER: &[OutputColumn] = &[
     OutputColumn::Path,
     OutputColumn::Name,
     OutputColumn::PathOnly,
@@ -97,6 +104,43 @@ pub const CPP_COLUMN_ORDER: &[OutputColumn] = &[
     OutputColumn::Encrypted,
     OutputColumn::Sparse,
     OutputColumn::Reparse,
+    OutputColumn::ParityAttributes,
+];
+
+/// Default column order: data columns + boolean attributes in NTFS flag value
+/// order (lowest → highest), matching the NTFS evolution of attribute flags.
+///
+/// This is the order used when `--columns all` is specified.
+pub const CPP_COLUMN_ORDER: &[OutputColumn] = &[
+    // ── Data columns ────────────────────────────────────────────────
+    OutputColumn::Path,
+    OutputColumn::Name,
+    OutputColumn::PathOnly,
+    OutputColumn::Size,
+    OutputColumn::SizeOnDisk,
+    OutputColumn::Created,
+    OutputColumn::Modified,
+    OutputColumn::Accessed,
+    OutputColumn::Descendants,
+    // ── Boolean attributes in NTFS flag value order ─────────────────
+    OutputColumn::ReadOnly,          // 0x0001
+    OutputColumn::Hidden,            // 0x0002
+    OutputColumn::System,            // 0x0004
+    OutputColumn::DirectoryFlag,     // 0x0010
+    OutputColumn::Archive,           // 0x0020
+    OutputColumn::Sparse,            // 0x0200
+    OutputColumn::Reparse,           // 0x0400
+    OutputColumn::Compressed,        // 0x0800
+    OutputColumn::Offline,           // 0x1000
+    OutputColumn::NotIndexed,        // 0x2000
+    OutputColumn::Encrypted,         // 0x4000
+    OutputColumn::Integrity,         // 0x8000
+    OutputColumn::NoScrub,           // 0x20000
+    OutputColumn::RecallOnOpen,      // 0x40000
+    OutputColumn::Pinned,            // 0x80000
+    OutputColumn::Unpinned,          // 0x100000
+    OutputColumn::RecallOnDataAccess, // 0x400000
+    // ── Raw aggregate ───────────────────────────────────────────────
     OutputColumn::Attributes,
 ];
 
@@ -153,6 +197,9 @@ impl OutputColumn {
             "integrity" => Some(Self::Integrity),
             "noscrub" => Some(Self::NoScrub),
             "directoryflag" => Some(Self::DirectoryFlag),
+            "recallonopen" | "recall_on_open" => Some(Self::RecallOnOpen),
+            "recallondataaccess" | "recall_on_data_access" => Some(Self::RecallOnDataAccess),
+            "parityattributes" | "parity_attributes" => Some(Self::ParityAttributes),
             _ => None,
         }
     }
@@ -197,6 +244,9 @@ impl OutputColumn {
             Self::Integrity => "is_integrity_stream",
             Self::NoScrub => "is_no_scrub_data",
             Self::DirectoryFlag => "is_directory",
+            Self::RecallOnOpen => "is_recall_on_open",
+            Self::RecallOnDataAccess => "is_recall_on_data_access",
+            Self::ParityAttributes => "parity_flags",
         }
     }
 
@@ -236,6 +286,9 @@ impl OutputColumn {
             Self::Integrity => "Integrity",
             Self::NoScrub => "No scrub file",
             Self::DirectoryFlag => "Directory Flag",
+            Self::RecallOnOpen => "Recall on open",
+            Self::RecallOnDataAccess => "Recall on data access",
+            Self::ParityAttributes => "Attributes",
         }
     }
 
@@ -297,7 +350,10 @@ impl OutputColumn {
             | Self::Pinned
             | Self::Unpinned
             | Self::Integrity
-            | Self::NoScrub => "0",
+            | Self::NoScrub
+            | Self::RecallOnOpen
+            | Self::RecallOnDataAccess
+            | Self::ParityAttributes => "0",
             // String and timestamp columns default to empty
             Self::Path
             | Self::Name

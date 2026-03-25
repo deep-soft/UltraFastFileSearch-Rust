@@ -1080,6 +1080,7 @@ fn regenerate_rust_output(
         tz_str.clone(),
         "--format".to_string(),
         "custom".to_string(), // Match C++ baseline format (includes footer)
+        "--parity-compat".to_string(), // 25 C++ columns + masked attributes
         "--out".to_string(),
         rust_output.to_string_lossy().to_string(),
     ];
@@ -1480,7 +1481,9 @@ fn show_first_sorted_diffs(file_a: &Path, file_b: &Path) {
         return;
     }
 
-    // Collect indices of lines that differ
+    // Collect indices of lines that differ.
+    // With --parity-compat, uffs outputs exactly 25 C++ baseline columns
+    // with masked attributes (15 bits), so direct comparison is correct.
     let diff_indices: Vec<usize> = (0..n)
         .filter(|&i| sorted_baseline[i] != sorted_rust[i])
         .collect();

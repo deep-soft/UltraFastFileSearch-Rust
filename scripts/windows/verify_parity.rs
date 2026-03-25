@@ -223,7 +223,7 @@ fn verify_drive(cfg: &Config, drive: &str) -> DriveResult {
     let rust_start = Instant::now();
     let rust_ok = run_scan_with_log(
         &cfg.rust_bin,
-        &["*", "--drive", drive, "--no-cache", "--format", "custom"],
+        &["*", "--drive", drive, "--no-cache", "--format", "custom", "--parity-compat"],
         &rust_file,
         &rust_log_file,
     );

@@ -47,6 +47,10 @@ pub(in crate::commands) enum AttrKind {
     NoScrub,
     /// Directory flag.
     Directory,
+    /// Recall on open (tiered/cloud storage).
+    RecallOnOpen,
+    /// Recall on data access (tiered/cloud storage).
+    RecallOnDataAccess,
 }
 
 impl AttrKind {
@@ -71,6 +75,8 @@ impl AttrKind {
             "integrity" => Some(Self::Integrity),
             "noscrub" => Some(Self::NoScrub),
             "directory" | "dir" => Some(Self::Directory),
+            "recallonopen" | "recall_on_open" => Some(Self::RecallOnOpen),
+            "recallondataaccess" | "recall_on_data_access" => Some(Self::RecallOnDataAccess),
             _ => None,
         }
     }
@@ -97,6 +103,8 @@ impl AttrKind {
             Self::Integrity => record.stdinfo.is_integrity_stream(),
             Self::NoScrub => record.stdinfo.is_no_scrub_data(),
             Self::Directory => record.is_directory(),
+            Self::RecallOnOpen => record.stdinfo.is_recall_on_open(),
+            Self::RecallOnDataAccess => record.stdinfo.is_recall_on_data_access(),
         }
     }
 }

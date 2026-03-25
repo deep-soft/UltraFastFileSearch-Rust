@@ -71,6 +71,9 @@ impl OutputConfig {
         if input == "all" {
             return None;
         }
+        if input == "parity" {
+            return Some(super::column::PARITY_COLUMN_ORDER.to_vec());
+        }
 
         let cols: Vec<OutputColumn> = input
             .split(',')

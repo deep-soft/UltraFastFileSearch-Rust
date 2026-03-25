@@ -193,6 +193,8 @@ pub(super) fn results_to_dataframe(
     let mut is_pinned: Vec<bool> = Vec::with_capacity(height);
     let mut is_unpinned: Vec<bool> = Vec::with_capacity(height);
     let mut is_virtual: Vec<bool> = Vec::with_capacity(height);
+    let mut is_recall_on_open: Vec<bool> = Vec::with_capacity(height);
+    let mut is_recall_on_data_access: Vec<bool> = Vec::with_capacity(height);
     let mut flags_values: Vec<u32> = Vec::with_capacity(height);
 
     let mut descendants_values: Vec<u32> = Vec::with_capacity(height);
@@ -256,6 +258,8 @@ pub(super) fn results_to_dataframe(
             is_pinned.push(rec.stdinfo.is_pinned());
             is_unpinned.push(rec.stdinfo.is_unpinned());
             is_virtual.push(rec.stdinfo.is_virtual());
+            is_recall_on_open.push(rec.stdinfo.is_recall_on_open());
+            is_recall_on_data_access.push(rec.stdinfo.is_recall_on_data_access());
             flags_values.push(rec.stdinfo.to_attributes());
         } else {
             allocated_sizes.push(0);
@@ -280,6 +284,8 @@ pub(super) fn results_to_dataframe(
             is_pinned.push(false);
             is_unpinned.push(false);
             is_virtual.push(false);
+            is_recall_on_open.push(false);
+            is_recall_on_data_access.push(false);
             flags_values.push(0);
         }
 
@@ -336,6 +342,8 @@ pub(super) fn results_to_dataframe(
         Series::new("is_pinned".into(), is_pinned).into_column(),
         Series::new("is_unpinned".into(), is_unpinned).into_column(),
         Series::new("is_virtual".into(), is_virtual).into_column(),
+        Series::new("is_recall_on_open".into(), is_recall_on_open).into_column(),
+        Series::new("is_recall_on_data_access".into(), is_recall_on_data_access).into_column(),
         Series::new("flags".into(), flags_values).into_column(),
         Series::new("descendants".into(), descendants_values).into_column(),
         Series::new("treesize".into(), treesize_values).into_column(),
