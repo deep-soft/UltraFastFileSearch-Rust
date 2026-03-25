@@ -53,7 +53,9 @@ mod app;
 /// Search backend: compact-index multi-drive search.
 pub(crate) mod backend;
 /// Compact in-memory index (72 bytes/record, replaces full MftIndex).
+mod columns;
 mod compact;
+mod filters;
 /// On-demand full record lookup from `.uffs` cache files.
 mod full_record;
 /// Search history: entry type, file format, CLI command roundtrip.
@@ -395,6 +397,12 @@ fn main() -> Result<()> {
                             size: 0,
                             is_directory: false,
                             modified: 0,
+                            created: 0,
+                            accessed: 0,
+                            flags: 0,
+                            allocated: 0,
+                            descendants: 0,
+                            treesize: 0,
                         });
                     }
                     Err(err) => {
@@ -405,6 +413,12 @@ fn main() -> Result<()> {
                             size: 0,
                             is_directory: false,
                             modified: 0,
+                            created: 0,
+                            accessed: 0,
+                            flags: 0,
+                            allocated: 0,
+                            descendants: 0,
+                            treesize: 0,
                         });
                     }
                 }

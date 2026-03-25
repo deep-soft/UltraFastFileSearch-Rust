@@ -189,20 +189,19 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
         }
     };
 
-    // Build table header row
-    let header = Row::new(vec![
-        Cell::from(col_header(backend::SortColumn::Drive, "Drv")),
-        Cell::from(col_header(backend::SortColumn::Name, "Name")),
-        Cell::from(col_header(backend::SortColumn::Size, "Size")),
-        Cell::from(col_header(backend::SortColumn::Modified, "Modified")),
-        Cell::from(col_header(backend::SortColumn::Path, "Path")),
-    ])
-    .style(
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )
-    .bottom_margin(0);
+    // Build table header row from visible columns
+    let vis = &app.visible_columns;
+    let header_cells: Vec<Cell> = vis
+        .iter()
+        .map(|col| Cell::from(col_header(col.to_sort_column(), col.label())))
+        .collect();
+    let header = Row::new(header_cells)
+        .style(
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+        .bottom_margin(0);
 
     // Extract literal words from the pattern for highlighting.
     // *\documents\*.txt → ["documents", "txt"]
@@ -218,125 +217,62 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
             .collect()
     };
 
-    // Build table rows from results
+    // Build table rows from results, respecting visible column selection
+    let num_cols = vis.len();
     let rows: Vec<Row> = app
         .results
         .iter()
         .map(|row| {
             // Loading progress messages (path empty = loading msg)
             if row.path.is_empty() {
-                return Row::new(vec![
-                    Cell::from(""),
-                    Cell::from(Line::from(Span::styled(
-                        row.name.clone(),
-                        Style::default()
-                            .fg(get_drive_color(row.drive))
-                            .add_modifier(Modifier::BOLD),
-                    ))),
-                    Cell::from(""),
-                    Cell::from(""),
-                    Cell::from(""),
-                ]);
+                let mut cells: Vec<Cell> = vec![Cell::from(""); num_cols];
+                // Put the message in the second column (or first if only one)
+                let msg_idx = usize::from(num_cols > 1);
+                cells[msg_idx] = Cell::from(Line::from(Span::styled(
+                    row.name.clone(),
+                    Style::default()
+                        .fg(get_drive_color(row.drive))
+                        .add_modifier(Modifier::BOLD),
+                )));
+                return Row::new(cells);
             }
 
-            // Get file-type icon from devicons (Nerd Font glyphs)
-            let fi = devicons::icon_for_file(&row.name, &None);
-            let icon_str = fi.icon.to_string();
-            let icon_color = devicon_color(fi.color);
-
-            // Drive column (colored letter)
-            let drive_cell = Cell::from(Line::from(Span::styled(
-                row.drive.to_string(),
-                Style::default()
-                    .fg(get_drive_color(row.drive))
-                    .add_modifier(Modifier::BOLD),
-            )));
-
-            // Name column: icon + highlighted name
-            let mut name_spans = vec![
-                Span::styled(icon_str, Style::default().fg(icon_color)),
-                Span::raw(" "),
-            ];
-            name_spans.extend(highlight_multi(
-                &row.name,
-                &highlight_terms,
-                Style::default().fg(Color::Cyan),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            let name_cell = Cell::from(Line::from(name_spans));
-
-            // Size column
-            let size_cell = Cell::from(Line::from(Span::styled(
-                uffs_mft::format_bytes(row.size),
-                Style::default().fg(Color::Yellow),
-            )));
-
-            // Modified column
-            let modified_cell = Cell::from(Line::from(Span::styled(
-                uffs_mft::format_timestamp(row.modified),
-                Style::default().fg(Color::DarkGray),
-            )));
-
-            // Path column (highlighted, truncated)
-            let path_display = truncate_path(&row.path, 60);
-            let path_spans = highlight_multi(
-                &path_display,
-                &highlight_terms,
-                Style::default().fg(Color::DarkGray),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            );
-            let path_cell = Cell::from(Line::from(path_spans));
-
-            Row::new(vec![
-                drive_cell,
-                name_cell,
-                size_cell,
-                modified_cell,
-                path_cell,
-            ])
+            let cells: Vec<Cell> = vis
+                .iter()
+                .map(|col| build_cell(*col, row, &highlight_terms, &drive_colors))
+                .collect();
+            Row::new(cells)
         })
         .collect();
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(3),  // Drive
-            Constraint::Min(20),    // Name (flexible, takes remaining space)
-            Constraint::Length(12), // Size
-            Constraint::Length(19), // Modified
-            Constraint::Length(62), // Path
-        ],
-    )
-    .header(header)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(results_border)
-            .title({
-                let sort_label = app.sort_column().label();
-                let dir_label = if app.sort_desc() { "▼" } else { "▲" };
-                let filter_label = app.filter_label();
-                let mode_label = if app.input_text().is_empty() {
-                    " │ ALL"
-                } else {
-                    ""
-                };
-                format!(
-                    " Results ({}) │ Sort: {sort_label} {dir_label}{filter_label}{mode_label} ",
-                    app.results.len()
-                )
-            }),
-    )
-    .row_highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▶ ");
+    let widths: Vec<Constraint> = vis.iter().map(|col| col.default_constraint()).collect();
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(results_border)
+                .title({
+                    let sort_label = app.sort_column().label();
+                    let dir_label = if app.sort_desc() { "▼" } else { "▲" };
+                    let filter_label = app.filter_label();
+                    let mode_label = if app.input_text().is_empty() {
+                        " │ ALL"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        " Results ({}) │ Sort: {sort_label} {dir_label}{filter_label}{mode_label} ",
+                        app.results.len()
+                    )
+                }),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
 
     frame.render_stateful_widget(table, chunks[2], &mut app.table_state.clone());
 
@@ -552,10 +488,6 @@ fn highlight_matches(
 ///
 /// Hex strings from devicons are always 7-byte ASCII (`#RRGGBB`), so
 /// byte-level `.get()` slicing is safe.
-#[expect(
-    clippy::single_call_fn,
-    reason = "standalone color-parsing helper; keeps rendering code readable"
-)]
 fn devicon_color(hex: &str) -> Color {
     if hex.len() == 7 && hex.starts_with('#') {
         if let (Some(rr), Some(gg), Some(bb)) = (hex.get(1..3), hex.get(3..5), hex.get(5..7)) {
@@ -585,10 +517,6 @@ pub fn format_ms_compact(ms: u128) -> String {
 }
 
 /// Truncate a path string for display, keeping the end visible.
-#[expect(
-    clippy::single_call_fn,
-    reason = "called from ui rendering; separation keeps display formatting isolated"
-)]
 fn truncate_path(path: &str, max_len: usize) -> String {
     if path.chars().count() <= max_len {
         return path.to_owned();
@@ -596,4 +524,202 @@ fn truncate_path(path: &str, max_len: usize) -> String {
     let skip = path.chars().count() - max_len + 1;
     let truncated: String = path.chars().skip(skip).collect();
     format!("…{truncated}")
+}
+
+/// Build a single table cell for the given column and row.
+#[expect(
+    clippy::single_call_fn,
+    clippy::too_many_lines,
+    reason = "large cell-rendering logic; separation keeps table-drawing code readable"
+)]
+fn build_cell<'a>(
+    col: backend::TuiColumn,
+    row: &backend::DisplayRow,
+    highlight_terms: &[&str],
+    drive_colors: &std::collections::HashMap<char, Color>,
+) -> Cell<'a> {
+    use backend::TuiColumn;
+    match col {
+        TuiColumn::Drive => Cell::from(Line::from(Span::styled(
+            row.drive.to_string(),
+            Style::default()
+                .fg(drive_colors
+                    .get(&row.drive)
+                    .copied()
+                    .unwrap_or(Color::White))
+                .add_modifier(Modifier::BOLD),
+        ))),
+        TuiColumn::Name => {
+            let fi = devicons::icon_for_file(&row.name, &None);
+            let icon_str = fi.icon.to_string();
+            let icon_color = devicon_color(fi.color);
+            let mut spans = vec![
+                Span::styled(icon_str, Style::default().fg(icon_color)),
+                Span::raw(" "),
+            ];
+            spans.extend(highlight_multi(
+                &row.name,
+                highlight_terms,
+                Style::default().fg(Color::Cyan),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            Cell::from(Line::from(spans))
+        }
+        TuiColumn::Size => Cell::from(Line::from(Span::styled(
+            uffs_mft::format_bytes(row.size),
+            Style::default().fg(Color::Yellow),
+        ))),
+        TuiColumn::Modified => Cell::from(Line::from(Span::styled(
+            uffs_mft::format_timestamp(row.modified),
+            Style::default().fg(Color::DarkGray),
+        ))),
+        TuiColumn::Created => Cell::from(Line::from(Span::styled(
+            uffs_mft::format_timestamp(row.created),
+            Style::default().fg(Color::DarkGray),
+        ))),
+        TuiColumn::Accessed => Cell::from(Line::from(Span::styled(
+            uffs_mft::format_timestamp(row.accessed),
+            Style::default().fg(Color::DarkGray),
+        ))),
+        TuiColumn::Path => {
+            let path_display = truncate_path(&row.path, 60);
+            let path_spans = highlight_multi(
+                &path_display,
+                highlight_terms,
+                Style::default().fg(Color::DarkGray),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            );
+            Cell::from(Line::from(path_spans))
+        }
+        TuiColumn::PathOnly => {
+            let dir = row
+                .path
+                .rfind('\\')
+                .and_then(|idx| row.path.get(..idx))
+                .unwrap_or("");
+            let dir_display = truncate_path(dir, 50);
+            Cell::from(Line::from(Span::styled(
+                dir_display,
+                Style::default().fg(Color::DarkGray),
+            )))
+        }
+        TuiColumn::SizeOnDisk => Cell::from(Line::from(Span::styled(
+            uffs_mft::format_bytes(row.allocated),
+            Style::default().fg(Color::Yellow),
+        ))),
+        TuiColumn::Extension => {
+            let ext = row.name.rsplit('.').next().unwrap_or("");
+            Cell::from(Line::from(Span::styled(
+                ext.to_owned(),
+                Style::default().fg(Color::Cyan),
+            )))
+        }
+        TuiColumn::Type => {
+            let fi = devicons::icon_for_file(&row.name, &None);
+            Cell::from(Line::from(Span::styled(
+                fi.icon.to_string(),
+                Style::default().fg(devicon_color(fi.color)),
+            )))
+        }
+        // ── formatted attribute string ─────────────────────────────
+        TuiColumn::Attributes => Cell::from(Line::from(Span::styled(
+            format_ntfs_attrs(row.flags),
+            Style::default().fg(Color::Magenta),
+        ))),
+        TuiColumn::AttributeValue => Cell::from(Line::from(Span::styled(
+            format!("{:06X}", row.flags),
+            Style::default().fg(Color::DarkGray),
+        ))),
+        // ── individual attribute booleans ───────────────────────────
+        TuiColumn::Hidden => attr_cell(row.flags, 0x0002),
+        TuiColumn::System => attr_cell(row.flags, 0x0004),
+        TuiColumn::Archive => attr_cell(row.flags, 0x0020),
+        TuiColumn::ReadOnly => attr_cell(row.flags, 0x0001),
+        TuiColumn::Compressed => attr_cell(row.flags, 0x0800),
+        TuiColumn::Encrypted => attr_cell(row.flags, 0x4000),
+        TuiColumn::Sparse => attr_cell(row.flags, 0x0200),
+        TuiColumn::Reparse => attr_cell(row.flags, 0x0400),
+        TuiColumn::Offline => attr_cell(row.flags, 0x1000),
+        TuiColumn::NotIndexed => attr_cell(row.flags, 0x2000),
+        TuiColumn::Temporary => attr_cell(row.flags, 0x0100),
+        TuiColumn::Virtual => attr_cell(row.flags, 0x0001_0000),
+        TuiColumn::Pinned => attr_cell(row.flags, 0x0008_0000),
+        TuiColumn::Unpinned => attr_cell(row.flags, 0x0010_0000),
+        TuiColumn::Integrity => attr_cell(row.flags, 0x8000),
+        TuiColumn::NoScrub => attr_cell(row.flags, 0x0002_0000),
+        TuiColumn::DirectoryFlag => attr_cell(row.flags, 0x0010),
+        // ── tree metrics ───────────────────────────────────────────
+        TuiColumn::Descendants => Cell::from(Line::from(Span::styled(
+            if row.descendants > 0 {
+                format!("{}", row.descendants)
+            } else {
+                String::new()
+            },
+            Style::default().fg(Color::Cyan),
+        ))),
+        TuiColumn::TreeSize => Cell::from(Line::from(Span::styled(
+            if row.treesize > 0 {
+                uffs_mft::format_bytes(row.treesize)
+            } else {
+                String::new()
+            },
+            Style::default().fg(Color::Yellow),
+        ))),
+    }
+}
+
+/// Render a boolean attribute cell: `✓` (green) or blank.
+fn attr_cell<'a>(flags: u32, bit: u32) -> Cell<'a> {
+    if flags & bit != 0 {
+        Cell::from(Line::from(Span::styled(
+            "✓",
+            Style::default().fg(Color::Green),
+        )))
+    } else {
+        Cell::from("")
+    }
+}
+
+/// Format NTFS attribute flags into a compact string.
+///
+/// Uses the same single-letter codes as Everything / the CLI:
+/// `R`ead-only, `H`idden, `S`ystem, `D`irectory, `A`rchive, `T`emporary,
+/// `s`parse, `r`eparse, `C`ompressed, `O`ffline, `N`ot-indexed,
+/// `E`ncrypted, `I`ntegrity, `V`irtual, `P`inned, `U`npinned, `X`(no-scrub).
+#[expect(
+    clippy::single_call_fn,
+    reason = "standalone formatter; keeps attribute-flag rendering isolated"
+)]
+fn format_ntfs_attrs(flags: u32) -> String {
+    /// Bit-flag / letter pairs for NTFS attributes.
+    const ATTR_MAP: &[(u32, char)] = &[
+        (0x0001, 'R'),
+        (0x0002, 'H'),
+        (0x0004, 'S'),
+        (0x0010, 'D'),
+        (0x0020, 'A'),
+        (0x0100, 'T'),
+        (0x0200, 's'),
+        (0x0400, 'r'),
+        (0x0800, 'C'),
+        (0x1000, 'O'),
+        (0x2000, 'N'),
+        (0x4000, 'E'),
+        (0x8000, 'I'),
+        (0x0001_0000, 'V'),
+        (0x0002_0000, 'X'),
+        (0x0008_0000, 'P'),
+        (0x0010_0000, 'U'),
+    ];
+    let mut out = String::with_capacity(8);
+    for &(bit, ch) in ATTR_MAP {
+        if flags & bit != 0 {
+            out.push(ch);
+        }
+    }
+    out
 }

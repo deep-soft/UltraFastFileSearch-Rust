@@ -77,6 +77,21 @@ pub struct App {
     pub help_page: u8,
     /// Visible page size for PageUp/Down (set by `ui()` on each render).
     pub page_size: usize,
+    /// Override result limit from history entry (`None` = backend default).
+    pub result_limit: Option<u32>,
+    /// Extended post-search filters from history entry.
+    pub search_filters: crate::backend::SearchFilters,
+    /// Visible columns and their display order.
+    ///
+    /// Defaults to [`crate::backend::DEFAULT_COLUMNS`].  Overridden by
+    /// `--columns` in a history entry.
+    pub visible_columns: Vec<crate::backend::TuiColumn>,
+    /// The full [`SearchState`] from the currently active history entry.
+    ///
+    /// Used as the base when saving a modified search so that extended
+    /// filters (`--attr`, `--min-size`, `--newer`, `--columns`, etc.)
+    /// survive even though the TUI has no interactive controls for them yet.
+    pub active_search_state: SearchState,
 }
 
 impl App {
@@ -136,6 +151,10 @@ impl App {
             peak_search: String::new(),
             help_page: 0,
             page_size: 20,
+            result_limit: None,
+            search_filters: crate::backend::SearchFilters::default(),
+            visible_columns: crate::backend::DEFAULT_COLUMNS.to_vec(),
+            active_search_state: SearchState::default(),
         }
     }
 
@@ -167,6 +186,10 @@ impl App {
             peak_search: String::new(),
             help_page: 0,
             page_size: 20,
+            result_limit: None,
+            search_filters: crate::backend::SearchFilters::default(),
+            visible_columns: crate::backend::DEFAULT_COLUMNS.to_vec(),
+            active_search_state: SearchState::default(),
         }
     }
 
@@ -199,6 +222,10 @@ impl App {
             peak_search: String::new(),
             help_page: 0,
             page_size: 20,
+            result_limit: None,
+            search_filters: crate::backend::SearchFilters::default(),
+            visible_columns: crate::backend::DEFAULT_COLUMNS.to_vec(),
+            active_search_state: SearchState::default(),
         }
     }
 
@@ -292,6 +319,7 @@ impl App {
                 self.save_history_entry(&peak);
             }
             self.history_idx = None;
+            self.reset_search_overrides();
             "*".to_owned()
         } else {
             // Track the longest pattern in this typing session
@@ -320,12 +348,16 @@ impl App {
             self.status = format!("⏳ Searching for \"{pattern}\"...");
         }
 
-        let result = self
-            .backend
-            .search(&pattern, self.case_sensitive, self.whole_word);
+        let result = self.backend.search(
+            &pattern,
+            self.case_sensitive,
+            self.whole_word,
+            self.result_limit,
+        );
         self.last_search_ms = result.duration.as_millis();
         self.results = result.rows;
         crate::backend::apply_filter(&mut self.results, self.filter_mode);
+        crate::backend::apply_search_filters(&mut self.results, &self.search_filters);
 
         let total_trigrams: usize = self
             .backend
@@ -372,6 +404,7 @@ impl App {
         } else {
             self.results = self.backend.last_results.clone();
             crate::backend::apply_filter(&mut self.results, self.filter_mode);
+            crate::backend::apply_search_filters(&mut self.results, &self.search_filters);
         }
     }
 
@@ -386,6 +419,7 @@ impl App {
         } else {
             self.results = self.backend.last_results.clone();
             crate::backend::apply_filter(&mut self.results, self.filter_mode);
+            crate::backend::apply_search_filters(&mut self.results, &self.search_filters);
         }
     }
 
@@ -438,8 +472,9 @@ impl App {
             self.history_idx = Some(new_idx);
             self.apply_history_entry(new_idx);
         } else {
-            // Past the end → restore saved input
+            // Past the end → restore saved input + clear overrides
             self.history_idx = None;
+            self.reset_search_overrides();
             let saved = self.history_saved_input.clone();
             self.set_input(&saved);
         }
@@ -452,15 +487,63 @@ impl App {
         self.search_history.get(idx)?.comment.as_deref()
     }
 
-    /// Apply a history entry at the given index: set pattern + restore toggles.
+    /// Apply a history entry at the given index: set pattern + restore all
+    /// toggles, sort, limit, and extended filters.
     fn apply_history_entry(&mut self, idx: usize) {
         if let Some(entry) = self.search_history.get(idx).cloned() {
             self.set_input(&entry.pattern);
+
+            // ── toggles ────────────────────────────────────────────
             self.case_sensitive = entry.state.case_sensitive;
             self.whole_word = entry.state.whole_word;
             self.name_only = entry.state.name_only;
             self.filter_mode = entry.state.filter;
+
+            // Smart-case: if enabled and pattern has uppercase, force
+            // case-sensitive (mirrors CLI --smart-case behaviour).
+            if entry.state.smart_case && entry.pattern.chars().any(char::is_uppercase) {
+                self.case_sensitive = true;
+            }
+
+            // ── sort (multi-tier) ───────────────────────────────────
+            if let Some(sort_str) = &entry.state.sort {
+                let specs = crate::backend::parse_sort_spec(sort_str);
+                if let Some(primary) = specs.first() {
+                    self.backend.sort_column = primary.column;
+                    self.backend.sort_desc = primary.descending;
+                    self.backend.extra_sort_tiers = specs.get(1..).unwrap_or_default().to_vec();
+                }
+            } else {
+                self.backend.extra_sort_tiers.clear();
+            }
+
+            // ── limit ──────────────────────────────────────────────
+            self.result_limit = entry.state.limit;
+
+            // ── extended filters ───────────────────────────────────
+            self.search_filters = crate::backend::SearchFilters::from_state(&entry.state);
+
+            // ── column selection ───────────────────────────────────
+            self.visible_columns = entry
+                .state
+                .columns
+                .as_deref()
+                .and_then(crate::backend::parse_columns)
+                .unwrap_or_else(|| crate::backend::DEFAULT_COLUMNS.to_vec());
+
+            // ── preserve full state for save_history_entry ──────────
+            self.active_search_state = entry.state;
         }
+    }
+
+    /// Reset extended filters, limit, and column selection to defaults
+    /// (called when user clears history browsing or types a new pattern).
+    pub fn reset_search_overrides(&mut self) {
+        self.result_limit = None;
+        self.search_filters = crate::backend::SearchFilters::default();
+        self.backend.extra_sort_tiers.clear();
+        self.visible_columns = crate::backend::DEFAULT_COLUMNS.to_vec();
+        self.active_search_state = SearchState::default();
     }
 
     /// Replace the textarea content with the given string.
@@ -476,17 +559,41 @@ impl App {
     }
 
     /// Capture the current search state and persist a history entry.
+    ///
+    /// Uses `active_search_state` (set by `apply_history_entry`) as the
+    /// base so that extended filters the TUI cannot yet edit interactively
+    /// (`--attr`, `--min-size`, `--newer`, `--columns`, etc.) survive
+    /// when the user only changes the pattern or toggles.
     #[allow(clippy::single_call_fn)] // persistence concern separated for readability
     fn save_history_entry(&mut self, pattern: &str) {
+        // Start from the full state of the active history entry (if any).
+        // Override only the fields the TUI can currently change.
+        let mut state = self.active_search_state.clone();
+        state.case_sensitive = self.case_sensitive;
+        state.smart_case = false; // TUI doesn't have a smart-case toggle
+        state.whole_word = self.whole_word;
+        state.name_only = self.name_only;
+        state.hide_system = self.search_filters.hide_system;
+        state.filter = self.filter_mode;
+        state.limit = self.result_limit;
+
+        // Capture the current sort from the backend (user may have
+        // cycled sort with Tab / toggled direction).
+        let sort_str = crate::backend::format_sort_spec(
+            self.backend.sort_column,
+            self.backend.sort_desc,
+            &self.backend.extra_sort_tiers,
+        );
+        state.sort = if sort_str.is_empty() {
+            None
+        } else {
+            Some(sort_str)
+        };
+
         let entry = HistoryEntry {
             comment: None, // user-generated entries have no comment
             pattern: pattern.to_owned(),
-            state: SearchState {
-                case_sensitive: self.case_sensitive,
-                whole_word: self.whole_word,
-                name_only: self.name_only,
-                filter: self.filter_mode,
-            },
+            state,
         };
         // Avoid duplicates (same pattern + same state)
         if self.search_history.last().is_none_or(|last| *last != entry) {
@@ -563,6 +670,12 @@ mod tests {
                 size: 0,
                 is_directory: false,
                 modified: 0,
+                created: 0,
+                accessed: 0,
+                flags: 0,
+                allocated: 0,
+                descendants: 0,
+                treesize: 0,
             },
             DisplayRow {
                 drive: 'C',
@@ -571,6 +684,12 @@ mod tests {
                 size: 0,
                 is_directory: false,
                 modified: 0,
+                created: 0,
+                accessed: 0,
+                flags: 0,
+                allocated: 0,
+                descendants: 0,
+                treesize: 0,
             },
             DisplayRow {
                 drive: 'C',
@@ -579,6 +698,12 @@ mod tests {
                 size: 0,
                 is_directory: true,
                 modified: 0,
+                created: 0,
+                accessed: 0,
+                flags: 0,
+                allocated: 0,
+                descendants: 0,
+                treesize: 0,
             },
         ];
 
@@ -617,6 +742,12 @@ mod tests {
             size: 0,
             is_directory: false,
             modified: 0,
+            created: 0,
+            accessed: 0,
+            flags: 0,
+            allocated: 0,
+            descendants: 0,
+            treesize: 0,
         }];
         // textarea starts empty → searches for "*" (all files)
         // With no drives loaded, this triggers the "no drives" error

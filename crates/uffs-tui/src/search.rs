@@ -27,7 +27,13 @@ pub fn collect_global_top_n(
     match sort_column {
         // Numeric columns: efficient lightweight tuple scan of all 25M records
         // Drive: packs drive_letter + name_prefix into i64 for grouping
-        SortColumn::Size | SortColumn::Modified | SortColumn::Drive => {
+        SortColumn::Size
+        | SortColumn::SizeOnDisk
+        | SortColumn::Created
+        | SortColumn::Modified
+        | SortColumn::Accessed
+        | SortColumn::Drive
+        | SortColumn::Descendants => {
             collect_global_top_n_numeric(drives, limit, sort_column, sort_desc)
         }
         // Path: hierarchical depth-first tree walk — instant, touches ~N records
@@ -114,6 +120,12 @@ fn collect_path_sorted(
                 size: rec.size,
                 is_directory: rec.is_directory(),
                 modified: rec.modified,
+                created: rec.created,
+                accessed: rec.accessed,
+                flags: rec.flags,
+                allocated: rec.allocated,
+                descendants: rec.descendants,
+                treesize: rec.treesize,
             });
 
             // Push children (sorted, reversed for DFS order)
@@ -199,6 +211,14 @@ fn collect_global_top_n_numeric(
             )]
             let sort_key = match sort_column {
                 SortColumn::Size => rec.size as i64,
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "allocated sizes within i64 range for practical NTFS volumes"
+                )]
+                SortColumn::SizeOnDisk => rec.allocated as i64,
+                SortColumn::Created => rec.created,
+                SortColumn::Accessed => rec.accessed,
+                SortColumn::Descendants => i64::from(rec.descendants),
                 SortColumn::Extension | SortColumn::Type => i64::from(rec.extension_id),
                 SortColumn::Name => {
                     // Pack first 8 bytes of lowercase name into u64 (big-endian).
@@ -252,13 +272,19 @@ fn collect_global_top_n_numeric(
                 size: rec.size,
                 is_directory: rec.is_directory(),
                 modified: rec.modified,
+                created: rec.created,
+                accessed: rec.accessed,
+                flags: rec.flags,
+                allocated: rec.allocated,
+                descendants: rec.descendants,
+                treesize: rec.treesize,
             })
         })
         .collect();
 
     // Re-sort with name tiebreaker: when multiple results share the same
     // sort key (e.g., same extension, same size), order them by name.
-    crate::backend::sort_rows(&mut rows, sort_column, sort_desc);
+    crate::backend::sort_rows(&mut rows, sort_column, sort_desc, &[]);
     rows
 }
 
@@ -306,6 +332,12 @@ pub fn search_compact_drive_regex(
                 size: rec.size,
                 is_directory: rec.is_directory(),
                 modified: rec.modified,
+                created: rec.created,
+                accessed: rec.accessed,
+                flags: rec.flags,
+                allocated: rec.allocated,
+                descendants: rec.descendants,
+                treesize: rec.treesize,
             })
         })
         .collect()
@@ -433,6 +465,12 @@ pub fn search_compact_drive(
                 size: rec.size,
                 is_directory: rec.is_directory(),
                 modified: rec.modified,
+                created: rec.created,
+                accessed: rec.accessed,
+                flags: rec.flags,
+                allocated: rec.allocated,
+                descendants: rec.descendants,
+                treesize: rec.treesize,
             })
         })
         .collect()
@@ -471,6 +509,12 @@ pub fn search_compact_drive_tree(
                 size: rec.size,
                 is_directory: rec.is_directory(),
                 modified: rec.modified,
+                created: rec.created,
+                accessed: rec.accessed,
+                flags: rec.flags,
+                allocated: rec.allocated,
+                descendants: rec.descendants,
+                treesize: rec.treesize,
             })
         })
         .collect()

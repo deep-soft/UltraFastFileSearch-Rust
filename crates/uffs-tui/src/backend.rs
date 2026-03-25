@@ -32,6 +32,18 @@ pub struct DisplayRow {
     pub is_directory: bool,
     /// Last modified time (Unix microseconds).
     pub modified: i64,
+    /// Creation time (Unix microseconds).
+    pub created: i64,
+    /// Last access time (Unix microseconds).
+    pub accessed: i64,
+    /// Raw NTFS `FILE_ATTRIBUTE_*` flags for attribute filtering.
+    pub flags: u32,
+    /// Allocated size on disk in bytes ("Size on Disk" column).
+    pub allocated: u64,
+    /// Descendant count (directories only).
+    pub descendants: u32,
+    /// Sum of logical file sizes in entire subtree (directories only).
+    pub treesize: u64,
 }
 
 /// Trigram inverted index: maps 3-byte sequences to sorted lists of record
@@ -219,10 +231,14 @@ pub struct MultiDriveBackend {
     pub drives: Vec<DriveCompactIndex>,
     /// Last search results (kept for re-sorting without re-searching).
     pub last_results: Vec<DisplayRow>,
-    /// Current sort column.
+    /// Current (primary) sort column.
     pub sort_column: SortColumn,
-    /// Sort direction.
+    /// Primary sort direction (`true` = descending).
     pub sort_desc: bool,
+    /// Additional sort tiers beyond the primary (applied in order when the
+    /// primary comparison is equal).  Empty = single-column sort with the
+    /// hardcoded name tiebreaker.
+    pub extra_sort_tiers: Vec<SortSpec>,
 }
 
 /// Columns available for sorting.
@@ -232,8 +248,14 @@ pub enum SortColumn {
     Name,
     /// Sort by file size.
     Size,
+    /// Sort by allocated size on disk.
+    SizeOnDisk,
+    /// Sort by creation time.
+    Created,
     /// Sort by last modified time.
     Modified,
+    /// Sort by last access time.
+    Accessed,
     /// Sort by full path.
     Path,
     /// Sort by drive letter.
@@ -242,7 +264,12 @@ pub enum SortColumn {
     Extension,
     /// Sort by devicon file type (groups similar types: music, images, code).
     Type,
+    /// Sort by descendant count.
+    Descendants,
 }
+
+// Re-exported from `crate::columns`.
+pub use crate::columns::{DEFAULT_COLUMNS, TuiColumn, parse_columns};
 
 impl SortColumn {
     /// Human-readable label for status bar display.
@@ -251,11 +278,15 @@ impl SortColumn {
         match self {
             Self::Name => "Name",
             Self::Size => "Size",
+            Self::SizeOnDisk => "SizeOnDisk",
+            Self::Created => "Created",
             Self::Modified => "Modified",
+            Self::Accessed => "Accessed",
             Self::Path => "Path",
             Self::Drive => "Drive",
             Self::Extension => "Extension",
             Self::Type => "Type",
+            Self::Descendants => "Descendants",
         }
     }
 }
@@ -281,6 +312,7 @@ impl MultiDriveBackend {
             last_results: Vec::new(),
             sort_column: SortColumn::Modified,
             sort_desc: true,
+            extra_sort_tiers: Vec::new(),
         }
     }
 
@@ -307,11 +339,19 @@ impl MultiDriveBackend {
     /// - `\path\pattern` → tree-based path search
     /// - `*glob*` → glob pattern with `*` and `?` wildcards
     /// - `text` → substring match (trigram-accelerated)
+    ///
+    /// `result_limit`: if `Some(n)`, caps results to `n`.
+    ///   `None` uses the built-in defaults (1 000 / 200 for short patterns).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "search dispatch with three modes; splitting would scatter related logic"
+    )]
     pub fn search(
         &mut self,
         pattern: &str,
         case_sensitive: bool,
         whole_word: bool,
+        result_limit: Option<u32>,
     ) -> SearchResult {
         let start = Instant::now();
         let mut rows = Vec::new();
@@ -330,7 +370,9 @@ impl MultiDriveBackend {
         let is_match_all = pattern == "*";
         // ">" prefix = regex mode
         let is_regex = pattern.starts_with('>') && pattern.len() > 1;
-        let limit = if is_match_all {
+        let limit = if let Some(n) = result_limit {
+            n as usize
+        } else if is_match_all {
             DEFAULT_RESULT_LIMIT
         } else if pattern.len() <= 2 {
             SHORT_PATTERN_LIMIT
@@ -373,7 +415,12 @@ impl MultiDriveBackend {
                     for drive_rows in drive_results {
                         rows.extend(drive_rows);
                     }
-                    sort_rows(&mut rows, self.sort_column, self.sort_desc);
+                    sort_rows(
+                        &mut rows,
+                        self.sort_column,
+                        self.sort_desc,
+                        &self.extra_sort_tiers,
+                    );
                     rows.truncate(limit);
                 }
                 Err(_err) => {
@@ -406,7 +453,12 @@ impl MultiDriveBackend {
             for drive_rows in drive_results {
                 rows.extend(drive_rows);
             }
-            sort_rows(&mut rows, self.sort_column, self.sort_desc);
+            sort_rows(
+                &mut rows,
+                self.sort_column,
+                self.sort_desc,
+                &self.extra_sort_tiers,
+            );
             rows.truncate(limit);
         }
         let scanned = self.drives.iter().map(|dr| dr.records.len()).sum();
@@ -427,7 +479,8 @@ impl MultiDriveBackend {
     pub fn sort(&mut self, column: SortColumn, descending: bool) {
         self.sort_column = column;
         self.sort_desc = descending;
-        sort_rows(&mut self.last_results, column, descending);
+        self.extra_sort_tiers.clear();
+        sort_rows(&mut self.last_results, column, descending, &[]);
     }
 
     /// Cycle to the next sort column with a sensible default direction.
@@ -437,23 +490,41 @@ impl MultiDriveBackend {
     /// - **Size, Modified** → descending (biggest/newest first)
     pub fn cycle_sort(&mut self) {
         let (new_column, new_desc) = match self.sort_column {
-            SortColumn::Name => (SortColumn::Size, true), // biggest first
-            SortColumn::Size => (SortColumn::Modified, true), // newest first
-            SortColumn::Modified => (SortColumn::Path, false), // A→Z
-            SortColumn::Path => (SortColumn::Drive, false), // A→Z
-            SortColumn::Drive => (SortColumn::Extension, false), // A→Z
-            SortColumn::Extension => (SortColumn::Type, false), // A→Z
-            SortColumn::Type => (SortColumn::Name, false), // A→Z
+            SortColumn::Name => (SortColumn::Size, true),
+            SortColumn::Size => (SortColumn::SizeOnDisk, true),
+            SortColumn::SizeOnDisk => (SortColumn::Created, true),
+            SortColumn::Created => (SortColumn::Modified, true),
+            SortColumn::Modified => (SortColumn::Accessed, true),
+            SortColumn::Accessed => (SortColumn::Path, false),
+            SortColumn::Path => (SortColumn::Drive, false),
+            SortColumn::Drive => (SortColumn::Extension, false),
+            SortColumn::Extension => (SortColumn::Type, false),
+            SortColumn::Type => (SortColumn::Descendants, true),
+            SortColumn::Descendants => (SortColumn::Name, false),
         };
         self.sort_column = new_column;
         self.sort_desc = new_desc;
-        sort_rows(&mut self.last_results, self.sort_column, self.sort_desc);
+        self.extra_sort_tiers.clear();
+        sort_rows(
+            &mut self.last_results,
+            self.sort_column,
+            self.sort_desc,
+            &[],
+        );
     }
 
-    /// Toggle sort direction.
+    /// Toggle sort direction (ascending ↔ descending) and re-sort.
+    ///
+    /// Clears extra sort tiers — the user is manually overriding.
     pub fn toggle_sort_direction(&mut self) {
         self.sort_desc = !self.sort_desc;
-        sort_rows(&mut self.last_results, self.sort_column, self.sort_desc);
+        self.extra_sort_tiers.clear();
+        sort_rows(
+            &mut self.last_results,
+            self.sort_column,
+            self.sort_desc,
+            &[],
+        );
     }
 }
 
@@ -579,41 +650,187 @@ pub fn build_drive_colors(
         .collect()
 }
 
-/// Sort display rows by the given column with name as secondary tiebreaker.
-pub fn sort_rows(rows: &mut [DisplayRow], column: SortColumn, descending: bool) {
+/// Sort display rows by the given column, then by additional tiers, with a
+/// final name-ascending tiebreaker when no explicit tiers resolve the tie.
+///
+/// `extra_tiers` may be empty — in that case the behaviour is identical to
+/// the previous single-column sort.
+pub fn sort_rows(
+    rows: &mut [DisplayRow],
+    column: SortColumn,
+    descending: bool,
+    extra_tiers: &[SortSpec],
+) {
     rows.sort_unstable_by(|row_a, row_b| {
-        let primary = match column {
-            SortColumn::Name => row_a.name.to_lowercase().cmp(&row_b.name.to_lowercase()),
-            SortColumn::Size => row_a.size.cmp(&row_b.size),
-            SortColumn::Modified => row_a.modified.cmp(&row_b.modified),
-            SortColumn::Path => row_a.path.to_lowercase().cmp(&row_b.path.to_lowercase()),
-            SortColumn::Drive => row_a.drive.cmp(&row_b.drive),
-            SortColumn::Extension => {
-                let ext_a = row_a.name.rsplit('.').next().unwrap_or("").to_lowercase();
-                let ext_b = row_b.name.rsplit('.').next().unwrap_or("").to_lowercase();
-                ext_a.cmp(&ext_b)
+        let mut ord = compare_by_column(row_a, row_b, column);
+        if descending {
+            ord = ord.reverse();
+        }
+
+        // Walk through extra tiers while still Equal.
+        for tier in extra_tiers {
+            if ord != core::cmp::Ordering::Equal {
+                break;
             }
-            SortColumn::Type => {
-                let icon_a = devicons::icon_for_file(&row_a.name, &None).icon;
-                let icon_b = devicons::icon_for_file(&row_b.name, &None).icon;
-                icon_a.cmp(&icon_b)
+            ord = compare_by_column(row_a, row_b, tier.column);
+            if tier.descending {
+                ord = ord.reverse();
             }
-        };
-        // Multi-tier: if primary column is equal, break ties by name (ascending)
-        let ord = if primary == core::cmp::Ordering::Equal && column != SortColumn::Name {
-            row_a.name.to_lowercase().cmp(&row_b.name.to_lowercase())
-        } else {
-            primary
-        };
-        if descending { ord.reverse() } else { ord }
+        }
+
+        // Final fallback: name ascending (unless name was already compared).
+        if ord == core::cmp::Ordering::Equal
+            && column != SortColumn::Name
+            && !extra_tiers
+                .iter()
+                .any(|tier| tier.column == SortColumn::Name)
+        {
+            ord = row_a.name.to_lowercase().cmp(&row_b.name.to_lowercase());
+        }
+
+        ord
     });
 }
 
-/// Apply filter mode to a set of display rows.
-pub fn apply_filter(rows: &mut Vec<DisplayRow>, filter: FilterMode) {
-    match filter {
-        FilterMode::All => {} // no-op
-        FilterMode::FilesOnly => rows.retain(|row| !row.is_directory),
-        FilterMode::DirsOnly => rows.retain(|row| row.is_directory),
+/// Compare two rows by a single column (natural / ascending order).
+fn compare_by_column(
+    row_a: &DisplayRow,
+    row_b: &DisplayRow,
+    column: SortColumn,
+) -> core::cmp::Ordering {
+    match column {
+        SortColumn::Name => row_a.name.to_lowercase().cmp(&row_b.name.to_lowercase()),
+        SortColumn::Size => row_a.size.cmp(&row_b.size),
+        SortColumn::SizeOnDisk => row_a.allocated.cmp(&row_b.allocated),
+        SortColumn::Created => row_a.created.cmp(&row_b.created),
+        SortColumn::Modified => row_a.modified.cmp(&row_b.modified),
+        SortColumn::Accessed => row_a.accessed.cmp(&row_b.accessed),
+        SortColumn::Path => row_a.path.to_lowercase().cmp(&row_b.path.to_lowercase()),
+        SortColumn::Drive => row_a.drive.cmp(&row_b.drive),
+        SortColumn::Extension => {
+            let ext_a = row_a.name.rsplit('.').next().unwrap_or("").to_lowercase();
+            let ext_b = row_b.name.rsplit('.').next().unwrap_or("").to_lowercase();
+            ext_a.cmp(&ext_b)
+        }
+        SortColumn::Type => {
+            let icon_a = devicons::icon_for_file(&row_a.name, &None).icon;
+            let icon_b = devicons::icon_for_file(&row_b.name, &None).icon;
+            icon_a.cmp(&icon_b)
+        }
+        SortColumn::Descendants => row_a.descendants.cmp(&row_b.descendants),
+    }
+}
+
+// Re-exported from `crate::filters`.
+pub use crate::filters::{SearchFilters, apply_filter, apply_search_filters};
+
+/// Parsed sort specification: column + direction.
+#[derive(Debug, Clone, Copy)]
+pub struct SortSpec {
+    /// Which column to sort by.
+    pub column: SortColumn,
+    /// `true` = descending (biggest / newest first).
+    pub descending: bool,
+}
+
+/// Parse a `--sort` value like `"name:asc,modified:desc"` into a list of
+/// [`SortSpec`]s.
+///
+/// Each comma-separated tier is parsed independently.  Unknown column names
+/// are silently skipped.  Returns an empty `Vec` when nothing is recognised.
+#[must_use]
+#[expect(
+    clippy::single_call_fn,
+    reason = "standalone parser; inverse of format_sort_spec, keeps sort parsing isolated"
+)]
+pub fn parse_sort_spec(sort_str: &str) -> Vec<SortSpec> {
+    let mut specs = Vec::new();
+    for raw_part in sort_str.split(',') {
+        let trimmed = raw_part.trim();
+        let (col_str, dir_str) = if let Some((col, dir)) = trimmed.split_once(':') {
+            (col.trim(), Some(dir.trim()))
+        } else {
+            (trimmed, None)
+        };
+        if let Some(column) = parse_sort_column(col_str) {
+            let descending = match dir_str {
+                Some("desc") => true,
+                Some("asc") => false,
+                _ => default_sort_direction(column),
+            };
+            specs.push(SortSpec { column, descending });
+        }
+    }
+    specs
+}
+
+/// Format the current sort state back into a CLI-compatible sort string.
+///
+/// Inverse of [`parse_sort_spec`].  Produces e.g. `"size:desc,name:asc"`.
+#[must_use]
+#[expect(
+    clippy::single_call_fn,
+    reason = "standalone formatter; inverse of parse_sort_spec, keeps sort serialisation isolated"
+)]
+pub fn format_sort_spec(primary: SortColumn, primary_desc: bool, extra: &[SortSpec]) -> String {
+    let mut parts = Vec::with_capacity(1 + extra.len());
+    let dir = |desc: bool| if desc { "desc" } else { "asc" };
+    parts.push(format!(
+        "{}:{}",
+        primary.label().to_ascii_lowercase(),
+        dir(primary_desc)
+    ));
+    for spec in extra {
+        parts.push(format!(
+            "{}:{}",
+            spec.column.label().to_ascii_lowercase(),
+            dir(spec.descending)
+        ));
+    }
+    parts.join(",")
+}
+
+/// Map a column name string to a `SortColumn`.
+#[expect(
+    clippy::single_call_fn,
+    reason = "standalone parser; keeps column-name mapping isolated from parse_sort_spec"
+)]
+fn parse_sort_column(name: &str) -> Option<SortColumn> {
+    match name.to_ascii_lowercase().as_str() {
+        "name" => Some(SortColumn::Name),
+        "size" => Some(SortColumn::Size),
+        "sizeondisk" | "allocated" => Some(SortColumn::SizeOnDisk),
+        "created" => Some(SortColumn::Created),
+        "modified" | "date" | "written" => Some(SortColumn::Modified),
+        "accessed" => Some(SortColumn::Accessed),
+        "path" => Some(SortColumn::Path),
+        "drive" => Some(SortColumn::Drive),
+        "ext" | "extension" => Some(SortColumn::Extension),
+        "type" => Some(SortColumn::Type),
+        "descendants" => Some(SortColumn::Descendants),
+        _ => None,
+    }
+}
+
+/// Sensible default direction for each sort column.
+#[expect(
+    clippy::single_call_fn,
+    reason = "standalone helper; keeps default-direction logic isolated from parse_sort_spec"
+)]
+const fn default_sort_direction(column: SortColumn) -> bool {
+    match column {
+        // Biggest / newest / most-descendants first
+        SortColumn::Size
+        | SortColumn::SizeOnDisk
+        | SortColumn::Created
+        | SortColumn::Modified
+        | SortColumn::Accessed
+        | SortColumn::Descendants => true,
+        // A→Z
+        SortColumn::Name
+        | SortColumn::Path
+        | SortColumn::Drive
+        | SortColumn::Extension
+        | SortColumn::Type => false,
     }
 }
