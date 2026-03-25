@@ -729,6 +729,18 @@ where
                             app.search();
                             continue;
                         }
+                        // Alt+C: toggle case-sensitive search
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::ALT) => {
+                            app.toggle_case_sensitive();
+                            app.search();
+                            continue;
+                        }
+                        // Alt+W: toggle whole-word search
+                        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::ALT) => {
+                            app.toggle_whole_word();
+                            app.search();
+                            continue;
+                        }
                         // Ctrl+P: previous search in history
                         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.history_back();
@@ -842,7 +854,6 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .map(|(letter, _count)| *letter)
         .collect();
     drive_letters.sort_unstable();
-    let name_only_indicator = if app.name_only { " [NAME]" } else { "" };
     let filter_indicator = app.filter_label();
     if app.has_data() {
         // Build colored drive letters for the title
@@ -859,9 +870,36 @@ fn ui(frame: &mut Frame, app: &mut App) {
             ));
         }
         title_spans.push(Span::raw(format!(
-            "] {} Files{name_only_indicator}{filter_indicator} ",
+            "] {} Files",
             uffs_mft::format_number_commas(app.backend.total_records() as u64),
         )));
+        // Search mode indicators: [Cc] [W] [NAME] [FILES] etc.
+        let badge = |label: &str, active: bool| -> Span<'static> {
+            if active {
+                Span::styled(
+                    format!(" [{label}]"),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(format!(" [{label}]"), Style::default().fg(Color::DarkGray))
+            }
+        };
+        title_spans.push(badge("Cc", app.case_sensitive));
+        title_spans.push(badge("W", app.whole_word));
+        if app.name_only {
+            title_spans.push(badge("NAME", true));
+        }
+        if !filter_indicator.is_empty() {
+            title_spans.push(Span::styled(
+                filter_indicator.to_owned(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        title_spans.push(Span::raw(" "));
         app.textarea.set_block(
             Block::default()
                 .borders(Borders::ALL)

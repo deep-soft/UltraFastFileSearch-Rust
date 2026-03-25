@@ -12,6 +12,10 @@ use crate::compact::{DriveCompactIndex, LoadTiming};
 type RefreshResult = (String, anyhow::Result<(DriveCompactIndex, LoadTiming)>);
 
 /// Application state.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "App state struct — independent toggle flags are clearest as bools"
+)]
 pub struct App {
     /// Search input text area (full editing: cursor, selection, clipboard).
     pub textarea: TextArea<'static>,
@@ -29,6 +33,10 @@ pub struct App {
     pub last_search_ms: u128,
     /// Whether name-only matching is active.
     pub name_only: bool,
+    /// Whether case-sensitive search is active (Alt+C toggle).
+    pub case_sensitive: bool,
+    /// Whether whole-word search is active (Alt+W toggle).
+    pub whole_word: bool,
     /// Filter mode: `All`, `FilesOnly`, or `DirsOnly`.
     pub filter_mode: FilterMode,
     /// Whether a refresh is in progress (background thread).
@@ -87,6 +95,8 @@ impl App {
             error: None,
             last_search_ms: 0,
             name_only: false,
+            case_sensitive: false,
+            whole_word: false,
             filter_mode: FilterMode::All,
             refreshing: false,
             refresh_rx: None,
@@ -112,6 +122,8 @@ impl App {
             error: None,
             last_search_ms: 0,
             name_only: false,
+            case_sensitive: false,
+            whole_word: false,
             filter_mode: FilterMode::All,
             refreshing: false,
             refresh_rx: None,
@@ -247,7 +259,7 @@ impl App {
             self.status = format!("⏳ Searching for \"{pattern}\"...");
         }
 
-        let result = self.backend.search(&pattern, self.name_only);
+        let result = self.backend.search(&pattern, self.case_sensitive, self.whole_word);
         self.last_search_ms = result.duration.as_millis();
         self.results = result.rows;
         crate::backend::apply_filter(&mut self.results, self.filter_mode);
@@ -418,6 +430,16 @@ impl App {
     /// Toggle name-only matching mode.
     pub const fn toggle_name_only(&mut self) {
         self.name_only = !self.name_only;
+    }
+
+    /// Toggle case-sensitive search mode.
+    pub const fn toggle_case_sensitive(&mut self) {
+        self.case_sensitive = !self.case_sensitive;
+    }
+
+    /// Toggle whole-word search mode.
+    pub const fn toggle_whole_word(&mut self) {
+        self.whole_word = !self.whole_word;
     }
 
     /// Cycle filter mode: `All` → `FilesOnly` → `DirsOnly` → `All`.

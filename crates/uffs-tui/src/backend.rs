@@ -310,7 +310,12 @@ impl MultiDriveBackend {
     /// - `\path\pattern` → tree-based path search
     /// - `*glob*` → glob pattern with `*` and `?` wildcards
     /// - `text` → substring match (trigram-accelerated)
-    pub fn search(&mut self, pattern: &str, _name_only: bool) -> SearchResult {
+    pub fn search(
+        &mut self,
+        pattern: &str,
+        case_sensitive: bool,
+        whole_word: bool,
+    ) -> SearchResult {
         let start = Instant::now();
         let mut rows = Vec::new();
 
@@ -336,8 +341,13 @@ impl MultiDriveBackend {
             DEFAULT_RESULT_LIMIT
         };
 
-        let needle_lower = pattern.to_ascii_lowercase();
-        let is_path = !is_match_all && !is_regex && compact::is_path_pattern(&needle_lower);
+        // Case-sensitive: use pattern as-is; otherwise lowercase
+        let needle = if case_sensitive {
+            pattern.to_owned()
+        } else {
+            pattern.to_ascii_lowercase()
+        };
+        let is_path = !is_match_all && !is_regex && compact::is_path_pattern(&needle);
 
         if is_match_all {
             // Global top-N: scan ALL records across ALL drives, pick the
@@ -345,9 +355,9 @@ impl MultiDriveBackend {
             rows = collect_global_top_n(&self.drives, limit, self.sort_column, self.sort_desc);
         } else if is_regex {
             // Regex mode: compile pattern (strip leading >) and search
-            let regex_pattern = needle_lower.strip_prefix('>').unwrap_or(&needle_lower);
+            let regex_pattern = needle.strip_prefix('>').unwrap_or(&needle);
             match regex::RegexBuilder::new(regex_pattern)
-                .case_insensitive(true)
+                .case_insensitive(!case_sensitive)
                 .build()
             {
                 Ok(compiled_re) => {
@@ -377,9 +387,9 @@ impl MultiDriveBackend {
                 .par_iter()
                 .map(|drive| {
                     if is_path {
-                        search_compact_drive_tree(drive, &needle_lower, limit)
+                        search_compact_drive_tree(drive, &needle, limit)
                     } else {
-                        search_compact_drive(drive, &needle_lower, limit)
+                        search_compact_drive(drive, &needle, limit, case_sensitive, whole_word)
                     }
                 })
                 .collect();
@@ -769,33 +779,54 @@ fn longest_literal(pattern: &str) -> String {
 )]
 fn search_compact_drive(
     drive: &DriveCompactIndex,
-    needle_lower: &str,
+    needle: &str,
     limit: usize,
+    case_sensitive: bool,
+    whole_word: bool,
 ) -> Vec<DisplayRow> {
-    if needle_lower.is_empty() {
+    if needle.is_empty() {
         return Vec::new();
     }
 
     let volume_prefix = format!("{}:\\", drive.letter);
-    let is_glob = needle_lower.contains('*') || needle_lower.contains('?');
+    let is_glob = needle.contains('*') || needle.contains('?');
 
-    // For glob patterns, extract the longest literal substring for trigram lookup.
-    // E.g., "*sex*ge*" → trigram search for "sex", then verify with full glob.
-    let trigram_needle = if is_glob {
-        longest_literal(needle_lower)
+    // Choose names blob: case-sensitive uses original case, otherwise lowercase
+    let names_blob = if case_sensitive {
+        &drive.names
     } else {
-        needle_lower.to_owned()
+        &drive.names_lower
     };
 
-    // Try trigram search first (3+ chars in the literal part)
-    let candidates = if trigram_needle.len() >= 3 {
+    // Match function: whole_word requires exact name match, otherwise glob/substring
+    let matches = |name: &str| -> bool {
+        if whole_word {
+            if is_glob {
+                compact::name_matches(name, needle)
+            } else {
+                name == needle
+            }
+        } else {
+            compact::name_matches(name, needle)
+        }
+    };
+
+    // For glob patterns, extract the longest literal substring for trigram lookup.
+    let trigram_needle = if is_glob {
+        longest_literal(needle)
+    } else {
+        needle.to_owned()
+    };
+
+    // Trigram index only works on names_lower — skip for case-sensitive mode
+    let candidates = if !case_sensitive && trigram_needle.len() >= 3 {
         drive.trigram.search(&trigram_needle)
     } else {
         None
     };
 
     let match_indices: Vec<usize> = if let Some(candidate_indices) = candidates {
-        // Trigram hit: verify candidates with glob or substring match
+        // Trigram hit: verify candidates
         candidate_indices
             .iter()
             .filter(|&&idx| {
@@ -803,21 +834,21 @@ fn search_compact_drive(
                 let Some(rec) = drive.records.get(rec_idx) else {
                     return false;
                 };
-                let name = rec.name(&drive.names_lower);
-                compact::name_matches(name, needle_lower)
+                let name = rec.name(names_blob);
+                matches(name)
             })
             .take(limit)
             .map(|&idx| idx as usize)
             .collect()
     } else {
-        // Short pattern or no trigram-able literals: linear scan
+        // Linear scan (case-sensitive, short pattern, or no trigram-able literals)
         drive
             .records
             .iter()
             .enumerate()
             .filter(|(_, rec)| {
-                let name = rec.name(&drive.names_lower);
-                compact::name_matches(name, needle_lower)
+                let name = rec.name(names_blob);
+                matches(name)
             })
             .take(limit)
             .map(|(idx, _)| idx)
