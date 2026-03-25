@@ -1150,13 +1150,12 @@ fn ui(frame: &mut Frame, app: &mut App) {
         ],
     };
     let page_labels = ["Nav", "Toggles", "Ctrl", "Patterns"];
-    let page_label = page_labels
-        .get(app.help_page as usize)
-        .unwrap_or(&"Help");
-    let help = Paragraph::new(Line::from(help_spans))
-        .block(Block::default().borders(Borders::ALL).title(format!(
-            " Help ({page_label}) — F1 to cycle "
-        )));
+    let page_label = page_labels.get(app.help_page as usize).unwrap_or(&"Help");
+    let help = Paragraph::new(Line::from(help_spans)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Help ({page_label}) — F1 to cycle ")),
+    );
     frame.render_widget(help, chunks[3]);
 }
 

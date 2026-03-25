@@ -17,7 +17,7 @@ const INDEX_MAGIC: &[u8; 8] = b"UFFSIDX\0";
 /// (in stream flags) Version 7: Added P3 forensic fields: `forensic_flags`
 /// (renamed from reserved), `base_frs` for extension records
 /// Version 8: Added `total_stream_count` for full tree-metrics accounting
-/// Version 9: StandardInfo.flags now stores raw NTFS FILE_ATTRIBUTE_* bits
+/// Version 9: `StandardInfo.flags` now stores raw NTFS `FILE_ATTRIBUTE_*` bits
 ///            (was remapped internal layout in v3-v8)
 const INDEX_VERSION: u32 = 9;
 

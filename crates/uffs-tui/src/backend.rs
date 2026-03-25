@@ -706,7 +706,8 @@ fn collect_global_top_n_numeric(
 /// Search a single drive using regex matching on filenames.
 ///
 /// Linear scan — regex can't leverage trigram index. But typically still
-/// fast (<500ms for 25M) because regex matching is optimized by the `regex` crate.
+/// fast (<500ms for 25M) because regex matching is optimized by the `regex`
+/// crate.
 #[expect(
     clippy::single_call_fn,
     reason = "called from MultiDriveBackend::search via rayon; separation keeps regex logic isolated"
@@ -798,7 +799,8 @@ fn search_compact_drive(
         &drive.names_lower
     };
 
-    // Match function: whole_word requires exact name match, otherwise glob/substring
+    // Match function: whole_word requires exact name match, otherwise
+    // glob/substring
     let matches = |name: &str| -> bool {
         if whole_word {
             if is_glob {

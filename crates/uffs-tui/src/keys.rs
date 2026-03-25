@@ -29,7 +29,8 @@ pub const SHOW_PATH: KeyBind = (KeyCode::Enter, KeyModifiers::NONE);
 
 // ─── Sort ───────────────────────────────────────────────────────────────
 
-/// Cycle sort column (Name → Size → Modified → Path → Drive → Extension → Type).
+/// Cycle sort column (Name → Size → Modified → Path → Drive → Extension →
+/// Type).
 pub const SORT_CYCLE: KeyBind = (KeyCode::Tab, KeyModifiers::NONE);
 /// Toggle sort direction (ascending ↔ descending).
 pub const SORT_DIRECTION: KeyBind = (KeyCode::BackTab, KeyModifiers::SHIFT);
@@ -108,7 +109,10 @@ const fn matches_code(actual: KeyCode, expected: KeyCode) -> bool {
 
 /// Help text label for a keybinding (for the help bar).
 #[must_use]
-#[expect(dead_code, reason = "public API for help bar rendering; wired in future")]
+#[expect(
+    dead_code,
+    reason = "public API for help bar rendering; wired in future"
+)]
 pub const fn label(bind: KeyBind) -> &'static str {
     match bind {
         (KeyCode::F(2), _) => "F2",

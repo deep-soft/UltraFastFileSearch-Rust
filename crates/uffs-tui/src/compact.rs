@@ -855,7 +855,8 @@ fn name_search(drive: &DriveCompactIndex, needle: &str, limit: usize) -> Vec<u32
     }
 }
 
-/// Check if a name matches a glob pattern (case-insensitive, both already lowercase).
+/// Check if a name matches a glob pattern (case-insensitive, both already
+/// lowercase).
 ///
 /// Supports:
 /// - `*`: matches any sequence of characters (including empty)

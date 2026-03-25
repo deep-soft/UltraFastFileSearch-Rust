@@ -263,7 +263,9 @@ impl App {
             self.status = format!("⏳ Searching for \"{pattern}\"...");
         }
 
-        let result = self.backend.search(&pattern, self.case_sensitive, self.whole_word);
+        let result = self
+            .backend
+            .search(&pattern, self.case_sensitive, self.whole_word);
         self.last_search_ms = result.duration.as_millis();
         self.results = result.rows;
         crate::backend::apply_filter(&mut self.results, self.filter_mode);
