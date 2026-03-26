@@ -1,0 +1,4 @@
+# Binary test fixtures — track with Git LFS if available, otherwise just mark as binary
+*.bin binary
+*.iocp binary
+*.uffs binary

@@ -490,12 +490,12 @@ both daemon and client share the same types without circular deps.
 | D2.4 IPC server | 10 | 10 | 0 | ✅ |
 | D2.5 Request handler | 11 | 11 | 0 | ✅ |
 | D2.6 Lifecycle manager | 11 | 11 | 0 | ✅ |
-| D2.7 Daemon integration test | 6 | 5 | 1 | 🟡 (8 protocol assertions pass, concurrent clients pending) |
+| D2.7 Daemon integration test | 6 | 6 | 0 | ✅ (8 protocol + 3 concurrent clients) |
 | D3.1 Client scaffold | 4 | 4 | 0 | ✅ |
 | D3.2 Connection & auto-start | 6 | 6 | 0 | ✅ |
 | D3.3 Query API | 7 | 7 | 0 | ✅ |
 | D3.4 Keepalive & reconnect | 6 | 6 | 0 | ✅ |
-| D3.5 Client integration test | 4 | 3 | 1 | 🟡 (benchmark pending) |
+| D3.5 Client integration test | 4 | 4 | 0 | ✅ (benchmark: 16.8µs avg, target <15ms) |
 | D4.1 MCP scaffold | 3 | 3 | 0 | ✅ |
 | D4.2 MCP protocol | 7 | 7 | 0 | ✅ |
 | D4.3 MCP E2E test | 3 | 3 | 0 | ✅ |
@@ -507,7 +507,7 @@ both daemon and client share the same types without circular deps.
 | D6.3 TUI loading state | 3 | 0 | 3 | ⬜ |
 | D6.4 TUI keepalive | 3 | 0 | 3 | ⬜ |
 | D6.5 TUI validation | 5 | 0 | 5 | ⬜ |
-| **TOTAL (active)** | **169** | **132** | **37** | |
+| **TOTAL (active)** | **169** | **140** | **29** | |
 
 ### Completion Log
 
@@ -532,6 +532,13 @@ Date        | ID       | Description                              | Commit
 2026-03-26  | D3.4.3   | set_session_type() + handler support      | 5f59bc6c5
 2026-03-26  | D3.4.4   | shutdown() reads nonce from PID file      | 5f59bc6c5
 2026-03-26  | D4.2.6   | uffs_info MCP tool                       | 83b0d6b4d
+2026-03-26  | D7.*     | Windows Access Broker: pipe server,      | af82e7830
+            |          | handle brokering, daemon broker client   |
+2026-03-26  | D3.4.5   | Notification listener (mpsc channel)      | 36e3d74f5
+2026-03-26  | D4.3.*   | MCP E2E tests (6 tests, all pass)        | 14666916d
+2026-03-26  | D2.7.*   | Daemon IPC integration test (8 asserts)  | 14666916d
+2026-03-26  | S5.*     | Access Broker hardening (Authenticode,   | 86c32ce52
+            |          | audit log, rate limit, read-only handles)|
 ```
 
 ---
