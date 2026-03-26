@@ -19,7 +19,10 @@ pub fn verify_daemon_identity(pid: u32) -> bool {
     let daemon_path = match get_process_exe_path(pid) {
         Some(p) => p,
         None => {
-            tracing::debug!(pid, "Could not determine daemon exe path, skipping verification");
+            tracing::debug!(
+                pid,
+                "Could not determine daemon exe path, skipping verification"
+            );
             return true; // graceful degradation
         }
     };
@@ -179,8 +182,8 @@ fn platform_get_exe_path(pid: u32) -> Option<PathBuf> {
 fn platform_get_exe_path(pid: u32) -> Option<PathBuf> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
     };
 
     // SAFETY: OpenProcess + QueryFullProcessImageNameW are well-defined Win32 APIs.
@@ -223,8 +226,8 @@ fn platform_get_exe_path(_pid: u32) -> Option<PathBuf> {
 /// Verify the code signature of the daemon binary (S4.3.8).
 ///
 /// - **macOS**: uses `codesign --verify` (checks Apple code signature)
-/// - **Windows**: uses `Get-AuthenticodeSignature` via PowerShell
-///   (checks Authenticode / Microsoft code signature)
+/// - **Windows**: uses `Get-AuthenticodeSignature` via PowerShell (checks
+///   Authenticode / Microsoft code signature)
 /// - **Linux**: no standard code signing — always returns `true`
 ///
 /// Returns `true` if the signature is valid or verification is unavailable.

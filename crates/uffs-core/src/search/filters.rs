@@ -210,9 +210,7 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
                 return false;
             }
         }
-        if filters.attr_require != 0
-            && (row.flags & filters.attr_require) != filters.attr_require
-        {
+        if filters.attr_require != 0 && (row.flags & filters.attr_require) != filters.attr_require {
             return false;
         }
         if filters.attr_exclude != 0 && (row.flags & filters.attr_exclude) != 0 {

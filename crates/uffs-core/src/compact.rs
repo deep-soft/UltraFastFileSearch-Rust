@@ -95,7 +95,8 @@ pub struct DriveCompactIndex {
     pub names_lower: Vec<u8>,
     /// Trigram inverted index built on `names_lower`.
     pub trigram: TrigramIndex,
-    /// Children index: `children[i]` = compact indices of directory i's children.
+    /// Children index: `children[i]` = compact indices of directory i's
+    /// children.
     pub children: Vec<Vec<u32>>,
     /// Where this index was loaded from (for future refresh).
     pub source: IndexSource,

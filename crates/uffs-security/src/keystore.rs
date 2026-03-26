@@ -176,9 +176,8 @@ fn dpapi_read_key(path: &std::path::Path) -> io::Result<[u8; KEY_SIZE]> {
 #[cfg(target_os = "windows")]
 fn dpapi_protect(data: &[u8]) -> io::Result<Vec<u8>> {
     use windows::Win32::Security::Cryptography::{
-        CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN,
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
     };
-    use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
 
     let mut input_blob = CRYPT_INTEGER_BLOB {
         cbData: data.len() as u32,
@@ -216,14 +215,11 @@ fn dpapi_protect(data: &[u8]) -> io::Result<Vec<u8>> {
 
     // Copy output blob to Vec and free the Windows-allocated memory
     let result = unsafe {
-        let slice = std::slice::from_raw_parts(
-            output_blob.pbData,
-            output_blob.cbData as usize,
-        );
+        let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize);
         let vec = slice.to_vec();
-        windows::Win32::System::Memory::LocalFree(
-            windows::Win32::Foundation::HLOCAL(output_blob.pbData as _),
-        );
+        windows::Win32::System::Memory::LocalFree(windows::Win32::Foundation::HLOCAL(
+            output_blob.pbData as _,
+        ));
         vec
     };
 
@@ -234,9 +230,8 @@ fn dpapi_protect(data: &[u8]) -> io::Result<Vec<u8>> {
 #[cfg(target_os = "windows")]
 fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
     use windows::Win32::Security::Cryptography::{
-        CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN,
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
     };
-    use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
 
     let mut input_blob = CRYPT_INTEGER_BLOB {
         cbData: blob.len() as u32,
@@ -273,14 +268,11 @@ fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
     }
 
     let result = unsafe {
-        let slice = std::slice::from_raw_parts(
-            output_blob.pbData,
-            output_blob.cbData as usize,
-        );
+        let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize);
         let vec = slice.to_vec();
-        windows::Win32::System::Memory::LocalFree(
-            windows::Win32::Foundation::HLOCAL(output_blob.pbData as _),
-        );
+        windows::Win32::System::Memory::LocalFree(windows::Win32::Foundation::HLOCAL(
+            output_blob.pbData as _,
+        ));
         vec
     };
 
@@ -357,7 +349,11 @@ mod tests {
     use super::*;
 
     /// S2.2.6: key round-trip — generate, store, retrieve, compare.
+    ///
+    /// IGNORED in CI: triggers macOS Keychain login prompt which blocks headless runners.
+    /// Run manually with: `cargo test -p uffs-security -- --ignored key_round_trip`
     #[test]
+    #[ignore = "triggers macOS Keychain prompt — run manually"]
     fn key_round_trip() {
         let key1 = get_cache_key().expect("first get_cache_key");
         let key2 = get_cache_key().expect("second get_cache_key");
@@ -365,7 +361,10 @@ mod tests {
     }
 
     /// Verify generated key is non-zero (not all zeros).
+    ///
+    /// IGNORED in CI: triggers macOS Keychain login prompt.
     #[test]
+    #[ignore = "triggers macOS Keychain prompt — run manually"]
     fn key_is_nonzero() {
         let key = get_cache_key().expect("get_cache_key");
         assert_ne!(key, [0u8; KEY_SIZE], "key should not be all zeros");

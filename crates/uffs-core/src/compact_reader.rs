@@ -163,34 +163,44 @@ impl FullRecordReader {
         let mut pos = 0;
 
         macro_rules! read_u8 {
-            () => {{ let val = *buf.get(pos)?; pos += 1; val }};
+            () => {{
+                let val = *buf.get(pos)?;
+                pos += 1;
+                val
+            }};
         }
         macro_rules! read_u16 {
             () => {{
                 let bytes: [u8; 2] = buf.get(pos..pos + 2)?.try_into().ok()?;
-                pos += 2; u16::from_le_bytes(bytes)
+                pos += 2;
+                u16::from_le_bytes(bytes)
             }};
         }
         macro_rules! read_u32 {
             () => {{
                 let bytes: [u8; 4] = buf.get(pos..pos + 4)?.try_into().ok()?;
-                pos += 4; u32::from_le_bytes(bytes)
+                pos += 4;
+                u32::from_le_bytes(bytes)
             }};
         }
         macro_rules! read_u64 {
             () => {{
                 let bytes: [u8; 8] = buf.get(pos..pos + 8)?.try_into().ok()?;
-                pos += 8; u64::from_le_bytes(bytes)
+                pos += 8;
+                u64::from_le_bytes(bytes)
             }};
         }
         macro_rules! read_i64 {
             () => {{
                 let bytes: [u8; 8] = buf.get(pos..pos + 8)?.try_into().ok()?;
-                pos += 8; i64::from_le_bytes(bytes)
+                pos += 8;
+                i64::from_le_bytes(bytes)
             }};
         }
         macro_rules! skip {
-            ($n:expr) => { pos += $n; };
+            ($n:expr) => {
+                pos += $n;
+            };
         }
 
         // frs: u64
@@ -198,7 +208,12 @@ impl FullRecordReader {
         let sequence_number = if self.version >= 4 { read_u16!() } else { 0 };
         let namespace = if self.version >= 4 { read_u8!() } else { 1 };
         let forensic_flags = if self.version >= 4 { read_u8!() } else { 0 };
-        let lsn = if self.version >= 5 { read_u64!() } else { skip!(0); 0 };
+        let lsn = if self.version >= 5 {
+            read_u64!()
+        } else {
+            skip!(0);
+            0
+        };
         let reparse_tag = if self.version >= 6 { read_u32!() } else { 0 };
         let base_frs = if self.version >= 7 { read_u64!() } else { 0 };
         // StandardInfo: 4×i64 timestamps + u32 flags (already in compact)
@@ -208,7 +223,9 @@ impl FullRecordReader {
         let owner_id = if self.version >= 5 { read_u32!() } else { 0 };
         // name_count + stream_count
         skip!(4);
-        if self.version >= 8 { skip!(2); }
+        if self.version >= 8 {
+            skip!(2);
+        }
         // first_child
         skip!(4);
         // first_name (LinkInfo)
@@ -216,7 +233,9 @@ impl FullRecordReader {
         // first_stream
         skip!(29);
         // tree metrics (v3+)
-        if self.version >= 3 { skip!(20); }
+        if self.version >= 3 {
+            skip!(20);
+        }
         // $FILE_NAME timestamps (v4+)
         let fn_created = if self.version >= 4 { read_i64!() } else { 0 };
         let fn_modified = if self.version >= 4 { read_i64!() } else { 0 };
@@ -225,9 +244,19 @@ impl FullRecordReader {
         let _: usize = pos;
 
         Some(ExtraRecordFields {
-            reparse_tag, sequence_number, namespace, forensic_flags,
-            lsn, base_frs, stdinfo_usn, security_id, owner_id,
-            fn_created, fn_modified, fn_accessed, fn_mft_changed,
+            reparse_tag,
+            sequence_number,
+            namespace,
+            forensic_flags,
+            lsn,
+            base_frs,
+            stdinfo_usn,
+            security_id,
+            owner_id,
+            fn_created,
+            fn_modified,
+            fn_accessed,
+            fn_mft_changed,
         })
     }
 }

@@ -15,7 +15,6 @@ use std::io::BufRead;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
 use uffs_client::connect::UffsClient;
 use uffs_client::protocol::SearchParams;
 
@@ -275,10 +274,7 @@ fn write_response<T: Serialize>(value: &T) -> anyhow::Result<()> {
 }
 
 /// Handle a single MCP request.
-async fn handle_mcp_request(
-    req: &McpRequest,
-    client: &mut UffsClient,
-) -> anyhow::Result<Value> {
+async fn handle_mcp_request(req: &McpRequest, client: &mut UffsClient) -> anyhow::Result<Value> {
     match req.method.as_str() {
         "initialize" => handle_initialize(),
         "tools/list" => handle_tools_list(),
@@ -319,14 +315,8 @@ fn handle_tools_list() -> anyhow::Result<Value> {
 }
 
 /// Handle `tools/call` — dispatch to the appropriate tool.
-async fn handle_tool_call(
-    params: &Value,
-    client: &mut UffsClient,
-) -> anyhow::Result<Value> {
-    let tool_name = params
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+async fn handle_tool_call(params: &Value, client: &mut UffsClient) -> anyhow::Result<Value> {
+    let tool_name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let arguments = params
         .get("arguments")
         .cloned()
@@ -358,16 +348,27 @@ async fn tool_search(args: Value, client: &mut UffsClient) -> anyhow::Result<Str
 
     let params = SearchParams {
         pattern,
-        case_sensitive: args.get("case_sensitive").and_then(Value::as_bool).unwrap_or(false),
+        case_sensitive: args
+            .get("case_sensitive")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         whole_word: false,
         sort: args.get("sort").and_then(Value::as_str).map(String::from),
-        sort_desc: args.get("sort_desc").and_then(Value::as_bool).unwrap_or(true),
-        limit: args.get("limit").and_then(Value::as_u64).map(|n| n.min(10_000) as u32),
+        sort_desc: args
+            .get("sort_desc")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        limit: args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map(|n| n.min(10_000) as u32),
         filter: args.get("filter").and_then(Value::as_str).map(String::from),
         drives: Vec::new(),
     };
 
-    let response = client.search(&params).await
+    let response = client
+        .search(&params)
+        .await
         .map_err(|e| anyhow::anyhow!("Search failed: {e}"))?;
 
     // Format results as a readable table
@@ -408,7 +409,9 @@ async fn tool_search(args: Value, client: &mut UffsClient) -> anyhow::Result<Str
 
 /// Tool: uffs_drives — list loaded drives.
 async fn tool_drives(client: &mut UffsClient) -> anyhow::Result<String> {
-    let response = client.drives().await
+    let response = client
+        .drives()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list drives: {e}"))?;
 
     let mut output = String::new();
@@ -426,31 +429,29 @@ async fn tool_drives(client: &mut UffsClient) -> anyhow::Result<String> {
 
 /// Tool: uffs_status — daemon status.
 async fn tool_status(client: &mut UffsClient) -> anyhow::Result<String> {
-    let response = client.status().await
+    let response = client
+        .status()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to get status: {e}"))?;
 
     let status_str = serde_json::to_string_pretty(&response.status)?;
     Ok(format!(
         "Daemon Status: {}\nUptime: {}s\nConnections: {}\nPID: {}\n",
-        status_str,
-        response.uptime_secs,
-        response.connections,
-        response.pid
+        status_str, response.uptime_secs, response.connections, response.pid
     ))
 }
 
 /// Tool: uffs_info — file/directory info by path.
 async fn tool_info(args: Value, client: &mut UffsClient) -> anyhow::Result<String> {
-    let path = args
-        .get("path")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let path = args.get("path").and_then(Value::as_str).unwrap_or("");
 
     if path.is_empty() {
         return Ok("Error: 'path' parameter is required.".to_owned());
     }
 
-    let response = client.info(path).await
+    let response = client
+        .info(path)
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to get info: {e}"))?;
 
     if !response.found {
@@ -493,12 +494,16 @@ async fn handle_resources_read(params: &Value, client: &mut UffsClient) -> anyho
 
     let (content, mime) = match uri {
         "uffs://drives" => {
-            let resp = client.drives().await
+            let resp = client
+                .drives()
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to read drives: {e}"))?;
             (serde_json::to_string_pretty(&resp)?, "application/json")
         }
         "uffs://status" => {
-            let resp = client.status().await
+            let resp = client
+                .status()
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to read status: {e}"))?;
             (serde_json::to_string_pretty(&resp)?, "application/json")
         }
@@ -578,7 +583,10 @@ fn handle_prompts_list() -> anyhow::Result<Value> {
 /// Handle `prompts/get` — return a specific prompt with arguments filled in.
 fn handle_prompts_get(params: &Value) -> anyhow::Result<Value> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-    let args = params.get("arguments").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or(Value::Object(serde_json::Map::new()));
 
     let messages = match name {
         "find_large_files" => {
@@ -602,7 +610,10 @@ fn handle_prompts_get(params: &Value) -> anyhow::Result<Value> {
             })]
         }
         "find_by_extension" => {
-            let ext = args.get("extension").and_then(Value::as_str).unwrap_or("txt");
+            let ext = args
+                .get("extension")
+                .and_then(Value::as_str)
+                .unwrap_or("txt");
             let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(100);
             vec![serde_json::json!({
                 "role": "user",

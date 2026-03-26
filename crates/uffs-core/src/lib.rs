@@ -41,11 +41,11 @@
 #![warn(clippy::all, clippy::pedantic)]
 
 // Suppress unused crate warnings for deps used by sub-modules or reserved
+#[cfg(test)]
+use criterion as _;
 use devicons as _;
 use memchr as _;
 use tokio as _;
-#[cfg(test)]
-use criterion as _;
 
 // ============================================================================
 // Module declarations

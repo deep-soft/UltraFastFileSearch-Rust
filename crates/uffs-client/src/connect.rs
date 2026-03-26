@@ -173,7 +173,9 @@ impl UffsClient {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
                 if value.get("method").is_some() && value.get("id").is_none() {
                     // It's a notification — route to channel
-                    if let Ok(notif) = serde_json::from_value::<crate::protocol::RpcNotification>(value) {
+                    if let Ok(notif) =
+                        serde_json::from_value::<crate::protocol::RpcNotification>(value)
+                    {
                         let _ = self.notification_tx.send(notif);
                     }
                     continue; // keep reading for the actual response
@@ -225,10 +227,7 @@ impl UffsClient {
     }
 
     /// Trigger a drive refresh.
-    pub async fn refresh(
-        &mut self,
-        drives: &[char],
-    ) -> Result<(), crate::error::ClientError> {
+    pub async fn refresh(&mut self, drives: &[char]) -> Result<(), crate::error::ClientError> {
         let params = serde_json::json!({"drives": drives});
         let _result = self.send_request("refresh", Some(params)).await?;
         Ok(())
@@ -251,7 +250,8 @@ impl UffsClient {
         Ok(())
     }
 
-    /// Set the session type (D3.4.3) — tells daemon which idle timeout tier to use.
+    /// Set the session type (D3.4.3) — tells daemon which idle timeout tier to
+    /// use.
     ///
     /// - `"cli"` → short timeout (5 min default)
     /// - `"tui"`, `"gui"`, `"mcp"` → long timeout (15 min default)
@@ -286,10 +286,7 @@ impl UffsClient {
     /// ```rust,ignore
     /// let _keepalive = client.start_keepalive(Duration::from_secs(60));
     /// ```
-    pub fn start_keepalive(
-        &self,
-        interval: std::time::Duration,
-    ) -> KeepaliveGuard {
+    pub fn start_keepalive(&self, interval: std::time::Duration) -> KeepaliveGuard {
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
         // We can't move &mut self into the task, so we open a separate

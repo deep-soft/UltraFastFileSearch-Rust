@@ -8,14 +8,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use tokio::sync::RwLock;
-
 use uffs_client::protocol::{
     DaemonStatus, DriveInfo, DrivesResponse, SearchParams, SearchResponse, SearchRow,
     StatusResponse,
 };
-use uffs_core::search::backend::{
-    DisplayRow, FilterMode, MultiDriveBackend, SortColumn,
-};
+use uffs_core::search::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
 use uffs_core::search::filters::SearchFilters;
 
 /// Manages loaded drive indices and serves queries.
@@ -422,4 +419,3 @@ fn parse_sort_column(name: &str) -> Option<SortColumn> {
         _ => None,
     }
 }
-

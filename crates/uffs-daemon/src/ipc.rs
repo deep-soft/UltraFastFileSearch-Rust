@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
 use uffs_client::protocol::{ERR_PARSE, RpcErrorResponse, RpcRequest};
 
 use crate::handler::handle_request;
@@ -236,7 +235,8 @@ pub async fn run_ipc_server(
     }
 }
 
-/// Windows: peer credential verification not needed — socket permissions handle it.
+/// Windows: peer credential verification not needed — socket permissions handle
+/// it.
 #[cfg(windows)]
 fn verify_peer_credentials(_stream: &tokio::net::UnixStream) -> bool {
     true
@@ -277,7 +277,10 @@ async fn handle_connection(
             Ok(Ok(n)) => n,
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => {
-                tracing::debug!("Idle connection timeout ({}s), disconnecting", IDLE_CONNECTION_SECS);
+                tracing::debug!(
+                    "Idle connection timeout ({}s), disconnecting",
+                    IDLE_CONNECTION_SECS
+                );
                 return Ok(());
             }
         };
@@ -322,11 +325,7 @@ async fn handle_connection(
         let req: RpcRequest = match serde_json::from_str(line.trim()) {
             Ok(r) => r,
             Err(e) => {
-                let err = RpcErrorResponse::error(
-                    None,
-                    ERR_PARSE,
-                    &format!("Invalid JSON: {e}"),
-                );
+                let err = RpcErrorResponse::error(None, ERR_PARSE, &format!("Invalid JSON: {e}"));
                 let response = serde_json::to_string(&err).unwrap_or_default();
                 writer.write_all(response.as_bytes()).await?;
                 writer.write_all(b"\n").await?;

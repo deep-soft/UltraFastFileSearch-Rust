@@ -187,4 +187,3 @@ pub use usn::{
     ChangeType, FileChange, UsnJournalInfo, UsnRecord, aggregate_changes, query_usn_journal,
     read_usn_journal, reason,
 };
-

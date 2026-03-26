@@ -4,7 +4,8 @@
 //! This is a placeholder — the GUI will use `uffs-client` to communicate
 //! with the daemon when implemented.
 
-// Suppress unused crate warnings for deps reserved for future GUI implementation
+// Suppress unused crate warnings for deps reserved for future GUI
+// implementation
 use anyhow as _;
 use clap as _;
 use tokio as _;

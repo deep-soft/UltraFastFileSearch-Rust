@@ -69,7 +69,10 @@ async fn handle_search(id: u64, req: &RpcRequest, index: &Arc<IndexManager>) -> 
         return serde_json::to_string(&RpcErrorResponse::error(
             Some(id),
             ERR_INVALID_PARAMS,
-            &format!("Pattern too long ({} chars, max {MAX_PATTERN_LENGTH})", params.pattern.len()),
+            &format!(
+                "Pattern too long ({} chars, max {MAX_PATTERN_LENGTH})",
+                params.pattern.len()
+            ),
         ))
         .unwrap_or_default();
     }
@@ -124,7 +127,8 @@ async fn handle_info(id: u64, req: &RpcRequest, index: &Arc<IndexManager>) -> St
     serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
 }
 
-/// Handle `refresh` method — spawns refresh in background, returns immediate ack.
+/// Handle `refresh` method — spawns refresh in background, returns immediate
+/// ack.
 async fn handle_refresh(id: u64, req: &RpcRequest, index: &Arc<IndexManager>) -> String {
     let params: RefreshParams = req
         .params

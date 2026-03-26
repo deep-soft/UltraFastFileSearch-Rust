@@ -1,8 +1,8 @@
 //! Daemon lifecycle: PID file, idle timeout, auto-retire, shutdown.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -18,7 +18,8 @@ pub struct LifecycleHandle {
     shutdown_nonce: Arc<std::sync::Mutex<Option<String>>>,
     /// Active connection count (D2.6.7: don't retire if > 0).
     active_connections: Arc<std::sync::atomic::AtomicUsize>,
-    /// Longest session type seen (D2.6.6: TUI/GUI/MCP get 15 min, CLI gets 5 min).
+    /// Longest session type seen (D2.6.6: TUI/GUI/MCP get 15 min, CLI gets 5
+    /// min).
     max_session_tier: Arc<std::sync::atomic::AtomicU8>,
 }
 
@@ -63,7 +64,10 @@ impl LifecycleHandle {
     ///
     /// If no nonce is set (shouldn't happen), allows shutdown anyway.
     pub fn verify_shutdown_nonce(&self, provided: &str) -> bool {
-        let guard = self.shutdown_nonce.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .shutdown_nonce
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         match guard.as_deref() {
             Some(expected) => expected == provided,
             None => true, // no nonce set — allow (shouldn't happen in practice)
@@ -121,8 +125,10 @@ impl LifecycleManager {
     /// Write the PID file.
     ///
     /// Format: `{pid}\n{start_timestamp}\n{exe_path_hash}\n{shutdown_nonce}\n`
-    /// - `exe_path_hash`: FNV-1a hash of the daemon executable path (for identity verification)
-    /// - `shutdown_nonce`: random token required for the `shutdown` RPC method (S4.4.9)
+    /// - `exe_path_hash`: FNV-1a hash of the daemon executable path (for
+    ///   identity verification)
+    /// - `shutdown_nonce`: random token required for the `shutdown` RPC method
+    ///   (S4.4.9)
     pub fn write_pid_file(&mut self) -> std::io::Result<()> {
         if let Some(parent) = self.pid_path.parent() {
             uffs_security::fs::create_secure_dir(parent)?;
@@ -198,13 +204,16 @@ impl LifecycleManager {
         true
     }
 
-    /// Run the idle timer. Returns when shutdown is requested or idle timeout fires.
+    /// Run the idle timer. Returns when shutdown is requested or idle timeout
+    /// fires.
     ///
     /// D2.6.6: Uses differentiated timeouts based on session type:
     /// - CLI sessions (tier 0): use the configured timeout (default 5 min)
-    /// - TUI/GUI/MCP sessions (tier 1): use 3× the configured timeout (default 15 min)
+    /// - TUI/GUI/MCP sessions (tier 1): use 3× the configured timeout (default
+    ///   15 min)
     ///
-    /// D2.6.7: Does NOT retire if active connections exist — waits for them to close first.
+    /// D2.6.7: Does NOT retire if active connections exist — waits for them to
+    /// close first.
     pub async fn run_idle_timer(&mut self) {
         let Some(base_timeout) = self.idle_timeout else {
             // --no-retire: just wait for shutdown signal
@@ -272,8 +281,12 @@ impl Drop for LifecycleManager {
 /// Check if a process with the given PID is alive.
 #[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
-    // SAFETY: kill with signal 0 checks if the process exists without sending a signal.
-    #[expect(unsafe_code, reason = "kill(pid, 0) is a standard POSIX liveness check")]
+    // SAFETY: kill with signal 0 checks if the process exists without sending a
+    // signal.
+    #[expect(
+        unsafe_code,
+        reason = "kill(pid, 0) is a standard POSIX liveness check"
+    )]
     unsafe {
         libc::kill(pid as libc::pid_t, 0) == 0
     }
@@ -300,7 +313,8 @@ fn is_process_alive(pid: u32) -> bool {
 
 /// FNV-1a hash of the current executable path (S4.3.1).
 ///
-/// Used in the PID file so the client can verify the daemon is the expected binary.
+/// Used in the PID file so the client can verify the daemon is the expected
+/// binary.
 fn exe_path_hash() -> u64 {
     let path = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())

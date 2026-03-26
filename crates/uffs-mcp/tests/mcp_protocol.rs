@@ -21,7 +21,11 @@ fn mcp_exe() -> PathBuf {
 }
 
 /// Spawn uffs-mcp with piped stdin/stdout.
-fn spawn_mcp() -> Option<(Child, std::process::ChildStdin, BufReader<std::process::ChildStdout>)> {
+fn spawn_mcp() -> Option<(
+    Child,
+    std::process::ChildStdin,
+    BufReader<std::process::ChildStdout>,
+)> {
     let exe = mcp_exe();
     if !exe.exists() {
         eprintln!("uffs-mcp binary not found at {}, skipping", exe.display());
@@ -43,7 +47,11 @@ fn spawn_mcp() -> Option<(Child, std::process::ChildStdin, BufReader<std::proces
 }
 
 /// Send a JSON-RPC request and read the response.
-fn send_and_read(stdin: &mut std::process::ChildStdin, stdout: &mut BufReader<std::process::ChildStdout>, req: &str) -> Option<String> {
+fn send_and_read(
+    stdin: &mut std::process::ChildStdin,
+    stdout: &mut BufReader<std::process::ChildStdout>,
+    req: &str,
+) -> Option<String> {
     stdin.write_all(req.as_bytes()).ok()?;
     stdin.write_all(b"\n").ok()?;
     stdin.flush().ok()?;
@@ -70,11 +78,23 @@ fn test_mcp_initialize() {
     );
 
     if let Some(resp) = &resp {
-        assert!(resp.contains("\"protocolVersion\""), "should have protocolVersion: {resp}");
+        assert!(
+            resp.contains("\"protocolVersion\""),
+            "should have protocolVersion: {resp}"
+        );
         assert!(resp.contains("\"tools\""), "should advertise tools: {resp}");
-        assert!(resp.contains("\"resources\""), "should advertise resources: {resp}");
-        assert!(resp.contains("\"prompts\""), "should advertise prompts: {resp}");
-        assert!(resp.contains("\"uffs\""), "server name should be uffs: {resp}");
+        assert!(
+            resp.contains("\"resources\""),
+            "should advertise resources: {resp}"
+        );
+        assert!(
+            resp.contains("\"prompts\""),
+            "should advertise prompts: {resp}"
+        );
+        assert!(
+            resp.contains("\"uffs\""),
+            "server name should be uffs: {resp}"
+        );
     }
 
     // Send initialized notification
@@ -108,9 +128,18 @@ fn test_mcp_tools_list() {
     );
 
     if let Some(resp) = &resp {
-        assert!(resp.contains("uffs_search"), "should have uffs_search: {resp}");
-        assert!(resp.contains("uffs_drives"), "should have uffs_drives: {resp}");
-        assert!(resp.contains("uffs_status"), "should have uffs_status: {resp}");
+        assert!(
+            resp.contains("uffs_search"),
+            "should have uffs_search: {resp}"
+        );
+        assert!(
+            resp.contains("uffs_drives"),
+            "should have uffs_drives: {resp}"
+        );
+        assert!(
+            resp.contains("uffs_status"),
+            "should have uffs_status: {resp}"
+        );
         assert!(resp.contains("uffs_info"), "should have uffs_info: {resp}");
     }
 
@@ -137,8 +166,14 @@ fn test_mcp_resources_list() {
     );
 
     if let Some(resp) = &resp {
-        assert!(resp.contains("uffs://drives"), "should have drives resource: {resp}");
-        assert!(resp.contains("uffs://status"), "should have status resource: {resp}");
+        assert!(
+            resp.contains("uffs://drives"),
+            "should have drives resource: {resp}"
+        );
+        assert!(
+            resp.contains("uffs://status"),
+            "should have status resource: {resp}"
+        );
     }
 
     let _ = child.kill();
@@ -164,10 +199,22 @@ fn test_mcp_prompts_list() {
     );
 
     if let Some(resp) = &resp {
-        assert!(resp.contains("find_large_files"), "should have find_large_files: {resp}");
-        assert!(resp.contains("recent_changes"), "should have recent_changes: {resp}");
-        assert!(resp.contains("find_by_extension"), "should have find_by_extension: {resp}");
-        assert!(resp.contains("find_duplicates_by_name"), "should have find_duplicates: {resp}");
+        assert!(
+            resp.contains("find_large_files"),
+            "should have find_large_files: {resp}"
+        );
+        assert!(
+            resp.contains("recent_changes"),
+            "should have recent_changes: {resp}"
+        );
+        assert!(
+            resp.contains("find_by_extension"),
+            "should have find_by_extension: {resp}"
+        );
+        assert!(
+            resp.contains("find_duplicates_by_name"),
+            "should have find_duplicates: {resp}"
+        );
     }
 
     let _ = child.kill();
@@ -175,7 +222,8 @@ fn test_mcp_prompts_list() {
 
 /// D4.3.2: Claude Desktop MCP configuration example.
 ///
-/// Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+/// Add this to `~/Library/Application
+/// Support/Claude/claude_desktop_config.json`: 
 /// ```json
 /// {
 ///   "mcpServers": {

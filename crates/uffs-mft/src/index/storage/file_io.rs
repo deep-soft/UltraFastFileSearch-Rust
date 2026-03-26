@@ -47,8 +47,8 @@ impl MftIndex {
     ///
     /// Detects the file format automatically:
     /// - **`UFFSENC`**: decrypts with the platform key, then deserializes
-    /// - **`UFFSIDX`** (legacy plaintext): deserializes directly, then
-    ///   re-saves as encrypted (one-time auto-migration)
+    /// - **`UFFSIDX`** (legacy plaintext): deserializes directly, then re-saves
+    ///   as encrypted (one-time auto-migration)
     /// - **Unknown**: returns an error
     ///
     /// If decryption fails (wrong key / tampered), the corrupted file is
@@ -67,9 +67,8 @@ impl MftIndex {
 
         let plaintext = match format {
             CacheFormat::Encrypted => {
-                let key = uffs_security::keystore::get_cache_key().map_err(|e| {
-                    Box::new(e) as Box<dyn core::error::Error>
-                })?;
+                let key = uffs_security::keystore::get_cache_key()
+                    .map_err(|e| Box::new(e) as Box<dyn core::error::Error>)?;
                 match decrypt_cache(&raw, &key) {
                     Ok(pt) => pt,
                     Err(e) => {

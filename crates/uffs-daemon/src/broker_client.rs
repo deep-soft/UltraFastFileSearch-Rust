@@ -17,6 +17,7 @@ pub const BROKER_PIPE_NAME: &str = r"\\.\pipe\uffs-broker";
 #[cfg(windows)]
 pub fn broker_available() -> bool {
     use std::os::windows::ffi::OsStrExt;
+
     use windows::Win32::Storage::FileSystem::GetFileAttributesW;
     use windows::core::PCWSTR;
 

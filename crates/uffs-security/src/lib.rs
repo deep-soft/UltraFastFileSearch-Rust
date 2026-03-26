@@ -6,8 +6,10 @@
 //! # Modules
 //!
 //! - [`crypto`] — AES-256-GCM authenticated encryption (Phase S2)
-//! - [`keystore`] — Platform-native key storage: DPAPI / Keychain / Secret Service (Phase S2)
-//! - [`fs`] — Secure file operations: atomic write, secure delete, permissions, file locking
+//! - [`keystore`] — Platform-native key storage: DPAPI / Keychain / Secret
+//!   Service (Phase S2)
+//! - [`fs`] — Secure file operations: atomic write, secure delete, permissions,
+//!   file locking
 
 // Platform-gated deps: used by sub-modules behind #[cfg] gates.
 // Suppress unused-crate-dependencies lint for platforms where the

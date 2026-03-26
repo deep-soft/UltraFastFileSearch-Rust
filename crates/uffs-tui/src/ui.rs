@@ -252,7 +252,10 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
         })
         .collect();
 
-    let widths: Vec<Constraint> = vis.iter().map(|col| crate::columns::default_constraint(*col)).collect();
+    let widths: Vec<Constraint> = vis
+        .iter()
+        .map(|col| crate::columns::default_constraint(*col))
+        .collect();
     let table = Table::new(rows, widths)
         .header(header)
         .block(

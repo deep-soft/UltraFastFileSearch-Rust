@@ -15,7 +15,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-
 // Suppress unused crate warnings for deps used in sub-modules behind cfg gates
 use dirs_next as _;
 use serde as _;

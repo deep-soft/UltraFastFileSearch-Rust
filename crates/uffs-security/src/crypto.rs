@@ -20,9 +20,8 @@
 
 use std::io;
 
-use aes_gcm::AeadInPlace;
 use aes_gcm::aead::generic_array::GenericArray;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::{AeadInPlace, Aes256Gcm, KeyInit, Nonce};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -134,11 +133,11 @@ pub fn encrypt_cache(plaintext: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
 
     // Build header (28 bytes)
     let mut output = Vec::with_capacity(HEADER_SIZE + plaintext.len() + TAG_SIZE);
-    output.extend_from_slice(ENCRYPTED_MAGIC);          // 0..8
+    output.extend_from_slice(ENCRYPTED_MAGIC); // 0..8
     output.extend_from_slice(&ENC_FORMAT_VERSION.to_le_bytes()); // 8..10
-    output.push(ALGO_AES_256_GCM);                      // 10
-    output.push(platform_kdf_id());                      // 11
-    output.extend_from_slice(&nonce_bytes);               // 12..24
+    output.push(ALGO_AES_256_GCM); // 10
+    output.push(platform_kdf_id()); // 11
+    output.extend_from_slice(&nonce_bytes); // 12..24
     output.extend_from_slice(&plaintext_len.to_le_bytes()); // 24..28
 
     // AAD = header bytes 0..28
@@ -153,7 +152,9 @@ pub fn encrypt_cache(plaintext: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
     let nonce = Nonce::from_slice(&nonce_bytes);
     let tag = cipher
         .encrypt_in_place_detached(nonce, &aad, &mut output[ciphertext_start..])
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("AES-GCM encrypt failed: {e}")))?;
+        .map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("AES-GCM encrypt failed: {e}"))
+        })?;
 
     // Append 16-byte GCM tag
     output.extend_from_slice(&tag);

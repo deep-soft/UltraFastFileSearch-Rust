@@ -205,8 +205,7 @@ impl MultiDriveBackend {
         } else {
             pattern.to_ascii_lowercase()
         };
-        let is_path =
-            !is_match_all && !is_regex && crate::search::tree::is_path_pattern(&needle);
+        let is_path = !is_match_all && !is_regex && crate::search::tree::is_path_pattern(&needle);
 
         if is_match_all {
             rows = super::query::collect_global_top_n(

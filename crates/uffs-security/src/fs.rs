@@ -24,8 +24,8 @@ use std::path::Path;
 /// Creates a directory (and parents) with owner-only permissions.
 ///
 /// - **Unix** (macOS + Linux): mode `0700` (`drwx------`)
-/// - **Windows**: creates the directory; sets read-only attribute as a
-///   basic protection layer (full DACL requires elevated context)
+/// - **Windows**: creates the directory; sets read-only attribute as a basic
+///   protection layer (full DACL requires elevated context)
 ///
 /// # Errors
 ///
@@ -44,9 +44,10 @@ fn set_dir_owner_only(path: &Path) -> io::Result<()> {
 
 /// Platform-specific directory permission hardening.
 ///
-/// S1.2.6: Uses `icacls`-equivalent approach — runs `icacls path /inheritance:r /grant:r %USERNAME%:(OI)(CI)F`
-/// to remove inherited ACEs and grant only the current user full control.
-/// Falls back to hidden attribute if the command fails.
+/// S1.2.6: Uses `icacls`-equivalent approach — runs `icacls path /inheritance:r
+/// /grant:r %USERNAME%:(OI)(CI)F` to remove inherited ACEs and grant only the
+/// current user full control. Falls back to hidden attribute if the command
+/// fails.
 #[cfg(windows)]
 fn set_dir_owner_only(path: &Path) -> io::Result<()> {
     // Try icacls first — works without elevation, sets proper DACL
@@ -60,8 +61,8 @@ fn set_dir_owner_only(path: &Path) -> io::Result<()> {
 /// Sets a file's permissions to owner-only (read+write).
 ///
 /// - **Unix** (macOS + Linux): mode `0600` (`-rw-------`)
-/// - **Windows**: sets read-only attribute removed (writable by owner);
-///   marks hidden to discourage casual access
+/// - **Windows**: sets read-only attribute removed (writable by owner); marks
+///   hidden to discourage casual access
 ///
 /// # Errors
 ///
@@ -124,9 +125,9 @@ fn win_set_hidden(path: &Path) -> io::Result<()> {
 
 /// Windows: set owner-only ACL via `icacls` command.
 ///
-/// S1.2.6: Equivalent to `icacls path /inheritance:r /grant:r %USERNAME%:(OI)(CI)F`
-/// which removes inherited ACEs and grants only the current user full control.
-/// Returns `true` on success.
+/// S1.2.6: Equivalent to `icacls path /inheritance:r /grant:r
+/// %USERNAME%:(OI)(CI)F` which removes inherited ACEs and grants only the
+/// current user full control. Returns `true` on success.
 #[cfg(windows)]
 fn win_set_owner_only_acl(path: &Path) -> bool {
     let username = std::env::var("USERNAME").unwrap_or_default();
@@ -144,7 +145,8 @@ fn win_set_owner_only_acl(path: &Path) -> bool {
         .status();
 
     if inherit_result.map_or(false, |s| s.success()) {
-        // Grant only current user full control (with Object Inherit + Container Inherit)
+        // Grant only current user full control (with Object Inherit + Container
+        // Inherit)
         let grant_arg = format!("{username}:(OI)(CI)F");
         let grant_result = std::process::Command::new("icacls")
             .args([path_str.as_ref(), "/grant:r", &grant_arg])
@@ -385,8 +387,7 @@ const ERROR_LOCK_VIOLATION: i32 = 33;
 /// Checks if an I/O error represents lock contention (Windows).
 #[cfg(windows)]
 fn is_lock_contention(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::WouldBlock
-        || e.raw_os_error() == Some(ERROR_LOCK_VIOLATION)
+    e.kind() == io::ErrorKind::WouldBlock || e.raw_os_error() == Some(ERROR_LOCK_VIOLATION)
 }
 
 /// Non-blocking lock attempt via `LockFileEx` (Windows).

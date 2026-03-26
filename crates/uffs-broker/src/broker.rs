@@ -7,7 +7,8 @@
 //! # Protocol (binary, over named pipe)
 //!
 //! Request:  1 byte = drive letter ASCII (e.g., b'C')
-//! Response: 1 byte status (0=ok, 1=error) + 8 bytes HANDLE value (little-endian u64)
+//! Response: 1 byte status (0=ok, 1=error) + 8 bytes HANDLE value
+//! (little-endian u64)
 //!
 //! The broker opens `\\.\X:` with `FILE_READ_DATA` + `SeBackupPrivilege`,
 //! then `DuplicateHandle`s it into the client process with read-only access.
@@ -45,7 +46,10 @@ fn run_foreground() -> anyhow::Result<()> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    tracing::info!(pid = std::process::id(), "uffs-broker starting (foreground mode)");
+    tracing::info!(
+        pid = std::process::id(),
+        "uffs-broker starting (foreground mode)"
+    );
 
     if !is_elevated() {
         tracing::warn!("Broker is NOT running elevated — volume access will fail");
@@ -61,7 +65,8 @@ fn run_foreground() -> anyhow::Result<()> {
 /// Serve handle requests on the named pipe.
 ///
 /// Hardened with S5 security controls:
-/// - S5.1: Pipe created with Administrators-only default DACL (elevated process)
+/// - S5.1: Pipe created with Administrators-only default DACL (elevated
+///   process)
 /// - S5.2: Client exe path + Authenticode verification
 /// - S5.3: Audit logging for every request
 /// - S5.4: Rate limiting (1 request per drive per 10s)
@@ -86,7 +91,13 @@ fn serve_pipe_requests() -> anyhow::Result<()> {
 
             if !verify_client(pid) {
                 // S5.3: Audit log — rejected client
-                audit_log("REJECTED", pid, exe_path.as_deref(), None, "identity verification failed");
+                audit_log(
+                    "REJECTED",
+                    pid,
+                    exe_path.as_deref(),
+                    None,
+                    "identity verification failed",
+                );
                 tracing::warn!(pid, "Rejected broker client — not uffs-daemon");
                 disconnect_and_close(&pipe);
                 continue;
@@ -95,7 +106,13 @@ fn serve_pipe_requests() -> anyhow::Result<()> {
             // S5.2: Authenticode signature check
             if let Some(ref path) = exe_path {
                 if !verify_authenticode(path) {
-                    audit_log("REJECTED", pid, exe_path.as_deref(), None, "Authenticode verification failed");
+                    audit_log(
+                        "REJECTED",
+                        pid,
+                        exe_path.as_deref(),
+                        None,
+                        "Authenticode verification failed",
+                    );
                     tracing::warn!(pid, exe = %path, "Rejected: invalid Authenticode signature");
                     disconnect_and_close(&pipe);
                     continue;
@@ -116,11 +133,23 @@ fn serve_pipe_requests() -> anyhow::Result<()> {
         match handle_pipe_request_with_rate_limit(&pipe, pid, &mut rate_limit) {
             Ok(drive) => {
                 // S5.3: Audit log — success
-                audit_log("GRANTED", pid, get_client_exe_path(pid).as_deref(), Some(drive), "handle issued");
+                audit_log(
+                    "GRANTED",
+                    pid,
+                    get_client_exe_path(pid).as_deref(),
+                    Some(drive),
+                    "handle issued",
+                );
             }
             Err(e) => {
                 // S5.3: Audit log — failure
-                audit_log("FAILED", pid, get_client_exe_path(pid).as_deref(), None, &e.to_string());
+                audit_log(
+                    "FAILED",
+                    pid,
+                    get_client_exe_path(pid).as_deref(),
+                    None,
+                    &e.to_string(),
+                );
                 tracing::debug!(error = %e, "Pipe request failed");
             }
         }
@@ -166,8 +195,13 @@ fn handle_pipe_request_with_rate_limit(
 fn verify_authenticode(exe_path: &str) -> bool {
     let output = std::process::Command::new("powershell")
         .args([
-            "-NoProfile", "-NonInteractive", "-Command",
-            &format!("(Get-AuthenticodeSignature '{}').Status", exe_path.replace('\'', "''")),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!(
+                "(Get-AuthenticodeSignature '{}').Status",
+                exe_path.replace('\'', "''")
+            ),
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -189,8 +223,8 @@ fn verify_authenticode(exe_path: &str) -> bool {
 fn get_client_exe_path(pid: u32) -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
     };
 
     #[expect(unsafe_code, reason = "Win32 process query")]
@@ -205,7 +239,9 @@ fn get_client_exe_path(pid: u32) -> Option<String> {
             &mut size,
         );
         let _ = CloseHandle(handle);
-        if !ok.as_bool() || size == 0 { return None; }
+        if !ok.as_bool() || size == 0 {
+            return None;
+        }
         Some(String::from_utf16_lossy(&buf[..size as usize]))
     }
 }
@@ -234,10 +270,13 @@ fn install_service() -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
     let output = std::process::Command::new("sc")
         .args([
-            "create", "UffsAccessBroker",
+            "create",
+            "UffsAccessBroker",
             &format!("binPath= \"{}\"", exe.display()),
-            "start=", "demand",
-            "DisplayName=", "UFFS Access Broker",
+            "start=",
+            "demand",
+            "DisplayName=",
+            "UFFS Access Broker",
         ])
         .output()?;
 
@@ -271,12 +310,11 @@ fn uninstall_service() -> anyhow::Result<()> {
 #[cfg(windows)]
 fn create_broker_pipe() -> anyhow::Result<windows::Win32::Foundation::HANDLE> {
     use std::os::windows::ffi::OsStrExt;
+
     use windows::Win32::Storage::FileSystem::{
-        CreateNamedPipeW, PIPE_ACCESS_DUPLEX, FILE_FLAG_FIRST_PIPE_INSTANCE,
+        CreateNamedPipeW, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
     };
-    use windows::Win32::System::Pipes::{
-        PIPE_TYPE_BYTE, PIPE_READMODE_BYTE, PIPE_WAIT,
-    };
+    use windows::Win32::System::Pipes::{PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT};
     use windows::core::PCWSTR;
 
     let pipe_name: Vec<u16> = std::ffi::OsStr::new(BROKER_PIPE_NAME)
@@ -290,16 +328,19 @@ fn create_broker_pipe() -> anyhow::Result<windows::Win32::Foundation::HANDLE> {
             PCWSTR(pipe_name.as_ptr()),
             PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            1,      // max instances
-            1024,   // out buffer
-            1024,   // in buffer
-            0,      // default timeout
-            None,   // default security (owner-only for elevated process)
+            1,    // max instances
+            1024, // out buffer
+            1024, // in buffer
+            0,    // default timeout
+            None, // default security (owner-only for elevated process)
         )
     };
 
     if handle.is_invalid() {
-        anyhow::bail!("CreateNamedPipeW failed: {}", std::io::Error::last_os_error());
+        anyhow::bail!(
+            "CreateNamedPipeW failed: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     Ok(handle)
@@ -315,7 +356,8 @@ fn wait_for_client(pipe: &windows::Win32::Foundation::HANDLE) -> anyhow::Result<
 
     if !ok.as_bool() {
         let err = std::io::Error::last_os_error();
-        // ERROR_PIPE_CONNECTED (535) means client connected before we called ConnectNamedPipe
+        // ERROR_PIPE_CONNECTED (535) means client connected before we called
+        // ConnectNamedPipe
         if err.raw_os_error() != Some(535) {
             anyhow::bail!("ConnectNamedPipe failed: {err}");
         }
@@ -326,10 +368,13 @@ fn wait_for_client(pipe: &windows::Win32::Foundation::HANDLE) -> anyhow::Result<
 /// Disconnect client and close pipe handle.
 #[cfg(windows)]
 fn disconnect_and_close(pipe: &windows::Win32::Foundation::HANDLE) {
-    use windows::Win32::System::Pipes::DisconnectNamedPipe;
     use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Pipes::DisconnectNamedPipe;
 
-    #[expect(unsafe_code, reason = "DisconnectNamedPipe + CloseHandle require unsafe FFI")]
+    #[expect(
+        unsafe_code,
+        reason = "DisconnectNamedPipe + CloseHandle require unsafe FFI"
+    )]
     unsafe {
         let _ = DisconnectNamedPipe(*pipe);
         let _ = CloseHandle(*pipe);
@@ -345,10 +390,17 @@ fn get_pipe_client_pid(pipe: &windows::Win32::Foundation::HANDLE) -> Option<u32>
 
     let mut pid: u32 = 0;
 
-    #[expect(unsafe_code, reason = "GetNamedPipeClientProcessId requires unsafe FFI")]
+    #[expect(
+        unsafe_code,
+        reason = "GetNamedPipeClientProcessId requires unsafe FFI"
+    )]
     let ok = unsafe { GetNamedPipeClientProcessId(*pipe, &mut pid) };
 
-    if ok.as_bool() && pid != 0 { Some(pid) } else { None }
+    if ok.as_bool() && pid != 0 {
+        Some(pid)
+    } else {
+        None
+    }
 }
 
 /// Verify that a client process is a legitimate uffs-daemon.
@@ -356,8 +408,8 @@ fn get_pipe_client_pid(pipe: &windows::Win32::Foundation::HANDLE) -> Option<u32>
 fn verify_client(pid: u32) -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
     };
 
     #[expect(unsafe_code, reason = "Win32 process query requires unsafe FFI")]
@@ -392,7 +444,8 @@ fn verify_client(pid: u32) -> bool {
 
 /// Handle a pipe request after rate limiting (drive letter already read).
 ///
-/// S5.5: Only issues read-only handles (`FILE_GENERIC_READ`), never write access.
+/// S5.5: Only issues read-only handles (`FILE_GENERIC_READ`), never write
+/// access.
 #[cfg(windows)]
 fn handle_pipe_request_inner(
     pipe: &windows::Win32::Foundation::HANDLE,
@@ -401,12 +454,10 @@ fn handle_pipe_request_inner(
 ) -> anyhow::Result<()> {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_GENERIC_READ, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
     };
-    use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_DUP_HANDLE,
-    };
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_DUP_HANDLE};
 
     tracing::info!(drive = %drive_letter, client_pid, "Opening volume for client");
 
@@ -414,7 +465,10 @@ fn handle_pipe_request_inner(
     let volume_path = format!("\\\\.\\{}:", drive_letter);
     let wide_path: Vec<u16> = volume_path.encode_utf16().chain(Some(0)).collect();
 
-    #[expect(unsafe_code, reason = "CreateFileW + DuplicateHandle require unsafe FFI")]
+    #[expect(
+        unsafe_code,
+        reason = "CreateFileW + DuplicateHandle require unsafe FFI"
+    )]
     unsafe {
         let volume_handle = CreateFileW(
             windows::core::PCWSTR(wide_path.as_ptr()),
@@ -490,9 +544,7 @@ fn read_pipe(pipe: &windows::Win32::Foundation::HANDLE, buf: &mut [u8]) -> anyho
     let mut bytes_read = 0u32;
 
     #[expect(unsafe_code, reason = "ReadFile requires unsafe FFI")]
-    let ok = unsafe {
-        ReadFile(*pipe, Some(buf), Some(&mut bytes_read), None)
-    };
+    let ok = unsafe { ReadFile(*pipe, Some(buf), Some(&mut bytes_read), None) };
 
     if !ok.as_bool() {
         anyhow::bail!("ReadFile failed: {}", std::io::Error::last_os_error());
@@ -511,9 +563,7 @@ fn write_pipe(pipe: &windows::Win32::Foundation::HANDLE, buf: &[u8]) -> anyhow::
     let mut bytes_written = 0u32;
 
     #[expect(unsafe_code, reason = "WriteFile requires unsafe FFI")]
-    let ok = unsafe {
-        WriteFile(*pipe, Some(buf), Some(&mut bytes_written), None)
-    };
+    let ok = unsafe { WriteFile(*pipe, Some(buf), Some(&mut bytes_written), None) };
 
     if !ok.as_bool() {
         anyhow::bail!("WriteFile failed: {}", std::io::Error::last_os_error());
@@ -525,9 +575,11 @@ fn write_pipe(pipe: &windows::Win32::Foundation::HANDLE, buf: &[u8]) -> anyhow::
 
 #[cfg(windows)]
 fn is_elevated() -> bool {
-    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Security::{
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     #[expect(unsafe_code, reason = "Win32 token query requires unsafe FFI")]
     unsafe {

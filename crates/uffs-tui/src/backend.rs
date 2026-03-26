@@ -1,8 +1,6 @@
 //! Search backend — re-exported from `uffs-core` with TUI-specific additions
 //! (drive color palettes).
 
-use crate::compact::DriveCompactIndex;
-
 // ── Re-exports from uffs-core (all search types, sort, filters) ─────────
 pub use uffs_core::search::backend::{
     DisplayRow, FilterMode, MultiDriveBackend, SortColumn, format_sort_spec, parse_sort_spec,
@@ -12,6 +10,7 @@ pub use uffs_core::trigram::TrigramIndex;
 
 // Re-exported from `crate::columns`.
 pub use crate::columns::{DEFAULT_COLUMNS, TuiColumn, parse_columns};
+use crate::compact::DriveCompactIndex;
 
 // ── TUI-specific: drive color palettes ──────────────────────────────────
 
