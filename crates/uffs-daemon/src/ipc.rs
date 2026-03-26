@@ -162,8 +162,61 @@ fn verify_peer_credentials(stream: &tokio::net::UnixStream) -> bool {
     true
 }
 
-/// Handle a single client connection (Unix).
-#[cfg(unix)]
+/// Windows IPC server — uses Unix domain sockets (Windows 10 1803+).
+///
+/// Native named pipe support can be added later for older Windows versions.
+#[cfg(windows)]
+pub async fn run_ipc_server(
+    index: Arc<IndexManager>,
+    lifecycle: LifecycleHandle,
+) -> anyhow::Result<()> {
+    let sock_path = socket_path();
+
+    if let Some(parent) = sock_path.parent() {
+        uffs_security::fs::create_secure_dir(parent)?;
+    }
+
+    if sock_path.exists() {
+        std::fs::remove_file(&sock_path)?;
+    }
+
+    let listener = tokio::net::UnixListener::bind(&sock_path)?;
+
+    tracing::info!(path = %sock_path.display(), "IPC server listening (Windows AF_UNIX)");
+
+    let connection_count = Arc::new(AtomicUsize::new(0));
+
+    loop {
+        let (stream, _addr) = listener.accept().await?;
+
+        let current = connection_count.load(Ordering::Relaxed);
+        if current >= MAX_CONNECTIONS {
+            tracing::warn!(current, max = MAX_CONNECTIONS, "Max connections reached");
+            drop(stream);
+            continue;
+        }
+
+        connection_count.fetch_add(1, Ordering::Relaxed);
+        let index = Arc::clone(&index);
+        let lifecycle = lifecycle.clone();
+        let conn_count = Arc::clone(&connection_count);
+
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(stream, &index, &lifecycle, &conn_count).await {
+                tracing::debug!(error = %e, "Connection ended");
+            }
+            conn_count.fetch_sub(1, Ordering::Relaxed);
+        });
+    }
+}
+
+/// Windows: peer credential verification not needed — socket permissions handle it.
+#[cfg(windows)]
+fn verify_peer_credentials(_stream: &tokio::net::UnixStream) -> bool {
+    true
+}
+
+/// Handle a single client connection (shared across all platforms).
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     index: &Arc<IndexManager>,

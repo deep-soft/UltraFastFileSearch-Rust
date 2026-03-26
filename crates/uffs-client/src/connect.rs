@@ -2,6 +2,14 @@
 //!
 //! [`UffsClient`] is the single entry point for all surfaces (CLI, TUI,
 //! GUI, MCP) to communicate with the daemon.
+//!
+//! # Platform Support
+//!
+//! | Platform | IPC Transport |
+//! |----------|--------------|
+//! | **macOS** | Unix domain socket (`~/Library/Application Support/uffs/daemon.sock`) |
+//! | **Linux** | Unix domain socket (`$XDG_RUNTIME_DIR/uffs/daemon.sock`) |
+//! | **Windows** | Unix domain socket (`%LOCALAPPDATA%/uffs/daemon.sock`) — named pipe planned |
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,14 +22,14 @@ use crate::protocol::{
 
 /// Thin client for the UFFS daemon.
 ///
-/// Holds an open connection to the daemon's Unix domain socket (or named
-/// pipe on Windows). All methods are async and return deserialized protocol
-/// types.
+/// Uses boxed async I/O so the same struct works with Unix domain sockets
+/// (macOS/Linux) and named pipes (Windows) without generics leaking into
+/// the public API.
 pub struct UffsClient {
-    /// Read half of the socket.
-    reader: BufReader<tokio::net::unix::OwnedReadHalf>,
-    /// Write half of the socket.
-    writer: tokio::net::unix::OwnedWriteHalf,
+    /// Buffered reader for the IPC connection.
+    reader: BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
+    /// Writer for the IPC connection.
+    writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
     /// Monotonically increasing request ID.
     next_id: AtomicU64,
 }
@@ -33,10 +41,8 @@ impl UffsClient {
     /// connection fails, spawns `uffs-daemon` as a detached process and
     /// retries with exponential backoff (up to ~30s).
     pub async fn connect() -> Result<Self, crate::error::ClientError> {
-        let sock_path = socket_path();
-
         // Try connecting directly first
-        if let Ok(client) = Self::connect_to(&sock_path).await {
+        if let Ok(client) = Self::platform_connect().await {
             return Ok(client);
         }
 
@@ -50,32 +56,17 @@ impl UffsClient {
         for attempt in 1..=max_attempts {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 
-            if let Ok(client) = Self::connect_to(&sock_path).await {
+            if let Ok(client) = Self::platform_connect().await {
                 tracing::info!(attempt, "Connected to daemon");
                 return Ok(client);
             }
 
-            delay_ms = (delay_ms * 2).min(2000); // cap at 2s
+            delay_ms = (delay_ms * 2).min(2000);
         }
 
         Err(crate::error::ClientError::ConnectionFailed(
             "Could not connect to daemon after auto-start".to_owned(),
         ))
-    }
-
-    /// Connect to a specific socket path.
-    async fn connect_to(path: &std::path::Path) -> Result<Self, crate::error::ClientError> {
-        let stream = tokio::net::UnixStream::connect(path)
-            .await
-            .map_err(|e| crate::error::ClientError::ConnectionFailed(e.to_string()))?;
-
-        let (read_half, write_half) = stream.into_split();
-
-        Ok(Self {
-            reader: BufReader::new(read_half),
-            writer: write_half,
-            next_id: AtomicU64::new(1),
-        })
     }
 
     /// Spawn the daemon as a detached background process.
@@ -84,8 +75,7 @@ impl UffsClient {
 
         #[cfg(unix)]
         {
-            use std::process::Command;
-            Command::new(&daemon_exe)
+            std::process::Command::new(&daemon_exe)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .stdin(std::process::Stdio::null())
@@ -100,8 +90,7 @@ impl UffsClient {
 
         #[cfg(windows)]
         {
-            use std::process::Command;
-            Command::new(&daemon_exe)
+            std::process::Command::new(&daemon_exe)
                 .creation_flags(0x0000_0008) // DETACHED_PROCESS
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -127,7 +116,6 @@ impl UffsClient {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let req = RpcRequest::new(id, method, params);
 
-        // Serialize and send
         let json = serde_json::to_string(&req)
             .map_err(|e| crate::error::ClientError::Protocol(e.to_string()))?;
 
@@ -144,7 +132,6 @@ impl UffsClient {
             .await
             .map_err(|e| crate::error::ClientError::Io(e.to_string()))?;
 
-        // Read response with timeout
         let mut line = String::new();
         let read_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
@@ -158,7 +145,6 @@ impl UffsClient {
             return Err(crate::error::ClientError::ConnectionClosed);
         }
 
-        // Parse response
         let resp: RpcResponse = serde_json::from_str(line.trim())
             .map_err(|e| crate::error::ClientError::Protocol(format!("Bad response: {e}")))?;
 
@@ -193,7 +179,7 @@ impl UffsClient {
             .map_err(|e| crate::error::ClientError::Protocol(e.to_string()))
     }
 
-    /// Trigger a drive refresh. Returns immediately; daemon refreshes in background.
+    /// Trigger a drive refresh.
     pub async fn refresh(
         &mut self,
         drives: &[char],
@@ -216,10 +202,54 @@ impl UffsClient {
     }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Platform-specific connection ────────────────────────────────────────────
 
-/// Platform-specific socket path (must match daemon's ipc::socket_path).
-fn socket_path() -> PathBuf {
+/// Unix: connect via Unix domain socket.
+#[cfg(unix)]
+impl UffsClient {
+    async fn platform_connect() -> Result<Self, crate::error::ClientError> {
+        let sock_path = socket_path();
+        let stream = tokio::net::UnixStream::connect(&sock_path)
+            .await
+            .map_err(|e| crate::error::ClientError::ConnectionFailed(e.to_string()))?;
+
+        let (read_half, write_half) = stream.into_split();
+
+        Ok(Self {
+            reader: BufReader::new(Box::new(read_half)),
+            writer: Box::new(write_half),
+            next_id: AtomicU64::new(1),
+        })
+    }
+}
+
+/// Windows: connect via Unix domain socket (named pipe support planned).
+///
+/// Windows 10 1803+ supports Unix domain sockets via `AF_UNIX`. We use
+/// this for now; native named pipe support can be added later for older
+/// Windows versions.
+#[cfg(windows)]
+impl UffsClient {
+    async fn platform_connect() -> Result<Self, crate::error::ClientError> {
+        let sock_path = socket_path();
+        let stream = tokio::net::UnixStream::connect(&sock_path)
+            .await
+            .map_err(|e| crate::error::ClientError::ConnectionFailed(e.to_string()))?;
+
+        let (read_half, write_half) = stream.into_split();
+
+        Ok(Self {
+            reader: BufReader::new(Box::new(read_half)),
+            writer: Box::new(write_half),
+            next_id: AtomicU64::new(1),
+        })
+    }
+}
+
+// ── Shared Helpers ──────────────────────────────────────────────────────────
+
+/// Platform-specific socket/pipe path (must match daemon's ipc::socket_path).
+pub fn socket_path() -> PathBuf {
     let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
 
     #[cfg(target_os = "macos")]
@@ -241,24 +271,18 @@ fn socket_path() -> PathBuf {
 }
 
 /// Find the `uffs-daemon` executable.
-///
-/// Looks for it next to the current executable first, then in PATH.
 fn find_daemon_exe() -> Result<PathBuf, crate::error::ClientError> {
-    // Check next to current executable
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(dir) = current_exe.parent() {
             let candidate = dir.join("uffs-daemon");
             if candidate.exists() {
                 return Ok(candidate);
             }
-            // Windows
             let candidate_exe = dir.join("uffs-daemon.exe");
             if candidate_exe.exists() {
                 return Ok(candidate_exe);
             }
         }
     }
-
-    // Fall back to PATH
     Ok(PathBuf::from("uffs-daemon"))
 }
