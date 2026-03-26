@@ -490,7 +490,7 @@ both daemon and client share the same types without circular deps.
 | D2.4 IPC server | 10 | 10 | 0 | ✅ |
 | D2.5 Request handler | 11 | 11 | 0 | ✅ |
 | D2.6 Lifecycle manager | 11 | 11 | 0 | ✅ |
-| D2.7 Daemon integration test | 6 | 4 | 2 | 🟡 (protocol tests done, load/concurrent pending) |
+| D2.7 Daemon integration test | 6 | 5 | 1 | 🟡 (8 protocol assertions pass, concurrent clients pending) |
 | D3.1 Client scaffold | 4 | 4 | 0 | ✅ |
 | D3.2 Connection & auto-start | 6 | 6 | 0 | ✅ |
 | D3.3 Query API | 7 | 7 | 0 | ✅ |
