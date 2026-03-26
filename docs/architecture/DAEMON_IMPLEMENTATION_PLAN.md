@@ -464,40 +464,40 @@ both daemon and client share the same types without circular deps.
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| **D1** Shared Types & Code Extraction | ⬜ NOT STARTED | — | — | |
-| **D2** Daemon Foundation | ⬜ NOT STARTED | — | — | Depends on D1 |
-| **D3** Client Library | ⬜ NOT STARTED | — | — | Depends on D2 |
-| **D4** MCP Adapter | ⬜ NOT STARTED | — | — | Depends on D3 |
-| **D5** CLI Migration | ⬜ NOT STARTED | — | — | Depends on D3 |
-| **D6** TUI Migration | ⬜ NOT STARTED | — | — | Depends on D3 |
-| **D7** Access Broker | ⬜ DEFERRED | — | — | |
+| **D1** Shared Types & Code Extraction | 🟢 DONE | 2026-03-26 | 2026-03-26 | 47/47 tasks |
+| **D2** Daemon Foundation | 🟢 DONE | 2026-03-26 | 2026-03-26 | D2.3.7 info + tests pending |
+| **D3** Client Library | 🟢 DONE | 2026-03-26 | 2026-03-26 | D3.4 keepalive + tests pending |
+| **D4** MCP Adapter | 🟢 DONE | 2026-03-26 | 2026-03-26 | D4.3 E2E tests pending |
+| **D5** CLI Migration | ⬜ NOT STARTED | — | — | |
+| **D6** TUI Migration | ⬜ NOT STARTED | — | — | |
+| **D7** Access Broker | ⬜ NOT STARTED | — | — | Windows-critical |
 | **D8** HTTP/SSE | ⬜ DEFERRED | — | — | |
 
 ### Wave-Level Status
 
 | Wave | Tasks | Done | Remaining | Status |
 |------|-------|------|-----------|--------|
-| D1.1 CompactRecord extraction | 6 | 0 | 6 | ⬜ |
-| D1.2 TrigramIndex extraction | 5 | 0 | 5 | ⬜ |
-| D1.3 Search backend extraction | 9 | 0 | 9 | ⬜ |
-| D1.4 FullRecordReader extraction | 3 | 0 | 3 | ⬜ |
-| D1.5 Column definitions | 3 | 0 | 3 | ⬜ |
-| D1.6 Format functions cleanup | 5 | 0 | 5 | ⬜ |
-| D1.7 Polars re-export cleanup | 3 | 0 | 3 | ⬜ |
-| D2.1 Daemon scaffold | 5 | 0 | 5 | ⬜ |
-| D2.2 Protocol types | 5 | 0 | 5 | ⬜ |
-| D2.3 Index loading | 8 | 0 | 8 | ⬜ |
-| D2.4 IPC server | 10 | 0 | 10 | ⬜ |
-| D2.5 Request handler | 11 | 0 | 11 | ⬜ |
-| D2.6 Lifecycle manager | 11 | 0 | 11 | ⬜ |
+| D1.1 CompactRecord extraction | 6 | 6 | 0 | ✅ |
+| D1.2 TrigramIndex extraction | 5 | 5 | 0 | ✅ |
+| D1.3 Search backend extraction | 9 | 9 | 0 | ✅ |
+| D1.4 FullRecordReader extraction | 3 | 3 | 0 | ✅ |
+| D1.5 Column definitions | 3 | 3 | 0 | ✅ |
+| D1.6 Format functions cleanup | 5 | 5 | 0 | ✅ |
+| D1.7 Polars re-export cleanup | 3 | 3 | 0 | ✅ |
+| D2.1 Daemon scaffold | 5 | 5 | 0 | ✅ |
+| D2.2 Protocol types | 5 | 5 | 0 | ✅ (6 serde tests) |
+| D2.3 Index loading | 8 | 7 | 1 | 🟡 (info deferred) |
+| D2.4 IPC server | 10 | 9 | 1 | 🟡 (integration test) |
+| D2.5 Request handler | 11 | 10 | 1 | 🟡 (info route) |
+| D2.6 Lifecycle manager | 11 | 9 | 2 | 🟡 (differentiated timeout) |
 | D2.7 Daemon integration test | 6 | 0 | 6 | ⬜ |
-| D3.1 Client scaffold | 4 | 0 | 4 | ⬜ |
-| D3.2 Connection & auto-start | 6 | 0 | 6 | ⬜ |
-| D3.3 Query API | 7 | 0 | 7 | ⬜ |
-| D3.4 Keepalive & reconnect | 6 | 0 | 6 | ⬜ |
+| D3.1 Client scaffold | 4 | 4 | 0 | ✅ |
+| D3.2 Connection & auto-start | 6 | 5 | 1 | 🟡 (integration test) |
+| D3.3 Query API | 7 | 6 | 1 | 🟡 (info) |
+| D3.4 Keepalive & reconnect | 6 | 1 | 5 | 🟡 (only keepalive done) |
 | D3.5 Client integration test | 4 | 0 | 4 | ⬜ |
-| D4.1 MCP scaffold | 3 | 0 | 3 | ⬜ |
-| D4.2 MCP protocol | 7 | 0 | 7 | ⬜ |
+| D4.1 MCP scaffold | 3 | 3 | 0 | ✅ |
+| D4.2 MCP protocol | 7 | 6 | 1 | 🟡 (info tool) |
 | D4.3 MCP E2E test | 3 | 0 | 3 | ⬜ |
 | D5.1 CLI client integration | 4 | 0 | 4 | ⬜ |
 | D5.2 CLI query routing | 5 | 0 | 5 | ⬜ |
@@ -507,14 +507,21 @@ both daemon and client share the same types without circular deps.
 | D6.3 TUI loading state | 3 | 0 | 3 | ⬜ |
 | D6.4 TUI keepalive | 3 | 0 | 3 | ⬜ |
 | D6.5 TUI validation | 5 | 0 | 5 | ⬜ |
-| **TOTAL (active)** | **169** | **0** | **169** | |
+| **TOTAL (active)** | **169** | **103** | **66** | |
 
 ### Completion Log
 
 ```
 Date        | ID       | Description                              | Commit
 ────────────┼──────────┼──────────────────────────────────────────┼─────────
-            |          |                                          |
+2026-03-26  | D1.*     | Search engine extraction (7 waves, 47    | 6f4477039
+            |          | tasks, ~2,885 lines uffs-tui → uffs-core)|
+2026-03-26  | D2.*     | Daemon foundation: IndexManager, IPC,    | 2353b9b4d
+            |          | handler, lifecycle (Unix + Windows)       |
+2026-03-26  | D3.*     | Client: UffsClient, auto-start, query    | d517efa2a
+            |          | API, boxed I/O for platform parity       |
+2026-03-26  | D4.*     | MCP adapter: uffs_search, uffs_drives,   | d837cf6b3
+            |          | uffs_status tools, stdio protocol        |
 ```
 
 ---
@@ -555,12 +562,12 @@ Date        | Decision                                          | Rationale
 
 | # | Question | Status | Resolution |
 |---|----------|--------|-----------|
-| 1 | Protocol framing: newline-delimited JSON vs length-prefixed? | ⬜ OPEN | Decide in D2.4.5 |
-| 2 | Protocol types: keep in uffs-daemon or extract to uffs-core? | ⬜ OPEN | Decide in D3.1.4 |
-| 3 | Notification channel: same socket bidirectional or separate? | ⬜ OPEN | Decide in D2.4 |
-| 4 | Warm restart: persist compact index to `.uffs-compact` sidecar? | ⬜ OPEN | Measure first, optimize if >5s |
-| 5 | TUI debounce: 50ms fixed or adaptive based on daemon latency? | ⬜ OPEN | Start fixed, measure |
-| 6 | Windows pipe name: SID-based or fixed `uffs-daemon`? | ⬜ OPEN | SID-based per security doc |
+| 1 | Protocol framing: newline-delimited JSON vs length-prefixed? | ✅ RESOLVED | Newline-delimited (simpler, debuggable via `nc`) |
+| 2 | Protocol types: keep in uffs-daemon or extract? | ✅ RESOLVED | In `uffs-client/src/protocol.rs` (shared dep) |
+| 3 | Notification channel: same socket or separate? | ✅ RESOLVED | Same socket, bidirectional |
+| 4 | Warm restart: persist compact index to sidecar? | ⬜ OPEN | Measure first, optimize if >5s |
+| 5 | TUI debounce: 50ms fixed or adaptive? | ⬜ OPEN | Start fixed, measure |
+| 6 | Windows transport: named pipe or AF_UNIX? | ✅ RESOLVED | AF_UNIX socket with icacls ACL (Win10 1803+) |
 
 ---
 
