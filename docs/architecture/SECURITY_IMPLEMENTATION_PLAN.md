@@ -449,23 +449,42 @@ Record completed items here as work progresses:
 ```
 Date        | ID      | Description                              | Commit
 ────────────┼─────────┼──────────────────────────────────────────┼─────────
-2026-03-26  | S1.1.*  | Cache dir relocation (secure_cache_dir,   | (pending)
+2026-03-26  | S1.1.*  | Cache dir relocation (secure_cache_dir,   | 6f4477039
             |         | migrate_legacy_cache, cleanup_stale_temps)|
-2026-03-26  | S1.2.*  | Dir/file permissions (create_secure_dir,  | (pending)
+2026-03-26  | S1.2.*  | Dir/file permissions (create_secure_dir,  | 6f4477039
             |         | set_file_permissions_owner_only)          |
-2026-03-26  | S1.3.*  | Atomic writes (atomic_write, updated      | (pending)
+2026-03-26  | S1.3.*  | Atomic writes (atomic_write, updated      | 6f4477039
             |         | save_to_file + read_and_cache_index)     |
-2026-03-26  | C1.*    | Created uffs-security crate, moved S1     | (pending)
+2026-03-26  | C1.*    | Created uffs-security crate, moved S1     | 6f4477039
             |         | primitives from cache.rs to fs.rs         |
-2026-03-26  | S3.1.*  | Secure wipe (secure_remove, wired into    | (pending)
+2026-03-26  | S3.1.*  | Secure wipe (secure_remove, wired into    | 6f4477039
             |         | remove_cached_index, remove_all)          |
-2026-03-26  | S3.2.*  | File locking (FileLock, with_file_lock,   | (pending)
+2026-03-26  | S3.2.*  | File locking (FileLock, with_file_lock,   | 6f4477039
             |         | wired into save/load/read_and_cache)      |
-2026-03-26  | S2.1.*  | aes-gcm + rand + security-framework deps  | (pending)
-2026-03-26  | S2.3.*  | AES-256-GCM encrypt/decrypt (11 tests)    | (pending)
-2026-03-26  | S2.2.*  | macOS Keychain keystore (2 tests)         | (pending)
-2026-03-26  | S2.4.*  | Encryption wired into file_io.rs +        | (pending)
+2026-03-26  | S2.1.*  | aes-gcm + rand + security-framework deps  | 6f4477039
+2026-03-26  | S2.3.*  | AES-256-GCM encrypt/decrypt (11 tests)    | 6f4477039
+2026-03-26  | S2.2.*  | macOS Keychain keystore (2 tests)         | 6f4477039
+2026-03-26  | S2.4.*  | Encryption wired into file_io.rs +        | 6f4477039
             |         | index_cache.rs (auto-migrate legacy)      |
+2026-03-26  | S4.1.1-2| Socket 0600, socket dir 0700 (ipc.rs)    | 2353b9b4d
+2026-03-26  | S4.2.1-2| Peer credential: getpeereid (Unix)       | 723d0872f
+2026-03-26  | S4.2.4  | Reject different UID with log warning     | 723d0872f
+2026-03-26  | S4.4.1  | Max message size 16 MB                   | 2353b9b4d
+2026-03-26  | S4.4.2  | JSON parse with line length check         | 2353b9b4d
+2026-03-26  | S4.4.3  | Max pattern length 4096 chars             | 723d0872f
+2026-03-26  | S4.4.4  | Hard cap on limit: 100,000 rows           | 723d0872f
+2026-03-26  | S4.4.5  | Max concurrent connections: 32            | 2353b9b4d
+2026-03-26  | S4.4.7  | Read timeout: 30 seconds per message      | 2353b9b4d
+2026-03-26  | S4.3.1  | PID file: pid + timestamp + exe_hash +   | 2fe32c4be
+            |         | shutdown_nonce (FNV-1a hash)              |
+2026-03-26  | S4.3.2  | PID file permissions 0600                | 2fe32c4be
+2026-03-26  | S4.3.3  | parse_pid_file() + expected_daemon_exe_  | 2fe32c4be
+            |         | hash() for client identity verification  |
+2026-03-26  | S4.4.6  | Rate limit: 100 queries/sec per conn     | 2fe32c4be
+            |         | (token bucket in handle_connection)       |
+2026-03-26  | S4.4.8  | Idle connection timeout: 5 min            | 2fe32c4be
+2026-03-26  | S4.4.9  | Shutdown nonce: random hex in PID file,   | 2fe32c4be
+            |         | handler verifies before accepting         |
 ```
 
 ---
