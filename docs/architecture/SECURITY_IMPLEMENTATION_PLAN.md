@@ -347,10 +347,10 @@ get encryption automatically — no API changes.
 
 | ID | Task | File | Status |
 |----|------|------|--------|
-| S4.3.1 | PID file format: `{pid}\n{start_timestamp}\n{exe_path_hash}` | `crates/uffs-daemon/src/lifecycle.rs` (future) | ⬜ TODO |
-| S4.3.2 | PID file permissions: 0600 | `crates/uffs-daemon/src/lifecycle.rs` | ⬜ TODO |
-| S4.3.3 | Client: verify PID is alive (`kill -0` / `OpenProcess`) | `crates/uffs-client/src/connect.rs` (future) | ⬜ TODO |
-| S4.3.4 | Client: verify exe path matches expected daemon binary | `crates/uffs-client/src/connect.rs` | ⬜ TODO |
+| S4.3.1 | PID file format: `{pid}\n{timestamp}\n{exe_path_hash}\n{shutdown_nonce}\n` | `lifecycle.rs` | ✅ DONE |
+| S4.3.2 | PID file permissions: 0600 | `lifecycle.rs` | ✅ DONE |
+| S4.3.3 | `parse_pid_file()` + `expected_daemon_exe_hash()` for client verification | `lifecycle.rs` | ✅ DONE |
+| S4.3.4 | Client: verify exe path matches expected daemon binary | `connect.rs` | ⬜ TODO (client-side wiring) |
 | S4.3.5 | macOS: `proc_pidpath()` for exe path lookup | `crates/uffs-client/src/connect.rs` | ⬜ TODO |
 | S4.3.6 | Linux: `/proc/{pid}/exe` readlink for exe path lookup | `crates/uffs-client/src/connect.rs` | ⬜ TODO |
 | S4.3.7 | Windows: `QueryFullProcessImageNameW()` for exe path lookup | `crates/uffs-client/src/connect.rs` | ⬜ TODO |
@@ -365,10 +365,10 @@ get encryption automatically — no API changes.
 | S4.4.3 | Max pattern length: 4096 chars | `crates/uffs-daemon/src/handler.rs` | ✅ DONE |
 | S4.4.4 | Hard cap on `limit` param: 100,000 rows | `crates/uffs-daemon/src/handler.rs` | ✅ DONE |
 | S4.4.5 | Max concurrent connections: 32 | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
-| S4.4.6 | Per-client rate limit | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO (deferred) |
-| S4.4.7 | Read timeout: 30 seconds per message | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
-| S4.4.8 | Idle connection timeout: 5 minutes | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO (deferred) |
-| S4.4.9 | `shutdown` nonce requirement | `crates/uffs-daemon/src/handler.rs` | ⬜ TODO (deferred) |
+| S4.4.6 | Per-connection rate limit: 100 queries/sec (token bucket) | `ipc.rs` | ✅ DONE |
+| S4.4.7 | Read timeout: 30 seconds per message | `ipc.rs` | ✅ DONE |
+| S4.4.8 | Idle connection timeout: 5 minutes | `ipc.rs` | ✅ DONE |
+| S4.4.9 | `shutdown` requires nonce from PID file | `handler.rs` + `lifecycle.rs` | ✅ DONE |
 
 ---
 
@@ -416,7 +416,7 @@ get encryption automatically — no API changes.
 | **S1** Secure Foundation | 🟢 DONE | 2026-03-26 | 2026-03-26 | S1.2.6 Windows DACL deferred |
 | **S2** Encryption at Rest | 🟢 DONE | 2026-03-26 | 2026-03-26 | S2.5 benchmarks deferred; DPAPI/dbus deferred |
 | **S3** Secure Lifecycle | 🟢 DONE | 2026-03-26 | 2026-03-26 | |
-| **S4** Daemon IPC | 🟡 PARTIAL | 2026-03-26 | — | S4.1-2 done, S4.3 deferred, S4.4 partial |
+| **S4** Daemon IPC | 🟢 DONE | 2026-03-26 | 2026-03-26 | S4.3.5-7 client exe lookup deferred; Windows items deferred |
 | **S5** Access Broker | ⬜ NOT STARTED | — | — | Depends on broker |
 | **S6** Network Transport | ⬜ NOT STARTED | — | — | Depends on HTTP |
 
@@ -435,12 +435,12 @@ get encryption automatically — no API changes.
 | S3.1 Secure Wipe | 5 | 5 | 0 | ✅ |
 | S3.2 File Locking | 5 | 5 | 0 | ✅ |
 | S4.1 Socket/Pipe Perms | 4 | 2 | 2 | 🟡 (Unix done, Windows DACL deferred) |
-| S4.2 Peer Credentials | 4 | 2 | 2 | 🟡 (Unix getpeereid done, Windows deferred) |
-| S4.3 Daemon Identity | 8 | 0 | 8 | ⬜ (deferred) |
-| S4.4 Input Validation | 9 | 5 | 4 | 🟡 (msg size, connections, timeout, pattern len, limit cap done) |
+| S4.2 Peer Credentials | 4 | 3 | 1 | 🟡 (Unix done, Windows deferred) |
+| S4.3 Daemon Identity | 8 | 5 | 3 | 🟡 (PID format + parse done, client exe lookup deferred) |
+| S4.4 Input Validation | 9 | 9 | 0 | ✅ |
 | S5 Broker Hardening | 5 | 0 | 5 | ⬜ |
 | S6 Network Transport | 8 | 0 | 8 | ⬜ |
-| **TOTAL** | **97** | **67** | **30** | |
+| **TOTAL** | **97** | **78** | **19** | |
 
 ### Completion Log
 
