@@ -41,14 +41,28 @@ pub fn verify_daemon_identity(pid: u32) -> bool {
             exe = %daemon_path.display(),
             "Daemon identity verification FAILED — process is not uffs-daemon"
         );
-    } else {
-        tracing::debug!(
+        return false;
+    }
+
+    // S4.3.8: Also verify code signature (graceful — warn but don't block)
+    let sig_ok = verify_code_signature(&daemon_path);
+    if !sig_ok {
+        tracing::warn!(
             pid,
             exe = %daemon_path.display(),
-            "Daemon identity verified"
+            "Daemon code signature verification failed"
         );
     }
 
+    tracing::debug!(
+        pid,
+        exe = %daemon_path.display(),
+        signed = sig_ok,
+        "Daemon identity verified"
+    );
+
+    // Return true even if signature fails — graceful degradation
+    // (unsigned dev builds should still work)
     is_valid
 }
 
@@ -200,4 +214,124 @@ fn platform_get_exe_path(pid: u32) -> Option<PathBuf> {
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn platform_get_exe_path(_pid: u32) -> Option<PathBuf> {
     None // graceful degradation
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// S4.3.8: Code Signature Verification
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Verify the code signature of the daemon binary (S4.3.8).
+///
+/// - **macOS**: uses `codesign --verify` (checks Apple code signature)
+/// - **Windows**: uses `Get-AuthenticodeSignature` via PowerShell
+///   (checks Authenticode / Microsoft code signature)
+/// - **Linux**: no standard code signing — always returns `true`
+///
+/// Returns `true` if the signature is valid or verification is unavailable.
+/// Logs a warning if the signature check fails but does NOT block connection
+/// (graceful degradation).
+pub fn verify_code_signature(exe_path: &std::path::Path) -> bool {
+    let result = platform_verify_signature(exe_path);
+
+    match result {
+        SignatureResult::Valid => {
+            tracing::debug!(exe = %exe_path.display(), "Code signature valid");
+            true
+        }
+        SignatureResult::NotSigned => {
+            tracing::debug!(exe = %exe_path.display(), "Binary is not code-signed (acceptable for dev builds)");
+            true // unsigned is OK — only flag tampered signatures
+        }
+        SignatureResult::Invalid => {
+            tracing::warn!(
+                exe = %exe_path.display(),
+                "Code signature INVALID — binary may have been tampered with"
+            );
+            false
+        }
+        SignatureResult::Unavailable => {
+            tracing::debug!("Code signature verification not available on this platform");
+            true
+        }
+    }
+}
+
+/// Result of a code signature check.
+enum SignatureResult {
+    /// Signature present and valid.
+    Valid,
+    /// Binary is not signed (acceptable for dev/debug builds).
+    NotSigned,
+    /// Signature present but INVALID (tampered).
+    Invalid,
+    /// Verification not available on this platform.
+    Unavailable,
+}
+
+/// macOS: verify via `codesign --verify --strict`
+#[cfg(target_os = "macos")]
+fn platform_verify_signature(exe_path: &std::path::Path) -> SignatureResult {
+    let output = std::process::Command::new("codesign")
+        .args(["--verify", "--strict", "--deep"])
+        .arg(exe_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    match output {
+        Ok(out) => {
+            if out.status.success() {
+                SignatureResult::Valid
+            } else {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if stderr.contains("not signed") || stderr.contains("code object is not signed") {
+                    SignatureResult::NotSigned
+                } else {
+                    SignatureResult::Invalid
+                }
+            }
+        }
+        Err(_) => SignatureResult::Unavailable,
+    }
+}
+
+/// Windows: verify Authenticode signature via PowerShell.
+#[cfg(target_os = "windows")]
+fn platform_verify_signature(exe_path: &std::path::Path) -> SignatureResult {
+    let path_str = exe_path.to_string_lossy();
+    let script = format!(
+        "(Get-AuthenticodeSignature '{}').Status",
+        path_str.replace('\'', "''")
+    );
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            match stdout.as_str() {
+                "Valid" => SignatureResult::Valid,
+                "NotSigned" => SignatureResult::NotSigned,
+                "HashMismatch" | "UnknownError" => SignatureResult::Invalid,
+                _ => SignatureResult::NotSigned, // treat unknown as unsigned
+            }
+        }
+        Err(_) => SignatureResult::Unavailable,
+    }
+}
+
+/// Linux: no standard code signing mechanism.
+#[cfg(target_os = "linux")]
+fn platform_verify_signature(_exe_path: &std::path::Path) -> SignatureResult {
+    SignatureResult::Unavailable
+}
+
+/// Fallback for unknown platforms.
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn platform_verify_signature(_exe_path: &std::path::Path) -> SignatureResult {
+    SignatureResult::Unavailable
 }
