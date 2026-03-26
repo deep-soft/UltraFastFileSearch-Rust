@@ -49,6 +49,9 @@ dirs-next.workspace = true
 # CLI
 clap.workspace = true
 
+# Random (nonce generation for shutdown auth)
+rand.workspace = true
+
 # Unix PID file liveness check
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

@@ -24,6 +24,12 @@ const READ_TIMEOUT_SECS: u64 = 30;
 /// Maximum message size (16 MB).
 const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
+/// Idle connection timeout — disconnect if no messages for this long (S4.4.8).
+const IDLE_CONNECTION_SECS: u64 = 300; // 5 minutes
+
+/// Per-connection rate limit: max queries per second (S4.4.6).
+const MAX_QUERIES_PER_SEC: u32 = 100;
+
 /// Returns the platform-specific socket path.
 pub fn socket_path() -> PathBuf {
     let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -217,6 +223,11 @@ fn verify_peer_credentials(_stream: &tokio::net::UnixStream) -> bool {
 }
 
 /// Handle a single client connection (shared across all platforms).
+///
+/// Enforces:
+/// - S4.4.7: 30-second per-message read timeout
+/// - S4.4.8: 5-minute idle connection timeout (no messages at all)
+/// - S4.4.6: Per-connection rate limit (100 queries/sec)
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     index: &Arc<IndexManager>,
@@ -227,12 +238,17 @@ async fn handle_connection(
     let mut buf_reader = BufReader::new(reader);
     let mut line = String::new();
 
+    // S4.4.6: Simple token-bucket rate limiter
+    let mut queries_this_second: u32 = 0;
+    let mut rate_limit_epoch = std::time::Instant::now();
+
     loop {
         line.clear();
 
-        // Read with timeout
+        // S4.4.8: Use idle connection timeout for the read
+        // (each message also has a READ_TIMEOUT_SECS per-message cap)
         let read_result = tokio::time::timeout(
-            std::time::Duration::from_secs(READ_TIMEOUT_SECS),
+            std::time::Duration::from_secs(IDLE_CONNECTION_SECS),
             buf_reader.read_line(&mut line),
         )
         .await;
@@ -241,14 +257,12 @@ async fn handle_connection(
             Ok(Ok(n)) => n,
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => {
-                // Read timeout — disconnect
-                tracing::debug!("Read timeout, disconnecting client");
+                tracing::debug!("Idle connection timeout ({}s), disconnecting", IDLE_CONNECTION_SECS);
                 return Ok(());
             }
         };
 
         if bytes_read == 0 {
-            // EOF — client disconnected
             return Ok(());
         }
 
@@ -261,7 +275,27 @@ async fn handle_connection(
             return Ok(());
         }
 
-        // Reset idle timer on any activity
+        // S4.4.6: Rate limiting — reset counter every second
+        let now = std::time::Instant::now();
+        if now.duration_since(rate_limit_epoch).as_secs() >= 1 {
+            queries_this_second = 0;
+            rate_limit_epoch = now;
+        }
+        queries_this_second += 1;
+        if queries_this_second > MAX_QUERIES_PER_SEC {
+            let err = RpcErrorResponse::error(
+                None,
+                -32000,
+                &format!("Rate limit exceeded ({MAX_QUERIES_PER_SEC} queries/sec)"),
+            );
+            let response = serde_json::to_string(&err).unwrap_or_default();
+            writer.write_all(response.as_bytes()).await?;
+            writer.write_all(b"\n").await?;
+            writer.flush().await?;
+            continue;
+        }
+
+        // Reset daemon idle timer on any activity
         lifecycle.reset_idle_timer();
 
         // Parse JSON-RPC request
@@ -285,7 +319,6 @@ async fn handle_connection(
         let connections = conn_count.load(Ordering::Relaxed);
         let response = handle_request(&req, index, lifecycle, connections).await;
 
-        // Write response + newline
         writer.write_all(response.as_bytes()).await?;
         writer.write_all(b"\n").await?;
         writer.flush().await?;

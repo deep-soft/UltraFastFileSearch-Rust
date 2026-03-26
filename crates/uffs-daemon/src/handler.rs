@@ -31,7 +31,7 @@ pub async fn handle_request(
         "status" => handle_status(id, index, connections).await,
         "refresh" => handle_refresh(id, req, index).await,
         "keepalive" => handle_keepalive(id, lifecycle).await,
-        "shutdown" => handle_shutdown(id, lifecycle).await,
+        "shutdown" => handle_shutdown(id, req, lifecycle).await,
         _ => {
             let err = RpcErrorResponse::error(
                 Some(id),
@@ -125,7 +125,26 @@ async fn handle_keepalive(id: u64, lifecycle: &LifecycleHandle) -> String {
 }
 
 /// Handle `shutdown` method.
-async fn handle_shutdown(id: u64, lifecycle: &LifecycleHandle) -> String {
+///
+/// S4.4.9: Requires a `nonce` parameter matching the one in the PID file.
+/// This prevents unauthorized shutdown via the socket.
+async fn handle_shutdown(id: u64, req: &RpcRequest, lifecycle: &LifecycleHandle) -> String {
+    let provided_nonce = req
+        .params
+        .as_ref()
+        .and_then(|p| p.get("nonce"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+
+    if !lifecycle.verify_shutdown_nonce(provided_nonce) {
+        return serde_json::to_string(&RpcErrorResponse::error(
+            Some(id),
+            ERR_INVALID_PARAMS,
+            "Invalid or missing shutdown nonce (read from daemon.pid file)",
+        ))
+        .unwrap_or_default();
+    }
+
     lifecycle.request_shutdown();
     let result = serde_json::json!({"ok": true, "message": "shutting down"});
     serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
