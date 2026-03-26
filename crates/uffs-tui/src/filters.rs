@@ -123,6 +123,92 @@ impl SearchFilters {
         }
     }
 
+    /// Check whether a compact record passes all filters.
+    ///
+    /// This is the hot-path predicate used during global top-N scans so that
+    /// attribute/time/size filters are applied *before* truncation.
+    #[must_use]
+    pub fn matches_record(&self, rec: &crate::compact::CompactRecord, names: &[u8]) -> bool {
+        if self.hide_system {
+            let name = rec.name(names);
+            if name.starts_with('$') {
+                return false;
+            }
+        }
+        if let Some(min) = self.min_size {
+            if rec.size < min {
+                return false;
+            }
+        }
+        if let Some(max) = self.max_size {
+            if rec.size > max {
+                return false;
+            }
+        }
+        if let Some(bound) = self.newer_us {
+            if rec.modified < bound {
+                return false;
+            }
+        }
+        if let Some(bound) = self.older_us {
+            if rec.modified >= bound {
+                return false;
+            }
+        }
+        if let Some(bound) = self.newer_created_us {
+            if rec.created < bound {
+                return false;
+            }
+        }
+        if let Some(bound) = self.older_created_us {
+            if rec.created >= bound {
+                return false;
+            }
+        }
+        if let Some(bound) = self.newer_accessed_us {
+            if rec.accessed < bound {
+                return false;
+            }
+        }
+        if let Some(bound) = self.older_accessed_us {
+            if rec.accessed >= bound {
+                return false;
+            }
+        }
+        if self.attr_require != 0 && (rec.flags & self.attr_require) != self.attr_require {
+            return false;
+        }
+        if self.attr_exclude != 0 && (rec.flags & self.attr_exclude) != 0 {
+            return false;
+        }
+        if let Some(min) = self.min_descendants {
+            if rec.descendants < min {
+                return false;
+            }
+        }
+        if let Some(max) = self.max_descendants {
+            if rec.descendants > max {
+                return false;
+            }
+        }
+        if !self.extensions.is_empty() {
+            let name = rec.name(names);
+            let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+            if !self.extensions.iter().any(|allowed| allowed == &ext) {
+                return false;
+            }
+        }
+        // Note: exclude_lower requires full name which we have via names blob
+        if let Some(excl) = &self.exclude_lower {
+            let name = rec.name(names);
+            let name_lower = name.to_ascii_lowercase();
+            if crate::compact::name_matches(&name_lower, excl) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Returns `true` if all filters are at their default (no-op) values.
     #[must_use]
     pub fn is_empty(&self) -> bool {

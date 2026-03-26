@@ -245,12 +245,19 @@ async fn run() -> Result<()> {
                          Remove the path from the pattern or drop --name-only."
                     );
                 }
+
+                // Merge --data-dir discovered files into --mft-file list
+                let mut mft_files = cli.mft_file;
+                if let Some(data_dir) = &cli.data_dir {
+                    mft_files.extend(uffs_mft::discovery::discover_mft_files(data_dir));
+                }
+
                 commands::search(
                     &pattern,
                     cli.drive,
                     cli.drives,
                     cli.index,
-                    cli.mft_file,
+                    mft_files,
                     cli.files_only,
                     cli.dirs_only,
                     cli.hide_system,
@@ -261,6 +268,8 @@ async fn run() -> Result<()> {
                     cli.no_cache,
                     cli.min_size,
                     cli.max_size,
+                    cli.min_descendants,
+                    cli.max_descendants,
                     cli.limit,
                     &cli.format,
                     cli.case,

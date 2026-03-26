@@ -20,10 +20,7 @@ use super::output::results_to_dataframe;
 #[path = "raw_io_windows.rs"]
 mod windows;
 #[cfg(windows)]
-pub(crate) use windows::{
-    OwnedQueryFilters, load_and_filter_data_index, load_and_filter_data_index_multi,
-    load_live_index,
-};
+pub(crate) use windows::{OwnedQueryFilters, load_live_index};
 
 /// Native offline query results for direct `--mft-file` output.
 pub(super) struct NativeOfflineQueryResults {
@@ -106,6 +103,10 @@ pub struct QueryFilters<'a> {
     pub min_size: Option<u64>,
     /// Maximum file size filter.
     pub max_size: Option<u64>,
+    /// Minimum descendant count filter (directories).
+    pub min_descendants: Option<u32>,
+    /// Maximum descendant count filter (directories).
+    pub max_descendants: Option<u32>,
     /// Maximum number of results to return.
     pub limit: u32,
 }
@@ -575,6 +576,10 @@ fn execute_query(
     if let Some(max) = filters.max_size {
         query = query.max_size(max);
     }
+
+    // Descendant filters are applied post-tree-metrics in the streaming path.
+    // The DataFrame/Polars path doesn't have descendants yet at this stage,
+    // so these are handled later in finalize_dataframe_output.
 
     if filters.limit > 0 {
         query = query.limit(filters.limit);

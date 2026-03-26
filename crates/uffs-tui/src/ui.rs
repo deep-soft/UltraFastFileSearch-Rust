@@ -209,10 +209,17 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
     // >regex → [] (regex too complex to highlight)
     let raw_input = app.input_text().to_lowercase();
     let highlight_terms: Vec<&str> = if raw_input.starts_with('>') {
-        Vec::new() // regex — don't highlight
+        // Regex: extract literal segments between metacharacters.
+        // `>.*\.log$` → [".log"]
+        raw_input
+            .strip_prefix('>')
+            .unwrap_or("")
+            .split(['*', '+', '?', '^', '$', '(', ')', '[', ']', '{', '}', '\\'])
+            .filter(|seg| seg.len() > 1)
+            .collect()
     } else {
         raw_input
-            .split(['*', '?', '\\', '/', '.'])
+            .split(['*', '?', '\\', '/', '|'])
             .filter(|seg| !seg.is_empty())
             .collect()
     };

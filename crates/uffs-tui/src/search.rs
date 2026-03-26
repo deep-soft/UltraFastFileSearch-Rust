@@ -23,6 +23,8 @@ pub fn collect_global_top_n(
     limit: usize,
     sort_column: SortColumn,
     sort_desc: bool,
+    filter_mode: crate::backend::FilterMode,
+    search_filters: &crate::filters::SearchFilters,
 ) -> Vec<DisplayRow> {
     match sort_column {
         // Numeric columns: efficient lightweight tuple scan of all 25M records
@@ -33,17 +35,27 @@ pub fn collect_global_top_n(
         | SortColumn::Modified
         | SortColumn::Accessed
         | SortColumn::Drive
-        | SortColumn::Descendants => {
-            collect_global_top_n_numeric(drives, limit, sort_column, sort_desc)
-        }
+        | SortColumn::Descendants => collect_global_top_n_numeric(
+            drives,
+            limit,
+            sort_column,
+            sort_desc,
+            filter_mode,
+            search_filters,
+        ),
         // Path: hierarchical depth-first tree walk — instant, touches ~N records
         SortColumn::Path => collect_path_sorted(drives, limit, sort_desc),
         // Extension/Type: routed to numeric (extension_id) inside collect_name_sorted
         //   Same extension_id = same devicons icon type, so grouping is correct.
         // Name: text comparison on names blob
-        SortColumn::Name | SortColumn::Extension | SortColumn::Type => {
-            collect_name_sorted(drives, limit, sort_column, sort_desc)
-        }
+        SortColumn::Name | SortColumn::Extension | SortColumn::Type => collect_name_sorted(
+            drives,
+            limit,
+            sort_column,
+            sort_desc,
+            filter_mode,
+            search_filters,
+        ),
     }
 }
 
@@ -177,11 +189,20 @@ fn collect_name_sorted(
     limit: usize,
     sort_column: SortColumn,
     sort_desc: bool,
+    filter_mode: crate::backend::FilterMode,
+    search_filters: &crate::filters::SearchFilters,
 ) -> Vec<DisplayRow> {
     // All columns now route through the numeric fast path:
     // - Extension/Type: extension_id as sort key
     // - Name: first 8 bytes of lowercase name packed into u64
-    collect_global_top_n_numeric(drives, limit, sort_column, sort_desc)
+    collect_global_top_n_numeric(
+        drives,
+        limit,
+        sort_column,
+        sort_desc,
+        filter_mode,
+        search_filters,
+    )
 }
 
 /// Efficient numeric global top-N using lightweight tuples.
@@ -197,13 +218,32 @@ fn collect_global_top_n_numeric(
     limit: usize,
     sort_column: SortColumn,
     sort_desc: bool,
+    filter_mode: crate::backend::FilterMode,
+    search_filters: &crate::filters::SearchFilters,
 ) -> Vec<DisplayRow> {
+    let has_filters =
+        !search_filters.is_empty() || !matches!(filter_mode, crate::backend::FilterMode::All);
     let mut candidates: Vec<(u16, u32, i64)> = Vec::new();
 
     for (drive_idx, drive) in drives.iter().enumerate() {
         for (rec_idx, rec) in drive.records.iter().enumerate() {
             if rec.name_len == 0 {
                 continue;
+            }
+            // Apply filters at scan time so filtered records never enter the
+            // candidate set — prevents the top-N window from discarding all
+            // matching records.
+            if has_filters {
+                match filter_mode {
+                    crate::backend::FilterMode::FilesOnly if rec.is_directory() => continue,
+                    crate::backend::FilterMode::DirsOnly if !rec.is_directory() => continue,
+                    crate::backend::FilterMode::All
+                    | crate::backend::FilterMode::FilesOnly
+                    | crate::backend::FilterMode::DirsOnly => {}
+                }
+                if !search_filters.matches_record(rec, &drive.names) {
+                    continue;
+                }
             }
             #[expect(
                 clippy::cast_possible_wrap,
@@ -382,6 +422,7 @@ pub fn search_compact_drive(
 
     let volume_prefix = format!("{}:\\", drive.letter);
     let is_glob = needle.contains('*') || needle.contains('?');
+    let is_or = needle.contains('|');
 
     // Choose names blob: case-sensitive uses original case, otherwise lowercase
     let names_blob = if case_sensitive {
@@ -394,7 +435,7 @@ pub fn search_compact_drive(
     // glob/substring
     let matches = |name: &str| -> bool {
         if whole_word {
-            if is_glob {
+            if is_glob || is_or {
                 compact::name_matches(name, needle)
             } else {
                 name == needle
@@ -405,7 +446,10 @@ pub fn search_compact_drive(
     };
 
     // For glob patterns, extract the longest literal substring for trigram lookup.
-    let trigram_needle = if is_glob {
+    // OR patterns (`*.rs|*.py`) cannot use a single trigram needle — skip trigram.
+    let trigram_needle = if is_or {
+        String::new()
+    } else if is_glob {
         longest_literal(needle)
     } else {
         needle.to_owned()

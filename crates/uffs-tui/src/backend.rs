@@ -9,6 +9,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use crate::compact::{self, DriveCompactIndex};
+pub use crate::filters::SearchFilters;
 
 /// Maximum results returned per search (prevents UI lag on broad patterns).
 /// 1K is plenty for a terminal display — keeps search under ~50ms.
@@ -352,6 +353,8 @@ impl MultiDriveBackend {
         case_sensitive: bool,
         whole_word: bool,
         result_limit: Option<u32>,
+        filter_mode: FilterMode,
+        search_filters: &SearchFilters,
     ) -> SearchResult {
         let start = Instant::now();
         let mut rows = Vec::new();
@@ -396,6 +399,8 @@ impl MultiDriveBackend {
                 limit,
                 self.sort_column,
                 self.sort_desc,
+                filter_mode,
+                search_filters,
             );
         } else if is_regex {
             // Regex mode: compile pattern (strip leading >) and search
@@ -415,6 +420,10 @@ impl MultiDriveBackend {
                     for drive_rows in drive_results {
                         rows.extend(drive_rows);
                     }
+                    // Apply filters BEFORE sort+truncation so attribute/time/
+                    // size filters don't silently discard matching results.
+                    apply_filter(&mut rows, filter_mode);
+                    apply_search_filters(&mut rows, search_filters);
                     sort_rows(
                         &mut rows,
                         self.sort_column,
@@ -453,6 +462,9 @@ impl MultiDriveBackend {
             for drive_rows in drive_results {
                 rows.extend(drive_rows);
             }
+            // Apply filters BEFORE sort+truncation.
+            apply_filter(&mut rows, filter_mode);
+            apply_search_filters(&mut rows, search_filters);
             sort_rows(
                 &mut rows,
                 self.sort_column,
@@ -461,6 +473,7 @@ impl MultiDriveBackend {
             );
             rows.truncate(limit);
         }
+
         let scanned = self.drives.iter().map(|dr| dr.records.len()).sum();
 
         self.last_results.clone_from(&rows);
@@ -722,7 +735,7 @@ fn compare_by_column(
 }
 
 // Re-exported from `crate::filters`.
-pub use crate::filters::{SearchFilters, apply_filter, apply_search_filters};
+pub use crate::filters::{apply_filter, apply_search_filters};
 
 /// Parsed sort specification: column + direction.
 #[derive(Debug, Clone, Copy)]
@@ -768,10 +781,6 @@ pub fn parse_sort_spec(sort_str: &str) -> Vec<SortSpec> {
 ///
 /// Inverse of [`parse_sort_spec`].  Produces e.g. `"size:desc,name:asc"`.
 #[must_use]
-#[expect(
-    clippy::single_call_fn,
-    reason = "standalone formatter; inverse of parse_sort_spec, keeps sort serialisation isolated"
-)]
 pub fn format_sort_spec(primary: SortColumn, primary_desc: bool, extra: &[SortSpec]) -> String {
     let mut parts = Vec::with_capacity(1 + extra.len());
     let dir = |desc: bool| if desc { "desc" } else { "asc" };

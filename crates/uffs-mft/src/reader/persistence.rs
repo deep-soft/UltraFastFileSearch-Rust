@@ -5,8 +5,6 @@
 
 use std::path::Path;
 
-#[cfg(windows)]
-use tracing::{debug, info};
 use uffs_polars::{DataFrame, ParquetReader, ParquetWriter, SerReader};
 
 use super::MftReader;

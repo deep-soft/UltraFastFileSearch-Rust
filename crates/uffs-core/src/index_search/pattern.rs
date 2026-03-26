@@ -348,20 +348,39 @@ pub fn compile_index_pattern(pattern: &str) -> Result<IndexPattern> {
             })
         }
         GlobKind::Complex(glob_pattern) => {
-            let glob = globset::Glob::new(&glob_pattern).map_err(|err| CoreError::InvalidGlob {
-                pattern: glob_pattern.clone(),
-                reason: err.to_string(),
-            })?;
-            let regex_str = glob.regex();
-            let regex = Regex::new(regex_str).map_err(|err| CoreError::InvalidRegex {
-                pattern: regex_str.to_owned(),
-                reason: err.to_string(),
-            })?;
-            let regex_lower =
-                Regex::new(&format!("(?i){regex_str}")).map_err(|err| CoreError::InvalidRegex {
-                    pattern: regex_str.to_owned(),
+            // globset treats `\` as an escape character, but our patterns use
+            // `\` as a Windows path separator.  Convert to `/` so globset
+            // interprets them as directory separators.
+            let mut globset_pattern = glob_pattern.replace('\\', "/");
+            // A leading `/` means "match at any depth" (like Everything),
+            // not "anchored at root".  Prepend `**/` so globset allows any
+            // prefix before the first segment.
+            if globset_pattern.starts_with('/') {
+                globset_pattern = format!("**{globset_pattern}");
+            }
+            let glob =
+                globset::Glob::new(&globset_pattern).map_err(|err| CoreError::InvalidGlob {
+                    pattern: glob_pattern.clone(),
                     reason: err.to_string(),
                 })?;
+            let raw_regex = glob.regex();
+            // globset emits `(?-u)` which disables Unicode mode — that makes
+            // `[/\\]` potentially match invalid UTF-8, which `regex::Regex`
+            // rejects.  Our paths are always valid UTF-8, so strip the flag.
+            let regex_str = raw_regex.strip_prefix("(?-u)").unwrap_or(raw_regex);
+            // globset emits `/` separators in the regex; our paths use `\`.
+            // Replace the separator class so the regex matches both.
+            let regex_str_win = regex_str.replace('/', r"[/\\]");
+            let regex = Regex::new(&regex_str_win).map_err(|err| CoreError::InvalidRegex {
+                pattern: regex_str_win.clone(),
+                reason: err.to_string(),
+            })?;
+            let regex_lower = Regex::new(&format!("(?i){regex_str_win}")).map_err(|err| {
+                CoreError::InvalidRegex {
+                    pattern: regex_str_win,
+                    reason: err.to_string(),
+                }
+            })?;
             Ok(IndexPattern::Regex { regex, regex_lower })
         }
     }

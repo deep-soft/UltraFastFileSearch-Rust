@@ -155,7 +155,7 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
                     if let Some(child_rec) = drive.records.get(child_idx as usize) {
                         if child_rec.is_directory() {
                             let child_name = child_rec.name(&drive.names_lower);
-                            if name_matches(child_name, segment) {
+                            if segment_matches(child_name, segment) {
                                 next_dirs.push(child_idx);
                             }
                         }
@@ -283,7 +283,7 @@ fn find_dirs_by_name(drive: &DriveCompactIndex, pattern: &str) -> Vec<u32> {
                     return false;
                 }
                 let dir_name = rec.name(&drive.names_lower);
-                name_matches(dir_name, pattern)
+                segment_matches(dir_name, pattern)
             })
             .copied()
             .collect()
@@ -298,7 +298,7 @@ fn find_dirs_by_name(drive: &DriveCompactIndex, pattern: &str) -> Vec<u32> {
                     return false;
                 }
                 let dir_name = rec.name(&drive.names_lower);
-                name_matches(dir_name, pattern)
+                segment_matches(dir_name, pattern)
             })
             .map(|(idx, _)| {
                 #[expect(
@@ -376,6 +376,18 @@ pub fn name_matches(name: &str, pattern: &str) -> bool {
     if pattern == "*" {
         return true;
     }
+    // OR operator: `*.rs|*.py` → match if ANY sub-pattern matches
+    if pattern.contains('|') {
+        return pattern.split('|').any(|sub| name_matches_single(name, sub));
+    }
+    name_matches_single(name, pattern)
+}
+
+/// Match a single pattern (no `|` alternation) against a filename.
+fn name_matches_single(name: &str, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
     if !pattern.contains('*') && !pattern.contains('?') {
         // No wildcards → substring match
         return name.contains(pattern);
@@ -384,13 +396,31 @@ pub fn name_matches(name: &str, pattern: &str) -> bool {
     glob_match(name.as_bytes(), pattern.as_bytes())
 }
 
+/// Match a path segment exactly against a directory/file name.
+///
+/// Unlike [`name_matches`] which does substring matching for bare literals
+/// (search behaviour), this requires an **exact** match for non-glob segments.
+/// `"Projects"` matches only `"projects"`, not `"rustroverprojects"`.
+///
+/// Glob patterns (`*`, `?`) still use glob matching.
+pub fn segment_matches(name: &str, segment: &str) -> bool {
+    if name.is_empty() || name == "." {
+        return false;
+    }
+    if segment == "*" || segment == "**" {
+        return true;
+    }
+    if !segment.contains('*') && !segment.contains('?') {
+        // No wildcards → exact match (not substring!)
+        return name == segment;
+    }
+    // Glob pattern → full glob match
+    glob_match(name.as_bytes(), segment.as_bytes())
+}
+
 /// Iterative glob matching: `*` matches any sequence, `?` matches one byte.
 ///
 /// Handles patterns like `*sex*ge*`, `*.jpg`, `photo?.*` correctly.
-#[expect(
-    clippy::single_call_fn,
-    reason = "separated for readability; glob matching is a distinct concern"
-)]
 #[expect(
     clippy::indexing_slicing,
     reason = "all index accesses are bounds-checked by the while/if conditions"

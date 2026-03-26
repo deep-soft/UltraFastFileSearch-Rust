@@ -227,16 +227,6 @@ impl MftReader {
         }
     }
 
-    /// Returns a reference to the `VolumeHandle` if this is a live reader.
-    #[cfg(windows)]
-    #[must_use]
-    pub(crate) fn handle(&self) -> Option<&VolumeHandle> {
-        match &self.source {
-            MftSource::LiveVolume(handle) => Some(handle),
-            MftSource::File(_) => None,
-        }
-    }
-
     /// Returns the `VolumeHandle`, panicking if this is a file-based reader.
     ///
     /// Only called from `#[cfg(windows)]` IOCP code paths where a live volume

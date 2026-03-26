@@ -117,6 +117,11 @@ pub(super) fn run_multi_file_streaming(config: &MultiFileStreamConfig<'_>) -> Re
     let compiled_pattern = &config.compiled_pattern;
     let output_config = config.output_config;
 
+    // Per-drive calls must NOT emit their own header — the caller writes one
+    // shared header before the loop.
+    let mut per_drive_config = output_config.clone();
+    per_drive_config.header = false;
+
     let stream_drive =
         |mft_index: &uffs_mft::MftIndex, writer: &mut dyn std::io::Write| -> Result<usize> {
             let ext_indices: Option<Vec<u32>> = compiled_pattern.as_ref().and_then(|_pat| {
@@ -135,7 +140,7 @@ pub(super) fn run_multi_file_streaming(config: &MultiFileStreamConfig<'_>) -> Re
                 rec_filter,
                 writer,
                 "",
-                output_config,
+                &per_drive_config,
                 &output::CppFooterContext::empty(),
             )
         };

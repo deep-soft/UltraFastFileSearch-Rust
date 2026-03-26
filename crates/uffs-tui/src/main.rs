@@ -223,10 +223,6 @@ fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
     clippy::too_many_lines,
     reason = "main function orchestrates TUI setup, async loading, and event loop; splitting would fragment cohesive logic"
 )]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "main orchestrates CLI flags, loading, and event loop dispatch"
-)]
 fn main() -> Result<()> {
     // Check for -v/--verbose flag early
     let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
@@ -248,31 +244,7 @@ fn main() -> Result<()> {
     // Discover MFT files from --data-dir if specified
     let mut mft_files = cli.mft_file;
     if let Some(data_dir) = &cli.data_dir {
-        if let Ok(entries) = std::fs::read_dir(data_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                    continue;
-                };
-                if let Some(letter) = name.strip_prefix("drive_") {
-                    if letter.len() == 1
-                        && letter
-                            .chars()
-                            .next()
-                            .is_some_and(|ch| ch.is_ascii_alphabetic())
-                    {
-                        // Prefer .iocp > .bin > .mft
-                        if let Some(best) = refresh::find_best_mft_file(&path) {
-                            mft_files.push(best);
-                        }
-                    }
-                }
-            }
-        }
-        mft_files.sort();
+        mft_files.extend(uffs_mft::discovery::discover_mft_files(data_dir));
     }
 
     // On Windows: auto-detect NTFS drives when no files specified
@@ -304,6 +276,15 @@ fn main() -> Result<()> {
     // Create app and load search history from disk
     let mut app = App::with_keymap(keymap);
     app.load_history();
+
+    // Record how MFT data was sourced (for CLI command generation on Enter)
+    app.data_source = if let Some(data_dir) = &cli.data_dir {
+        app::DataSource::DataDir(data_dir.clone())
+    } else if !mft_files.is_empty() {
+        app::DataSource::MftFiles(mft_files.clone())
+    } else {
+        app::DataSource::None
+    };
 
     let total_to_load = mft_files.len() + live_drives.len();
     let cli_no_cache = cli.no_cache;
@@ -687,6 +668,15 @@ fn handle_search_box_key(app: &mut App, key: KeyEvent, needs_search: &mut bool) 
     } else if app.keymap.matches(key, Action::Paste) {
         app.textarea.paste();
         *needs_search = true;
+    } else if app.keymap.matches(key, Action::CopyCliCommand) {
+        app.copy_cli_to_clipboard();
+    // PageUp/PageDown: auto-switch focus to results panel
+    } else if app.keymap.matches(key, Action::PageDown) {
+        app.focus = Focus::Results;
+        app.page_down();
+    } else if app.keymap.matches(key, Action::PageUp) {
+        app.focus = Focus::Results;
+        app.page_up();
     } else {
         return false; // not consumed — let textarea handle it
     }

@@ -1,9 +1,6 @@
 //! Read mode types and drive-type-based selection helpers.
 
-#[expect(
-    unused_imports,
-    reason = "cross-platform type, used by cfg(windows) mode-selection functions"
-)]
+#[cfg(windows)]
 use crate::platform::DriveType;
 
 /// Read mode for MFT operations.

@@ -396,6 +396,11 @@ fn run_multi_drive_writer(
 ) -> Result<usize> {
     use std::io::Write as _;
 
+    // Per-drive calls must NOT emit their own header — the caller writes one
+    // shared header before the loop.
+    let mut per_drive_config = output_config.clone();
+    per_drive_config.header = false;
+
     let stream_drive =
         |index: &uffs_mft::MftIndex, writer: &mut dyn std::io::Write| -> Result<usize> {
             let ext_indices: Option<Vec<u32>> = compiled_pattern.as_ref().and_then(|_pat| {
@@ -414,7 +419,7 @@ fn run_multi_drive_writer(
                 rec_filter,
                 writer,
                 "",
-                output_config,
+                &per_drive_config,
                 &output::CppFooterContext::empty(),
             )
         };

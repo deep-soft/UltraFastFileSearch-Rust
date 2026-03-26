@@ -32,6 +32,10 @@ pub(crate) struct OwnedQueryFilters {
     min_size: Option<u64>,
     /// Maximum file size filter.
     max_size: Option<u64>,
+    /// Minimum descendant count filter (directories).
+    min_descendants: Option<u32>,
+    /// Maximum descendant count filter (directories).
+    max_descendants: Option<u32>,
     /// Maximum number of results to return.
     limit: u32,
 }
@@ -47,6 +51,8 @@ impl OwnedQueryFilters {
             hide_system: filters.hide_system,
             min_size: filters.min_size,
             max_size: filters.max_size,
+            min_descendants: filters.min_descendants,
+            max_descendants: filters.max_descendants,
             limit: filters.limit,
         }
     }
@@ -291,6 +297,8 @@ pub(crate) async fn load_and_filter_data_index_multi(
                 hide_system: filters.hide_system,
                 min_size: filters.min_size,
                 max_size: filters.max_size,
+                min_descendants: filters.min_descendants,
+                max_descendants: filters.max_descendants,
                 limit: filters.limit,
             };
             let results = execute_index_query(&index, &borrowed_filters, needs_paths)?;

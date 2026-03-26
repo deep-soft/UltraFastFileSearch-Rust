@@ -5,8 +5,6 @@
 //! re-parse on Mac/Linux). Results are received via a channel during
 //! the event loop.
 
-use std::path::PathBuf;
-
 use anyhow::Result;
 
 use crate::app::App;
@@ -151,38 +149,4 @@ pub fn load_live_drive_impl(
     _no_cache: bool,
 ) -> Result<(compact::DriveCompactIndex, compact::LoadTiming)> {
     anyhow::bail!("Live drive loading requires Windows (drive {drive_letter}:)")
-}
-
-/// Find the best MFT file in a drive directory, preferring .iocp > .bin > .mft.
-#[expect(
-    clippy::single_call_fn,
-    reason = "called from async loader; separation keeps file discovery logic isolated"
-)]
-pub fn find_best_mft_file(dir: &std::path::Path) -> Option<PathBuf> {
-    let Ok(files) = std::fs::read_dir(dir) else {
-        return None;
-    };
-
-    let mut best: Option<(PathBuf, u8)> = None; // (path, priority: 0=iocp, 1=bin, 2=mft)
-
-    for file in files.flatten() {
-        let file_path = file.path();
-        if !file_path.is_file() {
-            continue;
-        }
-        let Some(ext) = file_path.extension().and_then(|ext| ext.to_str()) else {
-            continue;
-        };
-        let priority = match ext {
-            "iocp" => 0_u8, // best
-            "bin" => 1,
-            "mft" => 2,
-            _ => continue,
-        };
-        if best.as_ref().is_none_or(|(_, bp)| priority < *bp) {
-            best = Some((file_path, priority));
-        }
-    }
-
-    best.map(|(path, _)| path)
 }

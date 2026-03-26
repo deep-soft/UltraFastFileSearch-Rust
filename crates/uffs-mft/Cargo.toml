@@ -74,6 +74,7 @@ proptest.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros"] }
 sha2 = "0.10"  # For SHA256 validation in chaos tests
 tracing-subscriber = { workspace = true }
+tempfile = "3.27.0"
 
 [[bench]]
 name = "mft_read"

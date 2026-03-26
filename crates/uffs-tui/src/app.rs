@@ -1,5 +1,6 @@
 //! TUI Application state — compact-index search.
 
+use std::path::PathBuf;
 use std::sync::mpsc;
 
 use ratatui::widgets::TableState;
@@ -9,6 +10,18 @@ use crate::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
 use crate::compact::{DriveCompactIndex, LoadTiming};
 use crate::history::{HistoryEntry, SearchState};
 use crate::keys::Keymap;
+
+/// How the TUI was told to find MFT data (for CLI command generation).
+#[derive(Debug, Clone, Default)]
+pub enum DataSource {
+    /// No explicit source — Windows live MFT or nothing loaded.
+    #[default]
+    None,
+    /// `--data-dir <path>` — auto-discovered drive subdirectories.
+    DataDir(PathBuf),
+    /// `--mft-file <paths>` — explicit MFT file list.
+    MftFiles(Vec<PathBuf>),
+}
 
 /// Result type for a single drive refresh (label + result).
 type RefreshResult = (String, anyhow::Result<(DriveCompactIndex, LoadTiming)>);
@@ -92,6 +105,8 @@ pub struct App {
     /// filters (`--attr`, `--min-size`, `--newer`, `--columns`, etc.)
     /// survive even though the TUI has no interactive controls for them yet.
     pub active_search_state: SearchState,
+    /// How the TUI was told to find MFT data (for CLI command generation).
+    pub data_source: DataSource,
 }
 
 impl App {
@@ -155,6 +170,7 @@ impl App {
             search_filters: crate::backend::SearchFilters::default(),
             visible_columns: crate::backend::DEFAULT_COLUMNS.to_vec(),
             active_search_state: SearchState::default(),
+            data_source: DataSource::default(),
         }
     }
 
@@ -190,6 +206,7 @@ impl App {
             search_filters: crate::backend::SearchFilters::default(),
             visible_columns: crate::backend::DEFAULT_COLUMNS.to_vec(),
             active_search_state: SearchState::default(),
+            data_source: DataSource::default(),
         }
     }
 
@@ -226,6 +243,7 @@ impl App {
             search_filters: crate::backend::SearchFilters::default(),
             visible_columns: crate::backend::DEFAULT_COLUMNS.to_vec(),
             active_search_state: SearchState::default(),
+            data_source: DataSource::default(),
         }
     }
 
@@ -353,11 +371,11 @@ impl App {
             self.case_sensitive,
             self.whole_word,
             self.result_limit,
+            self.filter_mode,
+            &self.search_filters,
         );
         self.last_search_ms = result.duration.as_millis();
         self.results = result.rows;
-        crate::backend::apply_filter(&mut self.results, self.filter_mode);
-        crate::backend::apply_search_filters(&mut self.results, &self.search_filters);
 
         let total_trigrams: usize = self
             .backend
@@ -462,22 +480,30 @@ impl App {
 
     /// Navigate to the next search in history (Down arrow).
     ///
+    /// When not browsing, starts from the oldest entry (ring behaviour).
     /// At the end of history, restores the saved input from before browsing.
     pub fn history_forward(&mut self) {
-        let Some(idx) = self.history_idx else {
-            return; // not browsing history
-        };
-        if idx + 1 < self.search_history.len() {
-            let new_idx = idx + 1;
-            self.history_idx = Some(new_idx);
-            self.apply_history_entry(new_idx);
-        } else {
-            // Past the end → restore saved input + clear overrides
-            self.history_idx = None;
-            self.reset_search_overrides();
-            let saved = self.history_saved_input.clone();
-            self.set_input(&saved);
+        if self.search_history.is_empty() {
+            return;
         }
+        let new_idx = match self.history_idx {
+            None => {
+                // First press: save current input and jump to oldest entry
+                self.history_saved_input = self.input_text();
+                0
+            }
+            Some(idx) if idx + 1 < self.search_history.len() => idx + 1,
+            Some(_) => {
+                // Past the end → restore saved input + clear overrides
+                self.history_idx = None;
+                self.reset_search_overrides();
+                let saved = self.history_saved_input.clone();
+                self.set_input(&saved);
+                return;
+            }
+        };
+        self.history_idx = Some(new_idx);
+        self.apply_history_entry(new_idx);
     }
 
     /// Get the comment for the currently browsed history entry, if any.
@@ -635,6 +661,111 @@ impl App {
             FilterMode::DirsOnly => " [DIRS]",
         }
     }
+
+    /// Build a platform-aware CLI command string from the current search state.
+    ///
+    /// On Windows: `uffs.exe "pattern" --flags...`
+    /// On macOS/Linux: `cargo run --release --bin uffs -- "pattern" --data-dir
+    /// ... --flags...`
+    #[must_use]
+    pub fn build_cli_command(&self) -> String {
+        let input = self.input_text();
+        let pattern = if input.is_empty() { "*" } else { &input };
+
+        // Build the search state from current toggles
+        let mut state = self.active_search_state.clone();
+        state.case_sensitive = self.case_sensitive;
+        state.whole_word = self.whole_word;
+        state.name_only = self.name_only;
+        state.hide_system = self.search_filters.hide_system;
+        state.filter = self.filter_mode;
+        state.limit = self.result_limit;
+        if let Some(sort_str) = {
+            let sort = crate::backend::format_sort_spec(
+                self.backend.sort_column,
+                self.backend.sort_desc,
+                &self.backend.extra_sort_tiers,
+            );
+            if sort.is_empty() { None } else { Some(sort) }
+        } {
+            state.sort = Some(sort_str);
+        }
+
+        // Get the base CLI command (always uses "uffs.exe" prefix)
+        let base_cli = crate::history::search_state_to_cli(pattern, &state);
+
+        // Strip the "uffs.exe" prefix — we'll replace it with the platform command
+        let flags = base_cli.strip_prefix("uffs.exe ").unwrap_or(&base_cli);
+
+        // Build data source arguments
+        let data_args = match &self.data_source {
+            DataSource::None => String::new(),
+            DataSource::DataDir(dir) => format!(" --data-dir {}", dir.display()),
+            DataSource::MftFiles(files) => {
+                let paths: Vec<String> =
+                    files.iter().map(|fp| format!("{}", fp.display())).collect();
+                format!(" --mft-file {}", paths.join(","))
+            }
+        };
+
+        if cfg!(windows) {
+            format!("uffs.exe {flags}{data_args}")
+        } else {
+            format!("cargo run --release --bin uffs -- {flags}{data_args}")
+        }
+    }
+
+    /// Copy the CLI command to the system clipboard and update the status bar.
+    pub fn copy_cli_to_clipboard(&mut self) {
+        let command = self.build_cli_command();
+        match copy_to_clipboard(&command) {
+            Ok(()) => {
+                self.status = format!("📋 Copied: {command}");
+            }
+            Err(err) => {
+                self.status = format!("❌ Clipboard error: {err}");
+            }
+        }
+    }
+}
+
+/// Copy text to the system clipboard using platform-native tools.
+///
+/// - **macOS**: `pbcopy`
+/// - **Windows**: `clip.exe`
+/// - **Linux**: `xclip -selection clipboard` (falls back to `xsel --clipboard`)
+#[allow(clippy::single_call_fn)] // clipboard utility kept separate for clarity
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("pbcopy", &[])
+    } else if cfg!(target_os = "windows") {
+        ("clip", &[])
+    } else {
+        ("xclip", &["-selection", "clipboard"])
+    };
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("{program}: {err}"))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|err| format!("write to {program}: {err}"))?;
+    }
+
+    child
+        .wait()
+        .map_err(|err| format!("{program} wait: {err}"))?;
+
+    Ok(())
 }
 
 /// Create a configured single-line `TextArea` for the search box.

@@ -203,6 +203,8 @@ pub(super) fn build_search_config<'a>(
     no_cache: bool,
     min_size: Option<u64>,
     max_size: Option<u64>,
+    min_descendants: Option<u32>,
+    max_descendants: Option<u32>,
     limit: u32,
     format: &'a str,
     case_sensitive: bool,
@@ -257,6 +259,8 @@ pub(super) fn build_search_config<'a>(
         hide_system,
         min_size,
         max_size,
+        min_descendants,
+        max_descendants,
         limit,
     };
 

@@ -92,6 +92,7 @@ use {
 // Module declarations
 // ============================================================================
 
+pub mod discovery;
 pub mod error;
 pub mod flags;
 pub mod index;

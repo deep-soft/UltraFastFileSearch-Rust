@@ -8,6 +8,20 @@ use super::super::output;
 use super::super::raw_io::QueryFilters;
 use super::util::{extract_extensions_from_regex, extract_trailing_extension};
 
+/// Check whether the `--out` target refers to the console (stdout).
+///
+/// Recognises the default `"console"` value, common aliases, and the
+/// Unix convention of `"-"` for stdout.
+#[must_use]
+fn is_console_target(out: &str) -> bool {
+    out.is_empty()
+        || out == "-"
+        || matches!(
+            out.to_lowercase().as_str(),
+            "console" | "con" | "term" | "terminal"
+        )
+}
+
 /// Shared helper: write streaming output from an `MftIndex` to file or console.
 ///
 /// Used by both `--mft-file` and Windows LIVE full-scan paths (DRY).
@@ -21,10 +35,7 @@ pub(super) fn write_streaming_output(
 ) -> Result<usize> {
     use std::io::Write as _;
 
-    let is_console = matches!(
-        out.to_lowercase().as_str(),
-        "console" | "con" | "term" | "terminal"
-    );
+    let is_console = is_console_target(out);
 
     if is_console {
         let stdout_handle = std::io::stdout();
@@ -144,7 +155,7 @@ pub(super) fn write_with_closure<F>(out: &str, write_fn: F) -> Result<usize>
 where
     F: FnOnce(&mut dyn std::io::Write) -> Result<usize>,
 {
-    let is_console = out.is_empty() || out == "-";
+    let is_console = is_console_target(out);
     if is_console {
         let stdout = std::io::stdout();
         let mut buf_writer = std::io::BufWriter::with_capacity(1024 * 1024, stdout.lock());
@@ -258,6 +269,8 @@ pub(super) fn build_record_filter(
         hide_system: filters.hide_system,
         min_size: filters.min_size,
         max_size: filters.max_size,
+        min_descendants: filters.min_descendants,
+        max_descendants: filters.max_descendants,
         attr_filters: attr_filter
             .map(output::parse_attr_filter)
             .unwrap_or_default(),

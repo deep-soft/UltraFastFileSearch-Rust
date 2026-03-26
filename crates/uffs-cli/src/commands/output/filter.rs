@@ -83,6 +83,21 @@ impl StreamingRecordFilter {
             }
         }
 
+        // Descendant count filters (only meaningful for directories).
+        if self.min_descendants.is_some() || self.max_descendants.is_some() {
+            let (descendants, _, _) = record.tree_metrics();
+            if let Some(min) = self.min_descendants {
+                if descendants < min {
+                    return false;
+                }
+            }
+            if let Some(max) = self.max_descendants {
+                if descendants > max {
+                    return false;
+                }
+            }
+        }
+
         true
     }
 }

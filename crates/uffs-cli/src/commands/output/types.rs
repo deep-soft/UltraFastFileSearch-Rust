@@ -148,6 +148,10 @@ pub(in crate::commands) struct StreamingRecordFilter {
     pub newer_accessed: Option<i64>,
     /// Only records accessed before this timestamp.
     pub older_accessed: Option<i64>,
+    /// Minimum descendant count (directories).
+    pub min_descendants: Option<u32>,
+    /// Maximum descendant count (directories).
+    pub max_descendants: Option<u32>,
     /// Exclude pattern — records matching this are rejected.
     pub exclude_pattern: Option<uffs_core::IndexPattern>,
     /// Maximum number of output rows (0 = unlimited).

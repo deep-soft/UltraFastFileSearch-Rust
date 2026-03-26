@@ -97,6 +97,14 @@ pub struct Cli {
     )]
     pub mft_file: Vec<PathBuf>,
 
+    /// Data directory containing `drive_*` subdirectories with MFT files
+    ///
+    /// Auto-discovers all MFT files in `drive_c/`, `drive_d/`, etc.
+    /// within the given directory. Prefers `.iocp` over `.bin` over `.mft`.
+    ///   Example: `uffs "*" --data-dir ~/uffs_data`
+    #[arg(long, conflicts_with = "index", verbatim_doc_comment)]
+    pub data_dir: Option<PathBuf>,
+
     /// Show only files (exclude directories)
     #[arg(long)]
     pub files_only: bool,
@@ -138,6 +146,20 @@ pub struct Cli {
     /// Maximum file size in bytes
     #[arg(long)]
     pub max_size: Option<u64>,
+
+    /// Minimum descendant count (directories only)
+    ///
+    /// Filter directories by minimum number of child entries.
+    /// Example: --min-descendants 10 (dirs with at least 10 children)
+    #[arg(long)]
+    pub min_descendants: Option<u32>,
+
+    /// Maximum descendant count (directories only)
+    ///
+    /// Filter directories by maximum number of child entries.
+    /// Example: --max-descendants 0 (empty directories)
+    #[arg(long)]
+    pub max_descendants: Option<u32>,
 
     /// Maximum number of results (0 = unlimited)
     #[arg(short = 'n', long, default_value = "0")]

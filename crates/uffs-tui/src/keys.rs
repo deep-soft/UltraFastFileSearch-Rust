@@ -64,6 +64,7 @@ toggle_name_only = ["alt+n", "ctrl+f"]
 toggle_filter = ["alt+t", "ctrl+t"]
 toggle_case_sensitive = ["alt+c", "tab"]
 toggle_whole_word = ["alt+w", "ctrl+w"]
+copy_cli_command = ["enter"]
 
 [results]
 nav_down = ["down"]
@@ -104,6 +105,7 @@ toggle_name_only = ["alt+n", "ctrl+f"]
 toggle_filter = ["alt+t", "ctrl+t"]
 toggle_case_sensitive = ["alt+c", "tab"]
 toggle_whole_word = ["alt+w", "ctrl+w"]
+copy_cli_command = ["enter"]
 
 [results]
 nav_down = ["down", "ctrl+j"]
@@ -155,6 +157,8 @@ pub enum Action {
     ToggleCaseSensitive,
     /// Toggle whole-word search.
     ToggleWholeWord,
+    /// Copy the equivalent CLI command to the system clipboard.
+    CopyCliCommand,
 
     // ═══ Results panel ═════════════════════════════════════════════════
     /// Move selection down in results.
@@ -195,6 +199,7 @@ fn action_from_name(group: &str, name: &str) -> Option<Action> {
         ("search_box", "toggle_filter") => Some(Action::ToggleFilter),
         ("search_box", "toggle_case_sensitive") => Some(Action::ToggleCaseSensitive),
         ("search_box", "toggle_whole_word") => Some(Action::ToggleWholeWord),
+        ("search_box", "copy_cli_command") => Some(Action::CopyCliCommand),
         ("results", "nav_down") => Some(Action::NavDown),
         ("results", "nav_up") => Some(Action::NavUp),
         ("results", "page_down") => Some(Action::PageDown),

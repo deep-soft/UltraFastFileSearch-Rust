@@ -39,8 +39,6 @@ mod streaming;
 
 #[cfg(windows)]
 pub(crate) use self::multi_drive::search_multi_drive_filtered;
-#[cfg(windows)]
-use self::streaming::search_streaming;
 
 /// Maximum number of drive-level CLI search tasks to run concurrently.
 #[cfg(any(windows, test))]
@@ -177,6 +175,8 @@ pub async fn search(
     no_cache: bool,
     min_size: Option<u64>,
     max_size: Option<u64>,
+    min_descendants: Option<u32>,
+    max_descendants: Option<u32>,
     limit: u32,
     format: &str,
     case_sensitive: bool,
@@ -226,6 +226,8 @@ pub async fn search(
         no_cache,
         min_size,
         max_size,
+        min_descendants,
+        max_descendants,
         limit,
         format,
         case_sensitive,

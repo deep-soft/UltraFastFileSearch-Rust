@@ -490,10 +490,10 @@ uffs.exe \"Projects\" --dirs-only --name-only --sort name:asc --columns path,nam
 uffs.exe \"README.md\" --name-only --case
 
 # Find files modified today
-uffs.exe \"*\" --files-only --newer 1d --sort modified:desc,name:asc --columns name,modified,size,path --limit 500
+uffs.exe \"*\" --files-only --newer 1d --older 0d --sort modified:desc,name:asc --columns name,modified,size,path --limit 500
 
 # Find recently accessed files (last 7 days — note: NTFS may disable access timestamps)
-uffs.exe \"*\" --files-only --newer-accessed 7d --sort accessed:desc,name:asc --columns name,accessed,modified,size,path --limit 500
+uffs.exe \"*\" --files-only --newer-accessed 7d --older-accessed 0d --sort accessed:desc,name:asc --columns name,accessed,modified,size,path --limit 500
 
 # ── Find by Type ────────────────────────────────────────
 # Report §6 items 3, 13, 14: type/extension is the first refinement
@@ -519,8 +519,8 @@ uffs.exe \"*.exe|*.msi|*.bat|*.cmd|*.ps1\" --files-only --hide-system --sort nam
 # Find large files (> 100 MB), show size vs disk allocation
 uffs.exe \"*\" --files-only --min-size 104857600 --sort size:desc,name:asc --columns name,size,sizeondisk,ext,path --limit 500
 
-# Find files modified in the last 7 days — full timeline
-uffs.exe \"*\" --files-only --newer 7d --sort modified:desc,name:asc --columns name,modified,created,accessed,path --limit 500
+# Find files modified in the last 7 days — show all timestamps (modified, created, accessed)
+uffs.exe \"*\" --files-only --newer 7d --older 0d --sort modified:desc,name:asc --columns name,modified,created,accessed,path --limit 500
 
 # Find empty folders (zero descendants)
 uffs.exe \"*\" --dirs-only --max-descendants 0 --sort name:asc --columns name,path --limit 500
@@ -556,7 +556,7 @@ uffs.exe \"*.toml|*.json|*.yaml|*.yml|*.xml|*.ini\" --files-only --hide-system -
 uffs.exe \">.*\\.log$\" --files-only --sort modified:desc,name:asc --limit 500
 
 # Search within a specific folder tree (scoped search)
-uffs.exe \"\\Projects\\**\\*.rs\" --sort name:asc,modified:desc --limit 500
+uffs.exe \"\\users\\**\\*.rs\" --sort name:asc,modified:desc --limit 500
 
 # Find directories by descendant count (biggest trees first)
 uffs.exe \"*\" --dirs-only --sort descendants:desc --columns name,descendants,treesize,path --limit 500
