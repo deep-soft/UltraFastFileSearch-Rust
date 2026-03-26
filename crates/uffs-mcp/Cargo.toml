@@ -1,0 +1,42 @@
+# ============================================================================
+# uffs-mcp: MCP Stdio Adapter for UFFS
+# ============================================================================
+# Bridges AI agents (Claude, Cursor, Windsurf) to the UFFS daemon via the
+# Model Context Protocol (MCP). Reads JSON-RPC from stdin, translates to
+# uffs-client calls, writes responses to stdout.
+# ============================================================================
+
+[package]
+name = "uffs-mcp"
+description = "MCP stdio adapter for UFFS — bridges AI agents to the daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "uffs-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# Internal
+uffs-client.workspace = true
+
+# Async
+tokio.workspace = true
+
+# Serialization (MCP JSON-RPC)
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -27,6 +27,7 @@ members = [
     # ── Daemon Architecture ──
     "crates/uffs-daemon",   # 🛡️ Background service process
     "crates/uffs-client",   # 📡 Thin client library
+    "crates/uffs-mcp",      # 🤖 MCP stdio adapter for AI agents
     # ── Surfaces ──
     "crates/uffs-cli",      # 🖥️  Command-line interface
     "crates/uffs-tui",      # 📟 Terminal UI
