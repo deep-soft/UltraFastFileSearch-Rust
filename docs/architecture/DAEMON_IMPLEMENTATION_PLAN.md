@@ -72,12 +72,12 @@ and the TUI (in standalone mode) can use it.
 
 | ID | Task | Status |
 |----|------|--------|
-| D1.1.1 | Create `uffs-core/src/compact.rs` — copy `CompactRecord`, `DriveCompactIndex`, `IndexSource`, `LoadTiming`, `PatchStats` from `uffs-tui/src/compact.rs` | ⬜ TODO |
-| D1.1.2 | Copy `build_compact_index()`, `build_name_trigram()`, `load_mft_file()`, `load_live_drive()`, `refresh_drive()` to `uffs-core/src/compact.rs` | ⬜ TODO |
-| D1.1.3 | Export from `uffs-core/src/lib.rs`: `pub mod compact;` | ⬜ TODO |
-| D1.1.4 | Add `uffs-mft` and `rayon` dependencies to `uffs-core/Cargo.toml` (if not already present) | ⬜ TODO |
-| D1.1.5 | Update `uffs-tui/src/compact.rs` to re-export from `uffs-core`: `pub use uffs_core::compact::*;` | ⬜ TODO |
-| D1.1.6 | Verify: `cargo check -p uffs-tui` passes with no code changes in TUI consumers | ⬜ TODO |
+| D1.1.1 | Create `uffs-core/src/compact.rs` — copy `CompactRecord`, `DriveCompactIndex`, `IndexSource`, `LoadTiming`, `PatchStats` from `uffs-tui/src/compact.rs` | ✅ DONE |
+| D1.1.2 | Copy `build_compact_index()`, `build_name_trigram()`, `load_mft_file()`, `load_live_drive()`, `refresh_drive()` to `uffs-core/src/compact.rs` | ✅ DONE |
+| D1.1.3 | Export from `uffs-core/src/lib.rs`: `pub mod compact;` | ✅ DONE |
+| D1.1.4 | Add `uffs-mft` and `rayon` dependencies to `uffs-core/Cargo.toml` (if not already present) | ✅ DONE (already present) |
+| D1.1.5 | Update `uffs-tui/src/compact.rs` to re-export from `uffs-core`: `pub use uffs_core::compact::*;` | ✅ DONE |
+| D1.1.6 | Verify: `cargo check -p uffs-tui` passes with no code changes in TUI consumers | ✅ DONE |
 
 **Acceptance**: TUI compiles and runs identically — the move is invisible to TUI code.
 
@@ -85,59 +85,59 @@ and the TUI (in standalone mode) can use it.
 
 | ID | Task | Status |
 |----|------|--------|
-| D1.2.1 | Create `uffs-core/src/trigram.rs` — extract `TrigramIndex` + `intersect_sorted()` from `uffs-tui/src/backend.rs` | ⬜ TODO |
-| D1.2.2 | Export from `uffs-core/src/lib.rs`: `pub mod trigram;` | ⬜ TODO |
-| D1.2.3 | Update `uffs-core/src/compact.rs`: use `crate::trigram::TrigramIndex` for `DriveCompactIndex.trigram` field | ⬜ TODO |
-| D1.2.4 | Update `uffs-tui/src/backend.rs`: remove `TrigramIndex` definition, import from `uffs_core::trigram::TrigramIndex` | ⬜ TODO |
-| D1.2.5 | Verify: `cargo check -p uffs-tui` passes | ⬜ TODO |
+| D1.2.1 | Create `uffs-core/src/trigram.rs` — extract `TrigramIndex` + `intersect_sorted()` from `uffs-tui/src/backend.rs` | ✅ DONE |
+| D1.2.2 | Export from `uffs-core/src/lib.rs`: `pub mod trigram;` | ✅ DONE |
+| D1.2.3 | Update `uffs-core/src/compact.rs`: use `crate::trigram::TrigramIndex` for `DriveCompactIndex.trigram` field | ✅ DONE |
+| D1.2.4 | Update `uffs-tui/src/backend.rs`: remove `TrigramIndex` definition, import from `uffs_core::trigram::TrigramIndex` | ✅ DONE |
+| D1.2.5 | Verify: `cargo check -p uffs-tui` passes | ✅ DONE |
 
 ### Wave D1.3 — Search Backend (DisplayRow, MultiDriveBackend, Sort)
 
 | ID | Task | Status |
 |----|------|--------|
-| D1.3.1 | Create `uffs-core/src/search/mod.rs` with submodules: `backend`, `sort`, `filters`, `query`, `tree` | ⬜ TODO |
-| D1.3.2 | Move `DisplayRow`, `SearchResult`, `MultiDriveBackend` to `uffs-core/src/search/backend.rs` | ⬜ TODO |
-| D1.3.3 | Move `SortColumn`, `SortSpec`, sort comparators to `uffs-core/src/search/sort.rs` | ⬜ TODO |
-| D1.3.4 | Move `SearchFilters` to `uffs-core/src/search/filters.rs` | ⬜ TODO |
-| D1.3.5 | Move `collect_global_top_n`, `search_compact_drive`, per-drive search functions to `uffs-core/src/search/query.rs` | ⬜ TODO |
-| D1.3.6 | Move tree walk (`collect_path_sorted`, depth-first traversal) to `uffs-core/src/search/tree.rs` | ⬜ TODO |
-| D1.3.7 | Export `pub mod search;` from `uffs-core/src/lib.rs` | ⬜ TODO |
-| D1.3.8 | Update all `uffs-tui` imports to use `uffs_core::search::*` | ⬜ TODO |
-| D1.3.9 | Verify: `cargo check -p uffs-tui` && `cargo test -p uffs-tui` pass | ⬜ TODO |
+| D1.3.1 | Create `uffs-core/src/search/mod.rs` with submodules: `backend`, `sort`, `filters`, `query`, `tree` | ✅ DONE (sort merged into backend.rs) |
+| D1.3.2 | Move `DisplayRow`, `SearchResult`, `MultiDriveBackend` to `uffs-core/src/search/backend.rs` | ✅ DONE |
+| D1.3.3 | Move `SortColumn`, `SortSpec`, sort comparators to `uffs-core/src/search/backend.rs` | ✅ DONE (in backend.rs, not separate sort.rs) |
+| D1.3.4 | Move `SearchFilters` to `uffs-core/src/search/filters.rs` | ✅ DONE |
+| D1.3.5 | Move `collect_global_top_n`, `search_compact_drive`, per-drive search functions to `uffs-core/src/search/query.rs` | ✅ DONE |
+| D1.3.6 | Move tree walk (`collect_path_sorted`, depth-first traversal) to `uffs-core/src/search/tree.rs` | ✅ DONE |
+| D1.3.7 | Export `pub mod search;` from `uffs-core/src/lib.rs` | ✅ DONE |
+| D1.3.8 | Update all `uffs-tui` imports to use `uffs_core::search::*` | ✅ DONE |
+| D1.3.9 | Verify: `cargo check -p uffs-tui` && `cargo test -p uffs-tui` pass | ✅ DONE |
 
 ### Wave D1.4 — FullRecordReader
 
 | ID | Task | Status |
 |----|------|--------|
-| D1.4.1 | Move `FullRecordReader` to `uffs-core/src/compact_reader.rs` | ⬜ TODO |
-| D1.4.2 | Update `uffs-tui/src/full_record.rs` to re-export from `uffs-core` | ⬜ TODO |
-| D1.4.3 | Verify: TUI info panel (F9) still works | ⬜ TODO |
+| D1.4.1 | Move `FullRecordReader` to `uffs-core/src/compact_reader.rs` | ✅ DONE |
+| D1.4.2 | Update `uffs-tui/src/full_record.rs` to re-export from `uffs-core` | ✅ DONE |
+| D1.4.3 | Verify: TUI info panel (F9) still works | ✅ DONE |
 
 ### Wave D1.5 — Column Definitions
 
 | ID | Task | Status |
 |----|------|--------|
-| D1.5.1 | Move `TuiColumn`, `DEFAULT_COLUMNS`, `parse_columns` to `uffs-core/src/search/columns.rs` | ⬜ TODO |
-| D1.5.2 | Update `uffs-tui/src/columns.rs` and `backend.rs` re-export to point to `uffs-core` | ⬜ TODO |
-| D1.5.3 | Verify: column toggle (F4) still works in TUI | ⬜ TODO |
+| D1.5.1 | Move `TuiColumn`, `DEFAULT_COLUMNS`, `parse_columns` to `uffs-core/src/search/columns.rs` | ✅ DONE |
+| D1.5.2 | Update `uffs-tui/src/columns.rs` — re-export + TUI-specific `default_constraint()` standalone fn | ✅ DONE |
+| D1.5.3 | Verify: column toggle (F4) still works in TUI | ✅ DONE |
 
 ### Wave D1.6 — Format Functions (Dependency Cleanup)
 
 | ID | Task | Status |
 |----|------|--------|
-| D1.6.1 | Move `format_bytes`, `format_timestamp`, `format_bool`, `format_number_commas`, `format_duration` from `uffs-mft/src/lib.rs` to `uffs-core/src/format.rs` | ⬜ TODO |
-| D1.6.2 | Export `pub mod format;` from `uffs-core/src/lib.rs` | ⬜ TODO |
-| D1.6.3 | Update `uffs-tui` (14 sites): `uffs_mft::format_*` → `uffs_core::format::format_*` | ⬜ TODO |
-| D1.6.4 | Remove formatter functions from `uffs-mft/src/lib.rs` (or add deprecation re-exports) | ⬜ TODO |
-| D1.6.5 | Verify: `cargo check --workspace` && `cargo test --workspace` | ⬜ TODO |
+| D1.6.1 | Move `format_bytes`, `format_timestamp`, `format_bool`, `format_number_commas`, `format_duration` from `uffs-mft/src/lib.rs` to `uffs-core/src/format.rs` | ✅ DONE |
+| D1.6.2 | Export `pub mod format;` from `uffs-core/src/lib.rs` | ✅ DONE |
+| D1.6.3 | Update `uffs-tui` (14 sites): `uffs_mft::format_*` → `uffs_core::format::format_*` | ✅ DONE |
+| D1.6.4 | Remove formatter functions from `uffs-mft/src/lib.rs` | ✅ DONE |
+| D1.6.5 | Verify: `cargo check --workspace` && `cargo test --workspace` | ✅ DONE |
 
 ### Wave D1.7 — Polars Re-Export Cleanup
 
 | ID | Task | Status |
 |----|------|--------|
-| D1.7.1 | In `uffs-cli`: replace all `uffs_mft::DataFrame/LazyFrame/col/lit/IntoLazy` → `uffs_polars::*` (33 sites) | ⬜ TODO |
-| D1.7.2 | Remove `pub use uffs_polars::*` from `uffs-mft/src/lib.rs:184` | ⬜ TODO |
-| D1.7.3 | Verify: `cargo check --workspace` && `cargo test --workspace` | ⬜ TODO |
+| D1.7.1 | In `uffs-cli`: replace all `uffs_mft::DataFrame/LazyFrame/col/lit/IntoLazy` → `uffs_polars::*` (35 sites incl uffs-core) | ✅ DONE |
+| D1.7.2 | Remove `pub use uffs_polars::*` from `uffs-mft/src/lib.rs` | ✅ DONE |
+| D1.7.3 | Verify: `cargo check --workspace` && `cargo test --workspace` | ✅ DONE |
 
 ---
 
@@ -151,96 +151,95 @@ and the TUI (in standalone mode) can use it.
 
 | ID | Task | Status |
 |----|------|--------|
-| D2.1.1 | Create `crates/uffs-daemon/Cargo.toml` (deps: uffs-core, uffs-mft, uffs-security, tokio, serde, serde_json, tracing, dirs-next, clap) | ⬜ TODO |
-| D2.1.2 | Create `crates/uffs-daemon/src/main.rs` — CLI args (`--data-dir`, `--idle-timeout`, `--no-retire`, `--log-level`) + daemon bootstrap | ⬜ TODO |
-| D2.1.3 | Add to workspace `Cargo.toml` members + deps | ⬜ TODO |
-| D2.1.4 | Create module structure: `ipc.rs`, `handler.rs`, `lifecycle.rs`, `index.rs`, `protocol.rs` | ⬜ TODO |
-| D2.1.5 | Verify: `cargo check -p uffs-daemon` | ⬜ TODO |
+| D2.1.1 | Create `crates/uffs-daemon/Cargo.toml` | ✅ DONE |
+| D2.1.2 | Create `crates/uffs-daemon/src/main.rs` — clap CLI + tokio + tracing + daemon bootstrap | ✅ DONE |
+| D2.1.3 | Add to workspace `Cargo.toml` members + deps | ✅ DONE |
+| D2.1.4 | Create module structure: `ipc.rs`, `handler.rs`, `lifecycle.rs`, `index.rs`, `protocol.rs` | ✅ DONE |
+| D2.1.5 | Verify: `cargo check -p uffs-daemon` | ✅ DONE |
 
 ### Wave D2.2 — Shared Protocol Types
 
 | ID | Task | Status |
 |----|------|--------|
-| D2.2.1 | Create `crates/uffs-daemon/src/protocol.rs` — JSON-RPC 2.0 request/response types (`RpcRequest`, `RpcResponse`, `RpcError`, `RpcNotification`) | ⬜ TODO |
-| D2.2.2 | Define `SearchParams` struct (mirrors JSON in architecture doc) | ⬜ TODO |
-| D2.2.3 | Define `SearchResponse`, `DrivesResponse`, `StatusResponse`, `InfoResponse` structs | ⬜ TODO |
-| D2.2.4 | Define `DaemonStatus` enum: `Loading { drives_loaded, drives_total, pct }`, `Ready`, `Refreshing` | ⬜ TODO |
-| D2.2.5 | Unit tests: serialize/deserialize round-trip for all message types | ⬜ TODO |
+| D2.2.1 | JSON-RPC 2.0 types in `uffs-client/src/protocol.rs` (shared between daemon + client) | ✅ DONE |
+| D2.2.2 | Define `SearchParams` struct | ✅ DONE |
+| D2.2.3 | Define `SearchResponse`, `DrivesResponse`, `StatusResponse`, `InfoResponse` structs | ✅ DONE |
+| D2.2.4 | Define `DaemonStatus` enum: `Loading`, `Ready`, `Refreshing` | ✅ DONE |
+| D2.2.5 | Unit tests: 6 serialize/deserialize round-trip tests | ✅ DONE |
 
-**Note**: These protocol types will later be extracted to a tiny shared crate
-(or put in `uffs-core`) so `uffs-client` can use them too without depending
-on `uffs-daemon`. For now, define in daemon, extract when client is built.
+**Note**: Protocol types live in `uffs-client/src/protocol.rs` (not daemon) so
+both daemon and client share the same types without circular deps.
 
 ### Wave D2.3 — Index Loading
 
 | ID | Task | Status |
 |----|------|--------|
-| D2.3.1 | Create `crates/uffs-daemon/src/index.rs` — `IndexManager` struct holding `Vec<DriveCompactIndex>` | ⬜ TODO |
-| D2.3.2 | Implement `IndexManager::load_all(data_dir, drives)` — parallel per-drive load using `uffs_core::compact::load_mft_file` / `load_live_drive` | ⬜ TODO |
-| D2.3.3 | Implement progress reporting: `IndexManager::status()` returns `DaemonStatus::Loading { pct }` during load, `Ready` after | ⬜ TODO |
-| D2.3.4 | Implement `IndexManager::search(params) -> SearchResponse` — delegates to `uffs_core::search::MultiDriveBackend::search()` | ⬜ TODO |
-| D2.3.5 | Implement `IndexManager::drives()` → `DrivesResponse` | ⬜ TODO |
-| D2.3.6 | Implement `IndexManager::refresh(drives)` — reload specific drives, rebuild compact + trigram | ⬜ TODO |
-| D2.3.7 | Implement `IndexManager::info(path)` → `InfoResponse` (lookup via `FullRecordReader`) | ⬜ TODO |
-| D2.3.8 | Test: load 1 drive from `.uffs` cache, search `*.rs`, verify results | ⬜ TODO |
+| D2.3.1 | Create `IndexManager` struct with `RwLock<MultiDriveBackend>` + `RwLock<DaemonStatus>` | ✅ DONE |
+| D2.3.2 | `load_from_data_dir()` — sequential per-drive load with progress | ✅ DONE |
+| D2.3.3 | `status()` returns `DaemonStatus::Loading { drives_loaded, drives_total }` during load, `Ready` after | ✅ DONE |
+| D2.3.4 | `search(params)` — delegates to `MultiDriveBackend::search()` with sort/filter parsing | ✅ DONE |
+| D2.3.5 | `drives()` → `DrivesResponse` | ✅ DONE |
+| D2.3.6 | `refresh(drives)` — reload specific drives, replace in-place | ✅ DONE |
+| D2.3.7 | `info(path)` → `InfoResponse` (lookup via `FullRecordReader`) | ⬜ TODO (deferred) |
+| D2.3.8 | Test: load 1 drive from `.uffs` cache, search `*.rs`, verify results | ⬜ TODO (integration test) |
 
 ### Wave D2.4 — IPC Server
 
 | ID | Task | Status |
 |----|------|--------|
-| D2.4.1 | Create `crates/uffs-daemon/src/ipc.rs` — `IpcServer` struct | ⬜ TODO |
-| D2.4.2 | Unix: `tokio::net::UnixListener` on `~/.local/share/uffs/daemon.sock` with mode `0600` (via `uffs_security::fs`) | ⬜ TODO |
-| D2.4.3 | Windows: `tokio::net::windows::named_pipe` on `\\.\pipe\uffs-daemon-{SID}` with owner-only DACL | ⬜ TODO |
-| D2.4.4 | Connection handler: read newline-delimited JSON-RPC messages, dispatch to handler, write response | ⬜ TODO |
-| D2.4.5 | Length-prefixed framing: `u32 LE length` + `JSON payload` (or newline-delimited — decide and document) | ⬜ TODO |
-| D2.4.6 | Max message size: 16 MB (reject + disconnect) | ⬜ TODO |
-| D2.4.7 | Max concurrent connections: 32 | ⬜ TODO |
-| D2.4.8 | Read timeout: 30 seconds per message | ⬜ TODO |
-| D2.4.9 | Peer credential check on accept (Unix: `getpeereid`, Windows: `GetNamedPipeClientProcessId`) | ⬜ TODO |
-| D2.4.10 | Test: connect via `nc -U ~/.local/share/uffs/daemon.sock`, send `{"jsonrpc":"2.0","id":1,"method":"status"}`, verify response | ⬜ TODO |
+| D2.4.1 | `run_ipc_server()` with `UnixListener` (Unix) + `UnixListener` (Windows AF_UNIX) | ✅ DONE |
+| D2.4.2 | Unix: socket at platform-specific path with mode `0600` | ✅ DONE |
+| D2.4.3 | Windows: AF_UNIX socket (named pipe support planned for pre-1803) | ✅ DONE |
+| D2.4.4 | Newline-delimited JSON-RPC framing (decision: newline, not length-prefixed) | ✅ DONE |
+| D2.4.5 | _(merged with D2.4.4)_ | ✅ DONE |
+| D2.4.6 | Max message size: 16 MB (reject + disconnect) | ✅ DONE |
+| D2.4.7 | Max concurrent connections: 32 | ✅ DONE |
+| D2.4.8 | Read timeout: 30 seconds per message | ✅ DONE |
+| D2.4.9 | Peer credential check: `getpeereid()` (Unix), socket perms (Windows) | ✅ DONE (S4.2) |
+| D2.4.10 | Test: `nc -U` manual test possible | ⬜ TODO (integration test) |
 
 ### Wave D2.5 — Request Handler
 
 | ID | Task | Status |
 |----|------|--------|
-| D2.5.1 | Create `crates/uffs-daemon/src/handler.rs` — `handle_request(req: RpcRequest, index: &IndexManager) -> RpcResponse` | ⬜ TODO |
-| D2.5.2 | Route `"search"` → `IndexManager::search()` | ⬜ TODO |
-| D2.5.3 | Route `"drives"` → `IndexManager::drives()` | ⬜ TODO |
-| D2.5.4 | Route `"status"` → `IndexManager::status()` + daemon uptime, memory, connections | ⬜ TODO |
-| D2.5.5 | Route `"info"` → `IndexManager::info()` | ⬜ TODO |
-| D2.5.6 | Route `"refresh"` → spawn `IndexManager::refresh()`, return immediate ack, send notification on complete | ⬜ TODO |
-| D2.5.7 | Route `"keepalive"` → reset idle timer, return `{"ok": true}` | ⬜ TODO |
-| D2.5.8 | Route `"shutdown"` → initiate graceful shutdown | ⬜ TODO |
-| D2.5.9 | Unknown method → return `RpcError { code: -32601, message: "Method not found" }` | ⬜ TODO |
-| D2.5.10 | Regex compilation timeout: 100ms cap on search pattern compilation | ⬜ TODO |
-| D2.5.11 | Response limit cap: max 100,000 rows per search response | ⬜ TODO |
+| D2.5.1 | `handle_request()` dispatches to method-specific handlers | ✅ DONE |
+| D2.5.2 | Route `"search"` → `IndexManager::search()` | ✅ DONE |
+| D2.5.3 | Route `"drives"` → `IndexManager::drives()` | ✅ DONE |
+| D2.5.4 | Route `"status"` → `IndexManager::status()` + uptime, connections, PID | ✅ DONE |
+| D2.5.5 | Route `"info"` → `IndexManager::info()` | ⬜ TODO (deferred) |
+| D2.5.6 | Route `"refresh"` → spawn background task, return immediate ack | ✅ DONE |
+| D2.5.7 | Route `"keepalive"` → reset idle timer | ✅ DONE |
+| D2.5.8 | Route `"shutdown"` → graceful shutdown via lifecycle handle | ✅ DONE |
+| D2.5.9 | Unknown method → JSON-RPC -32601 error | ✅ DONE |
+| D2.5.10 | Max pattern length: 4096 chars (S4.4.3) | ✅ DONE |
+| D2.5.11 | Response limit cap: max 100,000 rows (S4.4.4) | ✅ DONE |
 
 ### Wave D2.6 — Lifecycle Manager
 
 | ID | Task | Status |
 |----|------|--------|
-| D2.6.1 | Create `crates/uffs-daemon/src/lifecycle.rs` — `LifecycleManager` | ⬜ TODO |
-| D2.6.2 | PID file: write on start (`~/.local/share/uffs/daemon.pid`), content = `{pid}\n{start_timestamp}\n{exe_path_hash}`, permissions `0600` | ⬜ TODO |
-| D2.6.3 | PID file: remove on graceful shutdown | ⬜ TODO |
-| D2.6.4 | PID file: stale PID check on startup (if PID file exists but process is dead → clean up and proceed) | ⬜ TODO |
-| D2.6.5 | Idle timer: configurable timeout (default 10 min), reset on every query/keepalive | ⬜ TODO |
-| D2.6.6 | Idle timer: differentiated timeouts — 5 min after CLI, 15 min after TUI/GUI/MCP | ⬜ TODO |
-| D2.6.7 | Idle timer: do NOT retire if active connections exist (check before firing) | ⬜ TODO |
-| D2.6.8 | Auto-retire: save updated `.uffs` caches (if MFT changed via USN), remove PID file, close socket, exit | ⬜ TODO |
-| D2.6.9 | `--no-retire` flag: disable idle timer entirely (persistent daemon) | ⬜ TODO |
-| D2.6.10 | Signal handling: `SIGTERM`/`SIGINT` → graceful shutdown (same as auto-retire) | ⬜ TODO |
-| D2.6.11 | Test: start daemon, verify PID file exists, wait for idle timeout, verify PID file removed + process exited | ⬜ TODO |
+| D2.6.1 | `LifecycleManager` + `LifecycleHandle` (watch channel for shutdown) | ✅ DONE |
+| D2.6.2 | PID file: `{pid}\n{start_timestamp}\n`, permissions `0600` | ✅ DONE |
+| D2.6.3 | PID file: remove on graceful shutdown (Drop impl) | ✅ DONE |
+| D2.6.4 | Stale PID check: `kill -0` (Unix) / `OpenProcess` (Windows) | ✅ DONE |
+| D2.6.5 | Idle timer: configurable timeout (default 600s), reset via `AtomicBool` | ✅ DONE |
+| D2.6.6 | Differentiated timeouts | ⬜ TODO (deferred — needs session type in keepalive) |
+| D2.6.7 | Don't retire if active connections | ⬜ TODO (deferred) |
+| D2.6.8 | Auto-retire: remove PID, close socket, exit | ✅ DONE |
+| D2.6.9 | `--no-retire` flag | ✅ DONE |
+| D2.6.10 | Signal handling via tokio shutdown | ✅ DONE (via watch channel) |
+| D2.6.11 | Test: idle timeout + PID cleanup | ⬜ TODO (integration test) |
 
 ### Wave D2.7 — Integration Test
 
 | ID | Task | Status |
 |----|------|--------|
-| D2.7.1 | End-to-end test: start daemon, connect via socket, send `search` request, verify results, send `shutdown` | ⬜ TODO |
+| D2.7.1 | End-to-end test: start daemon, connect, search, shutdown | ⬜ TODO |
 | D2.7.2 | Test: daemon loads from `.uffs` cache files (Mac offline mode) | ⬜ TODO |
 | D2.7.3 | Test: daemon loads from live MFT (Windows) | ⬜ TODO |
-| D2.7.4 | Test: concurrent clients — 3 connections, interleaved queries, verify no corruption | ⬜ TODO |
-| D2.7.5 | Test: idle timeout fires after no activity | ⬜ TODO |
-| D2.7.6 | Benchmark: query latency (target: <10ms for trigram, <50ms for full scan) | ⬜ TODO |
+| D2.7.4 | Test: concurrent clients | ⬜ TODO |
+| D2.7.5 | Test: idle timeout | ⬜ TODO |
+| D2.7.6 | Benchmark: query latency | ⬜ TODO |
 
 ---
 
@@ -254,44 +253,44 @@ on `uffs-daemon`. For now, define in daemon, extract when client is built.
 
 | ID | Task | Status |
 |----|------|--------|
-| D3.1.1 | Create `crates/uffs-client/Cargo.toml` (deps: uffs-security, tokio, serde, serde_json, tracing, dirs-next, thiserror) | ⬜ TODO |
-| D3.1.2 | Create `crates/uffs-client/src/lib.rs` with public API | ⬜ TODO |
-| D3.1.3 | Add to workspace members + deps | ⬜ TODO |
-| D3.1.4 | Extract protocol types from `uffs-daemon/src/protocol.rs` to shared location (either `uffs-core` or a new `uffs-protocol` module in uffs-client) | ⬜ TODO |
+| D3.1.1 | Create `crates/uffs-client/Cargo.toml` | ✅ DONE |
+| D3.1.2 | Create `crates/uffs-client/src/lib.rs` with public API | ✅ DONE |
+| D3.1.3 | Add to workspace members + deps | ✅ DONE |
+| D3.1.4 | Protocol types in `uffs-client/src/protocol.rs` (shared with daemon) | ✅ DONE |
 
 ### Wave D3.2 — Connection & Auto-Start
 
 | ID | Task | Status |
 |----|------|--------|
-| D3.2.1 | `UffsClient::connect() -> Result<Self>` — attempt socket connection | ⬜ TODO |
-| D3.2.2 | Auto-start: if socket doesn't exist or connect fails → spawn `uffs-daemon` as detached process | ⬜ TODO |
-| D3.2.3 | Wait for daemon ready: poll socket with backoff (10ms, 20ms, 40ms, ..., max 30s) | ⬜ TODO |
-| D3.2.4 | Daemon identity verification: read PID file → verify exe path (from `CACHE_SECURITY_ANALYSIS.md` §8.3) | ⬜ TODO |
-| D3.2.5 | Platform socket paths: `~/.local/share/uffs/daemon.sock` (Mac), `$XDG_RUNTIME_DIR/uffs/daemon.sock` (Linux), `\\.\pipe\uffs-daemon-{SID}` (Windows) | ⬜ TODO |
-| D3.2.6 | Test: client auto-starts daemon, connects, queries, receives results | ⬜ TODO |
+| D3.2.1 | `UffsClient::connect()` — try socket, auto-start, retry with backoff | ✅ DONE |
+| D3.2.2 | Auto-start: spawn `uffs-daemon` detached (Unix fork, Windows DETACHED_PROCESS) | ✅ DONE |
+| D3.2.3 | Backoff: 50ms → 2s cap, 20 attempts | ✅ DONE |
+| D3.2.4 | Daemon identity verification (PID file + exe path) | ⬜ TODO (S4.3 deferred) |
+| D3.2.5 | Platform socket paths: macOS, Linux (XDG_RUNTIME_DIR), Windows (AF_UNIX) | ✅ DONE |
+| D3.2.6 | Test: client auto-starts daemon | ⬜ TODO (integration test) |
 
 ### Wave D3.3 — Query API
 
 | ID | Task | Status |
 |----|------|--------|
-| D3.3.1 | `client.search(params: SearchParams) -> Result<SearchResponse>` | ⬜ TODO |
-| D3.3.2 | `client.drives() -> Result<DrivesResponse>` | ⬜ TODO |
-| D3.3.3 | `client.status() -> Result<StatusResponse>` | ⬜ TODO |
-| D3.3.4 | `client.info(path: &str) -> Result<InfoResponse>` | ⬜ TODO |
-| D3.3.5 | `client.refresh(drives: Option<Vec<char>>) -> Result<()>` (returns immediately, daemon sends notification when done) | ⬜ TODO |
-| D3.3.6 | `client.shutdown() -> Result<()>` | ⬜ TODO |
-| D3.3.7 | Internal: `send_request()` + `read_response()` with timeout (5s default) | ⬜ TODO |
+| D3.3.1 | `client.search(params)` → `SearchResponse` | ✅ DONE |
+| D3.3.2 | `client.drives()` → `DrivesResponse` | ✅ DONE |
+| D3.3.3 | `client.status()` → `StatusResponse` | ✅ DONE |
+| D3.3.4 | `client.info(path)` → `InfoResponse` | ⬜ TODO (deferred with D2.3.7) |
+| D3.3.5 | `client.refresh(drives)` → `()` | ✅ DONE |
+| D3.3.6 | `client.shutdown()` → `()` | ✅ DONE |
+| D3.3.7 | `send_request()` + `read_response()` with 30s timeout | ✅ DONE |
 
 ### Wave D3.4 — Keepalive & Reconnect
 
 | ID | Task | Status |
 |----|------|--------|
-| D3.4.1 | `client.keepalive()` — send keepalive, reset daemon idle timer | ⬜ TODO |
-| D3.4.2 | Auto-keepalive: background task sends keepalive every 60s for long-lived sessions | ⬜ TODO |
-| D3.4.3 | `client.set_session_type(SessionType::Cli | Tui | Gui | Mcp)` — tells daemon which idle timeout to use | ⬜ TODO |
-| D3.4.4 | Reconnect: on `ConnectionReset` / `BrokenPipe`, auto-restart daemon + reconnect (max 3 attempts) | ⬜ TODO |
-| D3.4.5 | Notification listener: async stream of daemon notifications (drive loaded, refresh complete) | ⬜ TODO |
-| D3.4.6 | Test: kill daemon while client connected → client reconnects transparently | ⬜ TODO |
+| D3.4.1 | `client.keepalive()` | ✅ DONE |
+| D3.4.2 | Auto-keepalive background task | ⬜ TODO (deferred) |
+| D3.4.3 | `client.set_session_type()` | ⬜ TODO (deferred) |
+| D3.4.4 | Auto-reconnect on broken pipe | ⬜ TODO (deferred) |
+| D3.4.5 | Notification listener | ⬜ TODO (deferred) |
+| D3.4.6 | Test: reconnect | ⬜ TODO |
 
 ### Wave D3.5 — Integration Test
 
@@ -314,21 +313,21 @@ on `uffs-daemon`. For now, define in daemon, extract when client is built.
 
 | ID | Task | Status |
 |----|------|--------|
-| D4.1.1 | Create `crates/uffs-mcp/Cargo.toml` (deps: uffs-client, tokio, serde, serde_json, anyhow, tracing) | ⬜ TODO |
-| D4.1.2 | Create `crates/uffs-mcp/src/main.rs` — stdio read loop | ⬜ TODO |
-| D4.1.3 | Add to workspace members | ⬜ TODO |
+| D4.1.1 | Create `crates/uffs-mcp/Cargo.toml` | ✅ DONE |
+| D4.1.2 | Create `crates/uffs-mcp/src/main.rs` — stdio read loop with MCP protocol | ✅ DONE |
+| D4.1.3 | Add to workspace members | ✅ DONE |
 
 ### Wave D4.2 — MCP Protocol
 
 | ID | Task | Status |
 |----|------|--------|
-| D4.2.1 | Handle `initialize` → respond with server info + capabilities | ⬜ TODO |
-| D4.2.2 | Handle `tools/list` → advertise `uffs_search`, `uffs_drives`, `uffs_status`, `uffs_info` | ⬜ TODO |
-| D4.2.3 | Tool `uffs_search`: translate MCP params → `client.search()`, format results as MCP content | ⬜ TODO |
-| D4.2.4 | Tool `uffs_drives`: `client.drives()` → MCP content | ⬜ TODO |
-| D4.2.5 | Tool `uffs_status`: `client.status()` → MCP content | ⬜ TODO |
-| D4.2.6 | Tool `uffs_info`: `client.info(path)` → MCP content (all 25 columns) | ⬜ TODO |
-| D4.2.7 | Rich tool descriptions with parameter schemas and examples (for agent context) | ⬜ TODO |
+| D4.2.1 | Handle `initialize` → server info + capabilities | ✅ DONE |
+| D4.2.2 | Handle `tools/list` → advertise `uffs_search`, `uffs_drives`, `uffs_status` | ✅ DONE |
+| D4.2.3 | Tool `uffs_search`: params → `client.search()` → markdown table | ✅ DONE |
+| D4.2.4 | Tool `uffs_drives`: `client.drives()` → MCP content | ✅ DONE |
+| D4.2.5 | Tool `uffs_status`: `client.status()` → MCP content | ✅ DONE |
+| D4.2.6 | Tool `uffs_info`: `client.info(path)` | ⬜ TODO (deferred with D2.3.7) |
+| D4.2.7 | Rich tool descriptions with JSON Schema input schemas | ✅ DONE |
 
 ### Wave D4.3 — End-to-End Test
 

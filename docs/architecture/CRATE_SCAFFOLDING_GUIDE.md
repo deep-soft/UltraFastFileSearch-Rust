@@ -742,15 +742,15 @@ Day 2 (cleanup):
 | Phase | Name | Tasks | Done | Status |
 |-------|------|-------|------|--------|
 | C1 | uffs-security scaffold | 6 | 6 | ✅ |
-| C2 | uffs-client scaffold | 4 | 0 | ⬜ |
-| C3 | uffs-daemon scaffold | 5 | 0 | ⬜ |
-| C4 | uffs-mcp scaffold | 4 | 0 | ⬜ |
+| C2 | uffs-client scaffold | 4 | 4 | ✅ |
+| C3 | uffs-daemon scaffold | 5 | 5 | ✅ |
+| C4 | uffs-mcp scaffold | 4 | 4 | ✅ |
 | C5 | uffs-broker scaffold | 4 | 0 | ⬜ (deferred) |
 | C6 | Polars re-export cleanup | 8 | 8 | ✅ |
 | C7 | Format function cleanup | 6 | 6 | ✅ |
 | C8 | GUI dep cleanup | 3 | 0 | ⬜ |
 | C9 | Workspace Cargo.toml | 1 | 1 | ✅ (done with C1) |
-| **TOTAL** | | **41** | **21** | |
+| **TOTAL** | | **41** | **34** | |
 
 ### Completion Log
 
@@ -761,6 +761,9 @@ Date        | ID     | Description                         | Commit
 2026-03-26  | C9     | Workspace Cargo.toml (uffs-security) | (pending)
 2026-03-26  | C6     | Polars re-export cleanup (33+2 sites)| (pending)
 2026-03-26  | C7     | format_* moved to uffs-core/format.rs| (pending)
+2026-03-26  | C2     | uffs-client crate + protocol types   | (pending)
+2026-03-26  | C3     | uffs-daemon crate + full D2 impl     | (pending)
+2026-03-26  | C4     | uffs-mcp crate + MCP protocol        | (pending)
 ```
 
 ---

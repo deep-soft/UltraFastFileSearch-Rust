@@ -329,19 +329,19 @@ get encryption automatically — no API changes.
 
 | ID | Task | File | Status |
 |----|------|------|--------|
-| S4.1.1 | Unix: create socket with mode 0600 (`fchmod` after bind) | `crates/uffs-daemon/src/ipc.rs` (future) | ⬜ TODO |
-| S4.1.2 | Unix: create socket dir (`~/.local/share/uffs/`) with mode 0700 | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
-| S4.1.3 | Windows: create named pipe with owner-only DACL | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
-| S4.1.4 | Windows: include user SID in pipe name (`\\.\pipe\uffs-daemon-{SID}`) | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
+| S4.1.1 | Unix: create socket with mode 0600 | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
+| S4.1.2 | Unix: create socket dir with mode 0700 | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
+| S4.1.3 | Windows: AF_UNIX socket (named pipe DACL deferred) | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO (deferred) |
+| S4.1.4 | Windows: user SID in pipe name | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO (deferred) |
 
 ### Wave S4.2 — Peer Credential Verification
 
 | ID | Task | File | Status |
 |----|------|------|--------|
-| S4.2.1 | Linux: verify `SO_PEERCRED` UID matches daemon UID on every accept | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
-| S4.2.2 | macOS: verify `getpeereid()` UID on every accept | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
-| S4.2.3 | Windows: verify `GetNamedPipeClientProcessId()` → same user | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
-| S4.2.4 | Reject connections from different UID/SID with log warning | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
+| S4.2.1 | Linux: verify `getpeereid()` UID matches daemon UID on every accept | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
+| S4.2.2 | macOS: verify `getpeereid()` UID on every accept | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
+| S4.2.3 | Windows: verify client credentials | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO (deferred) |
+| S4.2.4 | Reject connections from different UID with log warning | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
 
 ### Wave S4.3 — Daemon Identity Verification (Client-Side)
 
@@ -360,15 +360,15 @@ get encryption automatically — no API changes.
 
 | ID | Task | File | Status |
 |----|------|------|--------|
-| S4.4.1 | Max message size: 16 MB (reject + disconnect on exceed) | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
-| S4.4.2 | JSON parse with `serde_json::from_slice` in a size-bounded reader | `crates/uffs-daemon/src/handler.rs` (future) | ⬜ TODO |
-| S4.4.3 | Regex compilation timeout: 100ms (use `regex` crate's size limit + `fancy_regex` timeout if needed) | `crates/uffs-daemon/src/handler.rs` | ⬜ TODO |
-| S4.4.4 | Hard cap on `limit` param: 100,000 rows per response | `crates/uffs-daemon/src/handler.rs` | ⬜ TODO |
-| S4.4.5 | Max concurrent connections: 32 | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
-| S4.4.6 | Per-client rate limit: 100 queries/sec; global: 500/sec | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
-| S4.4.7 | Read timeout: 30 seconds per message | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
-| S4.4.8 | Idle connection timeout: 5 minutes (no keepalive) | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO |
-| S4.4.9 | `shutdown` method: require nonce from PID file or disable entirely (SIGTERM only) | `crates/uffs-daemon/src/handler.rs` | ⬜ TODO |
+| S4.4.1 | Max message size: 16 MB (reject + disconnect) | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
+| S4.4.2 | JSON parse with size-bounded reader | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE (line length check) |
+| S4.4.3 | Max pattern length: 4096 chars | `crates/uffs-daemon/src/handler.rs` | ✅ DONE |
+| S4.4.4 | Hard cap on `limit` param: 100,000 rows | `crates/uffs-daemon/src/handler.rs` | ✅ DONE |
+| S4.4.5 | Max concurrent connections: 32 | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
+| S4.4.6 | Per-client rate limit | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO (deferred) |
+| S4.4.7 | Read timeout: 30 seconds per message | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
+| S4.4.8 | Idle connection timeout: 5 minutes | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO (deferred) |
+| S4.4.9 | `shutdown` nonce requirement | `crates/uffs-daemon/src/handler.rs` | ⬜ TODO (deferred) |
 
 ---
 
@@ -416,7 +416,7 @@ get encryption automatically — no API changes.
 | **S1** Secure Foundation | 🟢 DONE | 2026-03-26 | 2026-03-26 | S1.2.6 Windows DACL deferred |
 | **S2** Encryption at Rest | 🟢 DONE | 2026-03-26 | 2026-03-26 | S2.5 benchmarks deferred; DPAPI/dbus deferred |
 | **S3** Secure Lifecycle | 🟢 DONE | 2026-03-26 | 2026-03-26 | |
-| **S4** Daemon IPC | ⬜ NOT STARTED | — | — | Depends on daemon |
+| **S4** Daemon IPC | 🟡 PARTIAL | 2026-03-26 | — | S4.1-2 done, S4.3 deferred, S4.4 partial |
 | **S5** Access Broker | ⬜ NOT STARTED | — | — | Depends on broker |
 | **S6** Network Transport | ⬜ NOT STARTED | — | — | Depends on HTTP |
 
@@ -434,13 +434,13 @@ get encryption automatically — no API changes.
 | S2.5 Perf Validation | 6 | 0 | 6 | ⬜ (deferred) |
 | S3.1 Secure Wipe | 5 | 5 | 0 | ✅ |
 | S3.2 File Locking | 5 | 5 | 0 | ✅ |
-| S4.1 Socket/Pipe Perms | 4 | 0 | 4 | ⬜ |
-| S4.2 Peer Credentials | 4 | 0 | 4 | ⬜ |
-| S4.3 Daemon Identity | 8 | 0 | 8 | ⬜ |
-| S4.4 Input Validation | 9 | 0 | 9 | ⬜ |
+| S4.1 Socket/Pipe Perms | 4 | 2 | 2 | 🟡 (Unix done, Windows DACL deferred) |
+| S4.2 Peer Credentials | 4 | 2 | 2 | 🟡 (Unix getpeereid done, Windows deferred) |
+| S4.3 Daemon Identity | 8 | 0 | 8 | ⬜ (deferred) |
+| S4.4 Input Validation | 9 | 5 | 4 | 🟡 (msg size, connections, timeout, pattern len, limit cap done) |
 | S5 Broker Hardening | 5 | 0 | 5 | ⬜ |
 | S6 Network Transport | 8 | 0 | 8 | ⬜ |
-| **TOTAL** | **97** | **58** | **39** | |
+| **TOTAL** | **97** | **67** | **30** | |
 
 ### Completion Log
 
