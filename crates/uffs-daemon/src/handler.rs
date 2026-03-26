@@ -3,10 +3,15 @@
 use std::sync::Arc;
 
 use uffs_client::protocol::{
-    ERR_BAD_PATTERN, ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, ERR_NOT_READY,
-    InfoParams, InfoResponse, KeepaliveParams, RefreshParams, RpcErrorResponse, RpcRequest,
+    ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RefreshParams, RpcErrorResponse, RpcRequest,
     RpcResponse, SearchParams,
 };
+
+/// Hard cap on search results per response (S4.4.4).
+const MAX_RESULT_LIMIT: u32 = 100_000;
+
+/// Maximum pattern length to prevent regex DoS (S4.4.3).
+const MAX_PATTERN_LENGTH: usize = 4096;
 
 use crate::index::IndexManager;
 use crate::lifecycle::LifecycleHandle;
@@ -58,7 +63,25 @@ async fn handle_search(id: u64, req: &RpcRequest, index: &Arc<IndexManager>) -> 
         }
     };
 
-    let response = index.search(&params).await;
+    // S4.4.3: Reject overly long patterns (regex DoS prevention)
+    if params.pattern.len() > MAX_PATTERN_LENGTH {
+        return serde_json::to_string(&RpcErrorResponse::error(
+            Some(id),
+            ERR_INVALID_PARAMS,
+            &format!("Pattern too long ({} chars, max {MAX_PATTERN_LENGTH})", params.pattern.len()),
+        ))
+        .unwrap_or_default();
+    }
+
+    // S4.4.4: Cap the limit to MAX_RESULT_LIMIT
+    let mut capped_params = params;
+    if let Some(limit) = capped_params.limit {
+        if limit > MAX_RESULT_LIMIT {
+            capped_params.limit = Some(MAX_RESULT_LIMIT);
+        }
+    }
+
+    let response = index.search(&capped_params).await;
     let result = serde_json::to_value(&response).unwrap_or_default();
     serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
 }

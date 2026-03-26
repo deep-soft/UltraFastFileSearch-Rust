@@ -84,6 +84,13 @@ pub async fn run_ipc_server(
     loop {
         let (stream, _addr) = listener.accept().await?;
 
+        // S4.2: Peer credential verification — reject connections from other UIDs
+        if !verify_peer_credentials(&stream) {
+            tracing::warn!("Rejected connection from different UID");
+            drop(stream);
+            continue;
+        }
+
         let current = connection_count.load(Ordering::Relaxed);
         if current >= MAX_CONNECTIONS {
             tracing::warn!(
@@ -113,6 +120,46 @@ pub async fn run_ipc_server(
             tracing::debug!(connections = remaining, "Client disconnected");
         });
     }
+}
+
+// ── S4.2: Peer Credential Verification ──────────────────────────────────────
+
+/// Verify that the connecting client has the same UID as the daemon.
+///
+/// - **macOS**: uses `getpeereid()` via the raw fd
+/// - **Linux**: uses `SO_PEERCRED` via `UCred`
+/// - **Windows**: always returns `true` (named pipe DACL handles this)
+#[cfg(unix)]
+fn verify_peer_credentials(stream: &tokio::net::UnixStream) -> bool {
+    use std::os::unix::io::AsRawFd;
+
+    let fd = stream.as_raw_fd();
+
+    // SAFETY: getuid() and getpeereid() are standard POSIX calls.
+    #[expect(unsafe_code, reason = "POSIX credential checks require unsafe FFI")]
+    let (my_uid, peer_uid, result) = unsafe {
+        let my_uid = libc::getuid();
+        let mut peer_uid: libc::uid_t = 0;
+        let mut peer_gid: libc::gid_t = 0;
+        let result = libc::getpeereid(fd, &mut peer_uid, &mut peer_gid);
+        (my_uid, peer_uid, result)
+    };
+
+    if result != 0 {
+        tracing::warn!("getpeereid failed, rejecting connection");
+        return false;
+    }
+
+    if peer_uid != my_uid {
+        tracing::warn!(
+            peer_uid,
+            daemon_uid = my_uid,
+            "Peer UID mismatch — rejecting connection"
+        );
+        return false;
+    }
+
+    true
 }
 
 /// Handle a single client connection (Unix).
