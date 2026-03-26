@@ -223,7 +223,10 @@ fn dpapi_protect(data: &[u8]) -> io::Result<Vec<u8>> {
     // Copy output blob to Vec and free the Windows-allocated memory.
     // SAFETY: output_blob.pbData was populated by CryptProtectData and must
     // be freed with LocalFree. We copy the data first, then free.
-    #[expect(unsafe_code, reason = "reading Win32-allocated output and calling LocalFree")]
+    #[expect(
+        unsafe_code,
+        reason = "reading Win32-allocated output and calling LocalFree"
+    )]
     let result = unsafe {
         let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize);
         let vec = slice.to_vec();
@@ -279,7 +282,10 @@ fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
 
     // SAFETY: output_blob.pbData was populated by CryptUnprotectData and must
     // be freed with LocalFree. We copy the data first, then free.
-    #[expect(unsafe_code, reason = "reading Win32-allocated output and calling LocalFree")]
+    #[expect(
+        unsafe_code,
+        reason = "reading Win32-allocated output and calling LocalFree"
+    )]
     let result = unsafe {
         let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize);
         let vec = slice.to_vec();

@@ -6,8 +6,9 @@
 # and prevents issues caused by switching between stable/nightly toolchains
 
 [toolchain]
-# Use latest nightly - Polars main branch requires recent nightly for SIMD support
-channel = "nightly"
+# Pinned nightly — 2026-03-25 nightly made core::unicode::{Case_Ignorable, Cased}
+# private, breaking polars-ops string case.rs. Pin until Polars upstream fixes it.
+channel = "nightly-2026-03-24"
 
 # Specify components that should always be available
 components = [

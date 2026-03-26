@@ -111,7 +111,7 @@ impl IpcServer {
 
     /// Windows: peer credential verification via ACL (handled at socket level).
     #[cfg(windows)]
-    fn verify_peer_credentials(_stream: &tokio::net::UnixStream) -> bool {
+    fn verify_peer_credentials_win() -> bool {
         true
     }
 
@@ -126,10 +126,10 @@ impl IpcServer {
         reason = "connection handler — structural separation"
     )]
     async fn handle_connection(
-        stream: tokio::net::UnixStream,
+        reader: impl tokio::io::AsyncRead + Unpin,
+        mut writer: impl tokio::io::AsyncWrite + Unpin,
         handler: &RequestHandler,
     ) -> anyhow::Result<()> {
-        let (reader, mut writer) = stream.into_split();
         let mut buf_reader = BufReader::new(reader);
         let mut line = String::new();
 
@@ -277,11 +277,12 @@ pub async fn run_ipc_server(
         let handler_clone = Arc::clone(&handler);
         let lc_clone = lifecycle.clone();
 
+        let (read_half, write_half) = stream.into_split();
         tokio::spawn(async move {
             let total_conns = lc_clone.active_connections();
             tracing::debug!(connections = total_conns, "Client connected");
 
-            if let Err(conn_err) = IpcServer::handle_connection(stream, &handler_clone).await {
+            if let Err(conn_err) = IpcServer::handle_connection(read_half, write_half, &handler_clone).await {
                 tracing::debug!(error = %conn_err, "Connection ended");
             }
 
@@ -311,7 +312,6 @@ pub async fn run_ipc_server(
         std::fs::remove_file(&sock_path)?;
     }
 
-    let listener = tokio::net::UnixListener::bind(&sock_path)?;
     uffs_security::fs::set_file_permissions_owner_only(&sock_path)?;
 
     tracing::info!(path = %sock_path.display(), "IPC server listening (Windows AF_UNIX)");
@@ -321,21 +321,79 @@ pub async fn run_ipc_server(
         lifecycle: lifecycle.clone(),
     });
 
-    loop {
-        let (stream, _addr) = listener.accept().await?;
+    // Windows: use std blocking UnixListener in a spawn_blocking loop,
+    // bridge each connection via tokio::io::duplex.
+    use std::os::windows::net::UnixListener as StdUnixListener;
+    let std_listener = StdUnixListener::bind(&sock_path)?;
 
-        if !IpcServer::verify_peer_credentials(&stream) {
+    loop {
+        // Blocking accept in spawn_blocking
+        let accept_listener = std_listener.try_clone()?;
+        let accept_result = tokio::task::spawn_blocking(move || accept_listener.accept()).await?;
+
+        let (std_stream, _addr) = accept_result?;
+        std_stream.set_read_timeout(Some(core::time::Duration::from_secs(IDLE_CONNECTION_SECS)))?;
+
+        if !IpcServer::verify_peer_credentials_win() {
             tracing::warn!("Rejected connection");
-            drop(stream);
             continue;
         }
 
         let active = lifecycle.active_connections();
         if active >= MAX_CONNECTIONS {
             tracing::warn!(active, max = MAX_CONNECTIONS, "Max connections reached");
-            drop(stream);
             continue;
         }
+
+        // Bridge std blocking socket to async duplex channels
+        let std_read = std_stream.try_clone()?;
+        let std_write = std_stream;
+
+        let (async_read, mut bridge_write) = tokio::io::duplex(65536);
+        let (mut bridge_read, async_write) = tokio::io::duplex(65536);
+
+        // Background thread: std socket → async reader
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut reader = std::io::BufReader::new(std_read);
+            let mut buf = [0_u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        use tokio::io::AsyncWriteExt;
+                        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                            let bytes = buf[..n].to_vec();
+                            let _ = handle.block_on(async { bridge_write.write_all(&bytes).await });
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        // Background thread: async writer → std socket
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut writer = std_write;
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.block_on(async {
+                    use tokio::io::AsyncReadExt;
+                    let mut buf = [0_u8; 8192];
+                    loop {
+                        match bridge_read.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if writer.write_all(&buf[..n]).is_err() || writer.flush().is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
 
         lifecycle.connection_opened();
         let handler_clone = Arc::clone(&handler);
@@ -345,7 +403,7 @@ pub async fn run_ipc_server(
             let total_conns = lc_clone.active_connections();
             tracing::debug!(connections = total_conns, "Client connected");
 
-            if let Err(conn_err) = IpcServer::handle_connection(stream, &handler_clone).await {
+            if let Err(conn_err) = IpcServer::handle_connection(async_read, async_write, &handler_clone).await {
                 tracing::debug!(error = %conn_err, "Connection ended");
             }
 

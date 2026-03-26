@@ -31,7 +31,7 @@ pub fn broker_available() -> bool {
     let attrs = unsafe { GetFileAttributesW(PCWSTR(wide.as_ptr())) };
 
     // If not INVALID_FILE_ATTRIBUTES, the pipe exists
-    attrs.0 != u32::MAX
+    attrs != u32::MAX
 }
 
 /// Request a volume handle from the broker for a drive letter.

@@ -88,6 +88,7 @@ impl UffsClient {
             }
             #[cfg(windows)]
             {
+                use std::os::windows::process::CommandExt;
                 std::process::Command::new(&daemon_exe)
                     .creation_flags(0x0000_0008) // DETACHED_PROCESS
                     .stdout(std::process::Stdio::null())
@@ -433,9 +434,7 @@ impl UffsClient {
                         let rt = tokio::runtime::Handle::try_current();
                         if let Ok(handle) = rt {
                             let bytes = buf[..n].to_vec();
-                            let _ = handle.block_on(async {
-                                bridge_write.write_all(&bytes).await
-                            });
+                            let _ = handle.block_on(async { bridge_write.write_all(&bytes).await });
                         } else {
                             break;
                         }
@@ -531,6 +530,14 @@ fn verify_daemon_after_connect() {
 /// platform-appropriate `std::os::*::net::UnixStream` which compiles on
 /// both Unix and Windows (unlike `tokio::net::UnixStream` which is
 /// `cfg(unix)` only).
+///
+/// Best-effort: write errors are intentionally ignored because a failed
+/// keepalive simply means the connection timed out.
+///
+/// Kept as a standalone function (rather than inlined) for clarity: it is the
+/// blocking closure body passed to `spawn_blocking` and contains platform-
+/// specific `#[cfg]` blocks that would clutter the caller.
+#[allow(clippy::single_call_fn)] // extracted for readability with multi-cfg blocks
 fn keepalive_send_blocking(sock_path: &std::path::Path) {
     #[cfg(unix)]
     {
@@ -538,9 +545,9 @@ fn keepalive_send_blocking(sock_path: &std::path::Path) {
         use std::os::unix::net::UnixStream;
         if let Ok(mut stream) = UnixStream::connect(sock_path) {
             let msg = r#"{"jsonrpc":"2.0","id":0,"method":"keepalive"}"#;
-            let _ = stream.write_all(msg.as_bytes());
-            let _ = stream.write_all(b"\n");
-            let _ = stream.flush();
+            drop(stream.write_all(msg.as_bytes()));
+            drop(stream.write_all(b"\n"));
+            drop(stream.flush());
         }
     }
     #[cfg(windows)]
@@ -549,9 +556,9 @@ fn keepalive_send_blocking(sock_path: &std::path::Path) {
         use std::os::windows::net::UnixStream;
         if let Ok(mut stream) = UnixStream::connect(sock_path) {
             let msg = r#"{"jsonrpc":"2.0","id":0,"method":"keepalive"}"#;
-            let _ = stream.write_all(msg.as_bytes());
-            let _ = stream.write_all(b"\n");
-            let _ = stream.flush();
+            drop(stream.write_all(msg.as_bytes()));
+            drop(stream.write_all(b"\n"));
+            drop(stream.flush());
         }
     }
 }

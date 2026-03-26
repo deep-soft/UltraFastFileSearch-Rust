@@ -11,6 +11,9 @@
 //! uffs-daemon --log-level debug        # verbose logging
 //! ```
 
+// Enable unstable Windows Unix domain socket support (Windows 10 1803+).
+#![cfg_attr(windows, feature(windows_unix_domain_sockets))]
+
 extern crate alloc;
 
 use alloc::sync::Arc;

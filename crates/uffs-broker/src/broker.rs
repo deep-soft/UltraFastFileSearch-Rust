@@ -233,14 +233,14 @@ fn get_client_exe_path(pid: u32) -> Option<String> {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = vec![0u16; 4096];
         let mut size = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(
+        let result = QueryFullProcessImageNameW(
             handle,
             PROCESS_NAME_FORMAT(0),
             windows::core::PWSTR(buf.as_mut_ptr()),
             &mut size,
         );
         let _ = CloseHandle(handle);
-        if !ok.as_bool() || size == 0 {
+        if result.is_err() || size == 0 {
             return None;
         }
         Some(String::from_utf16_lossy(&buf[..size as usize]))
@@ -313,9 +313,11 @@ fn create_broker_pipe() -> anyhow::Result<windows::Win32::Foundation::HANDLE> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows::Win32::Storage::FileSystem::{
-        CreateNamedPipeW, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
+        FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
     };
-    use windows::Win32::System::Pipes::{PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT};
+    use windows::Win32::System::Pipes::{
+        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
     use windows::core::PCWSTR;
 
     let pipe_name: Vec<u16> = std::ffi::OsStr::new(BROKER_PIPE_NAME)
@@ -353,14 +355,13 @@ fn wait_for_client(pipe: &windows::Win32::Foundation::HANDLE) -> anyhow::Result<
     use windows::Win32::System::Pipes::ConnectNamedPipe;
 
     #[expect(unsafe_code, reason = "ConnectNamedPipe requires unsafe FFI")]
-    let ok = unsafe { ConnectNamedPipe(*pipe, None) };
+    let result = unsafe { ConnectNamedPipe(*pipe, None) };
 
-    if !ok.as_bool() {
-        let err = std::io::Error::last_os_error();
+    if let Err(win_err) = result {
         // ERROR_PIPE_CONNECTED (535) means client connected before we called
-        // ConnectNamedPipe
-        if err.raw_os_error() != Some(535) {
-            anyhow::bail!("ConnectNamedPipe failed: {err}");
+        // ConnectNamedPipe — that's OK
+        if win_err.code().0 as u32 != 535 {
+            anyhow::bail!("ConnectNamedPipe failed: {win_err}");
         }
     }
     Ok(())
@@ -395,9 +396,9 @@ fn get_pipe_client_pid(pipe: &windows::Win32::Foundation::HANDLE) -> Option<u32>
         unsafe_code,
         reason = "GetNamedPipeClientProcessId requires unsafe FFI"
     )]
-    let ok = unsafe { GetNamedPipeClientProcessId(*pipe, &mut pid) };
+    let result = unsafe { GetNamedPipeClientProcessId(*pipe, &mut pid) };
 
-    if ok.as_bool() && pid != 0 {
+    if result.is_ok() && pid != 0 {
         Some(pid)
     } else {
         None
@@ -415,11 +416,13 @@ fn verify_client(pid: u32) -> bool {
 
     #[expect(unsafe_code, reason = "Win32 process query requires unsafe FFI")]
     let exe_name = unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
 
         let mut buf = vec![0u16; 4096];
         let mut size = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(
+        let result = QueryFullProcessImageNameW(
             handle,
             PROCESS_NAME_FORMAT(0),
             windows::core::PWSTR(buf.as_mut_ptr()),
@@ -427,7 +430,7 @@ fn verify_client(pid: u32) -> bool {
         );
         let _ = CloseHandle(handle);
 
-        if !ok.as_bool() || size == 0 {
+        if result.is_err() || size == 0 {
             return false;
         }
         String::from_utf16_lossy(&buf[..size as usize])
@@ -514,7 +517,7 @@ fn handle_pipe_request_inner(
         let _ = CloseHandle(volume_handle);
         let _ = CloseHandle(client_process);
 
-        if !dup_ok.as_bool() {
+        if dup_ok.is_err() {
             write_pipe(pipe, &[1u8; 1])?;
             anyhow::bail!("DuplicateHandle failed");
         }
@@ -545,10 +548,10 @@ fn read_pipe(pipe: &windows::Win32::Foundation::HANDLE, buf: &mut [u8]) -> anyho
     let mut bytes_read = 0u32;
 
     #[expect(unsafe_code, reason = "ReadFile requires unsafe FFI")]
-    let ok = unsafe { ReadFile(*pipe, Some(buf), Some(&mut bytes_read), None) };
+    let result = unsafe { ReadFile(*pipe, Some(buf), Some(&mut bytes_read), None) };
 
-    if !ok.as_bool() {
-        anyhow::bail!("ReadFile failed: {}", std::io::Error::last_os_error());
+    if let Err(win_err) = result {
+        anyhow::bail!("ReadFile failed: {win_err}");
     }
     if (bytes_read as usize) < buf.len() {
         anyhow::bail!("Short read: got {bytes_read}, expected {}", buf.len());
@@ -564,10 +567,10 @@ fn write_pipe(pipe: &windows::Win32::Foundation::HANDLE, buf: &[u8]) -> anyhow::
     let mut bytes_written = 0u32;
 
     #[expect(unsafe_code, reason = "WriteFile requires unsafe FFI")]
-    let ok = unsafe { WriteFile(*pipe, Some(buf), Some(&mut bytes_written), None) };
+    let result = unsafe { WriteFile(*pipe, Some(buf), Some(&mut bytes_written), None) };
 
-    if !ok.as_bool() {
-        anyhow::bail!("WriteFile failed: {}", std::io::Error::last_os_error());
+    if let Err(win_err) = result {
+        anyhow::bail!("WriteFile failed: {win_err}");
     }
     Ok(())
 }
@@ -585,20 +588,20 @@ fn is_elevated() -> bool {
     #[expect(unsafe_code, reason = "Win32 token query requires unsafe FFI")]
     unsafe {
         let mut token = HANDLE::default();
-        if !OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).as_bool() {
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
             return false;
         }
         let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
         let mut size = 0u32;
-        let ok = GetTokenInformation(
+        let result = GetTokenInformation(
             token,
             TokenElevation,
             Some(&mut elevation as *mut TOKEN_ELEVATION as *mut _),
-            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            size_of::<TOKEN_ELEVATION>() as u32,
             &mut size,
         );
         let _ = windows::Win32::Foundation::CloseHandle(token);
-        ok.as_bool() && elevation.TokenIsElevated != 0
+        result.is_ok() && elevation.TokenIsElevated != 0
     }
 }
 

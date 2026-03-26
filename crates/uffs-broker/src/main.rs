@@ -17,6 +17,7 @@
 
 // Deps used by broker.rs on Windows only — suppress unused-crate warnings
 use anyhow as _;
+use tracing_subscriber as _;
 use uffs_security as _;
 
 mod broker;

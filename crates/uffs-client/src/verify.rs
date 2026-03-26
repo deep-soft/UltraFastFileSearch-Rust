@@ -190,7 +190,7 @@ fn get_process_exe_path(pid: u32) -> Option<PathBuf> {
         let mut buf = vec![0u16; 4096];
         let mut size = buf.len() as u32;
 
-        let ok = QueryFullProcessImageNameW(
+        let result = QueryFullProcessImageNameW(
             handle,
             PROCESS_NAME_FORMAT(0), // Win32 path format
             windows::core::PWSTR(buf.as_mut_ptr()),
@@ -199,7 +199,7 @@ fn get_process_exe_path(pid: u32) -> Option<PathBuf> {
 
         let _ = CloseHandle(handle);
 
-        if !ok.as_bool() || size == 0 {
+        if result.is_err() || size == 0 {
             return None;
         }
 
