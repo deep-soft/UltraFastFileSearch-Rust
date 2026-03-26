@@ -170,7 +170,8 @@ fn verify_peer_credentials(stream: &tokio::net::UnixStream) -> bool {
 
 /// Windows IPC server — uses Unix domain sockets (Windows 10 1803+).
 ///
-/// Native named pipe support can be added later for older Windows versions.
+/// Mirrors the Unix version: secure dir (icacls owner-only ACL), socket
+/// file permissions, max connections, peer verification via ACL.
 #[cfg(windows)]
 pub async fn run_ipc_server(
     index: Arc<IndexManager>,
@@ -178,15 +179,20 @@ pub async fn run_ipc_server(
 ) -> anyhow::Result<()> {
     let sock_path = socket_path();
 
+    // Ensure parent directory exists with owner-only ACL (icacls)
     if let Some(parent) = sock_path.parent() {
         uffs_security::fs::create_secure_dir(parent)?;
     }
 
+    // Remove stale socket file
     if sock_path.exists() {
         std::fs::remove_file(&sock_path)?;
     }
 
     let listener = tokio::net::UnixListener::bind(&sock_path)?;
+
+    // Set socket file permissions to owner-only (icacls ACL)
+    uffs_security::fs::set_file_permissions_owner_only(&sock_path)?;
 
     tracing::info!(path = %sock_path.display(), "IPC server listening (Windows AF_UNIX)");
 
@@ -194,6 +200,14 @@ pub async fn run_ipc_server(
 
     loop {
         let (stream, _addr) = listener.accept().await?;
+
+        // Peer verification: on Windows, the socket dir's owner-only ACL
+        // prevents other users from connecting (OS-enforced).
+        if !verify_peer_credentials(&stream) {
+            tracing::warn!("Rejected connection");
+            drop(stream);
+            continue;
+        }
 
         let current = connection_count.load(Ordering::Relaxed);
         if current >= MAX_CONNECTIONS {
@@ -208,10 +222,16 @@ pub async fn run_ipc_server(
         let conn_count = Arc::clone(&connection_count);
 
         tokio::spawn(async move {
+            let total = conn_count.load(Ordering::Relaxed);
+            tracing::debug!(connections = total, "Client connected");
+
             if let Err(e) = handle_connection(stream, &index, &lifecycle, &conn_count).await {
                 tracing::debug!(error = %e, "Connection ended");
             }
+
             conn_count.fetch_sub(1, Ordering::Relaxed);
+            let remaining = conn_count.load(Ordering::Relaxed);
+            tracing::debug!(connections = remaining, "Client disconnected");
         });
     }
 }
