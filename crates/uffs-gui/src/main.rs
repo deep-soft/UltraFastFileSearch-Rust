@@ -1,124 +1,16 @@
 //! UFFS (Ultra Fast File Search) GUI
 //!
 //! Native graphical user interface for file search.
-//!
-//! This is a placeholder for future GUI implementation.
-//! Planned technologies: egui or Tauri
-//!
-//! ## Logging
-//!
-//! Use `-v` / `--verbose` for info-level terminal output:
-//! ```bash
-//! uffs_gui -v
-//! ```
-//!
-//! For finer control, use environment variables:
-//! - `RUST_LOG`: Terminal log level (default: `error`, or `info` with `-v`)
-//! - `RUST_LOG_FILE`: File log level (default: `info`)
-//! - `UFFS_LOG_DIR`: Log directory (default: `~/bin/uffs/logs`)
+//! This is a placeholder — the GUI will use `uffs-client` to communicate
+//! with the daemon when implemented.
 
-#![expect(
-    unused_crate_dependencies,
-    reason = "uffs-core, uffs-mft, uffs-polars, tokio, and anyhow are declared for future GUI implementation"
-)]
-
-use std::path::PathBuf;
-use std::{fs, io};
-
-use clap::Parser;
-use tracing::info;
-use tracing_appender::non_blocking::NonBlocking;
-use tracing_appender::rolling::{RollingFileAppender, Rotation};
-use tracing_subscriber::fmt::time::UtcTime;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::registry::Registry;
-use tracing_subscriber::{EnvFilter, Layer};
-
-/// UFFS (Ultra Fast File Search) GUI
-#[derive(Parser)]
-#[command(name = "uffs_gui")]
-#[command(author, version, about, long_about = None)]
-struct Cli {
-    /// Enable verbose output
-    #[arg(short, long, global = true)]
-    verbose: bool,
-}
-
-/// Initialize logging with terminal + file support.
-///
-/// If `verbose` is true and `RUST_LOG` is not set, uses `info` level for
-/// terminal. Otherwise, terminal logging is controlled by `RUST_LOG` (default:
-/// `error`). File logging is controlled by `RUST_LOG_FILE` (default: `info`).
-#[expect(
-    clippy::single_call_fn,
-    reason = "logging setup is logically separate from main"
-)]
-fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
-    // Get log directory (default: ~/bin/uffs/logs)
-    let log_dir = std::env::var("UFFS_LOG_DIR").map_or_else(
-        |_| {
-            dirs_next::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("bin")
-                .join("uffs")
-                .join("logs")
-        },
-        PathBuf::from,
-    );
-
-    // Create log directory if it doesn't exist
-    drop(fs::create_dir_all(&log_dir));
-
-    // Create rolling file appender (daily rotation)
-    let file_appender = RollingFileAppender::new(Rotation::DAILY, &log_dir, "uffs_gui_log_");
-    let (non_blocking, guard): (NonBlocking, _) = NonBlocking::new(file_appender);
-
-    // Terminal filter: -v sets info if RUST_LOG not explicitly set
-    let terminal_default = if verbose { "info" } else { "error" };
-    let terminal_filter =
-        EnvFilter::new(std::env::var("RUST_LOG").unwrap_or_else(|_| terminal_default.to_owned()));
-
-    // File filter (default: info)
-    let file_filter =
-        EnvFilter::new(std::env::var("RUST_LOG_FILE").unwrap_or_else(|_| "info".to_owned()));
-
-    // Timer format
-    let timer = UtcTime::rfc_3339();
-
-    // Terminal layer (to stderr, with ANSI colors, file/line info, thread IDs)
-    let terminal_layer = tracing_subscriber::fmt::layer()
-        .with_writer(io::stderr)
-        .with_timer(timer.clone())
-        .with_ansi(true)
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_ids(true)
-        .with_target(true)
-        .with_filter(terminal_filter);
-
-    // File layer (no ANSI colors, but with full context)
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(non_blocking)
-        .with_timer(timer)
-        .with_ansi(false)
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_ids(true)
-        .with_target(true)
-        .with_filter(file_filter);
-
-    // Combine layers
-    let subscriber = Registry::default().with(terminal_layer).with(file_layer);
-
-    #[expect(
-        clippy::expect_used,
-        reason = "panic is correct if global subscriber setup fails"
-    )]
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set global tracing subscriber");
-
-    guard
-}
+// Suppress unused crate warnings for deps reserved for future GUI implementation
+use anyhow as _;
+use clap as _;
+use tokio as _;
+use tracing as _;
+use tracing_subscriber as _;
+use uffs_client as _;
 
 /// Entry point: prints a placeholder banner and exits.
 #[expect(
@@ -126,16 +18,6 @@ fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
     reason = "placeholder banner intentionally prints to stderr"
 )]
 fn main() -> std::process::ExitCode {
-    // Check for -v/--verbose flag early
-    let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
-
-    // Initialize logging with terminal + file support
-    let _guard = init_logging(verbose);
-
-    let _cli = Cli::parse();
-
-    info!("UFFS GUI starting (placeholder)");
-
     eprintln!("╔══════════════════════════════════════════════════════════════╗");
     eprintln!("║       UFFS (Ultra Fast File Search) GUI - Coming Soon!       ║");
     eprintln!("╠══════════════════════════════════════════════════════════════╣");
@@ -145,13 +27,7 @@ fn main() -> std::process::ExitCode {
     eprintln!("║  In the meantime, please use:                                ║");
     eprintln!("║    • uffs      - Command-line interface                      ║");
     eprintln!("║    • uffs_tui  - Terminal user interface                     ║");
-    eprintln!("║                                                              ║");
-    eprintln!("║  Planned features:                                           ║");
-    eprintln!("║    • Native Windows/macOS/Linux GUI                          ║");
-    eprintln!("║    • Real-time search with instant results                   ║");
-    eprintln!("║    • File preview and quick actions                          ║");
-    eprintln!("║    • Customizable themes                                     ║");
-    eprintln!("║    • System tray integration                                 ║");
+    eprintln!("║    • uffs-mcp  - MCP adapter for AI agents                  ║");
     eprintln!("║                                                              ║");
     eprintln!("╚══════════════════════════════════════════════════════════════╝");
 

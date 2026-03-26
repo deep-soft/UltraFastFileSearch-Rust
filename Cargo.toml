@@ -28,6 +28,7 @@ members = [
     "crates/uffs-daemon",   # 🛡️ Background service process
     "crates/uffs-client",   # 📡 Thin client library
     "crates/uffs-mcp",      # 🤖 MCP stdio adapter for AI agents
+    "crates/uffs-broker",   # 🔑 Windows elevated handle broker (optional)
     # ── Surfaces ──
     "crates/uffs-cli",      # 🖥️  Command-line interface
     "crates/uffs-tui",      # 📟 Terminal UI

@@ -1,0 +1,37 @@
+# ============================================================================
+# uffs-broker: Windows Access Broker
+# ============================================================================
+# Tiny Windows service that provides elevated MFT handles to the daemon.
+# The daemon runs as a normal user; the broker runs elevated and hands
+# out read-only volume handles on request.
+# ============================================================================
+
+[package]
+name = "uffs-broker"
+description = "UFFS Access Broker — Windows service for elevated MFT handle brokering"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "uffs-broker"
+path = "src/main.rs"
+
+[dependencies]
+# Internal
+uffs-security.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[lints]
+workspace = true

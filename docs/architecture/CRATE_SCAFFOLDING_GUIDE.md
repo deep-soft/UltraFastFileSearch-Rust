@@ -431,10 +431,10 @@ workspace = true
 
 | ID | Task | Status |
 |----|------|--------|
-| C5.1 | Create `crates/uffs-broker/Cargo.toml` | ⬜ TODO |
-| C5.2 | Create `crates/uffs-broker/src/main.rs` with placeholder | ⬜ TODO |
-| C5.3 | Add to workspace members | ⬜ TODO |
-| C5.4 | Verify: `cargo check --workspace` passes | ⬜ TODO |
+| C5.1 | Create `crates/uffs-broker/Cargo.toml` | ✅ DONE |
+| C5.2 | Create `crates/uffs-broker/src/main.rs` with placeholder | ✅ DONE |
+| C5.3 | Add to workspace members | ✅ DONE |
+| C5.4 | Verify: `cargo check --workspace` passes | ✅ DONE |
 
 #### `crates/uffs-broker/Cargo.toml`
 
@@ -549,9 +549,9 @@ the new location.
 
 | ID | Task | Status |
 |----|------|--------|
-| C8.1 | Replace `uffs-polars`, `uffs-mft`, `uffs-core` deps with `uffs-client` in `uffs-gui/Cargo.toml` | ⬜ TODO |
-| C8.2 | Update `uffs-gui/src/main.rs` placeholder to reference `uffs-client` | ⬜ TODO |
-| C8.3 | Verify: `cargo check --workspace` passes | ⬜ TODO |
+| C8.1 | Replace `uffs-polars`, `uffs-mft`, `uffs-core` deps with `uffs-client` in `uffs-gui/Cargo.toml` | ✅ DONE |
+| C8.2 | Update `uffs-gui/src/main.rs` — simplified placeholder referencing uffs-client | ✅ DONE |
+| C8.3 | Verify: `cargo check --workspace` passes | ✅ DONE |
 
 #### Target `uffs-gui/Cargo.toml` dependencies section
 
@@ -745,12 +745,12 @@ Day 2 (cleanup):
 | C2 | uffs-client scaffold | 4 | 4 | ✅ |
 | C3 | uffs-daemon scaffold | 5 | 5 | ✅ |
 | C4 | uffs-mcp scaffold | 4 | 4 | ✅ |
-| C5 | uffs-broker scaffold | 4 | 0 | ⬜ (deferred) |
+| C5 | uffs-broker scaffold | 4 | 4 | ✅ |
 | C6 | Polars re-export cleanup | 8 | 8 | ✅ |
 | C7 | Format function cleanup | 6 | 6 | ✅ |
-| C8 | GUI dep cleanup | 3 | 0 | ⬜ |
+| C8 | GUI dep cleanup | 3 | 3 | ✅ |
 | C9 | Workspace Cargo.toml | 1 | 1 | ✅ (done with C1) |
-| **TOTAL** | | **41** | **34** | |
+| **TOTAL** | | **41** | **41** | 🎉 ALL DONE |
 
 ### Completion Log
 
@@ -764,6 +764,8 @@ Date        | ID     | Description                         | Commit
 2026-03-26  | C2     | uffs-client crate + protocol types   | (pending)
 2026-03-26  | C3     | uffs-daemon crate + full D2 impl     | (pending)
 2026-03-26  | C4     | uffs-mcp crate + MCP protocol        | (pending)
+2026-03-26  | C5     | uffs-broker crate (placeholder)      | (pending)
+2026-03-26  | C8     | GUI deps: uffs-polars/mft/core → uffs-client | (pending)
 ```
 
 ---

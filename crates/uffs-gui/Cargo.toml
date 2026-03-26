@@ -25,10 +25,8 @@ name = "uffs_gui"
 path = "src/main.rs"
 
 [dependencies]
-# Internal crates
-uffs-polars.workspace = true
-uffs-mft.workspace = true
-uffs-core.workspace = true
+# Internal — GUI is a thin client
+uffs-client.workspace = true
 
 # Async runtime
 tokio.workspace = true
@@ -39,10 +37,8 @@ anyhow.workspace = true
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tracing-appender.workspace = true
-dirs-next.workspace = true
 
-# CLI
+# CLI (for startup flags)
 clap.workspace = true
 
 # GUI framework (placeholder - will be added when implemented)
