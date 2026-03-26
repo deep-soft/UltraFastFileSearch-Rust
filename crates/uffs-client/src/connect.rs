@@ -32,6 +32,10 @@ pub struct UffsClient {
     writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
     /// Monotonically increasing request ID.
     next_id: AtomicU64,
+    /// Notification sender — incoming daemon notifications are forwarded here.
+    notification_tx: tokio::sync::mpsc::UnboundedSender<crate::protocol::RpcNotification>,
+    /// Notification receiver — consumers read daemon events from this.
+    notification_rx: tokio::sync::mpsc::UnboundedReceiver<crate::protocol::RpcNotification>,
 }
 
 impl UffsClient {
@@ -111,7 +115,18 @@ impl UffsClient {
         Ok(())
     }
 
+    /// Receive the next daemon notification (non-blocking).
+    ///
+    /// Returns `None` if no notifications are pending. Use this in an
+    /// event loop to process daemon events (drive_loaded, refresh_complete).
+    pub fn try_recv_notification(&mut self) -> Option<crate::protocol::RpcNotification> {
+        self.notification_rx.try_recv().ok()
+    }
+
     /// Send a JSON-RPC request and read the response.
+    ///
+    /// D3.4.5: While waiting for the response, any incoming notifications
+    /// (messages without an `id` field) are routed to the notification channel.
     async fn send_request(
         &mut self,
         method: &str,
@@ -136,23 +151,49 @@ impl UffsClient {
             .await
             .map_err(|e| crate::error::ClientError::Io(e.to_string()))?;
 
-        let mut line = String::new();
-        let read_result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            self.reader.read_line(&mut line),
-        )
-        .await
-        .map_err(|_| crate::error::ClientError::Timeout)?
-        .map_err(|e| crate::error::ClientError::Io(e.to_string()))?;
+        // Read lines until we get a response with matching id.
+        // Notifications (no id) are routed to the notification channel.
+        loop {
+            let mut line = String::new();
+            let read_result = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                self.reader.read_line(&mut line),
+            )
+            .await
+            .map_err(|_| crate::error::ClientError::Timeout)?
+            .map_err(|e| crate::error::ClientError::Io(e.to_string()))?;
 
-        if read_result == 0 {
-            return Err(crate::error::ClientError::ConnectionClosed);
+            if read_result == 0 {
+                return Err(crate::error::ClientError::ConnectionClosed);
+            }
+
+            let trimmed = line.trim();
+
+            // Check if this is a notification (has "method" but no "id")
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if value.get("method").is_some() && value.get("id").is_none() {
+                    // It's a notification — route to channel
+                    if let Ok(notif) = serde_json::from_value::<crate::protocol::RpcNotification>(value) {
+                        let _ = self.notification_tx.send(notif);
+                    }
+                    continue; // keep reading for the actual response
+                }
+            }
+
+            // It's a response
+            let resp: RpcResponse = serde_json::from_str(trimmed)
+                .map_err(|e| crate::error::ClientError::Protocol(format!("Bad response: {e}")))?;
+
+            return Ok(resp.result);
         }
+    }
 
-        let resp: RpcResponse = serde_json::from_str(line.trim())
-            .map_err(|e| crate::error::ClientError::Protocol(format!("Bad response: {e}")))?;
-
-        Ok(resp.result)
+    /// Create notification channel pair (used by platform_connect).
+    fn new_notification_channel() -> (
+        tokio::sync::mpsc::UnboundedSender<crate::protocol::RpcNotification>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::protocol::RpcNotification>,
+    ) {
+        tokio::sync::mpsc::unbounded_channel()
     }
 
     // ── Public Query API ────────────────────────────────────────────────
@@ -297,11 +338,14 @@ impl UffsClient {
             .map_err(|e| crate::error::ClientError::ConnectionFailed(e.to_string()))?;
 
         let (read_half, write_half) = stream.into_split();
+        let (notification_tx, notification_rx) = Self::new_notification_channel();
 
         Ok(Self {
             reader: BufReader::new(Box::new(read_half)),
             writer: Box::new(write_half),
             next_id: AtomicU64::new(1),
+            notification_tx,
+            notification_rx,
         })
     }
 }
@@ -320,11 +364,14 @@ impl UffsClient {
             .map_err(|e| crate::error::ClientError::ConnectionFailed(e.to_string()))?;
 
         let (read_half, write_half) = stream.into_split();
+        let (notification_tx, notification_rx) = Self::new_notification_channel();
 
         Ok(Self {
             reader: BufReader::new(Box::new(read_half)),
             writer: Box::new(write_half),
             next_id: AtomicU64::new(1),
+            notification_tx,
+            notification_rx,
         })
     }
 }

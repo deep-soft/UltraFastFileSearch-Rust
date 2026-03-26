@@ -283,6 +283,10 @@ async fn handle_mcp_request(
         "initialize" => handle_initialize(),
         "tools/list" => handle_tools_list(),
         "tools/call" => handle_tool_call(&req.params, client).await,
+        "resources/list" => handle_resources_list(),
+        "resources/read" => handle_resources_read(&req.params, client).await,
+        "prompts/list" => handle_prompts_list(),
+        "prompts/get" => handle_prompts_get(&req.params),
         // Notifications (no response needed, but we return ok)
         "notifications/initialized" => Ok(Value::Null),
         other => {
@@ -297,7 +301,9 @@ fn handle_initialize() -> anyhow::Result<Value> {
     Ok(serde_json::json!({
         "protocolVersion": "2024-11-05",
         "capabilities": {
-            "tools": {}
+            "tools": {},
+            "resources": {},
+            "prompts": {}
         },
         "serverInfo": {
             "name": "uffs",
@@ -455,4 +461,172 @@ async fn tool_info(args: Value, client: &mut UffsClient) -> anyhow::Result<Strin
         Some(record) => Ok(serde_json::to_string_pretty(&record)?),
         None => Ok(format!("File found but no details available: {path}")),
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// MCP Resources
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Handle `resources/list` — expose drives as browsable resources.
+fn handle_resources_list() -> anyhow::Result<Value> {
+    Ok(serde_json::json!({
+        "resources": [
+            {
+                "uri": "uffs://drives",
+                "name": "Indexed Drives",
+                "description": "List of all NTFS drives indexed by the UFFS daemon with record counts and source info",
+                "mimeType": "application/json"
+            },
+            {
+                "uri": "uffs://status",
+                "name": "Daemon Status",
+                "description": "Current daemon status: loading progress, uptime, memory, connections",
+                "mimeType": "application/json"
+            }
+        ]
+    }))
+}
+
+/// Handle `resources/read` — read a specific resource.
+async fn handle_resources_read(params: &Value, client: &mut UffsClient) -> anyhow::Result<Value> {
+    let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
+
+    let (content, mime) = match uri {
+        "uffs://drives" => {
+            let resp = client.drives().await
+                .map_err(|e| anyhow::anyhow!("Failed to read drives: {e}"))?;
+            (serde_json::to_string_pretty(&resp)?, "application/json")
+        }
+        "uffs://status" => {
+            let resp = client.status().await
+                .map_err(|e| anyhow::anyhow!("Failed to read status: {e}"))?;
+            (serde_json::to_string_pretty(&resp)?, "application/json")
+        }
+        _ => anyhow::bail!("Unknown resource: {uri}"),
+    };
+
+    Ok(serde_json::json!({
+        "contents": [{
+            "uri": uri,
+            "mimeType": mime,
+            "text": content
+        }]
+    }))
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// MCP Prompts
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Handle `prompts/list` — pre-built search templates.
+fn handle_prompts_list() -> anyhow::Result<Value> {
+    Ok(serde_json::json!({
+        "prompts": [
+            {
+                "name": "find_large_files",
+                "description": "Find the largest files across all drives, sorted by size descending",
+                "arguments": [
+                    {
+                        "name": "limit",
+                        "description": "Number of results (default: 50)",
+                        "required": false
+                    }
+                ]
+            },
+            {
+                "name": "recent_changes",
+                "description": "Find files modified in the last N days",
+                "arguments": [
+                    {
+                        "name": "days",
+                        "description": "Number of days to look back (default: 1)",
+                        "required": false
+                    }
+                ]
+            },
+            {
+                "name": "find_by_extension",
+                "description": "Find all files with a specific extension",
+                "arguments": [
+                    {
+                        "name": "extension",
+                        "description": "File extension without dot (e.g., 'rs', 'pdf', 'jpg')",
+                        "required": true
+                    },
+                    {
+                        "name": "limit",
+                        "description": "Number of results (default: 100)",
+                        "required": false
+                    }
+                ]
+            },
+            {
+                "name": "find_duplicates_by_name",
+                "description": "Search for files with the same name across all drives",
+                "arguments": [
+                    {
+                        "name": "filename",
+                        "description": "Exact filename to search for",
+                        "required": true
+                    }
+                ]
+            }
+        ]
+    }))
+}
+
+/// Handle `prompts/get` — return a specific prompt with arguments filled in.
+fn handle_prompts_get(params: &Value) -> anyhow::Result<Value> {
+    let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+    let args = params.get("arguments").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+
+    let messages = match name {
+        "find_large_files" => {
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50);
+            vec![serde_json::json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!("Use the uffs_search tool to find the {limit} largest files. Use pattern '*', sort by 'size' descending, limit {limit}, filter 'files'. Show results as a table with name, size, and path.")
+                }
+            })]
+        }
+        "recent_changes" => {
+            let days = args.get("days").and_then(Value::as_u64).unwrap_or(1);
+            vec![serde_json::json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!("Use the uffs_search tool to find files modified in the last {days} day(s). Use pattern '*', sort by 'modified' descending, limit 100. Show results as a table.")
+                }
+            })]
+        }
+        "find_by_extension" => {
+            let ext = args.get("extension").and_then(Value::as_str).unwrap_or("txt");
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(100);
+            vec![serde_json::json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!("Use the uffs_search tool to find all *.{ext} files. Use pattern '*.{ext}', sort by 'modified' descending, limit {limit}. Show results as a table.")
+                }
+            })]
+        }
+        "find_duplicates_by_name" => {
+            let filename = args.get("filename").and_then(Value::as_str).unwrap_or("*");
+            vec![serde_json::json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!("Use the uffs_search tool to find all files named '{filename}' across all drives. This helps identify duplicate files. Show the full path for each result.")
+                }
+            })]
+        }
+        _ => anyhow::bail!("Unknown prompt: {name}"),
+    };
+
+    Ok(serde_json::json!({
+        "description": format!("UFFS search prompt: {name}"),
+        "messages": messages
+    }))
 }

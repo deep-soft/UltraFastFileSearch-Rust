@@ -84,12 +84,12 @@ S4–S6 are implemented alongside their respective daemon phases.
 
 | ID | Task | File | Status |
 |----|------|------|--------|
-| S1.2.1 | Create `fn create_secure_dir(path: &Path) -> io::Result<()>` — creates dir with 0700 (Unix) or owner-only DACL (Windows) | `crates/uffs-mft/src/cache.rs` (new fn) | ✅ DONE (Unix 0700; Windows deferred to S1.2.6) |
+| S1.2.1 | Create `fn create_secure_dir(path: &Path) -> io::Result<()>` — creates dir with 0700 (Unix) or owner-only ACL via icacls (Windows) | `crates/uffs-security/src/fs.rs` | ✅ DONE |
 | S1.2.2 | Replace `std::fs::create_dir_all(&dir)` in `save_to_cache()` with `create_secure_dir()` | `crates/uffs-mft/src/cache.rs` | ✅ DONE |
 | S1.2.3 | Replace `std::fs::create_dir_all(&dir)` in `read_and_cache_index()` with `create_secure_dir()` | `crates/uffs-mft/src/reader/index_cache.rs` | ✅ DONE |
 | S1.2.4 | Create `fn set_file_permissions_owner_only(path: &Path) -> io::Result<()>` — sets 0600 (Unix) | `crates/uffs-mft/src/cache.rs` (new fn) | ✅ DONE |
 | S1.2.5 | Call `set_file_permissions_owner_only()` after every cache file write (both `save_to_file` and raw `fs::write` paths) | `crates/uffs-mft/src/cache.rs` (called from `atomic_write`) | ✅ DONE |
-| S1.2.6 | Windows: implement DACL-based `create_secure_dir()` using `windows` crate APIs | `crates/uffs-mft/src/cache.rs` (`#[cfg(windows)]` block) | ⬜ TODO (deferred) |
+| S1.2.6 | Windows: owner-only ACL via `icacls /inheritance:r /grant:r %USERNAME%:(OI)(CI)F` | `crates/uffs-security/src/fs.rs` | ✅ DONE |
 
 **Acceptance criteria**:
 - `ls -la` on cache dir shows `drwx------` (macOS/Linux)
@@ -147,7 +147,7 @@ secure storage. The user never sees or manages keys.
 | ID | Task | File | Status |
 |----|------|------|--------|
 | S2.2.1 | Public function `get_cache_key() -> io::Result<[u8; 32]>` with platform dispatch | `uffs-security/src/keystore.rs` | ✅ DONE |
-| S2.2.2 | Windows impl: file-based key fallback (DPAPI deferred) | `uffs-security/src/keystore.rs` | ✅ DONE (file fallback; DPAPI deferred) |
+| S2.2.2 | Windows impl: DPAPI (`CryptProtectData`/`CryptUnprotectData`) with entropy `uffs-cache-v1` | `uffs-security/src/keystore.rs` | ✅ DONE |
 | S2.2.3 | macOS impl: Keychain via `security-framework` (service `com.uffs.cache`, account `encryption-key-v1`) | `uffs-security/src/keystore.rs` | ✅ DONE |
 | S2.2.4 | Linux impl: file-based key fallback (Secret Service deferred) | `uffs-security/src/keystore.rs` | ✅ DONE (file fallback; dbus deferred) |
 | S2.2.5 | Public function dispatches to platform impl, generates key on first call | `uffs-security/src/keystore.rs` | ✅ DONE |
@@ -307,7 +307,7 @@ get encryption automatically — no API changes.
 | ID | Task | File | Status |
 |----|------|------|--------|
 | S3.2.1 | Create `FileLock` + `with_file_lock()` with timeout + retry | `uffs-security/src/fs.rs` | ✅ DONE |
-| S3.2.2 | Use `flock` (Unix) / `LockFileEx` (Windows) for platform locking | `uffs-security/src/fs.rs` | ✅ DONE (flock; Windows stub ready) |
+| S3.2.2 | Use `flock` (Unix) / `LockFileEx` (Windows) for platform locking | `uffs-security/src/fs.rs` | ✅ DONE |
 | S3.2.3 | Wrap `save_to_cache()` body in exclusive lock | `crates/uffs-mft/src/cache.rs` | ✅ DONE |
 | S3.2.4 | Wrap `load_cached_index()` body in shared (read) lock | `crates/uffs-mft/src/cache.rs` | ✅ DONE |
 | S3.2.5 | Wrap `read_and_cache_index()` raw write path in exclusive lock | `crates/uffs-mft/src/reader/index_cache.rs` | ✅ DONE |
@@ -414,7 +414,7 @@ get encryption automatically — no API changes.
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
 | **S1** Secure Foundation | 🟢 DONE | 2026-03-26 | 2026-03-26 | All complete |
-| **S2** Encryption at Rest | 🟢 DONE | 2026-03-26 | 2026-03-26 | S2.5 benchmarks deferred; DPAPI/dbus deferred |
+| **S2** Encryption at Rest | 🟢 DONE | 2026-03-26 | 2026-03-26 | S2.5 benchmarks deferred; Linux dbus/Secret Service deferred (file-based is fine) |
 | **S3** Secure Lifecycle | 🟢 DONE | 2026-03-26 | 2026-03-26 | |
 | **S4** Daemon IPC | 🟢 DONE | 2026-03-26 | 2026-03-26 | All complete |
 | **S5** Access Broker | 🟢 DONE | 2026-03-26 | 2026-03-26 | All 5 tasks complete |

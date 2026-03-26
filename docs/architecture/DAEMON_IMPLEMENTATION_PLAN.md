@@ -265,7 +265,7 @@ both daemon and client share the same types without circular deps.
 | D3.2.1 | `UffsClient::connect()` — try socket, auto-start, retry with backoff | ✅ DONE |
 | D3.2.2 | Auto-start: spawn `uffs-daemon` detached (Unix fork, Windows DETACHED_PROCESS) | ✅ DONE |
 | D3.2.3 | Backoff: 50ms → 2s cap, 20 attempts | ✅ DONE |
-| D3.2.4 | Daemon identity verification (PID file + exe path) | ⬜ TODO (S4.3 deferred) |
+| D3.2.4 | Daemon identity verification: `verify_daemon_after_connect()` → PID file + exe_path_hash + code signature | ✅ DONE (S4.3 complete) |
 | D3.2.5 | Platform socket paths: macOS, Linux (XDG_RUNTIME_DIR), Windows (AF_UNIX) | ✅ DONE |
 | D3.2.6 | Test: client auto-starts daemon | ⬜ TODO (integration test) |
 
