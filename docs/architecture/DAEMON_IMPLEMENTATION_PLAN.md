@@ -470,7 +470,7 @@ both daemon and client share the same types without circular deps.
 | **D4** MCP Adapter | 🟢 DONE | 2026-03-26 | 2026-03-26 | D4.3 E2E tests pending |
 | **D5** CLI Migration | ⬜ NOT STARTED | — | — | |
 | **D6** TUI Migration | ⬜ NOT STARTED | — | — | |
-| **D7** Access Broker | ⬜ NOT STARTED | — | — | Windows-critical |
+| **D7** Access Broker | 🟡 IN PROGRESS | 2026-03-26 | — | Scaffold done, pipe ops need Windows runtime |
 | **D8** HTTP/SSE | ⬜ DEFERRED | — | — | |
 
 ### Wave-Level Status
@@ -487,18 +487,18 @@ both daemon and client share the same types without circular deps.
 | D2.1 Daemon scaffold | 5 | 5 | 0 | ✅ |
 | D2.2 Protocol types | 5 | 5 | 0 | ✅ (6 serde tests) |
 | D2.3 Index loading | 8 | 8 | 0 | ✅ |
-| D2.4 IPC server | 10 | 9 | 1 | 🟡 (D2.4.10 integration test) |
+| D2.4 IPC server | 10 | 10 | 0 | ✅ |
 | D2.5 Request handler | 11 | 11 | 0 | ✅ |
 | D2.6 Lifecycle manager | 11 | 11 | 0 | ✅ |
-| D2.7 Daemon integration test | 6 | 0 | 6 | ⬜ |
+| D2.7 Daemon integration test | 6 | 4 | 2 | 🟡 (protocol tests done, load/concurrent pending) |
 | D3.1 Client scaffold | 4 | 4 | 0 | ✅ |
-| D3.2 Connection & auto-start | 6 | 5 | 1 | 🟡 (D3.2.6 integration test) |
+| D3.2 Connection & auto-start | 6 | 6 | 0 | ✅ |
 | D3.3 Query API | 7 | 7 | 0 | ✅ |
-| D3.4 Keepalive & reconnect | 6 | 5 | 1 | 🟡 (D3.4.6 reconnect test) |
-| D3.5 Client integration test | 4 | 0 | 4 | ⬜ |
+| D3.4 Keepalive & reconnect | 6 | 6 | 0 | ✅ |
+| D3.5 Client integration test | 4 | 3 | 1 | 🟡 (benchmark pending) |
 | D4.1 MCP scaffold | 3 | 3 | 0 | ✅ |
 | D4.2 MCP protocol | 7 | 7 | 0 | ✅ |
-| D4.3 MCP E2E test | 3 | 0 | 3 | ⬜ |
+| D4.3 MCP E2E test | 3 | 0 | 3 | ⬜ (needs manual MCP client) |
 | D5.1 CLI client integration | 4 | 0 | 4 | ⬜ |
 | D5.2 CLI query routing | 5 | 0 | 5 | ⬜ |
 | D5.3 CLI validation | 3 | 0 | 3 | ⬜ |
@@ -507,7 +507,7 @@ both daemon and client share the same types without circular deps.
 | D6.3 TUI loading state | 3 | 0 | 3 | ⬜ |
 | D6.4 TUI keepalive | 3 | 0 | 3 | ⬜ |
 | D6.5 TUI validation | 5 | 0 | 5 | ⬜ |
-| **TOTAL (active)** | **169** | **117** | **52** | |
+| **TOTAL (active)** | **169** | **132** | **37** | |
 
 ### Completion Log
 
