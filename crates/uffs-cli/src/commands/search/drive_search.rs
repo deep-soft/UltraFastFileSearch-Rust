@@ -16,7 +16,7 @@ pub(super) struct DriveResult {
     /// error).
     ///
     /// Paths are already resolved using the full MFT data when requested.
-    pub(super) df: Option<uffs_mft::DataFrame>,
+    pub(super) df: Option<uffs_polars::DataFrame>,
     /// Total records read from the MFT.
     pub(super) records_read: usize,
     /// Number of records matching the filters.
@@ -169,7 +169,7 @@ pub(super) async fn search_single_drive(
 }
 
 /// Reorder a `DataFrame` so the `drive` column appears first.
-pub(super) fn reorder_drive_column(df: &uffs_mft::DataFrame) -> Result<uffs_mft::DataFrame> {
+pub(super) fn reorder_drive_column(df: &uffs_polars::DataFrame) -> Result<uffs_polars::DataFrame> {
     let column_names: Vec<String> = df
         .get_column_names()
         .into_iter()

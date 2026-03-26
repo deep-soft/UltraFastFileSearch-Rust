@@ -1,15 +1,28 @@
 //! Index caching with TTL (Time-To-Live) support.
 //!
-//! This module provides automatic caching of MFT indices in the system temp
-//! directory with configurable TTL. Indices are automatically refreshed when
-//! stale.
+//! This module provides automatic caching of MFT indices in a secure,
+//! platform-appropriate directory with configurable TTL. Indices are
+//! automatically refreshed when stale.
 //!
 //! # Cache Location
 //!
-//! Indices are stored in `{TEMP}/uffs_index_cache/`:
+//! Indices are stored in a platform-specific secure directory:
+//! - **Windows**: `%LOCALAPPDATA%\uffs\cache\`
+//! - **macOS**: `~/Library/Caches/com.uffs/`
+//! - **Linux**: `$XDG_CACHE_HOME/uffs/` (default `~/.cache/uffs/`)
+//!
+//! Files:
 //! - `C_index.uffs` - Index for C: drive
 //! - `D_index.uffs` - Index for D: drive
 //! - etc.
+//!
+//! # Security
+//!
+//! - Cache directory is created with owner-only permissions (0700 / DACL)
+//! - Cache files are written with owner-only permissions (0600)
+//! - Writes use atomic temp-file-then-rename to prevent partial exposure
+//! - Legacy cache files in `{TEMP}/uffs_index_cache/` are automatically
+//!   migrated to the secure location on first access.
 //!
 //! # TTL Behavior
 //!
@@ -18,7 +31,8 @@
 //! - **Cleanup**: Remove cache directory if all files are expired
 
 use core::time::Duration;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Once;
 use std::time::SystemTime;
 
 use crate::index::{IndexHeader, MftIndex};
@@ -26,20 +40,178 @@ use crate::index::{IndexHeader, MftIndex};
 /// Default TTL for cached indices (10 minutes).
 pub const INDEX_TTL_SECONDS: u64 = 600;
 
-/// Name of the cache directory in the system temp folder.
-const CACHE_DIR_NAME: &str = "uffs_index_cache";
+/// Name of the legacy cache directory in the system temp folder.
+const LEGACY_CACHE_DIR_NAME: &str = "uffs_index_cache";
+
+/// One-time migration guard.
+static MIGRATION_ONCE: Once = Once::new();
+
+// ────────────────────────────────────────────────────────────────────────────
+// S1.1 — Cache Directory Relocation
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Returns the platform-appropriate secure cache directory.
+///
+/// | Platform | Path |
+/// |----------|------|
+/// | Windows  | `%LOCALAPPDATA%\uffs\cache\` |
+/// | macOS    | `~/Library/Caches/com.uffs/` |
+/// | Linux    | `$XDG_CACHE_HOME/uffs/` (default `~/.cache/uffs/`) |
+///
+/// Falls back to `{TEMP}/uffs_index_cache/` if the platform directory
+/// cannot be determined (should never happen in practice).
+#[must_use]
+pub fn secure_cache_dir() -> PathBuf {
+    if let Some(cache_base) = dirs_next::cache_dir() {
+        #[cfg(target_os = "macos")]
+        {
+            // ~/Library/Caches/com.uffs/
+            cache_base.join("com.uffs")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // %LOCALAPPDATA%\uffs\cache\
+            cache_base.join("uffs").join("cache")
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            // $XDG_CACHE_HOME/uffs/  (default ~/.cache/uffs/)
+            cache_base.join("uffs")
+        }
+    } else {
+        // Fallback: legacy location
+        std::env::temp_dir().join(LEGACY_CACHE_DIR_NAME)
+    }
+}
+
+/// Returns the legacy (insecure) cache directory path.
+///
+/// Used only during migration.
+#[must_use]
+fn legacy_cache_dir() -> PathBuf {
+    std::env::temp_dir().join(LEGACY_CACHE_DIR_NAME)
+}
+
+/// Migrates cache files from the legacy temp-dir location to the new
+/// secure directory.
+///
+/// This runs **once** per process. If the legacy directory contains `.uffs`
+/// files, they are moved (renamed) to the new location. The legacy directory
+/// is removed afterwards if empty.
+///
+/// Errors are logged but never propagated — migration is best-effort.
+pub fn migrate_legacy_cache() {
+    MIGRATION_ONCE.call_once(|| {
+        let legacy = legacy_cache_dir();
+        let secure = secure_cache_dir();
+
+        // Nothing to migrate if dirs are the same (fallback case) or
+        // legacy dir doesn't exist.
+        if legacy == secure || !legacy.is_dir() {
+            return;
+        }
+
+        // Read legacy dir entries
+        let entries = match std::fs::read_dir(&legacy) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        let mut moved = 0u32;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".uffs") {
+                continue;
+            }
+
+            // Ensure secure dir exists before first move
+            if moved == 0 {
+                if let Err(e) = create_secure_dir(&secure) {
+                    tracing::warn!(
+                        path = %secure.display(),
+                        error = %e,
+                        "Failed to create secure cache dir during migration"
+                    );
+                    return;
+                }
+            }
+
+            let src = entry.path();
+            let dst = secure.join(&name);
+            if dst.exists() {
+                // Secure dir already has this file — skip
+                continue;
+            }
+            match std::fs::rename(&src, &dst) {
+                Ok(()) => {
+                    moved += 1;
+                    // Best-effort permission tightening on migrated file
+                    let _ignore = set_file_permissions_owner_only(&dst);
+                }
+                Err(e) => {
+                    // Cross-device? Try copy + remove.
+                    if let Ok(data) = std::fs::read(&src) {
+                        if std::fs::write(&dst, &data).is_ok() {
+                            let _ignore = set_file_permissions_owner_only(&dst);
+                            let _ignore = std::fs::remove_file(&src);
+                            moved += 1;
+                        }
+                    } else {
+                        tracing::debug!(
+                            src = %src.display(),
+                            dst = %dst.display(),
+                            error = %e,
+                            "Failed to migrate cache file"
+                        );
+                    }
+                }
+            }
+        }
+
+        if moved > 0 {
+            tracing::info!(
+                files = moved,
+                from = %legacy.display(),
+                to = %secure.display(),
+                "Migrated legacy cache files to secure location"
+            );
+        }
+
+        // Remove legacy dir if now empty
+        let _ignore = std::fs::remove_dir(&legacy);
+    });
+}
+
+/// Cleans up stale `.uffs.tmp` files left behind by crashed atomic writes.
+fn cleanup_stale_temps(dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().ends_with(".uffs.tmp") {
+                let _ignore = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
 
 /// Gets the cache directory path.
 ///
-/// Returns `{TEMP}/uffs_index_cache/`.
+/// Returns the platform-appropriate secure cache directory. On the first
+/// call per process, also migrates any legacy cache files from the old
+/// temp-dir location and cleans up stale `.uffs.tmp` files.
 #[must_use]
 pub fn cache_dir() -> PathBuf {
-    std::env::temp_dir().join(CACHE_DIR_NAME)
+    migrate_legacy_cache();
+    let dir = secure_cache_dir();
+    // Best-effort cleanup of stale temps (no-op if dir doesn't exist)
+    cleanup_stale_temps(&dir);
+    dir
 }
 
 /// Gets the cache file path for a specific drive.
 ///
-/// Returns `{TEMP}/uffs_index_cache/{DRIVE}_index.uffs`.
+/// Returns `{SECURE_CACHE_DIR}/{DRIVE}_index.uffs`.
 #[must_use]
 pub fn cache_file_path(drive: char) -> PathBuf {
     cache_dir().join(format!("{}_index.uffs", drive.to_ascii_uppercase()))
@@ -82,6 +254,8 @@ pub fn cache_age_seconds(drive: char) -> Option<u64> {
 
 /// Loads a cached index if it exists and is fresh.
 ///
+/// Acquires a shared (read) lock on the cache file while loading.
+///
 /// # Arguments
 ///
 /// * `drive` - Drive letter to load
@@ -96,23 +270,33 @@ pub fn load_cached_index(drive: char, ttl_seconds: u64) -> Option<(MftIndex, Ind
         return None;
     }
 
-    let path = cache_file_path(drive);
-    match MftIndex::load_from_file(&path) {
-        Ok((index, header)) => {
+    let lock_path = cache_lock_path(drive);
+    let result = with_file_lock(&lock_path, LockKind::Shared, CACHE_LOCK_TIMEOUT, || {
+        let path = cache_file_path(drive);
+        match MftIndex::load_from_file(&path) {
+            Ok((index, header)) => Ok(Some((index, header))),
+            Err(_) => Ok(None),
+        }
+    });
+
+    match result {
+        Ok(Some((index, header))) => {
             // Verify the volume matches
             (header.volume == drive.to_ascii_uppercase()).then_some((index, header))
         }
-        Err(_) => None,
+        _ => None,
     }
 }
 
 /// Saves an index to the cache.
 ///
-/// Creates the cache directory if it doesn't exist.
+/// Creates the cache directory with owner-only permissions if it doesn't
+/// exist. Acquires an exclusive lock, then uses atomic write (temp file +
+/// rename) to prevent partial exposure.
 ///
 /// # Errors
 ///
-/// Returns an error if directory creation or file writing fails.
+/// Returns an error if directory creation, locking, or file writing fails.
 pub fn save_to_cache(
     index: &MftIndex,
     drive: char,
@@ -121,28 +305,46 @@ pub fn save_to_cache(
     next_usn: i64,
 ) -> std::io::Result<PathBuf> {
     let dir = cache_dir();
-    std::fs::create_dir_all(&dir)?;
+    create_secure_dir(&dir)?;
 
-    let path = cache_file_path(drive);
-    index.save_to_file(&path, volume_serial, usn_journal_id, next_usn)?;
-
-    Ok(path)
+    let lock_path = cache_lock_path(drive);
+    with_file_lock(&lock_path, LockKind::Exclusive, CACHE_LOCK_TIMEOUT, || {
+        let path = cache_file_path(drive);
+        index.save_to_file(&path, volume_serial, usn_journal_id, next_usn)?;
+        Ok(path)
+    })
 }
 
-/// Removes a cached index file for a specific drive.
+/// Securely removes a cached index file for a specific drive.
 ///
-/// Does nothing if the file doesn't exist.
+/// Overwrites the file with zeros before deleting. Does nothing if the
+/// file doesn't exist.
 pub fn remove_cached_index(drive: char) {
     let path = cache_file_path(drive);
-    drop(std::fs::remove_file(path));
+    let _ignore = secure_remove(&path);
+    // Also clean up the lock file
+    let lock = cache_lock_path(drive);
+    let _ignore = std::fs::remove_file(lock);
 }
 
-/// Removes all cached index files and the cache directory.
+/// Securely removes all cached index files and the cache directory.
 ///
-/// Does nothing if the directory doesn't exist.
+/// Each `.uffs` file is zero-overwritten before deletion. Does nothing
+/// if the directory doesn't exist.
 pub fn remove_all_cached_indices() {
     let dir = cache_dir();
-    drop(std::fs::remove_dir_all(dir));
+    // Securely wipe each .uffs file individually
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.ends_with(".uffs") {
+                let _ignore = secure_remove(&entry.path());
+            }
+        }
+    }
+    // Remove remaining files (.lock, .tmp) and the directory itself
+    let _ignore = std::fs::remove_dir_all(dir);
 }
 
 /// Lists all cached drive letters.
@@ -228,6 +430,26 @@ pub fn cleanup_expired_cache(ttl_seconds: u64) {
     if all_caches_expired(ttl_seconds) {
         remove_all_cached_indices();
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Security primitives — delegated to uffs-security crate
+// ────────────────────────────────────────────────────────────────────────────
+
+pub use uffs_security::fs::{
+    FileLock, LockKind, atomic_write, create_secure_dir, secure_remove,
+    set_file_permissions_owner_only, with_file_lock,
+};
+
+/// Default lock timeout for cache operations (5 seconds).
+const CACHE_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Returns the lock file path for a drive's cache file.
+///
+/// E.g. `{SECURE_CACHE_DIR}/C_index.lock`
+#[must_use]
+pub fn cache_lock_path(drive: char) -> PathBuf {
+    cache_dir().join(format!("{}_index.lock", drive.to_ascii_uppercase()))
 }
 
 /// Result of a cache check operation.

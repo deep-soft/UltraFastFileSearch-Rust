@@ -146,7 +146,7 @@ pub(super) fn load_and_filter_from_mft_file(
     profile: bool,
     debug_tree: bool,
     chaos_seed: Option<u64>,
-) -> Result<uffs_mft::DataFrame> {
+) -> Result<uffs_polars::DataFrame> {
     let native = load_and_filter_native_from_mft_file(
         mft_path,
         drive_letter,
@@ -424,7 +424,7 @@ pub(super) async fn load_and_filter_data(
     needs_paths: bool,
     profile: bool,
     no_bitmap: bool,
-) -> Result<uffs_mft::DataFrame> {
+) -> Result<uffs_polars::DataFrame> {
     if let Some(index_path) = index {
         let df = MftReader::load_parquet(&index_path)
             .with_context(|| format!("Failed to load index: {}", index_path.display()))?;
@@ -547,9 +547,9 @@ pub(super) async fn load_and_filter_data(
     )
 )]
 fn execute_query(
-    df: uffs_mft::DataFrame,
+    df: uffs_polars::DataFrame,
     filters: &QueryFilters<'_>,
-) -> Result<uffs_mft::DataFrame> {
+) -> Result<uffs_polars::DataFrame> {
     let mut query = MftQuery::new(df);
 
     query = query.pattern(filters.parsed)?;

@@ -45,6 +45,18 @@ memchr.workspace = true
 aho-corasick.workspace = true
 globset.workspace = true
 
+# Async (for load_live_drive on Windows)
+tokio.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# File type icons (for Type sort column)
+devicons.workspace = true
+
+# Platform dirs (for key file path in keystore)
+anyhow.workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros"] }

@@ -1,0 +1,21 @@
+//! Security primitives for UFFS.
+//!
+//! This crate provides encryption, key management, and secure filesystem
+//! operations. It has **no dependency** on MFT, search, or UI crates.
+//!
+//! # Modules
+//!
+//! - [`crypto`] — AES-256-GCM authenticated encryption (Phase S2)
+//! - [`keystore`] — Platform-native key storage: DPAPI / Keychain / Secret Service (Phase S2)
+//! - [`fs`] — Secure file operations: atomic write, secure delete, permissions, file locking
+
+// Platform-gated deps: used by sub-modules behind #[cfg] gates.
+// Suppress unused-crate-dependencies lint for platforms where the
+// usage is behind cfg and the lint can't see it.
+use dirs_next as _;
+#[cfg(target_os = "macos")]
+use security_framework as _;
+
+pub mod crypto;
+pub mod fs;
+pub mod keystore;

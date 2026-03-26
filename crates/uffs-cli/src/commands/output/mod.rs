@@ -160,7 +160,7 @@ pub(super) fn results_to_dataframe(
     index: &uffs_mft::MftIndex,
     results: Vec<uffs_core::SearchResult>,
     _resolve_paths: bool,
-) -> Result<uffs_mft::DataFrame> {
+) -> Result<uffs_polars::DataFrame> {
     use uffs_polars::{DataType, IntoColumn, NamedFrom, Series, TimeUnit};
 
     let height = results.len();
@@ -351,7 +351,7 @@ pub(super) fn results_to_dataframe(
         Series::new("stream_name".into(), stream_names).into_column(),
     ];
 
-    let mut df = uffs_mft::DataFrame::new_infer_height(columns)
+    let mut df = uffs_polars::DataFrame::new_infer_height(columns)
         .map_err(|err| anyhow::anyhow!("Failed to create DataFrame: {err}"))?;
 
     df = tokio::task::block_in_place(|| uffs_core::apply_directory_treesize(&df))
@@ -365,7 +365,7 @@ pub(super) fn results_to_dataframe(
 
 /// Write search results to console or file.
 pub(super) fn write_results(
-    results: &uffs_mft::DataFrame,
+    results: &uffs_polars::DataFrame,
     format: &str,
     out: &str,
     output_config: &OutputConfig,

@@ -29,8 +29,9 @@ name = "uffs_mft"
 path = "src/main.rs"
 
 [dependencies]
-# Internal: Polars facade
+# Internal
 uffs-polars.workspace = true
+uffs-security.workspace = true
 
 # Data structures
 bitflags.workspace = true

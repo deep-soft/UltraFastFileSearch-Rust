@@ -253,20 +253,43 @@ impl MftReader {
         // Serialize the index on the current thread (CPU-bound, no I/O yet)
         // so we can hand ownership of the index back to the caller immediately.
         // Only the byte buffer is sent to the blocking pool for the disk write.
-        let cache_bytes = index.serialize(volume_serial, usn_journal_id, next_usn);
+        let plaintext = index.serialize(volume_serial, usn_journal_id, next_usn);
+
+        // Encrypt if key is available; fall back to plaintext gracefully
+        let cache_bytes = match uffs_security::keystore::get_cache_key() {
+            Ok(key) => match uffs_security::crypto::encrypt_cache(&plaintext, &key) {
+                Ok(encrypted) => encrypted,
+                Err(e) => {
+                    info!(drive = %drive, error = %e, "⚠️ Encryption failed, caching plaintext");
+                    plaintext
+                }
+            },
+            Err(e) => {
+                info!(drive = %drive, error = %e, "⚠️ Key unavailable, caching plaintext");
+                plaintext
+            }
+        };
 
         tokio::task::spawn_blocking(move || {
-            use crate::cache::{cache_dir, cache_file_path};
+            use crate::cache::{
+                LockKind, atomic_write, cache_dir, cache_file_path, cache_lock_path,
+                create_secure_dir, with_file_lock,
+            };
             let dir = cache_dir();
-            if let Err(e) = std::fs::create_dir_all(&dir) {
+            if let Err(e) = create_secure_dir(&dir) {
                 info!(drive = %drive, error = %e, "⚠️ Failed to create cache dir");
                 return;
             }
-            let path = cache_file_path(drive);
-            if let Err(e) = std::fs::write(&path, &cache_bytes) {
-                info!(drive = %drive, error = %e, "⚠️ Failed to write cache (non-fatal)");
-            } else {
+            let lock_path = cache_lock_path(drive);
+            let timeout = std::time::Duration::from_secs(5);
+            let result = with_file_lock(&lock_path, LockKind::Exclusive, timeout, || {
+                let path = cache_file_path(drive);
+                atomic_write(&path, &cache_bytes)?;
                 info!(drive = %drive, bytes = cache_bytes.len(), "💾 Saved to cache");
+                Ok(())
+            });
+            if let Err(e) = result {
+                info!(drive = %drive, error = %e, "⚠️ Failed to write cache (non-fatal)");
             }
         });
 

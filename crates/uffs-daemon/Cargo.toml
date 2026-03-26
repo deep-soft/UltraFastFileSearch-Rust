@@ -1,0 +1,52 @@
+# ============================================================================
+# uffs-daemon: Background Service Process
+# ============================================================================
+# Holds MFT compact index + trigrams in memory, serves queries via IPC
+# (Unix domain socket / Windows named pipe). Auto-starts on first client
+# connection, auto-retires after idle timeout.
+# ============================================================================
+
+[package]
+name = "uffs-daemon"
+description = "UFFS background daemon — holds MFT index, serves queries via IPC"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "uffs-daemon"
+path = "src/main.rs"
+
+[dependencies]
+# Internal
+uffs-security.workspace = true
+uffs-mft.workspace = true
+uffs-core.workspace = true
+
+# Async
+tokio.workspace = true
+
+# Serialization (JSON-RPC)
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+
+# Platform dirs
+dirs-next.workspace = true
+
+# CLI
+clap.workspace = true
+
+[lints]
+workspace = true

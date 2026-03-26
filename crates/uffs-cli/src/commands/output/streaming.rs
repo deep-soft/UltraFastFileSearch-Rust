@@ -65,7 +65,7 @@ impl<W: Write> StreamingWriter<W> {
     }
 
     /// Write a `DataFrame` batch. Returns number of rows written.
-    pub fn write_batch(&self, df: &uffs_mft::DataFrame) -> Result<usize> {
+    pub fn write_batch(&self, df: &uffs_polars::DataFrame) -> Result<usize> {
         if df.height() == 0 {
             return Ok(0);
         }
@@ -89,7 +89,7 @@ impl<W: Write> StreamingWriter<W> {
     }
 
     /// Write a CSV batch (internal).
-    fn write_csv_batch(&self, writer: &mut W, df: &uffs_mft::DataFrame) -> Result<usize> {
+    fn write_csv_batch(&self, writer: &mut W, df: &uffs_polars::DataFrame) -> Result<usize> {
         let height = df.height();
         if height == 0 {
             return Ok(0);
@@ -129,7 +129,7 @@ impl<W: Write> StreamingWriter<W> {
     }
 
     /// Write a JSON batch (internal).
-    fn write_json_batch(&self, writer: &mut W, df: &uffs_mft::DataFrame) -> Result<usize> {
+    fn write_json_batch(&self, writer: &mut W, df: &uffs_polars::DataFrame) -> Result<usize> {
         let col_names: Vec<_> = df.get_column_names();
         let columns: Vec<_> = col_names
             .iter()

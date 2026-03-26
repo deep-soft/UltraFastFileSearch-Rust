@@ -357,7 +357,7 @@ fn main() -> Result<()> {
                 loaded_count += 1;
                 match result {
                     Ok((drive_index, timing)) => {
-                        let fc = |n: usize| uffs_mft::format_number_commas(n as u64);
+                        let fc = |n: usize| uffs_core::format::format_number_commas(n as u64);
                         let msg = format!(
                             "✅ {}:  {:>10} rec  │  mft:{:>7}  compact:{:>7}  tri:{:>7}  │  {:>6} trigrams  ({})",
                             drive_index.letter,
@@ -405,8 +405,8 @@ fn main() -> Result<()> {
                 }
                 app.status = format!(
                     "Loading... {loaded_count}/{total_to_load} drives ({} records, {})",
-                    uffs_mft::format_number_commas(app.backend.total_records() as u64),
-                    uffs_mft::format_duration(load_start.elapsed()),
+                    uffs_core::format::format_number_commas(app.backend.total_records() as u64),
+                    uffs_core::format::format_duration(load_start.elapsed()),
                 );
             }
 
@@ -448,8 +448,8 @@ fn main() -> Result<()> {
         app.status = format!(
             "Loaded {} drive(s), {} records in {} — type to search",
             app.backend.drives.len(),
-            uffs_mft::format_number_commas(app.backend.total_records() as u64),
-            uffs_mft::format_duration(elapsed),
+            uffs_core::format::format_number_commas(app.backend.total_records() as u64),
+            uffs_core::format::format_duration(elapsed),
         );
 
         // Search immediately — empty box shows '*' (all files, newest first)

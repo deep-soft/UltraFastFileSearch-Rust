@@ -66,7 +66,7 @@ enum SearchDispatchResult {
     /// Streaming output was written directly - search is complete.
     StreamingComplete,
     /// `DataFrame` results ready for output processing.
-    DataFrame(uffs_mft::DataFrame),
+    DataFrame(uffs_polars::DataFrame),
 }
 
 /// Full search configuration - all parameters needed for any search path.
@@ -284,6 +284,6 @@ pub(super) async fn search_multi_drive_filtered(
     _filters: &QueryFilters<'_>,
     _needs_paths: bool,
     _no_bitmap: bool,
-) -> Result<uffs_mft::DataFrame> {
+) -> Result<uffs_polars::DataFrame> {
     anyhow::bail!("Multi-drive search is only supported on Windows")
 }

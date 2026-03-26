@@ -154,7 +154,7 @@ fn run_single_file_dispatch(config: &SearchConfig<'_>, mft_path: &std::path::Pat
 }
 
 /// Execute `DataFrame` search (fallback path).
-async fn run_dataframe_search(config: &SearchConfig<'_>) -> Result<uffs_mft::DataFrame> {
+async fn run_dataframe_search(config: &SearchConfig<'_>) -> Result<uffs_polars::DataFrame> {
     // This is the fallback when streaming is not available.
     // Uses the index/DataFrame path with load_and_filter_* helpers.
 
@@ -317,7 +317,7 @@ pub(super) fn build_search_config<'a>(
 
 /// Finalize `DataFrame` output with tree columns and output writing.
 pub(super) fn finalize_dataframe_output(
-    mut results: uffs_mft::DataFrame,
+    mut results: uffs_polars::DataFrame,
     config: &SearchConfig<'_>,
 ) -> Result<()> {
     let t_tree = std::time::Instant::now();
@@ -364,7 +364,7 @@ pub(super) fn finalize_dataframe_output(
 
 /// Print benchmark statistics.
 #[expect(clippy::print_stderr, reason = "intentional user-facing output")]
-fn print_benchmark_stats(results: &uffs_mft::DataFrame, elapsed: core::time::Duration) {
+fn print_benchmark_stats(results: &uffs_polars::DataFrame, elapsed: core::time::Duration) {
     let row_count = results.height();
     let total_ms = elapsed.as_millis();
     let secs = elapsed.as_secs_f64();
@@ -386,7 +386,7 @@ fn print_benchmark_stats(results: &uffs_mft::DataFrame, elapsed: core::time::Dur
 /// Print profiling statistics.
 #[expect(clippy::print_stderr, reason = "intentional user-facing output")]
 fn print_profile_stats(
-    results: &uffs_mft::DataFrame,
+    results: &uffs_polars::DataFrame,
     tree_ms: u128,
     output_ms: u128,
     elapsed: core::time::Duration,

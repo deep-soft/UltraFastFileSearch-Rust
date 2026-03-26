@@ -355,7 +355,7 @@ impl App {
         }
 
         // Show working indicator (visible if UI renders before search completes)
-        let fc = |n: usize| uffs_mft::format_number_commas(n as u64);
+        let fc = |n: usize| uffs_core::format::format_number_commas(n as u64);
         let sort_label = self.sort_column().label();
         if pattern == "*" {
             self.status = format!(
@@ -547,7 +547,7 @@ impl App {
             self.result_limit = entry.state.limit;
 
             // ── extended filters ───────────────────────────────────
-            self.search_filters = crate::backend::SearchFilters::from_state(&entry.state);
+            self.search_filters = crate::filters::build_search_filters(&entry.state);
 
             // ── column selection ───────────────────────────────────
             self.visible_columns = entry

@@ -40,29 +40,33 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::all, clippy::pedantic)]
 
-// Suppress unused crate warnings for dev-dependencies and reserved dependencies
-// memchr is reserved for future SIMD-optimized string search
+// Suppress unused crate warnings for deps used by sub-modules or reserved
+use devicons as _;
+use memchr as _;
+use tokio as _;
 #[cfg(test)]
 use criterion as _;
-use memchr as _;
-#[cfg(test)]
-use tokio as _;
 
 // ============================================================================
 // Module declarations
 // ============================================================================
 
+pub mod compact;
+pub mod compact_reader;
 pub mod compiled_pattern;
 mod error;
 mod export;
 pub mod extensions;
+pub mod format;
 pub mod glob;
 pub mod index_search;
 pub mod output;
 mod path_resolver;
 pub mod pattern;
 mod query;
+pub mod search;
 pub mod tree;
+pub mod trigram;
 
 // ============================================================================
 // Public API re-exports
@@ -90,5 +94,5 @@ pub use path_resolver::{
 pub use query::MftQuery;
 pub use tree::{TreeColumn, TreeIndex, add_tree_columns, apply_directory_treesize};
 // Re-export commonly used types
-pub use uffs_mft::{DataFrame, FileFlags, LazyFrame};
-pub use uffs_polars::columns;
+pub use uffs_mft::FileFlags;
+pub use uffs_polars::{DataFrame, LazyFrame, columns};

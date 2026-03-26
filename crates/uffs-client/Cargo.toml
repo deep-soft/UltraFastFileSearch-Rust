@@ -1,0 +1,39 @@
+# ============================================================================
+# uffs-client: Thin Client Library for UFFS Daemon
+# ============================================================================
+# All surfaces (CLI, TUI, GUI, MCP) use this crate to communicate with the
+# daemon. Handles auto-start, connection, keepalive, and reconnect.
+# ============================================================================
+
+[package]
+name = "uffs-client"
+description = "Thin client library for UFFS daemon — connect, query, lifecycle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Internal
+uffs-security.workspace = true
+
+# Async
+tokio.workspace = true
+
+# Serialization (JSON-RPC)
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Platform dirs (for socket/pipe path)
+dirs-next.workspace = true
+
+[lints]
+workspace = true

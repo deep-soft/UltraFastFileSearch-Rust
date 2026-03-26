@@ -116,7 +116,7 @@ pub fn poll_refresh(app: &mut App) {
     if app.refresh_done >= app.refresh_total {
         app.refreshing = false;
         app.refresh_rx = None;
-        let fc = |n: usize| uffs_mft::format_number_commas(n as u64);
+        let fc = |n: usize| uffs_core::format::format_number_commas(n as u64);
         app.status = format!(
             "✅ Refreshed {} drive(s), {} records — type to search",
             app.backend.drives.len(),

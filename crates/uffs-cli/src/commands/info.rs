@@ -67,7 +67,7 @@ struct IndexStats {
 }
 
 /// Count true values in a boolean column.
-fn count_bool_column(df: &uffs_mft::DataFrame, name: &str) -> u64 {
+fn count_bool_column(df: &uffs_polars::DataFrame, name: &str) -> u64 {
     if let Ok(column) = df.column(name) {
         if let Ok(bool_arr) = column.bool() {
             return u64::from(bool_arr.sum().unwrap_or(0));
@@ -77,7 +77,7 @@ fn count_bool_column(df: &uffs_mft::DataFrame, name: &str) -> u64 {
 }
 
 /// Sum values in a u64 column.
-fn sum_u64_column(df: &uffs_mft::DataFrame, name: &str) -> u64 {
+fn sum_u64_column(df: &uffs_polars::DataFrame, name: &str) -> u64 {
     if let Ok(column) = df.column(name) {
         if let Ok(u64_arr) = column.u64() {
             return u64_arr.iter().flatten().sum();
@@ -87,7 +87,7 @@ fn sum_u64_column(df: &uffs_mft::DataFrame, name: &str) -> u64 {
 }
 
 /// Count entries where u16 column value > 1.
-fn count_multi_value_u16(df: &uffs_mft::DataFrame, name: &str) -> u64 {
+fn count_multi_value_u16(df: &uffs_polars::DataFrame, name: &str) -> u64 {
     if let Ok(column) = df.column(name) {
         if let Ok(u16_arr) = column.u16() {
             return u16_arr
@@ -104,7 +104,7 @@ fn count_multi_value_u16(df: &uffs_mft::DataFrame, name: &str) -> u64 {
     clippy::single_call_fn,
     reason = "extracted for clarity and testability"
 )]
-fn extract_index_stats(df: &uffs_mft::DataFrame, path: &Path) -> IndexStats {
+fn extract_index_stats(df: &uffs_polars::DataFrame, path: &Path) -> IndexStats {
     let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let file_size = std::fs::metadata(path).map_or(0, |meta| meta.len());
     let total_records = df.height();
@@ -135,7 +135,7 @@ fn extract_index_stats(df: &uffs_mft::DataFrame, path: &Path) -> IndexStats {
 
 /// Print index information to stdout.
 #[expect(clippy::single_call_fn, reason = "extracted for clarity")]
-fn print_index_info(stats: &IndexStats, df: &uffs_mft::DataFrame) -> Result<()> {
+fn print_index_info(stats: &IndexStats, df: &uffs_polars::DataFrame) -> Result<()> {
     let mut out = std::io::stdout().lock();
     let sep = "═══════════════════════════════════════════════════════════════";
     writeln!(out, "{sep}")?;

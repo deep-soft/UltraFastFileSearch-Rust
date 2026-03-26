@@ -79,7 +79,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
         }
         title_spans.push(Span::raw(format!(
             "] {} Files",
-            uffs_mft::format_number_commas(app.backend.total_records() as u64),
+            uffs_core::format::format_number_commas(app.backend.total_records() as u64),
         )));
         // Search mode indicators: [Cc] [W] [NAME] [FILES] etc.
         let badge = |label: &str, hint: &str, active: bool| -> Span<'static> {
@@ -252,7 +252,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
         })
         .collect();
 
-    let widths: Vec<Constraint> = vis.iter().map(|col| col.default_constraint()).collect();
+    let widths: Vec<Constraint> = vis.iter().map(|col| crate::columns::default_constraint(*col)).collect();
     let table = Table::new(rows, widths)
         .header(header)
         .block(
@@ -575,19 +575,19 @@ fn build_cell<'a>(
             Cell::from(Line::from(spans))
         }
         TuiColumn::Size => Cell::from(Line::from(Span::styled(
-            uffs_mft::format_bytes(row.size),
+            uffs_core::format::format_bytes(row.size),
             Style::default().fg(Color::Yellow),
         ))),
         TuiColumn::Modified => Cell::from(Line::from(Span::styled(
-            uffs_mft::format_timestamp(row.modified),
+            uffs_core::format::format_timestamp(row.modified),
             Style::default().fg(Color::DarkGray),
         ))),
         TuiColumn::Created => Cell::from(Line::from(Span::styled(
-            uffs_mft::format_timestamp(row.created),
+            uffs_core::format::format_timestamp(row.created),
             Style::default().fg(Color::DarkGray),
         ))),
         TuiColumn::Accessed => Cell::from(Line::from(Span::styled(
-            uffs_mft::format_timestamp(row.accessed),
+            uffs_core::format::format_timestamp(row.accessed),
             Style::default().fg(Color::DarkGray),
         ))),
         TuiColumn::Path => {
@@ -615,7 +615,7 @@ fn build_cell<'a>(
             )))
         }
         TuiColumn::SizeOnDisk => Cell::from(Line::from(Span::styled(
-            uffs_mft::format_bytes(row.allocated),
+            uffs_core::format::format_bytes(row.allocated),
             Style::default().fg(Color::Yellow),
         ))),
         TuiColumn::Extension => {
@@ -670,7 +670,7 @@ fn build_cell<'a>(
         ))),
         TuiColumn::TreeSize => Cell::from(Line::from(Span::styled(
             if row.treesize > 0 {
-                uffs_mft::format_bytes(row.treesize)
+                uffs_core::format::format_bytes(row.treesize)
             } else {
                 String::new()
             },

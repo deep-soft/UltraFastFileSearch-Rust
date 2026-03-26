@@ -1,0 +1,44 @@
+# ============================================================================
+# uffs-security: Security Primitives for UFFS
+# ============================================================================
+# This crate provides encryption, key management, and secure filesystem
+# operations. It has **no dependency** on MFT, search, or UI crates.
+#
+# Layer 0 (Foundation): no internal crate dependencies.
+# ============================================================================
+
+[package]
+name = "uffs-security"
+description = "Security primitives for UFFS: encryption, key storage, secure FS ops"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Logging
+tracing.workspace = true
+
+# Platform dirs (for key storage paths)
+dirs-next.workspace = true
+
+# Crypto (Phase S2)
+aes-gcm.workspace = true
+rand.workspace = true
+
+# File locking (flock on Unix)
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# macOS Keychain (Phase S2)
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
+
+# Windows APIs: file locking (LockFileEx), DACL permissions
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[lints]
+workspace = true

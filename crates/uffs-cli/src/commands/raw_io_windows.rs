@@ -58,7 +58,7 @@ impl OwnedQueryFilters {
     }
 
     /// Execute query with these filters.
-    pub(crate) fn execute(&self, df: uffs_mft::DataFrame) -> Result<uffs_mft::DataFrame> {
+    pub(crate) fn execute(&self, df: uffs_polars::DataFrame) -> Result<uffs_polars::DataFrame> {
         use uffs_core::MftQuery;
 
         let mut query = MftQuery::new(df);
@@ -127,7 +127,7 @@ fn execute_index_query(
     index: &uffs_mft::MftIndex,
     filters: &QueryFilters<'_>,
     resolve_paths: bool,
-) -> Result<uffs_mft::DataFrame> {
+) -> Result<uffs_polars::DataFrame> {
     use uffs_core::{IndexQuery, TypeFilter, compile_parsed_pattern};
 
     let mut query = IndexQuery::new(index);
@@ -183,7 +183,7 @@ pub(crate) async fn load_and_filter_data_index(
     needs_paths: bool,
     profile: bool,
     no_cache: bool,
-) -> Result<uffs_mft::DataFrame> {
+) -> Result<uffs_polars::DataFrame> {
     let effective_drive = single_drive.or_else(|| filters.parsed.drive());
     let drive_letter = effective_drive.ok_or_else(|| {
         anyhow::anyhow!(
@@ -252,7 +252,7 @@ pub(crate) async fn load_and_filter_data_index_multi(
     needs_paths: bool,
     profile: bool,
     no_cache: bool,
-) -> Result<uffs_mft::DataFrame> {
+) -> Result<uffs_polars::DataFrame> {
     if drives.is_empty() {
         bail!("No drives specified for multi-drive search");
     }
@@ -267,7 +267,7 @@ pub(crate) async fn load_and_filter_data_index_multi(
     let t_total = std::time::Instant::now();
     let owned_filters = Arc::new(OwnedQueryFilters::from_borrowed(filters));
 
-    let mut join_set: JoinSet<Result<(char, uffs_mft::DataFrame, u128, u128, usize)>> =
+    let mut join_set: JoinSet<Result<(char, uffs_polars::DataFrame, u128, u128, usize)>> =
         JoinSet::new();
 
     for &drive in drives {
@@ -308,7 +308,7 @@ pub(crate) async fn load_and_filter_data_index_multi(
         });
     }
 
-    let mut all_results: Vec<uffs_mft::DataFrame> = Vec::with_capacity(drives.len());
+    let mut all_results: Vec<uffs_polars::DataFrame> = Vec::with_capacity(drives.len());
     let mut total_records = 0usize;
     let mut total_matches = 0usize;
 
@@ -348,7 +348,7 @@ pub(crate) async fn load_and_filter_data_index_multi(
     }
 
     if all_results.is_empty() {
-        return Ok(uffs_mft::DataFrame::empty());
+        return Ok(uffs_polars::DataFrame::empty());
     }
 
     if all_results.len() == 1 {
