@@ -354,7 +354,7 @@ get encryption automatically — no API changes.
 | S4.3.5 | macOS: `proc_pidpath()` for exe path lookup | `verify.rs` | ✅ DONE |
 | S4.3.6 | Linux: `/proc/{pid}/exe` readlink for exe path lookup | `verify.rs` | ✅ DONE |
 | S4.3.7 | Windows: `QueryFullProcessImageNameW()` for exe path lookup | `verify.rs` | ✅ DONE |
-| S4.3.8 | Optional: verify code signature | `verify.rs` | ⬜ TODO (optional polish) |
+| S4.3.8 | Code signature: `codesign` (macOS), `Get-AuthenticodeSignature` (Windows), N/A (Linux) | `verify.rs` | ✅ DONE |
 
 ### Wave S4.4 — Input Validation & Resource Limits
 
@@ -416,7 +416,7 @@ get encryption automatically — no API changes.
 | **S1** Secure Foundation | 🟢 DONE | 2026-03-26 | 2026-03-26 | All complete |
 | **S2** Encryption at Rest | 🟢 DONE | 2026-03-26 | 2026-03-26 | S2.5 benchmarks deferred; DPAPI/dbus deferred |
 | **S3** Secure Lifecycle | 🟢 DONE | 2026-03-26 | 2026-03-26 | |
-| **S4** Daemon IPC | 🟢 DONE | 2026-03-26 | 2026-03-26 | S4.3.8 code signature optional |
+| **S4** Daemon IPC | 🟢 DONE | 2026-03-26 | 2026-03-26 | All complete |
 | **S5** Access Broker | ⬜ NOT STARTED | — | — | Depends on broker |
 | **S6** Network Transport | ⬜ NOT STARTED | — | — | Depends on HTTP |
 
@@ -436,11 +436,11 @@ get encryption automatically — no API changes.
 | S3.2 File Locking | 5 | 5 | 0 | ✅ |
 | S4.1 Socket/Pipe Perms | 4 | 4 | 0 | ✅ |
 | S4.2 Peer Credentials | 4 | 4 | 0 | ✅ |
-| S4.3 Daemon Identity | 8 | 7 | 1 | ✅ (S4.3.8 code signature optional) |
+| S4.3 Daemon Identity | 8 | 8 | 0 | ✅ |
 | S4.4 Input Validation | 9 | 9 | 0 | ✅ |
 | S5 Broker Hardening | 5 | 0 | 5 | ⬜ |
 | S6 Network Transport | 8 | 0 | 8 | ⬜ |
-| **TOTAL** | **97** | **86** | **11** | |
+| **TOTAL** | **97** | **87** | **10** | |
 
 ### Completion Log
 
