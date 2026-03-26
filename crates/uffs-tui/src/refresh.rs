@@ -5,8 +5,6 @@
 //! re-parse on Mac/Linux). Results are received via a channel during
 //! the event loop.
 
-use anyhow::Result;
-
 use crate::app::App;
 use crate::{backend, compact, ui};
 
@@ -147,6 +145,6 @@ pub fn load_live_drive_impl(
 pub fn load_live_drive_impl(
     drive_letter: char,
     _no_cache: bool,
-) -> Result<(compact::DriveCompactIndex, compact::LoadTiming)> {
+) -> anyhow::Result<(compact::DriveCompactIndex, compact::LoadTiming)> {
     anyhow::bail!("Live drive loading requires Windows (drive {drive_letter}:)")
 }

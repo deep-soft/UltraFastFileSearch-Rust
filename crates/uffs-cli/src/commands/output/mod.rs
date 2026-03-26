@@ -24,10 +24,7 @@ mod streaming;
 // ── Re-exports for sibling modules ──────────────────────────────────────────
 pub(super) use filter::{parse_age_filter, parse_attr_filter, parse_sort_spec};
 pub(super) use row_writer::write_index_streaming_with_filter;
-#[expect(
-    unused_imports,
-    reason = "cross-platform type, currently used from Windows multi-drive paths only"
-)]
+#[cfg(windows)]
 pub use streaming::StreamingWriter;
 #[cfg(test)]
 pub(super) use streaming::format_json_value;

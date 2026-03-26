@@ -41,7 +41,6 @@ pub fn broker_available() -> bool {
 #[cfg(windows)]
 pub fn request_volume_handle(drive_letter: char) -> anyhow::Result<u64> {
     use std::io::{Read, Write};
-    use std::os::windows::ffi::OsStrExt;
 
     // Connect to broker pipe
     let pipe_path = std::path::Path::new(BROKER_PIPE_NAME);

@@ -100,10 +100,7 @@ pub fn clean_path_for_display(path: &Path) -> PathBuf {
 }
 
 /// Truncates a string to a maximum length, adding "..." if truncated.
-#[expect(
-    dead_code,
-    reason = "cross-platform utility, currently called from Windows commands only"
-)]
+#[cfg(windows)]
 pub fn truncate_string(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         text.to_owned()
@@ -126,10 +123,7 @@ pub fn truncate_string(text: &str, max_len: usize) -> String {
 // ============================================================================
 
 /// Converts a byte to a printable ASCII character or '.' for non-printable.
-#[expect(
-    dead_code,
-    reason = "cross-platform utility, currently called from Windows commands only"
-)]
+#[cfg(windows)]
 pub const fn char_or_dot(byte: u8) -> char {
     if byte.is_ascii_graphic() || byte == b' ' {
         byte as char
@@ -144,10 +138,7 @@ pub const fn char_or_dot(byte: u8) -> char {
 // ============================================================================
 
 /// Format USN reason flags as a short string.
-#[expect(
-    dead_code,
-    reason = "cross-platform utility, currently called from Windows commands only"
-)]
+#[cfg(windows)]
 pub fn format_usn_reason(reason: u32) -> String {
     use uffs_mft::usn::reason;
 
@@ -179,10 +170,7 @@ pub fn format_usn_reason(reason: u32) -> String {
 }
 
 /// Format a number with thousands separators.
-#[expect(
-    dead_code,
-    reason = "cross-platform utility, currently called from Windows commands only"
-)]
+#[cfg(windows)]
 pub fn format_number(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::new();

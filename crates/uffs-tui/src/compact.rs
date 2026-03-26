@@ -7,5 +7,3 @@
 pub use uffs_core::compact::{
     DriveCompactIndex, IndexSource, LoadTiming, load_mft_file, refresh_drive,
 };
-#[cfg(windows)]
-pub use uffs_core::compact::{apply_usn_patch, load_live_drive};
