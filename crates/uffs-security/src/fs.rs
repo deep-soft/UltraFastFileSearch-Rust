@@ -43,11 +43,17 @@ fn set_dir_owner_only(path: &Path) -> io::Result<()> {
 }
 
 /// Platform-specific directory permission hardening.
+///
+/// S1.2.6: Uses `icacls`-equivalent approach — runs `icacls path /inheritance:r /grant:r %USERNAME%:(OI)(CI)F`
+/// to remove inherited ACEs and grant only the current user full control.
+/// Falls back to hidden attribute if the command fails.
 #[cfg(windows)]
 fn set_dir_owner_only(path: &Path) -> io::Result<()> {
-    // Windows: best-effort. Full DACL manipulation requires the `windows`
-    // crate's security APIs and often elevation. For now we mark hidden
-    // to discourage casual access. The cache is encrypted (S2) regardless.
+    // Try icacls first — works without elevation, sets proper DACL
+    if win_set_owner_only_acl(path) {
+        return Ok(());
+    }
+    // Fallback: at least mark hidden
     win_set_hidden(path)
 }
 
@@ -74,13 +80,18 @@ fn set_file_owner_only(path: &Path) -> io::Result<()> {
 /// Platform-specific file permission hardening.
 #[cfg(windows)]
 fn set_file_owner_only(path: &Path) -> io::Result<()> {
-    // Ensure the file is writable (not read-only) so we can update it,
-    // then mark hidden to discourage casual access.
+    // Ensure writable
     let meta = std::fs::metadata(path)?;
     let mut perms = meta.permissions();
-    perms.set_readonly(false);
-    std::fs::set_permissions(path, perms)?;
-    win_set_hidden(path)
+    if perms.readonly() {
+        perms.set_readonly(false);
+        std::fs::set_permissions(path, perms)?;
+    }
+    // Try proper DACL, fall back to hidden
+    if !win_set_owner_only_acl(path) {
+        win_set_hidden(path)?;
+    }
+    Ok(())
 }
 
 /// Windows: set the `FILE_ATTRIBUTE_HIDDEN` flag on a path.
@@ -101,7 +112,6 @@ fn win_set_hidden(path: &Path) -> io::Result<()> {
         let pcwstr = PCWSTR(wide.as_ptr());
 
         let current = GetFileAttributesW(pcwstr);
-        // INVALID_FILE_ATTRIBUTES == u32::MAX
         if current.0 != u32::MAX {
             let _ok = SetFileAttributesW(
                 pcwstr,
@@ -110,6 +120,42 @@ fn win_set_hidden(path: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Windows: set owner-only ACL via `icacls` command.
+///
+/// S1.2.6: Equivalent to `icacls path /inheritance:r /grant:r %USERNAME%:(OI)(CI)F`
+/// which removes inherited ACEs and grants only the current user full control.
+/// Returns `true` on success.
+#[cfg(windows)]
+fn win_set_owner_only_acl(path: &Path) -> bool {
+    let username = std::env::var("USERNAME").unwrap_or_default();
+    if username.is_empty() {
+        return false;
+    }
+
+    let path_str = path.to_string_lossy();
+
+    // Remove inherited permissions
+    let inherit_result = std::process::Command::new("icacls")
+        .args([path_str.as_ref(), "/inheritance:r"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    if inherit_result.map_or(false, |s| s.success()) {
+        // Grant only current user full control (with Object Inherit + Container Inherit)
+        let grant_arg = format!("{username}:(OI)(CI)F");
+        let grant_result = std::process::Command::new("icacls")
+            .args([path_str.as_ref(), "/grant:r", &grant_arg])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        return grant_result.map_or(false, |s| s.success());
+    }
+
+    false
 }
 
 // ────────────────────────────────────────────────────────────────────────────

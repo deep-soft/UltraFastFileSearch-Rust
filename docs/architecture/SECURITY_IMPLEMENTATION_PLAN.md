@@ -413,7 +413,7 @@ get encryption automatically — no API changes.
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| **S1** Secure Foundation | 🟢 DONE | 2026-03-26 | 2026-03-26 | S1.2.6 Windows DACL deferred |
+| **S1** Secure Foundation | 🟢 DONE | 2026-03-26 | 2026-03-26 | All complete |
 | **S2** Encryption at Rest | 🟢 DONE | 2026-03-26 | 2026-03-26 | S2.5 benchmarks deferred; DPAPI/dbus deferred |
 | **S3** Secure Lifecycle | 🟢 DONE | 2026-03-26 | 2026-03-26 | |
 | **S4** Daemon IPC | 🟢 DONE | 2026-03-26 | 2026-03-26 | S4.3.5-7 client exe lookup deferred; Windows items deferred |
@@ -425,7 +425,7 @@ get encryption automatically — no API changes.
 | Wave | Tasks | Done | Remaining | Status |
 |------|-------|------|-----------|--------|
 | S1.1 Cache Dir Relocation | 6 | 6 | 0 | ✅ |
-| S1.2 Permissions | 6 | 5 | 1 | 🟡 (S1.2.6 Windows DACL deferred) |
+| S1.2 Permissions | 6 | 6 | 0 | ✅ |
 | S1.3 Atomic Writes | 4 | 4 | 0 | ✅ |
 | S2.1 Deps & Scaffold | 6 | 6 | 0 | ✅ |
 | S2.2 Key Storage | 7 | 7 | 0 | ✅ |
@@ -440,7 +440,7 @@ get encryption automatically — no API changes.
 | S4.4 Input Validation | 9 | 9 | 0 | ✅ |
 | S5 Broker Hardening | 5 | 0 | 5 | ⬜ |
 | S6 Network Transport | 8 | 0 | 8 | ⬜ |
-| **TOTAL** | **97** | **78** | **19** | |
+| **TOTAL** | **97** | **79** | **18** | |
 
 ### Completion Log
 
