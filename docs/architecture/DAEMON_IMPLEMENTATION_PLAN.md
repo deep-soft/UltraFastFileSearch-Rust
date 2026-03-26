@@ -425,19 +425,19 @@ both daemon and client share the same types without circular deps.
 
 ---
 
-## Phase D7: Access Broker (Windows, Deferred)
+## Phase D7: Access Broker (Windows)
 
-> **Deferred** — implement when Windows UX polish is needed.
+> **Status**: In Progress — scaffold done, pipe operations need Windows runtime to complete.
 
 | ID | Task | Status |
 |----|------|--------|
-| D7.1 | Create `crates/uffs-broker/Cargo.toml` | ⬜ DEFERRED |
-| D7.2 | Windows Service scaffold (`--install`, `--uninstall`, `--start`, `--stop`) | ⬜ DEFERRED |
-| D7.3 | Named pipe server (Administrators + daemon SID DACL) | ⬜ DEFERRED |
-| D7.4 | Client process verification (PID → exe path → Authenticode) | ⬜ DEFERRED |
-| D7.5 | Handle request: receive drive letter → return read-only volume handle | ⬜ DEFERRED |
-| D7.6 | Audit logging to Windows Event Log | ⬜ DEFERRED |
-| D7.7 | `uffs-daemon` broker client: detect broker, request handles instead of self-elevating | ⬜ DEFERRED |
+| D7.1 | Create `crates/uffs-broker/Cargo.toml` + workspace member | ✅ DONE |
+| D7.2 | Windows Service scaffold (`--install` via `sc create`, `--uninstall` via `sc delete`, `--run` foreground) | ✅ DONE |
+| D7.3 | Named pipe server (`BROKER_PIPE_NAME`, `create_broker_pipe`, `connect_pipe`, `serve_pipe_requests`) | 🟡 SCAFFOLD (pipe ops are placeholders, need Windows runtime) |
+| D7.4 | Client process verification (`get_pipe_client_pid` → `verify_client`) | 🟡 SCAFFOLD (stub, proper verification in S5) |
+| D7.5 | Handle request: read drive letter → open volume → `DuplicateHandle` | 🟡 SCAFFOLD (protocol defined, needs Win32 impl) |
+| D7.6 | `is_elevated()`: `TOKEN_ELEVATION` check via Win32 `GetTokenInformation` | ✅ DONE |
+| D7.7 | `uffs-daemon` broker client: detect broker, request handles instead of self-elevating | ⬜ TODO |
 
 ---
 
