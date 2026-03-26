@@ -350,11 +350,11 @@ get encryption automatically — no API changes.
 | S4.3.1 | PID file format: `{pid}\n{timestamp}\n{exe_path_hash}\n{shutdown_nonce}\n` | `lifecycle.rs` | ✅ DONE |
 | S4.3.2 | PID file permissions: 0600 | `lifecycle.rs` | ✅ DONE |
 | S4.3.3 | `parse_pid_file()` + `expected_daemon_exe_hash()` for client verification | `lifecycle.rs` | ✅ DONE |
-| S4.3.4 | Client: verify exe path matches expected daemon binary | `connect.rs` | ⬜ TODO (client-side wiring) |
-| S4.3.5 | macOS: `proc_pidpath()` for exe path lookup | `crates/uffs-client/src/connect.rs` | ⬜ TODO |
-| S4.3.6 | Linux: `/proc/{pid}/exe` readlink for exe path lookup | `crates/uffs-client/src/connect.rs` | ⬜ TODO |
-| S4.3.7 | Windows: `QueryFullProcessImageNameW()` for exe path lookup | `crates/uffs-client/src/connect.rs` | ⬜ TODO |
-| S4.3.8 | Optional: verify code signature (macOS: `SecCodeCopySigningInformation`, Windows: `WinVerifyTrust`) | `crates/uffs-client/src/connect.rs` | ⬜ TODO |
+| S4.3.4 | Client: verify exe path after connect via PID file + exe hash | `connect.rs` + `verify.rs` | ✅ DONE |
+| S4.3.5 | macOS: `proc_pidpath()` for exe path lookup | `verify.rs` | ✅ DONE |
+| S4.3.6 | Linux: `/proc/{pid}/exe` readlink for exe path lookup | `verify.rs` | ✅ DONE |
+| S4.3.7 | Windows: `QueryFullProcessImageNameW()` for exe path lookup | `verify.rs` | ✅ DONE |
+| S4.3.8 | Optional: verify code signature | `verify.rs` | ⬜ TODO (optional polish) |
 
 ### Wave S4.4 — Input Validation & Resource Limits
 
@@ -416,7 +416,7 @@ get encryption automatically — no API changes.
 | **S1** Secure Foundation | 🟢 DONE | 2026-03-26 | 2026-03-26 | All complete |
 | **S2** Encryption at Rest | 🟢 DONE | 2026-03-26 | 2026-03-26 | S2.5 benchmarks deferred; DPAPI/dbus deferred |
 | **S3** Secure Lifecycle | 🟢 DONE | 2026-03-26 | 2026-03-26 | |
-| **S4** Daemon IPC | 🟢 DONE | 2026-03-26 | 2026-03-26 | S4.3.4-8 client exe path lookup deferred (polish) |
+| **S4** Daemon IPC | 🟢 DONE | 2026-03-26 | 2026-03-26 | S4.3.8 code signature optional |
 | **S5** Access Broker | ⬜ NOT STARTED | — | — | Depends on broker |
 | **S6** Network Transport | ⬜ NOT STARTED | — | — | Depends on HTTP |
 
@@ -436,11 +436,11 @@ get encryption automatically — no API changes.
 | S3.2 File Locking | 5 | 5 | 0 | ✅ |
 | S4.1 Socket/Pipe Perms | 4 | 4 | 0 | ✅ |
 | S4.2 Peer Credentials | 4 | 4 | 0 | ✅ |
-| S4.3 Daemon Identity | 8 | 5 | 3 | 🟡 (PID format + parse done, client exe lookup deferred) |
+| S4.3 Daemon Identity | 8 | 7 | 1 | ✅ (S4.3.8 code signature optional) |
 | S4.4 Input Validation | 9 | 9 | 0 | ✅ |
 | S5 Broker Hardening | 5 | 0 | 5 | ⬜ |
 | S6 Network Transport | 8 | 0 | 8 | ⬜ |
-| **TOTAL** | **97** | **82** | **15** | |
+| **TOTAL** | **97** | **86** | **11** | |
 
 ### Completion Log
 
