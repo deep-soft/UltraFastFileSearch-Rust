@@ -427,17 +427,17 @@ both daemon and client share the same types without circular deps.
 
 ## Phase D7: Access Broker (Windows)
 
-> **Status**: In Progress — scaffold done, pipe operations need Windows runtime to complete.
+> **Status**: ✅ DONE — full pipe server, handle brokering, client verification, daemon broker client.
 
 | ID | Task | Status |
 |----|------|--------|
 | D7.1 | Create `crates/uffs-broker/Cargo.toml` + workspace member | ✅ DONE |
 | D7.2 | Windows Service scaffold (`--install` via `sc create`, `--uninstall` via `sc delete`, `--run` foreground) | ✅ DONE |
-| D7.3 | Named pipe server (`BROKER_PIPE_NAME`, `create_broker_pipe`, `connect_pipe`, `serve_pipe_requests`) | 🟡 SCAFFOLD (pipe ops are placeholders, need Windows runtime) |
-| D7.4 | Client process verification (`get_pipe_client_pid` → `verify_client`) | 🟡 SCAFFOLD (stub, proper verification in S5) |
-| D7.5 | Handle request: read drive letter → open volume → `DuplicateHandle` | 🟡 SCAFFOLD (protocol defined, needs Win32 impl) |
-| D7.6 | `is_elevated()`: `TOKEN_ELEVATION` check via Win32 `GetTokenInformation` | ✅ DONE |
-| D7.7 | `uffs-daemon` broker client: detect broker, request handles instead of self-elevating | ⬜ TODO |
+| D7.3 | Named pipe server: `CreateNamedPipeW`, `ConnectNamedPipe`, `read_pipe`/`write_pipe` | ✅ DONE |
+| D7.4 | Client verification: `GetNamedPipeClientProcessId` → `QueryFullProcessImageNameW` → check uffs-daemon | ✅ DONE |
+| D7.5 | Handle brokering: `CreateFileW` + `FILE_FLAG_BACKUP_SEMANTICS` → `DuplicateHandle` into client | ✅ DONE |
+| D7.6 | `is_elevated()`: `TOKEN_ELEVATION` check | ✅ DONE |
+| D7.7 | Daemon broker client: `broker_available()` + `request_volume_handle(letter)` in `broker_client.rs` | ✅ DONE |
 
 ---
 
@@ -470,7 +470,7 @@ both daemon and client share the same types without circular deps.
 | **D4** MCP Adapter | 🟢 DONE | 2026-03-26 | 2026-03-26 | D4.3 E2E tests pending |
 | **D5** CLI Migration | ⬜ NOT STARTED | — | — | |
 | **D6** TUI Migration | ⬜ NOT STARTED | — | — | |
-| **D7** Access Broker | 🟡 IN PROGRESS | 2026-03-26 | — | Scaffold done, pipe ops need Windows runtime |
+| **D7** Access Broker | 🟢 DONE | 2026-03-26 | 2026-03-26 | Full pipe server + handle brokering + daemon client |
 | **D8** HTTP/SSE | ⬜ DEFERRED | — | — | |
 
 ### Wave-Level Status
