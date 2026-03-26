@@ -150,12 +150,12 @@ should only depend on `uffs-client`.
 
 | ID | Task | Status |
 |----|------|--------|
-| C1.1 | Create `crates/uffs-security/Cargo.toml` with minimal deps | ⬜ TODO |
-| C1.2 | Create `crates/uffs-security/src/lib.rs` with module stubs | ⬜ TODO |
-| C1.3 | Create stub files: `crypto.rs`, `keystore.rs`, `fs.rs` | ⬜ TODO |
-| C1.4 | Add `uffs-security` to workspace `Cargo.toml` members + deps | ⬜ TODO |
-| C1.5 | Add `uffs-security` dependency to `uffs-mft` | ⬜ TODO |
-| C1.6 | Verify: `cargo check --workspace` passes | ⬜ TODO |
+| C1.1 | Create `crates/uffs-security/Cargo.toml` with minimal deps | ✅ DONE |
+| C1.2 | Create `crates/uffs-security/src/lib.rs` with module stubs | ✅ DONE |
+| C1.3 | Create stub files: `crypto.rs`, `keystore.rs`, `fs.rs` | ✅ DONE (fully implemented, not stubs) |
+| C1.4 | Add `uffs-security` to workspace `Cargo.toml` members + deps | ✅ DONE |
+| C1.5 | Add `uffs-security` dependency to `uffs-mft` | ✅ DONE |
+| C1.6 | Verify: `cargo check --workspace` passes | ✅ DONE |
 
 #### `crates/uffs-security/Cargo.toml`
 
@@ -239,10 +239,10 @@ that will be filled in during security implementation phases:
 
 | ID | Task | Status |
 |----|------|--------|
-| C2.1 | Create `crates/uffs-client/Cargo.toml` | ⬜ TODO |
-| C2.2 | Create `crates/uffs-client/src/lib.rs` with placeholder API | ⬜ TODO |
-| C2.3 | Add to workspace members + deps | ⬜ TODO |
-| C2.4 | Verify: `cargo check --workspace` passes | ⬜ TODO |
+| C2.1 | Create `crates/uffs-client/Cargo.toml` | ✅ DONE |
+| C2.2 | Create `crates/uffs-client/src/lib.rs` + protocol.rs + connect.rs + error.rs | ✅ DONE (fully implemented) |
+| C2.3 | Add to workspace members + deps | ✅ DONE |
+| C2.4 | Verify: `cargo check --workspace` passes | ✅ DONE |
 
 #### `crates/uffs-client/Cargo.toml`
 
@@ -312,11 +312,11 @@ pub mod types;
 
 | ID | Task | Status |
 |----|------|--------|
-| C3.1 | Create `crates/uffs-daemon/Cargo.toml` | ⬜ TODO |
-| C3.2 | Create `crates/uffs-daemon/src/main.rs` with minimal daemon scaffold | ⬜ TODO |
-| C3.3 | Create stub modules: `ipc.rs`, `handler.rs`, `lifecycle.rs`, `index.rs` | ⬜ TODO |
-| C3.4 | Add to workspace members + deps | ⬜ TODO |
-| C3.5 | Verify: `cargo check --workspace` passes | ⬜ TODO |
+| C3.1 | Create `crates/uffs-daemon/Cargo.toml` | ✅ DONE |
+| C3.2 | Create `crates/uffs-daemon/src/main.rs` with clap CLI + tokio + tracing | ✅ DONE (fully implemented) |
+| C3.3 | Create modules: `ipc.rs`, `handler.rs`, `lifecycle.rs`, `index.rs`, `protocol.rs` | ✅ DONE (fully implemented) |
+| C3.4 | Add to workspace members + deps | ✅ DONE |
+| C3.5 | Verify: `cargo check --workspace` passes | ✅ DONE |
 
 #### `crates/uffs-daemon/Cargo.toml`
 
@@ -376,10 +376,10 @@ workspace = true
 
 | ID | Task | Status |
 |----|------|--------|
-| C4.1 | Create `crates/uffs-mcp/Cargo.toml` | ⬜ TODO |
-| C4.2 | Create `crates/uffs-mcp/src/main.rs` with placeholder | ⬜ TODO |
-| C4.3 | Add to workspace members | ⬜ TODO |
-| C4.4 | Verify: `cargo check --workspace` passes | ⬜ TODO |
+| C4.1 | Create `crates/uffs-mcp/Cargo.toml` | ✅ DONE |
+| C4.2 | Create `crates/uffs-mcp/src/main.rs` with full MCP protocol | ✅ DONE (fully implemented) |
+| C4.3 | Add to workspace members | ✅ DONE |
+| C4.4 | Verify: `cargo check --workspace` passes | ✅ DONE |
 
 #### `crates/uffs-mcp/Cargo.toml`
 
@@ -485,14 +485,14 @@ through the `uffs_mft` hand-me-down re-export.
 
 | ID | Task | Status |
 |----|------|--------|
-| C6.1 | In `uffs-cli`: replace all `uffs_mft::DataFrame` → `uffs_polars::DataFrame` (33 sites) | ⬜ TODO |
-| C6.2 | In `uffs-cli`: replace all `uffs_mft::LazyFrame` → `uffs_polars::LazyFrame` | ⬜ TODO |
-| C6.3 | In `uffs-cli`: replace all `uffs_mft::col` → `uffs_polars::col` | ⬜ TODO |
-| C6.4 | In `uffs-cli`: replace all `uffs_mft::lit` → `uffs_polars::lit` | ⬜ TODO |
-| C6.5 | In `uffs-cli`: replace all `uffs_mft::IntoLazy` → `uffs_polars::IntoLazy` | ⬜ TODO |
-| C6.6 | Remove Polars re-exports from `uffs-mft/src/lib.rs` line 184 | ⬜ TODO |
-| C6.7 | Verify: `cargo check --workspace` passes | ⬜ TODO |
-| C6.8 | Verify: `cargo test --workspace` passes | ⬜ TODO |
+| C6.1 | In `uffs-cli`: replace all `uffs_mft::DataFrame` → `uffs_polars::DataFrame` (33 sites) | ✅ DONE |
+| C6.2 | In `uffs-cli`: replace all `uffs_mft::LazyFrame` → `uffs_polars::LazyFrame` | ✅ DONE |
+| C6.3 | In `uffs-cli`: replace all `uffs_mft::col` → `uffs_polars::col` | ✅ DONE |
+| C6.4 | In `uffs-cli`: replace all `uffs_mft::lit` → `uffs_polars::lit` | ✅ DONE |
+| C6.5 | In `uffs-cli`: replace all `uffs_mft::IntoLazy` → `uffs_polars::IntoLazy` | ✅ DONE |
+| C6.6 | Remove Polars re-exports from `uffs-mft/src/lib.rs` | ✅ DONE |
+| C6.7 | Verify: `cargo check --workspace` passes | ✅ DONE |
+| C6.8 | Verify: `cargo test --workspace` passes | ✅ DONE |
 
 **Mechanical transformation** — every change is:
 ```rust
@@ -531,12 +531,12 @@ the new location.
 
 | ID | Task | Status |
 |----|------|--------|
-| C7.1 | Create `crates/uffs-core/src/format.rs` with the 5 formatter functions (copy from uffs-mft) | ⬜ TODO |
-| C7.2 | Export from `uffs-core/src/lib.rs`: `pub mod format;` | ⬜ TODO |
-| C7.3 | In `uffs-tui`: replace `uffs_mft::format_*` → `uffs_core::format::format_*` (14 sites) | ⬜ TODO |
-| C7.4 | In `uffs-mft/src/lib.rs`: remove formatter functions (lines 195-340), add deprecation re-exports pointing to `uffs_core::format::*` OR just remove if no external consumers | ⬜ TODO |
-| C7.5 | Update any `uffs-cli` code that uses formatters via `uffs-mft` | ⬜ TODO |
-| C7.6 | Verify: `cargo check --workspace` && `cargo test --workspace` | ⬜ TODO |
+| C7.1 | Create `crates/uffs-core/src/format.rs` with the 5 formatter functions | ✅ DONE |
+| C7.2 | Export from `uffs-core/src/lib.rs`: `pub mod format;` | ✅ DONE |
+| C7.3 | In `uffs-tui`: replace `uffs_mft::format_*` → `uffs_core::format::format_*` (14 sites) | ✅ DONE |
+| C7.4 | Remove formatter functions from `uffs-mft/src/lib.rs` | ✅ DONE |
+| C7.5 | No `uffs-cli` code used formatters via `uffs-mft` | ✅ DONE (verified) |
+| C7.6 | Verify: `cargo check --workspace` && `cargo test --workspace` | ✅ DONE |
 
 ---
 
