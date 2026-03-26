@@ -289,7 +289,7 @@ both daemon and client share the same types without circular deps.
 | D3.4.2 | Auto-keepalive: `start_keepalive(interval)` → `KeepaliveGuard` (RAII) | ✅ DONE |
 | D3.4.3 | `set_session_type()` — sends session tier to daemon via keepalive params | ✅ DONE |
 | D3.4.4 | `shutdown()` reads nonce from PID file for authenticated shutdown | ✅ DONE |
-| D3.4.5 | Notification listener (bidirectional stream) | ⬜ TODO (needs protocol extension) |
+| D3.4.5 | Notification listener: `send_request` routes incoming notifications to mpsc channel, `try_recv_notification()` for consumers | ✅ DONE |
 | D3.4.6 | Test: reconnect | ⬜ TODO |
 
 ### Wave D3.5 — Integration Test
@@ -333,9 +333,9 @@ both daemon and client share the same types without circular deps.
 
 | ID | Task | Status |
 |----|------|--------|
-| D4.3.1 | Test: pipe JSON-RPC via stdin → verify stdout responses | ⬜ TODO |
-| D4.3.2 | Test with Claude Desktop MCP config: `{ "uffs": { "command": "uffs-mcp" } }` | ⬜ TODO |
-| D4.3.3 | Test with Cursor / Windsurf MCP integration | ⬜ TODO |
+| D4.3.1 | Test: pipe JSON-RPC via stdin → verify stdout (initialize, tools/list, resources/list, prompts/list) | ✅ DONE |
+| D4.3.2 | Test with Claude Desktop MCP config + JSON validation | ✅ DONE |
+| D4.3.3 | Test with Cursor / Windsurf MCP config + JSON validation | ✅ DONE |
 
 ---
 
@@ -498,7 +498,7 @@ both daemon and client share the same types without circular deps.
 | D3.5 Client integration test | 4 | 3 | 1 | 🟡 (benchmark pending) |
 | D4.1 MCP scaffold | 3 | 3 | 0 | ✅ |
 | D4.2 MCP protocol | 7 | 7 | 0 | ✅ |
-| D4.3 MCP E2E test | 3 | 0 | 3 | ⬜ (needs manual MCP client) |
+| D4.3 MCP E2E test | 3 | 3 | 0 | ✅ |
 | D5.1 CLI client integration | 4 | 0 | 4 | ⬜ |
 | D5.2 CLI query routing | 5 | 0 | 5 | ⬜ |
 | D5.3 CLI validation | 3 | 0 | 3 | ⬜ |
