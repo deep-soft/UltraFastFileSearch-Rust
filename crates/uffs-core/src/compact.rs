@@ -102,6 +102,7 @@ pub struct DriveCompactIndex {
 }
 
 /// Where a drive index was loaded from.
+#[derive(Clone)]
 pub enum IndexSource {
     /// Raw/IOCP/compressed MFT file.
     MftFile(PathBuf),
