@@ -24,6 +24,7 @@ use tracing_appender as _;
 use uffs_mft as _;
 use uffs_security as _;
 
+mod broker_client;
 mod handler;
 mod index;
 mod ipc;
