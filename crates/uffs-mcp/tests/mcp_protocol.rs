@@ -5,20 +5,27 @@
 //!
 //! NOTE: These tests require a running daemon OR will test the MCP
 //! protocol error handling when the daemon is unavailable.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests are inherently outside cfg(test)"
+)]
+#![expect(
+    clippy::print_stderr,
+    reason = "eprintln is appropriate in integration tests for skip notices"
+)]
 
+// These crates are used by the uffs-mcp binary but not by this test target.
+// Acknowledge them so `unused-crate-dependencies` doesn't fire.
+use core::time::Duration;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
 
-/// Find the uffs-mcp binary.
-fn mcp_exe() -> PathBuf {
-    let mut path = std::env::current_exe().expect("current_exe");
-    path.pop(); // remove test binary name
-    path.pop(); // remove deps/
-    path.push("uffs-mcp");
-    path
-}
+use anyhow as _;
+use serde as _;
+use tokio as _;
+use tracing as _;
+use tracing_subscriber as _;
+use uffs_client as _;
 
 /// Spawn uffs-mcp with piped stdin/stdout.
 fn spawn_mcp() -> Option<(
@@ -26,7 +33,10 @@ fn spawn_mcp() -> Option<(
     std::process::ChildStdin,
     BufReader<std::process::ChildStdout>,
 )> {
-    let exe = mcp_exe();
+    let mut exe = std::env::current_exe().expect("current_exe");
+    exe.pop(); // remove test binary name
+    exe.pop(); // remove deps/
+    exe.push("uffs-mcp");
     if !exe.exists() {
         eprintln!("uffs-mcp binary not found at {}, skipping", exe.display());
         eprintln!("Run `cargo build -p uffs-mcp` first.");
@@ -77,34 +87,34 @@ fn test_mcp_initialize() {
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#,
     );
 
-    if let Some(resp) = &resp {
+    if let Some(body) = &resp {
         assert!(
-            resp.contains("\"protocolVersion\""),
-            "should have protocolVersion: {resp}"
+            body.contains("\"protocolVersion\""),
+            "should have protocolVersion: {body}"
         );
-        assert!(resp.contains("\"tools\""), "should advertise tools: {resp}");
+        assert!(body.contains("\"tools\""), "should advertise tools: {body}");
         assert!(
-            resp.contains("\"resources\""),
-            "should advertise resources: {resp}"
-        );
-        assert!(
-            resp.contains("\"prompts\""),
-            "should advertise prompts: {resp}"
+            body.contains("\"resources\""),
+            "should advertise resources: {body}"
         );
         assert!(
-            resp.contains("\"uffs\""),
-            "server name should be uffs: {resp}"
+            body.contains("\"prompts\""),
+            "should advertise prompts: {body}"
+        );
+        assert!(
+            body.contains("\"uffs\""),
+            "server name should be uffs: {body}"
         );
     }
 
     // Send initialized notification
-    let _ = send_and_read(
+    drop(send_and_read(
         &mut stdin,
         &mut stdout,
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
-    );
+    ));
 
-    let _ = child.kill();
+    drop(child.kill());
 }
 
 /// D4.3.1: Test tools/list returns our 4 tools.
@@ -115,11 +125,11 @@ fn test_mcp_tools_list() {
     };
 
     // Initialize first
-    let _ = send_and_read(
+    drop(send_and_read(
         &mut stdin,
         &mut stdout,
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#,
-    );
+    ));
 
     let resp = send_and_read(
         &mut stdin,
@@ -127,23 +137,23 @@ fn test_mcp_tools_list() {
         r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
     );
 
-    if let Some(resp) = &resp {
+    if let Some(body) = &resp {
         assert!(
-            resp.contains("uffs_search"),
-            "should have uffs_search: {resp}"
+            body.contains("uffs_search"),
+            "should have uffs_search: {body}"
         );
         assert!(
-            resp.contains("uffs_drives"),
-            "should have uffs_drives: {resp}"
+            body.contains("uffs_drives"),
+            "should have uffs_drives: {body}"
         );
         assert!(
-            resp.contains("uffs_status"),
-            "should have uffs_status: {resp}"
+            body.contains("uffs_status"),
+            "should have uffs_status: {body}"
         );
-        assert!(resp.contains("uffs_info"), "should have uffs_info: {resp}");
+        assert!(body.contains("uffs_info"), "should have uffs_info: {body}");
     }
 
-    let _ = child.kill();
+    drop(child.kill());
 }
 
 /// D4.3.1: Test resources/list returns our 2 resources.
@@ -153,11 +163,11 @@ fn test_mcp_resources_list() {
         return;
     };
 
-    let _ = send_and_read(
+    drop(send_and_read(
         &mut stdin,
         &mut stdout,
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#,
-    );
+    ));
 
     let resp = send_and_read(
         &mut stdin,
@@ -165,18 +175,18 @@ fn test_mcp_resources_list() {
         r#"{"jsonrpc":"2.0","id":3,"method":"resources/list"}"#,
     );
 
-    if let Some(resp) = &resp {
+    if let Some(body) = &resp {
         assert!(
-            resp.contains("uffs://drives"),
-            "should have drives resource: {resp}"
+            body.contains("uffs://drives"),
+            "should have drives resource: {body}"
         );
         assert!(
-            resp.contains("uffs://status"),
-            "should have status resource: {resp}"
+            body.contains("uffs://status"),
+            "should have status resource: {body}"
         );
     }
 
-    let _ = child.kill();
+    drop(child.kill());
 }
 
 /// D4.3.1: Test prompts/list returns our 4 prompts.
@@ -186,11 +196,11 @@ fn test_mcp_prompts_list() {
         return;
     };
 
-    let _ = send_and_read(
+    drop(send_and_read(
         &mut stdin,
         &mut stdout,
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#,
-    );
+    ));
 
     let resp = send_and_read(
         &mut stdin,
@@ -198,32 +208,32 @@ fn test_mcp_prompts_list() {
         r#"{"jsonrpc":"2.0","id":4,"method":"prompts/list"}"#,
     );
 
-    if let Some(resp) = &resp {
+    if let Some(body) = &resp {
         assert!(
-            resp.contains("find_large_files"),
-            "should have find_large_files: {resp}"
+            body.contains("find_large_files"),
+            "should have find_large_files: {body}"
         );
         assert!(
-            resp.contains("recent_changes"),
-            "should have recent_changes: {resp}"
+            body.contains("recent_changes"),
+            "should have recent_changes: {body}"
         );
         assert!(
-            resp.contains("find_by_extension"),
-            "should have find_by_extension: {resp}"
+            body.contains("find_by_extension"),
+            "should have find_by_extension: {body}"
         );
         assert!(
-            resp.contains("find_duplicates_by_name"),
-            "should have find_duplicates: {resp}"
+            body.contains("find_duplicates_by_name"),
+            "should have find_duplicates: {body}"
         );
     }
 
-    let _ = child.kill();
+    drop(child.kill());
 }
 
 /// D4.3.2: Claude Desktop MCP configuration example.
 ///
 /// Add this to `~/Library/Application
-/// Support/Claude/claude_desktop_config.json`: 
+/// Support/Claude/claude_desktop_config.json`:
 /// ```json
 /// {
 ///   "mcpServers": {
@@ -255,7 +265,11 @@ fn test_claude_desktop_config_example() {
         }
     }"#;
     let parsed: serde_json::Value = serde_json::from_str(config).expect("valid JSON");
-    assert!(parsed["mcpServers"]["uffs"]["command"].is_string());
+    let command = parsed
+        .get("mcpServers")
+        .and_then(|servers| servers.get("uffs"))
+        .and_then(|uffs| uffs.get("command"));
+    assert!(command.is_some_and(serde_json::Value::is_string));
 }
 
 /// D4.3.3: Cursor / Windsurf MCP configuration example.
@@ -276,5 +290,6 @@ fn test_cursor_windsurf_config_example() {
         }
     }"#;
     let parsed: serde_json::Value = serde_json::from_str(config).expect("valid JSON");
-    assert!(parsed["uffs"]["command"].is_string());
+    let command = parsed.get("uffs").and_then(|uffs| uffs.get("command"));
+    assert!(command.is_some_and(serde_json::Value::is_string));
 }

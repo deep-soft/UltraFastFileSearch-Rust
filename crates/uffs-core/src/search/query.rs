@@ -9,6 +9,7 @@ use crate::compact::DriveCompactIndex;
 use crate::search::tree;
 
 /// Collect the global top-N records across ALL drives for `*` match-all.
+#[must_use]
 pub fn collect_global_top_n(
     drives: &[DriveCompactIndex],
     limit: usize,
@@ -32,7 +33,71 @@ pub fn collect_global_top_n(
             filter_mode,
             search_filters,
         ),
-        SortColumn::Path => collect_path_sorted(drives, limit, sort_desc),
+        SortColumn::Path => {
+            // Hierarchical depth-first tree walk for Path sort
+            let mut path_results = Vec::with_capacity(limit);
+            let mut drive_order: Vec<usize> = (0..drives.len()).collect();
+            #[expect(clippy::indexing_slicing, reason = "indices from 0..len, always valid")]
+            drive_order.sort_unstable_by(|&idx_a, &idx_b| {
+                let ord = drives[idx_a].letter.cmp(&drives[idx_b].letter);
+                if sort_desc { ord.reverse() } else { ord }
+            });
+
+            for &drive_idx in &drive_order {
+                let Some(drive) = drives.get(drive_idx) else {
+                    continue;
+                };
+                let volume_prefix = format!("{}:\\", drive.letter);
+
+                let mut roots: Vec<u32> = drive
+                    .records
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, rec)| rec.parent_idx == u32::MAX && rec.name_len > 0)
+                    .map(|(idx, _)| {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "record index bounded by NTFS limits"
+                        )]
+                        {
+                            idx as u32
+                        }
+                    })
+                    .collect();
+
+                sort_indices_by_name(&mut roots, drive, sort_desc);
+
+                let mut stack: Vec<u32> = roots.into_iter().rev().collect();
+                while let Some(idx) = stack.pop() {
+                    if path_results.len() >= limit {
+                        return path_results;
+                    }
+
+                    let Some(rec) = drive.records.get(idx as usize) else {
+                        continue;
+                    };
+                    let name = rec.name(&drive.names);
+                    if name.is_empty() || name == "." {
+                        continue;
+                    }
+
+                    let path = tree::resolve_path(drive, idx as usize, &volume_prefix);
+                    path_results.push(make_display_row(drive.letter, rec, name, path));
+
+                    if let Some(children) = drive.children.get(idx as usize) {
+                        if !children.is_empty() {
+                            let mut sorted_children = children.clone();
+                            sort_indices_by_name(&mut sorted_children, drive, sort_desc);
+                            for &child in sorted_children.iter().rev() {
+                                stack.push(child);
+                            }
+                        }
+                    }
+                }
+            }
+
+            path_results
+        }
         SortColumn::Name | SortColumn::Extension | SortColumn::Type => {
             collect_global_top_n_numeric(
                 drives,
@@ -44,77 +109,6 @@ pub fn collect_global_top_n(
             )
         }
     }
-}
-
-/// Hierarchical depth-first tree walk for Path sort.
-fn collect_path_sorted(
-    drives: &[DriveCompactIndex],
-    limit: usize,
-    sort_desc: bool,
-) -> Vec<DisplayRow> {
-    let mut results = Vec::with_capacity(limit);
-
-    let mut drive_order: Vec<usize> = (0..drives.len()).collect();
-    #[expect(clippy::indexing_slicing, reason = "indices from 0..len, always valid")]
-    drive_order.sort_unstable_by(|&idx_a, &idx_b| {
-        let ord = drives[idx_a].letter.cmp(&drives[idx_b].letter);
-        if sort_desc { ord.reverse() } else { ord }
-    });
-
-    for &drive_idx in &drive_order {
-        let Some(drive) = drives.get(drive_idx) else {
-            continue;
-        };
-        let volume_prefix = format!("{}:\\", drive.letter);
-
-        let mut roots: Vec<u32> = drive
-            .records
-            .iter()
-            .enumerate()
-            .filter(|(_, rec)| rec.parent_idx == u32::MAX && rec.name_len > 0)
-            .map(|(idx, _)| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "record index bounded by NTFS limits"
-                )]
-                {
-                    idx as u32
-                }
-            })
-            .collect();
-
-        sort_indices_by_name(&mut roots, drive, sort_desc);
-
-        let mut stack: Vec<u32> = roots.into_iter().rev().collect();
-        while let Some(idx) = stack.pop() {
-            if results.len() >= limit {
-                return results;
-            }
-
-            let Some(rec) = drive.records.get(idx as usize) else {
-                continue;
-            };
-            let name = rec.name(&drive.names);
-            if name.is_empty() || name == "." {
-                continue;
-            }
-
-            let path = tree::resolve_path(drive, idx as usize, &volume_prefix);
-            results.push(make_display_row(drive.letter, rec, name, path));
-
-            if let Some(children) = drive.children.get(idx as usize) {
-                if !children.is_empty() {
-                    let mut sorted_children = children.clone();
-                    sort_indices_by_name(&mut sorted_children, drive, sort_desc);
-                    for &child in sorted_children.iter().rev() {
-                        stack.push(child);
-                    }
-                }
-            }
-        }
-    }
-
-    results
 }
 
 /// Sort a slice of compact indices by their name in the names blob.
@@ -229,6 +223,7 @@ fn collect_global_top_n_numeric(
 }
 
 /// Search a single drive using regex matching on filenames.
+#[must_use]
 pub fn search_compact_drive_regex(
     drive: &DriveCompactIndex,
     compiled_re: &regex::Regex,
@@ -252,6 +247,7 @@ pub fn search_compact_drive_regex(
 }
 
 /// Search a single drive's compact index (trigram + glob/substring).
+#[must_use]
 pub fn search_compact_drive(
     drive: &DriveCompactIndex,
     needle: &str,
@@ -288,7 +284,12 @@ pub fn search_compact_drive(
     let trigram_needle = if is_or {
         String::new()
     } else if is_glob {
-        longest_literal(needle)
+        // Extract the longest literal (non-wildcard) substring for trigram lookup
+        needle
+            .split(['*', '?'])
+            .max_by_key(|seg| seg.len())
+            .unwrap_or("")
+            .to_owned()
     } else {
         needle.to_owned()
     };
@@ -299,38 +300,42 @@ pub fn search_compact_drive(
         None
     };
 
-    let match_indices: Vec<usize> = if let Some(candidate_indices) = candidates {
-        candidate_indices
-            .iter()
-            .filter(|&&idx| {
-                let rec_idx = idx as usize;
-                let Some(rec) = drive.records.get(rec_idx) else {
-                    return false;
-                };
-                let name = rec.name(names_blob);
-                matches(name)
-            })
-            .take(limit)
-            .map(|&idx| idx as usize)
-            .collect()
-    } else {
-        drive
-            .records
-            .iter()
-            .enumerate()
-            .filter(|(_, rec)| {
-                let name = rec.name(names_blob);
-                matches(name)
-            })
-            .take(limit)
-            .map(|(idx, _)| idx)
-            .collect()
-    };
+    let match_indices: Vec<usize> = candidates.map_or_else(
+        || {
+            drive
+                .records
+                .iter()
+                .enumerate()
+                .filter(|(_, rec)| {
+                    let name = rec.name(names_blob);
+                    matches(name)
+                })
+                .take(limit)
+                .map(|(idx, _)| idx)
+                .collect()
+        },
+        |candidate_indices| {
+            candidate_indices
+                .iter()
+                .filter(|&&idx| {
+                    let rec_idx = idx as usize;
+                    let Some(rec) = drive.records.get(rec_idx) else {
+                        return false;
+                    };
+                    let name = rec.name(names_blob);
+                    matches(name)
+                })
+                .take(limit)
+                .map(|&idx| idx as usize)
+                .collect()
+        },
+    );
 
     indices_to_rows(drive, &match_indices, &volume_prefix)
 }
 
 /// Search a single drive using tree-based path traversal.
+#[must_use]
 pub fn search_compact_drive_tree(
     drive: &DriveCompactIndex,
     pattern_lower: &str,
@@ -354,15 +359,6 @@ pub fn search_compact_drive_tree(
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
-
-/// Extract the longest literal (non-wildcard) substring from a glob pattern.
-fn longest_literal(pattern: &str) -> String {
-    pattern
-        .split(['*', '?'])
-        .max_by_key(|seg| seg.len())
-        .unwrap_or("")
-        .to_owned()
-}
 
 /// Build a `DisplayRow` from a compact record.
 fn make_display_row(

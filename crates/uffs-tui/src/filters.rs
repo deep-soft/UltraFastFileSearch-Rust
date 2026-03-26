@@ -13,6 +13,10 @@ use crate::history::SearchState;
 /// This is the TUI-specific constructor. The generic `SearchFilters` struct
 /// lives in `uffs-core`; this function bridges TUI's `SearchState` to it.
 #[must_use]
+#[expect(
+    clippy::single_call_fn,
+    reason = "bridge function — structural separation from TUI logic"
+)]
 pub fn build_search_filters(state: &SearchState) -> SearchFilters {
     let now_us = now_unix_micros();
     SearchFilters {

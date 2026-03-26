@@ -15,9 +15,8 @@
 //!
 //! On non-Windows platforms, this binary prints an error and exits.
 
-// Suppress unused crate warnings for deps used on Windows only
+// Deps used by broker.rs on Windows only — suppress unused-crate warnings
 use anyhow as _;
-use tracing as _;
 use uffs_security as _;
 
 mod broker;
@@ -25,16 +24,15 @@ mod broker;
 fn main() {
     #[cfg(windows)]
     {
-        if let Err(e) = broker::run() {
-            eprintln!("uffs-broker error: {e}");
+        if let Err(run_err) = broker::run() {
+            tracing::error!(%run_err, "uffs-broker fatal error");
             std::process::exit(1);
         }
     }
 
     #[cfg(not(windows))]
     {
-        eprintln!("uffs-broker is a Windows-only component.");
-        eprintln!("On macOS/Linux, the daemon reads MFT files directly (no elevation needed).");
+        tracing::error!("uffs-broker is a Windows-only component");
         std::process::exit(1);
     }
 }

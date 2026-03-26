@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use indicatif::ProgressBar;
 use tokio::task::JoinSet;
 use tracing::info;
-use uffs_mft::IntoLazy;
+use uffs_core::IntoLazy;
 
 use super::drive_search::{reorder_drive_column, search_single_drive};
 use crate::commands::raw_io::{OwnedQueryFilters, QueryFilters};
@@ -34,7 +34,7 @@ pub(crate) async fn search_multi_drive_filtered(
     filters: &QueryFilters<'_>,
     needs_paths: bool,
     no_bitmap: bool,
-) -> Result<uffs_mft::DataFrame> {
+) -> Result<uffs_core::DataFrame> {
     if drives.is_empty() {
         bail!("No drives specified for multi-drive search");
     }
@@ -75,7 +75,7 @@ pub(crate) async fn search_multi_drive_filtered(
         }
     }
 
-    let mut filtered_results: Vec<uffs_mft::DataFrame> = Vec::new();
+    let mut filtered_results: Vec<uffs_core::DataFrame> = Vec::new();
     let mut total_matches = 0usize;
     let mut drives_processed = 0usize;
 

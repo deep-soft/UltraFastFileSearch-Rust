@@ -75,11 +75,11 @@ pub enum CacheFormat {
 /// Requires at least 8 bytes to identify the magic.
 #[must_use]
 pub fn detect_format(data: &[u8]) -> CacheFormat {
-    if data.len() >= 8 {
-        if data[..8] == *ENCRYPTED_MAGIC {
+    if let Some(magic) = data.get(..8) {
+        if *magic == *ENCRYPTED_MAGIC {
             return CacheFormat::Encrypted;
         }
-        if data[..8] == *LEGACY_MAGIC {
+        if *magic == *LEGACY_MAGIC {
             return CacheFormat::LegacyPlaintext;
         }
     }
@@ -90,37 +90,16 @@ pub fn detect_format(data: &[u8]) -> CacheFormat {
 // Encrypt
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Returns the KDF ID for the current platform.
-#[must_use]
-fn platform_kdf_id() -> u8 {
-    #[cfg(target_os = "windows")]
-    {
-        KDF_DPAPI
-    }
-    #[cfg(target_os = "macos")]
-    {
-        KDF_KEYCHAIN
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        KDF_SECRET_SERVICE
-    }
-}
-
 /// Encrypts plaintext using AES-256-GCM and wraps it in the UFFSENC format.
 ///
 /// # Errors
 ///
 /// Returns an error if encryption fails (should not happen with valid key).
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "plaintext_len checked to fit u32"
-)]
 pub fn encrypt_cache(plaintext: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
     use rand::Rng;
 
     // Validate plaintext length fits in u32
-    let plaintext_len: u32 = u32::try_from(plaintext.len()).map_err(|_| {
+    let plaintext_len: u32 = u32::try_from(plaintext.len()).map_err(|_convert_err| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "plaintext too large for UFFSENC format (max 4 GB)",
@@ -128,20 +107,31 @@ pub fn encrypt_cache(plaintext: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
     })?;
 
     // Generate random 96-bit nonce
-    let mut nonce_bytes = [0u8; NONCE_SIZE];
+    let mut nonce_bytes = [0_u8; NONCE_SIZE];
     rand::rng().fill_bytes(&mut nonce_bytes);
+
+    // KDF ID for the current platform
+    #[cfg(target_os = "windows")]
+    let kdf_id = KDF_DPAPI;
+    #[cfg(target_os = "macos")]
+    let kdf_id = KDF_KEYCHAIN;
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let kdf_id = KDF_SECRET_SERVICE;
 
     // Build header (28 bytes)
     let mut output = Vec::with_capacity(HEADER_SIZE + plaintext.len() + TAG_SIZE);
     output.extend_from_slice(ENCRYPTED_MAGIC); // 0..8
     output.extend_from_slice(&ENC_FORMAT_VERSION.to_le_bytes()); // 8..10
     output.push(ALGO_AES_256_GCM); // 10
-    output.push(platform_kdf_id()); // 11
+    output.push(kdf_id); // 11
     output.extend_from_slice(&nonce_bytes); // 12..24
     output.extend_from_slice(&plaintext_len.to_le_bytes()); // 24..28
 
     // AAD = header bytes 0..28
-    let aad = output[..HEADER_SIZE].to_vec();
+    let aad = output
+        .get(..HEADER_SIZE)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "header shorter than expected"))?
+        .to_vec();
 
     // Append plaintext (will be encrypted in-place)
     let ciphertext_start = output.len();
@@ -151,10 +141,17 @@ pub fn encrypt_cache(plaintext: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
     let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
     let nonce = Nonce::from_slice(&nonce_bytes);
     let tag = cipher
-        .encrypt_in_place_detached(nonce, &aad, &mut output[ciphertext_start..])
-        .map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("AES-GCM encrypt failed: {e}"))
-        })?;
+        .encrypt_in_place_detached(
+            nonce,
+            &aad,
+            output.get_mut(ciphertext_start..).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ciphertext offset out of bounds",
+                )
+            })?,
+        )
+        .map_err(|enc_err| io::Error::other(format!("AES-GCM encrypt failed: {enc_err}")))?;
 
     // Append 16-byte GCM tag
     output.extend_from_slice(&tag);
@@ -189,16 +186,31 @@ pub fn decrypt_cache(data: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
         ));
     }
 
+    // We need at least HEADER_SIZE (28) bytes for the header fields.
+    // Extract all header bytes via safe `.get()` accessors.
+    let header = data
+        .get(..HEADER_SIZE)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "data too short for header"))?;
+
     // Validate magic
-    if data[..8] != *ENCRYPTED_MAGIC {
+    let magic = header
+        .get(..8)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "data too short for magic"))?;
+    if *magic != *ENCRYPTED_MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "not an encrypted UFFS cache file (bad magic)",
         ));
     }
 
-    // Parse header
-    let version = u16::from_le_bytes([data[8], data[9]]);
+    // Parse version from header[8..10]
+    let ver_hi = *header
+        .get(8)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing version byte"))?;
+    let ver_lo = *header
+        .get(9)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing version byte"))?;
+    let version = u16::from_le_bytes([ver_hi, ver_lo]);
     if version != ENC_FORMAT_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -206,7 +218,9 @@ pub fn decrypt_cache(data: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
         ));
     }
 
-    let algo = data[10];
+    let algo = *header
+        .get(10)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing algorithm byte"))?;
     if algo != ALGO_AES_256_GCM {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -214,13 +228,22 @@ pub fn decrypt_cache(data: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
         ));
     }
 
-    // KDF ID at data[11] — informational, not validated during decrypt
+    // KDF ID at header[11] — informational, not validated during decrypt
 
-    let nonce_bytes: &[u8; NONCE_SIZE] = data[12..24]
+    let nonce_bytes: &[u8; NONCE_SIZE] = header
+        .get(12..24)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "data too short for nonce"))?
         .try_into()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid nonce"))?;
+        .map_err(|_nonce_err| io::Error::new(io::ErrorKind::InvalidData, "invalid nonce"))?;
 
-    let plaintext_len = u32::from_le_bytes([data[24], data[25], data[26], data[27]]) as usize;
+    let len_bytes: &[u8; 4] = header
+        .get(24..28)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing plaintext length"))?
+        .try_into()
+        .map_err(|_len_err| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid plaintext length bytes")
+        })?;
+    let plaintext_len = u32::from_le_bytes(*len_bytes) as usize;
 
     // Validate lengths
     let expected_total = HEADER_SIZE + plaintext_len + TAG_SIZE;
@@ -235,10 +258,18 @@ pub fn decrypt_cache(data: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
         ));
     }
 
-    // Extract components
-    let aad = &data[..HEADER_SIZE];
-    let ciphertext = &data[HEADER_SIZE..HEADER_SIZE + plaintext_len];
-    let tag = &data[HEADER_SIZE + plaintext_len..HEADER_SIZE + plaintext_len + TAG_SIZE];
+    // Extract components — bounds guaranteed by expected_total check
+    let aad = data
+        .get(..HEADER_SIZE)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "header slice out of bounds"))?;
+    let ciphertext = data
+        .get(HEADER_SIZE..HEADER_SIZE + plaintext_len)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "ciphertext slice out of bounds")
+        })?;
+    let tag = data
+        .get(HEADER_SIZE + plaintext_len..HEADER_SIZE + plaintext_len + TAG_SIZE)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "tag slice out of bounds"))?;
 
     // Decrypt
     let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
@@ -248,7 +279,7 @@ pub fn decrypt_cache(data: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
     let mut plaintext = ciphertext.to_vec();
     cipher
         .decrypt_in_place_detached(nonce, aad, &mut plaintext, tag_arr)
-        .map_err(|_| {
+        .map_err(|_dec_err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "AES-GCM authentication failed (wrong key or tampered data)",
@@ -269,7 +300,7 @@ mod tests {
     /// S2.3.5: encrypt → decrypt round-trip, various sizes.
     #[test]
     fn round_trip_empty() {
-        let key = [0x42u8; 32];
+        let key = [0x42_u8; 32];
         let plaintext = b"";
         let encrypted = encrypt_cache(plaintext, &key).expect("encrypt");
         let decrypted = decrypt_cache(&encrypted, &key).expect("decrypt");
@@ -278,7 +309,7 @@ mod tests {
 
     #[test]
     fn round_trip_1_byte() {
-        let key = [0xABu8; 32];
+        let key = [0xAB_u8; 32];
         let plaintext = b"X";
         let encrypted = encrypt_cache(plaintext, &key).expect("encrypt");
         let decrypted = decrypt_cache(&encrypted, &key).expect("decrypt");
@@ -287,8 +318,8 @@ mod tests {
 
     #[test]
     fn round_trip_1mb() {
-        let key = [0xCDu8; 32];
-        let plaintext = vec![0x55u8; 1024 * 1024];
+        let key = [0xCD_u8; 32];
+        let plaintext = vec![0x55_u8; 1024 * 1024];
         let encrypted = encrypt_cache(&plaintext, &key).expect("encrypt");
         let decrypted = decrypt_cache(&encrypted, &key).expect("decrypt");
         assert_eq!(decrypted, plaintext);
@@ -297,59 +328,72 @@ mod tests {
     /// S2.3.6: tampered ciphertext → decrypt fails.
     #[test]
     fn tampered_ciphertext() {
-        let key = [0x11u8; 32];
+        let key = [0x11_u8; 32];
         let plaintext = b"hello world";
         let mut encrypted = encrypt_cache(plaintext, &key).expect("encrypt");
         // Flip a byte in the ciphertext region
-        encrypted[HEADER_SIZE] ^= 0xFF;
+        if let Some(byte) = encrypted.get_mut(HEADER_SIZE) {
+            *byte ^= 0xFF;
+        }
         assert!(decrypt_cache(&encrypted, &key).is_err());
     }
 
     /// S2.3.7: tampered header → decrypt fails (AAD mismatch).
     #[test]
     fn tampered_header_nonce() {
-        let key = [0x22u8; 32];
+        let key = [0x22_u8; 32];
         let plaintext = b"hello world";
         let mut encrypted = encrypt_cache(plaintext, &key).expect("encrypt");
         // Flip a nonce byte
-        encrypted[14] ^= 0xFF;
+        if let Some(byte) = encrypted.get_mut(14) {
+            *byte ^= 0xFF;
+        }
         assert!(decrypt_cache(&encrypted, &key).is_err());
     }
 
     #[test]
     fn tampered_header_algo() {
-        let key = [0x33u8; 32];
+        let key = [0x33_u8; 32];
         let plaintext = b"hello world";
         let mut encrypted = encrypt_cache(plaintext, &key).expect("encrypt");
         // Change algo ID
-        encrypted[10] = 0xFF;
+        if let Some(byte) = encrypted.get_mut(10) {
+            *byte = 0xFF;
+        }
         assert!(decrypt_cache(&encrypted, &key).is_err());
     }
 
     /// S2.3.8: truncated file → decrypt fails.
     #[test]
     fn truncated_file() {
-        let key = [0x44u8; 32];
+        let key = [0x44_u8; 32];
         let plaintext = b"hello world";
         let encrypted = encrypt_cache(plaintext, &key).expect("encrypt");
         // Truncate to just the header
-        assert!(decrypt_cache(&encrypted[..HEADER_SIZE], &key).is_err());
+        let header_only = encrypted.get(..HEADER_SIZE).expect("header slice");
+        assert!(decrypt_cache(header_only, &key).is_err());
         // Truncate mid-ciphertext
-        assert!(decrypt_cache(&encrypted[..HEADER_SIZE + 5], &key).is_err());
+        let partial = encrypted.get(..HEADER_SIZE + 5).expect("partial slice");
+        assert!(decrypt_cache(partial, &key).is_err());
     }
 
-    /// S2.3.9: legacy UFFSIDX magic → detect_format returns LegacyPlaintext.
+    /// S2.3.9: legacy UFFSIDX magic → `detect_format` returns
+    /// `LegacyPlaintext`.
     #[test]
     fn detect_legacy() {
-        let mut data = vec![0u8; 64];
-        data[..8].copy_from_slice(LEGACY_MAGIC);
+        let mut data = vec![0_u8; 64];
+        data.get_mut(..8)
+            .expect("data slice")
+            .copy_from_slice(LEGACY_MAGIC);
         assert_eq!(detect_format(&data), CacheFormat::LegacyPlaintext);
     }
 
     #[test]
     fn detect_encrypted() {
-        let mut data = vec![0u8; 64];
-        data[..8].copy_from_slice(ENCRYPTED_MAGIC);
+        let mut data = vec![0_u8; 64];
+        data.get_mut(..8)
+            .expect("data slice")
+            .copy_from_slice(ENCRYPTED_MAGIC);
         assert_eq!(detect_format(&data), CacheFormat::Encrypted);
     }
 
@@ -362,8 +406,8 @@ mod tests {
     /// Wrong key → decrypt fails.
     #[test]
     fn wrong_key() {
-        let key1 = [0x11u8; 32];
-        let key2 = [0x22u8; 32];
+        let key1 = [0x11_u8; 32];
+        let key2 = [0x22_u8; 32];
         let plaintext = b"secret data";
         let encrypted = encrypt_cache(plaintext, &key1).expect("encrypt");
         assert!(decrypt_cache(&encrypted, &key2).is_err());

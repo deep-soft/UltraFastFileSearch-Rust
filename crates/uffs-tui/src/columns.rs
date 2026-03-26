@@ -6,6 +6,10 @@ pub use uffs_core::search::columns::{DEFAULT_COLUMNS, TuiColumn, parse_columns};
 
 /// Default width constraint for a column (TUI-specific, depends on ratatui).
 #[must_use]
+#[expect(
+    clippy::single_call_fn,
+    reason = "layout helper — clarity over inlining into render loop"
+)]
 pub const fn default_constraint(col: TuiColumn) -> ratatui::layout::Constraint {
     use ratatui::layout::Constraint;
     match col {

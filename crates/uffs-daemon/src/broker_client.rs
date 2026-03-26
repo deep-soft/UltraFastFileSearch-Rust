@@ -10,7 +10,8 @@
 //! 4. Receive status (1 byte) + handle value (8 bytes)
 //! 5. Use the handle for MFT reading
 
-/// The broker pipe name (must match uffs-broker/src/broker.rs).
+/// The broker pipe name (must match `uffs-broker/src/broker.rs`).
+#[cfg(windows)]
 pub const BROKER_PIPE_NAME: &str = r"\\.\pipe\uffs-broker";
 
 /// Check if the Access Broker is available (pipe exists).
@@ -77,12 +78,16 @@ pub fn request_volume_handle(drive_letter: char) -> anyhow::Result<u64> {
 
 /// Non-Windows: broker is never available.
 #[cfg(not(windows))]
-pub fn broker_available() -> bool {
+pub const fn broker_available() -> bool {
     false
 }
 
 /// Non-Windows: broker request always fails.
 #[cfg(not(windows))]
+#[expect(
+    clippy::single_call_fn,
+    reason = "platform stub — mirrors Windows variant"
+)]
 pub fn request_volume_handle(_drive_letter: char) -> anyhow::Result<u64> {
     anyhow::bail!("Access Broker is a Windows-only feature")
 }

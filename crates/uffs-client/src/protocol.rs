@@ -308,6 +308,10 @@ impl RpcErrorResponse {
     clippy::cast_precision_loss,
     reason = "precision loss acceptable for display"
 )]
+#[expect(
+    clippy::float_arithmetic,
+    reason = "floating-point division is intentional for human-readable size formatting"
+)]
 pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
@@ -322,6 +326,15 @@ pub fn format_size(bytes: u64) -> String {
 
 /// Format a Unix-microsecond timestamp as `YYYY-MM-DD HH:MM`.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "intermediate values are bounded by calendar math — truncation is safe"
+)]
+#[expect(
+    clippy::cast_lossless,
+    reason = "explicit casts are clearer than From for calendar arithmetic"
+)]
 pub fn format_time(unix_micros: i64) -> String {
     if unix_micros == 0 {
         return "—".to_owned();
@@ -334,18 +347,26 @@ pub fn format_time(unix_micros: i64) -> String {
     let minute = (day_secs % 3600) / 60;
 
     // Approximate date (Howard Hinnant algorithm, simplified)
-    let z = days_since_epoch + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u32;
+    let civil_z = days_since_epoch + 719_468;
+    let era = if civil_z >= 0 {
+        civil_z
+    } else {
+        civil_z - 146_096
+    } / 146_097;
+    let doe = (civil_z - era * 146_097) as u32;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
+    let base_year = yoe as i64 + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
+    let month_proxy = (5 * doy + 2) / 153;
+    let day = doy - (153 * month_proxy + 2) / 5 + 1;
+    let month = if month_proxy < 10 {
+        month_proxy + 3
+    } else {
+        month_proxy - 9
+    };
+    let year = if month <= 2 { base_year + 1 } else { base_year };
 
-    format!("{y:04}-{m:02}-{d:02} {hour:02}:{minute:02}")
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -369,7 +390,10 @@ mod tests {
     /// D2.2.5: serialize/deserialize round-trip for response.
     #[test]
     fn response_round_trip() {
-        let resp = RpcResponse::success(42, serde_json::json!({"rows": [], "records_scanned": 0}));
+        let resp = RpcResponse::success(
+            42,
+            serde_json::json!({"rows": [], "records_scanned": 0_u64}),
+        );
         let json = serde_json::to_string(&resp).expect("serialize");
         let parsed: RpcResponse = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.id, 42);
@@ -384,7 +408,7 @@ mod tests {
         assert_eq!(parsed.error.code, ERR_METHOD_NOT_FOUND);
     }
 
-    /// D2.2.5: SearchParams serialize/deserialize.
+    /// D2.2.5: `SearchParams` serialize/deserialize.
     #[test]
     fn search_params_round_trip() {
         let params = SearchParams {
@@ -400,7 +424,7 @@ mod tests {
         assert_eq!(parsed.limit, Some(100));
     }
 
-    /// D2.2.5: DaemonStatus serialize/deserialize.
+    /// D2.2.5: `DaemonStatus` serialize/deserialize.
     #[test]
     fn daemon_status_round_trip() {
         let loading = DaemonStatus::Loading {
@@ -412,12 +436,12 @@ mod tests {
         assert_eq!(parsed, loading);
 
         let ready = DaemonStatus::Ready;
-        let json = serde_json::to_string(&ready).expect("serialize");
-        let parsed: DaemonStatus = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(parsed, ready);
+        let ready_json = serde_json::to_string(&ready).expect("serialize");
+        let ready_parsed: DaemonStatus = serde_json::from_str(&ready_json).expect("deserialize");
+        assert_eq!(ready_parsed, ready);
     }
 
-    /// D2.2.5: SearchResponse with rows.
+    /// D2.2.5: `SearchResponse` with rows.
     #[test]
     fn search_response_round_trip() {
         let resp = SearchResponse {
@@ -442,7 +466,8 @@ mod tests {
         let json = serde_json::to_string(&resp).expect("serialize");
         let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.rows.len(), 1);
-        assert_eq!(parsed.rows[0].name, "test.rs");
+        let first_row = parsed.rows.first().expect("at least one row");
+        assert_eq!(first_row.name, "test.rs");
         assert_eq!(parsed.duration_ms, 8);
     }
 }

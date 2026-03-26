@@ -1,9 +1,9 @@
 //! Daemon lifecycle: PID file, idle timeout, auto-retire, shutdown.
 
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use tokio::sync::watch;
 
@@ -17,10 +17,10 @@ pub struct LifecycleHandle {
     /// Shutdown nonce — must be provided in the `shutdown` RPC call (S4.4.9).
     shutdown_nonce: Arc<std::sync::Mutex<Option<String>>>,
     /// Active connection count (D2.6.7: don't retire if > 0).
-    active_connections: Arc<std::sync::atomic::AtomicUsize>,
+    active_connections: Arc<core::sync::atomic::AtomicUsize>,
     /// Longest session type seen (D2.6.6: TUI/GUI/MCP get 15 min, CLI gets 5
     /// min).
-    max_session_tier: Arc<std::sync::atomic::AtomicU8>,
+    max_session_tier: Arc<core::sync::atomic::AtomicU8>,
 }
 
 impl LifecycleHandle {
@@ -67,11 +67,8 @@ impl LifecycleHandle {
         let guard = self
             .shutdown_nonce
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        match guard.as_deref() {
-            Some(expected) => expected == provided,
-            None => true, // no nonce set — allow (shouldn't happen in practice)
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.as_deref() == Some(provided) || guard.is_none()
     }
 }
 
@@ -93,12 +90,13 @@ impl LifecycleManager {
     /// Create a new lifecycle manager.
     ///
     /// `idle_timeout`: `None` for `--no-retire`, `Some(duration)` otherwise.
+    #[expect(clippy::single_call_fn, reason = "constructor — structural separation")]
     pub fn new(data_dir: &std::path::Path, idle_timeout: Option<Duration>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let idle_reset = Arc::new(AtomicBool::new(false));
         let shutdown_nonce_shared = Arc::new(std::sync::Mutex::new(None));
-        let active_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let max_session_tier = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let active_connections = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        let max_session_tier = Arc::new(core::sync::atomic::AtomicU8::new(0));
 
         let pid_path = data_dir.join("daemon.pid");
 
@@ -134,8 +132,8 @@ impl LifecycleManager {
             uffs_security::fs::create_secure_dir(parent)?;
         }
 
-        let exe_hash = exe_path_hash();
-        let nonce = generate_nonce();
+        let exe_hash = Self::exe_path_hash();
+        let nonce = Self::generate_nonce();
         self.shutdown_nonce = Some(nonce.clone());
 
         // Sync nonce to the shared handle so handlers can verify it
@@ -148,7 +146,7 @@ impl LifecycleManager {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs()),
+                .map_or(0, |dur| dur.as_secs()),
             exe_hash,
             nonce,
         );
@@ -167,30 +165,39 @@ impl LifecycleManager {
     }
 
     /// Check for stale PID file on startup. Returns `true` if safe to proceed.
+    ///
+    /// Uses [`parse_pid_file`] for structured parsing and validates the exe
+    /// hash via [`expected_daemon_exe_hash`] to detect stale files from
+    /// different binaries.
     pub fn check_stale_pid(&self) -> bool {
         if !self.pid_path.exists() {
             return true;
         }
 
-        let content = match std::fs::read_to_string(&self.pid_path) {
-            Ok(c) => c,
-            Err(_) => {
-                // Can't read — remove and proceed
-                let _ignore = std::fs::remove_file(&self.pid_path);
-                return true;
-            }
+        let Some((pid, _ts, exe_hash, _nonce)) = Self::parse_pid_file(&self.pid_path) else {
+            // Unparseable — remove and proceed
+            let _ignore = std::fs::remove_file(&self.pid_path);
+            return true;
         };
-
-        let pid_str = content.lines().next().unwrap_or("");
-        let pid: u32 = pid_str.parse().unwrap_or(0);
 
         if pid == 0 {
             let _ignore = std::fs::remove_file(&self.pid_path);
             return true;
         }
 
+        // Validate exe hash — if it doesn't match, it's from a different binary
+        let expected_hash = Self::expected_daemon_exe_hash();
+        if expected_hash != 0 && exe_hash != expected_hash {
+            tracing::info!(
+                pid,
+                "PID file exe hash mismatch (stale from different binary), cleaning up"
+            );
+            let _ignore = std::fs::remove_file(&self.pid_path);
+            return true;
+        }
+
         // Check if the process is still alive
-        if is_process_alive(pid) {
+        if Self::is_process_alive(pid) {
             tracing::warn!(
                 pid,
                 "Another daemon instance is running. Use 'shutdown' to stop it first."
@@ -217,7 +224,7 @@ impl LifecycleManager {
     pub async fn run_idle_timer(&mut self) {
         let Some(base_timeout) = self.idle_timeout else {
             // --no-retire: just wait for shutdown signal
-            let _ = self.shutdown_rx.wait_for(|&v| v).await;
+            let _shutdown = self.shutdown_rx.wait_for(|&done| done).await;
             return;
         };
 
@@ -256,7 +263,7 @@ impl LifecycleManager {
                     );
                     return;
                 }
-                _ = self.shutdown_rx.wait_for(|&v| v) => {
+                _ = self.shutdown_rx.wait_for(|&done| done) => {
                     tracing::info!("Shutdown requested");
                     return;
                 }
@@ -270,106 +277,133 @@ impl LifecycleManager {
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
     }
+
+    // ── Private helpers ───────────────────────────────────────────────
+
+    /// Check if a process with the given PID is alive (Unix).
+    #[cfg(unix)]
+    #[expect(
+        clippy::single_call_fn,
+        reason = "platform-specific helper — clarity over inlining"
+    )]
+    fn is_process_alive(pid: u32) -> bool {
+        // pid_t is i32; PIDs above i32::MAX are invalid on POSIX.
+        let Ok(target_pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        #[expect(
+            unsafe_code,
+            reason = "kill(pid, 0) is a standard POSIX liveness check"
+        )]
+        // SAFETY: `kill(pid, 0)` is a standard POSIX liveness check — it
+        // sends no signal, just tests whether the process exists.
+        let alive = unsafe { libc::kill(target_pid, 0_i32) == 0_i32 };
+        alive
+    }
+
+    /// Check if a process with the given PID is alive (Windows).
+    #[cfg(windows)]
+    fn is_process_alive(pid: u32) -> bool {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+        // SAFETY: `OpenProcess` is a well-defined Win32 API.
+        #[expect(unsafe_code, reason = "OpenProcess requires unsafe FFI")]
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if let Ok(proc_handle) = handle {
+                let _close = CloseHandle(proc_handle);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    /// `FNV-1a` hash of the current executable path (S4.3.1).
+    #[expect(
+        clippy::single_call_fn,
+        reason = "hashing helper — clarity over inlining"
+    )]
+    fn exe_path_hash() -> u64 {
+        let exe_path = std::env::current_exe()
+            .map(|exe| exe.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Self::fnv1a_hash(exe_path.as_bytes())
+    }
+
+    /// `FNV-1a` 64-bit hash (no external dep needed).
+    fn fnv1a_hash(data: &[u8]) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for &byte in data {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        hash
+    }
+
+    /// Generate a random 16-char hex nonce for shutdown authentication
+    /// (S4.4.9).
+    #[expect(
+        clippy::single_call_fn,
+        reason = "nonce generation — clarity over inlining"
+    )]
+    fn generate_nonce() -> String {
+        use rand::Rng;
+        let mut nonce_bytes = [0_u8; 8];
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let mut nonce_str = String::with_capacity(16_usize);
+        for byte in &nonce_bytes {
+            use core::fmt::Write;
+            let _ignore = write!(nonce_str, "{byte:02x}");
+        }
+        nonce_str
+    }
+
+    /// Parse a PID file and extract its fields.
+    ///
+    /// Returns `(pid, timestamp, exe_hash, nonce)`.
+    #[expect(
+        clippy::single_call_fn,
+        reason = "PID file parser — public API for clients"
+    )]
+    pub fn parse_pid_file(path: &std::path::Path) -> Option<(u32, u64, u64, String)> {
+        let file_content = std::fs::read_to_string(path).ok()?;
+        let mut lines_iter = file_content.lines();
+        let pid: u32 = lines_iter.next()?.parse().ok()?;
+        let timestamp: u64 = lines_iter.next()?.parse().ok()?;
+        let exe_hash: u64 = lines_iter.next()?.parse().ok()?;
+        let nonce = lines_iter.next()?.to_owned();
+        Some((pid, timestamp, exe_hash, nonce))
+    }
+
+    /// Get the expected `exe_path_hash` for daemon identity verification.
+    ///
+    /// Clients call this to compute what the daemon's exe hash should be,
+    /// then compare against the PID file.
+    #[expect(
+        clippy::single_call_fn,
+        reason = "exe hash verifier — public API for clients"
+    )]
+    pub fn expected_daemon_exe_hash() -> u64 {
+        if let Ok(current) = std::env::current_exe() {
+            if let Some(dir) = current.parent() {
+                let daemon = dir.join("uffs-daemon");
+                if daemon.exists() {
+                    return Self::fnv1a_hash(daemon.to_string_lossy().as_bytes());
+                }
+                let daemon_exe = dir.join("uffs-daemon.exe");
+                if daemon_exe.exists() {
+                    return Self::fnv1a_hash(daemon_exe.to_string_lossy().as_bytes());
+                }
+            }
+        }
+        0_u64
+    }
 }
 
 impl Drop for LifecycleManager {
     fn drop(&mut self) {
         self.remove_pid_file();
     }
-}
-
-/// Check if a process with the given PID is alive.
-#[cfg(unix)]
-fn is_process_alive(pid: u32) -> bool {
-    // SAFETY: kill with signal 0 checks if the process exists without sending a
-    // signal.
-    #[expect(
-        unsafe_code,
-        reason = "kill(pid, 0) is a standard POSIX liveness check"
-    )]
-    unsafe {
-        libc::kill(pid as libc::pid_t, 0) == 0
-    }
-}
-
-/// Check if a process with the given PID is alive (Windows).
-#[cfg(windows)]
-fn is_process_alive(pid: u32) -> bool {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-
-    // SAFETY: OpenProcess is a well-defined Win32 API.
-    #[expect(unsafe_code, reason = "OpenProcess requires unsafe FFI")]
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-        if let Ok(h) = handle {
-            let _ = CloseHandle(h);
-            true
-        } else {
-            false
-        }
-    }
-}
-
-/// FNV-1a hash of the current executable path (S4.3.1).
-///
-/// Used in the PID file so the client can verify the daemon is the expected
-/// binary.
-fn exe_path_hash() -> u64 {
-    let path = std::env::current_exe()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-    fnv1a_hash(path.as_bytes())
-}
-
-/// FNV-1a 64-bit hash (no external dep needed).
-fn fnv1a_hash(data: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &byte in data {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash
-}
-
-/// Generate a random 16-char hex nonce for shutdown authentication (S4.4.9).
-fn generate_nonce() -> String {
-    use rand::Rng;
-    let mut bytes = [0u8; 8];
-    rand::rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Parse a PID file and extract its fields.
-///
-/// Returns `(pid, timestamp, exe_hash, nonce)`.
-pub fn parse_pid_file(path: &std::path::Path) -> Option<(u32, u64, u64, String)> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let mut lines = content.lines();
-    let pid: u32 = lines.next()?.parse().ok()?;
-    let timestamp: u64 = lines.next()?.parse().ok()?;
-    let exe_hash: u64 = lines.next()?.parse().ok()?;
-    let nonce = lines.next()?.to_owned();
-    Some((pid, timestamp, exe_hash, nonce))
-}
-
-/// Get the expected exe_path_hash for daemon identity verification.
-///
-/// Clients call this to compute what the daemon's exe hash should be,
-/// then compare against the PID file.
-pub fn expected_daemon_exe_hash() -> u64 {
-    // Look for uffs-daemon next to current exe
-    if let Ok(current) = std::env::current_exe() {
-        if let Some(dir) = current.parent() {
-            let daemon = dir.join("uffs-daemon");
-            if daemon.exists() {
-                return fnv1a_hash(daemon.to_string_lossy().as_bytes());
-            }
-            let daemon_exe = dir.join("uffs-daemon.exe");
-            if daemon_exe.exists() {
-                return fnv1a_hash(daemon_exe.to_string_lossy().as_bytes());
-            }
-        }
-    }
-    0
 }

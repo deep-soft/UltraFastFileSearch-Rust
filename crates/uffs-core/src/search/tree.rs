@@ -11,6 +11,7 @@ use crate::compact::DriveCompactIndex;
 /// index.
 ///
 /// Returns path like `C:\Users\Photos\beach.jpg`.
+#[must_use]
 pub fn resolve_path(drive: &DriveCompactIndex, record_idx: usize, volume_prefix: &str) -> String {
     let mut components = Vec::with_capacity(8);
     let mut current_idx = record_idx;
@@ -88,7 +89,10 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
         return Vec::new();
     };
     if segments.len() == 1 {
-        return name_search(drive, first_segment, limit);
+        return trigram_filtered_records(drive, first_segment, limit, |rec| {
+            let name = rec.name(&drive.names_lower);
+            !name.is_empty() && name != "." && name.contains(first_segment)
+        });
     }
 
     // Multi-segment path search with ** support.
@@ -111,7 +115,9 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
             .map(|(idx, _)| idx as u32)
             .collect()
     } else {
-        find_dirs_by_name(drive, first_segment)
+        trigram_filtered_records(drive, first_segment, usize::MAX, |rec| {
+            rec.is_directory() && segment_matches(rec.name(&drive.names_lower), first_segment)
+        })
     };
 
     // Walk through intermediate dir segments
@@ -238,90 +244,41 @@ fn collect_all_descendants(
     }
 }
 
-/// Find all directory compact indices whose name matches a pattern.
-fn find_dirs_by_name(drive: &DriveCompactIndex, pattern: &str) -> Vec<u32> {
-    let candidates = drive.trigram.search(pattern);
-
-    if let Some(candidate_indices) = candidates {
-        candidate_indices
-            .iter()
-            .filter(|&&idx| {
-                let rec_idx = idx as usize;
-                let Some(rec) = drive.records.get(rec_idx) else {
-                    return false;
-                };
-                if !rec.is_directory() {
-                    return false;
-                }
-                let dir_name = rec.name(&drive.names_lower);
-                segment_matches(dir_name, pattern)
-            })
-            .copied()
-            .collect()
-    } else {
-        drive
-            .records
-            .iter()
-            .enumerate()
-            .filter(|(_, rec)| {
-                if !rec.is_directory() {
-                    return false;
-                }
-                let dir_name = rec.name(&drive.names_lower);
-                segment_matches(dir_name, pattern)
-            })
-            .map(|(idx, _)| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "record count bounded by NTFS limits"
-                )]
-                {
-                    idx as u32
-                }
-            })
-            .collect()
-    }
-}
-
-/// Simple name search by substring (used as single-segment fallback).
-fn name_search(drive: &DriveCompactIndex, needle: &str, limit: usize) -> Vec<u32> {
+/// Search records using trigram pre-filter and a predicate.
+///
+/// If a trigram candidate set exists for `needle`, only those records are
+/// checked; otherwise a full scan is performed, capped at `limit`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "record count bounded by NTFS limits"
+)]
+fn trigram_filtered_records(
+    drive: &DriveCompactIndex,
+    needle: &str,
+    limit: usize,
+    predicate: impl Fn(&crate::compact::CompactRecord) -> bool,
+) -> Vec<u32> {
     let candidates = drive.trigram.search(needle);
-
-    if let Some(candidate_indices) = candidates {
-        candidate_indices
-            .iter()
-            .filter(|&&idx| {
-                let rec_idx = idx as usize;
-                let Some(rec) = drive.records.get(rec_idx) else {
-                    return false;
-                };
-                let name = rec.name(&drive.names_lower);
-                !name.is_empty() && name.contains(needle)
-            })
-            .take(limit)
-            .copied()
-            .collect()
-    } else {
-        drive
-            .records
-            .iter()
-            .enumerate()
-            .filter(|(_, rec)| {
-                let name = rec.name(&drive.names_lower);
-                !name.is_empty() && name != "." && name.contains(needle)
-            })
-            .take(limit)
-            .map(|(idx, _)| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "record count bounded by NTFS limits"
-                )]
-                {
-                    idx as u32
-                }
-            })
-            .collect()
-    }
+    candidates.map_or_else(
+        || {
+            drive
+                .records
+                .iter()
+                .enumerate()
+                .filter(|(_, rec)| predicate(rec))
+                .take(limit)
+                .map(|(idx, _)| idx as u32)
+                .collect()
+        },
+        |candidate_indices| {
+            candidate_indices
+                .iter()
+                .filter(|&&idx| drive.records.get(idx as usize).is_some_and(&predicate))
+                .take(limit)
+                .copied()
+                .collect()
+        },
+    )
 }
 
 /// Check if a name matches a glob pattern (case-insensitive, both already
@@ -333,6 +290,7 @@ fn name_search(drive: &DriveCompactIndex, needle: &str, limit: usize) -> Vec<u32
 /// - Multiple wildcards: `*sex*Ge*` matches "I want your Sex - George Michael"
 /// - OR operator: `*.rs|*.py` → match if ANY sub-pattern matches
 /// - No wildcards: plain substring match
+#[must_use]
 pub fn name_matches(name: &str, pattern: &str) -> bool {
     if name.is_empty() || name == "." {
         return false;
@@ -363,6 +321,7 @@ fn name_matches_single(name: &str, pattern: &str) -> bool {
 ///
 /// Unlike [`name_matches`] which does substring matching for bare literals
 /// (search behaviour), this requires an **exact** match for non-glob segments.
+#[must_use]
 pub fn segment_matches(name: &str, segment: &str) -> bool {
     if name.is_empty() || name == "." {
         return false;

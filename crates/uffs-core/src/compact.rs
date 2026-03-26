@@ -133,6 +133,10 @@ pub struct PatchStats {
 }
 
 /// Refresh a drive by reloading from its original source.
+///
+/// # Errors
+///
+/// Returns an error if the drive source cannot be reloaded.
 pub fn refresh_drive(drive: &DriveCompactIndex) -> anyhow::Result<(DriveCompactIndex, LoadTiming)> {
     match &drive.source {
         IndexSource::MftFile(path) => {
@@ -154,6 +158,7 @@ pub fn refresh_drive(drive: &DriveCompactIndex) -> anyhow::Result<(DriveCompactI
 /// Build a `DriveCompactIndex` from a loaded `MftIndex`.
 ///
 /// Returns `(DriveCompactIndex, compact_build_ms, trigram_build_ms)`.
+#[must_use]
 pub fn build_compact_index(
     drive_letter: char,
     index: &MftIndex,
@@ -203,7 +208,21 @@ pub fn build_compact_index(
     let compact_elapsed = compact_start.elapsed().as_millis();
 
     let tri_start = Instant::now();
-    let trigram = build_name_trigram(&records, &names_lower);
+    let trigram = {
+        let name_strings: Vec<String> = records
+            .iter()
+            .map(|rec| {
+                let start = rec.name_offset as usize;
+                let end = start + rec.name_len as usize;
+                names_lower
+                    .get(start..end)
+                    .and_then(|bytes| core::str::from_utf8(bytes).ok())
+                    .unwrap_or("")
+                    .to_owned()
+            })
+            .collect();
+        TrigramIndex::build(&name_strings)
+    };
     let tri_elapsed = tri_start.elapsed().as_millis();
 
     // Build children index from parent_idx (single pass).
@@ -238,28 +257,14 @@ pub fn build_compact_index(
     )
 }
 
-/// Build a trigram index from compact records' names.
-fn build_name_trigram(records: &[CompactRecord], names_lower: &[u8]) -> TrigramIndex {
-    let name_strings: Vec<String> = records
-        .iter()
-        .map(|rec| {
-            let start = rec.name_offset as usize;
-            let end = start + rec.name_len as usize;
-            names_lower
-                .get(start..end)
-                .and_then(|bytes| core::str::from_utf8(bytes).ok())
-                .unwrap_or("")
-                .to_owned()
-        })
-        .collect();
-
-    TrigramIndex::build(&name_strings)
-}
-
 /// Cache TTL in seconds (10 minutes — same as Windows CLI).
 const INDEX_TTL_SECONDS: u64 = 600;
 
 /// Load an MFT file and build a compact index (cross-platform).
+///
+/// # Errors
+///
+/// Returns an error if the MFT file cannot be read or parsed.
 pub fn load_mft_file(
     mft_path: &std::path::Path,
     drive: Option<char>,
@@ -297,7 +302,25 @@ pub fn load_mft_file(
             path = %mft_path.display(),
             "📖 Parsing MFT file"
         );
-        let parsed = parse_raw_mft_to_index(mft_path, drive_letter)?;
+        let parsed = {
+            use uffs_mft::parse::{MftRecordMerger, apply_fixup, parse_record_full};
+
+            let options = uffs_mft::raw::LoadRawOptions::default();
+            let raw = uffs_mft::raw::load_raw_mft(mft_path, &options)?;
+            let capacity = uffs_mft::frs_to_usize(raw.header.record_count);
+            let mut merger = MftRecordMerger::with_capacity(capacity);
+
+            for (frs, record_data) in raw.iter_records() {
+                let mut record_buf = record_data.to_vec();
+                if !apply_fixup(&mut record_buf) {
+                    continue;
+                }
+                merger.add_result(parse_record_full(&record_buf, frs));
+            }
+
+            let records = merger.merge();
+            MftIndex::from_parsed_records(drive_letter, records)
+        };
 
         if let Err(err) = uffs_mft::cache::save_to_cache(&parsed, drive_letter, 0, 0, 0) {
             tracing::warn!(
@@ -329,30 +352,6 @@ pub fn load_mft_file(
             trigram: tri_elapsed,
         },
     ))
-}
-
-/// Parse a raw MFT file into an `MftIndex`.
-fn parse_raw_mft_to_index(
-    mft_path: &std::path::Path,
-    drive_letter: char,
-) -> anyhow::Result<MftIndex> {
-    use uffs_mft::parse::{MftRecordMerger, apply_fixup, parse_record_full};
-
-    let options = uffs_mft::raw::LoadRawOptions::default();
-    let raw = uffs_mft::raw::load_raw_mft(mft_path, &options)?;
-    let capacity = uffs_mft::frs_to_usize(raw.header.record_count);
-    let mut merger = MftRecordMerger::with_capacity(capacity);
-
-    for (frs, record_data) in raw.iter_records() {
-        let mut record_buf = record_data.to_vec();
-        if !apply_fixup(&mut record_buf) {
-            continue;
-        }
-        merger.add_result(parse_record_full(&record_buf, frs));
-    }
-
-    let records = merger.merge();
-    Ok(MftIndex::from_parsed_records(drive_letter, records))
 }
 
 /// Load a live NTFS drive and build a compact index (Windows only).

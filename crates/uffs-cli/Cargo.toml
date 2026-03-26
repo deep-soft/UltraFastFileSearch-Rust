@@ -30,7 +30,6 @@ path = "src/main.rs"
 # Internal crates
 uffs-mft.workspace = true
 uffs-core.workspace = true
-uffs-client.workspace = true
 
 # Async runtime
 tokio.workspace = true

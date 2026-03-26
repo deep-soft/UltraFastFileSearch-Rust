@@ -95,4 +95,4 @@ pub use query::MftQuery;
 pub use tree::{TreeColumn, TreeIndex, add_tree_columns, apply_directory_treesize};
 // Re-export commonly used types
 pub use uffs_mft::FileFlags;
-pub use uffs_polars::{DataFrame, LazyFrame, columns};
+pub use uffs_polars::{DataFrame, IntoLazy, LazyFrame, col, columns, lit};

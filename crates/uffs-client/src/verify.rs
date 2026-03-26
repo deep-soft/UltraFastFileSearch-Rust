@@ -16,20 +16,17 @@ use std::path::PathBuf;
 /// Returns `true` if verification passes or cannot be performed (graceful
 /// degradation — don't block the user if the OS API isn't available).
 pub fn verify_daemon_identity(pid: u32) -> bool {
-    let daemon_path = match get_process_exe_path(pid) {
-        Some(p) => p,
-        None => {
-            tracing::debug!(
-                pid,
-                "Could not determine daemon exe path, skipping verification"
-            );
-            return true; // graceful degradation
-        }
+    let Some(daemon_path) = get_process_exe_path(pid) else {
+        tracing::debug!(
+            pid,
+            "Could not determine daemon exe path, skipping verification"
+        );
+        return true; // graceful degradation
     };
 
     let daemon_name = daemon_path
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(|name| name.to_str())
         .unwrap_or("");
 
     // Check that the process is actually uffs-daemon (not something else)
@@ -71,7 +68,7 @@ pub fn verify_daemon_identity(pid: u32) -> bool {
 
 /// Verify daemon identity using the PID file at the given path.
 ///
-/// Reads the PID file, extracts the PID and exe_path_hash, then:
+/// Reads the PID file, extracts the PID and `exe_path_hash`, then:
 /// 1. Checks the PID is alive
 /// 2. Gets the exe path of that PID
 /// 3. Computes FNV-1a hash of the exe path
@@ -79,20 +76,17 @@ pub fn verify_daemon_identity(pid: u32) -> bool {
 ///
 /// Returns `true` if verification passes.
 pub fn verify_daemon_pid_file(pid_path: &std::path::Path) -> bool {
-    let content = match std::fs::read_to_string(pid_path) {
-        Ok(c) => c,
-        Err(_) => return true, // no PID file = can't verify, allow
+    let Ok(content) = std::fs::read_to_string(pid_path) else {
+        return true; // no PID file = can't verify, allow
     };
 
     let mut lines = content.lines();
-    let pid: u32 = match lines.next().and_then(|s| s.parse().ok()) {
-        Some(p) => p,
-        None => return true,
+    let Some(pid) = lines.next().and_then(|line| line.parse::<u32>().ok()) else {
+        return true;
     };
-    let _timestamp: u64 = lines.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let expected_hash: u64 = match lines.next().and_then(|s| s.parse().ok()) {
-        Some(h) => h,
-        None => return true, // old format PID file without hash
+    let _timestamp: u64 = lines.next().and_then(|line| line.parse().ok()).unwrap_or(0);
+    let Some(expected_hash) = lines.next().and_then(|line| line.parse::<u64>().ok()) else {
+        return true; // old format PID file without hash
     };
 
     // Skip hash verification if 0 (couldn't determine at write time)
@@ -101,12 +95,20 @@ pub fn verify_daemon_pid_file(pid_path: &std::path::Path) -> bool {
     }
 
     // Get the exe path and compute its hash
-    let exe_path = match get_process_exe_path(pid) {
-        Some(p) => p,
-        None => return true, // can't get path, allow
+    let Some(exe_path) = get_process_exe_path(pid) else {
+        return true; // can't get path, allow
     };
 
-    let actual_hash = fnv1a_hash(exe_path.to_string_lossy().as_bytes());
+    // FNV-1a 64-bit hash (must match uffs-daemon/lifecycle.rs)
+    let actual_hash = {
+        let data = exe_path.to_string_lossy();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for &byte in data.as_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        hash
+    };
 
     if actual_hash != expected_hash {
         tracing::warn!(
@@ -122,16 +124,6 @@ pub fn verify_daemon_pid_file(pid_path: &std::path::Path) -> bool {
     true
 }
 
-/// FNV-1a 64-bit hash (must match the one in uffs-daemon/lifecycle.rs).
-fn fnv1a_hash(data: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &byte in data {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash
-}
-
 // ── Platform-specific exe path lookup ───────────────────────────────────
 
 /// Get the executable path for a running process by PID.
@@ -139,16 +131,18 @@ fn fnv1a_hash(data: &[u8]) -> u64 {
 /// - **macOS**: `proc_pidpath()`
 /// - **Linux**: `/proc/{pid}/exe` readlink
 /// - **Windows**: `QueryFullProcessImageNameW()`
-fn get_process_exe_path(pid: u32) -> Option<PathBuf> {
-    platform_get_exe_path(pid)
-}
-
-// ── macOS: proc_pidpath ─────────────────────────────────────────────────
-
+///
+/// Returns `None` if the process is not found or the API is unavailable.
 #[cfg(target_os = "macos")]
-fn platform_get_exe_path(pid: u32) -> Option<PathBuf> {
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "proc_pidpath takes c_int pid and u32 bufsize, returns i32 len — all bounded"
+)]
+fn get_process_exe_path(pid: u32) -> Option<PathBuf> {
     // MAXPATHLEN on macOS is 1024; proc_pidpath needs at least this
-    let mut buf = vec![0u8; 4096];
+    let mut buf = vec![0_u8; 4096];
 
     // SAFETY: proc_pidpath is a documented macOS API (libproc.h).
     #[expect(unsafe_code, reason = "proc_pidpath requires unsafe FFI")]
@@ -160,26 +154,28 @@ fn platform_get_exe_path(pid: u32) -> Option<PathBuf> {
         )
     };
 
-    if len <= 0 {
+    if len <= 0_i32 {
         return None;
     }
 
-    let path_str = std::str::from_utf8(&buf[..len as usize]).ok()?;
+    let path_str = core::str::from_utf8(buf.get(..len as usize)?).ok()?;
     Some(PathBuf::from(path_str))
 }
 
 // ── Linux: /proc/{pid}/exe ──────────────────────────────────────────────
 
+/// Linux: reads `/proc/{pid}/exe` symlink.
 #[cfg(target_os = "linux")]
-fn platform_get_exe_path(pid: u32) -> Option<PathBuf> {
+fn get_process_exe_path(pid: u32) -> Option<PathBuf> {
     let proc_path = format!("/proc/{pid}/exe");
     std::fs::read_link(&proc_path).ok()
 }
 
 // ── Windows: QueryFullProcessImageNameW ─────────────────────────────────
 
+/// Windows: uses `QueryFullProcessImageNameW()`.
 #[cfg(target_os = "windows")]
-fn platform_get_exe_path(pid: u32) -> Option<PathBuf> {
+fn get_process_exe_path(pid: u32) -> Option<PathBuf> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -214,8 +210,9 @@ fn platform_get_exe_path(pid: u32) -> Option<PathBuf> {
 
 // ── Fallback for other platforms ────────────────────────────────────────
 
+/// Fallback for unknown platforms.
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn platform_get_exe_path(_pid: u32) -> Option<PathBuf> {
+fn get_process_exe_path(_pid: u32) -> Option<PathBuf> {
     None // graceful degradation
 }
 
@@ -233,47 +230,9 @@ fn platform_get_exe_path(_pid: u32) -> Option<PathBuf> {
 /// Returns `true` if the signature is valid or verification is unavailable.
 /// Logs a warning if the signature check fails but does NOT block connection
 /// (graceful degradation).
-pub fn verify_code_signature(exe_path: &std::path::Path) -> bool {
-    let result = platform_verify_signature(exe_path);
-
-    match result {
-        SignatureResult::Valid => {
-            tracing::debug!(exe = %exe_path.display(), "Code signature valid");
-            true
-        }
-        SignatureResult::NotSigned => {
-            tracing::debug!(exe = %exe_path.display(), "Binary is not code-signed (acceptable for dev builds)");
-            true // unsigned is OK — only flag tampered signatures
-        }
-        SignatureResult::Invalid => {
-            tracing::warn!(
-                exe = %exe_path.display(),
-                "Code signature INVALID — binary may have been tampered with"
-            );
-            false
-        }
-        SignatureResult::Unavailable => {
-            tracing::debug!("Code signature verification not available on this platform");
-            true
-        }
-    }
-}
-
-/// Result of a code signature check.
-enum SignatureResult {
-    /// Signature present and valid.
-    Valid,
-    /// Binary is not signed (acceptable for dev/debug builds).
-    NotSigned,
-    /// Signature present but INVALID (tampered).
-    Invalid,
-    /// Verification not available on this platform.
-    Unavailable,
-}
-
-/// macOS: verify via `codesign --verify --strict`
+/// macOS: verify via `codesign --verify --strict`.
 #[cfg(target_os = "macos")]
-fn platform_verify_signature(exe_path: &std::path::Path) -> SignatureResult {
+pub fn verify_code_signature(exe_path: &std::path::Path) -> bool {
     let output = std::process::Command::new("codesign")
         .args(["--verify", "--strict", "--deep"])
         .arg(exe_path)
@@ -284,23 +243,29 @@ fn platform_verify_signature(exe_path: &std::path::Path) -> SignatureResult {
     match output {
         Ok(out) => {
             if out.status.success() {
-                SignatureResult::Valid
+                tracing::debug!(exe = %exe_path.display(), "Code signature valid");
+                true
             } else {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 if stderr.contains("not signed") || stderr.contains("code object is not signed") {
-                    SignatureResult::NotSigned
+                    tracing::debug!(exe = %exe_path.display(), "Binary is not code-signed (acceptable for dev builds)");
+                    true
                 } else {
-                    SignatureResult::Invalid
+                    tracing::warn!(exe = %exe_path.display(), "Code signature INVALID — binary may have been tampered with");
+                    false
                 }
             }
         }
-        Err(_) => SignatureResult::Unavailable,
+        Err(_codesign_err) => {
+            tracing::debug!("Code signature verification not available on this platform");
+            true
+        }
     }
 }
 
 /// Windows: verify Authenticode signature via PowerShell.
 #[cfg(target_os = "windows")]
-fn platform_verify_signature(exe_path: &std::path::Path) -> SignatureResult {
+pub fn verify_code_signature(exe_path: &std::path::Path) -> bool {
     let path_str = exe_path.to_string_lossy();
     let script = format!(
         "(Get-AuthenticodeSignature '{}').Status",
@@ -317,24 +282,30 @@ fn platform_verify_signature(exe_path: &std::path::Path) -> SignatureResult {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).trim().to_owned();
             match stdout.as_str() {
-                "Valid" => SignatureResult::Valid,
-                "NotSigned" => SignatureResult::NotSigned,
-                "HashMismatch" | "UnknownError" => SignatureResult::Invalid,
-                _ => SignatureResult::NotSigned, // treat unknown as unsigned
+                "Valid" => {
+                    tracing::debug!(exe = %exe_path.display(), "Code signature valid");
+                    true
+                }
+                "HashMismatch" | "UnknownError" => {
+                    tracing::warn!(exe = %exe_path.display(), "Code signature INVALID — binary may have been tampered with");
+                    false
+                }
+                _ => {
+                    tracing::debug!(exe = %exe_path.display(), "Binary is not code-signed (acceptable for dev builds)");
+                    true
+                }
             }
         }
-        Err(_) => SignatureResult::Unavailable,
+        Err(_ps_err) => {
+            tracing::debug!("Code signature verification not available on this platform");
+            true
+        }
     }
 }
 
-/// Linux: no standard code signing mechanism.
-#[cfg(target_os = "linux")]
-fn platform_verify_signature(_exe_path: &std::path::Path) -> SignatureResult {
-    SignatureResult::Unavailable
-}
-
-/// Fallback for unknown platforms.
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn platform_verify_signature(_exe_path: &std::path::Path) -> SignatureResult {
-    SignatureResult::Unavailable
+/// Linux + other platforms: no standard code signing mechanism.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn verify_code_signature(_exe_path: &std::path::Path) -> bool {
+    tracing::debug!("Code signature verification not available on this platform");
+    true
 }

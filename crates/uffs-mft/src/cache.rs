@@ -62,25 +62,25 @@ static MIGRATION_ONCE: Once = Once::new();
 /// cannot be determined (should never happen in practice).
 #[must_use]
 pub fn secure_cache_dir() -> PathBuf {
-    if let Some(cache_base) = dirs_next::cache_dir() {
-        #[cfg(target_os = "macos")]
-        {
-            // ~/Library/Caches/com.uffs/
-            cache_base.join("com.uffs")
-        }
-        #[cfg(target_os = "windows")]
-        {
-            // %LOCALAPPDATA%\uffs\cache\
-            cache_base.join("uffs").join("cache")
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            // $XDG_CACHE_HOME/uffs/  (default ~/.cache/uffs/)
-            cache_base.join("uffs")
-        }
-    } else {
+    let Some(cache_base) = dirs_next::cache_dir() else {
         // Fallback: legacy location
-        std::env::temp_dir().join(LEGACY_CACHE_DIR_NAME)
+        return std::env::temp_dir().join(LEGACY_CACHE_DIR_NAME);
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        // ~/Library/Caches/com.uffs/
+        cache_base.join("com.uffs")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // %LOCALAPPDATA%\uffs\cache\
+        cache_base.join("uffs").join("cache")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        // $XDG_CACHE_HOME/uffs/  (default ~/.cache/uffs/)
+        cache_base.join("uffs")
     }
 }
 
@@ -112,12 +112,11 @@ pub fn migrate_legacy_cache() {
         }
 
         // Read legacy dir entries
-        let entries = match std::fs::read_dir(&legacy) {
-            Ok(e) => e,
-            Err(_) => return,
+        let Ok(entries) = std::fs::read_dir(&legacy) else {
+            return;
         };
 
-        let mut moved = 0u32;
+        let mut moved = 0_u32;
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();

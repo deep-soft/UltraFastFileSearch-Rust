@@ -53,9 +53,10 @@ pub struct SearchResult {
 }
 
 /// Columns available for sorting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortColumn {
     /// Sort by filename.
+    #[default]
     Name,
     /// Sort by file size.
     Size,
@@ -134,6 +135,12 @@ pub struct MultiDriveBackend {
     pub extra_sort_tiers: Vec<SortSpec>,
 }
 
+impl Default for MultiDriveBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MultiDriveBackend {
     /// Create a new empty backend.
     #[must_use]
@@ -190,15 +197,16 @@ impl MultiDriveBackend {
 
         let is_match_all = pattern == "*";
         let is_regex = pattern.starts_with('>') && pattern.len() > 1;
-        let limit = if let Some(n) = result_limit {
-            n as usize
-        } else if is_match_all {
-            DEFAULT_RESULT_LIMIT
-        } else if pattern.len() <= 2 {
-            SHORT_PATTERN_LIMIT
-        } else {
-            DEFAULT_RESULT_LIMIT
-        };
+        let limit = result_limit.map_or_else(
+            || {
+                if is_match_all || pattern.len() > 2 {
+                    DEFAULT_RESULT_LIMIT
+                } else {
+                    SHORT_PATTERN_LIMIT
+                }
+            },
+            |val| val as usize,
+        );
 
         let needle = if case_sensitive {
             pattern.to_owned()
@@ -418,11 +426,37 @@ pub fn parse_sort_spec(sort_str: &str) -> Vec<SortSpec> {
         } else {
             (trimmed, None)
         };
-        if let Some(column) = parse_sort_column(col_str) {
+        let parsed_column = match col_str.to_ascii_lowercase().as_str() {
+            "name" => Some(SortColumn::Name),
+            "size" => Some(SortColumn::Size),
+            "sizeondisk" | "allocated" => Some(SortColumn::SizeOnDisk),
+            "created" => Some(SortColumn::Created),
+            "modified" | "date" | "written" => Some(SortColumn::Modified),
+            "accessed" => Some(SortColumn::Accessed),
+            "path" => Some(SortColumn::Path),
+            "drive" => Some(SortColumn::Drive),
+            "ext" | "extension" => Some(SortColumn::Extension),
+            "type" => Some(SortColumn::Type),
+            "descendants" => Some(SortColumn::Descendants),
+            _ => None,
+        };
+        if let Some(column) = parsed_column {
             let descending = match dir_str {
                 Some("desc") => true,
                 Some("asc") => false,
-                _ => default_sort_direction(column),
+                _ => match column {
+                    SortColumn::Size
+                    | SortColumn::SizeOnDisk
+                    | SortColumn::Created
+                    | SortColumn::Modified
+                    | SortColumn::Accessed
+                    | SortColumn::Descendants => true,
+                    SortColumn::Name
+                    | SortColumn::Path
+                    | SortColumn::Drive
+                    | SortColumn::Extension
+                    | SortColumn::Type => false,
+                },
             };
             specs.push(SortSpec { column, descending });
         }
@@ -448,39 +482,4 @@ pub fn format_sort_spec(primary: SortColumn, primary_desc: bool, extra: &[SortSp
         ));
     }
     parts.join(",")
-}
-
-/// Map a column name string to a `SortColumn`.
-fn parse_sort_column(name: &str) -> Option<SortColumn> {
-    match name.to_ascii_lowercase().as_str() {
-        "name" => Some(SortColumn::Name),
-        "size" => Some(SortColumn::Size),
-        "sizeondisk" | "allocated" => Some(SortColumn::SizeOnDisk),
-        "created" => Some(SortColumn::Created),
-        "modified" | "date" | "written" => Some(SortColumn::Modified),
-        "accessed" => Some(SortColumn::Accessed),
-        "path" => Some(SortColumn::Path),
-        "drive" => Some(SortColumn::Drive),
-        "ext" | "extension" => Some(SortColumn::Extension),
-        "type" => Some(SortColumn::Type),
-        "descendants" => Some(SortColumn::Descendants),
-        _ => None,
-    }
-}
-
-/// Sensible default direction for each sort column.
-const fn default_sort_direction(column: SortColumn) -> bool {
-    match column {
-        SortColumn::Size
-        | SortColumn::SizeOnDisk
-        | SortColumn::Created
-        | SortColumn::Modified
-        | SortColumn::Accessed
-        | SortColumn::Descendants => true,
-        SortColumn::Name
-        | SortColumn::Path
-        | SortColumn::Drive
-        | SortColumn::Extension
-        | SortColumn::Type => false,
-    }
 }

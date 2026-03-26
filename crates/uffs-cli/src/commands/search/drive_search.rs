@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use indicatif::ProgressBar;
-use uffs_mft::{IntoLazy, col, lit};
+use uffs_core::{IntoLazy, col, lit};
 
 use crate::commands::raw_io::OwnedQueryFilters;
 

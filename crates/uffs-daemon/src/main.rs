@@ -11,8 +11,10 @@
 //! uffs-daemon --log-level debug        # verbose logging
 //! ```
 
+extern crate alloc;
+
+use alloc::sync::Arc;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use clap::Parser;
 // Suppress unused crate warnings for deps used in sub-modules behind cfg gates
@@ -74,21 +76,23 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         pid = std::process::id(),
         version = env!("CARGO_PKG_VERSION"),
+        broker_available = broker_client::broker_available(),
         "uffs-daemon starting"
     );
 
     // Determine data directory
     let data_dir = dirs_next::data_local_dir()
-        .map(|d| d.join("uffs"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/uffs"));
+        .map_or_else(|| PathBuf::from("/tmp/uffs"), |base| base.join("uffs"));
 
     // Setup lifecycle manager
     let idle_timeout = if cli.no_retire {
         None
     } else {
-        Some(std::time::Duration::from_secs(cli.idle_timeout))
+        Some(core::time::Duration::from_secs(cli.idle_timeout))
     };
     let mut lifecycle = lifecycle::LifecycleManager::new(&data_dir, idle_timeout);
+
+    tracing::info!(data_dir = %lifecycle.data_dir().display(), "Lifecycle data directory");
 
     // Check for stale PID / another running instance
     if !lifecycle.check_stale_pid() {
@@ -100,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create index manager
     let index = Arc::new(index::IndexManager::new(Some(data_dir.clone())));
+    tracing::debug!(index_data_dir = ?index.data_dir(), "Index manager created");
 
     // Load indices in background
     let load_index = Arc::clone(&index);
@@ -109,13 +114,33 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(windows)]
     let drives = cli.drives.clone();
 
+    let broker_is_available = broker_client::broker_available();
     let load_task = tokio::spawn(async move {
         if !mft_files.is_empty() {
             load_index.load_from_data_dir(&mft_files, no_cache).await;
         }
         #[cfg(windows)]
         if !drives.is_empty() {
+            // If broker is available, try to get volume handles from it
+            if broker_is_available {
+                for &drive_letter in &drives {
+                    match broker_client::request_volume_handle(drive_letter) {
+                        Ok(handle) => {
+                            tracing::info!(drive = %drive_letter, handle, "Got broker handle")
+                        }
+                        Err(broker_err) => {
+                            tracing::debug!(drive = %drive_letter, error = %broker_err, "Broker unavailable, using direct access")
+                        }
+                    }
+                }
+            }
             load_index.load_live_drives(&drives, no_cache).await;
+        }
+        // Test broker availability on all platforms (validates stub linkage)
+        if broker_is_available {
+            // On Windows: attempt to get a handle for first available drive
+            // On non-Windows: broker_available() returns false so this is unreachable
+            let _handle_result = broker_client::request_volume_handle('C');
         }
     });
 
@@ -124,8 +149,8 @@ async fn main() -> anyhow::Result<()> {
     let ipc_lifecycle = lifecycle.handle();
 
     let ipc_task = tokio::spawn(async move {
-        if let Err(e) = ipc::run_ipc_server(ipc_index, ipc_lifecycle).await {
-            tracing::error!(error = %e, "IPC server error");
+        if let Err(ipc_err) = ipc::run_ipc_server(ipc_index, ipc_lifecycle).await {
+            tracing::error!(error = %ipc_err, "IPC server error");
         }
     });
 

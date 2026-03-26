@@ -28,6 +28,7 @@ impl TrigramIndex {
     }
 
     /// Build a trigram index from pre-lowered paths.
+    #[must_use]
     pub fn build(paths_lower: &[String]) -> Self {
         const CHUNK_SIZE: usize = 64 * 1024;
 
@@ -84,6 +85,7 @@ impl TrigramIndex {
     }
 
     /// Number of unique trigrams in the index.
+    #[must_use]
     pub fn posting_count(&self) -> usize {
         self.postings.len()
     }
@@ -93,6 +95,7 @@ impl TrigramIndex {
     ///
     /// For queries < 3 chars, returns None (caller should fall back to linear
     /// scan).
+    #[must_use]
     pub fn search(&self, needle_lower: &str) -> Option<Vec<u32>> {
         let bytes = needle_lower.as_bytes();
         if bytes.len() < 3 {
@@ -124,7 +127,26 @@ impl TrigramIndex {
         };
         let mut result = first_list.to_vec();
         for list in lists.iter().skip(1) {
-            result = intersect_sorted(&result, list);
+            // Intersect two sorted u32 slices in-place
+            let mut new_result = Vec::with_capacity(result.len().min(list.len()));
+            let mut iter_a = result.iter().peekable();
+            let mut iter_b = list.iter().peekable();
+            while let (Some(&val_a), Some(&val_b)) = (iter_a.peek(), iter_b.peek()) {
+                match val_a.cmp(val_b) {
+                    core::cmp::Ordering::Equal => {
+                        new_result.push(*val_a);
+                        iter_a.next();
+                        iter_b.next();
+                    }
+                    core::cmp::Ordering::Less => {
+                        iter_a.next();
+                    }
+                    core::cmp::Ordering::Greater => {
+                        iter_b.next();
+                    }
+                }
+            }
+            result = new_result;
             if result.is_empty() {
                 break;
             }
@@ -132,29 +154,4 @@ impl TrigramIndex {
 
         Some(result)
     }
-}
-
-/// Intersect two sorted u32 slices, returning a new sorted Vec of common
-/// elements.
-fn intersect_sorted(list_a: &[u32], list_b: &[u32]) -> Vec<u32> {
-    let mut result = Vec::with_capacity(list_a.len().min(list_b.len()));
-    let mut iter_a = list_a.iter().peekable();
-    let mut iter_b = list_b.iter().peekable();
-
-    while let (Some(&val_a), Some(&val_b)) = (iter_a.peek(), iter_b.peek()) {
-        match val_a.cmp(val_b) {
-            core::cmp::Ordering::Equal => {
-                result.push(*val_a);
-                iter_a.next();
-                iter_b.next();
-            }
-            core::cmp::Ordering::Less => {
-                iter_a.next();
-            }
-            core::cmp::Ordering::Greater => {
-                iter_b.next();
-            }
-        }
-    }
-    result
 }

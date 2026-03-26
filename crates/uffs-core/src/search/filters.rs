@@ -252,6 +252,7 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Current time as Unix microseconds.
+#[must_use]
 pub fn now_unix_micros() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -268,6 +269,7 @@ pub fn now_unix_micros() -> i64 {
 /// Parse a time bound string into Unix microseconds.
 ///
 /// Supports duration (`7d`, `24h`, `30m`, `90s`) and ISO date (`2026-01-15`).
+#[must_use]
 pub fn parse_time_bound(spec: &str, now_us: i64, _is_newer: bool) -> Option<i64> {
     let trimmed = spec.trim();
 
@@ -295,7 +297,15 @@ pub fn parse_time_bound(spec: &str, now_us: i64, _is_newer: bool) -> Option<i64>
                 month_s.parse::<i64>(),
                 day_s.parse::<i64>(),
             ) {
-                let days = (year - 1970) * 365 + (year - 1969) / 4 + month_days(month) + day - 1;
+                // Approximate cumulative days before month (1-indexed, non-leap year)
+                let cumulative_month_days = {
+                    const CUMULATIVE: [i64; 13] =
+                        [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+                    let idx = usize::try_from(month).unwrap_or(0);
+                    CUMULATIVE.get(idx).copied().unwrap_or(0)
+                };
+                let days =
+                    (year - 1970) * 365 + (year - 1969) / 4 + cumulative_month_days + day - 1;
                 return Some(days * 86400 * 1_000_000);
             }
         }
@@ -304,14 +314,8 @@ pub fn parse_time_bound(spec: &str, now_us: i64, _is_newer: bool) -> Option<i64>
     None
 }
 
-/// Approximate cumulative days before month `m` (1-indexed, non-leap year).
-fn month_days(month: i64) -> i64 {
-    const CUMULATIVE: [i64; 13] = [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    let idx = usize::try_from(month).unwrap_or(0);
-    CUMULATIVE.get(idx).copied().unwrap_or(0)
-}
-
 /// NTFS attribute name → bit value.
+#[must_use]
 pub fn attr_bit(name: &str) -> u32 {
     match name {
         "readonly" | "read-only" | "r" => 0x0001,
@@ -338,6 +342,7 @@ pub fn attr_bit(name: &str) -> u32 {
 }
 
 /// Parse required attribute bits from an attr spec like `"hidden,compressed"`.
+#[must_use]
 pub fn parse_attr_require(spec: &str) -> u32 {
     let mut bits = 0_u32;
     for raw_part in spec.split(',') {
@@ -350,6 +355,7 @@ pub fn parse_attr_require(spec: &str) -> u32 {
 }
 
 /// Parse excluded attribute bits from an attr spec like `"!system,!hidden"`.
+#[must_use]
 pub fn parse_attr_exclude(spec: &str) -> u32 {
     let mut bits = 0_u32;
     for raw_part in spec.split(',') {

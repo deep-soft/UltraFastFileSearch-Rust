@@ -14,7 +14,8 @@
 //! then `DuplicateHandle`s it into the client process with read-only access.
 
 /// Pipe name for broker communication.
-pub const BROKER_PIPE_NAME: &str = r"\\.\pipe\uffs-broker";
+#[cfg(windows)]
+const BROKER_PIPE_NAME: &str = r"\\.\pipe\uffs-broker";
 
 /// Run the broker (called from main).
 #[cfg(windows)]
@@ -602,8 +603,3 @@ fn is_elevated() -> bool {
 }
 
 // ── Non-Windows stub ────────────────────────────────────────────────────
-
-#[cfg(not(windows))]
-pub fn run() -> anyhow::Result<()> {
-    anyhow::bail!("uffs-broker is a Windows-only component")
-}

@@ -30,19 +30,23 @@ const KEY_SIZE: usize = 32;
 /// # Errors
 ///
 /// Returns an error if key generation or storage fails.
-pub fn get_cache_key() -> io::Result<[u8; KEY_SIZE]> {
-    platform_get_or_create_key()
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// macOS: Keychain Services
-// ────────────────────────────────────────────────────────────────────────────
-
+/// Retrieves or creates a platform-specific encryption key (macOS Keychain).
+///
+/// Tries to read an existing key from Keychain; if not found or wrong size,
+/// generates a new 256-bit key, stores it, and returns it.
+///
+/// # Errors
+///
+/// Returns an error if Keychain access or key storage fails.
 #[cfg(target_os = "macos")]
-fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
+pub fn get_cache_key() -> io::Result<[u8; KEY_SIZE]> {
+    use rand::Rng;
     use security_framework::passwords::{
         delete_generic_password, get_generic_password, set_generic_password,
     };
+
+    /// macOS Keychain `errSecItemNotFound` error code.
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = -25_300_i32;
 
     const SERVICE: &str = "com.uffs.cache";
     const ACCOUNT: &str = "encryption-key-v1";
@@ -51,7 +55,7 @@ fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
     match get_generic_password(SERVICE, ACCOUNT) {
         Ok(key_data) => {
             if key_data.len() == KEY_SIZE {
-                let mut key = [0u8; KEY_SIZE];
+                let mut key = [0_u8; KEY_SIZE];
                 key.copy_from_slice(&key_data);
                 return Ok(key);
             }
@@ -62,11 +66,10 @@ fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
             );
             let _ignore = delete_generic_password(SERVICE, ACCOUNT);
         }
-        Err(e) => {
+        Err(keychain_err) => {
             // errSecItemNotFound is the expected "not yet created" case
-            let code = e.code();
-            if code != -25300 {
-                // -25300 = errSecItemNotFound
+            let code = keychain_err.code();
+            if code != ERR_SEC_ITEM_NOT_FOUND {
                 tracing::debug!(
                     error_code = code,
                     "Keychain lookup failed (will generate new key)"
@@ -75,15 +78,13 @@ fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
         }
     }
 
-    // Generate new key
-    let key = generate_key()?;
+    // Generate new key using OS CSPRNG
+    let mut key = [0_u8; KEY_SIZE];
+    rand::rng().fill_bytes(&mut key);
 
     // Store in Keychain
-    set_generic_password(SERVICE, ACCOUNT, &key).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to store key in Keychain: {e}"),
-        )
+    set_generic_password(SERVICE, ACCOUNT, &key).map_err(|store_err| {
+        io::Error::other(format!("failed to store key in Keychain: {store_err}"))
     })?;
 
     tracing::info!("Generated and stored new encryption key in macOS Keychain");
@@ -94,24 +95,29 @@ fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
 // Windows: DPAPI (CryptProtectData / CryptUnprotectData)
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Windows DPAPI key storage.
+/// Windows DPAPI key retrieval or generation.
 ///
 /// The raw 32-byte key is encrypted with `CryptProtectData` using the
 /// entropy string `"uffs-cache-v1"`. The encrypted blob is stored at
 /// `%LOCALAPPDATA%/uffs/key.dpapi`. Only the same Windows user account
 /// can decrypt it via `CryptUnprotectData`.
+///
+/// # Errors
+///
+/// Returns an error if DPAPI access or file I/O fails.
 #[cfg(target_os = "windows")]
-fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
+pub fn get_cache_key() -> io::Result<[u8; KEY_SIZE]> {
+    use rand::Rng;
     let key_path = dpapi_key_path()?;
 
     // Try to read and decrypt existing DPAPI blob
     if key_path.exists() {
         match dpapi_read_key(&key_path) {
             Ok(key) => return Ok(key),
-            Err(e) => {
+            Err(dpapi_err) => {
                 tracing::warn!(
                     path = %key_path.display(),
-                    error = %e,
+                    error = %dpapi_err,
                     "DPAPI decrypt failed, regenerating key"
                 );
                 let _ignore = std::fs::remove_file(&key_path);
@@ -119,8 +125,9 @@ fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
         }
     }
 
-    // Generate new key
-    let key = generate_key()?;
+    // Generate new key using OS CSPRNG
+    let mut key = [0_u8; KEY_SIZE];
+    rand::rng().fill_bytes(&mut key);
 
     // Ensure parent dir exists with secure permissions
     if let Some(parent) = key_path.parent() {
@@ -167,7 +174,7 @@ fn dpapi_read_key(path: &std::path::Path) -> io::Result<[u8; KEY_SIZE]> {
             format!("DPAPI decrypted key has wrong size: {}", plaintext.len()),
         ));
     }
-    let mut key = [0u8; KEY_SIZE];
+    let mut key = [0_u8; KEY_SIZE];
     key.copy_from_slice(&plaintext);
     Ok(key)
 }
@@ -206,20 +213,23 @@ fn dpapi_protect(data: &[u8]) -> io::Result<Vec<u8>> {
         )
     };
 
-    if !ok.as_bool() {
+    if let Err(win_err) = ok {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            "CryptProtectData failed",
+            format!("CryptProtectData failed: {win_err}"),
         ));
     }
 
-    // Copy output blob to Vec and free the Windows-allocated memory
+    // Copy output blob to Vec and free the Windows-allocated memory.
+    // SAFETY: output_blob.pbData was populated by CryptProtectData and must
+    // be freed with LocalFree. We copy the data first, then free.
+    #[expect(unsafe_code, reason = "reading Win32-allocated output and calling LocalFree")]
     let result = unsafe {
         let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize);
         let vec = slice.to_vec();
-        windows::Win32::System::Memory::LocalFree(windows::Win32::Foundation::HLOCAL(
+        windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(
             output_blob.pbData as _,
-        ));
+        )));
         vec
     };
 
@@ -260,19 +270,22 @@ fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
         )
     };
 
-    if !ok.as_bool() {
+    if let Err(win_err) = ok {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            "CryptUnprotectData failed (wrong user or corrupted blob)",
+            format!("CryptUnprotectData failed: {win_err}"),
         ));
     }
 
+    // SAFETY: output_blob.pbData was populated by CryptUnprotectData and must
+    // be freed with LocalFree. We copy the data first, then free.
+    #[expect(unsafe_code, reason = "reading Win32-allocated output and calling LocalFree")]
     let result = unsafe {
         let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize);
         let vec = slice.to_vec();
-        windows::Win32::System::Memory::LocalFree(windows::Win32::Foundation::HLOCAL(
+        windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(
             output_blob.pbData as _,
-        ));
+        )));
         vec
     };
 
@@ -283,18 +296,26 @@ fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
 // Linux: file-based key with 0600 permissions
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Linux file-based key storage.
+/// Linux file-based key retrieval or generation.
 ///
 /// The key is a raw 32-byte file stored at `~/.local/share/uffs/key.bin`
 /// with owner-only permissions (`0600`).
+///
+/// # Errors
+///
+/// Returns an error if filesystem access or key generation fails.
 #[cfg(target_os = "linux")]
-fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
-    let key_path = linux_key_path()?;
+pub fn get_cache_key() -> io::Result<[u8; KEY_SIZE]> {
+    use rand::Rng;
+    let base = dirs_next::data_local_dir().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "cannot determine local data dir")
+    })?;
+    let key_path = base.join("uffs").join("key.bin");
 
     if key_path.exists() {
         let data = std::fs::read(&key_path)?;
         if data.len() == KEY_SIZE {
-            let mut key = [0u8; KEY_SIZE];
+            let mut key = [0_u8; KEY_SIZE];
             key.copy_from_slice(&data);
             return Ok(key);
         }
@@ -305,7 +326,9 @@ fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
         );
     }
 
-    let key = generate_key()?;
+    // Generate new key using OS CSPRNG
+    let mut key = [0_u8; KEY_SIZE];
+    rand::rng().fill_bytes(&mut key);
 
     if let Some(parent) = key_path.parent() {
         crate::fs::create_secure_dir(parent)?;
@@ -315,28 +338,6 @@ fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
     crate::fs::set_file_permissions_owner_only(&key_path)?;
 
     tracing::info!(path = %key_path.display(), "Generated and stored new encryption key");
-    Ok(key)
-}
-
-/// Linux key file path: `~/.local/share/uffs/key.bin`
-#[cfg(target_os = "linux")]
-fn linux_key_path() -> io::Result<std::path::PathBuf> {
-    let base = dirs_next::data_local_dir().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, "cannot determine local data dir")
-    })?;
-    Ok(base.join("uffs").join("key.bin"))
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Shared helpers
-// ────────────────────────────────────────────────────────────────────────────
-
-/// Generates a random 256-bit key using the OS CSPRNG.
-fn generate_key() -> io::Result<[u8; KEY_SIZE]> {
-    use rand::Rng;
-
-    let mut key = [0u8; KEY_SIZE];
-    rand::rng().fill_bytes(&mut key);
     Ok(key)
 }
 
@@ -350,8 +351,9 @@ mod tests {
 
     /// S2.2.6: key round-trip — generate, store, retrieve, compare.
     ///
-    /// IGNORED in CI: triggers macOS Keychain login prompt which blocks headless runners.
-    /// Run manually with: `cargo test -p uffs-security -- --ignored key_round_trip`
+    /// IGNORED in CI: triggers macOS Keychain login prompt which blocks
+    /// headless runners. Run manually with: `cargo test -p uffs-security --
+    /// --ignored key_round_trip`
     #[test]
     #[ignore = "triggers macOS Keychain prompt — run manually"]
     fn key_round_trip() {
@@ -367,6 +369,6 @@ mod tests {
     #[ignore = "triggers macOS Keychain prompt — run manually"]
     fn key_is_nonzero() {
         let key = get_cache_key().expect("get_cache_key");
-        assert_ne!(key, [0u8; KEY_SIZE], "key should not be all zeros");
+        assert_ne!(key, [0_u8; KEY_SIZE], "key should not be all zeros");
     }
 }

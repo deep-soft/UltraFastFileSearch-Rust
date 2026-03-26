@@ -32,30 +32,22 @@ use std::path::Path;
 /// Returns an error if directory creation or permission setting fails.
 pub fn create_secure_dir(path: &Path) -> io::Result<()> {
     std::fs::create_dir_all(path)?;
-    set_dir_owner_only(path)
-}
 
-/// Platform-specific directory permission hardening.
-#[cfg(unix)]
-fn set_dir_owner_only(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-}
+    #[cfg(unix)]
+    return {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    };
 
-/// Platform-specific directory permission hardening.
-///
-/// S1.2.6: Uses `icacls`-equivalent approach — runs `icacls path /inheritance:r
-/// /grant:r %USERNAME%:(OI)(CI)F` to remove inherited ACEs and grant only the
-/// current user full control. Falls back to hidden attribute if the command
-/// fails.
-#[cfg(windows)]
-fn set_dir_owner_only(path: &Path) -> io::Result<()> {
-    // Try icacls first — works without elevation, sets proper DACL
-    if win_set_owner_only_acl(path) {
-        return Ok(());
-    }
-    // Fallback: at least mark hidden
-    win_set_hidden(path)
+    #[cfg(windows)]
+    return {
+        // Try icacls first — works without elevation, sets proper DACL
+        if !win_set_owner_only_acl(path) {
+            // Fallback: at least mark hidden
+            win_set_hidden(path)?;
+        }
+        Ok(())
+    };
 }
 
 /// Sets a file's permissions to owner-only (read+write).
@@ -68,31 +60,27 @@ fn set_dir_owner_only(path: &Path) -> io::Result<()> {
 ///
 /// Returns an error if permission setting fails.
 pub fn set_file_permissions_owner_only(path: &Path) -> io::Result<()> {
-    set_file_owner_only(path)
-}
+    #[cfg(unix)]
+    return {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    };
 
-/// Platform-specific file permission hardening.
-#[cfg(unix)]
-fn set_file_owner_only(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-/// Platform-specific file permission hardening.
-#[cfg(windows)]
-fn set_file_owner_only(path: &Path) -> io::Result<()> {
-    // Ensure writable
-    let meta = std::fs::metadata(path)?;
-    let mut perms = meta.permissions();
-    if perms.readonly() {
-        perms.set_readonly(false);
-        std::fs::set_permissions(path, perms)?;
-    }
-    // Try proper DACL, fall back to hidden
-    if !win_set_owner_only_acl(path) {
-        win_set_hidden(path)?;
-    }
-    Ok(())
+    #[cfg(windows)]
+    return {
+        // Ensure writable
+        let meta = std::fs::metadata(path)?;
+        let mut perms = meta.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            std::fs::set_permissions(path, perms)?;
+        }
+        // Try proper DACL, fall back to hidden
+        if !win_set_owner_only_acl(path) {
+            win_set_hidden(path)?;
+        }
+        Ok(())
+    };
 }
 
 /// Windows: set the `FILE_ATTRIBUTE_HIDDEN` flag on a path.
@@ -113,10 +101,10 @@ fn win_set_hidden(path: &Path) -> io::Result<()> {
         let pcwstr = PCWSTR(wide.as_ptr());
 
         let current = GetFileAttributesW(pcwstr);
-        if current.0 != u32::MAX {
+        if current != u32::MAX {
             let _ok = SetFileAttributesW(
                 pcwstr,
-                FILE_FLAGS_AND_ATTRIBUTES(current.0 | FILE_ATTRIBUTE_HIDDEN.0),
+                FILE_FLAGS_AND_ATTRIBUTES(current | FILE_ATTRIBUTE_HIDDEN.0),
             );
         }
     }
@@ -211,10 +199,13 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
 pub fn secure_remove(path: &Path) -> io::Result<()> {
     use std::io::{Seek, SeekFrom, Write};
 
+    /// Size of the zero-fill buffer for secure wipe.
+    const ZERO_BUF_SIZE: usize = 64 * 1024;
+
     let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e),
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
     };
 
     let file_len = meta.len();
@@ -231,8 +222,7 @@ pub fn secure_remove(path: &Path) -> io::Result<()> {
 
     let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
 
-    const ZERO_BUF_SIZE: usize = 64 * 1024;
-    let zeros = [0u8; ZERO_BUF_SIZE];
+    let zeros = vec![0_u8; ZERO_BUF_SIZE];
     let mut remaining = file_len;
 
     file.seek(SeekFrom::Start(0))?;
@@ -240,9 +230,12 @@ pub fn secure_remove(path: &Path) -> io::Result<()> {
         let chunk = if remaining >= ZERO_BUF_SIZE as u64 {
             ZERO_BUF_SIZE
         } else {
-            remaining as usize
+            usize::try_from(remaining).unwrap_or(ZERO_BUF_SIZE)
         };
-        file.write_all(&zeros[..chunk])?;
+        let buf = zeros
+            .get(..chunk)
+            .ok_or_else(|| io::Error::other("zero buffer slice out of bounds"))?;
+        file.write_all(buf)?;
         remaining -= chunk as u64;
     }
 
@@ -286,11 +279,14 @@ impl FileLock {
     ///
     /// Returns `io::ErrorKind::TimedOut` if the lock cannot be acquired
     /// within the timeout.
+    #[cfg(unix)]
     pub fn acquire(
         lock_path: &Path,
         kind: LockKind,
-        timeout: std::time::Duration,
+        timeout: core::time::Duration,
     ) -> io::Result<Self> {
+        use std::os::unix::io::AsRawFd;
+
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -299,27 +295,108 @@ impl FileLock {
             .open(lock_path)?;
 
         let deadline = std::time::Instant::now() + timeout;
-        let sleep_step = std::time::Duration::from_millis(50);
+        let sleep_step = core::time::Duration::from_millis(50);
+
+        let operation = match kind {
+            LockKind::Shared => libc::LOCK_SH | libc::LOCK_NB,
+            LockKind::Exclusive => libc::LOCK_EX | libc::LOCK_NB,
+        };
 
         loop {
-            match try_lock_platform(&file, kind) {
-                Ok(()) => {
-                    return Ok(Self { _file: file });
+            // SAFETY: flock is a well-defined POSIX syscall operating on a valid fd.
+            #[expect(unsafe_code, reason = "flock requires unsafe FFI call")]
+            let result = unsafe { libc::flock(file.as_raw_fd(), operation) };
+
+            if result == 0 {
+                return Ok(Self { _file: file });
+            }
+
+            let lock_err = io::Error::last_os_error();
+            let is_contention = lock_err.kind() == io::ErrorKind::WouldBlock
+                || lock_err.raw_os_error() == Some(libc::EWOULDBLOCK)
+                || lock_err.raw_os_error() == Some(libc::EAGAIN);
+
+            if is_contention {
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "could not acquire {kind:?} lock on {} within {}s",
+                            lock_path.display(),
+                            timeout.as_secs()
+                        ),
+                    ));
                 }
-                Err(e) if is_lock_contention(&e) => {
-                    if std::time::Instant::now() >= deadline {
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            format!(
-                                "could not acquire {kind:?} lock on {} within {}s",
-                                lock_path.display(),
-                                timeout.as_secs()
-                            ),
-                        ));
-                    }
-                    std::thread::sleep(sleep_step);
+                std::thread::sleep(sleep_step);
+            } else {
+                return Err(lock_err);
+            }
+        }
+    }
+
+    /// Acquire a file lock on Windows using `LockFileEx`.
+    #[cfg(windows)]
+    pub fn acquire(
+        lock_path: &Path,
+        kind: LockKind,
+        timeout: core::time::Duration,
+    ) -> io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+
+        /// Windows error code for lock contention.
+        const ERROR_LOCK_VIOLATION: i32 = 33;
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(lock_path)?;
+
+        let deadline = std::time::Instant::now() + timeout;
+        let sleep_step = core::time::Duration::from_millis(50);
+
+        loop {
+            // SAFETY: LockFileEx is a well-defined Win32 API operating on a valid handle.
+            #[expect(unsafe_code, reason = "LockFileEx requires unsafe FFI call")]
+            let lock_result = unsafe {
+                use windows::Win32::Foundation::HANDLE;
+                use windows::Win32::Storage::FileSystem::{
+                    LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+                };
+
+                let mut overlapped: windows::Win32::System::IO::OVERLAPPED = std::mem::zeroed();
+                let mut flags = LOCKFILE_FAIL_IMMEDIATELY;
+                if kind == LockKind::Exclusive {
+                    flags |= LOCKFILE_EXCLUSIVE_LOCK;
                 }
-                Err(e) => return Err(e),
+
+                let handle = HANDLE(file.as_raw_handle() as _);
+                LockFileEx(handle, flags, Some(0), u32::MAX, u32::MAX, &mut overlapped)
+            };
+
+            if lock_result.is_ok() {
+                return Ok(Self { _file: file });
+            }
+
+            let lock_err = io::Error::last_os_error();
+            let is_contention = lock_err.kind() == io::ErrorKind::WouldBlock
+                || lock_err.raw_os_error() == Some(ERROR_LOCK_VIOLATION);
+
+            if is_contention {
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "could not acquire {kind:?} lock on {} within {}s",
+                            lock_path.display(),
+                            timeout.as_secs()
+                        ),
+                    ));
+                }
+                std::thread::sleep(sleep_step);
+            } else {
+                return Err(lock_err);
             }
         }
     }
@@ -327,94 +404,22 @@ impl FileLock {
 
 /// Runs a closure while holding an advisory file lock.
 ///
-/// Creates a `.lock` file at `lock_path`, acquires the lock, runs `f`,
+/// Creates a `.lock` file at `lock_path`, acquires the lock, runs `func`,
 /// then releases the lock when the guard drops.
 ///
 /// # Errors
 ///
 /// Returns an error if the lock cannot be acquired within `timeout`, or if
-/// `f` returns an error.
+/// `func` returns an error.
 pub fn with_file_lock<F, T>(
     lock_path: &Path,
     kind: LockKind,
-    timeout: std::time::Duration,
-    f: F,
+    timeout: core::time::Duration,
+    func: F,
 ) -> io::Result<T>
 where
     F: FnOnce() -> io::Result<T>,
 {
     let _guard = FileLock::acquire(lock_path, kind, timeout)?;
-    f()
-}
-
-// ── Lock: Unix (macOS + Linux) ──────────────────────────────────────────────
-
-/// Checks if an I/O error represents lock contention (Unix).
-#[cfg(unix)]
-fn is_lock_contention(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::WouldBlock
-        || e.raw_os_error() == Some(libc::EWOULDBLOCK)
-        || e.raw_os_error() == Some(libc::EAGAIN)
-}
-
-/// Non-blocking lock attempt via `flock` (Unix: macOS + Linux).
-#[cfg(unix)]
-fn try_lock_platform(file: &std::fs::File, kind: LockKind) -> io::Result<()> {
-    use std::os::unix::io::AsRawFd;
-
-    let operation = match kind {
-        LockKind::Shared => libc::LOCK_SH | libc::LOCK_NB,
-        LockKind::Exclusive => libc::LOCK_EX | libc::LOCK_NB,
-    };
-
-    // SAFETY: flock is a well-defined POSIX syscall operating on a valid fd.
-    #[expect(unsafe_code, reason = "flock requires unsafe FFI call")]
-    let result = unsafe { libc::flock(file.as_raw_fd(), operation) };
-
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-// ── Lock: Windows ───────────────────────────────────────────────────────────
-
-/// Windows error code for lock contention.
-#[cfg(windows)]
-const ERROR_LOCK_VIOLATION: i32 = 33;
-
-/// Checks if an I/O error represents lock contention (Windows).
-#[cfg(windows)]
-fn is_lock_contention(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::WouldBlock || e.raw_os_error() == Some(ERROR_LOCK_VIOLATION)
-}
-
-/// Non-blocking lock attempt via `LockFileEx` (Windows).
-#[cfg(windows)]
-fn try_lock_platform(file: &std::fs::File, kind: LockKind) -> io::Result<()> {
-    use std::os::windows::io::AsRawHandle;
-
-    // SAFETY: LockFileEx is a well-defined Win32 API operating on a valid handle.
-    #[expect(unsafe_code, reason = "LockFileEx requires unsafe FFI call")]
-    unsafe {
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::Storage::FileSystem::{
-            LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
-        };
-
-        let mut overlapped: windows::Win32::System::IO::OVERLAPPED = std::mem::zeroed();
-        let mut flags = LOCKFILE_FAIL_IMMEDIATELY;
-        if kind == LockKind::Exclusive {
-            flags |= LOCKFILE_EXCLUSIVE_LOCK;
-        }
-
-        let handle = HANDLE(file.as_raw_handle() as _);
-        let ok = LockFileEx(handle, flags, 0, u32::MAX, u32::MAX, &mut overlapped);
-        if ok.as_bool() {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
+    func()
 }
