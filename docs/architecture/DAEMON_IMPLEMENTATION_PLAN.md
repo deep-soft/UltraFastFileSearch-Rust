@@ -180,7 +180,7 @@ both daemon and client share the same types without circular deps.
 | D2.3.4 | `search(params)` — delegates to `MultiDriveBackend::search()` with sort/filter parsing | ✅ DONE |
 | D2.3.5 | `drives()` → `DrivesResponse` | ✅ DONE |
 | D2.3.6 | `refresh(drives)` — reload specific drives, replace in-place | ✅ DONE |
-| D2.3.7 | `info(path)` → `InfoResponse` (lookup via `FullRecordReader`) | ⬜ TODO (deferred) |
+| D2.3.7 | `info(path)` → `InfoResponse` (path search across all drives) | ✅ DONE |
 | D2.3.8 | Test: load 1 drive from `.uffs` cache, search `*.rs`, verify results | ⬜ TODO (integration test) |
 
 ### Wave D2.4 — IPC Server
@@ -206,7 +206,7 @@ both daemon and client share the same types without circular deps.
 | D2.5.2 | Route `"search"` → `IndexManager::search()` | ✅ DONE |
 | D2.5.3 | Route `"drives"` → `IndexManager::drives()` | ✅ DONE |
 | D2.5.4 | Route `"status"` → `IndexManager::status()` + uptime, connections, PID | ✅ DONE |
-| D2.5.5 | Route `"info"` → `IndexManager::info()` | ⬜ TODO (deferred) |
+| D2.5.5 | Route `"info"` → `IndexManager::info()` | ✅ DONE |
 | D2.5.6 | Route `"refresh"` → spawn background task, return immediate ack | ✅ DONE |
 | D2.5.7 | Route `"keepalive"` → reset idle timer | ✅ DONE |
 | D2.5.8 | Route `"shutdown"` → graceful shutdown via lifecycle handle | ✅ DONE |
@@ -223,8 +223,8 @@ both daemon and client share the same types without circular deps.
 | D2.6.3 | PID file: remove on graceful shutdown (Drop impl) | ✅ DONE |
 | D2.6.4 | Stale PID check: `kill -0` (Unix) / `OpenProcess` (Windows) | ✅ DONE |
 | D2.6.5 | Idle timer: configurable timeout (default 600s), reset via `AtomicBool` | ✅ DONE |
-| D2.6.6 | Differentiated timeouts | ⬜ TODO (deferred — needs session type in keepalive) |
-| D2.6.7 | Don't retire if active connections | ⬜ TODO (deferred) |
+| D2.6.6 | Differentiated timeouts: CLI=base, TUI/GUI/MCP=3× (via session tier) | ✅ DONE |
+| D2.6.7 | Don't retire if `active_connections > 0` — defers until clients disconnect | ✅ DONE |
 | D2.6.8 | Auto-retire: remove PID, close socket, exit | ✅ DONE |
 | D2.6.9 | `--no-retire` flag | ✅ DONE |
 | D2.6.10 | Signal handling via tokio shutdown | ✅ DONE (via watch channel) |
@@ -276,7 +276,7 @@ both daemon and client share the same types without circular deps.
 | D3.3.1 | `client.search(params)` → `SearchResponse` | ✅ DONE |
 | D3.3.2 | `client.drives()` → `DrivesResponse` | ✅ DONE |
 | D3.3.3 | `client.status()` → `StatusResponse` | ✅ DONE |
-| D3.3.4 | `client.info(path)` → `InfoResponse` | ⬜ TODO (deferred with D2.3.7) |
+| D3.3.4 | `client.info(path)` → `InfoResponse` | ✅ DONE |
 | D3.3.5 | `client.refresh(drives)` → `()` | ✅ DONE |
 | D3.3.6 | `client.shutdown()` → `()` | ✅ DONE |
 | D3.3.7 | `send_request()` + `read_response()` with 30s timeout | ✅ DONE |
@@ -286,10 +286,10 @@ both daemon and client share the same types without circular deps.
 | ID | Task | Status |
 |----|------|--------|
 | D3.4.1 | `client.keepalive()` | ✅ DONE |
-| D3.4.2 | Auto-keepalive background task | ⬜ TODO (deferred) |
-| D3.4.3 | `client.set_session_type()` | ⬜ TODO (deferred) |
-| D3.4.4 | Auto-reconnect on broken pipe | ⬜ TODO (deferred) |
-| D3.4.5 | Notification listener | ⬜ TODO (deferred) |
+| D3.4.2 | Auto-keepalive: `start_keepalive(interval)` → `KeepaliveGuard` (RAII) | ✅ DONE |
+| D3.4.3 | `set_session_type()` — sends session tier to daemon via keepalive params | ✅ DONE |
+| D3.4.4 | `shutdown()` reads nonce from PID file for authenticated shutdown | ✅ DONE |
+| D3.4.5 | Notification listener (bidirectional stream) | ⬜ TODO (needs protocol extension) |
 | D3.4.6 | Test: reconnect | ⬜ TODO |
 
 ### Wave D3.5 — Integration Test
@@ -326,7 +326,7 @@ both daemon and client share the same types without circular deps.
 | D4.2.3 | Tool `uffs_search`: params → `client.search()` → markdown table | ✅ DONE |
 | D4.2.4 | Tool `uffs_drives`: `client.drives()` → MCP content | ✅ DONE |
 | D4.2.5 | Tool `uffs_status`: `client.status()` → MCP content | ✅ DONE |
-| D4.2.6 | Tool `uffs_info`: `client.info(path)` | ⬜ TODO (deferred with D2.3.7) |
+| D4.2.6 | Tool `uffs_info`: `client.info(path)` → pretty-printed JSON | ✅ DONE |
 | D4.2.7 | Rich tool descriptions with JSON Schema input schemas | ✅ DONE |
 
 ### Wave D4.3 — End-to-End Test
@@ -486,18 +486,18 @@ both daemon and client share the same types without circular deps.
 | D1.7 Polars re-export cleanup | 3 | 3 | 0 | ✅ |
 | D2.1 Daemon scaffold | 5 | 5 | 0 | ✅ |
 | D2.2 Protocol types | 5 | 5 | 0 | ✅ (6 serde tests) |
-| D2.3 Index loading | 8 | 7 | 1 | 🟡 (info deferred) |
-| D2.4 IPC server | 10 | 9 | 1 | 🟡 (integration test) |
-| D2.5 Request handler | 11 | 10 | 1 | 🟡 (info route) |
-| D2.6 Lifecycle manager | 11 | 9 | 2 | 🟡 (differentiated timeout) |
+| D2.3 Index loading | 8 | 8 | 0 | ✅ |
+| D2.4 IPC server | 10 | 9 | 1 | 🟡 (D2.4.10 integration test) |
+| D2.5 Request handler | 11 | 11 | 0 | ✅ |
+| D2.6 Lifecycle manager | 11 | 11 | 0 | ✅ |
 | D2.7 Daemon integration test | 6 | 0 | 6 | ⬜ |
 | D3.1 Client scaffold | 4 | 4 | 0 | ✅ |
-| D3.2 Connection & auto-start | 6 | 5 | 1 | 🟡 (integration test) |
-| D3.3 Query API | 7 | 6 | 1 | 🟡 (info) |
-| D3.4 Keepalive & reconnect | 6 | 1 | 5 | 🟡 (only keepalive done) |
+| D3.2 Connection & auto-start | 6 | 5 | 1 | 🟡 (D3.2.6 integration test) |
+| D3.3 Query API | 7 | 7 | 0 | ✅ |
+| D3.4 Keepalive & reconnect | 6 | 5 | 1 | 🟡 (D3.4.6 reconnect test) |
 | D3.5 Client integration test | 4 | 0 | 4 | ⬜ |
 | D4.1 MCP scaffold | 3 | 3 | 0 | ✅ |
-| D4.2 MCP protocol | 7 | 6 | 1 | 🟡 (info tool) |
+| D4.2 MCP protocol | 7 | 7 | 0 | ✅ |
 | D4.3 MCP E2E test | 3 | 0 | 3 | ⬜ |
 | D5.1 CLI client integration | 4 | 0 | 4 | ⬜ |
 | D5.2 CLI query routing | 5 | 0 | 5 | ⬜ |
@@ -507,7 +507,7 @@ both daemon and client share the same types without circular deps.
 | D6.3 TUI loading state | 3 | 0 | 3 | ⬜ |
 | D6.4 TUI keepalive | 3 | 0 | 3 | ⬜ |
 | D6.5 TUI validation | 5 | 0 | 5 | ⬜ |
-| **TOTAL (active)** | **169** | **103** | **66** | |
+| **TOTAL (active)** | **169** | **117** | **52** | |
 
 ### Completion Log
 
@@ -522,6 +522,16 @@ Date        | ID       | Description                              | Commit
             |          | API, boxed I/O for platform parity       |
 2026-03-26  | D4.*     | MCP adapter: uffs_search, uffs_drives,   | d837cf6b3
             |          | uffs_status tools, stdio protocol        |
+2026-03-26  | D2.3.7   | IndexManager::info(path) via path search  | 83b0d6b4d
+2026-03-26  | D2.5.5   | Route "info" in handler.rs               | 83b0d6b4d
+2026-03-26  | D2.6.6   | Differentiated idle timeouts (session     | 83b0d6b4d
+            |          | tier: CLI=base, TUI/GUI/MCP=3×)          |
+2026-03-26  | D2.6.7   | Don't retire if active connections > 0    | 83b0d6b4d
+2026-03-26  | D3.3.4   | client.info(path) → InfoResponse         | 83b0d6b4d
+2026-03-26  | D3.4.2   | Auto-keepalive (KeepaliveGuard, RAII)     | 5f59bc6c5
+2026-03-26  | D3.4.3   | set_session_type() + handler support      | 5f59bc6c5
+2026-03-26  | D3.4.4   | shutdown() reads nonce from PID file      | 5f59bc6c5
+2026-03-26  | D4.2.6   | uffs_info MCP tool                       | 83b0d6b4d
 ```
 
 ---
