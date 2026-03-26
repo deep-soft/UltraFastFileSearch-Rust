@@ -193,6 +193,17 @@ impl UffsClient {
         Ok(())
     }
 
+    /// Look up detailed info for a specific file path.
+    pub async fn info(
+        &mut self,
+        path: &str,
+    ) -> Result<crate::protocol::InfoResponse, crate::error::ClientError> {
+        let params = serde_json::json!({"path": path});
+        let result = self.send_request("info", Some(params)).await?;
+        serde_json::from_value(result)
+            .map_err(|e| crate::error::ClientError::Protocol(e.to_string()))
+    }
+
     /// Send a keepalive to reset the daemon's idle timer.
     pub async fn keepalive(&mut self) -> Result<(), crate::error::ClientError> {
         let _result = self.send_request("keepalive", None).await?;

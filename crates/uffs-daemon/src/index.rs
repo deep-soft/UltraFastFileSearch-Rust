@@ -327,6 +327,51 @@ impl IndexManager {
         *status = DaemonStatus::Ready;
     }
 
+    /// Look up a file by path and return all available fields (D2.3.7).
+    pub async fn info(&self, path: &str) -> uffs_client::protocol::InfoResponse {
+        let backend = self.backend.read().await;
+        let path_lower = path.to_ascii_lowercase();
+
+        // Search all drives for a matching path
+        for drive in &backend.drives {
+            let volume_prefix = format!("{}:\\", drive.letter);
+            for (idx, rec) in drive.records.iter().enumerate() {
+                if rec.name_len == 0 {
+                    continue;
+                }
+                let resolved = uffs_core::search::tree::resolve_path(drive, idx, &volume_prefix);
+                if resolved.to_ascii_lowercase() == path_lower {
+                    let name = rec.name(&drive.names);
+                    let record_json = serde_json::json!({
+                        "drive": drive.letter.to_string(),
+                        "path": resolved,
+                        "name": name,
+                        "size": rec.size,
+                        "allocated": rec.allocated,
+                        "treesize": rec.treesize,
+                        "created": rec.created,
+                        "modified": rec.modified,
+                        "accessed": rec.accessed,
+                        "flags": rec.flags,
+                        "is_directory": rec.is_directory(),
+                        "descendants": rec.descendants,
+                        "parent_idx": rec.parent_idx,
+                        "extension_id": rec.extension_id,
+                    });
+                    return uffs_client::protocol::InfoResponse {
+                        found: true,
+                        record: Some(record_json),
+                    };
+                }
+            }
+        }
+
+        uffs_client::protocol::InfoResponse {
+            found: false,
+            record: None,
+        }
+    }
+
     /// Check if the daemon has any loaded drives.
     pub async fn has_drives(&self) -> bool {
         let backend = self.backend.read().await;

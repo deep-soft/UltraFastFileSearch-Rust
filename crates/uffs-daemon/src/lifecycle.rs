@@ -16,6 +16,10 @@ pub struct LifecycleHandle {
     idle_reset: Arc<AtomicBool>,
     /// Shutdown nonce — must be provided in the `shutdown` RPC call (S4.4.9).
     shutdown_nonce: Arc<std::sync::Mutex<Option<String>>>,
+    /// Active connection count (D2.6.7: don't retire if > 0).
+    active_connections: Arc<std::sync::atomic::AtomicUsize>,
+    /// Longest session type seen (D2.6.6: TUI/GUI/MCP get 15 min, CLI gets 5 min).
+    max_session_tier: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl LifecycleHandle {
@@ -27,6 +31,32 @@ impl LifecycleHandle {
     /// Reset the idle timer (called on every query/keepalive).
     pub fn reset_idle_timer(&self) {
         self.idle_reset.store(true, Ordering::Relaxed);
+    }
+
+    /// Increment active connection count.
+    pub fn connection_opened(&self) {
+        self.active_connections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement active connection count.
+    pub fn connection_closed(&self) {
+        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Get active connection count.
+    pub fn active_connections(&self) -> usize {
+        self.active_connections.load(Ordering::Relaxed)
+    }
+
+    /// Update session type (D2.6.6). Higher tier = longer timeout.
+    /// 0 = CLI (5 min), 1 = TUI/GUI/MCP (15 min).
+    pub fn set_session_type(&self, session_type: &str) {
+        let tier = match session_type {
+            "tui" | "gui" | "mcp" => 1,
+            _ => 0, // cli or unknown
+        };
+        // Only upgrade, never downgrade
+        self.max_session_tier.fetch_max(tier, Ordering::Relaxed);
     }
 
     /// Verify a shutdown nonce matches the one in the PID file (S4.4.9).
@@ -63,6 +93,8 @@ impl LifecycleManager {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let idle_reset = Arc::new(AtomicBool::new(false));
         let shutdown_nonce_shared = Arc::new(std::sync::Mutex::new(None));
+        let active_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_session_tier = Arc::new(std::sync::atomic::AtomicU8::new(0));
 
         let pid_path = data_dir.join("daemon.pid");
 
@@ -72,6 +104,8 @@ impl LifecycleManager {
                 shutdown_tx,
                 idle_reset,
                 shutdown_nonce: shutdown_nonce_shared,
+                active_connections,
+                max_session_tier,
             },
             pid_path,
             idle_timeout,
@@ -165,33 +199,54 @@ impl LifecycleManager {
     }
 
     /// Run the idle timer. Returns when shutdown is requested or idle timeout fires.
+    ///
+    /// D2.6.6: Uses differentiated timeouts based on session type:
+    /// - CLI sessions (tier 0): use the configured timeout (default 5 min)
+    /// - TUI/GUI/MCP sessions (tier 1): use 3× the configured timeout (default 15 min)
+    ///
+    /// D2.6.7: Does NOT retire if active connections exist — waits for them to close first.
     pub async fn run_idle_timer(&mut self) {
-        let Some(timeout) = self.idle_timeout else {
+        let Some(base_timeout) = self.idle_timeout else {
             // --no-retire: just wait for shutdown signal
             let _ = self.shutdown_rx.wait_for(|&v| v).await;
             return;
         };
 
         loop {
-            // Reset the flag
+            // D2.6.6: Compute effective timeout based on highest session tier seen
+            let tier = self.handle.max_session_tier.load(Ordering::Relaxed);
+            let effective_timeout = if tier >= 1 {
+                base_timeout.saturating_mul(3) // TUI/GUI/MCP: 3× (e.g. 5min → 15min)
+            } else {
+                base_timeout // CLI: base timeout
+            };
+
             self.handle.idle_reset.store(false, Ordering::Relaxed);
 
             tokio::select! {
-                // Wait for idle timeout
-                () = tokio::time::sleep(timeout) => {
+                () = tokio::time::sleep(effective_timeout) => {
                     // Check if idle was reset during the sleep
                     if self.handle.idle_reset.load(Ordering::Relaxed) {
-                        // Activity happened — restart the timer
                         continue;
                     }
-                    // No activity — fire idle timeout
+
+                    // D2.6.7: Don't retire if active connections exist
+                    let conns = self.handle.active_connections();
+                    if conns > 0 {
+                        tracing::debug!(
+                            connections = conns,
+                            "Idle timeout reached but active connections exist — deferring"
+                        );
+                        continue;
+                    }
+
                     tracing::info!(
-                        timeout_secs = timeout.as_secs(),
+                        timeout_secs = effective_timeout.as_secs(),
+                        session_tier = tier,
                         "Idle timeout reached — auto-retiring"
                     );
                     return;
                 }
-                // Or shutdown was requested explicitly
                 _ = self.shutdown_rx.wait_for(|&v| v) => {
                     tracing::info!("Shutdown requested");
                     return;

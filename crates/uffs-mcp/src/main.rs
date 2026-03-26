@@ -159,6 +159,20 @@ fn tool_definitions() -> Vec<ToolDef> {
                 "properties": {}
             }),
         },
+        ToolDef {
+            name: "uffs_info".to_owned(),
+            description: "Get detailed information about a specific file or directory by its full path. Returns all available metadata including size, timestamps, attributes, descendants, and treesize.".to_owned(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Full file path, e.g. 'C:\\Users\\Documents\\report.pdf'"
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
     ]
 }
 
@@ -316,6 +330,7 @@ async fn handle_tool_call(
         "uffs_search" => tool_search(arguments, client).await?,
         "uffs_drives" => tool_drives(client).await?,
         "uffs_status" => tool_status(client).await?,
+        "uffs_info" => tool_info(arguments, client).await?,
         other => anyhow::bail!("Unknown tool: {other}"),
     };
 
@@ -416,4 +431,28 @@ async fn tool_status(client: &mut UffsClient) -> anyhow::Result<String> {
         response.connections,
         response.pid
     ))
+}
+
+/// Tool: uffs_info — file/directory info by path.
+async fn tool_info(args: Value, client: &mut UffsClient) -> anyhow::Result<String> {
+    let path = args
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    if path.is_empty() {
+        return Ok("Error: 'path' parameter is required.".to_owned());
+    }
+
+    let response = client.info(path).await
+        .map_err(|e| anyhow::anyhow!("Failed to get info: {e}"))?;
+
+    if !response.found {
+        return Ok(format!("File not found: {path}"));
+    }
+
+    match response.record {
+        Some(record) => Ok(serde_json::to_string_pretty(&record)?),
+        None => Ok(format!("File found but no details available: {path}")),
+    }
 }

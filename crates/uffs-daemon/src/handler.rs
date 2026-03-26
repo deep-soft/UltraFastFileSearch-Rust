@@ -29,6 +29,7 @@ pub async fn handle_request(
         "search" => handle_search(id, req, index).await,
         "drives" => handle_drives(id, index).await,
         "status" => handle_status(id, index, connections).await,
+        "info" => handle_info(id, req, index).await,
         "refresh" => handle_refresh(id, req, index).await,
         "keepalive" => handle_keepalive(id, lifecycle).await,
         "shutdown" => handle_shutdown(id, req, lifecycle).await,
@@ -96,6 +97,29 @@ async fn handle_drives(id: u64, index: &Arc<IndexManager>) -> String {
 /// Handle `status` method.
 async fn handle_status(id: u64, index: &Arc<IndexManager>, connections: usize) -> String {
     let response = index.status(connections).await;
+    let result = serde_json::to_value(&response).unwrap_or_default();
+    serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
+}
+
+/// Handle `info` method — look up a file by path.
+async fn handle_info(id: u64, req: &RpcRequest, index: &Arc<IndexManager>) -> String {
+    let path = req
+        .params
+        .as_ref()
+        .and_then(|p| p.get("path"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+
+    if path.is_empty() {
+        return serde_json::to_string(&RpcErrorResponse::error(
+            Some(id),
+            ERR_INVALID_PARAMS,
+            "Missing 'path' parameter",
+        ))
+        .unwrap_or_default();
+    }
+
+    let response = index.info(path).await;
     let result = serde_json::to_value(&response).unwrap_or_default();
     serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
 }
