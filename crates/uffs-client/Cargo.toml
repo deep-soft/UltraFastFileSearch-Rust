@@ -35,5 +35,12 @@ tracing.workspace = true
 # Platform dirs (for socket/pipe path)
 dirs-next.workspace = true
 
+# Daemon identity verification: exe path lookup
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
 [lints]
 workspace = true

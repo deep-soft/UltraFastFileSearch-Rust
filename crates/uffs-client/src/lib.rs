@@ -11,16 +11,12 @@
 //! let drives = client.drives().await?;
 //! ```
 
-// Suppress unused crate warnings for deps that will be used as modules are implemented
-use dirs_next as _;
+// Suppress unused crate warnings for deps used in sub-modules
 use serde as _;
-use serde_json as _;
-use thiserror as _;
-use tokio as _;
-use tracing as _;
 use uffs_security as _;
 
 pub mod connect;
 pub mod error;
 pub mod protocol;
 pub mod types;
+pub mod verify;

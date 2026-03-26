@@ -43,6 +43,8 @@ impl UffsClient {
     pub async fn connect() -> Result<Self, crate::error::ClientError> {
         // Try connecting directly first
         if let Ok(client) = Self::platform_connect().await {
+            // S4.3.4: Verify daemon identity via PID file
+            verify_daemon_after_connect();
             return Ok(client);
         }
 
@@ -58,6 +60,8 @@ impl UffsClient {
 
             if let Ok(client) = Self::platform_connect().await {
                 tracing::info!(attempt, "Connected to daemon");
+                // S4.3.4: Verify daemon identity via PID file
+                verify_daemon_after_connect();
                 return Ok(client);
             }
 
@@ -268,6 +272,31 @@ pub fn socket_path() -> PathBuf {
     {
         base.join("uffs").join("daemon.sock")
     }
+}
+
+/// S4.3.4: Verify daemon identity after connecting.
+///
+/// Reads the PID file, verifies the daemon process is alive and running
+/// the expected binary. Logs a warning on failure but does NOT disconnect
+/// (graceful degradation — don't block the user).
+fn verify_daemon_after_connect() {
+    let pid_path = pid_file_path();
+    if !pid_path.exists() {
+        tracing::debug!("No PID file found, skipping daemon identity verification");
+        return;
+    }
+    if !crate::verify::verify_daemon_pid_file(&pid_path) {
+        tracing::warn!(
+            path = %pid_path.display(),
+            "Daemon identity verification failed — proceed with caution"
+        );
+    }
+}
+
+/// PID file path (must match daemon's lifecycle.rs).
+fn pid_file_path() -> PathBuf {
+    let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join("uffs").join("daemon.pid")
 }
 
 /// Find the `uffs-daemon` executable.
