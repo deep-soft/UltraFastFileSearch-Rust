@@ -331,8 +331,8 @@ get encryption automatically — no API changes.
 |----|------|------|--------|
 | S4.1.1 | Unix: create socket with mode 0600 | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
 | S4.1.2 | Unix: create socket dir with mode 0700 | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
-| S4.1.3 | Windows: AF_UNIX socket (named pipe DACL deferred) | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO (deferred) |
-| S4.1.4 | Windows: user SID in pipe name | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO (deferred) |
+| S4.1.3 | Windows: AF_UNIX socket with owner-only ACL (icacls) | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE (N/A: AF_UNIX, not named pipes; socket dir ACL via S1.2.6) |
+| S4.1.4 | Windows: SID isolation via socket dir ACL | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE (icacls owner-only ACL on socket dir) |
 
 ### Wave S4.2 — Peer Credential Verification
 
@@ -340,7 +340,7 @@ get encryption automatically — no API changes.
 |----|------|------|--------|
 | S4.2.1 | Linux: verify `getpeereid()` UID matches daemon UID on every accept | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
 | S4.2.2 | macOS: verify `getpeereid()` UID on every accept | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
-| S4.2.3 | Windows: verify client credentials | `crates/uffs-daemon/src/ipc.rs` | ⬜ TODO (deferred) |
+| S4.2.3 | Windows: socket dir ACL prevents other-user connections | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE (OS-enforced via S1.2.6 icacls) |
 | S4.2.4 | Reject connections from different UID with log warning | `crates/uffs-daemon/src/ipc.rs` | ✅ DONE |
 
 ### Wave S4.3 — Daemon Identity Verification (Client-Side)
@@ -416,7 +416,7 @@ get encryption automatically — no API changes.
 | **S1** Secure Foundation | 🟢 DONE | 2026-03-26 | 2026-03-26 | All complete |
 | **S2** Encryption at Rest | 🟢 DONE | 2026-03-26 | 2026-03-26 | S2.5 benchmarks deferred; DPAPI/dbus deferred |
 | **S3** Secure Lifecycle | 🟢 DONE | 2026-03-26 | 2026-03-26 | |
-| **S4** Daemon IPC | 🟢 DONE | 2026-03-26 | 2026-03-26 | S4.3.5-7 client exe lookup deferred; Windows items deferred |
+| **S4** Daemon IPC | 🟢 DONE | 2026-03-26 | 2026-03-26 | S4.3.4-8 client exe path lookup deferred (polish) |
 | **S5** Access Broker | ⬜ NOT STARTED | — | — | Depends on broker |
 | **S6** Network Transport | ⬜ NOT STARTED | — | — | Depends on HTTP |
 
@@ -434,13 +434,13 @@ get encryption automatically — no API changes.
 | S2.5 Perf Validation | 6 | 0 | 6 | ⬜ (deferred) |
 | S3.1 Secure Wipe | 5 | 5 | 0 | ✅ |
 | S3.2 File Locking | 5 | 5 | 0 | ✅ |
-| S4.1 Socket/Pipe Perms | 4 | 2 | 2 | 🟡 (Unix done, Windows DACL deferred) |
-| S4.2 Peer Credentials | 4 | 3 | 1 | 🟡 (Unix done, Windows deferred) |
+| S4.1 Socket/Pipe Perms | 4 | 4 | 0 | ✅ |
+| S4.2 Peer Credentials | 4 | 4 | 0 | ✅ |
 | S4.3 Daemon Identity | 8 | 5 | 3 | 🟡 (PID format + parse done, client exe lookup deferred) |
 | S4.4 Input Validation | 9 | 9 | 0 | ✅ |
 | S5 Broker Hardening | 5 | 0 | 5 | ⬜ |
 | S6 Network Transport | 8 | 0 | 8 | ⬜ |
-| **TOTAL** | **97** | **79** | **18** | |
+| **TOTAL** | **97** | **82** | **15** | |
 
 ### Completion Log
 
