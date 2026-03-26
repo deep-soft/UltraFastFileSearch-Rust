@@ -66,11 +66,67 @@ copy-binary profile:
     fi
     if ! echo "$PATH" | grep -q "$HOME/bin"; then printf "\033[1;33m⚠️  ~/bin not in PATH. Add this to your shell profile:\033[0m\n"; printf "   export PATH=\"\$HOME/bin:\$PATH\"\n"; fi
 
-# Install shipped UFFS binaries to ~/bin (Windows only).
+# Build release binaries and install all platform-relevant ones to ~/bin.
+#
+# Platform binaries:
+#   All platforms : uffs, uffs_tui, uffs-daemon, uffs-mcp
+#   Windows only  : uffs-broker, uffs_gui
+#   macOS/Linux   : (uffs-broker excluded — Windows-only component)
+[unix]
+use:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf "\033[0;34m🔨 Building release binaries...\033[0m\n"
+    cargo build --release --workspace 2>&1 | tail -5
+
+    BIN_DIR="$HOME/bin"
+    mkdir -p "$BIN_DIR"
+
+    # Platform-relevant binaries (name in target/release → name in ~/bin)
+    BINARIES=("uffs" "uffs_tui" "uffs-daemon" "uffs-mcp")
+    INSTALLED=0
+    SKIPPED=0
+
+    printf "\033[0;34m📦 Installing to %s\033[0m\n" "$BIN_DIR"
+    for BIN in "${BINARIES[@]}"; do
+        SRC="target/release/$BIN"
+        if [[ -f "$SRC" ]]; then
+            cp "$SRC" "$BIN_DIR/$BIN"
+            chmod +x "$BIN_DIR/$BIN"
+            SIZE=$(du -sh "$BIN_DIR/$BIN" | cut -f1)
+            printf "  \033[0;32m✅ %-16s %s\033[0m\n" "$BIN" "$SIZE"
+            INSTALLED=$((INSTALLED + 1))
+        else
+            printf "  \033[1;33m⚠️  %-16s (not found in target/release/)\033[0m\n" "$BIN"
+            SKIPPED=$((SKIPPED + 1))
+        fi
+    done
+
+    printf "\n\033[0;32m✅ Installed %d binaries to ~/bin\033[0m\n" "$INSTALLED"
+    if [[ $SKIPPED -gt 0 ]]; then
+        printf "\033[1;33m⚠️  Skipped %d (build may have failed)\033[0m\n" "$SKIPPED"
+    fi
+
+    # Check PATH
+    if ! echo "$PATH" | grep -q "$HOME/bin"; then
+        printf "\n\033[1;33m⚠️  ~/bin not in PATH. Add to your shell profile:\033[0m\n"
+        printf "   export PATH=\"\$HOME/bin:\$PATH\"\n"
+    fi
+
+    # Show versions
+    printf "\n\033[0;34m📋 Installed versions:\033[0m\n"
+    for BIN in "${BINARIES[@]}"; do
+        if [[ -x "$BIN_DIR/$BIN" ]]; then
+            VER=$("$BIN_DIR/$BIN" --version 2>/dev/null || echo "unknown")
+            printf "  %-16s %s\n" "$BIN" "$VER"
+        fi
+    done
+
+# Install shipped UFFS binaries from dist/ to ~/bin (Windows).
+# Uses pre-built binaries from the CI shipping pipeline (cross-compiled on macOS).
 [windows]
 use:
     Write-Host "📦 Installing latest UFFS binaries to ~/bin..." -ForegroundColor Blue; \
-    Write-Host "ℹ️  Note: UFFS is Windows-only (requires NTFS MFT access)" -ForegroundColor Yellow; \
     $binDir = "$env:USERPROFILE\bin"; if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }; \
     $distDir = $null; $latestItem = Get-Item "dist\latest" -ErrorAction SilentlyContinue; \
     if ($latestItem -and $latestItem.LinkType -eq 'SymbolicLink') { $distDir = $latestItem.Target } elseif ($latestItem -and -not $latestItem.PSIsContainer) { $target = (Get-Content "dist\latest" -Raw).Trim(); if (Test-Path "dist\$target") { $distDir = "dist\$target" } }; \
@@ -79,15 +135,6 @@ use:
     Write-Host "  → Using: $distDir" -ForegroundColor Cyan; $binaries = @("uffs", "uffs_mft", "uffs_tui", "uffs_gui"); $installed = 0; $skipped = 0; \
     foreach ($bin in $binaries) { $src = "$distDir\$bin\$bin-windows-x64.exe"; $dest = "$binDir\$bin.exe"; if (Test-Path $src) { Copy-Item $src $dest -Force; Write-Host "  ✅ $bin.exe" -ForegroundColor Green; $installed++ } else { Write-Host "  ⚠️  $bin (not found)" -ForegroundColor Yellow; $skipped++ } }; \
     Write-Host "✅ Installed $installed binaries to ~/bin" -ForegroundColor Green; if ($skipped -gt 0) { Write-Host "⚠️  Skipped $skipped (run 'just phase2-ship' to build all binaries)" -ForegroundColor Yellow }
-
-# Explain that UFFS is Windows-only on Unix hosts.
-[unix]
-use:
-    #!/usr/bin/env bash
-    printf "\033[0;31m❌ UFFS only runs on Windows.\033[0m\n"
-    printf "\033[0;34m   UFFS reads the NTFS Master File Table directly using Windows APIs.\033[0m\n"
-    printf "\033[0;34m   Use 'just phase2-ship' to cross-compile and ship Windows binaries from this host.\033[0m\n"
-    exit 1
 
 # Git commit with auto-generated message.
 commit:
