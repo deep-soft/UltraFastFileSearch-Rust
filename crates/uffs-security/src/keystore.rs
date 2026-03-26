@@ -6,7 +6,7 @@
 //! | Platform | Backend | Key Location |
 //! |----------|---------|-------------|
 //! | **macOS** | Keychain Services | `com.uffs.cache` / `encryption-key-v1` |
-//! | **Windows** | File-based (secure dir + hidden attr) | `%LOCALAPPDATA%/uffs/key.bin` |
+//! | **Windows** | DPAPI (`CryptProtectData`) | `%LOCALAPPDATA%/uffs/key.dpapi` |
 //! | **Linux** | File-based (secure dir + 0600 perms) | `~/.local/share/uffs/key.bin` |
 //!
 //! The user never sees, configures, or manages keys. If the key is lost
@@ -91,33 +91,32 @@ fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Windows + Linux: file-based key in secure directory
+// Windows: DPAPI (CryptProtectData / CryptUnprotectData)
 // ────────────────────────────────────────────────────────────────────────────
 
-/// File-based key storage for Windows and Linux.
+/// Windows DPAPI key storage.
 ///
-/// The key is a raw 32-byte file stored under the platform's local data dir
-/// with owner-only permissions (`0600` on Linux, hidden attribute on Windows).
-/// This is protected against casual snooping; combined with cache encryption
-/// (S2), the actual file contents are opaque even if the key file is read.
-#[cfg(not(target_os = "macos"))]
+/// The raw 32-byte key is encrypted with `CryptProtectData` using the
+/// entropy string `"uffs-cache-v1"`. The encrypted blob is stored at
+/// `%LOCALAPPDATA%/uffs/key.dpapi`. Only the same Windows user account
+/// can decrypt it via `CryptUnprotectData`.
+#[cfg(target_os = "windows")]
 fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
-    let key_path = key_file_path()?;
+    let key_path = dpapi_key_path()?;
 
-    // Try to read existing key
+    // Try to read and decrypt existing DPAPI blob
     if key_path.exists() {
-        let data = std::fs::read(&key_path)?;
-        if data.len() == KEY_SIZE {
-            let mut key = [0u8; KEY_SIZE];
-            key.copy_from_slice(&data);
-            return Ok(key);
+        match dpapi_read_key(&key_path) {
+            Ok(key) => return Ok(key),
+            Err(e) => {
+                tracing::warn!(
+                    path = %key_path.display(),
+                    error = %e,
+                    "DPAPI decrypt failed, regenerating key"
+                );
+                let _ignore = std::fs::remove_file(&key_path);
+            }
         }
-        // Wrong size — regenerate
-        tracing::warn!(
-            len = data.len(),
-            path = %key_path.display(),
-            "Key file has wrong size, regenerating"
-        );
     }
 
     // Generate new key
@@ -128,7 +127,198 @@ fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
         crate::fs::create_secure_dir(parent)?;
     }
 
-    // Write key file with owner-only permissions
+    // Encrypt with DPAPI and write
+    dpapi_write_key(&key_path, &key)?;
+
+    tracing::info!(path = %key_path.display(), "Generated and stored new encryption key (DPAPI)");
+    Ok(key)
+}
+
+/// DPAPI key file path: `%LOCALAPPDATA%/uffs/key.dpapi`
+#[cfg(target_os = "windows")]
+fn dpapi_key_path() -> io::Result<std::path::PathBuf> {
+    let base = dirs_next::data_local_dir().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "cannot determine %LOCALAPPDATA%")
+    })?;
+    Ok(base.join("uffs").join("key.dpapi"))
+}
+
+/// Entropy string for DPAPI — binds the encrypted blob to this application.
+#[cfg(target_os = "windows")]
+const DPAPI_ENTROPY: &[u8] = b"uffs-cache-v1";
+
+/// Encrypt a key with DPAPI and write the blob to disk.
+#[cfg(target_os = "windows")]
+fn dpapi_write_key(path: &std::path::Path, key: &[u8; KEY_SIZE]) -> io::Result<()> {
+    let encrypted = dpapi_protect(key)?;
+    std::fs::write(path, &encrypted)?;
+    crate::fs::set_file_permissions_owner_only(path)?;
+    Ok(())
+}
+
+/// Read a DPAPI blob from disk and decrypt it to get the key.
+#[cfg(target_os = "windows")]
+fn dpapi_read_key(path: &std::path::Path) -> io::Result<[u8; KEY_SIZE]> {
+    let blob = std::fs::read(path)?;
+    let plaintext = dpapi_unprotect(&blob)?;
+    if plaintext.len() != KEY_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("DPAPI decrypted key has wrong size: {}", plaintext.len()),
+        ));
+    }
+    let mut key = [0u8; KEY_SIZE];
+    key.copy_from_slice(&plaintext);
+    Ok(key)
+}
+
+/// Call `CryptProtectData` to encrypt data with DPAPI.
+#[cfg(target_os = "windows")]
+fn dpapi_protect(data: &[u8]) -> io::Result<Vec<u8>> {
+    use windows::Win32::Security::Cryptography::{
+        CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN,
+    };
+    use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
+
+    let mut input_blob = CRYPT_INTEGER_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr() as *mut u8,
+    };
+    let mut entropy_blob = CRYPT_INTEGER_BLOB {
+        cbData: DPAPI_ENTROPY.len() as u32,
+        pbData: DPAPI_ENTROPY.as_ptr() as *mut u8,
+    };
+    let mut output_blob = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+
+    // SAFETY: CryptProtectData is a well-defined Win32 API.
+    #[expect(unsafe_code, reason = "DPAPI requires unsafe FFI")]
+    let ok = unsafe {
+        CryptProtectData(
+            &mut input_blob,
+            None,                      // description (optional)
+            Some(&mut entropy_blob),   // entropy
+            None,                      // reserved
+            None,                      // prompt struct
+            CRYPTPROTECT_UI_FORBIDDEN, // no UI
+            &mut output_blob,
+        )
+    };
+
+    if !ok.as_bool() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "CryptProtectData failed",
+        ));
+    }
+
+    // Copy output blob to Vec and free the Windows-allocated memory
+    let result = unsafe {
+        let slice = std::slice::from_raw_parts(
+            output_blob.pbData,
+            output_blob.cbData as usize,
+        );
+        let vec = slice.to_vec();
+        windows::Win32::System::Memory::LocalFree(
+            windows::Win32::Foundation::HLOCAL(output_blob.pbData as _),
+        );
+        vec
+    };
+
+    Ok(result)
+}
+
+/// Call `CryptUnprotectData` to decrypt a DPAPI blob.
+#[cfg(target_os = "windows")]
+fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
+    use windows::Win32::Security::Cryptography::{
+        CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN,
+    };
+    use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
+
+    let mut input_blob = CRYPT_INTEGER_BLOB {
+        cbData: blob.len() as u32,
+        pbData: blob.as_ptr() as *mut u8,
+    };
+    let mut entropy_blob = CRYPT_INTEGER_BLOB {
+        cbData: DPAPI_ENTROPY.len() as u32,
+        pbData: DPAPI_ENTROPY.as_ptr() as *mut u8,
+    };
+    let mut output_blob = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+
+    // SAFETY: CryptUnprotectData is a well-defined Win32 API.
+    #[expect(unsafe_code, reason = "DPAPI requires unsafe FFI")]
+    let ok = unsafe {
+        CryptUnprotectData(
+            &mut input_blob,
+            None,                      // description out
+            Some(&mut entropy_blob),   // entropy
+            None,                      // reserved
+            None,                      // prompt struct
+            CRYPTPROTECT_UI_FORBIDDEN, // no UI
+            &mut output_blob,
+        )
+    };
+
+    if !ok.as_bool() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "CryptUnprotectData failed (wrong user or corrupted blob)",
+        ));
+    }
+
+    let result = unsafe {
+        let slice = std::slice::from_raw_parts(
+            output_blob.pbData,
+            output_blob.cbData as usize,
+        );
+        let vec = slice.to_vec();
+        windows::Win32::System::Memory::LocalFree(
+            windows::Win32::Foundation::HLOCAL(output_blob.pbData as _),
+        );
+        vec
+    };
+
+    Ok(result)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Linux: file-based key with 0600 permissions
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Linux file-based key storage.
+///
+/// The key is a raw 32-byte file stored at `~/.local/share/uffs/key.bin`
+/// with owner-only permissions (`0600`).
+#[cfg(target_os = "linux")]
+fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
+    let key_path = linux_key_path()?;
+
+    if key_path.exists() {
+        let data = std::fs::read(&key_path)?;
+        if data.len() == KEY_SIZE {
+            let mut key = [0u8; KEY_SIZE];
+            key.copy_from_slice(&data);
+            return Ok(key);
+        }
+        tracing::warn!(
+            len = data.len(),
+            path = %key_path.display(),
+            "Key file has wrong size, regenerating"
+        );
+    }
+
+    let key = generate_key()?;
+
+    if let Some(parent) = key_path.parent() {
+        crate::fs::create_secure_dir(parent)?;
+    }
+
     std::fs::write(&key_path, key)?;
     crate::fs::set_file_permissions_owner_only(&key_path)?;
 
@@ -136,17 +326,11 @@ fn platform_get_or_create_key() -> io::Result<[u8; KEY_SIZE]> {
     Ok(key)
 }
 
-/// Returns the key file path.
-///
-/// - **Windows**: `%LOCALAPPDATA%/uffs/key.bin`
-/// - **Linux**: `~/.local/share/uffs/key.bin`
-#[cfg(not(target_os = "macos"))]
-fn key_file_path() -> io::Result<std::path::PathBuf> {
+/// Linux key file path: `~/.local/share/uffs/key.bin`
+#[cfg(target_os = "linux")]
+fn linux_key_path() -> io::Result<std::path::PathBuf> {
     let base = dirs_next::data_local_dir().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "cannot determine local data directory",
-        )
+        io::Error::new(io::ErrorKind::NotFound, "cannot determine local data dir")
     })?;
     Ok(base.join("uffs").join("key.bin"))
 }
