@@ -24,8 +24,8 @@ mod streaming;
 // ── Re-exports for sibling modules ──────────────────────────────────────────
 pub(super) use filter::{parse_age_filter, parse_attr_filter, parse_sort_spec};
 pub(super) use row_writer::write_index_streaming_with_filter;
-#[cfg(windows)]
-pub use streaming::StreamingWriter;
+// StreamingWriter re-export removed — no callers remain after streaming
+// search path consolidation.
 #[cfg(test)]
 pub(super) use streaming::format_json_value;
 pub(super) use types::StreamingRecordFilter;

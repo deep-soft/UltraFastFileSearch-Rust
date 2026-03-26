@@ -30,8 +30,6 @@ use super::{SearchConfig, SearchDispatchResult};
 struct IndexStreamConfig<'a> {
     /// Preloaded MFT index.
     index: &'a uffs_mft::MftIndex,
-    /// Load time in milliseconds.
-    load_ms: u128,
     /// Pattern string for filtering.
     pattern: &'a str,
     /// Whether to use case-sensitive matching.
@@ -214,7 +212,6 @@ async fn run_live_single_drive(config: &SearchConfig<'_>, drive_letter: char) ->
 
     let stream_config = IndexStreamConfig {
         index: &index,
-        load_ms,
         pattern: config.pattern,
         case_sensitive: config.effective_case_sensitive,
         filters: &config.filters,

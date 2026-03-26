@@ -587,18 +587,6 @@ fn execute_query(
     Ok(query.collect()?)
 }
 
-/// Execute query using fast `IndexQuery` path (no `DataFrame` conversion).
-///
-/// This is the fast path for simple queries.  Public wrapper so both
-/// `--mft-file` and Windows LIVE paths can share the same query logic.
-#[cfg(windows)]
-pub(super) fn execute_index_query_native_pub(
-    index: &uffs_mft::MftIndex,
-    filters: &QueryFilters<'_>,
-    resolve_paths: bool,
-) -> Result<Vec<uffs_core::SearchResult>> {
-    execute_index_query_native(index, filters, resolve_paths)
-}
 
 /// Execute query using fast `IndexQuery` path (no `DataFrame` conversion).
 ///

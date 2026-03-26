@@ -33,9 +33,8 @@ mod drive_search;
 /// Parallel multi-drive DataFrame helpers.
 #[cfg(windows)]
 mod multi_drive;
-/// Streaming multi-drive helpers.
-#[cfg(windows)]
-mod streaming;
+// NOTE: streaming module removed (zero callers — superseded by live.rs
+// multi-drive path).  Restore from git history if needed.
 
 #[cfg(windows)]
 pub(crate) use self::multi_drive::search_multi_drive_filtered;
