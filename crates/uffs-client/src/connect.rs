@@ -210,11 +210,79 @@ impl UffsClient {
         Ok(())
     }
 
-    /// Request graceful daemon shutdown.
-    pub async fn shutdown(&mut self) -> Result<(), crate::error::ClientError> {
-        let _result = self.send_request("shutdown", None).await?;
+    /// Set the session type (D3.4.3) — tells daemon which idle timeout tier to use.
+    ///
+    /// - `"cli"` → short timeout (5 min default)
+    /// - `"tui"`, `"gui"`, `"mcp"` → long timeout (15 min default)
+    pub async fn set_session_type(
+        &mut self,
+        session_type: &str,
+    ) -> Result<(), crate::error::ClientError> {
+        let params = serde_json::json!({"session_type": session_type});
+        let _result = self.send_request("keepalive", Some(params)).await?;
         Ok(())
     }
+
+    /// Request graceful daemon shutdown.
+    ///
+    /// Reads the shutdown nonce from the PID file (S4.4.9) and sends it
+    /// with the shutdown request.
+    pub async fn shutdown(&mut self) -> Result<(), crate::error::ClientError> {
+        // Read nonce from PID file
+        let nonce = read_shutdown_nonce().unwrap_or_default();
+        let params = serde_json::json!({"nonce": nonce});
+        let _result = self.send_request("shutdown", Some(params)).await?;
+        Ok(())
+    }
+
+    /// Start a background keepalive task (D3.4.2).
+    ///
+    /// Sends a keepalive every `interval` to prevent the daemon from
+    /// idle-retiring while this client is alive. Returns a handle that
+    /// stops the task when dropped.
+    ///
+    /// Typical usage for long-lived sessions (TUI, GUI, MCP):
+    /// ```rust,ignore
+    /// let _keepalive = client.start_keepalive(Duration::from_secs(60));
+    /// ```
+    pub fn start_keepalive(
+        &self,
+        interval: std::time::Duration,
+    ) -> KeepaliveGuard {
+        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // We can't move &mut self into the task, so we open a separate
+        // keepalive connection. This is lightweight — just sends one
+        // small JSON message every 60s.
+        let sock_path = socket_path();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = tokio::time::sleep(interval) => {
+                        // Open a short-lived connection for the keepalive
+                        if let Ok(stream) = tokio::net::UnixStream::connect(&sock_path).await {
+                            let (_, mut writer) = stream.into_split();
+                            let msg = r#"{"jsonrpc":"2.0","id":0,"method":"keepalive"}"#;
+                            let _ = writer.write_all(msg.as_bytes()).await;
+                            let _ = writer.write_all(b"\n").await;
+                            let _ = writer.flush().await;
+                        }
+                    }
+                    _ = &mut cancel_rx => {
+                        return; // cancelled
+                    }
+                }
+            }
+        });
+
+        KeepaliveGuard { _cancel: cancel_tx }
+    }
+}
+
+/// Guard that stops the background keepalive task when dropped (D3.4.2).
+pub struct KeepaliveGuard {
+    /// Dropping this sends a cancel signal to the keepalive task.
+    _cancel: tokio::sync::oneshot::Sender<()>,
 }
 
 // ── Platform-specific connection ────────────────────────────────────────────
@@ -308,6 +376,14 @@ fn verify_daemon_after_connect() {
 fn pid_file_path() -> PathBuf {
     let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     base.join("uffs").join("daemon.pid")
+}
+
+/// Read the shutdown nonce from the PID file (line 4).
+///
+/// PID file format: `{pid}\n{timestamp}\n{exe_hash}\n{nonce}\n`
+fn read_shutdown_nonce() -> Option<String> {
+    let content = std::fs::read_to_string(pid_file_path()).ok()?;
+    content.lines().nth(3).map(|s| s.to_owned())
 }
 
 /// Find the `uffs-daemon` executable.

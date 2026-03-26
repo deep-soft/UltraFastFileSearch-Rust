@@ -31,7 +31,7 @@ pub async fn handle_request(
         "status" => handle_status(id, index, connections).await,
         "info" => handle_info(id, req, index).await,
         "refresh" => handle_refresh(id, req, index).await,
-        "keepalive" => handle_keepalive(id, lifecycle).await,
+        "keepalive" => handle_keepalive(id, req, lifecycle).await,
         "shutdown" => handle_shutdown(id, req, lifecycle).await,
         _ => {
             let err = RpcErrorResponse::error(
@@ -142,8 +142,22 @@ async fn handle_refresh(id: u64, req: &RpcRequest, index: &Arc<IndexManager>) ->
 }
 
 /// Handle `keepalive` method.
-async fn handle_keepalive(id: u64, lifecycle: &LifecycleHandle) -> String {
+///
+/// D3.4.3: Also processes optional `session_type` parameter to set
+/// differentiated idle timeout tier.
+async fn handle_keepalive(id: u64, req: &RpcRequest, lifecycle: &LifecycleHandle) -> String {
     lifecycle.reset_idle_timer();
+
+    // D3.4.3: If session_type is provided, update the timeout tier
+    if let Some(session_type) = req
+        .params
+        .as_ref()
+        .and_then(|p| p.get("session_type"))
+        .and_then(serde_json::Value::as_str)
+    {
+        lifecycle.set_session_type(session_type);
+    }
+
     let result = serde_json::json!({"ok": true});
     serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
 }
