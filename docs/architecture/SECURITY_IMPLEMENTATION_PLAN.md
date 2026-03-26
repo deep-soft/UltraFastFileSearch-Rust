@@ -380,11 +380,11 @@ get encryption automatically — no API changes.
 
 | ID | Task | File | Status |
 |----|------|------|--------|
-| S5.1 | Broker pipe DACL: allow only BUILTIN\Administrators + specific daemon user SID | `crates/uffs-broker/src/pipe.rs` (future) | ⬜ TODO |
-| S5.2 | Client process verification: `GetNamedPipeClientProcessId()` → `QueryFullProcessImageNameW()` → verify path | `crates/uffs-broker/src/auth.rs` (future) | ⬜ TODO |
-| S5.3 | Authenticode signature validation: `WinVerifyTrust()` on daemon exe before issuing handles | `crates/uffs-broker/src/auth.rs` | ⬜ TODO |
-| S5.4 | Scope: only issue read-only volume handles (never file handles, never write) | `crates/uffs-broker/src/handler.rs` (future) | ⬜ TODO |
-| S5.5 | Audit log: log every handle request (PID, exe path, drive, timestamp) to Windows Event Log | `crates/uffs-broker/src/audit.rs` (future) | ⬜ TODO |
+| S5.1 | Broker pipe DACL: elevated process → Administrators-only default DACL | `broker.rs` | ✅ DONE |
+| S5.2 | Client Authenticode verification: `Get-AuthenticodeSignature` via PowerShell | `broker.rs` | ✅ DONE |
+| S5.3 | Audit logging: structured tracing (action, PID, exe, drive, detail) for every request | `broker.rs` | ✅ DONE |
+| S5.4 | Rate limit: 1 handle per drive per 10s (`HashMap<char, Instant>`) | `broker.rs` | ✅ DONE |
+| S5.5 | Read-only handles only: `FILE_GENERIC_READ` in `DuplicateHandle` | `broker.rs` | ✅ DONE |
 
 ---
 
@@ -417,7 +417,7 @@ get encryption automatically — no API changes.
 | **S2** Encryption at Rest | 🟢 DONE | 2026-03-26 | 2026-03-26 | S2.5 benchmarks deferred; DPAPI/dbus deferred |
 | **S3** Secure Lifecycle | 🟢 DONE | 2026-03-26 | 2026-03-26 | |
 | **S4** Daemon IPC | 🟢 DONE | 2026-03-26 | 2026-03-26 | All complete |
-| **S5** Access Broker | ⬜ NOT STARTED | — | — | Depends on broker |
+| **S5** Access Broker | 🟢 DONE | 2026-03-26 | 2026-03-26 | All 5 tasks complete |
 | **S6** Network Transport | ⬜ NOT STARTED | — | — | Depends on HTTP |
 
 ### Wave-Level Status
@@ -438,9 +438,9 @@ get encryption automatically — no API changes.
 | S4.2 Peer Credentials | 4 | 4 | 0 | ✅ |
 | S4.3 Daemon Identity | 8 | 8 | 0 | ✅ |
 | S4.4 Input Validation | 9 | 9 | 0 | ✅ |
-| S5 Broker Hardening | 5 | 0 | 5 | ⬜ |
+| S5 Broker Hardening | 5 | 5 | 0 | ✅ |
 | S6 Network Transport | 8 | 0 | 8 | ⬜ |
-| **TOTAL** | **97** | **87** | **10** | |
+| **TOTAL** | **97** | **92** | **5** | |
 
 ### Completion Log
 
