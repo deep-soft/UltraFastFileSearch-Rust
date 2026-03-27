@@ -559,13 +559,16 @@ try {
                 $esIpcAvailable = $LASTEXITCODE -eq 0
 
                 if (-not $esIpcAvailable -and $EverythingExe) {
-                    # Create a minimal ini that only indexes this drive
+                    # Create a minimal ini that ONLY indexes this drive.
+                    # Belt-and-suspenders: include target + explicitly exclude every other letter.
+                    $excludeLetters = ([char[]]([byte][char]'A'..[byte][char]'Z') |
+                        Where-Object { $_ -ne [char]$Drive.ToUpper() } |
+                        ForEach-Object { "${_}:" }) -join ";"
                     $esIniPath = Join-Path $driveDir "everything_${driveLower}.ini"
                     $iniContent = @(
                         "[Everything]"
                         "ntfs_volume_includes=${Drive}:"
-                        "ntfs_volume_excludes="
-                        "folder_exclude_includes="
+                        "ntfs_volume_excludes=$excludeLetters"
                         "exclude_hidden_foldersfiles=0"
                         "index_folder_size=0"
                         "run_as_admin=0"
@@ -574,8 +577,9 @@ try {
 
                     Write-Host "  → Starting Everything instance '$esInstanceName' (${Drive}: only)..." -ForegroundColor DarkYellow
                     $esDbPath = Join-Path $driveDir "everything_${driveLower}.db"
+                    # -choose-volumes prevents auto-discovery of volumes (double safety)
                     Start-Process -FilePath $EverythingExe `
-                        -ArgumentList "-instance `"$esInstanceName`" -config `"$esIniPath`" -db `"$esDbPath`" -startup -minimized -first-instance" `
+                        -ArgumentList "-instance `"$esInstanceName`" -config `"$esIniPath`" -db `"$esDbPath`" -choose-volumes -startup -minimized -first-instance" `
                         -WindowStyle Hidden
 
                     # Wait for IPC to become available (up to 60 seconds for large drives)
