@@ -341,8 +341,65 @@ both daemon and client share the same types without circular deps.
 
 ## Phase D5: CLI Migration
 
-> **Goal**: `uffs` CLI uses daemon when available, falls back to standalone.  
+> **Goal**: `uffs` CLI uses daemon when available, falls back to standalone.
 > **Effort**: 2–3 days
+> **Constraint**: CLI must perform identically to pre-D5 in speed and capabilities.
+> No regression is acceptable for any use case.
+
+### Design: Count-First Routing
+
+The key challenge is avoiding the IPC bottleneck for bulk queries (`uffs "*"`)
+while giving instant results for filtered queries (`uffs "*.rs"`).
+
+**Lesson from Everything**: voidtools Everything 1.4 has a 2GB IPC memory limit
+that prevents `es.exe` from exporting results on drives with >2M entries. Even
+path-only output OOMs on 4.7M files. The problem: the entire result set is
+serialized into a single IPC buffer. We must not repeat this mistake.
+
+**Solution: count-first routing** — the daemon returns a fast count before
+transferring any result data. The CLI uses this to decide the transfer strategy:
+
+```
+CLI connects to daemon (if available, <100ms timeout)
+  → sends "count" request (query + filters, no result data)
+  → daemon runs trigram filter, returns { "count": 847 } in ~1-5ms
+  → CLI decides:
+      count ≤ 100K  →  "search" request via IPC (instant, no MFT read)
+      count > 100K  →  disconnect, standalone MFT read (same speed as today)
+```
+
+**Total routing overhead**: ~5-10ms. Imperceptible to the user.
+
+**Why this works**:
+- 99% of real queries are filtered (`*.rs`, `config.yaml`, `readme*`) → <100K results → IPC
+- `uffs "*"` full dump → >100K results → standalone (identical to today's speed)
+- Warm daemon gives instant results for filtered queries (no 30s MFT read wait)
+- Cold daemon or no daemon → standalone fallback (no regression)
+- No binary protocol, no shared memory, no new complexity
+
+**Performance comparison for `uffs "*"` (25M files)**:
+
+| Transfer method | Overhead | Practical? |
+|----------------|----------|------------|
+| JSON-RPC (25M records) | ~20s serialize + transfer + deserialize | ❌ Wasteful |
+| Binary protocol | ~5s | Overkill for edge case |
+| Shared memory (mmap) | <1s | Complex, future option |
+| **Standalone fallback** | **0s overhead (same as today)** | **✅ Chosen** |
+
+**Future option**: If a remote/HTTP use case (D8) ever needs bulk export through
+the daemon, add shared-memory handoff or binary streaming then. For D5, the
+standalone fallback is the right trade-off.
+
+### Wave D5.0 — Daemon Protocol Addition
+
+| ID | Task | Status |
+|----|------|--------|
+| D5.0.1 | Add `"count"` method to daemon protocol (`uffs-client/src/protocol.rs`) | ⬜ TODO |
+| D5.0.2 | `CountParams`: same fields as `SearchParams` (query, filters, drives) | ⬜ TODO |
+| D5.0.3 | `CountResponse`: `{ "count": u64 }` | ⬜ TODO |
+| D5.0.4 | Daemon handler: route `"count"` → `IndexManager::count()` (trigram filter, return `.len()`) | ⬜ TODO |
+| D5.0.5 | `client.count(params)` → `CountResponse` | ⬜ TODO |
+| D5.0.6 | Test: count matches search result length | ⬜ TODO |
 
 ### Wave D5.1 — Client Integration
 
@@ -351,7 +408,8 @@ both daemon and client share the same types without circular deps.
 | D5.1.1 | Add `uffs-client` dependency to `uffs-cli/Cargo.toml` | ⬜ TODO |
 | D5.1.2 | Add `--standalone` CLI flag (forces direct MFT mode, no daemon) | ⬜ TODO |
 | D5.1.3 | Add `--daemon` CLI flag (forces daemon mode, fail if daemon unavailable) | ⬜ TODO |
-| D5.1.4 | Default behavior: try daemon first, fall back to standalone if daemon unavailable within 2s | ⬜ TODO |
+| D5.1.4 | Default: connect to daemon (<100ms), send `"count"`, route based on threshold | ⬜ TODO |
+| D5.1.5 | Configurable threshold: `--ipc-limit N` (default 100,000) | ⬜ TODO |
 
 ### Wave D5.2 — Query Routing
 
@@ -361,15 +419,19 @@ both daemon and client share the same types without circular deps.
 | D5.2.2 | `daemon_search()`: build `SearchParams` from CLI args, call `client.search()`, format output | ⬜ TODO |
 | D5.2.3 | `standalone_search()`: existing code path (direct MFT read) — unchanged | ⬜ TODO |
 | D5.2.4 | Translate daemon `SearchResponse` → same output format as standalone (exact parity) | ⬜ TODO |
-| D5.2.5 | Test: `uffs "*.rs"` with daemon → same output as `uffs "*.rs" --standalone` | ⬜ TODO |
+| D5.2.5 | Count-first routing: `client.count()` → decide IPC vs standalone | ⬜ TODO |
+| D5.2.6 | Test: `uffs "*.rs"` with daemon → same output as `uffs "*.rs" --standalone` | ⬜ TODO |
 
 ### Wave D5.3 — Validation
 
 | ID | Task | Status |
 |----|------|--------|
 | D5.3.1 | Benchmark: `uffs "*.rs"` via daemon vs standalone — target: <50ms overhead | ⬜ TODO |
-| D5.3.2 | Test: `uffs --standalone "*.rs"` works without daemon | ⬜ TODO |
-| D5.3.3 | Test: all CLI flags (`--files-only`, `--sort`, `--attr`, `--newer`, etc.) work through daemon | ⬜ TODO |
+| D5.3.2 | Benchmark: `uffs "*"` standalone — must match pre-D5 performance exactly | ⬜ TODO |
+| D5.3.3 | Benchmark: count-first routing overhead — target: <10ms decision time | ⬜ TODO |
+| D5.3.4 | Test: `uffs --standalone "*.rs"` works without daemon | ⬜ TODO |
+| D5.3.5 | Test: all CLI flags (`--files-only`, `--sort`, `--attr`, `--newer`, etc.) work through daemon | ⬜ TODO |
+| D5.3.6 | Test: `uffs "*"` auto-falls back to standalone (count > threshold) | ⬜ TODO |
 
 ---
 
@@ -499,15 +561,16 @@ both daemon and client share the same types without circular deps.
 | D4.1 MCP scaffold | 3 | 3 | 0 | ✅ |
 | D4.2 MCP protocol | 7 | 7 | 0 | ✅ |
 | D4.3 MCP E2E test | 3 | 3 | 0 | ✅ |
-| D5.1 CLI client integration | 4 | 0 | 4 | ⬜ |
-| D5.2 CLI query routing | 5 | 0 | 5 | ⬜ |
-| D5.3 CLI validation | 3 | 0 | 3 | ⬜ |
+| D5.0 Daemon count method | 6 | 0 | 6 | ⬜ |
+| D5.1 CLI client integration | 5 | 0 | 5 | ⬜ |
+| D5.2 CLI query routing | 6 | 0 | 6 | ⬜ |
+| D5.3 CLI validation | 6 | 0 | 6 | ⬜ |
 | D6.1 TUI client integration | 4 | 0 | 4 | ⬜ |
 | D6.2 TUI search-as-you-type | 5 | 0 | 5 | ⬜ |
 | D6.3 TUI loading state | 3 | 0 | 3 | ⬜ |
 | D6.4 TUI keepalive | 3 | 0 | 3 | ⬜ |
 | D6.5 TUI validation | 5 | 0 | 5 | ⬜ |
-| **TOTAL (active)** | **169** | **140** | **29** | |
+| **TOTAL (active)** | **181** | **140** | **41** | |
 
 ### Completion Log
 
@@ -570,7 +633,11 @@ Date        | Decision                                          | Rationale
 2026-03-26  | TUI keeps --standalone fallback                   | Offline/debugging use cases
 2026-03-26  | Protocol types initially in uffs-daemon            | Extract to shared crate when uffs-client is built
 2026-03-26  | Debounce 50ms in TUI daemon mode                  | Prevent flooding daemon with per-keystroke queries
-            |                                                   |
+2026-03-27  | Count-first routing for CLI (D5)                  | Daemon returns fast count (~1-5ms), CLI decides IPC
+            |                                                   | vs standalone based on threshold (100K). Avoids
+            |                                                   | Everything's 2GB IPC limit mistake. No speed regression
+            |                                                   | for `uffs "*"` (stays standalone). Filtered queries get
+            |                                                   | instant results from warm daemon.
 ```
 
 ---
