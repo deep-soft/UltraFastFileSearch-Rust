@@ -817,108 +817,240 @@ fn verify_hardlinks_from_file(baseline_path: &Path, only_in_rust: &[String]) {
     }
 }
 
-/// Compare Rust output against Everything (es.exe) output.
+/// Everything file record (parsed from EFU or es.exe CSV).
+#[derive(Debug)]
+struct EverythingRecord {
+    /// File size in bytes.
+    size: String,
+    /// Date Modified (FILETIME i64 or formatted string).
+    date_modified: String,
+    /// Date Created (FILETIME i64 or formatted string).
+    date_created: String,
+    /// Raw NTFS attributes value.
+    attributes: String,
+}
+
+/// Rust parity record (parsed from parity-compat CSV).
+#[derive(Debug)]
+struct RustParityRecord {
+    /// File size in bytes (column index 3).
+    size: String,
+    /// Created timestamp (column index 5).
+    created: String,
+    /// Modified/Written timestamp (column index 6).
+    modified: String,
+    /// Raw attributes value (last numeric column).
+    attributes: String,
+}
+
+/// Compare Rust output against Everything output — field by field.
 ///
 /// Everything is the gold standard for MFT-based file enumeration.
-/// This comparison validates Rust completeness by checking:
-/// 1. File count comparison
-/// 2. Path set analysis (what's in Everything but not Rust, and vice versa)
+/// EFU format: `Filename,Size,Date Modified,Date Created,Attributes`
+/// Rust parity-compat: `"Path","Name","PathOnly","Size","SizeOnDisk","Created","Modified","Accessed",...`
 ///
-/// Everything CSV format (from es.exe): Name,Path,Size,DateCreated,DateModified,DateAccessed
-/// Our parity-compat CSV format: "FullPath","Name","PathOnly",Size,SizeOnDisk,...
-///
-/// We normalize both to a set of full paths for comparison.
-fn compare_with_everything(es_file: &Path, rust_file: &Path, drive: &str) {
-    println!("  ── Everything (es.exe) vs Rust comparison ──");
+/// Comparison levels:
+/// 1. Path coverage (what's missing, what's extra)
+/// 2. Size match for common paths
+/// 3. Created/Modified timestamp match
+/// 4. Attributes match
+fn compare_with_everything(es_file: &Path, rust_file: &Path, _drive: &str) {
+    println!("  ── Everything vs Rust — field-by-field comparison ──");
     println!();
 
-    // Build path set from Everything output
-    // es.exe CSV: Name,Path,Size,DateCreated,DateModified,DateAccessed
-    // Path column is the directory, so full path = Path + Name
-    // But with -path-column, the output has: Name,Path,...
+    // 1. Load Everything records keyed by normalized path
     let t_es = Instant::now();
-    let es_paths = stream_everything_paths(es_file);
+    let es_records = stream_everything_records(es_file);
     let es_elapsed = t_es.elapsed();
     println!(
-        "  Everything: {} paths ({:.1}s)",
-        es_paths.len(),
+        "  Everything: {} entries ({:.1}s)",
+        es_records.len(),
         es_elapsed.as_secs_f64()
     );
 
-    // Build path set from Rust output
-    // Parity-compat CSV: "FullPath","Name","PathOnly",...
+    // 2. Load Rust records keyed by normalized path
     let t_rust = Instant::now();
-    let rust_paths = stream_rust_paths(rust_file);
+    let rust_records = stream_rust_records(rust_file);
     let rust_elapsed = t_rust.elapsed();
     println!(
-        "  Rust:       {} paths ({:.1}s)",
-        rust_paths.len(),
+        "  Rust:       {} entries ({:.1}s)",
+        rust_records.len(),
         rust_elapsed.as_secs_f64()
     );
 
-    // Compare
-    let only_in_es: Vec<&String> = es_paths.iter().filter(|p| !rust_paths.contains(*p)).collect();
-    let only_in_rust: Vec<&String> = rust_paths.iter().filter(|p| !es_paths.contains(*p)).collect();
-    let common = es_paths.len() - only_in_es.len();
+    // 3. Path-level comparison
+    let only_in_es: Vec<&String> = es_records.keys().filter(|p| !rust_records.contains_key(*p)).collect();
+    let only_in_rust: Vec<&String> = rust_records.keys().filter(|p| !es_records.contains_key(*p)).collect();
+    let common_count = es_records.len() - only_in_es.len();
 
     println!();
-    println!("  Common paths:       {}", common);
-    println!("  Only in Everything: {}", only_in_es.len());
-    println!("  Only in Rust:       {}", only_in_rust.len());
+    println!("  ┌─────────────────────────────────────────────────┐");
+    println!("  │  PATH COVERAGE                                  │");
+    println!("  ├─────────────────────────────────────────────────┤");
+    println!("  │  Common paths:       {:>10}                │", common_count);
+    println!("  │  Only in Everything: {:>10}                │", only_in_es.len());
+    println!("  │  Only in Rust:       {:>10}                │", only_in_rust.len());
+    println!("  └─────────────────────────────────────────────────┘");
 
-    if only_in_es.is_empty() && only_in_rust.is_empty() {
-        println!();
-        println!("  ✅ EVERYTHING MATCH — Rust finds exactly the same files as Everything");
-    } else if only_in_es.is_empty() {
-        println!();
-        println!(
-            "  ✅ EVERYTHING SUPERSET — Rust ⊇ Everything (+{} extra, likely ADS/metadata)",
-            only_in_rust.len()
-        );
-        if !only_in_rust.is_empty() {
-            println!("     Extra Rust paths (not in Everything):");
-            for (i, path) in only_in_rust.iter().enumerate().take(20) {
-                println!("       {:>3}. {}", i + 1, path);
+    // 4. Field-by-field comparison on common paths
+    let mut size_match: usize = 0;
+    let mut size_mismatch: usize = 0;
+    let mut created_match: usize = 0;
+    let mut created_mismatch: usize = 0;
+    let mut modified_match: usize = 0;
+    let mut modified_mismatch: usize = 0;
+    let mut attr_match: usize = 0;
+    let mut attr_mismatch: usize = 0;
+
+    let mut size_diffs: Vec<(String, String, String)> = Vec::new();
+    let mut created_diffs: Vec<(String, String, String)> = Vec::new();
+    let mut modified_diffs: Vec<(String, String, String)> = Vec::new();
+    let mut attr_diffs: Vec<(String, String, String)> = Vec::new();
+
+    for (path, es_rec) in &es_records {
+        if let Some(rust_rec) = rust_records.get(path) {
+            // Size
+            if es_rec.size == rust_rec.size {
+                size_match += 1;
+            } else {
+                size_mismatch += 1;
+                if size_diffs.len() < 20 {
+                    size_diffs.push((path.clone(), es_rec.size.clone(), rust_rec.size.clone()));
+                }
             }
-            if only_in_rust.len() > 20 {
-                println!("       ... and {} more", only_in_rust.len() - 20);
+            // Created
+            if timestamps_match(&es_rec.date_created, &rust_rec.created) {
+                created_match += 1;
+            } else {
+                created_mismatch += 1;
+                if created_diffs.len() < 20 {
+                    created_diffs.push((path.clone(), es_rec.date_created.clone(), rust_rec.created.clone()));
+                }
             }
-        }
-    } else {
-        println!();
-        println!(
-            "  ⚠️  EVERYTHING GAPS — {} paths in Everything but NOT in Rust",
-            only_in_es.len()
-        );
-        println!("     Missing from Rust (Everything has them):");
-        for (i, path) in only_in_es.iter().enumerate().take(50) {
-            println!("       {:>3}. {}", i + 1, path);
-        }
-        if only_in_es.len() > 50 {
-            println!("       ... and {} more", only_in_es.len() - 50);
-        }
-        if !only_in_rust.is_empty() {
-            println!();
-            println!("     Extra in Rust (Everything doesn't have them):");
-            for (i, path) in only_in_rust.iter().enumerate().take(20) {
-                println!("       {:>3}. {}", i + 1, path);
+            // Modified
+            if timestamps_match(&es_rec.date_modified, &rust_rec.modified) {
+                modified_match += 1;
+            } else {
+                modified_mismatch += 1;
+                if modified_diffs.len() < 20 {
+                    modified_diffs.push((path.clone(), es_rec.date_modified.clone(), rust_rec.modified.clone()));
+                }
             }
-            if only_in_rust.len() > 20 {
-                println!("       ... and {} more", only_in_rust.len() - 20);
+            // Attributes
+            if attributes_match(&es_rec.attributes, &rust_rec.attributes) {
+                attr_match += 1;
+            } else {
+                attr_mismatch += 1;
+                if attr_diffs.len() < 20 {
+                    attr_diffs.push((path.clone(), es_rec.attributes.clone(), rust_rec.attributes.clone()));
+                }
             }
         }
     }
-    let _ = drive; // used for future per-drive annotations
+
+    // Print field comparison results
+    println!();
+    println!("  ┌─────────────────────────────────────────────────┐");
+    println!("  │  FIELD COMPARISON ({} common paths)      │", common_count);
+    println!("  ├───────────────┬────────────┬────────────────────┤");
+    println!("  │  Field        │  Match     │  Mismatch          │");
+    println!("  ├───────────────┼────────────┼────────────────────┤");
+    println!("  │  Size         │ {:>10} │ {:>10}         │", size_match, size_mismatch);
+    println!("  │  Created      │ {:>10} │ {:>10}         │", created_match, created_mismatch);
+    println!("  │  Modified     │ {:>10} │ {:>10}         │", modified_match, modified_mismatch);
+    println!("  │  Attributes   │ {:>10} │ {:>10}         │", attr_match, attr_mismatch);
+    println!("  └───────────────┴────────────┴────────────────────┘");
+
+    let total_mismatches = size_mismatch + created_mismatch + modified_mismatch + attr_mismatch;
+
+    // Show sample mismatches
+    if !size_diffs.is_empty() {
+        println!();
+        println!("  Size mismatches (first {}):", size_diffs.len());
+        for (path, es_val, rust_val) in &size_diffs {
+            println!("    {} — Everything: {} / Rust: {}", path, es_val, rust_val);
+        }
+    }
+    if !created_diffs.is_empty() {
+        println!();
+        println!("  Created timestamp mismatches (first {}):", created_diffs.len());
+        for (path, es_val, rust_val) in &created_diffs {
+            println!("    {} — Everything: {} / Rust: {}", path, es_val, rust_val);
+        }
+    }
+    if !modified_diffs.is_empty() {
+        println!();
+        println!("  Modified timestamp mismatches (first {}):", modified_diffs.len());
+        for (path, es_val, rust_val) in &modified_diffs {
+            println!("    {} — Everything: {} / Rust: {}", path, es_val, rust_val);
+        }
+    }
+    if !attr_diffs.is_empty() {
+        println!();
+        println!("  Attribute mismatches (first {}):", attr_diffs.len());
+        for (path, es_val, rust_val) in &attr_diffs {
+            println!("    {} — Everything: {} / Rust: {}", path, es_val, rust_val);
+        }
+    }
+
+    // Summary verdict
+    println!();
+    if only_in_es.is_empty() && total_mismatches == 0 {
+        if only_in_rust.is_empty() {
+            println!("  ✅ EVERYTHING MATCH — Identical paths and all fields match");
+        } else {
+            println!(
+                "  ✅ EVERYTHING SUPERSET — Rust ⊇ Everything, all fields match (+{} extra in Rust)",
+                only_in_rust.len()
+            );
+        }
+    } else if only_in_es.is_empty() && total_mismatches > 0 {
+        println!(
+            "  ⚠️  EVERYTHING FIELD DIFFS — Paths match but {} field mismatches",
+            total_mismatches
+        );
+    } else {
+        println!(
+            "  ❌ EVERYTHING GAPS — {} missing from Rust, {} field mismatches",
+            only_in_es.len(),
+            total_mismatches
+        );
+    }
+
+    // Show path-level diffs
+    if !only_in_es.is_empty() {
+        println!();
+        println!("  Missing from Rust (Everything has them):");
+        for (i, path) in only_in_es.iter().enumerate().take(30) {
+            println!("    {:>3}. {}", i + 1, path);
+        }
+        if only_in_es.len() > 30 {
+            println!("    ... and {} more", only_in_es.len() - 30);
+        }
+    }
+    if !only_in_rust.is_empty() {
+        println!();
+        println!("  Extra in Rust (not in Everything, likely ADS/hardlinks):");
+        for (i, path) in only_in_rust.iter().enumerate().take(20) {
+            println!("    {:>3}. {}", i + 1, path);
+        }
+        if only_in_rust.len() > 20 {
+            println!("    ... and {} more", only_in_rust.len() - 20);
+        }
+    }
 }
 
-/// Stream Everything (es.exe) output and extract normalized full paths.
-/// es.exe CSV format with -name -path-column: Name,Path,Size,...
-/// Full path = Path + Name (Path already ends with backslash for dirs).
-fn stream_everything_paths(es_file: &Path) -> HashSet<String> {
+/// Stream Everything output into a map of normalized path → record.
+/// Supports two formats:
+///   - EFU (from -create-file-list): `Filename,Size,Date Modified,Date Created,Attributes`
+///   - es.exe CSV (from IPC query): `Name,Path,Size,DateCreated,DateModified,DateAccessed`
+fn stream_everything_records(es_file: &Path) -> HashMap<String, EverythingRecord> {
     let file = fs::File::open(es_file)
         .unwrap_or_else(|e| panic!("Failed to open {}: {e}", es_file.display()));
     let reader = BufReader::with_capacity(256 * 1024, file);
-    let mut paths = HashSet::new();
+    let mut records = HashMap::new();
+    let mut is_first_line = true;
+    let mut is_efu = false;
 
     for line in reader.lines() {
         let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
@@ -926,33 +1058,66 @@ fn stream_everything_paths(es_file: &Path) -> HashSet<String> {
         if trimmed.is_empty() {
             continue;
         }
-        // CSV: Name,Path,Size,DateCreated,DateModified,DateAccessed
-        // Name may be quoted if it contains commas
+
+        if is_first_line {
+            is_first_line = false;
+            if trimmed.starts_with("Filename,") {
+                is_efu = true;
+                continue; // skip header
+            }
+        }
+
         let fields = split_csv_fields(trimmed);
-        if fields.len() >= 2 {
-            let name = fields[0].trim_matches('"');
-            let dir = fields[1].trim_matches('"');
-            // Build full path: dir + name
-            // dir typically ends with \ for directories
-            let full = if dir.ends_with('\\') || dir.ends_with('/') {
-                format!("{dir}{name}")
-            } else {
-                format!("{dir}\\{name}")
-            };
-            // Normalize: uppercase drive letter, backslash, no trailing slash for files
-            paths.insert(normalize_path(&full));
+        if is_efu {
+            // EFU: Filename,Size,Date Modified,Date Created,Attributes
+            if fields.len() >= 5 {
+                let path = normalize_path(fields[0].trim_matches('"'));
+                records.insert(path, EverythingRecord {
+                    size: fields[1].trim_matches('"').to_string(),
+                    date_modified: fields[2].trim_matches('"').to_string(),
+                    date_created: fields[3].trim_matches('"').to_string(),
+                    attributes: fields[4].trim_matches('"').to_string(),
+                });
+            }
+        } else {
+            // es.exe: Name,Path,Size,DateCreated,DateModified,DateAccessed
+            if fields.len() >= 5 {
+                let name = fields[0].trim_matches('"');
+                let dir = fields[1].trim_matches('"');
+                let full = if dir.ends_with('\\') || dir.ends_with('/') {
+                    format!("{dir}{name}")
+                } else {
+                    format!("{dir}\\{name}")
+                };
+                let path = normalize_path(&full);
+                records.insert(path, EverythingRecord {
+                    size: fields[2].trim_matches('"').to_string(),
+                    date_modified: fields[4].trim_matches('"').to_string(),
+                    date_created: fields[3].trim_matches('"').to_string(),
+                    attributes: String::new(), // es.exe doesn't output attributes
+                });
+            }
         }
     }
-    paths
+    records
 }
 
-/// Stream Rust parity-compat output and extract normalized full paths.
-/// Format: "FullPath","Name","PathOnly",Size,SizeOnDisk,...
-fn stream_rust_paths(rust_file: &Path) -> HashSet<String> {
+/// Stream Rust parity-compat output into a map of normalized path → record.
+/// Parity-compat CSV columns (from `PARITY_COLUMN_ORDER`):
+///   0: "Path" (full path, quoted)
+///   1: "Name" (quoted)
+///   2: "PathOnly" (quoted)
+///   3: "Size"
+///   4: "SizeOnDisk"
+///   5: "Created" (FILETIME i64)
+///   6: "Modified" (FILETIME i64)
+///   7: "Accessed" (FILETIME i64)
+///   ... more columns follow (flags, booleans, etc.)
+fn stream_rust_records(rust_file: &Path) -> HashMap<String, RustParityRecord> {
     let file = fs::File::open(rust_file)
         .unwrap_or_else(|e| panic!("Failed to open {}: {e}", rust_file.display()));
     let reader = BufReader::with_capacity(256 * 1024, file);
-    let mut paths = HashSet::new();
+    let mut records = HashMap::new();
 
     for line in reader.lines() {
         let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
@@ -960,14 +1125,56 @@ fn stream_rust_paths(rust_file: &Path) -> HashSet<String> {
         if trimmed.is_empty() || is_footer_or_header_line(trimmed) {
             continue;
         }
-        // First quoted field is the full path
-        if let Some(end) = trimmed.find("\",") {
-            let path = trimmed[1..end].to_string(); // strip leading quote
-            paths.insert(normalize_path(&path));
+
+        let fields = split_csv_fields(trimmed);
+        if fields.len() >= 8 {
+            let path = normalize_path(fields[0].trim_matches('"'));
+            // Find the attributes field — it's typically the last numeric field
+            // or we look for the flags/attributes column
+            let attributes = if fields.len() > 8 {
+                fields[8].trim_matches('"').to_string()
+            } else {
+                String::new()
+            };
+            records.insert(path, RustParityRecord {
+                size: fields[3].trim_matches('"').to_string(),
+                created: fields[5].trim_matches('"').to_string(),
+                modified: fields[6].trim_matches('"').to_string(),
+                attributes,
+            });
         }
     }
-    paths
+    records
 }
+
+/// Compare timestamps from Everything (FILETIME i64) and Rust (FILETIME i64).
+/// Both should be raw FILETIME values (100-nanosecond intervals since 1601-01-01).
+/// Returns true if they match exactly, or if either is empty/zero.
+fn timestamps_match(es_ts: &str, rust_ts: &str) -> bool {
+    if es_ts.is_empty() || rust_ts.is_empty() {
+        return true; // can't compare missing data
+    }
+    // Both should be raw FILETIME i64 values
+    let es_val = es_ts.trim().parse::<i64>().unwrap_or(-1);
+    let rust_val = rust_ts.trim().parse::<i64>().unwrap_or(-2);
+    if es_val < 0 || rust_val < 0 {
+        // If either failed to parse, fall back to string comparison
+        return es_ts.trim() == rust_ts.trim();
+    }
+    es_val == rust_val
+}
+
+/// Compare attributes from Everything (raw NTFS u32) and Rust (raw NTFS u32).
+/// Returns true if they match, or if either is empty.
+fn attributes_match(es_attr: &str, rust_attr: &str) -> bool {
+    if es_attr.is_empty() || rust_attr.is_empty() {
+        return true; // can't compare missing data
+    }
+    let es_val = es_attr.trim().parse::<u32>().unwrap_or(u32::MAX);
+    let rust_val = rust_attr.trim().parse::<u32>().unwrap_or(u32::MAX - 1);
+    es_val == rust_val
+}
+
 
 /// Normalize a path for comparison: uppercase drive letter, consistent backslashes.
 fn normalize_path(path: &str) -> String {

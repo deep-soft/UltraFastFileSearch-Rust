@@ -192,20 +192,13 @@ try {
     $UffsCom    = Join-Path $BinDir "uffs.com"
     $UffsMftExe = Join-Path $BinDir "uffs_mft.exe"
 
-    # Everything CLI (es.exe) — gold-standard reference for MFT-based search
-    # Try common locations: PATH, Everything install dir, user bin dir
-    $EsExe = $null
+    # Everything — gold-standard MFT-based reference
+    # We edit the APPDATA ini per-drive to avoid indexing all 25M+ files at once.
+    # Requires: Everything.exe (GUI) + es.exe (CLI query tool)
     $EverythingExe = $null
-    $esCandidates = @(
-        (Get-Command "es.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
-        (Join-Path $BinDir "es.exe"),
-        (Join-Path ${env:ProgramFiles} "Everything\es.exe"),
-        (Join-Path ${env:ProgramW6432} "Everything\es.exe"),
-        (Join-Path ${env:LOCALAPPDATA} "Everything\es.exe")
-    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) }
-    if (@($esCandidates).Count -gt 0) { $EsExe = @($esCandidates)[0] }
+    $EsExe = $null
+    $EverythingIniPath = Join-Path $env:APPDATA "Everything\Everything.ini"
 
-    # Find Everything.exe (GUI/service) for auto-starting per-drive instances
     $etCandidates = @(
         (Join-Path ${env:ProgramFiles} "Everything\Everything.exe"),
         (Join-Path "${env:ProgramFiles(x86)}" "Everything\Everything.exe"),
@@ -215,10 +208,19 @@ try {
     ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) }
     if (@($etCandidates).Count -gt 0) { $EverythingExe = @($etCandidates)[0] }
 
+    $esCandidates = @(
+        (Get-Command "es.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+        (Join-Path $BinDir "es.exe"),
+        (Join-Path ${env:ProgramFiles} "Everything\es.exe"),
+        (Join-Path "${env:ProgramFiles(x86)}" "Everything\es.exe"),
+        (Join-Path ${env:LOCALAPPDATA} "Everything\es.exe")
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) }
+    if (@($esCandidates).Count -gt 0) { $EsExe = @($esCandidates)[0] }
+
     $hasRust = Test-Path -LiteralPath $UffsExe
     $hasCpp  = Test-Path -LiteralPath $UffsCom
     $hasMft  = Test-Path -LiteralPath $UffsMftExe
-    $hasEs   = $null -ne $EsExe
+    $hasEverything = ($null -ne $EverythingExe) -and ($null -ne $EsExe) -and (Test-Path -LiteralPath $EverythingIniPath)
 
     LogLine "## Binaries"
     LogLine ""
@@ -227,11 +229,17 @@ try {
     LogLine ("| uffs.exe (Rust) | ``$UffsExe`` | " + $(if ($hasRust) { "✅" } else { "❌" }) + " |")
     LogLine ("| uffs.com (C++) | ``$UffsCom`` | " + $(if ($hasCpp) { "✅" } else { "❌" }) + " |")
     LogLine ("| uffs_mft.exe | ``$UffsMftExe`` | " + $(if ($hasMft) { "✅" } else { "❌" }) + " |")
-    LogLine ("| es.exe (Everything) | ``$(if ($EsExe) { $EsExe } else { '(not found)' })`` | " + $(if ($hasEs) { "✅" } else { "⏭️ optional" }) + " |")
+    LogLine ("| Everything.exe | ``$(if ($EverythingExe) { $EverythingExe } else { '(not found)' })`` | " + $(if ($EverythingExe) { "✅" } else { "⏭️" }) + " |")
+    LogLine ("| es.exe | ``$(if ($EsExe) { $EsExe } else { '(not found)' })`` | " + $(if ($EsExe) { "✅" } else { "⏭️" }) + " |")
+    LogLine ("| Everything INI | ``$EverythingIniPath`` | " + $(if (Test-Path -LiteralPath $EverythingIniPath) { "✅" } else { "⏭️" }) + " |")
     LogLine ""
-    if (-not $hasEs) {
-        Write-Host "  ⏭️ es.exe (Everything CLI) not found — Everything baseline will be skipped" -ForegroundColor DarkGray
-        Write-Host "    Install from: https://www.voidtools.com/ (CLI downloads)" -ForegroundColor DarkGray
+    if (-not $hasEverything) {
+        $missingEs = @()
+        if (-not $EverythingExe) { $missingEs += "Everything.exe" }
+        if (-not $EsExe) { $missingEs += "es.exe" }
+        if (-not (Test-Path -LiteralPath $EverythingIniPath)) { $missingEs += "Everything.ini" }
+        Write-Host "  ⏭️ Everything baseline will be skipped (missing: $($missingEs -join ', '))" -ForegroundColor DarkGray
+        Write-Host "    Install from: https://www.voidtools.com/" -ForegroundColor DarkGray
     }
 
     if (@($Drives).Count -eq 0) {
@@ -400,12 +408,13 @@ try {
             [string]$UffsExe,
             [string]$UffsCom,
             [string]$UffsMftExe,
-            [string]$EsExe,
             [string]$EverythingExe,
+            [string]$EsExe,
+            [string]$EverythingIniPath,
             [bool]$HasRust,
             [bool]$HasCpp,
             [bool]$HasMft,
-            [bool]$HasEs
+            [bool]$HasEverything
         )
 
         $groupResults = @()
@@ -545,89 +554,98 @@ try {
                 $runs += [pscustomobject]@{ Drive=$Drive; Title="Rust LIVE TRACE"; Command=""; LogFile=$rustLiveTraceLog; OutFile=$rustLiveTraceOut; DurationMs=$null; ExitCode=$null }
             }
 
-            # 3. Everything (es.exe) — gold-standard reference baseline
-            # Uses Everything's own MFT index to list all files on the drive.
-            # Everything must be running for es.exe IPC to work.
-            # We auto-start a lightweight per-drive instance with a custom ini
-            # that ONLY indexes the target drive (avoids indexing all 25M+ files).
-            $esInstanceName = "uffs_parity_$Drive"
-            $startedEsInstance = $false
+            # 3. Everything — gold-standard MFT-based reference baseline
+            # Strategy: edit APPDATA ini to enable ONLY this drive, start Everything,
+            # wait for MFT indexing, query with es.exe (all columns), then stop.
+            # This avoids indexing all 25M+ files across all drives at once.
+            if ($HasEverything) {
+                Write-Host "  → Everything: configuring for ${Drive}: only..." -ForegroundColor DarkYellow
 
-            if ($HasEs) {
-                # Check if Everything IPC is available (any instance will do)
-                $null = & $EsExe -get-result-count 2>&1
-                $esIpcAvailable = $LASTEXITCODE -eq 0
+                # Stop any running Everything
+                Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+                    ForEach-Object { Stop-Process -Id $_.Id -Force }
+                Start-Sleep -Seconds 2
 
-                if (-not $esIpcAvailable -and $EverythingExe) {
-                    # Create a minimal ini that ONLY indexes this drive.
-                    # Belt-and-suspenders: include target + explicitly exclude every other letter.
-                    $excludeLetters = ([char[]]([byte][char]'A'..[byte][char]'Z') |
-                        Where-Object { $_ -ne [char]$Drive.ToUpper() } |
-                        ForEach-Object { "${_}:" }) -join ";"
-                    $esIniPath = Join-Path $driveDir "everything_${driveLower}.ini"
-                    $iniContent = @(
-                        "[Everything]"
-                        "ntfs_volume_includes=${Drive}:"
-                        "ntfs_volume_excludes=$excludeLetters"
-                        "exclude_hidden_foldersfiles=0"
-                        "index_folder_size=0"
-                        "run_as_admin=0"
-                    )
-                    $iniContent | Out-File -FilePath $esIniPath -Encoding ascii -Force
-
-                    Write-Host "  → Starting Everything instance '$esInstanceName' (${Drive}: only)..." -ForegroundColor DarkYellow
-                    $esDbPath = Join-Path $driveDir "everything_${driveLower}.db"
-                    # -choose-volumes prevents auto-discovery of volumes (double safety)
-                    Start-Process -FilePath $EverythingExe `
-                        -ArgumentList "-instance `"$esInstanceName`" -config `"$esIniPath`" -db `"$esDbPath`" -choose-volumes -startup -minimized -first-instance" `
-                        -WindowStyle Hidden
-
-                    # Wait for IPC to become available (up to 60 seconds for large drives)
-                    $waited = 0
-                    $esReady = $false
-                    while ($waited -lt 60) {
-                        Start-Sleep -Seconds 2
-                        $waited += 2
-                        $null = & $EsExe -instance $esInstanceName -get-result-count 2>&1
-                        if ($LASTEXITCODE -eq 0) {
-                            $esReady = $true
-                            Write-Host "  → Everything instance ready (${waited}s)" -ForegroundColor DarkGreen
-                            break
-                        }
-                    }
-                    if (-not $esReady) {
-                        Write-Host "  → Everything instance failed to start within 60s — skipping" -ForegroundColor DarkRed
-                        $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
-                    } else {
-                        $startedEsInstance = $true
-                        $runs += Run-LoggedLocal -Title "Everything (es.exe): drive $Drive" `
-                            -CmdLine ("`"$EsExe`" -instance `"$esInstanceName`" -path `"${Drive}:\`" -s -name -path-column -size -date-created -date-modified -date-accessed -no-digit-grouping -csv -no-header") `
-                            -LogFileName $esLog `
-                            -OutFileName $esOut
-                    }
-                } elseif ($esIpcAvailable) {
-                    # Everything IPC already available — use default instance
-                    $runs += Run-LoggedLocal -Title "Everything (es.exe): drive $Drive" `
-                        -CmdLine ("`"$EsExe`" -path `"${Drive}:\`" -s -name -path-column -size -date-created -date-modified -date-accessed -no-digit-grouping -csv -no-header") `
-                        -LogFileName $esLog `
-                        -OutFileName $esOut
-                } else {
-                    Write-Host "  → Everything (es.exe): skipped (no IPC, no Everything.exe found)" -ForegroundColor DarkGray
-                    $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
+                # Back up ini (only once — check if backup already exists)
+                $iniBak = "${EverythingIniPath}.uffs_bak"
+                if (-not (Test-Path -LiteralPath $iniBak)) {
+                    Copy-Item -LiteralPath $EverythingIniPath -Destination $iniBak -Force
                 }
 
-                # Shut down the per-drive instance if we started it
-                if ($startedEsInstance -and $EverythingExe) {
-                    Write-Host "  → Shutting down Everything instance '$esInstanceName'" -ForegroundColor DarkGray
-                    Start-Process -FilePath $EverythingExe `
-                        -ArgumentList "-instance `"$esInstanceName`" -quit" `
-                        -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
-                    # Clean up temp db (ini kept for debugging)
-                    Remove-Item -LiteralPath $esDbPath -Force -ErrorAction SilentlyContinue
+                # Read ini and find the drive's position in ntfs_volume_paths
+                $iniContent = Get-Content -LiteralPath $EverythingIniPath -Raw
+                $volPathsMatch = [regex]::Match($iniContent, 'ntfs_volume_paths=(.*)')
+                if ($volPathsMatch.Success) {
+                    $volPaths = $volPathsMatch.Groups[1].Value -split ','
+                    $driveIdx = -1
+                    for ($vi = 0; $vi -lt $volPaths.Count; $vi++) {
+                        $vp = $volPaths[$vi].Trim().Trim('"')
+                        if ($vp -eq "${Drive}:") { $driveIdx = $vi; break }
+                    }
+
+                    if ($driveIdx -ge 0) {
+                        # Build includes string: 0 for all, 1 for target drive
+                        $includesList = @(0) * $volPaths.Count
+                        $includesList[$driveIdx] = 1
+                        $includesStr = $includesList -join ","
+
+                        # Apply changes: only this drive, all index fields, no auto-include
+                        $iniContent = $iniContent -replace 'ntfs_volume_includes=.*', "ntfs_volume_includes=$includesStr"
+                        $iniContent = $iniContent -replace 'auto_include_fixed_volumes=.*', 'auto_include_fixed_volumes=0'
+                        $iniContent = $iniContent -replace 'auto_include_removable_volumes=.*', 'auto_include_removable_volumes=0'
+                        $iniContent = $iniContent -replace 'index_date_created=.*', 'index_date_created=1'
+                        $iniContent = $iniContent -replace 'index_date_accessed=.*', 'index_date_accessed=1'
+                        $iniContent = $iniContent -replace 'index_date_modified=.*', 'index_date_modified=1'
+                        $iniContent = $iniContent -replace 'index_attributes=.*', 'index_attributes=1'
+                        $iniContent = $iniContent -replace 'index_size=.*', 'index_size=1'
+                        $iniContent | Out-File -FilePath $EverythingIniPath -Encoding ascii -NoNewline
+
+                        # Start Everything (indexes only target drive)
+                        Start-Process -FilePath $EverythingExe -ArgumentList "-startup -minimized" -WindowStyle Hidden
+                        Write-Host "  → Everything: started, waiting for MFT index of ${Drive}:..." -ForegroundColor DarkYellow
+
+                        # Wait for indexing (poll es.exe -get-result-count until > 0 or timeout)
+                        $esReady = $false
+                        for ($wi = 1; $wi -le 30; $wi++) {
+                            Start-Sleep -Seconds 2
+                            $null = & $EsExe -get-result-count 2>&1
+                            if ($LASTEXITCODE -eq 0) {
+                                $rcText = & $EsExe -get-result-count 2>&1
+                                $rc = 0; [int]::TryParse($rcText, [ref]$rc) | Out-Null
+                                if ($rc -gt 0) {
+                                    $esReady = $true
+                                    Write-Host "  → Everything: indexed $rc entries ($($wi*2)s)" -ForegroundColor DarkGreen
+                                    break
+                                }
+                            }
+                        }
+
+                        if ($esReady) {
+                            # Query with ALL available columns (MFT-sourced via IPC)
+                            $runs += Run-LoggedLocal -Title "Everything (es.exe MFT): drive $Drive" `
+                                -CmdLine ("`"$EsExe`" -path `"${Drive}:\`" -s -name -path-column -size -date-created -date-modified -date-accessed -attributes -no-digit-grouping -csv") `
+                                -LogFileName $esLog `
+                                -OutFileName $esOut
+                        } else {
+                            Write-Host "  → Everything: indexing timed out (60s) — skipping" -ForegroundColor DarkRed
+                            $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe MFT)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
+                        }
+
+                        # Stop Everything after this drive
+                        Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+                            ForEach-Object { Stop-Process -Id $_.Id -Force }
+                        Start-Sleep -Seconds 1
+                    } else {
+                        Write-Host "  → Everything: drive ${Drive}: not found in ntfs_volume_paths — skipping" -ForegroundColor DarkRed
+                        $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe MFT)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
+                    }
+                } else {
+                    Write-Host "  → Everything: ntfs_volume_paths not found in ini — skipping" -ForegroundColor DarkRed
+                    $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe MFT)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
                 }
             } else {
-                Write-Host "  → Everything (es.exe): skipped (not installed)" -ForegroundColor DarkGray
-                $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
+                Write-Host "  → Everything: skipped (Everything.exe / es.exe / ini not found)" -ForegroundColor DarkGray
+                $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe MFT)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
             }
 
             # 4. Rust OFFLINE scan - SKIPPED on Windows
@@ -657,15 +675,32 @@ try {
         foreach ($diskNum in @($diskGroups.Keys | Sort-Object)) {
             $groupDrives = $diskGroups[$diskNum]
             $scanResults += & $runDiskGroup -DiskNumber $diskNum -GroupDrives $groupDrives -WorkDir $WorkDir `
-                -UffsExe $UffsExe -UffsCom $UffsCom -UffsMftExe $UffsMftExe -EsExe "$EsExe" -EverythingExe "$EverythingExe" `
-                -HasRust $hasRust -HasCpp $hasCpp -HasMft $hasMft -HasEs $hasEs
+                -UffsExe $UffsExe -UffsCom $UffsCom -UffsMftExe $UffsMftExe `
+                -EverythingExe "$EverythingExe" -EsExe "$EsExe" -EverythingIniPath "$EverythingIniPath" `
+                -HasRust $hasRust -HasCpp $hasCpp -HasMft $hasMft -HasEverything $hasEverything
         }
     } else {
         Write-Host "Drive scans: running sequential." -ForegroundColor Yellow
         foreach ($d in $Drives) {
             $scanResults += & $runDiskGroup -DiskNumber -1 -GroupDrives @($d) -WorkDir $WorkDir `
-                -UffsExe $UffsExe -UffsCom $UffsCom -UffsMftExe $UffsMftExe -EsExe "$EsExe" -EverythingExe "$EverythingExe" `
-                -HasRust $hasRust -HasCpp $hasCpp -HasMft $hasMft -HasEs $hasEs
+                -UffsExe $UffsExe -UffsCom $UffsCom -UffsMftExe $UffsMftExe `
+                -EverythingExe "$EverythingExe" -EsExe "$EsExe" -EverythingIniPath "$EverythingIniPath" `
+                -HasRust $hasRust -HasCpp $hasCpp -HasMft $hasMft -HasEverything $hasEverything
+        }
+    }
+
+
+    # Restore Everything ini from backup (if we modified it)
+    if ($hasEverything) {
+        $iniBak = "${EverythingIniPath}.uffs_bak"
+        if (Test-Path -LiteralPath $iniBak) {
+            # Stop Everything if still running
+            Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+                ForEach-Object { Stop-Process -Id $_.Id -Force }
+            Start-Sleep -Seconds 1
+            Copy-Item -LiteralPath $iniBak -Destination $EverythingIniPath -Force
+            Remove-Item -LiteralPath $iniBak -Force -ErrorAction SilentlyContinue
+            Write-Host "  → Everything ini restored from backup" -ForegroundColor DarkGreen
         }
     }
 
