@@ -237,8 +237,10 @@ fn run_legacy_mode(args: &[String], base_dir: &Path) {
 
     let result = verify_single_drive(base_dir, &drive_dir, &drive_letter, &rust_output, parse_duration, mft_size);
 
-    // Everything comparison (if es_<drive>.txt exists in drive dir)
-    try_everything_comparison(&drive_dir, &drive_letter, &rust_output);
+    // Everything comparison — DISABLED (2026-03-27)
+    // Everything 1.4 has a 2GB IPC limit; es.exe can't export large drives.
+    // Re-enable when Everything 1.5 ships with IPC memory fix.
+    // try_everything_comparison(&drive_dir, &drive_letter, &rust_output);
 
     // Print timing for single drive if available
     if let Some(duration) = result.parse_duration {
@@ -350,8 +352,10 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
 
         let result = verify_single_drive(base_dir, &drive_dir, &drive_letter, &rust_output, parse_duration, mft_size);
 
-        // Everything comparison (if es_<drive>.txt exists in drive dir)
-        try_everything_comparison(&drive_dir, &drive_letter, &rust_output);
+        // Everything comparison — DISABLED (2026-03-27)
+        // Everything 1.4 has a 2GB IPC limit; es.exe can't export large drives.
+        // Re-enable when Everything 1.5 ships with IPC memory fix.
+        // try_everything_comparison(&drive_dir, &drive_letter, &rust_output);
 
         results.push(result);
         println!();
@@ -1120,6 +1124,7 @@ fn verify_hardlinks_from_file(baseline_path: &Path, only_in_rust: &[String]) {
 }
 
 /// Everything file record (parsed from EFU or es.exe CSV).
+#[allow(dead_code)]
 #[derive(Debug)]
 struct EverythingRecord {
     /// File size in bytes.
@@ -1133,6 +1138,7 @@ struct EverythingRecord {
 }
 
 /// Rust parity record (parsed from parity-compat CSV).
+#[allow(dead_code)]
 #[derive(Debug)]
 struct RustParityRecord {
     /// File size in bytes (column index 3).
@@ -1346,6 +1352,7 @@ fn compare_with_everything(es_file: &Path, rust_file: &Path, _drive: &str) {
 /// Supports two formats:
 ///   - EFU (from -create-file-list): `Filename,Size,Date Modified,Date Created,Attributes`
 ///   - es.exe CSV (from IPC query): `Name,Path,Size,DateCreated,DateModified,DateAccessed`
+#[allow(dead_code)]
 fn stream_everything_records(es_file: &Path) -> HashMap<String, EverythingRecord> {
     let file = fs::File::open(es_file)
         .unwrap_or_else(|e| panic!("Failed to open {}: {e}", es_file.display()));
@@ -1415,6 +1422,7 @@ fn stream_everything_records(es_file: &Path) -> HashMap<String, EverythingRecord
 ///   6: "Modified" (FILETIME i64)
 ///   7: "Accessed" (FILETIME i64)
 ///   ... more columns follow (flags, booleans, etc.)
+#[allow(dead_code)]
 fn stream_rust_records(rust_file: &Path) -> HashMap<String, RustParityRecord> {
     let file = fs::File::open(rust_file)
         .unwrap_or_else(|e| panic!("Failed to open {}: {e}", rust_file.display()));
@@ -1452,6 +1460,7 @@ fn stream_rust_records(rust_file: &Path) -> HashMap<String, RustParityRecord> {
 /// Compare timestamps from Everything (FILETIME i64) and Rust (FILETIME i64).
 /// Both should be raw FILETIME values (100-nanosecond intervals since 1601-01-01).
 /// Returns true if they match exactly, or if either is empty/zero.
+#[allow(dead_code)]
 fn timestamps_match(es_ts: &str, rust_ts: &str) -> bool {
     if es_ts.is_empty() || rust_ts.is_empty() {
         return true; // can't compare missing data
@@ -1468,6 +1477,7 @@ fn timestamps_match(es_ts: &str, rust_ts: &str) -> bool {
 
 /// Compare attributes from Everything (raw NTFS u32) and Rust (raw NTFS u32).
 /// Returns true if they match, or if either is empty.
+#[allow(dead_code)]
 fn attributes_match(es_attr: &str, rust_attr: &str) -> bool {
     if es_attr.is_empty() || rust_attr.is_empty() {
         return true; // can't compare missing data
@@ -1491,6 +1501,8 @@ fn normalize_path(path: &str) -> String {
 
 /// Check for Everything (es.exe) output in the drive directory and compare if found.
 /// Looks for `es_<drive>.txt` in the drive dir. Skips silently if not found.
+/// DISABLED (2026-03-27): Everything 1.4 has a 2GB IPC limit; es.exe can't export large drives.
+#[allow(dead_code)]
 fn try_everything_comparison(drive_dir: &Path, drive_letter: &str, rust_output: &Path) {
     let drive_lower = drive_letter.to_lowercase();
     let es_file = drive_dir.join(format!("es_{drive_lower}.txt"));
