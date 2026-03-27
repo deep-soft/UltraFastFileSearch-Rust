@@ -199,6 +199,8 @@ try {
     $EsExe = $null
     $EverythingIniPath = Join-Path $env:APPDATA "Everything\Everything.ini"
 
+    $pf86 = ${env:ProgramFiles(x86)}
+
     $etCandidates = @(
         (Join-Path ${env:ProgramFiles} "Everything\Everything.exe"),
         (Join-Path ${env:LOCALAPPDATA} "Everything\Everything.exe"),
@@ -208,8 +210,6 @@ try {
     if (${env:ProgramW6432}) { $etCandidates += (Join-Path ${env:ProgramW6432} "Everything\Everything.exe") }
     $etCandidates = @($etCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) })
     if ($etCandidates.Count -gt 0) { $EverythingExe = $etCandidates[0] }
-
-    $pf86 = ${env:ProgramFiles(x86)}
     $esCandidates = @(
         (Join-Path $BinDir "es.exe"),
         (Join-Path ${env:ProgramFiles} "Everything\es.exe")
@@ -626,10 +626,37 @@ try {
 
                         if ($esReady) {
                             # Query with ALL available columns (MFT-sourced via IPC)
-                            $runs += Run-LoggedLocal -Title "Everything (es.exe MFT): drive $Drive" `
-                                -CmdLine ("`"$EsExe`" -path `"${Drive}:\`" -s -name -path-column -size -date-created -date-modified -date-accessed -attributes -no-digit-grouping -csv") `
-                                -LogFileName $esLog `
-                                -OutFileName $esOut
+                            # Use a timeout job to avoid hanging if es.exe OOMs on large drives
+                            $esOutPath = Join-Path $driveDir $esOut
+                            $esLogPath = Join-Path $driveDir $esLog
+                            Write-Host "  → Everything (es.exe MFT): drive $Drive..." -NoNewline
+                            $esSw = [System.Diagnostics.Stopwatch]::StartNew()
+                            try {
+                                $esProc = Start-Process -FilePath $EsExe `
+                                    -ArgumentList "-path `"${Drive}:\`" -s -name -path-column -size -date-created -date-modified -date-accessed -attributes -no-digit-grouping -csv" `
+                                    -RedirectStandardOutput $esOutPath `
+                                    -RedirectStandardError $esLogPath `
+                                    -NoNewWindow -PassThru -Wait:$false
+                                # Wait up to 5 minutes (300s) for large drives
+                                $esProc | Wait-Process -Timeout 300 -ErrorAction Stop
+                                $esSw.Stop()
+                                $esMs = [math]::Round($esSw.Elapsed.TotalMilliseconds)
+                                if ($esProc.ExitCode -eq 0) {
+                                    Write-Host " ✅ ($esMs ms)" -ForegroundColor Green
+                                } else {
+                                    Write-Host " ❌ (exit: $($esProc.ExitCode), $esMs ms)" -ForegroundColor Red
+                                }
+                                $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe MFT)"; Command="es.exe"; LogFile=$esLog; OutFile=$esOut; DurationMs=$esMs; ExitCode=$esProc.ExitCode }
+                            } catch {
+                                $esSw.Stop()
+                                # Timeout or crash — kill es.exe if still running
+                                if ($esProc -and -not $esProc.HasExited) {
+                                    Stop-Process -Id $esProc.Id -Force -ErrorAction SilentlyContinue
+                                }
+                                $esMs = [math]::Round($esSw.Elapsed.TotalMilliseconds)
+                                Write-Host " ❌ (timeout/crash after $esMs ms: $_)" -ForegroundColor Red
+                                $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe MFT)"; Command="es.exe"; LogFile=$esLog; OutFile=$esOut; DurationMs=$esMs; ExitCode=-1 }
+                            }
                         } else {
                             Write-Host "  → Everything: indexing timed out (60s) — skipping" -ForegroundColor DarkRed
                             $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe MFT)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
