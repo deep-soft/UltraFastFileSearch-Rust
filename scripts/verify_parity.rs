@@ -391,11 +391,18 @@ fn run_live_mode(args: &[String]) {
     let cpp_bin = parse_live_arg(args, "--cpp-bin")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            // Auto-detect: look for uffs.com in same dir as this script or PATH
-            let candidates = [
+            // Auto-detect: look for uffs.com in standard locations
+            let mut candidates = vec![
                 PathBuf::from("uffs.com"),
                 find_workspace_root().join("bin").join("uffs.com"),
             ];
+            // $USERPROFILE\bin\uffs.com (standard deploy location on Windows)
+            if let Ok(home) = env::var("USERPROFILE") {
+                candidates.push(PathBuf::from(home).join("bin").join("uffs.com"));
+            }
+            if let Ok(home) = env::var("HOME") {
+                candidates.push(PathBuf::from(home).join("bin").join("uffs.com"));
+            }
             candidates
                 .iter()
                 .find(|p| p.exists())
@@ -409,7 +416,16 @@ fn run_live_mode(args: &[String]) {
     let rust_bin = parse_live_arg(args, "--bin")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            // Auto-detect from workspace
+            // Auto-detect: $USERPROFILE\bin\uffs.exe first, then workspace release
+            let home_candidates: Vec<PathBuf> = ["USERPROFILE", "HOME"]
+                .iter()
+                .filter_map(|var| env::var(var).ok())
+                .map(|h| PathBuf::from(h).join("bin").join(uffs_binary_name()))
+                .filter(|p| p.exists())
+                .collect();
+            if let Some(p) = home_candidates.into_iter().next() {
+                return p;
+            }
             let artifact = find_workspace_release_artifact();
             artifact.binary_path
         });
