@@ -1,299 +1,571 @@
-# ============================================================================
-# UFFS Phase 2 Optimization Validation Test Suite
-# ============================================================================
-# This script validates the performance improvements from Phase 2:
-#   M1: Adaptive Concurrency (32 for NVMe, 8 for SSD, 2 for HDD)
-#   M2: Larger I/O Chunks (4MB for NVMe, 2MB for SSD, 1MB for HDD)
-#   M3: Parallel Parsing (24 workers on 24-core CPU)
-#   M4: Multi-Volume Parallel (single IOCP for multiple drives)
-#   M5: USN Journal Integration (incremental updates)
+# test_runs.ps1 - UFFS Live Data Collection (Windows only)
 #
-# Phase 2.5 Optimizations (I/O and Parsing):
-#   P1: Precise Read Chunks - Skip unused MFT regions entirely (NVMe/SSD)
-#   P2: Direct Chunk-to-I/O - Each chunk = one I/O op, fewer syscalls (NVMe/SSD)
-#   P3: Zero-Copy Parsing - In-place fixup, no per-record allocation
+# Purpose:
+#   Collect live MFT data and scan outputs on Windows for offline analysis on Mac.
+#   This script focuses on LIVE data collection only - offline analysis is done on Mac.
 #
-# Key metrics to watch in logs:
-#   - bytes_to_read_mb: Should be ~20% less than MFT size (P1)
-#   - io_ops: Should be fewer than before (P2)
-#   - direct_io=true: Confirms P2 is active
-#   - Parsing time: Should be faster (P3)
+# Strategy:
+#   - Never write binary outputs with Set-Content.
+#   - Capture stdout/stderr to .log files (text) with diagnostic logging.
+#   - Sequential per physical disk; parallel across physical disks (PS7+).
+#   - Enable diagnostic logging for live path analysis.
+#   - ALWAYS save IOCP capture (.iocp) for each drive - captures real Windows IOCP order
+#   - ALWAYS save uncompressed MFT snapshot (.bin) as fallback for offline analysis
 #
-# Usage:
-#   .\test_runs.ps1                    # Run full test suite
-#   .\test_runs.ps1 -Quick             # Quick test on Drive C only
-#   .\test_runs.ps1 -Quick -Drive F    # Quick test on Drive F
-#   .\test_runs.ps1 -Quick -Build      # Quick test with rebuild
-# ============================================================================
-
+# What gets collected:
+#   1. IOCP captures (.iocp files) - captures IOCP completion order for 100% accurate replay
+#   2. MFT snapshots (uncompressed .bin files) - fallback for sequential offline analysis
+#   3. C++ baseline scan output - reference for parity comparison
+#   4. Rust LIVE scan output + diagnostic logs - with chunk/record processing stats
+#
+# Diagnostic logging captures (in .log files):
+#   - Chunk handoff, record boundaries, preload_concurrent timing
+#   - USA fixup success/failure, records parsed, records not in-use
+#   - Parallel sync (lock acquisition), chunk processing order
+#
+# After running this script, transfer all files to Mac for offline analysis using:
+#   - uffs "*" --mft-file <mft_file.iocp> --drive <letter> --parity-compat  (IOCP replay)
+#   - uffs "*" --mft-file <mft_file.bin> --drive <letter> --parity-compat   (sequential fallback)
+#   - rust-script scripts/verify_parity.rs <data_dir> <drive> --regenerate
+#   - See: TESTING_TOOLS_GUIDE.md for full workflow
+[CmdletBinding()]
 param(
-    [switch]$Quick,
-    [switch]$Build,
-    [string]$Drive = "C"
+    [string[]]$Drives = @(),       # Drives to test (empty = auto-detect NTFS drives)
+    [switch]$SkipMftExtras,        # Skip extra MFT formats (compressed, raw) - uncompressed always saved
+    [string]$BinDir = "",          # Custom bin directory (default: $HOME\bin)
+    [int]$ThrottleLimit = 2,       # Max physical disks in parallel (PS7+ only)
+    [switch]$VerboseLog            # Enable verbose/trace logging (more detail, larger logs)
 )
 
-$UFFS = "$env:USERPROFILE\bin\uffs_mft.exe"
-$CPP_UFFS = "C:\Users\rnio\GitHub\Ultra-Fast-File-Search\UltraFastFileSearch-code\x64\COM\uffs.com"
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-# Enable verbose logging to see optimization metrics
-$env:RUST_LOG = "info"
+$env:RUST_BACKTRACE = "full"
 
-if ($Quick) {
-    Write-Host "`n" -NoNewline
-    Write-Host "=" * 80 -ForegroundColor Cyan
-    Write-Host "QUICK TEST: Drive $Drive with Phase 2.5 Optimizations" -ForegroundColor Cyan
-    Write-Host "=" * 80 -ForegroundColor Cyan
-    Write-Host ""
-
-    # Optional rebuild
-    if ($Build) {
-        Write-Host "Rebuilding binary..." -ForegroundColor Gray
-        $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
-        Push-Location $repoRoot
-        cargo build --release --package uffs-mft
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "❌ Build failed!" -ForegroundColor Red
-            Pop-Location
-            exit 1
-        }
-        Copy-Item target\release\uffs_mft.exe $UFFS -Force
-        Pop-Location
-        Write-Host "✅ Build successful" -ForegroundColor Green
-        Write-Host ""
-    }
-
-    # Check if binary exists
-    if (-not (Test-Path $UFFS)) {
-        Write-Host "❌ Binary not found: $UFFS" -ForegroundColor Red
-        Write-Host "Please build and copy the binary first, or use -Build flag:" -ForegroundColor Yellow
-        Write-Host "  .\test_runs.ps1 -Quick -Build" -ForegroundColor Gray
-        Write-Host "Or manually:" -ForegroundColor Yellow
-        Write-Host "  cargo build --release --package uffs-mft" -ForegroundColor Gray
-        Write-Host "  Copy-Item target\release\uffs_mft.exe $UFFS -Force" -ForegroundColor Gray
-        exit 1
-    }
-    Write-Host "Using binary: $UFFS" -ForegroundColor Gray
-
-    Write-Host ""
-    Write-Host "--- C++ Baseline ---" -ForegroundColor Yellow
-    & $CPP_UFFS --benchmark-index=$($Drive.ToLower())
-
-    Write-Host ""
-    Write-Host "--- Rust Full Scan (watch for Phase 2.5 metrics) ---" -ForegroundColor Cyan
-    Write-Host "Look for: bytes_to_read_mb, io_ops, direct_io, max_io_size_kb" -ForegroundColor DarkGray
-    & $UFFS index-update --drive $Drive --force-full
-
-    Write-Host ""
-    Write-Host "--- Rust Incremental (should be <1s) ---" -ForegroundColor Green
-    $incr = Measure-Command { & $UFFS index-update --drive $Drive }
-    Write-Host "Incremental time: $($incr.TotalSeconds.ToString('F3'))s" -ForegroundColor $(if ($incr.TotalSeconds -lt 1.0) { "Green" } else { "Red" })
-
-    Write-Host ""
-    Write-Host "=" * 80 -ForegroundColor White
-    Write-Host "QUICK TEST COMPLETE" -ForegroundColor White
-    Write-Host "=" * 80 -ForegroundColor White
-    Write-Host ""
-    Write-Host "Key metrics to check in the output above:" -ForegroundColor Gray
-    Write-Host "  - bytes_to_read_mb: Should be ~20% less than MFT size (3261 MB -> ~2600 MB)" -ForegroundColor Gray
-    Write-Host "  - io_ops: Should be fewer (was ~800, now ~200-400)" -ForegroundColor Gray
-    Write-Host "  - direct_io=true: Confirms direct chunk-to-I/O mapping" -ForegroundColor Gray
-    Write-Host "  - Total time: Should beat C++ baseline" -ForegroundColor Gray
-    Write-Host ""
-    exit 0
+# Logging configuration for C++ algorithm parity analysis
+# Modules:
+#   uffs_mft::cpp_tree        - C++ tree metrics algorithm port
+#   uffs_mft::cpp_types       - C++ types and parsing structures
+#   uffs_mft::cpp_io_pipeline - C++ I/O pipeline (bitmap sync, chunk processing)
+#   uffs_mft::parse           - MFT record parsing
+#   uffs_mft::io              - I/O operations
+#   uffs_mft::reader          - MFT reader
+#   uffs_mft::index           - Index building and tree metrics
+#   uffs_cli::commands        - CLI command execution
+#
+# Levels: error < warn < info < debug < trace
+#
+# IMPORTANT: The post-tree diagnostic for LIVE issues uses tracing::warn!
+# so it will appear even at "warn" level. The tripwire logs use tracing::debug!
+# so they require at least "debug" level to appear.
+if ($VerboseLog) {
+    # TRACE: Maximum verbosity - all C++ algorithm modules at trace level
+    $env:RUST_LOG = "uffs_mft=trace,uffs_cli=trace,uffs_core=trace"
+    Write-Host "📋 Verbose logging enabled (TRACE level for all uffs modules)" -ForegroundColor Yellow
+} else {
+    # Default: warn level - captures post-tree diagnostics for LIVE issues
+    # The "[tree] FINAL: directories with descendants==0" warning will appear here
+    $env:RUST_LOG = "warn"
+    Write-Host "📋 Standard logging (warn level - captures tree diagnostics, use -VerboseLog for trace)" -ForegroundColor Yellow
 }
 
-# ============================================================================
-# SECTION 1: C++ BASELINE (Reference Times)
-# ============================================================================
-Write-Host "`n" -NoNewline
-Write-Host "=" * 80 -ForegroundColor Yellow
-Write-Host "SECTION 1: C++ BASELINE (Reference Times)" -ForegroundColor Yellow
-Write-Host "=" * 80 -ForegroundColor Yellow
-Write-Host "Expected: C:~2.5s, F:~1.4s, S:~41s" -ForegroundColor Gray
+$WorkDir  = Get-Location
+$FinalLog = Join-Path $WorkDir "test_runs.md"
+$TempLog  = Join-Path $WorkDir "test_runs.md.tmp"
 
-& $CPP_UFFS --benchmark-index=c
-& $CPP_UFFS --benchmark-index=f
-& $CPP_UFFS --benchmark-index=s
+function Format-FileSize {
+    param([long]$Bytes)
+    if ($Bytes -ge 1GB) { return "{0:N2} GB" -f ($Bytes / 1GB) }
+    if ($Bytes -ge 1MB) { return "{0:N2} MB" -f ($Bytes / 1MB) }
+    if ($Bytes -ge 1KB) { return "{0:N2} KB" -f ($Bytes / 1KB) }
+    return "$Bytes bytes"
+}
 
-# ============================================================================
-# SECTION 2: RUST AUTO MODE (Should match or beat C++)
-# ============================================================================
-Write-Host "`n" -NoNewline
-Write-Host "=" * 80 -ForegroundColor Cyan
-Write-Host "SECTION 2: RUST AUTO MODE - Full MFT Scan" -ForegroundColor Cyan
-Write-Host "=" * 80 -ForegroundColor Cyan
-Write-Host "Validates: M1 (Adaptive Concurrency) + M2 (I/O Chunks) + M3 (Parallel Parse)" -ForegroundColor Gray
-Write-Host "Expected: C:~2.2s, F:~1.3s, S:~40s (should beat C++)" -ForegroundColor Gray
+function Get-NtfsDrives {
+    Get-WmiObject Win32_LogicalDisk |
+            Where-Object { $_.DriveType -eq 3 -and $_.FileSystem -eq "NTFS" } |
+            ForEach-Object { $_.DeviceID.TrimEnd(':') }
+}
 
-# Run benchmark-index-lean which uses Auto mode (now SlidingIocpInline)
-Write-Host "`n--- Drive C: (NVMe) - Expect: concurrency=32, io_size=4MB ---" -ForegroundColor White
-& $UFFS benchmark-index-lean --drive C
+# Best-effort mapping: Drive letter -> Physical disk number
+# Requires Storage module (usually present on Win10/11). If it fails, we return $null for that drive.
+function Get-PhysicalDiskNumberForDrive {
+    param([string]$DriveLetter)
 
-Write-Host "`n--- Drive F: (NVMe) - Expect: concurrency=32, io_size=4MB ---" -ForegroundColor White
-& $UFFS benchmark-index-lean --drive F
+    try {
+        $part = Get-Partition -DriveLetter $DriveLetter -ErrorAction Stop
+        $disk = Get-Disk -Number $part.DiskNumber -ErrorAction Stop
+        return [int]$disk.Number
+    } catch {
+        return $null
+    }
+}
 
-Write-Host "`n--- Drive S: (HDD) - Expect: concurrency=2, io_size=1MB ---" -ForegroundColor White
-& $UFFS benchmark-index-lean --drive S
+# Simple markdown logger (single writer)
+$fs = New-Object System.IO.FileStream(
+$TempLog,
+[System.IO.FileMode]::Create,
+[System.IO.FileAccess]::Write,
+[System.IO.FileShare]::ReadWrite
+)
+$sw = New-Object System.IO.StreamWriter($fs, [System.Text.Encoding]::UTF8)
+$sw.NewLine = "`r`n"
+function LogLine { param([string]$Line="") $sw.WriteLine($Line); $sw.Flush() }
 
-# ============================================================================
-# SECTION 3: CONCURRENCY COMPARISON (M1 Validation)
-# ============================================================================
-Write-Host "`n" -NoNewline
-Write-Host "=" * 80 -ForegroundColor Magenta
-Write-Host "SECTION 3: CONCURRENCY COMPARISON (M1 Validation)" -ForegroundColor Magenta
-Write-Host "=" * 80 -ForegroundColor Magenta
-Write-Host "Validates: Higher concurrency = faster on NVMe" -ForegroundColor Gray
-Write-Host "Expected: concurrency=2 slower, concurrency=32 optimal, concurrency=64 similar" -ForegroundColor Gray
+# Run a command and write stdout/stderr to a TEXT log file.
+# Does NOT try to "write output files" itself.
+function Invoke-CmdToLog {
+    param(
+        [string]$Title,
+        [string]$CommandLine,
+        [string]$LogFileName
+    )
 
-Write-Host "`n--- Concurrency=2 (HDD-style, should be SLOW ~6s) ---" -ForegroundColor White
-& $UFFS benchmark-index-lean --drive C --concurrency 2
+    $logPath = Join-Path $WorkDir $LogFileName
+    $started = Get-Date
+    $exitCode = 0
 
-Write-Host "`n--- Concurrency=32 (NVMe optimal, should be FAST ~2.2s) ---" -ForegroundColor White
-& $UFFS benchmark-index-lean --drive C --concurrency 32
+    Write-Host "  → $Title..." -NoNewline
 
-Write-Host "`n--- Concurrency=64 (over-saturated, similar to 32) ---" -ForegroundColor White
-& $UFFS benchmark-index-lean --drive C --concurrency 64
+    try {
+        # Capture cmd.exe output lines, then write to log (text)
+        $lines = @(& cmd.exe /c $CommandLine 2>&1)
+        $exitCode = $LASTEXITCODE
+        $lines | Set-Content -LiteralPath $logPath -Encoding UTF8
+    } catch {
+        $exitCode = -1
+        @("PowerShell exception:", $_.Exception.ToString()) | Set-Content -LiteralPath $logPath -Encoding UTF8
+    }
 
-# ============================================================================
-# SECTION 4: I/O SIZE COMPARISON (M2 Validation)
-# ============================================================================
-Write-Host "`n" -NoNewline
-Write-Host "=" * 80 -ForegroundColor Green
-Write-Host "SECTION 4: I/O SIZE COMPARISON (M2 Validation)" -ForegroundColor Green
-Write-Host "=" * 80 -ForegroundColor Green
-Write-Host "Validates: Larger I/O chunks = fewer syscalls = faster on NVMe" -ForegroundColor Gray
-Write-Host "Expected: 1MB slower, 4MB optimal" -ForegroundColor Gray
+    $ended = Get-Date
+    $durMs = [math]::Round((New-TimeSpan -Start $started -End $ended).TotalMilliseconds)
 
-Write-Host "`n--- I/O Size=1MB (HDD-style) ---" -ForegroundColor White
-& $UFFS benchmark-index-lean --drive C --io-size-kb 1024
+    if ($exitCode -eq 0) { Write-Host " ✅ ($durMs ms)" -ForegroundColor Green }
+    else { Write-Host " ❌ (exit: $exitCode)" -ForegroundColor Red }
 
-Write-Host "`n--- I/O Size=4MB (NVMe optimal) ---" -ForegroundColor White
-& $UFFS benchmark-index-lean --drive C --io-size-kb 4096
+    return [pscustomobject]@{
+        Title      = $Title
+        Command    = $CommandLine
+        LogFile    = $LogFileName
+        Started    = $started
+        Ended      = $ended
+        DurationMs = $durMs
+        ExitCode   = $exitCode
+    }
+}
 
-# ============================================================================
-# SECTION 4.5: PRECISE READ CHUNKS (P1+P2 Validation)
-# ============================================================================
-Write-Host "`n" -NoNewline
-Write-Host "=" * 80 -ForegroundColor DarkCyan
-Write-Host "SECTION 4.5: PRECISE READ CHUNKS (P1+P2 Validation)" -ForegroundColor DarkCyan
-Write-Host "=" * 80 -ForegroundColor DarkCyan
-Write-Host "Validates: Skip unused MFT regions, direct chunk-to-I/O mapping" -ForegroundColor Gray
-Write-Host "Watch for: bytes_to_read_mb < MFT size, io_ops count, direct_io=true" -ForegroundColor Gray
-Write-Host "Expected: ~20% less bytes read, fewer I/O operations" -ForegroundColor Gray
+try {
+    Write-Host ""
+    Write-Host "╔════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║    UFFS Test Run — Data Collection      ║" -ForegroundColor Cyan
+    Write-Host "╚════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host ""
 
-Write-Host "`n--- Drive C: (NVMe) - Watch for precise chunk metrics ---" -ForegroundColor White
-Write-Host "Look for: 'Generated I/O operations' log line with bytes_to_read_mb, io_ops, direct_io" -ForegroundColor DarkGray
-& $UFFS index-update --drive C --force-full
+    LogLine "# UFFS Test Run Report (data collection only)"
+    LogLine ""
+    LogLine ("- **Started:** " + (Get-Date -Format o))
+    LogLine ("- **Working dir:** " + $WorkDir.ToString())
+    LogLine ("- **User:** " + (whoami))
+    LogLine ("- **Computer:** " + $env:COMPUTERNAME)
+    LogLine ("- **PowerShell:** " + $PSVersionTable.PSVersion.ToString())
+    LogLine ""
 
-Write-Host "`n--- Drive F: (NVMe) - Watch for precise chunk metrics ---" -ForegroundColor White
-& $UFFS index-update --drive F --force-full
+    if (-not $BinDir) { $BinDir = Join-Path $HOME "bin" }
 
-# ============================================================================
-# SECTION 5: USN JOURNAL VALIDATION (M5)
-# ============================================================================
-Write-Host "`n" -NoNewline
-Write-Host "=" * 80 -ForegroundColor Blue
-Write-Host "SECTION 5: USN JOURNAL VALIDATION (M5)" -ForegroundColor Blue
-Write-Host "=" * 80 -ForegroundColor Blue
-Write-Host "Validates: USN API works, incremental updates are sub-second" -ForegroundColor Gray
+    $UffsExe    = Join-Path $BinDir "uffs.exe"
+    $UffsCom    = Join-Path $BinDir "uffs.com"
+    $UffsMftExe = Join-Path $BinDir "uffs_mft.exe"
 
-Write-Host "`n--- 5a. USN Journal Info (should show journal details) ---" -ForegroundColor White
-& $UFFS usn-info --drive C
+    $hasRust = Test-Path -LiteralPath $UffsExe
+    $hasCpp  = Test-Path -LiteralPath $UffsCom
+    $hasMft  = Test-Path -LiteralPath $UffsMftExe
 
-Write-Host "`n--- 5b. Clear cache and do full index build ---" -ForegroundColor White
-& $UFFS cache-clear --all
-& $UFFS index-update --drive C --force-full
+    LogLine "## Binaries"
+    LogLine ""
+    LogLine "| Binary | Path | Exists |"
+    LogLine "|--------|------|--------|"
+    LogLine ("| uffs.exe (Rust) | ``$UffsExe`` | " + $(if ($hasRust) { "✅" } else { "❌" }) + " |")
+    LogLine ("| uffs.com (C++) | ``$UffsCom`` | " + $(if ($hasCpp) { "✅" } else { "❌" }) + " |")
+    LogLine ("| uffs_mft.exe | ``$UffsMftExe`` | " + $(if ($hasMft) { "✅" } else { "❌" }) + " |")
+    LogLine ""
 
-Write-Host "`n--- 5c. Incremental update #1 (should be <1s) ---" -ForegroundColor White
-$t1 = Measure-Command { & $UFFS index-update --drive C }
-Write-Host "Time: $($t1.TotalSeconds.ToString('F3'))s" -ForegroundColor Yellow
+    if ($Drives.Count -eq 0) {
+        $Drives = @(Get-NtfsDrives)
+        Write-Host "Auto-detected NTFS drives: $($Drives -join ', ')" -ForegroundColor Yellow
+    }
 
-Write-Host "`n--- 5d. Incremental update #2 (should be <1s) ---" -ForegroundColor White
-$t2 = Measure-Command { & $UFFS index-update --drive C }
-Write-Host "Time: $($t2.TotalSeconds.ToString('F3'))s" -ForegroundColor Yellow
+    LogLine ("**Drives to test:** " + ($Drives -join ", "))
+    LogLine ""
 
-Write-Host "`n--- 5e. Incremental update #3 (should be <1s) ---" -ForegroundColor White
-$t3 = Measure-Command { & $UFFS index-update --drive C }
-Write-Host "Time: $($t3.TotalSeconds.ToString('F3'))s" -ForegroundColor Yellow
+    # Version check
+    $timings = @()
+    if ($hasRust) {
+        $timings += Invoke-CmdToLog -Title "uffs --version" `
+            -CommandLine ("`"$UffsExe`" --version") `
+            -LogFileName "uffs_version.log"
+        LogLine "- Version log: ``uffs_version.log``"
+        LogLine ""
 
-# ============================================================================
-# SECTION 6: MULTI-VOLUME PARALLEL (M4 Validation)
-# ============================================================================
-Write-Host "`n" -NoNewline
-Write-Host "=" * 80 -ForegroundColor DarkYellow
-Write-Host "SECTION 6: MULTI-VOLUME PARALLEL (M4 Validation)" -ForegroundColor DarkYellow
-Write-Host "=" * 80 -ForegroundColor DarkYellow
-Write-Host "Validates: Multiple drives indexed in parallel via single IOCP" -ForegroundColor Gray
-Write-Host "Expected: C+F together should be ~max(C,F) not C+F" -ForegroundColor Gray
+    }
 
-Write-Host "`n--- Multi-volume: C+F (both NVMe) ---" -ForegroundColor White
-& $UFFS benchmark-multi-volume --drives C,F
+    # MFT saves - ALWAYS save IOCP capture (primary) and uncompressed MFT (fallback)
+    # IOCP capture is preferred as it captures real Windows IOCP completion order
+    # Extra formats (compressed, raw) can be skipped with -SkipMftExtras
+    if ($hasMft -and $Drives.Count -gt 0) {
+        LogLine "---"
+        LogLine ""
+        LogLine "# MFT Snapshots"
+        LogLine ""
 
-Write-Host "`n--- Multi-volume: C+F+S (NVMe+NVMe+HDD) ---" -ForegroundColor White
-& $UFFS benchmark-multi-volume --drives C,F,S
+        foreach ($mftDrive in $Drives) {
+            Write-Host "MFT Save (Drive $mftDrive)..." -ForegroundColor Cyan
 
-# ============================================================================
-# SECTION 7: FULL COMPARISON SUMMARY
-# ============================================================================
-Write-Host "`n" -NoNewline
-Write-Host "=" * 80 -ForegroundColor Red
-Write-Host "SECTION 7: FULL COMPARISON SUMMARY (Timed)" -ForegroundColor Red
-Write-Host "=" * 80 -ForegroundColor Red
+            $mftIocp = "${mftDrive}_mft.iocp"       # IOCP capture - captures real IOCP order (PRIMARY)
+            $mftNoCompress = "${mftDrive}_mft.bin"  # Uncompressed sequential (fallback)
 
-# Clear cache for clean comparison
-& $UFFS cache-clear --all
+            # Always save IOCP capture (captures real Windows IOCP completion order)
+            # This is the PRIMARY format for 100% accurate LIVE replay on Mac
+            $timings += Invoke-CmdToLog -Title "uffs_mft save (IOCP capture): drive $mftDrive" `
+                -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive --output `"$mftIocp`" --iocp") `
+                -LogFileName "${mftDrive}_mft_save_iocp.log"
 
-Write-Host "`n--- Full Scan Times (Rust vs C++ target) ---" -ForegroundColor White
-Write-Host "Drive C: (NVMe, C++ target: 2.57s)" -ForegroundColor Gray
-$rust_c = Measure-Command { & $UFFS benchmark-index-lean --drive C 2>$null }
-Write-Host "  Rust: $($rust_c.TotalSeconds.ToString('F3'))s" -ForegroundColor $(if ($rust_c.TotalSeconds -lt 2.57) { "Green" } else { "Red" })
+            # Always save uncompressed MFT (fallback for sequential offline analysis)
+            $timings += Invoke-CmdToLog -Title "uffs_mft save (uncompressed): drive $mftDrive" `
+                -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive --output `"$mftNoCompress`" --no-compress") `
+                -LogFileName "${mftDrive}_mft_save.log"
 
-Write-Host "Drive F: (NVMe, C++ target: 1.44s)" -ForegroundColor Gray
-$rust_f = Measure-Command { & $UFFS benchmark-index-lean --drive F 2>$null }
-Write-Host "  Rust: $($rust_f.TotalSeconds.ToString('F3'))s" -ForegroundColor $(if ($rust_f.TotalSeconds -lt 1.44) { "Green" } else { "Red" })
+            # Extra formats (optional)
+            if (-not $SkipMftExtras) {
+                $mftCompressed = "${mftDrive}_mft_compressed.bin"
+                $mftRaw        = "${mftDrive}_mft.raw"
 
-Write-Host "Drive S: (HDD, C++ target: 41.1s)" -ForegroundColor Gray
-$rust_s = Measure-Command { & $UFFS benchmark-index-lean --drive S 2>$null }
-Write-Host "  Rust: $($rust_s.TotalSeconds.ToString('F3'))s" -ForegroundColor $(if ($rust_s.TotalSeconds -lt 41.1) { "Green" } else { "Red" })
+                $timings += Invoke-CmdToLog -Title "uffs_mft save (compressed): drive $mftDrive" `
+                    -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive -o `"$mftCompressed`"") `
+                    -LogFileName "${mftDrive}_mft_save_compressed.log"
 
-Write-Host "`n--- Incremental Update Times (target: <1s) ---" -ForegroundColor White
-& $UFFS cache-clear --all
-& $UFFS index-update --drive C --force-full 2>$null | Out-Null
-$incr = Measure-Command { & $UFFS index-update --drive C 2>$null }
-Write-Host "  Incremental C: $($incr.TotalSeconds.ToString('F3'))s" -ForegroundColor $(if ($incr.TotalSeconds -lt 1.0) { "Green" } else { "Red" })
+                $timings += Invoke-CmdToLog -Title "uffs_mft save (raw): drive $mftDrive" `
+                    -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive -o `"$mftRaw`" --raw") `
+                    -LogFileName "${mftDrive}_mft_save_raw.log"
+            }
+        }
 
-# ============================================================================
-# SUMMARY TABLE
-# ============================================================================
-Write-Host "`n" -NoNewline
-Write-Host "=" * 80 -ForegroundColor White
-Write-Host "RESULTS SUMMARY" -ForegroundColor White
-Write-Host "=" * 80 -ForegroundColor White
-Write-Host ""
-Write-Host "| Drive | Rust Time | C++ Target | Status |" -ForegroundColor White
-Write-Host "|-------|-----------|------------|--------|" -ForegroundColor White
-$status_c = if ($rust_c.TotalSeconds -lt 2.57) { "✅ PASS" } else { "❌ FAIL" }
-$status_f = if ($rust_f.TotalSeconds -lt 1.44) { "✅ PASS" } else { "❌ FAIL" }
-$status_s = if ($rust_s.TotalSeconds -lt 41.1) { "✅ PASS" } else { "❌ FAIL" }
-$status_i = if ($incr.TotalSeconds -lt 1.0) { "✅ PASS" } else { "❌ FAIL" }
-Write-Host "| C: (NVMe) | $($rust_c.TotalSeconds.ToString('F2'))s | 2.57s | $status_c |"
-Write-Host "| F: (NVMe) | $($rust_f.TotalSeconds.ToString('F2'))s | 1.44s | $status_f |"
-Write-Host "| S: (HDD)  | $($rust_s.TotalSeconds.ToString('F2'))s | 41.1s | $status_s |"
-Write-Host "| Incr C:   | $($incr.TotalSeconds.ToString('F2'))s | <1.0s | $status_i |"
-Write-Host ""
+        LogLine "### Generated MFT Files"
+        LogLine ""
+        LogLine "| Drive | File | Format | Size |"
+        LogLine "|-------|------|--------|------|"
+        foreach ($mftDrive in $Drives) {
+            # IOCP capture (primary)
+            $mftIocp = "${mftDrive}_mft.iocp"
+            $p = Join-Path $WorkDir $mftIocp
+            if (Test-Path -LiteralPath $p) {
+                $size = (Get-Item -LiteralPath $p).Length
+                LogLine "| $mftDrive | $mftIocp | **IOCP capture** (primary) | $(Format-FileSize $size) |"
+            } else {
+                LogLine "| $mftDrive | $mftIocp | IOCP capture | (missing) |"
+            }
 
-Write-Host "=" * 80 -ForegroundColor White
-Write-Host "PHASE 2.5 OPTIMIZATION NOTES" -ForegroundColor White
-Write-Host "=" * 80 -ForegroundColor White
-Write-Host ""
-Write-Host "Check the logs above (Section 4.5) for these metrics:" -ForegroundColor Gray
-Write-Host "  - bytes_to_read_mb: Should be ~20% less than MFT size" -ForegroundColor Gray
-Write-Host "  - io_ops: Fewer operations = less syscall overhead" -ForegroundColor Gray
-Write-Host "  - direct_io=true: Confirms direct chunk-to-I/O mapping active" -ForegroundColor Gray
-Write-Host "  - Parsing time: Should be faster due to zero-copy optimization" -ForegroundColor Gray
-Write-Host ""
-Write-Host "Expected improvements from Phase 2.5:" -ForegroundColor Yellow
-Write-Host "  P1 (Precise Chunks): Skip unused MFT regions -> ~20% less I/O" -ForegroundColor Yellow
-Write-Host "  P2 (Direct I/O):     Each chunk = 1 I/O op -> fewer syscalls" -ForegroundColor Yellow
-Write-Host "  P3 (Zero-Copy):      No per-record allocation -> faster parsing" -ForegroundColor Yellow
-Write-Host ""
+            # Uncompressed MFT (fallback)
+            $mftNoCompress = "${mftDrive}_mft.bin"
+            $p = Join-Path $WorkDir $mftNoCompress
+            if (Test-Path -LiteralPath $p) {
+                $size = (Get-Item -LiteralPath $p).Length
+                LogLine "| $mftDrive | $mftNoCompress | Sequential (fallback) | $(Format-FileSize $size) |"
+            } else {
+                LogLine "| $mftDrive | $mftNoCompress | Sequential | (missing) |"
+            }
+
+            if (-not $SkipMftExtras) {
+                $mftCompressed = "${mftDrive}_mft_compressed.bin"
+                $mftRaw        = "${mftDrive}_mft.raw"
+                foreach ($f in @($mftCompressed, $mftRaw)) {
+                    $p = Join-Path $WorkDir $f
+                    if (Test-Path -LiteralPath $p) {
+                        $size = (Get-Item -LiteralPath $p).Length
+                        LogLine "| $mftDrive | $f | Extra | $(Format-FileSize $size) |"
+                    } else {
+                        LogLine "| $mftDrive | $f | Extra | (missing) |"
+                    }
+                }
+            }
+        }
+        LogLine ""
+    }
+
+    # Group drives by physical disk number (best effort)
+    $driveToDisk = @{}
+    foreach ($d in $Drives) {
+        $driveToDisk[$d] = Get-PhysicalDiskNumberForDrive -DriveLetter $d
+    }
+
+    $allMapped = $true
+    foreach ($d in $Drives) {
+        if ($null -eq $driveToDisk[$d]) { $allMapped = $false; break }
+    }
+
+    $isPS7Plus = ($PSVersionTable.PSVersion.Major -ge 7)
+
+    LogLine "---"
+    LogLine ""
+    LogLine "# Drive Scans"
+    LogLine ""
+    LogLine ("- **PS7+ available:** " + $(if ($isPS7Plus) { "Yes" } else { "No" }))
+    LogLine ("- **Physical disk mapping available:** " + $(if ($allMapped) { "Yes" } else { "No (falling back to sequential)" }))
+    LogLine ("- **Policy:** sequential per physical disk; parallel across disks")
+    LogLine ""
+
+    # Build disk groups: @{ diskNumber = @('D','E') }
+    $diskGroups = @{}
+    if ($allMapped) {
+        foreach ($d in $Drives) {
+            $diskNum = $driveToDisk[$d]
+            if (-not $diskGroups.ContainsKey($diskNum)) { $diskGroups[$diskNum] = @() }
+            $diskGroups[$diskNum] += $d
+        }
+    }
+
+    # Worker logic (sequential for drives within a disk group)
+    # Focus on: C++ baseline, Rust live (cpp io), Rust offline (from saved MFT)
+    $runDiskGroup = {
+        param(
+            [int]$DiskNumber,
+            [string[]]$GroupDrives,
+            [string]$WorkDir,
+            [string]$UffsExe,
+            [string]$UffsCom,
+            [string]$UffsMftExe,
+            [bool]$HasRust,
+            [bool]$HasCpp,
+            [bool]$HasMft
+        )
+
+        $groupResults = @()
+
+        foreach ($Drive in $GroupDrives) {
+            $driveLower = $Drive.ToLower()
+
+            # Output files
+            $cppOut         = "cpp_${driveLower}.txt"
+            $rustLiveOut    = "rust_live_${driveLower}.txt"
+            $rustLiveTraceOut = "rust_live_trace_${driveLower}.txt"
+            $rustOfflineOut = "rust_offline_${driveLower}.txt"
+
+            # Log files (capture stderr with diagnostics)
+            $cppLog         = "cpp_${driveLower}.log"
+            $rustLiveLog    = "rust_live_${driveLower}.log"
+            $rustLiveTraceLog = "rust_live_trace_${driveLower}.log"
+            $rustOfflineLog = "rust_offline_${driveLower}.log"
+
+            # MFT file for offline comparison
+            $mftBin = "${driveLower}_mft.bin"
+
+            function Run-LoggedLocal {
+                param([string]$Title, [string]$CmdLine, [string]$LogFileName, [string]$OutFileName = "")
+
+                $logPath = Join-Path $WorkDir $LogFileName
+                $started = Get-Date
+                $exitCode = 0
+
+                Write-Host "  → $Title..." -NoNewline
+
+                try {
+                    # Run command with stdout to output file, stderr to log file
+                    # This properly separates scan output from diagnostic logs
+                    if ($OutFileName) {
+                        $outPath = Join-Path $WorkDir $OutFileName
+                        # Use cmd.exe to properly separate stdout (>output) and stderr (2>log)
+                        & cmd.exe /c "$CmdLine > `"$outPath`" 2> `"$logPath`""
+                        $exitCode = $LASTEXITCODE
+                    } else {
+                        # No output file - capture everything to log
+                        $lines = @(& cmd.exe /c $CmdLine 2>&1)
+                        $exitCode = $LASTEXITCODE
+                        $lines | Set-Content -LiteralPath $logPath -Encoding UTF8
+                    }
+                } catch {
+                    $exitCode = -1
+                    @("PowerShell exception:", $_.Exception.ToString()) | Set-Content -LiteralPath $logPath -Encoding UTF8
+                }
+
+                $ended = Get-Date
+                $durMs = [math]::Round((New-TimeSpan -Start $started -End $ended).TotalMilliseconds)
+
+                if ($exitCode -eq 0) {
+                    Write-Host " ✅ ($durMs ms)" -ForegroundColor Green
+                } else {
+                    Write-Host " ❌ (exit: $exitCode, $durMs ms)" -ForegroundColor Red
+                    # Show log content on error
+                    Write-Host "    📋 Log ($LogFileName):" -ForegroundColor Yellow
+                    if (Test-Path -LiteralPath $logPath) {
+                        $logContent = Get-Content -LiteralPath $logPath -TotalCount 20
+                        foreach ($line in $logContent) {
+                            Write-Host "       $line" -ForegroundColor DarkYellow
+                        }
+                        $totalLines = (Get-Content -LiteralPath $logPath | Measure-Object -Line).Lines
+                        if ($totalLines -gt 20) {
+                            Write-Host "       ... ($($totalLines - 20) more lines in $LogFileName)" -ForegroundColor DarkYellow
+                        }
+                    } else {
+                        Write-Host "       (log file not found)" -ForegroundColor DarkYellow
+                    }
+                }
+
+                return [pscustomobject]@{
+                    Drive      = $Drive
+                    Title      = $Title
+                    Command    = $CmdLine
+                    LogFile    = $LogFileName
+                    OutFile    = $OutFileName
+                    DurationMs = $durMs
+                    ExitCode   = $exitCode
+                }
+            }
+
+            $runs = @()
+
+            # 0. Clear Rust cache for this drive (ensures fresh MFT read with current algorithms)
+            if ($HasMft) {
+                Write-Host "  → Clearing Rust cache for drive $Drive..." -NoNewline
+                & cmd.exe /c "`"$UffsMftExe`" cache-clear --drive $Drive" 2>&1 | Out-Null
+                Write-Host " ✅" -ForegroundColor Green
+            }
+
+            # 1. C++ baseline (no diagnostics, just output)
+            # C++ always reads MFT fresh (no caching)
+            if ($HasCpp) {
+                $runs += Run-LoggedLocal -Title "C++ (baseline): drive $Drive" `
+                    -CmdLine ("`"$UffsCom`" `"*`" --drives=$Drive") `
+                    -LogFileName $cppLog `
+                    -OutFileName $cppOut
+            } else {
+                $runs += [pscustomobject]@{ Drive=$Drive; Title="C++ (baseline)"; Command=""; LogFile=$cppLog; OutFile=$cppOut; DurationMs=$null; ExitCode=$null }
+            }
+
+            # 2. Rust LIVE scan (with diagnostic logging via RUST_LOG)
+            # --no-cache forces fresh MFT read to ensure tree metrics are computed
+            # --parity-compat --format custom: match C++ output format for parity comparison
+            if ($HasRust) {
+                $runs += Run-LoggedLocal -Title "Rust LIVE: drive $Drive" `
+                    -CmdLine ("`"$UffsExe`" `"*`" --drive $Drive --no-cache --parity-compat --format custom") `
+                    -LogFileName $rustLiveLog `
+                    -OutFileName $rustLiveOut
+            } else {
+                $runs += [pscustomobject]@{ Drive=$Drive; Title="Rust LIVE"; Command=""; LogFile=$rustLiveLog; OutFile=$rustLiveOut; DurationMs=$null; ExitCode=$null }
+            }
+
+            # 2b. Rust LIVE scan with DEBUG logging (for detailed diagnostics)
+            # Temporarily enables debug-level logging to capture detailed diagnostics
+            # NOTE: Trace logging can cause stack overflow on deep directory trees - use debug level instead
+            if ($HasRust) {
+                $savedRustLog = $env:RUST_LOG
+                $env:RUST_LOG = "uffs_mft=debug,uffs_cli=debug,uffs_core=debug"
+                $runs += Run-LoggedLocal -Title "Rust LIVE TRACE: drive $Drive" `
+                    -CmdLine ("`"$UffsExe`" `"*`" --drive $Drive --no-cache --parity-compat --format custom") `
+                    -LogFileName $rustLiveTraceLog `
+                    -OutFileName $rustLiveTraceOut
+                $env:RUST_LOG = $savedRustLog
+            } else {
+                $runs += [pscustomobject]@{ Drive=$Drive; Title="Rust LIVE TRACE"; Command=""; LogFile=$rustLiveTraceLog; OutFile=$rustLiveTraceOut; DurationMs=$null; ExitCode=$null }
+            }
+
+            # 3. Rust OFFLINE scan - SKIPPED on Windows
+            # Offline analysis is done on Mac for faster iteration (see TESTING_TOOLS_GUIDE.md)
+            Write-Host "  → Rust OFFLINE: skipped (offline analysis done on Mac)" -ForegroundColor DarkGray
+
+            $groupResults += [pscustomobject]@{
+                Disk   = $DiskNumber
+                Drive  = $Drive
+                Files  = [pscustomobject]@{ Cpp=$cppOut; RustLive=$rustLiveOut; RustLiveTrace=$rustLiveTraceOut; RustOffline=$rustOfflineOut }
+                Logs   = [pscustomobject]@{ Cpp=$cppLog; RustLive=$rustLiveLog; RustLiveTrace=$rustLiveTraceLog; RustOffline=$rustOfflineLog }
+                Runs   = $runs
+            }
+        }
+
+        return $groupResults
+    }
+
+    $scanResults = @()
+
+    if (-not $allMapped -or -not $isPS7Plus -or $Drives.Count -le 1) {
+        # Safe fallback: fully sequential
+        Write-Host "Drive scans: running sequential (single drive / PS<7 / mapping unavailable)." -ForegroundColor Yellow
+
+        foreach ($d in $Drives) {
+            # treat each drive as its own "disk group"
+            $scanResults += & $runDiskGroup -DiskNumber -1 -GroupDrives @($d) -WorkDir $WorkDir `
+                -UffsExe $UffsExe -UffsCom $UffsCom -UffsMftExe $UffsMftExe `
+                -HasRust $hasRust -HasCpp $hasCpp -HasMft $hasMft
+        }
+    } else {
+        # Parallel across physical disks; sequential within each disk
+        Write-Host "Drive scans: parallel across physical disks (ThrottleLimit=$ThrottleLimit), sequential within each disk." -ForegroundColor Yellow
+
+        $diskNumbers = @($diskGroups.Keys | Sort-Object)
+        $scanResults = $diskNumbers | ForEach-Object -Parallel {
+            $diskNum = $_
+            $allDiskGroups = $using:diskGroups
+            $groupDrives = $allDiskGroups[$diskNum]
+            & $using:runDiskGroup -DiskNumber $diskNum -GroupDrives $groupDrives -WorkDir $using:WorkDir `
+                -UffsExe $using:UffsExe -UffsCom $using:UffsCom -UffsMftExe $using:UffsMftExe `
+                -HasRust $using:hasRust -HasCpp $using:hasCpp -HasMft $using:hasMft
+        } -ThrottleLimit $ThrottleLimit
+    }
+
+    # Consolidate results into markdown (single thread)
+    LogLine "---"
+    LogLine ""
+    LogLine "# Scan Outputs"
+    LogLine ""
+
+    foreach ($r in $scanResults) {
+        $drive = $r.Drive
+        $disk  = $r.Disk
+
+        LogLine "## Drive $drive (Disk $disk)"
+        LogLine ""
+
+        LogLine "| Flow | Output file | Size | Log file | Exit | Duration (ms) |"
+        LogLine "|------|-------------|------|----------|------|---------------:|"
+
+        foreach ($run in $r.Runs) {
+            $outFile = $run.OutFile
+            $outPath = if ($outFile) { Join-Path $WorkDir $outFile } else { $null }
+            $sizeStr = "N/A"
+            if ($outPath -and (Test-Path -LiteralPath $outPath)) {
+                $sizeStr = Format-FileSize (Get-Item -LiteralPath $outPath).Length
+            }
+
+            $logPath = if ($run.LogFile) { Join-Path $WorkDir $run.LogFile } else { $null }
+            $logSizeStr = ""
+            if ($logPath -and (Test-Path -LiteralPath $logPath)) {
+                $logSize = (Get-Item -LiteralPath $logPath).Length
+                $logSizeStr = " ($(Format-FileSize $logSize))"
+            }
+
+            $exit = if ($null -eq $run.ExitCode) { "skipped" } else { "$($run.ExitCode)" }
+            $dur  = if ($null -eq $run.DurationMs) { "N/A" } else { "$($run.DurationMs)" }
+
+            LogLine "| $($run.Title) | $outFile | $sizeStr | $($run.LogFile)$logSizeStr | $exit | $dur |"
+        }
+
+        LogLine ""
+    }
+
+    LogLine "---"
+    LogLine ("**Completed:** " + (Get-Date -Format o))
+}
+finally {
+    if ($sw) { $sw.Flush(); $sw.Dispose() }
+    if ($fs) { $fs.Dispose() }
+
+    try {
+        if (Test-Path -LiteralPath $FinalLog) { Remove-Item -LiteralPath $FinalLog -Force }
+        Move-Item -LiteralPath $TempLog -Destination $FinalLog -Force
+        Write-Host ""
+        Write-Host "📄 Report written: $FinalLog" -ForegroundColor Cyan
+    }
+    catch {
+        $fallback = Join-Path $WorkDir ("test_runs_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".md")
+        Move-Item -LiteralPath $TempLog -Destination $fallback -Force
+        Write-Warning ("test_runs.md was locked; wrote: " + $fallback)
+    }
+}
