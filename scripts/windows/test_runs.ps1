@@ -678,7 +678,8 @@ try {
                 Write-Host "  → Everything: skipped (Everything.exe / es.exe / ini not found)" -ForegroundColor DarkGray
                 $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe MFT)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
             }
-            #>  ── END COMMENTED-OUT EVERYTHING PARITY COLLECTION ──
+            #>
+            # ── END COMMENTED-OUT EVERYTHING PARITY COLLECTION ──
 
             # 4. Rust OFFLINE scan - SKIPPED on Windows
             # Offline analysis is done on Mac for faster iteration (see TESTING_TOOLS_GUIDE.md)
