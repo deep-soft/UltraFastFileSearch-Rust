@@ -283,8 +283,13 @@ function RunDriveBench($driveLetter) {
     if (-not $RustOnly -and -not $EverythingOnly -and (Test-Path $UFFS_CPP)) {
         BenchRun "C++ $mode" $UFFS_CPP (@("`"$Pattern`"", "--drives=$driveLetter") + $CppExtraArgs)
     }
-    if (-not $RustOnly -and -not $CppOnly -and -not $NoEverything) {
+    if (-not $RustOnly -and -not $CppOnly -and -not $NoEverything -and -not $Cache) {
+        # Everything only in cold mode — cached mode would only measure es.exe IPC
+        # response time (a single integer), not a full result dump like Rust/C++.
         BenchRunEverything $driveLetter
+    } elseif ($Cache -and -not $NoEverything -and -not $RustOnly -and -not $CppOnly) {
+        Write-Host "▶ Everything: skipped in cached mode (unfair — IPC returns count only, not full output)" -ForegroundColor DarkGray
+        Write-Host ""
     }
 }
 
