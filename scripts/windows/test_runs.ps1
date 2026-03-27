@@ -176,9 +176,22 @@ try {
     $UffsCom    = Join-Path $BinDir "uffs.com"
     $UffsMftExe = Join-Path $BinDir "uffs_mft.exe"
 
+    # Everything CLI (es.exe) — gold-standard reference for MFT-based search
+    # Try common locations: PATH, Everything install dir, user bin dir
+    $EsExe = $null
+    $esCandidates = @(
+        (Get-Command "es.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+        (Join-Path $BinDir "es.exe"),
+        (Join-Path ${env:ProgramFiles} "Everything\es.exe"),
+        (Join-Path ${env:ProgramW6432} "Everything\es.exe"),
+        (Join-Path ${env:LOCALAPPDATA} "Everything\es.exe")
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) }
+    if ($esCandidates.Count -gt 0) { $EsExe = $esCandidates[0] }
+
     $hasRust = Test-Path -LiteralPath $UffsExe
     $hasCpp  = Test-Path -LiteralPath $UffsCom
     $hasMft  = Test-Path -LiteralPath $UffsMftExe
+    $hasEs   = $null -ne $EsExe
 
     LogLine "## Binaries"
     LogLine ""
@@ -187,7 +200,12 @@ try {
     LogLine ("| uffs.exe (Rust) | ``$UffsExe`` | " + $(if ($hasRust) { "✅" } else { "❌" }) + " |")
     LogLine ("| uffs.com (C++) | ``$UffsCom`` | " + $(if ($hasCpp) { "✅" } else { "❌" }) + " |")
     LogLine ("| uffs_mft.exe | ``$UffsMftExe`` | " + $(if ($hasMft) { "✅" } else { "❌" }) + " |")
+    LogLine ("| es.exe (Everything) | ``$(if ($EsExe) { $EsExe } else { '(not found)' })`` | " + $(if ($hasEs) { "✅" } else { "⏭️ optional" }) + " |")
     LogLine ""
+    if (-not $hasEs) {
+        Write-Host "  ⏭️ es.exe (Everything CLI) not found — Everything baseline will be skipped" -ForegroundColor DarkGray
+        Write-Host "    Install from: https://www.voidtools.com/ (CLI downloads)" -ForegroundColor DarkGray
+    }
 
     if ($Drives.Count -eq 0) {
         $Drives = @(Get-NtfsDrives)
@@ -333,9 +351,11 @@ try {
             [string]$UffsExe,
             [string]$UffsCom,
             [string]$UffsMftExe,
+            [string]$EsExe,
             [bool]$HasRust,
             [bool]$HasCpp,
-            [bool]$HasMft
+            [bool]$HasMft,
+            [bool]$HasEs
         )
 
         $groupResults = @()
@@ -348,12 +368,14 @@ try {
             $rustLiveOut    = "rust_live_${driveLower}.txt"
             $rustLiveTraceOut = "rust_live_trace_${driveLower}.txt"
             $rustOfflineOut = "rust_offline_${driveLower}.txt"
+            $esOut          = "es_${driveLower}.txt"
 
             # Log files (capture stderr with diagnostics)
             $cppLog         = "cpp_${driveLower}.log"
             $rustLiveLog    = "rust_live_${driveLower}.log"
             $rustLiveTraceLog = "rust_live_trace_${driveLower}.log"
             $rustOfflineLog = "rust_offline_${driveLower}.log"
+            $esLog          = "es_${driveLower}.log"
 
             # MFT file for offline comparison
             $mftBin = "${driveLower}_mft.bin"
@@ -467,15 +489,31 @@ try {
                 $runs += [pscustomobject]@{ Drive=$Drive; Title="Rust LIVE TRACE"; Command=""; LogFile=$rustLiveTraceLog; OutFile=$rustLiveTraceOut; DurationMs=$null; ExitCode=$null }
             }
 
-            # 3. Rust OFFLINE scan - SKIPPED on Windows
+            # 3. Everything (es.exe) — gold-standard reference baseline
+            # Uses Everything's own MFT index to list all files on the drive
+            # Output: full path, one per line, sorted by name (default es.exe behavior)
+            # Everything must be running for es.exe to work (IPC)
+            if ($HasEs) {
+                # -path "X:\" restricts to this drive, -s sorts by full path
+                # -no-header suppresses CSV header if csv mode were used
+                $runs += Run-LoggedLocal -Title "Everything (es.exe): drive $Drive" `
+                    -CmdLine ("`"$EsExe`" -path `"${Drive}:\`" -s -name -path-column -size -date-created -date-modified -date-accessed -no-digit-grouping -csv -no-header") `
+                    -LogFileName $esLog `
+                    -OutFileName $esOut
+            } else {
+                Write-Host "  → Everything (es.exe): skipped (not installed)" -ForegroundColor DarkGray
+                $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
+            }
+
+            # 4. Rust OFFLINE scan - SKIPPED on Windows
             # Offline analysis is done on Mac for faster iteration (see TESTING_TOOLS_GUIDE.md)
             Write-Host "  → Rust OFFLINE: skipped (offline analysis done on Mac)" -ForegroundColor DarkGray
 
             $groupResults += [pscustomobject]@{
                 Disk   = $DiskNumber
                 Drive  = $Drive
-                Files  = [pscustomobject]@{ Cpp=$cppOut; RustLive=$rustLiveOut; RustLiveTrace=$rustLiveTraceOut; RustOffline=$rustOfflineOut }
-                Logs   = [pscustomobject]@{ Cpp=$cppLog; RustLive=$rustLiveLog; RustLiveTrace=$rustLiveTraceLog; RustOffline=$rustOfflineLog }
+                Files  = [pscustomobject]@{ Cpp=$cppOut; RustLive=$rustLiveOut; RustLiveTrace=$rustLiveTraceOut; RustOffline=$rustOfflineOut; Es=$esOut }
+                Logs   = [pscustomobject]@{ Cpp=$cppLog; RustLive=$rustLiveLog; RustLiveTrace=$rustLiveTraceLog; RustOffline=$rustOfflineLog; Es=$esLog }
                 Runs   = $runs
             }
         }
@@ -492,8 +530,8 @@ try {
         foreach ($d in $Drives) {
             # treat each drive as its own "disk group"
             $scanResults += & $runDiskGroup -DiskNumber -1 -GroupDrives @($d) -WorkDir $WorkDir `
-                -UffsExe $UffsExe -UffsCom $UffsCom -UffsMftExe $UffsMftExe `
-                -HasRust $hasRust -HasCpp $hasCpp -HasMft $hasMft
+                -UffsExe $UffsExe -UffsCom $UffsCom -UffsMftExe $UffsMftExe -EsExe "$EsExe" `
+                -HasRust $hasRust -HasCpp $hasCpp -HasMft $hasMft -HasEs $hasEs
         }
     } else {
         # Parallel across physical disks; sequential within each disk
@@ -505,8 +543,8 @@ try {
             $allDiskGroups = $using:diskGroups
             $groupDrives = $allDiskGroups[$diskNum]
             & $using:runDiskGroup -DiskNumber $diskNum -GroupDrives $groupDrives -WorkDir $using:WorkDir `
-                -UffsExe $using:UffsExe -UffsCom $using:UffsCom -UffsMftExe $using:UffsMftExe `
-                -HasRust $using:hasRust -HasCpp $using:hasCpp -HasMft $using:hasMft
+                -UffsExe $using:UffsExe -UffsCom $using:UffsCom -UffsMftExe $using:UffsMftExe -EsExe "$($using:EsExe)" `
+                -HasRust $using:hasRust -HasCpp $using:hasCpp -HasMft $using:hasMft -HasEs $using:hasEs
         } -ThrottleLimit $ThrottleLimit
     }
 

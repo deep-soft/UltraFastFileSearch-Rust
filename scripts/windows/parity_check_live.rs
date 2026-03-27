@@ -1,5 +1,14 @@
 #!/usr/bin/env rust-script
-//! Live MFT parity check: Rust uffs.exe vs C++ uffs.com
+//! ⚠️  DEPRECATED — Use `scripts/verify_parity.rs --live` instead.
+//!
+//! The unified verify_parity.rs script now supports both offline (Mac) and
+//! live (Windows) modes with streaming comparison, superset matching,
+//! hardlink verification, and paired diff output.
+//!
+//! Example: `rust-script scripts/verify_parity.rs --live --drive C --keep`
+//!
+//! ─────────────────────────────────────────────────────────────────────────
+//! Legacy: Live MFT parity check: Rust uffs.exe vs C++ uffs.com
 //!
 //! Runs both binaries against LIVE NTFS drives, sorts output, computes SHA256,
 //! and reports match/mismatch with detailed diff sampling.

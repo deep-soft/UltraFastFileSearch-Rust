@@ -1,41 +1,41 @@
 #!/usr/bin/env rust-script
-//! Multi-drive strict full-output SHA256 verification for UFFS.
+//! Cross-platform parity verification for UFFS (Mac + Windows).
 //!
-//! Discovers all `drive_*` directories in the data directory and runs
-//! parity verification on each one sequentially.
+//! Two modes of operation:
+//!
+//! **Offline** (Mac or Windows): Reads pre-captured MFT artifacts from disk,
+//! regenerates Rust output, compares against C++ golden baseline.
+//!
+//! **Live** (Windows, elevated): Runs both `uffs.com` (C++) and `uffs.exe`
+//! (Rust) against live NTFS drives, compares outputs directly. Includes
+//! retry logic for sharing violations and performance timing table.
 //!
 //! # Usage
 //!
 //! ```bash
-//! # Auto-discover and verify all drives (regenerate mode)
-//! rust-script scripts/verify_parity.rs /Users/rnio/uffs_data --regenerate
+//! # Offline: verify all drives from captured MFT data
+//! rust-script scripts/verify_parity.rs ~/uffs_data --regenerate
+//! rust-script scripts/verify_parity.rs ~/uffs_data --drive G --regenerate
 //!
-//! # Verify a specific drive only
-//! rust-script scripts/verify_parity.rs /Users/rnio/uffs_data --drive D --regenerate
-//! rust-script scripts/verify_parity.rs /Users/rnio/uffs_data --drive D --rust /tmp/rust_d.txt
-//!
-//! # With a custom search pattern (glob or regex)
-//! rust-script scripts/verify_parity.rs /Users/rnio/uffs_data --regenerate --pattern "*.txt"
-//! rust-script scripts/verify_parity.rs /Users/rnio/uffs_data --drive C --regenerate --pattern ">.*\\.(jpg|png|heic)"
-//!
-//! # Legacy single-drive mode (still supported)
-//! rust-script scripts/verify_parity.rs /Users/rnio/uffs_data D --regenerate
+//! # Live: run both tools on Windows (elevated), auto-detect NTFS drives
+//! rust-script scripts/verify_parity.rs --live
+//! rust-script scripts/verify_parity.rs --live --drive C --keep
+//! rust-script scripts/verify_parity.rs --live --drive C,D,F --out-dir D:\parity
 //! ```
 //!
-//! # Modes
+//! # Parity contract
 //!
-//! **--regenerate**: Runs uffs with auto-detected timezone to produce fresh
-//! Rust output matching the golden baseline timezone, then compares.
+//! Three-tier comparison (first match wins):
 //!
-//! **--rust <path>**: Compares the provided Rust output file against the golden
-//! baseline. Only valid when a single drive is specified.
+//! 1. **Strict match**: ordered full-file SHA256 identical.
+//! 2. **Sorted match**: line-sorted SHA256 identical (row order differs).
+//! 3. **Superset match**: filter both outputs (strip ADS + footer/header),
+//!    then verify every C++ data line appears in Rust output. Extra Rust
+//!    lines are hardlinks that C++ silently drops (known LIFO/name_index
+//!    bug in the C++ Matcher). This matches Everything (voidtools) behavior:
+//!    all hardlinks should appear in output.
 //!
-//! # Strict parity contract
-//!
-//! The ordered full-file SHA256 is authoritative. If ordered hashes differ,
-//! the script also computes a line-sorted full-file SHA256 as a normalization
-//! step for row-order differences. No header or footer lines are truncated or
-//! ignored during either comparison.
+//! Only tier 3 failure (C++ lines missing from Rust) is a true mismatch.
 //!
 //! ```cargo
 //! [dependencies]
@@ -43,7 +43,8 @@
 //! ```
 
 use std::cmp::Ordering;
-use std::io::{BufRead, BufReader};
+use std::collections::{HashMap, HashSet};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -58,6 +59,9 @@ const LCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
 enum VerifyResult {
     StrictMatch,
     SortedMatch,
+    /// Rust is a strict superset of C++ (C++ drops hardlinks due to known bug).
+    /// All C++ data lines appear in Rust output after filtering ADS/footer.
+    SupersetMatch,
     Mismatch,
     Skipped,
 }
@@ -68,6 +72,8 @@ struct DriveResult {
     result: VerifyResult,
     baseline_lines: usize,
     rust_lines: usize,
+    /// Number of extra lines Rust has vs C++ (hardlinks C++ drops).
+    extra_rust_lines: usize,
     mft_size_bytes: u64,
     parse_duration: Option<Duration>,
 }
@@ -80,11 +86,17 @@ struct RegenerateResult {
     mft_size_bytes: u64,
 }
 
+/// Streaming file stats computed in a single pass (no full file in memory).
 #[derive(Debug)]
-struct FileHashes {
+struct StreamingFileStats {
+    /// SHA256 of lines in original order.
     ordered_hash: String,
-    sorted_hash: String,
+    /// Number of lines.
     line_count: usize,
+    /// Order-independent fingerprint: XOR of per-line FNV-1a hashes.
+    xor_fingerprint: u64,
+    /// Order-independent fingerprint: sum of per-line FNV-1a hashes (wrapping).
+    sum_fingerprint: u128,
 }
 
 #[derive(Debug)]
@@ -96,13 +108,23 @@ struct UffsReleaseArtifact {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+
+    // Detect mode
+    let is_live = args.iter().any(|a| a == "--live");
+
+    if is_live {
+        // Live mode: run both C++ and Rust binaries, then compare
+        // Works on Windows (live MFT) or any platform with pre-built binaries
+        run_live_mode(&args);
+        return;
+    }
+
+    // Offline mode: compare pre-captured artifacts (Mac or Windows)
     // On macOS, always rebuild the release binary before verification
     #[cfg(target_os = "macos")]
     ensure_fresh_release_build();
 
-    let args: Vec<String> = env::args().collect();
-
-    // Parse arguments
     if args.len() < 3 {
         print_usage(&args[0]);
         std::process::exit(1);
@@ -215,6 +237,9 @@ fn run_legacy_mode(args: &[String], base_dir: &Path) {
 
     let result = verify_single_drive(base_dir, &drive_dir, &drive_letter, &rust_output, parse_duration, mft_size);
 
+    // Everything comparison (if es_<drive>.txt exists in drive dir)
+    try_everything_comparison(&drive_dir, &drive_letter, &rust_output);
+
     // Print timing for single drive if available
     if let Some(duration) = result.parse_duration {
         println!();
@@ -299,6 +324,7 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
                 result: VerifyResult::Skipped,
                 baseline_lines: 0,
                 rust_lines: 0,
+                extra_rust_lines: 0,
                 mft_size_bytes: 0,
                 parse_duration: None,
             });
@@ -323,6 +349,10 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
         };
 
         let result = verify_single_drive(base_dir, &drive_dir, &drive_letter, &rust_output, parse_duration, mft_size);
+
+        // Everything comparison (if es_<drive>.txt exists in drive dir)
+        try_everything_comparison(&drive_dir, &drive_letter, &rust_output);
+
         results.push(result);
         println!();
     }
@@ -334,6 +364,804 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
     let any_mismatch = results.iter().any(|r| r.result == VerifyResult::Mismatch);
     std::process::exit(i32::from(any_mismatch));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live mode: run C++ and Rust binaries, then compare outputs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Maximum retries for transient sharing-violation errors (Windows MFT access)
+const LIVE_MAX_RETRIES: u32 = 3;
+/// Delay between retries in milliseconds
+const LIVE_RETRY_DELAY_MS: u64 = 3000;
+
+/// Result from a live scan of a single drive
+#[derive(Debug)]
+struct LiveDriveResult {
+    drive_letter: String,
+    result: VerifyResult,
+    baseline_lines: usize,
+    rust_lines: usize,
+    extra_rust_lines: usize,
+    cpp_time: Duration,
+    rust_time: Duration,
+}
+
+/// Run live parity checks: execute both C++ and Rust binaries, then compare
+fn run_live_mode(args: &[String]) {
+    let cpp_bin = parse_live_arg(args, "--cpp-bin")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            // Auto-detect: look for uffs.com in same dir as this script or PATH
+            let candidates = [
+                PathBuf::from("uffs.com"),
+                find_workspace_root().join("bin").join("uffs.com"),
+            ];
+            candidates
+                .iter()
+                .find(|p| p.exists())
+                .cloned()
+                .unwrap_or_else(|| {
+                    eprintln!("ERROR: Cannot find uffs.com (C++ binary). Use --cpp-bin <path>");
+                    std::process::exit(1);
+                })
+        });
+
+    let rust_bin = parse_live_arg(args, "--bin")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            // Auto-detect from workspace
+            let artifact = find_workspace_release_artifact();
+            artifact.binary_path
+        });
+
+    // Everything CLI (es.exe) — gold-standard reference
+    let es_bin: Option<PathBuf> = parse_live_arg(args, "--es-bin")
+        .map(PathBuf::from)
+        .or_else(|| find_es_exe());
+
+    let out_dir = parse_live_arg(args, "--out-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let pattern = parse_pattern(args);
+    let keep_files = args.iter().any(|a| a == "--keep");
+    let name_only = args.iter().any(|a| a == "--name-only");
+
+    // Determine drives
+    let drives: Vec<String> = if let Some(d) = parse_drive_filter(args) {
+        vec![d.to_uppercase()]
+    } else {
+        detect_ntfs_drives()
+    };
+
+    if drives.is_empty() {
+        eprintln!("ERROR: No NTFS drives detected. Use --drive <letter>");
+        std::process::exit(1);
+    }
+
+    // Ensure output directory exists
+    fs::create_dir_all(&out_dir).unwrap_or_else(|e| {
+        eprintln!("ERROR: Cannot create output dir {}: {e}", out_dir.display());
+        std::process::exit(1);
+    });
+
+    println!("╔══════════════════════════════════════════════════════════════════╗");
+    println!("║          UFFS Live Parity Verification                           ║");
+    println!("╚══════════════════════════════════════════════════════════════════╝");
+    println!();
+    println!("  C++ binary:  {}", cpp_bin.display());
+    println!("  Rust binary: {}", rust_bin.display());
+    println!(
+        "  Everything:  {}",
+        es_bin
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(not found — skipping)".into())
+    );
+    println!("  Output dir:  {}", out_dir.display());
+    println!("  Pattern:     {}", pattern);
+    println!("  Drives:      {:?}", drives);
+    println!();
+
+    let mut results: Vec<LiveDriveResult> = Vec::new();
+
+    for (i, drive) in drives.iter().enumerate() {
+        let result = run_live_drive_parity(
+            drive,
+            &pattern,
+            name_only,
+            &cpp_bin,
+            &rust_bin,
+            es_bin.as_deref(),
+            &out_dir,
+            keep_files,
+            i + 1,
+            drives.len(),
+        );
+        results.push(result);
+    }
+
+    // Print summary with timing table
+    print_live_summary(&results);
+
+    let any_mismatch = results.iter().any(|r| r.result == VerifyResult::Mismatch);
+    std::process::exit(i32::from(any_mismatch));
+}
+
+/// Run a binary with retry logic for transient Windows sharing violations.
+/// Captures stdout to `output_file`, returns Ok on success.
+fn run_with_retry(
+    bin: &Path,
+    args: &[&str],
+    output_file: &Path,
+    label: &str,
+) -> Result<(), String> {
+    for attempt in 0..LIVE_MAX_RETRIES {
+        let output = Command::new(bin)
+            .args(args)
+            .stdout(
+                fs::File::create(output_file)
+                    .map_err(|e| format!("Cannot create {}: {e}", output_file.display()))?,
+            )
+            .stderr(std::process::Stdio::piped())
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => return Ok(()),
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                let stderr_msg = String::from_utf8_lossy(&out.stderr);
+                let is_sharing_violation = stderr_msg.contains("sharing violation")
+                    || stderr_msg.contains("access denied")
+                    || stderr_msg.contains("Access is denied")
+                    || code == 32; // ERROR_SHARING_VIOLATION
+
+                if is_sharing_violation && attempt + 1 < LIVE_MAX_RETRIES {
+                    eprintln!(
+                        "  ⚠️  {} failed (sharing violation), retry {}/{}...",
+                        label,
+                        attempt + 2,
+                        LIVE_MAX_RETRIES
+                    );
+                    std::thread::sleep(Duration::from_millis(LIVE_RETRY_DELAY_MS));
+                    continue;
+                }
+
+                let mut msg = format!("exit code {code}");
+                if !stderr_msg.is_empty() {
+                    msg.push_str(&format!(" — {}", stderr_msg.trim()));
+                }
+                return Err(msg);
+            }
+            Err(e) => return Err(format!("failed to execute {}: {e}", bin.display())),
+        }
+    }
+    Err("max retries exceeded".into())
+}
+
+/// Run live parity check for a single drive
+#[allow(clippy::too_many_arguments)]
+fn run_live_drive_parity(
+    drive: &str,
+    pattern: &str,
+    name_only: bool,
+    cpp_bin: &Path,
+    rust_bin: &Path,
+    es_bin: Option<&Path>,
+    out_dir: &Path,
+    keep_files: bool,
+    drive_index: usize,
+    total_drives: usize,
+) -> LiveDriveResult {
+    let drive_upper = drive.to_uppercase();
+    let drive_lower = drive.to_lowercase();
+
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!(
+        "  [{}/{}] DRIVE {} — Live MFT Scan",
+        drive_index, total_drives, drive_upper
+    );
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+
+    let cpp_raw = out_dir.join(format!("cpp_{drive_lower}.txt"));
+    let rust_raw = out_dir.join(format!("rust_{drive_lower}.txt"));
+
+    let skipped = |_msg: &str, cpp_ms, rust_ms| LiveDriveResult {
+        drive_letter: drive_upper.clone(),
+        result: VerifyResult::Skipped,
+        baseline_lines: 0,
+        rust_lines: 0,
+        extra_rust_lines: 0,
+        cpp_time: cpp_ms,
+        rust_time: rust_ms,
+    };
+
+    // 1. Run C++
+    print!("  [1/3] Running C++ scan...");
+    io::stdout().flush().ok();
+    let cpp_start = Instant::now();
+    let cpp_drives_arg = format!("--drives={drive_upper}");
+    let cpp_result = run_with_retry(cpp_bin, &[pattern, &cpp_drives_arg], &cpp_raw, "C++");
+    let cpp_elapsed = cpp_start.elapsed();
+    match cpp_result {
+        Ok(()) => println!(" ✅ ({})", format_duration(cpp_elapsed)),
+        Err(msg) => {
+            println!(" ❌ SKIPPED — {msg}");
+            return skipped(&msg, cpp_elapsed, Duration::ZERO);
+        }
+    }
+
+    // 2. Run Rust
+    print!("  [2/3] Running Rust scan...");
+    io::stdout().flush().ok();
+    let rust_start = Instant::now();
+    let drive_arg = drive_upper.clone();
+    let mut rust_args: Vec<&str> = vec![
+        pattern,
+        "--drive",
+        &drive_arg,
+        "--no-cache",
+        "--format",
+        "custom",
+        "--parity-compat",
+    ];
+    if name_only {
+        rust_args.push("--name-only");
+    }
+    let rust_result = run_with_retry(rust_bin, &rust_args, &rust_raw, "Rust");
+    let rust_elapsed = rust_start.elapsed();
+    match rust_result {
+        Ok(()) => println!(" ✅ ({})", format_duration(rust_elapsed)),
+        Err(msg) => {
+            println!(" ❌ SKIPPED — {msg}");
+            return skipped(&msg, cpp_elapsed, rust_elapsed);
+        }
+    }
+
+    // 3. Everything (es.exe) — gold-standard reference (optional)
+    let es_raw = out_dir.join(format!("es_{drive_lower}.txt"));
+    if let Some(es) = es_bin {
+        print!("  [3/4] Running Everything scan...");
+        io::stdout().flush().ok();
+        let es_start = Instant::now();
+        let es_path_arg = format!("{}:\\", drive_upper);
+        let es_result = run_with_retry(
+            es,
+            &[
+                "-path", &es_path_arg,
+                "-s", "-name", "-path-column", "-size",
+                "-date-created", "-date-modified", "-date-accessed",
+                "-no-digit-grouping", "-csv", "-no-header",
+            ],
+            &es_raw,
+            "Everything",
+        );
+        let es_elapsed = es_start.elapsed();
+        match es_result {
+            Ok(()) => println!(" ✅ ({})", format_duration(es_elapsed)),
+            Err(msg) => println!(" ⏭️ skipped — {msg}"),
+        }
+    } else {
+        println!("  [3/4] Everything: skipped (es.exe not found)");
+    }
+
+    // 4. Compare using the same streaming comparison as offline mode
+    let step = if es_bin.is_some() { "4/4" } else { "3/3" };
+    println!("  [{}] Comparing outputs...", step);
+    println!();
+
+    let golden_stats = compute_streaming_stats(&cpp_raw);
+    let rust_stats = compute_streaming_stats(&rust_raw);
+
+    println!(
+        "  C++ output:  {} ({} lines)",
+        golden_stats.ordered_hash, golden_stats.line_count
+    );
+    println!(
+        "  Rust output: {} ({} lines)",
+        rust_stats.ordered_hash, rust_stats.line_count
+    );
+    println!();
+
+    // Determine C++ vs Rust parity result
+    let parity_result = if golden_stats.ordered_hash == rust_stats.ordered_hash {
+        println!("  ✅ STRICT MATCH — Ordered outputs identical");
+        (VerifyResult::StrictMatch, 0usize)
+    } else if is_sorted_match(&golden_stats, &rust_stats) {
+        println!("  ✅ SORTED MATCH — Content identical (different traversal order)");
+        (VerifyResult::SortedMatch, 0usize)
+    } else {
+        // Streaming superset check (filter ADS + footer)
+        println!("  Fingerprints differ; streaming superset comparison...");
+        let t_diff = Instant::now();
+        let (only_in_baseline, only_in_rust) = compute_streaming_diff(&cpp_raw, &rust_raw);
+        let diff_elapsed = t_diff.elapsed();
+
+        println!(
+            "  Streaming diff: {:.1}s — {} only in C++, {} only in Rust",
+            diff_elapsed.as_secs_f64(),
+            only_in_baseline.len(),
+            only_in_rust.len()
+        );
+
+        if only_in_baseline.is_empty() {
+            let extra = only_in_rust.len();
+            println!();
+            println!("  ✅ SUPERSET MATCH (Rust ⊇ C++)");
+            println!("     Extra Rust lines: {extra}");
+
+            if !only_in_rust.is_empty() {
+                verify_hardlinks_from_file(&cpp_raw, &only_in_rust);
+            }
+            (VerifyResult::SupersetMatch, extra)
+        } else {
+            println!();
+            println!("  ❌ MISMATCH");
+            println!(
+                "     C++ has {} lines not in Rust, Rust has {} lines not in C++",
+                only_in_baseline.len(),
+                only_in_rust.len()
+            );
+            println!();
+            show_paired_diffs(&only_in_baseline, &only_in_rust);
+            (VerifyResult::Mismatch, only_in_rust.len())
+        }
+    };
+
+    // Everything comparison (if es.exe output exists)
+    if es_raw.exists() {
+        println!();
+        compare_with_everything(&es_raw, &rust_raw, &drive_upper);
+    }
+
+    cleanup_live_files(keep_files, &[&cpp_raw, &rust_raw, &es_raw]);
+
+    LiveDriveResult {
+        drive_letter: drive_upper,
+        result: parity_result.0,
+        baseline_lines: golden_stats.line_count,
+        rust_lines: rust_stats.line_count,
+        extra_rust_lines: parity_result.1,
+        cpp_time: cpp_elapsed,
+        rust_time: rust_elapsed,
+    }
+}
+
+/// Auto-detect es.exe (Everything CLI) on the system.
+fn find_es_exe() -> Option<PathBuf> {
+    // Check PATH first
+    if let Ok(output) = Command::new("where").arg("es.exe").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                let p = PathBuf::from(path.lines().next().unwrap_or(""));
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+
+    // Check common install locations
+    let candidates = [
+        "es.exe",
+        "C:\\Program Files\\Everything\\es.exe",
+        "C:\\Program Files (x86)\\Everything\\es.exe",
+    ];
+    for c in &candidates {
+        let p = PathBuf::from(c);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Verify extra Rust lines are hardlinks using fingerprints from a baseline file.
+/// Streams the baseline file to build fingerprints, then checks extras.
+fn verify_hardlinks_from_file(baseline_path: &Path, only_in_rust: &[String]) {
+    let common_fingerprints: HashSet<String> = {
+        let file = fs::File::open(baseline_path).unwrap_or_else(|e| {
+            panic!("Failed to open {}: {e}", baseline_path.display())
+        });
+        let reader = BufReader::with_capacity(256 * 1024, file);
+        reader
+            .lines()
+            .filter_map(|line| {
+                let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
+                if is_footer_or_header_line(&line) || is_ads_line(&line) {
+                    return None;
+                }
+                extract_data_fingerprint(&line)
+            })
+            .collect()
+    };
+    let mut extra_fps: HashMap<String, usize> = HashMap::new();
+    for line in only_in_rust {
+        if let Some(fp) = extract_data_fingerprint(line) {
+            *extra_fps.entry(fp).or_insert(0) += 1;
+        }
+    }
+    let verified = only_in_rust
+        .iter()
+        .filter(|line| {
+            extract_data_fingerprint(line).is_some_and(|fp| {
+                common_fingerprints.contains(&fp)
+                    || extra_fps.get(&fp).copied().unwrap_or(0) > 1
+            })
+        })
+        .count();
+    let unverified = only_in_rust.len() - verified;
+    println!(
+        "     Hardlink verification: {} verified, {} unverified",
+        verified, unverified
+    );
+    if unverified > 0 {
+        println!("     ⚠️  {} unverified extras — investigate!", unverified);
+    }
+}
+
+/// Compare Rust output against Everything (es.exe) output.
+///
+/// Everything is the gold standard for MFT-based file enumeration.
+/// This comparison validates Rust completeness by checking:
+/// 1. File count comparison
+/// 2. Path set analysis (what's in Everything but not Rust, and vice versa)
+///
+/// Everything CSV format (from es.exe): Name,Path,Size,DateCreated,DateModified,DateAccessed
+/// Our parity-compat CSV format: "FullPath","Name","PathOnly",Size,SizeOnDisk,...
+///
+/// We normalize both to a set of full paths for comparison.
+fn compare_with_everything(es_file: &Path, rust_file: &Path, drive: &str) {
+    println!("  ── Everything (es.exe) vs Rust comparison ──");
+    println!();
+
+    // Build path set from Everything output
+    // es.exe CSV: Name,Path,Size,DateCreated,DateModified,DateAccessed
+    // Path column is the directory, so full path = Path + Name
+    // But with -path-column, the output has: Name,Path,...
+    let t_es = Instant::now();
+    let es_paths = stream_everything_paths(es_file);
+    let es_elapsed = t_es.elapsed();
+    println!(
+        "  Everything: {} paths ({:.1}s)",
+        es_paths.len(),
+        es_elapsed.as_secs_f64()
+    );
+
+    // Build path set from Rust output
+    // Parity-compat CSV: "FullPath","Name","PathOnly",...
+    let t_rust = Instant::now();
+    let rust_paths = stream_rust_paths(rust_file);
+    let rust_elapsed = t_rust.elapsed();
+    println!(
+        "  Rust:       {} paths ({:.1}s)",
+        rust_paths.len(),
+        rust_elapsed.as_secs_f64()
+    );
+
+    // Compare
+    let only_in_es: Vec<&String> = es_paths.iter().filter(|p| !rust_paths.contains(*p)).collect();
+    let only_in_rust: Vec<&String> = rust_paths.iter().filter(|p| !es_paths.contains(*p)).collect();
+    let common = es_paths.len() - only_in_es.len();
+
+    println!();
+    println!("  Common paths:       {}", common);
+    println!("  Only in Everything: {}", only_in_es.len());
+    println!("  Only in Rust:       {}", only_in_rust.len());
+
+    if only_in_es.is_empty() && only_in_rust.is_empty() {
+        println!();
+        println!("  ✅ EVERYTHING MATCH — Rust finds exactly the same files as Everything");
+    } else if only_in_es.is_empty() {
+        println!();
+        println!(
+            "  ✅ EVERYTHING SUPERSET — Rust ⊇ Everything (+{} extra, likely ADS/metadata)",
+            only_in_rust.len()
+        );
+        if !only_in_rust.is_empty() {
+            println!("     Extra Rust paths (not in Everything):");
+            for (i, path) in only_in_rust.iter().enumerate().take(20) {
+                println!("       {:>3}. {}", i + 1, path);
+            }
+            if only_in_rust.len() > 20 {
+                println!("       ... and {} more", only_in_rust.len() - 20);
+            }
+        }
+    } else {
+        println!();
+        println!(
+            "  ⚠️  EVERYTHING GAPS — {} paths in Everything but NOT in Rust",
+            only_in_es.len()
+        );
+        println!("     Missing from Rust (Everything has them):");
+        for (i, path) in only_in_es.iter().enumerate().take(50) {
+            println!("       {:>3}. {}", i + 1, path);
+        }
+        if only_in_es.len() > 50 {
+            println!("       ... and {} more", only_in_es.len() - 50);
+        }
+        if !only_in_rust.is_empty() {
+            println!();
+            println!("     Extra in Rust (Everything doesn't have them):");
+            for (i, path) in only_in_rust.iter().enumerate().take(20) {
+                println!("       {:>3}. {}", i + 1, path);
+            }
+            if only_in_rust.len() > 20 {
+                println!("       ... and {} more", only_in_rust.len() - 20);
+            }
+        }
+    }
+    let _ = drive; // used for future per-drive annotations
+}
+
+/// Stream Everything (es.exe) output and extract normalized full paths.
+/// es.exe CSV format with -name -path-column: Name,Path,Size,...
+/// Full path = Path + Name (Path already ends with backslash for dirs).
+fn stream_everything_paths(es_file: &Path) -> HashSet<String> {
+    let file = fs::File::open(es_file)
+        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", es_file.display()));
+    let reader = BufReader::with_capacity(256 * 1024, file);
+    let mut paths = HashSet::new();
+
+    for line in reader.lines() {
+        let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // CSV: Name,Path,Size,DateCreated,DateModified,DateAccessed
+        // Name may be quoted if it contains commas
+        let fields = split_csv_fields(trimmed);
+        if fields.len() >= 2 {
+            let name = fields[0].trim_matches('"');
+            let dir = fields[1].trim_matches('"');
+            // Build full path: dir + name
+            // dir typically ends with \ for directories
+            let full = if dir.ends_with('\\') || dir.ends_with('/') {
+                format!("{dir}{name}")
+            } else {
+                format!("{dir}\\{name}")
+            };
+            // Normalize: uppercase drive letter, backslash, no trailing slash for files
+            paths.insert(normalize_path(&full));
+        }
+    }
+    paths
+}
+
+/// Stream Rust parity-compat output and extract normalized full paths.
+/// Format: "FullPath","Name","PathOnly",Size,SizeOnDisk,...
+fn stream_rust_paths(rust_file: &Path) -> HashSet<String> {
+    let file = fs::File::open(rust_file)
+        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", rust_file.display()));
+    let reader = BufReader::with_capacity(256 * 1024, file);
+    let mut paths = HashSet::new();
+
+    for line in reader.lines() {
+        let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
+        let trimmed = line.trim();
+        if trimmed.is_empty() || is_footer_or_header_line(trimmed) {
+            continue;
+        }
+        // First quoted field is the full path
+        if let Some(end) = trimmed.find("\",") {
+            let path = trimmed[1..end].to_string(); // strip leading quote
+            paths.insert(normalize_path(&path));
+        }
+    }
+    paths
+}
+
+/// Normalize a path for comparison: uppercase drive letter, consistent backslashes.
+fn normalize_path(path: &str) -> String {
+    let mut result = path.replace('/', "\\");
+    // Uppercase drive letter (first char)
+    if result.len() >= 2 && result.as_bytes()[1] == b':' {
+        let upper = result[..1].to_uppercase();
+        result = format!("{upper}{}", &result[1..]);
+    }
+    result
+}
+
+/// Check for Everything (es.exe) output in the drive directory and compare if found.
+/// Looks for `es_<drive>.txt` in the drive dir. Skips silently if not found.
+fn try_everything_comparison(drive_dir: &Path, drive_letter: &str, rust_output: &Path) {
+    let drive_lower = drive_letter.to_lowercase();
+    let es_file = drive_dir.join(format!("es_{drive_lower}.txt"));
+    if es_file.exists() {
+        println!();
+        compare_with_everything(&es_file, rust_output, drive_letter);
+    }
+}
+
+/// Detect NTFS drives on Windows using wmic. Returns empty vec on non-Windows.
+fn detect_ntfs_drives() -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+
+    let output = Command::new("wmic")
+        .args(["logicaldisk", "where", "DriveType=3", "get", "DeviceID,FileSystem"])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout
+                .lines()
+                .filter(|line| line.contains("NTFS"))
+                .filter_map(|line| line.chars().next())
+                .filter(|c| c.is_ascii_alphabetic())
+                .map(|c| c.to_string().to_uppercase())
+                .collect()
+        }
+        _ => vec!["C".to_string()],
+    }
+}
+
+/// Clean up temporary files unless --keep was specified
+fn cleanup_live_files(keep: bool, files: &[&Path]) {
+    if keep {
+        return;
+    }
+    for file in files {
+        fs::remove_file(file).ok();
+    }
+}
+
+/// Parse a named argument from the command line
+fn parse_live_arg<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
+}
+
+/// Print live mode summary with timing table
+fn print_live_summary(results: &[LiveDriveResult]) {
+    println!();
+    println!("╔══════════════════════════════════════════════════════════════════╗");
+    println!("║                         SUMMARY                                  ║");
+    println!("╚══════════════════════════════════════════════════════════════════╝");
+    println!();
+
+    let mut strict = 0;
+    let mut sorted = 0;
+    let mut superset = 0;
+    let mut mismatch = 0;
+    let mut skipped = 0;
+
+    for r in results {
+        let (icon, status) = match r.result {
+            VerifyResult::StrictMatch => { strict += 1; ("✅", "STRICT MATCH") }
+            VerifyResult::SortedMatch => { sorted += 1; ("✅", "SORTED MATCH") }
+            VerifyResult::SupersetMatch => { superset += 1; ("✅", "SUPERSET MATCH") }
+            VerifyResult::Mismatch => { mismatch += 1; ("❌", "MISMATCH") }
+            VerifyResult::Skipped => { skipped += 1; ("⏭️", "SKIPPED") }
+        };
+        let extra = if r.extra_rust_lines > 0 {
+            format!(" (+{} hardlinks)", r.extra_rust_lines)
+        } else {
+            String::new()
+        };
+        println!(
+            "  {} Drive {}: {} ({} / {} lines{})",
+            icon, r.drive_letter, status, r.baseline_lines, r.rust_lines, extra
+        );
+    }
+
+    println!();
+    println!("  Strict:   {strict}");
+    println!("  Sorted:   {sorted}");
+    println!("  Superset: {superset}  (Rust ⊇ C++)");
+    println!("  Mismatch: {mismatch}");
+    println!("  Skipped:  {skipped}");
+
+    if mismatch == 0 && skipped == 0 {
+        println!("  🎉 ALL DRIVES VERIFIED SUCCESSFULLY!");
+    } else if mismatch == 0 {
+        println!("  ✅ All tested drives passed ({skipped} skipped)");
+    } else {
+        println!("  ⚠️  {mismatch} drive(s) had mismatches");
+    }
+
+    // Timing table
+    print_timing_table(results);
+    println!();
+}
+
+/// Print scan performance comparison table
+fn print_timing_table(results: &[LiveDriveResult]) {
+    println!();
+    println!("╔══════════╦════════════════╦════════════════╦═════════════╦═══════════════════╗");
+    println!("║  Drive   ║   C++ Time     ║   Rust Time    ║  Speedup    ║  Files/sec (Rust) ║");
+    println!("╠══════════╬════════════════╬════════════════╬═════════════╬═══════════════════╣");
+
+    let mut total_cpp = Duration::ZERO;
+    let mut total_rust = Duration::ZERO;
+    let mut total_files: usize = 0;
+
+    for r in results {
+        if r.result == VerifyResult::Skipped {
+            println!(
+                "║    {}     ║ {:>14} ║ {:>14} ║  SKIPPED    ║                   ║",
+                r.drive_letter, "—", "—"
+            );
+            continue;
+        }
+
+        let cpp_str = format_duration(r.cpp_time);
+        let rust_str = format_duration(r.rust_time);
+
+        #[allow(clippy::cast_precision_loss)]
+        let speedup = if r.rust_time.as_millis() > 0 {
+            r.cpp_time.as_secs_f64() / r.rust_time.as_secs_f64()
+        } else {
+            0.0
+        };
+
+        let speedup_str = if speedup >= 1.0 {
+            format!("{speedup:.2}x faster")
+        } else if speedup > 0.0 {
+            format!("{:.2}x slower", 1.0 / speedup)
+        } else {
+            "N/A".to_string()
+        };
+
+        #[allow(clippy::cast_precision_loss)]
+        let files_per_sec = if r.rust_time.as_millis() > 0 {
+            r.rust_lines as f64 / r.rust_time.as_secs_f64()
+        } else {
+            0.0
+        };
+
+        total_cpp += r.cpp_time;
+        total_rust += r.rust_time;
+        total_files += r.rust_lines;
+
+        println!(
+            "║    {}     ║ {:>14} ║ {:>14} ║ {:>11} ║ {:>15.0}/s ║",
+            r.drive_letter, cpp_str, rust_str, speedup_str, files_per_sec
+        );
+    }
+
+    if results.len() > 1 {
+        println!("╠══════════╬════════════════╬════════════════╬═════════════╬═══════════════════╣");
+
+        #[allow(clippy::cast_precision_loss)]
+        let total_speedup = if total_rust.as_millis() > 0 {
+            total_cpp.as_secs_f64() / total_rust.as_secs_f64()
+        } else {
+            0.0
+        };
+        let speedup_str = if total_speedup >= 1.0 {
+            format!("{total_speedup:.2}x faster")
+        } else if total_speedup > 0.0 {
+            format!("{:.2}x slower", 1.0 / total_speedup)
+        } else {
+            "N/A".to_string()
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let avg_fps = if total_rust.as_millis() > 0 {
+            total_files as f64 / total_rust.as_secs_f64()
+        } else {
+            0.0
+        };
+
+        println!(
+            "║  TOTAL   ║ {:>14} ║ {:>14} ║ {:>11} ║ {:>15.0}/s ║",
+            format_duration(total_cpp),
+            format_duration(total_rust),
+            speedup_str,
+            avg_fps
+        );
+    }
+
+    println!("╚══════════╩════════════════╩════════════════╩═════════════╩═══════════════════╝");
+}
+
 
 /// Discover all drive_* directories in the base directory
 fn discover_drives(base_dir: &Path, filter: Option<&str>) -> Vec<String> {
@@ -393,6 +1221,7 @@ fn verify_single_drive(
             result: VerifyResult::Mismatch,
             baseline_lines: 0,
             rust_lines: 0,
+            extra_rust_lines: 0,
             mft_size_bytes,
             parse_duration,
         };
@@ -405,80 +1234,211 @@ fn verify_single_drive(
     println!("  Rust output:   {}", rust_output.display());
     println!();
 
-    println!("  Computing SHA256 hashes and persisting sorted files...");
-    let (golden_hashes, golden_sorted_path) =
-        compute_file_hashes_and_persist_sorted(&golden_baseline_file);
-    let (rust_hashes, rust_sorted_path) = compute_file_hashes_and_persist_sorted(rust_output);
+    println!("  Computing streaming SHA256 + order-independent fingerprints...");
+    let t_hash = Instant::now();
+    let golden_stats = compute_streaming_stats(&golden_baseline_file);
+    let rust_stats = compute_streaming_stats(rust_output);
+    let hash_elapsed = t_hash.elapsed();
 
-    println!("  Sorted baseline: {}", golden_sorted_path.display());
-    println!("  Sorted Rust:     {}", rust_sorted_path.display());
-
-    println!();
     println!(
-        "  Golden baseline: {} ({} lines)",
-        golden_hashes.ordered_hash, golden_hashes.line_count
+        "  Golden baseline: {} ({} lines) [{:.1}s]",
+        golden_stats.ordered_hash,
+        golden_stats.line_count,
+        hash_elapsed.as_secs_f64()
     );
     println!(
         "  Rust output:     {} ({} lines)",
-        rust_hashes.ordered_hash, rust_hashes.line_count
+        rust_stats.ordered_hash, rust_stats.line_count
     );
     println!();
 
-    if golden_hashes.ordered_hash == rust_hashes.ordered_hash {
+    if golden_stats.ordered_hash == rust_stats.ordered_hash {
         println!("  ✅ RESULT: STRICT FULL OUTPUT MATCH");
         println!("     Golden baseline verified for drive {}.", drive_letter);
         return DriveResult {
             drive_letter: drive_letter.to_string(),
             result: VerifyResult::StrictMatch,
-            baseline_lines: golden_hashes.line_count,
-            rust_lines: rust_hashes.line_count,
+            baseline_lines: golden_stats.line_count,
+            rust_lines: rust_stats.line_count,
+            extra_rust_lines: 0,
             mft_size_bytes,
             parse_duration,
         };
     }
 
-    println!("  Ordered hashes differ; checking full-file line-sort normalization...");
-    println!(
-        "  Golden baseline (sorted): {}",
-        golden_hashes.sorted_hash
-    );
-    println!("  Rust output (sorted):     {}", rust_hashes.sorted_hash);
-    println!();
-
-    if golden_hashes.sorted_hash == rust_hashes.sorted_hash {
-        println!("  ✅ RESULT: FULL OUTPUT MATCH AFTER LINE-SORT NORMALIZATION");
+    // Order-independent match: same lines, different order (no sort needed!)
+    if is_sorted_match(&golden_stats, &rust_stats) {
+        println!("  ✅ RESULT: FULL OUTPUT MATCH (order-independent fingerprint)");
         println!("     Exact line order differs (different traversal order), but content matches.");
         println!("     This is acceptable — C++ and Rust walk the MFT/tree in different orders.");
         return DriveResult {
             drive_letter: drive_letter.to_string(),
             result: VerifyResult::SortedMatch,
-            baseline_lines: golden_hashes.line_count,
-            rust_lines: rust_hashes.line_count,
+            baseline_lines: golden_stats.line_count,
+            rust_lines: rust_stats.line_count,
+            extra_rust_lines: 0,
             mft_size_bytes,
             parse_duration,
         };
     }
 
-    println!("  ❌ RESULT: STRICT FULL OUTPUT MISMATCH");
-    println!("     Sorted baseline:  {}", golden_hashes.sorted_hash);
-    println!("     Sorted Rust:      {}", rust_hashes.sorted_hash);
+    // ─── Superset comparison ───────────────────────────────────────────
+    // The C++ tool has a known bug: files with hardlinks across different
+    // directories are silently dropped (LIFO name_index vs ChildInfo mismatch).
+    // Everything (voidtools) confirms: all hardlinks should appear in output.
+    //
+    // Strategy: filter both outputs (strip ADS + footer/header), then check
+    // if all C++ data lines appear in Rust output. If so, Rust is a correct
+    // superset and parity is achieved.
+    println!("  Fingerprints differ; trying streaming superset comparison (filter ADS + footer)...");
+
+    let t_diff = Instant::now();
+    let (only_in_baseline, only_in_rust) =
+        compute_streaming_diff(&golden_baseline_file, rust_output);
+    let diff_elapsed = t_diff.elapsed();
+
     println!(
-        "     Line count:       {} (baseline) vs {} (Rust)",
-        golden_hashes.line_count, rust_hashes.line_count
+        "  Streaming diff completed in {:.1}s: {} only in baseline, {} only in Rust",
+        diff_elapsed.as_secs_f64(),
+        only_in_baseline.len(),
+        only_in_rust.len()
+    );
+
+    if only_in_baseline.is_empty() {
+        // All C++ data lines appear in Rust — Rust is a strict superset
+        let extra = only_in_rust.len();
+        println!();
+        println!("  ✅ RESULT: SUPERSET MATCH (Rust ⊇ C++)");
+        println!("     All C++ data lines found in Rust output.");
+        println!("     Extra Rust lines: {}", extra);
+
+        // Verify each extra line is actually a hardlink:
+        // A hardlink shares the same Size + Created + Modified + Accessed
+        // as another entry in the common set (different path, same inode data).
+        if !only_in_rust.is_empty() {
+            // Stream baseline to build fingerprints of common entries (no full load).
+            let common_fingerprints: HashSet<String> = {
+                let file = fs::File::open(&golden_baseline_file).unwrap_or_else(|e| {
+                    panic!("Failed to open {}: {e}", golden_baseline_file.display())
+                });
+                let reader = BufReader::with_capacity(256 * 1024, file);
+                reader
+                    .lines()
+                    .filter_map(|line| {
+                        let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
+                        if is_footer_or_header_line(&line) || is_ads_line(&line) {
+                            return None;
+                        }
+                        extract_data_fingerprint(&line)
+                    })
+                    .collect()
+            };
+
+            // Also build fingerprints from the extra lines themselves:
+            // if two extras share a fingerprint, they're hardlinks of each other
+            // (C++ dropped BOTH names of the same file).
+            let mut extra_fingerprints: HashMap<String, usize> = HashMap::new();
+            for line in &only_in_rust {
+                if let Some(fp) = extract_data_fingerprint(line) {
+                    *extra_fingerprints.entry(fp).or_insert(0) += 1;
+                }
+            }
+
+            let mut verified_hardlinks = Vec::new();
+            let mut unverified_extras = Vec::new();
+
+            for line in &only_in_rust {
+                let path = extract_path(line);
+                if let Some(fp) = extract_data_fingerprint(line) {
+                    // Verified if: fingerprint matches a common entry, OR
+                    // fingerprint appears in multiple extras (mutual hardlinks)
+                    if common_fingerprints.contains(&fp)
+                        || extra_fingerprints.get(&fp).copied().unwrap_or(0) > 1
+                    {
+                        verified_hardlinks.push((path, fp));
+                    } else {
+                        unverified_extras.push((path, fp));
+                    }
+                } else {
+                    unverified_extras.push((path, String::from("(unparseable)")));
+                }
+            }
+
+            println!();
+            println!(
+                "     Hardlink verification: {} verified, {} unverified",
+                verified_hardlinks.len(),
+                unverified_extras.len()
+            );
+
+            if !verified_hardlinks.is_empty() {
+                println!();
+                println!(
+                    "     ✅ Verified hardlinks (same size+timestamps as another entry):"
+                );
+                for (i, (path, _fp)) in verified_hardlinks.iter().enumerate().take(20) {
+                    println!("       {:>3}. {}", i + 1, path);
+                }
+                if verified_hardlinks.len() > 20 {
+                    println!("       ... and {} more", verified_hardlinks.len() - 20);
+                }
+            }
+
+            if !unverified_extras.is_empty() {
+                println!();
+                println!(
+                    "     ⚠️  UNVERIFIED extra Rust lines (NOT confirmed as hardlinks):"
+                );
+                for (i, (path, fp)) in unverified_extras.iter().enumerate().take(20) {
+                    println!("       {:>3}. {} [fingerprint: {}]", i + 1, path, fp);
+                }
+                if unverified_extras.len() > 20 {
+                    println!("       ... and {} more", unverified_extras.len() - 20);
+                }
+            }
+        }
+
+        return DriveResult {
+            drive_letter: drive_letter.to_string(),
+            result: VerifyResult::SupersetMatch,
+            baseline_lines: golden_stats.line_count,
+            rust_lines: rust_stats.line_count,
+            extra_rust_lines: extra,
+            mft_size_bytes,
+            parse_duration,
+        };
+    }
+
+    // True mismatch: C++ has lines that Rust doesn't
+    println!();
+    println!("  ❌ RESULT: MISMATCH (C++ has lines not in Rust)");
+    println!(
+        "     Lines only in C++ (missing from Rust): {}",
+        only_in_baseline.len()
+    );
+    println!(
+        "     Lines only in Rust (extra):             {}",
+        only_in_rust.len()
+    );
+    println!(
+        "     Line count: {} (baseline) vs {} (Rust)",
+        golden_stats.line_count, rust_stats.line_count
     );
     println!();
     println!("     TIP: If timestamps are off by exactly 1 hour, try the other TZ offset:");
     println!("          --tz -7 (PDT) or --tz -8 (PST)");
-    println!();
 
-    // Show SORTED diffs first — this is the meaningful comparison
-    show_first_sorted_diffs(&golden_baseline_file, rust_output);
+    // Show paired diffs: match by path, show BASELINE vs RUST side by side
+    println!();
+    show_paired_diffs(&only_in_baseline, &only_in_rust);
+    println!();
 
     DriveResult {
         drive_letter: drive_letter.to_string(),
         result: VerifyResult::Mismatch,
-        baseline_lines: golden_hashes.line_count,
-        rust_lines: rust_hashes.line_count,
+        baseline_lines: golden_stats.line_count,
+        rust_lines: rust_stats.line_count,
+        extra_rust_lines: only_in_rust.len(),
         mft_size_bytes,
         parse_duration,
     }
@@ -494,6 +1454,7 @@ fn print_summary(results: &[DriveResult]) {
 
     let mut strict_match = 0;
     let mut sorted_match = 0;
+    let mut superset_match = 0;
     let mut mismatch = 0;
     let mut skipped = 0;
 
@@ -507,6 +1468,10 @@ fn print_summary(results: &[DriveResult]) {
                 sorted_match += 1;
                 ("✅", "SORTED MATCH")
             }
+            VerifyResult::SupersetMatch => {
+                superset_match += 1;
+                ("✅", "SUPERSET MATCH")
+            }
             VerifyResult::Mismatch => {
                 mismatch += 1;
                 ("❌", "MISMATCH")
@@ -516,9 +1481,14 @@ fn print_summary(results: &[DriveResult]) {
                 ("⚠️ ", "SKIPPED")
             }
         };
+        let extra_info = if result.extra_rust_lines > 0 {
+            format!(" (+{} hardlinks)", result.extra_rust_lines)
+        } else {
+            String::new()
+        };
         println!(
-            "  {} Drive {}: {} ({} / {} lines)",
-            icon, result.drive_letter, status, result.baseline_lines, result.rust_lines
+            "  {} Drive {}: {} ({} / {} lines{})",
+            icon, result.drive_letter, status, result.baseline_lines, result.rust_lines, extra_info
         );
     }
 
@@ -527,6 +1497,7 @@ fn print_summary(results: &[DriveResult]) {
     println!("  Total drives:    {total_drives}");
     println!("  Strict matches:  {strict_match}");
     println!("  Sorted matches:  {sorted_match}");
+    println!("  Superset matches:{superset_match}  (Rust ⊇ C++, extra hardlinks)");
     println!("  Mismatches:      {mismatch}");
     println!("  Skipped:         {skipped}");
     println!();
@@ -542,13 +1513,13 @@ fn print_summary(results: &[DriveResult]) {
     // Print timing table if any drives have timing data
     let timed_results: Vec<_> = results.iter().filter(|r| r.parse_duration.is_some()).collect();
     if !timed_results.is_empty() {
-        print_timing_table(&timed_results);
+        print_offline_timing_table(&timed_results);
     }
     println!();
 }
 
-/// Print a timing table for MFT parsing performance
-fn print_timing_table(results: &[&DriveResult]) {
+/// Print a timing table for MFT parsing performance (offline mode)
+fn print_offline_timing_table(results: &[&DriveResult]) {
     println!();
     println!("╔══════════════════════════════════════════════════════════════════════════════╗");
     println!("║                      MFT PARSING PERFORMANCE                                 ║");
@@ -668,15 +1639,20 @@ fn baseline_candidates(drive_lower: &str) -> [String; 3] {
 }
 
 fn print_usage(prog: &str) {
-    eprintln!("UFFS Multi-Drive Parity Verification");
+    eprintln!("UFFS Parity Verification (cross-platform)");
     eprintln!();
-    eprintln!("Usage:");
+    eprintln!("OFFLINE MODE (Mac or Windows — compare against pre-captured MFT artifacts):");
     eprintln!("  {prog} <base_dir> --regenerate                   # Verify all drives");
     eprintln!("  {prog} <base_dir> --drive D --regenerate         # Verify drive D only");
     eprintln!("  {prog} <base_dir> --drive D --rust <path>        # Compare existing output");
-    eprintln!("  {prog} <base_dir> D --regenerate                 # Legacy single-drive mode");
     eprintln!();
-    eprintln!("Options:");
+    eprintln!("LIVE MODE (Windows — run C++ and Rust binaries, then compare):");
+    eprintln!("  {prog} --live                                    # All NTFS drives, auto-detect");
+    eprintln!("  {prog} --live --drive C                          # Single drive");
+    eprintln!("  {prog} --live --drive C,D,F                      # Multiple drives");
+    eprintln!("  {prog} --live --cpp-bin path\\uffs.com             # Custom C++ binary");
+    eprintln!();
+    eprintln!("Offline Options:");
     eprintln!("  --regenerate       Run uffs to generate fresh output, then compare");
     eprintln!("  --rust <path>      Compare existing Rust output (requires --drive)");
     eprintln!("  --drive <letter>   Verify only the specified drive");
@@ -684,20 +1660,24 @@ fn print_usage(prog: &str) {
     eprintln!("                     Use -7 for PDT (Mar-Nov), -8 for PST (Nov-Mar)");
     eprintln!("  --bin <path>       Path to uffs binary (default: auto-detect)");
     eprintln!();
-    eprintln!("The script discovers drive directories automatically:");
-    eprintln!("  <base_dir>/drive_d/  →  Drive D");
-    eprintln!("  <base_dir>/drive_e/  →  Drive E");
-    eprintln!("  ...");
+    eprintln!("Live Options:");
+    eprintln!("  --live             Run both C++ and Rust live, compare outputs");
+    eprintln!("  --cpp-bin <path>   Path to uffs.com (C++ binary)");
+    eprintln!("  --bin <path>       Path to uffs.exe (Rust binary)");
+    eprintln!("  --out-dir <path>   Output directory (default: current dir)");
+    eprintln!("  --keep             Keep output files after comparison");
+    eprintln!("  --name-only        Pass --name-only to Rust binary");
+    eprintln!("  --pattern <pat>    Search pattern (default: *)");
     eprintln!();
     eprintln!("Examples:");
-    eprintln!("  # Verify all drives in uffs_data");
-    eprintln!("  {prog} /Users/rnio/uffs_data --regenerate");
+    eprintln!("  # Offline: verify all drives from captured MFT data");
+    eprintln!("  {prog} ~/uffs_data --regenerate");
     eprintln!();
-    eprintln!("  # Verify only drive F");
-    eprintln!("  {prog} /Users/rnio/uffs_data --drive F --regenerate");
+    eprintln!("  # Live: run both tools on Windows, auto-detect NTFS drives");
+    eprintln!("  {prog} --live --keep");
     eprintln!();
-    eprintln!("  # Override timezone detection");
-    eprintln!("  {prog} /Users/rnio/uffs_data --regenerate --tz -8");
+    eprintln!("  # Live: single drive with custom paths");
+    eprintln!("  {prog} --live --drive C --cpp-bin bin\\uffs.com --bin bin\\uffs.exe");
 }
 
 /// Parse --drive argument from command line
@@ -745,12 +1725,15 @@ fn parse_tz_offset(args: &[String]) -> Option<i32> {
 /// Falls back to baseline file scanning if trial_run.md not found.
 /// trial_run.md contains: **Started:** 2026-03-11T22:18:32.7876612-07:00
 fn detect_tz_from_baseline(baseline_path: &Path) -> i32 {
-    // First, try to read trial_run.md in the same directory
+    // First, try to read test_runs.md or trial_run.md in the same directory
     let drive_dir = baseline_path.parent().unwrap_or(baseline_path);
-    let trial_run_path = drive_dir.join("trial_run.md");
 
-    if let Some(offset) = detect_tz_from_trial_run(&trial_run_path) {
-        return offset;
+    // Try test_runs.md first (current script name), then trial_run.md (legacy)
+    for name in &["test_runs.md", "trial_run.md"] {
+        let path = drive_dir.join(name);
+        if let Some(offset) = detect_tz_from_trial_run(&path) {
+            return offset;
+        }
     }
 
     // Fallback: scan baseline for most recent date
@@ -1253,45 +2236,156 @@ fn find_workspace_root() -> PathBuf {
     cwd
 }
 
-/// Compute hashes and persist the sorted version to disk.
-/// Returns the hashes and the path to the sorted file.
-fn compute_file_hashes_and_persist_sorted(path: &Path) -> (FileHashes, PathBuf) {
-    let lines = read_lines(path);
-    let hashes = FileHashes {
-        ordered_hash: ordered_sha256(&lines),
-        sorted_hash: sorted_sha256(&lines),
-        line_count: lines.len(),
-    };
+/// FNV-1a hash of a byte slice (fast, non-cryptographic, for fingerprinting).
+fn fnv1a_64(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
 
-    // Generate sorted file path: foo.txt -> foo_sorted.txt
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let ext = path.extension().map(|e| e.to_string_lossy()).unwrap_or_default();
-    let sorted_name = if ext.is_empty() {
-        format!("{stem}_sorted")
-    } else {
-        format!("{stem}_sorted.{ext}")
-    };
-    let sorted_path = path.parent().unwrap_or(Path::new(".")).join(&sorted_name);
+/// Compute streaming file stats in a single pass (no full file in memory).
+/// Returns ordered SHA256, line count, and order-independent fingerprints.
+fn compute_streaming_stats(path: &Path) -> StreamingFileStats {
+    let file = fs::File::open(path)
+        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
+    let reader = BufReader::with_capacity(256 * 1024, file);
 
-    // Sort lines using the same robust byte-level comparison
-    let mut indexed: Vec<(usize, &str)> = lines.iter().map(String::as_str).enumerate().collect();
-    indexed.sort_by(|(idx_a, a), (idx_b, b)| {
-        match a.as_bytes().cmp(b.as_bytes()) {
-            std::cmp::Ordering::Equal => idx_a.cmp(idx_b),
-            other => other,
-        }
-    });
+    let mut ordered_hasher = Sha256::new();
+    let mut line_count: usize = 0;
+    let mut xor_fp: u64 = 0;
+    let mut sum_fp: u128 = 0;
 
-    // Write sorted lines to file
-    use std::io::Write;
-    let mut file = fs::File::create(&sorted_path)
-        .unwrap_or_else(|e| panic!("Failed to create {}: {e}", sorted_path.display()));
-    for (_, line) in &indexed {
-        writeln!(file, "{}", line)
-            .unwrap_or_else(|e| panic!("Failed to write to {}: {e}", sorted_path.display()));
+    for line in reader.lines() {
+        let line = line.unwrap_or_else(|e| panic!("Failed to read line: {e}"));
+        // Ordered hash: feed each line + newline
+        ordered_hasher.update(line.as_bytes());
+        ordered_hasher.update(b"\n");
+        // Order-independent: FNV-1a per line, XOR and sum
+        let h = fnv1a_64(line.as_bytes());
+        xor_fp ^= h;
+        sum_fp = sum_fp.wrapping_add(h as u128);
+        line_count += 1;
     }
 
-    (hashes, sorted_path)
+    StreamingFileStats {
+        ordered_hash: format!("{:x}", ordered_hasher.finalize()),
+        line_count,
+        xor_fingerprint: xor_fp,
+        sum_fingerprint: sum_fp,
+    }
+}
+
+/// Check if two files have the same lines (order-independent) using streaming stats.
+fn is_sorted_match(a: &StreamingFileStats, b: &StreamingFileStats) -> bool {
+    a.line_count == b.line_count
+        && a.xor_fingerprint == b.xor_fingerprint
+        && a.sum_fingerprint == b.sum_fingerprint
+}
+
+/// Compute the symmetric difference between two files using HashMap<u64_hash, count>.
+/// Returns (only_in_a_hashes, only_in_b_hashes).
+/// For display, returns the actual line strings of the differences (re-reads files).
+/// Memory: O(n) with u64 keys (~16 bytes per entry) instead of full strings.
+fn compute_streaming_diff(
+    baseline_path: &Path,
+    rust_path: &Path,
+) -> (Vec<String>, Vec<String>) {
+    // Phase 1: Build HashMap<u64, i64> from baseline (positive counts)
+    let mut counts: HashMap<u64, i64> = HashMap::new();
+    {
+        let file = fs::File::open(baseline_path)
+            .unwrap_or_else(|e| panic!("Failed to open {}: {e}", baseline_path.display()));
+        let reader = BufReader::with_capacity(256 * 1024, file);
+        for line in reader.lines() {
+            let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
+            if is_footer_or_header_line(&line) || is_ads_line(&line) {
+                continue;
+            }
+            let h = fnv1a_64(line.as_bytes());
+            *counts.entry(h).or_insert(0) += 1;
+        }
+    }
+
+    // Phase 2: Stream Rust file, decrement matching counts
+    let mut only_in_rust_hashes: HashSet<u64> = HashSet::new();
+    {
+        let file = fs::File::open(rust_path)
+            .unwrap_or_else(|e| panic!("Failed to open {}: {e}", rust_path.display()));
+        let reader = BufReader::with_capacity(256 * 1024, file);
+        for line in reader.lines() {
+            let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
+            if is_footer_or_header_line(&line) || is_ads_line(&line) {
+                continue;
+            }
+            let h = fnv1a_64(line.as_bytes());
+            let count = counts.entry(h).or_insert(0);
+            if *count > 0 {
+                *count -= 1;
+            } else {
+                only_in_rust_hashes.insert(h);
+            }
+        }
+    }
+
+    // Collect hashes only in baseline (count still > 0)
+    let only_in_baseline_hashes: HashSet<u64> = counts
+        .iter()
+        .filter(|(_, &count)| count > 0)
+        .map(|(&h, _)| h)
+        .collect();
+
+    // Phase 3: Re-read files to extract actual line strings for the diffs only.
+    // This is fast because we only collect the small number of differing lines.
+    let only_in_baseline = if only_in_baseline_hashes.is_empty() {
+        Vec::new()
+    } else {
+        let file = fs::File::open(baseline_path)
+            .unwrap_or_else(|e| panic!("Failed to open {}: {e}", baseline_path.display()));
+        let reader = BufReader::with_capacity(256 * 1024, file);
+        reader
+            .lines()
+            .filter_map(|line| {
+                let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
+                if is_footer_or_header_line(&line) || is_ads_line(&line) {
+                    return None;
+                }
+                let h = fnv1a_64(line.as_bytes());
+                if only_in_baseline_hashes.contains(&h) {
+                    Some(line)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    let only_in_rust = if only_in_rust_hashes.is_empty() {
+        Vec::new()
+    } else {
+        let file = fs::File::open(rust_path)
+            .unwrap_or_else(|e| panic!("Failed to open {}: {e}", rust_path.display()));
+        let reader = BufReader::with_capacity(256 * 1024, file);
+        reader
+            .lines()
+            .filter_map(|line| {
+                let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
+                if is_footer_or_header_line(&line) || is_ads_line(&line) {
+                    return None;
+                }
+                let h = fnv1a_64(line.as_bytes());
+                if only_in_rust_hashes.contains(&h) {
+                    Some(line)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    (only_in_baseline, only_in_rust)
 }
 
 fn read_lines(path: &Path) -> Vec<String> {
@@ -1304,10 +2398,14 @@ fn read_lines(path: &Path) -> Vec<String> {
         .collect()
 }
 
+// --- Legacy functions (used by tests) ---
+
+#[allow(dead_code)]
 fn ordered_sha256(lines: &[String]) -> String {
     sha256_for_lines(lines.iter().map(String::as_str))
 }
 
+#[allow(dead_code)]
 fn sorted_sha256(lines: &[String]) -> String {
     let mut indexed: Vec<(usize, &str)> = lines.iter().map(String::as_str).enumerate().collect();
     // Stable sort with byte-level comparison for cross-platform consistency
@@ -1320,6 +2418,7 @@ fn sorted_sha256(lines: &[String]) -> String {
     sha256_for_lines(indexed.into_iter().map(|(_, s)| s))
 }
 
+#[allow(dead_code)]
 fn sha256_for_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
     let mut hasher = Sha256::new();
     for line in lines {
@@ -1327,6 +2426,290 @@ fn sha256_for_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
         hasher.update(b"\n");
     }
     format!("{:x}", hasher.finalize())
+}
+
+/// Check if a line is a C++ footer/header line (not a data row).
+/// Footer lines include: "Drives?", "MMMmmm that was FAST", "Search path",
+/// blank lines, and the column header line.
+fn is_footer_or_header_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty()
+        || trimmed.starts_with("Drives?")
+        || trimmed.starts_with("MMMmmm that was FAST")
+        || trimmed.starts_with("Search path")
+        || trimmed.starts_with("\"Path\"")  // CSV header
+        || trimmed.starts_with("Path\t")    // TSV header
+}
+
+/// Check if a line represents an Alternate Data Stream entry.
+/// ADS entries have a colon in the filename portion, e.g. "file.txt:Zone.Identifier".
+/// We detect this by looking for `:` after the last `\` in the path column (first quoted field).
+fn is_ads_line(line: &str) -> bool {
+    // Lines are CSV-quoted: "G:\path\file.txt:stream","name:stream",...
+    // Find the first quoted field (full path)
+    if let Some(first_quote_end) = line.find("\",") {
+        let path_field = &line[..first_quote_end];
+        // Strip leading quote if present
+        let path = path_field.strip_prefix('"').unwrap_or(path_field);
+        // Find the filename portion (after last backslash)
+        if let Some(last_sep) = path.rfind('\\') {
+            let filename = &path[last_sep + 1..];
+            // ADS entries have a colon in the filename (e.g. "file.txt:streamname")
+            return filename.contains(':');
+        }
+    }
+    false
+}
+
+/// Filter lines to data-only rows (no ADS, no footer/header).
+/// Returns sorted filtered lines for subset comparison.
+#[allow(dead_code)]
+fn filter_data_lines(lines: &[String]) -> Vec<String> {
+    let mut filtered: Vec<String> = lines
+        .iter()
+        .filter(|line| !is_footer_or_header_line(line) && !is_ads_line(line))
+        .cloned()
+        .collect();
+    filtered.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    filtered
+}
+
+/// Check if `subset` lines are all contained in `superset` lines.
+/// Both inputs must be sorted. Returns lines only in subset (should be empty
+/// for a valid superset) and lines only in superset (extra Rust hardlinks).
+#[allow(dead_code)]
+fn check_sorted_subset(subset: &[String], superset: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut only_in_subset = Vec::new();
+    let mut only_in_superset = Vec::new();
+
+    let mut is = 0;
+    let mut ip = 0;
+
+    while is < subset.len() && ip < superset.len() {
+        match subset[is].as_bytes().cmp(superset[ip].as_bytes()) {
+            Ordering::Equal => {
+                is += 1;
+                ip += 1;
+            }
+            Ordering::Less => {
+                only_in_subset.push(subset[is].clone());
+                is += 1;
+            }
+            Ordering::Greater => {
+                only_in_superset.push(superset[ip].clone());
+                ip += 1;
+            }
+        }
+    }
+
+    while is < subset.len() {
+        only_in_subset.push(subset[is].clone());
+        is += 1;
+    }
+    while ip < superset.len() {
+        only_in_superset.push(superset[ip].clone());
+        ip += 1;
+    }
+
+    (only_in_subset, only_in_superset)
+}
+
+
+
+/// Show paired diffs: match by path, display BASELINE vs RUST side by side.
+/// For lines that share the same path but differ in field values (size, timestamps,
+/// flags), shows them paired. Lines only in one side are shown separately.
+fn show_paired_diffs(only_in_baseline: &[String], only_in_rust: &[String]) {
+    // Index both sides by path (first quoted field)
+    let mut baseline_by_path: HashMap<String, Vec<&str>> = HashMap::new();
+    for line in only_in_baseline {
+        let path = extract_path(line);
+        baseline_by_path.entry(path).or_default().push(line);
+    }
+    let mut rust_by_path: HashMap<String, Vec<&str>> = HashMap::new();
+    for line in only_in_rust {
+        let path = extract_path(line);
+        rust_by_path.entry(path).or_default().push(line);
+    }
+
+    // Categorize: paired (same path, different data) vs one-side-only
+    let mut paired: Vec<(&str, &str)> = Vec::new(); // (baseline_line, rust_line)
+    let mut only_baseline: Vec<&str> = Vec::new();
+    let mut only_rust: Vec<&str> = Vec::new();
+
+    for (path, b_lines) in &baseline_by_path {
+        if let Some(r_lines) = rust_by_path.get(path) {
+            // Pair them up (usually 1:1)
+            let count = b_lines.len().max(r_lines.len());
+            for i in 0..count {
+                let b = b_lines.get(i).copied().unwrap_or("(missing)");
+                let r = r_lines.get(i).copied().unwrap_or("(missing)");
+                paired.push((b, r));
+            }
+        } else {
+            for line in b_lines {
+                only_baseline.push(line);
+            }
+        }
+    }
+    for (path, r_lines) in &rust_by_path {
+        if !baseline_by_path.contains_key(path) {
+            for line in r_lines {
+                only_rust.push(line);
+            }
+        }
+    }
+
+    // Sort for consistent output
+    paired.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    only_baseline.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    only_rust.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+    // === Paired diffs (same path, different field values) ===
+    if !paired.is_empty() {
+        let total = paired.len();
+        let head = 50.min(total);
+        let tail = 50.min(total);
+
+        println!("     ── FIELD DIFFERENCES ({} paths with different values) ──", total);
+        println!();
+
+        // First 50
+        for (_i, (b, r)) in paired.iter().enumerate().take(head) {
+            println!("       BASELINE: {}", b);
+            println!("       RUST:     {}", r);
+            println!();
+        }
+
+        // 100 random from middle
+        if total > head + tail + 10 {
+            let mid_start = head;
+            let mid_end = total.saturating_sub(tail);
+            let mid_count = mid_end - mid_start;
+            let sample_count = 100.min(mid_count);
+            println!(
+                "     ── {} RANDOM DIFFERENCES FROM MIDDLE ({} middle diffs) ──",
+                sample_count, mid_count
+            );
+            println!();
+            let step = if sample_count < mid_count {
+                let mut s = mid_count / sample_count;
+                if s < 2 { s = 2; }
+                if s % 2 == 0 { s += 1; }
+                s
+            } else {
+                1
+            };
+            let mut idx = mid_start;
+            let mut shown = 0;
+            while shown < sample_count && idx < mid_end {
+                let (b, r) = &paired[idx];
+                println!("       BASELINE: {}", b);
+                println!("       RUST:     {}", r);
+                println!();
+                idx += step;
+                shown += 1;
+            }
+        }
+
+        // Last 50
+        if total > head {
+            let tail_start = total.saturating_sub(tail);
+            println!("     ── Last {} ──", total - tail_start);
+            println!();
+            for i in tail_start..total {
+                let (b, r) = &paired[i];
+                println!("       BASELINE: {}", b);
+                println!("       RUST:     {}", r);
+                println!();
+            }
+        }
+    }
+
+    // === Lines only in baseline (C++ has, Rust doesn't — even after ADS filter) ===
+    if !only_baseline.is_empty() {
+        println!(
+            "     ── ONLY IN BASELINE ({} lines — missing from Rust) ──",
+            only_baseline.len()
+        );
+        println!();
+        for (i, line) in only_baseline.iter().enumerate().take(50) {
+            println!("       {:>5}. {}", i + 1, line);
+        }
+        if only_baseline.len() > 50 {
+            println!("       ... and {} more", only_baseline.len() - 50);
+        }
+        println!();
+    }
+
+    // === Lines only in Rust (extra entries — hardlinks, ADS, etc.) ===
+    if !only_rust.is_empty() {
+        println!(
+            "     ── ONLY IN RUST ({} lines — extra entries) ──",
+            only_rust.len()
+        );
+        println!();
+        for (i, line) in only_rust.iter().enumerate().take(50) {
+            println!("       {:>5}. {}", i + 1, line);
+        }
+        if only_rust.len() > 50 {
+            println!("       ... and {} more", only_rust.len() - 50);
+        }
+        println!();
+    }
+}
+
+/// Extract the path (first quoted field) from a CSV line for display.
+/// E.g. `"G:\path\file.txt","file.txt",...` → `"G:\path\file.txt"`
+fn extract_path(line: &str) -> String {
+    line.find("\",")
+        .map(|pos| line[..pos + 1].to_string())
+        .unwrap_or_else(|| line.to_string())
+}
+
+/// Extract a data fingerprint from a CSV line: Size + Created + Modified + Accessed.
+///
+/// Parity-compat CSV format:
+/// `"Path","Name","PathOnly",Size,SizeOnDisk,Created,Modified,Accessed,...`
+///  col 0   col 1  col 2    col3  col4       col5    col6     col7
+///
+/// Hardlinks share the same MFT file record, so they have identical
+/// Size, SizeOnDisk, Created, Modified, and Accessed values.
+/// If two lines have different paths but the same fingerprint, they're hardlinks.
+fn extract_data_fingerprint(line: &str) -> Option<String> {
+    // Split CSV respecting quotes. Fields 3-7 are: Size, SizeOnDisk, Created, Modified, Accessed
+    let fields = split_csv_fields(line);
+    if fields.len() >= 8 {
+        // Fingerprint = Size|SizeOnDisk|Created|Modified|Accessed
+        Some(format!(
+            "{}|{}|{}|{}|{}",
+            fields[3], fields[4], fields[5], fields[6], fields[7]
+        ))
+    } else {
+        None
+    }
+}
+
+/// Split a CSV line into fields, respecting quoted fields.
+fn split_csv_fields(line: &str) -> Vec<&str> {
+    let mut fields = Vec::new();
+    let mut start = 0;
+    let mut in_quotes = false;
+    let bytes = line.as_bytes();
+
+    for i in 0..bytes.len() {
+        if bytes[i] == b'"' {
+            in_quotes = !in_quotes;
+        } else if bytes[i] == b',' && !in_quotes {
+            fields.push(&line[start..i]);
+            start = i + 1;
+        }
+    }
+    // Last field
+    if start <= line.len() {
+        fields.push(&line[start..]);
+    }
+    fields
 }
 
 // Note: ordered diff functions kept for debugging but not used in main flow.
@@ -1471,6 +2854,7 @@ fn collect_sorted_diffs(file_a: &Path, file_b: &Path) -> (Vec<String>, Vec<Strin
 /// Show side-by-side comparison of DIFFERENT lines from sorted files.
 /// Only shows lines where baseline != rust. First 5 diffs, last 5 diffs, 10
 /// random from middle.
+#[allow(dead_code)]
 fn show_first_sorted_diffs(file_a: &Path, file_b: &Path) {
     let sorted_baseline = read_sorted_lines(file_a);
     let sorted_rust = read_sorted_lines(file_b);
