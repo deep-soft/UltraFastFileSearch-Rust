@@ -301,8 +301,7 @@ async fn run() -> Result<()> {
                     &cli.query_mode,
                     cli.tz_offset,
                     cli.chaos_seed,
-                    cli.ads && !cli.parity_compat, /* ADS hidden by default; --parity-compat
-                                                    * always hides */
+                    true, // ADS always shown — matches C++ behavior
                     cli.reserved_allocated,
                 )
                 .await?;
