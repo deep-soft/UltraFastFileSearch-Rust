@@ -318,6 +318,14 @@ pub struct Cli {
     #[arg(long)]
     pub parity_compat: bool,
 
+    /// Show Alternate Data Streams (ADS) in output.
+    ///
+    /// By default, named NTFS streams like `file.txt:Zone.Identifier` are
+    /// hidden. Pass `--ads` to include them. Ignored when `--parity-compat`
+    /// is active (C++ never outputs ADS).
+    #[arg(long)]
+    pub ads: bool,
+
     /// NTFS reserved cluster bytes to add to root directory's `Size on Disk`.
     ///
     /// C++ adds `(TotalReserved + MftZoneEnd - MftZoneStart) *

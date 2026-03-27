@@ -236,6 +236,12 @@ pub(in crate::commands) fn write_index_streaming_with_filter<W: Write + ?Sized>(
                     .unwrap_or(&record.first_name);
                 let stream_name = index.stream_name(stream_info);
                 let has_ads = !stream_name.is_empty();
+
+                // Skip Alternate Data Streams unless explicitly requested.
+                if has_ads && !record_filter.show_ads {
+                    continue;
+                }
+
                 let base_name = index.get_name(&name_info.name);
 
                 // Path base: use path_buffer for primary name, resolve
