@@ -30,6 +30,7 @@
 #   - See: TESTING_TOOLS_GUIDE.md for full workflow
 [CmdletBinding()]
 param(
+    [string]$WorkDir = "",         # Output directory (default: current dir, auto-created if missing)
     [string[]]$Drives = @(),       # Drives to test (empty = auto-detect NTFS drives)
     [switch]$SkipMftExtras,        # Skip extra MFT formats (compressed, raw) - uncompressed always saved
     [string]$BinDir = "",          # Custom bin directory (default: $HOME\bin)
@@ -69,7 +70,13 @@ if ($VerboseLog) {
     Write-Host "📋 Standard logging (warn level - captures tree diagnostics, use -VerboseLog for trace)" -ForegroundColor Yellow
 }
 
-$WorkDir  = Get-Location
+# Resolve WorkDir: default to current directory, auto-create if missing
+if (-not $WorkDir) { $WorkDir = (Get-Location).Path }
+$WorkDir = [System.IO.Path]::GetFullPath($WorkDir)
+if (-not (Test-Path -LiteralPath $WorkDir)) {
+    Write-Host "Creating output directory: $WorkDir" -ForegroundColor Yellow
+    New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
+}
 $FinalLog = Join-Path $WorkDir "test_runs.md"
 $TempLog  = Join-Path $WorkDir "test_runs.md.tmp"
 
@@ -118,10 +125,12 @@ function Invoke-CmdToLog {
     param(
         [string]$Title,
         [string]$CommandLine,
-        [string]$LogFileName
+        [string]$LogFileName,
+        [string]$OutDir = ""
     )
 
-    $logPath = Join-Path $WorkDir $LogFileName
+    if (-not $OutDir) { $OutDir = $WorkDir }
+    $logPath = Join-Path $OutDir $LogFileName
     $started = Get-Date
     $exitCode = 0
 
@@ -215,15 +224,21 @@ try {
     LogLine ("**Drives to test:** " + ($Drives -join ", "))
     LogLine ""
 
-    # Version check
+    # Version check — saved into each drive dir (each capture is a point-in-time snapshot)
     $timings = @()
     if ($hasRust) {
-        $timings += Invoke-CmdToLog -Title "uffs --version" `
-            -CommandLine ("`"$UffsExe`" --version") `
-            -LogFileName "uffs_version.log"
-        LogLine "- Version log: ``uffs_version.log``"
+        foreach ($d in $Drives) {
+            $dd = Join-Path $WorkDir "drive_$($d.ToLower())"
+            if (-not (Test-Path -LiteralPath $dd)) {
+                New-Item -ItemType Directory -Path $dd -Force | Out-Null
+            }
+            $timings += Invoke-CmdToLog -Title "uffs --version (drive $d)" `
+                -CommandLine ("`"$UffsExe`" --version") `
+                -LogFileName "uffs_version.log" `
+                -OutDir $dd
+        }
+        LogLine "- Version log saved to each ``drive_<x>/uffs_version.log``"
         LogLine ""
-
     }
 
     # MFT saves - ALWAYS save IOCP capture (primary) and uncompressed MFT (fallback)
@@ -238,32 +253,46 @@ try {
         foreach ($mftDrive in $Drives) {
             Write-Host "MFT Save (Drive $mftDrive)..." -ForegroundColor Cyan
 
+            # Create drive subdirectory
+            $driveDir = Join-Path $WorkDir "drive_$($mftDrive.ToLower())"
+            if (-not (Test-Path -LiteralPath $driveDir)) {
+                New-Item -ItemType Directory -Path $driveDir -Force | Out-Null
+            }
+
             $mftIocp = "${mftDrive}_mft.iocp"       # IOCP capture - captures real IOCP order (PRIMARY)
             $mftNoCompress = "${mftDrive}_mft.bin"  # Uncompressed sequential (fallback)
+            $mftIocpPath = Join-Path $driveDir $mftIocp
+            $mftNoCompressPath = Join-Path $driveDir $mftNoCompress
 
             # Always save IOCP capture (captures real Windows IOCP completion order)
             # This is the PRIMARY format for 100% accurate LIVE replay on Mac
             $timings += Invoke-CmdToLog -Title "uffs_mft save (IOCP capture): drive $mftDrive" `
-                -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive --output `"$mftIocp`" --iocp") `
-                -LogFileName "${mftDrive}_mft_save_iocp.log"
+                -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive --output `"$mftIocpPath`" --iocp") `
+                -LogFileName "${mftDrive}_mft_save_iocp.log" `
+                -OutDir $driveDir
 
             # Always save uncompressed MFT (fallback for sequential offline analysis)
             $timings += Invoke-CmdToLog -Title "uffs_mft save (uncompressed): drive $mftDrive" `
-                -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive --output `"$mftNoCompress`" --no-compress") `
-                -LogFileName "${mftDrive}_mft_save.log"
+                -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive --output `"$mftNoCompressPath`" --no-compress") `
+                -LogFileName "${mftDrive}_mft_save.log" `
+                -OutDir $driveDir
 
             # Extra formats (optional)
             if (-not $SkipMftExtras) {
                 $mftCompressed = "${mftDrive}_mft_compressed.bin"
                 $mftRaw        = "${mftDrive}_mft.raw"
+                $mftCompressedPath = Join-Path $driveDir $mftCompressed
+                $mftRawPath = Join-Path $driveDir $mftRaw
 
                 $timings += Invoke-CmdToLog -Title "uffs_mft save (compressed): drive $mftDrive" `
-                    -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive -o `"$mftCompressed`"") `
-                    -LogFileName "${mftDrive}_mft_save_compressed.log"
+                    -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive -o `"$mftCompressedPath`"") `
+                    -LogFileName "${mftDrive}_mft_save_compressed.log" `
+                    -OutDir $driveDir
 
                 $timings += Invoke-CmdToLog -Title "uffs_mft save (raw): drive $mftDrive" `
-                    -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive -o `"$mftRaw`" --raw") `
-                    -LogFileName "${mftDrive}_mft_save_raw.log"
+                    -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive -o `"$mftRawPath`" --raw") `
+                    -LogFileName "${mftDrive}_mft_save_raw.log" `
+                    -OutDir $driveDir
             }
         }
 
@@ -272,9 +301,11 @@ try {
         LogLine "| Drive | File | Format | Size |"
         LogLine "|-------|------|--------|------|"
         foreach ($mftDrive in $Drives) {
+            $driveDir = Join-Path $WorkDir "drive_$($mftDrive.ToLower())"
+
             # IOCP capture (primary)
             $mftIocp = "${mftDrive}_mft.iocp"
-            $p = Join-Path $WorkDir $mftIocp
+            $p = Join-Path $driveDir $mftIocp
             if (Test-Path -LiteralPath $p) {
                 $size = (Get-Item -LiteralPath $p).Length
                 LogLine "| $mftDrive | $mftIocp | **IOCP capture** (primary) | $(Format-FileSize $size) |"
@@ -284,7 +315,7 @@ try {
 
             # Uncompressed MFT (fallback)
             $mftNoCompress = "${mftDrive}_mft.bin"
-            $p = Join-Path $WorkDir $mftNoCompress
+            $p = Join-Path $driveDir $mftNoCompress
             if (Test-Path -LiteralPath $p) {
                 $size = (Get-Item -LiteralPath $p).Length
                 LogLine "| $mftDrive | $mftNoCompress | Sequential (fallback) | $(Format-FileSize $size) |"
@@ -296,7 +327,7 @@ try {
                 $mftCompressed = "${mftDrive}_mft_compressed.bin"
                 $mftRaw        = "${mftDrive}_mft.raw"
                 foreach ($f in @($mftCompressed, $mftRaw)) {
-                    $p = Join-Path $WorkDir $f
+                    $p = Join-Path $driveDir $f
                     if (Test-Path -LiteralPath $p) {
                         $size = (Get-Item -LiteralPath $p).Length
                         LogLine "| $mftDrive | $f | Extra | $(Format-FileSize $size) |"
@@ -363,7 +394,13 @@ try {
         foreach ($Drive in $GroupDrives) {
             $driveLower = $Drive.ToLower()
 
-            # Output files
+            # Create drive subdirectory
+            $driveDir = Join-Path $WorkDir "drive_${driveLower}"
+            if (-not (Test-Path -LiteralPath $driveDir)) {
+                New-Item -ItemType Directory -Path $driveDir -Force | Out-Null
+            }
+
+            # Output files (inside drive_<letter>/)
             $cppOut         = "cpp_${driveLower}.txt"
             $rustLiveOut    = "rust_live_${driveLower}.txt"
             $rustLiveTraceOut = "rust_live_trace_${driveLower}.txt"
@@ -377,13 +414,13 @@ try {
             $rustOfflineLog = "rust_offline_${driveLower}.log"
             $esLog          = "es_${driveLower}.log"
 
-            # MFT file for offline comparison
+            # MFT file for offline comparison (inside drive_<letter>/)
             $mftBin = "${driveLower}_mft.bin"
 
             function Run-LoggedLocal {
                 param([string]$Title, [string]$CmdLine, [string]$LogFileName, [string]$OutFileName = "")
 
-                $logPath = Join-Path $WorkDir $LogFileName
+                $logPath = Join-Path $driveDir $LogFileName
                 $started = Get-Date
                 $exitCode = 0
 
@@ -393,7 +430,7 @@ try {
                     # Run command with stdout to output file, stderr to log file
                     # This properly separates scan output from diagnostic logs
                     if ($OutFileName) {
-                        $outPath = Join-Path $WorkDir $OutFileName
+                        $outPath = Join-Path $driveDir $OutFileName
                         # Use cmd.exe to properly separate stdout (>output) and stderr (2>log)
                         & cmd.exe /c "$CmdLine > `"$outPath`" 2> `"$logPath`""
                         $exitCode = $LASTEXITCODE
@@ -557,6 +594,7 @@ try {
     foreach ($r in $scanResults) {
         $drive = $r.Drive
         $disk  = $r.Disk
+        $driveDir = Join-Path $WorkDir "drive_$($drive.ToLower())"
 
         LogLine "## Drive $drive (Disk $disk)"
         LogLine ""
@@ -566,13 +604,13 @@ try {
 
         foreach ($run in $r.Runs) {
             $outFile = $run.OutFile
-            $outPath = if ($outFile) { Join-Path $WorkDir $outFile } else { $null }
+            $outPath = if ($outFile) { Join-Path $driveDir $outFile } else { $null }
             $sizeStr = "N/A"
             if ($outPath -and (Test-Path -LiteralPath $outPath)) {
                 $sizeStr = Format-FileSize (Get-Item -LiteralPath $outPath).Length
             }
 
-            $logPath = if ($run.LogFile) { Join-Path $WorkDir $run.LogFile } else { $null }
+            $logPath = if ($run.LogFile) { Join-Path $driveDir $run.LogFile } else { $null }
             $logSizeStr = ""
             if ($logPath -and (Test-Path -LiteralPath $logPath)) {
                 $logSize = (Get-Item -LiteralPath $logPath).Length
@@ -590,20 +628,81 @@ try {
 
     LogLine "---"
     LogLine ("**Completed:** " + (Get-Date -Format o))
+
+    # Write per-drive summary files so each drive_<x>/ folder is self-contained
+    foreach ($r in $scanResults) {
+        $drive = $r.Drive
+        $driveLower = $drive.ToLower()
+        $driveDir = Join-Path $WorkDir "drive_${driveLower}"
+        if (-not (Test-Path -LiteralPath $driveDir)) { continue }
+
+        $driveSummary = Join-Path $driveDir "drive_${driveLower}_test_runs.md"
+        $lines = @()
+        $lines += "# Test Run — Drive $drive"
+        $lines += ""
+        $lines += "**Generated:** $(Get-Date -Format o)"
+        $lines += "**Host:** $env:COMPUTERNAME"
+        $lines += ""
+        $lines += "| Flow | Output file | Size | Log file | Exit | Duration (ms) |"
+        $lines += "|------|-------------|------|----------|------|---------------:|"
+        foreach ($run in $r.Runs) {
+            $outFile = $run.OutFile
+            $outPath = if ($outFile) { Join-Path $driveDir $outFile } else { $null }
+            $sizeStr = "N/A"
+            if ($outPath -and (Test-Path -LiteralPath $outPath)) {
+                $sizeStr = Format-FileSize (Get-Item -LiteralPath $outPath).Length
+            }
+            $logPath = if ($run.LogFile) { Join-Path $driveDir $run.LogFile } else { $null }
+            $logSizeStr = ""
+            if ($logPath -and (Test-Path -LiteralPath $logPath)) {
+                $logSize = (Get-Item -LiteralPath $logPath).Length
+                $logSizeStr = " ($(Format-FileSize $logSize))"
+            }
+            $exit = if ($null -eq $run.ExitCode) { "skipped" } else { "$($run.ExitCode)" }
+            $dur  = if ($null -eq $run.DurationMs) { "N/A" } else { "$($run.DurationMs)" }
+            $lines += "| $($run.Title) | $outFile | $sizeStr | $($run.LogFile)$logSizeStr | $exit | $dur |"
+        }
+        $lines += ""
+
+        # MFT file inventory for this drive
+        $mftFiles = Get-ChildItem -LiteralPath $driveDir -Filter "${drive}_mft*" -ErrorAction SilentlyContinue
+        if ($mftFiles.Count -gt 0) {
+            $lines += "## MFT Snapshots"
+            $lines += ""
+            $lines += "| File | Size |"
+            $lines += "|------|------|"
+            foreach ($mf in ($mftFiles | Sort-Object Name)) {
+                $lines += "| $($mf.Name) | $(Format-FileSize $mf.Length) |"
+            }
+            $lines += ""
+        }
+
+        $lines | Out-File -FilePath $driveSummary -Encoding utf8
+        Write-Host "📄 Drive summary: $driveSummary" -ForegroundColor DarkCyan
+    }
 }
 finally {
     if ($sw) { $sw.Flush(); $sw.Dispose() }
     if ($fs) { $fs.Dispose() }
 
     try {
-        if (Test-Path -LiteralPath $FinalLog) { Remove-Item -LiteralPath $FinalLog -Force }
-        Move-Item -LiteralPath $TempLog -Destination $FinalLog -Force
-        Write-Host ""
-        Write-Host "📄 Report written: $FinalLog" -ForegroundColor Cyan
+        # Copy report into each drive dir (each folder is self-contained)
+        foreach ($d in $Drives) {
+            $dd = Join-Path $WorkDir "drive_$($d.ToLower())"
+            if (Test-Path -LiteralPath $dd) {
+                Copy-Item -LiteralPath $TempLog -Destination (Join-Path $dd "test_runs.md") -Force
+                Write-Host "📄 Report: $(Join-Path $dd 'test_runs.md')" -ForegroundColor Cyan
+            }
+        }
+
+        # Remove temp file — no root copy (drives may be captured at different times)
+        Remove-Item -LiteralPath $TempLog -Force -ErrorAction SilentlyContinue
+        # Also clean up any stale root test_runs.md from previous runs
+        if (Test-Path -LiteralPath $FinalLog) {
+            Remove-Item -LiteralPath $FinalLog -Force -ErrorAction SilentlyContinue
+        }
     }
     catch {
-        $fallback = Join-Path $WorkDir ("test_runs_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".md")
-        Move-Item -LiteralPath $TempLog -Destination $fallback -Force
-        Write-Warning ("test_runs.md was locked; wrote: " + $fallback)
+        Write-Warning ("Failed to finalize report: " + $_.Exception.Message)
     }
 }
