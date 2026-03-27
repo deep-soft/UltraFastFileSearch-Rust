@@ -197,37 +197,53 @@ function BenchRunEverything($driveLetter) {
     $c = $c -replace 'index_size=.*', 'index_size=1'
     $c | Out-File -FilePath $EVERYTHING_INI -Encoding ascii -NoNewline
 
+    $everythingRunning = $false
+
     1..$N | ForEach-Object {
-        # Measure: stop → start → MFT index ready
-        # This is what Everything actually does well: read MFT into memory.
-        # es.exe IPC can't export large drives (>2M entries, 2GB IPC limit),
-        # so we only benchmark the index time (start → result-count > 0).
-        Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-            ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
-        Start-Sleep -Milliseconds 1500
+        if (-not $Cache -or -not $everythingRunning) {
+            # Cold: stop → start → MFT index each round
+            # Cached: only do this on first round, keep running for subsequent rounds
+            Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+                ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Milliseconds 1500
 
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        Start-Process -FilePath $EVERYTHING_EXE -ArgumentList "-startup -minimized" -WindowStyle Hidden
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            Start-Process -FilePath $EVERYTHING_EXE -ArgumentList "-startup -minimized" -WindowStyle Hidden
 
-        # Poll until index is ready (result count > 0)
-        $indexed = $false
-        $entryCount = 0
-        for ($wi = 1; $wi -le 60; $wi++) {
-            Start-Sleep -Milliseconds 500
-            $rc = & $ES_EXE -get-result-count 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                [int]::TryParse($rc, [ref]$entryCount) | Out-Null
-                if ($entryCount -gt 0) { $indexed = $true; break }
+            # Poll until index is ready (result count > 0)
+            $indexed = $false
+            $entryCount = 0
+            for ($wi = 1; $wi -le 60; $wi++) {
+                Start-Sleep -Milliseconds 500
+                $rc = & $ES_EXE -get-result-count 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    [int]::TryParse($rc, [ref]$entryCount) | Out-Null
+                    if ($entryCount -gt 0) { $indexed = $true; break }
+                }
             }
-        }
-        $sw.Stop()
-        $ms = $sw.Elapsed.TotalMilliseconds
+            $sw.Stop()
+            $ms = $sw.Elapsed.TotalMilliseconds
 
-        if ($indexed) {
-            $indexTimes += $ms
-            Write-Host ("   Run {0}: {1:N0} ms ({2:N0} entries)" -f $_, $ms, $entryCount) -ForegroundColor Gray
+            if ($indexed) {
+                $indexTimes += $ms
+                $everythingRunning = $true
+                if ($Cache) {
+                    Write-Host ("   Run {0}: {1:N0} ms ({2:N0} entries) [cold — building cache]" -f $_, $ms, $entryCount) -ForegroundColor Gray
+                } else {
+                    Write-Host ("   Run {0}: {1:N0} ms ({2:N0} entries)" -f $_, $ms, $entryCount) -ForegroundColor Gray
+                }
+            } else {
+                Write-Host "   Run $_`: timed out (30s)" -ForegroundColor Red
+            }
         } else {
-            Write-Host "   Run $_`: timed out (30s)" -ForegroundColor Red
+            # Cached: Everything already running, just measure query response time
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $rc = & $ES_EXE -get-result-count 2>&1
+            $sw.Stop()
+            $ms = $sw.Elapsed.TotalMilliseconds
+            $entryCount = 0; [int]::TryParse($rc, [ref]$entryCount) | Out-Null
+            $indexTimes += $ms
+            Write-Host ("   Run {0}: {1:N0} ms ({2:N0} entries) [cached — query only]" -f $_, $ms, $entryCount) -ForegroundColor Gray
         }
     }
 
@@ -240,9 +256,12 @@ function BenchRunEverything($driveLetter) {
     }
     Write-Host ""
 
-    # Stop Everything after benchmarking this drive
-    Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-        ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+    # Stop Everything after benchmarking this drive (cold mode)
+    # Cached mode: keep running (will be stopped when switching drives via ini edit)
+    if (-not $Cache) {
+        Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 
