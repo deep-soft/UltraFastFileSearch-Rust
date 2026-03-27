@@ -635,16 +635,26 @@ fn run_live_drive_parity(
         }
     }
 
-    // 3. Everything — gold-standard MFT reference (live collection via ini editing)
-    let es_collected = if let Some(es) = es_bin {
-        run_everything_live_collect(es, &drive_upper, &es_raw_path)
-    } else {
-        println!("  [3/4] Everything: skipped (es.exe not found)");
-        false
-    };
+    // 3. Everything — DISABLED (2026-03-27)
+    // Everything 1.4 has a 2GB IPC memory limit that prevents es.exe from
+    // exporting data on drives with >2M entries. Both -export-efu and CSV
+    // stdout hit this wall (even path-only output OOMs on 4.7M files).
+    // Everything can INDEX the MFT fine — the limit is purely in the IPC
+    // data transfer between Everything.exe and es.exe.
+    // Benchmark timing (start → index ready) is still available via benchmark.ps1.
+    // Re-enable when Everything 1.5 ships with the IPC memory fix.
+    // See: https://www.voidtools.com/forum/viewtopic.php?t=15249
+    //
+    // let es_collected = if let Some(es) = es_bin {
+    //     run_everything_live_collect(es, &drive_upper, &es_raw_path)
+    // } else {
+    //     println!("  [3/4] Everything: skipped (es.exe not found)");
+    //     false
+    // };
+    println!("  [3/3] Everything: disabled (es.exe 2GB IPC limit — see benchmark.ps1 for timing)");
 
     // Compare using the same streaming comparison as offline mode
-    let step = if es_collected { "4/4" } else { "3/3" };
+    let step = "3/3";
     println!("  [{}] Comparing outputs...", step);
     println!();
 
@@ -756,6 +766,7 @@ fn find_es_exe() -> Option<PathBuf> {
 }
 
 /// Auto-detect Everything.exe on the system.
+#[allow(dead_code)]
 fn find_everything_exe() -> Option<PathBuf> {
     let candidates = [
         "C:\\Program Files\\Everything\\Everything.exe",
@@ -781,11 +792,21 @@ fn find_everything_exe() -> Option<PathBuf> {
 }
 
 /// Find the Everything APPDATA ini path.
+#[allow(dead_code)]
 fn find_everything_ini() -> Option<PathBuf> {
     env::var("APPDATA").ok().map(|appdata| {
         PathBuf::from(appdata).join("Everything").join("Everything.ini")
     }).filter(|p| p.exists())
 }
+
+// ── BEGIN DISABLED EVERYTHING LIVE COLLECTION (2026-03-27) ──
+// Everything 1.4 has a 2GB IPC memory limit that prevents es.exe from
+// exporting data on drives with >2M entries. Both -export-efu and CSV
+// stdout hit this wall (even path-only output OOMs on 4.7M files).
+// Everything can INDEX the MFT fine — the limit is purely in the IPC
+// data transfer between Everything.exe and es.exe.
+// Re-enable when Everything 1.5 ships with the IPC memory fix.
+// See: https://www.voidtools.com/forum/viewtopic.php?t=15249
 
 /// Live-collect Everything data for a single drive using ini-editing approach.
 ///
@@ -800,6 +821,7 @@ fn find_everything_ini() -> Option<PathBuf> {
 /// 8. Restore ini from backup
 ///
 /// Returns true if data was collected successfully.
+#[allow(dead_code)]
 fn run_everything_live_collect(es_exe: &Path, drive_upper: &str, output_path: &Path) -> bool {
     let everything_exe = match find_everything_exe() {
         Some(p) => p,
@@ -934,6 +956,7 @@ fn run_everything_live_collect(es_exe: &Path, drive_upper: &str, output_path: &P
 }
 
 /// Kill all running Everything.exe processes.
+#[allow(dead_code)]
 fn kill_everything_processes() {
     // Use taskkill on Windows
     let _ = Command::new("taskkill")
@@ -944,6 +967,7 @@ fn kill_everything_processes() {
 }
 
 /// Edit Everything.ini to enable only the target drive with all index fields.
+#[allow(dead_code)]
 fn edit_everything_ini(ini_path: &Path, target_drive: &str) -> bool {
     let content = match fs::read_to_string(ini_path) {
         Ok(c) => c,
@@ -1021,6 +1045,7 @@ fn edit_everything_ini(ini_path: &Path, target_drive: &str) -> bool {
 }
 
 /// Restore Everything.ini from backup.
+#[allow(dead_code)]
 fn restore_everything_ini(ini_path: &Path, backup_path: &Path) {
     if backup_path.exists() {
         if let Err(e) = fs::copy(backup_path, ini_path) {
@@ -1031,6 +1056,7 @@ fn restore_everything_ini(ini_path: &Path, backup_path: &Path) {
         }
     }
 }
+// ── END DISABLED EVERYTHING LIVE COLLECTION ──
 
 
 /// Verify extra Rust lines are hardlinks using fingerprints from a baseline file.

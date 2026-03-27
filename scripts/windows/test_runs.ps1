@@ -558,10 +558,17 @@ try {
                 $runs += [pscustomobject]@{ Drive=$Drive; Title="Rust LIVE TRACE"; Command=""; LogFile=$rustLiveTraceLog; OutFile=$rustLiveTraceOut; DurationMs=$null; ExitCode=$null }
             }
 
-            # 3. Everything — gold-standard MFT-based reference baseline
-            # Strategy: edit APPDATA ini to enable ONLY this drive, start Everything,
-            # wait for MFT indexing, query with es.exe (all columns), then stop.
-            # This avoids indexing all 25M+ files across all drives at once.
+            # 3. Everything — DISABLED (2026-03-27)
+            # Everything 1.4 has a 2GB IPC memory limit that prevents es.exe from
+            # exporting data on drives with >2M entries. Both -export-efu and CSV
+            # stdout hit this wall (even path-only output OOMs on 4.7M files).
+            # Everything can INDEX the MFT fine — the limit is purely in the IPC
+            # data transfer between Everything.exe and es.exe.
+            # Benchmark timing (start → index ready) is still available via benchmark.ps1.
+            # Re-enable when Everything 1.5 ships with the IPC memory fix.
+            # See: https://www.voidtools.com/forum/viewtopic.php?t=15249
+            Write-Host "  → Everything: disabled (es.exe 2GB IPC limit — see benchmark.ps1 for timing)" -ForegroundColor DarkGray
+            <#  ── BEGIN COMMENTED-OUT EVERYTHING PARITY COLLECTION ──
             if ($HasEverything) {
                 Write-Host "  → Everything: configuring for ${Drive}: only..." -ForegroundColor DarkYellow
 
@@ -633,7 +640,7 @@ try {
 
                             # Attempt 1: EFU export (dev-recommended for large drives)
                             $efuResult = Run-LoggedLocal -Title "Everything (es.exe EFU export): drive $Drive" `
-                                -CmdLine ("`"$EsExe`" -path `"${Drive}:\`" -sort path -export-efu `"$esOutPath`"") `
+                                -CmdLine ("`"$EsExe`" -path `"${Drive}:\`" -export-efu `"$esOutPath`"") `
                                 -LogFileName $esLog
                             $runs += $efuResult
                             if ($efuResult.ExitCode -eq 0 -and (Test-Path -LiteralPath $esOutPath) -and (Get-Item $esOutPath).Length -gt 0) {
@@ -645,7 +652,7 @@ try {
                             if (-not $esExportOk) {
                                 Write-Host "    ⚠️  EFU export failed — retrying with path+size+attributes..." -ForegroundColor DarkYellow
                                 $fallbackResult = Run-LoggedLocal -Title "Everything (es.exe lite): drive $Drive" `
-                                    -CmdLine ("`"$EsExe`" -path `"${Drive}:\`" -sort path -name -path-column -size -attributes -no-digit-grouping -csv") `
+                                    -CmdLine ("`"$EsExe`" -path `"${Drive}:\`" -name -path-column -size -attributes -no-digit-grouping -csv") `
                                     -LogFileName $esLog `
                                     -OutFileName $esOut
                                 $runs += $fallbackResult
@@ -671,6 +678,7 @@ try {
                 Write-Host "  → Everything: skipped (Everything.exe / es.exe / ini not found)" -ForegroundColor DarkGray
                 $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe MFT)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
             }
+            #>  ── END COMMENTED-OUT EVERYTHING PARITY COLLECTION ──
 
             # 4. Rust OFFLINE scan - SKIPPED on Windows
             # Offline analysis is done on Mac for faster iteration (see TESTING_TOOLS_GUIDE.md)

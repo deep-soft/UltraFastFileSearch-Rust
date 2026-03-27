@@ -185,92 +185,64 @@ function BenchRunEverything($driveLetter) {
         Copy-Item -LiteralPath $EVERYTHING_INI -Destination $iniBak -Force
     }
 
+    # Edit ini once: only target drive, all index fields
+    $c = Get-Content -LiteralPath $EVERYTHING_INI -Raw
+    $c = $c -replace 'ntfs_volume_includes=.*', "ntfs_volume_includes=$includesStr"
+    $c = $c -replace 'auto_include_fixed_volumes=.*', 'auto_include_fixed_volumes=0'
+    $c = $c -replace 'auto_include_removable_volumes=.*', 'auto_include_removable_volumes=0'
+    $c = $c -replace 'index_date_created=.*', 'index_date_created=1'
+    $c = $c -replace 'index_date_accessed=.*', 'index_date_accessed=1'
+    $c = $c -replace 'index_date_modified=.*', 'index_date_modified=1'
+    $c = $c -replace 'index_attributes=.*', 'index_attributes=1'
+    $c = $c -replace 'index_size=.*', 'index_size=1'
+    $c | Out-File -FilePath $EVERYTHING_INI -Encoding ascii -NoNewline
+
     1..$N | ForEach-Object {
-        $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
+        # Measure: stop → start → MFT index ready
+        # This is what Everything actually does well: read MFT into memory.
+        # es.exe IPC can't export large drives (>2M entries, 2GB IPC limit),
+        # so we only benchmark the index time (start → result-count > 0).
+        Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.Id -Force }
+        Start-Sleep -Milliseconds 1500
 
-        if (-not $Cache -or $_ -eq 1) {
-            # Cold: stop, edit ini, start, wait for index each round
-            # Cached: only do this on first round, then keep running
-            Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-                ForEach-Object { Stop-Process -Id $_.Id -Force }
-            Start-Sleep -Milliseconds 1500
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Start-Process -FilePath $EVERYTHING_EXE -ArgumentList "-startup -minimized" -WindowStyle Hidden
 
-            # Edit ini: only target drive, all index fields
-            $c = Get-Content -LiteralPath $EVERYTHING_INI -Raw
-            $c = $c -replace 'ntfs_volume_includes=.*', "ntfs_volume_includes=$includesStr"
-            $c = $c -replace 'auto_include_fixed_volumes=.*', 'auto_include_fixed_volumes=0'
-            $c = $c -replace 'auto_include_removable_volumes=.*', 'auto_include_removable_volumes=0'
-            $c = $c -replace 'index_date_created=.*', 'index_date_created=1'
-            $c = $c -replace 'index_date_accessed=.*', 'index_date_accessed=1'
-            $c = $c -replace 'index_date_modified=.*', 'index_date_modified=1'
-            $c = $c -replace 'index_attributes=.*', 'index_attributes=1'
-            $c = $c -replace 'index_size=.*', 'index_size=1'
-            $c | Out-File -FilePath $EVERYTHING_INI -Encoding ascii -NoNewline
-
-            # Start and wait for index
-            $indexSw = [System.Diagnostics.Stopwatch]::StartNew()
-            Start-Process -FilePath $EVERYTHING_EXE -ArgumentList "-startup -minimized" -WindowStyle Hidden
-            $indexed = $false
-            for ($wi = 1; $wi -le 60; $wi++) {
-                Start-Sleep -Seconds 2
-                $rc = & $ES_EXE -get-result-count 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    $count = 0; [int]::TryParse($rc, [ref]$count) | Out-Null
-                    if ($count -gt 0) { $indexed = $true; break }
-                }
+        # Poll until index is ready (result count > 0)
+        $indexed = $false
+        $entryCount = 0
+        for ($wi = 1; $wi -le 60; $wi++) {
+            Start-Sleep -Milliseconds 500
+            $rc = & $ES_EXE -get-result-count 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                [int]::TryParse($rc, [ref]$entryCount) | Out-Null
+                if ($entryCount -gt 0) { $indexed = $true; break }
             }
-            $indexSw.Stop()
-            $indexMs = $indexSw.Elapsed.TotalMilliseconds
-            $indexTimes += $indexMs
-
-            if (-not $indexed) {
-                Write-Host "   Run $_`: index timed out — skipping" -ForegroundColor Red
-                $totalSw.Stop()
-                return
-            }
-        } else {
-            $indexMs = 0
         }
+        $sw.Stop()
+        $ms = $sw.Elapsed.TotalMilliseconds
 
-        # Query
-        $querySw = [System.Diagnostics.Stopwatch]::StartNew()
-        $null = & $ES_EXE -path "${driveLetter}:\" -s -name -path-column -size `
-            -date-created -date-modified -date-accessed -attributes `
-            -no-digit-grouping -csv 2>&1
-        $querySw.Stop()
-        $queryMs = $querySw.Elapsed.TotalMilliseconds
-        $queryTimes += $queryMs
-
-        $totalSw.Stop()
-        $totalMs = $totalSw.Elapsed.TotalMilliseconds
-        $totalTimes += $totalMs
-
-        if ($indexMs -gt 0) {
-            Write-Host "   Run $_`: $([math]::Round($totalMs/1000, 2))s (index: $([math]::Round($indexMs/1000, 2))s + query: $([math]::Round($queryMs/1000, 2))s)" -ForegroundColor Gray
+        if ($indexed) {
+            $indexTimes += $ms
+            Write-Host ("   Run {0}: {1:N0} ms ({2:N0} entries)" -f $_, $ms, $entryCount) -ForegroundColor Gray
         } else {
-            Write-Host "   Run $_`: $([math]::Round($queryMs/1000, 2))s (query only, cached)" -ForegroundColor Gray
+            Write-Host "   Run $_`: timed out (30s)" -ForegroundColor Red
         }
     }
 
     # Summary
-    if ($totalTimes.Count -gt 0) {
-        $avg = ($totalTimes | Measure-Object -Average).Average
-        $min = ($totalTimes | Measure-Object -Minimum).Minimum
-        $max = ($totalTimes | Measure-Object -Maximum).Maximum
+    if ($indexTimes.Count -gt 0) {
+        $avg = ($indexTimes | Measure-Object -Average).Average
+        $min = ($indexTimes | Measure-Object -Minimum).Minimum
+        $max = ($indexTimes | Measure-Object -Maximum).Maximum
         Write-Host ("{0,-20} avg={1,8:N0} ms   min={2,8:N0}   max={3,8:N0}" -f $label, $avg, $min, $max) -ForegroundColor Green
-        if (@($indexTimes | Where-Object { $_ -gt 0 }).Count -gt 0) {
-            $iAvg = ($indexTimes | Where-Object { $_ -gt 0 } | Measure-Object -Average).Average
-            $qAvg = ($queryTimes | Measure-Object -Average).Average
-            Write-Host ("  breakdown:         index avg={0,6:N0} ms   query avg={1,6:N0} ms" -f $iAvg, $qAvg) -ForegroundColor DarkGreen
-        }
     }
     Write-Host ""
 
-    # Stop Everything after this drive (cold mode) or keep running (cached)
-    if (-not $Cache) {
-        Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-            ForEach-Object { Stop-Process -Id $_.Id -Force }
-    }
+    # Stop Everything after benchmarking this drive
+    Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+        ForEach-Object { Stop-Process -Id $_.Id -Force }
 }
 
 
