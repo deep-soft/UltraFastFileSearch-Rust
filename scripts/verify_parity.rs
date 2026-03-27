@@ -736,11 +736,13 @@ fn run_live_drive_parity(
         }
     };
 
-    // Everything comparison (if es.exe output exists)
-    if es_raw_path.exists() {
-        println!();
-        compare_with_everything(&es_raw_path, &rust_raw, &drive_upper);
-    }
+    // Everything comparison — DISABLED (2026-03-27)
+    // Everything 1.4 has a 2GB IPC limit; es.exe can't export large drives.
+    // Re-enable when Everything 1.5 ships with IPC memory fix.
+    // if es_raw_path.exists() {
+    //     println!();
+    //     compare_with_everything(&es_raw_path, &rust_raw, &drive_upper);
+    // }
 
     cleanup_live_files(keep_files, &[&cpp_raw, &rust_raw, &es_raw_path]);
 
@@ -1162,6 +1164,7 @@ struct RustParityRecord {
 /// 2. Size match for common paths
 /// 3. Created/Modified timestamp match
 /// 4. Attributes match
+#[allow(dead_code)]
 fn compare_with_everything(es_file: &Path, rust_file: &Path, _drive: &str) {
     println!("  ── Everything vs Rust — field-by-field comparison ──");
     println!();
