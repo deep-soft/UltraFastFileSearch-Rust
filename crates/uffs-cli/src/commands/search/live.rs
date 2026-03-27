@@ -56,6 +56,8 @@ struct IndexStreamConfig<'a> {
     sort: Option<&'a str>,
     /// Sort descending.
     sort_desc: bool,
+    /// Show Alternate Data Streams in output.
+    show_ads: bool,
     /// Whether this is a full-scan.
     is_full_scan: bool,
     /// Force filename-only matching (--name-only flag).
@@ -116,6 +118,7 @@ fn run_index_streaming(config: &IndexStreamConfig<'_>) -> Result<usize> {
             config.exclude,
             config.sort,
             config.sort_desc,
+            config.show_ads,
         );
         write_streaming_output_with_filter(
             config.index,
@@ -180,6 +183,7 @@ pub(super) async fn dispatch_windows_live(
             config.exclude,
             config.sort,
             config.sort_desc,
+            config.show_ads,
             config.is_full_scan,
             config.name_only,
             config.format,
@@ -225,6 +229,7 @@ async fn run_live_single_drive(config: &SearchConfig<'_>, drive_letter: char) ->
         exclude: config.exclude,
         sort: config.sort,
         sort_desc: config.sort_desc,
+        show_ads: config.show_ads,
         is_full_scan: config.is_full_scan,
         name_only: config.name_only,
         format: config.format,
@@ -261,6 +266,7 @@ async fn run_live_multi_drive_streaming(
     exclude: Option<&str>,
     sort: Option<&str>,
     sort_desc: bool,
+    show_ads: bool,
     is_full_scan: bool,
     name_only: bool,
     format: &str,
@@ -329,6 +335,7 @@ async fn run_live_multi_drive_streaming(
         exclude,
         sort,
         sort_desc,
+        show_ads,
     );
 
     let writer_handle = std::thread::spawn(move || -> Result<usize> {

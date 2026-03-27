@@ -587,7 +587,6 @@ fn execute_query(
     Ok(query.collect()?)
 }
 
-
 /// Execute query using fast `IndexQuery` path (no `DataFrame` conversion).
 ///
 /// This is the fast path for simple queries.

@@ -312,9 +312,7 @@ fn uninstall_service() -> anyhow::Result<()> {
 fn create_broker_pipe() -> anyhow::Result<windows::Win32::Foundation::HANDLE> {
     use std::os::windows::ffi::OsStrExt;
 
-    use windows::Win32::Storage::FileSystem::{
-        FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
-    };
+    use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
     use windows::Win32::System::Pipes::{
         CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
     };

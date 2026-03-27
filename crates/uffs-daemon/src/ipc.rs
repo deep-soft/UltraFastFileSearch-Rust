@@ -282,7 +282,9 @@ pub async fn run_ipc_server(
             let total_conns = lc_clone.active_connections();
             tracing::debug!(connections = total_conns, "Client connected");
 
-            if let Err(conn_err) = IpcServer::handle_connection(read_half, write_half, &handler_clone).await {
+            if let Err(conn_err) =
+                IpcServer::handle_connection(read_half, write_half, &handler_clone).await
+            {
                 tracing::debug!(error = %conn_err, "Connection ended");
             }
 
@@ -403,7 +405,9 @@ pub async fn run_ipc_server(
             let total_conns = lc_clone.active_connections();
             tracing::debug!(connections = total_conns, "Client connected");
 
-            if let Err(conn_err) = IpcServer::handle_connection(async_read, async_write, &handler_clone).await {
+            if let Err(conn_err) =
+                IpcServer::handle_connection(async_read, async_write, &handler_clone).await
+            {
                 tracing::debug!(error = %conn_err, "Connection ended");
             }
 
