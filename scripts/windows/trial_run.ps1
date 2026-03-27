@@ -442,7 +442,7 @@ try {
         }
         LogLine ""
 
-        $allMatch = ($script:ComparisonResults | Where-Object { -not $_.Match }).Count -eq 0
+        $allMatch = @($script:ComparisonResults | Where-Object { -not $_.Match }).Count -eq 0
         if ($allMatch) {
             LogLine "> **🎉 100% PARITY ACHIEVED across all tested drives!**"
             Write-Host ""

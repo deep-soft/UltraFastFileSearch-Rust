@@ -564,8 +564,24 @@ fn run_live_drive_parity(
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
-    let cpp_raw = out_dir.join(format!("cpp_{drive_lower}.txt"));
-    let rust_raw = out_dir.join(format!("rust_{drive_lower}.txt"));
+    // Create drive subdirectory
+    let drive_dir = out_dir.join(format!("drive_{drive_lower}"));
+    fs::create_dir_all(&drive_dir).unwrap_or_else(|e| {
+        eprintln!("ERROR: Cannot create {}: {e}", drive_dir.display());
+        std::process::exit(1);
+    });
+
+    let cpp_raw = drive_dir.join(format!("cpp_{drive_lower}.txt"));
+    let rust_raw = drive_dir.join(format!("rust_{drive_lower}.txt"));
+    let es_raw_path = drive_dir.join(format!("es_{drive_lower}.txt"));
+
+    println!("  Drive dir:     {}", drive_dir.display());
+    println!("  C++ output:    {}", cpp_raw.display());
+    println!("  Rust output:   {}", rust_raw.display());
+    if es_bin.is_some() {
+        println!("  Everything:    {}", es_raw_path.display());
+    }
+    println!();
 
     let skipped = |_msg: &str, cpp_ms, rust_ms| LiveDriveResult {
         drive_letter: drive_upper.clone(),
@@ -620,7 +636,6 @@ fn run_live_drive_parity(
     }
 
     // 3. Everything (es.exe) — gold-standard reference (optional)
-    let es_raw = out_dir.join(format!("es_{drive_lower}.txt"));
     if let Some(es) = es_bin {
         print!("  [3/4] Running Everything scan...");
         io::stdout().flush().ok();
@@ -634,7 +649,7 @@ fn run_live_drive_parity(
                 "-date-created", "-date-modified", "-date-accessed",
                 "-no-digit-grouping", "-csv", "-no-header",
             ],
-            &es_raw,
+            &es_raw_path,
             "Everything",
         );
         let es_elapsed = es_start.elapsed();
@@ -710,12 +725,12 @@ fn run_live_drive_parity(
     };
 
     // Everything comparison (if es.exe output exists)
-    if es_raw.exists() {
+    if es_raw_path.exists() {
         println!();
-        compare_with_everything(&es_raw, &rust_raw, &drive_upper);
+        compare_with_everything(&es_raw_path, &rust_raw, &drive_upper);
     }
 
-    cleanup_live_files(keep_files, &[&cpp_raw, &rust_raw, &es_raw]);
+    cleanup_live_files(keep_files, &[&cpp_raw, &rust_raw, &es_raw_path]);
 
     LiveDriveResult {
         drive_letter: drive_upper,

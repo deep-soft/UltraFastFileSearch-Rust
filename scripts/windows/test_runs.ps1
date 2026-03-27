@@ -195,7 +195,7 @@ try {
         (Join-Path ${env:ProgramW6432} "Everything\es.exe"),
         (Join-Path ${env:LOCALAPPDATA} "Everything\es.exe")
     ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) }
-    if ($esCandidates.Count -gt 0) { $EsExe = $esCandidates[0] }
+    if (@($esCandidates).Count -gt 0) { $EsExe = @($esCandidates)[0] }
 
     $hasRust = Test-Path -LiteralPath $UffsExe
     $hasCpp  = Test-Path -LiteralPath $UffsCom
@@ -216,7 +216,7 @@ try {
         Write-Host "    Install from: https://www.voidtools.com/ (CLI downloads)" -ForegroundColor DarkGray
     }
 
-    if ($Drives.Count -eq 0) {
+    if (@($Drives).Count -eq 0) {
         $Drives = @(Get-NtfsDrives)
         Write-Host "Auto-detected NTFS drives: $($Drives -join ', ')" -ForegroundColor Yellow
     }
@@ -244,7 +244,7 @@ try {
     # MFT saves - ALWAYS save IOCP capture (primary) and uncompressed MFT (fallback)
     # IOCP capture is preferred as it captures real Windows IOCP completion order
     # Extra formats (compressed, raw) can be skipped with -SkipMftExtras
-    if ($hasMft -and $Drives.Count -gt 0) {
+    if ($hasMft -and @($Drives).Count -gt 0) {
         LogLine "---"
         LogLine ""
         LogLine "# MFT Snapshots"
@@ -560,7 +560,7 @@ try {
 
     $scanResults = @()
 
-    if (-not $allMapped -or -not $isPS7Plus -or $Drives.Count -le 1) {
+    if (-not $allMapped -or -not $isPS7Plus -or @($Drives).Count -le 1) {
         # Safe fallback: fully sequential
         Write-Host "Drive scans: running sequential (single drive / PS<7 / mapping unavailable)." -ForegroundColor Yellow
 
@@ -666,7 +666,7 @@ try {
 
         # MFT file inventory for this drive
         $mftFiles = Get-ChildItem -LiteralPath $driveDir -Filter "${drive}_mft*" -ErrorAction SilentlyContinue
-        if ($mftFiles.Count -gt 0) {
+        if (@($mftFiles).Count -gt 0) {
             $lines += "## MFT Snapshots"
             $lines += ""
             $lines += "| File | Size |"
