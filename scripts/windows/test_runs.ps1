@@ -89,9 +89,16 @@ function Format-FileSize {
 }
 
 function Get-NtfsDrives {
-    Get-WmiObject Win32_LogicalDisk |
-            Where-Object { $_.DriveType -eq 3 -and $_.FileSystem -eq "NTFS" } |
+    # Use Get-CimInstance (faster, non-blocking) instead of deprecated Get-WmiObject
+    # DriveType 3 = Fixed, DriveType 2 = Removable (USB NTFS drives like G:)
+    try {
+        Get-CimInstance Win32_LogicalDisk -Filter "(DriveType=3 OR DriveType=2) AND FileSystem='NTFS'" |
             ForEach-Object { $_.DeviceID.TrimEnd(':') }
+    } catch {
+        # Fallback: Get-Volume (available on Win10+) — picks up all NTFS regardless of bus type
+        Get-Volume | Where-Object { $_.FileSystemType -eq 'NTFS' -and $_.DriveLetter } |
+            ForEach-Object { $_.DriveLetter }
+    }
 }
 
 # Best-effort mapping: Drive letter -> Physical disk number
