@@ -1513,13 +1513,16 @@ fn try_everything_comparison(drive_dir: &Path, drive_letter: &str, rust_output: 
 }
 
 /// Detect NTFS drives on Windows using wmic. Returns empty vec on non-Windows.
+/// Includes both fixed (DriveType=3) and removable (DriveType=2) NTFS drives
+/// so that USB NTFS drives (like G:) are not missed.
 fn detect_ntfs_drives() -> Vec<String> {
     if !cfg!(windows) {
         return Vec::new();
     }
 
+    // Query all local + removable drives, filter by NTFS filesystem
     let output = Command::new("wmic")
-        .args(["logicaldisk", "where", "DriveType=3", "get", "DeviceID,FileSystem"])
+        .args(["logicaldisk", "where", "DriveType=2 or DriveType=3", "get", "DeviceID,FileSystem"])
         .output();
 
     match output {
