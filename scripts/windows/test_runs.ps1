@@ -195,6 +195,7 @@ try {
     # Everything CLI (es.exe) — gold-standard reference for MFT-based search
     # Try common locations: PATH, Everything install dir, user bin dir
     $EsExe = $null
+    $EverythingExe = $null
     $esCandidates = @(
         (Get-Command "es.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
         (Join-Path $BinDir "es.exe"),
@@ -203,6 +204,16 @@ try {
         (Join-Path ${env:LOCALAPPDATA} "Everything\es.exe")
     ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) }
     if (@($esCandidates).Count -gt 0) { $EsExe = @($esCandidates)[0] }
+
+    # Find Everything.exe (GUI/service) for auto-starting per-drive instances
+    $etCandidates = @(
+        (Join-Path ${env:ProgramFiles} "Everything\Everything.exe"),
+        (Join-Path "${env:ProgramFiles(x86)}" "Everything\Everything.exe"),
+        (Join-Path ${env:ProgramW6432} "Everything\Everything.exe"),
+        (Join-Path ${env:LOCALAPPDATA} "Everything\Everything.exe"),
+        (Join-Path $BinDir "Everything.exe")
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) }
+    if (@($etCandidates).Count -gt 0) { $EverythingExe = @($etCandidates)[0] }
 
     $hasRust = Test-Path -LiteralPath $UffsExe
     $hasCpp  = Test-Path -LiteralPath $UffsCom
@@ -390,6 +401,7 @@ try {
             [string]$UffsCom,
             [string]$UffsMftExe,
             [string]$EsExe,
+            [string]$EverythingExe,
             [bool]$HasRust,
             [bool]$HasCpp,
             [bool]$HasMft,
@@ -534,16 +546,81 @@ try {
             }
 
             # 3. Everything (es.exe) — gold-standard reference baseline
-            # Uses Everything's own MFT index to list all files on the drive
-            # Output: full path, one per line, sorted by name (default es.exe behavior)
-            # Everything must be running for es.exe to work (IPC)
+            # Uses Everything's own MFT index to list all files on the drive.
+            # Everything must be running for es.exe IPC to work.
+            # We auto-start a lightweight per-drive instance with a custom ini
+            # that ONLY indexes the target drive (avoids indexing all 25M+ files).
+            $esInstanceName = "uffs_parity_$Drive"
+            $startedEsInstance = $false
+
             if ($HasEs) {
-                # -path "X:\" restricts to this drive, -s sorts by full path
-                # -no-header suppresses CSV header if csv mode were used
-                $runs += Run-LoggedLocal -Title "Everything (es.exe): drive $Drive" `
-                    -CmdLine ("`"$EsExe`" -path `"${Drive}:\`" -s -name -path-column -size -date-created -date-modified -date-accessed -no-digit-grouping -csv -no-header") `
-                    -LogFileName $esLog `
-                    -OutFileName $esOut
+                # Check if Everything IPC is available (any instance will do)
+                $null = & $EsExe -get-result-count 2>&1
+                $esIpcAvailable = $LASTEXITCODE -eq 0
+
+                if (-not $esIpcAvailable -and $EverythingExe) {
+                    # Create a minimal ini that only indexes this drive
+                    $esIniPath = Join-Path $driveDir "everything_${driveLower}.ini"
+                    $iniContent = @(
+                        "[Everything]"
+                        "ntfs_volume_includes=${Drive}:"
+                        "ntfs_volume_excludes="
+                        "folder_exclude_includes="
+                        "exclude_hidden_foldersfiles=0"
+                        "index_folder_size=0"
+                        "run_as_admin=0"
+                    )
+                    $iniContent | Out-File -FilePath $esIniPath -Encoding ascii -Force
+
+                    Write-Host "  → Starting Everything instance '$esInstanceName' (${Drive}: only)..." -ForegroundColor DarkYellow
+                    $esDbPath = Join-Path $driveDir "everything_${driveLower}.db"
+                    Start-Process -FilePath $EverythingExe `
+                        -ArgumentList "-instance `"$esInstanceName`" -config `"$esIniPath`" -db `"$esDbPath`" -startup -minimized -first-instance" `
+                        -WindowStyle Hidden
+
+                    # Wait for IPC to become available (up to 60 seconds for large drives)
+                    $waited = 0
+                    $esReady = $false
+                    while ($waited -lt 60) {
+                        Start-Sleep -Seconds 2
+                        $waited += 2
+                        $null = & $EsExe -instance $esInstanceName -get-result-count 2>&1
+                        if ($LASTEXITCODE -eq 0) {
+                            $esReady = $true
+                            Write-Host "  → Everything instance ready (${waited}s)" -ForegroundColor DarkGreen
+                            break
+                        }
+                    }
+                    if (-not $esReady) {
+                        Write-Host "  → Everything instance failed to start within 60s — skipping" -ForegroundColor DarkRed
+                        $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
+                    } else {
+                        $startedEsInstance = $true
+                        $runs += Run-LoggedLocal -Title "Everything (es.exe): drive $Drive" `
+                            -CmdLine ("`"$EsExe`" -instance `"$esInstanceName`" -path `"${Drive}:\`" -s -name -path-column -size -date-created -date-modified -date-accessed -no-digit-grouping -csv -no-header") `
+                            -LogFileName $esLog `
+                            -OutFileName $esOut
+                    }
+                } elseif ($esIpcAvailable) {
+                    # Everything IPC already available — use default instance
+                    $runs += Run-LoggedLocal -Title "Everything (es.exe): drive $Drive" `
+                        -CmdLine ("`"$EsExe`" -path `"${Drive}:\`" -s -name -path-column -size -date-created -date-modified -date-accessed -no-digit-grouping -csv -no-header") `
+                        -LogFileName $esLog `
+                        -OutFileName $esOut
+                } else {
+                    Write-Host "  → Everything (es.exe): skipped (no IPC, no Everything.exe found)" -ForegroundColor DarkGray
+                    $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
+                }
+
+                # Shut down the per-drive instance if we started it
+                if ($startedEsInstance -and $EverythingExe) {
+                    Write-Host "  → Shutting down Everything instance '$esInstanceName'" -ForegroundColor DarkGray
+                    Start-Process -FilePath $EverythingExe `
+                        -ArgumentList "-instance `"$esInstanceName`" -quit" `
+                        -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
+                    # Clean up temp db (ini kept for debugging)
+                    Remove-Item -LiteralPath $esDbPath -Force -ErrorAction SilentlyContinue
+                }
             } else {
                 Write-Host "  → Everything (es.exe): skipped (not installed)" -ForegroundColor DarkGray
                 $runs += [pscustomobject]@{ Drive=$Drive; Title="Everything (es.exe)"; Command=""; LogFile=$esLog; OutFile=$esOut; DurationMs=$null; ExitCode=$null }
@@ -567,29 +644,25 @@ try {
 
     $scanResults = @()
 
-    if (-not $allMapped -or -not $isPS7Plus -or @($Drives).Count -le 1) {
-        # Safe fallback: fully sequential
-        Write-Host "Drive scans: running sequential (single drive / PS<7 / mapping unavailable)." -ForegroundColor Yellow
-
-        foreach ($d in $Drives) {
-            # treat each drive as its own "disk group"
-            $scanResults += & $runDiskGroup -DiskNumber -1 -GroupDrives @($d) -WorkDir $WorkDir `
-                -UffsExe $UffsExe -UffsCom $UffsCom -UffsMftExe $UffsMftExe -EsExe "$EsExe" `
+    # Sequential scan for all drives — grouped by physical disk for optimal I/O
+    # (ForEach-Object -Parallel cannot accept scriptblock variables, so we run
+    #  disk groups sequentially but process drives within each group sequentially too,
+    #  which is correct since drives on the same physical disk should not be read in parallel)
+    if ($allMapped -and @($diskGroups.Keys).Count -gt 1) {
+        Write-Host "Drive scans: sequential by physical disk group ($(@($diskGroups.Keys).Count) disks)." -ForegroundColor Yellow
+        foreach ($diskNum in @($diskGroups.Keys | Sort-Object)) {
+            $groupDrives = $diskGroups[$diskNum]
+            $scanResults += & $runDiskGroup -DiskNumber $diskNum -GroupDrives $groupDrives -WorkDir $WorkDir `
+                -UffsExe $UffsExe -UffsCom $UffsCom -UffsMftExe $UffsMftExe -EsExe "$EsExe" -EverythingExe "$EverythingExe" `
                 -HasRust $hasRust -HasCpp $hasCpp -HasMft $hasMft -HasEs $hasEs
         }
     } else {
-        # Parallel across physical disks; sequential within each disk
-        Write-Host "Drive scans: parallel across physical disks (ThrottleLimit=$ThrottleLimit), sequential within each disk." -ForegroundColor Yellow
-
-        $diskNumbers = @($diskGroups.Keys | Sort-Object)
-        $scanResults = $diskNumbers | ForEach-Object -Parallel {
-            $diskNum = $_
-            $allDiskGroups = $using:diskGroups
-            $groupDrives = $allDiskGroups[$diskNum]
-            & $using:runDiskGroup -DiskNumber $diskNum -GroupDrives $groupDrives -WorkDir $using:WorkDir `
-                -UffsExe $using:UffsExe -UffsCom $using:UffsCom -UffsMftExe $using:UffsMftExe -EsExe "$($using:EsExe)" `
-                -HasRust $using:hasRust -HasCpp $using:hasCpp -HasMft $using:hasMft -HasEs $using:hasEs
-        } -ThrottleLimit $ThrottleLimit
+        Write-Host "Drive scans: running sequential." -ForegroundColor Yellow
+        foreach ($d in $Drives) {
+            $scanResults += & $runDiskGroup -DiskNumber -1 -GroupDrives @($d) -WorkDir $WorkDir `
+                -UffsExe $UffsExe -UffsCom $UffsCom -UffsMftExe $UffsMftExe -EsExe "$EsExe" -EverythingExe "$EverythingExe" `
+                -HasRust $hasRust -HasCpp $hasCpp -HasMft $hasMft -HasEs $hasEs
+        }
     }
 
     # Consolidate results into markdown (single thread)
@@ -637,7 +710,8 @@ try {
     LogLine ("**Completed:** " + (Get-Date -Format o))
 
     # Write per-drive summary files so each drive_<x>/ folder is self-contained
-    foreach ($r in $scanResults) {
+    foreach ($r in @($scanResults)) {
+        if (-not $r -or -not $r.Drive) { continue }
         $drive = $r.Drive
         $driveLower = $drive.ToLower()
         $driveDir = Join-Path $WorkDir "drive_${driveLower}"
