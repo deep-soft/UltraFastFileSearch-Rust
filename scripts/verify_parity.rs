@@ -872,31 +872,49 @@ fn run_everything_live_collect(es_exe: &Path, drive_upper: &str, output_path: &P
     }
 
     let collected = if ready {
-        // 6. Query with all columns
-        print!("  [3/4] Everything: querying {drive_upper}: ...");
+        // 6. Export via EFU (avoids 2GB IPC stdout limit on Everything 1.4)
+        print!("  [3/4] Everything: exporting {drive_upper}: ...");
         io::stdout().flush().ok();
         let es_start = Instant::now();
         let es_path_arg = format!("{drive_upper}:\\");
-        let es_result = run_with_retry(
-            es_exe,
-            &[
+        let output_str = output_path.to_string_lossy().to_string();
+        let es_result = Command::new(es_exe)
+            .args([
                 "-path", &es_path_arg,
-                "-s", "-name", "-path-column", "-size",
-                "-date-created", "-date-modified", "-date-accessed",
-                "-attributes",
-                "-no-digit-grouping", "-csv",
-            ],
-            output_path,
-            "Everything",
-        );
+                "-sort", "path",
+                "-export-efu", &output_str,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
         let es_elapsed = es_start.elapsed();
         match es_result {
-            Ok(()) => {
+            Ok(status) if status.success() && output_path.exists() => {
                 println!(" ✅ ({})", format_duration(es_elapsed));
                 true
             }
-            Err(msg) => {
-                println!(" ❌ {msg}");
+            Ok(status) => {
+                println!(" ❌ (exit: {:?})", status.code());
+                // Fallback: path + size + attributes (~150B/entry, under 2GB IPC limit)
+                println!("  [3/4] Everything: retrying with path+size+attributes...");
+                let lite_result = run_with_retry(
+                    es_exe,
+                    &[
+                        "-path", &es_path_arg,
+                        "-sort", "path",
+                        "-name", "-path-column", "-size", "-attributes",
+                        "-no-digit-grouping", "-csv",
+                    ],
+                    output_path,
+                    "Everything lite",
+                );
+                match lite_result {
+                    Ok(()) => { println!("       ✅ lite fallback succeeded"); true }
+                    Err(msg) => { println!("       ❌ lite fallback: {msg}"); false }
+                }
+            }
+            Err(e) => {
+                println!(" ❌ {e}");
                 false
             }
         }
