@@ -299,7 +299,19 @@ if ($AllDrives.Count -eq 0) {
         }
     }
 
+    # Restore Everything ini before the all-drives run (in case per-drive benchmarks modified it)
+    $benchBak = "${EVERYTHING_INI}.bench_bak"
+    if (Test-Path -LiteralPath $benchBak -ErrorAction SilentlyContinue) {
+        Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.Id -Force }
+        Start-Sleep -Seconds 1
+        Copy-Item -LiteralPath $benchBak -Destination $EVERYTHING_INI -Force
+        Remove-Item -LiteralPath $benchBak -Force -ErrorAction SilentlyContinue
+        Write-Host "`n✅ Everything ini restored" -ForegroundColor DarkGreen
+    }
+
     # After all individual drives, run the parallel "all drives" benchmark
+    # Everything is skipped here — 25M+ files across all drives would OOM es.exe
     if (-not $NoAll) {
         Write-Host "`n" -NoNewline
         Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Magenta
