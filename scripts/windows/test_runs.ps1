@@ -201,21 +201,25 @@ try {
 
     $etCandidates = @(
         (Join-Path ${env:ProgramFiles} "Everything\Everything.exe"),
-        (Join-Path "${env:ProgramFiles(x86)}" "Everything\Everything.exe"),
-        (Join-Path ${env:ProgramW6432} "Everything\Everything.exe"),
         (Join-Path ${env:LOCALAPPDATA} "Everything\Everything.exe"),
         (Join-Path $BinDir "Everything.exe")
-    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) }
-    if (@($etCandidates).Count -gt 0) { $EverythingExe = @($etCandidates)[0] }
+    )
+    if ($pf86) { $etCandidates += (Join-Path $pf86 "Everything\Everything.exe") }
+    if (${env:ProgramW6432}) { $etCandidates += (Join-Path ${env:ProgramW6432} "Everything\Everything.exe") }
+    $etCandidates = @($etCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) })
+    if ($etCandidates.Count -gt 0) { $EverythingExe = $etCandidates[0] }
 
+    $pf86 = ${env:ProgramFiles(x86)}
     $esCandidates = @(
-        (Get-Command "es.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
         (Join-Path $BinDir "es.exe"),
-        (Join-Path ${env:ProgramFiles} "Everything\es.exe"),
-        (Join-Path "${env:ProgramFiles(x86)}" "Everything\es.exe"),
-        (Join-Path ${env:LOCALAPPDATA} "Everything\es.exe")
-    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) }
-    if (@($esCandidates).Count -gt 0) { $EsExe = @($esCandidates)[0] }
+        (Join-Path ${env:ProgramFiles} "Everything\es.exe")
+    )
+    if ($pf86) { $esCandidates += (Join-Path $pf86 "Everything\es.exe") }
+    $esCandidates += (Join-Path ${env:LOCALAPPDATA} "Everything\es.exe")
+    $esFromPath = Get-Command "es.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+    if ($esFromPath) { $esCandidates = @($esFromPath) + $esCandidates }
+    $esCandidates = @($esCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) })
+    if ($esCandidates.Count -gt 0) { $EsExe = $esCandidates[0] }
 
     $hasRust = Test-Path -LiteralPath $UffsExe
     $hasCpp  = Test-Path -LiteralPath $UffsCom

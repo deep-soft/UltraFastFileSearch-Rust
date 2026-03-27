@@ -15,9 +15,11 @@ param(
     [string]$Pattern = "*",         # Search pattern (default: "*" for everything)
     [string[]]$Drive = @(),         # Drives (comma-separated): -Drive C,D,E,F
     [switch]$Cache,                 # Keep cache between runs (warm benchmark)
-    [switch]$RustOnly,              # Skip C++ tests
-    [switch]$CppOnly,               # Skip Rust tests
+    [switch]$RustOnly,              # Skip C++ and Everything tests
+    [switch]$CppOnly,               # Skip Rust and Everything tests
+    [switch]$EverythingOnly,        # Skip C++ and Rust tests
     [switch]$NoAll,                 # Skip the final "all drives" parallel run
+    [switch]$NoEverything,          # Skip Everything benchmark
     [string]$RustArgs = "",         # Extra args for Rust (e.g. "--files-only --min-size 1024")
     [string]$CppArgs = ""           # Extra args for C++ (e.g. "--limit=100")
 )
@@ -26,6 +28,26 @@ $ErrorActionPreference = "Stop"
 $UFFS = "$env:USERPROFILE\bin\uffs.exe"
 $UFFS_CPP = "$env:USERPROFILE\bin\uffs.com"
 $CACHE_DIR = "$env:TEMP\uffs_index_cache"
+
+# Everything detection
+$pf86 = ${env:ProgramFiles(x86)}
+$EVERYTHING_EXE = $null
+$ES_EXE = $null
+$EVERYTHING_INI = Join-Path $env:APPDATA "Everything\Everything.ini"
+
+foreach ($p in @(
+    (Join-Path ${env:ProgramFiles} "Everything\Everything.exe"),
+    $(if ($pf86) { Join-Path $pf86 "Everything\Everything.exe" }),
+    (Join-Path "$env:USERPROFILE\bin" "Everything.exe")
+)) { if ($p -and (Test-Path -LiteralPath $p)) { $EVERYTHING_EXE = $p; break } }
+
+foreach ($p in @(
+    (Join-Path "$env:USERPROFILE\bin" "es.exe"),
+    (Join-Path ${env:ProgramFiles} "Everything\es.exe"),
+    $(if ($pf86) { Join-Path $pf86 "Everything\es.exe" })
+)) { if ($p -and (Test-Path -LiteralPath $p)) { $ES_EXE = $p; break } }
+
+$hasEverything = $EVERYTHING_EXE -and $ES_EXE -and (Test-Path -LiteralPath $EVERYTHING_INI)
 
 # Normalize drives to uppercase
 $AllDrives = $Drive | ForEach-Object { $_.ToUpper().Trim() } | Where-Object { $_ }
@@ -45,6 +67,9 @@ if ($RustArgs) {
 if ($CppArgs) {
     Write-Host "  C++ args: $CppArgs" -ForegroundColor Cyan
 }
+Write-Host "  Rust:       $(if (Test-Path $UFFS) { '✅' } else { '❌' }) $UFFS" -ForegroundColor Cyan
+Write-Host "  C++:        $(if (Test-Path $UFFS_CPP) { '✅' } else { '❌' }) $UFFS_CPP" -ForegroundColor Cyan
+Write-Host "  Everything: $(if ($hasEverything) { '✅' } else { '❌' }) $(if ($EVERYTHING_EXE) { $EVERYTHING_EXE } else { '(not found)' })" -ForegroundColor Cyan
 if ($Cache) {
     Write-Host "  (Cache kept between runs)" -ForegroundColor Cyan
 } else {
@@ -125,6 +150,130 @@ function BenchRun($label, $exePath, [string[]]$argList) {
     Write-Host ""
 }
 
+function BenchRunEverything($driveLetter) {
+    if (-not $hasEverything) { return }
+    $label = "Everything $mode"
+    Write-Host "▶ $label (drive ${driveLetter}:)" -ForegroundColor Yellow
+
+    $indexTimes = @()
+    $queryTimes = @()
+    $totalTimes = @()
+
+    # Read ini once to find drive position
+    $iniContent = Get-Content -LiteralPath $EVERYTHING_INI -Raw
+    $volMatch = [regex]::Match($iniContent, 'ntfs_volume_paths=(.*)')
+    if (-not $volMatch.Success) {
+        Write-Host "   ⚠️  ntfs_volume_paths not found in ini — skipping" -ForegroundColor Red
+        return
+    }
+    $volPaths = $volMatch.Groups[1].Value -split ','
+    $driveIdx = -1
+    for ($vi = 0; $vi -lt $volPaths.Count; $vi++) {
+        if ($volPaths[$vi].Trim().Trim('"') -eq "${driveLetter}:") { $driveIdx = $vi; break }
+    }
+    if ($driveIdx -lt 0) {
+        Write-Host "   ⚠️  Drive ${driveLetter}: not in ntfs_volume_paths — skipping" -ForegroundColor Red
+        return
+    }
+    $includesList = @(0) * $volPaths.Count
+    $includesList[$driveIdx] = 1
+    $includesStr = $includesList -join ","
+
+    # Backup ini once
+    $iniBak = "${EVERYTHING_INI}.bench_bak"
+    if (-not (Test-Path -LiteralPath $iniBak)) {
+        Copy-Item -LiteralPath $EVERYTHING_INI -Destination $iniBak -Force
+    }
+
+    1..$N | ForEach-Object {
+        $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
+
+        if (-not $Cache -or $_ -eq 1) {
+            # Cold: stop, edit ini, start, wait for index each round
+            # Cached: only do this on first round, then keep running
+            Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+                ForEach-Object { Stop-Process -Id $_.Id -Force }
+            Start-Sleep -Milliseconds 1500
+
+            # Edit ini: only target drive, all index fields
+            $c = Get-Content -LiteralPath $EVERYTHING_INI -Raw
+            $c = $c -replace 'ntfs_volume_includes=.*', "ntfs_volume_includes=$includesStr"
+            $c = $c -replace 'auto_include_fixed_volumes=.*', 'auto_include_fixed_volumes=0'
+            $c = $c -replace 'auto_include_removable_volumes=.*', 'auto_include_removable_volumes=0'
+            $c = $c -replace 'index_date_created=.*', 'index_date_created=1'
+            $c = $c -replace 'index_date_accessed=.*', 'index_date_accessed=1'
+            $c = $c -replace 'index_date_modified=.*', 'index_date_modified=1'
+            $c = $c -replace 'index_attributes=.*', 'index_attributes=1'
+            $c = $c -replace 'index_size=.*', 'index_size=1'
+            $c | Out-File -FilePath $EVERYTHING_INI -Encoding ascii -NoNewline
+
+            # Start and wait for index
+            $indexSw = [System.Diagnostics.Stopwatch]::StartNew()
+            Start-Process -FilePath $EVERYTHING_EXE -ArgumentList "-startup -minimized" -WindowStyle Hidden
+            $indexed = $false
+            for ($wi = 1; $wi -le 60; $wi++) {
+                Start-Sleep -Seconds 2
+                $rc = & $ES_EXE -get-result-count 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $count = 0; [int]::TryParse($rc, [ref]$count) | Out-Null
+                    if ($count -gt 0) { $indexed = $true; break }
+                }
+            }
+            $indexSw.Stop()
+            $indexMs = $indexSw.Elapsed.TotalMilliseconds
+            $indexTimes += $indexMs
+
+            if (-not $indexed) {
+                Write-Host "   Run $_`: index timed out — skipping" -ForegroundColor Red
+                $totalSw.Stop()
+                return
+            }
+        } else {
+            $indexMs = 0
+        }
+
+        # Query
+        $querySw = [System.Diagnostics.Stopwatch]::StartNew()
+        $null = & $ES_EXE -path "${driveLetter}:\" -s -name -path-column -size `
+            -date-created -date-modified -date-accessed -attributes `
+            -no-digit-grouping -csv 2>&1
+        $querySw.Stop()
+        $queryMs = $querySw.Elapsed.TotalMilliseconds
+        $queryTimes += $queryMs
+
+        $totalSw.Stop()
+        $totalMs = $totalSw.Elapsed.TotalMilliseconds
+        $totalTimes += $totalMs
+
+        if ($indexMs -gt 0) {
+            Write-Host "   Run $_`: $([math]::Round($totalMs/1000, 2))s (index: $([math]::Round($indexMs/1000, 2))s + query: $([math]::Round($queryMs/1000, 2))s)" -ForegroundColor Gray
+        } else {
+            Write-Host "   Run $_`: $([math]::Round($queryMs/1000, 2))s (query only, cached)" -ForegroundColor Gray
+        }
+    }
+
+    # Summary
+    if ($totalTimes.Count -gt 0) {
+        $avg = ($totalTimes | Measure-Object -Average).Average
+        $min = ($totalTimes | Measure-Object -Minimum).Minimum
+        $max = ($totalTimes | Measure-Object -Maximum).Maximum
+        Write-Host ("{0,-20} avg={1,8:N0} ms   min={2,8:N0}   max={3,8:N0}" -f $label, $avg, $min, $max) -ForegroundColor Green
+        if (@($indexTimes | Where-Object { $_ -gt 0 }).Count -gt 0) {
+            $iAvg = ($indexTimes | Where-Object { $_ -gt 0 } | Measure-Object -Average).Average
+            $qAvg = ($queryTimes | Measure-Object -Average).Average
+            Write-Host ("  breakdown:         index avg={0,6:N0} ms   query avg={1,6:N0} ms" -f $iAvg, $qAvg) -ForegroundColor DarkGreen
+        }
+    }
+    Write-Host ""
+
+    # Stop Everything after this drive (cold mode) or keep running (cached)
+    if (-not $Cache) {
+        Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.Id -Force }
+    }
+}
+
+
 # ============================================
 # Run benchmarks based on -Drive parameter
 # ============================================
@@ -137,11 +286,14 @@ function RunDriveBench($driveLetter) {
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
     Write-Host "📁 DRIVE ${driveLetter}:" -ForegroundColor Yellow
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
-    if (-not $CppOnly) {
+    if (-not $CppOnly -and -not $EverythingOnly) {
         BenchRun "Rust $mode" $UFFS (@("`"$Pattern`"", '--drive', $driveLetter) + $RustExtraArgs)
     }
-    if (-not $RustOnly -and (Test-Path $UFFS_CPP)) {
+    if (-not $RustOnly -and -not $EverythingOnly -and (Test-Path $UFFS_CPP)) {
         BenchRun "C++ $mode" $UFFS_CPP (@("`"$Pattern`"", "--drives=$driveLetter") + $CppExtraArgs)
+    }
+    if (-not $RustOnly -and -not $CppOnly -and -not $NoEverything) {
+        BenchRunEverything $driveLetter
     }
 }
 
@@ -186,6 +338,19 @@ if ($AllDrives.Count -eq 0) {
 }
 
 # ============================================
+# Restore Everything ini if we modified it
+# ============================================
+$benchBak = "${EVERYTHING_INI}.bench_bak"
+if (Test-Path -LiteralPath $benchBak -ErrorAction SilentlyContinue) {
+    Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
+        ForEach-Object { Stop-Process -Id $_.Id -Force }
+    Start-Sleep -Seconds 1
+    Copy-Item -LiteralPath $benchBak -Destination $EVERYTHING_INI -Force
+    Remove-Item -LiteralPath $benchBak -Force -ErrorAction SilentlyContinue
+    Write-Host "`n✅ Everything ini restored from backup" -ForegroundColor DarkGreen
+}
+
+# ============================================
 # SUMMARY
 # ============================================
 Write-Host "========================================" -ForegroundColor Cyan
@@ -199,4 +364,5 @@ if ($Cache) {
     Write-Host "Rust saves to cache after each run, but cache is cleared before next run." -ForegroundColor Gray
     Write-Host "Note: OS filesystem cache (RAM) is NOT cleared. Later runs benefit from" -ForegroundColor DarkGray
     Write-Host "MFT data kept in RAM by Windows. C++ has no disk cache (only OS cache)." -ForegroundColor DarkGray
+    Write-Host "Everything: each cold run includes startup + MFT indexing + query." -ForegroundColor DarkGray
 }

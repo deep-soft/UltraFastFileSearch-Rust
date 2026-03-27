@@ -452,11 +452,11 @@ fn run_live_mode(args: &[String]) {
     println!("  C++ binary:  {}", cpp_bin.display());
     println!("  Rust binary: {}", rust_bin.display());
     println!(
-        "  Everything:  {}",
+        "  Everything:  {} (pre-captured data or IPC fallback)",
         es_bin
             .as_ref()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(not found — skipping)".into())
+            .unwrap_or_else(|| "(not found)".into())
     );
     println!("  Output dir:  {}", out_dir.display());
     println!("  Pattern:     {}", pattern);
@@ -635,34 +635,16 @@ fn run_live_drive_parity(
         }
     }
 
-    // 3. Everything (es.exe) — gold-standard reference (optional)
-    if let Some(es) = es_bin {
-        print!("  [3/4] Running Everything scan...");
-        io::stdout().flush().ok();
-        let es_start = Instant::now();
-        let es_path_arg = format!("{}:\\", drive_upper);
-        let es_result = run_with_retry(
-            es,
-            &[
-                "-path", &es_path_arg,
-                "-s", "-name", "-path-column", "-size",
-                "-date-created", "-date-modified", "-date-accessed",
-                "-no-digit-grouping", "-csv", "-no-header",
-            ],
-            &es_raw_path,
-            "Everything",
-        );
-        let es_elapsed = es_start.elapsed();
-        match es_result {
-            Ok(()) => println!(" ✅ ({})", format_duration(es_elapsed)),
-            Err(msg) => println!(" ⏭️ skipped — {msg}"),
-        }
+    // 3. Everything — gold-standard MFT reference (live collection via ini editing)
+    let es_collected = if let Some(es) = es_bin {
+        run_everything_live_collect(es, &drive_upper, &es_raw_path)
     } else {
         println!("  [3/4] Everything: skipped (es.exe not found)");
-    }
+        false
+    };
 
-    // 4. Compare using the same streaming comparison as offline mode
-    let step = if es_bin.is_some() { "4/4" } else { "3/3" };
+    // Compare using the same streaming comparison as offline mode
+    let step = if es_collected { "4/4" } else { "3/3" };
     println!("  [{}] Comparing outputs...", step);
     println!();
 
@@ -772,6 +754,266 @@ fn find_es_exe() -> Option<PathBuf> {
     }
     None
 }
+
+/// Auto-detect Everything.exe on the system.
+fn find_everything_exe() -> Option<PathBuf> {
+    let candidates = [
+        "C:\\Program Files\\Everything\\Everything.exe",
+        "C:\\Program Files (x86)\\Everything\\Everything.exe",
+    ];
+    // Also check user bin dir
+    let home_bin = env::var("USERPROFILE")
+        .ok()
+        .map(|h| PathBuf::from(h).join("bin").join("Everything.exe"));
+
+    for c in &candidates {
+        let p = PathBuf::from(c);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Some(ref hb) = home_bin {
+        if hb.exists() {
+            return Some(hb.clone());
+        }
+    }
+    None
+}
+
+/// Find the Everything APPDATA ini path.
+fn find_everything_ini() -> Option<PathBuf> {
+    env::var("APPDATA").ok().map(|appdata| {
+        PathBuf::from(appdata).join("Everything").join("Everything.ini")
+    }).filter(|p| p.exists())
+}
+
+/// Live-collect Everything data for a single drive using ini-editing approach.
+///
+/// Flow:
+/// 1. Stop any running Everything
+/// 2. Backup ini
+/// 3. Edit ini: enable only target drive, enable all index fields
+/// 4. Start Everything (indexes only target drive MFT)
+/// 5. Poll es.exe until index is ready
+/// 6. Query with es.exe (all columns) → output file
+/// 7. Stop Everything
+/// 8. Restore ini from backup
+///
+/// Returns true if data was collected successfully.
+fn run_everything_live_collect(es_exe: &Path, drive_upper: &str, output_path: &Path) -> bool {
+    let everything_exe = match find_everything_exe() {
+        Some(p) => p,
+        None => {
+            println!("  [3/4] Everything: skipped (Everything.exe not found)");
+            return false;
+        }
+    };
+    let ini_path = match find_everything_ini() {
+        Some(p) => p,
+        None => {
+            println!("  [3/4] Everything: skipped (Everything.ini not found in %APPDATA%)");
+            return false;
+        }
+    };
+
+    println!("  [3/4] Everything: configuring for {drive_upper}: only...");
+
+    // 1. Stop any running Everything
+    kill_everything_processes();
+    std::thread::sleep(Duration::from_secs(2));
+
+    // 2. Backup ini
+    let ini_bak = ini_path.with_extension("ini.uffs_bak");
+    if !ini_bak.exists() {
+        if let Err(e) = fs::copy(&ini_path, &ini_bak) {
+            println!("  [3/4] Everything: failed to backup ini: {e}");
+            return false;
+        }
+    }
+
+    // 3. Edit ini: enable only target drive
+    let success = edit_everything_ini(&ini_path, drive_upper);
+    if !success {
+        restore_everything_ini(&ini_path, &ini_bak);
+        return false;
+    }
+
+    // 4. Start Everything
+    println!("  [3/4] Everything: starting (MFT index of {drive_upper}: only)...");
+    let start_result = Command::new(&everything_exe)
+        .args(["-startup", "-minimized"])
+        .spawn();
+    if let Err(e) = start_result {
+        println!("  [3/4] Everything: failed to start: {e}");
+        restore_everything_ini(&ini_path, &ini_bak);
+        return false;
+    }
+
+    // 5. Poll for readiness (up to 120s for large drives)
+    let mut ready = false;
+    for attempt in 1..=60 {
+        std::thread::sleep(Duration::from_secs(2));
+        if let Ok(output) = Command::new(es_exe).arg("-get-result-count").output() {
+            if output.status.success() {
+                let count_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if let Ok(count) = count_str.parse::<u64>() {
+                    if count > 0 {
+                        println!(
+                            "  [3/4] Everything: indexed {} entries ({}s)",
+                            count,
+                            attempt * 2
+                        );
+                        ready = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let collected = if ready {
+        // 6. Query with all columns
+        print!("  [3/4] Everything: querying {drive_upper}: ...");
+        io::stdout().flush().ok();
+        let es_start = Instant::now();
+        let es_path_arg = format!("{drive_upper}:\\");
+        let es_result = run_with_retry(
+            es_exe,
+            &[
+                "-path", &es_path_arg,
+                "-s", "-name", "-path-column", "-size",
+                "-date-created", "-date-modified", "-date-accessed",
+                "-attributes",
+                "-no-digit-grouping", "-csv",
+            ],
+            output_path,
+            "Everything",
+        );
+        let es_elapsed = es_start.elapsed();
+        match es_result {
+            Ok(()) => {
+                println!(" ✅ ({})", format_duration(es_elapsed));
+                true
+            }
+            Err(msg) => {
+                println!(" ❌ {msg}");
+                false
+            }
+        }
+    } else {
+        println!("  [3/4] Everything: indexing timed out (120s) — skipping");
+        false
+    };
+
+    // 7. Stop Everything
+    kill_everything_processes();
+    std::thread::sleep(Duration::from_secs(1));
+
+    // 8. Restore ini
+    restore_everything_ini(&ini_path, &ini_bak);
+
+    collected
+}
+
+/// Kill all running Everything.exe processes.
+fn kill_everything_processes() {
+    // Use taskkill on Windows
+    let _ = Command::new("taskkill")
+        .args(["/F", "/IM", "Everything.exe"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Edit Everything.ini to enable only the target drive with all index fields.
+fn edit_everything_ini(ini_path: &Path, target_drive: &str) -> bool {
+    let content = match fs::read_to_string(ini_path) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("  Everything: failed to read ini: {e}");
+            return false;
+        }
+    };
+
+    // Find ntfs_volume_paths to determine the drive's position
+    let vol_paths_line = content.lines().find(|l| l.starts_with("ntfs_volume_paths="));
+    let vol_paths_line = match vol_paths_line {
+        Some(l) => l,
+        None => {
+            println!("  Everything: ntfs_volume_paths not found in ini");
+            return false;
+        }
+    };
+
+    let paths_str = &vol_paths_line["ntfs_volume_paths=".len()..];
+    let volumes: Vec<&str> = paths_str.split(',').map(|s| s.trim().trim_matches('"')).collect();
+    let target_with_colon = format!("{target_drive}:");
+
+    let drive_idx = volumes.iter().position(|v| v.eq_ignore_ascii_case(&target_with_colon));
+    let drive_idx = match drive_idx {
+        Some(i) => i,
+        None => {
+            println!("  Everything: drive {target_drive}: not found in ntfs_volume_paths");
+            return false;
+        }
+    };
+
+    // Build includes string: 0 for all except target
+    let includes: String = (0..volumes.len())
+        .map(|i| if i == drive_idx { "1" } else { "0" })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // Apply replacements
+    let mut result = content.clone();
+    let includes_line = format!("ntfs_volume_includes={includes}");
+    let replacements: Vec<(&str, &str)> = vec![
+        ("ntfs_volume_includes=", &includes_line),
+        ("auto_include_fixed_volumes=", "auto_include_fixed_volumes=0"),
+        ("auto_include_removable_volumes=", "auto_include_removable_volumes=0"),
+        ("index_date_created=", "index_date_created=1"),
+        ("index_date_accessed=", "index_date_accessed=1"),
+        ("index_date_modified=", "index_date_modified=1"),
+        ("index_attributes=", "index_attributes=1"),
+        ("index_size=", "index_size=1"),
+    ];
+
+    for (prefix, replacement) in &replacements {
+        if let Some(line_start) = result.find(prefix) {
+            let line_end = result[line_start..].find('\n')
+                .map(|i| line_start + i)
+                .unwrap_or(result.len());
+            // Handle \r\n
+            let line_end_trim = if line_end > 0 && result.as_bytes().get(line_end - 1) == Some(&b'\r') {
+                line_end - 1
+            } else {
+                line_end
+            };
+            result.replace_range(line_start..line_end_trim, replacement);
+        }
+    }
+
+    match fs::write(ini_path, &result) {
+        Ok(()) => true,
+        Err(e) => {
+            println!("  Everything: failed to write ini: {e}");
+            false
+        }
+    }
+}
+
+/// Restore Everything.ini from backup.
+fn restore_everything_ini(ini_path: &Path, backup_path: &Path) {
+    if backup_path.exists() {
+        if let Err(e) = fs::copy(backup_path, ini_path) {
+            eprintln!("  ⚠️  Everything: failed to restore ini: {e}");
+        } else {
+            let _ = fs::remove_file(backup_path);
+            println!("  [3/4] Everything: ini restored from backup");
+        }
+    }
+}
+
 
 /// Verify extra Rust lines are hardlinks using fingerprints from a baseline file.
 /// Streams the baseline file to build fingerprints, then checks extras.
