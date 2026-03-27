@@ -203,7 +203,7 @@ function BenchRunEverything($driveLetter) {
         # es.exe IPC can't export large drives (>2M entries, 2GB IPC limit),
         # so we only benchmark the index time (start → result-count > 0).
         Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-            ForEach-Object { Stop-Process -Id $_.Id -Force }
+            ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
         Start-Sleep -Milliseconds 1500
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -242,7 +242,7 @@ function BenchRunEverything($driveLetter) {
 
     # Stop Everything after benchmarking this drive
     Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-        ForEach-Object { Stop-Process -Id $_.Id -Force }
+        ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
 }
 
 
@@ -303,7 +303,7 @@ if ($AllDrives.Count -eq 0) {
     $benchBak = "${EVERYTHING_INI}.bench_bak"
     if (Test-Path -LiteralPath $benchBak -ErrorAction SilentlyContinue) {
         Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-            ForEach-Object { Stop-Process -Id $_.Id -Force }
+            ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
         Start-Sleep -Seconds 1
         Copy-Item -LiteralPath $benchBak -Destination $EVERYTHING_INI -Force
         Remove-Item -LiteralPath $benchBak -Force -ErrorAction SilentlyContinue
@@ -327,7 +327,7 @@ if ($AllDrives.Count -eq 0) {
 $benchBak = "${EVERYTHING_INI}.bench_bak"
 if (Test-Path -LiteralPath $benchBak -ErrorAction SilentlyContinue) {
     Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-        ForEach-Object { Stop-Process -Id $_.Id -Force }
+        ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 1
     Copy-Item -LiteralPath $benchBak -Destination $EVERYTHING_INI -Force
     Remove-Item -LiteralPath $benchBak -Force -ErrorAction SilentlyContinue

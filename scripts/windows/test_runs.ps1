@@ -574,7 +574,7 @@ try {
 
                 # Stop any running Everything
                 Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-                    ForEach-Object { Stop-Process -Id $_.Id -Force }
+                    ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
                 Start-Sleep -Seconds 2
 
                 # Back up ini (only once — check if backup already exists)
@@ -664,7 +664,7 @@ try {
 
                         # Stop Everything after this drive
                         Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-                            ForEach-Object { Stop-Process -Id $_.Id -Force }
+                            ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
                         Start-Sleep -Seconds 1
                     } else {
                         Write-Host "  → Everything: drive ${Drive}: not found in ntfs_volume_paths — skipping" -ForegroundColor DarkRed
@@ -729,7 +729,7 @@ try {
         if (Test-Path -LiteralPath $iniBak) {
             # Stop Everything if still running
             Get-Process -Name "Everything" -ErrorAction SilentlyContinue |
-                ForEach-Object { Stop-Process -Id $_.Id -Force }
+                ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
             Start-Sleep -Seconds 1
             Copy-Item -LiteralPath $iniBak -Destination $EverythingIniPath -Force
             Remove-Item -LiteralPath $iniBak -Force -ErrorAction SilentlyContinue
