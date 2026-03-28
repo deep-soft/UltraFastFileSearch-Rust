@@ -98,7 +98,7 @@ function Invoke-UffsProfiled {
         -NoNewWindow -PassThru -Wait
     $sw.Stop()
     $ms = [math]::Round($sw.Elapsed.TotalMilliseconds)
-    $lineCount = (Get-Content $stdoutFile -ReadCount 0 -ErrorAction SilentlyContinue | Measure-Object).Count
+    $lineCount = (Get-Content $stdoutFile -ErrorAction SilentlyContinue | Measure-Object -Line).Lines
     $profileLines = @()
     if (Test-Path $stderrFile) {
         $profileLines = @(Get-Content $stderrFile -ErrorAction SilentlyContinue |
