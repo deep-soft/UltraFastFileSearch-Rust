@@ -11,9 +11,9 @@
 #
 # All other crates depend on this instead of Polars directly.
 #
-# NOTE: We intentionally track branch=main here; CI step 'update_polars_git'
-#       pins the lockfile to the current main HEAD each run via
-#       'cargo update -w -p polars --precise <sha>'.
+# NOTE: Pinned to a known-good commit via rev=... to prevent upstream
+#       breakage (e.g. polars main@7335a6c8 removed SinkedPathInfo).
+#       To upgrade: update the rev hash below and run `cargo update -p polars`.
 # ============================================================================
 
 [package]
@@ -43,9 +43,9 @@ test = false
 # ──────────────────────────────────────────────────────────────────────────────
 [dependencies]
 # ONLY Polars - all other dependencies provided by consuming crates
-# NOTE: We intentionally track branch=main here; CI step 'update_polars_git' pins the lockfile
-#       to the current main HEAD each run via 'cargo update -w -p polars --precise <sha>'.
-polars = { git = "https://github.com/pola-rs/polars", branch = "main", default-features = false, features = [
+# Pinned to known-good commit (polars main@7335a6c8 broke SinkedPathInfo).
+# To upgrade: update rev hash, run `cargo update -p polars`.
+polars = { git = "https://github.com/pola-rs/polars", rev = "95691e960cce347d5a6c5a79d6e44188f2fc4ac7", default-features = false, features = [
     # ===== Core Features =====
     "lazy",              # Lazy evaluation (query optimization)
     "new_streaming",     # New streaming engine (replaces deprecated "streaming")

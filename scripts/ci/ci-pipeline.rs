@@ -1017,9 +1017,39 @@ async fn increment_version() -> Result<()> {
     Ok(())
 }
 
-/// Update Polars git dependencies to the latest commit on main
-/// This keeps the uffs-polars facade fresh with the latest Polars features
+/// Update Polars git dependencies to the latest commit on main.
+///
+/// **Skipped** when `uffs-polars/Cargo.toml` uses `rev = "..."` pinning
+/// (which prevents upstream breakage). In that case the pinned commit is
+/// used as-is and `cargo update` is called with `--precise <pinned-rev>`.
 async fn update_polars_git(_ctx: &PipelineContext) -> Result<()> {
+    // Check if uffs-polars/Cargo.toml uses rev pinning
+    let cargo_toml = std::fs::read_to_string("crates/uffs-polars/Cargo.toml")
+        .context("Failed to read crates/uffs-polars/Cargo.toml")?;
+    if let Some(rev_line) = cargo_toml.lines().find(|l| l.contains("polars") && l.contains("rev =")) {
+        // Extract the rev hash
+        if let Some(start) = rev_line.find("rev = \"") {
+            let hash_start = start + 7;
+            if let Some(end) = rev_line[hash_start..].find('"') {
+                let pinned_rev = &rev_line[hash_start..hash_start + end];
+                println!(
+                    "{}",
+                    format!("📌 Polars pinned to rev={} — skipping auto-update", &pinned_rev[..12]).blue()
+                );
+                // Still run cargo update to ensure lockfile matches the pinned rev
+                let status = Command::new("cargo")
+                    .args(["update", "-p", "polars", "--precise", pinned_rev])
+                    .status()
+                    .await
+                    .context("Failed to run cargo update for pinned polars")?;
+                if !status.success() {
+                    println!("⚠️  cargo update --precise failed (lockfile may already be correct)");
+                }
+                return Ok(());
+            }
+        }
+    }
+
     println!(
         "{}",
         "📦 Updating Polars (git, branch=main) to latest commit...".blue()
