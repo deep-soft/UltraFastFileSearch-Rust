@@ -89,11 +89,11 @@ $runTimings = @()
 
 # Helper: run uffs and capture stdout line count + stderr profile lines via Start-Process
 function Invoke-UffsProfiled {
-    param([string[]]$Args)
+    param([string]$ArgString)
     $stdoutFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $proc = Start-Process -FilePath $UFFS -ArgumentList $Args `
+    $proc = Start-Process -FilePath $UFFS -ArgumentList $ArgString `
         -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile `
         -NoNewWindow -PassThru -Wait
     $sw.Stop()
@@ -113,7 +113,7 @@ function Invoke-UffsProfiled {
     $label = if ($runNum -eq 1) { "COLD (no cache)" } else { "RUN $runNum (should use cache)" }
     Write-Host "  ── Run $runNum ($label) ──" -ForegroundColor Cyan
 
-    $result = Invoke-UffsProfiled @('*', '--drive', $Drive)
+    $result = Invoke-UffsProfiled "`"*`" --drive $Drive"
 
     Write-Host "     Time: $($result.Ms) ms ($($result.Lines) lines)" -ForegroundColor $(if ($result.Ms -lt 2000) { "Green" } else { "White" })
 
@@ -145,7 +145,7 @@ Show-CacheStatus
 
 # 5. Test --no-cache flag
 Write-Host "[STEP 5] Running with --no-cache (should bypass cache):" -ForegroundColor Yellow
-$noCacheResult = Invoke-UffsProfiled @('*', '--drive', $Drive, '--no-cache')
+$noCacheResult = Invoke-UffsProfiled "`"*`" --drive $Drive --no-cache"
 $ms = $noCacheResult.Ms
 Write-Host "     Time: ${ms} ms ($($noCacheResult.Lines) lines)" -ForegroundColor White
 if ($noCacheResult.Profile.Count -gt 0) {
