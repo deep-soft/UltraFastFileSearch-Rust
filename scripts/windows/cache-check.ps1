@@ -87,31 +87,42 @@ Write-Host ""
 
 $runTimings = @()
 
+# Helper: run uffs and capture stdout line count + stderr profile lines via Start-Process
+function Invoke-UffsProfiled {
+    param([string[]]$Args)
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $proc = Start-Process -FilePath $UFFS -ArgumentList $Args `
+        -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile `
+        -NoNewWindow -PassThru -Wait
+    $sw.Stop()
+    $ms = [math]::Round($sw.Elapsed.TotalMilliseconds)
+    $lineCount = (Get-Content $stdoutFile -ReadCount 0 -ErrorAction SilentlyContinue | Measure-Object).Count
+    $profileLines = @()
+    if (Test-Path $stderrFile) {
+        $profileLines = @(Get-Content $stderrFile -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match '^\[CACHE_PROFILE\]' })
+    }
+    Remove-Item $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+    [PSCustomObject]@{ Ms = $ms; Lines = $lineCount; Profile = $profileLines }
+}
+
 1..$Rounds | ForEach-Object {
     $runNum = $_
     $label = if ($runNum -eq 1) { "COLD (no cache)" } else { "RUN $runNum (should use cache)" }
     Write-Host "  ── Run $runNum ($label) ──" -ForegroundColor Cyan
 
-    # Capture stdout (piped to line count) and stderr (profile data) separately
-    $stderrFile = [System.IO.Path]::GetTempFileName()
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $lineCount = (& $UFFS "*" --drive $Drive 2>$stderrFile | Measure-Object -Line).Lines
-    $sw.Stop()
-    $ms = [math]::Round($sw.Elapsed.TotalMilliseconds)
+    $result = Invoke-UffsProfiled @('*', '--drive', $Drive)
 
-    Write-Host "     Time: ${ms} ms ($lineCount lines)" -ForegroundColor $(if ($ms -lt 2000) { "Green" } else { "White" })
+    Write-Host "     Time: $($result.Ms) ms ($($result.Lines) lines)" -ForegroundColor $(if ($result.Ms -lt 2000) { "Green" } else { "White" })
 
-    # Parse and display profile lines from stderr
-    if (Test-Path $stderrFile) {
-        $profileLines = Get-Content $stderrFile -ErrorAction SilentlyContinue |
-            Where-Object { $_ -match '^\[CACHE_PROFILE\]' }
-        if ($profileLines) {
-            foreach ($line in $profileLines) {
-                $display = $line -replace '^\[CACHE_PROFILE\]\s*', ''
-                Write-Host "     ⏱  $display" -ForegroundColor DarkCyan
-            }
+    # Display profile lines from stderr
+    if ($result.Profile.Count -gt 0) {
+        foreach ($line in $result.Profile) {
+            $display = $line -replace '^\[CACHE_PROFILE\]\s*', ''
+            Write-Host "     ⏱  $display" -ForegroundColor DarkCyan
         }
-        Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
     }
 
     # Check cache file after this run
@@ -124,7 +135,7 @@ $runTimings = @()
         Write-Host "     Cache: NOT FOUND ❌" -ForegroundColor Red
     }
 
-    $runTimings += @{ Run = $runNum; Label = $label; Ms = $ms; Lines = $lineCount }
+    $runTimings += @{ Run = $runNum; Label = $label; Ms = $result.Ms; Lines = $result.Lines }
     Write-Host ""
 }
 
@@ -134,23 +145,14 @@ Show-CacheStatus
 
 # 5. Test --no-cache flag
 Write-Host "[STEP 5] Running with --no-cache (should bypass cache):" -ForegroundColor Yellow
-$stderrFile = [System.IO.Path]::GetTempFileName()
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-$lineCount = (& $UFFS "*" --drive $Drive --no-cache 2>$stderrFile | Measure-Object -Line).Lines
-$sw.Stop()
-$ms = [math]::Round($sw.Elapsed.TotalMilliseconds)
-Write-Host "     Time: ${ms} ms ($lineCount lines)" -ForegroundColor White
-
-if (Test-Path $stderrFile) {
-    $profileLines = Get-Content $stderrFile -ErrorAction SilentlyContinue |
-        Where-Object { $_ -match '^\[CACHE_PROFILE\]' }
-    if ($profileLines) {
-        foreach ($line in $profileLines) {
-            $display = $line -replace '^\[CACHE_PROFILE\]\s*', ''
-            Write-Host "     ⏱  $display" -ForegroundColor DarkCyan
-        }
+$noCacheResult = Invoke-UffsProfiled @('*', '--drive', $Drive, '--no-cache')
+$ms = $noCacheResult.Ms
+Write-Host "     Time: ${ms} ms ($($noCacheResult.Lines) lines)" -ForegroundColor White
+if ($noCacheResult.Profile.Count -gt 0) {
+    foreach ($line in $noCacheResult.Profile) {
+        $display = $line -replace '^\[CACHE_PROFILE\]\s*', ''
+        Write-Host "     ⏱  $display" -ForegroundColor DarkCyan
     }
-    Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
 }
 
 # 6. Summary
