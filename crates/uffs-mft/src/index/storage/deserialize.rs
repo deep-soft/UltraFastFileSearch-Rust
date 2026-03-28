@@ -22,7 +22,14 @@ impl MftIndex {
         clippy::cognitive_complexity,
         reason = "version-conditional fields (v3/v4/v5/v6)"
     )]
+    #[expect(
+        clippy::items_after_statements,
+        reason = "profiling variables must precede items for timing accuracy"
+    )]
     pub fn deserialize(data: &[u8]) -> Result<(Self, IndexHeader), &'static str> {
+        let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
+        let t_deser_start = std::time::Instant::now();
+
         const FRS_TO_IDX_ENTRY_BYTES: usize = 4;
         const LINK_INFO_BYTES: usize = 20;
         const STREAM_INFO_BYTES: usize = 29;
@@ -147,6 +154,8 @@ impl MftIndex {
         };
 
         header.validate()?;
+
+        let t_parse_start = std::time::Instant::now();
 
         // Read frs_to_idx table
         let frs_to_idx_len = read_u64!();
@@ -472,6 +481,8 @@ impl MftIndex {
             }
         }
 
+        let parse_ms = t_parse_start.elapsed().as_millis();
+
         let mut index = Self {
             volume,
             records,
@@ -489,19 +500,39 @@ impl MftIndex {
         };
 
         // Compute stats from loaded data
+        let t_stats = std::time::Instant::now();
         index.recompute_stats();
+        let stats_ms = t_stats.elapsed().as_millis();
 
         // If loading an old version (< 3) without tree metrics, recompute them
-        if version < 3 {
+        let tree_ms = if version < 3 {
             tracing::debug!("Old index version {version} - recomputing tree metrics");
+            let t_tree = std::time::Instant::now();
             index.compute_tree_metrics();
-        }
+            t_tree.elapsed().as_millis()
+        } else {
+            0
+        };
 
         // Rebuild the per-extension → record-indices lookup so that
         // filtered queries (*.txt, *.pdf, …) get O(matches) performance.
         // The ExtensionIndex is not serialized; it must be reconstructed
         // from the ExtensionTable + record names on every load.
+        let t_ext = std::time::Instant::now();
         index.build_extension_index();
+        let ext_idx_ms = t_ext.elapsed().as_millis();
+
+        let total_deser_ms = t_deser_start.elapsed().as_millis();
+
+        if profile {
+            eprintln!("[CACHE_PROFILE]   parse_fields:  {parse_ms:>6} ms  (binary field-by-field)");
+            eprintln!("[CACHE_PROFILE]   recompute_stats:{stats_ms:>5} ms");
+            if tree_ms > 0 {
+                eprintln!("[CACHE_PROFILE]   tree_metrics:  {tree_ms:>6} ms  (old format)");
+            }
+            eprintln!("[CACHE_PROFILE]   ext_index:     {ext_idx_ms:>6} ms  (CSR build)");
+            eprintln!("[CACHE_PROFILE]   deser_total:   {total_deser_ms:>6} ms");
+        }
 
         Ok((index, header))
     }

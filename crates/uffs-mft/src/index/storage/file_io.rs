@@ -54,6 +54,8 @@ impl MftIndex {
     /// If decryption fails (wrong key / tampered), the corrupted file is
     /// deleted and an error is returned so the caller rebuilds from MFT.
     ///
+    /// Set `UFFS_CACHE_PROFILE=1` to emit per-phase timing to stderr.
+    ///
     /// # Errors
     ///
     /// Returns an error if file reading, decryption, or deserialization fails.
@@ -62,9 +64,17 @@ impl MftIndex {
     ) -> Result<(Self, IndexHeader), Box<dyn core::error::Error>> {
         use uffs_security::crypto::{CacheFormat, decrypt_cache, detect_format};
 
+        let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
+        let t_total = std::time::Instant::now();
+
+        let t0 = std::time::Instant::now();
         let raw = std::fs::read(path)?;
+        let read_ms = t0.elapsed().as_millis();
+        let raw_len = raw.len();
+
         let format = detect_format(&raw);
 
+        let t1 = std::time::Instant::now();
         let plaintext = match format {
             CacheFormat::Encrypted => {
                 let key = uffs_security::keystore::get_cache_key()
@@ -96,8 +106,33 @@ impl MftIndex {
                 )));
             }
         };
+        let decrypt_ms = t1.elapsed().as_millis();
+        let plaintext_len = plaintext.len();
 
+        let t2 = std::time::Instant::now();
         let (index, header) = Self::deserialize(&plaintext)?;
+        let deser_ms = t2.elapsed().as_millis();
+
+        let total_ms = t_total.elapsed().as_millis();
+
+        if profile {
+            #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
+            let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+            eprintln!(
+                "[CACHE_PROFILE] file_read:     {read_ms:>6} ms  ({:.1} MB)",
+                mb(raw_len)
+            );
+            eprintln!(
+                "[CACHE_PROFILE] decrypt:       {decrypt_ms:>6} ms  ({:.1} MB plaintext)",
+                mb(plaintext_len)
+            );
+            eprintln!(
+                "[CACHE_PROFILE] deserialize:   {deser_ms:>6} ms  ({} records)",
+                index.len()
+            );
+            eprintln!("[CACHE_PROFILE] total_load:    {total_ms:>6} ms");
+        }
+
         Ok((index, header))
     }
 }

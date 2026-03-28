@@ -338,6 +338,12 @@ pub(in crate::commands) fn write_index_streaming_with_filter<W: Write + ?Sized>(
         "📊 streaming: output phase breakdown"
     );
 
+    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+    if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
+        eprintln!("[CACHE_PROFILE] path_resolver:  {cache_ms:>6} ms  (lazy={use_lazy})");
+        eprintln!("[CACHE_PROFILE] row_output:     {rows_ms:>6} ms  ({row_count} rows)");
+    }
+
     if format == "custom" {
         let final_footer = CppFooterContext {
             output_targets: footer_ctx.output_targets,

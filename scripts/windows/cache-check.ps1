@@ -1,14 +1,18 @@
 <#
 .SYNOPSIS
     Diagnostic: check UFFS cache status, run searches, observe cache behavior.
+    Set UFFS_CACHE_PROFILE=1 automatically to show per-phase timing breakdown.
 .PARAMETER Drive
     Drive letter to test (default: G)
 .PARAMETER Rounds
     Number of search runs (default: 3)
+.PARAMETER NoProfile
+    Disable per-phase profiling output (default: profiling is ON)
 #>
 param(
     [string]$Drive = "G",
-    [int]$Rounds = 3
+    [int]$Rounds = 3,
+    [switch]$NoProfile
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +20,11 @@ $UFFS = "$env:USERPROFILE\bin\uffs.exe"
 $CacheDir = "$env:LOCALAPPDATA\uffs\cache"
 $CacheDirLegacy = "$env:TEMP\uffs_index_cache"
 $CacheFile = Join-Path $CacheDir "${Drive}_index.uffs"
+
+# Enable cache profiling unless suppressed
+if (-not $NoProfile) {
+    $env:UFFS_CACHE_PROFILE = "1"
+}
 
 function Show-CacheStatus {
     Write-Host "`n─── Cache Status ───" -ForegroundColor Cyan
@@ -76,16 +85,34 @@ Show-CacheStatus
 Write-Host "[STEP 3] Running $Rounds searches (uffs `"*`" --drive $Drive):" -ForegroundColor Yellow
 Write-Host ""
 
-1..$Rounds | ForEach-Object {
-    $label = if ($_ -eq 1) { "COLD (no cache)" } else { "RUN $_ (should use cache)" }
-    Write-Host "  ── Run $_ ($label) ──" -ForegroundColor Cyan
+$runTimings = @()
 
+1..$Rounds | ForEach-Object {
+    $runNum = $_
+    $label = if ($runNum -eq 1) { "COLD (no cache)" } else { "RUN $runNum (should use cache)" }
+    Write-Host "  ── Run $runNum ($label) ──" -ForegroundColor Cyan
+
+    # Capture stdout (piped to line count) and stderr (profile data) separately
+    $stderrFile = [System.IO.Path]::GetTempFileName()
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $lineCount = (& $UFFS "*" --drive $Drive 2>$null | Measure-Object -Line).Lines
+    $lineCount = (& $UFFS "*" --drive $Drive 2>$stderrFile | Measure-Object -Line).Lines
     $sw.Stop()
     $ms = [math]::Round($sw.Elapsed.TotalMilliseconds)
 
     Write-Host "     Time: ${ms} ms ($lineCount lines)" -ForegroundColor $(if ($ms -lt 2000) { "Green" } else { "White" })
+
+    # Parse and display profile lines from stderr
+    if (Test-Path $stderrFile) {
+        $profileLines = Get-Content $stderrFile -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match '^\[CACHE_PROFILE\]' }
+        if ($profileLines) {
+            foreach ($line in $profileLines) {
+                $display = $line -replace '^\[CACHE_PROFILE\]\s*', ''
+                Write-Host "     ⏱  $display" -ForegroundColor DarkCyan
+            }
+        }
+        Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
+    }
 
     # Check cache file after this run
     if (Test-Path $CacheFile) {
@@ -96,6 +123,8 @@ Write-Host ""
     } else {
         Write-Host "     Cache: NOT FOUND ❌" -ForegroundColor Red
     }
+
+    $runTimings += @{ Run = $runNum; Label = $label; Ms = $ms; Lines = $lineCount }
     Write-Host ""
 }
 
@@ -105,13 +134,49 @@ Show-CacheStatus
 
 # 5. Test --no-cache flag
 Write-Host "[STEP 5] Running with --no-cache (should bypass cache):" -ForegroundColor Yellow
+$stderrFile = [System.IO.Path]::GetTempFileName()
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-$lineCount = (& $UFFS "*" --drive $Drive --no-cache 2>$null | Measure-Object -Line).Lines
+$lineCount = (& $UFFS "*" --drive $Drive --no-cache 2>$stderrFile | Measure-Object -Line).Lines
 $sw.Stop()
 $ms = [math]::Round($sw.Elapsed.TotalMilliseconds)
 Write-Host "     Time: ${ms} ms ($lineCount lines)" -ForegroundColor White
-Write-Host "     (Should be similar to Run 1 cold time)" -ForegroundColor DarkGray
 
-Write-Host "`n✅ Done. If Run 2+ times are similar to Run 1, cache is NOT working." -ForegroundColor Yellow
-Write-Host "   If Run 2+ are ~2-3x faster, cache IS working." -ForegroundColor Yellow
+if (Test-Path $stderrFile) {
+    $profileLines = Get-Content $stderrFile -ErrorAction SilentlyContinue |
+        Where-Object { $_ -match '^\[CACHE_PROFILE\]' }
+    if ($profileLines) {
+        foreach ($line in $profileLines) {
+            $display = $line -replace '^\[CACHE_PROFILE\]\s*', ''
+            Write-Host "     ⏱  $display" -ForegroundColor DarkCyan
+        }
+    }
+    Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
+}
+
+# 6. Summary
+Write-Host "`n─── Summary ───" -ForegroundColor Cyan
+$coldMs  = if ($runTimings.Count -gt 0) { $runTimings[0].Ms } else { 0 }
+$cachedAvg = if ($runTimings.Count -gt 1) {
+    [math]::Round(($runTimings[1..($runTimings.Count - 1)] | ForEach-Object { $_.Ms } |
+        Measure-Object -Average).Average)
+} else { 0 }
+$speedup = if ($cachedAvg -gt 0) { [math]::Round($coldMs / $cachedAvg, 1) } else { 0 }
+
+Write-Host "  Cold (Run 1):    $coldMs ms" -ForegroundColor White
+Write-Host "  Cached (avg):    $cachedAvg ms" -ForegroundColor $(if ($cachedAvg -lt $coldMs) { "Green" } else { "Yellow" })
+Write-Host "  No-cache:        $ms ms" -ForegroundColor White
+Write-Host "  Speedup:         ${speedup}x (cache vs cold)" -ForegroundColor $(if ($speedup -gt 2) { "Green" } else { "Yellow" })
+
+if ($speedup -lt 1.5) {
+    Write-Host "`n⚠️  Cache is NOT providing significant speedup." -ForegroundColor Red
+} elseif ($speedup -lt 3) {
+    Write-Host "`n✅ Cache is working. Bottleneck is likely deserialization or output." -ForegroundColor Yellow
+} else {
+    Write-Host "`n✅ Cache is working well!" -ForegroundColor Green
+}
+
+# Cleanup env var
+if (-not $NoProfile) {
+    Remove-Item Env:\UFFS_CACHE_PROFILE -ErrorAction SilentlyContinue
+}
 
