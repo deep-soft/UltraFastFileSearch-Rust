@@ -27,7 +27,9 @@ param(
 $ErrorActionPreference = "Stop"
 $UFFS = "$env:USERPROFILE\bin\uffs.exe"
 $UFFS_CPP = "$env:USERPROFILE\bin\uffs.com"
-$CACHE_DIR = "$env:TEMP\uffs_index_cache"
+# Cache location: secure dir (%LOCALAPPDATA%\uffs\cache\), with legacy fallback
+$CACHE_DIR = "$env:LOCALAPPDATA\uffs\cache"
+$CACHE_DIR_LEGACY = "$env:TEMP\uffs_index_cache"
 
 # Everything detection
 $pf86 = ${env:ProgramFiles(x86)}
@@ -96,9 +98,10 @@ function BenchRun($label, $exePath, [string[]]$argList) {
     Write-Host "▶ $label" -ForegroundColor Yellow
     $times = @()
     1..$N | ForEach-Object {
-        # Clear cache before each run in cold mode
+        # Clear cache before each run in cold mode (both secure + legacy locations)
         if (-not $Cache) {
             Remove-Item $CACHE_DIR -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $CACHE_DIR_LEGACY -Recurse -Force -ErrorAction SilentlyContinue
         }
 
         # Redirect stdout to NUL — we only need wall-clock time and any
@@ -366,7 +369,7 @@ Write-Host "  Benchmark Complete ($mode)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 if ($Cache) {
     Write-Host "`nThis measures cached performance (MFT index loaded from disk cache)." -ForegroundColor Gray
-    Write-Host "Cache location: $CACHE_DIR" -ForegroundColor Gray
+    Write-Host "Cache location: $CACHE_DIR (secure) / $CACHE_DIR_LEGACY (legacy)" -ForegroundColor Gray
 } else {
     Write-Host "`nThis measures fresh MFT reads (no cache)." -ForegroundColor Gray
     Write-Host "Rust saves to cache after each run, but cache is cleared before next run." -ForegroundColor Gray
