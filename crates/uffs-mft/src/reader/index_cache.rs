@@ -270,7 +270,10 @@ impl MftReader {
             }
         };
 
-        tokio::task::spawn_blocking(move || {
+        // Await the cache write — a few MB to disk takes <100ms.
+        // Previously this was fire-and-forget (spawn_blocking without await),
+        // causing the CLI process to exit before the cache was written.
+        let _cache_result = tokio::task::spawn_blocking(move || {
             use crate::cache::{
                 LockKind, atomic_write, cache_dir, cache_file_path, cache_lock_path,
                 create_secure_dir, with_file_lock,
@@ -291,7 +294,8 @@ impl MftReader {
             if let Err(e) = result {
                 info!(drive = %drive, error = %e, "⚠️ Failed to write cache (non-fatal)");
             }
-        });
+        })
+        .await;
 
         tracing::debug!(drive = %drive, "[TRIP] reader::read_and_cache_index EXIT");
         Ok(index)
