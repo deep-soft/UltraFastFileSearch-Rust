@@ -56,6 +56,63 @@ pub struct SearchFilters {
 }
 
 impl SearchFilters {
+    /// Build `SearchFilters` from individual CLI-style parameter strings.
+    ///
+    /// This is the generic constructor shared by CLI, TUI, daemon, etc.
+    /// All time-spec parsing and attribute parsing happens here so the
+    /// hot-path `matches_record` loop is branch-only.
+    #[must_use]
+    #[expect(clippy::too_many_arguments, reason = "mirrors CLI parameter surface")]
+    pub fn from_params(
+        hide_system: bool,
+        min_size: Option<u64>,
+        max_size: Option<u64>,
+        min_descendants: Option<u32>,
+        max_descendants: Option<u32>,
+        newer: Option<&str>,
+        older: Option<&str>,
+        newer_created: Option<&str>,
+        older_created: Option<&str>,
+        newer_accessed: Option<&str>,
+        older_accessed: Option<&str>,
+        attr_filter: Option<&str>,
+        ext_filter: Option<&str>,
+        exclude: Option<&str>,
+    ) -> Self {
+        let now_us = now_unix_micros();
+        Self {
+            hide_system,
+            min_size,
+            max_size,
+            newer_us: newer.and_then(|spec| parse_time_bound(spec, now_us, true)),
+            older_us: older.and_then(|spec| parse_time_bound(spec, now_us, false)),
+            newer_created_us: newer_created.and_then(|spec| parse_time_bound(spec, now_us, true)),
+            older_created_us: older_created.and_then(|spec| parse_time_bound(spec, now_us, false)),
+            newer_accessed_us: newer_accessed.and_then(|spec| parse_time_bound(spec, now_us, true)),
+            older_accessed_us: older_accessed
+                .and_then(|spec| parse_time_bound(spec, now_us, false)),
+            attr_require: parse_attr_require(attr_filter.unwrap_or("")),
+            attr_exclude: parse_attr_exclude(attr_filter.unwrap_or("")),
+            min_descendants,
+            max_descendants,
+            extensions: ext_filter
+                .map(|ext_list| {
+                    ext_list
+                        .split(',')
+                        .map(|seg| {
+                            seg.trim()
+                                .to_ascii_lowercase()
+                                .trim_start_matches('.')
+                                .to_owned()
+                        })
+                        .filter(|ext| !ext.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            exclude_lower: exclude.map(str::to_ascii_lowercase),
+        }
+    }
+
     /// Check whether a compact record passes all filters.
     ///
     /// Hot-path predicate used during global top-N scans.

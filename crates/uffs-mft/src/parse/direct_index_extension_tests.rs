@@ -17,6 +17,7 @@ fn create_test_record(frs: u64, length: u64, allocated: u64) -> crate::index::Fi
             next_entry: NO_ENTRY,
             name: IndexNameRef::default(),
             flags: 0,
+            _pad0: [0; 3],
         },
         ..Default::default()
     }

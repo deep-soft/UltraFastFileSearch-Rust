@@ -24,14 +24,20 @@ impl MftIndex {
     pub fn serialize(&self, volume_serial: u64, usn_journal_id: u64, next_usn: i64) -> Vec<u8> {
         let header = IndexHeader::new(self, volume_serial, usn_journal_id, next_usn);
 
-        // Estimate size (rough estimate for capacity)
+        // Exact capacity estimate — avoids reallocations during serialization.
+        let ext_idx_size = self
+            .extension_index
+            .as_ref()
+            .map_or(4, |ei| 4 + ei.offsets.len() * 4 + ei.postings.len() * 4);
         let estimated_size = 128 // header
-            + self.frs_to_idx.len() * 4
-            + self.records.len() * 128 // rough estimate per record
+            + 8 + self.frs_to_idx.len() * 4
+            + self.records.len() * size_of::<crate::index::types::FileRecord>()
             + self.names.len()
-            + self.links.len() * 24
-            + self.streams.len() * 32
-            + self.children.len() * 16;
+            + self.links.len() * size_of::<crate::index::types::LinkInfo>()
+            + self.streams.len() * size_of::<crate::index::types::IndexStreamInfo>()
+            + self.children.len() * size_of::<crate::index::model::ChildInfo>()
+            + self.extensions.len() * 20 // rough per-extension
+            + ext_idx_size;
 
         let mut buffer = Vec::with_capacity(estimated_size);
 
@@ -49,92 +55,26 @@ impl MftIndex {
         buffer.extend_from_slice(&header.streams_count.to_le_bytes());
         buffer.extend_from_slice(&header.children_count.to_le_bytes());
 
-        // Write frs_to_idx table size and data
+        // Write frs_to_idx table size and data — bulk cast
         buffer.extend_from_slice(&(self.frs_to_idx.len() as u64).to_le_bytes());
-        for &idx in &self.frs_to_idx {
-            buffer.extend_from_slice(&idx.to_le_bytes());
-        }
+        buffer.extend_from_slice(bytemuck::cast_slice(&self.frs_to_idx));
 
-        // Write records
-        for record in &self.records {
-            // FileRecord fields
-            buffer.extend_from_slice(&record.frs.to_le_bytes());
-            // Version 4+: sequence_number and namespace
-            buffer.extend_from_slice(&record.sequence_number.to_le_bytes());
-            buffer.push(record.namespace);
-            buffer.push(record.forensic_flags); // Version 7: renamed from reserved
-            // Version 5+: LSN (Log File Sequence Number)
-            buffer.extend_from_slice(&record.lsn.to_le_bytes());
-            // Version 6+: reparse_tag
-            buffer.extend_from_slice(&record.reparse_tag.to_le_bytes());
-            // Version 7+: base_frs for extension records
-            buffer.extend_from_slice(&record.base_frs.to_le_bytes());
-            // StandardInfo
-            buffer.extend_from_slice(&record.stdinfo.created.to_le_bytes());
-            buffer.extend_from_slice(&record.stdinfo.modified.to_le_bytes());
-            buffer.extend_from_slice(&record.stdinfo.accessed.to_le_bytes());
-            buffer.extend_from_slice(&record.stdinfo.mft_changed.to_le_bytes());
-            buffer.extend_from_slice(&record.stdinfo.flags.to_le_bytes());
-            // Version 5+: NTFS 3.0+ forensic fields
-            buffer.extend_from_slice(&record.stdinfo.usn.to_le_bytes());
-            buffer.extend_from_slice(&record.stdinfo.security_id.to_le_bytes());
-            buffer.extend_from_slice(&record.stdinfo.owner_id.to_le_bytes());
-            // Counts
-            buffer.extend_from_slice(&record.name_count.to_le_bytes());
-            buffer.extend_from_slice(&record.stream_count.to_le_bytes());
-            // Version 8+: total_stream_count for full tree-metrics accounting
-            buffer.extend_from_slice(&record.total_stream_count.to_le_bytes());
-            buffer.extend_from_slice(&record.first_child.to_le_bytes());
-            // first_name (LinkInfo)
-            buffer.extend_from_slice(&record.first_name.next_entry.to_le_bytes());
-            buffer.extend_from_slice(&record.first_name.name.offset.to_le_bytes());
-            buffer.extend_from_slice(&record.first_name.name.meta.to_le_bytes());
-            buffer.extend_from_slice(&record.first_name.parent_frs.to_le_bytes());
-            // first_stream (IndexStreamInfo)
-            buffer.extend_from_slice(&record.first_stream.size.length.to_le_bytes());
-            buffer.extend_from_slice(&record.first_stream.size.allocated.to_le_bytes());
-            buffer.extend_from_slice(&record.first_stream.next_entry.to_le_bytes());
-            buffer.extend_from_slice(&record.first_stream.name.offset.to_le_bytes());
-            buffer.extend_from_slice(&record.first_stream.name.meta.to_le_bytes());
-            buffer.extend_from_slice(&record.first_stream.flags.to_le_bytes());
-            // Tree metrics (Version 3+)
-            buffer.extend_from_slice(&record.descendants.to_le_bytes());
-            buffer.extend_from_slice(&record.treesize.to_le_bytes());
-            buffer.extend_from_slice(&record.tree_allocated.to_le_bytes());
-            // $FILE_NAME timestamps (Version 4+)
-            buffer.extend_from_slice(&record.fn_created.to_le_bytes());
-            buffer.extend_from_slice(&record.fn_modified.to_le_bytes());
-            buffer.extend_from_slice(&record.fn_accessed.to_le_bytes());
-            buffer.extend_from_slice(&record.fn_mft_changed.to_le_bytes());
-        }
+        // v10: Records — single bulk copy via bytemuck (Pod layout).
+        // Each record is 240 bytes (vs 195 in v9) but the extra 45 bytes of
+        // padding compress to nearly zero with zstd.
+        buffer.extend_from_slice(bytemuck::cast_slice(&self.records));
 
-        // Write names
+        // Names — raw bytes
         buffer.extend_from_slice(self.names.as_bytes());
 
-        // Write links (overflow links, not first_name)
-        for link in &self.links {
-            buffer.extend_from_slice(&link.next_entry.to_le_bytes());
-            buffer.extend_from_slice(&link.name.offset.to_le_bytes());
-            buffer.extend_from_slice(&link.name.meta.to_le_bytes());
-            buffer.extend_from_slice(&link.parent_frs.to_le_bytes());
-        }
+        // Links — bulk copy (LinkInfo is Pod, 24 bytes each)
+        buffer.extend_from_slice(bytemuck::cast_slice(&self.links));
 
-        // Write streams (overflow streams, not first_stream)
-        for stream in &self.streams {
-            buffer.extend_from_slice(&stream.size.length.to_le_bytes());
-            buffer.extend_from_slice(&stream.size.allocated.to_le_bytes());
-            buffer.extend_from_slice(&stream.next_entry.to_le_bytes());
-            buffer.extend_from_slice(&stream.name.offset.to_le_bytes());
-            buffer.extend_from_slice(&stream.name.meta.to_le_bytes());
-            buffer.extend_from_slice(&stream.flags.to_le_bytes());
-        }
+        // Streams — bulk copy (IndexStreamInfo is Pod, 32 bytes each)
+        buffer.extend_from_slice(bytemuck::cast_slice(&self.streams));
 
-        // Write children
-        for child in &self.children {
-            buffer.extend_from_slice(&child.next_entry.to_le_bytes());
-            buffer.extend_from_slice(&child.child_frs.to_le_bytes());
-            buffer.extend_from_slice(&child.name_index.to_le_bytes());
-        }
+        // v11: Children — bulk copy (ChildInfo is now Pod, 24 bytes each)
+        buffer.extend_from_slice(bytemuck::cast_slice(&self.children));
 
         // Write ExtensionTable
         // Extension count (u32)
@@ -160,6 +100,20 @@ impl MftIndex {
                 // Bytes (u64)
                 buffer.extend_from_slice(&bytes.to_le_bytes());
             }
+        }
+
+        // ─── v10: ExtensionIndex CSR ──────────────────────────────────
+        // Ensure the extension index is built before serializing.
+        // Callers should have called build_extension_index() already.
+        if let Some(ext_idx) = &self.extension_index {
+            let offsets_count = len_to_u32(ext_idx.offsets.len());
+            buffer.extend_from_slice(&offsets_count.to_le_bytes());
+            // Bulk cast u32 slices — same LE layout, no per-element overhead
+            buffer.extend_from_slice(bytemuck::cast_slice(&ext_idx.offsets));
+            buffer.extend_from_slice(bytemuck::cast_slice(&ext_idx.postings));
+        } else {
+            // No extension index — write zero count.
+            buffer.extend_from_slice(&0_u32.to_le_bytes());
         }
 
         buffer

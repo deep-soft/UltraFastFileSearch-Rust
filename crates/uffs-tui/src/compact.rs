@@ -7,5 +7,5 @@
 #[cfg(windows)]
 pub use uffs_core::compact::load_live_drive;
 pub use uffs_core::compact::{
-    DriveCompactIndex, IndexSource, LoadTiming, load_mft_file, refresh_drive,
+    ChildrenIndex, DriveCompactIndex, IndexSource, LoadTiming, load_mft_file, refresh_drive,
 };

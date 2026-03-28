@@ -16,12 +16,14 @@ fn test_extension_before_base_in_same_fragment() {
     fragment.links.push(LinkInfo {
         next_entry: link0_idx + 1,
         name: name2_ref,
+        _pad0: [0; 4],
         parent_frs: 5,
     });
     let link1_idx = fragment.links.len() as u32;
     fragment.links.push(LinkInfo {
         next_entry: NO_ENTRY,
         name: name3_ref,
+        _pad0: [0; 4],
         parent_frs: 6,
     });
 
@@ -47,6 +49,7 @@ fn test_extension_before_base_in_same_fragment() {
     record.first_name = LinkInfo {
         next_entry: NO_ENTRY,
         name: name1_ref,
+        _pad0: [0; 4],
         parent_frs: 5,
     };
 
@@ -131,6 +134,7 @@ fn test_cross_fragment_merge_multiple_extension_names() {
     fragment_a.links.push(LinkInfo {
         next_entry: NO_ENTRY,
         name: ext_hardlink_c,
+        _pad0: [0; 4],
         parent_frs: 10,
     });
 
@@ -189,6 +193,7 @@ fn test_cross_fragment_merge_base_first() {
     fragment_b.links.push(LinkInfo {
         next_entry: NO_ENTRY,
         name: ext_hardlink_c,
+        _pad0: [0; 4],
         parent_frs: 10,
     });
 
@@ -297,6 +302,7 @@ fn test_rebuild_children_from_names_hardlinks() {
     let link_name = push_index_name(&mut index, "file.txt");
     index.links.push(LinkInfo {
         name: link_name,
+        _pad0: [0; 4],
         parent_frs: dir1_frs,
         next_entry: NO_ENTRY,
     });

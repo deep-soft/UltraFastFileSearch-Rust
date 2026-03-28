@@ -84,13 +84,12 @@ pub fn collect_global_top_n(
                     let path = tree::resolve_path(drive, idx as usize, &volume_prefix);
                     path_results.push(make_display_row(drive.letter, rec, name, path));
 
-                    if let Some(children) = drive.children.get(idx as usize) {
-                        if !children.is_empty() {
-                            let mut sorted_children = children.clone();
-                            sort_indices_by_name(&mut sorted_children, drive, sort_desc);
-                            for &child in sorted_children.iter().rev() {
-                                stack.push(child);
-                            }
+                    let child_slice = drive.children.get(idx as usize);
+                    if !child_slice.is_empty() {
+                        let mut sorted_children = child_slice.to_vec();
+                        sort_indices_by_name(&mut sorted_children, drive, sort_desc);
+                        for &child in sorted_children.iter().rev() {
+                            stack.push(child);
                         }
                     }
                 }

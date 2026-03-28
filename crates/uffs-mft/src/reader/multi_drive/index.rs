@@ -11,6 +11,8 @@ use crate::error::{MftError, Result};
 use crate::index::{IndexHeader, MftIndex};
 use crate::platform::VolumeHandle;
 use crate::reader::{MftProgress, MftReader};
+#[cfg(windows)]
+use crate::usn::read_targeted_frs_records;
 use crate::usn::{aggregate_changes, query_usn_journal, read_usn_journal};
 
 impl MultiDriveMftReader {
@@ -362,18 +364,10 @@ impl MultiDriveMftReader {
             "🔧 Applying USN changes"
         );
 
-        let stats = index.apply_usn_changes(&changes);
-        debug!(
-            drive = %drive,
-            created = stats.created,
-            deleted = stats.deleted,
-            modified = stats.modified,
-            skipped = stats.skipped,
-            "📊 USN changes applied"
-        );
-
-        debug!(drive = %drive, "🔨 Recomputing tree metrics after USN updates");
-        index.compute_tree_metrics();
+        // Phase 1: apply deletes and collect FRS values for targeted reads
+        let (mut stats, _frs_to_read) = index.apply_usn_deletes(&changes);
+        #[cfg(windows)]
+        let frs_to_read = _frs_to_read;
 
         let handle = match VolumeHandle::open(drive) {
             Ok(handle) => handle,
@@ -386,6 +380,46 @@ impl MultiDriveMftReader {
                 return Ok(index);
             }
         };
+
+        // Phase 2: targeted MFT reads for non-delete changes (Windows only)
+        #[cfg(windows)]
+        if !frs_to_read.is_empty() {
+            debug!(
+                drive = %drive,
+                count = frs_to_read.len(),
+                "🎯 Reading targeted MFT records for USN changes"
+            );
+            match read_targeted_frs_records(&handle, &mut index, &frs_to_read) {
+                Ok(count) => {
+                    stats.targeted_reads = count;
+                }
+                Err(error) => {
+                    warn!(
+                        drive = %drive,
+                        error = %error,
+                        "⚠️ Targeted MFT reads failed"
+                    );
+                }
+            }
+        }
+
+        // Phase 3: rebuild derived structures
+        let had_changes = stats.deleted > 0 || stats.targeted_reads > 0;
+        if had_changes {
+            debug!(drive = %drive, "🔨 Rebuilding extension index after USN updates");
+            index.build_extension_index();
+            debug!(drive = %drive, "🔨 Recomputing tree metrics after USN updates");
+            index.compute_tree_metrics();
+        }
+
+        debug!(
+            drive = %drive,
+            targeted_reads = stats.targeted_reads,
+            deleted = stats.deleted,
+            skipped = stats.skipped,
+            "📊 USN changes applied"
+        );
+
         let volume_data = handle.volume_data();
         let volume_serial = volume_data.volume_serial_number;
 

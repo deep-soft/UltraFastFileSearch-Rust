@@ -51,7 +51,7 @@ pub fn start_refresh(app: &mut App) {
                         names: Vec::new(),
                         names_lower: Vec::new(),
                         trigram: backend::TrigramIndex::empty(),
-                        children: Vec::new(),
+                        children: compact::ChildrenIndex::empty(),
                         source: compact::IndexSource::MftFile(thread_source),
                     };
                     let result = compact::refresh_drive(&temp);

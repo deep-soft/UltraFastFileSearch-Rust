@@ -84,6 +84,9 @@ pub(super) fn load_index_from_mft_file(
     };
     let load_ms = t_load.elapsed().as_millis();
 
+    // Ensure compact cache is built + saved (profiling only for CLI)
+    let _compact = uffs_core::compact_cache::ensure_compact_cached(volume, &index);
+
     Ok(NativeIndexOnly { index, load_ms })
 }
 
@@ -251,6 +254,9 @@ pub(super) fn load_and_filter_native_from_mft_file(
         records = index.records.len(),
         load_ms, "[PARITY_TRACE] loaded"
     );
+
+    // Ensure compact cache is built + saved (profiling only for CLI)
+    let _compact = uffs_core::compact_cache::ensure_compact_cached(volume, &index);
 
     let t_query = std::time::Instant::now();
     let results = execute_index_query_native(&index, filters, needs_paths)?;
@@ -431,14 +437,10 @@ pub(super) async fn load_and_filter_data(
         return execute_query(df, filters);
     }
 
-    if let Some(drives) = multi_drives {
-        return super::search::search_multi_drive_filtered(
-            &drives,
-            filters,
-            needs_paths,
-            no_bitmap,
-        )
-        .await;
+    // Multi-drive and auto-detect are now handled via native compact search
+    // in dispatch. This function only handles single-drive and parquet index.
+    if multi_drives.is_some() {
+        bail!("Internal error: multi_drives should be routed to native compact search dispatch");
     }
 
     let effective_drive = single_drive.or_else(|| filters.parsed.drive());
@@ -504,31 +506,11 @@ pub(super) async fn load_and_filter_data(
         return Ok(filtered);
     }
 
-    #[cfg(windows)]
-    {
-        if !uffs_mft::is_elevated() {
-            bail!(
-                "Administrator privileges required.\n\n\
-                 UFFS reads the NTFS Master File Table directly, which requires elevated access.\n\n\
-                 Solutions:\n\
-                 1. Run PowerShell/Terminal as Administrator\n\
-                 2. Use a pre-built index: uffs search --index <file.parquet> \"*.txt\""
-            );
-        }
-        let all_drives = uffs_mft::detect_ntfs_drives();
-        if all_drives.is_empty() {
-            bail!("No NTFS drives found on this system");
-        }
-        info!(drives = ?all_drives, count = all_drives.len(), "No drive specified - searching all NTFS drives");
-        super::search::search_multi_drive_filtered(&all_drives, filters, needs_paths, no_bitmap)
-            .await
-    }
-    #[cfg(not(windows))]
-    {
-        bail!(
-            "No drive specified. Use --drive, --drives, --index, or include drive in pattern (e.g., c:/pro*)"
-        )
-    }
+    // Auto-detect case: no drive, no index → should be routed through
+    // native compact dispatch. Reaching here is a programming error.
+    bail!(
+        "No drive specified. Use --drive, --drives, --index, or include drive in pattern (e.g., c:/pro*)"
+    )
 }
 /// Build and execute the MFT query with all filters applied.
 #[tracing::instrument(

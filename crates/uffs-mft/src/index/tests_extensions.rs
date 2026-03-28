@@ -257,6 +257,7 @@ fn test_extension_index_with_hard_links() {
     index.links.push(LinkInfo {
         next_entry: NO_ENTRY,
         name: IndexNameRef::new(offset2, u16::try_from(name2.len()).unwrap(), true, ext_rs),
+        _pad0: [0; 4],
         parent_frs: 5, // same parent
     });
 

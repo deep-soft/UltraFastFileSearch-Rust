@@ -1,15 +1,15 @@
-//! Parallel multi-drive DataFrame search helpers.
+//! Parallel multi-drive native compact search helpers.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use indicatif::ProgressBar;
 use tokio::task::JoinSet;
 use tracing::info;
-use uffs_core::IntoLazy;
+use uffs_core::search::backend::DisplayRow;
 
-use super::drive_search::{reorder_drive_column, search_single_drive};
+use super::drive_search::search_single_drive;
 use crate::commands::raw_io::{OwnedQueryFilters, QueryFilters};
 use crate::commands::{add_drive_progress, create_multi_progress};
 
@@ -34,7 +34,7 @@ pub(crate) async fn search_multi_drive_filtered(
     filters: &QueryFilters<'_>,
     needs_paths: bool,
     no_bitmap: bool,
-) -> Result<uffs_core::DataFrame> {
+) -> Result<Vec<DisplayRow>> {
     if drives.is_empty() {
         bail!("No drives specified for multi-drive search");
     }
@@ -75,7 +75,7 @@ pub(crate) async fn search_multi_drive_filtered(
         }
     }
 
-    let mut filtered_results: Vec<uffs_core::DataFrame> = Vec::new();
+    let mut all_rows: Vec<DisplayRow> = Vec::new();
     let mut total_matches = 0usize;
     let mut drives_processed = 0usize;
 
@@ -117,9 +117,7 @@ pub(crate) async fn search_multi_drive_filtered(
                 "Drive completed"
             );
 
-            if let Some(df) = result.df {
-                filtered_results.push(df);
-            }
+            all_rows.extend(result.rows);
         }
 
         if let Some(drive_char) = pending_drives.next() {
@@ -135,31 +133,21 @@ pub(crate) async fn search_multi_drive_filtered(
         }
     }
 
-    if filtered_results.is_empty() {
+    if all_rows.is_empty() {
         bail!("No matching files found across {} drives", drives.len());
     }
 
-    let mut merged = filtered_results.remove(0);
-    for df in filtered_results {
-        merged = merged.vstack(&df).context("Failed to merge results")?;
+    // Apply limit if requested
+    if filters.limit > 0 {
+        all_rows.truncate(filters.limit as usize);
     }
-
-    let reordered = reorder_drive_column(&merged)?;
-    let result = if filters.limit > 0 {
-        reordered
-            .lazy()
-            .limit(filters.limit)
-            .collect()
-            .context("Failed to apply result limit")?
-    } else {
-        reordered
-    };
 
     info!(
         total_matches,
+        result_rows = all_rows.len(),
         drives = drives.len(),
         "Parallel multi-drive search complete"
     );
 
-    Ok(result)
+    Ok(all_rows)
 }

@@ -62,6 +62,7 @@ fn build_index_query_fixture() -> Result<MftIndex, TestError> {
     index.links.push(LinkInfo {
         next_entry: NO_ENTRY,
         name: hard_link_name,
+        _pad0: [0; 4],
         parent_frs: links_frs,
     });
 
@@ -74,6 +75,7 @@ fn build_index_query_fixture() -> Result<MftIndex, TestError> {
         next_entry: NO_ENTRY,
         name: ads_name,
         flags: 8_u8 << 2_u32,
+        _pad0: [0; 3],
     });
 
     let alpha = index.get_or_create(200);

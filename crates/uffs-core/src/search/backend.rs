@@ -464,6 +464,61 @@ pub fn parse_sort_spec(sort_str: &str) -> Vec<SortSpec> {
     specs
 }
 
+/// Convert `DisplayRow` results to a Polars `DataFrame` with standard MFT
+/// column names so existing CLI output formatters can consume it.
+///
+/// This creates a **small** `DataFrame` (only matching rows, not the full MFT).
+///
+/// # Errors
+///
+/// Returns an error if `DataFrame` construction fails.
+pub fn display_rows_to_dataframe(
+    rows: &[DisplayRow],
+) -> uffs_polars::PolarsResult<uffs_polars::DataFrame> {
+    use uffs_polars::{Column, DataFrame, columns};
+
+    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    let paths: Vec<&str> = rows.iter().map(|row| row.path.as_str()).collect();
+    let sizes: Vec<u64> = rows.iter().map(|row| row.size).collect();
+    let allocated: Vec<u64> = rows.iter().map(|row| row.allocated).collect();
+    let created: Vec<i64> = rows.iter().map(|row| row.created).collect();
+    let modified: Vec<i64> = rows.iter().map(|row| row.modified).collect();
+    let accessed: Vec<i64> = rows.iter().map(|row| row.accessed).collect();
+    let flags: Vec<u32> = rows.iter().map(|row| row.flags).collect();
+    let drives: Vec<String> = rows.iter().map(|row| format!("{}:", row.drive)).collect();
+    let descendants: Vec<u32> = rows.iter().map(|row| row.descendants).collect();
+    let treesize: Vec<u64> = rows.iter().map(|row| row.treesize).collect();
+
+    // path_only = directory portion of path (up to and including last backslash)
+    let path_only: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            row.path.rfind('\\').map_or_else(
+                || row.path.clone(),
+                |pos| row.path.get(..=pos).unwrap_or(&row.path).to_owned(),
+            )
+        })
+        .collect();
+
+    DataFrame::new(
+        rows.len(),
+        vec![
+            Column::new(columns::NAME.into(), &names),
+            Column::new(columns::PATH.into(), &paths),
+            Column::new("path_only".into(), &path_only),
+            Column::new(columns::SIZE.into(), &sizes),
+            Column::new("allocated_size".into(), &allocated),
+            Column::new(columns::CREATED.into(), &created),
+            Column::new(columns::MODIFIED.into(), &modified),
+            Column::new(columns::ACCESSED.into(), &accessed),
+            Column::new(columns::FLAGS.into(), &flags),
+            Column::new("drive".into(), &drives),
+            Column::new("descendants".into(), &descendants),
+            Column::new("treesize".into(), &treesize),
+        ],
+    )
+}
+
 /// Format the current sort state back into a CLI-compatible sort string.
 #[must_use]
 pub fn format_sort_spec(primary: SortColumn, primary_desc: bool, extra: &[SortSpec]) -> String {

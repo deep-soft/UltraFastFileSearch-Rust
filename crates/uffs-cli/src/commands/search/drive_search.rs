@@ -1,10 +1,16 @@
 //! Per-drive search helpers shared by multi-drive command flows.
+//!
+//! Search uses the **native `CompactIndex`** path by default:
+//! `MftIndex → CompactIndex → trigram/regex search → Vec<DisplayRow>`.
+//!
+//! Only the small result set (~500 rows) is converted to `DataFrame` for
+//! output formatting. The full MFT `DataFrame` (7M rows) is **never** created.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use indicatif::ProgressBar;
-use uffs_core::{IntoLazy, col, lit};
+use uffs_core::search::backend::DisplayRow;
 
 use crate::commands::raw_io::OwnedQueryFilters;
 
@@ -12,11 +18,8 @@ use crate::commands::raw_io::OwnedQueryFilters;
 pub(super) struct DriveResult {
     /// Drive letter that was read.
     pub(super) drive: char,
-    /// Filtered `DataFrame` with matching results (None if no matches or
-    /// error).
-    ///
-    /// Paths are already resolved using the full MFT data when requested.
-    pub(super) df: Option<uffs_polars::DataFrame>,
+    /// Matching rows from native compact index search.
+    pub(super) rows: Vec<DisplayRow>,
     /// Total records read from the MFT.
     pub(super) records_read: usize,
     /// Number of records matching the filters.
@@ -27,11 +30,8 @@ pub(super) struct DriveResult {
     pub(super) paths_resolved: bool,
 }
 
-/// Load, filter, and decorate results for a single drive.
-#[expect(
-    clippy::too_many_lines,
-    reason = "preserves the established per-drive search pipeline in one place"
-)]
+/// Load, filter, and decorate results for a single drive using **native
+/// compact index search** (no full-MFT `DataFrame` created).
 pub(super) async fn search_single_drive(
     drive_char: char,
     filters: Arc<OwnedQueryFilters>,
@@ -39,137 +39,82 @@ pub(super) async fn search_single_drive(
     no_bitmap: bool,
     progress: Option<ProgressBar>,
 ) -> DriveResult {
-    let full_df =
-        uffs_mft::load_or_build_dataframe_cached(drive_char, uffs_mft::INDEX_TTL_SECONDS).await;
-
-    let full_df = match full_df {
-        Ok(df) => df,
-        Err(error) => {
-            if let Some(pb) = progress.as_ref() {
-                pb.finish_with_message(format!("Error: {error}"));
-            }
-            return drive_error(drive_char, 0, 0, error.to_string(), false);
-        }
-    };
-
     _ = no_bitmap;
+    _ = needs_paths; // paths are always resolved by CompactIndex search
 
-    let records_read = full_df.height();
+    let result =
+        tokio::task::spawn_blocking(move || search_native_compact(drive_char, &filters)).await;
+
     if let Some(pb) = progress.as_ref() {
         pb.finish();
     }
 
-    let path_resolver = if needs_paths {
-        match uffs_core::FastPathResolver::build(&full_df, drive_char) {
-            Ok(resolver) => Some(resolver),
-            Err(error) => {
-                return drive_error(
-                    drive_char,
-                    records_read,
-                    0,
-                    format!("Failed to build path resolver: {error}"),
-                    false,
-                );
+    match result {
+        Ok(Ok(dr)) => dr,
+        Ok(Err(error)) => drive_error(drive_char, 0, 0, error.to_string(), false),
+        Err(error) => drive_error(drive_char, 0, 0, error.to_string(), false),
+    }
+}
+
+/// Native compact search: load `MftIndex` → build `CompactIndex` → search →
+/// convert small result set to `DataFrame`.
+#[cfg(windows)]
+fn search_native_compact(drive: char, filters: &OwnedQueryFilters) -> anyhow::Result<DriveResult> {
+    use uffs_mft::cache::load_cached_index;
+
+    // 1. Load MftIndex (cached or fresh)
+    let index =
+        if let Some((cached, _header)) = load_cached_index(drive, uffs_mft::INDEX_TTL_SECONDS) {
+            tracing::info!(drive = %drive, records = cached.records.len(), "📦 MftIndex cache hit");
+            cached
+        } else {
+            tracing::info!(drive = %drive, "📖 MftIndex cache miss — reading MFT");
+            let reader = uffs_mft::MftReader::open(drive)?;
+            let fresh = reader.read_all_index_sync()?;
+            let vol_serial = uffs_mft::VolumeHandle::open(drive)
+                .map(|handle| handle.volume_data().volume_serial_number)
+                .unwrap_or(0);
+            let (usn_jid, usn_next) = uffs_mft::usn::query_usn_journal(drive)
+                .map_or((0, 0), |info| (info.journal_id, info.next_usn));
+            if let Err(err) =
+                uffs_mft::cache::save_to_cache(&fresh, drive, vol_serial, usn_jid, usn_next)
+            {
+                tracing::warn!(drive = %drive, error = %err, "Failed to save .uffs cache");
             }
-        }
-    } else {
-        None
-    };
+            fresh
+        };
 
-    let filtered = match filters.execute(full_df) {
-        Ok(filtered) => filtered,
-        Err(error) => {
-            return drive_error(drive_char, records_read, 0, error.to_string(), false);
-        }
-    };
+    // 2. Ensure compact cache is built + saved
+    let compact = uffs_core::compact_cache::ensure_compact_cached(drive, &index);
+    let records_read = compact.records.len();
 
-    let matches = filtered.height();
+    // 3. Search on compact index (native — no full DataFrame)
+    let (rows, _search_filters, _filter_mode) = filters.search_compact(compact)?;
+    let matches = rows.len();
 
-    let with_paths = if let Some(resolver) = &path_resolver {
-        match resolver.add_path_column_with_dir_suffix(&filtered) {
-            Ok(df) => match uffs_core::add_path_only_column(&df) {
-                Ok(df_with_path_only) => {
-                    match uffs_core::apply_directory_treesize(&df_with_path_only) {
-                        Ok(df_with_treesize) => df_with_treesize,
-                        Err(error) => {
-                            return drive_error(
-                                drive_char,
-                                records_read,
-                                matches,
-                                format!("Failed to apply treesize: {error}"),
-                                false,
-                            );
-                        }
-                    }
-                }
-                Err(error) => {
-                    return drive_error(
-                        drive_char,
-                        records_read,
-                        matches,
-                        format!("Failed to add path_only: {error}"),
-                        false,
-                    );
-                }
-            },
-            Err(error) => {
-                return drive_error(
-                    drive_char,
-                    records_read,
-                    matches,
-                    format!("Failed to add paths: {error}"),
-                    false,
-                );
-            }
-        }
-    } else {
-        match uffs_core::apply_directory_treesize(&filtered) {
-            Ok(df) => df,
-            Err(error) => {
-                return drive_error(
-                    drive_char,
-                    records_read,
-                    matches,
-                    format!("Failed to apply treesize: {error}"),
-                    false,
-                );
-            }
-        }
-    };
-
-    let df_with_drive = if matches > 0 {
-        match with_paths
-            .lazy()
-            .with_column(lit(format!("{drive_char}:")).alias("drive"))
-            .collect()
-        {
-            Ok(df) => Some(df),
-            Err(error) => {
-                return drive_error(
-                    drive_char,
-                    records_read,
-                    matches,
-                    error.to_string(),
-                    path_resolver.is_some(),
-                );
-            }
-        }
-    } else {
-        None
-    };
-
-    DriveResult {
-        drive: drive_char,
-        df: df_with_drive,
+    Ok(DriveResult {
+        drive,
+        rows,
         records_read,
         matches,
         error: None,
-        paths_resolved: path_resolver.is_some(),
-    }
+        paths_resolved: true, // compact index always resolves paths
+    })
+}
+
+/// Stub for non-Windows — the live drive path is Windows-only.
+#[cfg(not(windows))]
+fn search_native_compact(
+    _drive: char,
+    _filters: &OwnedQueryFilters,
+) -> anyhow::Result<DriveResult> {
+    anyhow::bail!("live drive search requires Windows")
 }
 
 /// Reorder a `DataFrame` so the `drive` column appears first.
 pub(super) fn reorder_drive_column(df: &uffs_polars::DataFrame) -> Result<uffs_polars::DataFrame> {
+    use uffs_core::{IntoLazy, col};
+
     let column_names: Vec<String> = df
         .get_column_names()
         .into_iter()
@@ -198,7 +143,7 @@ fn drive_error(
 ) -> DriveResult {
     DriveResult {
         drive,
-        df: None,
+        rows: Vec::new(),
         records_read,
         matches,
         error: Some(error),

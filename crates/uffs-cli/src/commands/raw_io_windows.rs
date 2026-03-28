@@ -44,7 +44,7 @@ impl OwnedQueryFilters {
         }
     }
 
-    /// Execute query with these filters.
+    /// Execute query with these filters (legacy `DataFrame` path).
     pub(crate) fn execute(&self, df: uffs_polars::DataFrame) -> Result<uffs_polars::DataFrame> {
         use uffs_core::MftQuery;
 
@@ -77,6 +77,59 @@ impl OwnedQueryFilters {
 
         Ok(query.collect()?)
     }
+
+    /// Search on a `DriveCompactIndex` using native structures (no
+    /// `DataFrame`).
+    ///
+    /// Returns `(matching rows, search_filters, filter_mode)`.
+    pub(crate) fn search_compact(
+        &self,
+        compact: uffs_core::compact::DriveCompactIndex,
+    ) -> Result<(
+        Vec<uffs_core::search::backend::DisplayRow>,
+        uffs_core::search::filters::SearchFilters,
+        uffs_core::search::backend::FilterMode,
+    )> {
+        use uffs_core::search::backend::{FilterMode, MultiDriveBackend};
+        use uffs_core::search::filters::SearchFilters;
+
+        let search_filters = SearchFilters::from_params(
+            self.hide_system,
+            self.min_size,
+            self.max_size,
+            None,
+            None, // min/max descendants
+            None,
+            None, // newer/older (modified)
+            None,
+            None, // newer/older (created)
+            None,
+            None, // newer/older (accessed)
+            None, // attr_filter
+            self.ext_filter.as_deref(),
+            None, // exclude
+        );
+        let filter_mode = if self.files_only {
+            FilterMode::FilesOnly
+        } else if self.dirs_only {
+            FilterMode::DirsOnly
+        } else {
+            FilterMode::All
+        };
+
+        let mut backend = MultiDriveBackend::new();
+        backend.drives.push(compact);
+        let result = backend.search(
+            self.parsed.pattern(),
+            self.parsed.is_case_sensitive(),
+            false, // whole_word
+            None,  // result_limit (use default)
+            filter_mode,
+            &search_filters,
+        );
+
+        Ok((result.rows, search_filters, filter_mode))
+    }
 }
 
 /// Load index only (no query) for Windows LIVE streaming output.
@@ -105,6 +158,9 @@ pub(crate) async fn load_live_index(
         records = index.len(),
         "📊 Windows LIVE: index loaded for streaming output"
     );
+
+    // Ensure compact cache is built + saved (profiling only for CLI)
+    let _compact = uffs_core::compact_cache::ensure_compact_cached(drive_letter, &index);
 
     Ok((index, load_ms))
 }

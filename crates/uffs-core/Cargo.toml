@@ -28,6 +28,10 @@ categories.workspace = true
 # Internal crates
 uffs-polars.workspace = true
 uffs-mft.workspace = true
+uffs-security.workspace = true
+
+# Compression
+zstd.workspace = true
 
 # Error handling
 thiserror.workspace = true
@@ -56,6 +60,8 @@ devicons.workspace = true
 
 # Platform dirs (for key file path in keystore)
 anyhow.workspace = true
+itoa = "1.0.18"
+bytemuck = { version = "1.25.0", features = ["derive"] }
 
 [dev-dependencies]
 criterion.workspace = true

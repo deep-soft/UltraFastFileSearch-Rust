@@ -10,7 +10,10 @@
 ///
 /// Uses a single `u32` for all boolean flags (15 flags = 15 bits).
 /// This is more cache-friendly than separate `bool` fields.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// 56 bytes with explicit padding.  Derives `bytemuck::Pod` for bulk
+/// serialization.
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct StandardInfo {
     /// Creation time (Windows FILETIME as i64)
@@ -23,6 +26,12 @@ pub struct StandardInfo {
     pub mft_changed: i64,
     /// Bit-packed attribute flags
     pub flags: u32,
+    /// Explicit padding for `u64` alignment of `usn`.
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "bytemuck Pod requires all fields same visibility"
+    )]
+    pub _pad0: [u8; 4],
     // NTFS 3.0+ extended fields (forensic value)
     /// Update Sequence Number - correlates with USN journal (`$UsnJrnl`)
     pub usn: u64,
@@ -156,6 +165,7 @@ impl StandardInfo {
             accessed: ext.accessed,
             mft_changed: ext.mft_changed,
             flags,
+            _pad0: [0; 4],
             usn: ext.usn,
             security_id: ext.security_id,
             owner_id: ext.owner_id,
@@ -185,6 +195,7 @@ impl StandardInfo {
         accessed: 0,
         mft_changed: 0,
         flags: 0,
+        _pad0: [0; 4],
         usn: 0,
         security_id: 0,
         owner_id: 0,

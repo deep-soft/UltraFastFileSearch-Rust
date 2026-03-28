@@ -170,14 +170,14 @@ impl MftIndex {
             frs_to_idx_bytes,
             "FRS table exceeds remaining data",
         )?;
-        let mut frs_to_idx = Vec::with_capacity(
-            usize::try_from(frs_to_idx_len).map_err(|_err| "FRS table too large")?,
-        );
-        for _ in 0..frs_to_idx_len {
-            frs_to_idx.push(read_u32!());
-        }
+        let frs_slice = data
+            .get(pos..pos + frs_to_idx_bytes)
+            .ok_or("FRS table truncated")?;
+        let frs_to_idx: Vec<u32> = super::aligned_vec_from_bytes(frs_slice);
+        pos += frs_to_idx_bytes;
 
-        // Read records
+        // Read records — v10 uses bytemuck bulk copy (240B/rec),
+        //                 v3-v9 use field-by-field (variable size/rec).
         let record_size_bytes = match version {
             3 => 121,
             4 => 157,
@@ -185,6 +185,7 @@ impl MftIndex {
             6 => 185,
             7 => 193,
             8 | 9 => 195,
+            10 | 11 => 240, // Pod layout with padding
             _ => return Err("Unsupported index version"),
         };
         let record_bytes =
@@ -195,127 +196,145 @@ impl MftIndex {
             record_bytes,
             "Record section exceeds remaining data",
         )?;
-        let mut records = Vec::with_capacity(
-            usize::try_from(record_count).map_err(|_err| "Record section too large")?,
-        );
-        for _ in 0..record_count {
-            let frs = read_u64!();
-            // Version 4+: sequence_number and namespace (read sequentially to avoid
-            // unsequenced reads)
-            let sequence_number = if version >= 4 { read_u16!() } else { 0 };
-            let namespace = if version >= 4 { read_u8!() } else { 1 }; // Default: Win32
-            let forensic_flags = if version >= 4 { read_u8!() } else { 0 }; // Version 7: renamed from reserved
-            // Version 5+: LSN (Log File Sequence Number)
-            let lsn = if version >= 5 { read_u64!() } else { 0 };
-            // Version 6+: reparse_tag
-            let reparse_tag = if version >= 6 { read_u32!() } else { 0 };
-            // Version 7+: base_frs for extension records
-            let base_frs = if version >= 7 { read_u64!() } else { 0 };
-            // StandardInfo
-            let created = read_i64!();
-            let modified = read_i64!();
-            let accessed = read_i64!();
-            let mft_changed = read_i64!();
-            let raw_flags = read_u32!();
-            // v8 and earlier: flags used a remapped internal bit layout.
-            // v9+: flags store raw NTFS FILE_ATTRIBUTE_* bits directly.
-            let flags = if version <= 8 {
-                v8_flags_to_raw_ntfs(raw_flags)
-            } else {
-                raw_flags
-            };
-            // Version 5+: NTFS 3.0+ forensic fields
-            let usn = if version >= 5 { read_u64!() } else { 0 };
-            let security_id = if version >= 5 { read_u32!() } else { 0 };
-            let owner_id = if version >= 5 { read_u32!() } else { 0 };
-            // Counts
-            let name_count = read_u16!();
-            let rec_stream_count = read_u16!();
-            // Version 8+: total_stream_count for full tree-metrics accounting
-            // For older versions, default to stream_count (user-visible = total)
-            let total_stream_count = if version >= 8 {
-                read_u16!()
-            } else {
-                rec_stream_count
-            };
-            let first_child = read_u32!();
-            // first_name (LinkInfo)
-            let link_next_entry = read_u32!();
-            let link_name_offset = read_u32!();
-            let link_name_meta = read_u32!();
-            let link_parent_frs = read_u64!();
-            // first_stream (IndexStreamInfo)
-            let stream_size_length = read_u64!();
-            let stream_size_allocated = read_u64!();
-            let stream_next_entry = read_u32!();
-            let stream_name_offset = read_u32!();
-            let stream_name_meta = read_u32!();
-            let stream_flags = read_u8!();
-            // Tree metrics (Version 3+)
-            let descendants = if version >= 3 { read_u32!() } else { 0 };
-            let treesize = if version >= 3 { read_u64!() } else { 0 };
-            let tree_allocated = if version >= 3 { read_u64!() } else { 0 };
-            // $FILE_NAME timestamps (Version 4+, read sequentially)
-            let fn_created = if version >= 4 { read_i64!() } else { 0 };
-            let fn_modified = if version >= 4 { read_i64!() } else { 0 };
-            let fn_accessed = if version >= 4 { read_i64!() } else { 0 };
-            let fn_mft_changed = if version >= 4 { read_i64!() } else { 0 };
+        // v10+: alignment-safe bulk copy into aligned Vec<FileRecord>
+        let records = if version >= 10 {
+            let slice = data
+                .get(pos..pos + record_bytes)
+                .ok_or("Record section truncated")?;
+            let recs: Vec<FileRecord> = super::aligned_vec_from_bytes(slice);
+            pos += record_bytes;
+            recs
+        } else {
+            // v3-v9: field-by-field deserialization
+            let mut records = Vec::with_capacity(
+                usize::try_from(record_count).map_err(|_err| "Record section too large")?,
+            );
+            for _ in 0..record_count {
+                let frs = read_u64!();
+                // Version 4+: sequence_number and namespace (read sequentially to avoid
+                // unsequenced reads)
+                let sequence_number = if version >= 4 { read_u16!() } else { 0 };
+                let namespace = if version >= 4 { read_u8!() } else { 1 }; // Default: Win32
+                let forensic_flags = if version >= 4 { read_u8!() } else { 0 }; // Version 7: renamed from reserved
+                // Version 5+: LSN (Log File Sequence Number)
+                let lsn = if version >= 5 { read_u64!() } else { 0 };
+                // Version 6+: reparse_tag
+                let reparse_tag = if version >= 6 { read_u32!() } else { 0 };
+                // Version 7+: base_frs for extension records
+                let base_frs = if version >= 7 { read_u64!() } else { 0 };
+                // StandardInfo
+                let created = read_i64!();
+                let modified = read_i64!();
+                let accessed = read_i64!();
+                let mft_changed = read_i64!();
+                let raw_flags = read_u32!();
+                // v8 and earlier: flags used a remapped internal bit layout.
+                // v9+: flags store raw NTFS FILE_ATTRIBUTE_* bits directly.
+                let flags = if version <= 8 {
+                    v8_flags_to_raw_ntfs(raw_flags)
+                } else {
+                    raw_flags
+                };
+                // Version 5+: NTFS 3.0+ forensic fields
+                let usn = if version >= 5 { read_u64!() } else { 0 };
+                let security_id = if version >= 5 { read_u32!() } else { 0 };
+                let owner_id = if version >= 5 { read_u32!() } else { 0 };
+                // Counts
+                let name_count = read_u16!();
+                let rec_stream_count = read_u16!();
+                // Version 8+: total_stream_count for full tree-metrics accounting
+                // For older versions, default to stream_count (user-visible = total)
+                let total_stream_count = if version >= 8 {
+                    read_u16!()
+                } else {
+                    rec_stream_count
+                };
+                let first_child = read_u32!();
+                // first_name (LinkInfo)
+                let link_next_entry = read_u32!();
+                let link_name_offset = read_u32!();
+                let link_name_meta = read_u32!();
+                let link_parent_frs = read_u64!();
+                // first_stream (IndexStreamInfo)
+                let stream_size_length = read_u64!();
+                let stream_size_allocated = read_u64!();
+                let stream_next_entry = read_u32!();
+                let stream_name_offset = read_u32!();
+                let stream_name_meta = read_u32!();
+                let stream_flags = read_u8!();
+                // Tree metrics (Version 3+)
+                let descendants = if version >= 3 { read_u32!() } else { 0 };
+                let treesize = if version >= 3 { read_u64!() } else { 0 };
+                let tree_allocated = if version >= 3 { read_u64!() } else { 0 };
+                // $FILE_NAME timestamps (Version 4+, read sequentially)
+                let fn_created = if version >= 4 { read_i64!() } else { 0 };
+                let fn_modified = if version >= 4 { read_i64!() } else { 0 };
+                let fn_accessed = if version >= 4 { read_i64!() } else { 0 };
+                let fn_mft_changed = if version >= 4 { read_i64!() } else { 0 };
 
-            records.push(FileRecord {
-                frs,
-                sequence_number,
-                namespace,
-                forensic_flags,
-                lsn,
-                reparse_tag,
-                base_frs,
-                stdinfo: StandardInfo {
-                    created,
-                    modified,
-                    accessed,
-                    mft_changed,
-                    flags,
-                    usn,
-                    security_id,
-                    owner_id,
-                },
-                name_count,
-                stream_count: rec_stream_count,
-                total_stream_count,
-                first_internal_stream: NO_ENTRY,
-                first_child,
-                first_name: LinkInfo {
-                    next_entry: link_next_entry,
-                    name: IndexNameRef {
-                        offset: link_name_offset,
-                        meta: link_name_meta,
+                records.push(FileRecord {
+                    frs,
+                    sequence_number,
+                    namespace,
+                    forensic_flags,
+                    _pad0: [0; 4],
+                    lsn,
+                    reparse_tag,
+                    _pad1: [0; 4],
+                    base_frs,
+                    stdinfo: StandardInfo {
+                        created,
+                        modified,
+                        accessed,
+                        mft_changed,
+                        flags,
+                        _pad0: [0; 4],
+                        usn,
+                        security_id,
+                        owner_id,
                     },
-                    parent_frs: link_parent_frs,
-                },
-                first_stream: IndexStreamInfo {
-                    size: SizeInfo {
-                        length: stream_size_length,
-                        allocated: stream_size_allocated,
+                    name_count,
+                    stream_count: rec_stream_count,
+                    total_stream_count,
+                    _pad2: [0; 2],
+                    first_internal_stream: NO_ENTRY,
+                    first_child,
+                    first_name: LinkInfo {
+                        next_entry: link_next_entry,
+                        name: IndexNameRef {
+                            offset: link_name_offset,
+                            meta: link_name_meta,
+                        },
+                        _pad0: [0; 4],
+                        parent_frs: link_parent_frs,
                     },
-                    next_entry: stream_next_entry,
-                    name: IndexNameRef {
-                        offset: stream_name_offset,
-                        meta: stream_name_meta,
+                    first_stream: IndexStreamInfo {
+                        size: SizeInfo {
+                            length: stream_size_length,
+                            allocated: stream_size_allocated,
+                        },
+                        next_entry: stream_next_entry,
+                        name: IndexNameRef {
+                            offset: stream_name_offset,
+                            meta: stream_name_meta,
+                        },
+                        flags: stream_flags,
+                        _pad0: [0; 3],
                     },
-                    flags: stream_flags,
-                },
-                fn_created,
-                fn_modified,
-                fn_accessed,
-                fn_mft_changed,
-                descendants,
-                treesize,
-                tree_allocated,
-                // Deserialized caches don't have internal streams info (computed during parsing)
-                internal_streams_size: 0,
-                internal_streams_allocated: 0,
-            });
-        }
+                    fn_created,
+                    fn_modified,
+                    fn_accessed,
+                    fn_mft_changed,
+                    descendants,
+                    _pad3: [0; 4],
+                    treesize,
+                    tree_allocated,
+                    internal_streams_size: 0,
+                    internal_streams_allocated: 0,
+                });
+            }
+            records
+        }; // end v3-v9 else block
 
         // Read names
         let names_len = usize::try_from(names_size).map_err(|_err| "Names section too large")?;
@@ -334,96 +353,162 @@ impl MftIndex {
         pos = names_end;
 
         // Read links (overflow links)
-        let link_bytes =
-            checked_section_bytes(links_count, LINK_INFO_BYTES, "Links section too large")?;
-        ensure_remaining(
-            data.len(),
-            pos,
-            link_bytes,
-            "Links section exceeds remaining data",
-        )?;
-        let mut links = Vec::with_capacity(
-            usize::try_from(links_count).map_err(|_err| "Links section too large")?,
-        );
-        for _ in 0..links_count {
-            let next_entry = read_u32!();
-            let name_offset = read_u32!();
-            let name_meta = read_u32!();
-            let parent_frs = read_u64!();
-
-            links.push(LinkInfo {
-                next_entry,
-                name: IndexNameRef {
-                    offset: name_offset,
-                    meta: name_meta,
-                },
-                parent_frs,
-            });
-        }
+        let links = if version >= 10 {
+            // v10: Pod layout — 24 bytes per LinkInfo (with padding)
+            let link_pod_bytes = checked_section_bytes(
+                links_count,
+                core::mem::size_of::<LinkInfo>(),
+                "Links section too large",
+            )?;
+            ensure_remaining(
+                data.len(),
+                pos,
+                link_pod_bytes,
+                "Links section exceeds remaining data",
+            )?;
+            let slice = data
+                .get(pos..pos + link_pod_bytes)
+                .ok_or("Links truncated")?;
+            let result: Vec<LinkInfo> = super::aligned_vec_from_bytes(slice);
+            pos += link_pod_bytes;
+            result
+        } else {
+            let link_bytes =
+                checked_section_bytes(links_count, LINK_INFO_BYTES, "Links section too large")?;
+            ensure_remaining(
+                data.len(),
+                pos,
+                link_bytes,
+                "Links section exceeds remaining data",
+            )?;
+            let mut links = Vec::with_capacity(
+                usize::try_from(links_count).map_err(|_err| "Links section too large")?,
+            );
+            for _ in 0..links_count {
+                let next_entry = read_u32!();
+                let name_offset = read_u32!();
+                let name_meta = read_u32!();
+                let parent_frs = read_u64!();
+                links.push(LinkInfo {
+                    next_entry,
+                    name: IndexNameRef {
+                        offset: name_offset,
+                        meta: name_meta,
+                    },
+                    _pad0: [0; 4],
+                    parent_frs,
+                });
+            }
+            links
+        };
 
         // Read streams (overflow streams)
-        let stream_bytes = checked_section_bytes(
-            streams_count,
-            STREAM_INFO_BYTES,
-            "Streams section too large",
-        )?;
-        ensure_remaining(
-            data.len(),
-            pos,
-            stream_bytes,
-            "Streams section exceeds remaining data",
-        )?;
-        let mut streams = Vec::with_capacity(
-            usize::try_from(streams_count).map_err(|_err| "Streams section too large")?,
-        );
-        for _ in 0..streams_count {
-            let size_length = read_u64!();
-            let size_allocated = read_u64!();
-            let next_entry = read_u32!();
-            let name_offset = read_u32!();
-            let name_meta = read_u32!();
-            let flags = read_u8!();
+        let streams = if version >= 10 {
+            // v10: Pod layout — 32 bytes per IndexStreamInfo (with padding)
+            let stream_pod_bytes = checked_section_bytes(
+                streams_count,
+                core::mem::size_of::<IndexStreamInfo>(),
+                "Streams section too large",
+            )?;
+            ensure_remaining(
+                data.len(),
+                pos,
+                stream_pod_bytes,
+                "Streams section exceeds remaining data",
+            )?;
+            let slice = data
+                .get(pos..pos + stream_pod_bytes)
+                .ok_or("Streams truncated")?;
+            let result: Vec<IndexStreamInfo> = super::aligned_vec_from_bytes(slice);
+            pos += stream_pod_bytes;
+            result
+        } else {
+            let stream_bytes = checked_section_bytes(
+                streams_count,
+                STREAM_INFO_BYTES,
+                "Streams section too large",
+            )?;
+            ensure_remaining(
+                data.len(),
+                pos,
+                stream_bytes,
+                "Streams section exceeds remaining data",
+            )?;
+            let mut streams = Vec::with_capacity(
+                usize::try_from(streams_count).map_err(|_err| "Streams section too large")?,
+            );
+            for _ in 0..streams_count {
+                let size_length = read_u64!();
+                let size_allocated = read_u64!();
+                let next_entry = read_u32!();
+                let name_offset = read_u32!();
+                let name_meta = read_u32!();
+                let flags = read_u8!();
+                streams.push(IndexStreamInfo {
+                    size: SizeInfo {
+                        length: size_length,
+                        allocated: size_allocated,
+                    },
+                    next_entry,
+                    name: IndexNameRef {
+                        offset: name_offset,
+                        meta: name_meta,
+                    },
+                    flags,
+                    _pad0: [0; 3],
+                });
+            }
+            streams
+        };
 
-            streams.push(IndexStreamInfo {
-                size: SizeInfo {
-                    length: size_length,
-                    allocated: size_allocated,
-                },
-                next_entry,
-                name: IndexNameRef {
-                    offset: name_offset,
-                    meta: name_meta,
-                },
-                flags,
-            });
-        }
-
-        // Read children
-        let child_bytes = checked_section_bytes(
-            children_count,
-            CHILD_INFO_BYTES,
-            "Children section too large",
-        )?;
-        ensure_remaining(
-            data.len(),
-            pos,
-            child_bytes,
-            "Children section exceeds remaining data",
-        )?;
-        let mut children = Vec::with_capacity(
-            usize::try_from(children_count).map_err(|_err| "Children section too large")?,
-        );
-        for _ in 0..children_count {
-            let next_entry = read_u32!();
-            let child_frs = read_u64!();
-            let name_index = read_u16!();
-
-            children.push(ChildInfo {
-                next_entry,
-                child_frs,
-                name_index,
-            });
-        }
+        // Read children — v11+ Pod bulk copy, v3-v10 element-by-element
+        let children = if version >= 11 {
+            let child_pod_bytes = checked_section_bytes(
+                children_count,
+                size_of::<ChildInfo>(),
+                "Children section too large",
+            )?;
+            ensure_remaining(
+                data.len(),
+                pos,
+                child_pod_bytes,
+                "Children section exceeds remaining data",
+            )?;
+            let slice = data
+                .get(pos..pos + child_pod_bytes)
+                .ok_or("Children truncated")?;
+            let result: Vec<ChildInfo> = super::aligned_vec_from_bytes(slice);
+            pos += child_pod_bytes;
+            result
+        } else {
+            let child_bytes = checked_section_bytes(
+                children_count,
+                CHILD_INFO_BYTES,
+                "Children section too large",
+            )?;
+            ensure_remaining(
+                data.len(),
+                pos,
+                child_bytes,
+                "Children section exceeds remaining data",
+            )?;
+            let mut children = Vec::with_capacity(
+                usize::try_from(children_count).map_err(|_err| "Children section too large")?,
+            );
+            for _ in 0..children_count {
+                let next_entry = read_u32!();
+                let child_frs = read_u64!();
+                let name_index = read_u16!();
+                children.push(ChildInfo {
+                    next_entry,
+                    _pad0: [0; 4],
+                    child_frs,
+                    name_index,
+                    _pad1: [0; 6],
+                });
+            }
+            children
+        };
 
         // Read ExtensionTable
         let extension_count = read_u32!() as usize;
@@ -483,6 +568,50 @@ impl MftIndex {
 
         let parse_ms = t_parse_start.elapsed().as_millis();
 
+        // ─── v10: Read ExtensionIndex CSR ─────────────────────────────
+        let t_ext = std::time::Instant::now();
+        let extension_index = if version >= 10 && pos + 4 <= data.len() {
+            let offsets_count = read_u32!() as usize;
+            if offsets_count > 0 {
+                let offsets_bytes = offsets_count * 4;
+                ensure_remaining(
+                    data.len(),
+                    pos,
+                    offsets_bytes,
+                    "ExtensionIndex offsets exceed remaining data",
+                )?;
+                let off_slice = data
+                    .get(pos..pos + offsets_bytes)
+                    .ok_or("ExtensionIndex offsets truncated")?;
+                let ext_offsets: Vec<u32> = super::aligned_vec_from_bytes(off_slice);
+                pos += offsets_bytes;
+
+                let total_postings = ext_offsets.last().copied().unwrap_or(0) as usize;
+                let postings_bytes = total_postings * 4;
+                ensure_remaining(
+                    data.len(),
+                    pos,
+                    postings_bytes,
+                    "ExtensionIndex postings exceed remaining data",
+                )?;
+                let post_slice = data
+                    .get(pos..pos + postings_bytes)
+                    .ok_or("ExtensionIndex postings truncated")?;
+                let ext_postings: Vec<u32> = super::aligned_vec_from_bytes(post_slice);
+                let _ = postings_bytes; // pos not advanced — last section
+
+                Some(super::super::ExtensionIndex {
+                    offsets: ext_offsets,
+                    postings: ext_postings,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let ext_idx_ms = t_ext.elapsed().as_millis();
+
         let mut index = Self {
             volume,
             records,
@@ -494,8 +623,8 @@ impl MftIndex {
             internal_streams: Vec::new(),
             stats: MftStats::new(),
             extensions,
-            extension_index: None,
-            forensic_mode: false, // Loaded indexes don't have forensic records
+            extension_index,
+            forensic_mode: false,
             reserved_allocated_bytes: 0,
         };
 
@@ -514,13 +643,14 @@ impl MftIndex {
             0
         };
 
-        // Rebuild the per-extension → record-indices lookup so that
-        // filtered queries (*.txt, *.pdf, …) get O(matches) performance.
-        // The ExtensionIndex is not serialized; it must be reconstructed
-        // from the ExtensionTable + record names on every load.
-        let t_ext = std::time::Instant::now();
-        index.build_extension_index();
-        let ext_idx_ms = t_ext.elapsed().as_millis();
+        // v9 and below: ExtensionIndex was not persisted — rebuild from records
+        let ext_rebuild_ms = if index.extension_index.is_none() {
+            let t_rebuild = std::time::Instant::now();
+            index.build_extension_index();
+            t_rebuild.elapsed().as_millis()
+        } else {
+            0
+        };
 
         let total_deser_ms = t_deser_start.elapsed().as_millis();
 
@@ -530,7 +660,13 @@ impl MftIndex {
             if tree_ms > 0 {
                 eprintln!("[CACHE_PROFILE]   tree_metrics:  {tree_ms:>6} ms  (old format)");
             }
-            eprintln!("[CACHE_PROFILE]   ext_index:     {ext_idx_ms:>6} ms  (CSR build)");
+            if ext_rebuild_ms > 0 {
+                eprintln!(
+                    "[CACHE_PROFILE]   ext_index:     {ext_rebuild_ms:>6} ms  (CSR rebuild, v9)"
+                );
+            } else {
+                eprintln!("[CACHE_PROFILE]   ext_index:     {ext_idx_ms:>6} ms  (CSR load, v10)");
+            }
             eprintln!("[CACHE_PROFILE]   deser_total:   {total_deser_ms:>6} ms");
         }
 

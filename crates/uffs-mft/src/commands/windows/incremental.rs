@@ -540,25 +540,53 @@ pub async fn cmd_index_update(drive: char, force_full: bool, ttl: Option<u64>) -
 
             let mut updated_index = index;
             let apply_start = Instant::now();
-            let stats = updated_index.apply_usn_changes(&changes);
+
+            // Phase 1: deletes
+            let (mut stats, frs_to_read) = updated_index.apply_usn_deletes(&changes);
+
+            // Phase 2: targeted MFT reads for non-delete changes
+            let handle = VolumeHandle::open(drive)?;
+            if !frs_to_read.is_empty() {
+                println!(
+                    "   🎯 Reading {} targeted MFT records...",
+                    frs_to_read.len()
+                );
+                match uffs_mft::usn::read_targeted_frs_records(
+                    &handle,
+                    &mut updated_index,
+                    &frs_to_read,
+                ) {
+                    Ok(count) => {
+                        stats.targeted_reads = count;
+                    }
+                    Err(e) => {
+                        println!("   ⚠️ Targeted reads failed: {e}");
+                    }
+                }
+            }
             let apply_time = apply_start.elapsed();
 
             println!(
-                "   Created: {}, Deleted: {}, Modified: {}, Skipped: {}",
-                stats.created, stats.deleted, stats.modified, stats.skipped
+                "   Targeted reads: {}, Deleted: {}, Skipped: {}",
+                stats.targeted_reads, stats.deleted, stats.skipped
             );
             println!("   Applied in {:.3}s", apply_time.as_secs_f64());
 
-            // Recompute tree metrics after structural changes
-            println!();
-            println!("🔨 Recomputing tree metrics...");
-            let tree_start = Instant::now();
-            updated_index.compute_tree_metrics();
-            let tree_time = tree_start.elapsed();
-            println!("   Computed in {:.3}s", tree_time.as_secs_f64());
+            // Rebuild derived structures
+            let had_changes = stats.deleted > 0 || stats.targeted_reads > 0;
+            if had_changes {
+                println!();
+                println!("🔨 Rebuilding extension index...");
+                updated_index.build_extension_index();
+
+                println!("🔨 Recomputing tree metrics...");
+                let tree_start = Instant::now();
+                updated_index.compute_tree_metrics();
+                let tree_time = tree_start.elapsed();
+                println!("   Computed in {:.3}s", tree_time.as_secs_f64());
+            }
 
             // Save updated index
-            let handle = VolumeHandle::open(drive)?;
             let volume_data = handle.volume_data();
             let volume_serial = volume_data.volume_serial_number;
 

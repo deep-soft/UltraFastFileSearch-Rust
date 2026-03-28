@@ -73,6 +73,7 @@ pub fn is_path_pattern(pattern: &str) -> bool {
 /// 2. Find directories matching intermediate segments via trigram + name verify
 /// 3. Collect children of those directories
 /// 4. Filter leaf matches on the final segment
+#[must_use]
 pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize) -> Vec<u32> {
     // Normalize separators to backslash, strip leading separator
     let normalized = pattern_lower.replace('/', "\\");
@@ -131,11 +132,7 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
         } else {
             let mut next_dirs = Vec::new();
             for &dir_idx in &candidate_dirs {
-                let dir_children = drive
-                    .children
-                    .get(dir_idx as usize)
-                    .map_or(&[][..], Vec::as_slice);
-                for &child_idx in dir_children {
+                for &child_idx in drive.children.get(dir_idx as usize) {
                     if let Some(child_rec) = drive.records.get(child_idx as usize) {
                         if child_rec.is_directory() {
                             let child_name = child_rec.name(&drive.names_lower);
@@ -164,11 +161,7 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
         }
     } else {
         for &dir_idx in &candidate_dirs {
-            let dir_children = drive
-                .children
-                .get(dir_idx as usize)
-                .map_or(&[][..], Vec::as_slice);
-            for &child_idx in dir_children {
+            for &child_idx in drive.children.get(dir_idx as usize) {
                 if let Some(child_rec) = drive.records.get(child_idx as usize) {
                     let child_name = child_rec.name(&drive.names_lower);
                     if name_matches(child_name, leaf_pattern) {
@@ -195,11 +188,7 @@ fn collect_descendant_dirs(
     if out.len() >= max {
         return;
     }
-    let dir_children = drive
-        .children
-        .get(dir_idx as usize)
-        .map_or(&[][..], Vec::as_slice);
-    for &child_idx in dir_children {
+    for &child_idx in drive.children.get(dir_idx as usize) {
         if let Some(child_rec) = drive.records.get(child_idx as usize) {
             if child_rec.is_directory() && child_rec.name_len > 0 {
                 out.push(child_idx);
@@ -222,11 +211,7 @@ fn collect_all_descendants(
     if out.len() >= max {
         return;
     }
-    let dir_children = drive
-        .children
-        .get(dir_idx as usize)
-        .map_or(&[][..], Vec::as_slice);
-    for &child_idx in dir_children {
+    for &child_idx in drive.children.get(dir_idx as usize) {
         if let Some(child_rec) = drive.records.get(child_idx as usize) {
             if child_rec.name_len > 0 {
                 let name = child_rec.name(&drive.names_lower);

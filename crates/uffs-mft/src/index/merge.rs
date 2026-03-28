@@ -220,6 +220,7 @@ impl MftIndex {
                     self.links.push(LinkInfo {
                         next_entry: discarded.first_name.next_entry,
                         name: discarded.first_name.name,
+                        _pad0: [0; 4],
                         parent_frs: discarded.first_name.parent_frs,
                     });
                     Some(new_link_idx)
@@ -262,6 +263,7 @@ impl MftIndex {
                         name: discarded.first_stream.name,
                         size: discarded.first_stream.size,
                         flags: discarded.first_stream.flags,
+                        _pad0: [0; 3],
                     });
                     Some(new_stream_idx)
                 } else {

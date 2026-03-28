@@ -3,20 +3,38 @@
 //! Cache files are encrypted with AES-256-GCM when a platform key is
 //! available. Legacy plaintext files (`UFFSIDX` magic) are auto-migrated
 //! to encrypted format on first load.
+//!
+//! Since v0.4.22 the serialized bytes are zstd-compressed before encryption.
+//! On load, the decompressor detects the zstd frame magic (`0xFD2FB528`) and
+//! decompresses automatically; older uncompressed caches are still loaded
+//! transparently.
 
 use super::IndexHeader;
 use crate::index::MftIndex;
 
+/// zstd frame magic bytes (little-endian `0xFD2FB528`).
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+
+/// Default zstd compression level (3 = good balance of speed vs ratio).
+const ZSTD_LEVEL: i32 = 3;
+
+/// Returns `true` if `data` starts with the zstd frame magic.
+fn is_zstd_compressed(data: &[u8]) -> bool {
+    data.get(..4).is_some_and(|m| m == ZSTD_MAGIC)
+}
+
 impl MftIndex {
     /// Saves the index to a file.
     ///
-    /// The serialized bytes are encrypted with AES-256-GCM before writing.
-    /// If the encryption key is unavailable, falls back to plaintext with a
-    /// warning (never blocks the user).
+    /// The serialized bytes are zstd-compressed and then encrypted with
+    /// AES-256-GCM before writing. Encryption is mandatory — if the key
+    /// is unavailable or encryption fails, an error is returned and **no
+    /// data is written to disk**.
     ///
     /// # Errors
     ///
-    /// Returns an error if file writing fails.
+    /// Returns an error if compression, encryption, or file writing fails.
+    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
     pub fn save_to_file(
         &self,
         path: &std::path::Path,
@@ -24,21 +42,35 @@ impl MftIndex {
         usn_journal_id: u64,
         next_usn: i64,
     ) -> std::io::Result<()> {
-        let plaintext = self.serialize(volume_serial, usn_journal_id, next_usn);
+        let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
 
-        let data = match uffs_security::keystore::get_cache_key() {
-            Ok(key) => match uffs_security::crypto::encrypt_cache(&plaintext, &key) {
-                Ok(encrypted) => encrypted,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Encryption failed, saving plaintext");
-                    plaintext
-                }
-            },
-            Err(e) => {
-                tracing::warn!(error = %e, "Key unavailable, saving plaintext");
-                plaintext
-            }
-        };
+        let serialized = self.serialize(volume_serial, usn_journal_id, next_usn);
+        let uncompressed_len = serialized.len();
+
+        // Compress with zstd before encryption
+        let t_compress = std::time::Instant::now();
+        let compressed = zstd::encode_all(serialized.as_slice(), ZSTD_LEVEL)
+            .map_err(|e| std::io::Error::other(format!("zstd compression failed: {e}")))?;
+        let compress_ms = t_compress.elapsed().as_millis();
+        let compressed_len = compressed.len();
+
+        if profile {
+            #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
+            let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+            #[expect(clippy::cast_precision_loss, reason = "display-only ratio")]
+            let ratio = uncompressed_len as f64 / compressed_len as f64;
+            eprintln!(
+                "[CACHE_PROFILE] compress:      {compress_ms:>6} ms  ({:.1} MB → {:.1} MB, {ratio:.1}x)",
+                mb(uncompressed_len),
+                mb(compressed_len),
+            );
+        }
+
+        let key = uffs_security::keystore::get_cache_key().map_err(|e| {
+            std::io::Error::other(format!("cannot save cache without encryption key: {e}"))
+        })?;
+
+        let data = uffs_security::crypto::encrypt_cache(&compressed, &key)?;
 
         crate::cache::atomic_write(path, &data)
     }
@@ -51,6 +83,10 @@ impl MftIndex {
     ///   as encrypted (one-time auto-migration)
     /// - **Unknown**: returns an error
     ///
+    /// After decryption, if the plaintext starts with the zstd frame magic
+    /// (`0xFD2FB528`), it is decompressed before deserialization. Older
+    /// uncompressed caches are loaded transparently.
+    ///
     /// If decryption fails (wrong key / tampered), the corrupted file is
     /// deleted and an error is returned so the caller rebuilds from MFT.
     ///
@@ -59,6 +95,7 @@ impl MftIndex {
     /// # Errors
     ///
     /// Returns an error if file reading, decryption, or deserialization fails.
+    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
     pub fn load_from_file(
         path: &std::path::Path,
     ) -> Result<(Self, IndexHeader), Box<dyn core::error::Error>> {
@@ -75,7 +112,7 @@ impl MftIndex {
         let format = detect_format(&raw);
 
         let t1 = std::time::Instant::now();
-        let plaintext = match format {
+        let decrypted = match format {
             CacheFormat::Encrypted => {
                 let key = uffs_security::keystore::get_cache_key()
                     .map_err(|e| Box::new(e) as Box<dyn core::error::Error>)?;
@@ -107,6 +144,22 @@ impl MftIndex {
             }
         };
         let decrypt_ms = t1.elapsed().as_millis();
+        let decrypted_len = decrypted.len();
+
+        // Decompress if zstd-compressed (backward compat: old caches skip this)
+        let t_decompress = std::time::Instant::now();
+        let compressed = is_zstd_compressed(&decrypted);
+        let plaintext = if compressed {
+            zstd::decode_all(decrypted.as_slice()).map_err(|e| {
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("zstd decompression failed: {e}"),
+                )) as Box<dyn core::error::Error>
+            })?
+        } else {
+            decrypted
+        };
+        let decompress_ms = t_decompress.elapsed().as_millis();
         let plaintext_len = plaintext.len();
 
         let t2 = std::time::Instant::now();
@@ -123,9 +176,16 @@ impl MftIndex {
                 mb(raw_len)
             );
             eprintln!(
-                "[CACHE_PROFILE] decrypt:       {decrypt_ms:>6} ms  ({:.1} MB plaintext)",
-                mb(plaintext_len)
+                "[CACHE_PROFILE] decrypt:       {decrypt_ms:>6} ms  ({:.1} MB)",
+                mb(decrypted_len)
             );
+            if compressed {
+                eprintln!(
+                    "[CACHE_PROFILE] decompress:    {decompress_ms:>6} ms  ({:.1} MB → {:.1} MB)",
+                    mb(decrypted_len),
+                    mb(plaintext_len),
+                );
+            }
             eprintln!(
                 "[CACHE_PROFILE] deserialize:   {deser_ms:>6} ms  ({} records)",
                 index.len()

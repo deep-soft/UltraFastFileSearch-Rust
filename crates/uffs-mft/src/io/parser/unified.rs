@@ -224,8 +224,10 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
 
                                         index.children.push(ChildInfo {
                                             next_entry: old_fc,
+                                            _pad0: [0; 4],
                                             child_frs: frs_base,
                                             name_index,
+                                            _pad1: [0; 6],
                                         });
                                     }
 
@@ -356,7 +358,8 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                                 },
                                 next_entry: NO_ENTRY,
                                 name: nr,
-                                flags: 8 << 2, // type_name_id=8
+                                flags: 8 << 2,
+                                _pad0: [0; 3],
                             });
 
                             // Chain to record's stream list

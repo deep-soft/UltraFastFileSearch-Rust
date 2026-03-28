@@ -45,7 +45,7 @@ exclude = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.4.21"
+version = "0.4.23"
 edition = "2024"
 rust-version = "1.85"
 license = "MPL-2.0 OR LicenseRef-UFFS-Commercial"
@@ -146,6 +146,9 @@ num_cpus = "1.17.0"
 aes-gcm = "0.10"
 rand = "0.10.0"
 security-framework = "3.7.0"
+
+# ───── Compression ─────
+zstd = "0.13"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # WORKSPACE-WIDE SUPER STRICT LINTING CONFIGURATION (2026 CUTTING-EDGE STANDARDS)

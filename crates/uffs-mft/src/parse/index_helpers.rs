@@ -47,6 +47,7 @@ pub fn add_stream_to_index(
         name: stream_name_ref,
         // type_name_id=8 for $DATA (0x80 >> 4), stored in bits 2-7
         flags: 8 << 2,
+        _pad0: [0; 3],
     });
     stream_idx
 }
@@ -133,6 +134,7 @@ pub fn add_link_to_index(index: &mut MftIndex, link_name: &str, link_parent: u64
     index.links.push(LinkInfo {
         next_entry: NO_ENTRY,
         name: link_name_ref,
+        _pad0: [0; 4],
         parent_frs: link_parent,
     });
     link_idx
@@ -169,8 +171,10 @@ pub fn add_child_entry(index: &mut MftIndex, parent_frs: u64, child_frs: u64, na
 
     index.children.push(ChildInfo {
         next_entry: old_first_child,
+        _pad0: [0; 4],
         child_frs,
         name_index: name_idx,
+        _pad1: [0; 6],
     });
 }
 

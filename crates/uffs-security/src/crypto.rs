@@ -2,21 +2,28 @@
 //!
 //! # UFFSENC File Format
 //!
+//! ## Version 2 (current — writes always use this)
+//!
 //! ```text
 //! Offset  Size    Field
 //! ──────  ──────  ──────────────────────────────
 //! 0       8       Magic: b"UFFSENC\0"
-//! 8       2       Format version (u16 LE) — currently 1
+//! 8       2       Format version (u16 LE) = 2
 //! 10      1       Algorithm ID: 0x01 = AES-256-GCM
 //! 11      1       KDF ID (0x01=DPAPI, 0x02=Keychain, 0x03=SecretService, 0x04=HKDF)
 //! 12      12      Nonce (96-bit, random per write)
-//! 24      4       Plaintext length (u32 LE)
-//! 28      N       Ciphertext
-//! 28+N    16      GCM Authentication Tag
+//! 24      8       Plaintext length (u64 LE) — supports up to 16 EiB
+//! 32      N       Ciphertext
+//! 32+N    16      GCM Authentication Tag
 //! ────────────────────────────────────────────────
-//! Total overhead: 44 bytes
-//! AAD: bytes 0..28 (header, included in GCM auth)
+//! Total overhead: 48 bytes
+//! AAD: bytes 0..32 (header, included in GCM auth)
 //! ```
+//!
+//! ## Version 1 (legacy — read-only support)
+//!
+//! Same layout but offset 24 has a 4-byte u32 plaintext length (header = 28
+//! bytes). Supported for backward compatibility on read; never written.
 
 use std::io;
 
@@ -33,8 +40,8 @@ pub const ENCRYPTED_MAGIC: &[u8; 8] = b"UFFSENC\0";
 /// Magic bytes identifying a legacy plaintext UFFS cache file.
 pub const LEGACY_MAGIC: &[u8; 8] = b"UFFSIDX\0";
 
-/// Current encryption format version.
-pub const ENC_FORMAT_VERSION: u16 = 1;
+/// Current encryption format version (v2: u64 plaintext length).
+pub const ENC_FORMAT_VERSION: u16 = 2;
 
 /// Algorithm ID for AES-256-GCM.
 pub const ALGO_AES_256_GCM: u8 = 0x01;
@@ -48,8 +55,10 @@ pub const KDF_SECRET_SERVICE: u8 = 0x03;
 /// KDF ID: HKDF fallback (headless Linux).
 pub const KDF_HKDF: u8 = 0x04;
 
-/// Size of the UFFSENC header (before ciphertext).
-const HEADER_SIZE: usize = 28;
+/// Size of the UFFSENC v2 header (before ciphertext).
+const HEADER_SIZE_V2: usize = 32;
+/// Size of the legacy UFFSENC v1 header (before ciphertext).
+const HEADER_SIZE_V1: usize = 28;
 /// Size of the GCM authentication tag.
 const TAG_SIZE: usize = 16;
 /// Size of the AES-GCM nonce (96 bits).
@@ -90,7 +99,10 @@ pub fn detect_format(data: &[u8]) -> CacheFormat {
 // Encrypt
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Encrypts plaintext using AES-256-GCM and wraps it in the UFFSENC format.
+/// Encrypts plaintext using AES-256-GCM and wraps it in the UFFSENC v2 format.
+///
+/// The v2 format uses a u64 plaintext length field, supporting payloads up to
+/// 16 EiB (effectively unlimited for file-system index caches).
 ///
 /// # Errors
 ///
@@ -98,13 +110,7 @@ pub fn detect_format(data: &[u8]) -> CacheFormat {
 pub fn encrypt_cache(plaintext: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
     use rand::Rng;
 
-    // Validate plaintext length fits in u32
-    let plaintext_len: u32 = u32::try_from(plaintext.len()).map_err(|_convert_err| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "plaintext too large for UFFSENC format (max 4 GB)",
-        )
-    })?;
+    let plaintext_len = plaintext.len() as u64;
 
     // Generate random 96-bit nonce
     let mut nonce_bytes = [0_u8; NONCE_SIZE];
@@ -118,18 +124,18 @@ pub fn encrypt_cache(plaintext: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let kdf_id = KDF_SECRET_SERVICE;
 
-    // Build header (28 bytes)
-    let mut output = Vec::with_capacity(HEADER_SIZE + plaintext.len() + TAG_SIZE);
+    // Build header (32 bytes for v2)
+    let mut output = Vec::with_capacity(HEADER_SIZE_V2 + plaintext.len() + TAG_SIZE);
     output.extend_from_slice(ENCRYPTED_MAGIC); // 0..8
     output.extend_from_slice(&ENC_FORMAT_VERSION.to_le_bytes()); // 8..10
     output.push(ALGO_AES_256_GCM); // 10
     output.push(kdf_id); // 11
     output.extend_from_slice(&nonce_bytes); // 12..24
-    output.extend_from_slice(&plaintext_len.to_le_bytes()); // 24..28
+    output.extend_from_slice(&plaintext_len.to_le_bytes()); // 24..32  (u64)
 
-    // AAD = header bytes 0..28
+    // AAD = header bytes 0..32
     let aad = output
-        .get(..HEADER_SIZE)
+        .get(..HEADER_SIZE_V2)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "header shorter than expected"))?
         .to_vec();
 
@@ -163,9 +169,15 @@ pub fn encrypt_cache(plaintext: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
 // Decrypt
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Creates an `InvalidData` I/O error with the given message.
+fn bad_data(msg: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg.into())
+}
+
 /// Decrypts an UFFSENC-formatted buffer, returning the original plaintext.
 ///
-/// Validates the header, algorithm ID, and GCM authentication tag.
+/// Supports both v1 (u32 length, 28-byte header) and v2 (u64 length, 32-byte
+/// header) formats. Validates the header, algorithm ID, and GCM auth tag.
 ///
 /// # Errors
 ///
@@ -174,117 +186,96 @@ pub fn encrypt_cache(plaintext: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
 /// - The algorithm or version is unsupported
 /// - GCM authentication fails (tampered data or wrong key)
 pub fn decrypt_cache(data: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
-    // Minimum size: header (28) + tag (16) = 44 bytes (for 0-byte plaintext)
-    if data.len() < HEADER_SIZE + TAG_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "encrypted cache too short: {} bytes (minimum {})",
-                data.len(),
-                HEADER_SIZE + TAG_SIZE
-            ),
-        ));
+    // Minimum size: smallest header (v1=28) + tag (16) = 44 bytes
+    if data.len() < HEADER_SIZE_V1 + TAG_SIZE {
+        return Err(bad_data(format!(
+            "encrypted cache too short: {} bytes (min {})",
+            data.len(),
+            HEADER_SIZE_V1 + TAG_SIZE
+        )));
     }
 
-    // We need at least HEADER_SIZE (28) bytes for the header fields.
-    // Extract all header bytes via safe `.get()` accessors.
-    let header = data
-        .get(..HEADER_SIZE)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "data too short for header"))?;
-
-    // Validate magic
-    let magic = header
-        .get(..8)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "data too short for magic"))?;
-    if *magic != *ENCRYPTED_MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "not an encrypted UFFS cache file (bad magic)",
-        ));
+    if data.get(..8) != Some(ENCRYPTED_MAGIC.as_slice()) {
+        return Err(bad_data("not an encrypted UFFS cache file (bad magic)"));
     }
 
-    // Parse version from header[8..10]
-    let ver_hi = *header
-        .get(8)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing version byte"))?;
-    let ver_lo = *header
-        .get(9)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing version byte"))?;
-    let version = u16::from_le_bytes([ver_hi, ver_lo]);
-    if version != ENC_FORMAT_VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unsupported encryption format version: {version}"),
-        ));
-    }
-
-    let algo = *header
+    let algo = data
         .get(10)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing algorithm byte"))?;
+        .copied()
+        .ok_or_else(|| bad_data("missing algorithm byte"))?;
     if algo != ALGO_AES_256_GCM {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unsupported encryption algorithm: 0x{algo:02x}"),
-        ));
+        return Err(bad_data(format!("unsupported algorithm: 0x{algo:02x}")));
     }
 
-    // KDF ID at header[11] — informational, not validated during decrypt
+    // Version → header size + payload length
+    let ver_bytes: [u8; 2] = data
+        .get(8..10)
+        .ok_or_else(|| bad_data("missing version"))?
+        .try_into()
+        .map_err(|_e| bad_data("invalid version"))?;
+    let (header_size, payload_len) = match u16::from_le_bytes(ver_bytes) {
+        1 => {
+            let len_buf: [u8; 4] = data
+                .get(24..28)
+                .ok_or_else(|| bad_data("missing v1 length"))?
+                .try_into()
+                .map_err(|_e| bad_data("invalid v1 length"))?;
+            (HEADER_SIZE_V1, u32::from_le_bytes(len_buf) as usize)
+        }
+        2 => {
+            if data.len() < HEADER_SIZE_V2 + TAG_SIZE {
+                return Err(bad_data(format!(
+                    "v2 cache too short: {} bytes (min {})",
+                    data.len(),
+                    HEADER_SIZE_V2 + TAG_SIZE
+                )));
+            }
+            let len_buf: [u8; 8] = data
+                .get(24..32)
+                .ok_or_else(|| bad_data("missing v2 length"))?
+                .try_into()
+                .map_err(|_e| bad_data("invalid v2 length"))?;
+            let len64 = u64::from_le_bytes(len_buf);
+            let len = usize::try_from(len64).map_err(|_e| {
+                bad_data(format!("plaintext length {len64} exceeds platform usize"))
+            })?;
+            (HEADER_SIZE_V2, len)
+        }
+        ver => return Err(bad_data(format!("unsupported format version: {ver}"))),
+    };
 
-    let nonce_bytes: &[u8; NONCE_SIZE] = header
+    let nonce_bytes: &[u8; NONCE_SIZE] = data
         .get(12..24)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "data too short for nonce"))?
+        .ok_or_else(|| bad_data("data too short for nonce"))?
         .try_into()
-        .map_err(|_nonce_err| io::Error::new(io::ErrorKind::InvalidData, "invalid nonce"))?;
+        .map_err(|_e| bad_data("invalid nonce"))?;
 
-    let len_bytes: &[u8; 4] = header
-        .get(24..28)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing plaintext length"))?
-        .try_into()
-        .map_err(|_len_err| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid plaintext length bytes")
-        })?;
-    let plaintext_len = u32::from_le_bytes(*len_bytes) as usize;
-
-    // Validate lengths
-    let expected_total = HEADER_SIZE + plaintext_len + TAG_SIZE;
-    if data.len() < expected_total {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "encrypted cache truncated: have {} bytes, expected {}",
-                data.len(),
-                expected_total
-            ),
-        ));
+    let expected = header_size + payload_len + TAG_SIZE;
+    if data.len() < expected {
+        return Err(bad_data(format!(
+            "encrypted cache truncated: have {} bytes, expected {expected}",
+            data.len()
+        )));
     }
 
-    // Extract components — bounds guaranteed by expected_total check
+    // Extract components — bounds guaranteed by checks above
     let aad = data
-        .get(..HEADER_SIZE)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "header slice out of bounds"))?;
+        .get(..header_size)
+        .ok_or_else(|| bad_data("header OOB"))?;
     let ciphertext = data
-        .get(HEADER_SIZE..HEADER_SIZE + plaintext_len)
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "ciphertext slice out of bounds")
-        })?;
+        .get(header_size..header_size + payload_len)
+        .ok_or_else(|| bad_data("ciphertext OOB"))?;
     let tag = data
-        .get(HEADER_SIZE + plaintext_len..HEADER_SIZE + plaintext_len + TAG_SIZE)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "tag slice out of bounds"))?;
+        .get(header_size + payload_len..header_size + payload_len + TAG_SIZE)
+        .ok_or_else(|| bad_data("tag OOB"))?;
 
-    // Decrypt
     let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
     let nonce = Nonce::from_slice(nonce_bytes);
-    let tag_arr = GenericArray::from_slice(tag);
 
     let mut plaintext = ciphertext.to_vec();
     cipher
-        .decrypt_in_place_detached(nonce, aad, &mut plaintext, tag_arr)
-        .map_err(|_dec_err| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "AES-GCM authentication failed (wrong key or tampered data)",
-            )
-        })?;
+        .decrypt_in_place_detached(nonce, aad, &mut plaintext, GenericArray::from_slice(tag))
+        .map_err(|_e| bad_data("AES-GCM authentication failed (wrong key or tampered data)"))?;
 
     Ok(plaintext)
 }
@@ -331,8 +322,8 @@ mod tests {
         let key = [0x11_u8; 32];
         let plaintext = b"hello world";
         let mut encrypted = encrypt_cache(plaintext, &key).expect("encrypt");
-        // Flip a byte in the ciphertext region
-        if let Some(byte) = encrypted.get_mut(HEADER_SIZE) {
+        // Flip a byte in the ciphertext region (v2 header = 32 bytes)
+        if let Some(byte) = encrypted.get_mut(HEADER_SIZE_V2) {
             *byte ^= 0xFF;
         }
         assert!(decrypt_cache(&encrypted, &key).is_err());
@@ -369,12 +360,71 @@ mod tests {
         let key = [0x44_u8; 32];
         let plaintext = b"hello world";
         let encrypted = encrypt_cache(plaintext, &key).expect("encrypt");
-        // Truncate to just the header
-        let header_only = encrypted.get(..HEADER_SIZE).expect("header slice");
+        // Truncate to just the header (v2 = 32 bytes)
+        let header_only = encrypted.get(..HEADER_SIZE_V2).expect("header slice");
         assert!(decrypt_cache(header_only, &key).is_err());
         // Truncate mid-ciphertext
-        let partial = encrypted.get(..HEADER_SIZE + 5).expect("partial slice");
+        let partial = encrypted.get(..HEADER_SIZE_V2 + 5).expect("partial slice");
         assert!(decrypt_cache(partial, &key).is_err());
+    }
+
+    /// v2 format round-trip with large payload (validates u64 length field).
+    #[test]
+    fn round_trip_v2_header_format() {
+        let key = [0xEE_u8; 32];
+        let plaintext = vec![0xAB_u8; 5_000_000]; // 5 MB
+        let encrypted = encrypt_cache(&plaintext, &key).expect("encrypt");
+
+        // Verify v2 header: version = 2, header size = 32
+        assert_eq!(encrypted.get(8..10), Some([2_u8, 0].as_slice()));
+        // Verify u64 length at offset 24..32
+        let len_bytes: [u8; 8] = encrypted
+            .get(24..32)
+            .expect("len slice")
+            .try_into()
+            .unwrap();
+        assert_eq!(u64::from_le_bytes(len_bytes), 5_000_000);
+
+        let decrypted = decrypt_cache(&encrypted, &key).expect("decrypt");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// v1 format backward compatibility: hand-craft a v1 header and verify
+    /// decrypt still works.
+    #[test]
+    fn decrypt_v1_backward_compat() {
+        use aes_gcm::aead::generic_array::GenericArray;
+        use aes_gcm::{AeadInPlace, Aes256Gcm, KeyInit, Nonce};
+
+        let key_bytes = [0x77_u8; 32];
+        let plaintext = b"v1 payload data";
+        let nonce_bytes = [0x01_u8; 12];
+
+        // Build a v1 header manually (28 bytes)
+        let mut v1_data = Vec::new();
+        v1_data.extend_from_slice(ENCRYPTED_MAGIC); // 0..8
+        v1_data.extend_from_slice(&1_u16.to_le_bytes()); // 8..10 version=1
+        v1_data.push(ALGO_AES_256_GCM); // 10
+        v1_data.push(KDF_DPAPI); // 11
+        v1_data.extend_from_slice(&nonce_bytes); // 12..24
+        let payload_len: u32 = plaintext.len().try_into().expect("test payload fits u32");
+        v1_data.extend_from_slice(&payload_len.to_le_bytes()); // 24..28 (u32)
+
+        let aad = v1_data.clone();
+        let ciphertext_start = v1_data.len();
+        v1_data.extend_from_slice(plaintext);
+
+        let cipher = Aes256Gcm::new(GenericArray::from_slice(&key_bytes));
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ct_region = v1_data.get_mut(ciphertext_start..).expect("ct region");
+        let tag = cipher
+            .encrypt_in_place_detached(nonce, &aad, ct_region)
+            .expect("encrypt");
+        v1_data.extend_from_slice(&tag);
+
+        // decrypt_cache should handle v1 format
+        let decrypted = decrypt_cache(&v1_data, &key_bytes).expect("decrypt v1");
+        assert_eq!(decrypted, plaintext);
     }
 
     /// S2.3.9: legacy UFFSIDX magic → `detect_format` returns

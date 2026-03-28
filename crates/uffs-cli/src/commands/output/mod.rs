@@ -417,6 +417,78 @@ pub(super) fn write_results(
     Ok(())
 }
 
+/// Write native `DisplayRow` results — no `DataFrame` involved.
+#[cfg(windows)]
+/// Mirrors [`write_results`] but uses `OutputConfig::write_display_rows`
+/// instead of `OutputConfig::write` (`DataFrame` path).
+pub(super) fn write_native_results(
+    rows: &[uffs_core::search::backend::DisplayRow],
+    format: &str,
+    out: &str,
+    output_config: &OutputConfig,
+    output_targets: &[char],
+    _elapsed: Duration,
+    pattern: &str,
+) -> Result<()> {
+    let is_console = matches!(
+        out.to_lowercase().as_str(),
+        "console" | "con" | "term" | "terminal"
+    );
+
+    let footer_ctx = CppFooterContext {
+        output_targets,
+        pattern,
+        row_count: rows.len(),
+    };
+
+    if is_console {
+        let stdout_handle = std::io::stdout();
+        let mut stdout = stdout_handle.lock();
+        match format {
+            "json" => {
+                // Convert to small DataFrame for json export (reuses Polars json serialization)
+                let df = uffs_core::search::backend::display_rows_to_dataframe(rows)
+                    .map_err(|err| anyhow::anyhow!("Failed to build result DataFrame: {err}"))?;
+                export_json(&df, &mut stdout)?;
+            }
+            "csv" => output_config.write_display_rows(rows, &mut stdout)?,
+            "custom" => {
+                output_config.write_display_rows(rows, &mut stdout)?;
+                write_cpp_drive_footer(&mut stdout, &footer_ctx)?;
+            }
+            _ => {
+                // table format — convert to small DataFrame for table rendering
+                let df = uffs_core::search::backend::display_rows_to_dataframe(rows)
+                    .map_err(|err| anyhow::anyhow!("Failed to build result DataFrame: {err}"))?;
+                export_table(&df, &mut stdout)?;
+            }
+        }
+        stdout.flush()?;
+    } else {
+        let file =
+            File::create(out).with_context(|| format!("Failed to create output file: {out}"))?;
+        let mut writer = BufWriter::new(file);
+
+        match format {
+            "json" => {
+                let df = uffs_core::search::backend::display_rows_to_dataframe(rows)
+                    .map_err(|err| anyhow::anyhow!("Failed to build result DataFrame: {err}"))?;
+                export_json(&df, &mut writer)?;
+            }
+            "custom" => {
+                output_config.write_display_rows(rows, &mut writer)?;
+                write_cpp_drive_footer(&mut writer, &footer_ctx)?;
+            }
+            _ => output_config.write_display_rows(rows, &mut writer)?,
+        }
+        writer.flush()?;
+
+        info!(file = out, "Results written to file");
+    }
+
+    Ok(())
+}
+
 /// Append the legacy C++ drive footer for baseline-compatible custom output.
 ///
 /// Uses CRLF line endings (`\r\n`) to match C++ baseline behavior.

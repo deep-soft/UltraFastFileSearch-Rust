@@ -48,8 +48,10 @@ impl MftIndex {
 
         self.children.push(ChildInfo {
             next_entry: old_first_child,
+            _pad0: [0; 4],
             child_frs,
             name_index,
+            _pad1: [0; 6],
         });
     }
 

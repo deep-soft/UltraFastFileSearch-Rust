@@ -723,6 +723,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
     record.first_name = LinkInfo {
         next_entry: NO_ENTRY,
         name: name_ref,
+        _pad0: [0; 4],
         parent_frs,
     };
     record.name_count = 1 + additional_count as u16;

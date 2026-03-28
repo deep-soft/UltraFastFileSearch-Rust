@@ -312,8 +312,8 @@ pub fn parse_record_to_fragment(
                     },
                     next_entry: NO_ENTRY,
                     name: stream_name_ref,
-                    // type_name_id=8 for $DATA (0x80 >> 4), stored in bits 2-7
                     flags: 8 << 2,
+                    _pad0: [0; 3],
                 });
                 stream_indices.push(stream_idx);
             }
@@ -371,6 +371,7 @@ pub fn parse_record_to_fragment(
         fragment.links.push(LinkInfo {
             next_entry: NO_ENTRY,
             name: link_name_ref,
+            _pad0: [0; 4],
             parent_frs: link_parent,
         });
         link_indices.push(link_idx);
@@ -399,8 +400,8 @@ pub fn parse_record_to_fragment(
             },
             next_entry: NO_ENTRY,
             name: stream_name_ref,
-            // type_name_id=8 for $DATA (0x80 >> 4), stored in bits 2-7
             flags: 8 << 2,
+            _pad0: [0; 3],
         });
         stream_indices.push(stream_idx);
     }
@@ -446,6 +447,7 @@ pub fn parse_record_to_fragment(
     record.first_name = LinkInfo {
         next_entry: NO_ENTRY,
         name: name_ref,
+        _pad0: [0; 4],
         parent_frs,
     };
 
@@ -571,8 +573,10 @@ pub fn parse_record_to_fragment(
 
             fragment.children.push(ChildInfo {
                 next_entry: old_first_child,
+                _pad0: [0; 4],
                 child_frs: frs,
                 name_index: name_idx,
+                _pad1: [0; 6],
             });
         };
 

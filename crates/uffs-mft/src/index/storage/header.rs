@@ -19,7 +19,11 @@ const INDEX_MAGIC: &[u8; 8] = b"UFFSIDX\0";
 /// Version 8: Added `total_stream_count` for full tree-metrics accounting
 /// Version 9: `StandardInfo.flags` now stores raw NTFS `FILE_ATTRIBUTE_*` bits
 ///            (was remapped internal layout in v3-v8)
-const INDEX_VERSION: u32 = 9;
+/// Version 10: `ExtensionIndex` CSR appended after extension table — zero
+///             rebuild on load
+/// v11: `ChildInfo` is now Pod (24 bytes with explicit padding, was 14 bytes
+/// packed).  Serialized via `bytemuck::cast_slice` bulk copy.
+const INDEX_VERSION: u32 = 11;
 
 /// Persistent index header stored at the beginning of the index file.
 #[derive(Debug, Clone)]

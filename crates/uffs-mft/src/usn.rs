@@ -202,7 +202,7 @@ pub fn aggregate_changes(records: &[UsnRecord]) -> HashMap<u64, FileChange> {
 
 // Re-export platform-specific functions
 #[cfg(windows)]
-pub use windows_impl::{query_usn_journal, read_usn_journal};
+pub use windows_impl::{query_usn_journal, read_targeted_frs_records, read_usn_journal};
 
 #[cfg(windows)]
 #[expect(
@@ -332,88 +332,298 @@ mod windows_impl {
         })
     }
 
-    /// Reads USN Journal records starting from a given USN.
+    /// Reads all USN Journal records starting from a given USN.
+    ///
+    /// Loops the `FSCTL_READ_USN_JOURNAL` ioctl until all changes are consumed,
+    /// preventing data loss on busy volumes where a single 64KB buffer would
+    /// only return a subset of changes.
     pub fn read_usn_journal(
         volume: char,
         journal_id: u64,
         start_usn: i64,
     ) -> Result<(Vec<UsnRecord>, i64), std::io::Error> {
         let handle = open_volume_handle(volume)?;
-        let read_data = ReadUsnJournalDataV0 {
-            start_usn,
-            reason_mask: 0xFFFF_FFFF,
-            return_only_on_close: 0,
-            timeout: 0,
-            bytes_to_wait_for: 0,
-            usn_journal_id: journal_id,
-        };
         let mut buffer = vec![0u8; 64 * 1024];
-        let mut bytes_returned: u32 = 0;
-        // SAFETY: `handle` is a live volume handle, `read_data` and `buffer`
-        // provide valid input/output storage for the advertised byte counts, and
-        // `bytes_returned` is a valid out-parameter for the call.
-        let result = unsafe {
-            DeviceIoControl(
-                handle,
-                FSCTL_READ_USN_JOURNAL,
-                Some(ptr::from_ref(&read_data).cast()), // Input buffer
-                size_of::<ReadUsnJournalDataV0>() as u32, // Input buffer size
-                Some(buffer.as_mut_ptr().cast()),       // Output buffer
-                buffer.len() as u32,                    // Output buffer size
-                Some(&mut bytes_returned),              // Bytes returned
-                None,                                   // Overlapped
-            )
-        };
-        // SAFETY: `handle` was returned by `open_volume_handle` and is closed once
-        // after the ioctl completes.
-        let _ = unsafe { CloseHandle(handle) };
-        if result.is_err() {
-            return Err(std::io::Error::last_os_error());
-        }
-        if bytes_returned < size_of::<i64>() as u32 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "FSCTL_READ_USN_JOURNAL returned fewer than 8 bytes",
-            ));
-        }
-        let mut next_usn_bytes = [0_u8; 8];
-        next_usn_bytes.copy_from_slice(&buffer[..8]);
-        let next_usn = i64::from_le_bytes(next_usn_bytes);
-        let mut records = Vec::new();
-        let mut offset = 8usize;
-        while offset + size_of::<UsnRecordV2Header>() <= bytes_returned as usize {
-            let header =
-                match UsnRecordV2Header::read_from_prefix(&buffer[offset..bytes_returned as usize])
-                {
+        let mut all_records = Vec::new();
+        let mut current_usn = start_usn;
+
+        loop {
+            let read_data = ReadUsnJournalDataV0 {
+                start_usn: current_usn,
+                reason_mask: 0xFFFF_FFFF,
+                return_only_on_close: 0,
+                timeout: 0,
+                bytes_to_wait_for: 0,
+                usn_journal_id: journal_id,
+            };
+            let mut bytes_returned: u32 = 0;
+            // SAFETY: `handle` is a live volume handle, `read_data` and `buffer`
+            // provide valid input/output storage for the advertised byte counts,
+            // and `bytes_returned` is a valid out-parameter for the call.
+            let result = unsafe {
+                DeviceIoControl(
+                    handle,
+                    FSCTL_READ_USN_JOURNAL,
+                    Some(ptr::from_ref(&read_data).cast()),
+                    size_of::<ReadUsnJournalDataV0>() as u32,
+                    Some(buffer.as_mut_ptr().cast()),
+                    buffer.len() as u32,
+                    Some(&mut bytes_returned),
+                    None,
+                )
+            };
+            if result.is_err() {
+                // SAFETY: `handle` was returned by `open_volume_handle` and is
+                // closed exactly once.
+                let _ = unsafe { CloseHandle(handle) };
+                return Err(std::io::Error::last_os_error());
+            }
+            if bytes_returned < size_of::<i64>() as u32 {
+                // SAFETY: same as above.
+                let _ = unsafe { CloseHandle(handle) };
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "FSCTL_READ_USN_JOURNAL returned fewer than 8 bytes",
+                ));
+            }
+
+            // First 8 bytes of output = next USN to continue from
+            let mut next_usn_bytes = [0_u8; 8];
+            next_usn_bytes.copy_from_slice(&buffer[..8]);
+            let next_usn = i64::from_le_bytes(next_usn_bytes);
+
+            // Parse records from this batch
+            let mut offset = 8_usize;
+            let mut batch_count = 0_usize;
+            while offset + size_of::<UsnRecordV2Header>() <= bytes_returned as usize {
+                let header = match UsnRecordV2Header::read_from_prefix(
+                    &buffer[offset..bytes_returned as usize],
+                ) {
                     Ok((header, _)) => header,
                     Err(_) => break,
                 };
-            if header.record_length == 0 {
+                if header.record_length == 0 {
+                    break;
+                }
+                let name_start = offset + header.file_name_offset as usize;
+                let name_end = name_start + header.file_name_length as usize;
+                let filename = if name_end <= bytes_returned as usize {
+                    let name_bytes = &buffer[name_start..name_end];
+                    let name_u16: Vec<u16> = name_bytes
+                        .chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .collect();
+                    String::from_utf16_lossy(&name_u16)
+                } else {
+                    String::new()
+                };
+                all_records.push(UsnRecord {
+                    frs: header.file_reference_number & 0x0000_FFFF_FFFF_FFFF,
+                    parent_frs: header.parent_file_reference_number & 0x0000_FFFF_FFFF_FFFF,
+                    usn: header.usn,
+                    reason: header.reason,
+                    file_attributes: header.file_attributes,
+                    filename,
+                });
+                offset += header.record_length as usize;
+                batch_count += 1;
+            }
+
+            // If no records were returned in this batch, we've consumed
+            // everything — stop looping.
+            if batch_count == 0 || next_usn == current_usn {
+                current_usn = next_usn;
                 break;
             }
-            let name_start = offset + header.file_name_offset as usize;
-            let name_end = name_start + header.file_name_length as usize;
-            let filename = if name_end <= bytes_returned as usize {
-                let name_bytes = &buffer[name_start..name_end];
-                let name_u16: Vec<u16> = name_bytes
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                    .collect();
-                String::from_utf16_lossy(&name_u16)
-            } else {
-                String::new()
-            };
-            records.push(UsnRecord {
-                frs: header.file_reference_number & 0x0000_FFFF_FFFF_FFFF,
-                parent_frs: header.parent_file_reference_number & 0x0000_FFFF_FFFF_FFFF,
-                usn: header.usn,
-                reason: header.reason,
-                file_attributes: header.file_attributes,
-                filename,
-            });
-            offset += header.record_length as usize;
+            current_usn = next_usn;
         }
-        Ok((records, next_usn))
+
+        // SAFETY: `handle` was returned by `open_volume_handle` and is closed
+        // exactly once after all ioctl calls complete.
+        let _ = unsafe { CloseHandle(handle) };
+        Ok((all_records, current_usn))
+    }
+
+    /// Reads specific MFT records by FRS and re-parses them into the index.
+    ///
+    /// This performs **targeted reads** for individual FRS values identified by
+    /// the USN journal, giving each record full data (size, timestamps, flags,
+    /// attributes, streams) instead of the incomplete placeholder data that USN
+    /// alone provides.
+    ///
+    /// # Performance
+    ///
+    /// Each read is a single seek + 1-4KB read. For 1000 records on SSD this
+    /// takes ~2ms total. The cost is dominated by I/O latency on HDD (~5ms per
+    /// seek).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the volume cannot be opened or extents cannot be
+    /// retrieved. Individual record read failures are logged and skipped.
+    pub fn read_targeted_frs_records(
+        volume: &crate::platform::VolumeHandle,
+        index: &mut crate::index::MftIndex,
+        frs_list: &[u64],
+    ) -> Result<usize, crate::MftError> {
+        use core::mem::size_of;
+
+        use zerocopy::FromBytes;
+
+        use crate::io::MftRecordReader;
+        use crate::ntfs::{AttributeListEntry, AttributeRecordHeader, AttributeType};
+        use crate::parse::{apply_fixup, parse_record_to_index};
+
+        if frs_list.is_empty() {
+            return Ok(0);
+        }
+
+        // Build extent map for the MFT so we can seek to specific records
+        let extents = volume.get_mft_extents()?;
+        let extent_map = crate::io::MftExtentMap::new(
+            extents,
+            volume.volume_data().bytes_per_cluster,
+            volume.volume_data().bytes_per_file_record_segment,
+        );
+
+        let mut reader = MftRecordReader::new_with_extents(extent_map);
+        let handle = volume.raw_handle();
+        let mut success_count = 0_usize;
+
+        // Collect extension FRS numbers discovered from $ATTRIBUTE_LIST
+        // attributes. Processed in a second pass after all base records.
+        let mut extension_frs: Vec<u64> = Vec::new();
+
+        for &frs in frs_list {
+            match reader.read_record(handle, frs) {
+                Ok(raw_data) => {
+                    let mut buf = vec![0_u8; raw_data.len()];
+                    buf.copy_from_slice(raw_data);
+
+                    if apply_fixup(&mut buf) {
+                        // Scan for $ATTRIBUTE_LIST to discover extension records
+                        extract_extension_frs(&buf, frs, &mut extension_frs);
+
+                        // Parse the base record into the index.
+                        // `parse_record_to_index` uses `ExtensionSnapshot`
+                        // to preserve existing extension-chain data while
+                        // overwriting base-record fields with fresh data.
+                        if parse_record_to_index(&buf, frs, index) {
+                            success_count += 1;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::trace!(
+                        frs,
+                        error = %e,
+                        "⚠️ Targeted MFT read failed for FRS (skipping)"
+                    );
+                }
+            }
+        }
+
+        // Second pass: read extension records discovered from $ATTRIBUTE_LIST.
+        // `parse_record_to_index` detects extension records (base_frs != 0)
+        // and dispatches them to `parse_extension_to_index` automatically.
+        extension_frs.sort_unstable();
+        extension_frs.dedup();
+        if !extension_frs.is_empty() {
+            tracing::debug!(
+                count = extension_frs.len(),
+                "📎 Reading extension MFT records"
+            );
+        }
+        for ext_frs in &extension_frs {
+            match reader.read_record(handle, *ext_frs) {
+                Ok(raw_data) => {
+                    let mut buf = vec![0_u8; raw_data.len()];
+                    buf.copy_from_slice(raw_data);
+
+                    if apply_fixup(&mut buf) && parse_record_to_index(&buf, *ext_frs, index) {
+                        success_count += 1;
+                    }
+                }
+                Err(e) => {
+                    tracing::trace!(
+                        frs = *ext_frs,
+                        error = %e,
+                        "⚠️ Extension MFT record read failed (skipping)"
+                    );
+                }
+            }
+        }
+
+        /// Scans a base record's attributes for `$ATTRIBUTE_LIST` (type 0x20)
+        /// and extracts the FRS numbers of extension records.
+        fn extract_extension_frs(data: &[u8], base_frs: u64, out: &mut Vec<u64>) {
+            use crate::ntfs::FileRecordSegmentHeader;
+
+            if data.len() < size_of::<FileRecordSegmentHeader>() {
+                return;
+            }
+            let header = match FileRecordSegmentHeader::read_from_prefix(data) {
+                Ok((h, _)) => h,
+                Err(_) => return,
+            };
+
+            let mut offset = header.first_attribute_offset as usize;
+            let max_offset = core::cmp::min(header.bytes_in_use as usize, data.len());
+
+            while offset + size_of::<AttributeRecordHeader>() <= max_offset {
+                let attr = match AttributeRecordHeader::read_from_prefix(&data[offset..]) {
+                    Ok((a, _)) => a,
+                    Err(_) => break,
+                };
+                if attr.type_code == AttributeType::End as u32 {
+                    break;
+                }
+                if attr.length == 0 || offset + attr.length as usize > max_offset {
+                    break;
+                }
+
+                if attr.type_code == AttributeType::AttributeList as u32
+                    && attr.is_non_resident == 0
+                {
+                    // Resident $ATTRIBUTE_LIST — parse entries
+                    let val_offset_raw = data
+                        .get(offset + 20..offset + 22)
+                        .and_then(|b| <[u8; 2]>::try_from(b).ok())
+                        .map(u16::from_le_bytes)
+                        .unwrap_or(0) as usize;
+                    let val_length = data
+                        .get(offset + 16..offset + 20)
+                        .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                        .map(u32::from_le_bytes)
+                        .unwrap_or(0) as usize;
+
+                    let list_start = offset + val_offset_raw;
+                    let list_end =
+                        core::cmp::min(list_start.saturating_add(val_length), data.len());
+
+                    let mut pos = list_start;
+                    while pos + size_of::<AttributeListEntry>() <= list_end {
+                        let entry = match AttributeListEntry::read_from_prefix(&data[pos..list_end])
+                        {
+                            Ok((e, _)) => e,
+                            Err(_) => break,
+                        };
+                        if entry.length < size_of::<AttributeListEntry>() as u16 {
+                            break;
+                        }
+                        let target = entry.target_frs();
+                        if target != base_frs && target != 0 {
+                            out.push(target);
+                        }
+                        pos += entry.length as usize;
+                    }
+                }
+
+                offset += attr.length as usize;
+            }
+        }
+
+        Ok(success_count)
     }
 }
 

@@ -497,6 +497,7 @@ pub(super) fn parse_extension_to_index(
         index.links.push(LinkInfo {
             next_entry: NO_ENTRY,
             name: name_ref,
+            _pad0: [0; 4],
             parent_frs: *parent_frs,
         });
         link_indices.push(link_idx);
@@ -519,8 +520,8 @@ pub(super) fn parse_extension_to_index(
             },
             next_entry: NO_ENTRY,
             name: name_ref,
-            // type_name_id=8 for $DATA (0x80 >> 4), stored in bits 2-7
             flags: 8 << 2,
+            _pad0: [0; 3],
         });
         stream_indices.push(stream_idx);
     }
@@ -801,8 +802,10 @@ pub(super) fn parse_extension_to_index(
 
             index.children.push(ChildInfo {
                 next_entry: old_first_child,
+                _pad0: [0; 4],
                 child_frs: base_frs,
                 name_index: effective_name_idx,
+                _pad1: [0; 6],
             });
         }
     }

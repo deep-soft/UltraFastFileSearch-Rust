@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 use uffs_core::output::OutputConfig;
 
-use super::drive_search::{DriveResult, reorder_drive_column, search_single_drive};
+use super::drive_search::{DriveResult, search_single_drive};
 use crate::commands::output::StreamingWriter;
 use crate::commands::raw_io::{OwnedQueryFilters, QueryFilters};
 
@@ -140,11 +140,9 @@ async fn search_multi_drive_streaming<W: Write + Send + 'static>(
 
         total_matches += result.matches;
 
-        if let Some(ref df) = result.df {
-            if let Ok(reordered) = reorder_drive_column(df) {
-                if let Err(error) = streaming_writer.write_batch(&reordered) {
-                    eprintln!("[{}:] Write error: {}", result.drive, error);
-                }
+        if !result.rows.is_empty() {
+            if let Err(error) = streaming_writer.write_rows_batch(&result.rows) {
+                eprintln!("[{}:] Write error: {}", result.drive, error);
             }
         }
 

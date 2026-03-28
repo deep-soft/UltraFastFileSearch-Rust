@@ -6,15 +6,31 @@ use super::{
 };
 
 /// Directory child entry.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// 24 bytes per entry (with explicit padding).  Derives `bytemuck::Pod`
+/// so the entire children array can be serialized/deserialized as a single
+/// `memcpy` (v11+).
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct ChildInfo {
     /// Index of next `ChildInfo` in `MftIndex::children`, or `NO_ENTRY`.
     pub next_entry: u32,
+    /// Explicit padding for `u64` alignment of `child_frs`.
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "bytemuck Pod requires all fields same visibility"
+    )]
+    pub _pad0: [u8; 4],
     /// FRS of the child file or directory.
     pub child_frs: u64,
     /// Which name index to use for hard links.
     pub name_index: u16,
+    /// Explicit tail padding for struct alignment (8-byte boundary).
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "bytemuck Pod requires all fields same visibility"
+    )]
+    pub _pad1: [u8; 6],
 }
 
 /// Lean in-memory MFT index used by the parser and query layers.

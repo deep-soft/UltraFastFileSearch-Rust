@@ -37,8 +37,12 @@ use std::time::SystemTime;
 
 use crate::index::{IndexHeader, MftIndex};
 
-/// Default TTL for cached indices (10 minutes).
-pub const INDEX_TTL_SECONDS: u64 = 600;
+/// Default TTL for cached indices (4 hours).
+///
+/// USN Journal integration handles incremental freshness, so the TTL only
+/// serves as a safety-net periodic full rescan. Extended from 10 minutes to
+/// 4 hours to avoid unnecessary full MFT rescans on every cache expiry.
+pub const INDEX_TTL_SECONDS: u64 = 14400;
 
 /// Name of the legacy cache directory in the system temp folder.
 const LEGACY_CACHE_DIR_NAME: &str = "uffs_index_cache";

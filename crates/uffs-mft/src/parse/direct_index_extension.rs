@@ -794,8 +794,10 @@ pub(super) fn parse_extension_to_index(
 
             index.children.push(ChildInfo {
                 next_entry: old_first_child,
+                _pad0: [0; 4],
                 child_frs: base_frs,
                 name_index: effective_name_idx,
+                _pad1: [0; 6],
             });
         }
     }

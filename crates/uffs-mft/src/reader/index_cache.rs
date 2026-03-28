@@ -79,14 +79,15 @@ impl MftReader {
                     "📦 Cache HIT - checking for USN updates"
                 );
 
+                // Open volume handle once — used for reserved_allocated_bytes,
+                // targeted MFT reads, and cache save.
+                let handle = VolumeHandle::open(drive)?;
+
                 // Restore reserved_allocated_bytes from live volume data.
                 // This field is not serialized in the cache; it is needed for
                 // correct root tree_allocated when tree metrics are recomputed
                 // (e.g. after USN updates).
-                if let Ok(handle) = VolumeHandle::open(drive) {
-                    index.reserved_allocated_bytes =
-                        handle.volume_data().reserved_allocated_bytes();
-                }
+                index.reserved_allocated_bytes = handle.volume_data().reserved_allocated_bytes();
 
                 // Apply USN Journal updates to bring index up to date
                 let current_info = match query_usn_journal(drive) {
@@ -162,18 +163,55 @@ impl MftReader {
                     "📝 Applying USN updates to cached index"
                 );
 
-                let stats = index.apply_usn_changes(&changes);
+                // Phase 1: apply deletes and collect FRS values needing targeted reads
+                let (mut stats, frs_to_read) = index.apply_usn_deletes(&changes);
+
+                // Phase 2: targeted MFT reads for non-delete changes
+                if !frs_to_read.is_empty() {
+                    debug!(
+                        drive = %drive,
+                        count = frs_to_read.len(),
+                        "🎯 Reading targeted MFT records for USN changes"
+                    );
+                    match crate::usn::read_targeted_frs_records(&handle, &mut index, &frs_to_read) {
+                        Ok(count) => {
+                            stats.targeted_reads = count;
+                            debug!(
+                                drive = %drive,
+                                targeted_reads = count,
+                                total_requested = frs_to_read.len(),
+                                "✅ Targeted MFT reads complete"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                drive = %drive,
+                                error = %e,
+                                "⚠️ Targeted MFT reads failed — records may have incomplete data"
+                            );
+                        }
+                    }
+                }
+
+                // Phase 3: rebuild derived structures if anything changed
+                let had_changes = stats.deleted > 0 || stats.targeted_reads > 0;
+                if had_changes {
+                    debug!(drive = %drive, "🔨 Rebuilding extension index after USN updates");
+                    index.build_extension_index();
+
+                    debug!(drive = %drive, "🔨 Recomputing tree metrics after USN updates");
+                    index.compute_tree_metrics();
+                }
+
                 info!(
                     drive = %drive,
-                    created = stats.created,
-                    modified = stats.modified,
+                    targeted_reads = stats.targeted_reads,
                     deleted = stats.deleted,
                     skipped = stats.skipped,
                     "✅ USN updates applied"
                 );
 
-                // Save updated index back to cache
-                let handle = VolumeHandle::open(drive)?;
+                // Save updated index back to cache (reuse handle from above)
                 let volume_serial = handle.volume_data().volume_serial_number;
                 if let Err(e) = save_to_cache(
                     &index,
@@ -250,23 +288,33 @@ impl MftReader {
             Err(_) => (0, 0),
         };
 
-        // Serialize the index on the current thread (CPU-bound, no I/O yet)
-        // so we can hand ownership of the index back to the caller immediately.
-        // Only the byte buffer is sent to the blocking pool for the disk write.
-        let plaintext = index.serialize(volume_serial, usn_journal_id, next_usn);
+        // Serialize + compress the index on the current thread (CPU-bound, no
+        // I/O yet) so we can hand ownership of the index back to the caller
+        // immediately. Only the byte buffer is sent to the blocking pool for
+        // the disk write.
+        let serialized = index.serialize(volume_serial, usn_journal_id, next_usn);
 
-        // Encrypt if key is available; fall back to plaintext gracefully
-        let cache_bytes = match uffs_security::keystore::get_cache_key() {
-            Ok(key) => match uffs_security::crypto::encrypt_cache(&plaintext, &key) {
-                Ok(encrypted) => encrypted,
-                Err(e) => {
-                    info!(drive = %drive, error = %e, "⚠️ Encryption failed, caching plaintext");
-                    plaintext
-                }
-            },
+        let compressed = match zstd::encode_all(serialized.as_slice(), 3) {
+            Ok(c) => c,
             Err(e) => {
-                info!(drive = %drive, error = %e, "⚠️ Key unavailable, caching plaintext");
-                plaintext
+                info!(drive = %drive, error = %e, "⚠️ zstd compression failed, skipping cache");
+                return Ok(index);
+            }
+        };
+
+        // Encryption is mandatory — never write unencrypted data to disk.
+        let key = match uffs_security::keystore::get_cache_key() {
+            Ok(k) => k,
+            Err(e) => {
+                info!(drive = %drive, error = %e, "⚠️ Encryption key unavailable, skipping cache");
+                return Ok(index);
+            }
+        };
+        let cache_bytes = match uffs_security::crypto::encrypt_cache(&compressed, &key) {
+            Ok(encrypted) => encrypted,
+            Err(e) => {
+                info!(drive = %drive, error = %e, "⚠️ Encryption failed, skipping cache");
+                return Ok(index);
             }
         };
 

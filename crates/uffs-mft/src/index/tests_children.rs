@@ -28,8 +28,10 @@ fn test_sort_directory_children_basic() {
         // Add child to directory's children list
         let child_info = ChildInfo {
             next_entry: NO_ENTRY,
+            _pad0: [0; 4],
             child_frs,
             name_index: 0,
+            _pad1: [0; 6],
         };
         let child_idx = index.children.len() as u32;
         index.children.push(child_info);
@@ -102,8 +104,10 @@ fn test_sort_directory_children_single_child() {
 
     let child_info = ChildInfo {
         next_entry: NO_ENTRY,
+        _pad0: [0; 4],
         child_frs,
         name_index: 0,
+        _pad1: [0; 6],
     };
     let child_idx = index.children.len() as u32;
     index.children.push(child_info);
@@ -143,8 +147,10 @@ fn test_sort_directory_children_performance() {
 
         let child_info = ChildInfo {
             next_entry: NO_ENTRY,
+            _pad0: [0; 4],
             child_frs,
             name_index: 0,
+            _pad1: [0; 6],
         };
         let child_idx = index.children.len() as u32;
         index.children.push(child_info);

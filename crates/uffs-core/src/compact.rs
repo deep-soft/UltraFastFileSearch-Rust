@@ -10,15 +10,17 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use rayon::prelude::*;
 use uffs_mft::index::MftIndex;
 
 use crate::trigram::TrigramIndex;
 
 /// Compact per-record data for in-memory search, filter, and sort.
 ///
-/// 72 bytes per record (68 data + 4 tail padding for `#[repr(C)]` alignment).
-/// Covers every column from the uffs CLI output.
-#[derive(Debug, Clone, Copy, Default)]
+/// 72 bytes per record (68 data + 4 explicit tail padding).
+/// Derives `bytemuck::Pod` + `Zeroable` so the entire record array can be
+/// serialized/deserialized as a single bulk `memcpy` — no per-field encoding.
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct CompactRecord {
     // ── u64 fields first (8-byte aligned) ─────────────────────────
@@ -51,6 +53,14 @@ pub struct CompactRecord {
     pub name_len: u16,
     /// Interned extension ID (0 = no extension).
     pub extension_id: u16,
+
+    /// Explicit tail padding for 8-byte struct alignment.
+    /// Required by `bytemuck::Pod` — no implicit padding allowed.
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "bytemuck Pod requires all fields same visibility"
+    )]
+    pub _pad: [u8; 4],
 }
 
 impl CompactRecord {
@@ -83,6 +93,108 @@ const _: () = assert!(
     "CompactRecord must be exactly 72 bytes"
 );
 
+/// Children index in CSR (Compressed Sparse Row) layout.
+///
+/// `children(i)` returns the compact indices of record i's children as
+/// a contiguous `&[u32]` slice.  The CSR layout avoids per-record `Vec`
+/// allocations and enables bulk serialization/deserialization.
+pub struct ChildrenIndex {
+    /// CSR offsets — one per record + sentinel.  Length = `record_count` + 1.
+    /// Children of record `i` are `values[offsets[i]..offsets[i+1]]`.
+    offsets: Vec<u32>,
+    /// Flat array of all child indices.
+    values: Vec<u32>,
+}
+
+impl ChildrenIndex {
+    /// Build from `CompactRecord::parent_idx` in two passes (count + scatter).
+    #[must_use]
+    pub fn build(records: &[CompactRecord]) -> Self {
+        // Count children per parent
+        let mut counts = vec![0_u32; records.len()];
+        for rec in records {
+            let parent = rec.parent_idx;
+            if parent != u32::MAX {
+                if let Some(cnt) = counts.get_mut(parent as usize) {
+                    *cnt += 1;
+                }
+            }
+        }
+
+        // Prefix-sum → offsets
+        let mut offsets = Vec::with_capacity(records.len() + 1);
+        let mut running = 0_u32;
+        for &cnt in &counts {
+            offsets.push(running);
+            running = running.saturating_add(cnt);
+        }
+        offsets.push(running);
+
+        // Scatter children into values
+        let mut values = vec![0_u32; running as usize];
+        let mut write_pos = offsets.clone();
+        for (idx, rec) in records.iter().enumerate() {
+            let parent = rec.parent_idx;
+            if parent != u32::MAX {
+                if let Some(pos) = write_pos.get_mut(parent as usize) {
+                    if let Some(slot) = values.get_mut(*pos as usize) {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "record count bounded by NTFS limits, fits u32"
+                        )]
+                        let child_idx = idx as u32;
+                        *slot = child_idx;
+                        *pos += 1;
+                    }
+                }
+            }
+        }
+
+        Self { offsets, values }
+    }
+
+    /// Construct directly from pre-built CSR arrays (cache deserialization).
+    #[must_use]
+    pub const fn from_csr(offsets: Vec<u32>, values: Vec<u32>) -> Self {
+        Self { offsets, values }
+    }
+
+    /// Borrow the CSR components for serialization.
+    #[must_use]
+    pub fn as_csr(&self) -> (&[u32], &[u32]) {
+        (&self.offsets, &self.values)
+    }
+
+    /// Return the children of record `idx` as a contiguous slice.
+    #[must_use]
+    pub fn get(&self, idx: usize) -> &[u32] {
+        let start = self.offsets.get(idx).copied().unwrap_or(0) as usize;
+        let end = self.offsets.get(idx + 1).copied().unwrap_or(0) as usize;
+        self.values.get(start..end).unwrap_or(&[])
+    }
+
+    /// Total number of child entries across all records.
+    #[must_use]
+    pub fn total_children(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Number of records tracked (one slot per record).
+    #[must_use]
+    pub fn record_count(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    /// Create an empty children index.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            offsets: vec![0],
+            values: Vec::new(),
+        }
+    }
+}
+
 /// A loaded drive with compact index.
 pub struct DriveCompactIndex {
     /// Drive letter (e.g., 'C').
@@ -95,9 +207,8 @@ pub struct DriveCompactIndex {
     pub names_lower: Vec<u8>,
     /// Trigram inverted index built on `names_lower`.
     pub trigram: TrigramIndex,
-    /// Children index: `children[i]` = compact indices of directory i's
-    /// children.
-    pub children: Vec<Vec<u32>>,
+    /// CSR children index: `children.get(i)` → child indices of record i.
+    pub children: ChildrenIndex,
     /// Where this index was loaded from (for future refresh).
     pub source: IndexSource,
 }
@@ -164,83 +275,63 @@ pub fn build_compact_index(
     index: &MftIndex,
 ) -> (DriveCompactIndex, u128, u128) {
     let compact_start = Instant::now();
-    let record_count = index.records.len();
 
-    let mut records = Vec::with_capacity(record_count);
-    for record in &index.records {
-        let name_ref = &record.first_name.name;
-        let parent_idx = {
-            let parent_frs = record.first_name.parent_frs;
-            if parent_frs == record.frs
-                || parent_frs == u64::from(uffs_mft::NO_ENTRY)
-                || parent_frs == uffs_mft::ROOT_FRS
-            {
-                u32::MAX
-            } else {
-                let parent_usize = uffs_mft::frs_to_usize(parent_frs);
-                index
-                    .frs_to_idx
-                    .get(parent_usize)
-                    .copied()
-                    .filter(|&idx| idx != uffs_mft::NO_ENTRY)
-                    .unwrap_or(u32::MAX)
+    // Parallel construction: each record is independent (shared read on
+    // frs_to_idx for parent lookup, no writes). ~140ms → ~30ms on 8 cores.
+    let records: Vec<CompactRecord> = index
+        .records
+        .par_iter()
+        .map(|record| {
+            let name_ref = &record.first_name.name;
+            let parent_idx = {
+                let parent_frs = record.first_name.parent_frs;
+                if parent_frs == record.frs
+                    || parent_frs == u64::from(uffs_mft::NO_ENTRY)
+                    || parent_frs == uffs_mft::ROOT_FRS
+                {
+                    u32::MAX
+                } else {
+                    let parent_usize = uffs_mft::frs_to_usize(parent_frs);
+                    index
+                        .frs_to_idx
+                        .get(parent_usize)
+                        .copied()
+                        .filter(|&idx| idx != uffs_mft::NO_ENTRY)
+                        .unwrap_or(u32::MAX)
+                }
+            };
+
+            CompactRecord {
+                name_offset: name_ref.offset,
+                name_len: name_ref.length(),
+                extension_id: name_ref.extension_id(),
+                flags: record.stdinfo.flags,
+                parent_idx,
+                size: record.first_stream.size.length,
+                allocated: record.first_stream.size.allocated,
+                created: record.stdinfo.created,
+                modified: record.stdinfo.modified,
+                accessed: record.stdinfo.accessed,
+                descendants: record.descendants,
+                treesize: record.treesize,
+                _pad: [0; 4],
             }
-        };
-
-        records.push(CompactRecord {
-            name_offset: name_ref.offset,
-            name_len: name_ref.length(),
-            extension_id: name_ref.extension_id(),
-            flags: record.stdinfo.flags,
-            parent_idx,
-            size: record.first_stream.size.length,
-            allocated: record.first_stream.size.allocated,
-            created: record.stdinfo.created,
-            modified: record.stdinfo.modified,
-            accessed: record.stdinfo.accessed,
-            descendants: record.descendants,
-            treesize: record.treesize,
-        });
-    }
+        })
+        .collect();
 
     let names = index.names.as_bytes().to_vec();
-    let names_lower: Vec<u8> = index.names.to_ascii_lowercase().into_bytes();
+    // Clone-then-lowercase avoids the intermediate `String` allocation that
+    // `to_ascii_lowercase().into_bytes()` would create (~150MB saved).
+    let mut names_lower = names.clone();
+    names_lower.make_ascii_lowercase();
     let compact_elapsed = compact_start.elapsed().as_millis();
 
     let tri_start = Instant::now();
-    let trigram = {
-        let name_strings: Vec<String> = records
-            .iter()
-            .map(|rec| {
-                let start = rec.name_offset as usize;
-                let end = start + rec.name_len as usize;
-                names_lower
-                    .get(start..end)
-                    .and_then(|bytes| core::str::from_utf8(bytes).ok())
-                    .unwrap_or("")
-                    .to_owned()
-            })
-            .collect();
-        TrigramIndex::build(&name_strings)
-    };
+    let trigram = TrigramIndex::build(&records, &names_lower);
     let tri_elapsed = tri_start.elapsed().as_millis();
 
-    // Build children index from parent_idx (single pass).
-    let mut children: Vec<Vec<u32>> = vec![Vec::new(); records.len()];
-    for (idx, rec) in records.iter().enumerate() {
-        let parent = rec.parent_idx;
-        if parent != u32::MAX {
-            if let Some(child_list) = children.get_mut(parent as usize) {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "record count bounded by NTFS limits, always fits u32"
-                )]
-                {
-                    child_list.push(idx as u32);
-                }
-            }
-        }
-    }
+    // Build children CSR index from parent_idx (two-pass: count + scatter).
+    let children = ChildrenIndex::build(&records);
 
     (
         DriveCompactIndex {
@@ -257,8 +348,10 @@ pub fn build_compact_index(
     )
 }
 
-/// Cache TTL in seconds (10 minutes — same as Windows CLI).
-const INDEX_TTL_SECONDS: u64 = 600;
+/// Cache TTL in seconds (4 hours — same as Windows CLI).
+///
+/// USN Journal handles incremental freshness; this is a safety-net full rescan.
+pub(crate) const INDEX_TTL_SECONDS: u64 = 14400;
 
 /// Load an MFT file and build a compact index (cross-platform).
 ///
@@ -280,6 +373,28 @@ pub fn load_mft_file(
             .filter(char::is_ascii_alphabetic)
             .map_or('X', |ch| ch.to_ascii_uppercase())
     });
+
+    // Try compact cache first (skips MftIndex load entirely)
+    if !no_cache {
+        if let Some(mut compact) =
+            crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS)
+        {
+            compact.source = IndexSource::MftFile(mft_path.to_path_buf());
+            tracing::info!(
+                drive = %drive_letter,
+                records = compact.records.len(),
+                "📦 Cache hit — loaded compact cache"
+            );
+            return Ok((
+                compact,
+                LoadTiming {
+                    mft: 0,
+                    compact: 0,
+                    trigram: 0,
+                },
+            ));
+        }
+    }
 
     let mft_start = Instant::now();
 
@@ -344,6 +459,13 @@ pub fn load_mft_file(
     let (mut compact, compact_elapsed, tri_elapsed) = build_compact_index(drive_letter, &mft_index);
     compact.source = IndexSource::MftFile(mft_path.to_path_buf());
 
+    // Save compact cache (best-effort, don't fail the load)
+    if !no_cache {
+        if let Err(err) = crate::compact_cache::save_compact_cache(&compact) {
+            tracing::warn!(drive = %drive_letter, error = %err, "Failed to save compact cache");
+        }
+    }
+
     Ok((
         compact,
         LoadTiming {
@@ -361,6 +483,27 @@ pub fn load_live_drive(
     no_cache: bool,
 ) -> anyhow::Result<(DriveCompactIndex, LoadTiming)> {
     use anyhow::Context;
+
+    // Try compact cache first (skips MftIndex load entirely)
+    if !no_cache {
+        if let Some(compact) =
+            crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS)
+        {
+            tracing::info!(
+                drive = %drive_letter,
+                records = compact.records.len(),
+                "📦 Cache hit — loaded compact cache"
+            );
+            return Ok((
+                compact,
+                LoadTiming {
+                    mft: 0,
+                    compact: 0,
+                    trigram: 0,
+                },
+            ));
+        }
+    }
 
     let mft_start = Instant::now();
     let rt = tokio::runtime::Runtime::new()?;
@@ -383,6 +526,13 @@ pub fn load_live_drive(
 
     let (compact, compact_elapsed, tri_elapsed) = build_compact_index(drive_letter, &index);
 
+    // Save compact cache (best-effort, don't fail the load)
+    if !no_cache {
+        if let Err(err) = crate::compact_cache::save_compact_cache(&compact) {
+            tracing::warn!(drive = %drive_letter, error = %err, "Failed to save compact cache");
+        }
+    }
+
     Ok((
         compact,
         LoadTiming {
@@ -393,7 +543,11 @@ pub fn load_live_drive(
     ))
 }
 
-/// Apply USN changes in-place to the compact index (<50ms for typical changes).
+/// Apply USN changes in-place to the compact index.
+///
+/// Mutates records (parent_idx, names, flags) then rebuilds the children CSR
+/// once at the end.  Typical cost: <5ms for record mutations + ~100ms for CSR
+/// rebuild on a 7M-record drive.
 #[cfg(windows)]
 pub fn apply_usn_patch(
     drive: &mut DriveCompactIndex,
@@ -411,16 +565,13 @@ pub fn apply_usn_patch(
                 stats.skipped += 1;
             } else if let Some(rec) = drive.records.get_mut(compact_idx as usize) {
                 rec.name_len = 0;
-                let parent = rec.parent_idx;
-                if parent != u32::MAX {
-                    if let Some(children) = drive.children.get_mut(parent as usize) {
-                        children.retain(|&child| child != compact_idx);
-                    }
-                }
+                // Clear parent so CSR rebuild excludes this record.
+                rec.parent_idx = u32::MAX;
                 stats.deleted += 1;
             }
         } else if change.created {
             if compact_idx != u32::MAX {
+                // Re-animate a previously deleted slot.
                 if let Some(rec) = drive.records.get_mut(compact_idx as usize) {
                     if rec.name_len == 0 && !change.filename.is_empty() {
                         let name_start = drive.names.len();
@@ -469,18 +620,10 @@ pub fn apply_usn_patch(
                     accessed: 0,
                     descendants: 0,
                     treesize: 0,
+                    _pad: [0; 4],
                 };
 
-                let new_idx = drive.records.len() as u32;
                 drive.records.push(new_rec);
-                drive.children.push(Vec::new());
-
-                if parent_compact != u32::MAX {
-                    if let Some(children) = drive.children.get_mut(parent_compact as usize) {
-                        children.push(new_idx);
-                    }
-                }
-
                 stats.created += 1;
             } else {
                 stats.skipped += 1;
@@ -511,28 +654,21 @@ pub fn apply_usn_patch(
                     .copied()
                     .unwrap_or(u32::MAX);
 
-                if new_parent_compact != rec.parent_idx {
-                    let old_parent = rec.parent_idx;
-                    if old_parent != u32::MAX {
-                        if let Some(children) = drive.children.get_mut(old_parent as usize) {
-                            children.retain(|&child| child != compact_idx);
-                        }
-                    }
-                    rec.parent_idx = new_parent_compact;
-                    if new_parent_compact != u32::MAX {
-                        if let Some(children) = drive.children.get_mut(new_parent_compact as usize)
-                        {
-                            children.push(compact_idx);
-                        }
-                    }
-                }
-
+                // Update parent_idx — CSR rebuild picks this up.
+                rec.parent_idx = new_parent_compact;
                 stats.renamed += 1;
             }
         } else {
             stats.skipped += 1;
         }
     }
+
+    // Rebuild derived structures from updated records + names.
+    // Children CSR: ~100ms for 7M records. Trigram: ~500ms for 7M records.
+    // Both are necessary so newly created/renamed files appear in tree
+    // traversal AND trigram search.
+    drive.children = ChildrenIndex::build(&drive.records);
+    drive.trigram = TrigramIndex::build(&drive.records, &drive.names_lower);
 
     stats
 }

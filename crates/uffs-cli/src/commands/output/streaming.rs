@@ -64,6 +64,59 @@ impl<W: Write> StreamingWriter<W> {
         }
     }
 
+    /// Write a batch of native `DisplayRow` results. Returns number of rows
+    /// written.
+    pub fn write_rows_batch(
+        &self,
+        rows: &[uffs_core::search::backend::DisplayRow],
+    ) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        if self.limit > 0 {
+            let current = self.rows_written.load(Ordering::Relaxed);
+            if current >= self.limit as usize {
+                return Ok(0);
+            }
+        }
+
+        let rows_to_write = if self.limit > 0 {
+            let current = self.rows_written.load(Ordering::Relaxed);
+            let remaining = (self.limit as usize).saturating_sub(current);
+            if remaining == 0 {
+                return Ok(0);
+            }
+            remaining.min(rows.len())
+        } else {
+            rows.len()
+        };
+
+        // `rows_to_write` ≤ `rows.len()` by construction above, so this is
+        // always `Some`. Fall back to the full slice defensively.
+        let batch = rows.get(..rows_to_write).map_or(rows, |slice| slice);
+        let write_header = !self.header_written.swap(true, Ordering::SeqCst);
+        let mut config = self.output_config.clone();
+        config.header = write_header;
+
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|err| anyhow::anyhow!("Lock error: {err}"))?;
+
+        config
+            .write_display_rows(batch, &mut *writer)
+            .map_err(|err| anyhow::anyhow!("Write error: {err}"))?;
+
+        writer.flush()?;
+        drop(writer);
+
+        self.rows_written
+            .fetch_add(rows_to_write, Ordering::Relaxed);
+
+        Ok(rows_to_write)
+    }
+
     /// Write a `DataFrame` batch. Returns number of rows written.
     pub fn write_batch(&self, df: &uffs_polars::DataFrame) -> Result<usize> {
         if df.height() == 0 {

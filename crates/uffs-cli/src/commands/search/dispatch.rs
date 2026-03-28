@@ -10,6 +10,8 @@ use uffs_core::output::OutputConfig;
 use uffs_core::pattern::ParsedPattern;
 use uffs_core::tree::add_tree_columns;
 
+#[cfg(windows)]
+use super::super::output::write_native_results;
 use super::super::output::{can_write_native_results, write_results};
 use super::super::raw_io::{QueryFilters, load_and_filter_data, load_and_filter_from_mft_file};
 use super::streaming_io::build_record_filter;
@@ -46,9 +48,8 @@ pub(super) async fn dispatch_search(config: &SearchConfig<'_>) -> Result<SearchD
         }
     }
 
-    // Fallback: DataFrame path.
-    let df = run_dataframe_search(config).await?;
-    Ok(SearchDispatchResult::DataFrame(df))
+    // Fallback: native compact or legacy DataFrame path.
+    run_dataframe_search(config).await
 }
 
 /// Dispatch multi-file streaming search.
@@ -155,14 +156,14 @@ fn run_single_file_dispatch(config: &SearchConfig<'_>, mft_path: &std::path::Pat
     super::single_file::run_single_file_streaming(&stream_config)
 }
 
-/// Execute `DataFrame` search (fallback path).
-async fn run_dataframe_search(config: &SearchConfig<'_>) -> Result<uffs_polars::DataFrame> {
-    // This is the fallback when streaming is not available.
-    // Uses the index/DataFrame path with load_and_filter_* helpers.
-
-    // For --mft-file: load and query via existing helper.
+/// Execute search fallback path.
+///
+/// Returns `NativeRows` for multi-drive (compact index search) or
+/// `DataFrame` for legacy paths (parquet index, single-drive, mft-file).
+async fn run_dataframe_search(config: &SearchConfig<'_>) -> Result<SearchDispatchResult> {
+    // For --mft-file: load and query via existing helper (DataFrame path).
     if let Some(mft_path) = config.mft_file.first() {
-        return load_and_filter_from_mft_file(
+        let df = load_and_filter_from_mft_file(
             mft_path,
             config.single_drive,
             &config.filters,
@@ -170,20 +171,73 @@ async fn run_dataframe_search(config: &SearchConfig<'_>) -> Result<uffs_polars::
             config.profile,
             config.debug_tree,
             config.chaos_seed,
-        );
+        )?;
+        return Ok(SearchDispatchResult::DataFrame(df));
     }
 
-    // For --index file or Windows LIVE: use load_and_filter_data.
-    load_and_filter_data(
-        config.index.clone(),
-        config.multi_drives.clone(),
-        config.single_drive,
-        &config.filters,
-        config.output_config.needs_path_column(),
-        config.profile,
-        config.no_bitmap,
-    )
-    .await
+    // For multi-drive: use native compact index search (no DataFrame).
+    #[cfg(windows)]
+    if let Some(ref drives) = config.multi_drives {
+        let rows = super::multi_drive::search_multi_drive_filtered(
+            drives,
+            &config.filters,
+            config.output_config.needs_path_column(),
+            config.no_bitmap,
+        )
+        .await?;
+        return Ok(SearchDispatchResult::NativeRows(rows));
+    }
+
+    // For --index (parquet) or explicit single-drive: legacy DataFrame path.
+    if config.index.is_some()
+        || config.single_drive.is_some()
+        || config.filters.parsed.drive().is_some()
+    {
+        let df = load_and_filter_data(
+            config.index.clone(),
+            None, // multi_drives already handled above
+            config.single_drive,
+            &config.filters,
+            config.output_config.needs_path_column(),
+            config.profile,
+            config.no_bitmap,
+        )
+        .await?;
+        return Ok(SearchDispatchResult::DataFrame(df));
+    }
+
+    // Auto-detect: no drive, no index → find all NTFS drives and search natively.
+    #[cfg(windows)]
+    {
+        if !uffs_mft::is_elevated() {
+            bail!(
+                "Administrator privileges required.\n\n\
+                 UFFS reads the NTFS Master File Table directly, which requires elevated access.\n\n\
+                 Solutions:\n\
+                 1. Run PowerShell/Terminal as Administrator\n\
+                 2. Use a pre-built index: uffs search --index <file.parquet> \"*.txt\""
+            );
+        }
+        let all_drives = uffs_mft::detect_ntfs_drives();
+        if all_drives.is_empty() {
+            bail!("No NTFS drives found on this system");
+        }
+        info!(drives = ?all_drives, count = all_drives.len(), "No drive specified — searching all NTFS drives");
+        let rows = super::multi_drive::search_multi_drive_filtered(
+            &all_drives,
+            &config.filters,
+            config.output_config.needs_path_column(),
+            config.no_bitmap,
+        )
+        .await?;
+        return Ok(SearchDispatchResult::NativeRows(rows));
+    }
+    #[cfg(not(windows))]
+    {
+        bail!(
+            "No drive specified. Use --drive, --drives, --index, or include drive in pattern (e.g., c:/pro*)"
+        )
+    }
 }
 
 /// Build search configuration from CLI parameters.
@@ -364,6 +418,68 @@ pub(super) fn finalize_dataframe_output(
 
     info!(count = results.height(), "Search complete");
     Ok(())
+}
+
+/// Finalize **native** `DisplayRow` output — no full-MFT `DataFrame` involved.
+///
+/// For json/table formats, a small `DataFrame` is created from the result rows
+/// only (not the full MFT) to reuse existing Polars serialization.
+#[cfg(windows)]
+pub(super) fn finalize_native_output(
+    rows: &[uffs_core::search::backend::DisplayRow],
+    config: &SearchConfig<'_>,
+) -> Result<()> {
+    let elapsed = config.start_time.elapsed();
+    let t_output = std::time::Instant::now();
+
+    if !config.benchmark {
+        write_native_results(
+            rows,
+            config.format,
+            config.out,
+            &config.output_config,
+            &config.output_targets,
+            elapsed,
+            config.pattern,
+        )?;
+    }
+    let output_ms = t_output.elapsed().as_millis();
+
+    if config.benchmark {
+        print_benchmark_stats_native(rows, elapsed);
+    } else if config.profile {
+        print_profile_stats_native(rows.len(), output_ms, elapsed);
+    }
+
+    info!(count = rows.len(), "Search complete (native)");
+    Ok(())
+}
+
+/// Print profile statistics for native output.
+#[cfg(windows)]
+#[expect(
+    clippy::print_stderr,
+    reason = "intentional user-facing --profile output"
+)]
+fn print_profile_stats_native(row_count: usize, output_ms: u128, elapsed: core::time::Duration) {
+    let total_ms = elapsed.as_millis();
+    eprintln!("=== PROFILE: Output ===");
+    eprintln!("  Output/write:    {output_ms:>6} ms  ({row_count} rows)");
+    eprintln!("=== TOTAL: {total_ms} ms ===");
+}
+
+/// Print benchmark statistics for native results.
+#[cfg(windows)]
+#[expect(clippy::print_stderr, reason = "intentional user-facing output")]
+fn print_benchmark_stats_native(
+    rows: &[uffs_core::search::backend::DisplayRow],
+    elapsed: core::time::Duration,
+) {
+    let total_ms = elapsed.as_millis();
+    let secs = elapsed.as_secs_f64();
+    eprintln!("=== BENCHMARK MODE (no output) ===");
+    eprintln!("  Records found:   {:>10}", rows.len());
+    eprintln!("  Total time:      {total_ms:>10} ms ({secs:.2} s)");
 }
 
 /// Print benchmark statistics.

@@ -60,11 +60,16 @@ pub(super) fn search_drive_task_budget(total_drives: usize) -> usize {
         .min(MAX_CONCURRENT_SEARCH_DRIVE_TASKS)
 }
 
-/// Result of search dispatch - streaming completed or `DataFrame` needs output.
+/// Result of search dispatch - streaming completed, native rows, or legacy
+/// `DataFrame`.
 enum SearchDispatchResult {
     /// Streaming output was written directly - search is complete.
     StreamingComplete,
-    /// `DataFrame` results ready for output processing.
+    /// Native `DisplayRow` results from compact index search (Windows
+    /// multi-drive).
+    #[cfg(windows)]
+    NativeRows(Vec<uffs_core::search::backend::DisplayRow>),
+    /// Legacy `DataFrame` results (parquet index, exotic queries).
     DataFrame(uffs_polars::DataFrame),
 }
 
@@ -268,25 +273,8 @@ pub async fn search(
     // Handle result.
     match result {
         SearchDispatchResult::StreamingComplete => Ok(()),
+        #[cfg(windows)]
+        SearchDispatchResult::NativeRows(rows) => dispatch::finalize_native_output(&rows, &config),
         SearchDispatchResult::DataFrame(df) => dispatch::finalize_dataframe_output(df, &config),
     }
-}
-
-/// Stub for non-Windows platforms.
-#[cfg(not(windows))]
-#[expect(
-    clippy::unused_async,
-    reason = "must match async signature of Windows implementation"
-)]
-#[expect(
-    clippy::single_call_fn,
-    reason = "platform stub — matches Windows counterpart"
-)]
-pub(super) async fn search_multi_drive_filtered(
-    _drives: &[char],
-    _filters: &QueryFilters<'_>,
-    _needs_paths: bool,
-    _no_bitmap: bool,
-) -> Result<uffs_polars::DataFrame> {
-    anyhow::bail!("Multi-drive search is only supported on Windows")
 }

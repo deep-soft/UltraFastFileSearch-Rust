@@ -287,6 +287,53 @@ impl OutputConfig {
         Ok(())
     }
 
+    /// Write `DisplayRow` results directly — **no `DataFrame` involved**.
+    ///
+    /// Uses the same separator / quote / header / boolean formatting as
+    /// [`write`](Self::write) so output is identical.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying writer fails.
+    pub fn write_display_rows<W: Write>(
+        &self,
+        rows: &[crate::search::backend::DisplayRow],
+        mut writer: W,
+    ) -> Result<()> {
+        let output_cols: &[OutputColumn] = self
+            .columns
+            .as_ref()
+            .map_or(CPP_COLUMN_ORDER, |cols| cols.as_slice());
+
+        // Header
+        if self.header {
+            let mut header = String::with_capacity(output_cols.len() * 24);
+            for (idx, col) in output_cols.iter().enumerate() {
+                if idx > 0 {
+                    header.push_str(&self.separator);
+                }
+                header.push_str(&self.quote);
+                header.push_str(col.display_name());
+                header.push_str(&self.quote);
+            }
+            header.push('\n');
+            header.push('\n');
+            writer.write_all(header.as_bytes())?;
+        }
+
+        // Data rows
+        let mut buf = String::with_capacity(output_cols.len() * 32);
+        let mut itoa_buf = itoa::Buffer::new();
+        for row in rows {
+            buf.clear();
+            write_display_row_columns(&mut buf, &mut itoa_buf, output_cols, self, row);
+            buf.push('\n');
+            writer.write_all(buf.as_bytes())?;
+        }
+
+        Ok(())
+    }
+
     /// Append a single formatted series value to the provided row buffer.
     #[expect(
         clippy::wildcard_enum_match_arm,
@@ -416,4 +463,214 @@ impl OutputConfig {
             row_buffer.push_str(&value.to_string());
         }
     }
+}
+
+// ─── Native DisplayRow output ───────────────────────────────────────────────
+
+/// NTFS attribute flag constants for bit-testing `DisplayRow::flags`.
+mod attr {
+    /// Read-only.
+    pub const READONLY: u32 = 0x0001;
+    /// Hidden.
+    pub const HIDDEN: u32 = 0x0002;
+    /// System.
+    pub const SYSTEM: u32 = 0x0004;
+    /// Directory.
+    pub const DIRECTORY: u32 = 0x0010;
+    /// Archive.
+    pub const ARCHIVE: u32 = 0x0020;
+    /// Temporary.
+    pub const TEMPORARY: u32 = 0x0100;
+    /// Sparse.
+    pub const SPARSE: u32 = 0x0200;
+    /// Reparse point.
+    pub const REPARSE: u32 = 0x0400;
+    /// Compressed.
+    pub const COMPRESSED: u32 = 0x0800;
+    /// Offline.
+    pub const OFFLINE: u32 = 0x1000;
+    /// Not content indexed.
+    pub const NOT_INDEXED: u32 = 0x2000;
+    /// Encrypted.
+    pub const ENCRYPTED: u32 = 0x4000;
+    /// Integrity stream.
+    pub const INTEGRITY: u32 = 0x8000;
+    /// Virtual.
+    pub const VIRTUAL: u32 = 0x0001_0000;
+    /// No scrub data.
+    pub const NO_SCRUB: u32 = 0x0002_0000;
+    /// Recall on open.
+    pub const RECALL_ON_OPEN: u32 = 0x0004_0000;
+    /// Pinned.
+    pub const PINNED: u32 = 0x0008_0000;
+    /// Unpinned.
+    pub const UNPINNED: u32 = 0x0010_0000;
+    /// Recall on data access.
+    pub const RECALL_ON_DATA: u32 = 0x0040_0000;
+    /// Parity-compat mask (15 legacy bits).
+    pub const PARITY_MASK: u32 = 0x7FFF;
+}
+
+/// Write one `DisplayRow` into `buf` using the configured columns.
+///
+/// Extracted as a standalone function for readability — the column match has
+/// ~30 arms mirroring all `OutputColumn` variants.
+#[expect(
+    clippy::single_call_fn,
+    reason = "separated for readability of 30-arm match"
+)]
+fn write_display_row_columns(
+    buf: &mut String,
+    itoa_buf: &mut itoa::Buffer,
+    output_cols: &[OutputColumn],
+    cfg: &OutputConfig,
+    row: &crate::search::backend::DisplayRow,
+) {
+    let flags = row.flags;
+
+    for (idx, col) in output_cols.iter().enumerate() {
+        if idx > 0 {
+            buf.push_str(&cfg.separator);
+        }
+        match col {
+            OutputColumn::Path => {
+                buf.push_str(&cfg.quote);
+                buf.push_str(&row.path);
+                buf.push_str(&cfg.quote);
+            }
+            OutputColumn::Name => {
+                buf.push_str(&cfg.quote);
+                buf.push_str(&row.name);
+                buf.push_str(&cfg.quote);
+            }
+            OutputColumn::PathOnly => {
+                buf.push_str(&cfg.quote);
+                if let Some(pos) = row.path.rfind('\\') {
+                    buf.push_str(row.path.get(..=pos).unwrap_or(&row.path));
+                } else {
+                    buf.push_str(&row.path);
+                }
+                buf.push_str(&cfg.quote);
+            }
+            OutputColumn::Size => {
+                buf.push_str(itoa_buf.format(row.size));
+            }
+            OutputColumn::SizeOnDisk => {
+                buf.push_str(itoa_buf.format(row.allocated));
+            }
+            OutputColumn::Created => {
+                append_datetime_native(buf, row.created, cfg.timezone_offset_secs);
+            }
+            OutputColumn::Modified => {
+                append_datetime_native(buf, row.modified, cfg.timezone_offset_secs);
+            }
+            OutputColumn::Accessed => {
+                append_datetime_native(buf, row.accessed, cfg.timezone_offset_secs);
+            }
+            OutputColumn::Descendants => {
+                buf.push_str(itoa_buf.format(row.descendants));
+            }
+            OutputColumn::TreeSize => {
+                buf.push_str(itoa_buf.format(row.treesize));
+            }
+            OutputColumn::TreeAllocated => {
+                // tree_allocated not in DisplayRow — fall back to allocated
+                buf.push_str(itoa_buf.format(row.allocated));
+            }
+            OutputColumn::Type => {
+                // Extract extension from name
+                buf.push_str(&cfg.quote);
+                if let Some(dot) = row.name.rfind('.') {
+                    buf.push_str(row.name.get(dot + 1..).unwrap_or(""));
+                }
+                buf.push_str(&cfg.quote);
+            }
+            OutputColumn::Attributes | OutputColumn::AttributeValue => {
+                buf.push_str(itoa_buf.format(flags));
+            }
+            OutputColumn::ParityAttributes => {
+                buf.push_str(itoa_buf.format(flags & attr::PARITY_MASK));
+            }
+            OutputColumn::Hidden => push_flag(buf, cfg, flags, attr::HIDDEN),
+            OutputColumn::System => push_flag(buf, cfg, flags, attr::SYSTEM),
+            OutputColumn::Archive => push_flag(buf, cfg, flags, attr::ARCHIVE),
+            OutputColumn::ReadOnly => push_flag(buf, cfg, flags, attr::READONLY),
+            OutputColumn::Compressed => push_flag(buf, cfg, flags, attr::COMPRESSED),
+            OutputColumn::Encrypted => push_flag(buf, cfg, flags, attr::ENCRYPTED),
+            OutputColumn::Sparse => push_flag(buf, cfg, flags, attr::SPARSE),
+            OutputColumn::Reparse => push_flag(buf, cfg, flags, attr::REPARSE),
+            OutputColumn::Offline => push_flag(buf, cfg, flags, attr::OFFLINE),
+            OutputColumn::NotIndexed => push_flag(buf, cfg, flags, attr::NOT_INDEXED),
+            OutputColumn::Temporary => push_flag(buf, cfg, flags, attr::TEMPORARY),
+            OutputColumn::Virtual => push_flag(buf, cfg, flags, attr::VIRTUAL),
+            OutputColumn::Pinned => push_flag(buf, cfg, flags, attr::PINNED),
+            OutputColumn::Unpinned => push_flag(buf, cfg, flags, attr::UNPINNED),
+            OutputColumn::DirectoryFlag => push_flag(buf, cfg, flags, attr::DIRECTORY),
+            OutputColumn::Integrity => push_flag(buf, cfg, flags, attr::INTEGRITY),
+            OutputColumn::NoScrub => push_flag(buf, cfg, flags, attr::NO_SCRUB),
+            OutputColumn::RecallOnOpen => push_flag(buf, cfg, flags, attr::RECALL_ON_OPEN),
+            OutputColumn::RecallOnDataAccess => push_flag(buf, cfg, flags, attr::RECALL_ON_DATA),
+            OutputColumn::Bulkiness => {
+                buf.push_str(OutputColumn::Bulkiness.default_value());
+            }
+        }
+    }
+}
+
+/// Append a boolean flag test result.
+fn push_flag(buf: &mut String, cfg: &OutputConfig, flags: u32, mask: u32) {
+    if flags & mask != 0 {
+        buf.push_str(&cfg.pos);
+    } else {
+        buf.push_str(&cfg.neg);
+    }
+}
+
+/// Append `YYYY-MM-DD HH:MM:SS` from Unix microseconds with timezone offset.
+///
+/// Same algorithm as `row_writer::append_datetime` — no `chrono` overhead.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "rem_euclid always returns non-negative"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "day_secs/doe bounded within u32"
+)]
+fn append_datetime_native(buf: &mut String, timestamp_micros: i64, tz_offset_secs: i32) {
+    use core::fmt::Write;
+
+    let adjusted_secs = timestamp_micros.div_euclid(1_000_000) + i64::from(tz_offset_secs);
+    let day_secs = adjusted_secs.rem_euclid(86_400) as u32;
+    let days = adjusted_secs.div_euclid(86_400) + 719_468;
+
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let doe = (days - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let year_offset = i64::from(yoe) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let month_proxy = (5 * doy + 2) / 153;
+    let day = doy - (153 * month_proxy + 2) / 5 + 1;
+    let month = if month_proxy < 10 {
+        month_proxy + 3
+    } else {
+        month_proxy - 9
+    };
+    let year = if month <= 2 {
+        year_offset + 1
+    } else {
+        year_offset
+    };
+    let hour = day_secs / 3600;
+    let minute = (day_secs % 3600) / 60;
+    let second = day_secs % 60;
+
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "String::write_fmt never fails"
+    )]
+    let _ = write!(
+        buf,
+        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
+    );
 }

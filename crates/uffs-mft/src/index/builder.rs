@@ -202,6 +202,7 @@ impl MftIndex {
                     index.links.push(LinkInfo {
                         next_entry: prev_link_idx,
                         name: IndexNameRef::new(extra_offset, extra_len, extra_ascii, extra_ext_id),
+                        _pad0: [0; 4],
                         parent_frs: extra_name.parent_frs,
                     });
                     prev_link_idx = link_idx;
@@ -314,6 +315,7 @@ impl MftIndex {
                             stream_ext_id,
                         ),
                         flags,
+                        _pad0: [0; 3],
                     });
                     prev_stream_idx = stream_idx;
                 }
@@ -360,8 +362,10 @@ impl MftIndex {
                 // corresponding proportional-share slot when needed.
                 index.children.push(ChildInfo {
                     next_entry: old_first_child,
+                    _pad0: [0; 4],
                     child_frs: parsed.frs,
                     name_index: len_to_u16(name_idx),
+                    _pad1: [0; 6],
                 });
             }
 
@@ -390,8 +394,10 @@ impl MftIndex {
 
                 index.children.push(ChildInfo {
                     next_entry: old_first_child,
+                    _pad0: [0; 4],
                     child_frs: parsed.frs,
                     name_index: 0,
+                    _pad1: [0; 6],
                 });
             }
         }

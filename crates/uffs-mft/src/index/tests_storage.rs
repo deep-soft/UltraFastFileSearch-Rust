@@ -28,7 +28,8 @@ fn test_deserialize_rejects_record_count_that_is_too_large() {
 #[test]
 fn test_deserialize_rejects_names_size_beyond_remaining_bytes() {
     let mut data = empty_serialized_index();
-    write_u64(&mut data, NAMES_SIZE_OFFSET, 5);
+    // Use a size larger than remaining bytes after header+frs_to_idx+records.
+    write_u64(&mut data, NAMES_SIZE_OFFSET, 9999);
 
     assert!(matches!(
         MftIndex::deserialize(&data),

@@ -69,7 +69,7 @@ pub fn len_to_u16(len: usize) -> u16 {
 /// - Bits 0-9:   UTF-8 length (max 1023 bytes)
 /// - Bits 10-15: flags (`is_ascii`, etc.)
 /// - Bits 16-31: `extension_id` (65K unique extensions)
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct IndexNameRef {
     /// Byte offset into `MftIndex::names`
@@ -177,13 +177,19 @@ impl IndexNameRef {
 ///
 /// Uses `u64` for `parent_frs` so the index can represent the full NTFS FRS
 /// range.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct LinkInfo {
     /// Index of next `LinkInfo` in `MftIndex::links`, or `NO_ENTRY`
     pub next_entry: u32,
     /// Filename reference
     pub name: IndexNameRef,
+    /// Explicit padding for `u64` alignment of `parent_frs`.
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "bytemuck Pod requires all fields same visibility"
+    )]
+    pub _pad0: [u8; 4],
     /// Parent directory FRS (u64 to support all valid NTFS volumes)
     pub parent_frs: u64,
 }
@@ -193,7 +199,7 @@ pub struct LinkInfo {
 // ============================================================================
 
 /// File size information.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct SizeInfo {
     /// Logical file size
@@ -210,7 +216,7 @@ pub struct SizeInfo {
 ///
 /// Most files have only the default `$DATA` stream, stored inline.
 /// Files with ADS form a linked list via `next_entry`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct IndexStreamInfo {
     /// Size information
@@ -222,6 +228,12 @@ pub struct IndexStreamInfo {
     /// Packed flags: bit 0 = `is_sparse`, bit 1 = `is_resident`, bits 2-7 =
     /// `type_name_id`
     pub flags: u8,
+    /// Explicit tail padding for struct alignment.
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "bytemuck Pod requires all fields same visibility"
+    )]
+    pub _pad0: [u8; 3],
 }
 
 impl IndexStreamInfo {
@@ -292,9 +304,10 @@ pub struct InternalStreamInfo {
 
 /// Core file and directory record.
 ///
-/// Size: 224 bytes per record (includes sequence number, `$FILE_NAME`
-/// timestamps, forensic fields)
-#[derive(Debug, Clone, Default)]
+/// 240 bytes per record (with explicit padding).  Derives `bytemuck::Pod`
+/// so the entire record array can be serialized/deserialized as a single
+/// `memcpy`.
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct FileRecord {
     /// FRS (File Record Segment) number - primary key
@@ -308,25 +321,39 @@ pub struct FileRecord {
     /// found), bit 4 = `has_i30_stream`, bit 5 = `is_unified` (created by
     /// unified parser)
     pub forensic_flags: u8,
+    /// Explicit padding for `u64` alignment of `lsn`.
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "bytemuck Pod requires all fields same visibility"
+    )]
+    pub _pad0: [u8; 4],
     /// Log File Sequence Number - correlates with `$LogFile` journal (forensic)
     pub lsn: u64,
     /// Reparse tag from `$REPARSE_POINT` (0 if not a reparse point).
-    /// Common: symlink (0xA000000C), junction (0xA0000003), `OneDrive`, etc.
     pub reparse_tag: u32,
+    /// Explicit padding for `u64` alignment of `base_frs`.
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "bytemuck Pod requires all fields same visibility"
+    )]
+    pub _pad1: [u8; 4],
     /// Base FRS for extension records (0 for base records).
-    /// Only meaningful when `is_extension()` returns true.
     pub base_frs: u64,
     /// Timestamps and bit-packed attributes from `$STANDARD_INFORMATION`
     pub stdinfo: StandardInfo,
     /// Number of hard links (usually 1)
     pub name_count: u16,
-    /// Number of user-visible data streams (usually 1, excludes internal
-    /// Windows streams)
+    /// Number of user-visible data streams (usually 1)
     pub stream_count: u16,
     /// Total number of all streams including internal Windows streams.
     pub total_stream_count: u16,
-    /// Head of linked list of internal streams for this record (indexes into
-    /// `MftIndex::internal_streams`), or `NO_ENTRY`
+    /// Explicit padding for `u32` alignment of `first_internal_stream`.
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "bytemuck Pod requires all fields same visibility"
+    )]
+    pub _pad2: [u8; 2],
+    /// Head of linked list of internal streams (`NO_ENTRY` if none)
     pub first_internal_stream: u32,
     /// Index of first child in `MftIndex::children`, or `NO_ENTRY`
     pub first_child: u32,
@@ -345,17 +372,22 @@ pub struct FileRecord {
     /// MFT change time from `$FILE_NAME` (Unix microseconds)
     pub fn_mft_changed: i64,
 
-    // Tree metrics (computed after all records parsed via compute_tree_metrics)
-    /// Count of all descendants (files + subdirectories) in subtree (0 for
-    /// files)
+    // Tree metrics
+    /// Count of all descendants in subtree (0 for files)
     pub descendants: u32,
-    /// Sum of logical file sizes in subtree (includes this file/directory)
+    /// Explicit padding for `u64` alignment of `treesize`.
+    #[expect(
+        clippy::pub_underscore_fields,
+        reason = "bytemuck Pod requires all fields same visibility"
+    )]
+    pub _pad3: [u8; 4],
+    /// Sum of logical file sizes in subtree
     pub treesize: u64,
-    /// Sum of allocated disk sizes in subtree (includes this file/directory)
+    /// Sum of allocated disk sizes in subtree
     pub tree_allocated: u64,
 
-    /// Size of internal Windows streams (like `$REPARSE_POINT`) that are
-    /// filtered from user-visible output but still included in tree metrics.
+    /// Size of internal Windows streams (filtered from output, included in
+    /// tree metrics)
     pub internal_streams_size: u64,
     /// Allocated size of internal Windows streams.
     pub internal_streams_allocated: u64,
@@ -378,6 +410,7 @@ impl FileRecord {
                     offset: NO_ENTRY,
                     meta: 0,
                 },
+                _pad0: [0; 4],
                 parent_frs: u64::from(NO_ENTRY),
             },
             first_stream: IndexStreamInfo {
@@ -416,6 +449,7 @@ impl FileRecord {
                     offset: NO_ENTRY,
                     meta: 0,
                 },
+                _pad0: [0; 4],
                 parent_frs: u64::from(NO_ENTRY),
             },
             first_stream: IndexStreamInfo {
