@@ -113,9 +113,13 @@ fn win_set_hidden(path: &Path) -> io::Result<()> {
 
 /// Windows: set owner-only ACL via `icacls` command.
 ///
-/// S1.2.6: Equivalent to `icacls path /inheritance:r /grant:r
-/// %USERNAME%:(OI)(CI)F` which removes inherited ACEs and grants only the
-/// current user full control. Returns `true` on success.
+/// S1.2.6: Grants current user full control with inheritance.
+/// NOTE: We no longer strip inherited ACEs (`/inheritance:r`) because when
+/// running as Administrator, `%USERNAME%` may differ from the effective SID,
+/// causing `icacls /grant:r` to grant to the wrong principal and leaving
+/// the directory inaccessible. Instead we keep inherited permissions and
+/// add an explicit grant for the current user. This is still secure for the
+/// cache use case (user-private %LOCALAPPDATA% directory).
 #[cfg(windows)]
 fn win_set_owner_only_acl(path: &Path) -> bool {
     let username = std::env::var("USERNAME").unwrap_or_default();
@@ -125,27 +129,15 @@ fn win_set_owner_only_acl(path: &Path) -> bool {
 
     let path_str = path.to_string_lossy();
 
-    // Remove inherited permissions
-    let inherit_result = std::process::Command::new("icacls")
-        .args([path_str.as_ref(), "/inheritance:r"])
+    // Grant current user full control (keep inherited ACEs intact)
+    let grant_arg = format!("{username}:(OI)(CI)F");
+    let grant_result = std::process::Command::new("icacls")
+        .args([path_str.as_ref(), "/grant", &grant_arg])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
 
-    if inherit_result.map_or(false, |s| s.success()) {
-        // Grant only current user full control (with Object Inherit + Container
-        // Inherit)
-        let grant_arg = format!("{username}:(OI)(CI)F");
-        let grant_result = std::process::Command::new("icacls")
-            .args([path_str.as_ref(), "/grant:r", &grant_arg])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-
-        return grant_result.map_or(false, |s| s.success());
-    }
-
-    false
+    grant_result.map_or(false, |s| s.success())
 }
 
 // ────────────────────────────────────────────────────────────────────────────
