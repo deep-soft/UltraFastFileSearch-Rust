@@ -38,7 +38,32 @@
 //   stream-count (counts streams in the subtree, including internal streams and
 //   ADS, and can exceed row-count).
 
-use crate::index::{InternalStreamInfo, MftIndex, NO_ENTRY};
+use crate::index::{MftIndex, NO_ENTRY};
+
+/// Snapshot of the per-record fields needed for stream accumulation.
+///
+/// Avoids borrowing `self.index.records` while calling helper methods that
+/// also need `&self`.
+struct RecordSnapshot {
+    /// Default stream length.
+    first_len: u64,
+    /// Default stream allocated (may include merged `WoF` allocated).
+    first_alloc: u64,
+    /// Hardlink share index.
+    name_info: u32,
+    /// Total hardlink count (≥ 1).
+    total_names: u32,
+    /// Head of internal stream chain, or `NO_ENTRY`.
+    first_internal_stream: u32,
+    /// Aggregate internal stream size (fallback when chain unavailable).
+    internal_streams_size: u64,
+    /// Aggregate internal stream allocated (fallback).
+    internal_streams_allocated: u64,
+    /// Head of overflow user-visible stream chain, or `NO_ENTRY`.
+    first_stream_next: u32,
+    /// Index of `WoF` stream to suppress, or `NO_ENTRY`.
+    wof_stream_idx: u32,
+}
 
 /// Computes the delta share for a hardlink using the exact floor-division
 /// formula.
@@ -267,6 +292,68 @@ impl TreeTraversal<'_> {
         (wof_idx, first_alloc)
     }
 
+    /// Accumulates own-stream sizes (default + internal + overflow ADS),
+    /// delta-distributed across hardlinks.
+    ///
+    /// When `internal_streams` is not populated (cache-loaded index), falls
+    /// back to the aggregate `internal_streams_size` /
+    /// `internal_streams_allocated` stored on the record.
+    fn accumulate_own_streams(&self, snap: &RecordSnapshot) -> (u64, u64) {
+        let mut own_len = delta(snap.first_len, snap.name_info, snap.total_names);
+        let mut own_alloc = delta(snap.first_alloc, snap.name_info, snap.total_names);
+
+        // Internal streams: per-stream delta when chain is available,
+        // aggregate fallback otherwise (cache-loaded path).
+        if snap.first_internal_stream != NO_ENTRY && !self.index.internal_streams.is_empty() {
+            let mut idx = snap.first_internal_stream;
+            while idx != NO_ENTRY {
+                let Some(ist) = self.index.internal_streams.get(idx as usize) else {
+                    break;
+                };
+                own_len = own_len.saturating_add(delta(
+                    ist.size.length,
+                    snap.name_info,
+                    snap.total_names,
+                ));
+                own_alloc = own_alloc.saturating_add(delta(
+                    ist.size.allocated,
+                    snap.name_info,
+                    snap.total_names,
+                ));
+                idx = ist.next_entry;
+            }
+        } else if snap.internal_streams_size > 0 || snap.internal_streams_allocated > 0 {
+            own_len = own_len.saturating_add(delta(
+                snap.internal_streams_size,
+                snap.name_info,
+                snap.total_names,
+            ));
+            own_alloc = own_alloc.saturating_add(delta(
+                snap.internal_streams_allocated,
+                snap.name_info,
+                snap.total_names,
+            ));
+        }
+
+        // Overflow user-visible streams (ADS).
+        let mut stream_idx = snap.first_stream_next;
+        while stream_idx != NO_ENTRY {
+            let Some(stream) = self.index.streams.get(stream_idx as usize) else {
+                break;
+            };
+            // WoF stream: C++ uses 0 for both length and allocated in the
+            // Channel-A propagation (allocated already merged into first_alloc).
+            let is_wof = stream_idx == snap.wof_stream_idx;
+            let slen = if is_wof { 0 } else { stream.size.length };
+            let salloc = if is_wof { 0 } else { stream.size.allocated };
+            own_len = own_len.saturating_add(delta(slen, snap.name_info, snap.total_names));
+            own_alloc = own_alloc.saturating_add(delta(salloc, snap.name_info, snap.total_names));
+            stream_idx = stream.next_entry;
+        }
+
+        (own_len, own_alloc)
+    }
+
     /// Recursively computes tree metrics for a record and its children.
     ///
     /// Returns the Channel-A aggregate (length, allocated, treesize) for this
@@ -290,6 +377,8 @@ impl TreeTraversal<'_> {
             first_len,
             mut first_alloc,
             reparse_tag,
+            internal_streams_size,
+            internal_streams_allocated,
         ) = {
             let rec = &self.index.records[record_idx];
             (
@@ -301,6 +390,8 @@ impl TreeTraversal<'_> {
                 rec.first_stream.size.length,
                 rec.first_stream.size.allocated,
                 rec.reparse_tag,
+                rec.internal_streams_size,
+                rec.internal_streams_allocated,
             )
         };
 
@@ -363,32 +454,18 @@ impl TreeTraversal<'_> {
 
         // 2) Own streams (Channel A): default stream + ADS + internal streams,
         //    delta-distributed.
-        let mut own_len = delta(first_len, name_info, total_names);
-        let mut own_alloc = delta(first_alloc, name_info, total_names);
-        // Internal streams must be delta-distributed per-stream (rounding correctness).
-        let mut internal_idx = first_internal_stream;
-        while internal_idx != NO_ENTRY {
-            let ist: &InternalStreamInfo = &self.index.internal_streams[internal_idx as usize];
-            own_len = own_len.saturating_add(delta(ist.size.length, name_info, total_names));
-            own_alloc = own_alloc.saturating_add(delta(ist.size.allocated, name_info, total_names));
-            internal_idx = ist.next_entry;
-        }
-        // Overflow user-visible streams (delta per stream).
-        // Note: first_stream is embedded in the record; additional streams are in the
-        // streams vec.
-        let mut stream_idx = first_stream_next;
-        while stream_idx != NO_ENTRY {
-            let stream = &self.index.streams[stream_idx as usize];
-            // WoF stream: C++ uses 0 for both length and allocated in
-            // the Channel-A propagation. The allocated is already merged
-            // into first_alloc; the length is suppressed entirely.
-            let is_wof = stream_idx == wof_stream_idx;
-            let stream_len = if is_wof { 0 } else { stream.size.length };
-            let stream_alloc = if is_wof { 0 } else { stream.size.allocated };
-            own_len = own_len.saturating_add(delta(stream_len, name_info, total_names));
-            own_alloc = own_alloc.saturating_add(delta(stream_alloc, name_info, total_names));
-            stream_idx = stream.next_entry;
-        }
+        let snap = RecordSnapshot {
+            first_len,
+            first_alloc,
+            name_info,
+            total_names,
+            first_internal_stream,
+            internal_streams_size,
+            internal_streams_allocated,
+            first_stream_next,
+            wof_stream_idx,
+        };
+        let (own_len, own_alloc) = self.accumulate_own_streams(&snap);
 
         // Stream count contribution (Channel A): counts ALL streams on the record (incl
         // internal).

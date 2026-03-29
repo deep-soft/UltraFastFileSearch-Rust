@@ -183,6 +183,7 @@ async fn run_dataframe_search(config: &SearchConfig<'_>) -> Result<SearchDispatc
             &config.filters,
             config.output_config.needs_path_column(),
             config.no_bitmap,
+            config.no_cache,
         )
         .await?;
         return Ok(SearchDispatchResult::NativeRows(rows));
@@ -228,6 +229,7 @@ async fn run_dataframe_search(config: &SearchConfig<'_>) -> Result<SearchDispatc
             &config.filters,
             config.output_config.needs_path_column(),
             config.no_bitmap,
+            config.no_cache,
         )
         .await?;
         return Ok(SearchDispatchResult::NativeRows(rows));
@@ -444,6 +446,16 @@ pub(super) fn finalize_native_output(
         )?;
     }
     let output_ms = t_output.elapsed().as_millis();
+    let wall_ms = config.start_time.elapsed().as_millis();
+
+    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+    if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
+        eprintln!(
+            "[CACHE_PROFILE] output_write:  {output_ms:>6} ms  ({} rows)",
+            rows.len(),
+        );
+        eprintln!("[CACHE_PROFILE] wall_total:    {wall_ms:>6} ms");
+    }
 
     if config.benchmark {
         print_benchmark_stats_native(rows, elapsed);

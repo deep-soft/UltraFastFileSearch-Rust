@@ -2,7 +2,9 @@
 //! Everything Capacity Probe — discover per-drive IPC/OOM limits of Everything (es.exe).
 //!
 //! Run on Windows (elevated recommended) from the repo root:
-//!   rust-script scripts/windows/everything_capacity_probe.rs
+//!   rust-script scripts/windows/everything_capacity_probe.rs           # all drives
+//!   rust-script scripts/windows/everything_capacity_probe.rs G         # just G:
+//!   rust-script scripts/windows/everything_capacity_probe.rs G C D     # G:, C:, D:
 //!
 //! What it does:
 //!   1. Locates Everything.exe and es.exe on disk.
@@ -168,12 +170,16 @@ fn kill_everything() {
 }
 
 fn start_everything(exe: &Path) {
-    Command::new(exe)
+    println!("      CMD: \"{}\" -startup -minimized", exe.display());
+    match Command::new(exe)
         .args(["-startup", "-minimized"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .ok();
+    {
+        Ok(_) => {}
+        Err(e) => eprintln!("      ⚠️  Failed to start Everything: {e}"),
+    }
 }
 
 /// Wait until es.exe -get-result-count returns > 0 (index ready).
@@ -237,14 +243,20 @@ fn run_es_level(es: &Path, drive: char, level_idx: usize, timeout: Duration) -> 
     let t0 = Instant::now();
 
     let mut cmd = Command::new(es);
+    let mut cmd_display = format!("\"{}\"", es.display());
     if level_idx == 0 {
         cmd.arg("-get-result-count");
+        cmd_display.push_str(" -get-result-count");
     } else {
-        cmd.arg(format!("{}:", drive));
+        let drive_arg = format!("{}:", drive);
+        cmd.arg(&drive_arg);
+        cmd_display.push_str(&format!(" {drive_arg}"));
         for arg in extra_args {
             cmd.arg(arg);
+            cmd_display.push_str(&format!(" {arg}"));
         }
     }
+    println!("\n      CMD: {cmd_display}");
 
     // L0 (count-only) returns a single number — safe to pipe.
     // L1+ can output millions of lines.  Piping would deadlock because our
@@ -409,12 +421,42 @@ fn main() {
 
     // Parse drives from ini
     let ini_content = fs::read_to_string(&ini_path).unwrap_or_default();
-    let drives = parse_drives_from_ini(&ini_content);
-    if drives.is_empty() {
+    let all_drives = parse_drives_from_ini(&ini_content);
+    if all_drives.is_empty() {
         eprintln!("❌ No NTFS volumes found in Everything.ini — aborting.");
         return;
     }
-    println!("📁 Detected drives: {:?}\n", drives);
+    println!("📁 Detected drives: {:?}", all_drives);
+
+    // Filter to user-requested drives (if any args given)
+    let args: Vec<String> = env::args().skip(1).collect();
+    let drives: Vec<char> = if args.is_empty() {
+        all_drives.clone()
+    } else {
+        let requested: Vec<char> = args
+            .iter()
+            .filter_map(|a| a.trim().chars().next())
+            .map(|c| c.to_ascii_uppercase())
+            .collect();
+        let filtered: Vec<char> = requested
+            .iter()
+            .filter(|c| all_drives.contains(c))
+            .copied()
+            .collect();
+        let unknown: Vec<&char> = requested
+            .iter()
+            .filter(|c| !all_drives.contains(c))
+            .collect();
+        if !unknown.is_empty() {
+            eprintln!("⚠️  Unknown drives (not in ini): {:?}", unknown);
+        }
+        if filtered.is_empty() {
+            eprintln!("❌ None of the requested drives found in Everything.ini — aborting.");
+            return;
+        }
+        filtered
+    };
+    println!("🎯 Probing drives:  {:?}\n", drives);
 
     // Backup ini content for restore at end
     let ini_backup = ini_content.clone();
@@ -437,7 +479,7 @@ fn main() {
 
         // Isolate this drive in ini and restart Everything
         kill_everything();
-        isolate_drive_in_ini(&ini_path, drive, &drives);
+        isolate_drive_in_ini(&ini_path, drive, &all_drives);
 
         // Measure startup + MFT indexing time
         let t_start = Instant::now();

@@ -101,6 +101,7 @@ if ($Cache) {
 function BenchRun($label, $exePath, [string[]]$argList) {
     Write-Host "▶ $label" -ForegroundColor Yellow
     $times = @()
+    $isFullScan = ($Pattern -eq "*")
     1..$N | ForEach-Object {
         # Clear cache before each run in cold mode (both secure + legacy locations)
         if (-not $Cache) {
@@ -108,12 +109,11 @@ function BenchRun($label, $exePath, [string[]]$argList) {
             Remove-Item $CACHE_DIR_LEGACY -Recurse -Force -ErrorAction SilentlyContinue
         }
 
-        # Redirect stdout to NUL — we only need wall-clock time and any
-        # [TIMING]/[DIAG] lines that go to stderr.  Writing millions of
-        # result lines to a temp file added 10-20s of pure I/O overhead per
-        # run, and the subsequent Select-String scan of that multi-GB file
-        # added another 5-10s.
         $tempErr = [System.IO.Path]::GetTempFileName()
+        # Full scan ("*"): stdout → NUL (millions of rows = multi-GB temp file = 10-20s overhead).
+        # Pattern search: stdout → temp file, count lines, log count, delete.
+        # Temp files for pattern searches are typically <100KB — zero overhead.
+        $tempOut = if ($isFullScan) { "NUL" } else { [System.IO.Path]::GetTempFileName() }
 
         # Show exact command on first run only
         if ($_ -eq 1) {
@@ -122,7 +122,7 @@ function BenchRun($label, $exePath, [string[]]$argList) {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $proc = Start-Process -FilePath $exePath -ArgumentList $argList `
-                -RedirectStandardOutput "NUL" -RedirectStandardError $tempErr `
+                -RedirectStandardOutput $tempOut -RedirectStandardError $tempErr `
                 -NoNewWindow -Wait -PassThru
         } catch {
             Write-Host "   ⚠️  Error: $_" -ForegroundColor Red
@@ -130,7 +130,19 @@ function BenchRun($label, $exePath, [string[]]$argList) {
         $sw.Stop()
         $ms = $sw.Elapsed.TotalMilliseconds
         $times += $ms
-        Write-Host "   Run $_`: $([math]::Round($ms/1000, 2))s" -ForegroundColor Gray
+
+        # Count output lines for pattern searches (subtract 1 for CSV header)
+        $matchSuffix = ""
+        if (-not $isFullScan -and (Test-Path $tempOut -ErrorAction SilentlyContinue)) {
+            # Fast line count: read raw, count newlines
+            $raw = [System.IO.File]::ReadAllText($tempOut)
+            $lineCount = ($raw -split "`n" | Where-Object { $_.Trim() }).Count
+            $matchCount = [Math]::Max(0, $lineCount - 1) # exclude CSV header
+            $matchSuffix = "  ($matchCount matches)"
+            Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
+        }
+
+        Write-Host "   Run $_`: $([math]::Round($ms/1000, 2))s$matchSuffix" -ForegroundColor Gray
 
         # Extract [TIMING], [DIAG], and [CACHE_PROFILE] lines from stderr
         try {
@@ -144,7 +156,7 @@ function BenchRun($label, $exePath, [string[]]$argList) {
             # Ignore errors reading temp file
         }
 
-        # Clean up temp file
+        # Clean up temp files
         Remove-Item $tempErr -Force -ErrorAction SilentlyContinue
     }
 

@@ -34,6 +34,7 @@ pub(crate) async fn search_multi_drive_filtered(
     filters: &QueryFilters<'_>,
     needs_paths: bool,
     no_bitmap: bool,
+    no_cache: bool,
 ) -> Result<Vec<DisplayRow>> {
     if drives.is_empty() {
         bail!("No drives specified for multi-drive search");
@@ -70,7 +71,7 @@ pub(crate) async fn search_multi_drive_filtered(
                 let pb = pbs
                     .as_ref()
                     .and_then(|progress_bars| progress_bars.get(&drive_char).cloned());
-                search_single_drive(drive_char, filters, needs_paths, no_bitmap, pb).await
+                search_single_drive(drive_char, filters, needs_paths, no_bitmap, no_cache, pb).await
             });
         }
     }
@@ -95,7 +96,15 @@ pub(crate) async fn search_multi_drive_filtered(
                         let pb = pbs
                             .as_ref()
                             .and_then(|progress_bars| progress_bars.get(&drive_char).cloned());
-                        search_single_drive(drive_char, filters, needs_paths, no_bitmap, pb).await
+                        search_single_drive(
+                            drive_char,
+                            filters,
+                            needs_paths,
+                            no_bitmap,
+                            no_cache,
+                            pb,
+                        )
+                        .await
                     });
                 }
 
@@ -128,7 +137,7 @@ pub(crate) async fn search_multi_drive_filtered(
                 let pb = pbs
                     .as_ref()
                     .and_then(|progress_bars| progress_bars.get(&drive_char).cloned());
-                search_single_drive(drive_char, filters, needs_paths, no_bitmap, pb).await
+                search_single_drive(drive_char, filters, needs_paths, no_bitmap, no_cache, pb).await
             });
         }
     }

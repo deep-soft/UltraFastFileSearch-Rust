@@ -293,12 +293,18 @@ pub fn search_compact_drive(
         needle.to_owned()
     };
 
+    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
+
+    let t_tri = std::time::Instant::now();
     let candidates = if !case_sensitive && trigram_needle.len() >= 3 {
         drive.trigram.search(&trigram_needle)
     } else {
         None
     };
+    let tri_ms = t_tri.elapsed().as_millis();
+    let tri_count = candidates.as_ref().map_or(0, Vec::len);
 
+    let t_match = std::time::Instant::now();
     let match_indices: Vec<usize> = candidates.map_or_else(
         || {
             drive
@@ -329,8 +335,27 @@ pub fn search_compact_drive(
                 .collect()
         },
     );
+    let match_ms = t_match.elapsed().as_millis();
+    let match_count = match_indices.len();
 
-    indices_to_rows(drive, &match_indices, &volume_prefix)
+    let t_resolve = std::time::Instant::now();
+    let rows = indices_to_rows(drive, &match_indices, &volume_prefix);
+    let resolve_ms = t_resolve.elapsed().as_millis();
+
+    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+    if profile {
+        let scanned = if tri_count > 0 {
+            format!("{tri_count} trigram candidates")
+        } else {
+            format!("{} full scan", drive.records.len())
+        };
+        eprintln!(
+            "[CACHE_PROFILE] search_{}: trigram={tri_ms} ms  match={match_ms} ms ({match_count} hits from {scanned})  paths={resolve_ms} ms",
+            drive.letter,
+        );
+    }
+
+    rows
 }
 
 /// Search a single drive using tree-based path traversal.

@@ -37,13 +37,15 @@ pub(super) async fn search_single_drive(
     filters: Arc<OwnedQueryFilters>,
     needs_paths: bool,
     no_bitmap: bool,
+    no_cache: bool,
     progress: Option<ProgressBar>,
 ) -> DriveResult {
     _ = no_bitmap;
     _ = needs_paths; // paths are always resolved by CompactIndex search
 
     let result =
-        tokio::task::spawn_blocking(move || search_native_compact(drive_char, &filters)).await;
+        tokio::task::spawn_blocking(move || search_native_compact(drive_char, &filters, no_cache))
+            .await;
 
     if let Some(pb) = progress.as_ref() {
         pb.finish();
@@ -65,13 +67,28 @@ pub(super) async fn search_single_drive(
 ///
 /// The MftIndex is never held after the compact index is built.
 #[cfg(windows)]
-fn search_native_compact(drive: char, filters: &OwnedQueryFilters) -> anyhow::Result<DriveResult> {
+fn search_native_compact(
+    drive: char,
+    filters: &OwnedQueryFilters,
+    no_cache: bool,
+) -> anyhow::Result<DriveResult> {
+    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
+
     let source = uffs_core::compact::MftSource::Live(drive);
-    let (compact, _timing) = uffs_core::compact::load_drive(&source, false)?;
+    let (compact, _timing) = uffs_core::compact::load_drive(&source, no_cache)?;
     let records_read = compact.records.len();
 
+    let t_search = std::time::Instant::now();
     let (rows, _search_filters, _filter_mode) = filters.search_compact(compact)?;
     let matches = rows.len();
+    let search_ms = t_search.elapsed().as_millis();
+
+    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+    if profile {
+        eprintln!(
+            "[CACHE_PROFILE] search_{drive}_total: {search_ms:>6} ms  ({matches} matches from {records_read} records)",
+        );
+    }
 
     Ok(DriveResult {
         drive,
@@ -88,6 +105,7 @@ fn search_native_compact(drive: char, filters: &OwnedQueryFilters) -> anyhow::Re
 fn search_native_compact(
     _drive: char,
     _filters: &OwnedQueryFilters,
+    _no_cache: bool,
 ) -> anyhow::Result<DriveResult> {
     anyhow::bail!("live drive search requires Windows")
 }
