@@ -41,7 +41,7 @@ smallvec.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 rayon.workspace = true
-zstd = { version = "0.13.3", optional = true }
+zstd = { version = "0.13.3", optional = true, features = ["zstdmt"] }
 
 # CLI (for uffs_mft binary)
 clap.workspace = true

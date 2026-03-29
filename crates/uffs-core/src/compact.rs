@@ -324,15 +324,17 @@ pub fn load_drive(
         compact.source = IndexSource::MftFile(path.to_path_buf());
     }
 
-    // ── Save compact cache (best-effort) ───────────────────────────
+    // ── Save compact cache (background, best-effort) ────────────────
     if !no_cache {
         let t_compact_save = Instant::now();
-        if let Err(err) = crate::compact_cache::save_compact_cache(&compact) {
-            tracing::warn!(drive = %drive_letter, error = %err, "Failed to save compact cache");
+        if let Err(err) = crate::compact_cache::save_compact_cache_background(&compact) {
+            tracing::warn!(drive = %drive_letter, error = %err, "Failed to start compact cache save");
         }
         let compact_save_ms = t_compact_save.elapsed().as_millis();
         if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
-            eprintln!("[CACHE_PROFILE] compact_save_outer: {compact_save_ms:>4} ms");
+            eprintln!(
+                "[CACHE_PROFILE] compact_save_submit: {compact_save_ms:>4} ms  (serialized, bg thread spawned)"
+            );
         }
     }
 
@@ -384,11 +386,12 @@ fn load_mft_index_from_file(
     };
     let parsed = uffs_mft::MftReader::load_raw_to_index_with_options(mft_path, &options)?;
 
-    if let Err(err) = uffs_mft::cache::save_to_cache(&parsed, drive_letter, 0, 0, 0) {
-        tracing::warn!(drive = %drive_letter, error = %err, "Failed to save .uffs cache");
+    // Background save: serialize sync (~500ms), compress/encrypt/write in bg
+    // thread.
+    if let Err(err) = uffs_mft::cache::save_to_cache_background(&parsed, drive_letter, 0, 0, 0) {
+        tracing::warn!(drive = %drive_letter, error = %err, "Failed to start .uffs cache save");
     } else {
-        let cache_path = uffs_mft::cache::cache_file_path(drive_letter);
-        tracing::info!(drive = %drive_letter, path = %cache_path.display(), "💾 Saved .uffs cache");
+        tracing::info!(drive = %drive_letter, "💾 MFT cache save started (background)");
     }
 
     Ok(parsed)

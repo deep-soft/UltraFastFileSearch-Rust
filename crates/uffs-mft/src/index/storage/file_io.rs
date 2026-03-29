@@ -50,10 +50,9 @@ impl MftIndex {
         let serialize_ms = t_serialize.elapsed().as_millis();
         let uncompressed_len = serialized.len();
 
-        // Compress with zstd before encryption
+        // Compress with multi-threaded zstd before encryption
         let t_compress = std::time::Instant::now();
-        let compressed = zstd::encode_all(serialized.as_slice(), ZSTD_LEVEL)
-            .map_err(|e| std::io::Error::other(format!("zstd compression failed: {e}")))?;
+        let compressed = crate::cache::compress_zstd_mt(&serialized, ZSTD_LEVEL)?;
         let compress_ms = t_compress.elapsed().as_millis();
         let compressed_len = compressed.len();
 

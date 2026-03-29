@@ -3,15 +3,18 @@
 //! Stores `DriveCompactIndex` as zstd-compressed, AES-256-GCM encrypted
 //! `{DRIVE}_compact.uffs` alongside the full `.uffs` `MftIndex` cache.
 //!
-//! **v3** (current): adds `source_epoch` (u64) to the header — the
-//! `MftIndex.build_epoch` this compact index was built from.  On load the
-//! epoch is compared against the current `MftIndex`; if stale → rebuild.
+//! **v4** (current): trigram index is **not** stored on disk — rebuilt from
+//! `names_lower` on load (~1s).  This **halves** on-disk size and decompression
+//! time vs v3.  Writes `trigram_count = 0` as sentinel so the deserializer
+//! knows to rebuild.
+//!
+//! **v3**: adds `source_epoch` (u64) to the header.  Still accepted on load;
+//! trigram CSR is read if present.
 //!
 //! **v2**: trigram posting lists serialized in CSR format (zero rebuild).
 //! Accepted on load; `source_epoch` defaults to 0 (always stale).
 //!
-//! **v1** (legacy): trigram index was rebuilt from `names_lower` on every load.
-//! v1 caches are rejected and rebuilt automatically.
+//! **v1** (legacy): rejected — returns error, caller rebuilds.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -21,8 +24,8 @@ use crate::trigram::TrigramIndex;
 
 /// Magic bytes for compact cache files.
 const COMPACT_MAGIC: &[u8; 8] = b"UFFSCOM\0";
-/// Current compact cache format version (v3 adds `source_epoch`).
-const COMPACT_VERSION: u16 = 3;
+/// Current compact cache format version (v4 strips trigram from disk).
+const COMPACT_VERSION: u16 = 4;
 /// Bytes per `CompactRecord`.
 const RECORD_BYTES: usize = size_of::<CompactRecord>();
 /// zstd compression level for compact cache.
@@ -36,7 +39,12 @@ pub fn compact_cache_path(drive_letter: char) -> PathBuf {
     uffs_mft::cache::cache_dir().join(format!("{drive_letter}_compact.uffs"))
 }
 
-/// Serializes the compact index (records, names, children, trigram postings).
+/// Serializes the compact index (records, names, children).
+///
+/// **v4**: trigram index is NOT written to disk — it's rebuilt on load.
+/// This halves on-disk size (and thus zstd compress/decompress time).
+/// A `trigram_count = 0` sentinel is written so the deserializer knows
+/// to rebuild.
 #[must_use]
 pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
     let record_count = index.records.len();
@@ -44,25 +52,21 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
 
     // Children CSR — already in contiguous layout.
     let (csr_offsets, csr_values) = index.children.as_csr();
-    let (tri_keys, tri_offsets, tri_values) = index.trigram.as_csr();
 
     let total = 26 // header: 8 (magic) + 2 (ver) + 4 (rc) + 4 (nl) + 8 (epoch)
         + record_count * RECORD_BYTES
         + names_len * 2
         + csr_offsets.len() * 4
         + csr_values.len() * 4
-        + 4
-        + tri_keys.len() * 3
-        + tri_offsets.len() * 4
-        + tri_values.len() * 4;
+        + 4; // trigram_count sentinel (0)
     let mut buf = Vec::with_capacity(total);
 
-    // Header (26 bytes for v3)
+    // Header (26 bytes for v3+)
     buf.extend_from_slice(COMPACT_MAGIC);
     buf.extend_from_slice(&COMPACT_VERSION.to_le_bytes());
     push_u32(&mut buf, record_count);
     push_u32(&mut buf, names_len);
-    // v3: source_epoch
+    // v3+: source_epoch
     buf.extend_from_slice(&index.source_epoch.to_le_bytes());
 
     // Records — single bulk copy via bytemuck (Pod layout = on-disk layout)
@@ -76,28 +80,16 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
     buf.extend_from_slice(bytemuck::cast_slice(csr_offsets));
     buf.extend_from_slice(bytemuck::cast_slice(csr_values));
 
-    // ─── v2: Trigram postings CSR ─────────────────────────────────
-
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "trigram count bounded by alphabet³ ≤ 17K"
-    )]
-    let trigram_count = tri_keys.len() as u32;
-    buf.extend_from_slice(&trigram_count.to_le_bytes());
-
-    // Keys (3 bytes each, already sorted) — bulk copy
-    buf.extend_from_slice(bytemuck::cast_slice(tri_keys));
-
-    // CSR offsets + posting values — bulk cast
-    buf.extend_from_slice(bytemuck::cast_slice(tri_offsets));
-    buf.extend_from_slice(bytemuck::cast_slice(tri_values));
+    // v4: trigram_count = 0 sentinel (rebuild on load).
+    buf.extend_from_slice(&0_u32.to_le_bytes());
 
     buf
 }
 
 /// Deserializes a compact index from raw bytes.
 ///
-/// **v3**: trigram postings + `source_epoch`.
+/// **v4**: `trigram_count = 0` → rebuilt from `names_lower` on load.
+/// **v3**: trigram postings + `source_epoch` (still read if present).
 /// **v2**: trigram postings, `source_epoch` = 0 (accepted, triggers rebuild).
 /// **v1**: rejected — returns an error so the caller rebuilds from `MftIndex`.
 ///
@@ -150,37 +142,44 @@ pub fn deserialize_compact(
         aligned_vec_from_bytes(child_vals_slice),
     );
 
-    // ─── Trigram CSR (v2+) ─────────────────────────────────────────
+    // ─── Trigram: read from disk (v2/v3) or rebuild (v4+) ──────────
     let tri_start = Instant::now();
     let tri_hdr = postings_end;
     if data.len() < tri_hdr + 4 {
         return Err("truncated trigram header");
     }
     let tri_count = read_u32(data, tri_hdr) as usize;
-    let tri_keys_end = tri_hdr + 4 + tri_count * 3;
-    let tri_offs_end = tri_keys_end + (tri_count + 1) * 4;
-    if data.len() < tri_offs_end {
-        return Err("truncated trigram offsets");
-    }
-    let tri_post_count = read_u32(data, tri_offs_end - 4) as usize;
-    let tri_vals_end = tri_offs_end + tri_post_count * 4;
-    if data.len() < tri_vals_end {
-        return Err("truncated trigram postings");
-    }
-    let trigram = TrigramIndex::from_csr(
-        aligned_vec_from_bytes(
-            data.get(tri_hdr + 4..tri_keys_end)
-                .ok_or("trigram keys OOB")?,
-        ),
-        aligned_vec_from_bytes(
-            data.get(tri_keys_end..tri_offs_end)
-                .ok_or("trigram offsets OOB")?,
-        ),
-        aligned_vec_from_bytes(
-            data.get(tri_offs_end..tri_vals_end)
-                .ok_or("trigram values OOB")?,
-        ),
-    );
+
+    let trigram = if tri_count == 0 {
+        // v4+: trigram not on disk — rebuild from names_lower.
+        TrigramIndex::build(&records, &names_lower)
+    } else {
+        // v2/v3: trigram CSR on disk — read directly.
+        let tri_keys_end = tri_hdr + 4 + tri_count * 3;
+        let tri_offs_end = tri_keys_end + (tri_count + 1) * 4;
+        if data.len() < tri_offs_end {
+            return Err("truncated trigram offsets");
+        }
+        let tri_post_count = read_u32(data, tri_offs_end - 4) as usize;
+        let tri_vals_end = tri_offs_end + tri_post_count * 4;
+        if data.len() < tri_vals_end {
+            return Err("truncated trigram postings");
+        }
+        TrigramIndex::from_csr(
+            aligned_vec_from_bytes(
+                data.get(tri_hdr + 4..tri_keys_end)
+                    .ok_or("trigram keys OOB")?,
+            ),
+            aligned_vec_from_bytes(
+                data.get(tri_keys_end..tri_offs_end)
+                    .ok_or("trigram offsets OOB")?,
+            ),
+            aligned_vec_from_bytes(
+                data.get(tri_offs_end..tri_vals_end)
+                    .ok_or("trigram values OOB")?,
+            ),
+        )
+    };
     let tri_ms = tri_start.elapsed().as_millis();
 
     Ok((
@@ -232,7 +231,9 @@ fn parse_compact_header(data: &[u8]) -> Result<(u64, usize), &'static str> {
 
 // ─── Save / Load ────────────────────────────────────────────────────────────
 
-/// Saves a compact index to its cache file (zstd + AES-256-GCM).
+/// Saves a compact index to its cache file (zstd + AES-256-GCM), blocking.
+///
+/// Prefer [`save_compact_cache_background`] for non-blocking saves.
 ///
 /// # Errors
 /// Returns an error if compression, encryption, or file writing fails.
@@ -244,38 +245,61 @@ pub fn save_compact_cache(index: &DriveCompactIndex) -> std::io::Result<()> {
     let serialized = serialize_compact(index);
     let ser_ms = t_ser.elapsed().as_millis();
     let uncompressed_len = serialized.len();
-    let t_compress = Instant::now();
-    let compressed = zstd::encode_all(serialized.as_slice(), ZSTD_LEVEL)
-        .map_err(|err| std::io::Error::other(format!("compact zstd failed: {err}")))?;
-    let compress_ms = t_compress.elapsed().as_millis();
-    let compressed_len = compressed.len();
-    let key = uffs_security::keystore::get_cache_key()
-        .map_err(|err| std::io::Error::other(format!("key unavailable: {err}")))?;
-    let t_encrypt = Instant::now();
-    let encrypted = uffs_security::crypto::encrypt_cache(&compressed, &key)?;
-    let encrypt_ms = t_encrypt.elapsed().as_millis();
     let path = compact_cache_path(index.letter);
-    // Ensure the cache DIRECTORY exists (not the file path itself).
     if let Some(dir) = path.parent() {
         uffs_mft::cache::create_secure_dir(dir)?;
     }
-    let t_write = Instant::now();
-    uffs_mft::cache::atomic_write(&path, &encrypted)?;
-    let write_ms = t_write.elapsed().as_millis();
+    uffs_mft::cache::compress_encrypt_write(serialized, &path, ZSTD_LEVEL, profile, "compact")?;
     if profile {
         let uncomp_mb = uncompressed_len / (1024 * 1024);
-        let comp_mb = compressed_len / (1024 * 1024);
         eprintln!("[CACHE_PROFILE] compact_ser:   {ser_ms:>6} ms  (~{uncomp_mb} MB)");
-        eprintln!(
-            "[CACHE_PROFILE] compact_zstd:  {compress_ms:>6} ms  (~{uncomp_mb} MB → ~{comp_mb} MB)"
-        );
-        eprintln!("[CACHE_PROFILE] compact_enc:   {encrypt_ms:>6} ms  (~{comp_mb} MB)");
-        eprintln!("[CACHE_PROFILE] compact_write: {write_ms:>6} ms  (~{comp_mb} MB)");
         eprintln!(
             "[CACHE_PROFILE] compact_save:  {:>6} ms  total",
             t_total.elapsed().as_millis()
         );
     }
+    Ok(())
+}
+
+/// Serializes the compact index synchronously and spawns a background thread
+/// to compress, encrypt, and write the cache file.
+///
+/// Serialization (~100-250ms) runs on the calling thread; the heavy
+/// compress + encrypt + write (~3-5s) runs in a detached background thread.
+/// Uses [`atomic_write`](uffs_mft::cache::atomic_write), so partial writes
+/// from process exit are safe.
+///
+/// # Errors
+/// Returns an error only if serialization or directory creation fails.
+#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+pub fn save_compact_cache_background(index: &DriveCompactIndex) -> std::io::Result<()> {
+    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
+    let t_ser = Instant::now();
+    let serialized = serialize_compact(index);
+    let ser_ms = t_ser.elapsed().as_millis();
+    if profile {
+        let mb = serialized.len() / (1024 * 1024);
+        eprintln!("[CACHE_PROFILE] compact_ser:   {ser_ms:>6} ms  (~{mb} MB)");
+    }
+    let path = compact_cache_path(index.letter);
+    if let Some(dir) = path.parent() {
+        uffs_mft::cache::create_secure_dir(dir)?;
+    }
+    let drive = index.letter;
+    std::thread::Builder::new()
+        .name(format!("compact-save-{drive}"))
+        .spawn(move || {
+            if let Err(err) = uffs_mft::cache::compress_encrypt_write(
+                serialized, &path, ZSTD_LEVEL, profile, "compact",
+            ) {
+                tracing::warn!(
+                    drive = %drive,
+                    error = %err,
+                    "Background compact cache save failed"
+                );
+            }
+        })
+        .map_err(|err| std::io::Error::other(format!("spawn failed: {err}")))?;
     Ok(())
 }
 
@@ -372,8 +396,13 @@ pub fn load_compact_cache(
         if is_compressed {
             eprintln!("[CACHE_PROFILE] compact_dz:    {decompress_ms:>6} ms  (~{plain_mb} MB)");
         }
+        let tri_label = if tri_ms > 100 {
+            "tri_rebuild"
+        } else {
+            "tri_load"
+        };
         eprintln!(
-            "[CACHE_PROFILE] compact_deser: {deser_ms:>6} ms  ({} records, tri_load={tri_ms} ms)",
+            "[CACHE_PROFILE] compact_deser: {deser_ms:>6} ms  ({} records, {tri_label}={tri_ms} ms)",
             index.records.len()
         );
         eprintln!(

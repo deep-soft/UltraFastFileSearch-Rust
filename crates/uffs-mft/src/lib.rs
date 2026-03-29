@@ -130,10 +130,10 @@ pub use cache::load_or_build_dataframe_cached;
 pub use cache::{
     CacheStatus, FileLock, INDEX_TTL_SECONDS, LockKind, MultiDriveCacheStatus, atomic_write,
     cache_age_seconds, cache_dir, cache_file_path, cache_lock_path, check_cache_status,
-    check_multi_drive_cache, cleanup_expired_cache, create_secure_dir, is_cache_fresh,
-    load_cached_index, migrate_legacy_cache, remove_all_cached_indices, remove_cached_index,
-    save_to_cache, secure_cache_dir, secure_remove, set_file_permissions_owner_only,
-    with_file_lock,
+    check_multi_drive_cache, cleanup_expired_cache, compress_encrypt_write, compress_zstd_mt,
+    create_secure_dir, is_cache_fresh, load_cached_index, migrate_legacy_cache,
+    remove_all_cached_indices, remove_cached_index, save_to_cache, save_to_cache_background,
+    secure_cache_dir, secure_remove, set_file_permissions_owner_only, with_file_lock,
 };
 pub use error::{MftError, Result};
 pub use flags::FileFlags;

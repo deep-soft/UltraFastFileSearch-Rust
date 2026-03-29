@@ -324,6 +324,70 @@ pub fn save_to_cache(
     result
 }
 
+/// Serializes the `MftIndex` synchronously and spawns a background thread
+/// to compress, encrypt, and write the cache file.
+///
+/// This is the non-blocking version of [`save_to_cache`].  The serialization
+/// (~500ms for 8M records) is done on the calling thread; the heavy work
+/// (zstd compress + AES encrypt + disk write) runs in a detached thread.
+///
+/// The background thread uses [`atomic_write`], so the cache file is either
+/// fully written or not written at all — process exit during the write is
+/// safe (the cache simply won't exist, triggering a cold read next time).
+///
+/// # Errors
+///
+/// Returns an error only if serialization or directory creation fails.
+/// Background compression/encryption/write errors are logged but not
+/// propagated (best-effort save).
+#[cfg(feature = "zstd")]
+#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+pub fn save_to_cache_background(
+    index: &MftIndex,
+    drive: char,
+    volume_serial: u64,
+    usn_journal_id: u64,
+    next_usn: i64,
+) -> std::io::Result<()> {
+    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
+
+    let dir = cache_dir();
+    create_secure_dir(&dir)?;
+
+    // Serialize synchronously — fast (~500ms), needs &MftIndex.
+    let t_ser = std::time::Instant::now();
+    let serialized = index.serialize(volume_serial, usn_journal_id, next_usn);
+    let ser_ms = t_ser.elapsed().as_millis();
+    if profile {
+        #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
+        let mb = serialized.len() as f64 / (1024.0 * 1024.0);
+        eprintln!("[CACHE_PROFILE] mft_serialize: {ser_ms:>6} ms  ({mb:.1} MB)");
+    }
+
+    // Invalidate compact cache before writing new MftIndex.
+    invalidate_compact_cache(drive);
+
+    // Spawn background thread for compress → encrypt → write.
+    let path = cache_file_path(drive);
+    std::thread::Builder::new()
+        .name(format!("mft-save-{drive}"))
+        .spawn(move || {
+            if let Err(e) = compress_encrypt_write(
+                serialized, &path, 3, // ZSTD_LEVEL
+                profile, "mft",
+            ) {
+                tracing::warn!(
+                    drive = %drive,
+                    error = %e,
+                    "Background MFT cache save failed"
+                );
+            }
+        })
+        .map_err(|e| std::io::Error::other(format!("spawn failed: {e}")))?;
+
+    Ok(())
+}
+
 /// Deletes the compact cache file for a drive (best-effort).
 ///
 /// Called automatically by [`save_to_cache`] to ensure the compact index
@@ -471,6 +535,96 @@ pub use uffs_security::fs::{
     FileLock, LockKind, atomic_write, create_secure_dir, secure_remove,
     set_file_permissions_owner_only, with_file_lock,
 };
+
+// ────────────────────────────────────────────────────────────────────────────
+// Multi-threaded zstd compression
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Compresses `data` with zstd using multi-threaded mode.
+///
+/// Falls back to single-threaded if `multithread()` fails (e.g. on very
+/// old builds without `zstdmt`).
+///
+/// # Errors
+///
+/// Returns an I/O error if compression fails.
+#[cfg(feature = "zstd")]
+pub fn compress_zstd_mt(data: &[u8], level: i32) -> std::io::Result<Vec<u8>> {
+    let mut encoder = zstd::Encoder::new(Vec::new(), level)?;
+    // Use available parallelism, capped at 8 to avoid overhead on high-core
+    // machines.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "capped at 8, always fits in u32"
+    )]
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8)) as u32;
+    // Best-effort: if multithread fails, we still compress single-threaded.
+    let _ = encoder.multithread(workers);
+    std::io::Write::write_all(&mut encoder, data)?;
+    encoder.finish()
+}
+
+/// Compresses, encrypts, and atomically writes serialized cache bytes to disk.
+///
+/// Designed to be called from a background thread — all work is self-contained.
+/// Profile output is emitted to stderr if `profile` is true.
+///
+/// # Errors
+///
+/// Returns an I/O error if any step fails. Since this is typically called
+/// from a background thread, callers should log but not propagate errors.
+#[cfg(feature = "zstd")]
+#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+pub fn compress_encrypt_write(
+    serialized: Vec<u8>,
+    path: &std::path::Path,
+    zstd_level: i32,
+    profile: bool,
+    label: &str,
+) -> std::io::Result<()> {
+    let t_total = std::time::Instant::now();
+
+    let uncompressed_len = serialized.len();
+    let t_compress = std::time::Instant::now();
+    let compressed = compress_zstd_mt(&serialized, zstd_level)?;
+    let compress_ms = t_compress.elapsed().as_millis();
+    let compressed_len = compressed.len();
+    // Drop the serialized data now — we only need the compressed version.
+    drop(serialized);
+
+    let key = uffs_security::keystore::get_cache_key()
+        .map_err(|e| std::io::Error::other(format!("key unavailable: {e}")))?;
+    let t_encrypt = std::time::Instant::now();
+    let encrypted = uffs_security::crypto::encrypt_cache(&compressed, &key)?;
+    let encrypt_ms = t_encrypt.elapsed().as_millis();
+    // Drop compressed data — only encrypted version needed for write.
+    drop(compressed);
+
+    let t_write = std::time::Instant::now();
+    atomic_write(path, &encrypted)?;
+    let write_ms = t_write.elapsed().as_millis();
+
+    if profile {
+        #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
+        let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+        #[expect(clippy::cast_precision_loss, reason = "display-only ratio")]
+        let ratio = uncompressed_len as f64 / compressed_len as f64;
+        let total_ms = t_total.elapsed().as_millis();
+        eprintln!(
+            "[CACHE_PROFILE] {label}_bg_compress: {compress_ms:>6} ms  ({:.1} MB → {:.1} MB, {ratio:.1}x)",
+            mb(uncompressed_len),
+            mb(compressed_len),
+        );
+        eprintln!("[CACHE_PROFILE] {label}_bg_encrypt: {encrypt_ms:>6} ms");
+        eprintln!(
+            "[CACHE_PROFILE] {label}_bg_write:   {write_ms:>6} ms  ({:.1} MB)",
+            mb(encrypted.len()),
+        );
+        eprintln!("[CACHE_PROFILE] {label}_bg_total:   {total_ms:>6} ms  (background)");
+    }
+
+    Ok(())
+}
 
 /// Default lock timeout for cache operations (5 seconds).
 const CACHE_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -663,8 +817,10 @@ fn load_or_build_dataframe_cached_sync(
         Err(_) => (0, 0),
     };
 
-    if let Err(e) = save_to_cache(&index, drive, volume_serial, usn_journal_id, next_usn) {
-        tracing::warn!(drive = %drive, error = %e, "Failed to save cache");
+    // Background save: serialize sync, compress/encrypt/write in bg thread.
+    if let Err(e) = save_to_cache_background(&index, drive, volume_serial, usn_journal_id, next_usn)
+    {
+        tracing::warn!(drive = %drive, error = %e, "Failed to start cache save");
     }
 
     // Convert to DataFrame
