@@ -53,6 +53,7 @@ pub fn start_refresh(app: &mut App) {
                         trigram: backend::TrigramIndex::empty(),
                         children: compact::ChildrenIndex::empty(),
                         source: compact::IndexSource::MftFile(thread_source),
+                        source_epoch: 0,
                     };
                     let result = compact::refresh_drive(&temp);
                     drop(thread_sender.send((label, result)));

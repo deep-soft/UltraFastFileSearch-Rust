@@ -29,6 +29,8 @@ pub use extents::MftExtent;
 pub use system::DriveType;
 // is_volume_read_only is available on all platforms (stub on non-Windows)
 pub use system::is_volume_read_only;
+// System memory query — available on all platforms
+pub use system::{SystemMemory, query_system_memory};
 #[cfg(windows)]
 pub use system::{
     detect_drive_type, detect_ntfs_drives, infer_drive_from_path, is_elevated, volume_root_path,

@@ -23,7 +23,9 @@ const INDEX_MAGIC: &[u8; 8] = b"UFFSIDX\0";
 ///             rebuild on load
 /// v11: `ChildInfo` is now Pod (24 bytes with explicit padding, was 14 bytes
 /// packed).  Serialized via `bytemuck::cast_slice` bulk copy.
-const INDEX_VERSION: u32 = 11;
+/// v12: Added `build_epoch` (Unix microseconds) to header — downstream caches
+///      compare against this to detect staleness.
+const INDEX_VERSION: u32 = 12;
 
 /// Persistent index header stored at the beginning of the index file.
 #[derive(Debug, Clone)]
@@ -52,6 +54,9 @@ pub struct IndexHeader {
     pub streams_count: u64,
     /// Number of children entries
     pub children_count: u64,
+    /// Build epoch (Unix microseconds) — bumped on every build or mutation.
+    /// v12+; 0 for older versions.
+    pub build_epoch: u64,
 }
 
 impl IndexHeader {
@@ -73,6 +78,7 @@ impl IndexHeader {
             links_count: index.links.len() as u64,
             streams_count: index.streams.len() as u64,
             children_count: index.children.len() as u64,
+            build_epoch: index.build_epoch,
         }
     }
 

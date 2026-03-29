@@ -54,6 +54,8 @@ impl MftIndex {
         buffer.extend_from_slice(&header.links_count.to_le_bytes());
         buffer.extend_from_slice(&header.streams_count.to_le_bytes());
         buffer.extend_from_slice(&header.children_count.to_le_bytes());
+        // v12: build_epoch
+        buffer.extend_from_slice(&header.build_epoch.to_le_bytes());
 
         // Write frs_to_idx table size and data — bulk cast
         buffer.extend_from_slice(&(self.frs_to_idx.len() as u64).to_le_bytes());

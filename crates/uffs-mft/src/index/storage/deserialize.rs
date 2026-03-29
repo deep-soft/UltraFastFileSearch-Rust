@@ -137,6 +137,8 @@ impl MftIndex {
         let links_count = read_u64!();
         let streams_count = read_u64!();
         let children_count = read_u64!();
+        // v12+: build_epoch (Unix microseconds); 0 for older versions.
+        let build_epoch = if version >= 12 { read_u64!() } else { 0 };
 
         let header = IndexHeader {
             magic,
@@ -151,6 +153,7 @@ impl MftIndex {
             links_count,
             streams_count,
             children_count,
+            build_epoch,
         };
 
         header.validate()?;
@@ -185,7 +188,7 @@ impl MftIndex {
             6 => 185,
             7 => 193,
             8 | 9 => 195,
-            10 | 11 => 240, // Pod layout with padding
+            10..=12 => 240, // Pod layout with padding
             _ => return Err("Unsupported index version"),
         };
         let record_bytes =
@@ -626,6 +629,7 @@ impl MftIndex {
             extension_index,
             forensic_mode: false,
             reserved_allocated_bytes: 0,
+            build_epoch,
         };
 
         // Compute stats from loaded data

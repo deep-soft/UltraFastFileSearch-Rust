@@ -69,6 +69,11 @@ impl MftIndex {
         frs_to_read.sort_unstable();
         frs_to_read.dedup();
 
+        // Mark the index as mutated so downstream caches detect staleness.
+        if stats.deleted > 0 || !frs_to_read.is_empty() {
+            self.bump_epoch();
+        }
+
         (stats, frs_to_read)
     }
 }

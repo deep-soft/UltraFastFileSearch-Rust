@@ -5,12 +5,29 @@ use super::{
     MftIndex, MftStats, NO_ENTRY, frs_to_usize, len_to_u32,
 };
 
+/// Returns the current Unix-microsecond timestamp for `build_epoch`.
+#[must_use]
+fn current_epoch_micros() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "u128 micros fits u64 until year ~584,942"
+            )]
+            {
+                d.as_micros() as u64
+            }
+        })
+}
+
 impl MftIndex {
     /// Create a new empty index for the given volume
     #[must_use]
     pub fn new(volume: char) -> Self {
         Self {
             volume,
+            build_epoch: current_epoch_micros(),
             extensions: ExtensionTable::new(),
             ..Default::default()
         }
@@ -33,6 +50,7 @@ impl MftIndex {
             extension_index: None,
             forensic_mode: false,
             reserved_allocated_bytes: 0,
+            build_epoch: current_epoch_micros(),
         }
     }
 
@@ -86,7 +104,16 @@ impl MftIndex {
             extension_index: None,
             forensic_mode: false,
             reserved_allocated_bytes: 0,
+            build_epoch: current_epoch_micros(),
         }
+    }
+
+    /// Stamp the current time as `build_epoch` (Unix microseconds).
+    ///
+    /// Call after any mutation that changes index content (USN update,
+    /// record merge, etc.) so downstream caches can detect staleness.
+    pub fn bump_epoch(&mut self) {
+        self.build_epoch = current_epoch_micros();
     }
 
     /// Recompute stats from the current index data.

@@ -56,39 +56,19 @@ pub(super) async fn search_single_drive(
     }
 }
 
-/// Native compact search: load `MftIndex` → build `CompactIndex` → search →
-/// convert small result set to `DataFrame`.
+/// Native compact search: compact-first, MftIndex only on cache miss.
+///
+/// Uses [`uffs_core::compact::load_live_drive`] which:
+/// 1. Tries compact cache first (no MftIndex loaded)
+/// 2. On miss → loads MftIndex (with USN update) → builds compact → saves
+///    compact cache → drops MftIndex
+///
+/// The MftIndex is never held after the compact index is built.
 #[cfg(windows)]
 fn search_native_compact(drive: char, filters: &OwnedQueryFilters) -> anyhow::Result<DriveResult> {
-    use uffs_mft::cache::load_cached_index;
-
-    // 1. Load MftIndex (cached or fresh)
-    let index =
-        if let Some((cached, _header)) = load_cached_index(drive, uffs_mft::INDEX_TTL_SECONDS) {
-            tracing::info!(drive = %drive, records = cached.records.len(), "📦 MftIndex cache hit");
-            cached
-        } else {
-            tracing::info!(drive = %drive, "📖 MftIndex cache miss — reading MFT");
-            let reader = uffs_mft::MftReader::open(drive)?;
-            let fresh = reader.read_all_index_sync()?;
-            let vol_serial = uffs_mft::VolumeHandle::open(drive)
-                .map(|handle| handle.volume_data().volume_serial_number)
-                .unwrap_or(0);
-            let (usn_jid, usn_next) = uffs_mft::usn::query_usn_journal(drive)
-                .map_or((0, 0), |info| (info.journal_id, info.next_usn));
-            if let Err(err) =
-                uffs_mft::cache::save_to_cache(&fresh, drive, vol_serial, usn_jid, usn_next)
-            {
-                tracing::warn!(drive = %drive, error = %err, "Failed to save .uffs cache");
-            }
-            fresh
-        };
-
-    // 2. Ensure compact cache is built + saved
-    let compact = uffs_core::compact_cache::ensure_compact_cached(drive, &index);
+    let (compact, _timing) = uffs_core::compact::load_live_drive(drive, false)?;
     let records_read = compact.records.len();
 
-    // 3. Search on compact index (native — no full DataFrame)
     let (rows, _search_filters, _filter_mode) = filters.search_compact(compact)?;
     let matches = rows.len();
 
@@ -98,7 +78,7 @@ fn search_native_compact(drive: char, filters: &OwnedQueryFilters) -> anyhow::Re
         records_read,
         matches,
         error: None,
-        paths_resolved: true, // compact index always resolves paths
+        paths_resolved: true,
     })
 }
 

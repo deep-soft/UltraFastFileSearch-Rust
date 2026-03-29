@@ -211,6 +211,9 @@ pub struct DriveCompactIndex {
     pub children: ChildrenIndex,
     /// Where this index was loaded from (for future refresh).
     pub source: IndexSource,
+    /// `MftIndex.build_epoch` this compact index was built from.
+    /// Used as a staleness check when loading from cache.
+    pub source_epoch: u64,
 }
 
 /// Where a drive index was loaded from.
@@ -342,6 +345,7 @@ pub fn build_compact_index(
             trigram,
             children,
             source: IndexSource::MftFile(PathBuf::from(format!("{drive_letter}:"))),
+            source_epoch: index.build_epoch,
         },
         compact_elapsed,
         tri_elapsed,
@@ -374,10 +378,12 @@ pub fn load_mft_file(
             .map_or('X', |ch| ch.to_ascii_uppercase())
     });
 
-    // Try compact cache first (skips MftIndex load entirely)
+    // Try compact cache first (skips MftIndex load entirely).
+    // Pass epoch=0: we don't have the MftIndex yet, so the file-deletion
+    // mechanism in `save_to_cache` is the primary staleness guard here.
     if !no_cache {
         if let Some(mut compact) =
-            crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS)
+            crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS, 0)
         {
             compact.source = IndexSource::MftFile(mft_path.to_path_buf());
             tracing::info!(
@@ -484,10 +490,11 @@ pub fn load_live_drive(
 ) -> anyhow::Result<(DriveCompactIndex, LoadTiming)> {
     use anyhow::Context;
 
-    // Try compact cache first (skips MftIndex load entirely)
+    // Try compact cache first (skips MftIndex load entirely).
+    // Pass epoch=0: no MftIndex loaded yet; file-deletion is the primary guard.
     if !no_cache {
         if let Some(compact) =
-            crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS)
+            crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS, 0)
         {
             tracing::info!(
                 drive = %drive_letter,

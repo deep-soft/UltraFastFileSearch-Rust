@@ -66,6 +66,7 @@ mod path_resolver;
 pub mod pattern;
 mod query;
 pub mod search;
+pub mod slot_pool;
 pub mod tree;
 pub mod trigram;
 
@@ -93,6 +94,7 @@ pub use path_resolver::{
     add_path_only_column, add_paths_from_full_data,
 };
 pub use query::MftQuery;
+pub use slot_pool::{DriveLoadEstimate, SlotPool, compute_load_budget, estimate_drive_cost};
 pub use tree::{TreeColumn, TreeIndex, add_tree_columns, apply_directory_treesize};
 // Re-export commonly used types
 pub use uffs_mft::FileFlags;

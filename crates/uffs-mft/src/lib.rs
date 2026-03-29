@@ -164,7 +164,7 @@ pub use ntfs::{
 // Core types (DriveType, MftBitmap, MftExtent) are pure data — available on all platforms
 // Windows-specific types and functions (VolumeHandle, detect_ntfs_drives, etc.) only on
 // Windows
-pub use platform::{DriveType, MftBitmap, MftExtent};
+pub use platform::{DriveType, MftBitmap, MftExtent, SystemMemory, query_system_memory};
 #[cfg(windows)]
 pub use platform::{
     NtfsVolumeData, VolumeHandle, detect_drive_type, detect_ntfs_drives, infer_drive_from_path,

@@ -556,3 +556,187 @@ fn detect_drive_type_via_trim(drive_letter: char) -> DriveType {
         DriveType::Unknown
     }
 }
+
+// ─── System Memory ──────────────────────────────────────────────────────────
+
+/// Information about available system memory.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemMemory {
+    /// Total physical RAM in bytes.
+    pub total_bytes: u64,
+    /// Currently available (free + reclaimable) RAM in bytes.
+    pub available_bytes: u64,
+}
+
+impl SystemMemory {
+    /// Fraction of RAM currently available (0.0 – 1.0).
+    #[must_use]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "acceptable for percentage display"
+    )]
+    pub fn available_fraction(&self) -> f64 {
+        if self.total_bytes == 0 {
+            return 0.0;
+        }
+        #[expect(clippy::float_arithmetic, reason = "division for ratio")]
+        {
+            self.available_bytes as f64 / self.total_bytes as f64
+        }
+    }
+}
+
+/// Queries the system for total and available physical memory.
+///
+/// Uses platform-specific APIs:
+/// - **Windows**: `GlobalMemoryStatusEx`
+/// - **macOS**: `sysctl hw.memsize` + `vm_stat`
+/// - **Linux**: `/proc/meminfo`
+///
+/// Returns a conservative fallback (8 GB total, 2 GB available) if the
+/// platform query fails.
+#[must_use]
+pub fn query_system_memory() -> SystemMemory {
+    let fallback = SystemMemory {
+        total_bytes: 8 * 1024 * 1024 * 1024,
+        available_bytes: 2 * 1024 * 1024 * 1024,
+    };
+
+    query_system_memory_impl().unwrap_or(fallback)
+}
+
+/// Platform-specific memory query implementation.
+fn query_system_memory_impl() -> Option<SystemMemory> {
+    #[cfg(windows)]
+    {
+        query_memory_windows()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        query_memory_macos()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        query_memory_linux()
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+/// Windows implementation using `GlobalMemoryStatusEx`.
+#[cfg(windows)]
+#[expect(unsafe_code, reason = "FFI: windows API (GlobalMemoryStatusEx)")]
+fn query_memory_windows() -> Option<SystemMemory> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..MEMORYSTATUSEX::default()
+    };
+    // SAFETY: `status` is a properly sized, initialised MEMORYSTATUSEX with
+    // `dwLength` set.  The pointer is valid for the duration of the call.
+    unsafe {
+        GlobalMemoryStatusEx(&mut status).ok()?;
+    }
+    Some(SystemMemory {
+        total_bytes: status.ullTotalPhys,
+        available_bytes: status.ullAvailPhys,
+    })
+}
+
+/// macOS implementation using `sysctl` + `vm_stat` commands.
+#[cfg(target_os = "macos")]
+fn query_memory_macos() -> Option<SystemMemory> {
+    use std::process::Command;
+
+    // Total: sysctl hw.memsize → "hw.memsize: 34359738368"
+    let total_out = Command::new("sysctl")
+        .arg("-n")
+        .arg("hw.memsize")
+        .output()
+        .ok()?;
+    let total_str = String::from_utf8_lossy(&total_out.stdout);
+    let total_bytes: u64 = total_str.trim().parse().ok()?;
+
+    // Available: vm_stat → parse "Pages free" and "Pages inactive"
+    let vm_out = Command::new("vm_stat").output().ok()?;
+    let vm_str = String::from_utf8_lossy(&vm_out.stdout);
+
+    // First line: "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
+    let page_size = vm_str
+        .lines()
+        .next()
+        .and_then(|line| {
+            let start = line.find("page size of ")? + "page size of ".len();
+            let end = line[start..].find(' ')? + start;
+            line[start..end].parse::<u64>().ok()
+        })
+        .unwrap_or(16384);
+
+    let mut free_pages: u64 = 0;
+    let mut inactive_pages: u64 = 0;
+    let mut speculative_pages: u64 = 0;
+
+    for line in vm_str.lines() {
+        if let Some(val) = parse_vmstat_line(line, "Pages free") {
+            free_pages = val;
+        } else if let Some(val) = parse_vmstat_line(line, "Pages inactive") {
+            inactive_pages = val;
+        } else if let Some(val) = parse_vmstat_line(line, "Pages speculative") {
+            speculative_pages = val;
+        }
+    }
+
+    let available_bytes = (free_pages + inactive_pages + speculative_pages) * page_size;
+
+    Some(SystemMemory {
+        total_bytes,
+        available_bytes,
+    })
+}
+
+/// Parses a `vm_stat` line like `"Pages free:       123456."` → `Some(123456)`.
+#[cfg(target_os = "macos")]
+fn parse_vmstat_line(line: &str, key: &str) -> Option<u64> {
+    if !line.starts_with(key) {
+        return None;
+    }
+    let val_str = line.split(':').nth(1)?.trim().trim_end_matches('.');
+    val_str.parse().ok()
+}
+
+/// Linux implementation using `/proc/meminfo`.
+#[cfg(target_os = "linux")]
+fn query_memory_linux() -> Option<SystemMemory> {
+    let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let mut total_kb: u64 = 0;
+    let mut available_kb: u64 = 0;
+
+    for line in contents.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            total_kb = parse_meminfo_kb(rest);
+        } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            available_kb = parse_meminfo_kb(rest);
+        }
+    }
+
+    if total_kb == 0 {
+        return None;
+    }
+
+    Some(SystemMemory {
+        total_bytes: total_kb * 1024,
+        available_bytes: available_kb * 1024,
+    })
+}
+
+/// Parses a `/proc/meminfo` value like `"    12345678 kB"` → `12345678`.
+#[cfg(target_os = "linux")]
+fn parse_meminfo_kb(rest: &str) -> u64 {
+    rest.split_whitespace()
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}

@@ -69,6 +69,10 @@ pub struct MftIndex {
     /// depth 0. Without this adjustment the root `Size on Disk` will be
     /// off by this amount.
     pub reserved_allocated_bytes: u64,
+    /// Monotonically increasing epoch (Unix microseconds) stamped on every
+    /// build or mutation (e.g. USN update).  Downstream caches (compact
+    /// index) compare their `source_epoch` against this to detect staleness.
+    pub build_epoch: u64,
 }
 
 /// Proportional hard-link size division formula used by tree metrics.

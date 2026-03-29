@@ -311,11 +311,39 @@ pub fn save_to_cache(
     create_secure_dir(&dir)?;
 
     let lock_path = cache_lock_path(drive);
-    with_file_lock(&lock_path, LockKind::Exclusive, CACHE_LOCK_TIMEOUT, || {
+    let result = with_file_lock(&lock_path, LockKind::Exclusive, CACHE_LOCK_TIMEOUT, || {
         let path = cache_file_path(drive);
         index.save_to_file(&path, volume_serial, usn_journal_id, next_usn)?;
         Ok(path)
-    })
+    });
+
+    // Invalidate the companion compact cache so it gets rebuilt from the
+    // fresh MftIndex on next access.
+    invalidate_compact_cache(drive);
+
+    result
+}
+
+/// Deletes the compact cache file for a drive (best-effort).
+///
+/// Called automatically by [`save_to_cache`] to ensure the compact index
+/// is rebuilt from the updated `MftIndex`.
+fn invalidate_compact_cache(drive: char) {
+    let compact_path = cache_dir().join(format!("{drive}_compact.uffs"));
+    if compact_path.exists() {
+        if let Err(err) = std::fs::remove_file(&compact_path) {
+            tracing::warn!(
+                drive = %drive,
+                error = %err,
+                "⚠️ Failed to invalidate compact cache"
+            );
+        } else {
+            tracing::debug!(
+                drive = %drive,
+                "🗑️ Compact cache invalidated (MftIndex updated)"
+            );
+        }
+    }
 }
 
 /// Securely removes a cached index file for a specific drive.

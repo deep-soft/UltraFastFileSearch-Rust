@@ -3,8 +3,12 @@
 //! Stores `DriveCompactIndex` as zstd-compressed, AES-256-GCM encrypted
 //! `{DRIVE}_compact.uffs` alongside the full `.uffs` `MftIndex` cache.
 //!
-//! **v2** (current): trigram posting lists are serialized in CSR format after
-//! the children CSR. On load, postings are deserialized directly — no rebuild.
+//! **v3** (current): adds `source_epoch` (u64) to the header — the
+//! `MftIndex.build_epoch` this compact index was built from.  On load the
+//! epoch is compared against the current `MftIndex`; if stale → rebuild.
+//!
+//! **v2**: trigram posting lists serialized in CSR format (zero rebuild).
+//! Accepted on load; `source_epoch` defaults to 0 (always stale).
 //!
 //! **v1** (legacy): trigram index was rebuilt from `names_lower` on every load.
 //! v1 caches are rejected and rebuilt automatically.
@@ -17,8 +21,8 @@ use crate::trigram::TrigramIndex;
 
 /// Magic bytes for compact cache files.
 const COMPACT_MAGIC: &[u8; 8] = b"UFFSCOM\0";
-/// Current compact cache format version (v2 includes trigram postings).
-const COMPACT_VERSION: u16 = 2;
+/// Current compact cache format version (v3 adds `source_epoch`).
+const COMPACT_VERSION: u16 = 3;
 /// Bytes per `CompactRecord`.
 const RECORD_BYTES: usize = size_of::<CompactRecord>();
 /// zstd compression level for compact cache.
@@ -42,7 +46,7 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
     let (csr_offsets, csr_values) = index.children.as_csr();
     let (tri_keys, tri_offsets, tri_values) = index.trigram.as_csr();
 
-    let total = 18
+    let total = 26 // header: 8 (magic) + 2 (ver) + 4 (rc) + 4 (nl) + 8 (epoch)
         + record_count * RECORD_BYTES
         + names_len * 2
         + csr_offsets.len() * 4
@@ -53,11 +57,13 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
         + tri_values.len() * 4;
     let mut buf = Vec::with_capacity(total);
 
-    // Header (18 bytes)
+    // Header (26 bytes for v3)
     buf.extend_from_slice(COMPACT_MAGIC);
     buf.extend_from_slice(&COMPACT_VERSION.to_le_bytes());
     push_u32(&mut buf, record_count);
     push_u32(&mut buf, names_len);
+    // v3: source_epoch
+    buf.extend_from_slice(&index.source_epoch.to_le_bytes());
 
     // Records — single bulk copy via bytemuck (Pod layout = on-disk layout)
     buf.extend_from_slice(bytemuck::cast_slice(&index.records));
@@ -91,7 +97,8 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
 
 /// Deserializes a compact index from raw bytes.
 ///
-/// **v2**: trigram postings are read directly from the cache (zero rebuild).
+/// **v3**: trigram postings + `source_epoch`.
+/// **v2**: trigram postings, `source_epoch` = 0 (accepted, triggers rebuild).
 /// **v1**: rejected — returns an error so the caller rebuilds from `MftIndex`.
 ///
 /// Returns `(DriveCompactIndex, trigram_load_ms)`.
@@ -102,39 +109,23 @@ pub fn deserialize_compact(
     data: &[u8],
     drive_letter: char,
 ) -> Result<(DriveCompactIndex, u128), &'static str> {
-    if data.len() < 18 {
-        return Err("compact cache too short");
-    }
-    if data.get(..8) != Some(COMPACT_MAGIC.as_slice()) {
-        return Err("bad compact magic");
-    }
-    let version = data
-        .get(8..10)
-        .and_then(|slice| <[u8; 2]>::try_from(slice).ok())
-        .map_or(0, u16::from_le_bytes);
-    if version < COMPACT_VERSION {
-        return Err("stale compact version (v1 → rebuild)");
-    }
-    if version > COMPACT_VERSION {
-        return Err("unsupported compact version (future)");
-    }
+    let (source_epoch, body_offset) = parse_compact_header(data)?;
 
-    let record_count = read_u32(data, 10);
-    let names_len = read_u32(data, 14);
-    let rc = record_count as usize;
-    let nl = names_len as usize;
-    let records_end = 18 + rc * RECORD_BYTES;
-    let names_end = records_end + nl;
-    let names_lower_end = names_end + nl;
-    let csr_offsets_end = names_lower_end + (rc + 1) * 4;
+    let record_count = read_u32(data, 10) as usize;
+    let names_len = read_u32(data, 14) as usize;
+    let records_end = body_offset + record_count * RECORD_BYTES;
+    let names_end = records_end + names_len;
+    let names_lower_end = names_end + names_len;
+    let csr_offsets_end = names_lower_end + (record_count + 1) * 4;
     if data.len() < csr_offsets_end {
         return Err("compact cache truncated");
     }
 
     // Records — alignment-safe copy into properly aligned Vec<CompactRecord>
-    let records_slice = data.get(18..records_end).ok_or("truncated records")?;
-    let records: Vec<CompactRecord> = aligned_vec_from_bytes(records_slice);
-
+    let records: Vec<CompactRecord> = aligned_vec_from_bytes(
+        data.get(body_offset..records_end)
+            .ok_or("truncated records")?,
+    );
     let names = data
         .get(records_end..names_end)
         .ok_or("truncated names")?
@@ -148,60 +139,48 @@ pub fn deserialize_compact(
     let offsets_slice = data
         .get(names_lower_end..csr_offsets_end)
         .ok_or("truncated CSR")?;
-    let total_child_postings = read_u32(offsets_slice, rc * 4);
+    let total_child_postings = read_u32(offsets_slice, record_count * 4);
     let postings_end = csr_offsets_end + total_child_postings as usize * 4;
     if data.len() < postings_end {
         return Err("truncated CSR postings");
     }
     let child_vals_slice = data.get(csr_offsets_end..postings_end).ok_or("CSR OOB")?;
+    let children = ChildrenIndex::from_csr(
+        aligned_vec_from_bytes(offsets_slice),
+        aligned_vec_from_bytes(child_vals_slice),
+    );
 
-    let child_offsets: Vec<u32> = aligned_vec_from_bytes(offsets_slice);
-    let child_values: Vec<u32> = aligned_vec_from_bytes(child_vals_slice);
-    let children = ChildrenIndex::from_csr(child_offsets, child_values);
-
-    // ─── v2: Read trigram postings — alignment-safe bulk copy ───────
+    // ─── Trigram CSR (v2+) ─────────────────────────────────────────
     let tri_start = Instant::now();
-    let tri_header_offset = postings_end;
-    if data.len() < tri_header_offset + 4 {
+    let tri_hdr = postings_end;
+    if data.len() < tri_hdr + 4 {
         return Err("truncated trigram header");
     }
-    let trigram_count = read_u32(data, tri_header_offset);
-
-    let tc = trigram_count as usize;
-    let tri_keys_offset = tri_header_offset + 4;
-    let tri_keys_end = tri_keys_offset + tc * 3;
-    let tri_offsets_offset = tri_keys_end;
-    let tri_offsets_end = tri_offsets_offset + (tc + 1) * 4;
-    if data.len() < tri_offsets_end {
+    let tri_count = read_u32(data, tri_hdr) as usize;
+    let tri_keys_end = tri_hdr + 4 + tri_count * 3;
+    let tri_offs_end = tri_keys_end + (tri_count + 1) * 4;
+    if data.len() < tri_offs_end {
         return Err("truncated trigram offsets");
     }
-
-    let total_tri_postings = read_u32(data, tri_offsets_end - 4);
-    let tri_values_offset = tri_offsets_end;
-    let tri_values_end = tri_values_offset + total_tri_postings as usize * 4;
-    if data.len() < tri_values_end {
+    let tri_post_count = read_u32(data, tri_offs_end - 4) as usize;
+    let tri_vals_end = tri_offs_end + tri_post_count * 4;
+    if data.len() < tri_vals_end {
         return Err("truncated trigram postings");
     }
-
-    // Keys ([u8; 3]) — alignment = 1, so direct cast is safe
-    let keys_slice = data
-        .get(tri_keys_offset..tri_keys_end)
-        .ok_or("trigram keys OOB")?;
-    let tri_keys_vec: Vec<[u8; 3]> = aligned_vec_from_bytes(keys_slice);
-
-    // CSR offsets — alignment-safe
-    let tri_offs_slice = data
-        .get(tri_offsets_offset..tri_offsets_end)
-        .ok_or("trigram offsets OOB")?;
-    let tri_offsets_vec: Vec<u32> = aligned_vec_from_bytes(tri_offs_slice);
-
-    // Posting values — alignment-safe
-    let tri_vals_slice = data
-        .get(tri_values_offset..tri_values_end)
-        .ok_or("trigram values OOB")?;
-    let tri_values_vec: Vec<u32> = aligned_vec_from_bytes(tri_vals_slice);
-
-    let trigram = TrigramIndex::from_csr(tri_keys_vec, tri_offsets_vec, tri_values_vec);
+    let trigram = TrigramIndex::from_csr(
+        aligned_vec_from_bytes(
+            data.get(tri_hdr + 4..tri_keys_end)
+                .ok_or("trigram keys OOB")?,
+        ),
+        aligned_vec_from_bytes(
+            data.get(tri_keys_end..tri_offs_end)
+                .ok_or("trigram offsets OOB")?,
+        ),
+        aligned_vec_from_bytes(
+            data.get(tri_offs_end..tri_vals_end)
+                .ok_or("trigram values OOB")?,
+        ),
+    );
     let tri_ms = tri_start.elapsed().as_millis();
 
     Ok((
@@ -213,9 +192,42 @@ pub fn deserialize_compact(
             trigram,
             children,
             source: IndexSource::MftFile(PathBuf::from(format!("{drive_letter}:"))),
+            source_epoch,
         },
         tri_ms,
     ))
+}
+
+/// Validates magic/version and returns `(source_epoch, body_offset)`.
+fn parse_compact_header(data: &[u8]) -> Result<(u64, usize), &'static str> {
+    if data.len() < 18 {
+        return Err("compact cache too short");
+    }
+    if data.get(..8) != Some(COMPACT_MAGIC.as_slice()) {
+        return Err("bad compact magic");
+    }
+    let version = data
+        .get(8..10)
+        .and_then(|slice| <[u8; 2]>::try_from(slice).ok())
+        .map_or(0, u16::from_le_bytes);
+    if version < 2 {
+        return Err("stale compact version (v1 → rebuild)");
+    }
+    if version > COMPACT_VERSION {
+        return Err("unsupported compact version (future)");
+    }
+    if version >= 3 {
+        if data.len() < 26 {
+            return Err("compact cache truncated (v3 header)");
+        }
+        let epoch = data
+            .get(18..26)
+            .and_then(|slice| <[u8; 8]>::try_from(slice).ok())
+            .map_or(0, u64::from_le_bytes);
+        Ok((epoch, 26))
+    } else {
+        Ok((0, 18))
+    }
 }
 
 // ─── Save / Load ────────────────────────────────────────────────────────────
@@ -259,15 +271,41 @@ pub fn save_compact_cache(index: &DriveCompactIndex) -> std::io::Result<()> {
 }
 
 /// Loads a compact index from its cache file if fresh. Returns `None` if
-/// cache is missing, stale, or corrupt.
+/// cache is missing, stale, corrupt, or built from an older `MftIndex`.
+///
+/// `mft_build_epoch` is the `build_epoch` of the current `MftIndex`.
+/// If the compact cache was built from an older epoch it is considered stale
+/// and `None` is returned so the caller rebuilds.
 #[must_use]
 #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
-pub fn load_compact_cache(drive_letter: char, ttl_seconds: u64) -> Option<DriveCompactIndex> {
+pub fn load_compact_cache(
+    drive_letter: char,
+    ttl_seconds: u64,
+    mft_build_epoch: u64,
+) -> Option<DriveCompactIndex> {
     let path = compact_cache_path(drive_letter);
     let meta = std::fs::metadata(&path).ok()?;
-    let age = meta.modified().ok()?.elapsed().ok()?.as_secs();
+    let compact_mtime = meta.modified().ok()?;
+    let age = compact_mtime.elapsed().ok()?.as_secs();
     if age > ttl_seconds {
         return None;
+    }
+
+    // Mtime-based staleness: if the MftIndex `.uffs` file is newer than the
+    // compact cache, the compact was built from an older MftIndex.
+    // This catches cross-process updates (daemon updates MftIndex, TUI has
+    // stale compact) with zero I/O — just two stat() calls.
+    let mft_path = uffs_mft::cache::cache_file_path(drive_letter);
+    if let Ok(mft_meta) = std::fs::metadata(&mft_path) {
+        if let Ok(mft_mtime) = mft_meta.modified() {
+            if mft_mtime > compact_mtime {
+                tracing::debug!(
+                    drive = %drive_letter,
+                    "Compact cache older than MftIndex cache — rebuilding"
+                );
+                return None;
+            }
+        }
     }
 
     let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
@@ -293,6 +331,26 @@ pub fn load_compact_cache(drive_letter: char, ttl_seconds: u64) -> Option<DriveC
     let decompress_ms = t_decompress.elapsed().as_millis();
     let plaintext_len = plaintext.len();
 
+    // Early staleness check — inspect header before full deserialization.
+    if mft_build_epoch > 0 {
+        if let Ok((source_epoch, _)) = parse_compact_header(&plaintext) {
+            if source_epoch < mft_build_epoch {
+                if profile {
+                    eprintln!(
+                        "[CACHE_PROFILE] compact: STALE (source_epoch {source_epoch} < mft_epoch {mft_build_epoch})"
+                    );
+                }
+                tracing::debug!(
+                    drive = %drive_letter,
+                    compact_epoch = source_epoch,
+                    mft_epoch = mft_build_epoch,
+                    "Compact cache stale (source_epoch < mft build_epoch) — rebuilding"
+                );
+                return None;
+            }
+        }
+    }
+
     let t_deser = Instant::now();
     let (index, tri_ms) = deserialize_compact(&plaintext, drive_letter).ok()?;
     let deser_ms = t_deser.elapsed().as_millis();
@@ -310,8 +368,9 @@ pub fn load_compact_cache(drive_letter: char, ttl_seconds: u64) -> Option<DriveC
             index.records.len()
         );
         eprintln!(
-            "[CACHE_PROFILE] compact_total: {:>6} ms",
-            t_total.elapsed().as_millis()
+            "[CACHE_PROFILE] compact_total: {:>6} ms  (source_epoch={})",
+            t_total.elapsed().as_millis(),
+            index.source_epoch,
         );
     }
     Some(index)
@@ -333,8 +392,12 @@ pub fn ensure_compact_cached(
 ) -> DriveCompactIndex {
     let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
 
-    // Try loading existing compact cache
-    if let Some(cached) = load_compact_cache(drive_letter, super::compact::INDEX_TTL_SECONDS) {
+    // Try loading existing compact cache (epoch check catches stale caches)
+    if let Some(cached) = load_compact_cache(
+        drive_letter,
+        super::compact::INDEX_TTL_SECONDS,
+        mft_index.build_epoch,
+    ) {
         if profile {
             eprintln!(
                 "[CACHE_PROFILE] compact: loaded from cache ({} records)",
