@@ -268,8 +268,6 @@ impl MftReader {
         )
     )]
     async fn read_and_cache_index(&self) -> Result<crate::index::MftIndex> {
-        use tracing::info;
-
         use crate::platform::VolumeHandle;
         use crate::usn::query_usn_journal;
 
@@ -278,7 +276,7 @@ impl MftReader {
         let index = self.read_all_index().await?;
         tracing::debug!(drive = %drive, records = index.len(), "[TRIP] reader::read_and_cache_index -> read_all_index done");
 
-        // Get volume info for caching (quick syscalls, fine on async thread).
+        // Get volume info for caching (quick syscalls).
         let volume_serial = VolumeHandle::open(drive)
             .map(|h| h.volume_data().volume_serial_number)
             .unwrap_or(0);
@@ -288,62 +286,18 @@ impl MftReader {
             Err(_) => (0, 0),
         };
 
-        // Serialize + compress the index on the current thread (CPU-bound, no
-        // I/O yet) so we can hand ownership of the index back to the caller
-        // immediately. Only the byte buffer is sent to the blocking pool for
-        // the disk write.
-        let serialized = index.serialize(volume_serial, usn_journal_id, next_usn);
-
-        let compressed = match zstd::encode_all(serialized.as_slice(), 3) {
-            Ok(c) => c,
-            Err(e) => {
-                info!(drive = %drive, error = %e, "⚠️ zstd compression failed, skipping cache");
-                return Ok(index);
-            }
-        };
-
-        // Encryption is mandatory — never write unencrypted data to disk.
-        let key = match uffs_security::keystore::get_cache_key() {
-            Ok(k) => k,
-            Err(e) => {
-                info!(drive = %drive, error = %e, "⚠️ Encryption key unavailable, skipping cache");
-                return Ok(index);
-            }
-        };
-        let cache_bytes = match uffs_security::crypto::encrypt_cache(&compressed, &key) {
-            Ok(encrypted) => encrypted,
-            Err(e) => {
-                info!(drive = %drive, error = %e, "⚠️ Encryption failed, skipping cache");
-                return Ok(index);
-            }
-        };
-
-        // Await the cache write — a few MB to disk takes <100ms.
-        // Previously this was fire-and-forget (spawn_blocking without await),
-        // causing the CLI process to exit before the cache was written.
-        let _cache_result = tokio::task::spawn_blocking(move || {
-            use crate::cache::{
-                LockKind, atomic_write, cache_dir, cache_file_path, cache_lock_path,
-                create_secure_dir, with_file_lock,
-            };
-            let dir = cache_dir();
-            if let Err(e) = create_secure_dir(&dir) {
-                info!(drive = %drive, error = %e, "⚠️ Failed to create cache dir");
-                return;
-            }
-            let lock_path = cache_lock_path(drive);
-            let timeout = std::time::Duration::from_secs(5);
-            let result = with_file_lock(&lock_path, LockKind::Exclusive, timeout, || {
-                let path = cache_file_path(drive);
-                atomic_write(&path, &cache_bytes)?;
-                info!(drive = %drive, bytes = cache_bytes.len(), "💾 Saved to cache");
-                Ok(())
-            });
-            if let Err(e) = result {
-                info!(drive = %drive, error = %e, "⚠️ Failed to write cache (non-fatal)");
-            }
-        })
-        .await;
+        // Delegate to the single save_to_cache() implementation.
+        // This handles: serialize → zstd → AES-256-GCM → atomic_write,
+        // plus compact cache invalidation and [CACHE_PROFILE] profiling.
+        //
+        // This is the cold path (no cache exists) — serialize+compress is
+        // CPU-bound (~1-2s) but we must complete it before returning so the
+        // cache is guaranteed to exist for subsequent runs.
+        if let Err(e) =
+            crate::cache::save_to_cache(&index, drive, volume_serial, usn_journal_id, next_usn)
+        {
+            tracing::warn!(drive = %drive, error = %e, "⚠️ Failed to save cache (non-fatal)");
+        }
 
         tracing::debug!(drive = %drive, "[TRIP] reader::read_and_cache_index EXIT");
         Ok(index)

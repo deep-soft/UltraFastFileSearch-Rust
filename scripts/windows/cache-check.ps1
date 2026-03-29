@@ -64,25 +64,34 @@ Write-Host "╔═════════════════════�
 Write-Host "║    UFFS Cache Diagnostic — Drive $Drive     ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════╝" -ForegroundColor Cyan
 
-# 1. Show initial cache status
-Write-Host "`n[STEP 1] Initial cache state:" -ForegroundColor Yellow
-Show-CacheStatus
+# Show binary version
+$uffsVersion = & $UFFS --version 2>&1 | Select-Object -First 1
+Write-Host "  Binary: $UFFS" -ForegroundColor Gray
+Write-Host "  Version: $uffsVersion" -ForegroundColor Gray
 
-# 2. Clear cache for this drive
-Write-Host "[STEP 2] Clearing cache for drive ${Drive}:..." -ForegroundColor Yellow
+# 1. Clear cache for this drive
+Write-Host "`n[STEP 1] Clearing cache for drive ${Drive}:..." -ForegroundColor Yellow
 if (Test-Path $CacheFile) {
     Remove-Item $CacheFile -Force
     Write-Host "  Removed $CacheFile" -ForegroundColor DarkGray
+}
+$compactCacheFile = Join-Path $CacheDir "${Drive}_compact.uffs"
+if (Test-Path $compactCacheFile) {
+    Remove-Item $compactCacheFile -Force
+    Write-Host "  Removed $compactCacheFile" -ForegroundColor DarkGray
 }
 $legacyCacheFile = Join-Path $CacheDirLegacy "${Drive}_index.uffs"
 if (Test-Path $legacyCacheFile) {
     Remove-Item $legacyCacheFile -Force
     Write-Host "  Removed legacy $legacyCacheFile" -ForegroundColor DarkGray
 }
+
+# 2. Show cache state after clearing
+Write-Host "`n[STEP 2] Cache state (post-clear):" -ForegroundColor Yellow
 Show-CacheStatus
 
 # 3. Run search N times, show timing and cache status after each
-Write-Host "[STEP 3] Running $Rounds searches (uffs `"*`" --drive $Drive):" -ForegroundColor Yellow
+Write-Host "`n[STEP 3] Running $Rounds searches (uffs `"*`" --drive $Drive):" -ForegroundColor Yellow
 Write-Host ""
 
 $runTimings = @()

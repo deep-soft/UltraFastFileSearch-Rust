@@ -233,6 +233,194 @@ pub struct LoadTiming {
     pub trigram: u128,
 }
 
+/// Where to read MFT data from.
+#[derive(Debug, Clone)]
+pub enum MftSource {
+    /// Offline MFT file (`.uffs`, `.raw`, `.iocp` capture).
+    /// Second field is an optional drive-letter override.
+    File(PathBuf, Option<char>),
+    /// Live Windows NTFS volume (e.g., `'C'`).
+    #[cfg(windows)]
+    Live(char),
+}
+
+impl MftSource {
+    /// Returns the file path if this is a `File` source.
+    #[must_use]
+    pub fn file_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::File(path, _) => Some(path),
+            #[cfg(windows)]
+            Self::Live(_) => None,
+        }
+    }
+}
+
+/// Unified entry point: load MFT data from any source and build a compact
+/// index.
+///
+/// Handles compact cache → MFT cache → cold read → save caches,
+/// with `[CACHE_PROFILE]` profiling when `UFFS_CACHE_PROFILE=1`.
+///
+/// # Errors
+///
+/// Returns an error if the MFT data cannot be read or parsed.
+#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+pub fn load_drive(
+    source: &MftSource,
+    no_cache: bool,
+) -> anyhow::Result<(DriveCompactIndex, LoadTiming)> {
+    let drive_letter = match source {
+        MftSource::File(path, drive_override) => drive_override.unwrap_or_else(|| {
+            let stem = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("X");
+            stem.chars()
+                .next()
+                .filter(char::is_ascii_alphabetic)
+                .map_or('X', |ch| ch.to_ascii_uppercase())
+        }),
+        #[cfg(windows)]
+        MftSource::Live(ch) => *ch,
+    };
+
+    // ── Fast path: compact cache hit ───────────────────────────────
+    if !no_cache {
+        if let Some(mut compact) =
+            crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS, 0)
+        {
+            if let Some(path) = source.file_path() {
+                compact.source = IndexSource::MftFile(path.to_path_buf());
+            }
+            tracing::info!(
+                drive = %drive_letter,
+                records = compact.records.len(),
+                "📦 Cache hit — loaded compact cache"
+            );
+            return Ok((
+                compact,
+                LoadTiming {
+                    mft: 0,
+                    compact: 0,
+                    trigram: 0,
+                },
+            ));
+        }
+    }
+
+    // ── Load MftIndex (cache or cold) ──────────────────────────────
+    let mft_start = Instant::now();
+    let mft_index = match source {
+        MftSource::File(path, _) => load_mft_index_from_file(path, drive_letter, no_cache)?,
+        #[cfg(windows)]
+        MftSource::Live(ch) => load_mft_index_live(*ch, no_cache)?,
+    };
+    let mft_elapsed = mft_start.elapsed().as_millis();
+
+    // ── Build compact index ────────────────────────────────────────
+    let (mut compact, compact_elapsed, tri_elapsed) = build_compact_index(drive_letter, &mft_index);
+    if let Some(path) = source.file_path() {
+        compact.source = IndexSource::MftFile(path.to_path_buf());
+    }
+
+    // ── Save compact cache (best-effort) ───────────────────────────
+    if !no_cache {
+        let t_compact_save = Instant::now();
+        if let Err(err) = crate::compact_cache::save_compact_cache(&compact) {
+            tracing::warn!(drive = %drive_letter, error = %err, "Failed to save compact cache");
+        }
+        let compact_save_ms = t_compact_save.elapsed().as_millis();
+        if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
+            eprintln!("[CACHE_PROFILE] compact_save_outer: {compact_save_ms:>4} ms");
+        }
+    }
+
+    Ok((
+        compact,
+        LoadTiming {
+            mft: mft_elapsed,
+            compact: compact_elapsed,
+            trigram: tri_elapsed,
+        },
+    ))
+}
+
+/// Load `MftIndex` from an offline file (cache → cold parse).
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted for readability from load_drive"
+)]
+fn load_mft_index_from_file(
+    mft_path: &std::path::Path,
+    drive_letter: char,
+    no_cache: bool,
+) -> anyhow::Result<MftIndex> {
+    let cached = if no_cache {
+        None
+    } else {
+        uffs_mft::cache::load_cached_index(drive_letter, INDEX_TTL_SECONDS)
+    };
+
+    if let Some((cached_index, _header)) = cached {
+        tracing::info!(
+            drive = %drive_letter,
+            records = cached_index.records.len(),
+            "📦 Cache hit — loaded .uffs cache"
+        );
+        return Ok(cached_index);
+    }
+
+    tracing::info!(
+        drive = %drive_letter,
+        path = %mft_path.display(),
+        "📖 Parsing MFT file (delegating to uffs-mft)"
+    );
+
+    let options = uffs_mft::raw::LoadRawOptions {
+        header_only: false,
+        volume_letter: Some(drive_letter),
+        forensic: false,
+    };
+    let parsed = uffs_mft::MftReader::load_raw_to_index_with_options(mft_path, &options)?;
+
+    if let Err(err) = uffs_mft::cache::save_to_cache(&parsed, drive_letter, 0, 0, 0) {
+        tracing::warn!(drive = %drive_letter, error = %err, "Failed to save .uffs cache");
+    } else {
+        let cache_path = uffs_mft::cache::cache_file_path(drive_letter);
+        tracing::info!(drive = %drive_letter, path = %cache_path.display(), "💾 Saved .uffs cache");
+    }
+
+    Ok(parsed)
+}
+
+/// Load `MftIndex` from a live Windows volume (cache → cold read via IOCP).
+#[cfg(windows)]
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted for readability from load_drive"
+)]
+fn load_mft_index_live(drive_letter: char, no_cache: bool) -> anyhow::Result<MftIndex> {
+    use anyhow::Context;
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let reader = uffs_mft::MftReader::open(drive_letter)
+            .with_context(|| format!("Failed to open drive {drive_letter}:"))?;
+        if no_cache {
+            reader
+                .read_all_index()
+                .await
+                .with_context(|| format!("Failed to read MFT fresh for drive {drive_letter}:"))
+        } else {
+            reader
+                .read_index_cached(INDEX_TTL_SECONDS)
+                .await
+                .with_context(|| format!("Failed to read MFT for drive {drive_letter}:"))
+        }
+    })
+}
+
 /// Statistics from in-place USN patching.
 #[derive(Debug, Clone, Default)]
 pub struct PatchStats {
@@ -254,17 +442,19 @@ pub struct PatchStats {
 pub fn refresh_drive(drive: &DriveCompactIndex) -> anyhow::Result<(DriveCompactIndex, LoadTiming)> {
     match &drive.source {
         IndexSource::MftFile(path) => {
-            if path.to_string_lossy().len() <= 2 {
+            let source = if path.to_string_lossy().len() <= 2 {
                 #[cfg(windows)]
                 {
-                    return load_live_drive(drive.letter, false);
+                    MftSource::Live(drive.letter)
                 }
                 #[cfg(not(windows))]
                 {
                     anyhow::bail!("Cannot refresh live drive {}: on non-Windows", drive.letter);
                 }
-            }
-            load_mft_file(path, Some(drive.letter), false)
+            } else {
+                MftSource::File(path.clone(), Some(drive.letter))
+            };
+            load_drive(&source, false)
         }
     }
 }
@@ -359,195 +549,34 @@ pub(crate) const INDEX_TTL_SECONDS: u64 = 14400;
 
 /// Load an MFT file and build a compact index (cross-platform).
 ///
+/// **Deprecated:** Use [`load_drive`] with [`MftSource::File`] instead.
+///
 /// # Errors
 ///
 /// Returns an error if the MFT file cannot be read or parsed.
+#[deprecated(note = "Use load_drive(MftSource::File(...)) instead")]
 pub fn load_mft_file(
     mft_path: &std::path::Path,
     drive: Option<char>,
     no_cache: bool,
 ) -> anyhow::Result<(DriveCompactIndex, LoadTiming)> {
-    let drive_letter = drive.unwrap_or_else(|| {
-        let stem = mft_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("X");
-        stem.chars()
-            .next()
-            .filter(char::is_ascii_alphabetic)
-            .map_or('X', |ch| ch.to_ascii_uppercase())
-    });
-
-    // Try compact cache first (skips MftIndex load entirely).
-    // Pass epoch=0: we don't have the MftIndex yet, so the file-deletion
-    // mechanism in `save_to_cache` is the primary staleness guard here.
-    if !no_cache {
-        if let Some(mut compact) =
-            crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS, 0)
-        {
-            compact.source = IndexSource::MftFile(mft_path.to_path_buf());
-            tracing::info!(
-                drive = %drive_letter,
-                records = compact.records.len(),
-                "📦 Cache hit — loaded compact cache"
-            );
-            return Ok((
-                compact,
-                LoadTiming {
-                    mft: 0,
-                    compact: 0,
-                    trigram: 0,
-                },
-            ));
-        }
-    }
-
-    let mft_start = Instant::now();
-
-    let cached = if no_cache {
-        None
-    } else {
-        uffs_mft::cache::load_cached_index(drive_letter, INDEX_TTL_SECONDS)
-    };
-
-    let mft_index = if let Some((cached_index, _header)) = cached {
-        tracing::info!(
-            drive = %drive_letter,
-            records = cached_index.records.len(),
-            "📦 Cache hit — loaded .uffs cache"
-        );
-        cached_index
-    } else {
-        tracing::info!(
-            drive = %drive_letter,
-            path = %mft_path.display(),
-            "📖 Parsing MFT file"
-        );
-        let parsed = {
-            use uffs_mft::parse::{MftRecordMerger, apply_fixup, parse_record_full};
-
-            let options = uffs_mft::raw::LoadRawOptions::default();
-            let raw = uffs_mft::raw::load_raw_mft(mft_path, &options)?;
-            let capacity = uffs_mft::frs_to_usize(raw.header.record_count);
-            let mut merger = MftRecordMerger::with_capacity(capacity);
-
-            for (frs, record_data) in raw.iter_records() {
-                let mut record_buf = record_data.to_vec();
-                if !apply_fixup(&mut record_buf) {
-                    continue;
-                }
-                merger.add_result(parse_record_full(&record_buf, frs));
-            }
-
-            let records = merger.merge();
-            MftIndex::from_parsed_records(drive_letter, records)
-        };
-
-        if let Err(err) = uffs_mft::cache::save_to_cache(&parsed, drive_letter, 0, 0, 0) {
-            tracing::warn!(
-                drive = %drive_letter,
-                error = %err,
-                "Failed to save .uffs cache"
-            );
-        } else {
-            let cache_path = uffs_mft::cache::cache_file_path(drive_letter);
-            tracing::info!(
-                drive = %drive_letter,
-                path = %cache_path.display(),
-                "💾 Saved .uffs cache"
-            );
-        }
-
-        parsed
-    };
-    let mft_elapsed = mft_start.elapsed().as_millis();
-
-    let (mut compact, compact_elapsed, tri_elapsed) = build_compact_index(drive_letter, &mft_index);
-    compact.source = IndexSource::MftFile(mft_path.to_path_buf());
-
-    // Save compact cache (best-effort, don't fail the load)
-    if !no_cache {
-        if let Err(err) = crate::compact_cache::save_compact_cache(&compact) {
-            tracing::warn!(drive = %drive_letter, error = %err, "Failed to save compact cache");
-        }
-    }
-
-    Ok((
-        compact,
-        LoadTiming {
-            mft: mft_elapsed,
-            compact: compact_elapsed,
-            trigram: tri_elapsed,
-        },
-    ))
+    load_drive(&MftSource::File(mft_path.to_path_buf(), drive), no_cache)
 }
 
 /// Load a live NTFS drive and build a compact index (Windows only).
+///
+/// **Deprecated:** Use [`load_drive`] with [`MftSource::Live`] instead.
+///
+/// # Errors
+///
+/// Returns an error if the drive cannot be read.
 #[cfg(windows)]
+#[deprecated(note = "Use load_drive(MftSource::Live(...)) instead")]
 pub fn load_live_drive(
     drive_letter: char,
     no_cache: bool,
 ) -> anyhow::Result<(DriveCompactIndex, LoadTiming)> {
-    use anyhow::Context;
-
-    // Try compact cache first (skips MftIndex load entirely).
-    // Pass epoch=0: no MftIndex loaded yet; file-deletion is the primary guard.
-    if !no_cache {
-        if let Some(compact) =
-            crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS, 0)
-        {
-            tracing::info!(
-                drive = %drive_letter,
-                records = compact.records.len(),
-                "📦 Cache hit — loaded compact cache"
-            );
-            return Ok((
-                compact,
-                LoadTiming {
-                    mft: 0,
-                    compact: 0,
-                    trigram: 0,
-                },
-            ));
-        }
-    }
-
-    let mft_start = Instant::now();
-    let rt = tokio::runtime::Runtime::new()?;
-    let index = rt.block_on(async {
-        let reader = uffs_mft::MftReader::open(drive_letter)
-            .with_context(|| format!("Failed to open drive {drive_letter}:"))?;
-        if no_cache {
-            reader
-                .read_all_index()
-                .await
-                .with_context(|| format!("Failed to read MFT fresh for drive {drive_letter}:"))
-        } else {
-            reader
-                .read_index_cached(INDEX_TTL_SECONDS)
-                .await
-                .with_context(|| format!("Failed to read MFT for drive {drive_letter}:"))
-        }
-    })?;
-    let mft_elapsed = mft_start.elapsed().as_millis();
-
-    let (compact, compact_elapsed, tri_elapsed) = build_compact_index(drive_letter, &index);
-
-    // Save compact cache (best-effort, don't fail the load)
-    if !no_cache {
-        if let Err(err) = crate::compact_cache::save_compact_cache(&compact) {
-            tracing::warn!(drive = %drive_letter, error = %err, "Failed to save compact cache");
-        }
-    }
-
-    Ok((
-        compact,
-        LoadTiming {
-            mft: mft_elapsed,
-            compact: compact_elapsed,
-            trigram: tri_elapsed,
-        },
-    ))
+    load_drive(&MftSource::Live(drive_letter), no_cache)
 }
 
 /// Apply USN changes in-place to the compact index.

@@ -25,6 +25,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Enable CACHE_PROFILE so cold/warm profiling timers are emitted to stderr
+$env:UFFS_CACHE_PROFILE = "1"
 $UFFS = "$env:USERPROFILE\bin\uffs.exe"
 $UFFS_CPP = "$env:USERPROFILE\bin\uffs.com"
 # Cache location: secure dir (%LOCALAPPDATA%\uffs\cache\), with legacy fallback
@@ -69,8 +71,10 @@ if ($RustArgs) {
 if ($CppArgs) {
     Write-Host "  C++ args: $CppArgs" -ForegroundColor Cyan
 }
-Write-Host "  Rust:       $(if (Test-Path $UFFS) { '✅' } else { '❌' }) $UFFS" -ForegroundColor Cyan
-Write-Host "  C++:        $(if (Test-Path $UFFS_CPP) { '✅' } else { '❌' }) $UFFS_CPP" -ForegroundColor Cyan
+$rustVersion = if (Test-Path $UFFS) { & $UFFS --version 2>&1 | Select-Object -First 1 } else { "(not found)" }
+$cppVersion  = if (Test-Path $UFFS_CPP) { & $UFFS_CPP --version 2>&1 | Select-Object -First 1 } else { "(not found)" }
+Write-Host "  Rust:       $(if (Test-Path $UFFS) { '✅' } else { '❌' }) $rustVersion" -ForegroundColor Cyan
+Write-Host "  C++:        $(if (Test-Path $UFFS_CPP) { '✅' } else { '❌' }) $cppVersion" -ForegroundColor Cyan
 Write-Host "  Everything: $(if ($hasEverything) { '✅' } else { '❌' }) $(if ($EVERYTHING_EXE) { $EVERYTHING_EXE } else { '(not found)' })" -ForegroundColor Cyan
 if ($Cache) {
     Write-Host "  (Cache kept between runs)" -ForegroundColor Cyan
@@ -128,9 +132,9 @@ function BenchRun($label, $exePath, [string[]]$argList) {
         $times += $ms
         Write-Host "   Run $_`: $([math]::Round($ms/1000, 2))s" -ForegroundColor Gray
 
-        # Extract [TIMING] and [DIAG] lines from stderr (small file)
+        # Extract [TIMING], [DIAG], and [CACHE_PROFILE] lines from stderr
         try {
-            $timingLines = Select-String -Path $tempErr -Pattern '\[TIMING\]|\[DIAG\]' | ForEach-Object { $_.Line }
+            $timingLines = Select-String -Path $tempErr -Pattern '\[TIMING\]|\[DIAG\]|\[CACHE_PROFILE\]' | ForEach-Object { $_.Line }
             if ($timingLines) {
                 foreach ($line in $timingLines) {
                     Write-Host "     $line" -ForegroundColor DarkCyan

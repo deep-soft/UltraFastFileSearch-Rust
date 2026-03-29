@@ -62,9 +62,9 @@ impl IndexManager {
         for (idx, mft_path) in mft_files.iter().enumerate() {
             tracing::info!(path = %mft_path.display(), "Loading MFT file");
 
-            let cloned_path = mft_path.clone();
+            let source = uffs_core::compact::MftSource::File(mft_path.clone(), None);
             let result = tokio::task::spawn_blocking(move || {
-                uffs_core::compact::load_mft_file(&cloned_path, None, no_cache)
+                uffs_core::compact::load_drive(&source, no_cache)
             })
             .await;
 
@@ -128,7 +128,18 @@ impl IndexManager {
             tracing::info!(drive = %letter, "Loading live drive");
 
             let result = tokio::task::spawn_blocking(move || {
-                uffs_core::compact::load_live_drive(letter, no_cache)
+                #[cfg(windows)]
+                {
+                    uffs_core::compact::load_drive(
+                        &uffs_core::compact::MftSource::Live(letter),
+                        no_cache,
+                    )
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = (letter, no_cache);
+                    Err(anyhow::anyhow!("Live drive loading requires Windows"))
+                }
             })
             .await;
 
@@ -289,18 +300,21 @@ impl IndexManager {
 
             let result = tokio::task::spawn_blocking(move || match &source {
                 uffs_core::compact::IndexSource::MftFile(mft_path) => {
-                    if mft_path.to_string_lossy().len() <= 2 {
+                    let mft_source = if mft_path.to_string_lossy().len() <= 2 {
                         #[cfg(windows)]
                         {
-                            uffs_core::compact::load_live_drive(letter, false)
+                            uffs_core::compact::MftSource::Live(letter)
                         }
                         #[cfg(not(windows))]
                         {
-                            Err(anyhow::anyhow!("Cannot refresh live drive on non-Windows"))
+                            return Err(anyhow::anyhow!(
+                                "Cannot refresh live drive on non-Windows"
+                            ));
                         }
                     } else {
-                        uffs_core::compact::load_mft_file(mft_path, Some(letter), false)
-                    }
+                        uffs_core::compact::MftSource::File(mft_path.clone(), Some(letter))
+                    };
+                    uffs_core::compact::load_drive(&mft_source, false)
                 }
             })
             .await;

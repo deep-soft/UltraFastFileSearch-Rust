@@ -215,6 +215,7 @@ impl MftReader {
         clippy::too_many_lines,
         reason = "parsing logic with forensic/sequential/parallel branches is inherently complex"
     )]
+    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
     pub fn load_raw_to_index_with_options<P: AsRef<Path>>(
         path: P,
         options: &crate::raw::LoadRawOptions,
@@ -229,6 +230,7 @@ impl MftReader {
             parse_record_full,
         };
 
+        let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
         let path_ref = path.as_ref();
 
         // Check for IOCP capture format first
@@ -240,9 +242,17 @@ impl MftReader {
             return Self::load_iocp_capture_to_index(path_ref, options);
         }
 
+        let t_read = Instant::now();
         let mut raw = crate::raw::load_raw_mft(path_ref, options)?;
+        let read_ms = t_read.elapsed().as_millis();
         let capacity = usize::try_from(raw.header.record_count).unwrap_or(0);
         let total_records_in_file = capacity;
+
+        if profile {
+            #[expect(clippy::cast_precision_loss, reason = "display-only MB value")]
+            let mft_mb = raw.header.original_size as f64 / (1024.0 * 1024.0);
+            eprintln!("[CACHE_PROFILE] mft_read:      {read_ms:>6} ms  ({mft_mb:.1} MB)");
+        }
         let parse_options = if options.forensic {
             ParseOptions::FORENSIC
         } else {
@@ -283,10 +293,20 @@ impl MftReader {
                 "Offline parse pipeline summary"
             );
 
-            Ok(MftIndex::from_parsed_records(
-                raw.header.volume_letter,
-                parsed_records,
-            ))
+            let record_count = parsed_records.len();
+            let t_build = Instant::now();
+            let index = MftIndex::from_parsed_records(raw.header.volume_letter, parsed_records);
+            if profile {
+                let build_ms = t_build.elapsed().as_millis();
+                eprintln!(
+                    "[CACHE_PROFILE] mft_parse:     {:>6} ms  ({record_count} records, forensic)",
+                    0
+                );
+                eprintln!(
+                    "[CACHE_PROFILE] mft_build:     {build_ms:>6} ms  (tree_metrics+ext_index+stats)"
+                );
+            }
+            Ok(index)
         } else {
             let record_size = raw.header.record_size as usize;
             let single_thread = std::env::var("UFFS_SINGLE_THREAD").is_ok();
@@ -329,10 +349,20 @@ impl MftReader {
                     "Offline parse complete (sequential)"
                 );
 
-                Ok(MftIndex::from_parsed_records(
-                    raw.header.volume_letter,
-                    parsed_records,
-                ))
+                let parse_ms = parse_start.elapsed().as_millis();
+                let record_count = parsed_records.len();
+                let t_build = Instant::now();
+                let index = MftIndex::from_parsed_records(raw.header.volume_letter, parsed_records);
+                if profile {
+                    let build_ms = t_build.elapsed().as_millis();
+                    eprintln!(
+                        "[CACHE_PROFILE] mft_parse:     {parse_ms:>6} ms  ({record_count} records, sequential)"
+                    );
+                    eprintln!(
+                        "[CACHE_PROFILE] mft_build:     {build_ms:>6} ms  (tree_metrics+ext_index+stats)"
+                    );
+                }
+                Ok(index)
             } else {
                 use rayon::prelude::*;
 
@@ -415,10 +445,21 @@ impl MftReader {
                     "Offline parse complete (parallel)"
                 );
 
-                Ok(MftIndex::from_parsed_records(
-                    raw.header.volume_letter,
-                    parsed_records,
-                ))
+                let parse_ms = parse_start.elapsed().as_millis();
+                let record_count = parsed_records.len();
+                let t_build = Instant::now();
+                let index = MftIndex::from_parsed_records(raw.header.volume_letter, parsed_records);
+                if profile {
+                    let build_ms = t_build.elapsed().as_millis();
+                    eprintln!(
+                        "[CACHE_PROFILE] mft_parse:     {parse_ms:>6} ms  ({record_count} records, parallel/{}T)",
+                        rayon::current_num_threads(),
+                    );
+                    eprintln!(
+                        "[CACHE_PROFILE] mft_build:     {build_ms:>6} ms  (tree_metrics+ext_index+stats)"
+                    );
+                }
+                Ok(index)
             }
         }
     }
@@ -526,9 +567,10 @@ impl MftReader {
             "✅ IOCP capture parallel replay complete"
         );
 
+        // from_parsed_records already calls compute_tree_metrics +
+        // build_extension_index
         let mut index = MftIndex::from_parsed_records(volume, parsed_records);
         index.reserved_allocated_bytes = header.reserved_allocated_bytes;
-        index.compute_tree_metrics();
 
         Ok(index)
     }

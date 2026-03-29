@@ -134,14 +134,14 @@ pub fn load_live_drive_impl(
     drive_letter: char,
     no_cache: bool,
 ) -> anyhow::Result<(compact::DriveCompactIndex, compact::LoadTiming)> {
-    compact::load_live_drive(drive_letter, no_cache)
+    compact::load_drive(&compact::MftSource::Live(drive_letter), no_cache)
 }
 
 /// Load a live NTFS drive — not available on non-Windows.
 #[cfg(not(windows))]
 #[expect(
     clippy::single_call_fn,
-    reason = "platform-specific stub; Windows version in compact::load_live_drive"
+    reason = "platform-specific stub; Windows version uses MftSource::Live"
 )]
 pub fn load_live_drive_impl(
     drive_letter: char,

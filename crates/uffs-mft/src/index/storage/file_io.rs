@@ -43,8 +43,11 @@ impl MftIndex {
         next_usn: i64,
     ) -> std::io::Result<()> {
         let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
+        let t_save_total = std::time::Instant::now();
 
+        let t_serialize = std::time::Instant::now();
         let serialized = self.serialize(volume_serial, usn_journal_id, next_usn);
+        let serialize_ms = t_serialize.elapsed().as_millis();
         let uncompressed_len = serialized.len();
 
         // Compress with zstd before encryption
@@ -54,25 +57,45 @@ impl MftIndex {
         let compress_ms = t_compress.elapsed().as_millis();
         let compressed_len = compressed.len();
 
+        let key = uffs_security::keystore::get_cache_key().map_err(|e| {
+            std::io::Error::other(format!("cannot save cache without encryption key: {e}"))
+        })?;
+
+        let t_encrypt = std::time::Instant::now();
+        let data = uffs_security::crypto::encrypt_cache(&compressed, &key)?;
+        let encrypt_ms = t_encrypt.elapsed().as_millis();
+
+        let t_write = std::time::Instant::now();
+        let result = crate::cache::atomic_write(path, &data);
+        let write_ms = t_write.elapsed().as_millis();
+
         if profile {
             #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
             let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
             #[expect(clippy::cast_precision_loss, reason = "display-only ratio")]
             let ratio = uncompressed_len as f64 / compressed_len as f64;
+            let save_total_ms = t_save_total.elapsed().as_millis();
             eprintln!(
-                "[CACHE_PROFILE] compress:      {compress_ms:>6} ms  ({:.1} MB → {:.1} MB, {ratio:.1}x)",
+                "[CACHE_PROFILE] mft_serialize: {serialize_ms:>6} ms  ({:.1} MB)",
+                mb(uncompressed_len),
+            );
+            eprintln!(
+                "[CACHE_PROFILE] mft_compress:  {compress_ms:>6} ms  ({:.1} MB → {:.1} MB, {ratio:.1}x)",
                 mb(uncompressed_len),
                 mb(compressed_len),
             );
+            eprintln!(
+                "[CACHE_PROFILE] mft_encrypt:   {encrypt_ms:>6} ms  ({:.1} MB)",
+                mb(compressed_len),
+            );
+            eprintln!(
+                "[CACHE_PROFILE] mft_write:     {write_ms:>6} ms  ({:.1} MB)",
+                mb(data.len()),
+            );
+            eprintln!("[CACHE_PROFILE] mft_save_total:{save_total_ms:>6} ms");
         }
 
-        let key = uffs_security::keystore::get_cache_key().map_err(|e| {
-            std::io::Error::other(format!("cannot save cache without encryption key: {e}"))
-        })?;
-
-        let data = uffs_security::crypto::encrypt_cache(&compressed, &key)?;
-
-        crate::cache::atomic_write(path, &data)
+        result
     }
 
     /// Loads an index from a file.

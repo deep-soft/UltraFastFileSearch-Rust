@@ -251,10 +251,14 @@ pub fn save_compact_cache(index: &DriveCompactIndex) -> std::io::Result<()> {
     let compressed_len = compressed.len();
     let key = uffs_security::keystore::get_cache_key()
         .map_err(|err| std::io::Error::other(format!("key unavailable: {err}")))?;
+    let t_encrypt = Instant::now();
     let encrypted = uffs_security::crypto::encrypt_cache(&compressed, &key)?;
+    let encrypt_ms = t_encrypt.elapsed().as_millis();
     let path = compact_cache_path(index.letter);
     uffs_mft::cache::create_secure_dir(&path)?;
+    let t_write = Instant::now();
     uffs_mft::cache::atomic_write(&path, &encrypted)?;
+    let write_ms = t_write.elapsed().as_millis();
     if profile {
         let uncomp_mb = uncompressed_len / (1024 * 1024);
         let comp_mb = compressed_len / (1024 * 1024);
@@ -262,6 +266,8 @@ pub fn save_compact_cache(index: &DriveCompactIndex) -> std::io::Result<()> {
         eprintln!(
             "[CACHE_PROFILE] compact_zstd:  {compress_ms:>6} ms  (~{uncomp_mb} MB → ~{comp_mb} MB)"
         );
+        eprintln!("[CACHE_PROFILE] compact_enc:   {encrypt_ms:>6} ms  (~{comp_mb} MB)");
+        eprintln!("[CACHE_PROFILE] compact_write: {write_ms:>6} ms  (~{comp_mb} MB)");
         eprintln!(
             "[CACHE_PROFILE] compact_save:  {:>6} ms  total",
             t_total.elapsed().as_millis()

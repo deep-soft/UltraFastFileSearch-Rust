@@ -314,8 +314,9 @@ fn main() -> Result<()> {
                         let thread_drive = *drive_opt;
                         let no_cache_flag = cli_no_cache;
                         scope.spawn(move || {
-                            let result =
-                                compact::load_mft_file(&thread_path, thread_drive, no_cache_flag);
+                            let source =
+                                compact::MftSource::File(thread_path.clone(), thread_drive);
+                            let result = compact::load_drive(&source, no_cache_flag);
                             let file_name = thread_path
                                 .file_name()
                                 .and_then(|name| name.to_str())

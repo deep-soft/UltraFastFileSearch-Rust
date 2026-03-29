@@ -666,10 +666,12 @@ impl MftIndex {
             }
             if ext_rebuild_ms > 0 {
                 eprintln!(
-                    "[CACHE_PROFILE]   ext_index:     {ext_rebuild_ms:>6} ms  (CSR rebuild, v9)"
+                    "[CACHE_PROFILE]   ext_index:     {ext_rebuild_ms:>6} ms  (CSR rebuild, <v10)"
                 );
             } else {
-                eprintln!("[CACHE_PROFILE]   ext_index:     {ext_idx_ms:>6} ms  (CSR load, v10)");
+                eprintln!(
+                    "[CACHE_PROFILE]   ext_index:     {ext_idx_ms:>6} ms  (CSR load, v{version})"
+                );
             }
             eprintln!("[CACHE_PROFILE]   deser_total:   {total_deser_ms:>6} ms");
         }

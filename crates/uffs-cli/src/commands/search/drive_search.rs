@@ -66,7 +66,8 @@ pub(super) async fn search_single_drive(
 /// The MftIndex is never held after the compact index is built.
 #[cfg(windows)]
 fn search_native_compact(drive: char, filters: &OwnedQueryFilters) -> anyhow::Result<DriveResult> {
-    let (compact, _timing) = uffs_core::compact::load_live_drive(drive, false)?;
+    let source = uffs_core::compact::MftSource::Live(drive);
+    let (compact, _timing) = uffs_core::compact::load_drive(&source, false)?;
     let records_read = compact.records.len();
 
     let (rows, _search_filters, _filter_mode) = filters.search_compact(compact)?;
