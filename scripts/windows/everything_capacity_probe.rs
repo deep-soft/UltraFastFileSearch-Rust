@@ -245,7 +245,27 @@ fn run_es_level(es: &Path, drive: char, level_idx: usize, timeout: Duration) -> 
             cmd.arg(arg);
         }
     }
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    // L0 (count-only) returns a single number — safe to pipe.
+    // L1+ can output millions of lines.  Piping would deadlock because our
+    // poll loop doesn't drain stdout while waiting.  Redirect to a temp file
+    // so es.exe can write freely; we read the file after exit.
+    let stdout_file = if level_idx == 0 {
+        None
+    } else {
+        let path = std::env::temp_dir().join(format!("es_probe_{}.tmp", level_idx));
+        match fs::File::create(&path) {
+            Ok(f) => Some((path, f)),
+            Err(e) => return ProbeResult::SpawnError(format!("temp file: {e}")),
+        }
+    };
+
+    if let Some((_, ref f)) = stdout_file {
+        cmd.stdout(f.try_clone().unwrap_or_else(|_| f.try_clone().expect("clone")));
+    } else {
+        cmd.stdout(Stdio::piped());
+    }
+    cmd.stderr(Stdio::piped());
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -257,30 +277,32 @@ fn run_es_level(es: &Path, drive: char, level_idx: usize, timeout: Duration) -> 
         match child.try_wait() {
             Ok(Some(status)) => {
                 let elapsed = t0.elapsed();
-                let stdout = child.stdout.take().map(|mut s| {
-                    let mut buf = Vec::new();
-                    std::io::Read::read_to_end(&mut s, &mut buf).ok();
-                    buf
-                }).unwrap_or_default();
-                let stderr = child.stderr.take().map(|mut s| {
-                    let mut buf = String::new();
-                    std::io::Read::read_to_string(&mut s, &mut buf).ok();
-                    buf
-                }).unwrap_or_default();
 
                 if status.success() {
                     let count = if level_idx == 0 {
-                        String::from_utf8_lossy(&stdout)
-                            .trim()
-                            .parse::<u64>()
-                            .unwrap_or(0)
+                        // Read the small piped output
+                        let stdout = child.stdout.take().map(|mut s| {
+                            let mut buf = String::new();
+                            std::io::Read::read_to_string(&mut s, &mut buf).ok();
+                            buf
+                        }).unwrap_or_default();
+                        stdout.trim().parse::<u64>().unwrap_or(0)
                     } else {
-                        stdout.iter().filter(|&&b| b == b'\n').count() as u64
+                        // Count newlines in the temp file
+                        let path = &stdout_file.as_ref().unwrap().0;
+                        count_lines_in_file(path)
                     };
+                    cleanup_temp(&stdout_file);
                     return ProbeResult::Ok { lines: count, elapsed };
                 } else {
                     let code = status.code().unwrap_or(-1);
+                    let stderr = child.stderr.take().map(|mut s| {
+                        let mut buf = String::new();
+                        std::io::Read::read_to_string(&mut s, &mut buf).ok();
+                        buf
+                    }).unwrap_or_default();
                     let detail: String = stderr.chars().take(500).collect();
+                    cleanup_temp(&stdout_file);
                     return ProbeResult::Failed {
                         elapsed,
                         detail: format!("exit code {code}; {detail}"),
@@ -293,15 +315,36 @@ fn run_es_level(es: &Path, drive: char, level_idx: usize, timeout: Duration) -> 
                     child.kill().ok();
                     child.wait().ok();
                     kill_es_and_everything();
+                    cleanup_temp(&stdout_file);
                     return ProbeResult::Timeout { elapsed };
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }
             Err(e) => {
                 child.kill().ok();
+                cleanup_temp(&stdout_file);
                 return ProbeResult::SpawnError(format!("wait error: {e}"));
             }
         }
+    }
+}
+
+/// Count newlines in a file without loading it all into memory.
+fn count_lines_in_file(path: &Path) -> u64 {
+    use std::io::{BufRead, BufReader};
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    BufReader::with_capacity(256 * 1024, file)
+        .lines()
+        .count() as u64
+}
+
+/// Remove the temp file if one was created.
+fn cleanup_temp(tmp: &Option<(PathBuf, fs::File)>) {
+    if let Some((ref path, _)) = tmp {
+        fs::remove_file(path).ok();
     }
 }
 
