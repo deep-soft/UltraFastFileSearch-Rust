@@ -255,7 +255,10 @@ pub fn save_compact_cache(index: &DriveCompactIndex) -> std::io::Result<()> {
     let encrypted = uffs_security::crypto::encrypt_cache(&compressed, &key)?;
     let encrypt_ms = t_encrypt.elapsed().as_millis();
     let path = compact_cache_path(index.letter);
-    uffs_mft::cache::create_secure_dir(&path)?;
+    // Ensure the cache DIRECTORY exists (not the file path itself).
+    if let Some(dir) = path.parent() {
+        uffs_mft::cache::create_secure_dir(dir)?;
+    }
     let t_write = Instant::now();
     uffs_mft::cache::atomic_write(&path, &encrypted)?;
     let write_ms = t_write.elapsed().as_millis();

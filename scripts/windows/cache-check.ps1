@@ -96,24 +96,29 @@ Write-Host ""
 
 $runTimings = @()
 
-# Helper: run uffs and capture stdout line count + stderr profile lines via Start-Process
+# Helper: run uffs and capture profile lines + row count from stderr.
+# Stdout is discarded (sent to NUL) — counting 7M lines in PowerShell
+# added 2-3 MINUTES of overhead per run.  The row count is already in
+# the CACHE_PROFILE output: "row_output: 170 ms (7065511 rows)".
 function Invoke-UffsProfiled {
     param([string]$ArgString)
-    $stdoutFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $proc = Start-Process -FilePath $UFFS -ArgumentList $ArgString `
-        -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile `
+        -RedirectStandardOutput NUL -RedirectStandardError $stderrFile `
         -NoNewWindow -PassThru -Wait
     $sw.Stop()
     $ms = [math]::Round($sw.Elapsed.TotalMilliseconds)
-    $lineCount = (Get-Content $stdoutFile -ErrorAction SilentlyContinue | Measure-Object -Line).Lines
     $profileLines = @()
+    $lineCount = 0
     if (Test-Path $stderrFile) {
-        $profileLines = @(Get-Content $stderrFile -ErrorAction SilentlyContinue |
-            Where-Object { $_ -match '^\[CACHE_PROFILE\]' })
+        $stderrContent = Get-Content $stderrFile -ErrorAction SilentlyContinue
+        $profileLines = @($stderrContent | Where-Object { $_ -match '^\[CACHE_PROFILE\]' })
+        # Extract row count from profile: "row_output: ... (12345 rows)"
+        $rowLine = $stderrContent | Where-Object { $_ -match 'row_output:.*\((\d+) rows?\)' } | Select-Object -First 1
+        if ($rowLine -match '\((\d+) rows?\)') { $lineCount = [int64]$Matches[1] }
     }
-    Remove-Item $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+    Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
     [PSCustomObject]@{ Ms = $ms; Lines = $lineCount; Profile = $profileLines }
 }
 
@@ -124,7 +129,8 @@ function Invoke-UffsProfiled {
 
     $result = Invoke-UffsProfiled "`"*`" --drive $Drive"
 
-    Write-Host "     Time: $($result.Ms) ms ($($result.Lines) lines)" -ForegroundColor $(if ($result.Ms -lt 2000) { "Green" } else { "White" })
+    $linesLabel = if ($result.Lines -gt 0) { "$($result.Lines) rows" } else { "rows N/A" }
+    Write-Host "     Time: $($result.Ms) ms ($linesLabel)" -ForegroundColor $(if ($result.Ms -lt 2000) { "Green" } else { "White" })
 
     # Display profile lines from stderr
     if ($result.Profile.Count -gt 0) {
@@ -156,7 +162,8 @@ Show-CacheStatus
 Write-Host "[STEP 5] Running with --no-cache (should bypass cache):" -ForegroundColor Yellow
 $noCacheResult = Invoke-UffsProfiled "`"*`" --drive $Drive --no-cache"
 $ms = $noCacheResult.Ms
-Write-Host "     Time: ${ms} ms ($($noCacheResult.Lines) lines)" -ForegroundColor White
+$ncLabel = if ($noCacheResult.Lines -gt 0) { "$($noCacheResult.Lines) rows" } else { "rows N/A" }
+Write-Host "     Time: ${ms} ms ($ncLabel)" -ForegroundColor White
 if ($noCacheResult.Profile.Count -gt 0) {
     foreach ($line in $noCacheResult.Profile) {
         $display = $line -replace '^\[CACHE_PROFILE\]\s*', ''
