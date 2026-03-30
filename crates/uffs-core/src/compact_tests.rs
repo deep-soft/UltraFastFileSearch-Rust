@@ -1,5 +1,6 @@
 use uffs_mft::index::{
     IndexNameRef, IndexStreamInfo, LinkInfo, MftIndex, NO_ENTRY, ROOT_FRS, SizeInfo,
+    StandardInfo,
 };
 
 use super::*;
@@ -302,12 +303,13 @@ fn compact_record_count_includes_hardlinks() {
         drive.records.len() >= idx.records.len(),
         "compact must have at least as many records as MftIndex (base + hardlinks)"
     );
-    // The fixture has exactly 1 hardlink alternate name (hardlink_alt.txt),
-    // so compact should have exactly 1 extra record.
+    // The fixture has exactly 1 hardlink alternate name (hardlink_alt.txt)
+    // and 1 ADS stream (ads_file.dat:Zone.Identifier), so compact should
+    // have exactly 2 extra records beyond MftIndex base records.
     assert_eq!(
         drive.records.len(),
-        idx.records.len() + 1,
-        "fixture: exactly 1 hardlink expansion expected"
+        idx.records.len() + 2,
+        "fixture: 1 hardlink expansion + 1 ADS expansion expected"
     );
 }
 
@@ -355,5 +357,222 @@ fn compact_parity_root_present_sysfiles_absent_hardlinks_expanded() {
     assert!(
         all_names.contains(&"hardlink_alt.txt"),
         "alternate hardlink name must be present (expanded at build time)"
+    );
+}
+
+
+// ── ADS (Alternate Data Stream) expansion ──────────────────────────
+
+/// Build a fixture with a file that has an ADS (Zone.Identifier).
+fn fixture_index_with_ads() -> MftIndex {
+    let mut idx = MftIndex::new('M');
+
+    // Root (FRS 5)
+    let root_name = push_name(&mut idx, ".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = root_name;
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // file.pdf (FRS 100) — has a Zone.Identifier ADS
+    let file_name = push_name(&mut idx, "file.pdf");
+    let file = idx.get_or_create(100);
+    file.first_name.name = file_name;
+    file.first_name.parent_frs = ROOT_FRS;
+    file.first_stream.size = SizeInfo {
+        length: 50_000,
+        allocated: 51_200,
+    };
+    file.stdinfo.created = 1_000_000;
+    file.stdinfo.modified = 2_000_000;
+    file.stdinfo.accessed = 3_000_000;
+    file.stdinfo.flags = 32; // Archive
+    file.set_has_default_data();
+
+    // Add ADS: Zone.Identifier
+    let ads_name_offset = idx.add_name("Zone.Identifier");
+    let ads_name_ref = IndexNameRef::new(
+        ads_name_offset,
+        "Zone.Identifier".len() as u16,
+        true,
+        0,
+    );
+    let ads_si = idx.streams.len() as u32;
+    idx.streams.push(IndexStreamInfo {
+        size: SizeInfo {
+            length: 228,
+            allocated: 0,
+        },
+        next_entry: NO_ENTRY,
+        name: ads_name_ref,
+        flags: 8 << 2, // type_name_id=8 for $DATA
+        _pad0: [0; 3],
+    });
+
+    // Chain ADS to the record's stream list
+    let rec_idx = idx.frs_to_idx_opt(100).unwrap();
+    let rec = &mut idx.records[rec_idx];
+    rec.first_stream.next_entry = ads_si;
+    rec.stream_count = 2;
+    rec.total_stream_count = 2;
+
+    idx
+}
+
+#[test]
+fn ads_expanded_into_compact_records() {
+    let idx = fixture_index_with_ads();
+    let (compact, _, _) = build_compact_index('M', &idx);
+
+    // Collect all non-empty names.
+    let all_names: Vec<&str> = compact
+        .records
+        .iter()
+        .map(|r| r.name(&compact.names))
+        .filter(|n| !n.is_empty() && *n != ".")
+        .collect();
+
+    assert!(
+        all_names.contains(&"file.pdf"),
+        "primary file name must be present, got: {all_names:?}"
+    );
+    assert!(
+        all_names.contains(&"file.pdf:Zone.Identifier"),
+        "ADS entry must be expanded into a separate CompactRecord, got: {all_names:?}"
+    );
+}
+
+#[test]
+fn ads_compact_record_has_stream_size() {
+    let idx = fixture_index_with_ads();
+    let (compact, _, _) = build_compact_index('M', &idx);
+
+    let ads_rec = compact
+        .records
+        .iter()
+        .find(|r| r.name(&compact.names) == "file.pdf:Zone.Identifier")
+        .expect("ADS CompactRecord must exist");
+
+    assert_eq!(ads_rec.size, 228, "ADS size must be the stream's size");
+    assert_eq!(
+        ads_rec.allocated, 0,
+        "ADS allocated must be the stream's allocated"
+    );
+    assert_eq!(
+        ads_rec.descendants, 0,
+        "ADS must have no tree descendants"
+    );
+    assert_eq!(ads_rec.treesize, 0, "ADS must have no treesize");
+}
+
+#[test]
+fn ads_compact_record_inherits_timestamps() {
+    let idx = fixture_index_with_ads();
+    let (compact, _, _) = build_compact_index('M', &idx);
+
+    let base_rec = compact
+        .records
+        .iter()
+        .find(|r| r.name(&compact.names) == "file.pdf")
+        .expect("base file must exist");
+    let ads_rec = compact
+        .records
+        .iter()
+        .find(|r| r.name(&compact.names) == "file.pdf:Zone.Identifier")
+        .expect("ADS must exist");
+
+    assert_eq!(
+        ads_rec.created, base_rec.created,
+        "ADS inherits created timestamp"
+    );
+    assert_eq!(
+        ads_rec.modified, base_rec.modified,
+        "ADS inherits modified timestamp"
+    );
+    assert_eq!(
+        ads_rec.accessed, base_rec.accessed,
+        "ADS inherits accessed timestamp"
+    );
+    assert_eq!(
+        ads_rec.flags, base_rec.flags,
+        "ADS inherits flags from non-directory base record"
+    );
+}
+
+#[test]
+fn ads_on_directory_strips_directory_flag() {
+    let mut idx = MftIndex::new('M');
+
+    // Create root (FRS 5)
+    let root_name = push_name(&mut idx, ".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = root_name;
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // Create a directory (FRS 200) with DIRECTORY | ARCHIVE flags
+    let dir_name = push_name(&mut idx, "Airlink 430W");
+    let dir_rec = idx.get_or_create(200);
+    dir_rec.first_name.name = dir_name;
+    dir_rec.first_name.parent_frs = ROOT_FRS;
+    dir_rec.stdinfo.set_directory(true);
+    dir_rec.stdinfo.flags |= StandardInfo::IS_ARCHIVE;
+
+    // Add ADS: Win32App_1
+    let ads_name_offset = idx.add_name("Win32App_1");
+    let ads_name_ref = IndexNameRef::new(ads_name_offset, "Win32App_1".len() as u16, true, 0);
+    let ads_si = idx.streams.len() as u32;
+    idx.streams.push(IndexStreamInfo {
+        size: SizeInfo {
+            length: 0,
+            allocated: 0,
+        },
+        next_entry: NO_ENTRY,
+        name: ads_name_ref,
+        flags: 8 << 2, // type_name_id=8 for $DATA
+        _pad0: [0; 3],
+    });
+
+    let rec_idx = idx.frs_to_idx_opt(200).unwrap();
+    let rec = &mut idx.records[rec_idx];
+    rec.first_stream.next_entry = ads_si;
+    rec.stream_count = 2;
+    rec.total_stream_count = 2;
+
+    let (compact, _, _) = build_compact_index('M', &idx);
+
+    // The directory itself should have DIRECTORY flag.
+    let dir_compact = compact
+        .records
+        .iter()
+        .find(|r| r.name(&compact.names) == "Airlink 430W")
+        .expect("directory must exist");
+    assert!(
+        dir_compact.is_directory(),
+        "directory must have DIRECTORY flag"
+    );
+
+    // The ADS CompactRecord preserves raw NTFS flags (ground truth).
+    // DIRECTORY bit remains set because the parent IS a directory.
+    // The display layer (make_display_row) handles ADS-on-directory
+    // separately by checking for ':' in the name.
+    let ads_compact = compact
+        .records
+        .iter()
+        .find(|r| r.name(&compact.names) == "Airlink 430W:Win32App_1")
+        .expect("directory ADS must be expanded");
+    assert!(
+        ads_compact.is_directory(),
+        "ADS on directory preserves DIRECTORY flag (NTFS ground truth)"
+    );
+    assert_ne!(
+        ads_compact.flags & StandardInfo::IS_ARCHIVE,
+        0,
+        "ADS preserves ARCHIVE flag from parent record"
+    );
+    // Verify the combined flags match the parent's flags exactly.
+    assert_eq!(
+        ads_compact.flags, dir_compact.flags,
+        "ADS flags must match parent directory flags (raw NTFS parity)"
     );
 }

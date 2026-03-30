@@ -303,7 +303,7 @@ All paths converge to the same performance.
 | Prerequisite: TTL-only compact cache (skip mtime) | 🔲 Not started | `trust_ttl_only` param in `load_compact_cache`. |
 | Prerequisite: Search phase CACHE_PROFILE timing | 🔲 Not started | trigram/match/paths/output/wall_total. |
 | **⚠️ Known gap: IOCP file detection** | 🔲 Not started | `load_mft_index_from_file()` does NOT detect IOCP format. Must route IOCP files through `load_iocp_to_index()`. |
-| **⚠️ Known gap: name×stream expansion** | 🔲 Not started | Compact index stores only primary name for hardlinks and primary stream size. `--full` mode expansion not yet wired in unified pipeline. |
+| **✅ Resolved: name×stream expansion** | ✅ Done | `build_compact_index()` Phase 2 expands hardlinks, Phase 3 expands ADS streams into separate `CompactRecord` entries with combined `base:stream` names. Verified via parity on drive M (1,908,783 lines match). |
 
 ---
 

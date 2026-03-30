@@ -25,3 +25,6 @@ mod tests_merge;
 
 #[path = "tests_storage.rs"]
 mod tests_storage;
+
+#[path = "tests_ads.rs"]
+mod tests_ads;

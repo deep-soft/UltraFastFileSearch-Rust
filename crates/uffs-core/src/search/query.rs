@@ -385,18 +385,26 @@ pub fn search_compact_drive_tree(
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
 /// Build a `DisplayRow` from a compact record.
+///
+/// ADS entries (name contains `:`) are always rendered as file-like rows
+/// even when the underlying MFT record is a directory.  The raw `flags`
+/// field preserves the NTFS ground truth — only the `is_directory`
+/// display hint is adjusted.
 fn make_display_row(
     drive_letter: char,
     rec: &crate::compact::CompactRecord,
     name: &str,
     path: String,
 ) -> DisplayRow {
+    // ADS entries on directories must not render as directories
+    // (no trailing backslash, name shown, stream size used).
+    let is_ads = name.contains(':');
     DisplayRow {
         drive: drive_letter,
         path,
         name: name.to_owned(),
         size: rec.size,
-        is_directory: rec.is_directory(),
+        is_directory: rec.is_directory() && !is_ads,
         modified: rec.modified,
         created: rec.created,
         accessed: rec.accessed,

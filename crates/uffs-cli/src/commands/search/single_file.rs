@@ -63,8 +63,6 @@ pub(super) struct SingleFileStreamConfig<'a> {
     pub(super) profile: bool,
     /// Debug tree flag.
     pub(super) debug_tree: bool,
-    /// Show Alternate Data Streams in output.
-    pub(super) show_ads: bool,
     /// Chaos seed for testing.
     pub(super) chaos_seed: Option<u64>,
     /// Reserved allocation for size queries.
@@ -137,7 +135,6 @@ pub(super) fn run_single_file_streaming(config: &SingleFileStreamConfig<'_>) -> 
             config.exclude,
             config.sort,
             config.sort_desc,
-            config.show_ads,
         );
         write_streaming_output_with_filter(
             &native_index.index,

@@ -718,72 +718,55 @@ fn run_live_drive_parity(
         println!("  ✅ SORTED MATCH — Content identical (different traversal order)");
         (VerifyResult::SortedMatch, 0usize)
     } else {
-        // ADS-aware streaming comparison (no silent ADS filtering)
-        println!("  Fingerprints differ; running ADS-aware streaming comparison...");
+        // Streaming comparison — no filtering except header/footer
+        println!("  Fingerprints differ; running streaming line comparison...");
         let t_diff = Instant::now();
         let diff = compute_streaming_diff(&cpp_raw, &rust_raw);
         let diff_elapsed = t_diff.elapsed();
 
-        let total_only_baseline = diff.only_in_baseline_data.len() + diff.only_in_baseline_ads.len();
-        let total_only_rust = diff.only_in_rust_data.len() + diff.only_in_rust_ads.len();
         println!();
         println!(
             "  Streaming diff: {:.1}s",
             diff_elapsed.as_secs_f64()
         );
-        println!("     Only in baseline: {} total ({} data, {} ADS)",
-            total_only_baseline, diff.only_in_baseline_data.len(), diff.only_in_baseline_ads.len());
-        println!("     Only in Rust:     {} total ({} data, {} ADS)",
-            total_only_rust, diff.only_in_rust_data.len(), diff.only_in_rust_ads.len());
+        println!("     Only in C++:  {}", diff.only_in_baseline.len());
+        println!("     Only in Rust: {}", diff.only_in_rust.len());
 
-        // Show ADS differences
-        if !diff.only_in_baseline_ads.is_empty() {
-            println!();
-            println!("  ── ADS entries in C++ but not in Rust ({} total) ──",
-                diff.only_in_baseline_ads.len());
-            show_diff_lines(&diff.only_in_baseline_ads);
-        }
-        if !diff.only_in_rust_ads.is_empty() {
-            println!();
-            println!("  ── ⚠️  UNEXPECTED: ADS entries in Rust but not in C++ ({} total) ──",
-                diff.only_in_rust_ads.len());
-            show_diff_lines(&diff.only_in_rust_ads);
-        }
-
-        // Decision based on non-ADS data lines
-        if diff.only_in_baseline_data.is_empty() {
-            let extra = diff.only_in_rust_data.len();
+        if diff.only_in_baseline.is_empty() {
+            let extra = diff.only_in_rust.len();
             println!();
             println!("  ✅ SUPERSET MATCH (Rust ⊇ C++)");
-            println!("     Extra Rust data lines: {extra}");
+            println!("     Extra Rust lines: {extra}");
 
-            if !diff.only_in_rust_data.is_empty() {
-                verify_hardlinks_from_file(&cpp_raw, &diff.only_in_rust_data);
+            if !diff.only_in_rust.is_empty() {
+                verify_hardlinks_from_file(&cpp_raw, &diff.only_in_rust);
             }
             (VerifyResult::SupersetMatch, extra)
         } else {
             println!();
             println!("  ❌ MISMATCH");
             println!(
-                "     C++ has {} data lines not in Rust, Rust has {} data lines not in C++",
-                diff.only_in_baseline_data.len(),
-                diff.only_in_rust_data.len()
+                "     C++ has {} lines not in Rust, Rust has {} lines not in C++",
+                diff.only_in_baseline.len(),
+                diff.only_in_rust.len()
             );
-            if !diff.only_in_baseline_data.is_empty() {
+            if !diff.only_in_baseline.is_empty() {
                 println!();
-                println!("  ── Data lines MISSING from Rust ({} total) ──",
-                    diff.only_in_baseline_data.len());
-                show_diff_lines(&diff.only_in_baseline_data);
+                println!("  ── Lines MISSING from Rust ({} total) ──",
+                    diff.only_in_baseline.len());
+                show_diff_lines(&diff.only_in_baseline);
             }
-            if !diff.only_in_rust_data.is_empty() {
+            if !diff.only_in_rust.is_empty() {
                 println!();
-                println!("  ── Extra data lines in Rust ({} total) ──",
-                    diff.only_in_rust_data.len());
-                show_diff_lines(&diff.only_in_rust_data);
+                println!("  ── Extra lines in Rust ({} total) ──",
+                    diff.only_in_rust.len());
+                show_diff_lines(&diff.only_in_rust);
             }
-            println!();
-            show_paired_diffs(&diff.only_in_baseline_data, &diff.only_in_rust_data);
-            (VerifyResult::Mismatch, diff.only_in_rust_data.len())
+            if !diff.only_in_baseline.is_empty() && !diff.only_in_rust.is_empty() {
+                println!();
+                show_paired_diffs(&diff.only_in_baseline, &diff.only_in_rust);
+            }
+            (VerifyResult::Mismatch, diff.only_in_rust.len())
         }
     };
 
@@ -1144,7 +1127,7 @@ fn verify_hardlinks_from_file(baseline_path: &Path, only_in_rust: &[String]) {
             .lines()
             .filter_map(|line| {
                 let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
-                if is_footer_or_header_line(&line) || is_ads_line(&line) {
+                if is_footer_or_header_line(&line) {
                     return None;
                 }
                 extract_data_fingerprint(&line)
@@ -1478,8 +1461,7 @@ fn stream_everything_records(es_file: &Path) -> HashMap<String, EverythingRecord
 ///   ... more columns follow (flags, booleans, etc.)
 #[allow(dead_code)]
 fn stream_rust_records(rust_file: &Path) -> HashMap<String, RustParityRecord> {
-    let file = fs::File::open(rust_file)
-        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", rust_file.display()));
+    let file = open_file_with_retry(rust_file, 3, std::time::Duration::from_secs(2));
     let reader = BufReader::with_capacity(256 * 1024, file);
     let mut records = HashMap::new();
 
@@ -1872,13 +1854,11 @@ fn verify_single_drive(
         };
     }
 
-    // ─── Detailed comparison (ADS-aware, no silent filtering) ─────────
-    // ADS lines participate in the diff. After diffing, we classify the
-    // differences into ADS vs non-ADS:
-    //   - Non-ADS data missing from Rust → HARD FAILURE
-    //   - ADS only in baseline → EXPECTED (Rust doesn't output ADS)
-    //   - Extra non-ADS in Rust → usually hardlinks (C++ bug drops them)
-    println!("  Fingerprints differ; running ADS-aware streaming comparison...");
+    // ─── Streaming diff (no filtering except header/footer) ────────────
+    // All lines participate equally — ADS, data, everything.
+    // If baseline has lines Rust doesn't → those are flagged.
+    // If Rust has extra lines baseline doesn't → usually hardlinks (OK).
+    println!("  Fingerprints differ; running streaming line comparison...");
 
     let t_diff = Instant::now();
     let diff = compute_streaming_diff(&golden_baseline_file, rust_output);
@@ -1905,52 +1885,28 @@ fn verify_single_drive(
     );
     println!("  └──────────────────────────┴──────────────┴───────────────────┘");
 
-    // ── Diff results breakdown ──
-    let total_only_baseline = diff.only_in_baseline_data.len() + diff.only_in_baseline_ads.len();
-    let total_only_rust = diff.only_in_rust_data.len() + diff.only_in_rust_ads.len();
     println!();
     println!(
         "  Streaming diff completed in {:.1}s:",
         diff_elapsed.as_secs_f64()
     );
-    println!("     Only in baseline: {} total ({} data, {} ADS)",
-        total_only_baseline, diff.only_in_baseline_data.len(), diff.only_in_baseline_ads.len());
-    println!("     Only in Rust:     {} total ({} data, {} ADS)",
-        total_only_rust, diff.only_in_rust_data.len(), diff.only_in_rust_ads.len());
+    println!("     Only in baseline: {}", diff.only_in_baseline.len());
+    println!("     Only in Rust:     {}", diff.only_in_rust.len());
 
-    // ── Show ADS differences (always, when they exist) ──
-    if !diff.only_in_baseline_ads.is_empty() {
+    // ── Decision ──
+    if diff.only_in_baseline.is_empty() {
+        // All baseline lines found in Rust — Rust is a superset
+        let extra = diff.only_in_rust.len();
         println!();
-        println!("  ── ADS entries in baseline but not in Rust ({} total) ──",
-            diff.only_in_baseline_ads.len());
-        println!("     (Expected: Rust does not output Alternate Data Streams)");
-        show_diff_lines(&diff.only_in_baseline_ads);
-    }
-    if !diff.only_in_rust_ads.is_empty() {
-        println!();
-        println!("  ── ⚠️  UNEXPECTED: ADS entries in Rust but not in baseline ({} total) ──",
-            diff.only_in_rust_ads.len());
-        show_diff_lines(&diff.only_in_rust_ads);
-    }
-
-    // ── Decision: based on NON-ADS data lines only ──
-    if diff.only_in_baseline_data.is_empty() {
-        // All baseline data lines found in Rust — parity achieved
-        let extra_data = diff.only_in_rust_data.len();
-        println!();
-        println!("  ✅ RESULT: SUPERSET MATCH (Rust ⊇ C++)");
-        println!("     All C++ data lines found in Rust output.");
-        if extra_data > 0 {
-            println!("     Extra Rust data lines: {extra_data}");
-        }
-        if !diff.only_in_baseline_ads.is_empty() {
-            println!("     ADS entries only in C++: {} (expected — Rust skips ADS)",
-                diff.only_in_baseline_ads.len());
+        println!("  ✅ RESULT: SUPERSET MATCH (Rust ⊇ baseline)");
+        println!("     All baseline lines found in Rust output.");
+        if extra > 0 {
+            println!("     Extra Rust lines: {extra}");
         }
 
-        // Verify extra non-ADS lines are hardlinks
-        if !diff.only_in_rust_data.is_empty() {
-            verify_hardlinks_inline(&golden_baseline_file, &diff.only_in_rust_data);
+        // Verify extra lines are hardlinks
+        if !diff.only_in_rust.is_empty() {
+            verify_hardlinks_inline(&golden_baseline_file, &diff.only_in_rust);
         }
 
         return DriveResult {
@@ -1958,27 +1914,22 @@ fn verify_single_drive(
             result: VerifyResult::SupersetMatch,
             baseline_lines: golden_stats.line_count,
             rust_lines: rust_stats.line_count,
-            extra_rust_lines: extra_data,
+            extra_rust_lines: extra,
             mft_size_bytes,
             parse_duration,
         };
     }
 
-    // Non-ADS data lines missing from Rust — TRUE MISMATCH
+    // Baseline has lines Rust doesn't — MISMATCH
     println!();
-    println!("  ❌ RESULT: MISMATCH (C++ has data lines not in Rust)");
+    println!("  ❌ RESULT: MISMATCH");
     println!(
-        "     Data lines only in C++ (MISSING from Rust): {}",
-        diff.only_in_baseline_data.len()
+        "     Lines only in baseline (MISSING from Rust): {}",
+        diff.only_in_baseline.len()
     );
     println!(
-        "     Data lines only in Rust (extra):             {}",
-        diff.only_in_rust_data.len()
-    );
-    println!(
-        "     ADS only in C++:  {}    ADS only in Rust: {}",
-        diff.only_in_baseline_ads.len(),
-        diff.only_in_rust_ads.len()
+        "     Lines only in Rust (extra):                 {}",
+        diff.only_in_rust.len()
     );
     println!(
         "     Raw:  {} (baseline) vs {} (Rust)",
@@ -1988,27 +1939,27 @@ fn verify_single_drive(
         "     Data: {} (baseline) vs {} (Rust)",
         diff.baseline_data_lines, diff.rust_data_lines
     );
-    println!();
-    println!("     TIP: If timestamps are off by exactly 1 hour, try the other TZ offset:");
-    println!("          --tz -7 (PDT) or --tz -8 (PST)");
 
-    // Show the actual missing data lines (up to MAX_DIFF_DISPLAY)
-    if !diff.only_in_baseline_data.is_empty() {
+    // Show ALL missing lines (up to MAX_DIFF_DISPLAY)
+    if !diff.only_in_baseline.is_empty() {
         println!();
-        println!("  ── Data lines MISSING from Rust ({} total) ──",
-            diff.only_in_baseline_data.len());
-        show_diff_lines(&diff.only_in_baseline_data);
+        println!("  ── Lines MISSING from Rust ({} total) ──",
+            diff.only_in_baseline.len());
+        show_diff_lines(&diff.only_in_baseline);
     }
-    if !diff.only_in_rust_data.is_empty() {
+    if !diff.only_in_rust.is_empty() {
         println!();
-        println!("  ── Extra data lines in Rust ({} total) ──",
-            diff.only_in_rust_data.len());
-        show_diff_lines(&diff.only_in_rust_data);
+        println!("  ── Extra lines in Rust ({} total) ──",
+            diff.only_in_rust.len());
+        show_diff_lines(&diff.only_in_rust);
     }
 
-    // Show paired diffs for data lines
-    println!();
-    show_paired_diffs(&diff.only_in_baseline_data, &diff.only_in_rust_data);
+    // Show paired diffs only when both sides have unmatched lines
+    // (otherwise the single-side listing above already covers it)
+    if !diff.only_in_baseline.is_empty() && !diff.only_in_rust.is_empty() {
+        println!();
+        show_paired_diffs(&diff.only_in_baseline, &diff.only_in_rust);
+    }
     println!();
 
     DriveResult {
@@ -2016,7 +1967,7 @@ fn verify_single_drive(
         result: VerifyResult::Mismatch,
         baseline_lines: golden_stats.line_count,
         rust_lines: rust_stats.line_count,
-        extra_rust_lines: diff.only_in_rust_data.len(),
+        extra_rust_lines: diff.only_in_rust.len(),
         mft_size_bytes,
         parse_duration,
     }
@@ -2497,8 +2448,37 @@ fn detect_tz_from_trial_run(path: &Path) -> Option<i32> {
     None
 }
 
-/// Fallback: scan baseline CSV for most recent datetime.
+/// Fallback: determine timezone from when the baseline file was **created/modified**.
+///
+/// The C++ tool applies the system's *current* timezone when formatting timestamps,
+/// so the correct offset is based on the **capture date** (file modification time),
+/// NOT the dates inside the CSV content (which reflect when the files on disk were
+/// created — potentially months earlier in a different DST season).
 fn detect_tz_from_baseline_fallback(baseline_path: &Path) -> i32 {
+    // Primary strategy: use the baseline file's own modification time
+    if let Ok(meta) = std::fs::metadata(baseline_path) {
+        if let Ok(modified) = meta.modified() {
+            // Convert SystemTime to a (year, month, day) in UTC, then apply pacific offset
+            let duration = modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let secs = duration.as_secs() as i64;
+
+            // Simple civil-date calculation from unix timestamp (UTC)
+            let days = (secs / 86400) as i32;
+            let (year, month, day) = civil_from_days(days);
+
+            let offset = pacific_tz_offset(year, month as u32, day as u32);
+            let tz_name = if offset == -7 { "PDT" } else { "PST" };
+            println!(
+                "Auto-detected from baseline file date {}-{:02}-{:02}: {} ({}) [file mtime]",
+                year, month, day, offset, tz_name
+            );
+            return offset;
+        }
+    }
+
+    // Last resort: scan CSV content dates (legacy behavior)
     let file = match std::fs::File::open(baseline_path) {
         Ok(f) => f,
         Err(_) => return -7,
@@ -2526,7 +2506,7 @@ fn detect_tz_from_baseline_fallback(baseline_path: &Path) -> i32 {
         let offset = pacific_tz_offset(year, month, day);
         let tz_name = if offset == -7 { "PDT" } else { "PST" };
         println!(
-            "Auto-detected from baseline date {}-{:02}-{:02}: {} ({}) [fallback]",
+            "Auto-detected from baseline content date {}-{:02}-{:02}: {} ({}) [content fallback]",
             year, month, day, offset, tz_name
         );
         return offset;
@@ -2534,6 +2514,22 @@ fn detect_tz_from_baseline_fallback(baseline_path: &Path) -> i32 {
 
     println!("Could not auto-detect timezone, defaulting to -7 (PDT)");
     -7
+}
+
+/// Convert a day count (days since 1970-01-01) to (year, month, day).
+/// Algorithm from Howard Hinnant's `chrono`-compatible civil_from_days.
+fn civil_from_days(days: i32) -> (i32, i32, i32) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i32 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m as i32, d as i32)
 }
 
 /// Extract ALL (year, month, day, hour) tuples from a CSV line.
@@ -2982,6 +2978,49 @@ fn find_workspace_root() -> PathBuf {
     cwd
 }
 
+/// Open a file with retry logic for race conditions (e.g. concurrent builds).
+///
+/// Retries up to `max_retries` times with `delay` between attempts.
+/// On final failure, prints a clean error and exits instead of panicking.
+fn open_file_with_retry(path: &Path, max_retries: u32, delay: std::time::Duration) -> fs::File {
+    let mut last_err = String::new();
+    for attempt in 0..=max_retries {
+        match fs::File::open(path) {
+            Ok(f) => {
+                if attempt > 0 {
+                    eprintln!(
+                        "  ℹ️  File appeared after {} retries: {}",
+                        attempt,
+                        path.display()
+                    );
+                }
+                return f;
+            }
+            Err(e) => {
+                last_err = format!("{e}");
+                if attempt < max_retries {
+                    eprintln!(
+                        "  ⏳ File not ready (attempt {}/{}): {} — retrying in {}s...",
+                        attempt + 1,
+                        max_retries,
+                        path.display(),
+                        delay.as_secs()
+                    );
+                    std::thread::sleep(delay);
+                }
+            }
+        }
+    }
+    eprintln!(
+        "\n  ❌ Could not open file after {} retries: {}\n     Error: {}\n",
+        max_retries,
+        path.display(),
+        last_err
+    );
+    std::process::exit(1);
+}
+
+
 /// FNV-1a hash of a byte slice (fast, non-cryptographic, for fingerprinting).
 fn fnv1a_64(data: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
@@ -2994,9 +3033,10 @@ fn fnv1a_64(data: &[u8]) -> u64 {
 
 /// Compute streaming file stats in a single pass (no full file in memory).
 /// Returns ordered SHA256, line count, and order-independent fingerprints.
+///
+/// Uses `open_file_with_retry` for resilience against race conditions.
 fn compute_streaming_stats(path: &Path) -> StreamingFileStats {
-    let file = fs::File::open(path)
-        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
+    let file = open_file_with_retry(path, 3, std::time::Duration::from_secs(2));
     let reader = BufReader::with_capacity(256 * 1024, file);
 
     let mut ordered_hasher = Sha256::new();
@@ -3005,7 +3045,17 @@ fn compute_streaming_stats(path: &Path) -> StreamingFileStats {
     let mut sum_fp: u128 = 0;
 
     for line in reader.lines() {
-        let line = line.unwrap_or_else(|e| panic!("Failed to read line: {e}"));
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!(
+                    "  ❌ Read error at line {} of {}: {e}",
+                    line_count + 1,
+                    path.display()
+                );
+                break;
+            }
+        };
         // Ordered hash: feed each line + newline
         ordered_hasher.update(line.as_bytes());
         ordered_hasher.update(b"\n");
@@ -3041,19 +3091,14 @@ fn is_sorted_match(a: &StreamingFileStats, b: &StreamingFileStats) -> bool {
 const MAX_DIFF_DISPLAY: usize = 100;
 
 struct DiffResult {
-    // ── Post-diff classification (ADS vs non-ADS) ──
-    /// Non-ADS data lines only in baseline (Rust is MISSING these — hard failure).
-    only_in_baseline_data: Vec<String>,
-    /// Non-ADS data lines only in Rust (extra entries, usually hardlinks).
-    only_in_rust_data: Vec<String>,
-    /// ADS lines only in baseline (C++ reports ADS, Rust doesn't — expected).
-    only_in_baseline_ads: Vec<String>,
-    /// ADS lines only in Rust (unexpected — Rust shouldn't produce ADS).
-    only_in_rust_ads: Vec<String>,
-    // ── Line counts ──
-    /// Total data lines in baseline (excluding header/footer, INCLUDING ADS).
+    /// Lines only in baseline (Rust is MISSING these — ALL types, no filtering
+    /// except header/footer). ADS entries are treated as regular data.
+    only_in_baseline: Vec<String>,
+    /// Lines only in Rust (extra entries — usually hardlinks or ADS).
+    only_in_rust: Vec<String>,
+    /// Total data lines in baseline (excluding header/footer).
     baseline_data_lines: usize,
-    /// Total data lines in Rust (excluding header/footer, INCLUDING ADS).
+    /// Total data lines in Rust (excluding header/footer).
     rust_data_lines: usize,
     /// Header/footer lines filtered from baseline.
     baseline_header_footer_filtered: usize,
@@ -3091,8 +3136,7 @@ fn compute_streaming_diff(
     let mut rust_data_lines: usize = 0;
     let mut rust_header_footer_filtered: usize = 0;
     {
-        let file = fs::File::open(rust_path)
-            .unwrap_or_else(|e| panic!("Failed to open {}: {e}", rust_path.display()));
+        let file = open_file_with_retry(rust_path, 3, std::time::Duration::from_secs(2));
         let reader = BufReader::with_capacity(256 * 1024, file);
         for line in reader.lines() {
             let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
@@ -3145,8 +3189,7 @@ fn compute_streaming_diff(
     let only_in_rust: Vec<String> = if only_in_rust_hashes.is_empty() {
         Vec::new()
     } else {
-        let file = fs::File::open(rust_path)
-            .unwrap_or_else(|e| panic!("Failed to open {}: {e}", rust_path.display()));
+        let file = open_file_with_retry(rust_path, 3, std::time::Duration::from_secs(2));
         let reader = BufReader::with_capacity(256 * 1024, file);
         reader
             .lines()
@@ -3165,17 +3208,9 @@ fn compute_streaming_diff(
             .collect()
     };
 
-    // Phase 4: Classify diff lines into ADS vs non-ADS.
-    let (only_in_baseline_ads, only_in_baseline_data): (Vec<_>, Vec<_>) =
-        only_in_baseline.into_iter().partition(|l| is_ads_line(l));
-    let (only_in_rust_ads, only_in_rust_data): (Vec<_>, Vec<_>) =
-        only_in_rust.into_iter().partition(|l| is_ads_line(l));
-
     DiffResult {
-        only_in_baseline_data,
-        only_in_rust_data,
-        only_in_baseline_ads,
-        only_in_rust_ads,
+        only_in_baseline,
+        only_in_rust,
         baseline_data_lines,
         rust_data_lines,
         baseline_header_footer_filtered,
@@ -3236,33 +3271,13 @@ fn is_footer_or_header_line(line: &str) -> bool {
         || trimmed.starts_with("Path\t")    // TSV header
 }
 
-/// Check if a line represents an Alternate Data Stream entry.
-/// ADS entries have a colon in the filename portion, e.g. "file.txt:Zone.Identifier".
-/// We detect this by looking for `:` after the last `\` in the path column (first quoted field).
-fn is_ads_line(line: &str) -> bool {
-    // Lines are CSV-quoted: "G:\path\file.txt:stream","name:stream",...
-    // Find the first quoted field (full path)
-    if let Some(first_quote_end) = line.find("\",") {
-        let path_field = &line[..first_quote_end];
-        // Strip leading quote if present
-        let path = path_field.strip_prefix('"').unwrap_or(path_field);
-        // Find the filename portion (after last backslash)
-        if let Some(last_sep) = path.rfind('\\') {
-            let filename = &path[last_sep + 1..];
-            // ADS entries have a colon in the filename (e.g. "file.txt:streamname")
-            return filename.contains(':');
-        }
-    }
-    false
-}
-
-/// Filter lines to data-only rows (no ADS, no footer/header).
+/// Filter lines to data rows (no footer/header).
 /// Returns sorted filtered lines for subset comparison.
 #[allow(dead_code)]
 fn filter_data_lines(lines: &[String]) -> Vec<String> {
     let mut filtered: Vec<String> = lines
         .iter()
-        .filter(|line| !is_footer_or_header_line(line) && !is_ads_line(line))
+        .filter(|line| !is_footer_or_header_line(line))
         .cloned()
         .collect();
     filtered.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));

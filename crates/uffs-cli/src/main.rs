@@ -302,7 +302,6 @@ async fn run() -> Result<()> {
                     &cli.pipeline,
                     cli.tz_offset,
                     cli.chaos_seed,
-                    true, // ADS always shown — matches C++ behavior
                     cli.reserved_allocated,
                 )
                 .await?;

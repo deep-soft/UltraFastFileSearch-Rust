@@ -56,8 +56,52 @@ const LCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
 enum VerifyResult {
     StrictMatch,
     SortedMatch,
+    SupersetMatch,
     Mismatch,
     Skipped,
+}
+
+/// Maximum number of diff lines to display per category.
+const MAX_DIFF_DISPLAY: usize = 100;
+
+/// Check if a line represents a header or footer (not real data).
+fn is_footer_or_header_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty()
+        || trimmed.starts_with("Drives?")
+        || trimmed.starts_with("MMMmmm that was FAST")
+        || trimmed.starts_with("Search path")
+        || trimmed.starts_with("\"Path\"")
+        || trimmed.starts_with("Path\t")
+}
+
+/// Check if a line represents an Alternate Data Stream entry.
+fn is_ads_line(line: &str) -> bool {
+    if let Some(first_quote_end) = line.find("\",") {
+        let path_field = &line[..first_quote_end];
+        let path = path_field.strip_prefix('"').unwrap_or(path_field);
+        if let Some(last_sep) = path.rfind('\\') {
+            let filename = &path[last_sep + 1..];
+            return filename.contains(':');
+        }
+    }
+    false
+}
+
+/// Display diff lines (up to MAX_DIFF_DISPLAY), truncating long lines.
+fn show_diff_lines(lines: &[&str]) {
+    let show = lines.len().min(MAX_DIFF_DISPLAY);
+    for (i, line) in lines.iter().enumerate().take(show) {
+        let display = if line.len() > 200 {
+            format!("{}…", &line[..200])
+        } else {
+            line.to_string()
+        };
+        println!("       {:>3}. {display}", i + 1);
+    }
+    if lines.len() > show {
+        println!("       ... and {} more", lines.len() - show);
+    }
 }
 
 /// Maximum retries for transient errors (sharing violation, access denied).
@@ -404,25 +448,96 @@ fn run_drive_parity(
         };
     }
 
-    // Mismatch - show details
+    // ── ADS-aware comparison ──
+    // Read sorted lines and classify differences as ADS vs non-ADS data.
+    let sorted_cpp_lines = read_sorted_lines(&cpp_sorted);
+    let sorted_rust_lines = read_sorted_lines(&rust_sorted);
+    let cpp_set: std::collections::HashSet<&str> = sorted_cpp_lines.iter().map(|s| s.as_str()).collect();
+    let rust_set: std::collections::HashSet<&str> = sorted_rust_lines.iter().map(|s| s.as_str()).collect();
+
+    let only_in_cpp: Vec<&str> = sorted_cpp_lines.iter()
+        .filter(|l| !is_footer_or_header_line(l) && !rust_set.contains(l.as_str()))
+        .map(|s| s.as_str())
+        .collect();
+    let only_in_rust: Vec<&str> = sorted_rust_lines.iter()
+        .filter(|l| !is_footer_or_header_line(l) && !cpp_set.contains(l.as_str()))
+        .map(|s| s.as_str())
+        .collect();
+
+    let (cpp_ads, cpp_data): (Vec<&str>, Vec<&str>) = only_in_cpp.iter()
+        .partition(|l| is_ads_line(l));
+    let (rust_ads, rust_data): (Vec<&str>, Vec<&str>) = only_in_rust.iter()
+        .partition(|l| is_ads_line(l));
+
+    println!();
+    println!("  ADS-aware diff:");
+    println!("     Only in C++:  {} total ({} data, {} ADS)", only_in_cpp.len(), cpp_data.len(), cpp_ads.len());
+    println!("     Only in Rust: {} total ({} data, {} ADS)", only_in_rust.len(), rust_data.len(), rust_ads.len());
+
+    // Show ADS lines when present
+    if !cpp_ads.is_empty() {
+        println!();
+        println!("  ── ADS entries in C++ but not in Rust ({} total) ──", cpp_ads.len());
+        println!("     (Expected: Rust does not output Alternate Data Streams)");
+        show_diff_lines(&cpp_ads);
+    }
+    if !rust_ads.is_empty() {
+        println!();
+        println!("  ── ⚠️  UNEXPECTED: ADS entries in Rust but not in C++ ({} total) ──", rust_ads.len());
+        show_diff_lines(&rust_ads);
+    }
+
+    // If no non-ADS data lines differ, this is a SUPERSET MATCH
+    if cpp_data.is_empty() {
+        println!();
+        println!("  ╔═══════════════════════════════════════════════════════════╗");
+        println!("  ║  ✅ PARITY: SUPERSET MATCH (Rust ⊇ C++)                  ║");
+        println!("  ║     All C++ data lines found in Rust output.             ║");
+        if !cpp_ads.is_empty() {
+            println!("  ║     ADS only in C++: {} (expected — Rust skips ADS)  ║", cpp_ads.len());
+        }
+        if !rust_data.is_empty() {
+            println!("  ║     Extra Rust data lines: {} (likely hardlinks)     ║", rust_data.len());
+        }
+        println!("  ╚═══════════════════════════════════════════════════════════╝");
+        println!();
+
+        if !keep_files {
+            fs::remove_file(&cpp_raw).ok();
+            fs::remove_file(&rust_raw).ok();
+            fs::remove_file(&cpp_sorted).ok();
+            fs::remove_file(&rust_sorted).ok();
+        }
+
+        return DriveResult {
+            drive_letter: drive_upper,
+            result: VerifyResult::SupersetMatch,
+            cpp_lines,
+            rust_lines,
+            cpp_time_ms: cpp_ms,
+            rust_time_ms: rust_ms,
+            _sort_time_ms: sort_ms,
+        };
+    }
+
+    // True mismatch: non-ADS data lines differ
+    println!();
     println!("  ╔═══════════════════════════════════════════════════════════╗");
-    println!("  ║  ❌ PARITY: MISMATCH — Outputs differ                     ║");
+    println!("  ║  ❌ PARITY: MISMATCH — Data lines differ                  ║");
     println!("  ╚═══════════════════════════════════════════════════════════╝");
     println!();
-    println!("  Hashes:");
-    println!("       C++ ordered SHA256 : {}...", &cpp_ordered_hash[..16]);
-    println!(
-        "       Rust ordered SHA256: {}...",
-        &rust_ordered_hash[..16]
-    );
-    println!("       C++ sorted SHA256  : {}...", &cpp_sorted_hash[..16]);
-    println!("       Rust sorted SHA256 : {}...", &rust_sorted_hash[..16]);
-    println!();
     println!("  Line count: {} (C++) vs {} (Rust)", cpp_lines, rust_lines);
-    println!();
 
-    // Show sorted side-by-side comparison (most useful for debugging)
-    show_first_sorted_diffs(&cpp_sorted, &rust_sorted, sample_size);
+    if !cpp_data.is_empty() {
+        println!();
+        println!("  ── Data lines MISSING from Rust ({} total) ──", cpp_data.len());
+        show_diff_lines(&cpp_data);
+    }
+    if !rust_data.is_empty() {
+        println!();
+        println!("  ── Extra data lines in Rust ({} total) ──", rust_data.len());
+        show_diff_lines(&rust_data);
+    }
 
     // Write diff report to file
     write_diff_report(

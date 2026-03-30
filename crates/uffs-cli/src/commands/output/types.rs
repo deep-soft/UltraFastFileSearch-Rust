@@ -155,10 +155,6 @@ pub(in crate::commands) struct StreamingRecordFilter {
     pub max_descendants: Option<u32>,
     /// Exclude pattern — records matching this are rejected.
     pub exclude_pattern: Option<uffs_core::IndexPattern>,
-    /// Show Alternate Data Streams (ADS) in output. Default: `true` (matches
-    /// C++ behavior). When `false`, named streams like
-    /// `file.txt:Zone.Identifier` are hidden.
-    pub show_ads: bool,
     /// Maximum number of output rows (0 = unlimited).
     pub limit: usize,
     /// Sort specification (empty = no sort, output in FRS order).
@@ -185,7 +181,6 @@ impl Default for StreamingRecordFilter {
             min_descendants: None,
             max_descendants: None,
             exclude_pattern: None,
-            show_ads: true,
             limit: 0,
             sort_spec: Vec::new(),
             sort_desc: false,

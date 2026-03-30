@@ -139,8 +139,6 @@ struct SearchConfig<'a> {
     pipeline: &'a str,
     /// Chaos seed for testing.
     chaos_seed: Option<u64>,
-    /// Show Alternate Data Streams in output.
-    show_ads: bool,
     /// Reserved allocation for size queries.
     reserved_allocated: Option<u64>,
     /// Start time for profiling.
@@ -213,7 +211,6 @@ pub async fn search(
     pipeline: &str,
     tz_offset: Option<i32>,
     chaos_seed: Option<u64>,
-    show_ads: bool,
     reserved_allocated: Option<u64>,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
@@ -266,7 +263,6 @@ pub async fn search(
         pipeline,
         tz_offset,
         chaos_seed,
-        show_ads,
         reserved_allocated,
         start_time,
     )?;

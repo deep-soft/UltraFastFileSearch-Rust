@@ -261,7 +261,6 @@ pub(super) fn build_record_filter(
     exclude: Option<&str>,
     sort: Option<&str>,
     sort_desc: bool,
-    show_ads: bool,
 ) -> output::StreamingRecordFilter {
     let exclude_pattern = exclude.and_then(|excl| uffs_core::compile_index_pattern(excl).ok());
 
@@ -283,7 +282,6 @@ pub(super) fn build_record_filter(
         newer_accessed: newer_accessed.and_then(output::parse_age_filter),
         older_accessed: older_accessed.and_then(output::parse_age_filter),
         exclude_pattern,
-        show_ads,
         limit: filters.limit as usize,
         sort_spec: sort.map(output::parse_sort_spec).unwrap_or_default(),
         sort_desc,

@@ -317,7 +317,6 @@ fn run_multi_file_dispatch(config: &SearchConfig<'_>) -> Result<()> {
         config.exclude,
         config.sort,
         config.sort_desc,
-        config.show_ads,
     );
 
     let stream_config = super::mft_file::MultiFileStreamConfig {
@@ -370,7 +369,6 @@ fn run_single_file_dispatch(config: &SearchConfig<'_>, mft_path: &std::path::Pat
         output_targets: &config.output_targets,
         profile: config.profile,
         debug_tree: config.debug_tree,
-        show_ads: config.show_ads,
         chaos_seed: config.chaos_seed,
         reserved_allocated: config.reserved_allocated,
         start_time: config.start_time,
@@ -513,7 +511,6 @@ pub(super) fn build_search_config<'a>(
     pipeline: &'a str,
     tz_offset: Option<i32>,
     chaos_seed: Option<u64>,
-    show_ads: bool,
     reserved_allocated: Option<u64>,
     start_time: std::time::Instant,
 ) -> Result<SearchConfig<'a>> {
@@ -595,7 +592,6 @@ pub(super) fn build_search_config<'a>(
         query_mode,
         pipeline,
         chaos_seed,
-        show_ads,
         reserved_allocated,
         start_time,
     })

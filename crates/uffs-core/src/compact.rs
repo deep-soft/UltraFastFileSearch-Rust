@@ -594,7 +594,105 @@ pub fn build_compact_index(
     // Merge primary + hardlink records.
     records.extend(extra_records);
 
-    let names = index.names.as_bytes().to_vec();
+    // Phase 3: expand ADS (Alternate Data Streams) — sequential.
+    // For each valid record with stream_count > 1, walk the stream chain and
+    // create additional CompactRecords with a combined "base:stream" name.
+    // ADS entries are rare (~0.01% of records on typical volumes).
+    //
+    // IMPORTANT: ADS must be expanded for EVERY name (primary + hardlinks).
+    // The C++ baseline emits one ADS row per (name × stream) combination,
+    // so a file with 2 hardlinks and 1 ADS produces 2 ADS rows.
+    let mut names = index.names.as_bytes().to_vec();
+    let mut ads_records: Vec<CompactRecord> = Vec::new();
+    for (idx, record) in index.records.iter().enumerate() {
+        if !resolver.is_valid_idx(idx) || record.stream_count <= 1 {
+            continue;
+        }
+
+        // Collect all names for this record (primary + hardlinks).
+        let mut all_names: Vec<(&str, u32)> = Vec::new();
+        let primary_name = index.get_name(&record.first_name.name);
+        if !primary_name.is_empty() {
+            let parent_idx = resolve_parent(record.first_name.parent_frs, record.frs);
+            all_names.push((primary_name, parent_idx));
+        }
+        // Walk hardlink chain for additional names.
+        if record.name_count > 1 {
+            let mut link_entry = record.first_name.next_entry;
+            while link_entry != uffs_mft::NO_ENTRY {
+                let Some(link) = index.links.get(link_entry as usize) else {
+                    break;
+                };
+                let link_name = index.get_name(&link.name);
+                if !link_name.is_empty() {
+                    let link_parent = resolve_parent(link.parent_frs, record.frs);
+                    all_names.push((link_name, link_parent));
+                }
+                link_entry = link.next_entry;
+            }
+        }
+
+        if all_names.is_empty() {
+            continue;
+        }
+
+        // Collect output streams (skip default $DATA at head of chain).
+        let mut output_streams: Vec<(&str, u64, u64)> = Vec::new();
+        let mut stream_entry = record.first_stream.next_entry;
+        while stream_entry != uffs_mft::NO_ENTRY {
+            let Some(stream) = index.streams.get(stream_entry as usize) else {
+                break;
+            };
+            if stream.is_output_stream() {
+                let stream_name = index.stream_name(stream);
+                if !stream_name.is_empty() {
+                    output_streams.push((
+                        stream_name,
+                        stream.size.length,
+                        stream.size.allocated,
+                    ));
+                }
+            }
+            stream_entry = stream.next_entry;
+        }
+
+        // Expand: every name × every output stream.
+        for &(base_name, parent_idx) in &all_names {
+            for &(stream_name, stream_size, stream_alloc) in &output_streams {
+                let combined = format!("{base_name}:{stream_name}");
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "names buffer < 4GB for any real volume"
+                )]
+                let name_offset = names.len() as u32;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "combined name length < 65535 chars"
+                )]
+                let name_len = combined.len() as u16;
+                names.extend_from_slice(combined.as_bytes());
+
+                ads_records.push(CompactRecord {
+                    name_offset,
+                    name_len,
+                    extension_id: 0, // ADS names don't have meaningful extensions
+                    flags: record.stdinfo.flags, // preserve raw NTFS flags (C++ parity)
+                    parent_idx,
+                    size: stream_size,
+                    allocated: stream_alloc,
+                    created: record.stdinfo.created,
+                    modified: record.stdinfo.modified,
+                    accessed: record.stdinfo.accessed,
+                    descendants: 0,
+                    treesize: 0,
+                    tree_allocated: 0,
+                    _pad: [0; 4],
+                });
+            }
+        }
+    }
+    records.extend(ads_records);
+
     // Clone-then-lowercase avoids the intermediate `String` allocation that
     // `to_ascii_lowercase().into_bytes()` would create (~150MB saved).
     let mut names_lower = names.clone();
