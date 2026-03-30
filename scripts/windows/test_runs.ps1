@@ -88,6 +88,58 @@ function Format-FileSize {
     return "$Bytes bytes"
 }
 
+# Smart-skip: returns $true if the artifact file exists, is less than 7 days old,
+# and exceeds the minimum size threshold (default 1KB).
+# When $true the caller should skip re-creation to save time on re-runs.
+function Test-ArtifactFresh {
+    param(
+        [string]$Path,
+        [long]$MinBytes = 1024,      # 1 KB default
+        [int]$MaxAgeDays = 7
+    )
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $item = Get-Item -LiteralPath $Path
+    if ($item.Length -lt $MinBytes) { return $false }
+    if ($item.LastWriteTime -lt (Get-Date).AddDays(-$MaxAgeDays)) { return $false }
+    return $true
+}
+
+# Validate an artifact after creation. If the file is missing or too small, record
+# a failure and emit a loud console error. Returns $true on success, $false on failure.
+# Caller supplies a human-readable $Label for the error message.
+$script:artifactFailures = @()
+
+function Confirm-Artifact {
+    param(
+        [string]$Path,
+        [string]$Label,
+        [long]$MinBytes = 1024       # 1 KB default
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        $msg = "ARTIFACT MISSING: $Label → $Path"
+        Write-Host ""
+        Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+        Write-Host "  ║  ❌ $Label" -ForegroundColor Red
+        Write-Host "  ║     File does not exist: $Path" -ForegroundColor Red
+        Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+        $script:artifactFailures += $msg
+        return $false
+    }
+    $size = (Get-Item -LiteralPath $Path).Length
+    if ($size -lt $MinBytes) {
+        $msg = "ARTIFACT TOO SMALL: $Label → $Path ($(Format-FileSize $size) < $(Format-FileSize $MinBytes))"
+        Write-Host ""
+        Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+        Write-Host "  ║  ❌ $Label" -ForegroundColor Red
+        Write-Host "  ║     File too small: $(Format-FileSize $size) (need ≥ $(Format-FileSize $MinBytes))" -ForegroundColor Red
+        Write-Host "  ║     Path: $Path" -ForegroundColor Red
+        Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+        $script:artifactFailures += $msg
+        return $false
+    }
+    return $true
+}
+
 function Get-NtfsDrives {
     # Use Get-CimInstance (faster, non-blocking) instead of deprecated Get-WmiObject
     # DriveType 3 = Fixed, DriveType 2 = Removable (USB NTFS drives like G:)
@@ -296,16 +348,26 @@ try {
 
             # Always save IOCP capture (captures real Windows IOCP completion order)
             # This is the PRIMARY format for 100% accurate LIVE replay on Mac
-            $timings += Invoke-CmdToLog -Title "uffs_mft save (IOCP capture): drive $mftDrive" `
-                -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive --output `"$mftIocpPath`" --iocp") `
-                -LogFileName "${mftDrive}_mft_save_iocp.log" `
-                -OutDir $driveDir
+            if (Test-ArtifactFresh $mftIocpPath) {
+                Write-Host "  ⏭️  IOCP capture fresh — skipping: $mftIocp" -ForegroundColor DarkGreen
+            } else {
+                $timings += Invoke-CmdToLog -Title "uffs_mft save (IOCP capture): drive $mftDrive" `
+                    -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive --output `"$mftIocpPath`" --iocp") `
+                    -LogFileName "${mftDrive}_mft_save_iocp.log" `
+                    -OutDir $driveDir
+                Confirm-Artifact -Path $mftIocpPath -Label "MFT IOCP capture (drive $mftDrive)" | Out-Null
+            }
 
             # Always save uncompressed MFT (fallback for sequential offline analysis)
-            $timings += Invoke-CmdToLog -Title "uffs_mft save (uncompressed): drive $mftDrive" `
-                -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive --output `"$mftNoCompressPath`" --no-compress") `
-                -LogFileName "${mftDrive}_mft_save.log" `
-                -OutDir $driveDir
+            if (Test-ArtifactFresh $mftNoCompressPath) {
+                Write-Host "  ⏭️  Uncompressed MFT fresh — skipping: $mftNoCompress" -ForegroundColor DarkGreen
+            } else {
+                $timings += Invoke-CmdToLog -Title "uffs_mft save (uncompressed): drive $mftDrive" `
+                    -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive --output `"$mftNoCompressPath`" --no-compress") `
+                    -LogFileName "${mftDrive}_mft_save.log" `
+                    -OutDir $driveDir
+                Confirm-Artifact -Path $mftNoCompressPath -Label "MFT uncompressed (drive $mftDrive)" | Out-Null
+            }
 
             # Extra formats (optional)
             if (-not $SkipMftExtras) {
@@ -314,15 +376,25 @@ try {
                 $mftCompressedPath = Join-Path $driveDir $mftCompressed
                 $mftRawPath = Join-Path $driveDir $mftRaw
 
-                $timings += Invoke-CmdToLog -Title "uffs_mft save (compressed): drive $mftDrive" `
-                    -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive -o `"$mftCompressedPath`"") `
-                    -LogFileName "${mftDrive}_mft_save_compressed.log" `
-                    -OutDir $driveDir
+                if (Test-ArtifactFresh $mftCompressedPath) {
+                    Write-Host "  ⏭️  Compressed MFT fresh — skipping: $mftCompressed" -ForegroundColor DarkGreen
+                } else {
+                    $timings += Invoke-CmdToLog -Title "uffs_mft save (compressed): drive $mftDrive" `
+                        -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive -o `"$mftCompressedPath`"") `
+                        -LogFileName "${mftDrive}_mft_save_compressed.log" `
+                        -OutDir $driveDir
+                    Confirm-Artifact -Path $mftCompressedPath -Label "MFT compressed (drive $mftDrive)" | Out-Null
+                }
 
-                $timings += Invoke-CmdToLog -Title "uffs_mft save (raw): drive $mftDrive" `
-                    -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive -o `"$mftRawPath`" --raw") `
-                    -LogFileName "${mftDrive}_mft_save_raw.log" `
-                    -OutDir $driveDir
+                if (Test-ArtifactFresh $mftRawPath) {
+                    Write-Host "  ⏭️  Raw MFT fresh — skipping: $mftRaw" -ForegroundColor DarkGreen
+                } else {
+                    $timings += Invoke-CmdToLog -Title "uffs_mft save (raw): drive $mftDrive" `
+                        -CommandLine ("`"$UffsMftExe`" save --drive $mftDrive -o `"$mftRawPath`" --raw") `
+                        -LogFileName "${mftDrive}_mft_save_raw.log" `
+                        -OutDir $driveDir
+                    Confirm-Artifact -Path $mftRawPath -Label "MFT raw (drive $mftDrive)" | Out-Null
+                }
             }
         }
 
@@ -513,8 +585,18 @@ try {
 
             $runs = @()
 
-            # 0. Clear Rust cache for this drive (ensures fresh MFT read with current algorithms)
-            if ($HasMft) {
+            # Track which scans need re-collection (only clear cache if we're actually scanning)
+            $cppOutPath       = Join-Path $driveDir $cppOut
+            $rustLiveOutPath  = Join-Path $driveDir $rustLiveOut
+            $rustLiveTraceOutPath = Join-Path $driveDir $rustLiveTraceOut
+
+            $needCpp       = $HasCpp  -and -not (Test-ArtifactFresh $cppOutPath)
+            $needRustLive  = $HasRust -and -not (Test-ArtifactFresh $rustLiveOutPath)
+            $needRustTrace = $HasRust -and -not (Test-ArtifactFresh $rustLiveTraceOutPath)
+            $needAnyScan   = $needCpp -or $needRustLive -or $needRustTrace
+
+            # 0. Clear Rust cache for this drive (only if we're re-scanning)
+            if ($HasMft -and $needAnyScan) {
                 Write-Host "  → Clearing Rust cache for drive $Drive..." -NoNewline
                 & cmd.exe /c "`"$UffsMftExe`" cache-clear --drive $Drive" 2>&1 | Out-Null
                 Write-Host " ✅" -ForegroundColor Green
@@ -522,31 +604,41 @@ try {
 
             # 1. C++ baseline (no diagnostics, just output)
             # C++ always reads MFT fresh (no caching)
-            if ($HasCpp) {
+            if (-not $HasCpp) {
+                $runs += [pscustomobject]@{ Drive=$Drive; Title="C++ (baseline)"; Command=""; LogFile=$cppLog; OutFile=$cppOut; DurationMs=$null; ExitCode=$null }
+            } elseif (-not $needCpp) {
+                Write-Host "  ⏭️  C++ baseline fresh — skipping: $cppOut" -ForegroundColor DarkGreen
+            } else {
                 $runs += Run-LoggedLocal -Title "C++ (baseline): drive $Drive" `
                     -CmdLine ("`"$UffsCom`" `"*`" --drives=$Drive") `
                     -LogFileName $cppLog `
                     -OutFileName $cppOut
-            } else {
-                $runs += [pscustomobject]@{ Drive=$Drive; Title="C++ (baseline)"; Command=""; LogFile=$cppLog; OutFile=$cppOut; DurationMs=$null; ExitCode=$null }
+                Confirm-Artifact -Path $cppOutPath -Label "C++ baseline (drive $Drive)" | Out-Null
             }
 
             # 2. Rust LIVE scan (with diagnostic logging via RUST_LOG)
             # --no-cache forces fresh MFT read to ensure tree metrics are computed
             # --parity-compat --format custom: match C++ output format for parity comparison
-            if ($HasRust) {
+            if (-not $HasRust) {
+                $runs += [pscustomobject]@{ Drive=$Drive; Title="Rust LIVE"; Command=""; LogFile=$rustLiveLog; OutFile=$rustLiveOut; DurationMs=$null; ExitCode=$null }
+            } elseif (-not $needRustLive) {
+                Write-Host "  ⏭️  Rust LIVE fresh — skipping: $rustLiveOut" -ForegroundColor DarkGreen
+            } else {
                 $runs += Run-LoggedLocal -Title "Rust LIVE: drive $Drive" `
                     -CmdLine ("`"$UffsExe`" `"*`" --drive $Drive --no-cache --parity-compat --format custom") `
                     -LogFileName $rustLiveLog `
                     -OutFileName $rustLiveOut
-            } else {
-                $runs += [pscustomobject]@{ Drive=$Drive; Title="Rust LIVE"; Command=""; LogFile=$rustLiveLog; OutFile=$rustLiveOut; DurationMs=$null; ExitCode=$null }
+                Confirm-Artifact -Path $rustLiveOutPath -Label "Rust LIVE scan (drive $Drive)" | Out-Null
             }
 
             # 2b. Rust LIVE scan with DEBUG logging (for detailed diagnostics)
             # Temporarily enables debug-level logging to capture detailed diagnostics
             # NOTE: Trace logging can cause stack overflow on deep directory trees - use debug level instead
-            if ($HasRust) {
+            if (-not $HasRust) {
+                $runs += [pscustomobject]@{ Drive=$Drive; Title="Rust LIVE TRACE"; Command=""; LogFile=$rustLiveTraceLog; OutFile=$rustLiveTraceOut; DurationMs=$null; ExitCode=$null }
+            } elseif (-not $needRustTrace) {
+                Write-Host "  ⏭️  Rust LIVE TRACE fresh — skipping: $rustLiveTraceOut" -ForegroundColor DarkGreen
+            } else {
                 $savedRustLog = $env:RUST_LOG
                 $env:RUST_LOG = "uffs_mft=debug,uffs_cli=debug,uffs_core=debug"
                 $runs += Run-LoggedLocal -Title "Rust LIVE TRACE: drive $Drive" `
@@ -554,8 +646,7 @@ try {
                     -LogFileName $rustLiveTraceLog `
                     -OutFileName $rustLiveTraceOut
                 $env:RUST_LOG = $savedRustLog
-            } else {
-                $runs += [pscustomobject]@{ Drive=$Drive; Title="Rust LIVE TRACE"; Command=""; LogFile=$rustLiveTraceLog; OutFile=$rustLiveTraceOut; DurationMs=$null; ExitCode=$null }
+                Confirm-Artifact -Path $rustLiveTraceOutPath -Label "Rust LIVE TRACE (drive $Drive)" | Out-Null
             }
 
             # 3. Everything — DISABLED (2026-03-27)
@@ -857,5 +948,36 @@ finally {
     }
     catch {
         Write-Warning ("Failed to finalize report: " + $_.Exception.Message)
+    }
+
+    # ── ARTIFACT FAILURE SUMMARY ──
+    # Print a loud, unmissable summary of any artifacts that were missing or too small.
+    # Exit with non-zero code so the caller knows data collection was incomplete.
+    if ($script:artifactFailures.Count -gt 0) {
+        Write-Host ""
+        Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+        Write-Host "║                                                              ║" -ForegroundColor Red
+        Write-Host "║   ❌  DATA COLLECTION INCOMPLETE — ARTIFACTS FAILED          ║" -ForegroundColor Red
+        Write-Host "║                                                              ║" -ForegroundColor Red
+        Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  $($script:artifactFailures.Count) artifact(s) failed:" -ForegroundColor Red
+        Write-Host ""
+        $idx = 0
+        foreach ($fail in $script:artifactFailures) {
+            $idx++
+            Write-Host "    ${idx}. $fail" -ForegroundColor Yellow
+        }
+        Write-Host ""
+        Write-Host "  Re-run this script to retry only the missing artifacts." -ForegroundColor Yellow
+        Write-Host "  (Fresh artifacts < 7 days old and > 1 KB are automatically skipped.)" -ForegroundColor DarkGray
+        Write-Host ""
+        exit 1
+    } else {
+        Write-Host ""
+        Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+        Write-Host "║   ✅  ALL ARTIFACTS COLLECTED SUCCESSFULLY                   ║" -ForegroundColor Green
+        Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+        Write-Host ""
     }
 }

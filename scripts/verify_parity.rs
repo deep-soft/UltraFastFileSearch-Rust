@@ -325,7 +325,11 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
         // Check if this drive has the necessary files
         let Some(golden_baseline) = find_golden_baseline_file_optional(&drive_dir, drive_lower)
         else {
-            println!("  ⚠️  SKIPPED: No golden baseline found");
+            eprintln!("  ╔══════════════════════════════════════════════════════════════╗");
+            eprintln!("  ║  ⚠️  SKIPPED: No baseline file found for drive {}             ", drive_letter);
+            eprintln!("  ║     Directory: {}", drive_dir.display());
+            eprintln!("  ║     Run test_runs.ps1 on Windows to collect artifacts.       ║");
+            eprintln!("  ╚══════════════════════════════════════════════════════════════╝");
             println!();
             results.push(DriveResult {
                 drive_letter: drive_letter.clone(),
@@ -1768,27 +1772,24 @@ fn verify_single_drive(
     let drive_lower = drive_letter.to_lowercase();
     let golden_baseline_file = find_golden_baseline_file(drive_dir, &drive_lower);
 
-    if !rust_output.exists() {
-        eprintln!(
-            "  ERROR: Rust output file not found: {}",
-            rust_output.display()
-        );
-        return DriveResult {
-            drive_letter: drive_letter.to_string(),
-            result: VerifyResult::Mismatch,
-            baseline_lines: 0,
-            rust_lines: 0,
-            extra_rust_lines: 0,
-            mft_size_bytes,
-            parse_duration,
-        };
-    }
+    // Validate baseline: warn if not a real C++ baseline, error if too small
+    let baseline_type = warn_if_not_cpp_baseline(&golden_baseline_file, &drive_lower);
 
-    println!("  Base dir:      {}", base_dir.display());
-    println!("  Drive dir:     {}", drive_dir.display());
-    println!("  Drive letter:  {drive_letter}");
-    println!("  Baseline file: {}", golden_baseline_file.display());
-    println!("  Rust output:   {}", rust_output.display());
+    // Validate Rust output: must exist and be >1 KB
+    validate_rust_output(rust_output, drive_letter);
+
+    let baseline_label = match baseline_type {
+        BaselineType::Golden => "golden (curated)",
+        BaselineType::Cpp => "C++ scan",
+        BaselineType::RustLive => "⚠️  Rust live (NOT C++ parity!)",
+    };
+
+    println!("  Base dir:       {}", base_dir.display());
+    println!("  Drive dir:      {}", drive_dir.display());
+    println!("  Drive letter:   {drive_letter}");
+    println!("  Baseline file:  {}", golden_baseline_file.display());
+    println!("  Baseline type:  {baseline_label}");
+    println!("  Rust output:    {}", rust_output.display());
     println!();
 
     println!("  Computing streaming SHA256 + order-independent fingerprints...");
@@ -2160,39 +2161,159 @@ fn resolve_drive_dir(base_dir: &Path, drive_lower: &str) -> PathBuf {
     base_dir.to_path_buf()
 }
 
+/// Classifies the type of baseline file found, so callers can warn when
+/// the comparison is not a true C++ parity check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BaselineType {
+    /// `golden_<drive>.txt` — curated golden reference (best)
+    Golden,
+    /// `cpp_<drive>.txt` — C++ scan output (true parity comparison)
+    Cpp,
+    /// `rust_live_<drive>.txt` — Rust live scan output (NOT a C++ parity
+    /// check — this is a self-comparison that only tests offline vs live
+    /// consistency). Using this as a "golden baseline" masks real parity
+    /// issues.
+    RustLive,
+}
+
+/// Minimum size (bytes) for a baseline or output file to be considered valid.
+/// An MFT scan on even a nearly-empty NTFS volume produces >1 KB of output.
+const MIN_ARTIFACT_SIZE: u64 = 1024;
+
+/// Find the golden baseline file for a drive, or exit with a clear error.
 fn find_golden_baseline_file(data_dir: &Path, drive_lower: &str) -> PathBuf {
-    if let Some(path) = find_golden_baseline_file_optional(data_dir, drive_lower) {
+    if let Some((path, _)) = find_golden_baseline_file_typed(data_dir, drive_lower) {
         return path;
     }
     let candidates = baseline_candidates(drive_lower);
-    eprintln!("ERROR: Golden baseline file not found in {}", data_dir.display());
+    eprintln!("╔══════════════════════════════════════════════════════════════╗");
+    eprintln!("║  ❌ FATAL: Golden baseline file not found                    ║");
+    eprintln!("╚══════════════════════════════════════════════════════════════╝");
+    eprintln!();
+    eprintln!("  Drive:     {}", drive_lower.to_uppercase());
+    eprintln!("  Directory: {}", data_dir.display());
     eprintln!("  Checked:");
-    for name in &candidates {
+    for (name, _) in &candidates {
         eprintln!("    - {name}");
     }
+    eprintln!();
+    eprintln!("  Run test_runs.ps1 on Windows to collect C++ baseline artifacts.");
     std::process::exit(1);
 }
 
 /// Try to find a golden baseline file, returning None if not found
 fn find_golden_baseline_file_optional(data_dir: &Path, drive_lower: &str) -> Option<PathBuf> {
+    find_golden_baseline_file_typed(data_dir, drive_lower).map(|(path, _)| path)
+}
+
+/// Find baseline and return both path and type, or None if nothing found.
+fn find_golden_baseline_file_typed(
+    data_dir: &Path,
+    drive_lower: &str,
+) -> Option<(PathBuf, BaselineType)> {
     let candidates = baseline_candidates(drive_lower);
 
-    for name in &candidates {
+    for (name, btype) in &candidates {
         let path = data_dir.join(name);
         if path.exists() {
-            return Some(path);
+            return Some((path, *btype));
         }
     }
     None
 }
 
-/// List of candidate baseline filenames to check
-fn baseline_candidates(drive_lower: &str) -> [String; 3] {
+/// List of candidate baseline filenames to check, in priority order.
+fn baseline_candidates(drive_lower: &str) -> [(String, BaselineType); 3] {
     [
-        format!("golden_{drive_lower}.txt"),
-        format!("cpp_{drive_lower}.txt"),       // C++ baseline output
-        format!("rust_live_{drive_lower}.txt"), // Live scan output (when comparing offline)
+        (format!("golden_{drive_lower}.txt"), BaselineType::Golden),
+        (format!("cpp_{drive_lower}.txt"), BaselineType::Cpp),
+        (
+            format!("rust_live_{drive_lower}.txt"),
+            BaselineType::RustLive,
+        ),
     ]
+}
+
+/// Print a loud warning banner when using rust_live as baseline (not a real
+/// C++ parity check). Returns the baseline type for downstream decisions.
+fn warn_if_not_cpp_baseline(baseline_path: &Path, drive_lower: &str) -> BaselineType {
+    let (_, btype) = find_golden_baseline_file_typed(
+        baseline_path.parent().unwrap_or(Path::new(".")),
+        drive_lower,
+    )
+    .unwrap_or_else(|| {
+        // Shouldn't happen — we already found the file — but be safe
+        (baseline_path.to_path_buf(), BaselineType::RustLive)
+    });
+
+    match btype {
+        BaselineType::RustLive => {
+            eprintln!();
+            eprintln!("  ╔══════════════════════════════════════════════════════════════╗");
+            eprintln!("  ║  ⚠️  WARNING: Using Rust live output as baseline             ║");
+            eprintln!("  ║                                                              ║");
+            eprintln!("  ║  This is NOT a C++ parity check! The comparison is:          ║");
+            eprintln!("  ║    Rust offline  vs  Rust live  (self-consistency only)       ║");
+            eprintln!("  ║                                                              ║");
+            eprintln!("  ║  For true parity, collect C++ baseline with test_runs.ps1     ║");
+            eprintln!("  ║  on Windows (needs uffs.com / C++ binary).                   ║");
+            eprintln!("  ╚══════════════════════════════════════════════════════════════╝");
+            eprintln!("  Baseline file: {}", baseline_path.display());
+            eprintln!();
+        }
+        BaselineType::Golden | BaselineType::Cpp => {
+            // These are legitimate baselines — no warning needed
+        }
+    }
+
+    // Validate baseline file size regardless of type
+    if let Ok(meta) = fs::metadata(baseline_path) {
+        if meta.len() < MIN_ARTIFACT_SIZE {
+            eprintln!();
+            eprintln!("  ╔══════════════════════════════════════════════════════════════╗");
+            eprintln!("  ║  ❌ FATAL: Baseline file is too small ({} bytes)     ", meta.len());
+            eprintln!("  ║     Minimum: {} bytes                                ", MIN_ARTIFACT_SIZE);
+            eprintln!("  ║     File: {}", baseline_path.display());
+            eprintln!("  ║                                                              ║");
+            eprintln!("  ║  The baseline file appears empty or corrupt.                 ║");
+            eprintln!("  ║  Re-run test_runs.ps1 on Windows to regenerate.              ║");
+            eprintln!("  ╚══════════════════════════════════════════════════════════════╝");
+            eprintln!();
+            std::process::exit(1);
+        }
+    }
+
+    btype
+}
+
+/// Validate that a Rust output file exists and is large enough to be real.
+/// Exits with a clear error if validation fails.
+fn validate_rust_output(rust_output: &Path, drive_letter: &str) {
+    if !rust_output.exists() {
+        eprintln!();
+        eprintln!("  ╔══════════════════════════════════════════════════════════════╗");
+        eprintln!("  ║  ❌ FATAL: Rust output file not found                       ║");
+        eprintln!("  ║     Drive: {}                                               ", drive_letter);
+        eprintln!("  ║     Path:  {}", rust_output.display());
+        eprintln!("  ╚══════════════════════════════════════════════════════════════╝");
+        eprintln!();
+        std::process::exit(1);
+    }
+    if let Ok(meta) = fs::metadata(rust_output) {
+        if meta.len() < MIN_ARTIFACT_SIZE {
+            eprintln!();
+            eprintln!("  ╔══════════════════════════════════════════════════════════════╗");
+            eprintln!("  ║  ❌ FATAL: Rust output file is too small ({} bytes) ", meta.len());
+            eprintln!("  ║     Minimum: {} bytes                                ", MIN_ARTIFACT_SIZE);
+            eprintln!("  ║     Drive: {}                                        ", drive_letter);
+            eprintln!("  ║     File:  {}", rust_output.display());
+            eprintln!("  ║                                                              ║");
+            eprintln!("  ║  The scan produced no meaningful output.                     ║");
+            eprintln!("  ╚══════════════════════════════════════════════════════════════╝");
+            eprintln!();
+            std::process::exit(1);
+        }
+    }
 }
 
 fn print_usage(prog: &str) {
@@ -2568,11 +2689,28 @@ fn regenerate_rust_output(
     } else if bin_file.exists() {
         (bin_file, "Raw MFT (sequential)")
     } else {
-        eprintln!("ERROR: No MFT file found. Looked for:");
+        eprintln!("╔══════════════════════════════════════════════════════════════╗");
+        eprintln!("║  ❌ FATAL: No MFT file found for drive {}                    ", drive_letter);
+        eprintln!("╚══════════════════════════════════════════════════════════════╝");
+        eprintln!("  Looked for:");
         eprintln!("  - {} (IOCP capture, preferred)", iocp_file.display());
         eprintln!("  - {} (raw MFT, fallback)", bin_file.display());
+        eprintln!();
+        eprintln!("  Run test_runs.ps1 on Windows to collect MFT artifacts.");
         std::process::exit(1);
     };
+
+    // Validate MFT file size (even the smallest NTFS MFT is >100 KB)
+    if let Ok(meta) = fs::metadata(&mft_file) {
+        if meta.len() < MIN_ARTIFACT_SIZE {
+            eprintln!("╔══════════════════════════════════════════════════════════════╗");
+            eprintln!("║  ❌ FATAL: MFT file is too small ({} bytes)           ", meta.len());
+            eprintln!("║     File: {}", mft_file.display());
+            eprintln!("║     Re-run test_runs.ps1 on Windows to regenerate.         ║");
+            eprintln!("╚══════════════════════════════════════════════════════════════╝");
+            std::process::exit(1);
+        }
+    }
 
     // Get MFT file size
     let mft_size_bytes = fs::metadata(&mft_file).map(|m| m.len()).unwrap_or(0);
