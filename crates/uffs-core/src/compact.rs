@@ -423,8 +423,7 @@ fn load_mft_index_from_file(
 fn load_mft_index_live(drive_letter: char, no_cache: bool) -> anyhow::Result<MftIndex> {
     use anyhow::Context;
 
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
+    let read_index = async {
         let reader = uffs_mft::MftReader::open(drive_letter)
             .with_context(|| format!("Failed to open drive {drive_letter}:"))?;
         if no_cache {
@@ -438,7 +437,17 @@ fn load_mft_index_live(drive_letter: char, no_cache: bool) -> anyhow::Result<Mft
                 .await
                 .with_context(|| format!("Failed to read MFT for drive {drive_letter}:"))
         }
-    })
+    };
+
+    // If we are already inside a Tokio runtime (e.g. CLI `#[tokio::main]`),
+    // creating a new `Runtime` would panic with "Cannot start a runtime from
+    // within a runtime".  Use `block_in_place` + the current handle instead.
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(read_index))
+    } else {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(read_index)
+    }
 }
 
 /// Statistics from in-place USN patching.

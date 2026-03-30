@@ -211,6 +211,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "may prompt for keychain password on macOS — run with --ignored"]
     fn test_search_accepts_multi_mft_file_without_drives() {
         // Multiple --mft-file values work without --drives.
         // Drive letters are auto-inferred from filenames (C.bin → C:).
