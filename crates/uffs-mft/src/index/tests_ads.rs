@@ -2,8 +2,9 @@
 //!
 //! Regression tests ensuring ADS entries are never silently dropped.
 
-use super::*;
 use tests_helpers::push_index_name;
+
+use super::*;
 
 /// Create a minimal index with a file that has ADS streams.
 fn create_index_with_ads() -> MftIndex {
@@ -23,8 +24,7 @@ fn create_index_with_ads() -> MftIndex {
 
     // Add ADS: Zone.Identifier
     let ads_name_offset = index.add_name("Zone.Identifier");
-    let ads_name_ref =
-        IndexNameRef::new(ads_name_offset, "Zone.Identifier".len() as u16, true, 0);
+    let ads_name_ref = IndexNameRef::new(ads_name_offset, "Zone.Identifier".len() as u16, true, 0);
     let ads_si = index.streams.len() as u32;
     index.streams.push(IndexStreamInfo {
         size: SizeInfo {
@@ -73,7 +73,10 @@ fn ads_stream_iterable_via_iter_streams() {
     // First stream: default $DATA (unnamed)
     let (idx0, s0) = &streams[0];
     assert_eq!(*idx0, 0);
-    assert!(index.stream_name(s0).is_empty(), "default stream has no name");
+    assert!(
+        index.stream_name(s0).is_empty(),
+        "default stream has no name"
+    );
     assert_eq!(s0.size.length, 1024);
     assert!(s0.is_output_stream(), "default $DATA is an output stream");
 
@@ -113,7 +116,10 @@ fn is_output_stream_accepts_data_streams() {
         flags: 8 << 2,
         ..Default::default()
     };
-    assert!(data_stream.is_output_stream(), "$DATA must be output stream");
+    assert!(
+        data_stream.is_output_stream(),
+        "$DATA must be output stream"
+    );
 
     // type_name_id=0 ($I30) → is_output_stream = true
     let i30_stream = IndexStreamInfo {
@@ -132,4 +138,3 @@ fn is_output_stream_accepts_data_streams() {
         "internal stream must NOT be output stream"
     );
 }
-

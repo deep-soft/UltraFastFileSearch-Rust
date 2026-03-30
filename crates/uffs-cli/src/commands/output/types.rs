@@ -119,7 +119,7 @@ impl AttrKind {
 /// ```text
 /// uffs *.txt --files-only --min-size 1024 --attr hidden --newer 7d --case
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each bool maps to an independent CLI flag — not a state machine"
@@ -163,30 +163,7 @@ pub(in crate::commands) struct StreamingRecordFilter {
     pub sort_desc: bool,
 }
 
-impl Default for StreamingRecordFilter {
-    fn default() -> Self {
-        Self {
-            files_only: false,
-            dirs_only: false,
-            hide_system: false,
-            min_size: None,
-            max_size: None,
-            attr_filters: Vec::new(),
-            newer_modified: None,
-            older_modified: None,
-            newer_created: None,
-            older_created: None,
-            newer_accessed: None,
-            older_accessed: None,
-            min_descendants: None,
-            max_descendants: None,
-            exclude_pattern: None,
-            limit: 0,
-            sort_spec: Vec::new(),
-            sort_desc: false,
-        }
-    }
-}
+
 
 /// A single sort tier: column + direction.
 #[derive(Debug, Clone, Copy)]

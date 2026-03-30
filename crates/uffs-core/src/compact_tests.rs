@@ -1,6 +1,5 @@
 use uffs_mft::index::{
-    IndexNameRef, IndexStreamInfo, LinkInfo, MftIndex, NO_ENTRY, ROOT_FRS, SizeInfo,
-    StandardInfo,
+    IndexNameRef, IndexStreamInfo, LinkInfo, MftIndex, NO_ENTRY, ROOT_FRS, SizeInfo, StandardInfo,
 };
 
 use super::*;
@@ -360,7 +359,6 @@ fn compact_parity_root_present_sysfiles_absent_hardlinks_expanded() {
     );
 }
 
-
 // ── ADS (Alternate Data Stream) expansion ──────────────────────────
 
 /// Build a fixture with a file that has an ADS (Zone.Identifier).
@@ -391,12 +389,8 @@ fn fixture_index_with_ads() -> MftIndex {
 
     // Add ADS: Zone.Identifier
     let ads_name_offset = idx.add_name("Zone.Identifier");
-    let ads_name_ref = IndexNameRef::new(
-        ads_name_offset,
-        "Zone.Identifier".len() as u16,
-        true,
-        0,
-    );
+    let ads_name_ref = IndexNameRef::new(ads_name_offset, 15, true, 0); // "Zone.Identifier" = 15 chars
+    #[expect(clippy::cast_possible_truncation, reason = "test fixture has < 2^32 streams")]
     let ads_si = idx.streams.len() as u32;
     idx.streams.push(IndexStreamInfo {
         size: SizeInfo {
@@ -410,11 +404,11 @@ fn fixture_index_with_ads() -> MftIndex {
     });
 
     // Chain ADS to the record's stream list
-    let rec_idx = idx.frs_to_idx_opt(100).unwrap();
-    let rec = &mut idx.records[rec_idx];
-    rec.first_stream.next_entry = ads_si;
-    rec.stream_count = 2;
-    rec.total_stream_count = 2;
+    let file_idx = idx.frs_to_idx_opt(100).unwrap();
+    let file_mut = idx.records.get_mut(file_idx).expect("record must exist");
+    file_mut.first_stream.next_entry = ads_si;
+    file_mut.stream_count = 2;
+    file_mut.total_stream_count = 2;
 
     idx
 }
@@ -428,7 +422,7 @@ fn ads_expanded_into_compact_records() {
     let all_names: Vec<&str> = compact
         .records
         .iter()
-        .map(|r| r.name(&compact.names))
+        .map(|rec| rec.name(&compact.names))
         .filter(|n| !n.is_empty() && *n != ".")
         .collect();
 
@@ -450,7 +444,7 @@ fn ads_compact_record_has_stream_size() {
     let ads_rec = compact
         .records
         .iter()
-        .find(|r| r.name(&compact.names) == "file.pdf:Zone.Identifier")
+        .find(|rec| rec.name(&compact.names) == "file.pdf:Zone.Identifier")
         .expect("ADS CompactRecord must exist");
 
     assert_eq!(ads_rec.size, 228, "ADS size must be the stream's size");
@@ -458,10 +452,7 @@ fn ads_compact_record_has_stream_size() {
         ads_rec.allocated, 0,
         "ADS allocated must be the stream's allocated"
     );
-    assert_eq!(
-        ads_rec.descendants, 0,
-        "ADS must have no tree descendants"
-    );
+    assert_eq!(ads_rec.descendants, 0, "ADS must have no tree descendants");
     assert_eq!(ads_rec.treesize, 0, "ADS must have no treesize");
 }
 
@@ -473,12 +464,12 @@ fn ads_compact_record_inherits_timestamps() {
     let base_rec = compact
         .records
         .iter()
-        .find(|r| r.name(&compact.names) == "file.pdf")
+        .find(|rec| rec.name(&compact.names) == "file.pdf")
         .expect("base file must exist");
     let ads_rec = compact
         .records
         .iter()
-        .find(|r| r.name(&compact.names) == "file.pdf:Zone.Identifier")
+        .find(|rec| rec.name(&compact.names) == "file.pdf:Zone.Identifier")
         .expect("ADS must exist");
 
     assert_eq!(
@@ -520,7 +511,8 @@ fn ads_on_directory_strips_directory_flag() {
 
     // Add ADS: Win32App_1
     let ads_name_offset = idx.add_name("Win32App_1");
-    let ads_name_ref = IndexNameRef::new(ads_name_offset, "Win32App_1".len() as u16, true, 0);
+    let ads_name_ref = IndexNameRef::new(ads_name_offset, 10, true, 0); // "Win32App_1" = 10 chars
+    #[expect(clippy::cast_possible_truncation, reason = "test fixture has < 2^32 streams")]
     let ads_si = idx.streams.len() as u32;
     idx.streams.push(IndexStreamInfo {
         size: SizeInfo {
@@ -533,11 +525,11 @@ fn ads_on_directory_strips_directory_flag() {
         _pad0: [0; 3],
     });
 
-    let rec_idx = idx.frs_to_idx_opt(200).unwrap();
-    let rec = &mut idx.records[rec_idx];
-    rec.first_stream.next_entry = ads_si;
-    rec.stream_count = 2;
-    rec.total_stream_count = 2;
+    let dir_idx = idx.frs_to_idx_opt(200).unwrap();
+    let dir_mut = idx.records.get_mut(dir_idx).expect("record must exist");
+    dir_mut.first_stream.next_entry = ads_si;
+    dir_mut.stream_count = 2;
+    dir_mut.total_stream_count = 2;
 
     let (compact, _, _) = build_compact_index('M', &idx);
 
@@ -545,7 +537,7 @@ fn ads_on_directory_strips_directory_flag() {
     let dir_compact = compact
         .records
         .iter()
-        .find(|r| r.name(&compact.names) == "Airlink 430W")
+        .find(|rec| rec.name(&compact.names) == "Airlink 430W")
         .expect("directory must exist");
     assert!(
         dir_compact.is_directory(),
@@ -559,7 +551,7 @@ fn ads_on_directory_strips_directory_flag() {
     let ads_compact = compact
         .records
         .iter()
-        .find(|r| r.name(&compact.names) == "Airlink 430W:Win32App_1")
+        .find(|rec| rec.name(&compact.names) == "Airlink 430W:Win32App_1")
         .expect("directory ADS must be expanded");
     assert!(
         ads_compact.is_directory(),

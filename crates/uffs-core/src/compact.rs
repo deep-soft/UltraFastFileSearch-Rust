@@ -488,6 +488,135 @@ pub fn refresh_drive(drive: &DriveCompactIndex) -> anyhow::Result<(DriveCompactI
     }
 }
 
+
+/// Expand hardlinks and ADS into additional `CompactRecord` entries.
+///
+/// Phase 2 (hardlinks): for each valid record with `name_count > 1`, walks the
+/// link chain and creates additional records with alternate name/parent.
+///
+/// Phase 3 (ADS): for each valid record with `stream_count > 1`, creates
+/// `CompactRecord`s for every `(name × stream)` combination. This includes
+/// both primary and hardlink names — matching C++ baseline behavior.
+#[expect(
+    clippy::single_call_fn,
+    reason = "Extracted to keep build_compact_index under the too_many_lines limit"
+)]
+fn expand_links_and_ads(
+    index: &MftIndex,
+    resolver: &uffs_mft::index::PathResolver,
+    resolve_parent: &dyn Fn(u64, u64) -> u32,
+    names: &mut Vec<u8>,
+) -> Vec<CompactRecord> {
+    let mut extra: Vec<CompactRecord> = Vec::new();
+
+    for (idx, record) in index.records.iter().enumerate() {
+        if !resolver.is_valid_idx(idx) {
+            continue;
+        }
+
+        // Phase 2: hardlink expansion.
+        if record.name_count > 1 {
+            let mut link_entry = record.first_name.next_entry;
+            while link_entry != uffs_mft::NO_ENTRY {
+                let Some(link) = index.links.get(link_entry as usize) else {
+                    break;
+                };
+                let link_parent = resolve_parent(link.parent_frs, record.frs);
+                extra.push(CompactRecord {
+                    name_offset: link.name.offset,
+                    name_len: link.name.length(),
+                    extension_id: link.name.extension_id(),
+                    flags: record.stdinfo.flags,
+                    parent_idx: link_parent,
+                    size: record.first_stream.size.length,
+                    allocated: record.first_stream.size.allocated,
+                    created: record.stdinfo.created,
+                    modified: record.stdinfo.modified,
+                    accessed: record.stdinfo.accessed,
+                    descendants: record.descendants,
+                    treesize: record.treesize,
+                    tree_allocated: record.tree_allocated,
+                    _pad: [0; 4],
+                });
+                link_entry = link.next_entry;
+            }
+        }
+
+        // Phase 3: ADS expansion (name × stream cross product).
+        if record.stream_count <= 1 {
+            continue;
+        }
+
+        // Collect all names for this record (primary + hardlinks).
+        let mut all_names: Vec<(&str, u32)> = Vec::new();
+        let primary_name = index.get_name(&record.first_name.name);
+        if !primary_name.is_empty() {
+            let pid = resolve_parent(record.first_name.parent_frs, record.frs);
+            all_names.push((primary_name, pid));
+        }
+        if record.name_count > 1 {
+            let mut le = record.first_name.next_entry;
+            while le != uffs_mft::NO_ENTRY {
+                let Some(lnk) = index.links.get(le as usize) else {
+                    break;
+                };
+                let ln = index.get_name(&lnk.name);
+                if !ln.is_empty() {
+                    let lp = resolve_parent(lnk.parent_frs, record.frs);
+                    all_names.push((ln, lp));
+                }
+                le = lnk.next_entry;
+            }
+        }
+
+        // Walk output streams (skip default $DATA at head of chain).
+        let mut se = record.first_stream.next_entry;
+        while se != uffs_mft::NO_ENTRY {
+            let Some(stream) = index.streams.get(se as usize) else {
+                break;
+            };
+            if stream.is_output_stream() {
+                let sn = index.stream_name(stream);
+                if !sn.is_empty() {
+                    for &(base_name, parent_idx) in &all_names {
+                        let combined = format!("{base_name}:{sn}");
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "names buffer < 4GB for any real volume"
+                        )]
+                        let name_offset = names.len() as u32;
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "combined name length < 65535 chars"
+                        )]
+                        let name_len = combined.len() as u16;
+                        names.extend_from_slice(combined.as_bytes());
+
+                        extra.push(CompactRecord {
+                            name_offset,
+                            name_len,
+                            extension_id: 0,
+                            flags: record.stdinfo.flags,
+                            parent_idx,
+                            size: stream.size.length,
+                            allocated: stream.size.allocated,
+                            created: record.stdinfo.created,
+                            modified: record.stdinfo.modified,
+                            accessed: record.stdinfo.accessed,
+                            descendants: 0,
+                            treesize: 0,
+                            tree_allocated: 0,
+                            _pad: [0; 4],
+                        });
+                    }
+                }
+            }
+            se = stream.next_entry;
+        }
+    }
+    extra
+}
+
 /// Build a `DriveCompactIndex` from a loaded `MftIndex`.
 ///
 /// Returns `(DriveCompactIndex, compact_build_ms, trigram_build_ms)`.
@@ -556,142 +685,11 @@ pub fn build_compact_index(
         })
         .collect();
 
-    // Phase 2: expand hardlinks (sequential — rare, <1% of records).
-    // For each valid record with name_count > 1, create additional
-    // CompactRecords with the alternate name's offset/len and parent_idx.
-    let mut extra_records: Vec<CompactRecord> = Vec::new();
-    for (idx, record) in index.records.iter().enumerate() {
-        if !resolver.is_valid_idx(idx) || record.name_count <= 1 {
-            continue;
-        }
-        // Walk the link chain for alternate names.
-        let mut link_entry = record.first_name.next_entry;
-        while link_entry != uffs_mft::NO_ENTRY {
-            let Some(link) = index.links.get(link_entry as usize) else {
-                break;
-            };
-            let link_parent = resolve_parent(link.parent_frs, record.frs);
-            extra_records.push(CompactRecord {
-                name_offset: link.name.offset,
-                name_len: link.name.length(),
-                extension_id: link.name.extension_id(),
-                flags: record.stdinfo.flags,
-                parent_idx: link_parent,
-                size: record.first_stream.size.length,
-                allocated: record.first_stream.size.allocated,
-                created: record.stdinfo.created,
-                modified: record.stdinfo.modified,
-                accessed: record.stdinfo.accessed,
-                descendants: record.descendants,
-                treesize: record.treesize,
-                tree_allocated: record.tree_allocated,
-                _pad: [0; 4],
-            });
-            link_entry = link.next_entry;
-        }
-    }
-
-    // Merge primary + hardlink records.
-    records.extend(extra_records);
-
-    // Phase 3: expand ADS (Alternate Data Streams) — sequential.
-    // For each valid record with stream_count > 1, walk the stream chain and
-    // create additional CompactRecords with a combined "base:stream" name.
-    // ADS entries are rare (~0.01% of records on typical volumes).
-    //
-    // IMPORTANT: ADS must be expanded for EVERY name (primary + hardlinks).
-    // The C++ baseline emits one ADS row per (name × stream) combination,
-    // so a file with 2 hardlinks and 1 ADS produces 2 ADS rows.
+    // Phase 2+3: expand hardlinks and ADS (sequential — rare, <1% of records).
     let mut names = index.names.as_bytes().to_vec();
-    let mut ads_records: Vec<CompactRecord> = Vec::new();
-    for (idx, record) in index.records.iter().enumerate() {
-        if !resolver.is_valid_idx(idx) || record.stream_count <= 1 {
-            continue;
-        }
-
-        // Collect all names for this record (primary + hardlinks).
-        let mut all_names: Vec<(&str, u32)> = Vec::new();
-        let primary_name = index.get_name(&record.first_name.name);
-        if !primary_name.is_empty() {
-            let parent_idx = resolve_parent(record.first_name.parent_frs, record.frs);
-            all_names.push((primary_name, parent_idx));
-        }
-        // Walk hardlink chain for additional names.
-        if record.name_count > 1 {
-            let mut link_entry = record.first_name.next_entry;
-            while link_entry != uffs_mft::NO_ENTRY {
-                let Some(link) = index.links.get(link_entry as usize) else {
-                    break;
-                };
-                let link_name = index.get_name(&link.name);
-                if !link_name.is_empty() {
-                    let link_parent = resolve_parent(link.parent_frs, record.frs);
-                    all_names.push((link_name, link_parent));
-                }
-                link_entry = link.next_entry;
-            }
-        }
-
-        if all_names.is_empty() {
-            continue;
-        }
-
-        // Collect output streams (skip default $DATA at head of chain).
-        let mut output_streams: Vec<(&str, u64, u64)> = Vec::new();
-        let mut stream_entry = record.first_stream.next_entry;
-        while stream_entry != uffs_mft::NO_ENTRY {
-            let Some(stream) = index.streams.get(stream_entry as usize) else {
-                break;
-            };
-            if stream.is_output_stream() {
-                let stream_name = index.stream_name(stream);
-                if !stream_name.is_empty() {
-                    output_streams.push((
-                        stream_name,
-                        stream.size.length,
-                        stream.size.allocated,
-                    ));
-                }
-            }
-            stream_entry = stream.next_entry;
-        }
-
-        // Expand: every name × every output stream.
-        for &(base_name, parent_idx) in &all_names {
-            for &(stream_name, stream_size, stream_alloc) in &output_streams {
-                let combined = format!("{base_name}:{stream_name}");
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "names buffer < 4GB for any real volume"
-                )]
-                let name_offset = names.len() as u32;
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "combined name length < 65535 chars"
-                )]
-                let name_len = combined.len() as u16;
-                names.extend_from_slice(combined.as_bytes());
-
-                ads_records.push(CompactRecord {
-                    name_offset,
-                    name_len,
-                    extension_id: 0, // ADS names don't have meaningful extensions
-                    flags: record.stdinfo.flags, // preserve raw NTFS flags (C++ parity)
-                    parent_idx,
-                    size: stream_size,
-                    allocated: stream_alloc,
-                    created: record.stdinfo.created,
-                    modified: record.stdinfo.modified,
-                    accessed: record.stdinfo.accessed,
-                    descendants: 0,
-                    treesize: 0,
-                    tree_allocated: 0,
-                    _pad: [0; 4],
-                });
-            }
-        }
-    }
-    records.extend(ads_records);
+    let expanded =
+        expand_links_and_ads(index, &resolver, &resolve_parent, &mut names);
+    records.extend(expanded);
 
     // Clone-then-lowercase avoids the intermediate `String` allocation that
     // `to_ascii_lowercase().into_bytes()` would create (~150MB saved).
