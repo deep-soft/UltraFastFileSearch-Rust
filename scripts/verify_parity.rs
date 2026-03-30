@@ -718,44 +718,47 @@ fn run_live_drive_parity(
         println!("  ✅ SORTED MATCH — Content identical (different traversal order)");
         (VerifyResult::SortedMatch, 0usize)
     } else {
-        // Streaming superset check (filter ADS + footer)
-        println!("  Fingerprints differ; streaming superset comparison...");
+        // ADS-aware streaming comparison (no silent ADS filtering)
+        println!("  Fingerprints differ; running ADS-aware streaming comparison...");
         let t_diff = Instant::now();
         let diff = compute_streaming_diff(&cpp_raw, &rust_raw);
         let diff_elapsed = t_diff.elapsed();
 
+        let total_only_baseline = diff.only_in_baseline_data.len() + diff.only_in_baseline_ads.len();
+        let total_only_rust = diff.only_in_rust_data.len() + diff.only_in_rust_ads.len();
         println!();
         println!(
-            "  Filter stats: baseline {}/{} data/ADS/hdr, Rust {}/{} data/ADS/hdr",
-            diff.baseline_data_lines,
-            diff.baseline_ads_filtered + diff.baseline_header_footer_filtered,
-            diff.rust_data_lines,
-            diff.rust_ads_filtered + diff.rust_header_footer_filtered,
+            "  Streaming diff: {:.1}s",
+            diff_elapsed.as_secs_f64()
         );
-        println!(
-            "  Streaming diff: {:.1}s — {} only in C++, {} only in Rust",
-            diff_elapsed.as_secs_f64(),
-            diff.only_in_baseline.len(),
-            diff.only_in_rust.len()
-        );
+        println!("     Only in baseline: {} total ({} data, {} ADS)",
+            total_only_baseline, diff.only_in_baseline_data.len(), diff.only_in_baseline_ads.len());
+        println!("     Only in Rust:     {} total ({} data, {} ADS)",
+            total_only_rust, diff.only_in_rust_data.len(), diff.only_in_rust_ads.len());
 
-        // Rust must NOT have fewer data lines — that means missing entries
-        if diff.rust_data_lines < diff.baseline_data_lines && diff.only_in_baseline.is_empty() {
-            let gap = diff.baseline_data_lines - diff.rust_data_lines;
+        // Show ADS differences
+        if !diff.only_in_baseline_ads.is_empty() {
             println!();
-            println!("  ❌ PARITY FAILURE: Rust has {gap} fewer data lines than C++");
-            println!("     Baseline data lines: {}", diff.baseline_data_lines);
-            println!("     Rust data lines:     {}", diff.rust_data_lines);
-            println!("     Filtered diff showed 0 missing — filter is masking the gap.");
-            (VerifyResult::Mismatch, 0usize)
-        } else if diff.only_in_baseline.is_empty() && diff.rust_data_lines >= diff.baseline_data_lines {
-            let extra = diff.only_in_rust.len();
+            println!("  ── ADS entries in C++ but not in Rust ({} total) ──",
+                diff.only_in_baseline_ads.len());
+            show_diff_lines(&diff.only_in_baseline_ads);
+        }
+        if !diff.only_in_rust_ads.is_empty() {
+            println!();
+            println!("  ── ⚠️  UNEXPECTED: ADS entries in Rust but not in C++ ({} total) ──",
+                diff.only_in_rust_ads.len());
+            show_diff_lines(&diff.only_in_rust_ads);
+        }
+
+        // Decision based on non-ADS data lines
+        if diff.only_in_baseline_data.is_empty() {
+            let extra = diff.only_in_rust_data.len();
             println!();
             println!("  ✅ SUPERSET MATCH (Rust ⊇ C++)");
-            println!("     Extra Rust lines: {extra}");
+            println!("     Extra Rust data lines: {extra}");
 
-            if !diff.only_in_rust.is_empty() {
-                verify_hardlinks_from_file(&cpp_raw, &diff.only_in_rust);
+            if !diff.only_in_rust_data.is_empty() {
+                verify_hardlinks_from_file(&cpp_raw, &diff.only_in_rust_data);
             }
             (VerifyResult::SupersetMatch, extra)
         } else {
@@ -763,12 +766,24 @@ fn run_live_drive_parity(
             println!("  ❌ MISMATCH");
             println!(
                 "     C++ has {} data lines not in Rust, Rust has {} data lines not in C++",
-                diff.only_in_baseline.len(),
-                diff.only_in_rust.len()
+                diff.only_in_baseline_data.len(),
+                diff.only_in_rust_data.len()
             );
+            if !diff.only_in_baseline_data.is_empty() {
+                println!();
+                println!("  ── Data lines MISSING from Rust ({} total) ──",
+                    diff.only_in_baseline_data.len());
+                show_diff_lines(&diff.only_in_baseline_data);
+            }
+            if !diff.only_in_rust_data.is_empty() {
+                println!();
+                println!("  ── Extra data lines in Rust ({} total) ──",
+                    diff.only_in_rust_data.len());
+                show_diff_lines(&diff.only_in_rust_data);
+            }
             println!();
-            show_paired_diffs(&diff.only_in_baseline, &diff.only_in_rust);
-            (VerifyResult::Mismatch, diff.only_in_rust.len())
+            show_paired_diffs(&diff.only_in_baseline_data, &diff.only_in_rust_data);
+            (VerifyResult::Mismatch, diff.only_in_rust_data.len())
         }
     };
 
@@ -1857,21 +1872,19 @@ fn verify_single_drive(
         };
     }
 
-    // ─── Superset comparison ───────────────────────────────────────────
-    // The C++ tool has a known bug: files with hardlinks across different
-    // directories are silently dropped (LIFO name_index vs ChildInfo mismatch).
-    // Everything (voidtools) confirms: all hardlinks should appear in output.
-    //
-    // Strategy: filter both outputs (strip ADS + footer/header), then check
-    // if all C++ data lines appear in Rust output. If so, Rust is a correct
-    // superset and parity is achieved.
-    println!("  Fingerprints differ; trying streaming superset comparison (filter ADS + footer)...");
+    // ─── Detailed comparison (ADS-aware, no silent filtering) ─────────
+    // ADS lines participate in the diff. After diffing, we classify the
+    // differences into ADS vs non-ADS:
+    //   - Non-ADS data missing from Rust → HARD FAILURE
+    //   - ADS only in baseline → EXPECTED (Rust doesn't output ADS)
+    //   - Extra non-ADS in Rust → usually hardlinks (C++ bug drops them)
+    println!("  Fingerprints differ; running ADS-aware streaming comparison...");
 
     let t_diff = Instant::now();
     let diff = compute_streaming_diff(&golden_baseline_file, rust_output);
     let diff_elapsed = t_diff.elapsed();
 
-    // ── Show filtered line count breakdown ──
+    // ── Line count breakdown ──
     println!();
     println!("  ┌─────────────────────────────────────────────────────────────┐");
     println!("  │  LINE COUNT BREAKDOWN                                       │");
@@ -1883,152 +1896,61 @@ fn verify_single_drive(
         golden_stats.line_count, rust_stats.line_count
     );
     println!(
-        "  │  Header/footer (filtered)│ {:>12} │ {:>17} │",
+        "  │  Header/footer (skipped) │ {:>12} │ {:>17} │",
         diff.baseline_header_footer_filtered, diff.rust_header_footer_filtered
-    );
-    println!(
-        "  │  ADS entries (filtered)  │ {:>12} │ {:>17} │",
-        diff.baseline_ads_filtered, diff.rust_ads_filtered
     );
     println!(
         "  │  Data lines (compared)   │ {:>12} │ {:>17} │",
         diff.baseline_data_lines, diff.rust_data_lines
     );
     println!("  └──────────────────────────┴──────────────┴───────────────────┘");
+
+    // ── Diff results breakdown ──
+    let total_only_baseline = diff.only_in_baseline_data.len() + diff.only_in_baseline_ads.len();
+    let total_only_rust = diff.only_in_rust_data.len() + diff.only_in_rust_ads.len();
     println!();
     println!(
-        "  Streaming diff completed in {:.1}s: {} only in baseline, {} only in Rust",
-        diff_elapsed.as_secs_f64(),
-        diff.only_in_baseline.len(),
-        diff.only_in_rust.len()
+        "  Streaming diff completed in {:.1}s:",
+        diff_elapsed.as_secs_f64()
     );
+    println!("     Only in baseline: {} total ({} data, {} ADS)",
+        total_only_baseline, diff.only_in_baseline_data.len(), diff.only_in_baseline_ads.len());
+    println!("     Only in Rust:     {} total ({} data, {} ADS)",
+        total_only_rust, diff.only_in_rust_data.len(), diff.only_in_rust_ads.len());
 
-    // ── Sanity check: Rust must NOT have fewer data lines than baseline ──
-    // Having fewer data lines means Rust is MISSING entries. Even if the
-    // filtered diff shows "0 only in baseline", the raw count gap reveals
-    // entries that were filtered away on only one side — that's a real bug.
-    if diff.rust_data_lines < diff.baseline_data_lines && diff.only_in_baseline.is_empty() {
-        // The filtered diff says "all baseline lines are in Rust" but the
-        // data line counts disagree. This means the filter is masking a gap.
-        let gap = diff.baseline_data_lines - diff.rust_data_lines;
+    // ── Show ADS differences (always, when they exist) ──
+    if !diff.only_in_baseline_ads.is_empty() {
         println!();
-        println!("  ╔══════════════════════════════════════════════════════════════╗");
-        println!("  ║  ❌ PARITY FAILURE: Rust has fewer data lines than baseline  ║");
-        println!("  ╚══════════════════════════════════════════════════════════════╝");
+        println!("  ── ADS entries in baseline but not in Rust ({} total) ──",
+            diff.only_in_baseline_ads.len());
+        println!("     (Expected: Rust does not output Alternate Data Streams)");
+        show_diff_lines(&diff.only_in_baseline_ads);
+    }
+    if !diff.only_in_rust_ads.is_empty() {
         println!();
-        println!("     Baseline data lines: {}", diff.baseline_data_lines);
-        println!("     Rust data lines:     {}", diff.rust_data_lines);
-        println!("     Gap:                 {} MISSING entries", gap);
-        println!();
-        println!("     Filtered diff showed 0 missing, but data line counts disagree.");
-        println!("     This indicates the ADS/header filter is hiding real differences.");
-        println!();
-        println!("     Investigate: Does the Rust output have ADS entries or");
-        println!("     header/footer lines that the baseline does not?");
-        println!(
-            "       Baseline ADS: {}, header/footer: {}",
-            diff.baseline_ads_filtered, diff.baseline_header_footer_filtered
-        );
-        println!(
-            "       Rust ADS:     {}, header/footer: {}",
-            diff.rust_ads_filtered, diff.rust_header_footer_filtered
-        );
-
-        return DriveResult {
-            drive_letter: drive_letter.to_string(),
-            result: VerifyResult::Mismatch,
-            baseline_lines: golden_stats.line_count,
-            rust_lines: rust_stats.line_count,
-            extra_rust_lines: 0,
-            mft_size_bytes,
-            parse_duration,
-        };
+        println!("  ── ⚠️  UNEXPECTED: ADS entries in Rust but not in baseline ({} total) ──",
+            diff.only_in_rust_ads.len());
+        show_diff_lines(&diff.only_in_rust_ads);
     }
 
-    if diff.only_in_baseline.is_empty() && diff.rust_data_lines >= diff.baseline_data_lines {
-        // All C++ data lines appear in Rust AND Rust has >= data lines — valid superset
-        let extra = diff.only_in_rust.len();
+    // ── Decision: based on NON-ADS data lines only ──
+    if diff.only_in_baseline_data.is_empty() {
+        // All baseline data lines found in Rust — parity achieved
+        let extra_data = diff.only_in_rust_data.len();
         println!();
         println!("  ✅ RESULT: SUPERSET MATCH (Rust ⊇ C++)");
         println!("     All C++ data lines found in Rust output.");
-        println!("     Extra Rust lines: {}", extra);
+        if extra_data > 0 {
+            println!("     Extra Rust data lines: {extra_data}");
+        }
+        if !diff.only_in_baseline_ads.is_empty() {
+            println!("     ADS entries only in C++: {} (expected — Rust skips ADS)",
+                diff.only_in_baseline_ads.len());
+        }
 
-        // Verify each extra line is actually a hardlink
-        if !diff.only_in_rust.is_empty() {
-            let common_fingerprints: HashSet<String> = {
-                let file = fs::File::open(&golden_baseline_file).unwrap_or_else(|e| {
-                    panic!("Failed to open {}: {e}", golden_baseline_file.display())
-                });
-                let reader = BufReader::with_capacity(256 * 1024, file);
-                reader
-                    .lines()
-                    .filter_map(|line| {
-                        let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
-                        if is_footer_or_header_line(&line) || is_ads_line(&line) {
-                            return None;
-                        }
-                        extract_data_fingerprint(&line)
-                    })
-                    .collect()
-            };
-
-            let mut extra_fingerprints: HashMap<String, usize> = HashMap::new();
-            for line in &diff.only_in_rust {
-                if let Some(fp) = extract_data_fingerprint(line) {
-                    *extra_fingerprints.entry(fp).or_insert(0) += 1;
-                }
-            }
-
-            let mut verified_hardlinks = Vec::new();
-            let mut unverified_extras = Vec::new();
-
-            for line in &diff.only_in_rust {
-                let path = extract_path(line);
-                if let Some(fp) = extract_data_fingerprint(line) {
-                    if common_fingerprints.contains(&fp)
-                        || extra_fingerprints.get(&fp).copied().unwrap_or(0) > 1
-                    {
-                        verified_hardlinks.push((path, fp));
-                    } else {
-                        unverified_extras.push((path, fp));
-                    }
-                } else {
-                    unverified_extras.push((path, String::from("(unparseable)")));
-                }
-            }
-
-            println!();
-            println!(
-                "     Hardlink verification: {} verified, {} unverified",
-                verified_hardlinks.len(),
-                unverified_extras.len()
-            );
-
-            if !verified_hardlinks.is_empty() {
-                println!();
-                println!(
-                    "     ✅ Verified hardlinks (same size+timestamps as another entry):"
-                );
-                for (i, (path, _fp)) in verified_hardlinks.iter().enumerate().take(20) {
-                    println!("       {:>3}. {}", i + 1, path);
-                }
-                if verified_hardlinks.len() > 20 {
-                    println!("       ... and {} more", verified_hardlinks.len() - 20);
-                }
-            }
-
-            if !unverified_extras.is_empty() {
-                println!();
-                println!(
-                    "     ⚠️  UNVERIFIED extra Rust lines (NOT confirmed as hardlinks):"
-                );
-                for (i, (path, fp)) in unverified_extras.iter().enumerate().take(20) {
-                    println!("       {:>3}. {} [fingerprint: {}]", i + 1, path, fp);
-                }
-                if unverified_extras.len() > 20 {
-                    println!("       ... and {} more", unverified_extras.len() - 20);
-                }
-            }
+        // Verify extra non-ADS lines are hardlinks
+        if !diff.only_in_rust_data.is_empty() {
+            verify_hardlinks_inline(&golden_baseline_file, &diff.only_in_rust_data);
         }
 
         return DriveResult {
@@ -2036,38 +1958,57 @@ fn verify_single_drive(
             result: VerifyResult::SupersetMatch,
             baseline_lines: golden_stats.line_count,
             rust_lines: rust_stats.line_count,
-            extra_rust_lines: extra,
+            extra_rust_lines: extra_data,
             mft_size_bytes,
             parse_duration,
         };
     }
 
-    // True mismatch: C++ has data lines that Rust doesn't
+    // Non-ADS data lines missing from Rust — TRUE MISMATCH
     println!();
     println!("  ❌ RESULT: MISMATCH (C++ has data lines not in Rust)");
     println!(
-        "     Data lines only in C++ (missing from Rust): {}",
-        diff.only_in_baseline.len()
+        "     Data lines only in C++ (MISSING from Rust): {}",
+        diff.only_in_baseline_data.len()
     );
     println!(
         "     Data lines only in Rust (extra):             {}",
-        diff.only_in_rust.len()
+        diff.only_in_rust_data.len()
     );
     println!(
-        "     Raw line count:  {} (baseline) vs {} (Rust)",
+        "     ADS only in C++:  {}    ADS only in Rust: {}",
+        diff.only_in_baseline_ads.len(),
+        diff.only_in_rust_ads.len()
+    );
+    println!(
+        "     Raw:  {} (baseline) vs {} (Rust)",
         golden_stats.line_count, rust_stats.line_count
     );
     println!(
-        "     Data line count: {} (baseline) vs {} (Rust)",
+        "     Data: {} (baseline) vs {} (Rust)",
         diff.baseline_data_lines, diff.rust_data_lines
     );
     println!();
     println!("     TIP: If timestamps are off by exactly 1 hour, try the other TZ offset:");
     println!("          --tz -7 (PDT) or --tz -8 (PST)");
 
-    // Show paired diffs: match by path, show BASELINE vs RUST side by side
+    // Show the actual missing data lines (up to MAX_DIFF_DISPLAY)
+    if !diff.only_in_baseline_data.is_empty() {
+        println!();
+        println!("  ── Data lines MISSING from Rust ({} total) ──",
+            diff.only_in_baseline_data.len());
+        show_diff_lines(&diff.only_in_baseline_data);
+    }
+    if !diff.only_in_rust_data.is_empty() {
+        println!();
+        println!("  ── Extra data lines in Rust ({} total) ──",
+            diff.only_in_rust_data.len());
+        show_diff_lines(&diff.only_in_rust_data);
+    }
+
+    // Show paired diffs for data lines
     println!();
-    show_paired_diffs(&diff.only_in_baseline, &diff.only_in_rust);
+    show_paired_diffs(&diff.only_in_baseline_data, &diff.only_in_rust_data);
     println!();
 
     DriveResult {
@@ -2075,7 +2016,7 @@ fn verify_single_drive(
         result: VerifyResult::Mismatch,
         baseline_lines: golden_stats.line_count,
         rust_lines: rust_stats.line_count,
-        extra_rust_lines: diff.only_in_rust.len(),
+        extra_rust_lines: diff.only_in_rust_data.len(),
         mft_size_bytes,
         parse_duration,
     }
@@ -3096,22 +3037,27 @@ fn is_sorted_match(a: &StreamingFileStats, b: &StreamingFileStats) -> bool {
 /// Memory: O(n) with u64 keys (~16 bytes per entry) instead of full strings.
 /// Detailed result from a streaming diff comparison, including filter
 /// statistics so callers can detect when filtering is hiding real gaps.
+/// Maximum number of diff lines to display per category.
+const MAX_DIFF_DISPLAY: usize = 100;
+
 struct DiffResult {
-    /// Lines present in baseline but not in Rust (after filtering).
-    only_in_baseline: Vec<String>,
-    /// Lines present in Rust but not in baseline (after filtering).
-    only_in_rust: Vec<String>,
-    /// Number of data lines in baseline (after filtering ADS + header/footer).
+    // ── Post-diff classification (ADS vs non-ADS) ──
+    /// Non-ADS data lines only in baseline (Rust is MISSING these — hard failure).
+    only_in_baseline_data: Vec<String>,
+    /// Non-ADS data lines only in Rust (extra entries, usually hardlinks).
+    only_in_rust_data: Vec<String>,
+    /// ADS lines only in baseline (C++ reports ADS, Rust doesn't — expected).
+    only_in_baseline_ads: Vec<String>,
+    /// ADS lines only in Rust (unexpected — Rust shouldn't produce ADS).
+    only_in_rust_ads: Vec<String>,
+    // ── Line counts ──
+    /// Total data lines in baseline (excluding header/footer, INCLUDING ADS).
     baseline_data_lines: usize,
-    /// Number of data lines in Rust (after filtering ADS + header/footer).
+    /// Total data lines in Rust (excluding header/footer, INCLUDING ADS).
     rust_data_lines: usize,
-    /// Number of baseline lines filtered as ADS entries.
-    baseline_ads_filtered: usize,
-    /// Number of baseline lines filtered as header/footer.
+    /// Header/footer lines filtered from baseline.
     baseline_header_footer_filtered: usize,
-    /// Number of Rust lines filtered as ADS entries.
-    rust_ads_filtered: usize,
-    /// Number of Rust lines filtered as header/footer.
+    /// Header/footer lines filtered from Rust.
     rust_header_footer_filtered: usize,
 }
 
@@ -3119,10 +3065,10 @@ fn compute_streaming_diff(
     baseline_path: &Path,
     rust_path: &Path,
 ) -> DiffResult {
-    // Phase 1: Build HashMap<u64, i64> from baseline (positive counts)
+    // Phase 1: Build HashMap<u64, i64> from baseline (positive counts).
+    // ADS lines are included as regular data — classification happens post-diff.
     let mut counts: HashMap<u64, i64> = HashMap::new();
     let mut baseline_data_lines: usize = 0;
-    let mut baseline_ads_filtered: usize = 0;
     let mut baseline_header_footer_filtered: usize = 0;
     {
         let file = fs::File::open(baseline_path)
@@ -3134,10 +3080,6 @@ fn compute_streaming_diff(
                 baseline_header_footer_filtered += 1;
                 continue;
             }
-            if is_ads_line(&line) {
-                baseline_ads_filtered += 1;
-                continue;
-            }
             baseline_data_lines += 1;
             let h = fnv1a_64(line.as_bytes());
             *counts.entry(h).or_insert(0) += 1;
@@ -3147,7 +3089,6 @@ fn compute_streaming_diff(
     // Phase 2: Stream Rust file, decrement matching counts
     let mut only_in_rust_hashes: HashSet<u64> = HashSet::new();
     let mut rust_data_lines: usize = 0;
-    let mut rust_ads_filtered: usize = 0;
     let mut rust_header_footer_filtered: usize = 0;
     {
         let file = fs::File::open(rust_path)
@@ -3157,10 +3098,6 @@ fn compute_streaming_diff(
             let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
             if is_footer_or_header_line(&line) {
                 rust_header_footer_filtered += 1;
-                continue;
-            }
-            if is_ads_line(&line) {
-                rust_ads_filtered += 1;
                 continue;
             }
             rust_data_lines += 1;
@@ -3181,8 +3118,8 @@ fn compute_streaming_diff(
         .map(|(&h, _)| h)
         .collect();
 
-    // Phase 3: Re-read files to extract actual line strings for the diffs only.
-    let only_in_baseline = if only_in_baseline_hashes.is_empty() {
+    // Phase 3: Re-read files to collect actual diff lines (only header/footer filtered).
+    let only_in_baseline: Vec<String> = if only_in_baseline_hashes.is_empty() {
         Vec::new()
     } else {
         let file = fs::File::open(baseline_path)
@@ -3192,7 +3129,7 @@ fn compute_streaming_diff(
             .lines()
             .filter_map(|line| {
                 let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
-                if is_footer_or_header_line(&line) || is_ads_line(&line) {
+                if is_footer_or_header_line(&line) {
                     return None;
                 }
                 let h = fnv1a_64(line.as_bytes());
@@ -3205,7 +3142,7 @@ fn compute_streaming_diff(
             .collect()
     };
 
-    let only_in_rust = if only_in_rust_hashes.is_empty() {
+    let only_in_rust: Vec<String> = if only_in_rust_hashes.is_empty() {
         Vec::new()
     } else {
         let file = fs::File::open(rust_path)
@@ -3215,7 +3152,7 @@ fn compute_streaming_diff(
             .lines()
             .filter_map(|line| {
                 let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
-                if is_footer_or_header_line(&line) || is_ads_line(&line) {
+                if is_footer_or_header_line(&line) {
                     return None;
                 }
                 let h = fnv1a_64(line.as_bytes());
@@ -3228,14 +3165,20 @@ fn compute_streaming_diff(
             .collect()
     };
 
+    // Phase 4: Classify diff lines into ADS vs non-ADS.
+    let (only_in_baseline_ads, only_in_baseline_data): (Vec<_>, Vec<_>) =
+        only_in_baseline.into_iter().partition(|l| is_ads_line(l));
+    let (only_in_rust_ads, only_in_rust_data): (Vec<_>, Vec<_>) =
+        only_in_rust.into_iter().partition(|l| is_ads_line(l));
+
     DiffResult {
-        only_in_baseline,
-        only_in_rust,
+        only_in_baseline_data,
+        only_in_rust_data,
+        only_in_baseline_ads,
+        only_in_rust_ads,
         baseline_data_lines,
         rust_data_lines,
-        baseline_ads_filtered,
         baseline_header_footer_filtered,
-        rust_ads_filtered,
         rust_header_footer_filtered,
     }
 }
@@ -3369,6 +3312,97 @@ fn check_sorted_subset(subset: &[String], superset: &[String]) -> (Vec<String>, 
 
 
 /// Show paired diffs: match by path, display BASELINE vs RUST side by side.
+/// Display diff lines (up to MAX_DIFF_DISPLAY), truncating long lines.
+fn show_diff_lines(lines: &[String]) {
+    let show = lines.len().min(MAX_DIFF_DISPLAY);
+    for (i, line) in lines.iter().enumerate().take(show) {
+        let display = if line.len() > 200 {
+            format!("{}…", &line[..200])
+        } else {
+            line.clone()
+        };
+        println!("       {:>3}. {display}", i + 1);
+    }
+    if lines.len() > show {
+        println!("       ... and {} more", lines.len() - show);
+    }
+}
+
+/// Verify that extra Rust data lines are hardlinks (inline version for
+/// verify_single_drive).
+fn verify_hardlinks_inline(golden_baseline_file: &Path, only_in_rust_data: &[String]) {
+    let common_fingerprints: HashSet<String> = {
+        let file = fs::File::open(golden_baseline_file)
+            .unwrap_or_else(|e| panic!("Failed to open {}: {e}", golden_baseline_file.display()));
+        let reader = BufReader::with_capacity(256 * 1024, file);
+        reader
+            .lines()
+            .filter_map(|line| {
+                let line = line.unwrap_or_else(|e| panic!("Read error: {e}"));
+                if is_footer_or_header_line(&line) {
+                    return None;
+                }
+                extract_data_fingerprint(&line)
+            })
+            .collect()
+    };
+
+    let mut extra_fingerprints: HashMap<String, usize> = HashMap::new();
+    for line in only_in_rust_data {
+        if let Some(fp) = extract_data_fingerprint(line) {
+            *extra_fingerprints.entry(fp).or_insert(0) += 1;
+        }
+    }
+
+    let mut verified_hardlinks = Vec::new();
+    let mut unverified_extras = Vec::new();
+
+    for line in only_in_rust_data {
+        let path = extract_path(line);
+        if let Some(fp) = extract_data_fingerprint(line) {
+            if common_fingerprints.contains(&fp)
+                || extra_fingerprints.get(&fp).copied().unwrap_or(0) > 1
+            {
+                verified_hardlinks.push((path, fp));
+            } else {
+                unverified_extras.push((path, fp));
+            }
+        } else {
+            unverified_extras.push((path, String::from("(unparseable)")));
+        }
+    }
+
+    println!();
+    println!(
+        "     Hardlink verification: {} verified, {} unverified",
+        verified_hardlinks.len(),
+        unverified_extras.len()
+    );
+
+    if !verified_hardlinks.is_empty() {
+        println!();
+        println!("     ✅ Verified hardlinks (same size+timestamps as another entry):");
+        for (i, (path, _fp)) in verified_hardlinks.iter().enumerate().take(20) {
+            println!("       {:>3}. {}", i + 1, path);
+        }
+        if verified_hardlinks.len() > 20 {
+            println!("       ... and {} more", verified_hardlinks.len() - 20);
+        }
+    }
+
+    if !unverified_extras.is_empty() {
+        println!();
+        println!("     ⚠️  UNVERIFIED extra Rust lines (NOT confirmed as hardlinks):");
+        for (i, (path, fp)) in unverified_extras.iter().enumerate().take(20) {
+            println!("       {:>3}. {} [fingerprint: {}]", i + 1, path, fp);
+        }
+        if unverified_extras.len() > 20 {
+            println!("       ... and {} more", unverified_extras.len() - 20);
+        }
+    }
+}
+
+
 /// For lines that share the same path but differ in field values (size, timestamps,
 /// flags), shows them paired. Lines only in one side are shown separately.
 fn show_paired_diffs(only_in_baseline: &[String], only_in_rust: &[String]) {
