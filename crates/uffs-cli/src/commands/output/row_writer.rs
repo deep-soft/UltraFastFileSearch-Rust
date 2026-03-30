@@ -1,4 +1,5 @@
-//! Streaming row writer: single-pass output from `MftIndex` to `Write`.
+//! **[LEGACY_PIPELINE]** Streaming row writer: single-pass output from
+//! `MftIndex` to `Write`.
 
 use std::io::Write;
 

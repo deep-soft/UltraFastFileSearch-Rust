@@ -299,6 +299,7 @@ async fn run() -> Result<()> {
                     &cli.pos,
                     &cli.neg,
                     &cli.query_mode,
+                    &cli.pipeline,
                     cli.tz_offset,
                     cli.chaos_seed,
                     true, // ADS always shown — matches C++ behavior

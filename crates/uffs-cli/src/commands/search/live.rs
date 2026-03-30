@@ -1,4 +1,5 @@
-//! Windows LIVE multi-drive and single-drive streaming search.
+//! **[LEGACY_PIPELINE]** Windows LIVE multi-drive and single-drive streaming
+//! search.
 
 #[cfg(windows)]
 use anyhow::{Context, Result, bail};

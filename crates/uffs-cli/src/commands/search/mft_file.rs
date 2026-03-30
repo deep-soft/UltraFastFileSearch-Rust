@@ -1,4 +1,4 @@
-//! Multi-file MFT streaming search execution.
+//! **[LEGACY_PIPELINE]** Multi-file MFT streaming search execution.
 
 use std::path::PathBuf;
 

@@ -93,8 +93,17 @@ pub const ERR_BAD_PATTERN: i32 = -2;
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Parameters for the `search` method.
+///
+/// All filter fields mirror the CLI surface; see
+/// [`uffs_core::search::filters::SearchFilters`] for semantics.
+/// Every field is optional — omitted fields impose no constraint.
 #[derive(Debug, Serialize, Deserialize, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "JSON wire type — bools are the natural encoding"
+)]
 pub struct SearchParams {
+    // ── Core ────────────────────────────────────────────────────────
     /// Search pattern (glob, regex with `>` prefix, or substring).
     pub pattern: String,
     /// Case-sensitive matching.
@@ -103,21 +112,83 @@ pub struct SearchParams {
     /// Whole-word matching.
     #[serde(default)]
     pub whole_word: bool,
+
+    // ── Sort ────────────────────────────────────────────────────────
     /// Sort column name (e.g. `"modified"`, `"size"`, `"name"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort: Option<String>,
     /// Sort direction: `true` = descending.
     #[serde(default)]
     pub sort_desc: bool,
-    /// Maximum results to return.
+
+    // ── Limit ───────────────────────────────────────────────────────
+    /// Maximum results to return (`None` = unlimited).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+
+    // ── Filter mode ────────────────────────────────────────────────
     /// Filter mode: `"all"` (default), `"files"`, `"dirs"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
     /// Specific drives to search (empty = all loaded).
     #[serde(default)]
     pub drives: Vec<char>,
+
+    // ── Size filters ───────────────────────────────────────────────
+    /// Minimum file size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_size: Option<u64>,
+    /// Maximum file size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u64>,
+
+    // ── Descendant filters ─────────────────────────────────────────
+    /// Minimum descendant count (inclusive).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_descendants: Option<u32>,
+    /// Maximum descendant count (inclusive).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_descendants: Option<u32>,
+
+    // ── Time filters ───────────────────────────────────────────────
+    /// Modified-time lower bound (e.g. `"7d"`, `"24h"`, `"2026-01-15"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newer: Option<String>,
+    /// Modified-time upper bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub older: Option<String>,
+    /// Created-time lower bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newer_created: Option<String>,
+    /// Created-time upper bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub older_created: Option<String>,
+    /// Accessed-time lower bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newer_accessed: Option<String>,
+    /// Accessed-time upper bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub older_accessed: Option<String>,
+
+    // ── Attribute filter ───────────────────────────────────────────
+    /// Attribute filter spec (e.g. `"hidden,compressed,!system"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attr: Option<String>,
+
+    // ── Extension filter ───────────────────────────────────────────
+    /// Comma-separated extension filter (e.g. `"rs,toml,md"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<String>,
+
+    // ── Exclude ────────────────────────────────────────────────────
+    /// Exclude glob pattern (e.g. `"backup*"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<String>,
+
+    // ── Misc ───────────────────────────────────────────────────────
+    /// Hide system meta-files (names starting with `$`).
+    #[serde(default)]
+    pub hide_system: bool,
 }
 
 /// Parameters for the `refresh` method.

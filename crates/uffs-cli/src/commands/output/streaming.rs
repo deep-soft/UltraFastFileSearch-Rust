@@ -1,4 +1,4 @@
-//! Streaming output writer for multi-drive search.
+//! **[LEGACY_PIPELINE]** Streaming output writer for multi-drive search.
 //!
 //! Supports CSV (header + rows) and NDJSON (one JSON object per line) formats.
 //! Writes results as each drive completes for immediate user feedback.

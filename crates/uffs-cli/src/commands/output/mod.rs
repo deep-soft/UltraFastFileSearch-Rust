@@ -13,13 +13,17 @@ use tracing::info;
 use uffs_core::output::{CPP_COLUMN_ORDER, OutputColumn, OutputConfig};
 use uffs_core::{export_json, export_table};
 
-/// Record filter matching, attribute/age parsing, sort comparison.
+/// **[LEGACY_PIPELINE]** Record filter matching, attribute/age parsing, sort
+/// comparison.
 mod filter;
-/// Streaming row writer: single-pass output from `MftIndex`.
+/// **[LEGACY_PIPELINE]** Streaming row writer: single-pass output from
+/// `MftIndex`.
 mod row_writer;
-/// Output type definitions: attribute enums, record filter, sort types.
+/// **[LEGACY_PIPELINE]** Output type definitions: attribute enums, record
+/// filter, sort types.
 pub(super) mod types;
 
+/// **[LEGACY_PIPELINE]** Streaming output writer for multi-drive search.
 mod streaming;
 // ── Re-exports for sibling modules ──────────────────────────────────────────
 pub(super) use filter::{parse_age_filter, parse_attr_filter, parse_sort_spec};
@@ -59,7 +63,8 @@ pub(super) fn can_write_native_results(format: &str, output_config: &OutputConfi
         && !selected_output_columns(output_config).contains(&OutputColumn::Bulkiness)
 }
 
-/// Stream output directly from `MftIndex` — zero `SearchResult` allocation.
+/// **`[LEGACY_PIPELINE]`** Stream output directly from `MftIndex` — zero
+/// `SearchResult` allocation.
 ///
 /// This replaces the chain: `IndexQuery::collect()` → `Vec<SearchResult>` →
 /// `write_native_results_to()` with a single pass that reads record fields
@@ -418,7 +423,7 @@ pub(super) fn write_results(
 }
 
 /// Write native `DisplayRow` results — no `DataFrame` involved.
-#[cfg(windows)]
+///
 /// Mirrors [`write_results`] but uses `OutputConfig::write_display_rows`
 /// instead of `OutputConfig::write` (`DataFrame` path).
 pub(super) fn write_native_results(

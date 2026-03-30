@@ -17,7 +17,7 @@ use crate::trigram::TrigramIndex;
 
 /// Compact per-record data for in-memory search, filter, and sort.
 ///
-/// 72 bytes per record (68 data + 4 explicit tail padding).
+/// 80 bytes per record (76 data + 4 explicit tail padding).
 /// Derives `bytemuck::Pod` + `Zeroable` so the entire record array can be
 /// serialized/deserialized as a single bulk `memcpy` — no per-field encoding.
 #[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -30,6 +30,8 @@ pub struct CompactRecord {
     pub allocated: u64,
     /// Sum of logical file sizes in entire subtree.
     pub treesize: u64,
+    /// Sum of allocated sizes in entire subtree.
+    pub tree_allocated: u64,
     /// Creation time (Unix microseconds).
     pub created: i64,
     /// Last write time (Unix microseconds).
@@ -89,8 +91,8 @@ impl CompactRecord {
 
 // Compile-time size assertion.
 const _: () = assert!(
-    size_of::<CompactRecord>() == 72,
-    "CompactRecord must be exactly 72 bytes"
+    size_of::<CompactRecord>() == 80,
+    "CompactRecord must be exactly 80 bytes"
 );
 
 /// Children index in CSR (Compressed Sparse Row) layout.
@@ -379,12 +381,27 @@ fn load_mft_index_from_file(
         "📖 Parsing MFT file (delegating to uffs-mft)"
     );
 
-    let options = uffs_mft::raw::LoadRawOptions {
-        header_only: false,
-        volume_letter: Some(drive_letter),
-        forensic: false,
+    // IOCP captures must use `load_iocp_to_index` (unified `process_record`
+    // path) which mirrors the Windows LIVE inline parser exactly.  The generic
+    // `load_raw_to_index_with_options` dispatches IOCP to
+    // `load_iocp_capture_to_index` (MftRecordMerger multi-pass path) which
+    // produces different `total_stream_count` values and therefore different
+    // tree metrics (descendants, treesize) — a known parity divergence.
+    let is_iocp = uffs_mft::is_iocp_capture(mft_path).unwrap_or(false);
+    let parsed = if is_iocp {
+        tracing::info!(
+            drive = %drive_letter,
+            "📼 IOCP capture detected — using unified process_record parser for parity"
+        );
+        uffs_mft::load_iocp_to_index(mft_path)?
+    } else {
+        let options = uffs_mft::raw::LoadRawOptions {
+            header_only: false,
+            volume_letter: Some(drive_letter),
+            forensic: false,
+        };
+        uffs_mft::MftReader::load_raw_to_index_with_options(mft_path, &options)?
     };
-    let parsed = uffs_mft::MftReader::load_raw_to_index_with_options(mft_path, &options)?;
 
     // Background save: serialize sync (~500ms), compress/encrypt/write in bg
     // thread.
@@ -470,32 +487,46 @@ pub fn build_compact_index(
     drive_letter: char,
     index: &MftIndex,
 ) -> (DriveCompactIndex, u128, u128) {
+    use uffs_mft::index::PathResolver;
+
     let compact_start = Instant::now();
 
-    // Parallel construction: each record is independent (shared read on
-    // frs_to_idx for parent lookup, no writes). ~140ms → ~30ms on 8 cores.
-    let records: Vec<CompactRecord> = index
+    // Build path resolver to determine which records are valid.
+    // This filters out system metafiles (FRS 0-15 except root) and
+    // propagates invalidity to descendants (e.g., $Extend children).
+    let resolver = PathResolver::build(index, false);
+
+    // Helper: resolve parent_frs → compact index.
+    let resolve_parent = |parent_frs: u64, own_frs: u64| -> u32 {
+        if parent_frs == own_frs
+            || parent_frs == u64::from(uffs_mft::NO_ENTRY)
+            || parent_frs == uffs_mft::ROOT_FRS
+        {
+            u32::MAX
+        } else {
+            let parent_usize = uffs_mft::frs_to_usize(parent_frs);
+            index
+                .frs_to_idx
+                .get(parent_usize)
+                .copied()
+                .filter(|&idx| idx != uffs_mft::NO_ENTRY)
+                .unwrap_or(u32::MAX)
+        }
+    };
+
+    // Phase 1: build primary compact records (parallel).
+    let mut records: Vec<CompactRecord> = index
         .records
         .par_iter()
-        .map(|record| {
+        .enumerate()
+        .map(|(idx, record)| {
+            // Skip invalid records (system metafiles + descendants).
+            if !resolver.is_valid_idx(idx) {
+                return CompactRecord::default();
+            }
+
             let name_ref = &record.first_name.name;
-            let parent_idx = {
-                let parent_frs = record.first_name.parent_frs;
-                if parent_frs == record.frs
-                    || parent_frs == u64::from(uffs_mft::NO_ENTRY)
-                    || parent_frs == uffs_mft::ROOT_FRS
-                {
-                    u32::MAX
-                } else {
-                    let parent_usize = uffs_mft::frs_to_usize(parent_frs);
-                    index
-                        .frs_to_idx
-                        .get(parent_usize)
-                        .copied()
-                        .filter(|&idx| idx != uffs_mft::NO_ENTRY)
-                        .unwrap_or(u32::MAX)
-                }
-            };
+            let parent_idx = resolve_parent(record.first_name.parent_frs, record.frs);
 
             CompactRecord {
                 name_offset: name_ref.offset,
@@ -510,10 +541,49 @@ pub fn build_compact_index(
                 accessed: record.stdinfo.accessed,
                 descendants: record.descendants,
                 treesize: record.treesize,
+                tree_allocated: record.tree_allocated,
                 _pad: [0; 4],
             }
         })
         .collect();
+
+    // Phase 2: expand hardlinks (sequential — rare, <1% of records).
+    // For each valid record with name_count > 1, create additional
+    // CompactRecords with the alternate name's offset/len and parent_idx.
+    let mut extra_records: Vec<CompactRecord> = Vec::new();
+    for (idx, record) in index.records.iter().enumerate() {
+        if !resolver.is_valid_idx(idx) || record.name_count <= 1 {
+            continue;
+        }
+        // Walk the link chain for alternate names.
+        let mut link_entry = record.first_name.next_entry;
+        while link_entry != uffs_mft::NO_ENTRY {
+            let Some(link) = index.links.get(link_entry as usize) else {
+                break;
+            };
+            let link_parent = resolve_parent(link.parent_frs, record.frs);
+            extra_records.push(CompactRecord {
+                name_offset: link.name.offset,
+                name_len: link.name.length(),
+                extension_id: link.name.extension_id(),
+                flags: record.stdinfo.flags,
+                parent_idx: link_parent,
+                size: record.first_stream.size.length,
+                allocated: record.first_stream.size.allocated,
+                created: record.stdinfo.created,
+                modified: record.stdinfo.modified,
+                accessed: record.stdinfo.accessed,
+                descendants: record.descendants,
+                treesize: record.treesize,
+                tree_allocated: record.tree_allocated,
+                _pad: [0; 4],
+            });
+            link_entry = link.next_entry;
+        }
+    }
+
+    // Merge primary + hardlink records.
+    records.extend(extra_records);
 
     let names = index.names.as_bytes().to_vec();
     // Clone-then-lowercase avoids the intermediate `String` allocation that
@@ -659,6 +729,7 @@ pub fn apply_usn_patch(
                     accessed: 0,
                     descendants: 0,
                     treesize: 0,
+                    tree_allocated: 0,
                     _pad: [0; 4],
                 };
 
@@ -711,3 +782,14 @@ pub fn apply_usn_patch(
 
     stats
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// REGRESSION TESTS — Search Pipeline Parity Guards
+//
+// These tests protect critical behaviors that broke during the v0.4.30
+// refactor attempt.  They run on synthetic data (no Windows/MFT needed).
+// See `docs/architecture/2026_03_30_04_12_SEARCH_PIPELINE_REGRESSION_ANALYSIS.
+// md` ════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+#[path = "compact_tests.rs"]
+mod tests;

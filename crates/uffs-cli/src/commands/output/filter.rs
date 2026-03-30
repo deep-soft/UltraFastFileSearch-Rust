@@ -1,5 +1,5 @@
-//! Record filter matching, attribute/age parsing, sort specification parsing,
-//! and multi-tier record comparison.
+//! **[LEGACY_PIPELINE]** Record filter matching, attribute/age parsing, sort
+//! specification parsing, and multi-tier record comparison.
 
 use super::types::{AttrKind, AttrRequirement, SortColumn, SortKind, StreamingRecordFilter};
 

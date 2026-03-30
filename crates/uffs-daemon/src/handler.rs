@@ -5,9 +5,6 @@ use uffs_client::protocol::{
     RpcResponse, SearchParams,
 };
 
-/// Hard cap on search results per response (`S4.4.4`).
-const MAX_RESULT_LIMIT: u32 = 100_000;
-
 /// Maximum pattern length to prevent regex `DoS` (`S4.4.3`).
 const MAX_PATTERN_LENGTH: usize = 4096;
 
@@ -76,15 +73,7 @@ impl RequestHandler {
             .unwrap_or_default();
         }
 
-        // S4.4.4: Cap the limit to `MAX_RESULT_LIMIT`
-        let mut capped = search_params;
-        if let Some(limit) = capped.limit {
-            if limit > MAX_RESULT_LIMIT {
-                capped.limit = Some(MAX_RESULT_LIMIT);
-            }
-        }
-
-        let response = self.index.search(&capped).await;
+        let response = self.index.search(&search_params).await;
         let result = serde_json::to_value(&response).unwrap_or_default();
         serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
     }

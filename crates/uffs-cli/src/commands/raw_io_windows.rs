@@ -28,6 +28,12 @@ pub(crate) struct OwnedQueryFilters {
     min_size: Option<u64>,
     /// Maximum file size filter.
     max_size: Option<u64>,
+    /// Minimum descendant count filter (directories).
+    min_descendants: Option<u32>,
+    /// Maximum descendant count filter (directories).
+    max_descendants: Option<u32>,
+    /// Maximum number of results to return.
+    limit: u32,
 }
 
 impl OwnedQueryFilters {
@@ -41,6 +47,9 @@ impl OwnedQueryFilters {
             hide_system: filters.hide_system,
             min_size: filters.min_size,
             max_size: filters.max_size,
+            min_descendants: filters.min_descendants,
+            max_descendants: filters.max_descendants,
+            limit: filters.limit,
         }
     }
 
@@ -119,11 +128,17 @@ impl OwnedQueryFilters {
 
         let mut backend = MultiDriveBackend::new();
         backend.drives.push(compact);
+        // limit=0 means unlimited → pass None; otherwise pass Some.
+        let result_limit = if self.limit > 0 {
+            Some(self.limit)
+        } else {
+            None
+        };
         let result = backend.search(
             self.parsed.pattern(),
             self.parsed.is_case_sensitive(),
             false, // whole_word
-            None,  // result_limit (use default)
+            result_limit,
             filter_mode,
             &search_filters,
         );

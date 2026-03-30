@@ -1,4 +1,4 @@
-//! Single-file MFT streaming search execution.
+//! **[LEGACY_PIPELINE]** Single-file MFT streaming search execution.
 
 use anyhow::Result;
 use tracing::info;

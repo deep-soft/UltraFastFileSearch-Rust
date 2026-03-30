@@ -16,21 +16,23 @@ use super::raw_io::QueryFilters;
 
 /// Search dispatch routing and configuration building.
 mod dispatch;
-/// Windows LIVE multi-drive and single-drive streaming search.
+/// **[LEGACY_PIPELINE]** Windows LIVE multi-drive and single-drive streaming
+/// search.
 mod live;
-/// Multi-file MFT streaming search execution.
+/// **[LEGACY_PIPELINE]** Multi-file MFT streaming search execution.
 mod mft_file;
-/// Single-file MFT streaming search execution.
+/// **[LEGACY_PIPELINE]** Single-file MFT streaming search execution.
 mod single_file;
-/// Streaming I/O helpers for writing search results.
+/// **[LEGACY_PIPELINE]** Streaming I/O helpers for writing search results.
 mod streaming_io;
 /// Pure utility helpers for the search command.
 mod util;
 
-/// Per-drive search helpers shared by multi-drive command paths.
+/// **[LEGACY_PIPELINE]** Per-drive search helpers shared by multi-drive command
+/// paths.
 #[cfg(windows)]
 mod drive_search;
-/// Parallel multi-drive DataFrame helpers.
+/// **[LEGACY_PIPELINE]** Parallel multi-drive DataFrame helpers.
 #[cfg(windows)]
 mod multi_drive;
 // NOTE: streaming module removed (zero callers — superseded by live.rs
@@ -65,9 +67,7 @@ pub(super) fn search_drive_task_budget(total_drives: usize) -> usize {
 enum SearchDispatchResult {
     /// Streaming output was written directly - search is complete.
     StreamingComplete,
-    /// Native `DisplayRow` results from compact index search (Windows
-    /// multi-drive).
-    #[cfg(windows)]
+    /// Native `DisplayRow` results from compact index search.
     NativeRows(Vec<uffs_core::search::backend::DisplayRow>),
     /// Legacy `DataFrame` results (parquet index, exotic queries).
     DataFrame(uffs_polars::DataFrame),
@@ -75,7 +75,6 @@ enum SearchDispatchResult {
 
 /// Full search configuration - all parameters needed for any search path.
 #[expect(clippy::struct_excessive_bools, reason = "mirrors CLI parameters")]
-#[expect(dead_code, reason = "fields used conditionally on Windows")]
 struct SearchConfig<'a> {
     /// Search pattern.
     pattern: &'a str,
@@ -135,6 +134,9 @@ struct SearchConfig<'a> {
     name_only: bool,
     /// Query mode.
     query_mode: &'a str,
+    /// Pipeline mode: `"legacy"` (streaming+compact) or `"unified"` (new
+    /// compact-only).
+    pipeline: &'a str,
     /// Chaos seed for testing.
     chaos_seed: Option<u64>,
     /// Show Alternate Data Streams in output.
@@ -208,6 +210,7 @@ pub async fn search(
     pos: &str,
     neg: &str,
     query_mode: &str,
+    pipeline: &str,
     tz_offset: Option<i32>,
     chaos_seed: Option<u64>,
     show_ads: bool,
@@ -260,6 +263,7 @@ pub async fn search(
         pos,
         neg,
         query_mode,
+        pipeline,
         tz_offset,
         chaos_seed,
         show_ads,
@@ -273,7 +277,6 @@ pub async fn search(
     // Handle result.
     match result {
         SearchDispatchResult::StreamingComplete => Ok(()),
-        #[cfg(windows)]
         SearchDispatchResult::NativeRows(rows) => dispatch::finalize_native_output(&rows, &config),
         SearchDispatchResult::DataFrame(df) => dispatch::finalize_dataframe_output(df, &config),
     }

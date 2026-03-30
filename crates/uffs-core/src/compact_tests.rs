@@ -1,0 +1,359 @@
+use uffs_mft::index::{
+    IndexNameRef, IndexStreamInfo, LinkInfo, MftIndex, NO_ENTRY, ROOT_FRS, SizeInfo,
+};
+
+use super::*;
+
+// ── helpers ──────────────────────────────────────────────────────
+
+/// Push a name into the index and return its `IndexNameRef`.
+fn push_name(index: &mut MftIndex, name: &str) -> IndexNameRef {
+    let offset = index.add_name(name);
+    let ext_id = index.intern_extension(name);
+    IndexNameRef::new(
+        offset,
+        u16::try_from(name.len()).expect("test name too long"),
+        name.is_ascii(),
+        ext_id,
+    )
+}
+
+/// Build a small fixture: root, one dir ("Docs"), a few files.
+fn fixture_index() -> MftIndex {
+    let mut idx = MftIndex::new('C');
+
+    // Root (FRS 5)
+    let root_name = push_name(&mut idx, ".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = root_name;
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // Docs directory (FRS 100)
+    let docs_name = push_name(&mut idx, "Docs");
+    let docs = idx.get_or_create(100);
+    docs.stdinfo.set_directory(true);
+    docs.first_name.name = docs_name;
+    docs.first_name.parent_frs = ROOT_FRS;
+    docs.descendants = 3;
+    docs.treesize = 500;
+
+    // file.txt (FRS 200) — simple single-name, single-stream
+    let file_name = push_name(&mut idx, "file.txt");
+    let file = idx.get_or_create(200);
+    file.first_name.name = file_name;
+    file.first_name.parent_frs = 100;
+    file.first_stream.size = SizeInfo {
+        length: 120,
+        allocated: 128,
+    };
+    file.stdinfo.created = 1_000_000;
+    file.stdinfo.modified = 2_000_000;
+    file.stdinfo.accessed = 3_000_000;
+    file.stdinfo.flags = 0x20; // ARCHIVE
+
+    // hardlink.txt (FRS 201) — 2 names (hardlink)
+    let hl_primary = push_name(&mut idx, "hardlink.txt");
+    let hl_alt_name = push_name(&mut idx, "hardlink_alt.txt");
+
+    let link_idx = u32::try_from(idx.links.len()).expect("link overflow");
+    idx.links.push(LinkInfo {
+        next_entry: NO_ENTRY,
+        name: hl_alt_name,
+        _pad0: [0; 4],
+        parent_frs: ROOT_FRS,
+    });
+
+    let hl = idx.get_or_create(201);
+    hl.first_name.name = hl_primary;
+    hl.first_name.parent_frs = 100;
+    hl.first_name.next_entry = link_idx;
+    hl.name_count = 2;
+    hl.first_stream.size = SizeInfo {
+        length: 50,
+        allocated: 64,
+    };
+
+    // ads_file.dat (FRS 202) — 2 streams (ADS)
+    let ads_name = push_name(&mut idx, "ads_file.dat");
+    let stream_name = push_name(&mut idx, "Zone.Identifier");
+
+    let stream_idx = u32::try_from(idx.streams.len()).expect("stream overflow");
+    idx.streams.push(IndexStreamInfo {
+        size: SizeInfo {
+            length: 26,
+            allocated: 32,
+        },
+        next_entry: NO_ENTRY,
+        name: stream_name,
+        flags: 0,
+        _pad0: [0; 3],
+    });
+
+    let ads = idx.get_or_create(202);
+    ads.first_name.name = ads_name;
+    ads.first_name.parent_frs = 100;
+    ads.first_stream.size = SizeInfo {
+        length: 300,
+        allocated: 512,
+    };
+    ads.first_stream.next_entry = stream_idx;
+    ads.stream_count = 2;
+
+    // $MFT system metafile (FRS 0) — should be filterable
+    let mft_name = push_name(&mut idx, "$MFT");
+    let mft_rec = idx.get_or_create(0);
+    mft_rec.first_name.name = mft_name;
+    mft_rec.first_name.parent_frs = ROOT_FRS;
+    mft_rec.first_stream.size = SizeInfo {
+        length: 500_000,
+        allocated: 512_000,
+    };
+
+    idx
+}
+
+// ── Test 1: All critical fields transfer to CompactRecord ──────
+
+#[test]
+fn compact_preserves_all_critical_fields() {
+    let idx = fixture_index();
+    let (drive, _, _) = build_compact_index('C', &idx);
+
+    // Find file.txt by scanning names
+    let file_rec = drive
+        .records
+        .iter()
+        .find(|rec| rec.name(&drive.names) == "file.txt")
+        .expect("file.txt not found in compact index");
+
+    assert_eq!(file_rec.size, 120, "size must transfer");
+    assert_eq!(file_rec.allocated, 128, "allocated must transfer");
+    assert_eq!(file_rec.created, 1_000_000, "created must transfer");
+    assert_eq!(file_rec.modified, 2_000_000, "modified must transfer");
+    assert_eq!(file_rec.accessed, 3_000_000, "accessed must transfer");
+    assert_eq!(file_rec.flags, 0x20, "flags must transfer");
+    assert!(!file_rec.is_directory(), "file must not be a directory");
+}
+
+// ── Test 2: Directory tree metrics transfer ────────────────────
+
+#[test]
+fn compact_preserves_directory_tree_metrics() {
+    let idx = fixture_index();
+    let (drive, _, _) = build_compact_index('C', &idx);
+
+    let docs_rec = drive
+        .records
+        .iter()
+        .find(|rec| rec.name(&drive.names) == "Docs")
+        .expect("Docs not found");
+
+    assert_eq!(docs_rec.descendants, 3, "descendants must transfer");
+    assert_eq!(docs_rec.treesize, 500, "treesize must transfer");
+    assert!(docs_rec.is_directory(), "Docs must be a directory");
+}
+
+// ── Test 3: Hardlink records only keep first_name ──────────────
+// Regression: streaming pipeline iterated name_count × stream_count;
+// compact stores only first_name. Refactor MUST account for this gap.
+
+#[test]
+fn compact_expands_hardlink_names() {
+    let idx = fixture_index();
+    let (drive, _, _) = build_compact_index('C', &idx);
+
+    // Both primary and alternate hardlink names must appear as separate
+    // CompactRecords so the unified pipeline matches the legacy pipeline.
+    let hl_names: Vec<&str> = drive
+        .records
+        .iter()
+        .filter(|rec| {
+            let nm = rec.name(&drive.names);
+            nm.contains("hardlink")
+        })
+        .map(|rec| rec.name(&drive.names))
+        .collect();
+
+    assert!(
+        hl_names.contains(&"hardlink.txt"),
+        "primary name must appear"
+    );
+    assert!(
+        hl_names.contains(&"hardlink_alt.txt"),
+        "alternate hardlink name must appear (expanded at build time)"
+    );
+}
+
+// ── Test 4: ADS records only keep first_stream size ────────────
+// Regression: streaming iterated stream_count; compact stores first_stream
+// only. The ADS size (26 bytes) is invisible in compact.
+
+#[test]
+fn compact_stores_only_primary_stream_size() {
+    let idx = fixture_index();
+    let (drive, _, _) = build_compact_index('C', &idx);
+
+    let ads_rec = drive
+        .records
+        .iter()
+        .find(|rec| rec.name(&drive.names) == "ads_file.dat")
+        .expect("ads_file.dat not found");
+
+    // Compact stores the primary stream's size (300), NOT the ADS (26).
+    assert_eq!(ads_rec.size, 300, "compact must store first_stream size");
+    assert_eq!(
+        ads_rec.allocated, 512,
+        "compact must store first_stream allocated"
+    );
+    // The ADS size=26 is not visible here — it can only be resolved
+    // by going back to the MftIndex. Any refactored output that shows
+    // ADS rows must look up the original MftIndex stream data.
+}
+
+// ── Test 5: System metafile ($MFT) is present and filterable ───
+// Regression: streaming used PathResolver.is_valid_idx which skips FRS 0–15;
+// compact uses name.starts_with('$'). Different semantics.
+
+#[test]
+fn compact_filters_system_metafiles() {
+    let idx = fixture_index();
+    let (drive, _, _) = build_compact_index('C', &idx);
+
+    // $MFT (FRS 0) must be filtered at build time — its CompactRecord should
+    // have name_len=0 (default/zeroed), matching the legacy pipeline which
+    // filters system metafiles via PathResolver.
+    let has_mft = drive
+        .records
+        .iter()
+        .any(|rec| rec.name(&drive.names) == "$MFT");
+
+    assert!(
+        !has_mft,
+        "$MFT must NOT appear in compact index (filtered at build time)"
+    );
+}
+
+// ── Test 6: parent_idx and children index ──────────────────────
+// Regression: tree traversal relies on correct parent_idx wiring.
+
+#[test]
+fn compact_parent_idx_and_children_correct() {
+    let idx = fixture_index();
+    let (drive, _, _) = build_compact_index('C', &idx);
+
+    // Find Docs' compact index
+    let docs_pos = drive
+        .records
+        .iter()
+        .position(|rec| rec.name(&drive.names) == "Docs")
+        .expect("Docs not found");
+
+    // Find file.txt's compact index
+    let file_pos = drive
+        .records
+        .iter()
+        .position(|rec| rec.name(&drive.names) == "file.txt")
+        .expect("file.txt not found");
+
+    // file.txt's parent_idx should point to Docs
+    let file_rec = drive.records.get(file_pos).expect("file_pos out of bounds");
+    let docs_pos_u32 = u32::try_from(docs_pos).expect("docs_pos overflow");
+    assert_eq!(
+        file_rec.parent_idx, docs_pos_u32,
+        "file.txt parent_idx must point to Docs"
+    );
+
+    // Docs' children should include file.txt
+    let file_pos_u32 = u32::try_from(file_pos).expect("file_pos overflow");
+    let docs_children = drive.children.get(docs_pos);
+    assert!(
+        docs_children.contains(&file_pos_u32),
+        "Docs children must include file.txt (idx {file_pos}), got: {docs_children:?}"
+    );
+}
+
+// ── Test 7: names_lower for case-insensitive search ────────────
+
+#[test]
+fn compact_names_lower_is_correct() {
+    let idx = fixture_index();
+    let (drive, _, _) = build_compact_index('C', &idx);
+
+    let docs_rec = drive
+        .records
+        .iter()
+        .find(|rec| rec.name(&drive.names) == "Docs")
+        .expect("Docs not found");
+
+    let lower_name = docs_rec.name(&drive.names_lower);
+    assert_eq!(lower_name, "docs", "names_lower must be lowercase");
+}
+
+// ── Test 8: Verify record count matches ────────────────────────
+
+#[test]
+fn compact_record_count_includes_hardlinks() {
+    let idx = fixture_index();
+    let (drive, _, _) = build_compact_index('C', &idx);
+    // Compact index has base records (same count as MftIndex) plus extra
+    // records for expanded hardlink alternate names.
+    assert!(
+        drive.records.len() >= idx.records.len(),
+        "compact must have at least as many records as MftIndex (base + hardlinks)"
+    );
+    // The fixture has exactly 1 hardlink alternate name (hardlink_alt.txt),
+    // so compact should have exactly 1 extra record.
+    assert_eq!(
+        drive.records.len(),
+        idx.records.len() + 1,
+        "fixture: exactly 1 hardlink expansion expected"
+    );
+}
+
+// ── Regression test: parity between compact and legacy pipeline ──
+// Catches three specific regressions:
+//   (A) System metafiles ($MFT, $Extend, etc.) must be filtered at build time
+//   (B) Root directory ("." name) must be present and searchable
+//   (C) Hardlinked files must have all names expanded as separate records
+
+#[test]
+fn compact_parity_root_present_sysfiles_absent_hardlinks_expanded() {
+    let idx = fixture_index();
+    let (drive, _, _) = build_compact_index('C', &idx);
+
+    // (A) System metafiles must NOT appear.
+    let system_names: Vec<&str> = drive
+        .records
+        .iter()
+        .map(|rec| rec.name(&drive.names))
+        .filter(|nm| nm.starts_with('$'))
+        .collect();
+    assert!(
+        system_names.is_empty(),
+        "no $-prefixed system metafiles in compact index, found: {system_names:?}"
+    );
+
+    // (B) Root directory must be present (name = ".").
+    let root_present = drive
+        .records
+        .iter()
+        .any(|rec| rec.name(&drive.names) == "." && rec.is_directory());
+    assert!(root_present, "root directory '.' must be in compact index");
+
+    // (C) Both hardlink names must be present.
+    let all_names: Vec<&str> = drive
+        .records
+        .iter()
+        .map(|rec| rec.name(&drive.names))
+        .filter(|nm| !nm.is_empty())
+        .collect();
+    assert!(
+        all_names.contains(&"hardlink.txt"),
+        "primary hardlink name must be present"
+    );
+    assert!(
+        all_names.contains(&"hardlink_alt.txt"),
+        "alternate hardlink name must be present (expanded at build time)"
+    );
+}

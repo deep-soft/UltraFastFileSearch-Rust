@@ -202,6 +202,7 @@ fn run_legacy_mode(args: &[String], base_dir: &Path) {
     let explicit_tz = parse_tz_offset(args);
     let custom_bin = parse_bin_path(args);
     let pattern = parse_pattern(args);
+    let pipeline = parse_pipeline(args);
 
     // Determine mode
     let mode = &args[3];
@@ -217,6 +218,7 @@ fn run_legacy_mode(args: &[String], base_dir: &Path) {
                 tz_offset,
                 custom_bin.as_deref(),
                 &pattern,
+                pipeline.as_deref(),
             );
             (regen.output_path, Some(regen.parse_duration), regen.mft_size_bytes)
         }
@@ -265,6 +267,7 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
     let specific_drive = parse_drive_filter(args);
     let rust_output_path = parse_rust_path(args);
     let pattern = parse_pattern(args);
+    let pipeline = parse_pipeline(args);
     let regenerate = args.iter().any(|a| a == "--regenerate");
 
     if !regenerate && rust_output_path.is_none() {
@@ -296,6 +299,9 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
     println!("Drives found:   {} ({:?})", drives.len(), drives);
     if pattern != "*" {
         println!("Pattern:        {}", pattern);
+    }
+    if let Some(ref pl) = pipeline {
+        println!("Pipeline:       {}", pl);
     }
     println!();
 
@@ -346,6 +352,7 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
                 tz_offset,
                 custom_bin.as_deref(),
                 &pattern,
+                pipeline.as_deref(),
             );
             (regen.output_path, Some(regen.parse_duration), regen.mft_size_bytes)
         };
@@ -444,6 +451,7 @@ fn run_live_mode(args: &[String]) {
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let pattern = parse_pattern(args);
+    let pipeline = parse_pipeline(args);
     let keep_files = args.iter().any(|a| a == "--keep");
     let name_only = args.iter().any(|a| a == "--name-only");
 
@@ -480,6 +488,7 @@ fn run_live_mode(args: &[String]) {
     );
     println!("  Output dir:  {}", out_dir.display());
     println!("  Pattern:     {}", pattern);
+    println!("  Pipeline:    {}", pipeline.as_deref().unwrap_or("(default)"));
     println!("  Drives:      {:?}", drives);
     println!();
 
@@ -495,6 +504,7 @@ fn run_live_mode(args: &[String]) {
             es_bin.as_deref(),
             &out_dir,
             keep_files,
+            pipeline.as_deref(),
             i + 1,
             drives.len(),
         );
@@ -570,6 +580,7 @@ fn run_live_drive_parity(
     es_bin: Option<&Path>,
     out_dir: &Path,
     keep_files: bool,
+    pipeline: Option<&str>,
     drive_index: usize,
     total_drives: usize,
 ) -> LiveDriveResult {
@@ -644,6 +655,10 @@ fn run_live_drive_parity(
     ];
     if name_only {
         rust_args.push("--name-only");
+    }
+    if let Some(pl) = pipeline {
+        rust_args.push("--pipeline");
+        rust_args.push(pl);
     }
     let rust_result = run_with_retry(rust_bin, &rust_args, &rust_raw, "Rust");
     let rust_elapsed = rust_start.elapsed();
@@ -2211,9 +2226,17 @@ fn print_usage(prog: &str) {
     eprintln!("  --name-only        Pass --name-only to Rust binary");
     eprintln!("  --pattern <pat>    Search pattern (default: *)");
     eprintln!();
+    eprintln!("Common Options (offline + live):");
+    eprintln!("  --pipeline <mode>  Search pipeline: unified (default) or legacy");
+    eprintln!("                     Use to verify both pipelines produce identical output");
+    eprintln!();
     eprintln!("Examples:");
     eprintln!("  # Offline: verify all drives from captured MFT data");
     eprintln!("  {prog} ~/uffs_data --regenerate");
+    eprintln!();
+    eprintln!("  # Offline: compare legacy vs unified pipelines");
+    eprintln!("  {prog} ~/uffs_data --regenerate --pipeline legacy --drive G");
+    eprintln!("  {prog} ~/uffs_data --regenerate --pipeline unified --drive G");
     eprintln!();
     eprintln!("  # Live: run both tools on Windows, auto-detect NTFS drives");
     eprintln!("  {prog} --live --keep");
@@ -2250,6 +2273,22 @@ fn parse_pattern(args: &[String]) -> String {
         }
     }
     "*".to_string()
+}
+
+/// Parse `--pipeline unified|legacy` from command line.
+/// Returns `None` when not specified (uffs uses its own default).
+fn parse_pipeline(args: &[String]) -> Option<String> {
+    for i in 0..args.len() {
+        if args[i] == "--pipeline" && i + 1 < args.len() {
+            let val = args[i + 1].to_lowercase();
+            if val != "unified" && val != "legacy" {
+                eprintln!("ERROR: --pipeline must be 'unified' or 'legacy', got '{val}'");
+                std::process::exit(1);
+            }
+            return Some(val);
+        }
+    }
+    None
 }
 
 /// Parse --tz argument from command line. Returns None if not specified
@@ -2507,6 +2546,7 @@ fn regenerate_rust_output(
     tz_offset: i32,
     custom_bin: Option<&Path>,
     pattern: &str,
+    pipeline: Option<&str>,
 ) -> RegenerateResult {
     let tz_str = format!("{tz_offset}");
     let tz_label = match tz_offset {
@@ -2603,6 +2643,7 @@ fn regenerate_rust_output(
         drive_letter.to_string(),
         "--tz-offset".to_string(),
         tz_str.clone(),
+        "--no-cache".to_string(),  // Deterministic: always parse fresh MFT
         "--format".to_string(),
         "custom".to_string(), // Match C++ baseline format (includes footer)
         "--parity-compat".to_string(), // 25 C++ columns + masked attributes
@@ -2613,6 +2654,11 @@ fn regenerate_rust_output(
         args.push("--reserved-allocated".to_string());
         args.push(val.clone());
     }
+    if let Some(pl) = pipeline {
+        args.push("--pipeline".to_string());
+        args.push(pl.to_string());
+    }
+    println!("Pipeline: {}", pipeline.unwrap_or("(default)"));
     let status = Command::new(&binary_path)
         .args(&args)
         .status();

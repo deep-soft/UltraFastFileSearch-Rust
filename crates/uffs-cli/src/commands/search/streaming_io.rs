@@ -1,4 +1,5 @@
-//! Streaming I/O helpers for writing search results to console or file.
+//! **[LEGACY_PIPELINE]** Streaming I/O helpers for writing search results to
+//! console or file.
 
 use anyhow::{Context, Result};
 use tracing::info;

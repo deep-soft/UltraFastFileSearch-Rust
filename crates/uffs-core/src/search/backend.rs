@@ -7,11 +7,8 @@ use rayon::prelude::*;
 
 use crate::compact::DriveCompactIndex;
 
-/// Maximum results returned per search (prevents UI lag on broad patterns).
-const DEFAULT_RESULT_LIMIT: usize = 1_000;
-
-/// Even lower limit for very short patterns (1-2 chars) that match millions.
-const SHORT_PATTERN_LIMIT: usize = 200;
+/// Sentinel: no truncation — return every matching record.
+const UNLIMITED: usize = usize::MAX;
 
 /// A single displayable search result row.
 #[derive(Debug, Clone)]
@@ -40,6 +37,8 @@ pub struct DisplayRow {
     pub descendants: u32,
     /// Sum of logical file sizes in entire subtree (directories only).
     pub treesize: u64,
+    /// Sum of allocated sizes in entire subtree (directories only).
+    pub tree_allocated: u64,
 }
 
 /// Result of a search operation.
@@ -197,16 +196,7 @@ impl MultiDriveBackend {
 
         let is_match_all = pattern == "*";
         let is_regex = pattern.starts_with('>') && pattern.len() > 1;
-        let limit = result_limit.map_or_else(
-            || {
-                if is_match_all || pattern.len() > 2 {
-                    DEFAULT_RESULT_LIMIT
-                } else {
-                    SHORT_PATTERN_LIMIT
-                }
-            },
-            |val| val as usize,
-        );
+        let limit = result_limit.map_or(UNLIMITED, |val| val as usize);
 
         let needle = if case_sensitive {
             pattern.to_owned()

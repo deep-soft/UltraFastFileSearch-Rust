@@ -193,7 +193,22 @@ impl IndexManager {
             _ => FilterMode::All,
         };
 
-        let filters = SearchFilters::default();
+        let filters = SearchFilters::from_params(
+            params.hide_system,
+            params.min_size,
+            params.max_size,
+            params.min_descendants,
+            params.max_descendants,
+            params.newer.as_deref(),
+            params.older.as_deref(),
+            params.newer_created.as_deref(),
+            params.older_created.as_deref(),
+            params.newer_accessed.as_deref(),
+            params.older_accessed.as_deref(),
+            params.attr.as_deref(),
+            params.ext.as_deref(),
+            params.exclude.as_deref(),
+        );
 
         let result = backend.search(
             &params.pattern,

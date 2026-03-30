@@ -385,6 +385,7 @@ fn main() -> Result<()> {
                             allocated: 0,
                             descendants: 0,
                             treesize: 0,
+                            tree_allocated: 0,
                         });
                     }
                     Err(err) => {
@@ -401,6 +402,7 @@ fn main() -> Result<()> {
                             allocated: 0,
                             descendants: 0,
                             treesize: 0,
+                            tree_allocated: 0,
                         });
                     }
                 }

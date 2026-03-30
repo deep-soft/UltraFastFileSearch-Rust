@@ -22,8 +22,8 @@ and tracking.
 | **D2** | Daemon Foundation | 4–5 days | IPC server, index loading, query handler, lifecycle |
 | **D3** | Client Library | 3–4 days | Auto-start, connect, query API, keepalive, reconnect |
 | **D4** | MCP Adapter | 2–3 days | MCP stdio protocol, tool definitions, end-to-end test |
-| **D5** | CLI Migration | 2–3 days | Route through client, --standalone fallback |
-| **D6** | TUI Migration | 3–5 days | Replace in-process index with client, search-as-you-type |
+| **D5** | CLI Migration | 3–4 days | Daemon-only, shared memory for bulk results |
+| **D6** | TUI Migration | 3–5 days | Daemon-only, replace in-process index with client |
 
 Phases D7 (Access Broker) and D8 (HTTP/SSE) are deferred — documented at the
 end for completeness but not tracked in the active task list.
@@ -341,97 +341,121 @@ both daemon and client share the same types without circular deps.
 
 ## Phase D5: CLI Migration
 
-> **Goal**: `uffs` CLI uses daemon when available, falls back to standalone.
-> **Effort**: 2–3 days
-> **Constraint**: CLI must perform identically to pre-D5 in speed and capabilities.
-> No regression is acceptable for any use case.
+> **Goal**: `uffs` CLI routes ALL search through daemon. No standalone mode.
+> **Effort**: 3–4 days
+> **Constraint**: Must be faster than pre-D5 for every use case. No regression.
 
-### Design: Count-First Routing
+### Design: Daemon-Only with Shared Memory for Bulk Results
 
-The key challenge is avoiding the IPC bottleneck for bulk queries (`uffs "*"`)
-while giving instant results for filtered queries (`uffs "*.rs"`).
+**No standalone mode.** Every CLI search goes through the daemon. This
+gives us ONE search pipeline, ONE filter implementation, no DRY.
 
-**Lesson from Everything**: voidtools Everything 1.4 has a 2GB IPC memory limit
-that prevents `es.exe` from exporting results on drives with >2M entries. Even
-path-only output OOMs on 4.7M files. The problem: the entire result set is
-serialized into a single IPC buffer. We must not repeat this mistake.
+**The IPC challenge:** Serializing 25M results through JSON-RPC would
+take ~20s and consume ~12 GB RAM. voidtools Everything 1.4 hit this exact
+problem — a 2GB IPC memory limit that prevents `es.exe` from exporting
+results on drives with >2M entries. We solve it differently.
 
-**Solution: count-first routing** — the daemon returns a fast count before
-transferring any result data. The CLI uses this to decide the transfer strategy:
+**Solution: adaptive result delivery** — the daemon chooses the
+transport based on result count:
 
 ```
-CLI connects to daemon (if available, <100ms timeout)
-  → sends "count" request (query + filters, no result data)
-  → daemon runs trigram filter, returns { "count": 847 } in ~1-5ms
-  → CLI decides:
-      count ≤ 100K  →  "search" request via IPC (instant, no MFT read)
-      count > 100K  →  disconnect, standalone MFT read (same speed as today)
+CLI connects to daemon, sends SearchParams
+  → daemon searches (warm index — instant, no MFT read)
+  → daemon counts results:
+      ≤ 100K rows  →  return inline via JSON-RPC (normal response)
+      > 100K rows  →  write to shared memory, return shmem path
 ```
 
-**Total routing overhead**: ~5-10ms. Imperceptible to the user.
+**How shared memory works:**
 
-**Why this works**:
-- 99% of real queries are filtered (`*.rs`, `config.yaml`, `readme*`) → <100K results → IPC
-- `uffs "*"` full dump → >100K results → standalone (identical to today's speed)
-- Warm daemon gives instant results for filtered queries (no 30s MFT read wait)
-- Cold daemon or no daemon → standalone fallback (no regression)
-- No binary protocol, no shared memory, no new complexity
+```
+Daemon (bulk results):
+  1. Search → Vec<DisplayRow> in daemon memory
+  2. shm_open() (Unix) / CreateFileMapping() (Windows) → shared region
+  3. Write rows as flat binary layout (struct-of-arrays, no JSON overhead)
+  4. Return JSON-RPC: { "shmem": "/dev/shm/uffs-XXXX", "count": 25000000 }
 
-**Performance comparison for `uffs "*"` (25M files)**:
+CLI (bulk results):
+  1. Receive JSON-RPC response with shmem path + count
+  2. mmap(path) → &[DisplayRow] (zero-copy, zero-deserialize)
+  3. Format each row → stdout (same output code as today)
+  4. munmap + unlink
+```
 
-| Transfer method | Overhead | Practical? |
-|----------------|----------|------------|
-| JSON-RPC (25M records) | ~20s serialize + transfer + deserialize | ❌ Wasteful |
-| Binary protocol | ~5s | Overkill for edge case |
-| Shared memory (mmap) | <1s | Complex, future option |
-| **Standalone fallback** | **0s overhead (same as today)** | **✅ Chosen** |
+**Performance comparison (25M files, `uffs "*"`):**
 
-**Future option**: If a remote/HTTP use case (D8) ever needs bulk export through
-the daemon, add shared-memory handoff or binary streaming then. For D5, the
-standalone fallback is the right trade-off.
+| Scenario | MFT/cache load | Search+sort | Transfer | Stdout | Total |
+|----------|---------------|-------------|----------|--------|-------|
+| Pre-D5 (cold, live MFT) | 5–30s | ~1.5s | 0 (in-process) | ~8s | 15–40s |
+| Pre-D5 (warm, .uffs cache) | 1–3s | ~1.5s | 0 (in-process) | ~8s | 11–13s |
+| **D5 daemon + shmem** | **0s** (warm) | ~1.5s | **~0.2s** (mmap) | ~8s | **~10s** |
 
-### Wave D5.0 — Daemon Protocol Addition
+**The daemon is FASTER than today** because:
+- No .uffs cache load (1–3s saved per invocation)
+- No index build (0.5–1s saved)
+- Shared memory overhead (~200ms) is less than what's saved
+- The stdout write (~8s) is the true bottleneck — identical either way
 
-| ID | Task | Status |
-|----|------|--------|
-| D5.0.1 | Add `"count"` method to daemon protocol (`uffs-client/src/protocol.rs`) | ⬜ TODO |
-| D5.0.2 | `CountParams`: same fields as `SearchParams` (query, filters, drives) | ⬜ TODO |
-| D5.0.3 | `CountResponse`: `{ "count": u64 }` | ⬜ TODO |
-| D5.0.4 | Daemon handler: route `"count"` → `IndexManager::count()` (trigram filter, return `.len()`) | ⬜ TODO |
-| D5.0.5 | `client.count(params)` → `CountResponse` | ⬜ TODO |
-| D5.0.6 | Test: count matches search result length | ⬜ TODO |
+**For filtered queries** (`uffs "*.rs"`, 500 results): pre-D5 takes
+2–5s (cache load + search). Daemon: <100ms (warm index, JSON-RPC inline).
+**20–50× faster.**
 
-### Wave D5.1 — Client Integration
+**Cross-platform:** `shm_open` + `mmap` on Unix, `CreateFileMapping` +
+`MapViewOfFile` on Windows. Both well-supported via the `memmap2` crate.
 
-| ID | Task | Status |
-|----|------|--------|
-| D5.1.1 | Add `uffs-client` dependency to `uffs-cli/Cargo.toml` | ⬜ TODO |
-| D5.1.2 | Add `--standalone` CLI flag (forces direct MFT mode, no daemon) | ⬜ TODO |
-| D5.1.3 | Add `--daemon` CLI flag (forces daemon mode, fail if daemon unavailable) | ⬜ TODO |
-| D5.1.4 | Default: connect to daemon (<100ms), send `"count"`, route based on threshold | ⬜ TODO |
-| D5.1.5 | Configurable threshold: `--ipc-limit N` (default 100,000) | ⬜ TODO |
-
-### Wave D5.2 — Query Routing
+### Wave D5.0 — Shared Memory Infrastructure
 
 | ID | Task | Status |
 |----|------|--------|
-| D5.2.1 | Extract search dispatch into `daemon_search()` and `standalone_search()` functions | ⬜ TODO |
-| D5.2.2 | `daemon_search()`: build `SearchParams` from CLI args, call `client.search()`, format output | ⬜ TODO |
-| D5.2.3 | `standalone_search()`: existing code path (direct MFT read) — unchanged | ⬜ TODO |
-| D5.2.4 | Translate daemon `SearchResponse` → same output format as standalone (exact parity) | ⬜ TODO |
-| D5.2.5 | Count-first routing: `client.count()` → decide IPC vs standalone | ⬜ TODO |
-| D5.2.6 | Test: `uffs "*.rs"` with daemon → same output as `uffs "*.rs" --standalone` | ⬜ TODO |
+| D5.0.1 | Add `memmap2` dependency to `uffs-core/Cargo.toml` | ⬜ TODO |
+| D5.0.2 | Create `uffs-core/src/shmem.rs` — cross-platform shared memory helpers | ⬜ TODO |
+| D5.0.3 | `ShmemWriter::new(name)` → create shared region, write header | ⬜ TODO |
+| D5.0.4 | `ShmemWriter::write_rows(&[DisplayRow])` → flat binary layout | ⬜ TODO |
+| D5.0.5 | `ShmemReader::open(path)` → mmap, read header, return `&[DisplayRow]` | ⬜ TODO |
+| D5.0.6 | Cleanup: `ShmemReader` Drop impl → munmap + unlink/CloseHandle | ⬜ TODO |
+| D5.0.7 | Test: write 1M rows, read back, verify round-trip | ⬜ TODO |
+
+### Wave D5.1 — Daemon Protocol Addition
+
+| ID | Task | Status |
+|----|------|--------|
+| D5.1.1 | Add `"search_bulk"` method to daemon handler (returns shmem path) | ⬜ TODO |
+| D5.1.2 | Adaptive routing in `IndexManager::search()`: count → inline vs shmem | ⬜ TODO |
+| D5.1.3 | `SearchResponse` variant: `Inline { rows }` vs `Shmem { path, count }` | ⬜ TODO |
+| D5.1.4 | Shmem cleanup: daemon tracks active shmem regions, GC after client disconnects | ⬜ TODO |
+| D5.1.5 | `client.search()` handles both response variants transparently | ⬜ TODO |
+| D5.1.6 | Test: search returning >100K results uses shmem path | ⬜ TODO |
+
+### Wave D5.2 — CLI Integration (absorbs former Wave 2)
+
+> **Wave 2 absorbed here.** The 14 broken CLI filter flags were caused by
+> the `SearchConfig → QueryFilters → OwnedQueryFilters → SearchFilters`
+> pipeline. This step deletes that entire pipeline and replaces it with
+> `SearchParams → daemon → SearchFilters`. All 14 flags are fixed.
+
+| ID | Task | Status |
+|----|------|--------|
+| D5.2.1 | Add `uffs-client` dependency to `uffs-cli/Cargo.toml` | ⬜ TODO |
+| D5.2.2 | Replace `search_compact()` dispatch with `client.search()` | ⬜ TODO |
+| D5.2.3 | Build `SearchParams` from CLI args — all filter/sort/attr/ext flags (clap → SearchParams) | ⬜ TODO |
+| D5.2.4 | Ensure `SearchParams` has fields for all 14 formerly broken flags (newer, older, min-size, max-size, attr, exclude, ext collections, sort, files-only, dirs-only, etc.) | ⬜ TODO |
+| D5.2.5 | Handle inline response: format `SearchResponse.rows` → stdout | ⬜ TODO |
+| D5.2.6 | Handle shmem response: mmap → format rows → stdout → unlink | ⬜ TODO |
+| D5.2.7 | Delete broken pipeline: `QueryFilters`, `OwnedQueryFilters`, dead `SearchConfig` fields | ⬜ TODO |
+| D5.2.8 | Delete `--standalone` and `--daemon` flags (always daemon) | ⬜ TODO |
+| D5.2.9 | Fix dead re-export (`raw_io.rs:23`) | ⬜ TODO |
 
 ### Wave D5.3 — Validation
 
 | ID | Task | Status |
 |----|------|--------|
-| D5.3.1 | Benchmark: `uffs "*.rs"` via daemon vs standalone — target: <50ms overhead | ⬜ TODO |
-| D5.3.2 | Benchmark: `uffs "*"` standalone — must match pre-D5 performance exactly | ⬜ TODO |
-| D5.3.3 | Benchmark: count-first routing overhead — target: <10ms decision time | ⬜ TODO |
-| D5.3.4 | Test: `uffs --standalone "*.rs"` works without daemon | ⬜ TODO |
-| D5.3.5 | Test: all CLI flags (`--files-only`, `--sort`, `--attr`, `--newer`, etc.) work through daemon | ⬜ TODO |
-| D5.3.6 | Test: `uffs "*"` auto-falls back to standalone (count > threshold) | ⬜ TODO |
+| D5.3.1 | Benchmark: `uffs "*.rs"` — target: <100ms (warm daemon) | ⬜ TODO |
+| D5.3.2 | Benchmark: `uffs "*"` (25M files) — target: ≤ pre-D5 time (shmem) | ⬜ TODO |
+| D5.3.3 | Benchmark: shmem overhead — target: <500ms for 25M rows | ⬜ TODO |
+| D5.3.4 | Test: all CLI flags (`--files-only`, `--sort`, `--attr`, `--newer`, etc.) work | ⬜ TODO |
+| D5.3.5 | Test: shmem cleanup on CLI exit (no leaked /dev/shm files) | ⬜ TODO |
+| D5.3.6 | Test: shmem cleanup on CLI crash (daemon GC after timeout) | ⬜ TODO |
+| D5.3.7 | Test: concurrent CLI invocations (separate shmem regions) | ⬜ TODO |
 
 ---
 
@@ -446,8 +470,7 @@ standalone fallback is the right trade-off.
 |----|------|--------|
 | D6.1.1 | Add `uffs-client` dependency to `uffs-tui/Cargo.toml` | ⬜ TODO |
 | D6.1.2 | Create `uffs-tui/src/client_backend.rs` — adapter between `UffsClient` and existing UI state | ⬜ TODO |
-| D6.1.3 | `--standalone` flag: use existing in-process `MultiDriveBackend` (unchanged) | ⬜ TODO |
-| D6.1.4 | Default: use `UffsClient` backend | ⬜ TODO |
+| D6.1.3 | All search via `UffsClient` (daemon-only, no standalone mode) | ⬜ TODO |
 
 ### Wave D6.2 — Search-As-You-Type via IPC
 
@@ -479,9 +502,9 @@ standalone fallback is the right trade-off.
 
 | ID | Task | Status |
 |----|------|--------|
-| D6.5.1 | Measure TUI process memory: target <50 MB (vs ~7 GiB in standalone) | ⬜ TODO |
+| D6.5.1 | Measure TUI process memory: target <50 MB (vs ~7 GiB pre-D6) | ⬜ TODO |
 | D6.5.2 | Measure search-as-you-type latency: target <15ms round-trip | ⬜ TODO |
-| D6.5.3 | UX parity: every feature works identically in daemon mode vs standalone | ⬜ TODO |
+| D6.5.3 | UX parity: every feature works identically vs pre-D6 | ⬜ TODO |
 | D6.5.4 | Test: TUI startup when daemon already warm (should be instant) | ⬜ TODO |
 | D6.5.5 | Test: TUI startup when daemon not running (should auto-start, show progress) | ⬜ TODO |
 
@@ -613,8 +636,9 @@ Date        | ID       | Description                              | Commit
 | Trigram search latency | <10ms | <15ms (includes IPC) | 5ms for IPC |
 | Full scan + filter | <50ms | <55ms | 5ms for IPC |
 | TUI search-as-you-type | <10ms | <20ms (debounce + IPC) | 10ms for debounce+IPC |
-| CLI warm start | 5-30s | <1s | Daemon already loaded |
+| CLI warm start | 5-30s | <100ms | Daemon already loaded |
 | CLI cold start | 5-30s | Same (daemon loading) | Subsequent runs instant |
+| CLI bulk (`uffs "*"` 25M) | 11-13s | ≤10s | Shmem: no cache load overhead |
 | TUI memory (daemon mode) | ~7.3 GiB | <50 MB | No index in TUI process |
 | MCP query | N/A | <100ms total | Connect + query + format |
 | Daemon idle → retire | N/A | 5-15 min | Memory reclaimed to 0 |
@@ -626,18 +650,23 @@ Date        | ID       | Description                              | Commit
 ```
 Date        | Decision                                          | Rationale
 ────────────┼───────────────────────────────────────────────────┼─────────────────────────────
-2026-03-26  | Extract compact index to uffs-core (not uffs-daemon) | Shared by daemon + standalone TUI
+2026-03-26  | Extract compact index to uffs-core (not uffs-daemon) | Shared by daemon + all frontends
 2026-03-26  | JSON-RPC 2.0 over socket/pipe                     | MCP compat, debuggability, optimize later if needed
 2026-03-26  | uffs-client auto-starts daemon                    | Zero-install UX, no service to manage
-2026-03-26  | CLI keeps --standalone fallback                   | Scripting environments, no daemon lifecycle
-2026-03-26  | TUI keeps --standalone fallback                   | Offline/debugging use cases
 2026-03-26  | Protocol types initially in uffs-daemon            | Extract to shared crate when uffs-client is built
 2026-03-26  | Debounce 50ms in TUI daemon mode                  | Prevent flooding daemon with per-keystroke queries
-2026-03-27  | Count-first routing for CLI (D5)                  | Daemon returns fast count (~1-5ms), CLI decides IPC
-            |                                                   | vs standalone based on threshold (100K). Avoids
-            |                                                   | Everything's 2GB IPC limit mistake. No speed regression
-            |                                                   | for `uffs "*"` (stays standalone). Filtered queries get
-            |                                                   | instant results from warm daemon.
+2026-03-27  | Count-first routing for CLI (D5) — SUPERSEDED     | Was: daemon count → decide IPC vs standalone based
+            |                                                   | on threshold (100K). Avoided Everything's 2GB IPC
+            |                                                   | limit. Superseded by shared memory approach.
+2026-03-30  | Daemon-only, no standalone mode (D5+D6)           | ONE pipeline, ONE filter implementation. All search
+            |                                                   | goes through daemon. Bulk results (>100K rows) via
+            |                                                   | shared memory (mmap) for near-native speed. Daemon is
+            |                                                   | actually faster than standalone: skips cache load
+            |                                                   | (1-3s) and index build (0.5-1s). Shmem overhead ~200ms.
+            |                                                   | Eliminates DRY problem (no parallel filter pipelines).
+2026-03-30  | Removed --standalone flag from CLI and TUI         | Standalone mode contradicts one-pipeline goal. All
+            |                                                   | filter/sort/field logic lives in uffs-core, consumed
+            |                                                   | by daemon's IndexManager. No per-frontend wiring.
 ```
 
 ---

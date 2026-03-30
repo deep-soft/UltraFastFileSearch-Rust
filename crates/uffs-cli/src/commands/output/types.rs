@@ -1,4 +1,5 @@
-//! Output type definitions: attribute enums, record filter, sort column types.
+//! **[LEGACY_PIPELINE]** Output type definitions: attribute enums, record
+//! filter, sort column types.
 
 /// A single attribute requirement: attribute must be set (Include) or not set
 /// (Exclude).

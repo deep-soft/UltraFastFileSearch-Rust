@@ -28,6 +28,9 @@ pub struct OutputConfig {
     /// `FileTimeToLocalFileTime()` uses the CURRENT timezone offset for ALL
     /// timestamps, ignoring historical DST.
     pub timezone_offset_secs: i32,
+    /// C++ parity-compat mode: directories get trailing `\` in `Path`,
+    /// empty `Name`, self-path in `PathOnly`, and treesize for `Size`.
+    pub parity_compat: bool,
     // NOTE: Tripwire was removed from OutputConfig (Fix #1).
     // Tripwire is now logged to stderr/tracing and embedded in binary string table.
     // See TRIPWIRE constant in uffs-cli/src/commands.rs.
@@ -47,6 +50,7 @@ impl Default for OutputConfig {
             pos: "1".to_owned(),
             neg: "0".to_owned(),
             timezone_offset_secs,
+            parity_compat: false,
         }
     }
 }
@@ -159,6 +163,13 @@ impl OutputConfig {
     #[must_use]
     pub const fn with_tz_offset_hours(mut self, hours: i32) -> Self {
         self.timezone_offset_secs = hours * 3_600_i32;
+        self
+    }
+
+    /// Enable C++ parity-compat directory formatting.
+    #[must_use]
+    pub const fn with_parity_compat(mut self, enabled: bool) -> Self {
+        self.parity_compat = enabled;
         self
     }
 
@@ -507,8 +518,30 @@ mod attr {
     pub const UNPINNED: u32 = 0x0010_0000;
     /// Recall on data access.
     pub const RECALL_ON_DATA: u32 = 0x0040_0000;
-    /// Parity-compat mask (15 legacy bits).
-    pub const PARITY_MASK: u32 = 0x7FFF;
+    /// Parity-compat mask — must match `StandardInfo::parity_attributes()`.
+    ///
+    /// Includes the 15 attribute bits the C++ baseline tracks:
+    /// `READONLY` | `HIDDEN` | `SYSTEM` | `DIRECTORY` | `ARCHIVE` | `SPARSE` |
+    /// `REPARSE` | `COMPRESSED` | `OFFLINE` | `NOT_INDEXED` | `ENCRYPTED` |
+    /// `INTEGRITY` | `NO_SCRUB` | `PINNED` | `UNPINNED`.
+    ///
+    /// Note: excludes `TEMPORARY` (0x100) and `VIRTUAL` (0x10000) which are
+    /// NOT part of the parity contract.
+    pub const PARITY_MASK: u32 = READONLY
+        | HIDDEN
+        | SYSTEM
+        | DIRECTORY
+        | ARCHIVE
+        | SPARSE
+        | REPARSE
+        | COMPRESSED
+        | OFFLINE
+        | NOT_INDEXED
+        | ENCRYPTED
+        | INTEGRITY
+        | NO_SCRUB
+        | PINNED
+        | UNPINNED;
 }
 
 /// Write one `DisplayRow` into `buf` using the configured columns.
@@ -519,6 +552,10 @@ mod attr {
     clippy::single_call_fn,
     reason = "separated for readability of 30-arm match"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "column dispatch — flat match arms, splitting hurts readability"
+)]
 fn write_display_row_columns(
     buf: &mut String,
     itoa_buf: &mut itoa::Buffer,
@@ -527,6 +564,8 @@ fn write_display_row_columns(
     row: &crate::search::backend::DisplayRow,
 ) {
     let flags = row.flags;
+    // Parity-compat: directories get trailing `\`, empty name, self-path.
+    let parity_dir = cfg.parity_compat && row.is_directory;
 
     for (idx, col) in output_cols.iter().enumerate() {
         if idx > 0 {
@@ -536,16 +575,28 @@ fn write_display_row_columns(
             OutputColumn::Path => {
                 buf.push_str(&cfg.quote);
                 buf.push_str(&row.path);
+                if parity_dir && !row.path.ends_with('\\') {
+                    buf.push('\\');
+                }
                 buf.push_str(&cfg.quote);
             }
             OutputColumn::Name => {
                 buf.push_str(&cfg.quote);
-                buf.push_str(&row.name);
+                if !parity_dir {
+                    buf.push_str(&row.name);
+                }
+                // parity dirs: empty name (just quotes)
                 buf.push_str(&cfg.quote);
             }
             OutputColumn::PathOnly => {
                 buf.push_str(&cfg.quote);
-                if let Some(pos) = row.path.rfind('\\') {
+                if parity_dir {
+                    // Legacy: PathOnly = full path with trailing `\`
+                    buf.push_str(&row.path);
+                    if !row.path.ends_with('\\') {
+                        buf.push('\\');
+                    }
+                } else if let Some(pos) = row.path.rfind('\\') {
                     buf.push_str(row.path.get(..=pos).unwrap_or(&row.path));
                 } else {
                     buf.push_str(&row.path);
@@ -553,10 +604,18 @@ fn write_display_row_columns(
                 buf.push_str(&cfg.quote);
             }
             OutputColumn::Size => {
-                buf.push_str(itoa_buf.format(row.size));
+                if parity_dir {
+                    buf.push_str(itoa_buf.format(row.treesize));
+                } else {
+                    buf.push_str(itoa_buf.format(row.size));
+                }
             }
             OutputColumn::SizeOnDisk => {
-                buf.push_str(itoa_buf.format(row.allocated));
+                if parity_dir {
+                    buf.push_str(itoa_buf.format(row.tree_allocated));
+                } else {
+                    buf.push_str(itoa_buf.format(row.allocated));
+                }
             }
             OutputColumn::Created => {
                 append_datetime_native(buf, row.created, cfg.timezone_offset_secs);

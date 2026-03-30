@@ -288,7 +288,6 @@ impl McpServer {
                 .get("case_sensitive")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            whole_word: false,
             sort: arguments
                 .get("sort")
                 .and_then(Value::as_str)
@@ -300,12 +299,12 @@ impl McpServer {
             limit: arguments
                 .get("limit")
                 .and_then(Value::as_u64)
-                .and_then(|val| u32::try_from(val.min(10_000)).ok()),
+                .and_then(|val| u32::try_from(val).ok()),
             filter: arguments
                 .get("filter")
                 .and_then(Value::as_str)
                 .map(String::from),
-            drives: Vec::new(),
+            ..Default::default()
         };
         let response = self
             .client

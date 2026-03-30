@@ -77,7 +77,7 @@ pub fn collect_global_top_n(
                         continue;
                     };
                     let name = rec.name(&drive.names);
-                    if name.is_empty() || name == "." {
+                    if name.is_empty() {
                         continue;
                     }
 
@@ -208,7 +208,7 @@ fn collect_global_top_n_numeric(
             let drive = drives.get(drive_idx as usize)?;
             let rec = drive.records.get(rec_idx as usize)?;
             let name = rec.name(&drive.names);
-            if name.is_empty() || name == "." {
+            if name.is_empty() {
                 return None;
             }
             let volume_prefix = format!("{}:\\", drive.letter);
@@ -236,7 +236,7 @@ pub fn search_compact_drive_regex(
         .enumerate()
         .filter(|(_, rec)| {
             let name = rec.name(&drive.names);
-            !name.is_empty() && name != "." && compiled_re.is_match(name)
+            !name.is_empty() && compiled_re.is_match(name)
         })
         .take(limit)
         .map(|(idx, _)| idx)
@@ -373,7 +373,7 @@ pub fn search_compact_drive_tree(
         .filter_map(|&record_idx| {
             let rec = drive.records.get(record_idx as usize)?;
             let name = rec.name(&drive.names);
-            if name.is_empty() || name == "." {
+            if name.is_empty() {
                 return None;
             }
             let path = tree::resolve_path(drive, record_idx as usize, &volume_prefix);
@@ -404,6 +404,7 @@ fn make_display_row(
         allocated: rec.allocated,
         descendants: rec.descendants,
         treesize: rec.treesize,
+        tree_allocated: rec.tree_allocated,
     }
 }
 
@@ -418,7 +419,7 @@ fn indices_to_rows(
         .filter_map(|&record_idx| {
             let rec = drive.records.get(record_idx)?;
             let name = rec.name(&drive.names);
-            if name.is_empty() || name == "." {
+            if name.is_empty() {
                 return None;
             }
             let path = tree::resolve_path(drive, record_idx, volume_prefix);
@@ -426,3 +427,15 @@ fn indices_to_rows(
         })
         .collect()
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// REGRESSION TESTS — End-to-End Compact Search Parity
+//
+// These tests build a synthetic MftIndex → compact index → search and
+// verify DisplayRow correctness. They protect against field mapping,
+// filter wiring, and system metafile handling regressions.
+// See `docs/architecture/2026_03_30_04_12_SEARCH_PIPELINE_REGRESSION_ANALYSIS.
+// md` ════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+#[path = "query_tests.rs"]
+mod tests;
