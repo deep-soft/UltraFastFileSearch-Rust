@@ -488,7 +488,6 @@ pub fn refresh_drive(drive: &DriveCompactIndex) -> anyhow::Result<(DriveCompactI
     }
 }
 
-
 /// Expand hardlinks and ADS into additional `CompactRecord` entries.
 ///
 /// Phase 2 (hardlinks): for each valid record with `name_count > 1`, walks the
@@ -687,8 +686,7 @@ pub fn build_compact_index(
 
     // Phase 2+3: expand hardlinks and ADS (sequential — rare, <1% of records).
     let mut names = index.names.as_bytes().to_vec();
-    let expanded =
-        expand_links_and_ads(index, &resolver, &resolve_parent, &mut names);
+    let expanded = expand_links_and_ads(index, &resolver, &resolve_parent, &mut names);
     records.extend(expanded);
 
     // Clone-then-lowercase avoids the intermediate `String` allocation that

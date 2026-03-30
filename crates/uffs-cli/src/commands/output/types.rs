@@ -163,8 +163,6 @@ pub(in crate::commands) struct StreamingRecordFilter {
     pub sort_desc: bool,
 }
 
-
-
 /// A single sort tier: column + direction.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::commands) struct SortColumn {
