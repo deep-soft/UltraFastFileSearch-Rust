@@ -305,3 +305,173 @@ fn unlimited_returns_more_than_capped() {
     let cap = backend.search("*", false, false, Some(500), FilterMode::All, &filters);
     assert!(all.rows.len() > cap.rows.len(), "unlimited > capped");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Regex search (search_compact_drive_regex)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn regex_search_finds_matching_files() {
+    let drive = build_test_drive();
+    let re = regex::Regex::new("(?i)readme").expect("valid regex");
+    let rows = search_compact_drive_regex(&drive, &re, 100);
+    assert!(
+        rows.iter().any(|row| row.name == "readme.txt"),
+        "regex 'readme' must find readme.txt"
+    );
+}
+
+#[test]
+fn regex_search_no_match_returns_empty() {
+    let drive = build_test_drive();
+    let re = regex::Regex::new("zzz_no_match[0-9]+").expect("valid regex");
+    let rows = search_compact_drive_regex(&drive, &re, 100);
+    assert!(rows.is_empty(), "regex with no match must return empty");
+}
+
+#[test]
+fn regex_search_respects_limit() {
+    let drive = build_large_drive(500);
+    let re = regex::Regex::new("f[0-9]+").expect("valid regex");
+    let rows = search_compact_drive_regex(&drive, &re, 10);
+    assert!(
+        rows.len() <= 10,
+        "regex search must respect limit, got {}",
+        rows.len()
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// make_display_row ADS logic
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Build a fixture with an ADS on a directory.
+fn build_ads_on_dir_drive() -> DriveCompactIndex {
+    use uffs_mft::index::{
+        IndexNameRef, IndexStreamInfo, MftIndex, NO_ENTRY, ROOT_FRS, SizeInfo, StandardInfo,
+    };
+
+    let mut idx = MftIndex::new('C');
+
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // A directory with an ADS
+    let dir_name = "MyFolder";
+    let dir_off = idx.add_name(dir_name);
+    let dir_ext = idx.intern_extension(dir_name);
+    let dir_rec = idx.get_or_create(100);
+    dir_rec.stdinfo.set_directory(true);
+    dir_rec.stdinfo.flags |= StandardInfo::IS_ARCHIVE;
+    dir_rec.first_name.name = IndexNameRef::new(
+        dir_off,
+        u16::try_from(dir_name.len()).expect("len"),
+        true,
+        dir_ext,
+    );
+    dir_rec.first_name.parent_frs = ROOT_FRS;
+
+    // Add ADS stream
+    let stream_name = "metadata";
+    let stream_off = idx.add_name(stream_name);
+    let stream_ref = IndexNameRef::new(
+        stream_off,
+        u16::try_from(stream_name.len()).expect("len"),
+        true,
+        0,
+    );
+    #[expect(clippy::cast_possible_truncation, reason = "test fixture")]
+    let si = idx.streams.len() as u32;
+    idx.streams.push(IndexStreamInfo {
+        size: SizeInfo {
+            length: 42,
+            allocated: 64,
+        },
+        next_entry: NO_ENTRY,
+        name: stream_ref,
+        flags: 8 << 2,
+        _pad0: [0; 3],
+    });
+
+    let dir_idx = idx.frs_to_idx_opt(100).expect("dir idx");
+    let dir_mut = idx.records.get_mut(dir_idx).expect("dir record");
+    dir_mut.first_stream.next_entry = si;
+    dir_mut.stream_count = 2;
+    dir_mut.total_stream_count = 2;
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    drive
+}
+
+#[test]
+fn ads_on_directory_display_row_is_not_directory() {
+    let drive = build_ads_on_dir_drive();
+    // needle must be lowered — search_compact_drive expects pre-lowered for
+    // case-insensitive
+    let rows = search_compact_drive(&drive, "myfolder:metadata", 100, false, false);
+    let ads_row = rows
+        .iter()
+        .find(|row| row.name.contains(':'))
+        .expect("ADS row must exist");
+    assert!(
+        !ads_row.is_directory,
+        "ADS on directory must render as non-directory in DisplayRow"
+    );
+    assert_eq!(ads_row.size, 42, "ADS must show stream size");
+}
+
+#[test]
+fn normal_directory_display_row_is_directory() {
+    let drive = build_ads_on_dir_drive();
+    // needle must be lowered — search_compact_drive expects pre-lowered for
+    // case-insensitive
+    let rows = search_compact_drive(&drive, "myfolder", 100, false, false);
+    let dir_row = rows
+        .iter()
+        .find(|row| row.name == "MyFolder")
+        .expect("directory row must exist");
+    assert!(
+        dir_row.is_directory,
+        "normal directory must render as directory in DisplayRow"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Case-sensitive and whole-word search
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn case_sensitive_search_misses_wrong_case() {
+    let drive = build_test_drive();
+    let rows = search_compact_drive(&drive, "README", 100, true, false);
+    assert!(
+        !rows.iter().any(|row| row.name == "readme.txt"),
+        "case-sensitive 'README' must not match 'readme.txt'"
+    );
+}
+
+#[test]
+fn case_insensitive_search_finds_any_case() {
+    let drive = build_test_drive();
+    // needle must be pre-lowered for case-insensitive search (caller's
+    // responsibility)
+    let rows = search_compact_drive(&drive, "readme", 100, false, false);
+    assert!(
+        rows.iter().any(|row| row.name == "readme.txt"),
+        "case-insensitive 'readme' must match 'readme.txt'"
+    );
+}
+
+#[test]
+fn whole_word_search_exact_match() {
+    let drive = build_test_drive();
+    // Whole-word with exact name (no extension)
+    let rows = search_compact_drive(&drive, "readme.txt", 100, false, true);
+    assert!(
+        rows.iter().any(|row| row.name == "readme.txt"),
+        "whole-word exact match must find readme.txt"
+    );
+}

@@ -425,6 +425,14 @@ After Wave 0, the following `[CACHE_PROFILE]` labels are emitted (when `UFFS_CAC
 [CACHE_PROFILE] row_output:        XX ms  (N rows)            ← format + write all output rows
 ```
 
+### Search phase (per-drive + aggregate)
+```
+[CACHE_PROFILE] search_C:          trigram=X ms  match=X ms (N hits from M trigram candidates)  paths=X ms
+[CACHE_PROFILE] search_C:          regex_match=X ms (N hits from M scan)  paths=X ms
+[CACHE_PROFILE] search_C:          tree_walk=X ms (N hits)  paths=X ms
+[CACHE_PROFILE] search_total:      XX ms  (N rows, M scanned, mode=trigram|regex|tree|match-all)
+```
+
 ### Warm start (cache hit)
 ```
 [CACHE_PROFILE]   file_read:       XX ms  (YY.Y MB)           ← read .uffs from disk
@@ -439,6 +447,7 @@ After Wave 0, the following `[CACHE_PROFILE]` labels are emitted (when `UFFS_CAC
 [CACHE_PROFILE] compact_build:     XX ms  (N records)
 [CACHE_PROFILE] compact_tri:       XX ms
 [CACHE_PROFILE] compact_total:     XX ms  (build+trigram)
+[CACHE_PROFILE] search_C:          ...                        ← same per-drive + aggregate labels as above
 [CACHE_PROFILE] path_resolver:     XX ms  (lazy=bool)
 [CACHE_PROFILE] row_output:        XX ms  (N rows)
 ```

@@ -8,9 +8,8 @@ use anyhow::{Context, Result, bail};
 use tracing::info;
 use uffs_core::output::OutputConfig;
 use uffs_core::pattern::ParsedPattern;
-use uffs_core::tree::add_tree_columns;
 
-use super::super::output::{can_write_native_results, write_native_results, write_results};
+use super::super::output::{can_write_native_results, write_native_results};
 use super::super::raw_io::{QueryFilters, load_and_filter_data, load_and_filter_from_mft_file};
 use super::streaming_io::build_record_filter;
 use super::util::{compute_output_targets, is_full_scan_query};
@@ -597,54 +596,7 @@ pub(super) fn build_search_config<'a>(
     })
 }
 
-/// Finalize `DataFrame` output with tree columns and output writing.
-pub(super) fn finalize_dataframe_output(
-    mut results: uffs_polars::DataFrame,
-    config: &SearchConfig<'_>,
-) -> Result<()> {
-    let t_tree = std::time::Instant::now();
-    if !config.benchmark && config.output_config.needs_tree_columns() {
-        let tree_cols = config.output_config.get_tree_columns();
-        let missing_cols: Vec<_> = tree_cols
-            .iter()
-            .filter(|col| results.column(col.column_name()).is_err())
-            .copied()
-            .collect();
-
-        if !missing_cols.is_empty() {
-            info!(columns = missing_cols.len(), "Computing tree metrics");
-            results = add_tree_columns(&results, &missing_cols)
-                .context("Failed to compute tree columns")?;
-        }
-    }
-    let tree_ms = t_tree.elapsed().as_millis();
-
-    let elapsed = config.start_time.elapsed();
-    let t_output = std::time::Instant::now();
-    if !config.benchmark {
-        write_results(
-            &results,
-            config.format,
-            config.out,
-            &config.output_config,
-            &config.output_targets,
-            elapsed,
-            config.pattern,
-        )?;
-    }
-    let output_ms = t_output.elapsed().as_millis();
-
-    if config.benchmark {
-        print_benchmark_stats(&results, elapsed);
-    } else if config.profile {
-        print_profile_stats(&results, tree_ms, output_ms, elapsed);
-    }
-
-    info!(count = results.height(), "Search complete");
-    Ok(())
-}
-
-/// Finalize **native** `DisplayRow` output — no full-MFT `DataFrame` involved.
+/// Finalize search output — all paths converge here.
 ///
 /// For json/table formats, a small `DataFrame` is created from the result rows
 /// only (not the full MFT) to reuse existing Polars serialization.
@@ -711,41 +663,4 @@ fn print_benchmark_stats_native(
     eprintln!("=== BENCHMARK MODE (no output) ===");
     eprintln!("  Records found:   {:>10}", rows.len());
     eprintln!("  Total time:      {total_ms:>10} ms ({secs:.2} s)");
-}
-
-/// Print benchmark statistics.
-#[expect(clippy::print_stderr, reason = "intentional user-facing output")]
-fn print_benchmark_stats(results: &uffs_polars::DataFrame, elapsed: core::time::Duration) {
-    let row_count = results.height();
-    let total_ms = elapsed.as_millis();
-    let secs = elapsed.as_secs_f64();
-    eprintln!("=== BENCHMARK MODE (no output) ===");
-    eprintln!("  Records found:   {row_count:>10}");
-    eprintln!("  Total time:      {total_ms:>10} ms ({secs:.2} s)");
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "row_count as f64 is fine for display"
-    )]
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "throughput calculation for display"
-    )]
-    let throughput = row_count as f64 / secs;
-    eprintln!("  Throughput:      {throughput:>10.0} records/sec");
-}
-
-/// Print profiling statistics.
-#[expect(clippy::print_stderr, reason = "intentional user-facing output")]
-fn print_profile_stats(
-    results: &uffs_polars::DataFrame,
-    tree_ms: u128,
-    output_ms: u128,
-    elapsed: core::time::Duration,
-) {
-    let row_count = results.height();
-    let total_ms = elapsed.as_millis();
-    eprintln!("=== PROFILE: Output ===");
-    eprintln!("  Tree columns:    {tree_ms:>6} ms");
-    eprintln!("  Output/write:    {output_ms:>6} ms  ({row_count} rows)");
-    eprintln!("=== TOTAL: {total_ms} ms ===");
 }

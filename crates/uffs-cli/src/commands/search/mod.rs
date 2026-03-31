@@ -270,10 +270,14 @@ pub async fn search(
     // Dispatch to appropriate search path.
     let result = dispatch::dispatch_search(&config).await?;
 
-    // Handle result.
+    // Handle result — all paths converge on `finalize_native_output`.
     match result {
         SearchDispatchResult::StreamingComplete => Ok(()),
         SearchDispatchResult::NativeRows(rows) => dispatch::finalize_native_output(&rows, &config),
-        SearchDispatchResult::DataFrame(df) => dispatch::finalize_dataframe_output(df, &config),
+        SearchDispatchResult::DataFrame(df) => {
+            let rows = uffs_core::search::backend::dataframe_to_display_rows(&df)
+                .map_err(|err| anyhow::anyhow!("DataFrame→DisplayRow conversion failed: {err}"))?;
+            dispatch::finalize_native_output(&rows, &config)
+        }
     }
 }

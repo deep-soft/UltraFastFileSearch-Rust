@@ -365,7 +365,11 @@ pub(super) fn results_to_dataframe(
     Ok(df)
 }
 
-/// Write search results to console or file.
+/// Write search results (`DataFrame`) to console or file.
+///
+/// Only used by tests — production code uses `write_native_results` via the
+/// unified `finalize_native_output` path.
+#[cfg(test)]
 pub(super) fn write_results(
     results: &uffs_polars::DataFrame,
     format: &str,

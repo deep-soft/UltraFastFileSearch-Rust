@@ -53,6 +53,7 @@ use tokio as _;
 
 pub mod compact;
 pub mod compact_cache;
+pub mod compact_loader;
 pub mod compact_reader;
 pub mod compiled_pattern;
 mod error;

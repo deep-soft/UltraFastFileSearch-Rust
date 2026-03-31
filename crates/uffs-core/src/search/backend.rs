@@ -283,6 +283,24 @@ impl MultiDriveBackend {
         }
 
         let scanned = self.drives.iter().map(|dr| dr.records.len()).sum();
+        let wall_ms = start.elapsed().as_millis();
+
+        #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+        if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
+            let mode = if is_match_all {
+                "match-all"
+            } else if is_regex {
+                "regex"
+            } else if is_path {
+                "tree"
+            } else {
+                "trigram"
+            };
+            eprintln!(
+                "[CACHE_PROFILE] search_total:  {wall_ms:>6} ms  ({} rows, {scanned} scanned, mode={mode})",
+                rows.len(),
+            );
+        }
 
         self.last_results.clone_from(&rows);
         SearchResult {
@@ -509,6 +527,139 @@ pub fn display_rows_to_dataframe(
     )
 }
 
+/// Convert a legacy Polars `DataFrame` into `Vec<DisplayRow>`.
+///
+/// Handles both "new" column layouts (from `display_rows_to_dataframe`) and
+/// legacy MFT layouts (from `results_to_dataframe`). Timestamps may be
+/// plain `Int64` or `Datetime(Microseconds)` — both are handled.
+///
+/// Columns that don't exist get sensible defaults (0 for numbers, empty
+/// strings, `'?'` for drive).
+///
+/// # Errors
+///
+/// Returns an error if `DataFrame` column extraction fails in an unexpected
+/// way.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "u32/u64 downcasts bounded by record counts; i64→u64 safe for MFT sizes"
+)]
+pub fn dataframe_to_display_rows(
+    data_frame: &uffs_polars::DataFrame,
+) -> Result<Vec<DisplayRow>, String> {
+    let height = data_frame.height();
+    if height == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut rows = Vec::with_capacity(height);
+    for row_idx in 0..height {
+        let name = col_str(data_frame, "name", row_idx).unwrap_or_default();
+        let path = col_str(data_frame, "path", row_idx).unwrap_or_default();
+        let drive = col_str(data_frame, "drive", row_idx)
+            .and_then(|val| val.chars().next())
+            .unwrap_or('?');
+        let size = col_u64(data_frame, "size", row_idx);
+        let allocated = col_u64(data_frame, "allocated_size", row_idx);
+        let flags = col_u64(data_frame, "flags", row_idx) as u32;
+        let is_directory = col_bool(data_frame, "is_directory", row_idx);
+        let created = col_timestamp(data_frame, "created", row_idx);
+        let modified = col_timestamp(data_frame, "modified", row_idx);
+        let accessed = col_timestamp(data_frame, "accessed", row_idx);
+        let descendants = col_u64(data_frame, "descendants", row_idx) as u32;
+        let treesize = col_u64(data_frame, "treesize", row_idx);
+        let tree_allocated = col_u64(data_frame, "tree_allocated", row_idx);
+
+        rows.push(DisplayRow {
+            drive,
+            path,
+            name,
+            size,
+            is_directory,
+            modified,
+            created,
+            accessed,
+            flags,
+            allocated,
+            descendants,
+            treesize,
+            tree_allocated,
+        });
+    }
+    Ok(rows)
+}
+
+/// Extract a string value from a `DataFrame` column at `row_idx`.
+fn col_str(data_frame: &uffs_polars::DataFrame, col_name: &str, row_idx: usize) -> Option<String> {
+    data_frame
+        .column(col_name)
+        .ok()
+        .and_then(|column| column.str().ok())
+        .and_then(|chunked| chunked.get(row_idx).map(String::from))
+}
+
+/// Extract a `u64` value from a `DataFrame` column (handles `UInt64`,
+/// `Int64`, `UInt32` dtype).
+#[allow(clippy::cast_sign_loss)]
+fn col_u64(data_frame: &uffs_polars::DataFrame, col_name: &str, row_idx: usize) -> u64 {
+    data_frame
+        .column(col_name)
+        .ok()
+        .and_then(|column| {
+            column
+                .u64()
+                .ok()
+                .and_then(|arr| arr.get(row_idx))
+                .or_else(|| {
+                    column
+                        .i64()
+                        .ok()
+                        .and_then(|arr| arr.get(row_idx).map(|val| val as u64))
+                })
+                .or_else(|| {
+                    column
+                        .u32()
+                        .ok()
+                        .and_then(|arr| arr.get(row_idx).map(u64::from))
+                })
+        })
+        .unwrap_or(0)
+}
+
+/// Extract a boolean value from a `DataFrame` column.
+#[allow(clippy::single_call_fn)]
+fn col_bool(data_frame: &uffs_polars::DataFrame, col_name: &str, row_idx: usize) -> bool {
+    data_frame
+        .column(col_name)
+        .ok()
+        .and_then(|column| column.bool().ok())
+        .and_then(|chunked| chunked.get(row_idx))
+        .unwrap_or(false)
+}
+
+/// Extract a timestamp (microseconds `i64`) from a `DataFrame` column.
+///
+/// Handles both plain `Int64` and `Datetime(Microseconds)` dtypes.
+fn col_timestamp(data_frame: &uffs_polars::DataFrame, col_name: &str, row_idx: usize) -> i64 {
+    data_frame
+        .column(col_name)
+        .ok()
+        .and_then(|column| {
+            // Try direct i64 first (from display_rows_to_dataframe).
+            column
+                .i64()
+                .ok()
+                .and_then(|arr| arr.get(row_idx))
+                .or_else(|| {
+                    // Try Datetime(Microseconds) (from legacy MftIndex DataFrames).
+                    // `.phys` gives the underlying Int64 chunked array.
+                    column.datetime().ok().and_then(|dt| dt.phys.get(row_idx))
+                })
+        })
+        .unwrap_or(0)
+}
+
 /// Format the current sort state back into a CLI-compatible sort string.
 #[must_use]
 pub fn format_sort_spec(primary: SortColumn, primary_desc: bool, extra: &[SortSpec]) -> String {
@@ -528,3 +679,7 @@ pub fn format_sort_spec(primary: SortColumn, primary_desc: bool, extra: &[SortSp
     }
     parts.join(",")
 }
+
+#[cfg(test)]
+#[path = "backend_tests.rs"]
+mod tests;

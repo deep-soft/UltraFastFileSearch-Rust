@@ -309,12 +309,18 @@ pub fn save_compact_cache_background(index: &DriveCompactIndex) -> std::io::Resu
 /// `mft_build_epoch` is the `build_epoch` of the current `MftIndex`.
 /// If the compact cache was built from an older epoch it is considered stale
 /// and `None` is returned so the caller rebuilds.
+///
+/// When `trust_ttl_only` is `true`, the mtime comparison against the
+/// `MftIndex` `.uffs` file is skipped — only the TTL age check is used.
+/// This is useful for hot-path searches where the caller knows the compact
+/// cache was just built or the `MftIndex` hasn't changed.
 #[must_use]
 #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
 pub fn load_compact_cache(
     drive_letter: char,
     ttl_seconds: u64,
     mft_build_epoch: u64,
+    trust_ttl_only: bool,
 ) -> Option<DriveCompactIndex> {
     let path = compact_cache_path(drive_letter);
     let meta = std::fs::metadata(&path).ok()?;
@@ -328,15 +334,18 @@ pub fn load_compact_cache(
     // compact cache, the compact was built from an older MftIndex.
     // This catches cross-process updates (daemon updates MftIndex, TUI has
     // stale compact) with zero I/O — just two stat() calls.
-    let mft_path = uffs_mft::cache::cache_file_path(drive_letter);
-    if let Ok(mft_meta) = std::fs::metadata(&mft_path) {
-        if let Ok(mft_mtime) = mft_meta.modified() {
-            if mft_mtime > compact_mtime {
-                tracing::debug!(
-                    drive = %drive_letter,
-                    "Compact cache older than MftIndex cache — rebuilding"
-                );
-                return None;
+    // Skipped when `trust_ttl_only` — caller trusts the TTL is sufficient.
+    if !trust_ttl_only {
+        let mft_path = uffs_mft::cache::cache_file_path(drive_letter);
+        if let Ok(mft_meta) = std::fs::metadata(&mft_path) {
+            if let Ok(mft_mtime) = mft_meta.modified() {
+                if mft_mtime > compact_mtime {
+                    tracing::debug!(
+                        drive = %drive_letter,
+                        "Compact cache older than MftIndex cache — rebuilding"
+                    );
+                    return None;
+                }
             }
         }
     }
@@ -430,11 +439,13 @@ pub fn ensure_compact_cached(
 ) -> DriveCompactIndex {
     let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
 
-    // Try loading existing compact cache (epoch check catches stale caches)
+    // Try loading existing compact cache (epoch check catches stale caches).
+    // Not TTL-only: we have the MftIndex, so mtime validation is cheap & correct.
     if let Some(cached) = load_compact_cache(
         drive_letter,
         super::compact::INDEX_TTL_SECONDS,
         mft_index.build_epoch,
+        false,
     ) {
         if profile {
             eprintln!(

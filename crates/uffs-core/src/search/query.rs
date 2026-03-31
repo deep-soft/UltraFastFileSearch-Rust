@@ -229,7 +229,9 @@ pub fn search_compact_drive_regex(
     limit: usize,
 ) -> Vec<DisplayRow> {
     let volume_prefix = format!("{}:\\", drive.letter);
+    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
 
+    let t_match = std::time::Instant::now();
     let match_indices: Vec<usize> = drive
         .records
         .iter()
@@ -241,8 +243,23 @@ pub fn search_compact_drive_regex(
         .take(limit)
         .map(|(idx, _)| idx)
         .collect();
+    let match_ms = t_match.elapsed().as_millis();
+    let match_count = match_indices.len();
 
-    indices_to_rows(drive, &match_indices, &volume_prefix)
+    let t_resolve = std::time::Instant::now();
+    let rows = indices_to_rows(drive, &match_indices, &volume_prefix);
+    let resolve_ms = t_resolve.elapsed().as_millis();
+
+    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+    if profile {
+        eprintln!(
+            "[CACHE_PROFILE] search_{}: regex_match={match_ms} ms ({match_count} hits from {} scan)  paths={resolve_ms} ms",
+            drive.letter,
+            drive.records.len(),
+        );
+    }
+
+    rows
 }
 
 /// Search a single drive's compact index (trigram + glob/substring).
@@ -366,9 +383,15 @@ pub fn search_compact_drive_tree(
     limit: usize,
 ) -> Vec<DisplayRow> {
     let volume_prefix = format!("{}:\\", drive.letter);
-    let match_indices = tree::tree_search(drive, pattern_lower, limit);
+    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
 
-    match_indices
+    let t_tree = std::time::Instant::now();
+    let match_indices = tree::tree_search(drive, pattern_lower, limit);
+    let tree_ms = t_tree.elapsed().as_millis();
+    let match_count = match_indices.len();
+
+    let t_resolve = std::time::Instant::now();
+    let rows: Vec<DisplayRow> = match_indices
         .iter()
         .filter_map(|&record_idx| {
             let rec = drive.records.get(record_idx as usize)?;
@@ -379,7 +402,18 @@ pub fn search_compact_drive_tree(
             let path = tree::resolve_path(drive, record_idx as usize, &volume_prefix);
             Some(make_display_row(drive.letter, rec, name, path))
         })
-        .collect()
+        .collect();
+    let resolve_ms = t_resolve.elapsed().as_millis();
+
+    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+    if profile {
+        eprintln!(
+            "[CACHE_PROFILE] search_{}: tree_walk={tree_ms} ms ({match_count} hits)  paths={resolve_ms} ms",
+            drive.letter,
+        );
+    }
+
+    rows
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
