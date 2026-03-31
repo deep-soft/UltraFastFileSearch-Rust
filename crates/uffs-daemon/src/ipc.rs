@@ -314,6 +314,12 @@ pub async fn run_ipc_server(
         std::fs::remove_file(&sock_path)?;
     }
 
+    // Windows: use std blocking UnixListener in a spawn_blocking loop,
+    // bridge each connection via tokio::io::duplex.
+    use std::os::windows::net::UnixListener as StdUnixListener;
+    let std_listener = StdUnixListener::bind(&sock_path)?;
+
+    // Set socket permissions to owner-only AFTER bind creates the file
     uffs_security::fs::set_file_permissions_owner_only(&sock_path)?;
 
     tracing::info!(path = %sock_path.display(), "IPC server listening (Windows AF_UNIX)");
@@ -322,11 +328,6 @@ pub async fn run_ipc_server(
         index,
         lifecycle: lifecycle.clone(),
     });
-
-    // Windows: use std blocking UnixListener in a spawn_blocking loop,
-    // bridge each connection via tokio::io::duplex.
-    use std::os::windows::net::UnixListener as StdUnixListener;
-    let std_listener = StdUnixListener::bind(&sock_path)?;
 
     loop {
         // Blocking accept in spawn_blocking
