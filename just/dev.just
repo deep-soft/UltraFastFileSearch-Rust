@@ -67,3 +67,86 @@ update-tools:
     fi
     @printf "\033[0;32m✅ All tools updated to latest versions!\033[0m\n"
 
+
+
+# Quick deploy to Windows: version bump → xcompile → deploy to dist/ → commit → push.
+# Skips all CI validation (tests, lint, coverage). For debug iteration only.
+[unix]
+quick-deploy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf "\033[1;34m⚡ Quick Deploy to Windows (skip CI)\033[0m\n"
+    printf "\033[1;33m⚠️  No tests, no linting — debug iteration only!\033[0m\n"
+    echo "========================================================"
+
+    # 1. Version bump
+    printf "\n\033[0;34m📈 Step 1/5: Version bump...\033[0m\n"
+    if [ -f "./build/update_all_versions.rs" ]; then
+        ./build/update_all_versions.rs patch
+    else
+        printf "\033[1;31m❌ Version script not found\033[0m\n"
+        exit 1
+    fi
+    NEW_VERSION=$(awk '/^\[workspace\.package\]/{flag=1; next} flag && /^version/{print $3; exit}' Cargo.toml | tr -d '"')
+    printf "\033[0;32m  → v%s\033[0m\n" "$NEW_VERSION"
+
+    # 2. Cross-compile for Windows
+    printf "\n\033[0;34m🔨 Step 2/5: Cross-compile for Windows...\033[0m\n"
+    START=$(date +%s)
+    rust-script scripts/ci/build-cross-all.rs
+    END=$(date +%s)
+    printf "\033[0;32m  → Build completed in %ds\033[0m\n" $((END - START))
+
+    # 3. Deploy to dist/ and ~/bin
+    printf "\n\033[0;34m📦 Step 3/5: Deploy artifacts...\033[0m\n"
+    DIST_DIR="dist/v${NEW_VERSION}"
+    mkdir -p "$DIST_DIR"
+
+    # Copy cross-compiled Windows binaries
+    WIN_TARGET="target/x86_64-pc-windows-msvc/release"
+    if [ -d "$WIN_TARGET" ]; then
+        for BIN in uffs uffs_tui uffs_gui uffs_mft; do
+            SRC="$WIN_TARGET/${BIN}.exe"
+            if [ -f "$SRC" ]; then
+                BIN_DIST="$DIST_DIR/$BIN"
+                mkdir -p "$BIN_DIST"
+                cp "$SRC" "$BIN_DIST/${BIN}-windows-x64.exe"
+                SIZE=$(du -sh "$SRC" | cut -f1)
+                printf "  \033[0;32m✅ %-20s %s\033[0m\n" "${BIN}.exe" "$SIZE"
+            fi
+        done
+    fi
+
+    # Update dist/latest symlink
+    rm -f dist/latest
+    ln -sf "v${NEW_VERSION}" dist/latest
+    printf "  \033[0;32m→ dist/latest → v%s\033[0m\n" "$NEW_VERSION"
+
+    # Also install macOS native binaries to ~/bin
+    printf "\n  \033[0;34mInstalling macOS binaries to ~/bin...\033[0m\n"
+    cargo build --release -p uffs-cli -p uffs-daemon -p uffs-mcp 2>&1 | tail -3
+    BIN_DIR="$HOME/bin"
+    mkdir -p "$BIN_DIR"
+    for BIN in uffs uffs-daemon uffs-mcp; do
+        SRC="target/release/$BIN"
+        if [ -f "$SRC" ]; then
+            cp "$SRC" "$BIN_DIR/$BIN"
+            chmod +x "$BIN_DIR/$BIN"
+            printf "  \033[0;32m✅ ~/bin/%-16s\033[0m\n" "$BIN"
+        fi
+    done
+
+    # 4. Git commit
+    printf "\n\033[0;34m📝 Step 4/5: Git commit...\033[0m\n"
+    git add .
+    git -c commit.gpgsign=false commit -m "debug: quick-deploy v${NEW_VERSION} [skip ci]"
+    printf "\033[0;32m  → Committed\033[0m\n"
+
+    # 5. Git push
+    printf "\n\033[0;34m🚀 Step 5/5: Git push...\033[0m\n"
+    git pull origin main --rebase
+    git push origin main
+    printf "\033[0;32m  → Pushed\033[0m\n"
+
+    printf "\n\033[1;32m⚡ Quick deploy complete: v%s pushed to remote\033[0m\n" "$NEW_VERSION"
+    printf "\033[0;34m💡 On Windows: git pull && just use\033[0m\n"

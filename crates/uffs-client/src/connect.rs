@@ -83,26 +83,54 @@ impl UffsClient {
     /// # Errors
     ///
     /// Returns `ConnectionFailed` or `DaemonStartFailed`.
+    #[expect(
+        clippy::print_stdout,
+        clippy::use_debug,
+        reason = "temporary diagnostic output for debugging daemon start"
+    )]
     pub async fn connect_with_args(
         spawn_args: &[String],
     ) -> Result<Self, crate::error::ClientError> {
+        let sock = socket_path();
+        let pid_path = pid_file_path();
+        println!("[diag] connect_with_args: socket_path={}", sock.display());
+        println!("[diag] connect_with_args: socket exists={}", sock.exists());
+        println!("[diag] connect_with_args: pid_file={}", pid_path.display());
+        println!(
+            "[diag] connect_with_args: pid_file exists={}",
+            pid_path.exists()
+        );
+
         // Try connecting directly first — daemon may already be running.
-        if let Ok(client) = Self::platform_connect().await {
-            // S4.3.4: Verify daemon identity via PID file
-            verify_daemon_after_connect();
-            return Ok(client);
+        match Self::platform_connect().await {
+            Ok(client) => {
+                println!("[diag] connect_with_args: already connected to existing daemon");
+                // S4.3.4: Verify daemon identity via PID file
+                verify_daemon_after_connect();
+                return Ok(client);
+            }
+            Err(conn_err) => {
+                println!("[diag] connect_with_args: initial connect failed: {conn_err}");
+                drop(conn_err);
+            }
         }
 
         // Auto-start the daemon using the same binary (`uffs daemon run`)
         tracing::info!("Daemon not running, auto-starting via `uffs daemon run`...");
 
         let uffs_exe = find_uffs_exe();
+        println!("[diag] connect_with_args: uffs_exe={}", uffs_exe.display());
+        println!(
+            "[diag] connect_with_args: uffs_exe exists={}",
+            uffs_exe.exists()
+        );
 
         // Build args: ["daemon", "run", ...spawn_args]
         let mut cmd_args: Vec<&str> = vec!["daemon", "run"];
         for arg in spawn_args {
             cmd_args.push(arg.as_str());
         }
+        println!("[diag] connect_with_args: cmd_args={cmd_args:?}");
 
         // Spawn the daemon process.
         //
@@ -111,6 +139,7 @@ impl UffsClient {
         // "runas" verb to trigger a UAC consent dialog. If already elevated
         // (or the broker service is available), we spawn normally.
         spawn_daemon(&uffs_exe, &cmd_args)?;
+        println!("[diag] connect_with_args: spawn_daemon returned OK");
 
         // Retry with backoff
         let mut delay_ms = 50_u64;
@@ -118,16 +147,30 @@ impl UffsClient {
         for attempt in 1_usize..=max_attempts {
             tokio::time::sleep(core::time::Duration::from_millis(delay_ms)).await;
 
-            if let Ok(client) = Self::platform_connect().await {
-                tracing::info!(attempt, "Connected to daemon");
-                // S4.3.4: Verify daemon identity via PID file
-                verify_daemon_after_connect();
-                return Ok(client);
+            let sock_exists = sock.exists();
+            let pid_exists = pid_path.exists();
+            println!(
+                "[diag] connect attempt {attempt}/{max_attempts}: delay={delay_ms}ms, socket_exists={sock_exists}, pid_exists={pid_exists}"
+            );
+
+            match Self::platform_connect().await {
+                Ok(client) => {
+                    println!("[diag] connect_with_args: connected on attempt {attempt}!");
+                    tracing::info!(attempt, "Connected to daemon");
+                    // S4.3.4: Verify daemon identity via PID file
+                    verify_daemon_after_connect();
+                    return Ok(client);
+                }
+                Err(conn_err) if attempt <= 3 || attempt == max_attempts => {
+                    println!("[diag] connect attempt {attempt} failed: {conn_err}");
+                }
+                Err(_) => {}
             }
 
             delay_ms = (delay_ms * 2).min(2000);
         }
 
+        println!("[diag] connect_with_args: all {max_attempts} attempts exhausted, giving up");
         Err(crate::error::ClientError::ConnectionFailed(
             "Could not connect to daemon after auto-start".to_owned(),
         ))
@@ -783,14 +826,25 @@ fn spawn_daemon_unix(
     clippy::single_call_fn,
     reason = "platform-specific helper — clarity over inlining"
 )]
+#[expect(
+    clippy::print_stdout,
+    clippy::use_debug,
+    reason = "temporary diagnostic output for debugging daemon start"
+)]
 fn spawn_daemon_windows(
     exe: &std::path::Path,
     args: &[&str],
 ) -> Result<(), crate::error::ClientError> {
-    if is_elevated() {
+    let elevated = is_elevated();
+    println!("[diag] spawn_daemon_windows: exe={}", exe.display());
+    println!("[diag] spawn_daemon_windows: args={args:?}");
+    println!("[diag] spawn_daemon_windows: is_elevated={elevated}");
+
+    if elevated {
         // Already elevated — spawn directly (no UAC prompt).
         use std::os::windows::process::CommandExt;
-        std::process::Command::new(exe)
+        println!("[diag] spawn_daemon_windows: spawning DETACHED_PROCESS...");
+        let child = std::process::Command::new(exe)
             .args(args)
             .creation_flags(0x0000_0008) // DETACHED_PROCESS
             .stdout(std::process::Stdio::null())
@@ -798,15 +852,19 @@ fn spawn_daemon_windows(
             .stdin(std::process::Stdio::null())
             .spawn()
             .map_err(|spawn_err| {
+                println!("[diag] spawn_daemon_windows: spawn FAILED: {spawn_err}");
                 crate::error::ClientError::DaemonStartFailed(format!(
                     "Failed to spawn {} daemon run: {spawn_err}",
                     exe.display()
                 ))
             })?;
+        println!("[diag] spawn_daemon_windows: spawned PID={}", child.id());
     } else {
         // Not elevated — use ShellExecuteW "runas" to trigger UAC.
+        println!("[diag] spawn_daemon_windows: NOT elevated, using ShellExecuteW runas");
         tracing::info!("Not elevated — requesting elevation via UAC prompt");
         shell_execute_elevated(exe, args)?;
+        println!("[diag] spawn_daemon_windows: ShellExecuteW returned OK");
     }
     Ok(())
 }

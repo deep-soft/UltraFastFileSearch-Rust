@@ -97,11 +97,17 @@ fn validate_data_sources(
 ///
 /// Returns an error if another daemon is already running, data sources
 /// are missing, or the IPC server fails to bind.
+#[expect(clippy::too_many_lines, reason = "temporary: extra tracing for daemon debugging")]
 pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     tracing::info!(
         pid = std::process::id(),
         version = env!("CARGO_PKG_VERSION"),
         broker_available = broker_client::broker_available(),
+        mft_files = ?config.mft_files,
+        drives = ?config.drives,
+        data_dir = ?config.data_dir,
+        no_cache = config.no_cache,
+        no_retire = config.no_retire,
         "uffs-daemon starting"
     );
 
@@ -121,11 +127,13 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
 
     // Check for stale PID / another running instance
     if !lifecycle_mgr.check_stale_pid() {
+        tracing::error!("Another daemon instance is already running");
         anyhow::bail!("Another daemon instance is already running");
     }
 
     // Write PID file
     lifecycle_mgr.write_pid_file()?;
+    tracing::info!("PID file written");
 
     // D5.0: clean up stale shmem files from previous daemon sessions.
     uffs_client::shmem::cleanup_stale_shmem_files();
@@ -160,20 +168,27 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
             );
             auto_drives
         } else {
+            tracing::info!(explicit_drives = ?explicit, mft_file_count = mft_files.len(), "Using explicit sources");
             explicit
         }
     };
     #[cfg(not(windows))]
     let drives: Vec<char> = Vec::new();
 
+    tracing::info!(mft_files = mft_files.len(), drives = ?drives, "Final data sources");
+
     // Refuse to start with zero data sources — an empty daemon is useless.
     validate_data_sources(&mft_files, &drives, &lifecycle_mgr)?;
+    tracing::info!("Data sources validated OK");
 
     let load_index = Arc::clone(&idx);
     let broker_is_available = broker_client::broker_available();
     let load_task = tokio::spawn(async move {
+        tracing::info!(mft_files = mft_files.len(), drives = ?drives, "Load task starting");
         if !mft_files.is_empty() {
+            tracing::info!("Loading MFT files from data dir...");
             load_index.load_from_data_dir(&mft_files, no_cache).await;
+            tracing::info!("MFT files loaded");
         }
         #[cfg(windows)]
         if !drives.is_empty() {
@@ -189,22 +204,27 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
                     }
                 }
             }
+            tracing::info!(drives = ?drives, "Loading live drives...");
             load_index.load_live_drives(&drives, no_cache).await;
+            tracing::info!("Live drives loaded");
         }
         if broker_is_available {
             let _handle_result = broker_client::request_volume_handle('C');
         }
+        tracing::info!("Load task completed");
     });
 
     // Start IPC server
     let ipc_index = Arc::clone(&idx);
     let ipc_lifecycle = lifecycle_mgr.handle();
 
+    tracing::info!("Starting IPC server...");
     let ipc_task = tokio::spawn(async move {
         if let Err(ipc_err) = ipc::run_ipc_server(ipc_index, ipc_lifecycle).await {
             tracing::error!(error = %ipc_err, "IPC server error");
         }
     });
+    tracing::info!("IPC server task spawned");
 
     // Run idle timer (blocks until shutdown or timeout)
     lifecycle_mgr.run_idle_timer().await;
