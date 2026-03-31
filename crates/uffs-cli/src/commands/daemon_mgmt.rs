@@ -23,7 +23,65 @@ pub async fn daemon(action: &DaemonAction) -> Result<()> {
             Ok(())
         }
         DaemonAction::Restart => daemon_restart().await,
+        DaemonAction::Run {
+            mft_files,
+            data_dir,
+            drives,
+            idle_timeout,
+            no_retire,
+            no_cache,
+            log_level,
+        } => {
+            daemon_run(
+                mft_files,
+                data_dir.as_ref(),
+                drives,
+                *idle_timeout,
+                *no_retire,
+                *no_cache,
+                log_level,
+            )
+            .await
+        }
     }
+}
+
+/// `uffs daemon run` — run the daemon in-process (embedded mode).
+///
+/// This is the same daemon logic as the standalone `uffs-daemon` binary,
+/// invoked by the client's auto-start mechanism so only a single `uffs`
+/// binary needs to be deployed.
+async fn daemon_run(
+    mft_files: &[std::path::PathBuf],
+    data_dir: Option<&std::path::PathBuf>,
+    drives: &[char],
+    idle_timeout: u64,
+    no_retire: bool,
+    no_cache: bool,
+    log_level: &str,
+) -> Result<()> {
+    // Initialise tracing for the daemon — when launched as a detached
+    // background process, no subscriber exists yet.  When called in-process
+    // (e.g. `uffs daemon run` from the same CLI binary), a subscriber may
+    // already be installed; `try_init` gracefully handles that.
+    let filter = tracing_subscriber::EnvFilter::try_new(log_level)
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let _ignore = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .try_init();
+
+    uffs_daemon::run_daemon(uffs_daemon::DaemonConfig {
+        mft_files: mft_files.to_vec(),
+        data_dir: data_dir.cloned(),
+        drives: drives.to_vec(),
+        idle_timeout,
+        no_retire,
+        no_cache,
+        log_level: log_level.to_owned(),
+    })
+    .await
+    .with_context(|| "daemon run failed")
 }
 
 /// `uffs daemon start` — start the daemon, forwarding data-source flags

@@ -424,4 +424,40 @@ pub enum DaemonAction {
     Kill,
     /// Stop then restart the daemon (re-loads all indices).
     Restart,
+
+    /// Run the daemon in-process (used internally by auto-start).
+    ///
+    /// This is the embedded daemon entry point — same functionality as the
+    /// standalone `uffs-daemon` binary.  Normally invoked by the client
+    /// library's auto-start logic; not intended for direct user use.
+    #[command(hide = true)]
+    Run {
+        /// Raw MFT file(s) to load.
+        #[arg(long = "mft-file", value_delimiter = ',')]
+        mft_files: Vec<PathBuf>,
+
+        /// Data directory containing `drive_*` subdirectories.
+        #[arg(long = "data-dir")]
+        data_dir: Option<PathBuf>,
+
+        /// Live drive letters (Windows only).
+        #[arg(long = "drive")]
+        drives: Vec<char>,
+
+        /// Idle timeout in seconds (default 600).
+        #[arg(long, default_value = "600")]
+        idle_timeout: u64,
+
+        /// Disable auto-retire.
+        #[arg(long)]
+        no_retire: bool,
+
+        /// Skip cache.
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Log level.
+        #[arg(long, default_value = "info")]
+        log_level: String,
+    },
 }

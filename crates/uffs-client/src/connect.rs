@@ -40,8 +40,8 @@ impl UffsClient {
     /// Connect to a running daemon, or auto-start one if not running.
     ///
     /// Tries to connect to the socket. If the socket doesn't exist or
-    /// connection fails, spawns `uffs-daemon` as a detached process and
-    /// retries with exponential backoff (up to ~30s).
+    /// connection fails, spawns `uffs daemon run` as a detached process
+    /// and retries with exponential backoff (up to ~30s).
     ///
     /// On Windows the daemon auto-discovers live NTFS drives so no extra
     /// args are needed.  On Mac/Linux, pass `--data-dir` or `--mft-file`
@@ -55,24 +55,9 @@ impl UffsClient {
         Self::connect_with_args(&[]).await
     }
 
-    /// Connect to a running daemon, or auto-start one with extra CLI
-    /// arguments.
-    ///
-    /// `spawn_args` are forwarded to `uffs-daemon` **only** when the
-    /// daemon is not already running and must be auto-started.  If a
-    /// daemon is already listening, the args are ignored (it already
-    /// has its data loaded).
-    ///
-    /// Typical usage (Mac/Linux):
-    /// ```rust,ignore
-    /// let args = vec!["--data-dir".into(), "/path/to/uffs_data".into()];
-    /// let client = UffsClient::connect_with_args(&args).await?;
-    /// ```
+    /// Try to connect to an already-running daemon **without** auto-starting.
     ///
     /// # Errors
-    ///
-    /// Returns `ConnectionFailed` or `DaemonStartFailed`.
-    /// Try to connect to an already-running daemon **without** auto-starting.
     ///
     /// Returns `ConnectionFailed` if no daemon is listening.
     pub async fn connect_raw() -> Result<Self, crate::error::ClientError> {
@@ -84,8 +69,16 @@ impl UffsClient {
     /// Connect to a running daemon, or auto-start one with extra CLI
     /// arguments.
     ///
-    /// `spawn_args` are forwarded to `uffs-daemon` **only** when the
-    /// daemon is not already running and must be auto-started.
+    /// `spawn_args` are forwarded to `uffs daemon run` **only** when
+    /// the daemon is not already running and must be auto-started.  If
+    /// a daemon is already listening, the args are ignored (it already
+    /// has its data loaded).
+    ///
+    /// Typical usage (Mac/Linux):
+    /// ```rust,ignore
+    /// let args = vec!["--data-dir".into(), "/path/to/uffs_data".into()];
+    /// let client = UffsClient::connect_with_args(&args).await?;
+    /// ```
     ///
     /// # Errors
     ///
@@ -100,17 +93,22 @@ impl UffsClient {
             return Ok(client);
         }
 
-        // Auto-start the daemon
-        tracing::info!("Daemon not running, auto-starting...");
+        // Auto-start the daemon using the same binary (`uffs daemon run`)
+        tracing::info!("Daemon not running, auto-starting via `uffs daemon run`...");
 
-        // Find the daemon executable: look next to current exe, fall back to PATH
-        let daemon_exe = find_daemon_exe();
+        let uffs_exe = find_uffs_exe();
+
+        // Build args: ["daemon", "run", ...spawn_args]
+        let mut cmd_args: Vec<&str> = vec!["daemon", "run"];
+        for arg in spawn_args {
+            cmd_args.push(arg.as_str());
+        }
 
         let spawn_result = {
             #[cfg(unix)]
             {
-                std::process::Command::new(&daemon_exe)
-                    .args(spawn_args)
+                std::process::Command::new(&uffs_exe)
+                    .args(&cmd_args)
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .stdin(std::process::Stdio::null())
@@ -119,8 +117,8 @@ impl UffsClient {
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
-                std::process::Command::new(&daemon_exe)
-                    .args(spawn_args)
+                std::process::Command::new(&uffs_exe)
+                    .args(&cmd_args)
                     .creation_flags(0x0000_0008) // DETACHED_PROCESS
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -131,8 +129,8 @@ impl UffsClient {
 
         spawn_result.map_err(|spawn_err| {
             crate::error::ClientError::DaemonStartFailed(format!(
-                "Failed to spawn {}: {spawn_err}",
-                daemon_exe.display()
+                "Failed to spawn {} daemon run: {spawn_err}",
+                uffs_exe.display()
             ))
         })?;
 
@@ -696,8 +694,35 @@ pub fn parse_pid_file(path: &std::path::Path) -> Option<(u32, u64, u64, String)>
     Some((pid, ts, hash, nonce))
 }
 
-/// Find the `uffs-daemon` executable: look next to the current binary
-/// first, then fall back to `PATH`.
+/// Find the `uffs` executable (the CLI binary that also embeds the daemon).
+///
+/// Strategy:
+/// 1. If the calling binary is `uffs` (or `uffs.exe`), use `current_exe()`.
+/// 2. Otherwise (e.g. called from `uffs_tui`), look for `uffs` next to the
+///    current binary, then fall back to `PATH`.
+#[must_use]
+pub fn find_uffs_exe() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        let name = exe.file_stem().and_then(|stem| stem.to_str()).unwrap_or("");
+        if name == "uffs" {
+            return exe;
+        }
+        // Current binary is not `uffs` — look for it alongside the exe.
+        if let Some(parent) = exe.parent() {
+            let uffs_bin = if cfg!(windows) { "uffs.exe" } else { "uffs" };
+            let sibling = parent.join(uffs_bin);
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+    }
+    PathBuf::from("uffs")
+}
+
+/// Find the `uffs-daemon` executable (legacy — prefer `find_uffs_exe`).
+///
+/// Kept for backward compatibility: if a standalone `uffs-daemon` binary
+/// exists next to `uffs`, it can still be used.
 #[must_use]
 pub fn find_daemon_exe() -> PathBuf {
     std::env::current_exe()

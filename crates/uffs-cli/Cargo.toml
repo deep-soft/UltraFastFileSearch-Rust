@@ -56,6 +56,7 @@ chrono.workspace = true
 # Memory allocator - mimalloc is faster than system allocator on all platforms
 mimalloc.workspace = true
 uffs-client.workspace = true
+uffs-daemon.workspace = true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lints (inherit from workspace)

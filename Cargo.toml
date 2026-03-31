@@ -45,7 +45,7 @@ exclude = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.4.33"
+version = "0.4.34"
 edition = "2024"
 rust-version = "1.85"
 license = "MPL-2.0 OR LicenseRef-UFFS-Commercial"
@@ -67,6 +67,7 @@ uffs-security = { path = "crates/uffs-security" }
 uffs-mft      = { path = "crates/uffs-mft", features = ["zstd"] }
 uffs-core     = { path = "crates/uffs-core" }
 uffs-client   = { path = "crates/uffs-client" }
+uffs-daemon   = { path = "crates/uffs-daemon" }
 # NOTE: no `uffs-diag` workspace dependency alias on purpose.
 # It is a top-level diagnostic/tool crate, not a shared runtime dependency.
 
