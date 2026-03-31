@@ -219,9 +219,13 @@ pub struct KeepaliveParams {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Response for the `search` method.
+///
+/// Results are delivered either inline (`rows`) or via shared memory
+/// (`shmem_path`).  When `shmem_path` is set, `rows` is empty and the
+/// client should read the file with [`crate::shmem::read_search_results`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchResponse {
-    /// Matching result rows.
+    /// Matching result rows (inline delivery — empty when shmem is used).
     pub rows: Vec<SearchRow>,
     /// Total records scanned.
     pub records_scanned: usize,
@@ -229,6 +233,17 @@ pub struct SearchResponse {
     pub duration_ms: u64,
     /// Whether results were truncated by limit.
     pub truncated: bool,
+    /// Path to a shared-memory file containing the results (D5.0).
+    ///
+    /// When set, `rows` is empty and the file should be read with
+    /// [`crate::shmem::read_search_results`].  The client is responsible
+    /// for deleting the file after reading.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shmem_path: Option<String>,
+    /// Number of rows in the shmem file (present only when `shmem_path`
+    /// is set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shmem_count: Option<u64>,
 }
 
 /// A single search result row.
@@ -289,6 +304,25 @@ pub struct StatusResponse {
     pub connections: usize,
     /// Daemon process ID.
     pub pid: u32,
+}
+
+/// Response for the `stats` method — daemon performance metrics.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StatsResponse {
+    /// Total search queries served since startup.
+    pub total_queries: u64,
+    /// Cumulative search time in microseconds.
+    pub total_query_time_us: u64,
+    /// Average query time in microseconds.
+    pub avg_query_time_us: f64,
+    /// Time from daemon start to `Ready` in milliseconds.
+    pub startup_duration_ms: u64,
+    /// Daemon uptime in seconds.
+    pub uptime_secs: u64,
+    /// Total records across all loaded drives.
+    pub total_records: usize,
+    /// Queries per second (over daemon lifetime).
+    pub queries_per_second: f64,
 }
 
 /// Daemon operational status.
@@ -533,6 +567,8 @@ mod tests {
             records_scanned: 1_000_000,
             duration_ms: 8,
             truncated: false,
+            shmem_path: None,
+            shmem_count: None,
         };
         let json = serde_json::to_string(&resp).expect("serialize");
         let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");

@@ -37,6 +37,7 @@ tracing.workspace = true
 
 # Platform dirs (for socket/pipe path)
 dirs-next.workspace = true
+memmap2.workspace = true
 
 # Daemon identity verification: exe path lookup
 [target.'cfg(unix)'.dependencies]

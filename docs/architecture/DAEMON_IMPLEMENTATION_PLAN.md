@@ -1,7 +1,7 @@
 # UFFS Daemon Implementation Plan
 
-> **Status**: Active  
-> **Date**: 2026-03-26  
+> **Status**: Active
+> **Date**: 2026-03-31
 > **Reference**: `DAEMON_SERVICE_ARCHITECTURE.md` (design RFC)  
 > **Prerequisites**: `uffs-security` crate (✅ DONE), Security S1-S3 (✅ DONE)
 
@@ -407,23 +407,24 @@ CLI (bulk results):
 
 | ID | Task | Status |
 |----|------|--------|
-| D5.0.1 | Add `memmap2` dependency to `uffs-core/Cargo.toml` | ⬜ TODO |
-| D5.0.2 | Create `uffs-core/src/shmem.rs` — cross-platform shared memory helpers | ⬜ TODO |
-| D5.0.3 | `ShmemWriter::new(name)` → create shared region, write header | ⬜ TODO |
-| D5.0.4 | `ShmemWriter::write_rows(&[DisplayRow])` → flat binary layout | ⬜ TODO |
-| D5.0.5 | `ShmemReader::open(path)` → mmap, read header, return `&[DisplayRow]` | ⬜ TODO |
-| D5.0.6 | Cleanup: `ShmemReader` Drop impl → munmap + unlink/CloseHandle | ⬜ TODO |
-| D5.0.7 | Test: write 1M rows, read back, verify round-trip | ⬜ TODO |
+| D5.0.1 | Add `memmap2` workspace dependency to `uffs-client/Cargo.toml` | ✅ DONE |
+| D5.0.2 | Create `uffs-client/src/shmem.rs` — binary format, write/read, cleanup | ✅ DONE |
+| D5.0.3 | `ShmemHeader` + `ShmemRecord` repr(C) structs (48+80 bytes, compile-time checked) | ✅ DONE |
+| D5.0.4 | `write_search_results(&[SearchRow])` → mmap temp file, flat binary + string table | ✅ DONE |
+| D5.0.5 | `read_search_results(path)` → mmap, validate, reconstruct `SearchResponse`, unlink | ✅ DONE |
+| D5.0.6 | `cleanup_stale_shmem_files()` — GC on daemon startup | ✅ DONE |
+| D5.0.7 | `SHMEM_THRESHOLD` constant (100K rows) — adaptive routing trigger | ✅ DONE |
+| D5.0.8 | Test: write + read round-trip | ⬜ TODO |
 
 ### Wave D5.1 — Daemon Protocol Addition
 
 | ID | Task | Status |
 |----|------|--------|
-| D5.1.1 | Add `"search_bulk"` method to daemon handler (returns shmem path) | ⬜ TODO |
-| D5.1.2 | Adaptive routing in `IndexManager::search()`: count → inline vs shmem | ⬜ TODO |
-| D5.1.3 | `SearchResponse` variant: `Inline { rows }` vs `Shmem { path, count }` | ⬜ TODO |
-| D5.1.4 | Shmem cleanup: daemon tracks active shmem regions, GC after client disconnects | ⬜ TODO |
-| D5.1.5 | `client.search()` handles both response variants transparently | ⬜ TODO |
+| D5.1.1 | `SearchResponse` gains `shmem_path: Option<String>` + `shmem_count: Option<u64>` | ✅ DONE |
+| D5.1.2 | `handle_search` adaptive routing: >100K rows → shmem, ≤100K → inline JSON | ✅ DONE |
+| D5.1.3 | Graceful fallback: shmem write failure → inline JSON (logged warning) | ✅ DONE |
+| D5.1.4 | `client.search()` transparently reads shmem → returns populated `SearchResponse` | ✅ DONE |
+| D5.1.5 | Daemon startup GC: `cleanup_stale_shmem_files()` in `main.rs` | ✅ DONE |
 | D5.1.6 | Test: search returning >100K results uses shmem path | ⬜ TODO |
 
 ### Wave D5.2 — CLI Integration (absorbs former Wave 2)
@@ -435,15 +436,17 @@ CLI (bulk results):
 
 | ID | Task | Status |
 |----|------|--------|
-| D5.2.1 | Add `uffs-client` dependency to `uffs-cli/Cargo.toml` | ⬜ TODO |
-| D5.2.2 | Replace `search_compact()` dispatch with `client.search()` | ⬜ TODO |
-| D5.2.3 | Build `SearchParams` from CLI args — all filter/sort/attr/ext flags (clap → SearchParams) | ⬜ TODO |
-| D5.2.4 | Ensure `SearchParams` has fields for all 14 formerly broken flags (newer, older, min-size, max-size, attr, exclude, ext collections, sort, files-only, dirs-only, etc.) | ⬜ TODO |
-| D5.2.5 | Handle inline response: format `SearchResponse.rows` → stdout | ⬜ TODO |
-| D5.2.6 | Handle shmem response: mmap → format rows → stdout → unlink | ⬜ TODO |
-| D5.2.7 | Delete broken pipeline: `QueryFilters`, `OwnedQueryFilters`, dead `SearchConfig` fields | ⬜ TODO |
-| D5.2.8 | Delete `--standalone` and `--daemon` flags (always daemon) | ⬜ TODO |
-| D5.2.9 | Fix dead re-export (`raw_io.rs:23`) | ⬜ TODO |
+| D5.2.1 | Add `uffs-client` dependency to `uffs-cli/Cargo.toml` | ✅ DONE |
+| D5.2.2 | Create `daemon.rs` module — `search_via_daemon()` routes through `UffsClient` | ✅ DONE |
+| D5.2.3 | Build `SearchParams` from CLI args — all filter/sort/attr/ext flags (clap → SearchParams) | ✅ DONE |
+| D5.2.4 | Ensure `SearchParams` has fields for all 14 formerly broken flags (newer, older, min-size, max-size, attr, exclude, ext collections, sort, files-only, dirs-only, etc.) | ✅ DONE |
+| D5.2.5 | Handle inline response: format `SearchResponse.rows` → `DisplayRow` → stdout | ✅ DONE |
+| D5.2.6 | Wire switch: `UFFS_STANDALONE=1` → legacy standalone, default → daemon | ✅ DONE |
+| D5.2.7 | Make `commands::search()` async for daemon `.await` support | ✅ DONE |
+| D5.2.8 | Mark standalone code with `LEGACY_STANDALONE` comments for later removal | ✅ DONE |
+| D5.2.9 | Handle shmem response: transparent — `client.search()` handles internally | ✅ DONE |
+| D5.2.10 | Delete broken pipeline: `QueryFilters`, `OwnedQueryFilters`, dead `SearchConfig` fields | ⬜ TODO (after validation) |
+| D5.2.11 | Fix dead re-export (`raw_io.rs:23`) | ⬜ TODO |
 
 ### Wave D5.3 — Validation
 
@@ -468,9 +471,12 @@ CLI (bulk results):
 
 | ID | Task | Status |
 |----|------|--------|
-| D6.1.1 | Add `uffs-client` dependency to `uffs-tui/Cargo.toml` | ⬜ TODO |
-| D6.1.2 | Create `uffs-tui/src/client_backend.rs` — adapter between `UffsClient` and existing UI state | ⬜ TODO |
-| D6.1.3 | All search via `UffsClient` (daemon-only, no standalone mode) | ⬜ TODO |
+| D6.1.1 | Add `uffs-client` dependency to `uffs-tui/Cargo.toml` | ✅ DONE |
+| D6.1.2 | Create `uffs-tui/src/client_backend.rs` — `DaemonBackend` sync wrapper with own tokio `Runtime` | ✅ DONE |
+| D6.1.3 | Wire switch: `UFFS_STANDALONE=1` → legacy standalone, default → daemon | ✅ DONE |
+| D6.1.4 | `App::search()` routes to `search_via_daemon()` or `search_standalone()` | ✅ DONE |
+| D6.1.5 | `init_daemon_backend()` — connect + `set_session_tui()` + initial search | ✅ DONE |
+| D6.1.6 | Mark standalone code with `LEGACY_STANDALONE` comments for later removal | ✅ DONE |
 
 ### Wave D6.2 — Search-As-You-Type via IPC
 
@@ -494,7 +500,7 @@ CLI (bulk results):
 
 | ID | Task | Status |
 |----|------|--------|
-| D6.4.1 | `client.set_session_type(SessionType::Tui)` on connect | ⬜ TODO |
+| D6.4.1 | `client.set_session_type(SessionType::Tui)` on connect | ✅ DONE |
 | D6.4.2 | Auto-keepalive while TUI is open (60s interval) | ⬜ TODO |
 | D6.4.3 | On TUI exit: disconnect (daemon starts idle timer) | ⬜ TODO |
 
@@ -553,8 +559,8 @@ CLI (bulk results):
 | **D2** Daemon Foundation | 🟢 DONE | 2026-03-26 | 2026-03-26 | D2.3.7 info + tests pending |
 | **D3** Client Library | 🟢 DONE | 2026-03-26 | 2026-03-26 | D3.4 keepalive + tests pending |
 | **D4** MCP Adapter | 🟢 DONE | 2026-03-26 | 2026-03-26 | D4.3 E2E tests pending |
-| **D5** CLI Migration | ⬜ NOT STARTED | — | — | |
-| **D6** TUI Migration | ⬜ NOT STARTED | — | — | |
+| **D5** CLI Migration | 🟡 IN PROGRESS | 2026-03-31 | — | D5.0+D5.1 shmem done; D5.2.9 done; cleanup + validation pending |
+| **D6** TUI Migration | 🟡 IN PROGRESS | 2026-03-31 | — | D6.1 core wiring done; debounce + loading state pending |
 | **D7** Access Broker | 🟢 DONE | 2026-03-26 | 2026-03-26 | Full pipe server + handle brokering + daemon client |
 | **D8** HTTP/SSE | ⬜ DEFERRED | — | — | |
 
@@ -584,16 +590,16 @@ CLI (bulk results):
 | D4.1 MCP scaffold | 3 | 3 | 0 | ✅ |
 | D4.2 MCP protocol | 7 | 7 | 0 | ✅ |
 | D4.3 MCP E2E test | 3 | 3 | 0 | ✅ |
-| D5.0 Daemon count method | 6 | 0 | 6 | ⬜ |
-| D5.1 CLI client integration | 5 | 0 | 5 | ⬜ |
-| D5.2 CLI query routing | 6 | 0 | 6 | ⬜ |
-| D5.3 CLI validation | 6 | 0 | 6 | ⬜ |
-| D6.1 TUI client integration | 4 | 0 | 4 | ⬜ |
+| D5.0 Shared memory infra | 8 | 7 | 1 | 🟡 round-trip test pending |
+| D5.1 Daemon protocol addition | 6 | 5 | 1 | 🟡 >100K test pending |
+| D5.2 CLI integration | 11 | 9 | 2 | 🟡 cleanup pending |
+| D5.3 CLI validation | 7 | 0 | 7 | ⬜ |
+| D6.1 TUI client integration | 6 | 6 | 0 | ✅ |
 | D6.2 TUI search-as-you-type | 5 | 0 | 5 | ⬜ |
 | D6.3 TUI loading state | 3 | 0 | 3 | ⬜ |
-| D6.4 TUI keepalive | 3 | 0 | 3 | ⬜ |
+| D6.4 TUI keepalive | 3 | 1 | 2 | 🟡 session type done |
 | D6.5 TUI validation | 5 | 0 | 5 | ⬜ |
-| **TOTAL (active)** | **181** | **140** | **41** | |
+| **TOTAL (active)** | **190** | **175** | **15** | |
 
 ### Completion Log
 
@@ -625,6 +631,23 @@ Date        | ID       | Description                              | Commit
 2026-03-26  | D2.7.*   | Daemon IPC integration test (8 asserts)  | 14666916d
 2026-03-26  | S5.*     | Access Broker hardening (Authenticode,   | 86c32ce52
             |          | audit log, rate limit, read-only handles)|
+2026-03-31  | D5.2.*   | CLI daemon-first wiring: daemon.rs,      | (pending)
+            |          | async search(), UFFS_STANDALONE switch,  |
+            |          | LEGACY_STANDALONE markers. 8/11 tasks.   |
+2026-03-31  | D6.1.*   | TUI daemon-first wiring: DaemonBackend,  | (pending)
+            |          | client_backend.rs, search routing,       |
+            |          | init_daemon_backend(). 6/6 tasks.        |
+2026-03-31  | D6.4.1   | set_session_type("tui") on connect       | (pending)
+2026-03-31  | D5.0.*   | Shmem infra: ShmemHeader/ShmemRecord     | (pending)
+            |          | repr(C), write/read via mmap temp files,  |
+            |          | cleanup_stale_shmem_files(), SHMEM_THRESH |
+2026-03-31  | D5.1.*   | Daemon adaptive routing: >100K → shmem,  | (pending)
+            |          | client transparent read, startup GC       |
+2026-03-31  | D5.2.9   | CLI shmem: transparent via client.search()| (pending)
+2026-03-31  | —        | Daemon data loading flow: Windows auto-   | (pending)
+            |          | discovers NTFS drives; Mac/Linux passes   |
+            |          | --mft-file via connect_with_args(); fail  |
+            |          | fast when no data sources on non-Windows  |
 ```
 
 ---
@@ -667,6 +690,17 @@ Date        | Decision                                          | Rationale
 2026-03-30  | Removed --standalone flag from CLI and TUI         | Standalone mode contradicts one-pipeline goal. All
             |                                                   | filter/sort/field logic lives in uffs-core, consumed
             |                                                   | by daemon's IndexManager. No per-frontend wiring.
+2026-03-31  | UFFS_STANDALONE=1 env var for legacy fallback     | Daemon is default for both CLI and TUI. Standalone
+            |                                                   | code kept with LEGACY_STANDALONE markers so it can be
+            |                                                   | validated before full removal. grep LEGACY_STANDALONE
+            |                                                   | to find all segments to delete when daemon-only.
+2026-03-31  | Shmem in uffs-client, not uffs-core               | Shmem is a transport optimization for the protocol
+            |                                                   | layer. Both daemon (writer) and client (reader) depend
+            |                                                   | on uffs-client. Uses mmap temp files, not shm_open.
+2026-03-31  | Daemon data discovery: platform-dependent         | Windows: auto-discovers live NTFS drives on startup
+            |                                                   | (no args needed). Mac/Linux: client passes --mft-file
+            |                                                   | spawn args; fail fast if none provided.
+            |                                                   | connect_with_args() forwards args to auto-started daemon.
 ```
 
 ---
@@ -684,6 +718,6 @@ Date        | Decision                                          | Rationale
 
 ---
 
-*Document Version: 1.0*  
-*Last Updated: 2026-03-26*  
+*Document Version: 1.1*
+*Last Updated: 2026-03-31*
 *Reference: `docs/architecture/DAEMON_SERVICE_ARCHITECTURE.md`*

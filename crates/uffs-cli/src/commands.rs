@@ -8,6 +8,8 @@ use indicatif::MultiProgress;
 #[cfg(windows)]
 use indicatif::{ProgressBar, ProgressStyle};
 
+/// Daemon management subcommands.
+mod daemon_mgmt;
 /// Index subcommand implementation.
 mod index;
 /// Info subcommand implementation.
@@ -21,6 +23,7 @@ mod search;
 /// Stats subcommand implementation.
 mod stats;
 
+pub use self::daemon_mgmt::daemon;
 pub use self::index::index;
 pub use self::info::info;
 pub use self::search::search;

@@ -4,13 +4,14 @@
 //! the compact search indices for all loaded drives and delegates to
 //! `uffs_core::search` for query execution.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
 use std::time::Instant;
 
 use tokio::sync::RwLock;
 use uffs_client::protocol::{
     DaemonStatus, DriveInfo, DrivesResponse, SearchParams, SearchResponse, SearchRow,
-    StatusResponse,
+    StatsResponse, StatusResponse,
 };
 use uffs_core::search::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
 use uffs_core::search::filters::SearchFilters;
@@ -28,6 +29,13 @@ pub struct IndexManager {
     start_time: Instant,
     /// Data directory for MFT files (Mac/Linux offline mode).
     data_dir: Option<PathBuf>,
+    // ── Performance counters ────────────────────────────────────────
+    /// Total search queries served.
+    queries_total: AtomicU64,
+    /// Cumulative search time in microseconds.
+    queries_total_us: AtomicU64,
+    /// Duration from daemon start to `Ready` (microseconds, set once).
+    startup_duration_us: AtomicU64,
 }
 
 impl IndexManager {
@@ -43,6 +51,9 @@ impl IndexManager {
             }),
             start_time: Instant::now(),
             data_dir,
+            queries_total: AtomicU64::new(0),
+            queries_total_us: AtomicU64::new(0),
+            startup_duration_us: AtomicU64::new(0),
         }
     }
 
@@ -99,10 +110,8 @@ impl IndexManager {
             drop(progress);
         }
 
-        // Mark as ready
-        let mut final_status = self.status.write().await;
-        *final_status = DaemonStatus::Ready;
-        drop(final_status);
+        // Mark as ready + record startup duration.
+        self.set_ready().await;
 
         let backend = self.backend.read().await;
         tracing::info!(
@@ -171,12 +180,28 @@ impl IndexManager {
             };
         }
 
-        let mut status = self.status.write().await;
-        *status = DaemonStatus::Ready;
+        self.set_ready().await;
     }
 
-    /// Execute a search query.
+    /// Transition to `Ready` and record startup duration (idempotent).
+    async fn set_ready(&self) {
+        let mut status = self.status.write().await;
+        *status = DaemonStatus::Ready;
+        drop(status);
+        // Record only the first transition.
+        let elapsed_us = u64::try_from(self.start_time.elapsed().as_micros()).unwrap_or(u64::MAX);
+        // Only record the first transition; ignore the result.
+        let _already_set = self.startup_duration_us.compare_exchange(
+            0,
+            elapsed_us,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Execute a search query (updates perf counters).
     pub async fn search(&self, params: &SearchParams) -> SearchResponse {
+        let query_start = Instant::now();
         let mut backend = self.backend.write().await;
 
         let sort_column = params
@@ -220,6 +245,14 @@ impl IndexManager {
         );
         drop(backend);
 
+        // Update perf counters.
+        let query_us = query_start.elapsed().as_micros();
+        self.queries_total.fetch_add(1, Ordering::Relaxed);
+        self.queries_total_us.fetch_add(
+            u64::try_from(query_us).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+
         let truncated = params
             .limit
             .is_some_and(|cap| result.rows.len() >= cap as usize);
@@ -235,6 +268,8 @@ impl IndexManager {
             records_scanned: result.records_scanned,
             duration_ms,
             truncated,
+            shmem_path: None,
+            shmem_count: None,
         }
     }
 
@@ -259,6 +294,42 @@ impl IndexManager {
                     },
                 })
                 .collect(),
+        }
+    }
+
+    /// Get daemon performance statistics.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::float_arithmetic,
+        clippy::default_numeric_fallback,
+        reason = "stats are approximate; f64 precision is fine for monitoring"
+    )]
+    pub async fn stats(&self) -> StatsResponse {
+        let total_queries = self.queries_total.load(Ordering::Relaxed);
+        let total_us = self.queries_total_us.load(Ordering::Relaxed);
+        let startup_us = self.startup_duration_us.load(Ordering::Relaxed);
+        let uptime_secs = self.start_time.elapsed().as_secs();
+        let total_records = self.total_records().await;
+
+        let avg_query_us = if total_queries > 0 {
+            total_us as f64 / total_queries as f64
+        } else {
+            0.0
+        };
+        let qps = if uptime_secs > 0 {
+            total_queries as f64 / uptime_secs as f64
+        } else {
+            0.0
+        };
+
+        StatsResponse {
+            total_queries,
+            total_query_time_us: total_us,
+            avg_query_time_us: avg_query_us,
+            startup_duration_ms: startup_us / 1000,
+            uptime_secs,
+            total_records,
+            queries_per_second: qps,
         }
     }
 
@@ -364,9 +435,7 @@ impl IndexManager {
             }
         }
 
-        let mut done_status = self.status.write().await;
-        *done_status = DaemonStatus::Ready;
-        drop(done_status);
+        self.set_ready().await;
     }
 
     /// Look up a file by path and return all available fields (D2.3.7).

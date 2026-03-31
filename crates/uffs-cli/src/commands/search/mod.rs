@@ -1,7 +1,10 @@
 //! Search command implementation.
 //!
-//! All search paths use the unified compact-index pipeline.  This file
-//! contains only the public entry point, shared types, and module wiring.
+//! By default, search routes through the UFFS daemon (IPC). Set the
+//! environment variable `UFFS_STANDALONE=1` to fall back to the legacy
+//! in-process compact-index pipeline.
+//!
+//! All output paths converge on `finalize_output` regardless of backend.
 
 extern crate alloc;
 
@@ -13,7 +16,10 @@ use uffs_core::output::OutputConfig;
 
 use super::raw_io::QueryFilters;
 
+/// Daemon-based search via IPC.
+mod daemon;
 /// Search dispatch routing and configuration building.
+/// LEGACY_STANDALONE: standalone dispatch — remove when daemon-only.
 mod dispatch;
 /// Pure utility helpers for the search command.
 mod util;
@@ -27,10 +33,15 @@ struct SearchConfig<'a> {
     single_drive: Option<char>,
     /// Multiple drive letters.
     multi_drives: Option<Vec<char>>,
+    // LEGACY_STANDALONE: `index` field — remove when daemon-only.
     /// Index file path.
     index: Option<PathBuf>,
+    // LEGACY_STANDALONE: `mft_file` field — remove when daemon-only.
     /// MFT file paths.
     mft_file: Vec<PathBuf>,
+    /// Data directory (`--data-dir`), forwarded to daemon as-is.
+    data_dir: Option<PathBuf>,
+    // LEGACY_STANDALONE: `filters` field — remove when daemon-only.
     /// Query filters.
     filters: QueryFilters<'a>,
     /// Effective case sensitivity.
@@ -39,6 +50,7 @@ struct SearchConfig<'a> {
     profile: bool,
     /// Benchmark mode (no output).
     benchmark: bool,
+    // LEGACY_STANDALONE: `no_cache` field — remove when daemon-only.
     /// Disable cache.
     no_cache: bool,
     /// Attribute filter string.
@@ -73,6 +85,13 @@ struct SearchConfig<'a> {
     start_time: std::time::Instant,
 }
 
+// LEGACY_STANDALONE: `is_standalone_mode` — remove when daemon-only.
+/// Returns `true` when the user has explicitly opted into the legacy
+/// standalone pipeline via `UFFS_STANDALONE=1`.
+fn is_standalone_mode() -> bool {
+    std::env::var("UFFS_STANDALONE").is_ok_and(|val| val == "1" || val.eq_ignore_ascii_case("true"))
+}
+
 /// Search for files matching a pattern.
 ///
 /// Supports:
@@ -84,6 +103,9 @@ struct SearchConfig<'a> {
 /// - Extension filtering: `--ext pictures,mp4,pdf`
 /// - Output customization: `--out`, `--columns`, `--sep`, `--quotes`,
 ///   `--header`, `--pos`, `--neg`
+///
+/// Default: daemon mode (IPC to `uffs-daemon`).
+/// Fallback: `UFFS_STANDALONE=1` uses in-process pipeline.
 #[expect(
     clippy::too_many_arguments,
     clippy::fn_params_excessive_bools,
@@ -93,12 +115,13 @@ struct SearchConfig<'a> {
     clippy::single_call_fn,
     reason = "public CLI entry point called from main dispatch"
 )]
-pub fn search(
+pub async fn search(
     pattern: &str,
     single_drive: Option<char>,
     multi_drives: Option<Vec<char>>,
     index: Option<PathBuf>,
     mft_file: Vec<PathBuf>,
+    data_dir: Option<PathBuf>,
     files_only: bool,
     dirs_only: bool,
     hide_system: bool,
@@ -144,6 +167,7 @@ pub fn search(
         multi_drives,
         index,
         mft_file,
+        data_dir,
         files_only,
         dirs_only,
         hide_system,
@@ -181,9 +205,15 @@ pub fn search(
         start_time,
     )?;
 
-    // Dispatch to unified search pipeline.
-    let rows = dispatch::dispatch_search(&config)?;
+    // ── Route: daemon (default) or standalone (legacy) ────────────────
+    let rows = if is_standalone_mode() {
+        // LEGACY_STANDALONE: this branch — remove when daemon-only.
+        debug!("Using LEGACY standalone search pipeline (UFFS_STANDALONE=1)");
+        dispatch::dispatch_search(&config)?
+    } else {
+        daemon::search_via_daemon(&config).await?
+    };
 
-    // Output.
+    // Output — shared by both paths.
     dispatch::finalize_output(&rows, &config)
 }

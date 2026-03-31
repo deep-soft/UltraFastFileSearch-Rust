@@ -43,6 +43,13 @@ struct Cli {
     #[arg(long = "mft-file", value_name = "PATH")]
     mft_files: Vec<PathBuf>,
 
+    /// Data directory containing `drive_*` subdirectories with MFT files.
+    ///
+    /// Auto-discovers MFT files in `drive_c/`, `drive_d/`, etc.
+    /// Prefers `.iocp` over `.bin` over `.mft`.
+    #[arg(long = "data-dir", value_name = "DIR")]
+    data_dir_arg: Option<PathBuf>,
+
     /// Live drives to load (Windows only, e.g. C D E).
     #[arg(long = "drive", value_name = "LETTER")]
     drives: Vec<char>,
@@ -62,6 +69,43 @@ struct Cli {
     /// Log level (error, warn, info, debug, trace).
     #[arg(long, default_value = "info")]
     log_level: String,
+}
+
+/// Bail if the daemon has nothing to serve.
+///
+/// On Windows, auto-discovered drives count as data sources.
+/// On non-Windows, `--mft-file` must be provided.
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted from main to stay under line limit"
+)]
+fn validate_data_sources(
+    mft_files: &[PathBuf],
+    _drives: &[char],
+    lifecycle: &lifecycle::LifecycleManager,
+) -> anyhow::Result<()> {
+    let has_data = !mft_files.is_empty() || {
+        #[cfg(windows)]
+        {
+            !_drives.is_empty()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    };
+    if !has_data {
+        tracing::error!(
+            "No data sources provided. On macOS/Linux pass --mft-file; \
+             on Windows, NTFS drives are auto-discovered."
+        );
+        lifecycle.remove_pid_file();
+        anyhow::bail!(
+            "Daemon has no data sources to load. \
+             Provide --mft-file <path> (or --data-dir when launching via CLI)."
+        );
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -105,17 +149,50 @@ async fn main() -> anyhow::Result<()> {
     // Write PID file
     lifecycle.write_pid_file()?;
 
+    // D5.0: clean up stale shmem files from previous daemon sessions.
+    uffs_client::shmem::cleanup_stale_shmem_files();
+
     // Create index manager
     let index = Arc::new(index::IndexManager::new(Some(data_dir.clone())));
     tracing::debug!(index_data_dir = ?index.data_dir(), "Index manager created");
 
     // Load indices in background
     let load_index = Arc::clone(&index);
-    let mft_files = cli.mft_files.clone();
+
+    // Merge --data-dir discovered files into --mft-file list.
+    let mut mft_files = cli.mft_files.clone();
+    if let Some(dir) = &cli.data_dir_arg {
+        let discovered = uffs_mft::discovery::discover_mft_files(dir);
+        tracing::info!(
+            data_dir = %dir.display(),
+            count = discovered.len(),
+            "Discovered MFT files from --data-dir"
+        );
+        mft_files.extend(discovered);
+    }
     let no_cache = cli.no_cache;
 
+    // Gather drive letters (Windows only; empty on other platforms).
     #[cfg(windows)]
-    let drives = cli.drives.clone();
+    let drives: Vec<char> = {
+        let explicit = cli.drives.clone();
+        if explicit.is_empty() && mft_files.is_empty() {
+            let auto_drives = uffs_mft::detect_ntfs_drives();
+            tracing::info!(
+                count = auto_drives.len(),
+                drives = ?auto_drives,
+                "Auto-discovered NTFS drives"
+            );
+            auto_drives
+        } else {
+            explicit
+        }
+    };
+    #[cfg(not(windows))]
+    let drives: Vec<char> = Vec::new();
+
+    // Refuse to start with zero data sources — an empty daemon is useless.
+    validate_data_sources(&mft_files, &drives, &lifecycle)?;
 
     let broker_is_available = broker_client::broker_available();
     let load_task = tokio::spawn(async move {

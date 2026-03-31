@@ -22,5 +22,6 @@ use uffs_security as _;
 pub mod connect;
 pub mod error;
 pub mod protocol;
+pub mod shmem;
 pub mod types;
 pub mod verify;

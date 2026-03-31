@@ -16,9 +16,7 @@ use std::path::PathBuf;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::protocol::{
-    DrivesResponse, RpcRequest, RpcResponse, SearchParams, SearchResponse, StatusResponse,
-};
+use crate::protocol::{DrivesResponse, RpcRequest, SearchParams, SearchResponse, StatusResponse};
 
 /// Thin client for the UFFS daemon.
 ///
@@ -45,12 +43,57 @@ impl UffsClient {
     /// connection fails, spawns `uffs-daemon` as a detached process and
     /// retries with exponential backoff (up to ~30s).
     ///
+    /// On Windows the daemon auto-discovers live NTFS drives so no extra
+    /// args are needed.  On Mac/Linux, pass `--data-dir` or `--mft-file`
+    /// via [`connect_with_args`] so the daemon knows where to find data.
+    ///
     /// # Errors
     ///
     /// Returns `ConnectionFailed` if the daemon cannot be reached after
     /// multiple retries, or `DaemonStartFailed` if auto-start fails.
     pub async fn connect() -> Result<Self, crate::error::ClientError> {
-        // Try connecting directly first
+        Self::connect_with_args(&[]).await
+    }
+
+    /// Connect to a running daemon, or auto-start one with extra CLI
+    /// arguments.
+    ///
+    /// `spawn_args` are forwarded to `uffs-daemon` **only** when the
+    /// daemon is not already running and must be auto-started.  If a
+    /// daemon is already listening, the args are ignored (it already
+    /// has its data loaded).
+    ///
+    /// Typical usage (Mac/Linux):
+    /// ```rust,ignore
+    /// let args = vec!["--data-dir".into(), "/path/to/uffs_data".into()];
+    /// let client = UffsClient::connect_with_args(&args).await?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConnectionFailed` or `DaemonStartFailed`.
+    /// Try to connect to an already-running daemon **without** auto-starting.
+    ///
+    /// Returns `ConnectionFailed` if no daemon is listening.
+    pub async fn connect_raw() -> Result<Self, crate::error::ClientError> {
+        Self::platform_connect().await.map_err(|conn_err| {
+            crate::error::ClientError::ConnectionFailed(format!("No daemon is running: {conn_err}"))
+        })
+    }
+
+    /// Connect to a running daemon, or auto-start one with extra CLI
+    /// arguments.
+    ///
+    /// `spawn_args` are forwarded to `uffs-daemon` **only** when the
+    /// daemon is not already running and must be auto-started.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConnectionFailed` or `DaemonStartFailed`.
+    pub async fn connect_with_args(
+        spawn_args: &[String],
+    ) -> Result<Self, crate::error::ClientError> {
+        // Try connecting directly first — daemon may already be running.
         if let Ok(client) = Self::platform_connect().await {
             // S4.3.4: Verify daemon identity via PID file
             verify_daemon_after_connect();
@@ -61,26 +104,13 @@ impl UffsClient {
         tracing::info!("Daemon not running, auto-starting...");
 
         // Find the daemon executable: look next to current exe, fall back to PATH
-        let daemon_exe = std::env::current_exe()
-            .ok()
-            .and_then(|exe| {
-                let parent = exe.parent()?;
-                let unix = parent.join("uffs-daemon");
-                let win = parent.join("uffs-daemon.exe");
-                if unix.exists() {
-                    Some(unix)
-                } else if win.exists() {
-                    Some(win)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| PathBuf::from("uffs-daemon"));
+        let daemon_exe = find_daemon_exe();
 
         let spawn_result = {
             #[cfg(unix)]
             {
                 std::process::Command::new(&daemon_exe)
+                    .args(spawn_args)
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .stdin(std::process::Stdio::null())
@@ -90,6 +120,7 @@ impl UffsClient {
             {
                 use std::os::windows::process::CommandExt;
                 std::process::Command::new(&daemon_exe)
+                    .args(spawn_args)
                     .creation_flags(0x0000_0008) // DETACHED_PROCESS
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -194,12 +225,28 @@ impl UffsClient {
                 }
             }
 
-            // It's a response
-            let resp: RpcResponse = serde_json::from_str(trimmed).map_err(|err| {
+            // It's a response — could be success (has `result`) or error (has `error`).
+            let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|err| {
                 crate::error::ClientError::Protocol(format!("Bad response: {err}"))
             })?;
 
-            return Ok(resp.result);
+            // Check for JSON-RPC error response first.
+            if let Some(err_obj) = value.get("error") {
+                let msg = err_obj
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown RPC error");
+                return Err(crate::error::ClientError::Protocol(msg.to_owned()));
+            }
+
+            // Success response.
+            if let Some(result) = value.get("result") {
+                return Ok(result.clone());
+            }
+
+            return Err(crate::error::ClientError::Protocol(
+                "Response has neither `result` nor `error`".to_owned(),
+            ));
         }
     }
 
@@ -217,8 +264,20 @@ impl UffsClient {
         let value = serde_json::to_value(params)
             .map_err(|err| crate::error::ClientError::Protocol(err.to_string()))?;
         let result = self.send_request("search", Some(value)).await?;
-        serde_json::from_value(result)
-            .map_err(|err| crate::error::ClientError::Protocol(err.to_string()))
+        let response: SearchResponse = serde_json::from_value(result)
+            .map_err(|err| crate::error::ClientError::Protocol(err.to_string()))?;
+
+        // D5.1: transparent shmem reading — if the daemon used shmem,
+        // read the file and return a response with inline rows.
+        if let Some(path_str) = &response.shmem_path {
+            let path = std::path::Path::new(path_str);
+            let shmem_response = crate::shmem::read_search_results(path).map_err(|err| {
+                crate::error::ClientError::Protocol(format!("shmem read failed: {err}"))
+            })?;
+            return Ok(shmem_response);
+        }
+
+        Ok(response)
     }
 
     /// List loaded drives.
@@ -241,6 +300,59 @@ impl UffsClient {
         let result = self.send_request("status", None).await?;
         serde_json::from_value(result)
             .map_err(|err| crate::error::ClientError::Protocol(err.to_string()))
+    }
+
+    /// Query daemon performance statistics (queries, timing, startup).
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ClientError` on connection, protocol, or timeout failure.
+    pub async fn stats(
+        &mut self,
+    ) -> Result<crate::protocol::StatsResponse, crate::error::ClientError> {
+        let result = self.send_request("stats", None).await?;
+        serde_json::from_value(result)
+            .map_err(|err| crate::error::ClientError::Protocol(err.to_string()))
+    }
+
+    /// Wait until the daemon has finished loading its indices.
+    ///
+    /// Polls `status()` with exponential backoff (250ms → 2s cap) until the
+    /// daemon reports [`DaemonStatus::Ready`].  Times out after
+    /// `timeout` and returns an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on connection failure or timeout.
+    pub async fn await_ready(
+        &mut self,
+        timeout: core::time::Duration,
+    ) -> Result<(), crate::error::ClientError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut delay_ms = 250_u64;
+
+        loop {
+            match self.status().await {
+                Ok(resp) => {
+                    if resp.status == crate::protocol::DaemonStatus::Ready {
+                        return Ok(());
+                    }
+                    tracing::debug!(status = ?resp.status, "Daemon still loading…");
+                }
+                Err(status_err) => {
+                    tracing::debug!(error = %status_err, "Status poll failed");
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(crate::error::ClientError::ConnectionFailed(
+                    "Timed out waiting for daemon to finish loading".to_owned(),
+                ));
+            }
+
+            tokio::time::sleep(core::time::Duration::from_millis(delay_ms)).await;
+            delay_ms = (delay_ms * 2).min(2000);
+        }
     }
 
     /// Trigger a drive refresh.
@@ -564,7 +676,43 @@ fn keepalive_send_blocking(sock_path: &std::path::Path) {
 }
 
 /// PID file path (must match daemon's lifecycle.rs).
-fn pid_file_path() -> PathBuf {
+#[must_use]
+pub fn pid_file_path() -> PathBuf {
     let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     base.join("uffs").join("daemon.pid")
+}
+
+/// Parse a daemon PID file. Returns `(pid, timestamp, exe_hash, nonce)`.
+///
+/// Format: `{pid}\n{timestamp}\n{exe_hash}\n{nonce}\n`
+#[must_use]
+pub fn parse_pid_file(path: &std::path::Path) -> Option<(u32, u64, u64, String)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut lines = content.lines();
+    let pid: u32 = lines.next()?.parse().ok()?;
+    let ts: u64 = lines.next()?.parse().ok()?;
+    let hash: u64 = lines.next()?.parse().ok()?;
+    let nonce = lines.next()?.to_owned();
+    Some((pid, ts, hash, nonce))
+}
+
+/// Find the `uffs-daemon` executable: look next to the current binary
+/// first, then fall back to `PATH`.
+#[must_use]
+pub fn find_daemon_exe() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            let parent = exe.parent()?;
+            let unix = parent.join("uffs-daemon");
+            let win = parent.join("uffs-daemon.exe");
+            if unix.exists() {
+                Some(unix)
+            } else if win.exists() {
+                Some(win)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| PathBuf::from("uffs-daemon"))
 }

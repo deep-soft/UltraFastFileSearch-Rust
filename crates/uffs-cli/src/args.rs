@@ -375,4 +375,53 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         top: u32,
     },
+
+    /// Manage the UFFS background daemon
+    ///
+    /// The daemon runs automatically when you search. Use this subcommand
+    /// to explicitly start it, check its status, stop it, or force a restart.
+    ///
+    /// Examples:
+    ///   uffs daemon start --data-dir ~/`uffs_data`
+    ///   uffs daemon status
+    ///   uffs daemon stats
+    ///   uffs daemon stop
+    ///   uffs daemon restart
+    Daemon {
+        /// Daemon management action.
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+}
+
+/// Actions for `uffs daemon` subcommand.
+#[derive(Subcommand)]
+pub enum DaemonAction {
+    /// Start the daemon with specified data sources.
+    ///
+    /// On Windows, live NTFS drives are auto-discovered if no MFT files
+    /// are provided.  On macOS/Linux, provide --mft-file or --data-dir.
+    Start {
+        /// Raw MFT file(s) to load (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        mft_file: Vec<PathBuf>,
+
+        /// Data directory containing `drive_*` subdirectories with MFT files.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+
+        /// Skip the file cache and always re-parse MFT files.
+        #[arg(long)]
+        no_cache: bool,
+    },
+    /// Show daemon status (running, loading, drives loaded, PID).
+    Status,
+    /// Show performance statistics (queries, timing, startup duration).
+    Stats,
+    /// Gracefully stop the running daemon.
+    Stop,
+    /// Stop the daemon and remove its PID/socket files (hard kill).
+    Kill,
+    /// Stop then restart the daemon (re-loads all indices).
+    Restart,
 }

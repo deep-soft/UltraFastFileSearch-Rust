@@ -1,4 +1,8 @@
 //! TUI Application state — compact-index search.
+//!
+//! By default, search routes through the UFFS daemon (IPC). Set the
+//! environment variable `UFFS_STANDALONE=1` to fall back to the legacy
+//! in-process compact-index pipeline.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -7,6 +11,7 @@ use ratatui::widgets::TableState;
 use ratatui_textarea::TextArea;
 
 use crate::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
+use crate::client_backend::DaemonBackend;
 use crate::compact::{DriveCompactIndex, LoadTiming};
 use crate::history::{HistoryEntry, SearchState};
 use crate::keys::Keymap;
@@ -107,6 +112,9 @@ pub struct App {
     pub active_search_state: SearchState,
     /// How the TUI was told to find MFT data (for CLI command generation).
     pub data_source: DataSource,
+    /// Daemon client backend (IPC). `Some` when running in daemon mode,
+    /// `None` in standalone mode (`UFFS_STANDALONE=1`).
+    pub daemon_backend: Option<DaemonBackend>,
 }
 
 impl App {
@@ -171,6 +179,7 @@ impl App {
             visible_columns: crate::backend::DEFAULT_COLUMNS.to_vec(),
             active_search_state: SearchState::default(),
             data_source: DataSource::default(),
+            daemon_backend: None,
         }
     }
 
@@ -207,6 +216,7 @@ impl App {
             visible_columns: crate::backend::DEFAULT_COLUMNS.to_vec(),
             active_search_state: SearchState::default(),
             data_source: DataSource::default(),
+            daemon_backend: None,
         }
     }
 
@@ -244,13 +254,14 @@ impl App {
             visible_columns: crate::backend::DEFAULT_COLUMNS.to_vec(),
             active_search_state: SearchState::default(),
             data_source: DataSource::default(),
+            daemon_backend: None,
         }
     }
 
-    /// Check if any drives are loaded.
+    /// Check if any drives are loaded (standalone) or daemon connected.
     #[must_use]
     pub fn has_data(&self) -> bool {
-        !self.backend.drives.is_empty()
+        self.daemon_backend.is_some() || !self.backend.drives.is_empty()
     }
 
     /// Move selection to next item.
@@ -355,6 +366,112 @@ impl App {
         }
 
         // Show working indicator (visible if UI renders before search completes)
+        self.status = format!("⏳ Searching for \"{pattern}\"...");
+
+        // ── Route: daemon (default) or standalone (legacy) ────────────
+        if self.daemon_backend.is_some() {
+            self.search_via_daemon(&pattern);
+        } else {
+            // LEGACY_STANDALONE: this branch — remove when daemon-only.
+            self.search_standalone(&pattern);
+        }
+
+        if self.results.is_empty() {
+            self.table_state.select(None);
+        } else {
+            self.table_state.select(Some(0));
+        }
+    }
+
+    /// Search via daemon IPC.
+    fn search_via_daemon(&mut self, pattern: &str) {
+        use uffs_client::protocol::SearchParams;
+
+        let effective_limit = self.effective_limit(pattern);
+
+        let filter = match self.filter_mode {
+            FilterMode::FilesOnly => Some("files".to_owned()),
+            FilterMode::DirsOnly => Some("dirs".to_owned()),
+            FilterMode::All => None,
+        };
+
+        let sort_label = self.sort_column().label().to_ascii_lowercase();
+        let sort = Some(format!(
+            "{sort_label}:{}",
+            if self.sort_desc() { "desc" } else { "asc" }
+        ));
+
+        let params = SearchParams {
+            pattern: pattern.to_owned(),
+            case_sensitive: self.case_sensitive,
+            whole_word: self.whole_word,
+            sort,
+            sort_desc: self.sort_desc(),
+            limit: effective_limit,
+            filter,
+            drives: Vec::new(),
+            min_size: self.search_filters.min_size,
+            max_size: self.search_filters.max_size,
+            min_descendants: self.search_filters.min_descendants,
+            max_descendants: self.search_filters.max_descendants,
+            newer: None,
+            older: None,
+            newer_created: None,
+            older_created: None,
+            newer_accessed: None,
+            older_accessed: None,
+            attr: None,
+            ext: None,
+            exclude: None,
+            hide_system: self.search_filters.hide_system,
+        };
+
+        // `daemon_backend` is `Some` — checked by caller.
+        let db = self.daemon_backend.as_mut();
+
+        let fc = |n: usize| uffs_core::format::format_number_commas(n as u64);
+
+        match db {
+            Some(backend) => match backend.search(&params) {
+                Ok(result) => {
+                    self.last_search_ms = u128::from(result.duration_ms);
+                    self.results = result.rows;
+
+                    let ms = result.duration_ms;
+                    let time_str = if ms < 1000 {
+                        format!("{ms}ms")
+                    } else {
+                        let tenths = (ms + 50) / 100;
+                        let whole = tenths / 10;
+                        let frac = tenths % 10;
+                        format!("{whole}.{frac}s")
+                    };
+
+                    self.status = format!(
+                        "🔌 {} matches  │  {}  │  {} records scanned{}",
+                        fc(self.results.len()),
+                        time_str,
+                        fc(result.records_scanned),
+                        if result.truncated {
+                            "  │  (truncated)"
+                        } else {
+                            ""
+                        },
+                    );
+                }
+                Err(err) => {
+                    self.error = Some(format!("Daemon error: {err}"));
+                }
+            },
+            None => {
+                self.error = Some("Daemon backend not connected".to_owned());
+            }
+        }
+    }
+
+    // LEGACY_STANDALONE: `search_standalone` — remove when daemon-only.
+    /// Standalone in-process search using compact indices.
+    fn search_standalone(&mut self, pattern: &str) {
         let fc = |n: usize| uffs_core::format::format_number_commas(n as u64);
         let sort_label = self.sort_column().label();
         if pattern == "*" {
@@ -362,21 +479,11 @@ impl App {
                 "⏳ Scanning {} records — Sort: {sort_label}...",
                 fc(self.backend.total_records())
             );
-        } else {
-            self.status = format!("⏳ Searching for \"{pattern}\"...");
         }
 
-        // TUI interactive limit: cap results to keep the UI responsive.
-        // History entries can override via `self.result_limit`.
-        let effective_limit = self.result_limit.or_else(|| {
-            if pattern == "*" || pattern.len() > 2 {
-                Some(1_000)
-            } else {
-                Some(200)
-            }
-        });
+        let effective_limit = self.effective_limit(pattern);
         let result = self.backend.search(
-            &pattern,
+            pattern,
             self.case_sensitive,
             self.whole_word,
             effective_limit,
@@ -410,12 +517,20 @@ impl App {
             self.backend.drives.len(),
             fc(total_trigrams),
         );
+    }
 
-        if self.results.is_empty() {
-            self.table_state.select(None);
-        } else {
-            self.table_state.select(Some(0));
-        }
+    /// Compute the effective result limit for a search pattern.
+    ///
+    /// TUI interactive limit: cap results to keep the UI responsive.
+    /// History entries can override via `self.result_limit`.
+    fn effective_limit(&self, pattern: &str) -> Option<u32> {
+        self.result_limit.or_else(|| {
+            if pattern == "*" || pattern.len() > 2 {
+                Some(1_000)
+            } else {
+                Some(200)
+            }
+        })
     }
 
     /// Cycle sort column and re-sort results.

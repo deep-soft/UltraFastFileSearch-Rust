@@ -29,6 +29,7 @@ impl RequestHandler {
             "search" => self.handle_search(id, req).await,
             "drives" => self.handle_drives(id).await,
             "status" => self.handle_status(id, connections).await,
+            "stats" => self.handle_stats(id).await,
             "info" => self.handle_info(id, req).await,
             "refresh" => self.handle_refresh(id, req),
             "keepalive" => self.handle_keepalive(id, req),
@@ -73,7 +74,42 @@ impl RequestHandler {
             .unwrap_or_default();
         }
 
-        let response = self.index.search(&search_params).await;
+        let mut response = self.index.search(&search_params).await;
+
+        // D5.1: adaptive routing — use shmem for large result sets.
+        if response.rows.len() > uffs_client::shmem::SHMEM_THRESHOLD {
+            match uffs_client::shmem::write_search_results(
+                &response.rows,
+                response.duration_ms,
+                response.records_scanned as u64,
+                response.truncated,
+            ) {
+                Ok(path) => {
+                    let count = response.rows.len() as u64;
+                    response.shmem_path = Some(path.to_string_lossy().into_owned());
+                    response.shmem_count = Some(count);
+                    // Clear inline rows — data is in shmem now.
+                    response.rows = Vec::new();
+                }
+                Err(shmem_err) => {
+                    tracing::warn!(
+                        error = %shmem_err,
+                        rows = response.rows.len(),
+                        "shmem write failed; falling back to inline JSON"
+                    );
+                    // Fall through — send inline (may be slow for very
+                    // large result sets, but at least it works).
+                }
+            }
+        }
+
+        let result = serde_json::to_value(&response).unwrap_or_default();
+        serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
+    }
+
+    /// Handle `stats` method — performance metrics.
+    async fn handle_stats(&self, id: u64) -> String {
+        let response = self.index.stats().await;
         let result = serde_json::to_value(&response).unwrap_or_default();
         serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
     }

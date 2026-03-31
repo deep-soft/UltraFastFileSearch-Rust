@@ -232,6 +232,9 @@ async fn run() -> Result<()> {
         Some(Commands::Stats { path, top }) => {
             commands::stats(&path, top)?;
         }
+        Some(Commands::Daemon { action }) => {
+            commands::daemon(&action).await?;
+        }
         None => {
             // Default action: search
             if let Some(pattern) = cli.pattern {
@@ -246,18 +249,13 @@ async fn run() -> Result<()> {
                     );
                 }
 
-                // Merge --data-dir discovered files into --mft-file list
-                let mut mft_files = cli.mft_file;
-                if let Some(data_dir) = &cli.data_dir {
-                    mft_files.extend(uffs_mft::discovery::discover_mft_files(data_dir));
-                }
-
                 commands::search(
                     &pattern,
                     cli.drive,
                     cli.drives,
                     cli.index,
-                    mft_files,
+                    cli.mft_file,
+                    cli.data_dir,
                     cli.files_only,
                     cli.dirs_only,
                     cli.hide_system,
@@ -296,7 +294,8 @@ async fn run() -> Result<()> {
                     &cli.pos,
                     &cli.neg,
                     cli.tz_offset,
-                )?;
+                )
+                .await?;
             } else {
                 // No pattern provided - show help
                 use clap::CommandFactory;

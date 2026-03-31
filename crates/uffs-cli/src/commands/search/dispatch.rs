@@ -145,15 +145,21 @@ fn load_unified_drives(
 ) -> Result<()> {
     use uffs_core::compact::{MftSource, load_drive};
 
-    if config.mft_file.is_empty() {
+    // Resolve --data-dir into concrete MFT file paths (standalone only).
+    let mut resolved_files = config.mft_file.clone();
+    if let Some(dir) = &config.data_dir {
+        resolved_files.extend(uffs_mft::discovery::discover_mft_files(dir));
+    }
+
+    if resolved_files.is_empty() {
         load_live_drives(config, backend)?;
     } else {
         let drive_letters: Vec<Option<char>> = config.multi_drives.as_ref().map_or_else(
-            || vec![config.single_drive; config.mft_file.len()],
+            || vec![config.single_drive; resolved_files.len()],
             |drives| drives.iter().copied().map(Some).collect(),
         );
 
-        for (path, drive_override) in config.mft_file.iter().zip(drive_letters.iter()) {
+        for (path, drive_override) in resolved_files.iter().zip(drive_letters.iter()) {
             let source = MftSource::File(path.clone(), *drive_override);
             let (compact, timing) = load_drive(&source, config.no_cache)
                 .with_context(|| format!("Failed to load MFT file: {}", path.display()))?;
@@ -245,6 +251,7 @@ pub(super) fn build_search_config<'a>(
     multi_drives: Option<Vec<char>>,
     index: Option<PathBuf>,
     mft_file: Vec<PathBuf>,
+    data_dir: Option<PathBuf>,
     files_only: bool,
     dirs_only: bool,
     hide_system: bool,
@@ -332,6 +339,7 @@ pub(super) fn build_search_config<'a>(
         multi_drives,
         index,
         mft_file,
+        data_dir,
         filters,
         effective_case_sensitive,
         profile,

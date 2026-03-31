@@ -52,6 +52,8 @@ use tracing_subscriber::{EnvFilter, Layer};
 mod app;
 /// Search backend: compact-index multi-drive search.
 pub(crate) mod backend;
+/// Daemon client backend for IPC-based search (D6).
+mod client_backend;
 /// Compact in-memory index (72 bytes/record, replaces full MftIndex).
 mod columns;
 mod compact;
@@ -218,7 +220,94 @@ fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
     guard
 }
 
-/// Entry point: parse CLI, set up terminal, and run the TUI event loop.
+/// Build arguments forwarded to `uffs-daemon` when auto-starting.
+///
+/// On Windows this returns an empty list — the daemon auto-discovers
+/// live NTFS drives.  On Mac/Linux this includes `--mft-file` paths.
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted from main to reduce cognitive complexity"
+)]
+fn build_daemon_spawn_args(
+    mft_files: &[PathBuf],
+    data_dir: Option<&std::path::Path>,
+    no_cache: bool,
+) -> Vec<String> {
+    if cfg!(windows) {
+        return Vec::new();
+    }
+    let mut args = Vec::new();
+    // Forward --data-dir raw — daemon resolves it internally.
+    if let Some(dir) = data_dir {
+        args.push("--data-dir".to_owned());
+        args.push(dir.to_string_lossy().into_owned());
+    }
+    for mft_path in mft_files {
+        args.push("--mft-file".to_owned());
+        args.push(mft_path.to_string_lossy().into_owned());
+    }
+    if no_cache {
+        args.push("--no-cache".to_owned());
+    }
+    args
+}
+
+/// Connect to the UFFS daemon and attach the backend to the app.
+///
+/// On success, sets `app.daemon_backend` and triggers an initial search.
+/// On failure, sets `app.error` with a diagnostic message.
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted from main to reduce cognitive complexity"
+)]
+fn init_daemon_backend(app: &mut App, spawn_args: Vec<String>, no_local_data: bool) {
+    // Non-Windows without data sources: fail fast — no point starting a daemon.
+    if !cfg!(windows) && no_local_data {
+        app.error = Some(
+            "No MFT data source specified.\n\
+             Use --data-dir <path> or --mft-file <path> to provide MFT files."
+                .to_owned(),
+        );
+        "⚠ No data — provide --data-dir or --mft-file".clone_into(&mut app.status);
+        return;
+    }
+
+    let mut daemon_backend = client_backend::DaemonBackend::new(spawn_args);
+    match daemon_backend.connect() {
+        Ok(()) => {
+            daemon_backend.set_session_tui();
+            app.daemon_backend = Some(daemon_backend);
+            "🔌 Connected to daemon — type to search".clone_into(&mut app.status);
+            app.search();
+        }
+        Err(err) => {
+            app.error = Some(format!("Failed to connect to daemon: {err}"));
+            "⚠ Daemon unavailable — set UFFS_STANDALONE=1 for standalone mode"
+                .clone_into(&mut app.status);
+        }
+    }
+}
+
+/// In standalone mode, resolve `--data-dir` into concrete MFT file paths.
+/// In daemon mode, return `mft_files` unchanged — the daemon resolves
+/// `--data-dir` internally.
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted from main to reduce cognitive complexity"
+)]
+fn resolve_standalone_mft_files(
+    mut mft_files: Vec<PathBuf>,
+    data_dir: Option<&std::path::Path>,
+    is_standalone: bool,
+) -> Vec<PathBuf> {
+    if is_standalone {
+        if let Some(dir) = data_dir {
+            mft_files.extend(uffs_mft::discovery::discover_mft_files(dir));
+        }
+    }
+    mft_files
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "main function orchestrates TUI setup, async loading, and event loop; splitting would fragment cohesive logic"
@@ -241,11 +330,7 @@ fn main() -> Result<()> {
         }
     }
 
-    // Discover MFT files from --data-dir if specified
-    let mut mft_files = cli.mft_file;
-    if let Some(data_dir) = &cli.data_dir {
-        mft_files.extend(uffs_mft::discovery::discover_mft_files(data_dir));
-    }
+    let mft_files = cli.mft_file;
 
     // On Windows: auto-detect NTFS drives when no files specified
     #[cfg(windows)]
@@ -286,10 +371,30 @@ fn main() -> Result<()> {
         app::DataSource::None
     };
 
+    // ── Route: daemon (default) or standalone (legacy) ────────────────
+    // LEGACY_STANDALONE: this `is_standalone` check — remove when daemon-only.
+    let is_standalone = std::env::var("UFFS_STANDALONE")
+        .is_ok_and(|val| val == "1" || val.eq_ignore_ascii_case("true"));
+
+    // Standalone: resolve --data-dir locally. Daemon: forwarded raw.
+    #[expect(
+        clippy::shadow_reuse,
+        reason = "extending mft_files for standalone data-dir resolution"
+    )]
+    let mft_files = resolve_standalone_mft_files(mft_files, cli.data_dir.as_deref(), is_standalone);
+
     let total_to_load = mft_files.len() + live_drives.len();
     let cli_no_cache = cli.no_cache;
 
-    if total_to_load > 0 {
+    if !is_standalone {
+        // Daemon mode (default): connect to the daemon via IPC.
+        let spawn_args = build_daemon_spawn_args(&mft_files, cli.data_dir.as_deref(), cli_no_cache);
+        "🔌 Connecting to UFFS daemon...".clone_into(&mut app.status);
+        terminal.draw(|frame| ui::ui(frame, &mut app))?;
+        let no_local_data = mft_files.is_empty() && cli.data_dir.is_none();
+        init_daemon_backend(&mut app, spawn_args, no_local_data);
+    } else if total_to_load > 0 {
+        // LEGACY_STANDALONE: this entire `else if` branch — remove when daemon-only.
         app.status = format!("Loading {total_to_load} drive(s)...");
 
         // Build load tasks: MFT files + live drives unified
