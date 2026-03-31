@@ -359,56 +359,72 @@ pub async fn run_ipc_server(
             continue;
         }
 
-        // Bridge std blocking socket to async duplex channels
+        // Bridge std blocking socket to async duplex channels.
+        // Each bridge thread gets its own dedicated tokio current-thread
+        // runtime.  Using Handle::block_on on the main runtime caused
+        // DuplexStream waker issues — premature EOF after ~10 RPCs.
         let std_read = std_stream.try_clone()?;
         let std_write = std_stream;
 
         let (async_read, mut bridge_write) = tokio::io::duplex(65536);
         let (mut bridge_read, async_write) = tokio::io::duplex(65536);
 
-        // Capture the tokio runtime handle BEFORE spawning OS threads —
-        // std::thread::spawn does NOT inherit the tokio thread-local context,
-        // so try_current() would return Err and the bridge would exit immediately.
-        let rt_handle_read = tokio::runtime::Handle::current();
-        let rt_handle_write = tokio::runtime::Handle::current();
-
-        // Background thread: std socket → async reader
+        // Background thread: std socket → async bridge_write
         std::thread::spawn(move || {
             use std::io::Read;
             tracing::info!("[daemon-bridge-read] thread started");
-            let mut reader = std::io::BufReader::new(std_read);
-            let mut buf = [0_u8; 8192];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => {
-                        tracing::info!("[daemon-bridge-read] EOF from client socket");
-                        break;
-                    }
-                    Err(read_err) => {
-                        tracing::info!(error = %read_err, "[daemon-bridge-read] read error");
-                        break;
-                    }
-                    Ok(n) => {
-                        use tokio::io::AsyncWriteExt;
-                        let bytes = buf[..n].to_vec();
-                        if let Err(write_err) = rt_handle_read
-                            .block_on(async { bridge_write.write_all(&bytes).await })
-                        {
-                            tracing::info!(error = %write_err, "[daemon-bridge-read] bridge write failed");
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(rt_err) => {
+                    tracing::info!(error = %rt_err, "[daemon-bridge-read] failed to create runtime");
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                use tokio::io::AsyncWriteExt;
+                let mut reader = std::io::BufReader::new(std_read);
+                let mut buf = [0_u8; 8192];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => {
+                            tracing::info!("[daemon-bridge-read] EOF from client socket");
                             break;
+                        }
+                        Err(read_err) => {
+                            tracing::info!(error = %read_err, "[daemon-bridge-read] read error");
+                            break;
+                        }
+                        Ok(n) => {
+                            if let Err(write_err) = bridge_write.write_all(&buf[..n]).await {
+                                tracing::info!(error = %write_err, "[daemon-bridge-read] bridge write failed");
+                                break;
+                            }
                         }
                     }
                 }
-            }
+            });
             tracing::info!("[daemon-bridge-read] thread exiting");
         });
 
-        // Background thread: async writer → std socket
+        // Background thread: async bridge_read → std socket
         std::thread::spawn(move || {
             use std::io::Write;
             tracing::info!("[daemon-bridge-write] thread started");
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(rt_err) => {
+                    tracing::info!(error = %rt_err, "[daemon-bridge-write] failed to create runtime");
+                    return;
+                }
+            };
             let mut writer = std_write;
-            rt_handle_write.block_on(async {
+            rt.block_on(async {
                 use tokio::io::AsyncReadExt;
                 let mut buf = [0_u8; 8192];
                 loop {

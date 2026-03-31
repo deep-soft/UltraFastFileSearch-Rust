@@ -93,10 +93,13 @@ async fn daemon_start(
     no_cache: bool,
 ) -> Result<()> {
     // Already running?
+    tracing::info!("[daemon_start] checking if daemon is already running");
     if UffsClient::connect_raw().await.is_ok() {
+        tracing::info!("[daemon_start] connect_raw succeeded — daemon already running");
         println!("Daemon is already running. Use `uffs daemon restart` to reload.");
         return Ok(());
     }
+    tracing::info!("[daemon_start] connect_raw failed — daemon not running, will start");
 
     // Build spawn args — forward raw, let daemon handle discovery.
     let mut spawn_args = Vec::new();
@@ -121,20 +124,22 @@ async fn daemon_start(
 
     println!("Starting daemon...");
 
+    tracing::info!("[daemon_start] connecting to daemon (auto-start if needed)");
     let mut client = UffsClient::connect_with_args(&spawn_args)
         .await
         .with_context(|| "Failed to start daemon")?;
+    tracing::info!("[daemon_start] connected, entering await_ready");
 
     client
         .await_ready(core::time::Duration::from_secs(120))
         .await
         .with_context(|| "Daemon did not become ready in time")?;
 
-    if let Ok(resp) = client.status().await {
-        println!("Daemon started (PID {}), status: Ready", resp.pid);
-    } else {
-        println!("Daemon started.");
-    }
+    tracing::info!("[daemon_start] await_ready returned OK, printing result");
+    // await_ready already confirmed Ready — no need for a second status call
+    // which would risk hanging if the bridge connection tears down.
+    println!("Daemon started and ready.");
+    tracing::info!("[daemon_start] done, returning");
     Ok(())
 }
 

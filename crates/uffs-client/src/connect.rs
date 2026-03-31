@@ -36,6 +36,9 @@ pub struct UffsClient {
     notification_rx: tokio::sync::mpsc::UnboundedReceiver<crate::protocol::RpcNotification>,
 }
 
+
+
+
 impl UffsClient {
     /// Connect to a running daemon, or auto-start one if not running.
     ///
@@ -591,10 +594,11 @@ impl UffsClient {
         let std_stream = StdUnixStream::connect(&sock_path)
             .map_err(|io_err| crate::error::ClientError::ConnectionFailed(io_err.to_string()))?;
 
-        // No read timeout — the bridge thread blocks indefinitely on
-        // reads and the async layer (send_request) handles its own
-        // 30-second per-read timeout.  A std-level read_timeout would
-        // kill the bridge thread and poison all subsequent RPCs.
+        // Set a read timeout so the bridge-read thread can detect when the
+        // daemon closes the socket and exit promptly instead of blocking forever.
+        std_stream
+            .set_read_timeout(Some(core::time::Duration::from_secs(5)))
+            .map_err(|io_err| crate::error::ClientError::ConnectionFailed(io_err.to_string()))?;
 
         let std_read = std_stream
             .try_clone()
@@ -606,34 +610,51 @@ impl UffsClient {
         let (async_read, mut bridge_write) = tokio::io::duplex(65536);
         let (mut bridge_read, async_write) = tokio::io::duplex(65536);
 
-        // Capture the tokio runtime handle BEFORE spawning OS threads —
-        // std::thread::spawn does NOT inherit the tokio thread-local context,
-        // so try_current() would return Err and the bridge would exit immediately.
-        let rt_handle_read = tokio::runtime::Handle::current();
-        let rt_handle_write = tokio::runtime::Handle::current();
+        // Each bridge thread gets its own dedicated tokio current-thread
+        // runtime.  Previous versions shared the caller's runtime via
+        // Handle::block_on, which caused subtle waker/scheduling issues —
+        // the DuplexStream EOF was delivered prematurely, collapsing the
+        // bridge after ~10 RPCs.  Isolated runtimes eliminate that class
+        // of bugs entirely.
 
-        // Background thread: std socket → async reader
-        //
-        // Uses a single `block_on` wrapping the entire loop to avoid
-        // per-iteration `block_on` deadlocks when the tokio runtime is
-        // already running on the main thread.
+        // Background thread: std socket → async reader (bridge_write)
         std::thread::spawn(move || {
             tracing::info!("[client-bridge-read] thread started");
-            rt_handle_read.block_on(async move {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(rt_err) => {
+                    tracing::info!(error = %rt_err, "[client-bridge-read] failed to create runtime");
+                    return;
+                }
+            };
+            rt.block_on(async move {
                 use tokio::io::AsyncWriteExt;
                 let mut reader = std::io::BufReader::new(std_read);
                 let mut buf = [0_u8; 8192];
                 loop {
-                    // Blocking read from the std socket — runs on this
-                    // dedicated thread so it doesn't stall tokio.
                     let n = match reader.read(&mut buf) {
                         Ok(0) => {
                             tracing::info!("[client-bridge-read] EOF from socket");
                             break;
                         }
+                        Err(ref read_err) if read_err.kind() == std::io::ErrorKind::TimedOut
+                            || read_err.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            // Read timeout — check if bridge_write is still alive
+                            // by attempting a zero-byte write.
+                            if bridge_write.write_all(&[]).await.is_err() {
+                                tracing::info!("[client-bridge-read] bridge closed during timeout, exiting");
+                                break;
+                            }
+                            continue; // retry the read
+                        }
                         Err(read_err) => {
                             tracing::info!(
                                 error = %read_err,
+                                kind = ?read_err.kind(),
                                 "[client-bridge-read] read error from socket"
                             );
                             break;
@@ -649,17 +670,27 @@ impl UffsClient {
             tracing::info!("[client-bridge-read] thread exiting");
         });
 
-        // Background thread: async writer → std socket
+        // Background thread: async bridge_read → std socket
         std::thread::spawn(move || {
             tracing::info!("[client-bridge-write] thread started");
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(rt_err) => {
+                    tracing::info!(error = %rt_err, "[client-bridge-write] failed to create runtime");
+                    return;
+                }
+            };
             let mut writer = std_write;
-            rt_handle_write.block_on(async {
+            rt.block_on(async {
                 use tokio::io::AsyncReadExt;
                 let mut buf = [0_u8; 8192];
                 loop {
                     match bridge_read.read(&mut buf).await {
                         Ok(0) => {
-                            tracing::info!("[client-bridge-write] EOF from bridge");
+                            tracing::info!("[client-bridge-write] EOF from bridge (async_write dropped)");
                             break;
                         }
                         Err(read_err) => {
