@@ -355,6 +355,12 @@ pub async fn run_ipc_server(
         let (async_read, mut bridge_write) = tokio::io::duplex(65536);
         let (mut bridge_read, async_write) = tokio::io::duplex(65536);
 
+        // Capture the tokio runtime handle BEFORE spawning OS threads —
+        // std::thread::spawn does NOT inherit the tokio thread-local context,
+        // so try_current() would return Err and the bridge would exit immediately.
+        let rt_handle_read = tokio::runtime::Handle::current();
+        let rt_handle_write = tokio::runtime::Handle::current();
+
         // Background thread: std socket → async reader
         std::thread::spawn(move || {
             use std::io::Read;
@@ -365,12 +371,9 @@ pub async fn run_ipc_server(
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         use tokio::io::AsyncWriteExt;
-                        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                            let bytes = buf[..n].to_vec();
-                            let _ = handle.block_on(async { bridge_write.write_all(&bytes).await });
-                        } else {
-                            break;
-                        }
+                        let bytes = buf[..n].to_vec();
+                        let _ = rt_handle_read
+                            .block_on(async { bridge_write.write_all(&bytes).await });
                     }
                 }
             }
@@ -380,22 +383,20 @@ pub async fn run_ipc_server(
         std::thread::spawn(move || {
             use std::io::Write;
             let mut writer = std_write;
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.block_on(async {
-                    use tokio::io::AsyncReadExt;
-                    let mut buf = [0_u8; 8192];
-                    loop {
-                        match bridge_read.read(&mut buf).await {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => {
-                                if writer.write_all(&buf[..n]).is_err() || writer.flush().is_err() {
-                                    break;
-                                }
+            rt_handle_write.block_on(async {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0_u8; 8192];
+                loop {
+                    match bridge_read.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if writer.write_all(&buf[..n]).is_err() || writer.flush().is_err() {
+                                break;
                             }
                         }
                     }
-                });
-            }
+                }
+            });
         });
 
         lifecycle.connection_opened();
