@@ -1,558 +1,133 @@
-    ~/Private/GitHub/UltraFastFileSearch  on   main !1  cargo clean                                                                                                   ✔  took 7s   at 11:49:04 
-     Removed 0 files
-
-    ~/Private/GitHub/UltraFastFileSearch  on   main !1  cargo bloat --release --crates --target x86_64-pc-windows-msvc                                                            ✔  at 11:49:08 
-   Compiling proc-macro2 v1.0.106
-   Compiling unicode-ident v1.0.24
-   Compiling quote v1.0.45
-   Compiling cfg-if v1.0.4
-   Compiling serde_core v1.0.228
-   Compiling windows-link v0.2.1
-   Compiling version_check v0.9.5
-   Compiling serde v1.0.228
-   Compiling libc v0.2.183
-   Compiling shlex v1.3.0
-   Compiling find-msvc-tools v0.1.9
-   Compiling crossbeam-utils v0.8.21
-   Compiling itoa v1.0.18
-   Compiling memchr v2.8.0
-   Compiling smallvec v1.15.1
-   Compiling pin-project-lite v0.2.17
-   Compiling rayon-core v1.13.0
-   Compiling equivalent v1.0.2
-   Compiling allocator-api2 v0.2.21
-   Compiling getrandom v0.2.17
-   Compiling foldhash v0.2.0
-   Compiling once_cell v1.21.3
-   Compiling parking_lot_core v0.9.12
-   Compiling scopeguard v1.2.0
-   Compiling futures-core v0.3.32
-   Compiling windows-sys v0.61.2
-   Compiling winapi v0.3.9
-   Compiling autocfg v1.5.0
-   Compiling libm v0.2.16
-   Compiling lock_api v0.4.14
-   Compiling tracing-core v0.1.36
-   Compiling typenum v1.19.0
-   Compiling stable_deref_trait v1.2.1
-   Compiling num-traits v0.2.19
-   Compiling subtle v2.6.1
-   Compiling thiserror v2.0.18
-   Compiling futures-sink v0.3.32
-   Compiling generic-array v0.14.7
-   Compiling ryu v1.0.23
-   Compiling bitflags v2.11.0
-   Compiling slab v0.4.12
-   Compiling futures-channel v0.3.32
-   Compiling zerocopy v0.8.42
-   Compiling log v0.4.29
-   Compiling aho-corasick v1.1.4
-   Compiling futures-task v0.3.32
-   Compiling futures-io v0.3.32
-   Compiling mio v1.1.1
-   Compiling socket2 v0.6.3
-   Compiling regex-syntax v0.8.10
-   Compiling syn v2.0.117
-   Compiling zmij v1.0.21
-   Compiling litemap v0.8.1
-   Compiling serde_json v1.0.149
-   Compiling getrandom v0.3.4
-   Compiling writeable v0.6.2
-   Compiling icu_normalizer_data v2.1.1
-   Compiling regex-automata v0.4.14
-   Compiling crossbeam-epoch v0.9.18
-   Compiling zeroize v1.8.2
-   Compiling synstructure v0.13.2
-   Compiling serde_derive v1.0.228
-   Compiling windows-interface v0.59.3
-   Compiling crossbeam-deque v0.8.6
-   Compiling windows-implement v0.60.2
-   Compiling tracing-attributes v0.1.31
-   Compiling tokio-macros v2.6.1
-   Compiling zerofrom-derive v0.1.6
-   Compiling yoke-derive v0.8.1
-   Compiling parking_lot v0.12.5
-   Compiling jobserver v0.1.34
-   Compiling zerovec-derive v0.11.2
-   Compiling thiserror-impl v2.0.18
-   Compiling displaydoc v0.2.5
-   Compiling cc v1.2.56
-   Compiling zerocopy-derive v0.8.42
-   Compiling futures-macro v0.3.32
-   Compiling ring v0.17.14
-   Compiling icu_properties_data v2.1.2
-   Compiling rustversion v1.0.22
-   Compiling object v0.37.3
-   Compiling rustls-pki-types v1.14.0
-   Compiling heck v0.5.0
-   Compiling percent-encoding v2.3.2
-   Compiling windows_x86_64_msvc v0.52.6
-   Compiling getrandom v0.4.2
-   Compiling rand_core v0.10.0
-   Compiling windows-link v0.1.3
-   Compiling zerofrom v0.1.6
-   Compiling untrusted v0.9.0
-   Compiling tracing v0.1.44
-   Compiling httparse v1.10.1
-   Compiling futures-util v0.3.32
-   Compiling atomic-waker v1.1.2
-   Compiling try-lock v0.2.5
-   Compiling fnv v1.0.7
-   Compiling rustls v0.23.37
-   Compiling tower-service v0.3.3
-   Compiling want v0.3.1
-   Compiling yoke v0.8.1
-   Compiling static_assertions v1.1.0
-   Compiling pin-utils v0.1.0
-   Compiling windows-strings v0.4.2
-   Compiling windows-result v0.3.4
-   Compiling form_urlencoded v1.2.2
-   Compiling rand_core v0.9.5
-   Compiling schannel v0.1.29
-   Compiling ar_archive_writer v0.5.1
-   Compiling sync_wrapper v1.0.2
-   Compiling tower-layer v0.3.3
-   Compiling ipnet v2.12.0
-   Compiling utf8_iter v1.0.4
-   Compiling base64 v0.22.1
-   Compiling castaway v0.2.4
-   Compiling rustls-native-certs v0.8.3
-   Compiling windows-core v0.61.2
-   Compiling psm v0.1.30
-   Compiling windows-targets v0.52.6
-   Compiling strum_macros v0.27.2
-   Compiling stacker v0.1.23
-   Compiling winapi-util v0.1.11
-   Compiling foldhash v0.1.5
-   Compiling iri-string v0.7.10
-   Compiling windows-sys v0.59.0
-   Compiling unicode-width v0.2.2
-   Compiling futures-executor v0.3.32
-   Compiling hashbrown v0.15.5
-   Compiling zerovec v0.11.5
-   Compiling zerotrie v0.2.3
-   Compiling same-file v1.0.6
-   Compiling async-trait v0.1.89
-   Compiling bytemuck_derive v1.10.2
-   Compiling futures v0.3.32
-   Compiling errno v0.3.14
-   Compiling pkg-config v0.3.32
-   Compiling signal-hook v0.4.3
-   Compiling array-init-cursor v0.2.1
-   Compiling signal-hook-registry v1.4.8
-   Compiling zstd-sys v2.0.16+zstd.1.5.7
-   Compiling planus v1.1.1
-   Compiling walkdir v2.5.0
-   Compiling either v1.15.0
-   Compiling bytes v1.11.1
-   Compiling compact_str v0.9.0
-   Compiling chrono v0.4.44
-   Compiling serde_urlencoded v0.7.1
-   Compiling rayon v1.11.0
-   Compiling itertools v0.14.0
-   Compiling tokio v1.50.0
-   Compiling http v1.4.0
-   Compiling ppv-lite86 v0.2.21
-   Compiling quick-xml v0.38.4
-   Compiling tinystr v0.8.2
-   Compiling potential_utf v0.1.4
-   Compiling rand_chacha v0.9.0
-   Compiling windows-threading v0.1.0
-   Compiling http-body v1.0.1
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/curve25519.c:24:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/internal.h:20:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/25ac62e5b3c53843-curve25519.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/curve25519.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/aes/aes_nohw.c:17:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/aes/../../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/0bbbd18bda93c05b-aes_nohw.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/aes/aes_nohw.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/montgomery.c:15:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/internal.h:28:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/../../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/00c879ee3285a50d-montgomery.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/montgomery.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/montgomery_inv.c:15:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/internal.h:28:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/../../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/00c879ee3285a50d-montgomery_inv.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/montgomery_inv.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/ecp_nistz.c:15:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/ecp_nistz.h:20:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/limbs.h:20:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-ecp_nistz.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/ecp_nistz.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/gfp_p256.c:15:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/./p256_shared.h:29:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/./../bn/internal.h:28:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/./../bn/../../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-gfp_p256.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/gfp_p256.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/gfp_p384.c:15:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/limbs.h:20:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-gfp_p384.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/gfp_p384.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/p256.c:21:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/limbs.h:20:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-p256.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/p256.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/limbs/limbs.c:15:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/limbs/limbs.h:20:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/limbs/../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/aaa1ba3e455ee2e1-limbs.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/limbs/limbs.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/mem.c:16:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a4019cc0736b0423-mem.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/mem.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/poly1305/poly1305.c:21:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/poly1305/../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/d5a9841f3dc6e253-poly1305.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/poly1305/poly1305.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/cpu_intel.c:27:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a4019cc0736b0423-cpu_intel.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/cpu_intel.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/curve25519_64_adx.c:15:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/internal.h:20:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/25ac62e5b3c53843-curve25519_64_adx.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/curve25519_64_adx.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/p256-nistz.c:26:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/limbs.inl:15:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/limbs.h:20:
-warning: ring@0.17.14: In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/../internal.h:20:
-warning: ring@0.17.14: /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-warning: ring@0.17.14:    27 | # include <assert.h>
-warning: ring@0.17.14:       |           ^~~~~~~~~~
-warning: ring@0.17.14: 1 error generated.
-warning: ring@0.17.14: ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-p256-nistz.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/p256-nistz.c"
-error: failed to run custom build command for `ring v0.17.14`
-
-Caused by:
-  process didn't exit successfully: `/Users/rnio/Private/Github/UltraFastFileSearch/target/release/build/ring-16ce033666a15793/build-script-build` (exit status: 1)
-  --- stdout
-  cargo:rerun-if-env-changed=CARGO_MANIFEST_DIR
-  cargo:rerun-if-env-changed=CARGO_PKG_NAME
-  cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MAJOR
-  cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MINOR
-  cargo:rerun-if-env-changed=CARGO_PKG_VERSION_PATCH
-  cargo:rerun-if-env-changed=CARGO_PKG_VERSION_PRE
-  cargo:rerun-if-env-changed=CARGO_MANIFEST_LINKS
-  cargo:rerun-if-env-changed=RING_PREGENERATE_ASM
-  cargo:rerun-if-env-changed=OUT_DIR
-  cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH
-  cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS
-  cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ENV
-  cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ENDIAN
-  OPT_LEVEL = Some(3)
-  OUT_DIR = Some(/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out)
-  TARGET = Some(x86_64-pc-windows-msvc)
-  CARGO_ENCODED_RUSTFLAGS = Some(-Ctarget-cpu=x86-64-v3-Clink-arg=/OPT:REF-Clink-arg=/OPT:ICF)
-  cargo:rerun-if-env-changed=VCINSTALLDIR
-  VCINSTALLDIR = None
-  HOST = Some(aarch64-apple-darwin)
-  cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
-  CC_x86_64-pc-windows-msvc = None
-  cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
-  CC_x86_64_pc_windows_msvc = None
-  cargo:rerun-if-env-changed=TARGET_CC
-  TARGET_CC = None
-  cargo:rerun-if-env-changed=CC
-  CC = None
-  cargo:rerun-if-env-changed=CROSS_COMPILE
-  CROSS_COMPILE = None
-  RUSTC_LINKER = Some(link.exe)
-  cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
-  RUSTC_WRAPPER = Some(/Users/rnio/.cargo/bin/sccache)
-  cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
-  CRATE_CC_NO_DEFAULTS = None
-  DEBUG = Some(true)
-  cargo:rerun-if-env-changed=CFLAGS
-  CFLAGS = None
-  cargo:rerun-if-env-changed=TARGET_CFLAGS
-  TARGET_CFLAGS = None
-  cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
-  CFLAGS_x86_64_pc_windows_msvc = None
-  cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
-  CFLAGS_x86_64-pc-windows-msvc = None
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/curve25519.c:24:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/internal.h:20:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/25ac62e5b3c53843-curve25519.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/curve25519.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/aes/aes_nohw.c:17:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/aes/../../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/0bbbd18bda93c05b-aes_nohw.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/aes/aes_nohw.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/montgomery.c:15:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/internal.h:28:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/../../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/00c879ee3285a50d-montgomery.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/montgomery.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/montgomery_inv.c:15:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/internal.h:28:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/../../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/00c879ee3285a50d-montgomery_inv.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/bn/montgomery_inv.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/ecp_nistz.c:15:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/ecp_nistz.h:20:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/limbs.h:20:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-ecp_nistz.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/ecp_nistz.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/gfp_p256.c:15:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/./p256_shared.h:29:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/./../bn/internal.h:28:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/./../bn/../../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-gfp_p256.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/gfp_p256.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/gfp_p384.c:15:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/limbs.h:20:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-gfp_p384.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/gfp_p384.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/p256.c:21:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/limbs.h:20:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-p256.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/p256.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/limbs/limbs.c:15:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/limbs/limbs.h:20:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/limbs/../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/aaa1ba3e455ee2e1-limbs.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/limbs/limbs.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/mem.c:16:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a4019cc0736b0423-mem.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/mem.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/poly1305/poly1305.c:21:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/poly1305/../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/d5a9841f3dc6e253-poly1305.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/poly1305/poly1305.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/cpu_intel.c:27:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 0
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a4019cc0736b0423-cpu_intel.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/cpu_intel.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/curve25519_64_adx.c:15:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/internal.h:20:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/25ac62e5b3c53843-curve25519_64_adx.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/curve25519/curve25519_64_adx.c"cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/p256-nistz.c:26:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/limbs.inl:15:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/limbs.h:20:
-  cargo:warning=In file included from /Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/../../limbs/../internal.h:20:
-  cargo:warning=/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include/ring-core/check.h:27:11: fatal error: 'assert.h' file not found
-  cargo:warning=   27 | # include <assert.h>
-  cargo:warning=      |           ^~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  exit status: 1
-  cargo:warning=ToolExecError: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-p256-nistz.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/p256-nistz.c"
-
-  --- stderr
-
-
-  error occurred in cc-rs: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/include" "-I" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/pregenerated" "-Wall" "-Wextra" "-fvisibility=hidden" "-std=c1x" "-Wall" "-Wbad-function-cast" "-Wcast-align" "-Wcast-qual" "-Wconversion" "-Wmissing-field-initializers" "-Wmissing-include-dirs" "-Wnested-externs" "-Wredundant-decls" "-Wshadow" "-Wsign-compare" "-Wsign-conversion" "-Wstrict-prototypes" "-Wundef" "-Wuninitialized" "-g3" "-DNDEBUG" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/ring-d4a6b929c8b0bebc/out/a0330e891e733f4e-p256-nistz.o" "-c" "/Users/rnio/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ring-0.17.14/crypto/fipsmodule/ec/p256-nistz.c"
-
-
-warning: build failed, waiting for other jobs to finish...
-warning: stacker@0.1.23: src/arch/windows.c:1:10: fatal error: 'windows.h' file not found
-warning: stacker@0.1.23:     1 | #include <windows.h>
-warning: stacker@0.1.23:       |          ^~~~~~~~~~~
-warning: stacker@0.1.23: 1 error generated.
-error: failed to run custom build command for `stacker v0.1.23`
-
-Caused by:
-  process didn't exit successfully: `/Users/rnio/Private/Github/UltraFastFileSearch/target/release/build/stacker-78fa0b35be4c3b41/build-script-build` (exit status: 1)
-  --- stdout
-  OUT_DIR = Some(/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/stacker-56a6f8bb5a8c7907/out)
-  OPT_LEVEL = Some(3)
-  TARGET = Some(x86_64-pc-windows-msvc)
-  CARGO_ENCODED_RUSTFLAGS = Some(-Ctarget-cpu=x86-64-v3-Clink-arg=/OPT:REF-Clink-arg=/OPT:ICF)
-  cargo:rerun-if-env-changed=VCINSTALLDIR
-  VCINSTALLDIR = None
-  HOST = Some(aarch64-apple-darwin)
-  cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
-  CC_x86_64-pc-windows-msvc = None
-  cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
-  CC_x86_64_pc_windows_msvc = None
-  cargo:rerun-if-env-changed=TARGET_CC
-  TARGET_CC = None
-  cargo:rerun-if-env-changed=CC
-  CC = None
-  cargo:rerun-if-env-changed=CROSS_COMPILE
-  CROSS_COMPILE = None
-  RUSTC_LINKER = Some(link.exe)
-  cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
-  RUSTC_WRAPPER = Some(/Users/rnio/.cargo/bin/sccache)
-  cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
-  CRATE_CC_NO_DEFAULTS = None
-  DEBUG = Some(true)
-  cargo:rerun-if-env-changed=CFLAGS
-  CFLAGS = None
-  cargo:rerun-if-env-changed=TARGET_CFLAGS
-  TARGET_CFLAGS = None
-  cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
-  CFLAGS_x86_64_pc_windows_msvc = None
-  cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
-  CFLAGS_x86_64-pc-windows-msvc = None
-  cargo:warning=src/arch/windows.c:1:10: fatal error: 'windows.h' file not found
-  cargo:warning=    1 | #include <windows.h>
-  cargo:warning=      |          ^~~~~~~~~~~
-  cargo:warning=1 error generated.
-
-  --- stderr
-
-
-  error occurred in cc-rs: command did not execute successfully (status code exit status: 1): LC_ALL="C" "/Users/rnio/.cargo/bin/sccache" "cc" "-O3" "-ffunction-sections" "-fdata-sections" "-g" "-fno-omit-frame-pointer" "-m64" "--target=x86_64-pc-windows-msvc" "-I" "src/arch" "-Wall" "-Wextra" "-DWINDOWS" "-o" "/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/stacker-56a6f8bb5a8c7907/out/2d87c5a413c3c6c5-windows.o" "-c" "src/arch/windows.c"
-
-
-error: failed to run custom build command for `psm v0.1.30`
-
-Caused by:
-  process didn't exit successfully: `/Users/rnio/Private/Github/UltraFastFileSearch/target/release/build/psm-48a31947f742fb5a/build-script-build` (exit status: 1)
-  --- stdout
-  cargo:rustc-check-cfg=cfg(switchable_stack,asm,link_asm)
-  OPT_LEVEL = Some(3)
-  OUT_DIR = Some(/Users/rnio/Private/Github/UltraFastFileSearch/target/x86_64-pc-windows-msvc/release/build/psm-4dd32d14e5be0a06/out)
-  TARGET = Some(x86_64-pc-windows-msvc)
-  CARGO_ENCODED_RUSTFLAGS = Some(-Ctarget-cpu=x86-64-v3-Clink-arg=/OPT:REF-Clink-arg=/OPT:ICF)
-  cargo:rerun-if-env-changed=VCINSTALLDIR
-  VCINSTALLDIR = None
-  HOST = Some(aarch64-apple-darwin)
-  cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
-  CC_x86_64-pc-windows-msvc = None
-  cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
-  CC_x86_64_pc_windows_msvc = None
-  cargo:rerun-if-env-changed=TARGET_CC
-  TARGET_CC = None
-  cargo:rerun-if-env-changed=CC
-  CC = None
-  cargo:rerun-if-env-changed=CROSS_COMPILE
-  CROSS_COMPILE = None
-  RUSTC_LINKER = Some(link.exe)
-  cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
-  RUSTC_WRAPPER = Some(/Users/rnio/.cargo/bin/sccache)
-  cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
-  CRATE_CC_NO_DEFAULTS = None
-  DEBUG = Some(true)
-  cargo:rerun-if-env-changed=CFLAGS
-  CFLAGS = None
-  cargo:rerun-if-env-changed=TARGET_CFLAGS
-  TARGET_CFLAGS = None
-  cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
-  CFLAGS_x86_64_pc_windows_msvc = None
-  cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
-  CFLAGS_x86_64-pc-windows-msvc = None
-  cargo:rustc-cfg=asm
-  cargo:rustc-cfg=link_asm
-  cargo:rerun-if-env-changed=AR_x86_64-pc-windows-msvc
-  AR_x86_64-pc-windows-msvc = None
-  cargo:rerun-if-env-changed=AR_x86_64_pc_windows_msvc
-  AR_x86_64_pc_windows_msvc = None
-  cargo:rerun-if-env-changed=TARGET_AR
-  TARGET_AR = None
-  cargo:rerun-if-env-changed=AR
-  AR = None
-  cargo:rerun-if-env-changed=ARFLAGS
-  ARFLAGS = None
-  cargo:rerun-if-env-changed=TARGET_ARFLAGS
-  TARGET_ARFLAGS = None
-  cargo:rerun-if-env-changed=ARFLAGS_x86_64_pc_windows_msvc
-  ARFLAGS_x86_64_pc_windows_msvc = None
-  cargo:rerun-if-env-changed=ARFLAGS_x86_64-pc-windows-msvc
-  ARFLAGS_x86_64-pc-windows-msvc = None
-
-  --- stderr
-
-
-  error occurred in cc-rs: failed to find tool "lib.exe": No such file or directory (os error 2)
-
-
-Error: failed to execute 'cargo build'. Probably a build error.
-
-    ~/Private/GitHub/UltraFastFileSearch  on   main !1                                                                                                             1 ✘  took 10s   at 11:49:20 
+stuck : 2026-03-31T20:14:32.9755533Z  INFO ThreadId(14) uffs_client::connect: crates/uffs-client/src/connect.rs:119: Daemon not running, auto-starting via `uffs daemon run`...
+2026-03-31T20:14:33.1693925Z  INFO ThreadId(23) uffs_daemon: crates/uffs-daemon/src/lib.rs:102: uffs-daemon starting pid=70468 version="0.4.39" broker_available=false mft_files=[] drives=[] data_dir=None no_cache=false no_retire=false
+2026-03-31T20:14:33.1700601Z  INFO ThreadId(23) uffs_daemon: crates/uffs-daemon/src/lib.rs:126: Lifecycle data directory data_dir=C:\Users\rnio\AppData\Local\uffs
+2026-03-31T20:14:33.3604455Z  INFO ThreadId(23) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:155: PID file written path=C:\Users\rnio\AppData\Local\uffs\daemon.pid
+2026-03-31T20:14:33.3604693Z  INFO ThreadId(23) uffs_daemon: crates/uffs-daemon/src/lib.rs:136: PID file written
+2026-03-31T20:14:33.3612502Z  INFO ThreadId(23) uffs_daemon: crates/uffs-daemon/src/lib.rs:164: Auto-discovered NTFS drives count=7 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-03-31T20:14:33.3612637Z  INFO ThreadId(23) uffs_daemon: crates/uffs-daemon/src/lib.rs:178: Final data sources mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-03-31T20:14:33.3612672Z  INFO ThreadId(23) uffs_daemon: crates/uffs-daemon/src/lib.rs:182: Data sources validated OK
+2026-03-31T20:14:33.3612946Z  INFO ThreadId(23) uffs_daemon: crates/uffs-daemon/src/lib.rs:221: Starting IPC server...
+2026-03-31T20:14:33.3613072Z  INFO ThreadId(23) uffs_daemon: crates/uffs-daemon/src/lib.rs:227: IPC server task spawned
+2026-03-31T20:14:33.3613333Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:187: Load task starting mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-03-31T20:14:33.3613889Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:207: Loading live drives... drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-03-31T20:14:33.3613945Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=C
+2026-03-31T20:14:33.5260314Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:159: Connected to daemon attempt=3
+2026-03-31T20:14:33.5263593Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=1 delay_ms=250
+2026-03-31T20:14:33.526379Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
+2026-03-31T20:14:33.5263867Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=1 error=I/O error: broken pipe
+2026-03-31T20:14:33.571754Z  INFO ThreadId(23) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:325: IPC server listening (Windows AF_UNIX) path=C:\Users\rnio\AppData\Local\uffs\daemon.sock
+2026-03-31T20:14:33.7894132Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=2 delay_ms=500
+2026-03-31T20:14:33.7894487Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
+2026-03-31T20:14:33.789457Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=2 error=I/O error: broken pipe
+2026-03-31T20:14:34.3038465Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=3 delay_ms=1000
+2026-03-31T20:14:34.3038759Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
+2026-03-31T20:14:34.3038826Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=3 error=I/O error: broken pipe
+2026-03-31T20:14:35.3170221Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=4 delay_ms=2000
+2026-03-31T20:14:35.3170528Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=4 method="status"
+2026-03-31T20:14:35.3170588Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=4 error=I/O error: broken pipe
+2026-03-31T20:14:35.6161781Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=C records=3423931
+2026-03-31T20:14:35.6162832Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=C records=3423931 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T20:14:35.616307Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=D
+2026-03-31T20:14:37.3266918Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=5 delay_ms=2000
+2026-03-31T20:14:37.3267305Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=5 method="status"
+2026-03-31T20:14:37.3267365Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=5 error=I/O error: broken pipe
+2026-03-31T20:14:39.1698032Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=D records=7065539
+2026-03-31T20:14:39.1698493Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=D records=7065539 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T20:14:39.1698567Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=E
+2026-03-31T20:14:39.3357647Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=6 delay_ms=2000
+2026-03-31T20:14:39.3357954Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=6 method="status"
+2026-03-31T20:14:39.3358048Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=6 error=I/O error: broken pipe
+2026-03-31T20:14:40.4565321Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=E records=2929519
+2026-03-31T20:14:40.4565796Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=E records=2929519 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T20:14:40.4565882Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=F
+2026-03-31T20:14:41.3449681Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=7 delay_ms=2000
+2026-03-31T20:14:41.3449913Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=7 method="status"
+2026-03-31T20:14:41.3449974Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=7 error=I/O error: broken pipe
+2026-03-31T20:14:41.6970206Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=F records=2221343
+2026-03-31T20:14:41.6970656Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=F records=2221343 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T20:14:41.6970733Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=G
+2026-03-31T20:14:41.706733Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=G records=15090
+2026-03-31T20:14:41.7067723Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=G records=15090 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T20:14:41.7067803Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=M
+2026-03-31T20:14:42.3311819Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=M records=1908805
+2026-03-31T20:14:42.3312396Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=M records=1908805 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T20:14:42.3312528Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=S
+2026-03-31T20:14:43.3582094Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=8 delay_ms=2000
+2026-03-31T20:14:43.3582389Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=8 method="status"
+2026-03-31T20:14:43.3582453Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=8 error=I/O error: broken pipe
+2026-03-31T20:14:45.3500829Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=S records=8278102
+2026-03-31T20:14:45.3501296Z  INFO ThreadId(23) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=S records=8278102 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T20:14:45.3501509Z  INFO ThreadId(23) uffs_daemon: crates/uffs-daemon/src/lib.rs:209: Live drives loaded
+2026-03-31T20:14:45.3501525Z  INFO ThreadId(23) uffs_daemon: crates/uffs-daemon/src/lib.rs:214: Load task completed
+2026-03-31T20:14:45.3679156Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=9 delay_ms=2000
+2026-03-31T20:14:45.3679477Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=9 method="status"
+2026-03-31T20:14:45.3679532Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=9 error=I/O error: broken pipe
+2026-03-31T20:14:47.369533Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=10 delay_ms=2000
+2026-03-31T20:14:47.3695573Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=10 method="status"
+2026-03-31T20:14:47.3695625Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=10 error=I/O error: broken pipe
+2026-03-31T20:14:49.3854443Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=11 delay_ms=2000
+2026-03-31T20:14:49.3854739Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=11 method="status"
+2026-03-31T20:14:49.3854796Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=11 error=I/O error: broken pipe
+2026-03-31T20:14:51.398097Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=12 delay_ms=2000
+2026-03-31T20:14:51.3981295Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=12 method="status"
+2026-03-31T20:14:51.3981365Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=12 error=I/O error: broken pipe
+2026-03-31T20:14:53.4139216Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=13 delay_ms=2000
+2026-03-31T20:14:53.4139503Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=13 method="status"
+2026-03-31T20:14:53.4139573Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=13 error=I/O error: broken pipe
+2026-03-31T20:14:55.4285906Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=14 delay_ms=2000
+2026-03-31T20:14:55.4286166Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=14 method="status"
+2026-03-31T20:14:55.4286219Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=14 error=I/O error: broken pipe
+2026-03-31T20:14:57.4433149Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=15 delay_ms=2000
+2026-03-31T20:14:57.4433435Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=15 method="status"
+2026-03-31T20:14:57.4433486Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=15 error=I/O error: broken pipe
+2026-03-31T20:14:59.4563091Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=16 delay_ms=2000
+2026-03-31T20:14:59.4563344Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=16 method="status"
+2026-03-31T20:14:59.4563391Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=16 error=I/O error: broken pipe
+2026-03-31T20:15:01.4611689Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=17 delay_ms=2000
+2026-03-31T20:15:01.461202Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=17 method="status"
+2026-03-31T20:15:01.46121Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=17 error=I/O error: broken pipe
+2026-03-31T20:15:03.4747859Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=18 delay_ms=2000
+2026-03-31T20:15:03.4748114Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=18 method="status"
+2026-03-31T20:15:03.4748164Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=18 error=I/O error: broken pipe
+2026-03-31T20:15:05.4789979Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=19 delay_ms=2000
+2026-03-31T20:15:05.4790308Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=19 method="status"
+2026-03-31T20:15:05.4790382Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=19 error=I/O error: broken pipe
+2026-03-31T20:15:07.4942547Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=20 delay_ms=2000
+2026-03-31T20:15:07.494285Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=20 method="status"
+2026-03-31T20:15:07.4942924Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=20 error=I/O error: broken pipe
+2026-03-31T20:15:09.5093322Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=21 delay_ms=2000
+2026-03-31T20:15:09.5093554Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=21 method="status"
+2026-03-31T20:15:09.5093606Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=21 error=I/O error: broken pipe
+2026-03-31T20:15:11.5190803Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=22 delay_ms=2000
+2026-03-31T20:15:11.5191072Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=22 method="status"
+2026-03-31T20:15:11.5191121Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=22 error=I/O error: broken pipe
+2026-03-31T20:15:13.5298571Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=23 delay_ms=2000
+2026-03-31T20:15:13.5298939Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=23 method="status"
+2026-03-31T20:15:13.5299003Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=23 error=I/O error: broken pipe
+2026-03-31T20:15:15.537134Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=24 delay_ms=2000
+2026-03-31T20:15:15.5371608Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=24 method="status"
+2026-03-31T20:15:15.5371653Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=24 error=I/O error: broken pipe
+2026-03-31T20:15:17.5506022Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=25 delay_ms=2000
+2026-03-31T20:15:17.5506266Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=25 method="status"
+2026-03-31T20:15:17.5506318Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=25 error=I/O error: broken pipe
+2026-03-31T20:15:19.5670419Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=26 delay_ms=2000
+2026-03-31T20:15:19.5670722Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=26 method="status"
+2026-03-31T20:15:19.5670787Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=26 error=I/O error: broken pipe
+2026-03-31T20:15:21.5747156Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=27 delay_ms=2000
+2026-03-31T20:15:21.5747506Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=27 method="status"
+2026-03-31T20:15:21.5747571Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=27 error=I/O error: broken pipe
+2026-03-31T20:15:23.5846256Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=28 delay_ms=2000
+2026-03-31T20:15:23.5846531Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=28 method="status"
+2026-03-31T20:15:23.5846605Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=28 error=I/O error: broken pipe
+2026-03-31T20:15:25.5872197Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=29 delay_ms=2000
+2026-03-31T20:15:25.5872462Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=29 method="status"
+2026-03-31T20:15:25.5872537Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=29 error=I/O error: broken pipe
+2026-03-31T20:15:27.60289Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=30 delay_ms=2000
+2026-03-31T20:15:27.6029172Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=30 method="status"
+2026-03-31T20:15:27.6029231Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=30 error=I/O error: broken pipe
+2026-03-31T20:15:29.6161869Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=31 delay_ms=2000
+2026-03-31T20:15:29.6162277Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=31 method="status"
+2026-03-31T20:15:29.6162375Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=31 error=I/O error: broken pipe
+2026-03-31T20:15:31.6192737Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:361: await_ready: sending status poll poll_count=32 delay_ms=2000
+2026-03-31T20:15:31.6193012Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=32 method="status"
+2026-03-31T20:15:31.6193075Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:370: await_ready: status poll failed poll_count=32 error=I/O error: broken pipe

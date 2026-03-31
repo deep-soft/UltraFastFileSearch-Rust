@@ -345,6 +345,9 @@ impl UffsClient {
     /// daemon reports [`DaemonStatus::Ready`].  Times out after
     /// `timeout` and returns an error.
     ///
+    /// If multiple consecutive I/O errors occur (e.g. broken pipe from a
+    /// stale socket), the client automatically reconnects to the daemon.
+    ///
     /// # Errors
     ///
     /// Returns `ClientError` on connection failure or timeout.
@@ -352,18 +355,59 @@ impl UffsClient {
         &mut self,
         timeout: core::time::Duration,
     ) -> Result<(), crate::error::ClientError> {
+        /// Consecutive I/O errors before attempting a reconnect.
+        const RECONNECT_THRESHOLD: u32 = 3;
+
         let deadline = tokio::time::Instant::now() + timeout;
         let mut delay_ms = 250_u64;
         let mut poll_count = 0_u32;
+        let mut consecutive_io_errors = 0_u32;
 
         loop {
             poll_count += 1;
             tracing::info!(poll_count, delay_ms, "await_ready: sending status poll");
             match self.status().await {
                 Ok(resp) => {
+                    consecutive_io_errors = 0;
                     tracing::info!(poll_count, status = ?resp.status, "await_ready: got status");
                     if resp.status == crate::protocol::DaemonStatus::Ready {
                         return Ok(());
+                    }
+                }
+                Err(
+                    err @ (crate::error::ClientError::Io(_)
+                    | crate::error::ClientError::ConnectionClosed),
+                ) => {
+                    consecutive_io_errors += 1;
+                    tracing::info!(
+                        poll_count,
+                        consecutive_io_errors,
+                        error = %err,
+                        "await_ready: status poll I/O error"
+                    );
+
+                    if consecutive_io_errors >= RECONNECT_THRESHOLD {
+                        tracing::info!(
+                            consecutive_io_errors,
+                            "await_ready: reconnecting to daemon"
+                        );
+                        match Self::platform_connect().await {
+                            Ok(new_client) => {
+                                self.reader = new_client.reader;
+                                self.writer = new_client.writer;
+                                self.next_id = new_client.next_id;
+                                self.notification_tx = new_client.notification_tx;
+                                self.notification_rx = new_client.notification_rx;
+                                consecutive_io_errors = 0;
+                                tracing::info!("await_ready: reconnected successfully");
+                            }
+                            Err(reconn_err) => {
+                                tracing::info!(
+                                    error = %reconn_err,
+                                    "await_ready: reconnect failed, will retry"
+                                );
+                            }
+                        }
                     }
                 }
                 Err(status_err) => {

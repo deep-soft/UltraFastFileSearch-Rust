@@ -95,6 +95,15 @@ quick-deploy:
     NEW_VERSION=$(awk '/^\[workspace\.package\]/{flag=1; next} flag && /^version/{print $3; exit}' Cargo.toml | tr -d '"')
     printf "\033[0;32m  → v%s\033[0m\n" "$NEW_VERSION"
 
+    # Sync workflow state so build-cross-all.rs uses the correct version
+    STATE_FILE="build/.uffs-workflow-state.json"
+    if [ -f "$STATE_FILE" ]; then
+        # Update current_version in-place using portable sed
+        sed -i.bak "s/\"current_version\": *\"[^\"]*\"/\"current_version\": \"${NEW_VERSION}\"/" "$STATE_FILE"
+        rm -f "${STATE_FILE}.bak"
+        printf "\033[0;36m  → Synced workflow state to v%s\033[0m\n" "$NEW_VERSION"
+    fi
+
     # 2. Cross-compile for Windows (build-cross-all.rs handles dist/ copy)
     printf "\n\033[0;34m🔨 Step 2/4: Cross-compile for Windows...\033[0m\n"
     START=$(date +%s)
