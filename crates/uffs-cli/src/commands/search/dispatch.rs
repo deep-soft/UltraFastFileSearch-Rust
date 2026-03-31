@@ -624,7 +624,7 @@ pub(super) fn finalize_native_output(
     #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
     if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
         eprintln!(
-            "[CACHE_PROFILE] output_write:  {output_ms:>6} ms  ({} rows)",
+            "[CACHE_PROFILE] output_total:  {output_ms:>6} ms  ({} rows)",
             rows.len(),
         );
         eprintln!("[CACHE_PROFILE] wall_total:    {wall_ms:>6} ms");

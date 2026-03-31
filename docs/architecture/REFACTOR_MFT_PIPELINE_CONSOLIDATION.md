@@ -422,7 +422,7 @@ After Wave 0, the following `[CACHE_PROFILE]` labels are emitted (when `UFFS_CAC
 [CACHE_PROFILE] compact_save:      XX ms  total               ← compact save total
 [CACHE_PROFILE] compact_save_outer:XX ms                      ← save_compact_cache wall time
 [CACHE_PROFILE] path_resolver:     XX ms  (lazy=bool)         ← PathResolver build
-[CACHE_PROFILE] row_output:        XX ms  (N rows)            ← format + write all output rows
+[CACHE_PROFILE] row_output:        XX ms  (N rows)            ← format + write all output rows (legacy)
 ```
 
 ### Search phase (per-drive + aggregate)
@@ -431,6 +431,14 @@ After Wave 0, the following `[CACHE_PROFILE]` labels are emitted (when `UFFS_CAC
 [CACHE_PROFILE] search_C:          regex_match=X ms (N hits from M scan)  paths=X ms
 [CACHE_PROFILE] search_C:          tree_walk=X ms (N hits)  paths=X ms
 [CACHE_PROFILE] search_total:      XX ms  (N rows, M scanned, mode=trigram|regex|tree|match-all)
+```
+
+### Output phase (unified, all search paths)
+```
+[CACHE_PROFILE] output_convert:    XX ms  (N rows → DataFrame)  ← json/table only (DisplayRow→DataFrame)
+[CACHE_PROFILE] output_fmt_io:     XX ms  (format=custom|csv|json|table) ← formatting + I/O write
+[CACHE_PROFILE] output_total:      XX ms  (N rows)              ← convert + fmt_io combined
+[CACHE_PROFILE] wall_total:        XX ms                        ← end-to-end from search start
 ```
 
 ### Warm start (cache hit)
@@ -449,5 +457,8 @@ After Wave 0, the following `[CACHE_PROFILE]` labels are emitted (when `UFFS_CAC
 [CACHE_PROFILE] compact_total:     XX ms  (build+trigram)
 [CACHE_PROFILE] search_C:          ...                        ← same per-drive + aggregate labels as above
 [CACHE_PROFILE] path_resolver:     XX ms  (lazy=bool)
-[CACHE_PROFILE] row_output:        XX ms  (N rows)
+[CACHE_PROFILE] output_convert:    XX ms  (N rows → DataFrame) ← json/table only
+[CACHE_PROFILE] output_fmt_io:     XX ms  (format=...)
+[CACHE_PROFILE] output_total:      XX ms  (N rows)
+[CACHE_PROFILE] wall_total:        XX ms
 ```

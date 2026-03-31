@@ -430,6 +430,7 @@ pub(super) fn write_results(
 ///
 /// Mirrors [`write_results`] but uses `OutputConfig::write_display_rows`
 /// instead of `OutputConfig::write` (`DataFrame` path).
+#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
 pub(super) fn write_native_results(
     rows: &[uffs_core::search::backend::DisplayRow],
     format: &str,
@@ -439,6 +440,7 @@ pub(super) fn write_native_results(
     _elapsed: Duration,
     pattern: &str,
 ) -> Result<()> {
+    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
     let is_console = matches!(
         out.to_lowercase().as_str(),
         "console" | "con" | "term" | "terminal"
@@ -450,27 +452,32 @@ pub(super) fn write_native_results(
         row_count: rows.len(),
     };
 
+    // ── Phase 1: convert DisplayRows → DataFrame (json/table only) ──
+    let t_convert = std::time::Instant::now();
+    let needs_df = matches!(format, "json" | "table");
+    let converted_df = if needs_df {
+        Some(
+            uffs_core::search::backend::display_rows_to_dataframe(rows)
+                .map_err(|err| anyhow::anyhow!("Failed to build result DataFrame: {err}"))?,
+        )
+    } else {
+        None
+    };
+    let convert_ms = t_convert.elapsed().as_millis();
+
+    // ── Phase 2: format + write ─────────────────────────────────────
+    let t_write = std::time::Instant::now();
     if is_console {
         let stdout_handle = std::io::stdout();
         let mut stdout = stdout_handle.lock();
         match format {
-            "json" => {
-                // Convert to small DataFrame for json export (reuses Polars json serialization)
-                let df = uffs_core::search::backend::display_rows_to_dataframe(rows)
-                    .map_err(|err| anyhow::anyhow!("Failed to build result DataFrame: {err}"))?;
-                export_json(&df, &mut stdout)?;
-            }
+            "json" => export_json(converted_df.as_ref().unwrap_or(&EMPTY_DF), &mut stdout)?,
             "csv" => output_config.write_display_rows(rows, &mut stdout)?,
             "custom" => {
                 output_config.write_display_rows(rows, &mut stdout)?;
                 write_cpp_drive_footer(&mut stdout, &footer_ctx)?;
             }
-            _ => {
-                // table format — convert to small DataFrame for table rendering
-                let df = uffs_core::search::backend::display_rows_to_dataframe(rows)
-                    .map_err(|err| anyhow::anyhow!("Failed to build result DataFrame: {err}"))?;
-                export_table(&df, &mut stdout)?;
-            }
+            _ => export_table(converted_df.as_ref().unwrap_or(&EMPTY_DF), &mut stdout)?,
         }
         stdout.flush()?;
     } else {
@@ -479,11 +486,7 @@ pub(super) fn write_native_results(
         let mut writer = BufWriter::new(file);
 
         match format {
-            "json" => {
-                let df = uffs_core::search::backend::display_rows_to_dataframe(rows)
-                    .map_err(|err| anyhow::anyhow!("Failed to build result DataFrame: {err}"))?;
-                export_json(&df, &mut writer)?;
-            }
+            "json" => export_json(converted_df.as_ref().unwrap_or(&EMPTY_DF), &mut writer)?,
             "custom" => {
                 output_config.write_display_rows(rows, &mut writer)?;
                 write_cpp_drive_footer(&mut writer, &footer_ctx)?;
@@ -494,9 +497,24 @@ pub(super) fn write_native_results(
 
         info!(file = out, "Results written to file");
     }
+    let write_ms = t_write.elapsed().as_millis();
+
+    if profile {
+        if needs_df {
+            eprintln!(
+                "[CACHE_PROFILE] output_convert: {convert_ms:>5} ms  ({} rows → DataFrame)",
+                rows.len(),
+            );
+        }
+        eprintln!("[CACHE_PROFILE] output_fmt_io:  {write_ms:>5} ms  (format={format})",);
+    }
 
     Ok(())
 }
+
+/// Empty `DataFrame` sentinel — avoids `unwrap` when the branch is unreachable.
+static EMPTY_DF: std::sync::LazyLock<uffs_polars::DataFrame> =
+    std::sync::LazyLock::new(uffs_polars::DataFrame::empty);
 
 /// Append the legacy C++ drive footer for baseline-compatible custom output.
 ///
