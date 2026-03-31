@@ -23,8 +23,9 @@
 //   Scenario J: Search auto-starts daemon
 //
 // Usage:
-//   rust-script scripts/dev/daemon-readiness.rs --data-dir ~/uffs_data
-//   rust-script scripts/dev/daemon-readiness.rs --data-dir ~/uffs_data --binary target/release/uffs
+//   rust-script scripts/dev/daemon-readiness.rs ~/uffs_data          # macOS with offline data
+//   rust-script scripts/dev/daemon-readiness.rs                       # Windows (auto-discovers NTFS drives)
+//   rust-script scripts/dev/daemon-readiness.rs --binary target/release/uffs
 
 use std::process::{Command, Output};
 use std::time::Instant;
@@ -40,17 +41,20 @@ use colored::Colorize;
     after_help = "EXAMPLES:\n  \
         rust-script scripts/dev/daemon-readiness.rs ~/uffs_data\n  \
         rust-script scripts/dev/daemon-readiness.rs /path/to/C_mft.iocp\n  \
-        rust-script scripts/dev/daemon-readiness.rs ~/uffs_data --pattern '*.dll'"
+        rust-script scripts/dev/daemon-readiness.rs ~/uffs_data --pattern '*.dll'\n  \
+        rust-script scripts/dev/daemon-readiness.rs                  # Windows: auto-discover NTFS drives"
 )]
 struct Cli {
     /// Path to an MFT file or a data directory containing drive_* subdirs.
     /// Auto-detected: if it's a file → --mft-file, if directory → --data-dir.
+    /// On Windows, omit to auto-discover live NTFS drives.
     #[arg(value_name = "PATH")]
-    path: String,
+    path: Option<String>,
 
-    /// Path to the uffs binary. Default: target/release/uffs
-    #[arg(long, default_value = "target/release/uffs")]
-    binary: String,
+    /// Path to the uffs binary.
+    /// Default: ~/bin/uffs first, then target/release/uffs
+    #[arg(long)]
+    binary: Option<String>,
 
     /// Search pattern to test with.
     #[arg(long, default_value = "*.rs")]
@@ -77,9 +81,9 @@ fn detect_data_source(path: &str) -> Result<(&'static str, String)> {
 
 struct Runner {
     binary: String,
-    /// `"--data-dir"` or `"--mft-file"`.
-    source_flag: &'static str,
-    /// The path value for the flag.
+    /// `"--data-dir"` or `"--mft-file"`, or `None` for Windows live drives.
+    source_flag: Option<&'static str>,
+    /// The path value for the flag (empty when using live drives).
     source_path: String,
     pattern: String,
     passed: u32,
@@ -88,8 +92,16 @@ struct Runner {
 }
 
 impl Runner {
-    fn new(binary: String, source_flag: &'static str, source_path: String, pattern: String) -> Self {
+    fn new(binary: String, source_flag: Option<&'static str>, source_path: String, pattern: String) -> Self {
         Self { binary, source_flag, source_path, pattern, passed: 0, failed: 0, timings: Vec::new() }
+    }
+
+    /// Build the source args (e.g. ["--data-dir", "/path"]) or empty for live drives.
+    fn source_args(&self) -> Vec<&str> {
+        match self.source_flag {
+            Some(flag) => vec![flag, &self.source_path],
+            None => vec![],
+        }
     }
 
     /// Run uffs and return (stdout, stderr, success).
@@ -164,14 +176,17 @@ impl Runner {
     }
 
     fn start_daemon(&self) -> Result<String> {
-        let sp = self.source_path.clone();
-        self.run_ok(&["daemon", "start", self.source_flag, &sp])
+        let mut args: Vec<&str> = vec!["daemon", "start"];
+        args.extend(self.source_args());
+        self.run_ok(&args)
     }
 
     fn search(&self, limit: u32) -> Result<usize> {
-        let sp = self.source_path.clone();
         let lim = limit.to_string();
-        let out = self.run_ok(&[&self.pattern, self.source_flag, &sp, "--limit", &lim])?;
+        let mut args: Vec<&str> = vec![&self.pattern];
+        args.extend(self.source_args());
+        args.extend(["--limit", &lim]);
+        let out = self.run_ok(&args)?;
         Ok(out.lines().count())
     }
 }
@@ -183,7 +198,7 @@ fn scenario_a(r: &mut Runner) {
 
     r.step("A1  Kill stale daemon", |r| { r.ensure_stopped(); Ok(String::new()) });
     r.step("A2  Verify not running", |r| { r.assert_not_running()?; Ok(String::new()) });
-    r.step("A3  Start with --data-dir", |r| { r.start_daemon()?; Ok(String::new()) });
+    r.step("A3  Start daemon", |r| { r.start_daemon()?; Ok(String::new()) });
     r.step("A4  Verify Ready + drives", |r| r.assert_ready());
     r.step("A5  Search returns results", |r| {
         let n = r.search(100)?;
@@ -380,16 +395,56 @@ fn scenario_j(r: &mut Runner) {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+fn default_binary() -> String {
+    // Check ~/bin/ first (deployed), then target/release/ (dev build)
+    let (home_var, bin_name) = if cfg!(windows) {
+        ("USERPROFILE", "uffs.exe")
+    } else {
+        ("HOME", "uffs")
+    };
+    if let Ok(home) = std::env::var(home_var) {
+        let deployed = std::path::PathBuf::from(&home).join("bin").join(bin_name);
+        if deployed.exists() {
+            return deployed.to_string_lossy().into_owned();
+        }
+    }
+    let target = std::path::Path::new("target").join("release").join(bin_name);
+    target.to_string_lossy().into_owned()
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let (source_flag, source_path) = detect_data_source(&cli.path)?;
+    let binary = cli.binary.unwrap_or_else(|| default_binary());
+
+    let (source_flag, source_path): (Option<&'static str>, String) = match &cli.path {
+        Some(path) => {
+            let (flag, val) = detect_data_source(path)?;
+            (Some(flag), val)
+        }
+        None => {
+            // No path given — Windows live drive mode.
+            if !cfg!(windows) {
+                bail!(
+                    "PATH is required on non-Windows platforms.\n\n\
+                     On macOS/Linux, provide a data directory or MFT file:\n  \
+                     rust-script scripts/dev/daemon-readiness.rs ~/uffs_data\n  \
+                     rust-script scripts/dev/daemon-readiness.rs /path/to/C_mft.iocp\n\n\
+                     On Windows, omit PATH to auto-discover live NTFS drives."
+                );
+            }
+            (None, String::new())
+        }
+    };
 
     println!("{}", "═══ UFFS Daemon Readiness Verification ═══".bold());
-    println!("  binary:    {}", cli.binary);
-    println!("  source:    {} {}", source_flag, source_path);
+    println!("  binary:    {}", binary);
+    match source_flag {
+        Some(flag) => println!("  source:    {} {}", flag, source_path),
+        None => println!("  source:    live NTFS drives (auto-discover)"),
+    }
     println!("  pattern:   {}", cli.pattern);
 
-    let mut r = Runner::new(cli.binary, source_flag, source_path, cli.pattern);
+    let mut r = Runner::new(binary, source_flag, source_path, cli.pattern);
 
     scenario_a(&mut r);
     scenario_b(&mut r);

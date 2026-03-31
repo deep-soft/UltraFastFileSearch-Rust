@@ -124,14 +124,20 @@ A comprehensive test script exercises all daemon lifecycle combinations
 (10 scenarios, 68 steps):
 
 ```bash
-# With a data directory
+# macOS/Linux: with a data directory
 rust-script scripts/dev/daemon-readiness.rs ~/uffs_data
 
-# With a single MFT file
+# macOS/Linux: with a single MFT file
 rust-script scripts/dev/daemon-readiness.rs /path/to/C_mft.iocp
 
-# With custom search pattern
+# macOS/Linux: with custom search pattern
 rust-script scripts/dev/daemon-readiness.rs ~/uffs_data --pattern "*.dll"
+
+# Windows: auto-discovers live NTFS drives (no path needed)
+rust-script scripts/dev/daemon-readiness.rs
+
+# Windows: with custom pattern
+rust-script scripts/dev/daemon-readiness.rs --pattern "*.exe"
 ```
 
 Scenarios tested: clean lifecycle, idempotent ops on stopped daemon, double
