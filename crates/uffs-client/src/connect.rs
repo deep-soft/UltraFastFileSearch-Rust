@@ -200,6 +200,7 @@ impl UffsClient {
         let json = serde_json::to_string(&req)
             .map_err(|ser_err| crate::error::ClientError::Protocol(ser_err.to_string()))?;
 
+        tracing::info!(id, method, "send_request: writing request");
         self.writer
             .write_all(json.as_bytes())
             .await
@@ -212,6 +213,7 @@ impl UffsClient {
             .flush()
             .await
             .map_err(|io_err| crate::error::ClientError::Io(io_err.to_string()))?;
+        tracing::info!(id, method, "send_request: write+flush done, reading response");
 
         // Read lines until we get a response with matching id.
         // Notifications (no id) are routed to the notification channel.
@@ -222,7 +224,10 @@ impl UffsClient {
                 self.reader.read_line(&mut line),
             )
             .await
-            .map_err(|_timeout_err| crate::error::ClientError::Timeout)?
+            .map_err(|_timeout_err| {
+                tracing::info!(id, method, "send_request: read timed out after 30s");
+                crate::error::ClientError::Timeout
+            })?
             .map_err(|io_err| crate::error::ClientError::Io(io_err.to_string()))?;
 
             if read_result == 0 {
@@ -349,17 +354,20 @@ impl UffsClient {
     ) -> Result<(), crate::error::ClientError> {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut delay_ms = 250_u64;
+        let mut poll_count = 0_u32;
 
         loop {
+            poll_count += 1;
+            tracing::info!(poll_count, delay_ms, "await_ready: sending status poll");
             match self.status().await {
                 Ok(resp) => {
+                    tracing::info!(poll_count, status = ?resp.status, "await_ready: got status");
                     if resp.status == crate::protocol::DaemonStatus::Ready {
                         return Ok(());
                     }
-                    tracing::debug!(status = ?resp.status, "Daemon still loading…");
                 }
                 Err(status_err) => {
-                    tracing::debug!(error = %status_err, "Status poll failed");
+                    tracing::info!(poll_count, error = %status_err, "await_ready: status poll failed");
                 }
             }
 
@@ -539,9 +547,10 @@ impl UffsClient {
         let std_stream = StdUnixStream::connect(&sock_path)
             .map_err(|io_err| crate::error::ClientError::ConnectionFailed(io_err.to_string()))?;
 
-        std_stream
-            .set_read_timeout(Some(core::time::Duration::from_secs(30)))
-            .map_err(|io_err| crate::error::ClientError::ConnectionFailed(io_err.to_string()))?;
+        // No read timeout — the bridge thread blocks indefinitely on
+        // reads and the async layer (send_request) handles its own
+        // 30-second per-read timeout.  A std-level read_timeout would
+        // kill the bridge thread and poison all subsequent RPCs.
 
         let std_read = std_stream
             .try_clone()
@@ -554,24 +563,31 @@ impl UffsClient {
         let (mut bridge_read, async_write) = tokio::io::duplex(65536);
 
         // Background thread: std socket → async reader
+        //
+        // Uses a single `block_on` wrapping the entire loop to avoid
+        // per-iteration `block_on` deadlocks when the tokio runtime is
+        // already running on the main thread.
         std::thread::spawn(move || {
-            let mut reader = std::io::BufReader::new(std_read);
-            let mut buf = [0_u8; 8192];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        use tokio::io::AsyncWriteExt;
-                        let rt = tokio::runtime::Handle::try_current();
-                        if let Ok(handle) = rt {
-                            let bytes = buf[..n].to_vec();
-                            let _ = handle.block_on(async { bridge_write.write_all(&bytes).await });
-                        } else {
-                            break;
-                        }
+            let rt = match tokio::runtime::Handle::try_current() {
+                Ok(h) => h,
+                Err(_) => return,
+            };
+            rt.block_on(async move {
+                use tokio::io::AsyncWriteExt;
+                let mut reader = std::io::BufReader::new(std_read);
+                let mut buf = [0_u8; 8192];
+                loop {
+                    // Blocking read from the std socket — runs on this
+                    // dedicated thread so it doesn't stall tokio.
+                    let n = match reader.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    if bridge_write.write_all(&buf[..n]).await.is_err() {
+                        break;
                     }
                 }
-            }
+            });
         });
 
         // Background thread: async writer → std socket
