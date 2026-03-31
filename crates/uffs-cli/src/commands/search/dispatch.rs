@@ -1,4 +1,8 @@
 //! Search dispatch routing and configuration building.
+//!
+//! All search paths converge on a single unified compact-index pipeline.
+//! The only escape hatch is `--index` (parquet), which loads a pre-built
+//! `DataFrame` and converts it to `DisplayRow`s.
 
 extern crate alloc;
 
@@ -9,90 +13,32 @@ use tracing::info;
 use uffs_core::output::OutputConfig;
 use uffs_core::pattern::ParsedPattern;
 
-use super::super::output::{can_write_native_results, write_native_results};
-use super::super::raw_io::{QueryFilters, load_and_filter_data, load_and_filter_from_mft_file};
-use super::streaming_io::build_record_filter;
-use super::util::{compute_output_targets, is_full_scan_query};
-use super::{SearchConfig, SearchDispatchResult};
+use super::super::output::write_native_results;
+use super::super::raw_io::QueryFilters;
+use super::SearchConfig;
+use super::util::compute_output_targets;
 
-/// Dispatch search to the appropriate execution path.
+/// Dispatch search — unified compact-index pipeline.
 ///
-/// Returns `StreamingComplete` if output was written directly (early return),
-/// or `DataFrame` if results need standard output processing.
-///
-/// The `--pipeline` flag controls which execution path is used:
-/// - `legacy`  → current streaming + compact paths (stable, default)
-/// - `unified` → new unified compact-only path (under development)
-pub(super) async fn dispatch_search(config: &SearchConfig<'_>) -> Result<SearchDispatchResult> {
-    // ── Pipeline fork ──────────────────────────────────────────────
-    if config.pipeline == "unified" {
-        info!(pipeline = "unified", "🔀 Using UNIFIED search pipeline");
-        return dispatch_unified(config).await;
-    }
-
-    // ── [LEGACY_PIPELINE] — all code below is the legacy dispatch ──
-    dispatch_legacy(config).await
-}
-
-/// **`[LEGACY_PIPELINE]`** Legacy dispatch — streaming + compact + `DataFrame`
-/// paths.
-///
-/// This is the stable, production search pipeline.  All code reachable from
-/// this function is tagged `[LEGACY_PIPELINE]` for easy identification and
-/// eventual removal once the unified pipeline reaches parity.
-async fn dispatch_legacy(config: &SearchConfig<'_>) -> Result<SearchDispatchResult> {
-    // [LEGACY_PIPELINE] Multi-file streaming path (cross-platform).
-    if config.mft_file.len() > 1
-        && !config.benchmark
-        && can_write_native_results(config.format, &config.output_config)
-    {
-        run_multi_file_dispatch(config)?;
-        return Ok(SearchDispatchResult::StreamingComplete);
-    }
-
-    // [LEGACY_PIPELINE] Single-file streaming path (cross-platform).
-    if let Some(mft_path) = config.mft_file.first() {
-        if !config.benchmark && can_write_native_results(config.format, &config.output_config) {
-            run_single_file_dispatch(config, mft_path)?;
-            return Ok(SearchDispatchResult::StreamingComplete);
-        }
-    }
-
-    // [LEGACY_PIPELINE] Windows LIVE paths.
-    #[cfg(windows)]
-    {
-        if let Some(result) = super::live::dispatch_windows_live(config).await? {
-            return Ok(result);
-        }
-    }
-
-    // [LEGACY_PIPELINE] Fallback: native compact or legacy DataFrame path.
-    run_dataframe_search(config).await
-}
-
-/// Unified pipeline dispatch — compact-only path.
-///
-/// Replaces all legacy paths (streaming, `DataFrame`, native compact)
-/// with a single compact-index-based flow:
+/// Returns `Vec<DisplayRow>` for all paths. The only escape hatch is
+/// `--index` (parquet), which is handled inline.
 ///
 /// 1. Load MFT data → `MftIndex` → `DriveCompactIndex`
 /// 2. Search via `MultiDriveBackend` (handles pattern, sort, limit)
 /// 3. Apply `SearchFilters` (size, date, attr, extension, exclude)
-/// 4. Return `NativeRows` for output
-async fn dispatch_unified(config: &SearchConfig<'_>) -> Result<SearchDispatchResult> {
+/// 4. Return `Vec<DisplayRow>` for output
+pub(super) fn dispatch_search(
+    config: &SearchConfig<'_>,
+) -> Result<Vec<uffs_core::search::backend::DisplayRow>> {
     use uffs_core::search::backend::{FilterMode, MultiDriveBackend};
     use uffs_core::search::filters::SearchFilters;
 
-    // ── Escape hatch: explicit `DataFrame` requests fall through to legacy ──
-    if config.query_mode == "dataframe" || config.index.is_some() {
-        info!(
-            pipeline = "unified",
-            "⤵ Falling back to legacy for DataFrame/index path"
-        );
-        return dispatch_legacy(config).await;
+    // ── Escape hatch: --index (parquet) ──────────────────────────────
+    if let Some(index_path) = &config.index {
+        return load_parquet_search(index_path, config);
     }
 
-    // ── Build search filters (the 14 that were missing in v0.4.30) ───
+    // ── Build search filters ─────────────────────────────────────────
     let search_filters = SearchFilters::from_params(
         config.filters.hide_system,
         config.filters.min_size,
@@ -145,10 +91,27 @@ async fn dispatch_unified(config: &SearchConfig<'_>) -> Result<SearchDispatchRes
         rows = result.rows.len(),
         duration_ms = result.duration.as_millis(),
         scanned = result.records_scanned,
-        "🔍 Unified search complete"
+        "🔍 Search complete"
     );
 
-    Ok(SearchDispatchResult::NativeRows(result.rows))
+    Ok(result.rows)
+}
+
+/// Load a parquet index file, apply query filters, convert to `DisplayRow`s.
+fn load_parquet_search(
+    index_path: &std::path::Path,
+    config: &SearchConfig<'_>,
+) -> Result<Vec<uffs_core::search::backend::DisplayRow>> {
+    info!(index = %index_path.display(), "📦 Loading parquet index");
+    let df = uffs_mft::MftReader::load_parquet(index_path)
+        .with_context(|| format!("Failed to load index: {}", index_path.display()))?;
+
+    let filtered = super::super::raw_io::execute_query(df, &config.filters)?;
+    let rows = uffs_core::search::backend::dataframe_to_display_rows(&filtered)
+        .map_err(|err| anyhow::anyhow!("DataFrame→DisplayRow conversion failed: {err}"))?;
+
+    info!(rows = rows.len(), "📦 Parquet search complete");
+    Ok(rows)
 }
 
 /// Configure sort on `MultiDriveBackend` from `SearchConfig`.
@@ -273,194 +236,6 @@ fn resolve_all_ntfs_drives() -> Result<Vec<char>> {
     Ok(all)
 }
 
-/// **`[LEGACY_PIPELINE]`** Dispatch multi-file streaming search.
-fn run_multi_file_dispatch(config: &SearchConfig<'_>) -> Result<()> {
-    let drive_letters: Vec<char> = if let Some(drives) = &config.multi_drives {
-        if drives.len() != config.mft_file.len() {
-            bail!(
-                "Number of --drives ({}) must match number of --mft-file ({}).",
-                drives.len(),
-                config.mft_file.len()
-            );
-        }
-        drives.clone()
-    } else {
-        config
-            .mft_file
-            .iter()
-            .map(|path| super::util::infer_drive_from_filename(path))
-            .collect()
-    };
-
-    info!(
-        files = config.mft_file.len(),
-        drives = ?drive_letters,
-        "📂 MULTI-FILE STREAMING (cross-platform multi-drive)"
-    );
-
-    let compiled_pattern = if config.is_full_scan {
-        None
-    } else {
-        Some(uffs_core::compile_parsed_pattern(config.filters.parsed)?)
-    };
-
-    let rec_filter = build_record_filter(
-        &config.filters,
-        config.attr_filter,
-        config.newer,
-        config.older,
-        config.newer_created,
-        config.older_created,
-        config.newer_accessed,
-        config.older_accessed,
-        config.exclude,
-        config.sort,
-        config.sort_desc,
-    );
-
-    let stream_config = super::mft_file::MultiFileStreamConfig {
-        mft_files: &config.mft_file,
-        drive_letters,
-        compiled_pattern,
-        format: config.format,
-        out: config.out,
-        output_config: &config.output_config,
-        output_targets: &config.output_targets,
-        pattern: config.pattern,
-        case_sensitive: config.effective_case_sensitive,
-        is_path_pattern: config.filters.parsed.is_path_pattern() && !config.name_only,
-        rec_filter,
-        debug_tree: config.debug_tree,
-        chaos_seed: config.chaos_seed,
-        reserved_allocated: config.reserved_allocated,
-    };
-
-    let t_output = std::time::Instant::now();
-    let total_rows = super::mft_file::run_multi_file_streaming(&stream_config)?;
-    let output_ms = t_output.elapsed().as_millis();
-    info!(output_ms, total_rows, "📊 multi-file streaming complete");
-    Ok(())
-}
-
-/// **`[LEGACY_PIPELINE]`** Dispatch single-file streaming search.
-fn run_single_file_dispatch(config: &SearchConfig<'_>, mft_path: &std::path::Path) -> Result<()> {
-    let stream_config = super::single_file::SingleFileStreamConfig {
-        mft_path,
-        pattern: config.pattern,
-        single_drive: config.single_drive,
-        effective_case_sensitive: config.effective_case_sensitive,
-        filters: &config.filters,
-        attr_filter: config.attr_filter,
-        newer: config.newer,
-        older: config.older,
-        newer_created: config.newer_created,
-        older_created: config.older_created,
-        newer_accessed: config.older_accessed,
-        older_accessed: config.older_accessed,
-        exclude: config.exclude,
-        sort: config.sort,
-        sort_desc: config.sort_desc,
-        is_full_scan: config.is_full_scan,
-        name_only: config.name_only,
-        format: config.format,
-        out: config.out,
-        output_config: &config.output_config,
-        output_targets: &config.output_targets,
-        profile: config.profile,
-        debug_tree: config.debug_tree,
-        chaos_seed: config.chaos_seed,
-        reserved_allocated: config.reserved_allocated,
-        start_time: config.start_time,
-    };
-    super::single_file::run_single_file_streaming(&stream_config)
-}
-
-/// **`[LEGACY_PIPELINE]`** Execute search fallback path.
-///
-/// Returns `NativeRows` for multi-drive (compact index search) or
-/// `DataFrame` for legacy paths (parquet index, single-drive, mft-file).
-async fn run_dataframe_search(config: &SearchConfig<'_>) -> Result<SearchDispatchResult> {
-    // For --mft-file: load and query via existing helper (DataFrame path).
-    if let Some(mft_path) = config.mft_file.first() {
-        let df = load_and_filter_from_mft_file(
-            mft_path,
-            config.single_drive,
-            &config.filters,
-            config.output_config.needs_path_column(),
-            config.profile,
-            config.debug_tree,
-            config.chaos_seed,
-        )?;
-        return Ok(SearchDispatchResult::DataFrame(df));
-    }
-
-    // For multi-drive: use native compact index search (no DataFrame).
-    #[cfg(windows)]
-    if let Some(ref drives) = config.multi_drives {
-        let rows = super::multi_drive::search_multi_drive_filtered(
-            drives,
-            &config.filters,
-            config.output_config.needs_path_column(),
-            config.no_bitmap,
-            config.no_cache,
-        )
-        .await?;
-        return Ok(SearchDispatchResult::NativeRows(rows));
-    }
-
-    // For --index (parquet) or explicit single-drive: legacy DataFrame path.
-    if config.index.is_some()
-        || config.single_drive.is_some()
-        || config.filters.parsed.drive().is_some()
-    {
-        let df = load_and_filter_data(
-            config.index.clone(),
-            None, // multi_drives already handled above
-            config.single_drive,
-            &config.filters,
-            config.output_config.needs_path_column(),
-            config.profile,
-            config.no_bitmap,
-        )
-        .await?;
-        return Ok(SearchDispatchResult::DataFrame(df));
-    }
-
-    // Auto-detect: no drive, no index → find all NTFS drives and search natively.
-    #[cfg(windows)]
-    {
-        if !uffs_mft::is_elevated() {
-            bail!(
-                "Administrator privileges required.\n\n\
-                 UFFS reads the NTFS Master File Table directly, which requires elevated access.\n\n\
-                 Solutions:\n\
-                 1. Run PowerShell/Terminal as Administrator\n\
-                 2. Use a pre-built index: uffs search --index <file.parquet> \"*.txt\""
-            );
-        }
-        let all_drives = uffs_mft::detect_ntfs_drives();
-        if all_drives.is_empty() {
-            bail!("No NTFS drives found on this system");
-        }
-        info!(drives = ?all_drives, count = all_drives.len(), "No drive specified — searching all NTFS drives");
-        let rows = super::multi_drive::search_multi_drive_filtered(
-            &all_drives,
-            &config.filters,
-            config.output_config.needs_path_column(),
-            config.no_bitmap,
-            config.no_cache,
-        )
-        .await?;
-        return Ok(SearchDispatchResult::NativeRows(rows));
-    }
-    #[cfg(not(windows))]
-    {
-        bail!(
-            "No drive specified. Use --drive, --drives, --index, or include drive in pattern (e.g., c:/pro*)"
-        )
-    }
-}
-
 /// Build search configuration from CLI parameters.
 #[expect(clippy::too_many_arguments, reason = "mirrors CLI parameters")]
 #[expect(clippy::fn_params_excessive_bools, reason = "mirrors CLI parameters")]
@@ -474,9 +249,7 @@ pub(super) fn build_search_config<'a>(
     dirs_only: bool,
     hide_system: bool,
     profile: bool,
-    debug_tree: bool,
     benchmark: bool,
-    no_bitmap: bool,
     no_cache: bool,
     min_size: Option<u64>,
     max_size: Option<u64>,
@@ -495,7 +268,6 @@ pub(super) fn build_search_config<'a>(
     older_accessed: Option<&'a str>,
     exclude: Option<&'a str>,
     word: bool,
-    name_only: bool,
     sort: Option<&'a str>,
     sort_desc: bool,
     ext_filter: Option<&'a str>,
@@ -506,11 +278,7 @@ pub(super) fn build_search_config<'a>(
     header: bool,
     pos: &'a str,
     neg: &'a str,
-    query_mode: &'a str,
-    pipeline: &'a str,
     tz_offset: Option<i32>,
-    chaos_seed: Option<u64>,
-    reserved_allocated: Option<u64>,
     start_time: std::time::Instant,
 ) -> Result<SearchConfig<'a>> {
     // Smart case: if enabled and pattern has any uppercase letter,
@@ -557,7 +325,6 @@ pub(super) fn build_search_config<'a>(
 
     let output_targets =
         compute_output_targets(single_drive, multi_drives.as_ref(), filters.parsed.drive());
-    let is_full_scan = is_full_scan_query(&filters);
 
     Ok(SearchConfig {
         pattern,
@@ -568,9 +335,7 @@ pub(super) fn build_search_config<'a>(
         filters,
         effective_case_sensitive,
         profile,
-        debug_tree,
         benchmark,
-        no_bitmap,
         no_cache,
         attr_filter,
         newer,
@@ -586,12 +351,6 @@ pub(super) fn build_search_config<'a>(
         out,
         output_config,
         output_targets,
-        is_full_scan,
-        name_only,
-        query_mode,
-        pipeline,
-        chaos_seed,
-        reserved_allocated,
         start_time,
     })
 }
@@ -600,7 +359,7 @@ pub(super) fn build_search_config<'a>(
 ///
 /// For json/table formats, a small `DataFrame` is created from the result rows
 /// only (not the full MFT) to reuse existing Polars serialization.
-pub(super) fn finalize_native_output(
+pub(super) fn finalize_output(
     rows: &[uffs_core::search::backend::DisplayRow],
     config: &SearchConfig<'_>,
 ) -> Result<()> {
@@ -636,7 +395,7 @@ pub(super) fn finalize_native_output(
         print_profile_stats_native(rows.len(), output_ms, elapsed);
     }
 
-    info!(count = rows.len(), "Search complete (native)");
+    info!(count = rows.len(), "Search complete");
     Ok(())
 }
 

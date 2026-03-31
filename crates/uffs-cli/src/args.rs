@@ -294,16 +294,6 @@ pub struct Cli {
     #[arg(long, default_value = "auto", verbatim_doc_comment)]
     pub query_mode: String,
 
-    /// Search pipeline: unified or legacy
-    ///
-    /// - unified: New unified compact pipeline (default)
-    /// - legacy:  Previous streaming+compact pipeline (fallback)
-    ///
-    /// Use `--pipeline legacy` to fall back to the previous search path.
-    /// Both pipelines coexist — switch at any time.
-    #[arg(long, default_value = "unified", verbatim_doc_comment)]
-    pub pipeline: String,
-
     /// Override timezone offset for timestamp display (hours from UTC).
     ///
     /// By default, timestamps are displayed in the current local timezone.

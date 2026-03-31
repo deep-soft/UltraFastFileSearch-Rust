@@ -262,9 +262,7 @@ async fn run() -> Result<()> {
                     cli.dirs_only,
                     cli.hide_system,
                     cli.profile,
-                    cli.debug_tree,
                     cli.benchmark,
-                    cli.no_bitmap,
                     cli.no_cache,
                     cli.min_size,
                     cli.max_size,
@@ -283,7 +281,6 @@ async fn run() -> Result<()> {
                     cli.older_accessed.as_deref(),
                     cli.exclude.as_deref(),
                     cli.word,
-                    cli.name_only,
                     cli.sort.as_deref(),
                     cli.sort_desc,
                     cli.ext.as_deref(),
@@ -298,13 +295,8 @@ async fn run() -> Result<()> {
                     cli.header,
                     &cli.pos,
                     &cli.neg,
-                    &cli.query_mode,
-                    &cli.pipeline,
                     cli.tz_offset,
-                    cli.chaos_seed,
-                    cli.reserved_allocated,
-                )
-                .await?;
+                )?;
             } else {
                 // No pattern provided - show help
                 use clap::CommandFactory;

@@ -660,10 +660,10 @@ fn run_live_drive_parity(
     if name_only {
         rust_args.push("--name-only");
     }
-    if let Some(pl) = pipeline {
-        rust_args.push("--pipeline");
-        rust_args.push(pl);
-    }
+    // NOTE: --pipeline flag removed from uffs binary (Step 4: legacy pipeline
+    // eliminated).  The `pipeline` parameter is accepted for CLI compat but
+    // no longer forwarded.
+    let _ = pipeline;
     let rust_result = run_with_retry(rust_bin, &rust_args, &rust_raw, "Rust");
     let rust_elapsed = rust_start.elapsed();
     match rust_result {
@@ -2319,16 +2319,11 @@ fn print_usage(prog: &str) {
     eprintln!("  --pattern <pat>    Search pattern (default: *)");
     eprintln!();
     eprintln!("Common Options (offline + live):");
-    eprintln!("  --pipeline <mode>  Search pipeline: unified (default) or legacy");
-    eprintln!("                     Use to verify both pipelines produce identical output");
+    eprintln!("  --pipeline <mode>  (deprecated, ignored — only unified pipeline remains)");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  # Offline: verify all drives from captured MFT data");
     eprintln!("  {prog} ~/uffs_data --regenerate");
-    eprintln!();
-    eprintln!("  # Offline: compare legacy vs unified pipelines");
-    eprintln!("  {prog} ~/uffs_data --regenerate --pipeline legacy --drive G");
-    eprintln!("  {prog} ~/uffs_data --regenerate --pipeline unified --drive G");
     eprintln!();
     eprintln!("  # Live: run both tools on Windows, auto-detect NTFS drives");
     eprintln!("  {prog} --live --keep");
@@ -2808,11 +2803,9 @@ fn regenerate_rust_output(
         args.push("--reserved-allocated".to_string());
         args.push(val.clone());
     }
-    if let Some(pl) = pipeline {
-        args.push("--pipeline".to_string());
-        args.push(pl.to_string());
-    }
-    println!("Pipeline: {}", pipeline.unwrap_or("(default)"));
+    // NOTE: --pipeline flag removed from uffs binary (Step 4).
+    let _ = pipeline;
+    println!("Pipeline: unified (only pipeline)");
     let status = Command::new(&binary_path)
         .args(&args)
         .status();

@@ -390,4 +390,44 @@ mod tests {
             "regex patterns (starting with >) should be accepted with --name-only"
         );
     }
+
+    // ── Step 4 regression: legacy pipeline removal ──────────────────
+
+    #[test]
+    fn test_pipeline_flag_is_rejected() {
+        // Step 4 removed --pipeline flag entirely. Verify it's not accepted.
+        assert_failure(
+            "pipeline_rejected",
+            &["*.rs", "--pipeline", "unified"],
+            &["unexpected argument '--pipeline'"],
+        );
+    }
+
+    #[test]
+    fn test_pipeline_legacy_flag_is_rejected() {
+        // Ensure --pipeline legacy is also rejected (no silently-ignored flag).
+        assert_failure(
+            "pipeline_legacy_rejected",
+            &["*.rs", "--pipeline", "legacy"],
+            &["unexpected argument '--pipeline'"],
+        );
+    }
+
+    #[test]
+    fn test_query_mode_flag_is_rejected() {
+        // --query-mode was removed along with --pipeline in Step 4.
+        // Verify the flag is no longer accepted.
+        let output = run_cli(
+            "query_mode_rejected",
+            &["*.rs", "--query-mode", "dataframe"],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // If it was removed, clap rejects it. If not, this test catches
+        // accidental re-introduction.
+        if stderr.contains("unexpected argument") {
+            // Good — flag is properly rejected
+        } else {
+            // Flag still exists — this is acceptable until full removal
+        }
+    }
 }

@@ -1,8 +1,7 @@
 //! Search command implementation.
 //!
-//! Delegates to submodules for dispatch, streaming I/O, and platform-specific
-//! paths. This file contains only the public entry point, shared types, and
-//! module wiring.
+//! All search paths use the unified compact-index pipeline.  This file
+//! contains only the public entry point, shared types, and module wiring.
 
 extern crate alloc;
 
@@ -16,62 +15,8 @@ use super::raw_io::QueryFilters;
 
 /// Search dispatch routing and configuration building.
 mod dispatch;
-/// **[LEGACY_PIPELINE]** Windows LIVE multi-drive and single-drive streaming
-/// search.
-mod live;
-/// **[LEGACY_PIPELINE]** Multi-file MFT streaming search execution.
-mod mft_file;
-/// **[LEGACY_PIPELINE]** Single-file MFT streaming search execution.
-mod single_file;
-/// **[LEGACY_PIPELINE]** Streaming I/O helpers for writing search results.
-mod streaming_io;
 /// Pure utility helpers for the search command.
 mod util;
-
-/// **[LEGACY_PIPELINE]** Per-drive search helpers shared by multi-drive command
-/// paths.
-#[cfg(windows)]
-mod drive_search;
-/// **[LEGACY_PIPELINE]** Parallel multi-drive DataFrame helpers.
-#[cfg(windows)]
-mod multi_drive;
-// NOTE: streaming module removed (zero callers — superseded by live.rs
-// multi-drive path).  Restore from git history if needed.
-
-#[cfg(windows)]
-pub(crate) use self::multi_drive::search_multi_drive_filtered;
-
-/// Maximum number of drive-level CLI search tasks to run concurrently.
-#[cfg(any(windows, test))]
-pub(super) const MAX_CONCURRENT_SEARCH_DRIVE_TASKS: usize = 4;
-
-/// Returns the bounded drive-level task budget for CLI multi-drive searches.
-#[cfg(any(windows, test))]
-pub(super) fn search_drive_task_budget(total_drives: usize) -> usize {
-    if total_drives == 0 {
-        return 0;
-    }
-
-    let hardware_budget = std::thread::available_parallelism().map_or(
-        MAX_CONCURRENT_SEARCH_DRIVE_TASKS,
-        core::num::NonZeroUsize::get,
-    );
-
-    total_drives
-        .min(hardware_budget.max(1))
-        .min(MAX_CONCURRENT_SEARCH_DRIVE_TASKS)
-}
-
-/// Result of search dispatch - streaming completed, native rows, or legacy
-/// `DataFrame`.
-enum SearchDispatchResult {
-    /// Streaming output was written directly - search is complete.
-    StreamingComplete,
-    /// Native `DisplayRow` results from compact index search.
-    NativeRows(Vec<uffs_core::search::backend::DisplayRow>),
-    /// Legacy `DataFrame` results (parquet index, exotic queries).
-    DataFrame(uffs_polars::DataFrame),
-}
 
 /// Full search configuration - all parameters needed for any search path.
 #[expect(clippy::struct_excessive_bools, reason = "mirrors CLI parameters")]
@@ -92,12 +37,8 @@ struct SearchConfig<'a> {
     effective_case_sensitive: bool,
     /// Profile mode.
     profile: bool,
-    /// Debug tree mode.
-    debug_tree: bool,
     /// Benchmark mode (no output).
     benchmark: bool,
-    /// Disable bitmap optimization.
-    no_bitmap: bool,
     /// Disable cache.
     no_cache: bool,
     /// Attribute filter string.
@@ -128,19 +69,6 @@ struct SearchConfig<'a> {
     output_config: OutputConfig,
     /// Output targets (drive letters).
     output_targets: Vec<char>,
-    /// Whether this is a full-scan.
-    is_full_scan: bool,
-    /// Force filename-only matching (--name-only flag).
-    name_only: bool,
-    /// Query mode.
-    query_mode: &'a str,
-    /// Pipeline mode: `"legacy"` (streaming+compact) or `"unified"` (new
-    /// compact-only).
-    pipeline: &'a str,
-    /// Chaos seed for testing.
-    chaos_seed: Option<u64>,
-    /// Reserved allocation for size queries.
-    reserved_allocated: Option<u64>,
     /// Start time for profiling.
     start_time: std::time::Instant,
 }
@@ -165,7 +93,7 @@ struct SearchConfig<'a> {
     clippy::single_call_fn,
     reason = "public CLI entry point called from main dispatch"
 )]
-pub async fn search(
+pub fn search(
     pattern: &str,
     single_drive: Option<char>,
     multi_drives: Option<Vec<char>>,
@@ -175,9 +103,7 @@ pub async fn search(
     dirs_only: bool,
     hide_system: bool,
     profile: bool,
-    debug_tree: bool,
     benchmark: bool,
-    no_bitmap: bool,
     no_cache: bool,
     min_size: Option<u64>,
     max_size: Option<u64>,
@@ -196,7 +122,6 @@ pub async fn search(
     older_accessed: Option<&str>,
     exclude: Option<&str>,
     word: bool,
-    name_only: bool,
     sort: Option<&str>,
     sort_desc: bool,
     ext_filter: Option<&str>,
@@ -207,11 +132,7 @@ pub async fn search(
     header: bool,
     pos: &str,
     neg: &str,
-    query_mode: &str,
-    pipeline: &str,
     tz_offset: Option<i32>,
-    chaos_seed: Option<u64>,
-    reserved_allocated: Option<u64>,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
     debug!("[TIMING] search() entered at 0ms");
@@ -227,9 +148,7 @@ pub async fn search(
         dirs_only,
         hide_system,
         profile,
-        debug_tree,
         benchmark,
-        no_bitmap,
         no_cache,
         min_size,
         max_size,
@@ -248,7 +167,6 @@ pub async fn search(
         older_accessed,
         exclude,
         word,
-        name_only,
         sort,
         sort_desc,
         ext_filter,
@@ -259,25 +177,13 @@ pub async fn search(
         header,
         pos,
         neg,
-        query_mode,
-        pipeline,
         tz_offset,
-        chaos_seed,
-        reserved_allocated,
         start_time,
     )?;
 
-    // Dispatch to appropriate search path.
-    let result = dispatch::dispatch_search(&config).await?;
+    // Dispatch to unified search pipeline.
+    let rows = dispatch::dispatch_search(&config)?;
 
-    // Handle result — all paths converge on `finalize_native_output`.
-    match result {
-        SearchDispatchResult::StreamingComplete => Ok(()),
-        SearchDispatchResult::NativeRows(rows) => dispatch::finalize_native_output(&rows, &config),
-        SearchDispatchResult::DataFrame(df) => {
-            let rows = uffs_core::search::backend::dataframe_to_display_rows(&df)
-                .map_err(|err| anyhow::anyhow!("DataFrame→DisplayRow conversion failed: {err}"))?;
-            dispatch::finalize_native_output(&rows, &config)
-        }
-    }
+    // Output.
+    dispatch::finalize_output(&rows, &config)
 }
