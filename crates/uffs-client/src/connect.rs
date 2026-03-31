@@ -104,35 +104,13 @@ impl UffsClient {
             cmd_args.push(arg.as_str());
         }
 
-        let spawn_result = {
-            #[cfg(unix)]
-            {
-                std::process::Command::new(&uffs_exe)
-                    .args(&cmd_args)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .stdin(std::process::Stdio::null())
-                    .spawn()
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                std::process::Command::new(&uffs_exe)
-                    .args(&cmd_args)
-                    .creation_flags(0x0000_0008) // DETACHED_PROCESS
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .stdin(std::process::Stdio::null())
-                    .spawn()
-            }
-        };
-
-        spawn_result.map_err(|spawn_err| {
-            crate::error::ClientError::DaemonStartFailed(format!(
-                "Failed to spawn {} daemon run: {spawn_err}",
-                uffs_exe.display()
-            ))
-        })?;
+        // Spawn the daemon process.
+        //
+        // On Windows, MFT reading requires Administrator privileges. If the
+        // current process is not elevated, we use `ShellExecuteW` with the
+        // "runas" verb to trigger a UAC consent dialog. If already elevated
+        // (or the broker service is available), we spawn normally.
+        spawn_daemon(&uffs_exe, &cmd_args)?;
 
         // Retry with backoff
         let mut delay_ms = 50_u64;
@@ -740,4 +718,200 @@ pub fn find_daemon_exe() -> PathBuf {
             }
         })
         .unwrap_or_else(|| PathBuf::from("uffs-daemon"))
+}
+
+// ── Daemon Spawn ──────────────────────────────────────────────────────────
+
+/// Spawn the daemon as a detached background process.
+///
+/// On **Unix**, uses a normal `Command::new` spawn (no elevation needed).
+///
+/// On **Windows**, MFT reading requires Administrator privileges. If the
+/// current process is already elevated, spawns directly with
+/// `DETACHED_PROCESS`. Otherwise, uses `ShellExecuteW` with the `"runas"`
+/// verb to trigger a UAC consent dialog so the daemon starts elevated.
+///
+/// # Errors
+///
+/// Returns `DaemonStartFailed` if spawning fails (Unix), if the UAC prompt
+/// is denied, or if `ShellExecuteW` fails (Windows).
+#[expect(
+    clippy::single_call_fn,
+    reason = "platform-specific spawn logic — clarity over inlining"
+)]
+fn spawn_daemon(exe: &std::path::Path, args: &[&str]) -> Result<(), crate::error::ClientError> {
+    #[cfg(unix)]
+    spawn_daemon_unix(exe, args)?;
+
+    #[cfg(windows)]
+    spawn_daemon_windows(exe, args)?;
+
+    Ok(())
+}
+
+/// Unix daemon spawn: simple detached process.
+#[cfg(unix)]
+#[expect(
+    clippy::single_call_fn,
+    reason = "platform-specific helper — clarity over inlining"
+)]
+fn spawn_daemon_unix(
+    exe: &std::path::Path,
+    args: &[&str],
+) -> Result<(), crate::error::ClientError> {
+    std::process::Command::new(exe)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map_err(|spawn_err| {
+            crate::error::ClientError::DaemonStartFailed(format!(
+                "Failed to spawn {} daemon run: {spawn_err}",
+                exe.display()
+            ))
+        })?;
+    Ok(())
+}
+
+/// Windows daemon spawn: elevation-aware.
+///
+/// If already elevated, spawns directly with `DETACHED_PROCESS`.
+/// Otherwise uses `ShellExecuteW("runas", ...)` to trigger a UAC prompt.
+#[cfg(windows)]
+#[expect(
+    clippy::single_call_fn,
+    reason = "platform-specific helper — clarity over inlining"
+)]
+fn spawn_daemon_windows(
+    exe: &std::path::Path,
+    args: &[&str],
+) -> Result<(), crate::error::ClientError> {
+    if is_elevated() {
+        // Already elevated — spawn directly (no UAC prompt).
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(exe)
+            .args(args)
+            .creation_flags(0x0000_0008) // DETACHED_PROCESS
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .map_err(|spawn_err| {
+                crate::error::ClientError::DaemonStartFailed(format!(
+                    "Failed to spawn {} daemon run: {spawn_err}",
+                    exe.display()
+                ))
+            })?;
+    } else {
+        // Not elevated — use ShellExecuteW "runas" to trigger UAC.
+        tracing::info!("Not elevated — requesting elevation via UAC prompt");
+        shell_execute_elevated(exe, args)?;
+    }
+    Ok(())
+}
+
+// ── Windows Elevation Helpers ─────────────────────────────────────────────
+
+/// Check if the current process is running with Administrator privileges.
+///
+/// Uses `OpenProcessToken` + `GetTokenInformation(TokenElevation)`.
+#[cfg(windows)]
+fn is_elevated() -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Security::{
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // SAFETY: Win32 token query APIs are well-defined and we close the handle.
+    #[expect(
+        unsafe_code,
+        reason = "Win32 token elevation check requires unsafe FFI"
+    )]
+    unsafe {
+        let mut token = windows::Win32::Foundation::HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut size = 0_u32;
+        let result = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(core::ptr::from_mut(&mut elevation).cast()),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        );
+        let _ = CloseHandle(token);
+        result.is_ok() && elevation.TokenIsElevated != 0
+    }
+}
+
+/// Spawn a process with elevation via `ShellExecuteW("runas", ...)`.
+///
+/// This triggers a Windows UAC consent dialog. The daemon process starts
+/// elevated and can read the NTFS MFT directly.
+///
+/// # Errors
+///
+/// Returns `DaemonStartFailed` if the user denies the UAC prompt or if the
+/// Win32 call fails.
+#[cfg(windows)]
+fn shell_execute_elevated(
+    exe: &std::path::Path,
+    args: &[&str],
+) -> Result<(), crate::error::ClientError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    // Build the arguments as a single space-separated string.
+    let params_string = args.join(" ");
+
+    // Convert strings to wide (UTF-16) null-terminated.
+    let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+    let file: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
+    let params: Vec<u16> = params_string.encode_utf16().chain(Some(0)).collect();
+
+    // ShellExecuteW returns HINSTANCE; values > 32 indicate success.
+    // SAFETY: ShellExecuteW is a well-defined Win32 Shell API. All pointers
+    // are valid null-terminated UTF-16 strings allocated above.
+    #[expect(unsafe_code, reason = "ShellExecuteW requires unsafe FFI")]
+    let result = unsafe {
+        // ShellExecuteW is in shell32.dll — use raw FFI to avoid adding
+        // Win32_UI_Shell feature to the windows crate.
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut core::ffi::c_void,
+                operation: *const u16,
+                file: *const u16,
+                parameters: *const u16,
+                directory: *const u16,
+                show_cmd: i32,
+            ) -> isize;
+        }
+
+        ShellExecuteW(
+            core::ptr::null_mut(), // hwnd
+            verb.as_ptr(),         // "runas"
+            file.as_ptr(),         // exe path
+            params.as_ptr(),       // arguments
+            core::ptr::null(),     // directory (inherit)
+            0,                     // SW_HIDE
+        )
+    };
+
+    // HINSTANCE > 32 means success.
+    if result > 32 {
+        tracing::info!("Daemon spawned with elevation (ShellExecuteW returned {result})");
+        Ok(())
+    } else {
+        // Common error codes:
+        // SE_ERR_ACCESSDENIED (5) — user denied UAC
+        // 0 — out of memory
+        Err(crate::error::ClientError::DaemonStartFailed(format!(
+            "UAC elevation failed (ShellExecuteW returned {result}). \
+             Run your terminal as Administrator, or install the uffs-broker service."
+        )))
+    }
 }
