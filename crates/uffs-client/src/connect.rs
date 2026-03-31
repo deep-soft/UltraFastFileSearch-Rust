@@ -606,17 +606,20 @@ impl UffsClient {
         let (async_read, mut bridge_write) = tokio::io::duplex(65536);
         let (mut bridge_read, async_write) = tokio::io::duplex(65536);
 
+        // Capture the tokio runtime handle BEFORE spawning OS threads —
+        // std::thread::spawn does NOT inherit the tokio thread-local context,
+        // so try_current() would return Err and the bridge would exit immediately.
+        let rt_handle_read = tokio::runtime::Handle::current();
+        let rt_handle_write = tokio::runtime::Handle::current();
+
         // Background thread: std socket → async reader
         //
         // Uses a single `block_on` wrapping the entire loop to avoid
         // per-iteration `block_on` deadlocks when the tokio runtime is
         // already running on the main thread.
         std::thread::spawn(move || {
-            let rt = match tokio::runtime::Handle::try_current() {
-                Ok(h) => h,
-                Err(_) => return,
-            };
-            rt.block_on(async move {
+            tracing::info!("[client-bridge-read] thread started");
+            rt_handle_read.block_on(async move {
                 use tokio::io::AsyncWriteExt;
                 let mut reader = std::io::BufReader::new(std_read);
                 let mut buf = [0_u8; 8192];
@@ -624,39 +627,66 @@ impl UffsClient {
                     // Blocking read from the std socket — runs on this
                     // dedicated thread so it doesn't stall tokio.
                     let n = match reader.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) => {
+                            tracing::info!("[client-bridge-read] EOF from socket");
+                            break;
+                        }
+                        Err(read_err) => {
+                            tracing::info!(
+                                error = %read_err,
+                                "[client-bridge-read] read error from socket"
+                            );
+                            break;
+                        }
                         Ok(n) => n,
                     };
                     if bridge_write.write_all(&buf[..n]).await.is_err() {
+                        tracing::info!("[client-bridge-read] bridge_write failed");
                         break;
                     }
                 }
             });
+            tracing::info!("[client-bridge-read] thread exiting");
         });
 
         // Background thread: async writer → std socket
         std::thread::spawn(move || {
+            tracing::info!("[client-bridge-write] thread started");
             let mut writer = std_write;
-            let rt = tokio::runtime::Handle::try_current();
-            if let Ok(handle) = rt {
-                handle.block_on(async {
-                    use tokio::io::AsyncReadExt;
-                    let mut buf = [0_u8; 8192];
-                    loop {
-                        match bridge_read.read(&mut buf).await {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => {
-                                if writer.write_all(&buf[..n]).is_err() {
-                                    break;
-                                }
-                                if writer.flush().is_err() {
-                                    break;
-                                }
+            rt_handle_write.block_on(async {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0_u8; 8192];
+                loop {
+                    match bridge_read.read(&mut buf).await {
+                        Ok(0) => {
+                            tracing::info!("[client-bridge-write] EOF from bridge");
+                            break;
+                        }
+                        Err(read_err) => {
+                            tracing::info!(
+                                error = %read_err,
+                                "[client-bridge-write] bridge read error"
+                            );
+                            break;
+                        }
+                        Ok(n) => {
+                            if writer.write_all(&buf[..n]).is_err() {
+                                tracing::info!(
+                                    "[client-bridge-write] socket write_all failed"
+                                );
+                                break;
+                            }
+                            if writer.flush().is_err() {
+                                tracing::info!(
+                                    "[client-bridge-write] socket flush failed"
+                                );
+                                break;
                             }
                         }
                     }
-                });
-            }
+                }
+            });
+            tracing::info!("[client-bridge-write] thread exiting");
         });
 
         let (notification_tx, notification_rx) = tokio::sync::mpsc::unbounded_channel();

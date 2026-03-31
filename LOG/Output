@@ -1,228 +1,106 @@
-2026-03-31T21:50:11.6375965Z  INFO ThreadId(20) uffs_client::connect: crates/uffs-client/src/connect.rs:119: Daemon not running, auto-starting via `uffs daemon run`...
-2026-03-31T21:50:11.835747Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:102: uffs-daemon starting pid=67384 version="0.4.41" broker_available=false mft_files=[] drives=[] data_dir=None no_cache=false no_retire=false
-2026-03-31T21:50:11.8363954Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:126: Lifecycle data directory data_dir=C:\Users\rnio\AppData\Local\uffs
-2026-03-31T21:50:12.1388443Z  INFO ThreadId(22) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:155: PID file written path=C:\Users\rnio\AppData\Local\uffs\daemon.pid
-2026-03-31T21:50:12.1388681Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:136: PID file written
-2026-03-31T21:50:12.139618Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:164: Auto-discovered NTFS drives count=7 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T21:50:12.1396342Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:178: Final data sources mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T21:50:12.1396393Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:182: Data sources validated OK
-2026-03-31T21:50:12.1396642Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:221: Starting IPC server...
-2026-03-31T21:50:12.1396728Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:227: IPC server task spawned
-2026-03-31T21:50:12.1396978Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:187: Load task starting mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T21:50:12.1397424Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:207: Loading live drives... drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T21:50:12.1397513Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=C
-2026-03-31T21:50:12.1407723Z  INFO ThreadId(27) read_index_cached{volume=C mode=auto use_bitmap=true merge_extensions=true expand_links=true}: uffs_mft::reader::index_cache: crates/uffs-mft/src/reader/index_cache.rs:230: 🔄 Cache STALE - rebuilding index drive=C age_seconds=Some(18302)
-2026-03-31T21:50:12.1412881Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::reader::index_read: crates/uffs-mft/src/reader/index_read.rs:314: Starting MFT read (lean index) volume=C
-2026-03-31T21:50:12.1413631Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::reader::index_read: crates/uffs-mft/src/reader/index_read.rs:323: 🚀 Drive type detected for I/O optimization (lean index) volume=C drive_type=Nvme
-2026-03-31T21:50:12.1415823Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::reader::index_read: crates/uffs-mft/src/reader/index_read.rs:340: MFT extents retrieved num_extents=28
-2026-03-31T21:50:12.1416375Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::io::extent_map: crates/uffs-mft/src/io/extent_map.rs:48: ⚠️  MFT is fragmented extents=28 sparse_extents=0 total_clusters=72756 total_records=4656384 mft_size_mb="4547.25"
-2026-03-31T21:50:12.1416554Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::reader::index_read: crates/uffs-mft/src/reader/index_read.rs:345: Total MFT records to read total_records=4656384
-2026-03-31T21:50:12.435904Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::reader::index_read: crates/uffs-mft/src/reader/index_read.rs:352: MFT bitmap loaded - will skip unused records in_use_records=3159641 skip_percentage=32.143891053658805
-2026-03-31T21:50:12.4359397Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::reader::index_read: crates/uffs-mft/src/reader/index_read.rs:398: 🚀 Using read mode (lean index) mode=sliding-iocp-inline
-2026-03-31T21:50:12.4366431Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::io::readers::parallel: crates/uffs-mft/src/io/readers/parallel/mod.rs:166: 🚀 Creating optimized reader for drive type drive_type=Nvme chunk_size_mb=4
-2026-03-31T21:50:12.4366795Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::io::readers::parallel::to_index: crates/uffs-mft/src/io/readers/parallel/to_index.rs:105: 🚀 Starting sliding window IOCP with INLINE parsing (adaptive settings) total_records=4656384 concurrency=32 io_size_kb=4096 drive_type=Nvme
-2026-03-31T21:50:12.4376017Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::io::chunking: crates/uffs-mft/src/io/chunking.rs:203: 📊 Read plan generated chunks=1152 records_to_read=4656384 records_skipped=0 skip_percentage="0.0%" bitmap_used=true
-2026-03-31T21:50:12.4377787Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::io::readers::parallel::to_index: crates/uffs-mft/src/io/readers/parallel/to_index.rs:197: 📊 Generated I/O operations for inline parsing io_ops=1152 estimated_records=3159641 max_frs=4656109 bytes_to_read_mb=4547 max_io_size_kb=4096 direct_io=true
-2026-03-31T21:50:13.1788512Z  INFO ThreadId(22) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:325: IPC server listening (Windows AF_UNIX) path=C:\Users\rnio\AppData\Local\uffs\daemon.sock
-2026-03-31T21:50:13.856337Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:159: Connected to daemon attempt=5
-2026-03-31T21:50:13.8566346Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=1 delay_ms=250
-2026-03-31T21:50:13.856669Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:50:13.8566762Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=1 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:50:14.1191194Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=2 delay_ms=500
-2026-03-31T21:50:14.1191431Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:50:14.1191482Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=2 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:50:14.632178Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=3 delay_ms=1000
-2026-03-31T21:50:14.6322125Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:50:14.6322198Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=3 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:50:14.6322233Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:50:14.6327199Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:50:15.2901466Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::io::readers::parallel::to_index: crates/uffs-mft/src/io/readers/parallel/to_index.rs:519: ✅ Sliding window IOCP with direct-to-index parsing complete (I/O overlap analysis) total_ms=2852 wait_ms=1357 parse_ms=1394 overlap_pct="0.0%" bytes_mb=4547 records_parsed=3159641 index_entries=3103370
-2026-03-31T21:50:15.2906599Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::reader::index_read: crates/uffs-mft/src/reader/index_read.rs:687: 📊 reserved_allocated_bytes for tree_allocated root adjustment reserved_allocated_bytes=15794176 total_reserved=241 mft_zone_start=21786272 mft_zone_end=21789504 bytes_per_cluster=65536
-2026-03-31T21:50:15.6452403Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=4 delay_ms=2000
-2026-03-31T21:50:15.6452988Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:50:15.6453104Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=4 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:50:15.7698676Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::reader::index_read: crates/uffs-mft/src/reader/index_read.rs:712: ✅ Tree metrics computed for inline index tree_metrics_ms=479
-2026-03-31T21:50:15.8149248Z  INFO ThreadId(28) read_mft_index_internal{volume=C configured_mode=auto use_bitmap=true merge_extensions=true expand_links=true forensic=false progress_callback=false}: uffs_mft::reader::index_read: crates/uffs-mft/src/reader/index_read.rs:725: 📊 Windows LIVE index build timing breakdown total_index_ms=3673 tree_ms=479 ext_ms=45 records=3103370
-2026-03-31T21:50:17.6670517Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=5 delay_ms=2000
-2026-03-31T21:50:17.6671704Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:50:17.667179Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=5 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:50:19.2140471Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=C records=3424075 mft_ms=5212 compact_ms=281 trigram_ms=1303
-2026-03-31T21:50:19.2140973Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=D
-2026-03-31T21:50:19.6807071Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=6 delay_ms=2000
-2026-03-31T21:50:19.6807494Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:50:19.6807572Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=6 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:50:19.6807606Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:50:19.6813112Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:50:21.6955682Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=7 delay_ms=2000
-2026-03-31T21:50:21.6956011Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:50:21.6956076Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=7 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:50:21.7565691Z  INFO ThreadId(28) read_index_cached{volume=D mode=auto use_bitmap=true merge_extensions=true expand_links=true}: uffs_mft::reader::index_cache: crates/uffs-mft/src/reader/index_cache.rs:55: 📦 Read-only volume — using cached index (no TTL) drive=D records=4771190
-2026-03-31T21:50:23.7108836Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=8 delay_ms=2000
-2026-03-31T21:50:23.7109089Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:50:23.7109169Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=8 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:50:24.9404294Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=D records=7065539 mft_ms=2542 compact_ms=620 trigram_ms=2128
-2026-03-31T21:50:24.9404562Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=E
-2026-03-31T21:50:25.7198818Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=9 delay_ms=2000
-2026-03-31T21:50:25.7199238Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:50:25.719933Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=9 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:50:25.7199374Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:50:25.7206421Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:50:26.2762221Z  INFO ThreadId(29) read_index_cached{volume=E mode=auto use_bitmap=true merge_extensions=true expand_links=true}: uffs_mft::reader::index_cache: crates/uffs-mft/src/reader/index_cache.rs:55: 📦 Read-only volume — using cached index (no TTL) drive=E records=2926804
-2026-03-31T21:50:27.2718804Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=E records=2929519 mft_ms=1335 compact_ms=171 trigram_ms=649
-2026-03-31T21:50:27.2719037Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=F
-2026-03-31T21:50:27.7291495Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=10 delay_ms=2000
-2026-03-31T21:50:27.7291963Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:50:27.729206Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=10 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:50:28.4042043Z  INFO ThreadId(27) read_index_cached{volume=F mode=auto use_bitmap=true merge_extensions=true expand_links=true}: uffs_mft::reader::index_cache: crates/uffs-mft/src/reader/index_cache.rs:55: 📦 Read-only volume — using cached index (no TTL) drive=F records=2028208
-2026-03-31T21:50:29.5708957Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=F records=2221343 mft_ms=1132 compact_ms=195 trigram_ms=804
-2026-03-31T21:50:29.5709355Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=G
-2026-03-31T21:50:29.5869474Z  INFO ThreadId(29) read_index_cached{volume=G mode=auto use_bitmap=true merge_extensions=true expand_links=true}: uffs_mft::reader::index_cache: crates/uffs-mft/src/reader/index_cache.rs:55: 📦 Read-only volume — using cached index (no TTL) drive=G records=15079
-2026-03-31T21:50:29.7423248Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=11 delay_ms=2000
-2026-03-31T21:50:29.7423806Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:50:29.7423911Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=11 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:50:29.7514887Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=G records=15090 mft_ms=15 compact_ms=1 trigram_ms=9
-2026-03-31T21:50:29.7515193Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=M
-2026-03-31T21:50:30.5122031Z  INFO ThreadId(27) read_index_cached{volume=M mode=auto use_bitmap=true merge_extensions=true expand_links=true}: uffs_mft::reader::index_cache: crates/uffs-mft/src/reader/index_cache.rs:55: 📦 Read-only volume — using cached index (no TTL) drive=M records=1908771
-2026-03-31T21:50:31.1733834Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=M records=1908805 mft_ms=760 compact_ms=124 trigram_ms=386
-2026-03-31T21:50:31.1734166Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=S
-2026-03-31T21:50:31.7553516Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=12 delay_ms=2000
-2026-03-31T21:50:31.7553944Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:50:31.755403Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=12 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:50:31.7554065Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:50:31.7559841Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:50:33.7622354Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=13 delay_ms=2000
-2026-03-31T21:50:33.7622833Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:50:33.7622979Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=13 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:50:35.6567265Z  INFO ThreadId(29) read_index_cached{volume=S mode=auto use_bitmap=true merge_extensions=true expand_links=true}: uffs_mft::reader::index_cache: crates/uffs-mft/src/reader/index_cache.rs:55: 📦 Read-only volume — using cached index (no TTL) drive=S records=8277613
-2026-03-31T21:50:35.7733169Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=14 delay_ms=2000
-2026-03-31T21:50:35.7733576Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:50:35.7733676Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=14 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:50:37.7754Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=15 delay_ms=2000
-2026-03-31T21:50:37.7754257Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:50:37.7754328Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=15 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:50:37.7754357Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:50:37.7759231Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:50:38.4038226Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=S records=8278102 mft_ms=4483 compact_ms=473 trigram_ms=1888
-2026-03-31T21:50:38.4038655Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:209: Live drives loaded
-2026-03-31T21:50:38.40387Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:214: Load task completed
-2026-03-31T21:50:39.7871469Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=16 delay_ms=2000
-2026-03-31T21:50:39.7872018Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:50:39.7872162Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=16 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:50:41.7882644Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=17 delay_ms=2000
-2026-03-31T21:50:41.7882916Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:50:41.7882974Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=17 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:50:43.8045571Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=18 delay_ms=2000
-2026-03-31T21:50:43.8045838Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:50:43.8045897Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=18 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:50:43.8046037Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:50:43.8051233Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:50:45.8160523Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=19 delay_ms=2000
-2026-03-31T21:50:45.8160817Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:50:45.8160877Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=19 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:50:47.8230103Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=20 delay_ms=2000
-2026-03-31T21:50:47.8230391Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:50:47.8230478Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=20 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:50:49.8365211Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=21 delay_ms=2000
-2026-03-31T21:50:49.8365526Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:50:49.8365675Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=21 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:50:49.8365711Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:50:49.8370607Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:50:51.8501973Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=22 delay_ms=2000
-2026-03-31T21:50:51.850229Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:50:51.8502367Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=22 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:50:53.8520603Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=23 delay_ms=2000
-2026-03-31T21:50:53.852105Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:50:53.8521127Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=23 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:50:55.854108Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=24 delay_ms=2000
-2026-03-31T21:50:55.8541366Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:50:55.8541458Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=24 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:50:55.8541499Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:50:55.8546481Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:50:57.8650244Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=25 delay_ms=2000
-2026-03-31T21:50:57.865051Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:50:57.8650566Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=25 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:50:59.8770618Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=26 delay_ms=2000
-2026-03-31T21:50:59.8770872Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:50:59.8770929Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=26 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:51:01.8843226Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=27 delay_ms=2000
-2026-03-31T21:51:01.8843514Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:51:01.8843568Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=27 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:51:01.8843592Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:51:01.8849016Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:51:03.8937509Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=28 delay_ms=2000
-2026-03-31T21:51:03.8937784Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:51:03.8937841Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=28 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:51:05.9055611Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=29 delay_ms=2000
-2026-03-31T21:51:05.9055894Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:51:05.9055982Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=29 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:51:07.9197856Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=30 delay_ms=2000
-2026-03-31T21:51:07.9198163Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:51:07.9198244Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=30 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:51:07.9198281Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:51:07.9202696Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:51:09.9322622Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=31 delay_ms=2000
-2026-03-31T21:51:09.9322855Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:51:09.9322913Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=31 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:51:11.9413793Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=32 delay_ms=2000
-2026-03-31T21:51:11.9414091Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:51:11.9414147Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=32 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:51:13.9550291Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=33 delay_ms=2000
-2026-03-31T21:51:13.9550548Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:51:13.9550605Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=33 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:51:13.9550632Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:51:13.9554468Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:51:15.9636868Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=34 delay_ms=2000
-2026-03-31T21:51:15.9637172Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:51:15.9637267Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=34 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:51:17.9780174Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=35 delay_ms=2000
-2026-03-31T21:51:17.9780393Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:51:17.9780458Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=35 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:51:19.9911665Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=36 delay_ms=2000
-2026-03-31T21:51:19.9911923Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:51:19.9911985Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=36 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:51:19.9912028Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:51:19.991673Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:51:21.9932749Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=37 delay_ms=2000
-2026-03-31T21:51:21.9933034Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:51:21.9933098Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=37 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:51:23.9953277Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=38 delay_ms=2000
-2026-03-31T21:51:23.9953556Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:51:23.9953615Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=38 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:51:25.9999072Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=39 delay_ms=2000
-2026-03-31T21:51:25.9999445Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:51:25.9999535Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=39 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:51:25.999958Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:51:26.0004144Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:51:28.0124272Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=40 delay_ms=2000
-2026-03-31T21:51:28.0124737Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:51:28.0124816Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=40 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:51:30.0137274Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=41 delay_ms=2000
-2026-03-31T21:51:30.0137701Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:51:30.0137808Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=41 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:51:32.0291339Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=42 delay_ms=2000
-2026-03-31T21:51:32.029161Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:51:32.0291671Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=42 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:51:32.0291698Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:51:32.0297482Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:51:34.0348719Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=43 delay_ms=2000
-2026-03-31T21:51:34.0349202Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:51:34.0349315Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=43 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:51:36.0515097Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=44 delay_ms=2000
-2026-03-31T21:51:36.0515338Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:51:36.0515394Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=44 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:51:38.059528Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=45 delay_ms=2000
-2026-03-31T21:51:38.0595542Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:51:38.0595613Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=45 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:51:38.0595646Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:51:38.0600224Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
-2026-03-31T21:51:40.0699233Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=46 delay_ms=2000
-2026-03-31T21:51:40.0699515Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T21:51:40.0699584Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=46 consecutive_io_errors=1 error=I/O error: broken pipe
-2026-03-31T21:51:42.0716494Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=47 delay_ms=2000
-2026-03-31T21:51:42.0716846Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T21:51:42.0716921Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=47 consecutive_io_errors=2 error=I/O error: broken pipe
-2026-03-31T21:51:44.0770354Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=48 delay_ms=2000
-2026-03-31T21:51:44.0770654Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T21:51:44.0770738Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=48 consecutive_io_errors=3 error=I/O error: broken pipe
-2026-03-31T21:51:44.0770776Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
-2026-03-31T21:51:44.077544Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
+2026-03-31T22:11:15.3031601Z  INFO ThreadId(18) uffs_client::connect: crates/uffs-client/src/connect.rs:119: Daemon not running, auto-starting via `uffs daemon run`...
+2026-03-31T22:11:15.5035419Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:102: uffs-daemon starting pid=74136 version="0.4.42" broker_available=false mft_files=[] drives=[] data_dir=None no_cache=false no_retire=false
+2026-03-31T22:11:15.5041928Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:126: Lifecycle data directory data_dir=C:\Users\rnio\AppData\Local\uffs
+2026-03-31T22:11:15.7152073Z  INFO ThreadId(22) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:155: PID file written path=C:\Users\rnio\AppData\Local\uffs\daemon.pid
+2026-03-31T22:11:15.7152301Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:136: PID file written
+2026-03-31T22:11:15.7161171Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:164: Auto-discovered NTFS drives count=7 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-03-31T22:11:15.7161313Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:178: Final data sources mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-03-31T22:11:15.7161346Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:182: Data sources validated OK
+2026-03-31T22:11:15.7161848Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:221: Starting IPC server...
+2026-03-31T22:11:15.7162077Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:227: IPC server task spawned
+2026-03-31T22:11:15.7162398Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:187: Load task starting mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-03-31T22:11:15.7163004Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:207: Loading live drives... drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-03-31T22:11:15.7163111Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=C
+2026-03-31T22:11:15.8589575Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:159: Connected to daemon attempt=3
+2026-03-31T22:11:15.8593796Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=1 delay_ms=250
+2026-03-31T22:11:15.8594033Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
+2026-03-31T22:11:15.8594134Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=1 consecutive_io_errors=1 error=I/O error: broken pipe
+2026-03-31T22:11:15.9319848Z  INFO ThreadId(22) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:325: IPC server listening (Windows AF_UNIX) path=C:\Users\rnio\AppData\Local\uffs\daemon.sock
+2026-03-31T22:11:16.1245032Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=2 delay_ms=500
+2026-03-31T22:11:16.1245311Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
+2026-03-31T22:11:16.1245372Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=2 consecutive_io_errors=2 error=I/O error: broken pipe
+2026-03-31T22:11:16.6487889Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=3 delay_ms=1000
+2026-03-31T22:11:16.6488212Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
+2026-03-31T22:11:16.6488275Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=3 consecutive_io_errors=3 error=I/O error: broken pipe
+2026-03-31T22:11:16.6488315Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
+2026-03-31T22:11:16.6494274Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
+2026-03-31T22:11:17.6535233Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=4 delay_ms=2000
+2026-03-31T22:11:17.6535549Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
+2026-03-31T22:11:17.6535617Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=4 consecutive_io_errors=1 error=I/O error: broken pipe
+2026-03-31T22:11:17.7602216Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=C records=3424075
+2026-03-31T22:11:17.7603062Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=C records=3424075 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T22:11:17.7603457Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=D
+2026-03-31T22:11:19.6593381Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=5 delay_ms=2000
+2026-03-31T22:11:19.6593742Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
+2026-03-31T22:11:19.6593834Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=5 consecutive_io_errors=2 error=I/O error: broken pipe
+2026-03-31T22:11:21.2461488Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=D records=7065539
+2026-03-31T22:11:21.2462181Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=D records=7065539 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T22:11:21.2462336Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=E
+2026-03-31T22:11:21.6747433Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=6 delay_ms=2000
+2026-03-31T22:11:21.6747778Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
+2026-03-31T22:11:21.6747837Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=6 consecutive_io_errors=3 error=I/O error: broken pipe
+2026-03-31T22:11:21.6747869Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
+2026-03-31T22:11:21.6753297Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
+2026-03-31T22:11:22.4597209Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=E records=2929519
+2026-03-31T22:11:22.45978Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=E records=2929519 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T22:11:22.459795Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=F
+2026-03-31T22:11:23.6797128Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=7 delay_ms=2000
+2026-03-31T22:11:23.6797556Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
+2026-03-31T22:11:23.6797643Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=7 consecutive_io_errors=1 error=I/O error: broken pipe
+2026-03-31T22:11:23.7496502Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=F records=2221343
+2026-03-31T22:11:23.7497212Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=F records=2221343 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T22:11:23.7497383Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=G
+2026-03-31T22:11:23.7615353Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=G records=15090
+2026-03-31T22:11:23.7616053Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=G records=15090 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T22:11:23.7616246Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=M
+2026-03-31T22:11:24.806775Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=M records=1908805
+2026-03-31T22:11:24.8068363Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=M records=1908805 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T22:11:24.8068518Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=S
+2026-03-31T22:11:25.6927445Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=8 delay_ms=2000
+2026-03-31T22:11:25.6927808Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
+2026-03-31T22:11:25.6927893Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=8 consecutive_io_errors=2 error=I/O error: broken pipe
+2026-03-31T22:11:27.7079183Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=9 delay_ms=2000
+2026-03-31T22:11:27.7079627Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
+2026-03-31T22:11:27.7079712Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=9 consecutive_io_errors=3 error=I/O error: broken pipe
+2026-03-31T22:11:27.7079749Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
+2026-03-31T22:11:27.7084723Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
+2026-03-31T22:11:29.2761915Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=S records=8278102
+2026-03-31T22:11:29.2762549Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=S records=8278102 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-03-31T22:11:29.2762783Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:209: Live drives loaded
+2026-03-31T22:11:29.276281Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:214: Load task completed
+2026-03-31T22:11:29.7122978Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=10 delay_ms=2000
+2026-03-31T22:11:29.7123285Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
+2026-03-31T22:11:29.712335Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=10 consecutive_io_errors=1 error=I/O error: broken pipe
+2026-03-31T22:11:31.724142Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=11 delay_ms=2000
+2026-03-31T22:11:31.7241688Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
+2026-03-31T22:11:31.7241743Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=11 consecutive_io_errors=2 error=I/O error: broken pipe
+2026-03-31T22:11:33.7359753Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=12 delay_ms=2000
+2026-03-31T22:11:33.7360045Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
+2026-03-31T22:11:33.7360119Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=12 consecutive_io_errors=3 error=I/O error: broken pipe
+2026-03-31T22:11:33.7360154Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
+2026-03-31T22:11:33.7364566Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
+2026-03-31T22:11:35.7398857Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=13 delay_ms=2000
+2026-03-31T22:11:35.7399147Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
+2026-03-31T22:11:35.7399225Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=13 consecutive_io_errors=1 error=I/O error: broken pipe
+2026-03-31T22:11:37.7420885Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=14 delay_ms=2000
+2026-03-31T22:11:37.7421193Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
+2026-03-31T22:11:37.742126Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=14 consecutive_io_errors=2 error=I/O error: broken pipe
+2026-03-31T22:11:39.7500463Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=15 delay_ms=2000
+2026-03-31T22:11:39.7500827Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
+2026-03-31T22:11:39.75009Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=15 consecutive_io_errors=3 error=I/O error: broken pipe
+2026-03-31T22:11:39.7500934Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
+2026-03-31T22:11:39.7506477Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
+2026-03-31T22:11:41.7630527Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=16 delay_ms=2000
+2026-03-31T22:11:41.7630885Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
+2026-03-31T22:11:41.7630964Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=16 consecutive_io_errors=1 error=I/O error: broken pipe
+2026-03-31T22:11:43.7643281Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=17 delay_ms=2000
+2026-03-31T22:11:43.7643556Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
+2026-03-31T22:11:43.7643614Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=17 consecutive_io_errors=2 error=I/O error: broken pipe
+2026-03-31T22:11:45.7710313Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=18 delay_ms=2000
+2026-03-31T22:11:45.7710627Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
+2026-03-31T22:11:45.771071Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=18 consecutive_io_errors=3 error=I/O error: broken pipe
+2026-03-31T22:11:45.771074Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:390: await_ready: reconnecting to daemon consecutive_io_errors=3
+2026-03-31T22:11:45.7715795Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:402: await_ready: reconnected successfully
+2026-03-31T22:11:47.7742587Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=19 delay_ms=2000
+2026-03-31T22:11:47.774294Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
+2026-03-31T22:11:47.7743009Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:382: await_ready: status poll I/O error poll_count=19 consecutive_io_errors=1 error=I/O error: broken pipe

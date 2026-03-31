@@ -329,22 +329,33 @@ pub async fn run_ipc_server(
         lifecycle: lifecycle.clone(),
     });
 
+    tracing::info!("[daemon-ipc] entering accept loop");
     loop {
         // Blocking accept in spawn_blocking
         let accept_listener = std_listener.try_clone()?;
+        tracing::info!("[daemon-ipc] waiting for accept...");
         let accept_result = tokio::task::spawn_blocking(move || accept_listener.accept()).await?;
+
+        match &accept_result {
+            Ok((_stream, _addr)) => {
+                tracing::info!("[daemon-ipc] accept() returned OK");
+            }
+            Err(accept_err) => {
+                tracing::info!(error = %accept_err, "[daemon-ipc] accept() returned Err");
+            }
+        }
 
         let (std_stream, _addr) = accept_result?;
         std_stream.set_read_timeout(Some(core::time::Duration::from_secs(IDLE_CONNECTION_SECS)))?;
 
         if !IpcServer::verify_peer_credentials_win() {
-            tracing::warn!("Rejected connection");
+            tracing::warn!("[daemon-ipc] Rejected connection (peer verification failed)");
             continue;
         }
 
         let active = lifecycle.active_connections();
         if active >= MAX_CONNECTIONS {
-            tracing::warn!(active, max = MAX_CONNECTIONS, "Max connections reached");
+            tracing::warn!(active, max = MAX_CONNECTIONS, "[daemon-ipc] Max connections reached");
             continue;
         }
 
@@ -364,39 +375,66 @@ pub async fn run_ipc_server(
         // Background thread: std socket → async reader
         std::thread::spawn(move || {
             use std::io::Read;
+            tracing::info!("[daemon-bridge-read] thread started");
             let mut reader = std::io::BufReader::new(std_read);
             let mut buf = [0_u8; 8192];
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => {
+                        tracing::info!("[daemon-bridge-read] EOF from client socket");
+                        break;
+                    }
+                    Err(read_err) => {
+                        tracing::info!(error = %read_err, "[daemon-bridge-read] read error");
+                        break;
+                    }
                     Ok(n) => {
                         use tokio::io::AsyncWriteExt;
                         let bytes = buf[..n].to_vec();
-                        let _ = rt_handle_read
-                            .block_on(async { bridge_write.write_all(&bytes).await });
+                        if let Err(write_err) = rt_handle_read
+                            .block_on(async { bridge_write.write_all(&bytes).await })
+                        {
+                            tracing::info!(error = %write_err, "[daemon-bridge-read] bridge write failed");
+                            break;
+                        }
                     }
                 }
             }
+            tracing::info!("[daemon-bridge-read] thread exiting");
         });
 
         // Background thread: async writer → std socket
         std::thread::spawn(move || {
             use std::io::Write;
+            tracing::info!("[daemon-bridge-write] thread started");
             let mut writer = std_write;
             rt_handle_write.block_on(async {
                 use tokio::io::AsyncReadExt;
                 let mut buf = [0_u8; 8192];
                 loop {
                     match bridge_read.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) => {
+                            tracing::info!("[daemon-bridge-write] EOF from bridge");
+                            break;
+                        }
+                        Err(read_err) => {
+                            tracing::info!(error = %read_err, "[daemon-bridge-write] bridge read error");
+                            break;
+                        }
                         Ok(n) => {
-                            if writer.write_all(&buf[..n]).is_err() || writer.flush().is_err() {
+                            if writer.write_all(&buf[..n]).is_err() {
+                                tracing::info!("[daemon-bridge-write] socket write_all failed");
+                                break;
+                            }
+                            if writer.flush().is_err() {
+                                tracing::info!("[daemon-bridge-write] socket flush failed");
                                 break;
                             }
                         }
                     }
                 }
             });
+            tracing::info!("[daemon-bridge-write] thread exiting");
         });
 
         lifecycle.connection_opened();
