@@ -420,20 +420,22 @@ fn main() {
         assert_rows(stdout, 0, 10)
     });
 
-    // ── 21. --format json ─────────────────────────────────────────────
+    // ── 21. --format json (NDJSON — one JSON object per line) ────────
     t.test("T20 --format json", &["*.rs", "--format", "json", "--limit", "5"], |stdout, _| {
-        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
-        let arr = parsed.as_array()
-            .ok_or_else(|| anyhow::anyhow!("Expected JSON array, got: {}", &stdout[..80.min(stdout.len())]))?;
-        if arr.is_empty() { bail!("Empty JSON array"); }
-        if arr.len() > 5 { bail!("Expected <= 5 items, got {}", arr.len()); }
+        let items: Vec<serde_json::Value> = stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("Invalid JSON line: {e}"))?;
+        if items.is_empty() { bail!("No JSON items"); }
+        if items.len() > 5 { bail!("Expected <= 5 items, got {}", items.len()); }
         // Verify each item has expected fields
-        let first = &arr[0];
+        let first = &items[0];
         if first.get("Name").is_none() && first.get("name").is_none() {
             bail!("JSON item missing 'Name' field: {first}");
         }
-        Ok(format!("{} JSON items", arr.len()))
+        Ok(format!("{} NDJSON items", items.len()))
     });
 
     // ── 22. --format table ────────────────────────────────────────────
