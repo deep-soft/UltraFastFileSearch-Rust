@@ -1,8 +1,4 @@
-//! TUI Application state — compact-index search.
-//!
-//! By default, search routes through the UFFS daemon (IPC). Set the
-//! environment variable `UFFS_STANDALONE=1` to fall back to the legacy
-//! in-process compact-index pipeline.
+//! TUI Application state — daemon-backed search via IPC.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -259,7 +255,7 @@ impl App {
 
     /// Check if daemon is connected.
     #[must_use]
-    pub fn has_data(&self) -> bool {
+    pub const fn has_data(&self) -> bool {
         self.daemon_backend.is_some()
     }
 

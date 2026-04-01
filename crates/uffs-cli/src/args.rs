@@ -85,12 +85,7 @@ pub struct Cli {
     /// override if needed.
     ///   Single:  `uffs "*" --mft-file C.bin`
     ///   Multi:   `uffs "*" --mft-file C.bin,D.bin`
-    #[arg(
-        long,
-        value_delimiter = ',',
-        conflicts_with = "index",
-        verbatim_doc_comment
-    )]
+    #[arg(long, value_delimiter = ',', verbatim_doc_comment)]
     pub mft_file: Vec<PathBuf>,
 
     /// Data directory containing `drive_*` subdirectories with MFT files
@@ -98,7 +93,7 @@ pub struct Cli {
     /// Auto-discovers all MFT files in `drive_c/`, `drive_d/`, etc.
     /// within the given directory. Prefers `.iocp` over `.bin` over `.mft`.
     ///   Example: `uffs "*" --data-dir ~/uffs_data`
-    #[arg(long, conflicts_with = "index", verbatim_doc_comment)]
+    #[arg(long, verbatim_doc_comment)]
     pub data_dir: Option<PathBuf>,
 
     /// Show only files (exclude directories)

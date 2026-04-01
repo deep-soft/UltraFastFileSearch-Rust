@@ -193,24 +193,6 @@ mod tests {
     }
 
     #[test]
-    fn test_search_rejects_conflicting_index_and_mft_file() {
-        assert_failure(
-            "search_index_mft_conflict",
-            &["*.rs", "--index", "saved.parquet", "--mft-file", "raw.bin"],
-            &["cannot be used with", "--mft-file <MFT_FILE>"],
-        );
-    }
-
-    #[test]
-    fn test_search_rejects_conflicting_index_and_drive() {
-        assert_failure(
-            "search_index_drive_conflict",
-            &["*.rs", "--index", "saved.parquet", "--drive", "C"],
-            &["cannot be used with", "--drive <DRIVE>"],
-        );
-    }
-
-    #[test]
     #[ignore = "may prompt for keychain password on macOS — run with --ignored"]
     fn test_search_accepts_multi_mft_file_without_drives() {
         // Multiple --mft-file values work without --drives.

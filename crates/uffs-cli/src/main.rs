@@ -39,8 +39,6 @@
 )]
 #![allow(clippy::items_after_test_module)]
 
-// Dependencies used in commands.rs for streaming output (Windows-only code
-// paths)
 use std::io;
 use std::path::PathBuf;
 
@@ -416,23 +414,6 @@ mod tests {
         assert_eq!(cli.mft_file.as_slice(), &[PathBuf::from("raw.bin")]);
         assert_eq!(cli.format, "json");
         assert_eq!(cli.tz_offset, Some(-8));
-    }
-
-    #[test]
-    fn test_default_search_rejects_conflicting_search_sources() {
-        let err = match parse_cli(&[
-            "uffs",
-            "*.rs",
-            "--index",
-            "saved.parquet",
-            "--mft-file",
-            "raw.bin",
-        ]) {
-            Ok(_) => panic!("conflicting search source flags should fail"),
-            Err(err) => err,
-        };
-
-        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

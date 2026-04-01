@@ -287,10 +287,6 @@ fn init_daemon_backend(app: &mut App, spawn_args: Vec<String>, no_local_data: bo
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "main function orchestrates TUI setup, async loading, and event loop; splitting would fragment cohesive logic"
-)]
 fn main() -> Result<()> {
     // Check for -v/--verbose flag early
     let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
@@ -310,21 +306,6 @@ fn main() -> Result<()> {
     }
 
     let mft_files = cli.mft_file;
-
-    // On Windows: auto-detect NTFS drives when no files specified
-    #[cfg(windows)]
-    let live_drives: Vec<char> = if mft_files.is_empty() && cli.data_dir.is_none() {
-        let mut drives = uffs_mft::detect_ntfs_drives();
-        // If --drive specified, filter to just those
-        if !cli.drive.is_empty() {
-            drives.retain(|dr| cli.drive.contains(dr));
-        }
-        drives
-    } else {
-        Vec::new()
-    };
-    #[cfg(not(windows))]
-    let live_drives: Vec<char> = Vec::new();
 
     // Setup terminal immediately so the TUI is visible during loading
     enable_raw_mode()?;

@@ -5,5 +5,5 @@
 
 // Re-export all public types and functions from uffs-core
 pub use uffs_core::compact::{
-    ChildrenIndex, DriveCompactIndex, IndexSource, LoadTiming, MftSource, load_drive, refresh_drive,
+    ChildrenIndex, DriveCompactIndex, IndexSource, LoadTiming, refresh_drive,
 };
