@@ -460,7 +460,7 @@ serialization (~16s) are significant for bulk unfiltered queries. For filtered q
 | D5.3.1 | Benchmark: `uffs "*.rs"` — target: <100ms (warm daemon) | ✅ DONE (**420ms cold-connect, 0ms query**, 107 rows across 7 drives) |
 | D5.3.2 | Benchmark: `uffs "*"` (25M files) — target: ≤ pre-D5 time (shmem) | ✅ DONE (**42.4s benchmark, 85s warm+file, 117s cold+file** — 25.8M rows via shmem) |
 | D5.3.3 | Benchmark: shmem overhead — target: <500ms for 25M rows | ✅ DONE (**shmem_read ~6–7.8s for 25.8M rows** — above target, dominated by SearchRow reconstruction) |
-| D5.3.4 | Test: all CLI flags (`--files-only`, `--sort`, `--attr`, `--newer`, etc.) work | ✅ DONE (**34/34 pass** — `--drive`/`--drives` + `--columns` fixes verified in production) |
+| D5.3.4 | Test: all CLI flags (`--files-only`, `--sort`, `--attr`, `--newer`, etc.) work | ✅ DONE (**44/44 pass** v0.4.55 — expanded from 34; `--header false`, `--smart-case`, `--newer-accessed`, attr combos added) |
 | D5.3.5 | Test: shmem cleanup on CLI exit (no leaked /dev/shm files) | ✅ DONE (unit tests + production verified: 25.8M rows, shmem dir empty after exit) |
 | D5.3.6 | Test: shmem cleanup on CLI crash (daemon GC after timeout) | ✅ DONE (unit test: orphaned .bin → cleanup_stale_shmem_files removes it) |
 | D5.3.7 | Test: concurrent CLI invocations (separate shmem regions) | ✅ DONE (unit test: 8 threads, unique paths, data isolation, cleanup verified) |
@@ -580,7 +580,7 @@ Run 2 = fully WARM (daemon already loaded from Run 1).
 | 33 | Regex `>.*\.config$` | ✅ | 63 | 61 | Regex pattern matching works |
 | 34 | Combined (7 flags) | ✅ | 12 | 9 | Multi-flag stress test OK |
 
-**Summary:** 34/34 pass ✅ both runs. v0.4.51 applied 3 fixes: `--drive`/`--drives` filter + `--columns` space handling.
+**Summary:** 34/34 pass ✅ both runs (v0.4.51). Expanded to **44/44 pass** in v0.4.55 (10 new tests added).
 
 **Performance analysis (Run 1 vs Run 2):**
 - **Cold start penalty:** Test 1 only — 12,439ms (daemon spawn + 7-drive MFT load)
@@ -692,7 +692,7 @@ Run 2 = fully WARM (daemon already loaded from Run 1).
 | **D2** Daemon Foundation | 🟢 DONE | 2026-03-26 | 2026-04-01 | All tasks done incl. integration tests |
 | **D3** Client Library | 🟢 DONE | 2026-03-26 | 2026-04-01 | All tasks done incl. benchmarks |
 | **D4** MCP Adapter | 🟢 DONE | 2026-03-26 | 2026-03-26 | D4.3 E2E tests passed |
-| **D5** CLI Migration | 🟢 DONE | 2026-03-31 | 2026-04-01 | 34/34 flags pass, shmem validated, standalone pipeline removed |
+| **D5** CLI Migration | 🟢 DONE | 2026-03-31 | 2026-04-01 | 44/44 flags pass (v0.4.55), shmem validated, standalone pipeline removed |
 | **D6** TUI Migration | 🟡 IN PROGRESS | 2026-03-31 | — | D6.1 done + standalone removed; D6.2–D6.5 TUI-specific validation pending |
 | **D7** Access Broker | 🟢 DONE | 2026-03-26 | 2026-03-26 | Full pipe server + handle brokering + daemon client |
 | **D8** HTTP/SSE | ⬜ DEFERRED | — | — | |
@@ -726,7 +726,7 @@ Run 2 = fully WARM (daemon already loaded from Run 1).
 | D5.0 Shared memory infra | 8 | 8 | 0 | ✅ |
 | D5.1 Daemon protocol addition | 6 | 6 | 0 | ✅ (>100K shmem test: 100,001 rows verified) |
 | D5.2 CLI integration | 11 | 11 | 0 | ✅ (dead pipeline removed: streaming, QueryFilters, raw_io) |
-| D5.3 CLI validation | 7 | 7 | 0 | ✅ (34/34 flags, shmem cleanup, concurrent, GC — all verified) |
+| D5.3 CLI validation | 7 | 7 | 0 | ✅ (44/44 flags v0.4.55, shmem cleanup, concurrent, GC — all verified) |
 | D6.1 TUI client integration | 6 | 6 | 0 | ✅ (standalone removed, daemon-only) |
 | D6.2 TUI search-as-you-type | 5 | 0 | 5 | ⬜ (TUI-specific, same daemon backend) |
 | D6.3 TUI loading state | 3 | 0 | 3 | ⬜ (TUI-specific UI polish) |
@@ -799,8 +799,8 @@ Date        | ID       | Description                              | Commit
             |          | shmem_read: 6-8s, CSV write: 38s.          |
             |          | Daemon startup: 22.8s, avg query: 26.7s.   |
             |          | 7 drives: C/D/E/F/G/M/S = 25,842,547 rows |
-2026-04-01  | D5.3.4   | CLI flag validation: 34/34 pass            | v0.4.51
-            |          | Cold: 14.8s (daemon spawn), Warm: 8-864ms.  |
+2026-04-01  | D5.3.4   | CLI flag validation: 44/44 pass            | v0.4.55
+            |          | Cold: 39.5s (daemon spawn), Warm: 192ms–2.1s |
             |          | Fixes: --drive/--drives filter, --columns   |
             |          | with spaces. Standalone pipeline removed.    |
 ```
@@ -935,7 +935,7 @@ These `eprintln!` statements produce the profiling output. Capture reference bef
 | CLI bulk (`uffs "*"` 25M → file) | ≤10s (shmem) | **85.2s** warm, **42.4s** benchmark (v0.4.50) | ❌ see gap analysis |
 | Shmem read (25.8M rows) | <500ms | **6–7.8s** (v0.4.50) | ❌ 12–16× over target |
 | CSV format+write (25.8M rows) | — | **38.2s** (v0.4.50) | ⚠️ dominant cost (45%) |
-| CLI flag suite (34 tests, warm) | all pass | **34/34 pass** (v0.4.51, median 16ms, cold 14.8s) | ✅ |
+| CLI flag suite (44 tests, warm) | all pass | **44/44 pass** (v0.4.55, median ~200ms, cold 39.5s) | ✅ |
 | Benchmark (154K `.rs` files) | — | **355ms** total, **33ms** shmem read (v0.4.50) | ✅ |
 | TUI memory (daemon mode) | <50 MB | ⬜ pending | |
 | MCP query | <100ms | ⬜ pending | |

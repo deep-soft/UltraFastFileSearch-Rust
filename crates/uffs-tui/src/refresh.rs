@@ -127,4 +127,3 @@ pub fn poll_refresh(app: &mut App) {
         }
     }
 }
-

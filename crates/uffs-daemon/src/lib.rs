@@ -99,7 +99,10 @@ fn validate_data_sources(
 ///
 /// Returns an error if another daemon is already running, data sources
 /// are missing, or the IPC server fails to bind.
-#[expect(clippy::too_many_lines, reason = "temporary: extra tracing for daemon debugging")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "temporary: extra tracing for daemon debugging"
+)]
 pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     tracing::info!(
         pid = std::process::id(),
@@ -250,12 +253,14 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
             interval.tick().await;
             let total_records = stats_index.total_records().await;
             let stats = stats_index.stats().await;
-            stats_index.event_sender().emit(events::DaemonEvent::StatsHeartbeat {
-                total_queries: stats.total_queries,
-                uptime_secs: stats.uptime_secs,
-                total_records,
-                connections: stats_lifecycle.active_connections(),
-            });
+            stats_index
+                .event_sender()
+                .emit(events::DaemonEvent::StatsHeartbeat {
+                    total_queries: stats.total_queries,
+                    uptime_secs: stats.uptime_secs,
+                    total_records,
+                    connections: stats_lifecycle.active_connections(),
+                });
         }
     });
 
@@ -278,7 +283,10 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     // will keep the process alive indefinitely after the daemon logic has
     // finished, turning it into a multi-GB zombie.  `process::exit(0)` is
     // the standard pattern for daemons with uncancellable blocking threads.
-    #[expect(clippy::exit, reason = "daemon has orphaned blocking threads that prevent normal exit")]
+    #[expect(
+        clippy::exit,
+        reason = "daemon has orphaned blocking threads that prevent normal exit"
+    )]
     {
         std::process::exit(0);
     }

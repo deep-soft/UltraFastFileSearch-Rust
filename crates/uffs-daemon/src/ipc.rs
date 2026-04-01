@@ -115,17 +115,21 @@ impl IpcServer {
     /// Handle a single client connection (shared across all platforms).
     ///
     /// Uses a split-writer architecture:
-    /// - **Reader task**: reads JSON-RPC requests, dispatches to handler,
-    ///   sends responses via an outbound channel.
+    /// - **Reader task**: reads JSON-RPC requests, dispatches to handler, sends
+    ///   responses via an outbound channel.
     /// - **Notification task**: subscribes to the broadcast event channel,
     ///   serializes events as JSON-RPC notifications, sends via the same
     ///   outbound channel.
-    /// - **Writer task**: drains the outbound channel and writes to the
-    ///   socket (single writer, no concurrent writes).
+    /// - **Writer task**: drains the outbound channel and writes to the socket
+    ///   (single writer, no concurrent writes).
     ///
     /// Enforces:
     /// - S4.4.8: 5-minute idle connection timeout
     /// - S4.4.6: Per-connection rate limit (100 queries/sec)
+    #[expect(
+        clippy::single_call_fn,
+        reason = "extracted for readability; handles reader/writer/notif tasks for one connection"
+    )]
     async fn handle_connection(
         reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
         writer: impl tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -154,7 +158,10 @@ impl IpcServer {
 
     /// Reads JSON-RPC requests from the client, dispatches to the handler,
     /// and sends responses via the outbound channel.
-    #[expect(clippy::single_call_fn, reason = "structural separation — reader/writer/notifier split")]
+    #[expect(
+        clippy::single_call_fn,
+        reason = "structural separation — reader/writer/notifier split"
+    )]
     async fn reader_loop(
         reader: impl tokio::io::AsyncRead + Unpin,
         handler: Arc<RequestHandler>,
@@ -248,7 +255,10 @@ impl IpcServer {
 
     /// Subscribes to daemon events and forwards them as JSON-RPC
     /// notifications to the outbound channel.
-    #[expect(clippy::single_call_fn, reason = "structural separation — reader/writer/notifier split")]
+    #[expect(
+        clippy::single_call_fn,
+        reason = "structural separation — reader/writer/notifier split"
+    )]
     async fn notification_loop(
         mut event_rx: EventReceiver,
         out_tx: tokio::sync::mpsc::Sender<String>,
@@ -276,7 +286,10 @@ impl IpcServer {
     }
 
     /// Drains the outbound channel and writes each message to the socket.
-    #[expect(clippy::single_call_fn, reason = "structural separation — reader/writer/notifier split")]
+    #[expect(
+        clippy::single_call_fn,
+        reason = "structural separation — reader/writer/notifier split"
+    )]
     async fn writer_loop(
         mut writer: impl tokio::io::AsyncWrite + Unpin,
         mut out_rx: tokio::sync::mpsc::Receiver<String>,
@@ -434,7 +447,11 @@ pub async fn run_ipc_server(
 
         let active = lifecycle.active_connections();
         if active >= MAX_CONNECTIONS {
-            tracing::warn!(active, max = MAX_CONNECTIONS, "[daemon-ipc] Max connections reached");
+            tracing::warn!(
+                active,
+                max = MAX_CONNECTIONS,
+                "[daemon-ipc] Max connections reached"
+            );
             continue;
         }
 

@@ -134,7 +134,6 @@ impl EventSender {
     }
 }
 
-
 /// Serialize a [`DaemonEvent`] as a JSON-RPC 2.0 notification line.
 ///
 /// Returns a newline-terminated JSON string ready to write to the socket:
@@ -165,7 +164,6 @@ pub fn event_to_json_line(event: &DaemonEvent) -> Option<String> {
     Some(line)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,7 +176,10 @@ mod tests {
             version: "0.4.53".to_owned(),
         });
         let event = rx.try_recv().unwrap();
-        assert!(matches!(event, DaemonEvent::DaemonStarting { pid: 1234, .. }));
+        assert!(matches!(
+            event,
+            DaemonEvent::DaemonStarting { pid: 1234, .. }
+        ));
     }
 
     #[test]
@@ -323,8 +324,7 @@ mod tests {
         for event in &events {
             let line = event_to_json_line(event);
             assert!(line.is_some(), "Failed to serialize: {event:?}");
-            let json: serde_json::Value =
-                serde_json::from_str(line.unwrap().trim()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(line.unwrap().trim()).unwrap();
             assert_eq!(json["jsonrpc"], "2.0");
             assert!(json.get("method").is_some());
             assert!(json.get("id").is_none());
@@ -335,7 +335,6 @@ mod tests {
     /// and are forwarded as JSON-RPC notification lines to the client's socket.
     #[tokio::test]
     async fn notification_loop_delivers_events_to_client() {
-
         let (tx, _rx) = event_channel();
         let mut sub = tx.subscribe();
 
@@ -353,8 +352,8 @@ mod tests {
                             }
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 }
             }
         });
@@ -376,21 +375,15 @@ mod tests {
         });
 
         // Read them from the channel
-        let line1 = tokio::time::timeout(
-            core::time::Duration::from_secs(1),
-            out_rx.recv(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let line1 = tokio::time::timeout(core::time::Duration::from_secs(1), out_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
 
-        let line2 = tokio::time::timeout(
-            core::time::Duration::from_secs(1),
-            out_rx.recv(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let line2 = tokio::time::timeout(core::time::Duration::from_secs(1), out_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
 
         let parsed1: serde_json::Value = serde_json::from_str(line1.trim()).unwrap();
         let parsed2: serde_json::Value = serde_json::from_str(line2.trim()).unwrap();

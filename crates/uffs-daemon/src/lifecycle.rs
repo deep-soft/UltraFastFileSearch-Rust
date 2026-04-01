@@ -49,7 +49,10 @@ impl LifecycleHandle {
 
     /// Decrement active connection count and emit event.
     pub fn connection_closed(&self) {
-        let active = self.active_connections.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
+        let active = self
+            .active_connections
+            .fetch_sub(1, Ordering::Relaxed)
+            .saturating_sub(1);
         self.events.emit(DaemonEvent::ConnectionChanged { active });
     }
 
@@ -183,6 +186,10 @@ impl LifecycleManager {
     /// Without this, a stale socket file remains after graceful stop and
     /// subsequent `daemon status` connects to it, gets EOF, and reports
     /// "connection closed" instead of "not running".
+    #[expect(
+        clippy::unused_self,
+        reason = "method signature matches remove_pid_file(&self); both called in Drop"
+    )]
     pub fn remove_socket_file(&self) {
         let sock_path = crate::ipc::IpcServer::socket_path();
         if sock_path.exists() {

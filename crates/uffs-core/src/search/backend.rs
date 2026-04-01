@@ -169,10 +169,6 @@ impl MultiDriveBackend {
     }
 
     /// Search across all loaded drives.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "search dispatch with three modes; splitting would scatter related logic"
-    )]
     pub fn search(
         &mut self,
         pattern: &str,
@@ -200,7 +196,9 @@ impl MultiDriveBackend {
     /// drives".
     #[expect(
         clippy::too_many_lines,
-        reason = "search dispatch with three modes; splitting would scatter related logic"
+        clippy::too_many_arguments,
+        reason = "search dispatch with three modes and a drive filter; bundling params into a
+                  struct would change the public API across CLI/TUI/daemon callers"
     )]
     pub fn search_drives(
         &mut self,
@@ -234,7 +232,7 @@ impl MultiDriveBackend {
             let (keep, rest): (Vec<_>, Vec<_>) = all.into_iter().partition(|dr| {
                 drives_filter
                     .iter()
-                    .any(|f| f.eq_ignore_ascii_case(&dr.letter))
+                    .any(|fl| fl.eq_ignore_ascii_case(&dr.letter))
             });
             self.drives = keep;
             Some(rest)

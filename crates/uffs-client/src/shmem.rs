@@ -428,7 +428,10 @@ mod tests {
         let path = write_search_results(&[], 0, 0, false).expect("write should succeed");
         let resp = read_search_results(&path).expect("read should succeed");
         assert!(resp.rows.is_empty());
-        assert!(!path.exists(), "empty shmem file must be deleted after read");
+        assert!(
+            !path.exists(),
+            "empty shmem file must be deleted after read"
+        );
     }
 
     #[test]
@@ -452,7 +455,10 @@ mod tests {
         assert_eq!(resp.duration_ms, 99);
         assert_eq!(resp.records_scanned, SHMEM_THRESHOLD + 1);
         assert_eq!(resp.rows[0].name, "file_0.txt");
-        assert_eq!(resp.rows[SHMEM_THRESHOLD].name, format!("file_{SHMEM_THRESHOLD}.txt"));
+        assert_eq!(
+            resp.rows[SHMEM_THRESHOLD].name,
+            format!("file_{SHMEM_THRESHOLD}.txt")
+        );
         assert!(!path.exists(), "shmem file must be deleted after read");
     }
 
@@ -518,11 +524,14 @@ mod tests {
             })
             .collect();
 
-        let paths: Vec<std::path::PathBuf> =
+        let paths: Vec<PathBuf> =
             handles.into_iter().map(|h| h.join().unwrap()).collect();
 
         // All paths must be unique (atomic counter guarantees this).
-        let mut sorted = paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>();
+        let mut sorted = paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>();
         sorted.sort();
         sorted.dedup();
         assert_eq!(

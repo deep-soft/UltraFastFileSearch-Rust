@@ -506,18 +506,23 @@ Benchmark                                | Measured        | Target  | Pass?
 Daemon 7-drive startup (all cached)      | ~12s (25.8M)    | <6s ¹   | ⚠️ ¹
 Per-drive cache load rate                | 1.7–2.7M rec/s  | —       | ✅
 Daemon warm search (25.8M records)       | 0ms query       | —       | ✅
-IPC round-trip latency (daemon mode)     | 9ms median      | <15ms   | ✅
-CLI cold start (spawn + 7-drive load)    | ~12.4s           | —       | ✅
+IPC round-trip latency (daemon mode)     | ~200ms median   | <15ms ² | ⚠️ ²
+CLI cold start (spawn + 7-drive load)    | ~39.5s           | —       | ✅
 Encrypt throughput (AES-NI)              |                 | ≥4 GB/s | ⬜ TODO
 Decrypt throughput (AES-NI)              |                 | ≥4 GB/s | ⬜ TODO
 Cache Save (500 MB, NVMe)               |                 | <200ms  | ⬜ TODO
 Cache Load (500 MB, NVMe)               |                 | <100ms  | ⬜ TODO
 ```
 
-¹ The 12s startup loads 25.8M records across 7 drives — well within the
-  previously measured ~5s TUI baseline for fewer records. The target was set
-  for 7 drives at smaller scale. Per-drive throughput (2.2M rec/s avg) is
-  healthy; startup is I/O-bound on sequential drive loading, not crypto.
+¹ The startup loads 25.8M records across 7 drives. Per-drive throughput
+  (2.2M rec/s avg) is healthy; startup is I/O-bound on sequential drive
+  loading, not crypto. v0.4.55 cold start: 39.5s (up from 12s in v0.4.49
+  due to additional initialization).
+
+² The ~200ms median includes full CLI process spawn + IPC + output
+  formatting (measured end-to-end by `rust-script` test harness). Daemon-side
+  query latency remains 0–1ms for simple queries. The 15ms target was for
+  daemon-side IPC only; the 200ms includes CLI process overhead.
 
 **Source:** `DAEMON_IMPLEMENTATION_PLAN.md` §Readiness Verification Results,
 `REFACTOR_MFT_PIPELINE_CONSOLIDATION.md` §Production Validation.

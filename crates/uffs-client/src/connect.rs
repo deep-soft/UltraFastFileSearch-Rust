@@ -36,9 +36,6 @@ pub struct UffsClient {
     notification_rx: tokio::sync::mpsc::UnboundedReceiver<crate::protocol::RpcNotification>,
 }
 
-
-
-
 impl UffsClient {
     /// Connect to a running daemon, or auto-start one if not running.
     ///
@@ -86,34 +83,29 @@ impl UffsClient {
     /// # Errors
     ///
     /// Returns `ConnectionFailed` or `DaemonStartFailed`.
-    #[expect(
-        clippy::print_stdout,
-        clippy::use_debug,
-        reason = "temporary diagnostic output for debugging daemon start"
-    )]
     pub async fn connect_with_args(
         spawn_args: &[String],
     ) -> Result<Self, crate::error::ClientError> {
         let sock = socket_path();
         let pid_path = pid_file_path();
-        eprintln!("[diag] connect_with_args: socket_path={}", sock.display());
-        eprintln!("[diag] connect_with_args: socket exists={}", sock.exists());
-        eprintln!("[diag] connect_with_args: pid_file={}", pid_path.display());
-        eprintln!(
-            "[diag] connect_with_args: pid_file exists={}",
-            pid_path.exists()
+        tracing::debug!(
+            socket_path = %sock.display(),
+            socket_exists = sock.exists(),
+            pid_file = %pid_path.display(),
+            pid_file_exists = pid_path.exists(),
+            "connect_with_args: paths"
         );
 
         // Try connecting directly first — daemon may already be running.
         match Self::platform_connect().await {
             Ok(client) => {
-                eprintln!("[diag] connect_with_args: already connected to existing daemon");
+                tracing::debug!("connect_with_args: already connected to existing daemon");
                 // S4.3.4: Verify daemon identity via PID file
                 verify_daemon_after_connect();
                 return Ok(client);
             }
             Err(conn_err) => {
-                eprintln!("[diag] connect_with_args: initial connect failed: {conn_err}");
+                tracing::debug!(%conn_err, "connect_with_args: initial connect failed");
                 drop(conn_err);
             }
         }
@@ -122,10 +114,10 @@ impl UffsClient {
         tracing::info!("Daemon not running, auto-starting via `uffs daemon run`...");
 
         let uffs_exe = find_uffs_exe();
-        eprintln!("[diag] connect_with_args: uffs_exe={}", uffs_exe.display());
-        eprintln!(
-            "[diag] connect_with_args: uffs_exe exists={}",
-            uffs_exe.exists()
+        tracing::debug!(
+            uffs_exe = %uffs_exe.display(),
+            uffs_exe_exists = uffs_exe.exists(),
+            "connect_with_args: resolved exe"
         );
 
         // Build args: ["daemon", "run", ...spawn_args]
@@ -133,7 +125,7 @@ impl UffsClient {
         for arg in spawn_args {
             cmd_args.push(arg.as_str());
         }
-        eprintln!("[diag] connect_with_args: cmd_args={cmd_args:?}");
+        tracing::debug!(?cmd_args, "connect_with_args: spawning daemon");
 
         // Spawn the daemon process.
         //
@@ -142,7 +134,7 @@ impl UffsClient {
         // "runas" verb to trigger a UAC consent dialog. If already elevated
         // (or the broker service is available), we spawn normally.
         spawn_daemon(&uffs_exe, &cmd_args)?;
-        eprintln!("[diag] connect_with_args: spawn_daemon returned OK");
+        tracing::debug!("connect_with_args: spawn_daemon returned OK");
 
         // Retry with backoff
         let mut delay_ms = 50_u64;
@@ -152,20 +144,24 @@ impl UffsClient {
 
             let sock_exists = sock.exists();
             let pid_exists = pid_path.exists();
-            println!(
-                "[diag] connect attempt {attempt}/{max_attempts}: delay={delay_ms}ms, socket_exists={sock_exists}, pid_exists={pid_exists}"
+            tracing::debug!(
+                attempt,
+                max_attempts,
+                delay_ms,
+                sock_exists,
+                pid_exists,
+                "connect attempt"
             );
 
             match Self::platform_connect().await {
                 Ok(client) => {
-                    println!("[diag] connect_with_args: connected on attempt {attempt}!");
                     tracing::info!(attempt, "Connected to daemon");
                     // S4.3.4: Verify daemon identity via PID file
                     verify_daemon_after_connect();
                     return Ok(client);
                 }
                 Err(conn_err) if attempt <= 3 || attempt == max_attempts => {
-                    println!("[diag] connect attempt {attempt} failed: {conn_err}");
+                    tracing::debug!(attempt, %conn_err, "connect attempt failed");
                 }
                 Err(_) => {}
             }
@@ -173,7 +169,7 @@ impl UffsClient {
             delay_ms = (delay_ms * 2).min(2000);
         }
 
-        println!("[diag] connect_with_args: all {max_attempts} attempts exhausted, giving up");
+        tracing::warn!(max_attempts, "all connect attempts exhausted");
         Err(crate::error::ClientError::ConnectionFailed(
             "Could not connect to daemon after auto-start".to_owned(),
         ))
@@ -216,7 +212,11 @@ impl UffsClient {
             .flush()
             .await
             .map_err(|io_err| crate::error::ClientError::Io(io_err.to_string()))?;
-        tracing::info!(id, method, "send_request: write+flush done, reading response");
+        tracing::info!(
+            id,
+            method,
+            "send_request: write+flush done, reading response"
+        );
 
         // Read lines until we get a response with matching id.
         // Notifications (no id) are routed to the notification channel.
@@ -655,13 +655,16 @@ impl UffsClient {
                             tracing::info!("[client-bridge-read] EOF from socket");
                             break;
                         }
-                        Err(ref read_err) if read_err.kind() == std::io::ErrorKind::TimedOut
-                            || read_err.kind() == std::io::ErrorKind::WouldBlock =>
+                        Err(ref read_err)
+                            if read_err.kind() == std::io::ErrorKind::TimedOut
+                                || read_err.kind() == std::io::ErrorKind::WouldBlock =>
                         {
                             // Read timeout — check if bridge_write is still alive
                             // by attempting a zero-byte write.
                             if bridge_write.write_all(&[]).await.is_err() {
-                                tracing::info!("[client-bridge-read] bridge closed during timeout, exiting");
+                                tracing::info!(
+                                    "[client-bridge-read] bridge closed during timeout, exiting"
+                                );
                                 break;
                             }
                             continue; // retry the read
@@ -705,7 +708,9 @@ impl UffsClient {
                 loop {
                     match bridge_read.read(&mut buf).await {
                         Ok(0) => {
-                            tracing::info!("[client-bridge-write] EOF from bridge (async_write dropped)");
+                            tracing::info!(
+                                "[client-bridge-write] EOF from bridge (async_write dropped)"
+                            );
                             break;
                         }
                         Err(read_err) => {
@@ -717,15 +722,11 @@ impl UffsClient {
                         }
                         Ok(n) => {
                             if writer.write_all(&buf[..n]).is_err() {
-                                tracing::info!(
-                                    "[client-bridge-write] socket write_all failed"
-                                );
+                                tracing::info!("[client-bridge-write] socket write_all failed");
                                 break;
                             }
                             if writer.flush().is_err() {
-                                tracing::info!(
-                                    "[client-bridge-write] socket flush failed"
-                                );
+                                tracing::info!("[client-bridge-write] socket flush failed");
                                 break;
                             }
                         }
@@ -989,7 +990,9 @@ fn spawn_daemon_windows(
         // CreateProcessW with bInheritHandles=FALSE prevents all handle
         // inheritance, so the daemon is fully detached from the parent's
         // I/O.
-        println!("[diag] spawn_daemon_windows: spawning via CreateProcessW (no handle inheritance)...");
+        println!(
+            "[diag] spawn_daemon_windows: spawning via CreateProcessW (no handle inheritance)..."
+        );
         spawn_detached_no_inherit(exe, args)?;
     } else {
         // Not elevated — use ShellExecuteW "runas" to trigger UAC.
@@ -1002,7 +1005,6 @@ fn spawn_daemon_windows(
     }
     Ok(())
 }
-
 
 /// Spawn the daemon as a fully detached process with NO handle inheritance.
 ///
@@ -1048,23 +1050,30 @@ fn spawn_detached_no_inherit(
     #[expect(unsafe_code, reason = "CreateProcessW requires unsafe FFI")]
     let result = unsafe {
         CreateProcessW(
-            None,                                    // lpApplicationName (use command line)
+            None,                                              /* lpApplicationName (use command
+                                                                * line) */
             Some(windows::core::PWSTR(cmd_wide.as_mut_ptr())), // lpCommandLine
-            None,                                    // lpProcessAttributes
-            None,                                    // lpThreadAttributes
-            false,                                   // bInheritHandles = FALSE ← key fix
-            DETACHED_PROCESS,                        // dwCreationFlags
-            None,                                    // lpEnvironment (inherit)
-            None,                                    // lpCurrentDirectory (inherit)
-            &si,                                     // lpStartupInfo
-            &mut pi,                                 // lpProcessInformation
+            None,                                              // lpProcessAttributes
+            None,                                              // lpThreadAttributes
+            false,                                             // bInheritHandles = FALSE ← key fix
+            DETACHED_PROCESS,                                  // dwCreationFlags
+            None,                                              // lpEnvironment (inherit)
+            None,                                              // lpCurrentDirectory (inherit)
+            &si,                                               // lpStartupInfo
+            &mut pi,                                           // lpProcessInformation
         )
     };
 
     match result {
         Ok(()) => {
-            println!("[diag] spawn_detached_no_inherit: spawned PID={}", pi.dwProcessId);
-            tracing::info!(pid = pi.dwProcessId, "Daemon spawned (no handle inheritance)");
+            println!(
+                "[diag] spawn_detached_no_inherit: spawned PID={}",
+                pi.dwProcessId
+            );
+            tracing::info!(
+                pid = pi.dwProcessId,
+                "Daemon spawned (no handle inheritance)"
+            );
             // Close the process and thread handles — we don't need them.
             // SAFETY: valid handles returned by CreateProcessW.
             #[expect(unsafe_code, reason = "closing Win32 handles from CreateProcessW")]

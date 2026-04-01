@@ -184,7 +184,10 @@ impl OutputColumn {
             "reparse" => Some(Self::Reparse),
             "offline" | "o" => Some(Self::Offline),
             // CPP uses "notcontent", Rust uses "notindexed" - support both
-            "notindexed" | "notcontent" | "not content indexed file" | "not indexed"
+            "notindexed"
+            | "notcontent"
+            | "not content indexed file"
+            | "not indexed"
             | "not content indexed" => Some(Self::NotIndexed),
             "temporary" => Some(Self::Temporary),
             "virtual" => Some(Self::Virtual),

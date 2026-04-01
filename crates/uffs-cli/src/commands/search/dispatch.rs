@@ -90,8 +90,7 @@ pub(super) fn build_search_config<'a>(
         output_config = output_config.with_tz_offset_hours(hours);
     }
 
-    let output_targets =
-        compute_output_targets(single_drive, multi_drives.as_ref(), pattern_drive);
+    let output_targets = compute_output_targets(single_drive, multi_drives.as_ref(), pattern_drive);
 
     Ok(SearchConfig {
         pattern,

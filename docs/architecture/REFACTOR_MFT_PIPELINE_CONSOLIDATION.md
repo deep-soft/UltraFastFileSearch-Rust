@@ -317,7 +317,7 @@ guards drop → join (instant, both already done)
 | Deprecated function callers | N/A | 0 | **0** (only test/diagnostic code uses deprecated wrappers) | ✅ |
 | Daemon cache load rate (25.8M records, 7 drives) | N/A | — | **2.2M rec/s avg** (12s total, compact cache) | ✅ baseline |
 | Daemon warm search (25.8M records) | N/A | <15ms | **0ms query + 12ms wall** | ✅ |
-| CLI flag validation (34 tests) | 14 broken flags | 34/34 pass | **34/34 pass** (v0.4.51) | ✅ |
+| CLI flag validation (44 tests) | 14 broken flags | 44/44 pass | **44/44 pass** (v0.4.55, 56.5s total, avg 1.3s) | ✅ |
 
 ---
 
@@ -450,7 +450,7 @@ The unified profiling pipeline (`CACHE_PROFILE`) was validated end-to-end:
 | `mft_serialize` / `mft_compress` / `mft_encrypt` / `mft_write` | `cache.rs` → `file_io.rs` | Wave 1: read_and_cache_index now delegates to save_to_cache |
 | `compact_build` / `compact_tri` / `compact_total` | `compact.rs` | Wave 3: load_drive() builds compact after MftIndex load |
 | `compact_ser` / `compact_zstd` / `compact_enc` / `compact_write` | `compact_cache.rs` | Wave 0.7: save_compact_cache profiling added |
-| `search_*` / `output_*` / `wall_total` | `dispatch.rs` / `output/mod.rs` | CLI daemon path (D5.3: 34/34 flag tests) |
+| `search_*` / `output_*` / `wall_total` | `dispatch.rs` / `output/mod.rs` | CLI daemon path (D5.3: 44/44 flag tests) |
 | `shmem_read` / `shmem_write` | `handler.rs` / `connect.rs` | D5.0: shmem validated for 25.8M rows |
 
 ### load_drive() Call Site Audit
@@ -480,18 +480,20 @@ The consolidated pipeline delivers sub-millisecond daemon-side query latency:
 | `*.rs` (limit=1000) | 1,007 | **4ms** | 25.8M |
 | `*` (all 25.8M, shmem) | 25,842,547 | **26.7s** | 25.8M |
 
-Median warm CLI round-trip (incl IPC + output): **9ms** (34-test suite, v0.4.51).
+Median warm CLI round-trip (incl IPC + output): **~200ms** (44-test suite, v0.4.55).
 
-### CLI Flag Validation (34/34 Pass, v0.4.51)
+### CLI Flag Validation (44/44 Pass, v0.4.55)
 
-All 34 CLI flag combinations pass on production data (25.8M records, 7 drives).
-Full results in `DAEMON_IMPLEMENTATION_PLAN.md` §CLI Flag Validation.
+All 44 CLI flag combinations pass on production data (25.8M records, 7 drives).
+Suite: `scripts/windows/cli-flag-validation.rs`. Total runtime: **56.5s** (avg 1.3s/test).
 
-Key performance observations from the flag suite:
-- **Cold start penalty:** 12.4s (daemon spawn + 7-drive cache load) — test 1 only
-- **Median warm query:** 9ms (both cold and warm run suites)
-- **Slowest filters:** `--ext` (1.7–1.9s, full-index extension scan), `--attr !hidden` (738–820ms)
-- **Benchmark (154K `.rs` rows):** 248–289ms including shmem serialization
+Key performance observations from the v0.4.55 flag suite:
+- **Cold start penalty:** 39.5s (daemon spawn + 7-drive cache load) — test T00 only
+- **Median warm query:** ~200ms (IPC round-trip + output formatting)
+- **Fastest queries:** simple glob/name match: **192–214ms** (T01–T03, T16–T19, T25–T31, T40–T42)
+- **Slowest filters:** `--ext` (1.8–2.1s, full-index extension scan), `--attr !hidden` (944ms), `--limit 0 unlimited` (1.1s for 163K rows)
+- **Benchmark (154K `.rs` rows):** 479ms including shmem serialization
+- **10 new tests vs v0.4.51:** `--header false`, `--smart-case`, `--newer-accessed`, `--attr readonly`, `--attr system,!hidden`, `--older-created`, `--limit 0`, `--no-results`, `--attr system` (all pass)
 
 ---
 
