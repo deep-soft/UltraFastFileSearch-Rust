@@ -359,7 +359,6 @@ mod tests {
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
-
                 }
             }
         });
