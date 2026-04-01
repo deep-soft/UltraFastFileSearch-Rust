@@ -234,6 +234,19 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     ipc_task.abort();
     let _ignore = load_task.await;
     tracing::info!("Daemon stopped");
-    // PID + socket files are cleaned up by LifecycleManager::drop().
-    Ok(())
+
+    // Clean up PID + socket files before exiting.
+    drop(lifecycle_mgr);
+
+    // Force-exit the process.  The Windows IPC server uses
+    // `std::os::windows::net::UnixListener` with `spawn_blocking(accept)`
+    // and per-connection `std::thread::spawn` bridge threads.  These
+    // blocking std threads cannot be cancelled by `ipc_task.abort()` and
+    // will keep the process alive indefinitely after the daemon logic has
+    // finished, turning it into a multi-GB zombie.  `process::exit(0)` is
+    // the standard pattern for daemons with uncancellable blocking threads.
+    #[expect(clippy::exit, reason = "daemon has orphaned blocking threads that prevent normal exit")]
+    {
+        std::process::exit(0);
+    }
 }
