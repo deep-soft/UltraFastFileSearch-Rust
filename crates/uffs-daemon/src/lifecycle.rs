@@ -164,6 +164,19 @@ impl LifecycleManager {
         }
     }
 
+    /// Remove the IPC socket file (called on shutdown).
+    ///
+    /// Without this, a stale socket file remains after graceful stop and
+    /// subsequent `daemon status` connects to it, gets EOF, and reports
+    /// "connection closed" instead of "not running".
+    pub fn remove_socket_file(&self) {
+        let sock_path = crate::ipc::IpcServer::socket_path();
+        if sock_path.exists() {
+            let _ignore = std::fs::remove_file(&sock_path);
+            tracing::info!(path = %sock_path.display(), "Socket file removed");
+        }
+    }
+
     /// Check for stale PID file on startup. Returns `true` if safe to proceed.
     ///
     /// Uses [`parse_pid_file`] for structured parsing and validates the exe
@@ -405,5 +418,6 @@ impl LifecycleManager {
 impl Drop for LifecycleManager {
     fn drop(&mut self) {
         self.remove_pid_file();
+        self.remove_socket_file();
     }
 }

@@ -1,194 +1,192 @@
-2026-03-31T23:13:26.0711084Z  INFO ThreadId(14) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T23:13:26.0711429Z  INFO ThreadId(14) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=1 method="status"
-2026-03-31T23:13:38.0690483Z  INFO ThreadId(13) uffs_client::connect: crates/uffs-client/src/connect.rs:119: Daemon not running, auto-starting via `uffs daemon run`...
-2026-03-31T23:13:38.2636811Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:102: uffs-daemon starting pid=76712 version="0.4.43" broker_available=false mft_files=[] drives=[] data_dir=None no_cache=false no_retire=false
-2026-03-31T23:13:38.2643102Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:126: Lifecycle data directory data_dir=C:\Users\rnio\AppData\Local\uffs
-2026-03-31T23:13:38.4577845Z  INFO ThreadId(24) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:155: PID file written path=C:\Users\rnio\AppData\Local\uffs\daemon.pid
-2026-03-31T23:13:38.4578235Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:136: PID file written
-2026-03-31T23:13:38.4585511Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:164: Auto-discovered NTFS drives count=7 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T23:13:38.4585667Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:178: Final data sources mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T23:13:38.4585713Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:182: Data sources validated OK
-2026-03-31T23:13:38.4585962Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:221: Starting IPC server...
-2026-03-31T23:13:38.4586063Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:227: IPC server task spawned
-2026-03-31T23:13:38.4586486Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:187: Load task starting mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T23:13:38.4586956Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:207: Loading live drives... drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T23:13:38.4587027Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=C
-2026-03-31T23:13:38.621688Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:159: Connected to daemon attempt=3
-2026-03-31T23:13:38.6217501Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:621: [client-bridge-read] thread started
-2026-03-31T23:13:38.6218012Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:654: [client-bridge-write] thread started
-2026-03-31T23:13:38.6219876Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=1 delay_ms=250
-2026-03-31T23:13:38.6220199Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T23:13:38.6220374Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=1 method="status"
-2026-03-31T23:13:38.6837144Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:325: IPC server listening (Windows AF_UNIX) path=C:\Users\rnio\AppData\Local\uffs\daemon.sock
-2026-03-31T23:13:38.683734Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:332: [daemon-ipc] entering accept loop
-2026-03-31T23:13:38.6853281Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
-2026-03-31T23:13:38.6857434Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:341: [daemon-ipc] accept() returned OK
-2026-03-31T23:13:38.6859401Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
-2026-03-31T23:13:38.6859691Z  INFO ThreadId(29) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:378: [daemon-bridge-read] thread started
-2026-03-31T23:13:38.6860442Z  INFO ThreadId(30) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:409: [daemon-bridge-write] thread started
-2026-03-31T23:13:38.6863062Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:372: await_ready: got status poll_count=1 status=Loading { drives_loaded: 0, drives_total: 7 }
-2026-03-31T23:13:38.9450553Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=2 delay_ms=500
-2026-03-31T23:13:38.9451443Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=2 method="status"
-2026-03-31T23:13:38.9451643Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=2 method="status"
-2026-03-31T23:13:38.9453634Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:372: await_ready: got status poll_count=2 status=Loading { drives_loaded: 0, drives_total: 7 }
-2026-03-31T23:13:39.4568841Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=3 delay_ms=1000
-2026-03-31T23:13:39.4569227Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=3 method="status"
-2026-03-31T23:13:39.4569448Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=3 method="status"
-2026-03-31T23:13:39.4571572Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:372: await_ready: got status poll_count=3 status=Loading { drives_loaded: 0, drives_total: 7 }
-2026-03-31T23:13:40.4727543Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=4 delay_ms=2000
-2026-03-31T23:13:40.47278Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=4 method="status"
-2026-03-31T23:13:40.4727907Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=4 method="status"
-2026-03-31T23:13:40.4729875Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:372: await_ready: got status poll_count=4 status=Loading { drives_loaded: 0, drives_total: 7 }
-2026-03-31T23:13:40.5702723Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=C records=3424075
-2026-03-31T23:13:40.5703512Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=C records=3424075 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:13:40.5703834Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=D
-2026-03-31T23:13:42.4813636Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=5 delay_ms=2000
-2026-03-31T23:13:42.4813957Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=5 method="status"
-2026-03-31T23:13:42.4814084Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=5 method="status"
-2026-03-31T23:13:42.4816167Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:372: await_ready: got status poll_count=5 status=Loading { drives_loaded: 1, drives_total: 7 }
-2026-03-31T23:13:43.9349166Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=D records=7065539
-2026-03-31T23:13:43.9349743Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=D records=7065539 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:13:43.9349884Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=E
-2026-03-31T23:13:44.4974182Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=6 delay_ms=2000
-2026-03-31T23:13:44.4974564Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=6 method="status"
-2026-03-31T23:13:44.4974746Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=6 method="status"
-2026-03-31T23:13:44.4976989Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:372: await_ready: got status poll_count=6 status=Loading { drives_loaded: 2, drives_total: 7 }
-2026-03-31T23:13:45.1267412Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=E records=2929519
-2026-03-31T23:13:45.1267855Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=E records=2929519 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:13:45.1267929Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=F
-2026-03-31T23:13:46.30023Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=F records=2221343
-2026-03-31T23:13:46.3002723Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=F records=2221343 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:13:46.3002801Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=G
-2026-03-31T23:13:46.3103488Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=G records=15090
-2026-03-31T23:13:46.3103889Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=G records=15090 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:13:46.3104026Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=M
-2026-03-31T23:13:46.5136603Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=7 delay_ms=2000
-2026-03-31T23:13:46.5136886Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=7 method="status"
-2026-03-31T23:13:46.5137113Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=7 method="status"
-2026-03-31T23:13:46.5139453Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:372: await_ready: got status poll_count=7 status=Loading { drives_loaded: 5, drives_total: 7 }
-2026-03-31T23:13:46.9635229Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=M records=1908805
-2026-03-31T23:13:46.9635741Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=M records=1908805 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:13:46.963582Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=S
-2026-03-31T23:13:48.5147693Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=8 delay_ms=2000
-2026-03-31T23:13:48.5147999Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=8 method="status"
-2026-03-31T23:13:48.5148143Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=8 method="status"
-2026-03-31T23:13:48.5162312Z  INFO ThreadId(16) uffs_client::connect: crates/uffs-client/src/connect.rs:372: await_ready: got status poll_count=8 status=Loading { drives_loaded: 6, drives_total: 7 }
-2026-03-31T23:13:49.9884295Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=S records=8278102
-2026-03-31T23:13:49.9884739Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=S records=8278102 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:13:49.9884833Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:209: Live drives loaded
-2026-03-31T23:13:49.9884854Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:214: Load task completed
-2026-03-31T23:13:50.523281Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:368: await_ready: sending status poll poll_count=9 delay_ms=2000
-2026-03-31T23:13:50.5233063Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=9 method="status"
-2026-03-31T23:13:50.5233201Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=9 method="status"
-2026-03-31T23:13:50.5235246Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:372: await_ready: got status poll_count=9 status=Ready
-2026-03-31T23:13:50.523541Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=10 method="status"
-2026-03-31T23:13:50.5235491Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=10 method="status"
-2026-03-31T23:13:50.5237018Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:662: [client-bridge-write] EOF from bridge
-2026-03-31T23:13:50.5237115Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:689: [client-bridge-write] thread exiting
-2026-03-31T23:13:50.528547Z  INFO ThreadId(29) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:388: [daemon-bridge-read] read error error=An existing connection was forcibly closed by the remote host. (os error 10054)
-2026-03-31T23:13:50.5288647Z  INFO ThreadId(29) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:403: [daemon-bridge-read] thread exiting
-2026-03-31T23:13:50.528927Z  INFO ThreadId(30) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:417: [daemon-bridge-write] EOF from bridge
-2026-03-31T23:13:50.5289401Z  INFO ThreadId(30) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:437: [daemon-bridge-write] thread exiting
-2026-03-31T23:33:38.4831423Z  INFO ThreadId(02) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:259: Idle timeout reached — auto-retiring timeout_secs=600 session_tier=0
-2026-03-31T23:33:38.4832298Z  INFO ThreadId(02) uffs_daemon: crates/uffs-daemon/src/lib.rs:233: Daemon shutting down
-2026-03-31T23:33:38.4832364Z  INFO ThreadId(02) uffs_daemon: crates/uffs-daemon/src/lib.rs:236: Daemon stopped
-2026-03-31T23:33:38.4838062Z  INFO ThreadId(02) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:163: PID file removed path=C:\Users\rnio\AppData\Local\uffs\daemon.pid
-2026-03-31T23:54:30.7808049Z  INFO ThreadId(18) uffs_client::connect: crates/uffs-client/src/connect.rs:203: send_request: writing request id=1 method="status"
-2026-03-31T23:54:30.7808312Z  INFO ThreadId(18) uffs_client::connect: crates/uffs-client/src/connect.rs:216: send_request: write+flush done, reading response id=1 method="status"
-2026-03-31T23:54:30.7808559Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:621: [client-bridge-read] thread started
-2026-03-31T23:54:30.7809682Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:631: [client-bridge-read] EOF from socket
-2026-03-31T23:54:30.7809851Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:649: [client-bridge-read] thread exiting
-2026-03-31T23:54:30.7809386Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:654: [client-bridge-write] thread started
-2026-03-31T23:54:30.7810693Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:662: [client-bridge-write] EOF from bridge
-2026-03-31T23:54:30.781079Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:689: [client-bridge-write] thread exiting
-2026-03-31T23:54:45.4398133Z  INFO ThreadId(06) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:96: [daemon_start] checking if daemon is already running
-2026-03-31T23:54:45.4426353Z  INFO ThreadId(06) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:102: [daemon_start] connect_raw failed — daemon not running, will start
-2026-03-31T23:54:45.4426783Z  INFO ThreadId(06) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:127: [daemon_start] connecting to daemon (auto-start if needed)
-2026-03-31T23:54:45.4429558Z  INFO ThreadId(06) uffs_client::connect: crates/uffs-client/src/connect.rs:122: Daemon not running, auto-starting via `uffs daemon run`...
-2026-03-31T23:54:45.6423042Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:102: uffs-daemon starting pid=71912 version="0.4.44" broker_available=false mft_files=[] drives=[] data_dir=None no_cache=false no_retire=false
-2026-03-31T23:54:45.6430301Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:126: Lifecycle data directory data_dir=C:\Users\rnio\AppData\Local\uffs
-2026-03-31T23:54:45.9554713Z  INFO ThreadId(22) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:155: PID file written path=C:\Users\rnio\AppData\Local\uffs\daemon.pid
-2026-03-31T23:54:45.9555137Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:136: PID file written
-2026-03-31T23:54:45.9562607Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:164: Auto-discovered NTFS drives count=7 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T23:54:45.9562772Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:178: Final data sources mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T23:54:45.956282Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:182: Data sources validated OK
-2026-03-31T23:54:45.9563086Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:221: Starting IPC server...
-2026-03-31T23:54:45.9563184Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:227: IPC server task spawned
-2026-03-31T23:54:45.9563503Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:187: Load task starting mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T23:54:45.956391Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:207: Loading live drives... drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
-2026-03-31T23:54:45.9564091Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=C
-2026-03-31T23:54:46.2910159Z  INFO ThreadId(22) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:325: IPC server listening (Windows AF_UNIX) path=C:\Users\rnio\AppData\Local\uffs\daemon.sock
-2026-03-31T23:54:46.2910369Z  INFO ThreadId(22) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:332: [daemon-ipc] entering accept loop
-2026-03-31T23:54:46.292792Z  INFO ThreadId(22) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
-2026-03-31T23:54:46.4046125Z  INFO ThreadId(22) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:341: [daemon-ipc] accept() returned OK
-2026-03-31T23:54:46.4048447Z  INFO ThreadId(22) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
-2026-03-31T23:54:46.4049601Z  INFO ThreadId(29) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:375: [daemon-bridge-read] thread started
-2026-03-31T23:54:46.4050393Z  INFO ThreadId(30) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:415: [daemon-bridge-write] thread started
-2026-03-31T23:54:46.4065509Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:162: Connected to daemon attempt=4
-2026-03-31T23:54:46.4065791Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:622: [client-bridge-read] thread started
-2026-03-31T23:54:46.4066721Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:675: [client-bridge-write] thread started
-2026-03-31T23:54:46.4069408Z  INFO ThreadId(02) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:131: [daemon_start] connected, entering await_ready
-2026-03-31T23:54:46.406956Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=1 delay_ms=250
-2026-03-31T23:54:46.4069704Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=1 method="status"
-2026-03-31T23:54:46.4069834Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=1 method="status"
-2026-03-31T23:54:46.4072481Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=1 status=Loading { drives_loaded: 0, drives_total: 7 }
-2026-03-31T23:54:46.6676895Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=2 delay_ms=500
-2026-03-31T23:54:46.6677667Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=2 method="status"
-2026-03-31T23:54:46.667786Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=2 method="status"
-2026-03-31T23:54:46.6680042Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=2 status=Loading { drives_loaded: 0, drives_total: 7 }
-2026-03-31T23:54:47.1687789Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=3 delay_ms=1000
-2026-03-31T23:54:47.1688068Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=3 method="status"
-2026-03-31T23:54:47.1688185Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=3 method="status"
-2026-03-31T23:54:47.169054Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=3 status=Loading { drives_loaded: 0, drives_total: 7 }
-2026-03-31T23:54:48.005936Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=C records=3424075
-2026-03-31T23:54:48.005999Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=C records=3424075 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:54:48.0060147Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=D
-2026-03-31T23:54:48.182968Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=4 delay_ms=2000
-2026-03-31T23:54:48.1830019Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=4 method="status"
-2026-03-31T23:54:48.1830153Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=4 method="status"
-2026-03-31T23:54:48.1832227Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=4 status=Loading { drives_loaded: 1, drives_total: 7 }
-2026-03-31T23:54:50.1978556Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=5 delay_ms=2000
-2026-03-31T23:54:50.1978841Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=5 method="status"
-2026-03-31T23:54:50.1979026Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=5 method="status"
-2026-03-31T23:54:50.1981089Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=5 status=Loading { drives_loaded: 1, drives_total: 7 }
-2026-03-31T23:54:51.2445818Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=D records=7065539
-2026-03-31T23:54:51.2446282Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=D records=7065539 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:54:51.2446361Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=E
-2026-03-31T23:54:52.2139896Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=6 delay_ms=2000
-2026-03-31T23:54:52.2140131Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=6 method="status"
-2026-03-31T23:54:52.2140234Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=6 method="status"
-2026-03-31T23:54:52.2142341Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=6 status=Loading { drives_loaded: 2, drives_total: 7 }
-2026-03-31T23:54:52.402145Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=E records=2929519
-2026-03-31T23:54:52.402191Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=E records=2929519 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:54:52.4021989Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=F
-2026-03-31T23:54:53.5557261Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=F records=2221343
-2026-03-31T23:54:53.5557726Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=F records=2221343 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:54:53.5557805Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=G
-2026-03-31T23:54:53.5659437Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=G records=15090
-2026-03-31T23:54:53.5659785Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=G records=15090 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:54:53.5659859Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=M
-2026-03-31T23:54:54.2141733Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=M records=1908805
-2026-03-31T23:54:54.2142203Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=M records=1908805 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:54:54.2142279Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=S
-2026-03-31T23:54:54.229848Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=7 delay_ms=2000
-2026-03-31T23:54:54.2298769Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=7 method="status"
-2026-03-31T23:54:54.2298904Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=7 method="status"
-2026-03-31T23:54:54.2301237Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=7 status=Loading { drives_loaded: 6, drives_total: 7 }
-2026-03-31T23:54:56.240892Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=8 delay_ms=2000
-2026-03-31T23:54:56.2409211Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=8 method="status"
-2026-03-31T23:54:56.2409327Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=8 method="status"
-2026-03-31T23:54:56.2411686Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=8 status=Loading { drives_loaded: 6, drives_total: 7 }
-2026-03-31T23:54:57.2080056Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=S records=8278102
-2026-03-31T23:54:57.2080645Z  INFO ThreadId(22) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=S records=8278102 mft_ms=0 compact_ms=0 trigram_ms=0
-2026-03-31T23:54:57.2080724Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:209: Live drives loaded
-2026-03-31T23:54:57.2080741Z  INFO ThreadId(22) uffs_daemon: crates/uffs-daemon/src/lib.rs:214: Load task completed
-2026-03-31T23:54:58.2439598Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=9 delay_ms=2000
-2026-03-31T23:54:58.2439855Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=9 method="status"
-2026-03-31T23:54:58.2439963Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=9 method="status"
-2026-03-31T23:54:58.2441846Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=9 status=Ready
-2026-03-31T23:54:58.2441993Z  INFO ThreadId(02) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:138: [daemon_start] await_ready returned OK, printing result
-2026-03-31T23:54:58.2442199Z  INFO ThreadId(02) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:142: [daemon_start] done, returning
-2026-03-31T23:54:58.2494164Z  INFO ThreadId(29) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:397: [daemon-bridge-read] read error error=An existing connection was forcibly closed by the remote host. (os error 10054)
-2026-03-31T23:54:58.2497479Z  INFO ThreadId(29) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:409: [daemon-bridge-read] thread exiting
-2026-03-31T23:54:58.2497875Z  INFO ThreadId(30) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:433: [daemon-bridge-write] EOF from bridge
-2026-03-31T23:54:58.2498016Z  INFO ThreadId(30) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:453: [daemon-bridge-write] thread exiting
+2026-04-01T00:14:45.9720106Z  INFO ThreadId(02) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:259: Idle timeout reached — auto-retiring timeout_secs=600 session_tier=0
+2026-04-01T00:14:45.9720701Z  INFO ThreadId(02) uffs_daemon: crates/uffs-daemon/src/lib.rs:233: Daemon shutting down
+2026-04-01T00:14:45.9720751Z  INFO ThreadId(02) uffs_daemon: crates/uffs-daemon/src/lib.rs:236: Daemon stopped
+2026-04-01T00:14:45.9725882Z  INFO ThreadId(02) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:163: PID file removed path=C:\Users\rnio\AppData\Local\uffs\daemon.pid
+2026-04-01T00:23:01.8371415Z  INFO ThreadId(14) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=1 method="status"
+2026-04-01T00:23:01.8371686Z  INFO ThreadId(14) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=1 method="status"
+2026-04-01T00:23:01.8372359Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:622: [client-bridge-read] thread started
+2026-04-01T00:23:01.8373799Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:640: [client-bridge-read] EOF from socket
+2026-04-01T00:23:01.8373316Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:675: [client-bridge-write] thread started
+2026-04-01T00:23:01.8374Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:670: [client-bridge-read] thread exiting
+2026-04-01T00:23:01.8374737Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:693: [client-bridge-write] EOF from bridge (async_write dropped)
+2026-04-01T00:23:01.8374836Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:720: [client-bridge-write] thread exiting
+2026-04-01T00:23:27.4820605Z  INFO ThreadId(14) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:96: [daemon_start] checking if daemon is already running
+2026-04-01T00:23:27.4846156Z  INFO ThreadId(14) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:102: [daemon_start] connect_raw failed — daemon not running, will start
+2026-04-01T00:23:27.4846525Z  INFO ThreadId(14) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:127: [daemon_start] connecting to daemon (auto-start if needed)
+2026-04-01T00:23:27.4848314Z  INFO ThreadId(14) uffs_client::connect: crates/uffs-client/src/connect.rs:122: Daemon not running, auto-starting via `uffs daemon run`...
+2026-04-01T00:23:27.6638398Z  INFO ThreadId(14) uffs_client::connect: crates/uffs-client/src/connect.rs:1052: Daemon spawned (no handle inheritance) pid=34164
+2026-04-01T00:23:27.678975Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:102: uffs-daemon starting pid=34164 version="0.4.46" broker_available=false mft_files=[] drives=[] data_dir=None no_cache=false no_retire=false
+2026-04-01T00:23:27.6796131Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:126: Lifecycle data directory data_dir=C:\Users\rnio\AppData\Local\uffs
+2026-04-01T00:23:27.8416446Z  INFO ThreadId(24) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:155: PID file written path=C:\Users\rnio\AppData\Local\uffs\daemon.pid
+2026-04-01T00:23:27.8416698Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:136: PID file written
+2026-04-01T00:23:27.8424527Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:164: Auto-discovered NTFS drives count=7 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-04-01T00:23:27.8424713Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:178: Final data sources mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-04-01T00:23:27.842476Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:182: Data sources validated OK
+2026-04-01T00:23:27.8425031Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:221: Starting IPC server...
+2026-04-01T00:23:27.8425163Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:227: IPC server task spawned
+2026-04-01T00:23:27.8425709Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:187: Load task starting mft_files=0 drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-04-01T00:23:27.842631Z  INFO ThreadId(25) uffs_daemon: crates/uffs-daemon/src/lib.rs:207: Loading live drives... drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']
+2026-04-01T00:23:27.8426485Z  INFO ThreadId(25) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=C
+2026-04-01T00:23:28.0307739Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:325: IPC server listening (Windows AF_UNIX) path=C:\Users\rnio\AppData\Local\uffs\daemon.sock
+2026-04-01T00:23:28.0307968Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:332: [daemon-ipc] entering accept loop
+2026-04-01T00:23:28.0323939Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
+2026-04-01T00:23:28.0375476Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:341: [daemon-ipc] accept() returned OK
+2026-04-01T00:23:28.0377518Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
+2026-04-01T00:23:28.0377925Z  INFO ThreadId(29) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:375: [daemon-bridge-read] thread started
+2026-04-01T00:23:28.037806Z  INFO ThreadId(30) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:415: [daemon-bridge-write] thread started
+2026-04-01T00:23:28.0395535Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:162: Connected to daemon attempt=3
+2026-04-01T00:23:28.0395973Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:622: [client-bridge-read] thread started
+2026-04-01T00:23:28.0397217Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:675: [client-bridge-write] thread started
+2026-04-01T00:23:28.0398503Z  INFO ThreadId(02) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:131: [daemon_start] connected, entering await_ready
+2026-04-01T00:23:28.0398661Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=1 delay_ms=250
+2026-04-01T00:23:28.0398878Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=1 method="status"
+2026-04-01T00:23:28.0399113Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=1 method="status"
+2026-04-01T00:23:28.0402053Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=1 status=Loading { drives_loaded: 0, drives_total: 7 }
+2026-04-01T00:23:28.3016206Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=2 delay_ms=500
+2026-04-01T00:23:28.3016823Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=2 method="status"
+2026-04-01T00:23:28.3016978Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=2 method="status"
+2026-04-01T00:23:28.3019035Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=2 status=Loading { drives_loaded: 0, drives_total: 7 }
+2026-04-01T00:23:28.815931Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=3 delay_ms=1000
+2026-04-01T00:23:28.8159585Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=3 method="status"
+2026-04-01T00:23:28.81597Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=3 method="status"
+2026-04-01T00:23:28.8182793Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=3 status=Loading { drives_loaded: 0, drives_total: 7 }
+2026-04-01T00:23:29.8229627Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=4 delay_ms=2000
+2026-04-01T00:23:29.8229904Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=4 method="status"
+2026-04-01T00:23:29.8230022Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=4 method="status"
+2026-04-01T00:23:29.823178Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=4 status=Loading { drives_loaded: 0, drives_total: 7 }
+2026-04-01T00:23:29.957298Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=C records=3424075
+2026-04-01T00:23:29.9573624Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=C records=3424075 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-04-01T00:23:29.95738Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=D
+2026-04-01T00:23:31.8388252Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=5 delay_ms=2000
+2026-04-01T00:23:31.8388534Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=5 method="status"
+2026-04-01T00:23:31.8388662Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=5 method="status"
+2026-04-01T00:23:31.8390991Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=5 status=Loading { drives_loaded: 1, drives_total: 7 }
+2026-04-01T00:23:33.3219508Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=D records=7065539
+2026-04-01T00:23:33.3219974Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=D records=7065539 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-04-01T00:23:33.322005Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=E
+2026-04-01T00:23:33.8516698Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=6 delay_ms=2000
+2026-04-01T00:23:33.8517004Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=6 method="status"
+2026-04-01T00:23:33.8517159Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=6 method="status"
+2026-04-01T00:23:33.8519335Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=6 status=Loading { drives_loaded: 2, drives_total: 7 }
+2026-04-01T00:23:34.5233394Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=E records=2929519
+2026-04-01T00:23:34.523399Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=E records=2929519 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-04-01T00:23:34.5234184Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=F
+2026-04-01T00:23:35.7021818Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=F records=2221343
+2026-04-01T00:23:35.7022302Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=F records=2221343 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-04-01T00:23:35.7022385Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=G
+2026-04-01T00:23:35.7125009Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=G records=15090
+2026-04-01T00:23:35.7125307Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=G records=15090 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-04-01T00:23:35.7125372Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=M
+2026-04-01T00:23:35.8616705Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=7 delay_ms=2000
+2026-04-01T00:23:35.8616953Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=7 method="status"
+2026-04-01T00:23:35.861707Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=7 method="status"
+2026-04-01T00:23:35.8618829Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=7 status=Loading { drives_loaded: 5, drives_total: 7 }
+2026-04-01T00:23:36.3639769Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=M records=1908805
+2026-04-01T00:23:36.3640347Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=M records=1908805 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-04-01T00:23:36.364049Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:137: Loading live drive drive=S
+2026-04-01T00:23:37.8777764Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=8 delay_ms=2000
+2026-04-01T00:23:37.8778132Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=8 method="status"
+2026-04-01T00:23:37.8778293Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=8 method="status"
+2026-04-01T00:23:37.9099212Z  INFO ThreadId(25) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=8 status=Loading { drives_loaded: 6, drives_total: 7 }
+2026-04-01T00:23:39.4955074Z  INFO ThreadId(27) uffs_core::compact_loader: crates/uffs-core/src/compact_loader.rs:97: 📦 Cache hit — loaded compact cache drive=S records=8278102
+2026-04-01T00:23:39.4955733Z  INFO ThreadId(24) uffs_daemon::index: crates/uffs-daemon/src/index.rs:157: Live drive loaded drive=S records=8278102 mft_ms=0 compact_ms=0 trigram_ms=0
+2026-04-01T00:23:39.4955989Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:209: Live drives loaded
+2026-04-01T00:23:39.4956059Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:214: Load task completed
+2026-04-01T00:23:39.918121Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=9 delay_ms=2000
+2026-04-01T00:23:39.9181516Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=9 method="status"
+2026-04-01T00:23:39.9181643Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=9 method="status"
+2026-04-01T00:23:39.9183787Z  INFO ThreadId(02) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=9 status=Ready
+2026-04-01T00:23:39.9183939Z  INFO ThreadId(02) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:138: [daemon_start] await_ready returned OK, printing result
+2026-04-01T00:23:39.9184127Z  INFO ThreadId(02) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:142: [daemon_start] done, returning
+2026-04-01T00:23:39.9237701Z  INFO ThreadId(29) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:397: [daemon-bridge-read] read error error=An existing connection was forcibly closed by the remote host. (os error 10054)
+2026-04-01T00:23:39.9242358Z  INFO ThreadId(29) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:409: [daemon-bridge-read] thread exiting
+2026-04-01T00:23:39.9242883Z  INFO ThreadId(30) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:433: [daemon-bridge-write] EOF from bridge
+2026-04-01T00:23:39.9243091Z  INFO ThreadId(30) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:453: [daemon-bridge-write] thread exiting
+2026-04-01T00:23:40.2031774Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:341: [daemon-ipc] accept() returned OK
+2026-04-01T00:23:40.2033255Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
+2026-04-01T00:23:40.2033335Z  INFO ThreadId(55) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:375: [daemon-bridge-read] thread started
+2026-04-01T00:23:40.2033521Z  INFO ThreadId(56) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:415: [daemon-bridge-write] thread started
+2026-04-01T00:23:40.2049512Z  INFO ThreadId(13) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=1 method="status"
+2026-04-01T00:23:40.2049658Z  INFO ThreadId(13) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=1 method="status"
+2026-04-01T00:23:40.2049419Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:622: [client-bridge-read] thread started
+2026-04-01T00:23:40.2050135Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:675: [client-bridge-write] thread started
+2026-04-01T00:23:40.2053054Z  INFO ThreadId(13) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=2 method="drives"
+2026-04-01T00:23:40.2053152Z  INFO ThreadId(13) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=2 method="drives"
+2026-04-01T00:23:40.2099514Z  INFO ThreadId(55) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:397: [daemon-bridge-read] read error error=An existing connection was forcibly closed by the remote host. (os error 10054)
+2026-04-01T00:23:40.2100893Z  INFO ThreadId(55) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:409: [daemon-bridge-read] thread exiting
+2026-04-01T00:23:40.2101261Z  INFO ThreadId(56) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:433: [daemon-bridge-write] EOF from bridge
+2026-04-01T00:23:40.2101348Z  INFO ThreadId(56) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:453: [daemon-bridge-write] thread exiting
+2026-04-01T00:23:40.6354268Z  INFO ThreadId(17) uffs::commands::search::daemon: crates/uffs-cli/src/commands/search/daemon.rs:29: 🔌 Searching via daemon pattern=*.rs case_sensitive=false limit=Some(100)
+2026-04-01T00:23:40.6379345Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:341: [daemon-ipc] accept() returned OK
+2026-04-01T00:23:40.6381223Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
+2026-04-01T00:23:40.6381501Z  INFO ThreadId(57) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:375: [daemon-bridge-read] thread started
+2026-04-01T00:23:40.6381687Z  INFO ThreadId(58) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:415: [daemon-bridge-write] thread started
+2026-04-01T00:23:40.6395159Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:622: [client-bridge-read] thread started
+2026-04-01T00:23:40.6395821Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:675: [client-bridge-write] thread started
+2026-04-01T00:23:40.6397107Z  INFO ThreadId(17) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=1 delay_ms=250
+2026-04-01T00:23:40.6397247Z  INFO ThreadId(17) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=1 method="status"
+2026-04-01T00:23:40.6397334Z  INFO ThreadId(17) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=1 method="status"
+2026-04-01T00:23:40.6399638Z  INFO ThreadId(17) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=1 status=Ready
+2026-04-01T00:23:40.6399758Z  INFO ThreadId(17) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=2 method="search"
+2026-04-01T00:23:40.6399833Z  INFO ThreadId(17) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=2 method="search"
+2026-04-01T00:23:40.6424021Z  INFO ThreadId(17) uffs::commands::search::daemon: crates/uffs-cli/src/commands/search/daemon.rs:52: 🔌 Daemon search complete rows=100 duration_ms=1 scanned=25842473 truncated=true
+2026-04-01T00:23:40.642431Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:693: [client-bridge-write] EOF from bridge (async_write dropped)
+2026-04-01T00:23:40.6424486Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:720: [client-bridge-write] thread exiting
+2026-04-01T00:23:40.6428107Z  INFO ThreadId(17) uffs::commands::search::dispatch: crates/uffs-cli/src/commands/search/dispatch.rs:406: Search complete count=100
+2026-04-01T00:23:40.6475939Z  INFO ThreadId(57) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:397: [daemon-bridge-read] read error error=An existing connection was forcibly closed by the remote host. (os error 10054)
+2026-04-01T00:23:40.6477376Z  INFO ThreadId(57) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:409: [daemon-bridge-read] thread exiting
+2026-04-01T00:23:40.6477733Z  INFO ThreadId(58) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:433: [daemon-bridge-write] EOF from bridge
+2026-04-01T00:23:40.6477908Z  INFO ThreadId(58) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:453: [daemon-bridge-write] thread exiting
+2026-04-01T00:23:41.061753Z  INFO ThreadId(20) uffs::commands::search::daemon: crates/uffs-cli/src/commands/search/daemon.rs:29: 🔌 Searching via daemon pattern=*.rs case_sensitive=false limit=Some(100)
+2026-04-01T00:23:41.0644949Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:341: [daemon-ipc] accept() returned OK
+2026-04-01T00:23:41.0646795Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
+2026-04-01T00:23:41.0646954Z  INFO ThreadId(60) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:415: [daemon-bridge-write] thread started
+2026-04-01T00:23:41.06468Z  INFO ThreadId(59) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:375: [daemon-bridge-read] thread started
+2026-04-01T00:23:41.0659588Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:622: [client-bridge-read] thread started
+2026-04-01T00:23:41.0660219Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:675: [client-bridge-write] thread started
+2026-04-01T00:23:41.0661379Z  INFO ThreadId(20) uffs_client::connect: crates/uffs-client/src/connect.rs:371: await_ready: sending status poll poll_count=1 delay_ms=250
+2026-04-01T00:23:41.0661509Z  INFO ThreadId(20) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=1 method="status"
+2026-04-01T00:23:41.0661583Z  INFO ThreadId(20) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=1 method="status"
+2026-04-01T00:23:41.0662859Z  INFO ThreadId(20) uffs_client::connect: crates/uffs-client/src/connect.rs:375: await_ready: got status poll_count=1 status=Ready
+2026-04-01T00:23:41.0662933Z  INFO ThreadId(20) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=2 method="search"
+2026-04-01T00:23:41.0662981Z  INFO ThreadId(20) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=2 method="search"
+2026-04-01T00:23:41.0684101Z  INFO ThreadId(20) uffs::commands::search::daemon: crates/uffs-cli/src/commands/search/daemon.rs:52: 🔌 Daemon search complete rows=100 duration_ms=1 scanned=25842473 truncated=true
+2026-04-01T00:23:41.068433Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:693: [client-bridge-write] EOF from bridge (async_write dropped)
+2026-04-01T00:23:41.0684424Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:720: [client-bridge-write] thread exiting
+2026-04-01T00:23:41.0687961Z  INFO ThreadId(20) uffs::commands::search::dispatch: crates/uffs-cli/src/commands/search/dispatch.rs:406: Search complete count=100
+2026-04-01T00:23:41.0734851Z  INFO ThreadId(59) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:397: [daemon-bridge-read] read error error=An existing connection was forcibly closed by the remote host. (os error 10054)
+2026-04-01T00:23:41.0736363Z  INFO ThreadId(59) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:409: [daemon-bridge-read] thread exiting
+2026-04-01T00:23:41.0736678Z  INFO ThreadId(60) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:433: [daemon-bridge-write] EOF from bridge
+2026-04-01T00:23:41.0736767Z  INFO ThreadId(60) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:453: [daemon-bridge-write] thread exiting
+2026-04-01T00:23:41.4998709Z  INFO ThreadId(25) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:341: [daemon-ipc] accept() returned OK
+2026-04-01T00:23:41.5000683Z  INFO ThreadId(25) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
+2026-04-01T00:23:41.5001111Z  INFO ThreadId(61) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:375: [daemon-bridge-read] thread started
+2026-04-01T00:23:41.5001708Z  INFO ThreadId(62) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:415: [daemon-bridge-write] thread started
+2026-04-01T00:23:41.5015484Z  INFO ThreadId(15) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=1 method="stats"
+2026-04-01T00:23:41.5015643Z  INFO ThreadId(15) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=1 method="stats"
+2026-04-01T00:23:41.501629Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:622: [client-bridge-read] thread started
+2026-04-01T00:23:41.501722Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:675: [client-bridge-write] thread started
+2026-04-01T00:23:41.506841Z  INFO ThreadId(61) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:397: [daemon-bridge-read] read error error=An existing connection was forcibly closed by the remote host. (os error 10054)
+2026-04-01T00:23:41.5070007Z  INFO ThreadId(61) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:409: [daemon-bridge-read] thread exiting
+2026-04-01T00:23:41.5070307Z  INFO ThreadId(62) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:433: [daemon-bridge-write] EOF from bridge
+2026-04-01T00:23:41.5070426Z  INFO ThreadId(62) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:453: [daemon-bridge-write] thread exiting
+2026-04-01T00:23:41.9211541Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:341: [daemon-ipc] accept() returned OK
+2026-04-01T00:23:41.9213196Z  INFO ThreadId(24) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:336: [daemon-ipc] waiting for accept...
+2026-04-01T00:23:41.9213348Z  INFO ThreadId(63) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:375: [daemon-bridge-read] thread started
+2026-04-01T00:23:41.9213431Z  INFO ThreadId(64) uffs_daemon::ipc: crates/uffs-daemon/src/ipc.rs:415: [daemon-bridge-write] thread started
+2026-04-01T00:23:41.9227898Z  INFO ThreadId(12) uffs::commands::daemon_mgmt: crates/uffs-cli/src/commands/daemon_mgmt.rs:252: Sending shutdown request to daemon
+2026-04-01T00:23:41.9228069Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:622: [client-bridge-read] thread started
+2026-04-01T00:23:41.9229181Z  INFO ThreadId(12) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=1 method="shutdown"
+2026-04-01T00:23:41.9228773Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:675: [client-bridge-write] thread started
+2026-04-01T00:23:41.9229295Z  INFO ThreadId(12) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=1 method="shutdown"
+2026-04-01T00:23:41.9230757Z  INFO ThreadId(24) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:267: Shutdown requested
+2026-04-01T00:23:41.9230832Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:233: Daemon shutting down
+2026-04-01T00:23:41.9230879Z  INFO ThreadId(24) uffs_daemon: crates/uffs-daemon/src/lib.rs:236: Daemon stopped
+2026-04-01T00:23:41.9233988Z  INFO ThreadId(24) uffs_daemon::lifecycle: crates/uffs-daemon/src/lifecycle.rs:163: PID file removed path=C:\Users\rnio\AppData\Local\uffs\daemon.pid
+2026-04-01T00:23:42.845137Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:206: send_request: writing request id=1 method="status"
+2026-04-01T00:23:42.8451602Z  INFO ThreadId(08) uffs_client::connect: crates/uffs-client/src/connect.rs:219: send_request: write+flush done, reading response id=1 method="status"
+2026-04-01T00:23:42.8452091Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:622: [client-bridge-read] thread started
+2026-04-01T00:23:42.8453063Z  INFO ThreadId(28) uffs_client::connect: crates/uffs-client/src/connect.rs:675: [client-bridge-write] thread started
+2026-04-01T00:23:42.845374Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:640: [client-bridge-read] EOF from socket
+2026-04-01T00:23:42.8453925Z  INFO ThreadId(27) uffs_client::connect: crates/uffs-client/src/connect.rs:670: [client-bridge-read] thread exiting
+

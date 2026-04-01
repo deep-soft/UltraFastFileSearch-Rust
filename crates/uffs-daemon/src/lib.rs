@@ -234,5 +234,6 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     ipc_task.abort();
     let _ignore = load_task.await;
     tracing::info!("Daemon stopped");
+    // PID + socket files are cleaned up by LifecycleManager::drop().
     Ok(())
 }

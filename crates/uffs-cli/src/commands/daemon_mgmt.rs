@@ -146,64 +146,73 @@ async fn daemon_start(
 /// `uffs daemon status` — show daemon status, PID, loaded drives.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 async fn daemon_status() -> Result<()> {
-    if let Ok(mut client) = UffsClient::connect_raw().await {
-        let status = client
-            .status()
-            .await
-            .with_context(|| "Failed to query daemon status")?;
+    let Ok(mut client) = UffsClient::connect_raw().await else {
+        print_not_running();
+        return Ok(());
+    };
 
-        let uptime = core::time::Duration::from_secs(status.uptime_secs);
-        println!("Daemon PID:    {}", status.pid);
-        println!(
-            "Uptime:        {}",
-            uffs_core::format::format_duration(uptime)
-        );
-        match &status.status {
-            DaemonStatus::Loading {
-                drives_loaded,
-                drives_total,
-            } => {
-                println!("Status:        Loading ({drives_loaded}/{drives_total} drives)");
-            }
-            DaemonStatus::Ready => {
-                println!("Status:        Ready");
-            }
-            DaemonStatus::Refreshing { drives } => {
-                let drive_list: String = drives
-                    .iter()
-                    .map(|letter| format!("{letter}:"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                println!("Status:        Refreshing ({drive_list})");
-            }
-        }
-        println!("Connections:   {}", status.connections);
+    // If the socket file is stale (daemon just exited), status() returns
+    // ConnectionClosed.  Treat that as "not running" instead of an error.
+    let Ok(status) = client.status().await else {
+        print_not_running();
+        return Ok(());
+    };
 
-        // Also show loaded drives.
-        let drives = client
-            .drives()
-            .await
-            .with_context(|| "Failed to query drives")?;
-        if drives.drives.is_empty() {
-            println!("Drives:        (none loaded)");
-        } else {
-            for dr in &drives.drives {
-                println!(
-                    "  {}: — {:>10} records ({})",
-                    dr.letter,
-                    uffs_core::format::format_number_commas(dr.records as u64),
-                    dr.source
-                );
-            }
+    let uptime = core::time::Duration::from_secs(status.uptime_secs);
+    println!("Daemon PID:    {}", status.pid);
+    println!(
+        "Uptime:        {}",
+        uffs_core::format::format_duration(uptime)
+    );
+    match &status.status {
+        DaemonStatus::Loading {
+            drives_loaded,
+            drives_total,
+        } => {
+            println!("Status:        Loading ({drives_loaded}/{drives_total} drives)");
         }
+        DaemonStatus::Ready => {
+            println!("Status:        Ready");
+        }
+        DaemonStatus::Refreshing { drives } => {
+            let drive_list: String = drives
+                .iter()
+                .map(|letter| format!("{letter}:"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("Status:        Refreshing ({drive_list})");
+        }
+    }
+    println!("Connections:   {}", status.connections);
+
+    // Also show loaded drives.
+    let drives = client
+        .drives()
+        .await
+        .with_context(|| "Failed to query drives")?;
+    if drives.drives.is_empty() {
+        println!("Drives:        (none loaded)");
     } else {
-        println!("Daemon is not running.");
-        let pid_path = pid_file_path();
-        if pid_path.exists() {
-            println!("  (stale PID file exists at {})", pid_path.display());
+        for dr in &drives.drives {
+            println!(
+                "  {}: — {:>10} records ({})",
+                dr.letter,
+                uffs_core::format::format_number_commas(dr.records as u64),
+                dr.source
+            );
         }
     }
     Ok(())
+}
+
+/// Print the "not running" message with optional stale-PID hint.
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn print_not_running() {
+    println!("Daemon is not running.");
+    let pid_path = pid_file_path();
+    if pid_path.exists() {
+        println!("  (stale PID file exists at {})", pid_path.display());
+    }
 }
 
 /// `uffs daemon stats` — show performance metrics.
