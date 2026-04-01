@@ -28,11 +28,14 @@
 //   rust-script scripts/dev/daemon-readiness.rs --binary target/release/uffs
 
 use std::process::{Command, Output};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use colored::Colorize;
+
+/// Maximum time any single `uffs` invocation may run before we kill it.
+const STEP_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Parser)]
 #[command(
@@ -104,12 +107,54 @@ impl Runner {
         }
     }
 
-    /// Run uffs and return (stdout, stderr, success).
+    /// Run uffs with a hard 120-second timeout.
+    ///
+    /// Uses `spawn()` + polling instead of `output()` so the script
+    /// never blocks for 40+ minutes when the daemon child inherits
+    /// pipe handles.
     fn run_raw(&self, args: &[&str]) -> Result<Output> {
-        Command::new(&self.binary)
+        let mut child = Command::new(&self.binary)
             .args(args)
-            .output()
-            .with_context(|| format!("Failed to exec: {} {}", self.binary, args.join(" ")))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("Failed to exec: {} {}", self.binary, args.join(" ")))?;
+
+        let deadline = Instant::now() + STEP_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // Process exited — drain remaining output.
+                    let stdout = child.stdout.take().map_or_else(Vec::new, |mut s| {
+                        let mut buf = Vec::new();
+                        let _ = std::io::Read::read_to_end(&mut s, &mut buf);
+                        buf
+                    });
+                    let stderr = child.stderr.take().map_or_else(Vec::new, |mut s| {
+                        let mut buf = Vec::new();
+                        let _ = std::io::Read::read_to_end(&mut s, &mut buf);
+                        buf
+                    });
+                    return Ok(Output { status, stdout, stderr });
+                }
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait(); // reap zombie
+                        bail!(
+                            "TIMEOUT after {}s: {} {}",
+                            STEP_TIMEOUT.as_secs(),
+                            self.binary,
+                            args.join(" ")
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Err(e) => {
+                    bail!("wait error for {} {}: {e}", self.binary, args.join(" "));
+                }
+            }
+        }
     }
 
     /// Run uffs, require exit 0.

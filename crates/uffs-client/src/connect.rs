@@ -962,32 +962,111 @@ fn spawn_daemon_windows(
     println!("[diag] spawn_daemon_windows: is_elevated={elevated}");
 
     if elevated {
-        // Already elevated — spawn directly (no UAC prompt).
-        use std::os::windows::process::CommandExt;
-        println!("[diag] spawn_daemon_windows: spawning DETACHED_PROCESS...");
-        let child = std::process::Command::new(exe)
-            .args(args)
-            .creation_flags(0x0000_0008) // DETACHED_PROCESS
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .stdin(std::process::Stdio::null())
-            .spawn()
-            .map_err(|spawn_err| {
-                println!("[diag] spawn_daemon_windows: spawn FAILED: {spawn_err}");
-                crate::error::ClientError::DaemonStartFailed(format!(
-                    "Failed to spawn {} daemon run: {spawn_err}",
-                    exe.display()
-                ))
-            })?;
-        println!("[diag] spawn_daemon_windows: spawned PID={}", child.id());
+        // Already elevated — spawn directly via CreateProcessW.
+        //
+        // We use CreateProcessW instead of std::process::Command because
+        // Command always sets bInheritHandles=TRUE.  When the parent
+        // process was itself started with pipe redirection (e.g.
+        // `Command::output()`), the pipe handles are inheritable and
+        // would leak into the daemon.  The caller's `.output()` then
+        // blocks until the daemon exits (10-20 min idle timeout).
+        //
+        // CreateProcessW with bInheritHandles=FALSE prevents all handle
+        // inheritance, so the daemon is fully detached from the parent's
+        // I/O.
+        println!("[diag] spawn_daemon_windows: spawning via CreateProcessW (no handle inheritance)...");
+        spawn_detached_no_inherit(exe, args)?;
     } else {
         // Not elevated — use ShellExecuteW "runas" to trigger UAC.
+        // ShellExecuteW always creates a fully new process — no handle
+        // inheritance issues.
         println!("[diag] spawn_daemon_windows: NOT elevated, using ShellExecuteW runas");
         tracing::info!("Not elevated — requesting elevation via UAC prompt");
         shell_execute_elevated(exe, args)?;
         println!("[diag] spawn_daemon_windows: ShellExecuteW returned OK");
     }
     Ok(())
+}
+
+
+/// Spawn the daemon as a fully detached process with NO handle inheritance.
+///
+/// Uses `CreateProcessW` directly with `bInheritHandles = FALSE` and
+/// `DETACHED_PROCESS` creation flag.  This prevents the daemon from
+/// inheriting any of the parent's handles (especially stdout/stderr
+/// pipes created by `Command::output()`), which would otherwise keep
+/// the calling process alive until the daemon exits.
+#[cfg(windows)]
+fn spawn_detached_no_inherit(
+    exe: &std::path::Path,
+    args: &[&str],
+) -> Result<(), crate::error::ClientError> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        CreateProcessW, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+
+    // Build the command line: "exe" arg1 arg2 ...
+    // CreateProcessW wants a single mutable command line string.
+    let mut cmd_line = String::new();
+    cmd_line.push('"');
+    cmd_line.push_str(&exe.to_string_lossy());
+    cmd_line.push('"');
+    for arg in args {
+        cmd_line.push(' ');
+        cmd_line.push_str(arg);
+    }
+
+    // Convert to wide (UTF-16) null-terminated mutable buffer.
+    let mut cmd_wide: Vec<u16> = cmd_line.encode_utf16().chain(core::iter::once(0)).collect();
+
+    let si = STARTUPINFOW {
+        cb: core::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut pi = PROCESS_INFORMATION::default();
+
+    // SAFETY: CreateProcessW is a well-defined Win32 API. All pointers are
+    // valid: cmd_wide is a mutable null-terminated UTF-16 buffer, si is
+    // a zeroed STARTUPINFOW with cb set, pi is zeroed output buffer.
+    // We close the returned handles immediately after success.
+    #[expect(unsafe_code, reason = "CreateProcessW requires unsafe FFI")]
+    let result = unsafe {
+        CreateProcessW(
+            None,                                    // lpApplicationName (use command line)
+            Some(windows::core::PWSTR(cmd_wide.as_mut_ptr())), // lpCommandLine
+            None,                                    // lpProcessAttributes
+            None,                                    // lpThreadAttributes
+            false,                                   // bInheritHandles = FALSE ← key fix
+            DETACHED_PROCESS,                        // dwCreationFlags
+            None,                                    // lpEnvironment (inherit)
+            None,                                    // lpCurrentDirectory (inherit)
+            &si,                                     // lpStartupInfo
+            &mut pi,                                 // lpProcessInformation
+        )
+    };
+
+    match result {
+        Ok(()) => {
+            println!("[diag] spawn_detached_no_inherit: spawned PID={}", pi.dwProcessId);
+            tracing::info!(pid = pi.dwProcessId, "Daemon spawned (no handle inheritance)");
+            // Close the process and thread handles — we don't need them.
+            // SAFETY: valid handles returned by CreateProcessW.
+            #[expect(unsafe_code, reason = "closing Win32 handles from CreateProcessW")]
+            unsafe {
+                let _ = CloseHandle(pi.hProcess);
+                let _ = CloseHandle(pi.hThread);
+            }
+            Ok(())
+        }
+        Err(win_err) => {
+            println!("[diag] spawn_detached_no_inherit: FAILED: {win_err}");
+            Err(crate::error::ClientError::DaemonStartFailed(format!(
+                "CreateProcessW failed for {}: {win_err}",
+                exe.display()
+            )))
+        }
+    }
 }
 
 // ── Windows Elevation Helpers ─────────────────────────────────────────────
