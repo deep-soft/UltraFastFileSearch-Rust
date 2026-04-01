@@ -378,6 +378,8 @@ pub fn cleanup_stale_shmem_files() {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+
     use super::*;
     use crate::protocol::SearchRow;
 
@@ -408,8 +410,10 @@ mod tests {
         // Read immediately — avoid race with parallel GC test.
         let resp = read_search_results(&path).expect("read should succeed");
         assert_eq!(resp.rows.len(), 2);
-        assert_eq!(resp.rows[0].name, "a.txt");
-        assert_eq!(resp.rows[1].name, "b.txt");
+        let first = resp.rows.first().expect("expected at least 1 row");
+        let second = resp.rows.get(1).expect("expected at least 2 rows");
+        assert_eq!(first.name, "a.txt");
+        assert_eq!(second.name, "b.txt");
         assert_eq!(resp.duration_ms, 42);
         assert_eq!(resp.records_scanned, 100);
 
@@ -438,8 +442,8 @@ mod tests {
     fn shmem_used_for_large_result_sets() {
         // D5.1.6: Verify that a result set exceeding SHMEM_THRESHOLD
         // can be written to shmem and read back correctly.
-        let rows: Vec<SearchRow> = (0..SHMEM_THRESHOLD + 1)
-            .map(|i| sample_row(&format!("file_{i}.txt")))
+        let rows: Vec<SearchRow> = (0..=SHMEM_THRESHOLD)
+            .map(|idx| sample_row(&format!("file_{idx}.txt")))
             .collect();
         assert!(
             rows.len() > SHMEM_THRESHOLD,
@@ -454,11 +458,10 @@ mod tests {
         assert_eq!(resp.rows.len(), SHMEM_THRESHOLD + 1);
         assert_eq!(resp.duration_ms, 99);
         assert_eq!(resp.records_scanned, SHMEM_THRESHOLD + 1);
-        assert_eq!(resp.rows[0].name, "file_0.txt");
-        assert_eq!(
-            resp.rows[SHMEM_THRESHOLD].name,
-            format!("file_{SHMEM_THRESHOLD}.txt")
-        );
+        let first = resp.rows.first().expect("expected at least 1 row");
+        assert_eq!(first.name, "file_0.txt");
+        let last = resp.rows.get(SHMEM_THRESHOLD).expect("expected last row");
+        assert_eq!(last.name, format!("file_{SHMEM_THRESHOLD}.txt"));
         assert!(!path.exists(), "shmem file must be deleted after read");
     }
 
@@ -500,44 +503,44 @@ mod tests {
         // file and immediately read it back (mimicking 8 parallel CLI
         // processes).  Verifies path uniqueness, data isolation, and
         // cleanup.
-        use std::sync::{Arc, Barrier};
+        use alloc::sync::Arc;
+        use std::sync::Barrier;
         use std::thread;
 
-        const N: usize = 8;
-        let barrier = Arc::new(Barrier::new(N));
-        let handles: Vec<_> = (0..N)
-            .map(|i| {
+        const THREADS: usize = 8;
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let paths: Vec<PathBuf> = (0..THREADS)
+            .map(|idx| {
                 let bar = Arc::clone(&barrier);
                 thread::spawn(move || {
-                    let row = sample_row(&format!("concurrent_{i}.txt"));
+                    let row = sample_row(&format!("concurrent_{idx}.txt"));
                     // Synchronise so all threads call write at roughly the same time.
                     bar.wait();
-                    let path = write_search_results(&[row], i as u64, 1, false)
+                    let path = write_search_results(&[row], idx as u64, 1, false)
                         .expect("concurrent write should succeed");
                     // Read+delete immediately (same as real CLI does).
                     let resp = read_search_results(&path).expect("read should succeed");
                     assert_eq!(resp.rows.len(), 1);
-                    assert_eq!(resp.rows[0].name, format!("concurrent_{i}.txt"));
+                    let first = resp.rows.first().expect("expected 1 row");
+                    assert_eq!(first.name, format!("concurrent_{idx}.txt"));
                     assert!(!path.exists(), "shmem file must be deleted after read");
                     path
                 })
             })
+            .map(|handle| handle.join().unwrap())
             .collect();
-
-        let paths: Vec<PathBuf> =
-            handles.into_iter().map(|h| h.join().unwrap()).collect();
 
         // All paths must be unique (atomic counter guarantees this).
         let mut sorted = paths
             .iter()
-            .map(|p| p.display().to_string())
+            .map(|path| path.display().to_string())
             .collect::<Vec<_>>();
         sorted.sort();
         sorted.dedup();
         assert_eq!(
             sorted.len(),
-            N,
-            "expected {N} unique shmem paths, got {}",
+            THREADS,
+            "expected {THREADS} unique shmem paths, got {}",
             sorted.len()
         );
     }

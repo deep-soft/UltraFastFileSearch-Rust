@@ -165,6 +165,11 @@ pub fn event_to_json_line(event: &DaemonEvent) -> Option<String> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    clippy::default_numeric_fallback,
+    reason = "JSON Value indexing is safe (returns null), integer literals are self-evident in tests"
+)]
 mod tests {
     use super::*;
 
@@ -331,7 +336,7 @@ mod tests {
         }
     }
 
-    /// Simulates the daemon's notification_loop: events arrive via broadcast
+    /// Simulates the daemon's `notification_loop`: events arrive via broadcast
     /// and are forwarded as JSON-RPC notification lines to the client's socket.
     #[tokio::test]
     async fn notification_loop_delivers_events_to_client() {
@@ -353,7 +358,8 @@ mod tests {
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+
                 }
             }
         });
