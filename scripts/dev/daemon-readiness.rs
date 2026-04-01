@@ -109,9 +109,11 @@ impl Runner {
 
     /// Run uffs with a hard 120-second timeout.
     ///
-    /// Uses `spawn()` + polling instead of `output()` so the script
-    /// never blocks for 40+ minutes when the daemon child inherits
-    /// pipe handles.
+    /// Spawns reader threads for stdout/stderr so pipe buffers are
+    /// continuously drained.  Without this, a child that writes more
+    /// than the OS pipe buffer (4-64 KB) deadlocks because the parent
+    /// only reads *after* exit — but exit can't happen while the write
+    /// is blocked on a full pipe.
     fn run_raw(&self, args: &[&str]) -> Result<Output> {
         let mut child = Command::new(&self.binary)
             .args(args)
@@ -120,21 +122,31 @@ impl Runner {
             .spawn()
             .with_context(|| format!("Failed to exec: {} {}", self.binary, args.join(" ")))?;
 
+        // Drain stdout/stderr on background threads so pipes never fill.
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+
+        let stdout_thread = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut r) = stdout_pipe {
+                let _ = std::io::Read::read_to_end(&mut r, &mut buf);
+            }
+            buf
+        });
+        let stderr_thread = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut r) = stderr_pipe {
+                let _ = std::io::Read::read_to_end(&mut r, &mut buf);
+            }
+            buf
+        });
+
         let deadline = Instant::now() + STEP_TIMEOUT;
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    // Process exited — drain remaining output.
-                    let stdout = child.stdout.take().map_or_else(Vec::new, |mut s| {
-                        let mut buf = Vec::new();
-                        let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                        buf
-                    });
-                    let stderr = child.stderr.take().map_or_else(Vec::new, |mut s| {
-                        let mut buf = Vec::new();
-                        let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                        buf
-                    });
+                    let stdout = stdout_thread.join().unwrap_or_default();
+                    let stderr = stderr_thread.join().unwrap_or_default();
                     return Ok(Output { status, stdout, stderr });
                 }
                 Ok(None) => {
