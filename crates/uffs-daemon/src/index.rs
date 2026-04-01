@@ -235,13 +235,14 @@ impl IndexManager {
             params.exclude.as_deref(),
         );
 
-        let result = backend.search(
+        let result = backend.search_drives(
             &params.pattern,
             params.case_sensitive,
             params.whole_word,
             params.limit,
             filter_mode,
             &filters,
+            &params.drives,
         );
         drop(backend);
 

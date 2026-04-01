@@ -162,9 +162,9 @@ impl OutputColumn {
         match name.to_lowercase().as_str() {
             "path" => Some(Self::Path),
             "name" => Some(Self::Name),
-            "pathonly" => Some(Self::PathOnly),
+            "pathonly" | "path only" | "path_only" => Some(Self::PathOnly),
             "size" => Some(Self::Size),
-            "sizeondisk" => Some(Self::SizeOnDisk),
+            "sizeondisk" | "size on disk" | "size_on_disk" => Some(Self::SizeOnDisk),
             "created" => Some(Self::Created),
             // CPP uses "written", Rust uses "modified" - support both
             "modified" | "written" => Some(Self::Modified),
@@ -177,14 +177,15 @@ impl OutputColumn {
             "hidden" | "h" => Some(Self::Hidden),
             "system" | "s" => Some(Self::System),
             "archive" | "a" => Some(Self::Archive),
-            "readonly" | "r" => Some(Self::ReadOnly),
+            "readonly" | "read-only" | "read only" | "r" => Some(Self::ReadOnly),
             "compressed" => Some(Self::Compressed),
             "encrypted" => Some(Self::Encrypted),
             "sparse" => Some(Self::Sparse),
             "reparse" => Some(Self::Reparse),
             "offline" | "o" => Some(Self::Offline),
             // CPP uses "notcontent", Rust uses "notindexed" - support both
-            "notindexed" | "notcontent" => Some(Self::NotIndexed),
+            "notindexed" | "notcontent" | "not content indexed file" | "not indexed"
+            | "not content indexed" => Some(Self::NotIndexed),
             "temporary" => Some(Self::Temporary),
             "virtual" => Some(Self::Virtual),
             "pinned" => Some(Self::Pinned),
@@ -196,10 +197,12 @@ impl OutputColumn {
             "bulkiness" => Some(Self::Bulkiness),
             // New columns for legacy-output parity
             "integrity" => Some(Self::Integrity),
-            "noscrub" => Some(Self::NoScrub),
-            "directoryflag" => Some(Self::DirectoryFlag),
-            "recallonopen" | "recall_on_open" => Some(Self::RecallOnOpen),
-            "recallondataaccess" | "recall_on_data_access" => Some(Self::RecallOnDataAccess),
+            "noscrub" | "no scrub file" | "no scrub" | "no_scrub" => Some(Self::NoScrub),
+            "directoryflag" | "directory flag" | "directory_flag" => Some(Self::DirectoryFlag),
+            "recallonopen" | "recall_on_open" | "recall on open" => Some(Self::RecallOnOpen),
+            "recallondataaccess" | "recall_on_data_access" | "recall on data access" => {
+                Some(Self::RecallOnDataAccess)
+            }
             "parityattributes" | "parity_attributes" => Some(Self::ParityAttributes),
             _ => None,
         }

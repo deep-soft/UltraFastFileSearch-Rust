@@ -28,6 +28,26 @@ fn test_parse_columns_list() {
 }
 
 #[test]
+fn test_parse_columns_with_spaces() {
+    // "Name,Size,Path Only" — the exact failing case from CLI validation test 22
+    let cols = OutputConfig::parse_columns("Name,Size,Path Only").expect("should parse");
+    assert_eq!(cols.len(), 3);
+    assert_eq!(cols.first(), Some(&OutputColumn::Name));
+    assert_eq!(cols.get(1), Some(&OutputColumn::Size));
+    assert_eq!(cols.get(2), Some(&OutputColumn::PathOnly));
+}
+
+#[test]
+fn test_parse_columns_size_on_disk() {
+    let cols =
+        OutputConfig::parse_columns("Name,Size on Disk,Directory Flag").expect("should parse");
+    assert_eq!(cols.len(), 3);
+    assert_eq!(cols.first(), Some(&OutputColumn::Name));
+    assert_eq!(cols.get(1), Some(&OutputColumn::SizeOnDisk));
+    assert_eq!(cols.get(2), Some(&OutputColumn::DirectoryFlag));
+}
+
+#[test]
 fn test_parse_separator_special() {
     // Original values
     assert_eq!(OutputConfig::parse_separator("TAB"), "\t");
@@ -62,6 +82,39 @@ fn test_parse_column_aliases() {
     assert_eq!(
         OutputColumn::parse("decendents"),
         Some(OutputColumn::Descendants)
+    );
+    // Space-separated display names
+    assert_eq!(
+        OutputColumn::parse("path only"),
+        Some(OutputColumn::PathOnly)
+    );
+    assert_eq!(
+        OutputColumn::parse("size on disk"),
+        Some(OutputColumn::SizeOnDisk)
+    );
+    assert_eq!(
+        OutputColumn::parse("directory flag"),
+        Some(OutputColumn::DirectoryFlag)
+    );
+    assert_eq!(
+        OutputColumn::parse("no scrub file"),
+        Some(OutputColumn::NoScrub)
+    );
+    assert_eq!(
+        OutputColumn::parse("recall on open"),
+        Some(OutputColumn::RecallOnOpen)
+    );
+    assert_eq!(
+        OutputColumn::parse("recall on data access"),
+        Some(OutputColumn::RecallOnDataAccess)
+    );
+    assert_eq!(
+        OutputColumn::parse("read-only"),
+        Some(OutputColumn::ReadOnly)
+    );
+    assert_eq!(
+        OutputColumn::parse("not content indexed file"),
+        Some(OutputColumn::NotIndexed)
     );
 }
 

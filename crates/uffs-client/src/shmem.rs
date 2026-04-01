@@ -375,3 +375,193 @@ pub fn cleanup_stale_shmem_files() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::SearchRow;
+
+    /// Helper: build a minimal `SearchRow` for testing.
+    fn sample_row(name: &str) -> SearchRow {
+        SearchRow {
+            drive: 'C',
+            path: format!("C:\\test\\{name}"),
+            name: name.to_owned(),
+            size: 1024,
+            is_directory: false,
+            modified: 1_700_000_000_000_000,
+            created: 1_700_000_000_000_000,
+            accessed: 1_700_000_000_000_000,
+            flags: 32,
+            allocated: 4096,
+            descendants: 0,
+            treesize: 1024,
+        }
+    }
+
+    #[test]
+    fn shmem_round_trip_deletes_file() {
+        // Write a shmem file and verify it exists.
+        let rows = vec![sample_row("a.txt"), sample_row("b.txt")];
+        let path = write_search_results(&rows, 42, 100, false).expect("write should succeed");
+        assert!(path.exists(), "shmem file must exist after write");
+
+        // Read it back — read_search_results deletes the file.
+        let resp = read_search_results(&path).expect("read should succeed");
+        assert_eq!(resp.rows.len(), 2);
+        assert_eq!(resp.rows[0].name, "a.txt");
+        assert_eq!(resp.rows[1].name, "b.txt");
+        assert_eq!(resp.duration_ms, 42);
+        assert_eq!(resp.records_scanned, 100);
+
+        // The file must be gone now.
+        assert!(
+            !path.exists(),
+            "shmem file must be deleted after read: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn shmem_empty_round_trip_deletes_file() {
+        // Edge case: zero rows.
+        let path = write_search_results(&[], 0, 0, false).expect("write should succeed");
+        assert!(path.exists());
+
+        let resp = read_search_results(&path).expect("read should succeed");
+        assert!(resp.rows.is_empty());
+        assert!(!path.exists(), "empty shmem file must be deleted after read");
+    }
+
+    #[test]
+    fn cleanup_stale_shmem_files_removes_bins() {
+        // Create some fake .bin files in the shmem directory.
+        let dir = shmem_dir().expect("shmem_dir should work");
+        let fake1 = dir.join("stale_test_1.bin");
+        let fake2 = dir.join("stale_test_2.bin");
+        std::fs::write(&fake1, b"fake").expect("write fake1");
+        std::fs::write(&fake2, b"fake").expect("write fake2");
+        assert!(fake1.exists());
+        assert!(fake2.exists());
+
+        cleanup_stale_shmem_files();
+
+        assert!(
+            !fake1.exists(),
+            "stale .bin must be removed: {}",
+            fake1.display()
+        );
+        assert!(
+            !fake2.exists(),
+            "stale .bin must be removed: {}",
+            fake2.display()
+        );
+    }
+
+    #[test]
+    fn cleanup_does_not_remove_non_bin_files() {
+        let dir = shmem_dir().expect("shmem_dir should work");
+        let other = dir.join("keep_me.txt");
+        std::fs::write(&other, b"preserve").expect("write non-bin");
+
+        cleanup_stale_shmem_files();
+
+        assert!(
+            other.exists(),
+            "non-.bin file must survive cleanup: {}",
+            other.display()
+        );
+
+        // Clean up our test file.
+        drop(std::fs::remove_file(&other));
+    }
+
+    #[test]
+    fn shmem_used_for_large_result_sets() {
+        // D5.1.6: Verify that a result set exceeding SHMEM_THRESHOLD
+        // can be written to shmem and read back correctly.
+        let rows: Vec<SearchRow> = (0..SHMEM_THRESHOLD + 1)
+            .map(|i| sample_row(&format!("file_{i}.txt")))
+            .collect();
+        assert!(
+            rows.len() > SHMEM_THRESHOLD,
+            "test set must exceed threshold"
+        );
+
+        let path =
+            write_search_results(&rows, 99, rows.len() as u64, false).expect("write should work");
+        assert!(path.exists(), "shmem file must exist");
+
+        let resp = read_search_results(&path).expect("read should work");
+        assert_eq!(resp.rows.len(), SHMEM_THRESHOLD + 1);
+        assert_eq!(resp.duration_ms, 99);
+        assert_eq!(resp.records_scanned, SHMEM_THRESHOLD + 1);
+        assert_eq!(resp.rows[0].name, "file_0.txt");
+        assert_eq!(resp.rows[SHMEM_THRESHOLD].name, format!("file_{SHMEM_THRESHOLD}.txt"));
+        assert!(!path.exists(), "shmem file must be deleted after read");
+    }
+
+    #[test]
+    fn crash_orphaned_shmem_cleaned_by_gc() {
+        // D5.3.6: Simulate CLI crash — write shmem but never read it.
+        // The orphaned file should be cleaned up by cleanup_stale_shmem_files.
+        let rows = vec![sample_row("orphan.txt")];
+        let path = write_search_results(&rows, 1, 1, false).expect("write should work");
+        assert!(path.exists(), "orphaned shmem file must exist");
+
+        // Simulate: CLI crashes here — never calls read_search_results.
+        // On daemon restart, GC sweeps:
+        cleanup_stale_shmem_files();
+
+        assert!(
+            !path.exists(),
+            "orphaned shmem file must be removed by GC: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn concurrent_writes_get_unique_paths() {
+        // Simulate concurrent shmem usage: 8 threads each write a shmem
+        // file and immediately read it back (mimicking 8 parallel CLI
+        // processes).  Verifies path uniqueness, data isolation, and
+        // cleanup.
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const N: usize = 8;
+        let barrier = Arc::new(Barrier::new(N));
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                let bar = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    let row = sample_row(&format!("concurrent_{i}.txt"));
+                    // Synchronise so all threads call write at roughly the same time.
+                    bar.wait();
+                    let path = write_search_results(&[row], i as u64, 1, false)
+                        .expect("concurrent write should succeed");
+                    // Read+delete immediately (same as real CLI does).
+                    let resp = read_search_results(&path).expect("read should succeed");
+                    assert_eq!(resp.rows.len(), 1);
+                    assert_eq!(resp.rows[0].name, format!("concurrent_{i}.txt"));
+                    assert!(!path.exists(), "shmem file must be deleted after read");
+                    path
+                })
+            })
+            .collect();
+
+        let paths: Vec<std::path::PathBuf> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // All paths must be unique (atomic counter guarantees this).
+        let mut sorted = paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            N,
+            "expected {N} unique shmem paths, got {}",
+            sorted.len()
+        );
+    }
+}

@@ -182,6 +182,36 @@ impl MultiDriveBackend {
         filter_mode: FilterMode,
         search_filters: &super::filters::SearchFilters,
     ) -> SearchResult {
+        self.search_drives(
+            pattern,
+            case_sensitive,
+            whole_word,
+            result_limit,
+            filter_mode,
+            search_filters,
+            &[],
+        )
+    }
+
+    /// Search with an optional drive-letter filter.
+    ///
+    /// When `drives_filter` is non-empty, only drives whose letter is in
+    /// the slice are searched. An empty slice means "search all loaded
+    /// drives".
+    #[expect(
+        clippy::too_many_lines,
+        reason = "search dispatch with three modes; splitting would scatter related logic"
+    )]
+    pub fn search_drives(
+        &mut self,
+        pattern: &str,
+        case_sensitive: bool,
+        whole_word: bool,
+        result_limit: Option<u32>,
+        filter_mode: FilterMode,
+        search_filters: &super::filters::SearchFilters,
+        drives_filter: &[char],
+    ) -> SearchResult {
         let start = Instant::now();
         let mut rows = Vec::new();
 
@@ -193,6 +223,22 @@ impl MultiDriveBackend {
                 records_scanned: 0,
             };
         }
+
+        // When a drive filter is active, temporarily swap out non-matching
+        // drives so the rest of the search logic (which uses `self.drives`)
+        // only touches the requested subset. We restore afterwards.
+        let stashed_drives = if drives_filter.is_empty() {
+            None
+        } else {
+            let all = core::mem::take(&mut self.drives);
+            let (keep, rest): (Vec<_>, Vec<_>) = all.into_iter().partition(|dr| {
+                drives_filter
+                    .iter()
+                    .any(|f| f.eq_ignore_ascii_case(&dr.letter))
+            });
+            self.drives = keep;
+            Some(rest)
+        };
 
         let is_match_all = pattern == "*";
         let is_regex = pattern.starts_with('>') && pattern.len() > 1;
@@ -242,6 +288,10 @@ impl MultiDriveBackend {
                     rows.truncate(limit);
                 }
                 Err(_err) => {
+                    // Restore stashed drives before returning.
+                    if let Some(rest) = stashed_drives {
+                        self.drives.extend(rest);
+                    }
                     self.last_results.clear();
                     return SearchResult {
                         rows: Vec::new(),
@@ -283,6 +333,11 @@ impl MultiDriveBackend {
         }
 
         let scanned = self.drives.iter().map(|dr| dr.records.len()).sum();
+
+        // Restore stashed drives if we filtered them out.
+        if let Some(rest) = stashed_drives {
+            self.drives.extend(rest);
+        }
         let wall_ms = start.elapsed().as_millis();
 
         #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
