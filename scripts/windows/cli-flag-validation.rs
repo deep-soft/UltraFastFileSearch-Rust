@@ -58,18 +58,33 @@ fn csv_row_count(stdout: &str) -> usize {
     stdout.lines().filter(|l| !l.is_empty()).count().saturating_sub(1)
 }
 
+/// Split a single CSV line respecting double-quote quoting.
+///
+/// Handles quoted fields that may contain commas (e.g. paths with commas).
+/// Does NOT handle escaped quotes inside quoted fields (not needed for UFFS).
+fn split_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for ch in line.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                fields.push(current.clone());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    fields.push(current);
+    fields
+}
+
 /// Parse CSV: returns (headers, data_rows).
 fn parse_csv(stdout: &str) -> (Vec<String>, Vec<Vec<String>>) {
     let mut lines = stdout.lines().filter(|l| !l.is_empty());
-    let headers: Vec<String> = lines
-        .next()
-        .unwrap_or("")
-        .split(',')
-        .map(|s| s.trim_matches('"').to_string())
-        .collect();
-    let rows: Vec<Vec<String>> = lines
-        .map(|line| line.split(',').map(|s| s.trim_matches('"').to_string()).collect())
-        .collect();
+    let headers = split_csv_line(lines.next().unwrap_or(""));
+    let rows: Vec<Vec<String>> = lines.map(|line| split_csv_line(line)).collect();
     (headers, rows)
 }
 
@@ -210,24 +225,23 @@ fn main() {
     });
 
     // ── 2. --files-only ───────────────────────────────────────────────
-    t.test("T01 --files-only", &["*.txt", "--files-only", "--limit", "10"], |stdout, _| {
+    t.test("T01 --files-only", &["*.txt", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
-        // Directory column should be 0 for all rows
         for (i, row) in rows.iter().enumerate() {
-            let dir = col_val(row, &h, "Directory");
-            if dir == "1" { bail!("Row {i} is a directory (Directory=1)"); }
+            let dir = col_val(row, &h, "Directory Flag");
+            if dir == "1" { bail!("Row {i} is a directory (Directory Flag=1)"); }
         }
         Ok(format!("{} rows, all files", rows.len()))
     });
 
     // ── 3. --dirs-only ────────────────────────────────────────────────
-    t.test("T02 --dirs-only", &["Windows", "--dirs-only", "--limit", "10"], |stdout, _| {
+    t.test("T02 --dirs-only", &["Windows", "--dirs-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
-            let dir = col_val(row, &h, "Directory");
-            if dir != "1" { bail!("Row {i} is not a directory (Directory={dir})"); }
+            let dir = col_val(row, &h, "Directory Flag");
+            if dir != "1" { bail!("Row {i} is not a directory (Directory Flag={dir})"); }
         }
         Ok(format!("{} rows, all directories", rows.len()))
     });
@@ -237,7 +251,7 @@ fn main() {
         let (h, rows) = parse_csv(stdout);
         // With --hide-system, no file should start with $
         for (i, row) in rows.iter().enumerate() {
-            let name = col_val(row, &h, "Filename");
+            let name = col_val(row, &h, "Name");
             if name.starts_with('$') { bail!("Row {i}: {name} starts with $ despite --hide-system"); }
         }
         Ok(format!("{} rows, no $-prefixed files", rows.len()))
@@ -248,7 +262,7 @@ fn main() {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
-            let name = col_val(row, &h, "Filename");
+            let name = col_val(row, &h, "Name");
             if !name.to_lowercase().ends_with(".rs") {
                 bail!("Row {i}: {name} does not end with .rs");
             }
@@ -262,7 +276,7 @@ fn main() {
         if rows.is_empty() { bail!("No rows"); }
         let exts = ["jpg", "png", "gif"];
         for (i, row) in rows.iter().enumerate() {
-            let name = col_val(row, &h, "Filename").to_lowercase();
+            let name = col_val(row, &h, "Name").to_lowercase();
             if !exts.iter().any(|e| name.ends_with(&format!(".{e}"))) {
                 bail!("Row {i}: {name} not in {{jpg,png,gif}}");
             }
@@ -337,7 +351,7 @@ fn main() {
     });
 
     // ── 14. --attr hidden ─────────────────────────────────────────────
-    t.test("T13 --attr hidden", &["*", "--attr", "hidden", "--files-only", "--limit", "10"], |stdout, _| {
+    t.test("T13 --attr hidden", &["*", "--attr", "hidden", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -348,7 +362,7 @@ fn main() {
     });
 
     // ── 15. --attr !hidden ────────────────────────────────────────────
-    t.test("T14 --attr !hidden", &["*", "--attr", "!hidden", "--files-only", "--limit", "10"], |stdout, _| {
+    t.test("T14 --attr !hidden", &["*", "--attr", "!hidden", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -359,7 +373,7 @@ fn main() {
     });
 
     // ── 16. --attr compressed ─────────────────────────────────────────
-    t.test("T15 --attr compressed", &["*", "--attr", "compressed", "--limit", "10"], |stdout, _| {
+    t.test("T15 --attr compressed", &["*", "--attr", "compressed", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         // compressed files may not exist on all systems — 0 rows is ok
         for (i, row) in rows.iter().enumerate() {
@@ -373,7 +387,7 @@ fn main() {
     t.test("T16 --exclude backup*", &["*.txt", "--exclude", "backup*", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
-            let name = col_val(row, &h, "Filename").to_lowercase();
+            let name = col_val(row, &h, "Name").to_lowercase();
             if name.starts_with("backup") { bail!("Row {i}: {name} matches exclude pattern"); }
         }
         Ok(format!("{} rows, no backup* files", rows.len()))
@@ -384,7 +398,7 @@ fn main() {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
-            let name = col_val(row, &h, "Filename").to_lowercase();
+            let name = col_val(row, &h, "Name").to_lowercase();
             if !name.contains("readme") { bail!("Row {i}: {name} does not contain 'readme'"); }
         }
         Ok(format!("{} rows, all contain 'readme'", rows.len()))
@@ -395,7 +409,7 @@ fn main() {
         let (h, rows) = parse_csv(stdout);
         // All results should have exact case "README" in filename
         for (i, row) in rows.iter().enumerate() {
-            let name = col_val(row, &h, "Filename");
+            let name = col_val(row, &h, "Name");
             if !name.contains("README") { bail!("Row {i}: {name} — case mismatch"); }
         }
         Ok(format!("{} rows, case-sensitive match", rows.len()))
@@ -416,8 +430,8 @@ fn main() {
         if arr.len() > 5 { bail!("Expected <= 5 items, got {}", arr.len()); }
         // Verify each item has expected fields
         let first = &arr[0];
-        if first.get("Filename").is_none() && first.get("filename").is_none() {
-            bail!("JSON item missing 'Filename' field: {first}");
+        if first.get("Name").is_none() && first.get("name").is_none() {
+            bail!("JSON item missing 'Name' field: {first}");
         }
         Ok(format!("{} JSON items", arr.len()))
     });
@@ -440,7 +454,7 @@ fn main() {
     });
 
     // ── 24. --dirs-only + --min-descendants ───────────────────────────
-    t.test("T23 --min-descendants 100", &["*", "--dirs-only", "--min-descendants", "100", "--limit", "10"], |stdout, _| {
+    t.test("T23 --min-descendants 100", &["*", "--dirs-only", "--min-descendants", "100", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let desc: u64 = col_val(row, &h, "Descendants").parse().unwrap_or(0);
@@ -450,7 +464,7 @@ fn main() {
     });
 
     // ── 25. --dirs-only + --max-descendants 0 (empty dirs) ───────────
-    t.test("T24 --max-descendants 0", &["*", "--dirs-only", "--max-descendants", "0", "--limit", "10"], |stdout, _| {
+    t.test("T24 --max-descendants 0", &["*", "--dirs-only", "--max-descendants", "0", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let desc: u64 = col_val(row, &h, "Descendants").parse().unwrap_or(999);
@@ -529,7 +543,7 @@ fn main() {
     t.test("T33 regex >.*\\.config$", &[">.*\\.config$", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
-            let name = col_val(row, &h, "Filename").to_lowercase();
+            let name = col_val(row, &h, "Name").to_lowercase();
             if !name.ends_with(".config") { bail!("Row {i}: {name} doesn't end with .config"); }
         }
         Ok(format!("{} rows, all .config files", rows.len()))
@@ -572,7 +586,7 @@ fn main() {
     });
 
     // ── 38. --attr system ─────────────────────────────────────────────
-    t.test("T37 --attr system", &["*", "--attr", "system", "--files-only", "--limit", "10"], |stdout, _| {
+    t.test("T37 --attr system", &["*", "--attr", "system", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let sys = col_val(row, &h, "System");
@@ -582,17 +596,17 @@ fn main() {
     });
 
     // ── 39. --attr readonly ───────────────────────────────────────────
-    t.test("T38 --attr readonly", &["*", "--attr", "readonly", "--files-only", "--limit", "10"], |stdout, _| {
+    t.test("T38 --attr readonly", &["*", "--attr", "readonly", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
-            let ro = col_val(row, &h, "Readonly");
-            if ro != "1" { bail!("Row {i}: Readonly={ro}, expected 1"); }
+            let ro = col_val(row, &h, "Read-only");
+            if ro != "1" { bail!("Row {i}: Read-only={ro}, expected 1"); }
         }
         Ok(format!("{} rows, all readonly", rows.len()))
     });
 
     // ── 40. --attr combined: system,!hidden ───────────────────────────
-    t.test("T39 --attr system,!hidden", &["*", "--attr", "system,!hidden", "--files-only", "--limit", "10"], |stdout, _| {
+    t.test("T39 --attr system,!hidden", &["*", "--attr", "system,!hidden", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let sys = col_val(row, &h, "System");
@@ -614,9 +628,12 @@ fn main() {
     t.test("T41 --header false", &["*.exe", "--header", "false", "--limit", "5", "--drive", "C"], |stdout, _| {
         let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
         // With --no-header, first line should be data, not column names
-        // Heuristic: column headers contain "Filename" — data lines don't
+        // Heuristic: column headers contain "Name" or "Path" — data lines don't
         if let Some(first) = lines.first() {
-            if first.contains("Filename") { bail!("First line looks like a header: {first}"); }
+            // Default header starts with "Path","Name",...
+            if first.starts_with("\"Path\"") || first.starts_with("Path,") {
+                bail!("First line looks like a header: {first}");
+            }
         }
         Ok(format!("{} lines, no header", lines.len()))
     });
@@ -626,7 +643,7 @@ fn main() {
         let (h, rows) = parse_csv(stdout);
         // lowercase query → case-insensitive → should match README, Readme, etc
         let has_mixed_case = rows.iter().any(|r| {
-            let name = col_val(r, &h, "Filename");
+            let name = col_val(r, &h, "Name");
             name != name.to_lowercase()
         });
         if rows.is_empty() { bail!("No rows"); }
