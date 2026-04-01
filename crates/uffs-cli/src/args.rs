@@ -265,8 +265,8 @@ pub struct Cli {
     #[arg(long, default_value = "\"")]
     pub quotes: String,
 
-    /// Include header row in output.
-    #[arg(long, default_value = "true")]
+    /// Include header row in output (use --no-header to suppress).
+    #[arg(long, default_value_t = true)]
     pub header: bool,
 
     /// Representation for active/true boolean attributes
