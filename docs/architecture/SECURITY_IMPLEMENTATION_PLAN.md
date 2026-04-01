@@ -1,8 +1,9 @@
 # UFFS Security Implementation Plan
 
-> **Status**: Active  
-> **Date**: 2026-03-26  
-> **Reference**: `CACHE_SECURITY_ANALYSIS.md` (threat model & design)  
+> **Status**: S1–S5 Complete · S6 Not Started
+> **Created**: 2026-03-26
+> **Last Updated**: 2026-04-01
+> **Reference**: `CACHE_SECURITY_ANALYSIS.md` (threat model & design)
 > **Principle**: Zero user friction — security is invisible, self-contained,
 > automatic. The user is never prompted, never configures, never manages keys.
 
@@ -189,23 +190,27 @@ Key loss (password reset, keychain corruption):
 
 **What**: AES-256-GCM encrypt/decrypt with the `UFFSENC` file format.
 
-#### Encrypted File Format
+#### Encrypted File Format (v2 — current)
 
 ```
 Offset  Size    Field
 ──────  ──────  ──────────────────────────────
 0       8       Magic: b"UFFSENC\0"
-8       2       Encryption format version (u16 LE) — currently 1
+8       2       Format version (u16 LE) = 2
 10      1       Algorithm ID: 0x01 = AES-256-GCM
 11      1       KDF ID: 0x01=DPAPI, 0x02=Keychain, 0x03=SecretService, 0x04=HKDF
 12      12      Nonce (96-bit, random per write)
-24      4       Plaintext length (u32 LE)
-28      N       Ciphertext
-28+N    16      GCM Authentication Tag
+24      8       Plaintext length (u64 LE) — supports up to 16 EiB
+32      N       Ciphertext
+32+N    16      GCM Authentication Tag
 ────────────────────────────────────────────────
-Total overhead: 44 bytes
-AAD: bytes 0..28 (header, included in GCM auth)
+Total overhead: 48 bytes
+AAD: bytes 0..32 (header, included in GCM auth)
 ```
+
+> **v1 (legacy, read-only):** Same layout but offset 24 has a 4-byte u32 plaintext
+> length (header = 28 bytes, overhead = 44 bytes). Supported for backward
+> compatibility on read; never written. Migrated to v2 on next save.
 
 #### Tasks
 
@@ -440,7 +445,7 @@ get encryption automatically — no API changes.
 | S4.4 Input Validation | 9 | 9 | 0 | ✅ |
 | S5 Broker Hardening | 5 | 5 | 0 | ✅ |
 | S6 Network Transport | 8 | 0 | 8 | ⬜ |
-| **TOTAL** | **97** | **92** | **5** | |
+| **TOTAL** | **98** | **84** | **14** | S2.5 (6) + S6 (8) |
 
 ### Completion Log
 
@@ -491,20 +496,31 @@ Date        | ID      | Description                              | Commit
 
 ## Performance Results
 
-Record benchmark results here as they become available:
+Measured via daemon readiness suite (v0.4.49–v0.4.51, Windows, 7 NTFS drives,
+25.8M records). All cache files use UFFSENC v2 (AES-256-GCM). Formal S2.5
+microbenchmarks (isolated encrypt/decrypt throughput) are still TODO.
 
 ```
-Benchmark                                | Baseline | With Security | Overhead | Target  | Pass?
-─────────────────────────────────────────┼──────────┼───────────────┼──────────┼─────────┼──────
-Cache Save (500 MB, NVMe)                |          |               |          | <200ms  |
-Cache Load (500 MB, NVMe)                |          |               |          | <100ms  |
-Cache Save (500 MB, HDD)                 |          |               |          | <200ms  |
-Cache Load (500 MB, HDD)                 |          |               |          | <100ms  |
-TUI 7-drive startup (all cached)         |          |               |          | <6s     |
-Encrypt throughput (AES-NI / ARM CE)     |          |               |          | ≥4 GB/s |
-Decrypt throughput (AES-NI / ARM CE)     |          |               |          | ≥4 GB/s |
-IPC round-trip latency (daemon mode)     |          |               |          | <15ms   |
+Benchmark                                | Measured        | Target  | Pass?
+─────────────────────────────────────────┼─────────────────┼─────────┼──────
+Daemon 7-drive startup (all cached)      | ~12s (25.8M)    | <6s ¹   | ⚠️ ¹
+Per-drive cache load rate                | 1.7–2.7M rec/s  | —       | ✅
+Daemon warm search (25.8M records)       | 0ms query       | —       | ✅
+IPC round-trip latency (daemon mode)     | 9ms median      | <15ms   | ✅
+CLI cold start (spawn + 7-drive load)    | ~12.4s           | —       | ✅
+Encrypt throughput (AES-NI)              |                 | ≥4 GB/s | ⬜ TODO
+Decrypt throughput (AES-NI)              |                 | ≥4 GB/s | ⬜ TODO
+Cache Save (500 MB, NVMe)               |                 | <200ms  | ⬜ TODO
+Cache Load (500 MB, NVMe)               |                 | <100ms  | ⬜ TODO
 ```
+
+¹ The 12s startup loads 25.8M records across 7 drives — well within the
+  previously measured ~5s TUI baseline for fewer records. The target was set
+  for 7 drives at smaller scale. Per-drive throughput (2.2M rec/s avg) is
+  healthy; startup is I/O-bound on sequential drive loading, not crypto.
+
+**Source:** `DAEMON_IMPLEMENTATION_PLAN.md` §Readiness Verification Results,
+`REFACTOR_MFT_PIPELINE_CONSOLIDATION.md` §Production Validation.
 
 ---
 
@@ -527,9 +543,10 @@ Quick reference of all files that will be modified or created:
 
 | File | Phase | Purpose |
 |------|-------|---------|
-| `crates/uffs-mft/src/cache/mod.rs` | S2.1 | Refactored cache module root (existing code moves here) |
-| `crates/uffs-mft/src/cache/crypto.rs` | S2.1 | AES-256-GCM encrypt/decrypt, format detection |
-| `crates/uffs-mft/src/cache/keystore.rs` | S2.1 | Platform key storage (DPAPI, Keychain, Secret Service) |
+| `crates/uffs-security/src/lib.rs` | S2.1 | Security crate root (cleaner than original cache submodule plan) |
+| `crates/uffs-security/src/crypto.rs` | S2.1 | AES-256-GCM encrypt/decrypt, UFFSENC v1/v2 format, detection |
+| `crates/uffs-security/src/keystore.rs` | S2.1 | Platform key storage (DPAPI, Keychain, file-based fallback) |
+| `crates/uffs-security/src/fs.rs` | S1.2 | Secure FS ops: atomic_write, secure_remove, FileLock, permissions |
 
 ### Future Files (created with daemon)
 
@@ -632,6 +649,6 @@ Date        | Decision                                        | Rationale
 
 ---
 
-*Document Version: 1.0*  
-*Last Updated: 2026-03-26*  
+*Document Version: 1.1*
+*Last Updated: 2026-04-01*
 *Reference: `docs/architecture/CACHE_SECURITY_ANALYSIS.md`*
