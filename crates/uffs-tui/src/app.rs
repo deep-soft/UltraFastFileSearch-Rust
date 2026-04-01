@@ -112,8 +112,7 @@ pub struct App {
     pub active_search_state: SearchState,
     /// How the TUI was told to find MFT data (for CLI command generation).
     pub data_source: DataSource,
-    /// Daemon client backend (IPC). `Some` when running in daemon mode,
-    /// `None` in standalone mode (`UFFS_STANDALONE=1`).
+    /// Daemon client backend (IPC).
     pub daemon_backend: Option<DaemonBackend>,
 }
 
@@ -258,10 +257,10 @@ impl App {
         }
     }
 
-    /// Check if any drives are loaded (standalone) or daemon connected.
+    /// Check if daemon is connected.
     #[must_use]
     pub fn has_data(&self) -> bool {
-        self.daemon_backend.is_some() || !self.backend.drives.is_empty()
+        self.daemon_backend.is_some()
     }
 
     /// Move selection to next item.
@@ -368,13 +367,7 @@ impl App {
         // Show working indicator (visible if UI renders before search completes)
         self.status = format!("⏳ Searching for \"{pattern}\"...");
 
-        // ── Route: daemon (default) or standalone (legacy) ────────────
-        if self.daemon_backend.is_some() {
-            self.search_via_daemon(&pattern);
-        } else {
-            // LEGACY_STANDALONE: this branch — remove when daemon-only.
-            self.search_standalone(&pattern);
-        }
+        self.search_via_daemon(&pattern);
 
         if self.results.is_empty() {
             self.table_state.select(None);
@@ -467,56 +460,6 @@ impl App {
                 self.error = Some("Daemon backend not connected".to_owned());
             }
         }
-    }
-
-    // LEGACY_STANDALONE: `search_standalone` — remove when daemon-only.
-    /// Standalone in-process search using compact indices.
-    fn search_standalone(&mut self, pattern: &str) {
-        let fc = |n: usize| uffs_core::format::format_number_commas(n as u64);
-        let sort_label = self.sort_column().label();
-        if pattern == "*" {
-            self.status = format!(
-                "⏳ Scanning {} records — Sort: {sort_label}...",
-                fc(self.backend.total_records())
-            );
-        }
-
-        let effective_limit = self.effective_limit(pattern);
-        let result = self.backend.search(
-            pattern,
-            self.case_sensitive,
-            self.whole_word,
-            effective_limit,
-            self.filter_mode,
-            &self.search_filters,
-        );
-        self.last_search_ms = result.duration.as_millis();
-        self.results = result.rows;
-
-        let total_trigrams: usize = self
-            .backend
-            .drives
-            .iter()
-            .map(|dr| dr.trigram.posting_count())
-            .sum();
-        self.status = format!(
-            "{} matches  │  {}  │  {} records across {} drives  │  {} trigrams",
-            fc(self.results.len()),
-            {
-                let ms = result.duration.as_millis();
-                if ms < 1000 {
-                    format!("{ms}ms")
-                } else {
-                    let tenths = (ms + 50) / 100;
-                    let whole = tenths / 10;
-                    let frac = tenths % 10;
-                    format!("{whole}.{frac}s")
-                }
-            },
-            fc(result.records_scanned),
-            self.backend.drives.len(),
-            fc(total_trigrams),
-        );
     }
 
     /// Compute the effective result limit for a search pattern.

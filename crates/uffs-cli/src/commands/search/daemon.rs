@@ -117,11 +117,11 @@ fn build_daemon_spawn_args(config: &SearchConfig<'_>) -> Result<Vec<String>> {
 /// Build [`SearchParams`] from the CLI [`SearchConfig`].
 ///
 /// Maps every CLI flag to the corresponding `SearchParams` field so the
-/// daemon applies the same filters the standalone pipeline would.
+/// daemon applies the same filters.
 fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
-    let filter = if config.filters.files_only {
+    let filter = if config.files_only {
         Some("files".to_owned())
-    } else if config.filters.dirs_only {
+    } else if config.dirs_only {
         Some("dirs".to_owned())
     } else {
         None
@@ -135,7 +135,7 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         .unwrap_or_default();
 
     // limit=0 in CLI means unlimited → None for daemon.
-    let limit = (config.filters.limit > 0).then_some(config.filters.limit);
+    let limit = (config.limit > 0).then_some(config.limit);
 
     SearchParams {
         pattern: config.pattern.to_owned(),
@@ -146,10 +146,10 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         limit,
         filter,
         drives,
-        min_size: config.filters.min_size,
-        max_size: config.filters.max_size,
-        min_descendants: config.filters.min_descendants,
-        max_descendants: config.filters.max_descendants,
+        min_size: config.min_size,
+        max_size: config.max_size,
+        min_descendants: config.min_descendants,
+        max_descendants: config.max_descendants,
         newer: config.newer.map(ToOwned::to_owned),
         older: config.older.map(ToOwned::to_owned),
         newer_created: config.newer_created.map(ToOwned::to_owned),
@@ -157,9 +157,9 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         newer_accessed: config.newer_accessed.map(ToOwned::to_owned),
         older_accessed: config.older_accessed.map(ToOwned::to_owned),
         attr: config.attr_filter.map(ToOwned::to_owned),
-        ext: config.filters.ext_filter.map(ToOwned::to_owned),
+        ext: config.ext_filter.map(ToOwned::to_owned),
         exclude: config.exclude.map(ToOwned::to_owned),
-        hide_system: config.filters.hide_system,
+        hide_system: config.hide_system,
     }
 }
 

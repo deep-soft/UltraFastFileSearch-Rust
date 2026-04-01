@@ -282,30 +282,9 @@ fn init_daemon_backend(app: &mut App, spawn_args: Vec<String>, no_local_data: bo
         }
         Err(err) => {
             app.error = Some(format!("Failed to connect to daemon: {err}"));
-            "⚠ Daemon unavailable — set UFFS_STANDALONE=1 for standalone mode"
-                .clone_into(&mut app.status);
+            "⚠ Daemon unavailable".clone_into(&mut app.status);
         }
     }
-}
-
-/// In standalone mode, resolve `--data-dir` into concrete MFT file paths.
-/// In daemon mode, return `mft_files` unchanged — the daemon resolves
-/// `--data-dir` internally.
-#[expect(
-    clippy::single_call_fn,
-    reason = "extracted from main to reduce cognitive complexity"
-)]
-fn resolve_standalone_mft_files(
-    mut mft_files: Vec<PathBuf>,
-    data_dir: Option<&std::path::Path>,
-    is_standalone: bool,
-) -> Vec<PathBuf> {
-    if is_standalone {
-        if let Some(dir) = data_dir {
-            mft_files.extend(uffs_mft::discovery::discover_mft_files(dir));
-        }
-    }
-    mft_files
 }
 
 #[expect(
@@ -371,198 +350,13 @@ fn main() -> Result<()> {
         app::DataSource::None
     };
 
-    // ── Route: daemon (default) or standalone (legacy) ────────────────
-    // LEGACY_STANDALONE: this `is_standalone` check — remove when daemon-only.
-    let is_standalone = std::env::var("UFFS_STANDALONE")
-        .is_ok_and(|val| val == "1" || val.eq_ignore_ascii_case("true"));
-
-    // Standalone: resolve --data-dir locally. Daemon: forwarded raw.
-    #[expect(
-        clippy::shadow_reuse,
-        reason = "extending mft_files for standalone data-dir resolution"
-    )]
-    let mft_files = resolve_standalone_mft_files(mft_files, cli.data_dir.as_deref(), is_standalone);
-
-    let total_to_load = mft_files.len() + live_drives.len();
+    // ── Connect to daemon ──────────────────────────────────────────────
     let cli_no_cache = cli.no_cache;
-
-    if !is_standalone {
-        // Daemon mode (default): connect to the daemon via IPC.
-        let spawn_args = build_daemon_spawn_args(&mft_files, cli.data_dir.as_deref(), cli_no_cache);
-        "🔌 Connecting to UFFS daemon...".clone_into(&mut app.status);
-        terminal.draw(|frame| ui::ui(frame, &mut app))?;
-        let no_local_data = mft_files.is_empty() && cli.data_dir.is_none();
-        init_daemon_backend(&mut app, spawn_args, no_local_data);
-    } else if total_to_load > 0 {
-        // LEGACY_STANDALONE: this entire `else if` branch — remove when daemon-only.
-        app.status = format!("Loading {total_to_load} drive(s)...");
-
-        // Build load tasks: MFT files + live drives unified
-        let file_tasks: Vec<_> = mft_files
-            .iter()
-            .enumerate()
-            .map(|(idx, path)| (path.clone(), cli.drive.get(idx).copied()))
-            .collect();
-
-        // Use a channel to receive loaded drives from background threads
-        let (sender, receiver) = std::sync::mpsc::channel();
-
-        // Spawn loading threads for both MFT files and live drives
-        let _load_handle = std::thread::spawn(move || {
-            std::thread::scope(|scope| {
-                // Spawn threads for MFT file loading
-                let mut handles: Vec<_> = file_tasks
-                    .iter()
-                    .map(|(file_path, drive_opt)| {
-                        let thread_sender = sender.clone();
-                        let thread_path = file_path.clone();
-                        let thread_drive = *drive_opt;
-                        let no_cache_flag = cli_no_cache;
-                        scope.spawn(move || {
-                            let source =
-                                compact::MftSource::File(thread_path.clone(), thread_drive);
-                            let result = compact::load_drive(&source, no_cache_flag);
-                            let file_name = thread_path
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("?")
-                                .to_owned();
-                            drop(thread_sender.send((file_name, result)));
-                        })
-                    })
-                    .collect();
-
-                // Spawn threads for live NTFS drives
-                // (live_drives is always empty on non-Windows)
-                let no_cache_flag = cli_no_cache;
-                for drive_letter in live_drives {
-                    let thread_sender = sender.clone();
-                    handles.push(scope.spawn(move || {
-                        let label = format!("LIVE {drive_letter}:");
-                        let result = refresh::load_live_drive_impl(drive_letter, no_cache_flag);
-                        drop(thread_sender.send((label, result)));
-                    }));
-                }
-
-                for handle in handles {
-                    drop(handle.join());
-                }
-            });
-        });
-
-        // Poll for loaded drives while rendering the TUI
-        let mut loaded_count = 0_usize;
-        let load_start = std::time::Instant::now();
-
-        while loaded_count < total_to_load {
-            // Render current state
-            terminal.draw(|frame| ui::ui(frame, &mut app))?;
-
-            // Check for loaded drives (non-blocking)
-            while let Ok((file_name, result)) = receiver.try_recv() {
-                loaded_count += 1;
-                match result {
-                    Ok((drive_index, timing)) => {
-                        let fc = |n: usize| uffs_core::format::format_number_commas(n as u64);
-                        let msg = format!(
-                            "✅ {}:  {:>10} rec  │  mft:{:>7}  compact:{:>7}  tri:{:>7}  │  {:>6} trigrams  ({})",
-                            drive_index.letter,
-                            fc(drive_index.records.len()),
-                            ui::format_ms_compact(timing.mft),
-                            ui::format_ms_compact(timing.compact),
-                            ui::format_ms_compact(timing.trigram),
-                            fc(drive_index.trigram.posting_count()),
-                            file_name,
-                        );
-                        let dl = drive_index.letter;
-                        app.backend.drives.push(drive_index);
-                        // Show progress as search results (path empty = loading msg)
-                        app.results.push(backend::DisplayRow {
-                            drive: dl,
-                            path: String::new(),
-                            name: msg,
-                            size: 0,
-                            is_directory: false,
-                            modified: 0,
-                            created: 0,
-                            accessed: 0,
-                            flags: 0,
-                            allocated: 0,
-                            descendants: 0,
-                            treesize: 0,
-                            tree_allocated: 0,
-                        });
-                    }
-                    Err(err) => {
-                        app.results.push(backend::DisplayRow {
-                            drive: '!',
-                            path: String::new(),
-                            name: format!("❌ {file_name}: {err}"),
-                            size: 0,
-                            is_directory: false,
-                            modified: 0,
-                            created: 0,
-                            accessed: 0,
-                            flags: 0,
-                            allocated: 0,
-                            descendants: 0,
-                            treesize: 0,
-                            tree_allocated: 0,
-                        });
-                    }
-                }
-                app.status = format!(
-                    "Loading... {loaded_count}/{total_to_load} drives ({} records, {})",
-                    uffs_core::format::format_number_commas(app.backend.total_records() as u64),
-                    uffs_core::format::format_duration(load_start.elapsed()),
-                );
-            }
-
-            // Handle input during loading — text box is always active
-            if event::poll(core::time::Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        if is_exit_key(&app.keymap, key) {
-                            disable_raw_mode()?;
-                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                            terminal.show_cursor()?;
-                            return Ok(());
-                        }
-                        // Keybindings during loading — uses app.keymap
-                        if app.keymap.matches(key, Action::ClearLine) {
-                            app.textarea.select_all();
-                            app.textarea.cut();
-                        } else if app.keymap.matches(key, Action::Undo) {
-                            app.textarea.undo();
-                        } else if app.keymap.matches(key, Action::Redo) {
-                            app.textarea.redo();
-                        } else if app.keymap.matches(key, Action::SelectAll) {
-                            app.textarea.select_all();
-                        } else if app.keymap.matches(key, Action::Copy) {
-                            app.textarea.copy();
-                        } else if app.keymap.matches(key, Action::Paste) {
-                            app.textarea.paste();
-                        } else {
-                            app.textarea.input(key);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Loading complete — clear progress and show summary
-        app.results.clear();
-        let elapsed = load_start.elapsed();
-        app.status = format!(
-            "Loaded {} drive(s), {} records in {} — type to search",
-            app.backend.drives.len(),
-            uffs_core::format::format_number_commas(app.backend.total_records() as u64),
-            uffs_core::format::format_duration(elapsed),
-        );
-
-        // Search immediately — empty box shows '*' (all files, newest first)
-        app.search();
-    }
+    let spawn_args = build_daemon_spawn_args(&mft_files, cli.data_dir.as_deref(), cli_no_cache);
+    "🔌 Connecting to UFFS daemon...".clone_into(&mut app.status);
+    terminal.draw(|frame| ui::ui(frame, &mut app))?;
+    let no_local_data = mft_files.is_empty() && cli.data_dir.is_none();
+    init_daemon_backend(&mut app, spawn_args, no_local_data);
 
     // Spawn auto-refresh timer thread (if interval > 0)
     let refresh_interval = cli.refresh_interval;

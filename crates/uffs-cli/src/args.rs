@@ -77,10 +77,6 @@ pub struct Cli {
     #[arg(long, value_delimiter = ',', conflicts_with = "drive", value_parser = parse_drive_letter)]
     pub drives: Option<Vec<char>>,
 
-    /// Use pre-built index file instead of live MFT
-    #[arg(short, long, conflicts_with_all = ["drive", "drives", "mft_file"])]
-    pub index: Option<PathBuf>,
-
     /// Use raw MFT file(s) instead of live MFT (cross-platform)
     ///
     /// Load previously saved raw MFT files (from `uffs save-raw` or

@@ -16,8 +16,6 @@ mod index;
 mod info;
 /// Output helpers for search results.
 mod output;
-/// Raw MFT/data loading helpers for search.
-mod raw_io;
 /// Search command implementation.
 mod search;
 /// Stats subcommand implementation.

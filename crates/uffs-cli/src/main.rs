@@ -253,7 +253,6 @@ async fn run() -> Result<()> {
                     &pattern,
                     cli.drive,
                     cli.drives,
-                    cli.index,
                     cli.mft_file,
                     cli.data_dir,
                     cli.files_only,

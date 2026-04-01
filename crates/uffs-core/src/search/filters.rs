@@ -429,7 +429,7 @@ pub fn parse_attr_exclude(spec: &str) -> u32 {
 //
 // These tests verify that SearchFilters.matches_record covers ALL filter
 // types.  During the v0.4.30 refactor, 14 filter parameters were not
-// wired into the compact path (OwnedQueryFilters passed None for them).
+// wired into the compact search path (they were all passed as None).
 // See `docs/architecture/2026_03_30_04_12_SEARCH_PIPELINE_REGRESSION_ANALYSIS.
 // md` ════════════════════════════════════════════════════════════════════════
 #[cfg(test)]

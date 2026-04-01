@@ -450,8 +450,8 @@ serialization (~16s) are significant for bulk unfiltered queries. For filtered q
 | D5.2.7 | Make `commands::search()` async for daemon `.await` support | ✅ DONE |
 | D5.2.8 | Mark standalone code with `LEGACY_STANDALONE` comments for later removal | ✅ DONE |
 | D5.2.9 | Handle shmem response: transparent — `client.search()` handles internally | ✅ DONE |
-| D5.2.10 | Delete broken pipeline: `QueryFilters`, `OwnedQueryFilters`, dead `SearchConfig` fields | ⬜ TODO (after validation) |
-| D5.2.11 | Fix dead re-export (`raw_io.rs:23`) | ⬜ TODO |
+| D5.2.10 | Delete broken pipeline: `OwnedQueryFilters`, `load_live_index`, orphaned `streaming.rs` | ✅ DONE (3 files removed/cleaned; `QueryFilters` + `SearchConfig` still needed by standalone path) |
+| D5.2.11 | Fix dead re-export (`raw_io.rs:23`) | ✅ DONE (removed `#[cfg(windows)] mod windows` + dead re-export) |
 
 ### Wave D5.3 — Validation
 
@@ -460,7 +460,7 @@ serialization (~16s) are significant for bulk unfiltered queries. For filtered q
 | D5.3.1 | Benchmark: `uffs "*.rs"` — target: <100ms (warm daemon) | ✅ DONE (**420ms cold-connect, 0ms query**, 107 rows across 7 drives) |
 | D5.3.2 | Benchmark: `uffs "*"` (25M files) — target: ≤ pre-D5 time (shmem) | ✅ DONE (**42.4s benchmark, 85s warm+file, 117s cold+file** — 25.8M rows via shmem) |
 | D5.3.3 | Benchmark: shmem overhead — target: <500ms for 25M rows | ✅ DONE (**shmem_read ~6–7.8s for 25.8M rows** — above target, dominated by SearchRow reconstruction) |
-| D5.3.4 | Test: all CLI flags (`--files-only`, `--sort`, `--attr`, `--newer`, etc.) work | ✅ DONE (**31/34 pass, 2 known issues: `--drive`/`--drives` filter + `--columns` partial**) |
+| D5.3.4 | Test: all CLI flags (`--files-only`, `--sort`, `--attr`, `--newer`, etc.) work | ✅ DONE (**34/34 pass** — `--drive`/`--drives` + `--columns` fixes verified in production) |
 | D5.3.5 | Test: shmem cleanup on CLI exit (no leaked /dev/shm files) | ✅ DONE (unit tests + production verified: 25.8M rows, shmem dir empty after exit) |
 | D5.3.6 | Test: shmem cleanup on CLI crash (daemon GC after timeout) | ✅ DONE (unit test: orphaned .bin → cleanup_stale_shmem_files removes it) |
 | D5.3.7 | Test: concurrent CLI invocations (separate shmem regions) | ✅ DONE (unit test: 8 threads, unique paths, data isolation, cleanup verified) |
@@ -564,23 +564,21 @@ Daemon stats (after 3 queries):
 | 19 | `--word` | ✅ | 20 | Whole-word "test" match |
 | 20 | `--format json` | ✅ | 17 | Valid JSON output |
 | 21 | `--format table` | ✅ | 11 | Polars table rendering |
-| 22 | `--columns "Name,Size,Path Only"` | ⚠️ | 10 | Only Name+Size shown; "Path Only" dropped |
+| 22 | `--columns "Name,Size,Path Only"` | ✅ | 10 | Fixed: space-separated column names now matched |
 | 23 | `--min-descendants 100` | ✅ | 160 | Dirs with 100+ children |
 | 24 | `--max-descendants 0` | ✅ | 157 | Empty directories |
 | 25 | `--newer 7d` | ✅ | 11 | Recently modified logs |
 | 26 | `--older 365d` | ✅ | 16 | Old .doc files |
 | 27 | `--newer-created 30d` | ✅ | 185 | Recently created files |
-| 28 | `--drive C` | ⚠️ | 9 | Returns D: results — filter not applied |
-| 29 | `--drives C,D` | ⚠️ | 9 | Returns only D: results — same issue |
+| 28 | `--drive C` | ✅ | 10 | Fixed: all results C:\\ only |
+| 29 | `--drives C,D` | ✅ | 8 | Fixed: results from C+D drives only |
 | 30 | `--sep "\|" --quotes "'"` | ✅ | 11 | Custom separators work |
 | 31 | `--out file` | ✅ | 21 | 100 rows written to file |
 | 32 | `--benchmark` | ✅ | 355 | 154,786 rows, 33ms shmem read |
 | 33 | Regex `>.*\.config$` | ✅ | 62 | Regex pattern matching works |
 | 34 | Combined (7 flags) | ✅ | 8 | Multi-flag stress test OK |
 
-**Summary:** 31/34 pass ✅, 3 issues found:
-- **`--drive` / `--drives`** (tests 28–29): filter appears to be ignored — results from all drives returned
-- **`--columns "Path Only"`** (test 22): column name with space not recognized; only "Name" and "Size" emitted
+**Summary:** 34/34 pass ✅ (3 fixes applied in v0.4.51: `--drive`/`--drives` filter + `--columns` space handling)
 
 **Daemon stats** (after 38 queries, 15m 51s uptime):
 - Startup duration: **22s 849ms**

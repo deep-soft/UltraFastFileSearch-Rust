@@ -404,9 +404,8 @@ mod tests {
         // Write a shmem file and verify it exists.
         let rows = vec![sample_row("a.txt"), sample_row("b.txt")];
         let path = write_search_results(&rows, 42, 100, false).expect("write should succeed");
-        assert!(path.exists(), "shmem file must exist after write");
 
-        // Read it back — read_search_results deletes the file.
+        // Read immediately — avoid race with parallel GC test.
         let resp = read_search_results(&path).expect("read should succeed");
         assert_eq!(resp.rows.len(), 2);
         assert_eq!(resp.rows[0].name, "a.txt");
@@ -424,56 +423,12 @@ mod tests {
 
     #[test]
     fn shmem_empty_round_trip_deletes_file() {
-        // Edge case: zero rows.
+        // Edge case: zero rows.  Read immediately after write to avoid
+        // races with the parallel GC test that sweeps all .bin files.
         let path = write_search_results(&[], 0, 0, false).expect("write should succeed");
-        assert!(path.exists());
-
         let resp = read_search_results(&path).expect("read should succeed");
         assert!(resp.rows.is_empty());
         assert!(!path.exists(), "empty shmem file must be deleted after read");
-    }
-
-    #[test]
-    fn cleanup_stale_shmem_files_removes_bins() {
-        // Create some fake .bin files in the shmem directory.
-        let dir = shmem_dir().expect("shmem_dir should work");
-        let fake1 = dir.join("stale_test_1.bin");
-        let fake2 = dir.join("stale_test_2.bin");
-        std::fs::write(&fake1, b"fake").expect("write fake1");
-        std::fs::write(&fake2, b"fake").expect("write fake2");
-        assert!(fake1.exists());
-        assert!(fake2.exists());
-
-        cleanup_stale_shmem_files();
-
-        assert!(
-            !fake1.exists(),
-            "stale .bin must be removed: {}",
-            fake1.display()
-        );
-        assert!(
-            !fake2.exists(),
-            "stale .bin must be removed: {}",
-            fake2.display()
-        );
-    }
-
-    #[test]
-    fn cleanup_does_not_remove_non_bin_files() {
-        let dir = shmem_dir().expect("shmem_dir should work");
-        let other = dir.join("keep_me.txt");
-        std::fs::write(&other, b"preserve").expect("write non-bin");
-
-        cleanup_stale_shmem_files();
-
-        assert!(
-            other.exists(),
-            "non-.bin file must survive cleanup: {}",
-            other.display()
-        );
-
-        // Clean up our test file.
-        drop(std::fs::remove_file(&other));
     }
 
     #[test]
@@ -490,8 +445,8 @@ mod tests {
 
         let path =
             write_search_results(&rows, 99, rows.len() as u64, false).expect("write should work");
-        assert!(path.exists(), "shmem file must exist");
 
+        // Read immediately — avoid race with parallel GC test.
         let resp = read_search_results(&path).expect("read should work");
         assert_eq!(resp.rows.len(), SHMEM_THRESHOLD + 1);
         assert_eq!(resp.duration_ms, 99);
@@ -502,22 +457,35 @@ mod tests {
     }
 
     #[test]
-    fn crash_orphaned_shmem_cleaned_by_gc() {
-        // D5.3.6: Simulate CLI crash — write shmem but never read it.
-        // The orphaned file should be cleaned up by cleanup_stale_shmem_files.
-        let rows = vec![sample_row("orphan.txt")];
-        let path = write_search_results(&rows, 1, 1, false).expect("write should work");
-        assert!(path.exists(), "orphaned shmem file must exist");
+    fn gc_cleans_orphaned_bins_and_preserves_non_bins() {
+        // D5.3.6: Combined GC test — runs as a single test to avoid
+        // races with other shmem tests (GC sweeps ALL .bin files).
+        let dir = shmem_dir().expect("shmem_dir should work");
 
-        // Simulate: CLI crashes here — never calls read_search_results.
-        // On daemon restart, GC sweeps:
+        // 1. Simulate CLI crash: write shmem but never read it.
+        let rows = vec![sample_row("orphan.txt")];
+        let orphan = write_search_results(&rows, 1, 1, false).expect("write should work");
+
+        // 2. Create extra stale .bin files (simulating older crashes).
+        let stale1 = dir.join("gc_stale_1.bin");
+        let stale2 = dir.join("gc_stale_2.bin");
+        std::fs::write(&stale1, b"stale").expect("write stale1");
+        std::fs::write(&stale2, b"stale").expect("write stale2");
+
+        // 3. Create a non-.bin file that must survive.
+        let keep = dir.join("gc_keep_me.txt");
+        std::fs::write(&keep, b"preserve").expect("write non-bin");
+
+        // GC sweep — should remove all .bin, preserve .txt.
         cleanup_stale_shmem_files();
 
-        assert!(
-            !path.exists(),
-            "orphaned shmem file must be removed by GC: {}",
-            path.display()
-        );
+        assert!(!orphan.exists(), "orphan must be removed by GC");
+        assert!(!stale1.exists(), "stale .bin must be removed by GC");
+        assert!(!stale2.exists(), "stale .bin must be removed by GC");
+        assert!(keep.exists(), "non-.bin must survive GC");
+
+        // Clean up our test file.
+        drop(std::fs::remove_file(&keep));
     }
 
     #[test]
