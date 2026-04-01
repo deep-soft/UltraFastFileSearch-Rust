@@ -96,10 +96,10 @@ impl UffsClient {
     ) -> Result<Self, crate::error::ClientError> {
         let sock = socket_path();
         let pid_path = pid_file_path();
-        println!("[diag] connect_with_args: socket_path={}", sock.display());
-        println!("[diag] connect_with_args: socket exists={}", sock.exists());
-        println!("[diag] connect_with_args: pid_file={}", pid_path.display());
-        println!(
+        eprintln!("[diag] connect_with_args: socket_path={}", sock.display());
+        eprintln!("[diag] connect_with_args: socket exists={}", sock.exists());
+        eprintln!("[diag] connect_with_args: pid_file={}", pid_path.display());
+        eprintln!(
             "[diag] connect_with_args: pid_file exists={}",
             pid_path.exists()
         );
@@ -107,13 +107,13 @@ impl UffsClient {
         // Try connecting directly first — daemon may already be running.
         match Self::platform_connect().await {
             Ok(client) => {
-                println!("[diag] connect_with_args: already connected to existing daemon");
+                eprintln!("[diag] connect_with_args: already connected to existing daemon");
                 // S4.3.4: Verify daemon identity via PID file
                 verify_daemon_after_connect();
                 return Ok(client);
             }
             Err(conn_err) => {
-                println!("[diag] connect_with_args: initial connect failed: {conn_err}");
+                eprintln!("[diag] connect_with_args: initial connect failed: {conn_err}");
                 drop(conn_err);
             }
         }
@@ -122,8 +122,8 @@ impl UffsClient {
         tracing::info!("Daemon not running, auto-starting via `uffs daemon run`...");
 
         let uffs_exe = find_uffs_exe();
-        println!("[diag] connect_with_args: uffs_exe={}", uffs_exe.display());
-        println!(
+        eprintln!("[diag] connect_with_args: uffs_exe={}", uffs_exe.display());
+        eprintln!(
             "[diag] connect_with_args: uffs_exe exists={}",
             uffs_exe.exists()
         );
@@ -133,7 +133,7 @@ impl UffsClient {
         for arg in spawn_args {
             cmd_args.push(arg.as_str());
         }
-        println!("[diag] connect_with_args: cmd_args={cmd_args:?}");
+        eprintln!("[diag] connect_with_args: cmd_args={cmd_args:?}");
 
         // Spawn the daemon process.
         //
@@ -142,7 +142,7 @@ impl UffsClient {
         // "runas" verb to trigger a UAC consent dialog. If already elevated
         // (or the broker service is available), we spawn normally.
         spawn_daemon(&uffs_exe, &cmd_args)?;
-        println!("[diag] connect_with_args: spawn_daemon returned OK");
+        eprintln!("[diag] connect_with_args: spawn_daemon returned OK");
 
         // Retry with backoff
         let mut delay_ms = 50_u64;
@@ -223,12 +223,12 @@ impl UffsClient {
         loop {
             let mut line = String::new();
             let read_result = tokio::time::timeout(
-                core::time::Duration::from_secs(30),
+                core::time::Duration::from_secs(300),
                 self.reader.read_line(&mut line),
             )
             .await
             .map_err(|_timeout_err| {
-                tracing::info!(id, method, "send_request: read timed out after 30s");
+                tracing::info!(id, method, "send_request: read timed out after 300s");
                 crate::error::ClientError::Timeout
             })?
             .map_err(|io_err| crate::error::ClientError::Io(io_err.to_string()))?;
@@ -297,10 +297,25 @@ impl UffsClient {
         // D5.1: transparent shmem reading — if the daemon used shmem,
         // read the file and return a response with inline rows.
         if let Some(path_str) = &response.shmem_path {
+            let t_shmem = std::time::Instant::now();
             let path = std::path::Path::new(path_str);
             let shmem_response = crate::shmem::read_search_results(path).map_err(|err| {
                 crate::error::ClientError::Protocol(format!("shmem read failed: {err}"))
             })?;
+            let shmem_read_ms = t_shmem.elapsed().as_millis();
+            let row_count = shmem_response.rows.len();
+            tracing::info!(
+                rows = row_count,
+                shmem_read_ms = shmem_read_ms,
+                path = %path_str,
+                "🗂️ shmem: read bulk results"
+            );
+            #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+            if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
+                eprintln!(
+                    "[CACHE_PROFILE] shmem_read:  {shmem_read_ms:>6} ms  ({row_count} rows from shmem)"
+                );
+            }
             return Ok(shmem_response);
         }
 

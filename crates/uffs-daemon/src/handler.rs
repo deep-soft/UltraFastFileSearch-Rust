@@ -75,9 +75,11 @@ impl RequestHandler {
         }
 
         let mut response = self.index.search(&search_params).await;
+        let row_count = response.rows.len();
 
         // D5.1: adaptive routing — use shmem for large result sets.
-        if response.rows.len() > uffs_client::shmem::SHMEM_THRESHOLD {
+        if row_count > uffs_client::shmem::SHMEM_THRESHOLD {
+            let t_shmem = std::time::Instant::now();
             match uffs_client::shmem::write_search_results(
                 &response.rows,
                 response.duration_ms,
@@ -85,16 +87,26 @@ impl RequestHandler {
                 response.truncated,
             ) {
                 Ok(path) => {
-                    let count = response.rows.len() as u64;
-                    response.shmem_path = Some(path.to_string_lossy().into_owned());
+                    let shmem_ms = t_shmem.elapsed().as_millis();
+                    let count = row_count as u64;
+                    let path_str = path.to_string_lossy().into_owned();
+                    tracing::info!(
+                        rows = row_count,
+                        shmem_write_ms = shmem_ms,
+                        path = %path_str,
+                        "🗂️ shmem: wrote bulk results"
+                    );
+                    response.shmem_path = Some(path_str);
                     response.shmem_count = Some(count);
                     // Clear inline rows — data is in shmem now.
                     response.rows = Vec::new();
                 }
                 Err(shmem_err) => {
+                    let shmem_ms = t_shmem.elapsed().as_millis();
                     tracing::warn!(
                         error = %shmem_err,
-                        rows = response.rows.len(),
+                        rows = row_count,
+                        shmem_write_ms = shmem_ms,
                         "shmem write failed; falling back to inline JSON"
                     );
                     // Fall through — send inline (may be slow for very
@@ -103,8 +115,22 @@ impl RequestHandler {
             }
         }
 
+        let t_serialize = std::time::Instant::now();
         let result = serde_json::to_value(&response).unwrap_or_default();
-        serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
+        let json = serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default();
+        let ser_ms = t_serialize.elapsed().as_millis();
+
+        if row_count > 10_000 || ser_ms > 100 {
+            tracing::info!(
+                rows = row_count,
+                serialize_ms = ser_ms,
+                json_bytes = json.len(),
+                shmem = response.shmem_path.is_some(),
+                "🔌 search response serialized"
+            );
+        }
+
+        json
     }
 
     /// Handle `stats` method — performance metrics.
