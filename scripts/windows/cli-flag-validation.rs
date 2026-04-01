@@ -627,7 +627,7 @@ fn main() {
     });
 
     // ── 42. --header false ────────────────────────────────────────────
-    t.test("T41 --no-header", &["*.exe", "--no-header", "--limit", "5", "--drive", "C"], |stdout, _| {
+    t.test("T41 --header false", &["*.exe", "--header", "false", "--limit", "5", "--drive", "C"], |stdout, _| {
         let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
         // With --no-header, first line should be data, not column names
         // Heuristic: column headers contain "Name" or "Path" — data lines don't
