@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uffs_client::protocol::{ERR_PARSE, RpcErrorResponse, RpcRequest};
 
+use crate::events::{EventReceiver, event_to_json_line};
 use crate::handler::RequestHandler;
 use crate::index::IndexManager;
 use crate::lifecycle::LifecycleHandle;
@@ -30,10 +31,6 @@ pub struct IpcServer;
 
 impl IpcServer {
     /// Returns the platform-specific socket path.
-    #[expect(
-        clippy::single_call_fn,
-        reason = "platform-dispatch helper — clarity over inlining"
-    )]
     pub fn socket_path() -> PathBuf {
         let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
 
@@ -117,22 +114,54 @@ impl IpcServer {
 
     /// Handle a single client connection (shared across all platforms).
     ///
+    /// Uses a split-writer architecture:
+    /// - **Reader task**: reads JSON-RPC requests, dispatches to handler,
+    ///   sends responses via an outbound channel.
+    /// - **Notification task**: subscribes to the broadcast event channel,
+    ///   serializes events as JSON-RPC notifications, sends via the same
+    ///   outbound channel.
+    /// - **Writer task**: drains the outbound channel and writes to the
+    ///   socket (single writer, no concurrent writes).
+    ///
     /// Enforces:
-    /// - S4.4.7: 30-second per-message read timeout
     /// - S4.4.8: 5-minute idle connection timeout
     /// - S4.4.6: Per-connection rate limit (100 queries/sec)
-    #[expect(
-        clippy::single_call_fn,
-        reason = "connection handler — structural separation"
-    )]
     async fn handle_connection(
+        reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+        writer: impl tokio::io::AsyncWrite + Unpin + Send + 'static,
+        handler: Arc<RequestHandler>,
+        event_rx: EventReceiver,
+    ) -> anyhow::Result<()> {
+        // Outbound channel — both responses and notifications funnel here.
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel::<String>(128);
+
+        // ── Writer task: drains outbound channel → socket ────────────
+        let writer_task = tokio::spawn(Self::writer_loop(writer, out_rx));
+
+        // ── Notification task: broadcast events → outbound channel ───
+        let notif_tx = out_tx.clone();
+        let notif_task = tokio::spawn(Self::notification_loop(event_rx, notif_tx));
+
+        // ── Reader task: reads requests → handler → outbound channel ─
+        let reader_result = Self::reader_loop(reader, handler, out_tx).await;
+
+        // Reader done (client disconnected or error) — cancel helpers.
+        notif_task.abort();
+        writer_task.abort();
+
+        reader_result
+    }
+
+    /// Reads JSON-RPC requests from the client, dispatches to the handler,
+    /// and sends responses via the outbound channel.
+    #[expect(clippy::single_call_fn, reason = "structural separation — reader/writer/notifier split")]
+    async fn reader_loop(
         reader: impl tokio::io::AsyncRead + Unpin,
-        mut writer: impl tokio::io::AsyncWrite + Unpin,
-        handler: &RequestHandler,
+        handler: Arc<RequestHandler>,
+        out_tx: tokio::sync::mpsc::Sender<String>,
     ) -> anyhow::Result<()> {
         let mut buf_reader = BufReader::new(reader);
         let mut line = String::new();
-
         let mut queries_this_second: u32 = 0;
         let mut rate_limit_epoch = std::time::Instant::now();
 
@@ -164,9 +193,9 @@ impl IpcServer {
             if line.len() > MAX_MESSAGE_SIZE {
                 let err_resp = RpcErrorResponse::error(None, ERR_PARSE, "Message too large");
                 let json_out = serde_json::to_string(&err_resp).unwrap_or_default();
-                writer.write_all(json_out.as_bytes()).await?;
-                writer.write_all(b"\n").await?;
-                writer.flush().await?;
+                let mut msg = json_out;
+                msg.push('\n');
+                let _ignore = out_tx.send(msg).await;
                 return Ok(());
             }
 
@@ -183,9 +212,9 @@ impl IpcServer {
                     &format!("Rate limit exceeded ({MAX_QUERIES_PER_SEC} queries/sec)"),
                 );
                 let json_out = serde_json::to_string(&rate_err).unwrap_or_default();
-                writer.write_all(json_out.as_bytes()).await?;
-                writer.write_all(b"\n").await?;
-                writer.flush().await?;
+                let mut msg = json_out;
+                msg.push('\n');
+                let _ignore = out_tx.send(msg).await;
                 continue;
             }
 
@@ -200,18 +229,65 @@ impl IpcServer {
                         &format!("Invalid JSON: {parse_err}"),
                     );
                     let json_out = serde_json::to_string(&err_resp).unwrap_or_default();
-                    writer.write_all(json_out.as_bytes()).await?;
-                    writer.write_all(b"\n").await?;
-                    writer.flush().await?;
+                    let mut msg = json_out;
+                    msg.push('\n');
+                    let _ignore = out_tx.send(msg).await;
                     continue;
                 }
             };
 
             let response = handler.handle(&req).await;
+            let mut msg = response;
+            msg.push('\n');
+            if out_tx.send(msg).await.is_err() {
+                // Writer task dropped — connection is dead.
+                return Ok(());
+            }
+        }
+    }
 
-            writer.write_all(response.as_bytes()).await?;
-            writer.write_all(b"\n").await?;
-            writer.flush().await?;
+    /// Subscribes to daemon events and forwards them as JSON-RPC
+    /// notifications to the outbound channel.
+    #[expect(clippy::single_call_fn, reason = "structural separation — reader/writer/notifier split")]
+    async fn notification_loop(
+        mut event_rx: EventReceiver,
+        out_tx: tokio::sync::mpsc::Sender<String>,
+    ) {
+        loop {
+            match event_rx.recv().await {
+                Ok(event) => {
+                    if let Some(json_line) = event_to_json_line(&event) {
+                        if out_tx.send(json_line).await.is_err() {
+                            // Client disconnected.
+                            return;
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::debug!(skipped, "Client lagged on event broadcast");
+                    // Continue — just skip the missed events.
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    // Daemon shutting down — broadcast channel closed.
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Drains the outbound channel and writes each message to the socket.
+    #[expect(clippy::single_call_fn, reason = "structural separation — reader/writer/notifier split")]
+    async fn writer_loop(
+        mut writer: impl tokio::io::AsyncWrite + Unpin,
+        mut out_rx: tokio::sync::mpsc::Receiver<String>,
+    ) {
+        while let Some(msg) = out_rx.recv().await {
+            if writer.write_all(msg.as_bytes()).await.is_err() {
+                return;
+            }
+            if writer.flush().await.is_err() {
+                return;
+            }
         }
     }
 }
@@ -247,6 +323,7 @@ pub async fn run_ipc_server(
 
     tracing::info!(path = %sock_path.display(), "IPC server listening");
 
+    let events = index.event_sender().clone();
     let handler = Arc::new(RequestHandler {
         index,
         lifecycle: lifecycle.clone(),
@@ -276,6 +353,7 @@ pub async fn run_ipc_server(
         lifecycle.connection_opened();
         let handler_clone = Arc::clone(&handler);
         let lc_clone = lifecycle.clone();
+        let event_rx = events.subscribe();
 
         let (read_half, write_half) = stream.into_split();
         tokio::spawn(async move {
@@ -283,7 +361,7 @@ pub async fn run_ipc_server(
             tracing::debug!(connections = total_conns, "Client connected");
 
             if let Err(conn_err) =
-                IpcServer::handle_connection(read_half, write_half, &handler_clone).await
+                IpcServer::handle_connection(read_half, write_half, handler_clone, event_rx).await
             {
                 tracing::debug!(error = %conn_err, "Connection ended");
             }
@@ -324,6 +402,7 @@ pub async fn run_ipc_server(
 
     tracing::info!(path = %sock_path.display(), "IPC server listening (Windows AF_UNIX)");
 
+    let events = index.event_sender().clone();
     let handler = Arc::new(RequestHandler {
         index,
         lifecycle: lifecycle.clone(),
@@ -456,13 +535,14 @@ pub async fn run_ipc_server(
         lifecycle.connection_opened();
         let handler_clone = Arc::clone(&handler);
         let lc_clone = lifecycle.clone();
+        let event_rx = events.subscribe();
 
         tokio::spawn(async move {
             let total_conns = lc_clone.active_connections();
             tracing::debug!(connections = total_conns, "Client connected");
 
             if let Err(conn_err) =
-                IpcServer::handle_connection(async_read, async_write, &handler_clone).await
+                IpcServer::handle_connection(async_read, async_write, handler_clone, event_rx).await
             {
                 tracing::debug!(error = %conn_err, "Connection ended");
             }

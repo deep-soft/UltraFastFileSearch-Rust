@@ -25,6 +25,8 @@ use uffs_security as _;
 
 /// Broker client — volume handle requests (Windows) / stubs (other).
 mod broker_client;
+/// Daemon event broadcasting — push notifications to connected clients.
+pub mod events;
 /// JSON-RPC request handler.
 mod handler;
 /// Index manager — loads and queries MFT data.
@@ -115,13 +117,23 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     let data_dir = dirs_next::data_local_dir()
         .map_or_else(|| PathBuf::from("/tmp/uffs"), |base| base.join("uffs"));
 
+    // Create event broadcast channel — used for push notifications to clients.
+    let (event_tx, _event_rx) = events::event_channel();
+
+    // Emit daemon_starting event
+    event_tx.emit(events::DaemonEvent::DaemonStarting {
+        pid: std::process::id(),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+    });
+
     // Setup lifecycle manager
     let idle_timeout = if config.no_retire {
         None
     } else {
         Some(core::time::Duration::from_secs(config.idle_timeout))
     };
-    let mut lifecycle_mgr = lifecycle::LifecycleManager::new(&data_dir, idle_timeout);
+    let mut lifecycle_mgr =
+        lifecycle::LifecycleManager::new(&data_dir, idle_timeout, event_tx.clone());
 
     tracing::info!(data_dir = %lifecycle_mgr.data_dir().display(), "Lifecycle data directory");
 
@@ -139,7 +151,7 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     uffs_client::shmem::cleanup_stale_shmem_files();
 
     // Create index manager
-    let idx = Arc::new(index::IndexManager::new(Some(data_dir.clone())));
+    let idx = Arc::new(index::IndexManager::new(Some(data_dir.clone()), event_tx));
     tracing::debug!(index_data_dir = ?idx.data_dir(), "Index manager created");
 
     // Merge --data-dir discovered files into --mft-file list.
@@ -225,6 +237,27 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
         }
     });
     tracing::info!("IPC server task spawned");
+
+    // Spawn periodic stats heartbeat — pushes stats to all connected
+    // clients every 30 seconds.
+    let stats_index = Arc::clone(&idx);
+    let stats_lifecycle = lifecycle_mgr.handle();
+    let _stats_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(core::time::Duration::from_secs(30));
+        // Skip the first tick (fires immediately).
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let total_records = stats_index.total_records().await;
+            let stats = stats_index.stats().await;
+            stats_index.event_sender().emit(events::DaemonEvent::StatsHeartbeat {
+                total_queries: stats.total_queries,
+                uptime_secs: stats.uptime_secs,
+                total_records,
+                connections: stats_lifecycle.active_connections(),
+            });
+        }
+    });
 
     // Run idle timer (blocks until shutdown or timeout)
     lifecycle_mgr.run_idle_timer().await;

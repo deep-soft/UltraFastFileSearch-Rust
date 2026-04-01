@@ -16,6 +16,8 @@ use uffs_client::protocol::{
 use uffs_core::search::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
 use uffs_core::search::filters::SearchFilters;
 
+use crate::events::{DaemonEvent, EventSender};
+
 /// Manages loaded drive indices and serves queries.
 ///
 /// Thread-safe via `Arc<RwLock<...>>` — multiple readers (search) can
@@ -29,6 +31,8 @@ pub struct IndexManager {
     start_time: Instant,
     /// Data directory for MFT files (Mac/Linux offline mode).
     data_dir: Option<PathBuf>,
+    /// Event broadcaster — pushes notifications to all connected clients.
+    events: EventSender,
     // ── Performance counters ────────────────────────────────────────
     /// Total search queries served.
     queries_total: AtomicU64,
@@ -42,7 +46,7 @@ impl IndexManager {
     /// Create a new empty index manager.
     #[must_use]
     #[expect(clippy::single_call_fn, reason = "constructor — structural separation")]
-    pub fn new(data_dir: Option<PathBuf>) -> Self {
+    pub fn new(data_dir: Option<PathBuf>, events: EventSender) -> Self {
         Self {
             backend: RwLock::new(MultiDriveBackend::new()),
             status: RwLock::new(DaemonStatus::Loading {
@@ -51,10 +55,16 @@ impl IndexManager {
             }),
             start_time: Instant::now(),
             data_dir,
+            events,
             queries_total: AtomicU64::new(0),
             queries_total_us: AtomicU64::new(0),
             startup_duration_us: AtomicU64::new(0),
         }
+    }
+
+    /// Get a reference to the event sender (for IPC and lifecycle integration).
+    pub const fn event_sender(&self) -> &EventSender {
+        &self.events
     }
 
     /// Load drives from MFT files in the data directory.
@@ -81,14 +91,25 @@ impl IndexManager {
 
             match result {
                 Ok(Ok((drive_index, timing))) => {
+                    let letter = drive_index.letter;
+                    let records = drive_index.records.len();
                     tracing::info!(
-                        drive = %drive_index.letter,
-                        records = drive_index.records.len(),
+                        drive = %letter,
+                        records,
                         mft_ms = timing.mft,
                         compact_ms = timing.compact,
                         trigram_ms = timing.trigram,
                         "Drive loaded"
                     );
+                    self.events.emit(DaemonEvent::DriveLoaded {
+                        drive: letter,
+                        records,
+                        mft_ms: timing.mft,
+                        compact_ms: timing.compact,
+                        trigram_ms: timing.trigram,
+                        drives_loaded: idx + 1,
+                        drives_total: total,
+                    });
                     let mut backend = self.backend.write().await;
                     backend.drives.push(drive_index);
                     drop(backend);
@@ -114,11 +135,19 @@ impl IndexManager {
         self.set_ready().await;
 
         let backend = self.backend.read().await;
+        let drive_count = backend.drives.len();
+        let total_records = backend.total_records();
+        drop(backend);
         tracing::info!(
-            drives = backend.drives.len(),
-            total_records = backend.total_records(),
+            drives = drive_count,
+            total_records,
             "All drives loaded — daemon ready"
         );
+        self.events.emit(DaemonEvent::DaemonReady {
+            drives: drive_count,
+            total_records,
+            startup_ms: self.start_time.elapsed().as_millis(),
+        });
     }
 
     /// Load live Windows drives.
@@ -154,14 +183,24 @@ impl IndexManager {
 
             match result {
                 Ok(Ok((drive_index, timing))) => {
+                    let records = drive_index.records.len();
                     tracing::info!(
                         drive = %letter,
-                        records = drive_index.records.len(),
+                        records,
                         mft_ms = timing.mft,
                         compact_ms = timing.compact,
                         trigram_ms = timing.trigram,
                         "Live drive loaded"
                     );
+                    self.events.emit(DaemonEvent::DriveLoaded {
+                        drive: letter,
+                        records,
+                        mft_ms: timing.mft,
+                        compact_ms: timing.compact,
+                        trigram_ms: timing.trigram,
+                        drives_loaded: idx + 1,
+                        drives_total: total,
+                    });
                     let mut backend = self.backend.write().await;
                     backend.drives.push(drive_index);
                 }
@@ -181,6 +220,16 @@ impl IndexManager {
         }
 
         self.set_ready().await;
+
+        let backend = self.backend.read().await;
+        let drive_count = backend.drives.len();
+        let total_records = backend.total_records();
+        drop(backend);
+        self.events.emit(DaemonEvent::DaemonReady {
+            drives: drive_count,
+            total_records,
+            startup_ms: self.start_time.elapsed().as_millis(),
+        });
     }
 
     /// Transition to `Ready` and record startup duration (idempotent).
@@ -363,6 +412,10 @@ impl IndexManager {
             drives.to_vec()
         };
 
+        self.events.emit(DaemonEvent::RefreshStarted {
+            drives: drives_to_refresh.clone(),
+        });
+
         let mut refresh_status = self.status.write().await;
         *refresh_status = DaemonStatus::Refreshing {
             drives: drives_to_refresh.clone(),
@@ -408,6 +461,7 @@ impl IndexManager {
 
             match result {
                 Ok(Ok((new_drive, timing))) => {
+                    let records = new_drive.records.len();
                     let mut backend_wr = self.backend.write().await;
                     if let Some(pos) = backend_wr.drives.iter().position(|dr| dr.letter == letter) {
                         // `pos` was just validated by `position()`.
@@ -421,11 +475,19 @@ impl IndexManager {
                     drop(backend_wr);
                     tracing::info!(
                         drive = %letter,
+                        records,
                         mft_ms = timing.mft,
                         compact_ms = timing.compact,
                         trigram_ms = timing.trigram,
                         "Drive refreshed"
                     );
+                    self.events.emit(DaemonEvent::DriveRefreshed {
+                        drive: letter,
+                        records,
+                        mft_ms: timing.mft,
+                        compact_ms: timing.compact,
+                        trigram_ms: timing.trigram,
+                    });
                 }
                 Ok(Err(refresh_err)) => {
                     tracing::error!(drive = %letter, error = %refresh_err, "Failed to refresh drive");
@@ -437,6 +499,9 @@ impl IndexManager {
         }
 
         self.set_ready().await;
+        self.events.emit(DaemonEvent::RefreshComplete {
+            drives_refreshed: drives_to_refresh.len(),
+        });
     }
 
     /// Look up a file by path and return all available fields (D2.3.7).

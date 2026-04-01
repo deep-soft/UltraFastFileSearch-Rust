@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 use tokio::sync::watch;
 
+use crate::events::{DaemonEvent, EventSender};
+
 /// Handle given to request handlers to control the lifecycle.
 #[derive(Clone)]
 pub struct LifecycleHandle {
@@ -21,11 +23,16 @@ pub struct LifecycleHandle {
     /// Longest session type seen (D2.6.6: TUI/GUI/MCP get 15 min, CLI gets 5
     /// min).
     max_session_tier: Arc<core::sync::atomic::AtomicU8>,
+    /// Event broadcaster — connection and lifecycle events.
+    events: EventSender,
 }
 
 impl LifecycleHandle {
     /// Signal the daemon to shut down gracefully.
     pub fn request_shutdown(&self) {
+        self.events.emit(DaemonEvent::ShuttingDown {
+            reason: "shutdown requested via RPC".to_owned(),
+        });
         let _ignore = self.shutdown_tx.send(true);
     }
 
@@ -34,14 +41,16 @@ impl LifecycleHandle {
         self.idle_reset.store(true, Ordering::Relaxed);
     }
 
-    /// Increment active connection count.
+    /// Increment active connection count and emit event.
     pub fn connection_opened(&self) {
-        self.active_connections.fetch_add(1, Ordering::Relaxed);
+        let active = self.active_connections.fetch_add(1, Ordering::Relaxed) + 1;
+        self.events.emit(DaemonEvent::ConnectionChanged { active });
     }
 
-    /// Decrement active connection count.
+    /// Decrement active connection count and emit event.
     pub fn connection_closed(&self) {
-        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+        let active = self.active_connections.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
+        self.events.emit(DaemonEvent::ConnectionChanged { active });
     }
 
     /// Get active connection count.
@@ -91,7 +100,11 @@ impl LifecycleManager {
     ///
     /// `idle_timeout`: `None` for `--no-retire`, `Some(duration)` otherwise.
     #[expect(clippy::single_call_fn, reason = "constructor — structural separation")]
-    pub fn new(data_dir: &std::path::Path, idle_timeout: Option<Duration>) -> Self {
+    pub fn new(
+        data_dir: &std::path::Path,
+        idle_timeout: Option<Duration>,
+        events: EventSender,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let idle_reset = Arc::new(AtomicBool::new(false));
         let shutdown_nonce_shared = Arc::new(std::sync::Mutex::new(None));
@@ -108,6 +121,7 @@ impl LifecycleManager {
                 shutdown_nonce: shutdown_nonce_shared,
                 active_connections,
                 max_session_tier,
+                events,
             },
             pid_path,
             idle_timeout,
@@ -274,6 +288,13 @@ impl LifecycleManager {
                         session_tier = tier,
                         "Idle timeout reached — auto-retiring"
                     );
+                    self.handle.events.emit(DaemonEvent::ShuttingDown {
+                        reason: format!(
+                            "idle timeout ({}s, tier {})",
+                            effective_timeout.as_secs(),
+                            tier,
+                        ),
+                    });
                     return;
                 }
                 _ = self.shutdown_rx.wait_for(|&done| done) => {
