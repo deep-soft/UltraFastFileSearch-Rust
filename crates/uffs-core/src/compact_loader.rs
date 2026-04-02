@@ -440,10 +440,8 @@ pub fn apply_usn_patch(
     // Both are necessary so newly created/renamed files appear in tree
     // traversal AND trigram search.
     drive.children = ChildrenIndex::build(&drive.records);
-    // Temp lowercase for trigram rebuild — not kept in memory.
-    let mut names_lower = drive.names.clone();
-    names_lower.make_ascii_lowercase();
-    drive.trigram = TrigramIndex::build(&drive.records, &names_lower);
+    // Rebuild trigram index using CaseFold — no names_lower clone needed.
+    drive.trigram = TrigramIndex::build(&drive.records, &drive.names, drive.fold);
 
     stats
 }

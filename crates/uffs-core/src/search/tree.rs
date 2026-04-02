@@ -186,10 +186,14 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
     let Some(first_segment) = segments.first() else {
         return Vec::new();
     };
+    let fold = drive.fold;
+    let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
+
     if segments.len() == 1 {
         return trigram_filtered_records(drive, first_segment, limit, |rec| {
-            let name = rec.name(&drive.names).to_ascii_lowercase();
-            !name.is_empty() && name != "." && name.contains(first_segment)
+            let name = rec.name(&drive.names);
+            let folded = fold.fold_into(name, &mut fold_buf);
+            !folded.is_empty() && folded != "." && folded.contains(first_segment)
         });
     }
 
@@ -215,7 +219,10 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
     } else {
         trigram_filtered_records(drive, first_segment, usize::MAX, |rec| {
             rec.is_directory()
-                && segment_matches(&rec.name(&drive.names).to_ascii_lowercase(), first_segment)
+                && segment_matches(
+                    fold.fold_into(rec.name(&drive.names), &mut fold_buf),
+                    first_segment,
+                )
         })
     };
 
@@ -233,8 +240,9 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
                 for &child_idx in drive.children.get(dir_idx as usize) {
                     if let Some(child_rec) = drive.records.get(child_idx as usize) {
                         if child_rec.is_directory() {
-                            let child_name = child_rec.name(&drive.names).to_ascii_lowercase();
-                            if segment_matches(&child_name, segment) {
+                            let child_name =
+                                fold.fold_into(child_rec.name(&drive.names), &mut fold_buf);
+                            if segment_matches(child_name, segment) {
                                 next_dirs.push(child_idx);
                             }
                         }
@@ -261,8 +269,8 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
         for &dir_idx in &candidate_dirs {
             for &child_idx in drive.children.get(dir_idx as usize) {
                 if let Some(child_rec) = drive.records.get(child_idx as usize) {
-                    let child_name = child_rec.name(&drive.names).to_ascii_lowercase();
-                    if name_matches(&child_name, leaf_pattern) {
+                    let child_name = fold.fold_into(child_rec.name(&drive.names), &mut fold_buf);
+                    if name_matches(child_name, leaf_pattern) {
                         results.push(child_idx);
                         if results.len() >= limit {
                             return results;
@@ -312,7 +320,7 @@ fn collect_all_descendants(
     for &child_idx in drive.children.get(dir_idx as usize) {
         if let Some(child_rec) = drive.records.get(child_idx as usize) {
             if child_rec.name_len > 0 {
-                let name = child_rec.name(&drive.names).to_ascii_lowercase();
+                let name = child_rec.name(&drive.names);
                 if !name.is_empty() && name != "." {
                     out.push(child_idx);
                     if out.len() >= max {
@@ -331,37 +339,44 @@ fn collect_all_descendants(
 ///
 /// If a trigram candidate set exists for `needle`, only those records are
 /// checked; otherwise a full scan is performed, capped at `limit`.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "record count bounded by NTFS limits"
-)]
 fn trigram_filtered_records(
     drive: &DriveCompactIndex,
     needle: &str,
     limit: usize,
-    predicate: impl Fn(&crate::compact::CompactRecord) -> bool,
+    mut predicate: impl FnMut(&crate::compact::CompactRecord) -> bool,
 ) -> Vec<u32> {
-    let candidates = drive.trigram.search(needle);
-    candidates.map_or_else(
-        || {
-            drive
-                .records
-                .iter()
-                .enumerate()
-                .filter(|(_, rec)| predicate(rec))
-                .take(limit)
-                .map(|(idx, _)| idx as u32)
-                .collect()
-        },
-        |candidate_indices| {
-            candidate_indices
-                .iter()
-                .filter(|&&idx| drive.records.get(idx as usize).is_some_and(&predicate))
-                .take(limit)
-                .copied()
-                .collect()
-        },
-    )
+    let candidates = drive.trigram.search(needle, drive.fold);
+    match candidates {
+        None => drive
+            .records
+            .iter()
+            .enumerate()
+            .filter(|(_, rec)| predicate(rec))
+            .take(limit)
+            .map(|(idx, _)| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "record count bounded by NTFS limits"
+                )]
+                let i = idx as u32;
+                i
+            })
+            .collect(),
+        Some(candidate_indices) => {
+            let mut out = Vec::with_capacity(candidate_indices.len().min(limit));
+            for &idx in &candidate_indices {
+                if out.len() >= limit {
+                    break;
+                }
+                if let Some(rec) = drive.records.get(idx as usize) {
+                    if predicate(rec) {
+                        out.push(idx);
+                    }
+                }
+            }
+            out
+        }
+    }
 }
 
 /// Check if a name matches a glob pattern (case-insensitive, both already

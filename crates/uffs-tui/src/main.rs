@@ -50,6 +50,8 @@ use tracing_subscriber::{EnvFilter, Layer};
 
 /// Application state and search logic.
 mod app;
+/// Small utility helpers for the TUI `App` (clipboard, textarea factory).
+mod app_util;
 /// Search backend: compact-index multi-drive search.
 pub(crate) mod backend;
 /// Daemon client backend for IPC-based search (D6).

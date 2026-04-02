@@ -1,0 +1,28 @@
+# ============================================================================
+# uffs-text: Unicode Text Processing for UFFS
+# ============================================================================
+# Layer 0 Foundation crate. No internal crate dependencies.
+#
+# Provides NTFS-compatible case folding via the $UpCase table, trigram key
+# helpers, and (future) Unicode normalisation, collation, and i18n support.
+# ============================================================================
+
+[package]
+name = "uffs-text"
+description = "Unicode text processing for UFFS: NTFS case folding, trigram keys, i18n foundation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+
+[lints]
+workspace = true
+

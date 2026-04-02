@@ -31,6 +31,7 @@ path = "src/main.rs"
 # Internal crates
 uffs-polars.workspace = true
 uffs-mft.workspace = true
+uffs-text.workspace = true
 uffs-core.workspace = true
 
 # Async runtime

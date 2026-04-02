@@ -117,7 +117,10 @@ pub fn collect_global_top_n(
 }
 
 /// Sort a slice of compact indices by their name (case-insensitive).
+///
+/// Uses `CaseFold::cmp_str` for zero-alloc, per-codepoint fold comparison.
 fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactIndex, desc: bool) {
+    let fold = drive.fold;
     indices.sort_unstable_by(|&idx_a, &idx_b| {
         let name_a = drive
             .records
@@ -127,9 +130,7 @@ fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactIndex, desc: bo
             .records
             .get(idx_b as usize)
             .map_or("", |rec| rec.name(&drive.names));
-        let ord = name_a
-            .to_ascii_lowercase()
-            .cmp(&name_b.to_ascii_lowercase());
+        let ord = fold.cmp_str(name_a, name_b);
         if desc { ord.reverse() } else { ord }
     });
 }
@@ -149,10 +150,11 @@ fn collect_global_top_n_numeric(
 ) -> Vec<DisplayRow> {
     let has_filters = !search_filters.is_empty() || !matches!(filter_mode, FilterMode::All);
     let mut candidates: Vec<(u16, u32, i64)> = Vec::new();
-    // Reusable buffer for on-the-fly lowering inside filter matching.
-    let mut lower_buf: Vec<u8> = Vec::with_capacity(256);
+    // Reusable buffer for on-the-fly CaseFold inside filter matching.
+    let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
 
     for (drive_idx, drive) in drives.iter().enumerate() {
+        let drive_fold = drive.fold;
         for (rec_idx, rec) in drive.records.iter().enumerate() {
             if rec.name_len == 0 {
                 continue;
@@ -163,7 +165,7 @@ fn collect_global_top_n_numeric(
                     FilterMode::DirsOnly if !rec.is_directory() => continue,
                     FilterMode::All | FilterMode::FilesOnly | FilterMode::DirsOnly => {}
                 }
-                if !search_filters.matches_record(rec, &drive.names, &mut lower_buf) {
+                if !search_filters.matches_record(rec, &drive.names, &mut fold_buf, drive_fold) {
                     continue;
                 }
             }
@@ -185,8 +187,15 @@ fn collect_global_top_n_numeric(
                 SortColumn::Name => {
                     let name = rec.name(&drive.names);
                     let mut key = [0_u8; 8];
-                    for (dst, src) in key.iter_mut().zip(name.bytes()) {
-                        *dst = src.to_ascii_lowercase();
+                    for (dst, ch) in key.iter_mut().zip(name.chars()) {
+                        let folded = drive_fold.fold_char(ch);
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "sort key prefix — truncation is acceptable"
+                        )]
+                        {
+                            *dst = folded as u8;
+                        }
                     }
                     i64::from_be_bytes(key)
                 }
@@ -194,8 +203,15 @@ fn collect_global_top_n_numeric(
                     let name = rec.name(&drive.names);
                     let mut key = [0_u8; 8];
                     key[0] = drive.letter as u8;
-                    for (dst, src) in key[1..].iter_mut().zip(name.bytes()) {
-                        *dst = src.to_ascii_lowercase();
+                    for (dst, ch) in key[1..].iter_mut().zip(name.chars()) {
+                        let folded = drive_fold.fold_char(ch);
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "sort key prefix — truncation is acceptable"
+                        )]
+                        {
+                            *dst = folded as u8;
+                        }
                     }
                     i64::from_be_bytes(key)
                 }
@@ -400,13 +416,24 @@ pub fn search_compact_drive(
     let is_glob = needle.contains('*') || needle.contains('?');
     let is_or = needle.contains('|');
 
+    // $UpCase case folding engine — zero-alloc comparisons, buffer-reuse fold.
+    let fold = drive.fold;
+
+    // Pre-fold the needle for case-insensitive matching.
+    let mut needle_fold_buf: Vec<u8> = Vec::with_capacity(needle.len());
+    let needle_folded = if case_sensitive {
+        needle.to_owned()
+    } else {
+        fold.fold_into(needle, &mut needle_fold_buf).to_owned()
+    };
+
     // Pre-build a SIMD-accelerated substring finder for simple queries.
     // For 1–2 byte needles this is dramatically faster than `str::contains`
     // (memchr uses SSE2/AVX2/NEON vectorised search).
     let simple_substring = !is_glob && !is_or && !whole_word && !case_sensitive;
-    let finder = simple_substring.then(|| memchr::memmem::Finder::new(needle.as_bytes()));
-    // Reusable buffer for on-the-fly lowering (avoids per-record heap alloc).
-    let mut lower_buf: Vec<u8> = Vec::with_capacity(256);
+    let finder = simple_substring.then(|| memchr::memmem::Finder::new(needle_folded.as_bytes()));
+    // Reusable buffer for on-the-fly CaseFold (avoids per-record heap alloc).
+    let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
     let matches = |name: &str, buf: &mut Vec<u8>| -> bool {
         if name.is_empty() || name == "." {
             return false;
@@ -419,23 +446,22 @@ pub fn search_compact_drive(
                     name == needle
                 }
             } else {
-                let lower = name.to_ascii_lowercase();
+                let folded = fold.fold_into(name, buf);
                 if is_glob || is_or {
-                    tree::name_matches(&lower, needle)
+                    tree::name_matches(folded, &needle_folded)
                 } else {
-                    lower == needle
+                    folded == needle_folded
                 }
             }
         } else if let Some(fnd) = &finder {
             buf.clear();
-            buf.extend_from_slice(name.as_bytes());
-            buf.make_ascii_lowercase();
-            fnd.find(buf.as_slice()).is_some()
+            let folded = fold.fold_into(name, buf);
+            fnd.find(folded.as_bytes()).is_some()
         } else if case_sensitive {
             tree::name_matches(name, needle)
         } else {
-            let lower = name.to_ascii_lowercase();
-            tree::name_matches(&lower, needle)
+            let folded = fold.fold_into(name, buf);
+            tree::name_matches(folded, &needle_folded)
         }
     };
 
@@ -444,7 +470,7 @@ pub fn search_compact_drive(
 
     let t_tri = std::time::Instant::now();
     let candidates = if !case_sensitive && trigram_needle.len() >= 3 {
-        drive.trigram.search(&trigram_needle)
+        drive.trigram.search(&trigram_needle, fold)
     } else {
         None
     };
@@ -452,7 +478,7 @@ pub fn search_compact_drive(
     let tri_count = candidates.as_ref().map_or(0, Vec::len);
 
     let t_match = std::time::Instant::now();
-    let match_indices = collect_match_indices(drive, candidates, limit, &mut lower_buf, &matches);
+    let match_indices = collect_match_indices(drive, candidates, limit, &mut fold_buf, &matches);
     let match_ms = t_match.elapsed().as_millis();
     let match_count = match_indices.len();
 

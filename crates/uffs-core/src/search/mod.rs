@@ -8,4 +8,5 @@ pub mod backend;
 pub mod columns;
 pub mod filters;
 pub mod query;
+mod sorting;
 pub mod tree;

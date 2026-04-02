@@ -1,68 +1,56 @@
-//! Trigram inverted index — CSR (Compressed Sparse Row) layout.
+//! Character-level trigram inverted index — CSR (Compressed Sparse Row) layout.
 //!
-//! Maps 3-byte sequences to sorted lists of record indices using three
-//! contiguous arrays:
+//! Maps 3-codepoint trigrams (folded via NTFS `$UpCase`) to sorted lists
+//! of record indices using three contiguous arrays:
 //!
-//! - `keys`:    sorted `[u8; 3]` trigram keys
+//! - `keys`:    sorted `u64` packed char-trigrams (3 × `u16` folded codepoints)
 //! - `offsets`: CSR offsets into `values` (len = `keys.len()` + 1)
-//! - `values`:  flat u32 posting entries
+//! - `values`:  flat `u32` posting entries
 //!
 //! Lookup is binary-search on `keys` → slice into `values`.
 //! This layout is cache-friendly, allocation-free after construction,
 //! and can be serialized/deserialized as three bulk `memcpy`s.
+//!
+//! ## Character trigrams vs byte trigrams
+//!
+//! The index uses **character-level** trigrams (3 Unicode codepoints folded
+//! to uppercase via `CaseFold`) instead of byte-level trigrams.  This gives
+//! correct case-insensitive matching for non-ASCII filenames (e.g. ü↔Ü,
+//! é↔É, Д↔д).
 //!
 //! ## Build algorithm
 //!
 //! Two-pass counting sort (same pattern as `ChildrenIndex`):
 //!
 //! 1. **Pass 1 — count** (parallel): rayon chunks walk `CompactRecord` name
-//!    slices from the pre-lowered names blob, deduplicate trigrams per record
-//!    via `TinyTriSet`, and increment per-trigram counters in chunk-local
-//!    `HashMap`s. Chunk maps are merged into global counts.
-//! 2. **Sort keys + prefix sum** → sorted `keys` + CSR `offsets`.
-//! 3. **Pass 2 — scatter**: re-iterate all names, write `record_idx` into
+//!    slices, fold each codepoint via `CaseFold`, deduplicate trigrams per
+//!    record via `TinyTriSet`, increment per-trigram counters in chunk-local
+//!    `FxHashMap`s. Chunk maps are merged into global counts.
+//! 2. **Sort keys + prefix sum** → CSR `keys` + `offsets`.
+//! 3. **Pass 2 — scatter**: re-iterate names, write `record_idx` into
 //!    `values[write_pos[key_idx]++]` for each unique trigram.
 //!
-//! Peak memory is only the final CSR arrays (~200MB for 7M records).
-//! No intermediate 840MB pairs `Vec`.
+//! Peak memory is only the final CSR arrays (~200 MB for 7M records)
+//! plus a ~1.6 MB `FxHashMap` LUT (replacing the old 64 MB flat array).
 
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
+use uffs_text::{CaseFold, pack_char_trigram};
 
 use crate::compact::CompactRecord;
 
-/// Flat lookup table size: 256³ = 16,777,216 possible trigram values.
-/// At 4 bytes per entry = 64MB. Temporary — freed after build.
-const TRIGRAM_LUT_SIZE: usize = 1 << 24;
-
 /// Trigram inverted index in CSR (Compressed Sparse Row) layout.
+///
+/// Keys are packed `u64` char-trigrams (3 folded `u16` codepoints).
 pub struct TrigramIndex {
-    /// Sorted trigram keys (each 3 bytes).
-    keys: Vec<[u8; 3]>,
+    /// Sorted packed char-trigram keys (`u64`, see [`pack_char_trigram`]).
+    keys: Vec<u64>,
     /// CSR offsets into `values`. Length = `keys.len() + 1`.
     /// Posting list for `keys[i]` is `values[offsets[i]..offsets[i+1]]`.
     offsets: Vec<u32>,
     /// Flat array of all posting values (record indices), sorted per posting
     /// list.
     values: Vec<u32>,
-}
-
-/// Pack a 3-byte trigram into a `u32` for sorting (big-endian order so
-/// lexicographic sort on the packed value equals byte-order sort on the
-/// trigram).
-#[inline]
-const fn pack_trigram(tri: [u8; 3]) -> u32 {
-    (tri[0] as u32) << 16 | (tri[1] as u32) << 8 | (tri[2] as u32)
-}
-
-/// Unpack a `u32` back to a 3-byte trigram.
-#[inline]
-#[expect(clippy::single_call_fn, reason = "pack/unpack are paired helpers")]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "right-shift guarantees the value fits in u8"
-)]
-const fn unpack_trigram(packed: u32) -> [u8; 3] {
-    [(packed >> 16) as u8, (packed >> 8) as u8, packed as u8]
 }
 
 impl TrigramIndex {
@@ -76,57 +64,55 @@ impl TrigramIndex {
         }
     }
 
-    /// Build a trigram index directly from compact records and a pre-lowered
-    /// names blob.
+    /// Build a trigram index from compact records and the **original-case**
+    /// names blob, using `CaseFold` for per-codepoint folding.
     ///
     /// Uses a **two-pass counting-sort** algorithm (same pattern as
     /// `ChildrenIndex::build`):
     ///
     /// 1. **Pass 1 — count**: parallel scan of names → per-chunk
-    ///    `HashMap<packed_trigram, count>`. Merge into global counts.
+    ///    `FxHashMap<packed_char_trigram, count>`. Merge into global counts.
     /// 2. **Sort keys + prefix sum** → CSR `keys` + `offsets`.
     /// 3. **Pass 2 — scatter**: re-iterate names, write `record_idx` into
     ///    `values` at the correct write position for each trigram.
     ///
-    /// **Peak memory**: only the final CSR arrays (~200MB for 7M records).
-    /// No intermediate 840MB pairs `Vec`.
+    /// No `names_lower` clone needed — folding happens inline per codepoint.
     ///
-    /// **Zero per-name heap allocations.** Names are accessed as byte slices
-    /// from `names_lower`; no `String` or `&str` intermediaries are created.
+    /// **Peak memory**: final CSR arrays (~200 MB for 7M records)
+    /// + ~1.6 MB `FxHashMap` LUT (was 64 MB flat array).
     #[must_use]
-    pub fn build(records: &[CompactRecord], names_lower: &[u8]) -> Self {
-        use std::collections::HashMap;
-
+    pub fn build(records: &[CompactRecord], names: &[u8], fold: CaseFold) -> Self {
         const CHUNK_SIZE: usize = 64 * 1024;
 
         if records.is_empty() {
             return Self::empty();
         }
 
-        // ── Pass 1: parallel count ──────────────────────────────────
-        // Each chunk produces a local HashMap<packed_trigram, count>.
-        // "count" = number of UNIQUE records containing this trigram.
-        let chunk_counts: Vec<HashMap<u32, u32>> = records
+        // ── Pass 1: parallel count (char-level trigrams) ─────────────
+        let chunk_counts: Vec<FxHashMap<u64, u32>> = records
             .par_chunks(CHUNK_SIZE)
             .map(|chunk| {
-                let mut local: HashMap<u32, u32> = HashMap::new();
-                // Reuse one TinyTriSet per chunk — clear() resets length
-                // without deallocating, eliminating one malloc per record.
+                let mut local: FxHashMap<u64, u32> = FxHashMap::default();
                 let mut seen = TinyTriSet::new();
+                let mut folded_buf: Vec<u16> = Vec::with_capacity(64);
                 for rec in chunk {
                     let start = rec.name_offset as usize;
                     let end = start + rec.name_len as usize;
-                    let bytes = match names_lower.get(start..end) {
-                        Some(slice) if slice.len() >= 3 => slice,
-                        _ => continue,
+                    let Some(name_bytes) = names.get(start..end) else {
+                        continue;
                     };
+                    let name_str = core::str::from_utf8(name_bytes).unwrap_or("");
+                    folded_buf.clear();
+                    folded_buf.extend(name_str.chars().map(|ch| fold.fold_char(ch)));
+                    if folded_buf.len() < 3 {
+                        continue;
+                    }
                     seen.clear();
-                    for window in bytes.windows(3) {
-                        let tri: [u8; 3] = match window.try_into() {
-                            Ok(arr) => arr,
-                            Err(_) => continue,
+                    for window in folded_buf.windows(3) {
+                        let Some(&[cp0, cp1, cp2]) = window.first_chunk::<3>() else {
+                            continue;
                         };
-                        let packed = pack_trigram(tri);
+                        let packed = pack_char_trigram(cp0, cp1, cp2);
                         if seen.insert(packed) {
                             *local.entry(packed).or_insert(0) += 1;
                         }
@@ -136,10 +122,8 @@ impl TrigramIndex {
             })
             .collect();
 
-        // Merge chunk counts into global counts (keep chunk_counts for parallel
-        // scatter). Iteration order doesn't matter — global_counts is a HashMap
-        // (unordered), and we sort the final keys in the next step.
-        let mut global_counts: HashMap<u32, u32> = HashMap::new();
+        // Merge chunk counts into global counts.
+        let mut global_counts: FxHashMap<u64, u32> = FxHashMap::default();
         for chunk_map in &chunk_counts {
             #[expect(
                 clippy::iter_over_hash_type,
@@ -151,7 +135,7 @@ impl TrigramIndex {
         }
 
         // ── Sort keys + prefix sum → CSR offsets ────────────────────
-        let mut sorted_keys: Vec<(u32, u32)> = global_counts.into_iter().collect();
+        let mut sorted_keys: Vec<(u64, u32)> = global_counts.into_iter().collect();
         sorted_keys.sort_unstable_by_key(|&(packed, _)| packed);
 
         let trigram_count = sorted_keys.len();
@@ -159,13 +143,13 @@ impl TrigramIndex {
         let mut offsets = Vec::with_capacity(trigram_count + 1);
         let mut running = 0_u32;
 
-        // Flat lookup table: packed_trigram → key_index.
-        // 16M entries × 4 bytes = 64MB temporary. O(1) lookup in scatter
-        // phase vs HashMap's ~30ns/lookup. Freed after build completes.
-        let mut tri_lut = vec![u32::MAX; TRIGRAM_LUT_SIZE];
+        // FxHashMap LUT: packed_char_trigram → key_index.
+        // ~50K entries × 16 B ≈ 1.6 MB (was 64 MB flat array).
+        let mut tri_lut: FxHashMap<u64, u32> = FxHashMap::default();
+        tri_lut.reserve(trigram_count);
 
         for (key_idx, &(packed, count)) in sorted_keys.iter().enumerate() {
-            keys.push(unpack_trigram(packed));
+            keys.push(packed);
             offsets.push(running);
             running = running.saturating_add(count);
             #[expect(
@@ -173,9 +157,7 @@ impl TrigramIndex {
                 reason = "trigram count bounded by alphabet³ ≈ 50K"
             )]
             let ki = key_idx as u32;
-            if let Some(slot) = tri_lut.get_mut(packed as usize) {
-                *slot = ki;
-            }
+            tri_lut.insert(packed, ki);
         }
         offsets.push(running);
         drop(sorted_keys);
@@ -183,7 +165,8 @@ impl TrigramIndex {
         // ── Pass 2: scatter record_idx into CSR values (parallel) ────
         let values = scatter_postings_parallel(
             records,
-            names_lower,
+            names,
+            fold,
             &tri_lut,
             &offsets,
             running,
@@ -203,7 +186,7 @@ impl TrigramIndex {
     /// This is a zero-rebuild constructor — the three arrays are bulk-copied
     /// from the cache file, no per-element processing needed.
     #[must_use]
-    pub const fn from_csr(keys: Vec<[u8; 3]>, offsets: Vec<u32>, values: Vec<u32>) -> Self {
+    pub const fn from_csr(keys: Vec<u64>, offsets: Vec<u32>, values: Vec<u32>) -> Self {
         Self {
             keys,
             offsets,
@@ -213,7 +196,7 @@ impl TrigramIndex {
 
     /// Borrow the CSR components for serialization.
     #[must_use]
-    pub fn as_csr(&self) -> (&[[u8; 3]], &[u32], &[u32]) {
+    pub fn as_csr(&self) -> (&[u64], &[u32], &[u32]) {
         (&self.keys, &self.offsets, &self.values)
     }
 
@@ -223,35 +206,46 @@ impl TrigramIndex {
         self.keys.len()
     }
 
-    /// Look up the posting list for a single trigram key.
+    /// Look up the posting list for a single packed char-trigram key.
     #[must_use]
-    fn get_posting(&self, tri: [u8; 3]) -> Option<&[u32]> {
-        let idx = self.keys.binary_search(&tri).ok()?;
+    fn get_posting(&self, packed: u64) -> Option<&[u32]> {
+        let idx = self.keys.binary_search(&packed).ok()?;
         let start = *self.offsets.get(idx)? as usize;
         let end = *self.offsets.get(idx + 1)? as usize;
         self.values.get(start..end)
     }
 
-    /// Search: intersect posting lists for query trigrams, return candidate
-    /// record indices.
+    /// Search: intersect posting lists for query char-trigrams, return
+    /// candidate record indices.
     ///
     /// For queries < 3 chars, returns `None` (caller should fall back to
     /// linear scan).
     #[must_use]
-    pub fn search(&self, needle_lower: &str) -> Option<Vec<u32>> {
-        let bytes = needle_lower.as_bytes();
-        if bytes.len() < 3 {
+    pub fn search(&self, needle: &str, fold: CaseFold) -> Option<Vec<u32>> {
+        let folded: Vec<u16> = needle.chars().map(|ch| fold.fold_char(ch)).collect();
+        if folded.len() < 3 {
             return None;
         }
 
-        let trigrams: Vec<[u8; 3]> = bytes
-            .windows(3)
-            .filter_map(|win| win.try_into().ok())
-            .collect();
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut trigrams: Vec<u64> = Vec::new();
+        for window in folded.windows(3) {
+            let Some(&[cp0, cp1, cp2]) = window.first_chunk::<3>() else {
+                continue;
+            };
+            let packed = pack_char_trigram(cp0, cp1, cp2);
+            if seen.insert(packed) {
+                trigrams.push(packed);
+            }
+        }
+
+        if trigrams.is_empty() {
+            return Some(Vec::new());
+        }
 
         let mut lists: Vec<&[u32]> = trigrams
             .iter()
-            .filter_map(|tri| self.get_posting(*tri))
+            .filter_map(|&tri| self.get_posting(tri))
             .collect();
 
         if lists.is_empty() {
@@ -315,9 +309,8 @@ fn intersect_in_place(result: &mut Vec<u32>, other: &[u32]) {
 /// Within each chunk, records are visited in order, and chunks themselves
 /// are ordered, so each posting list remains sorted by record index.
 ///
-/// `tri_lut` is a flat lookup table of size `TRIGRAM_LUT_SIZE` mapping
-/// `packed_trigram → key_index`. `u32::MAX` means "trigram not present".
-/// O(1) lookup — no hashing overhead.
+/// `tri_lut` is an `FxHashMap<u64, u32>` mapping packed char-trigrams to
+/// their CSR key index (~1.6 MB, was 64 MB flat array).
 ///
 /// Uses `AtomicU32` with `Relaxed` ordering for the shared values array.
 /// On x86-64 this compiles to plain `mov` — zero overhead vs non-atomic
@@ -329,11 +322,12 @@ fn intersect_in_place(result: &mut Vec<u32>, other: &[u32]) {
 )]
 fn scatter_postings_parallel(
     records: &[CompactRecord],
-    names_lower: &[u8],
-    tri_lut: &[u32],
+    names: &[u8],
+    fold: CaseFold,
+    tri_lut: &FxHashMap<u64, u32>,
     offsets: &[u32],
     total_postings: u32,
-    chunk_counts: &[std::collections::HashMap<u32, u32>],
+    chunk_counts: &[FxHashMap<u64, u32>],
 ) -> Vec<u32> {
     use core::sync::atomic::AtomicU32;
 
@@ -346,11 +340,6 @@ fn scatter_postings_parallel(
     };
 
     // Build per-chunk write-start positions.
-    // chunk_write_pos[c][key_idx] = the first write slot in `values` for
-    // chunk c's records under trigram key_idx.
-    //
-    // We walk chunks in order, accumulating offsets: chunk 0 starts at
-    // the base CSR offsets, chunk 1 starts after chunk 0's counts, etc.
     let mut chunk_write_pos: Vec<Vec<u32>> = Vec::with_capacity(chunk_counts.len());
     let mut accumulated: Vec<u32> = offsets.get(..num_keys).map_or_else(Vec::new, Vec::from);
 
@@ -360,8 +349,6 @@ fn scatter_postings_parallel(
     }
 
     // Allocate the shared values array as AtomicU32.
-    // Each chunk writes to non-overlapping regions, so there is no actual
-    // contention — Relaxed stores compile to plain MOV on x86-64.
     let values: Vec<AtomicU32> = (0..total_postings as usize)
         .map(|_| AtomicU32::new(0))
         .collect();
@@ -375,14 +362,20 @@ fn scatter_postings_parallel(
             let record_offset = chunk_idx * CHUNK_SIZE;
             let mut write_pos = base_pos.clone();
             let mut seen = TinyTriSet::new();
+            let mut folded_buf: Vec<u16> = Vec::with_capacity(64);
 
             for (local_idx, rec) in chunk.iter().enumerate() {
                 let start = rec.name_offset as usize;
                 let end = start + rec.name_len as usize;
-                let bytes = match names_lower.get(start..end) {
-                    Some(slice) if slice.len() >= 3 => slice,
-                    _ => continue,
+                let Some(name_bytes) = names.get(start..end) else {
+                    continue;
                 };
+                let name_str = core::str::from_utf8(name_bytes).unwrap_or("");
+                folded_buf.clear();
+                folded_buf.extend(name_str.chars().map(|ch| fold.fold_char(ch)));
+                if folded_buf.len() < 3 {
+                    continue;
+                }
                 #[expect(
                     clippy::cast_possible_truncation,
                     reason = "MFT record count bounded by NTFS limits"
@@ -390,7 +383,14 @@ fn scatter_postings_parallel(
                 let rec_idx = (record_offset + local_idx) as u32;
 
                 seen.clear();
-                scatter_one_record(bytes, rec_idx, tri_lut, &mut write_pos, &values, &mut seen);
+                scatter_one_record(
+                    &folded_buf,
+                    rec_idx,
+                    tri_lut,
+                    &mut write_pos,
+                    &values,
+                    &mut seen,
+                );
             }
         });
 
@@ -406,52 +406,49 @@ fn scatter_postings_parallel(
 )]
 fn advance_offsets(
     accumulated: &mut [u32],
-    chunk_map: &std::collections::HashMap<u32, u32>,
-    tri_lut: &[u32],
+    chunk_map: &FxHashMap<u64, u32>,
+    tri_lut: &FxHashMap<u64, u32>,
 ) {
     #[expect(
         clippy::iter_over_hash_type,
         reason = "iteration order irrelevant — accumulating counts"
     )]
     for (&packed, &cnt) in chunk_map {
-        if let Some(&ki) = tri_lut.get(packed as usize) {
-            if ki != u32::MAX {
-                if let Some(slot) = accumulated.get_mut(ki as usize) {
-                    *slot += cnt;
-                }
+        if let Some(&ki) = tri_lut.get(&packed) {
+            if let Some(slot) = accumulated.get_mut(ki as usize) {
+                *slot += cnt;
             }
         }
     }
 }
 
-/// Scatter trigrams from one record's name bytes into the atomic values array.
+/// Scatter char-trigrams from one record's folded codepoints into the
+/// atomic values array.
 #[inline]
 #[expect(
     clippy::single_call_fn,
     reason = "extracted for clarity from scatter_postings_parallel"
 )]
 fn scatter_one_record(
-    bytes: &[u8],
+    folded: &[u16],
     rec_idx: u32,
-    tri_lut: &[u32],
+    tri_lut: &FxHashMap<u64, u32>,
     write_pos: &mut [u32],
     values: &[core::sync::atomic::AtomicU32],
     seen: &mut TinyTriSet,
 ) {
     use core::sync::atomic::Ordering;
 
-    for window in bytes.windows(3) {
-        let tri: [u8; 3] = match window.try_into() {
-            Ok(arr) => arr,
-            Err(_) => continue,
+    for window in folded.windows(3) {
+        let Some(&[cp0, cp1, cp2]) = window.first_chunk::<3>() else {
+            continue;
         };
-        let packed = pack_trigram(tri);
+        let packed = pack_char_trigram(cp0, cp1, cp2);
         if !seen.insert(packed) {
             continue;
         }
-        let key_idx = match tri_lut.get(packed as usize).copied() {
-            Some(ki) if ki != u32::MAX => ki,
-            _ => continue,
+        let Some(key_idx) = tri_lut.get(&packed).copied() else {
+            continue;
         };
         if let Some(pos) = write_pos.get_mut(key_idx as usize) {
             if let Some(slot) = values.get(*pos as usize) {
@@ -462,15 +459,15 @@ fn scatter_one_record(
     }
 }
 
-/// Tiny inline set for deduplicating packed trigram values within a single
-/// filename.
+/// Tiny inline set for deduplicating packed char-trigram values within a
+/// single filename.
 ///
 /// NTFS filenames are at most 255 chars → at most 253 trigrams. We use a
 /// small `Vec` with linear scan. For ≤253 elements this is faster than
 /// hashing (no hash computation, cache-hot sequential scan).
 struct TinyTriSet {
-    /// Packed trigram values seen so far.
-    seen: Vec<u32>,
+    /// Packed char-trigram values seen so far.
+    seen: Vec<u64>,
 }
 
 impl TinyTriSet {
@@ -482,16 +479,12 @@ impl TinyTriSet {
     }
 
     /// Reset for the next record without deallocating.
-    ///
-    /// The underlying `Vec` keeps its capacity, so the next record
-    /// reuses the same heap allocation — eliminating one malloc/free
-    /// per record (14M total across Pass 1 + Pass 2).
     fn clear(&mut self) {
         self.seen.clear();
     }
 
     /// Insert a packed trigram. Returns `true` if it was NOT already present.
-    fn insert(&mut self, packed: u32) -> bool {
+    fn insert(&mut self, packed: u64) -> bool {
         if self.seen.contains(&packed) {
             return false;
         }

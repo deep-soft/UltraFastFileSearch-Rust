@@ -146,47 +146,21 @@ pub fn deserialize_compact(
         aligned_vec_from_bytes(child_vals_slice),
     );
 
-    // ─── Trigram: read from disk (v2/v3) or rebuild (v4+/v5) ──────
+    // ─── Trigram: always rebuild with CaseFold (char-level) ─────
+    // v5 and earlier wrote byte-trigrams or no trigrams on disk.
+    // We always rebuild with char-level trigrams + $UpCase folding
+    // for correctness. The old byte-trigram CSR is skipped.
+    let fold = uffs_text::CaseFold::default_table();
+
     let tri_start = Instant::now();
     let tri_hdr = postings_end;
     if data.len() < tri_hdr + 4 {
         return Err("truncated trigram header");
     }
-    let tri_count = read_u32(data, tri_hdr) as usize;
-
-    let trigram = if tri_count == 0 {
-        // v4+/v5: trigram not on disk — rebuild from lowered names.
-        let mut names_lower = names.clone();
-        names_lower.make_ascii_lowercase();
-        TrigramIndex::build(&records, &names_lower)
-        // names_lower dropped here — not kept in memory
-    } else {
-        // v2/v3: trigram CSR on disk — read directly.
-        let tri_keys_end = tri_hdr + 4 + tri_count * 3;
-        let tri_offs_end = tri_keys_end + (tri_count + 1) * 4;
-        if data.len() < tri_offs_end {
-            return Err("truncated trigram offsets");
-        }
-        let tri_post_count = read_u32(data, tri_offs_end - 4) as usize;
-        let tri_vals_end = tri_offs_end + tri_post_count * 4;
-        if data.len() < tri_vals_end {
-            return Err("truncated trigram postings");
-        }
-        TrigramIndex::from_csr(
-            aligned_vec_from_bytes(
-                data.get(tri_hdr + 4..tri_keys_end)
-                    .ok_or("trigram keys OOB")?,
-            ),
-            aligned_vec_from_bytes(
-                data.get(tri_keys_end..tri_offs_end)
-                    .ok_or("trigram offsets OOB")?,
-            ),
-            aligned_vec_from_bytes(
-                data.get(tri_offs_end..tri_vals_end)
-                    .ok_or("trigram values OOB")?,
-            ),
-        )
-    };
+    // Skip any existing trigram data on disk (byte-trigrams from v2/v3
+    // are incompatible with the new char-trigram format). Rebuild from
+    // the original-case names + CaseFold.
+    let trigram = TrigramIndex::build(&records, &names, fold);
     let tri_ms = tri_start.elapsed().as_millis();
 
     Ok((
@@ -196,6 +170,7 @@ pub fn deserialize_compact(
             names,
             trigram,
             children,
+            fold,
             source: IndexSource::MftFile(PathBuf::from(format!("{drive_letter}:"))),
             source_epoch,
         },

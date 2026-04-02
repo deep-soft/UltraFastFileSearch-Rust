@@ -212,10 +212,12 @@ pub struct DriveCompactIndex {
     pub records: Vec<CompactRecord>,
     /// All filenames concatenated (UTF-8 bytes, original case).
     pub names: Vec<u8>,
-    /// Trigram inverted index built from lowered names.
+    /// Trigram inverted index built from folded names (char-level, `$UpCase`).
     pub trigram: TrigramIndex,
     /// CSR children index: `children.get(i)` → child indices of record i.
     pub children: ChildrenIndex,
+    /// NTFS `$UpCase` case folding engine for this volume.
+    pub fold: uffs_text::CaseFold,
     /// Where this index was loaded from (for future refresh).
     pub source: IndexSource,
     /// `MftIndex.build_epoch` this compact index was built from.
@@ -426,15 +428,11 @@ pub fn build_compact_index(
 
     let compact_elapsed = compact_start.elapsed().as_millis();
 
+    // Use $UpCase case folding — no names_lower clone needed.
+    let fold = uffs_text::CaseFold::default_table();
+
     let tri_start = Instant::now();
-    // Temporary lowercase copy — used only for trigram build, then dropped.
-    // Saves ~140 MB of permanent heap vs keeping names_lower in the struct.
-    let trigram = {
-        let mut names_lower = names.clone();
-        names_lower.make_ascii_lowercase();
-        TrigramIndex::build(&records, &names_lower)
-        // names_lower dropped here
-    };
+    let trigram = TrigramIndex::build(&records, &names, fold);
     let tri_elapsed = tri_start.elapsed().as_millis();
 
     // Build children CSR index from parent_idx (two-pass: count + scatter).
@@ -447,6 +445,7 @@ pub fn build_compact_index(
             names,
             trigram,
             children,
+            fold,
             source: IndexSource::MftFile(std::path::PathBuf::from(format!("{drive_letter}:"))),
             source_epoch: index.build_epoch,
         },

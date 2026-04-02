@@ -20,6 +20,7 @@ use serde as _;
 use uffs_security as _;
 
 pub mod connect;
+pub mod daemon_ctl;
 pub mod error;
 pub mod protocol;
 pub mod shmem;

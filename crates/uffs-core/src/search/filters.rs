@@ -97,19 +97,23 @@ impl SearchFilters {
             max_descendants,
             extensions: ext_filter
                 .map(|ext_list| {
+                    let fold = uffs_text::CaseFold::default_table();
+                    let mut buf = Vec::with_capacity(32);
                     ext_list
                         .split(',')
                         .map(|seg| {
-                            seg.trim()
-                                .to_ascii_lowercase()
-                                .trim_start_matches('.')
+                            fold.fold_into(seg.trim().trim_start_matches('.'), &mut buf)
                                 .to_owned()
                         })
                         .filter(|ext| !ext.is_empty())
                         .collect()
                 })
                 .unwrap_or_default(),
-            exclude_lower: exclude.map(str::to_ascii_lowercase),
+            exclude_lower: exclude.map(|excl| {
+                let fold = uffs_text::CaseFold::default_table();
+                let mut buf = Vec::with_capacity(excl.len());
+                fold.fold_into(excl, &mut buf).to_owned()
+            }),
         }
     }
 
@@ -117,14 +121,16 @@ impl SearchFilters {
     ///
     /// Hot-path predicate used during global top-N scans.
     ///
-    /// `lower_buf` is a caller-owned reusable buffer for on-the-fly
-    /// lowering (avoids per-record heap allocation for exclude matching).
+    /// `fold_buf` is a caller-owned reusable buffer for on-the-fly
+    /// `CaseFold` folding (avoids per-record heap allocation for exclude
+    /// matching).
     #[must_use]
     pub fn matches_record(
         &self,
         rec: &CompactRecord,
         names: &[u8],
-        lower_buf: &mut Vec<u8>,
+        fold_buf: &mut Vec<u8>,
+        fold: uffs_text::CaseFold,
     ) -> bool {
         if self.hide_system {
             let name = rec.name(names);
@@ -191,28 +197,18 @@ impl SearchFilters {
         if !self.extensions.is_empty() {
             let name = rec.name(names);
             let ext = name.rsplit('.').next().unwrap_or("");
-            // Zero-alloc: compare case-insensitively instead of allocating
-            // a lowercase String per record.  `self.extensions` are stored
-            // pre-lowered, and `eq_ignore_ascii_case` handles mixed-case
-            // filenames without allocation.
-            if !self
-                .extensions
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(ext))
-            {
+            // Compare via CaseFold: extensions are stored pre-folded,
+            // and we fold the record's extension on-the-fly.
+            let ext_folded = fold.fold_into(ext, fold_buf);
+            if !self.extensions.iter().any(|allowed| allowed == ext_folded) {
                 return false;
             }
         }
         if let Some(excl) = &self.exclude_lower {
-            // Zero-alloc: lowercase the name in a reusable caller-owned buffer
-            // instead of allocating a new String per record.
+            // Zero-alloc via CaseFold: fold the name into a reusable buffer.
             let name = rec.name(names);
-            lower_buf.clear();
-            lower_buf.extend_from_slice(name.as_bytes());
-            lower_buf.make_ascii_lowercase();
-            // Name was valid UTF-8 and ASCII lowering preserves UTF-8.
-            let lower_name = core::str::from_utf8(lower_buf).unwrap_or("");
-            if name_matches(lower_name, excl) {
+            let folded_name = fold.fold_into(name, fold_buf);
+            if name_matches(folded_name, excl) {
                 return false;
             }
         }
@@ -245,6 +241,8 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
     if filters.is_empty() {
         return;
     }
+    let fold = uffs_text::CaseFold::default_table();
+    let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
     rows.retain(|row| {
         if filters.hide_system && row.name().starts_with('$') {
             return false;
@@ -307,21 +305,18 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
         }
         if !filters.extensions.is_empty() {
             let ext = row.name().rsplit('.').next().unwrap_or("");
-            // Zero-alloc: case-insensitive comparison instead of allocating
-            // a lowercase String per row.
+            let ext_folded = fold.fold_into(ext, &mut fold_buf);
             if !filters
                 .extensions
                 .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(ext))
+                .any(|allowed| allowed == ext_folded)
             {
                 return false;
             }
         }
         if let Some(excl) = &filters.exclude_lower {
-            // DisplayRow path: allocate a lowercase copy.  This is bounded
-            // by result count (typically < 10 K), not record count (7 M).
-            let name_lower = row.name().to_ascii_lowercase();
-            if name_matches(&name_lower, excl) {
+            let folded_name = fold.fold_into(row.name(), &mut fold_buf);
+            if name_matches(folded_name, excl) {
                 return false;
             }
         }

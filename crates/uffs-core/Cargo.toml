@@ -27,6 +27,7 @@ categories.workspace = true
 [dependencies]
 # Internal crates
 uffs-polars.workspace = true
+uffs-text.workspace = true
 uffs-mft.workspace = true
 uffs-security.workspace = true
 
@@ -42,6 +43,9 @@ serde_json.workspace = true
 # Parallelization
 rayon.workspace = true
 chrono.workspace = true
+
+# Hashing (FxHashMap — fast, non-crypto hash for internal tables)
+rustc-hash = "2.1.1"
 
 # String matching (SIMD-optimized for IndexQuery)
 regex.workspace = true
@@ -61,7 +65,7 @@ devicons.workspace = true
 # Platform dirs (for key file path in keystore)
 anyhow.workspace = true
 itoa = "1.0.18"
-bytemuck = { version = "1.25.0", features = ["derive"] }
+bytemuck.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
