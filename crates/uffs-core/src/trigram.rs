@@ -265,7 +265,7 @@ impl TrigramIndex {
         };
         let mut result = first_list.to_vec();
         for list in lists.iter().skip(1) {
-            result = intersect_sorted(&result, list);
+            intersect_in_place(&mut result, list);
             if result.is_empty() {
                 break;
             }
@@ -275,31 +275,35 @@ impl TrigramIndex {
     }
 }
 
-/// Intersect two sorted `u32` slices, returning a new sorted `Vec<u32>`.
+/// Intersect a sorted `Vec<u32>` with a sorted slice **in place**.
+///
+/// Retains only elements present in both, preserving sorted order.
+/// Shrinks `result` via `truncate` — no allocation, no new `Vec`.
 #[expect(
     clippy::single_call_fn,
     reason = "separated for clarity — hot-path intersection logic"
 )]
-fn intersect_sorted(list_a: &[u32], list_b: &[u32]) -> Vec<u32> {
-    let mut out = Vec::with_capacity(list_a.len().min(list_b.len()));
-    let mut iter_a = list_a.iter().peekable();
-    let mut iter_b = list_b.iter().peekable();
-    while let (Some(&val_a), Some(&val_b)) = (iter_a.peek(), iter_b.peek()) {
-        match val_a.cmp(val_b) {
-            core::cmp::Ordering::Equal => {
-                out.push(*val_a);
-                iter_a.next();
-                iter_b.next();
+fn intersect_in_place(result: &mut Vec<u32>, other: &[u32]) {
+    let mut write = 0_usize;
+    let mut j = 0_usize;
+    for i in 0..result.len() {
+        let Some(&val) = result.get(i) else { break };
+        // Advance `j` until other[j] >= val.
+        while let Some(&ov) = other.get(j) {
+            if ov >= val {
+                break;
             }
-            core::cmp::Ordering::Less => {
-                iter_a.next();
+            j += 1;
+        }
+        if other.get(j).copied() == Some(val) {
+            if let Some(slot) = result.get_mut(write) {
+                *slot = val;
             }
-            core::cmp::Ordering::Greater => {
-                iter_b.next();
-            }
+            write += 1;
+            j += 1;
         }
     }
-    out
+    result.truncate(write);
 }
 
 /// Pass 2 of the counting-sort trigram build: scatter `record_idx` values

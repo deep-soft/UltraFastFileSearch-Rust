@@ -154,72 +154,31 @@ for 7M records) because the per-record work is trivial.
 
 ## STAGE 3 — Search & Filter
 
-### 🔴 3A. `resolve_path` — No Caching of Directory Prefixes
+### ✅ 3A. `resolve_path` — Directory Caching Added (2026-04-02)
 
-**File**: `crates/uffs-core/src/search/tree.rs`, lines 14–59
+**Status**: Fixed.  Added `resolve_path_cached` with `DirCache`
+(`HashMap<u32, String>`) that caches intermediate directory paths during
+parent-chain walks.  All 4 callers in `search/query.rs` updated.
 
-```rust
-pub fn resolve_path(
-    drive: &DriveCompactIndex,
-    record_idx: usize,
-    volume_prefix: &str,
-) -> String {
-    let mut components = Vec::with_capacity(8);
-    let mut current_idx = record_idx;
-    loop {
-        let record = drive.records.get(current_idx)?;
-        let name = record.name(&drive.names);
-        components.push(name);
-        current_idx = record.parent_idx as usize;
-        // ... walks to root every time
-    }
-    // reverse + join
-}
-```
+**What was wrong**: Every search result independently walked the full
+parent chain.  10K results in the same directory re-walked the same
+chain 10K times.
 
-**Problem**: Every search result independently walks the entire parent chain
-from leaf to root.  For 10,000 results in `C:\Users\John\Documents\`, each
-result re-walks the same 4-level chain.  That's 40,000 redundant name lookups
-and string operations.
+**What was fixed**:
+- New `resolve_path_cached()` and `DirCache` type in `search/tree.rs`
+- `resolve_path_inner()` shared implementation checks cache at each
+  ancestor, short-circuits on hit, and populates cache with all
+  intermediate directory paths after building the result
+- All 4 callers in `search/query.rs` updated:
+  - `collect_global_top_n` (Path sort): per-drive cache in DFS loop
+  - `collect_global_top_n_numeric`: per-drive caches via `HashMap<u16, DirCache>`
+  - `search_compact_drive_tree`: per-drive cache for tree search
+  - `indices_to_rows`: per-drive cache for trigram/regex results
+- Mirrors the `PathResolver::materialize_path_cached` pattern already
+  used by the `MftIndex` search path
 
-**Why it's critical**: Path resolution is called in `indices_to_rows()` for
-every matched record.  For large result sets (10K–100K rows) or
-path-heavy patterns, this dominates query latency.
-
-**Fix**: Add a `HashMap<u32, String>` cache (directory_idx → resolved prefix).
-When walking the parent chain, check the cache at each level.  On cache hit,
-prepend the cached prefix and store the newly resolved intermediate paths.
-
-```rust
-pub fn resolve_paths_cached(
-    drive: &DriveCompactIndex,
-    record_indices: &[usize],
-    volume_prefix: &str,
-) -> Vec<String> {
-    let mut dir_cache: HashMap<u32, String> = HashMap::with_capacity(256);
-    record_indices.iter().map(|&idx| {
-        let mut chain: SmallVec<[usize; 8]> = SmallVec::new();
-        let mut current = idx;
-        // Walk up until cache hit or root
-        loop {
-            if let Some(cached) = dir_cache.get(&(current as u32)) {
-                // Build path from cache + remaining chain
-                return build_from_cache(cached, &chain, drive);
-            }
-            chain.push(current);
-            // ... continue walking ...
-        }
-        // ... populate cache with intermediate directories ...
-    }).collect()
-}
-```
-
-Note: `MftIndex::PathResolver` already has a `dir_cache` with this exact
-pattern (see `crates/uffs-mft/src/index/path_resolver.rs` lines 130–148).
-The compact index path should adopt the same approach.
-
-**Estimated savings**: 50–80% reduction in path resolution time for typical
-search queries with many results.
+**Estimated savings**: 50–80% reduction in path resolution time for
+typical search queries with many results.
 
 ### 🟢 3B. Trigram Search — Well Optimised
 
@@ -229,71 +188,37 @@ Binary search on sorted `keys` → CSR slice lookup → merge-intersect of
 posting lists.  The lists are already sorted by record index (guaranteed by
 the scatter-in-order build), so intersection is a single linear merge pass.
 
-### 🟡 3C. `intersect_sorted` — Clones First Posting List
+### ✅ 3C. `intersect_sorted` → `intersect_in_place` (2026-04-02)
 
-**File**: `crates/uffs-core/src/trigram.rs`, lines 256–268
+**Status**: Fixed.  Replaced allocating `intersect_sorted` (new `Vec` per
+step) with in-place `intersect_in_place` (shrinks via `truncate`, zero
+re-allocation after the initial `.to_vec()` of the smallest list).
 
-```rust
-let mut result = first_list.to_vec();  // ← clones entire posting list
-for list in lists.iter().skip(1) {
-    result = intersect_sorted(&result, list);
-}
-```
+**What was wrong**: Each intersection step allocated a new `Vec<u32>`.  For
+a query with 5 trigrams, that's 4 intermediate `Vec` allocations.
 
-The first (smallest) posting list is cloned into a `Vec<u32>`.  For
-moderately selective trigrams, this can be 100K–1M entries (400 KB – 4 MB).
-Each subsequent intersection allocates a new `Vec` for the result.
+**What was fixed**: `intersect_in_place(&mut result, other)` uses a
+read-pointer / write-pointer pattern to retain only matching elements,
+then `truncate`s.  The initial `.to_vec()` of the shortest posting list
+is still needed (to get an owned copy from a borrowed CSR slice), but
+all subsequent intersections are allocation-free.
 
-**Fix**: In-place intersection that shrinks `result` without re-allocating:
+### ✅ 3D. Linear Fallback — SIMD-Accelerated via `memchr` (2026-04-02)
 
-```rust
-fn intersect_in_place(result: &mut Vec<u32>, other: &[u32]) {
-    let mut write = 0;
-    let mut j = 0;
-    for i in 0..result.len() {
-        while j < other.len() && other[j] < result[i] { j += 1; }
-        if j < other.len() && other[j] == result[i] {
-            result[write] = result[i];
-            write += 1;
-            j += 1;
-        }
-    }
-    result.truncate(write);
-}
-```
+**Status**: Fixed.  Simple substring queries (non-glob, non-OR,
+non-whole-word) now use `memchr::memmem::Finder` for SIMD-accelerated
+matching instead of `str::contains`.
 
-This eliminates N-1 allocations (one per intersection step).
+**What was changed**: In `search_compact_drive()`, a `Finder` is pre-built
+once from the needle bytes.  The `matches` closure uses it for all
+per-record substring checks — both the fallback linear scan (< 3 char
+queries) and the post-trigram candidate filtering.
 
-**Estimated savings**: Negligible for highly selective queries; up to 50%
-less allocation for broad queries with many trigram intersections.
+`memchr` uses SSE2/AVX2 on x86-64 and NEON on ARM, processing 16–32
+bytes per cycle.  For 1–2 byte needles this is dramatically faster than
+the generic `str::contains` implementation.
 
-### 🟡 3D. Linear Fallback for Short Queries (< 3 chars)
-
-**File**: `crates/uffs-core/src/search/query.rs`, lines 316–328
-
-For 1–2 character queries, trigram search returns `None` and the code falls
-back to a full linear scan of all records:
-
-```rust
-drive.records.iter().enumerate()
-    .filter(|(_, rec)| {
-        let name = rec.name(names_blob);
-        matches(name)
-    })
-    .take(limit)
-```
-
-For 7M records, this is a ~25 ms sequential scan.  Acceptable for rare
-queries, but could be improved with:
-
-- **1-gram / 2-gram index**: A supplementary flat array mapping each
-  byte/pair to a bitset of matching records.  Space: 256 × (7M/8) = 224 KB
-  for unigrams.
-- **SIMD `memchr`**: Use the `memchr` crate for vectorised byte searching
-  within the names blob — processes 32 bytes per cycle on AVX2.
-
-**Priority**: Low.  The `take(limit)` short-circuits early for typical
-interactive searches.
+The `take(limit)` early-exit still applies for interactive searches.
 
 ---
 
@@ -499,15 +424,15 @@ production code path uses `ChildrenIndex` (CSR), which is correct.
 | # | Fix | Impact | Effort | Stage |
 |---|-----|--------|--------|-------|
 | 1 | **BufWriter for console stdout** | 🔴 5–20× output speed | 1 line | Output |
-| 2 | **resolve_path directory cache** | 🔴 50–80% less search latency | ~30 lines | Search |
+| ~~2~~ | ~~**resolve_path directory cache**~~ | ✅ **DONE** | — | Search |
 | ~~3~~ | ~~**OFFLINE: switch to `load_raw_to_index_direct`**~~ | ✅ **DONE** | — | Ingest |
 | ~~4~~ | ~~**names_lower in-place lowering**~~ | ✅ **ALREADY DONE** | — | Build |
-| 5 | **intersect_sorted in-place** | 🟡 less alloc during search | ~15 lines | Search |
+| ~~5~~ | ~~**intersect_sorted in-place**~~ | ✅ **DONE** | — | Search |
 | ~~6~~ | ~~**Parallelise scatter_postings**~~ | ✅ **DONE** | — | Build |
 | 7 | **Remove/gate legacy TreeIndex** | 🟡 less dead code | ~5 lines | Cleanup |
 | 8 | **Streaming DisplayRow (Cow/borrow)** | 🟡 less alloc for 100K+ results | ~100 lines | Results |
 | 9 | **Direct JSON serialisation** | 🟢 skip DataFrame roundtrip | ~40 lines | Output |
-| 10 | **1-gram/2-gram index for short queries** | 🟢 faster 1–2 char search | ~80 lines | Search |
+| ~~10~~ | ~~**SIMD memchr for short queries**~~ | ✅ **DONE** | — | Search |
 
 ---
 

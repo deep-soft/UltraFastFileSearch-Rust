@@ -67,6 +67,7 @@ pub fn collect_global_top_n(
 
                 sort_indices_by_name(&mut roots, drive, sort_desc);
 
+                let mut dir_cache = tree::DirCache::with_capacity(256);
                 let mut stack: Vec<u32> = roots.into_iter().rev().collect();
                 while let Some(idx) = stack.pop() {
                     if path_results.len() >= limit {
@@ -81,7 +82,12 @@ pub fn collect_global_top_n(
                         continue;
                     }
 
-                    let path = tree::resolve_path(drive, idx as usize, &volume_prefix);
+                    let path = tree::resolve_path_cached(
+                        drive,
+                        idx as usize,
+                        &volume_prefix,
+                        &mut dir_cache,
+                    );
                     path_results.push(make_display_row(drive.letter, rec, name, path));
 
                     let child_slice = drive.children.get(idx as usize);
@@ -202,6 +208,8 @@ fn collect_global_top_n_numeric(
     }
     candidates.truncate(limit);
 
+    let mut dir_caches: std::collections::HashMap<u16, tree::DirCache> =
+        std::collections::HashMap::new();
     let mut rows: Vec<DisplayRow> = candidates
         .iter()
         .filter_map(|&(drive_idx, rec_idx, _)| {
@@ -212,7 +220,10 @@ fn collect_global_top_n_numeric(
                 return None;
             }
             let volume_prefix = format!("{}:\\", drive.letter);
-            let path = tree::resolve_path(drive, rec_idx as usize, &volume_prefix);
+            let cache = dir_caches
+                .entry(drive_idx)
+                .or_insert_with(|| tree::DirCache::with_capacity(256));
+            let path = tree::resolve_path_cached(drive, rec_idx as usize, &volume_prefix, cache);
             Some(make_display_row(drive.letter, rec, name, path))
         })
         .collect();
@@ -285,13 +296,23 @@ pub fn search_compact_drive(
         &drive.names_lower
     };
 
+    // Pre-build a SIMD-accelerated substring finder for simple queries.
+    // For 1–2 byte needles this is dramatically faster than `str::contains`
+    // (memchr uses SSE2/AVX2/NEON vectorised search).
+    let simple_substring = !is_glob && !is_or && !whole_word;
+    let finder = simple_substring.then(|| memchr::memmem::Finder::new(needle.as_bytes()));
     let matches = |name: &str| -> bool {
+        if name.is_empty() || name == "." {
+            return false;
+        }
         if whole_word {
             if is_glob || is_or {
                 tree::name_matches(name, needle)
             } else {
                 name == needle
             }
+        } else if let Some(fnd) = &finder {
+            fnd.find(name.as_bytes()).is_some()
         } else {
             tree::name_matches(name, needle)
         }
@@ -391,6 +412,7 @@ pub fn search_compact_drive_tree(
     let match_count = match_indices.len();
 
     let t_resolve = std::time::Instant::now();
+    let mut dir_cache = tree::DirCache::with_capacity(256);
     let rows: Vec<DisplayRow> = match_indices
         .iter()
         .filter_map(|&record_idx| {
@@ -399,7 +421,12 @@ pub fn search_compact_drive_tree(
             if name.is_empty() {
                 return None;
             }
-            let path = tree::resolve_path(drive, record_idx as usize, &volume_prefix);
+            let path = tree::resolve_path_cached(
+                drive,
+                record_idx as usize,
+                &volume_prefix,
+                &mut dir_cache,
+            );
             Some(make_display_row(drive.letter, rec, name, path))
         })
         .collect();
@@ -456,6 +483,7 @@ fn indices_to_rows(
     indices: &[usize],
     volume_prefix: &str,
 ) -> Vec<DisplayRow> {
+    let mut dir_cache = tree::DirCache::with_capacity(256);
     indices
         .iter()
         .filter_map(|&record_idx| {
@@ -464,7 +492,7 @@ fn indices_to_rows(
             if name.is_empty() {
                 return None;
             }
-            let path = tree::resolve_path(drive, record_idx, volume_prefix);
+            let path = tree::resolve_path_cached(drive, record_idx, volume_prefix, &mut dir_cache);
             Some(make_display_row(drive.letter, rec, name, path))
         })
         .collect()
