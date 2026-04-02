@@ -279,36 +279,34 @@ fn filter_all_pass_accepts() {
 #[test]
 fn apply_search_filters_matches_compact_behavior() {
     let mut rows = vec![
-        DisplayRow {
-            drive: 'C',
-            path: "C:\\file.txt".to_owned(),
-            name: "file.txt".to_owned(),
-            size: 1000,
-            is_directory: false,
-            modified: 200_000_000,
-            created: 100_000_000,
-            accessed: 300_000_000,
-            flags: 0x20,
-            allocated: 1024,
-            descendants: 0,
-            treesize: 0,
-            tree_allocated: 0,
-        },
-        DisplayRow {
-            drive: 'C',
-            path: "C:\\$MFT".to_owned(),
-            name: "$MFT".to_owned(),
-            size: 500_000,
-            is_directory: false,
-            modified: 200_000_000,
-            created: 100_000_000,
-            accessed: 300_000_000,
-            flags: 0x06,
-            allocated: 512_000,
-            descendants: 0,
-            treesize: 0,
-            tree_allocated: 0,
-        },
+        DisplayRow::new(
+            'C',
+            "C:\\file.txt".to_owned(),
+            1000,
+            false,
+            200_000_000,
+            100_000_000,
+            300_000_000,
+            0x20,
+            1024,
+            0,
+            0,
+            0,
+        ),
+        DisplayRow::new(
+            'C',
+            "C:\\$MFT".to_owned(),
+            500_000,
+            false,
+            200_000_000,
+            100_000_000,
+            300_000_000,
+            0x06,
+            512_000,
+            0,
+            0,
+            0,
+        ),
     ];
 
     let filters = SearchFilters {
@@ -318,7 +316,7 @@ fn apply_search_filters_matches_compact_behavior() {
     apply_search_filters(&mut rows, &filters);
     assert_eq!(rows.len(), 1, "hide_system should remove $MFT");
     let first = rows.first().expect("rows should not be empty");
-    assert_eq!(first.name, "file.txt");
+    assert_eq!(first.name(), "file.txt");
 }
 
 // ── Older-created / older-accessed filters ───────────────────────

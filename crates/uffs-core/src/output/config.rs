@@ -583,7 +583,7 @@ fn write_display_row_columns(
             OutputColumn::Name => {
                 buf.push_str(&cfg.quote);
                 if !parity_dir {
-                    buf.push_str(&row.name);
+                    buf.push_str(row.name());
                 }
                 // parity dirs: empty name (just quotes)
                 buf.push_str(&cfg.quote);
@@ -639,8 +639,8 @@ fn write_display_row_columns(
             OutputColumn::Type => {
                 // Extract extension from name
                 buf.push_str(&cfg.quote);
-                if let Some(dot) = row.name.rfind('.') {
-                    buf.push_str(row.name.get(dot + 1..).unwrap_or(""));
+                if let Some(dot) = row.name().rfind('.') {
+                    buf.push_str(row.name().get(dot + 1..).unwrap_or(""));
                 }
                 buf.push_str(&cfg.quote);
             }

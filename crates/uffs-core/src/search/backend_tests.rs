@@ -7,39 +7,37 @@ use super::*;
 
 /// Build a minimal `DisplayRow` for sort / aggregation tests.
 fn row(name: &str, drive: char, size: u64, modified: i64, created: i64) -> DisplayRow {
-    DisplayRow {
+    DisplayRow::new(
         drive,
-        path: format!("{drive}:\\{name}"),
-        name: name.to_owned(),
+        format!("{drive}:\\{name}"),
         size,
-        is_directory: false,
+        false,
         modified,
         created,
-        accessed: 0,
-        flags: 0x20,
-        allocated: size.next_multiple_of(512),
-        descendants: 0,
-        treesize: 0,
-        tree_allocated: 0,
-    }
+        0,
+        0x20,
+        size.next_multiple_of(512),
+        0,
+        0,
+        0,
+    )
 }
 
 fn dir_row(name: &str, drive: char, descendants: u32, treesize: u64) -> DisplayRow {
-    DisplayRow {
+    DisplayRow::new(
         drive,
-        path: format!("{drive}:\\{name}"),
-        name: name.to_owned(),
-        size: 0,
-        is_directory: true,
-        modified: 0,
-        created: 0,
-        accessed: 0,
-        flags: 0x10,
-        allocated: 0,
+        format!("{drive}:\\{name}"),
+        0,
+        true,
+        0,
+        0,
+        0,
+        0x10,
+        0,
         descendants,
         treesize,
-        tree_allocated: treesize,
-    }
+        treesize,
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -157,7 +155,7 @@ fn sort_by_name_ascending() {
         row("alpha.txt", 'C', 200, 0, 0),
     ];
     sort_rows(&mut rows, SortColumn::Name, false, &[]);
-    assert_eq!(rows.first().expect("first").name, "alpha.txt");
+    assert_eq!(rows.first().expect("first").name(), "alpha.txt");
 }
 
 #[test]
@@ -167,7 +165,7 @@ fn sort_by_modified_descending() {
         row("new.txt", 'C', 100, 9000, 0),
     ];
     sort_rows(&mut rows, SortColumn::Modified, true, &[]);
-    assert_eq!(rows.first().expect("first").name, "new.txt");
+    assert_eq!(rows.first().expect("first").name(), "new.txt");
 }
 
 #[test]
@@ -177,14 +175,14 @@ fn sort_by_created_descending() {
         row("new.txt", 'C', 100, 0, 9000),
     ];
     sort_rows(&mut rows, SortColumn::Created, true, &[]);
-    assert_eq!(rows.first().expect("first").name, "new.txt");
+    assert_eq!(rows.first().expect("first").name(), "new.txt");
 }
 
 #[test]
 fn sort_by_path_ascending() {
     let mut rows = vec![row("z.txt", 'D', 100, 0, 0), row("a.txt", 'C', 100, 0, 0)];
     sort_rows(&mut rows, SortColumn::Path, false, &[]);
-    assert_eq!(rows.first().expect("first").name, "a.txt");
+    assert_eq!(rows.first().expect("first").name(), "a.txt");
 }
 
 #[test]
@@ -194,7 +192,7 @@ fn sort_by_extension_ascending() {
         row("file.abc", 'C', 100, 0, 0),
     ];
     sort_rows(&mut rows, SortColumn::Extension, false, &[]);
-    assert_eq!(rows.first().expect("first").name, "file.abc");
+    assert_eq!(rows.first().expect("first").name(), "file.abc");
 }
 
 #[test]
@@ -204,7 +202,7 @@ fn sort_by_descendants_descending() {
         dir_row("big", 'C', 500, 50_000),
     ];
     sort_rows(&mut rows, SortColumn::Descendants, true, &[]);
-    assert_eq!(rows.first().expect("first").name, "big");
+    assert_eq!(rows.first().expect("first").name(), "big");
 }
 
 #[test]
@@ -224,7 +222,7 @@ fn sort_by_size_on_disk_descending() {
         row("big.txt", 'C', 5000, 0, 0),
     ];
     sort_rows(&mut rows, SortColumn::SizeOnDisk, true, &[]);
-    assert_eq!(rows.first().expect("first").name, "big.txt");
+    assert_eq!(rows.first().expect("first").name(), "big.txt");
 }
 
 #[test]
@@ -240,9 +238,9 @@ fn sort_multi_tier_size_then_name() {
     }];
     sort_rows(&mut rows, SortColumn::Size, true, &tiers);
     // gamma (200) first, then alpha (100), then beta (100) — name tiebreaker
-    assert_eq!(rows.first().expect("first").name, "gamma.txt");
-    assert_eq!(rows.get(1).expect("second").name, "alpha.txt");
-    assert_eq!(rows.get(2).expect("third").name, "beta.txt");
+    assert_eq!(rows.first().expect("first").name(), "gamma.txt");
+    assert_eq!(rows.get(1).expect("second").name(), "alpha.txt");
+    assert_eq!(rows.get(2).expect("third").name(), "beta.txt");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -307,7 +305,8 @@ fn multi_drive_sort_across_drives() {
     // data.csv (800) on D should come before report.txt (400) on C
     let first = result.rows.first().expect("first");
     assert_eq!(
-        first.name, "data.csv",
+        first.name(),
+        "data.csv",
         "largest file across drives must be first"
     );
     assert_eq!(first.drive, 'D');

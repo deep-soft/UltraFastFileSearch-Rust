@@ -356,9 +356,6 @@ pub fn apply_usn_patch(
                     if rec.name_len == 0 && !change.filename.is_empty() {
                         let name_start = drive.names.len();
                         drive.names.extend_from_slice(change.filename.as_bytes());
-                        drive
-                            .names_lower
-                            .extend_from_slice(change.filename.to_ascii_lowercase().as_bytes());
                         #[expect(
                             clippy::cast_possible_truncation,
                             reason = "name offset bounded by names blob size"
@@ -373,9 +370,6 @@ pub fn apply_usn_patch(
             } else if !change.filename.is_empty() {
                 let name_start = drive.names.len();
                 drive.names.extend_from_slice(change.filename.as_bytes());
-                drive
-                    .names_lower
-                    .extend_from_slice(change.filename.to_ascii_lowercase().as_bytes());
 
                 let parent_frs_usize = uffs_mft::frs_to_usize(change.parent_frs);
                 let parent_compact = frs_to_compact
@@ -416,9 +410,6 @@ pub fn apply_usn_patch(
                 if !change.filename.is_empty() {
                     let name_start = drive.names.len();
                     drive.names.extend_from_slice(change.filename.as_bytes());
-                    drive
-                        .names_lower
-                        .extend_from_slice(change.filename.to_ascii_lowercase().as_bytes());
                     #[expect(
                         clippy::cast_possible_truncation,
                         reason = "name offset bounded by names blob size"
@@ -449,7 +440,10 @@ pub fn apply_usn_patch(
     // Both are necessary so newly created/renamed files appear in tree
     // traversal AND trigram search.
     drive.children = ChildrenIndex::build(&drive.records);
-    drive.trigram = TrigramIndex::build(&drive.records, &drive.names_lower);
+    // Temp lowercase for trigram rebuild — not kept in memory.
+    let mut names_lower = drive.names.clone();
+    names_lower.make_ascii_lowercase();
+    drive.trigram = TrigramIndex::build(&drive.records, &names_lower);
 
     stats
 }

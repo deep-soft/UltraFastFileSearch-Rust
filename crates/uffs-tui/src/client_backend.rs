@@ -108,20 +108,21 @@ impl DaemonBackend {
         let rows: Vec<DisplayRow> = response
             .rows
             .into_iter()
-            .map(|row| DisplayRow {
-                drive: row.drive,
-                path: row.path,
-                name: row.name,
-                size: row.size,
-                is_directory: row.is_directory,
-                modified: row.modified,
-                created: row.created,
-                accessed: row.accessed,
-                flags: row.flags,
-                allocated: row.allocated,
-                descendants: row.descendants,
-                treesize: row.treesize,
-                tree_allocated: 0,
+            .map(|row| {
+                DisplayRow::new(
+                    row.drive,
+                    row.path,
+                    row.size,
+                    row.is_directory,
+                    row.modified,
+                    row.created,
+                    row.accessed,
+                    row.flags,
+                    row.allocated,
+                    row.descendants,
+                    row.treesize,
+                    0,
+                )
             })
             .collect();
 

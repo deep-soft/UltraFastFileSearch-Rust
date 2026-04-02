@@ -224,43 +224,27 @@ The `take(limit)` early-exit still applies for interactive searches.
 
 ## STAGE 4 — Result Construction
 
-### 🟡 4A. `DisplayRow` Owns Strings — Per-Result Heap Allocations
+### ✅ 4A. `DisplayRow` Name Allocation Eliminated (2026-04-02)
 
-**File**: `crates/uffs-core/src/search/backend.rs`
+**Status**: Fixed.  Replaced `name: String` field with `name_start: u32`
+(byte offset into `path`).  `name()` method returns `&str` slice into the
+owned `path` — zero-cost, no allocation.
 
-```rust
-pub struct DisplayRow {
-    pub path: String,   // heap-allocated owned String
-    pub name: String,   // heap-allocated owned String
-    // ... 11 more fields (all Copy)
-}
-```
+**What was wrong**: Each `DisplayRow` allocated a separate `name: String`
+via `.to_owned()`.  For 10K results, that's 10K unnecessary heap allocs.
 
-**File**: `crates/uffs-core/src/search/query.rs`, `make_display_row()`
+**What was fixed**:
+- `DisplayRow` now stores `name_start: u32` (private) instead of
+  `name: String`
+- New `DisplayRow::new()` constructor computes `name_start` from
+  `path.rfind('\\')` once
+- New `name()` method returns `&self.path[name_start..]` (zero-cost slice)
+- All constructors across uffs-core, uffs-cli, uffs-tui, uffs-daemon
+  updated to use `DisplayRow::new()`
+- All field accesses `.name` → `.name()` across production and test code
 
-```rust
-fn make_display_row(...) -> DisplayRow {
-    DisplayRow {
-        name: name.to_owned(),      // ← HEAP ALLOC
-        path: /* resolve_path() */,  // ← HEAP ALLOC (builds a new String)
-        // ...
-    }
-}
-```
-
-For 10,000 results, this creates **20,000 heap allocations** (one `String`
-for `name`, one for `path`).  The `name` is already available as a
-zero-copy `&str` slice into the names blob; the `path` could be written
-directly to the output buffer without intermediate ownership.
-
-**Fix** (large refactor): Introduce a streaming output mode where
-`CompactRecord` + names blob → formatted row is done in a single pass
-without constructing `DisplayRow`.  For sorted output (which requires
-all rows in memory), keep `DisplayRow` but use `Cow<'a, str>` for `name`
-to avoid cloning.
-
-**Priority**: Medium.  The allocation cost is ~0.5 ms for 10K results —
-dwarfed by path resolution.  Becomes relevant for 100K+ result sets.
+**Savings**: Eliminates one `String` heap allocation per result row.
+For 10K results: 10K fewer allocations, ~200 KB less heap.
 
 ### 🟡 4B. `display_rows_to_dataframe` Roundtrip (JSON/Table Only)
 
@@ -287,49 +271,19 @@ format directly using the `comfy-table` or similar crate.
 
 ## STAGE 5 — Output I/O
 
-### 🔴 5A. Console Output — No `BufWriter` Wrapping
+### ✅ 5A. Console Output — `BufWriter` Added (2026-04-02)
 
-**File**: `crates/uffs-cli/src/commands/output/mod.rs`, lines 68–78
+**Status**: Fixed.  Wrapped locked stdout in
+`BufWriter::with_capacity(64 * 1024, ...)`.
 
-```rust
-let stdout_handle = std::io::stdout();
-let mut stdout = stdout_handle.lock();
-// ↑ Raw locked stdout — every write_all() is a syscall!
+**What was wrong**: Every `write_all()` call was an unbuffered syscall.
+10K rows → 10K syscalls → ~500 ms of pure I/O overhead.
 
-match format {
-    "csv" => output_config.write_display_rows(rows, &mut stdout)?,
-    // ...
-}
-```
+**What was fixed**: One-line change in `output/mod.rs`:
+`BufWriter::with_capacity(64 * 1024, stdout_handle.lock())`.
+Explicit `flush()` already existed after the match block.
 
-Compare with the file output path (same file, lines 85–90):
-
-```rust
-let file = File::create(path)?;
-let mut writer = BufWriter::new(file);  // ← Correctly buffered!
-output_config.write_display_rows(rows, &mut writer)?;
-```
-
-**Problem**: `write_display_rows` calls `writer.write_all(buf.as_bytes())`
-once per row.  For console output, each call is an **unbuffered syscall**
-(`write(1, ...)` on POSIX, `WriteFile` on Windows).
-
-For 10,000 rows × ~200 bytes each:
-- **Without BufWriter**: 10,000 syscalls, ~50 µs each → **~500 ms**
-- **With BufWriter(64K)**: ~31 syscalls → **< 1 ms**
-
-**Fix** (1 line):
-
-```rust
-let mut stdout = BufWriter::with_capacity(64 * 1024, stdout_handle.lock());
-```
-
-Flush is automatic on `Drop`, or add explicit `writer.flush()?;` after the
-loop.
-
-**Estimated savings**: 5–20× faster console output for result sets > 100
-rows.  This may be the single highest-impact fix in the entire codebase for
-interactive use.
+**Savings**: 10K rows: ~500 ms → < 1 ms (5–20× faster console output).
 
 ### 🟢 5B. File Output — Properly Buffered
 
@@ -384,38 +338,33 @@ contiguous allocation, so TLB misses are unlikely).
 `DriveCompactIndex` is built (which uses CSR `ChildrenIndex`).  Not on
 the search hot path.
 
-### DS6. `names: Vec<u8>` + `names_lower: Vec<u8>` — ⚠️ Double Memory
+### ✅ DS6. `names_lower` Eliminated from Runtime (2026-04-02)
 
-Two copies of the names blob (~140 MB each for 7M records).  Total ~280 MB
-for names alone.
+**Status**: Fixed.  `names_lower: Vec<u8>` field removed from
+`DriveCompactIndex`.  All search paths do on-the-fly
+`to_ascii_lowercase()` per-record.  Trigram build creates a temporary
+lowercase copy that is dropped immediately after.
 
-**Alternatives considered**:
-1. **Store only lowercase, reconstruct original from MFT on demand** —
-   Breaks display of original-case names, which is a UX requirement.
-2. **Interleave original and lowercase in a single buffer** — Saves one
-   allocation but same total memory.
-3. **Compute lowercase on the fly during search** — Adds `make_ascii_lowercase`
-   per comparison.  For trigram search (which only looks up pre-built indices),
-   this is irrelevant.  For linear-scan fallback, it would add ~5 ns per
-   record (35 ms for 7M records) — acceptable.
-4. **Store lowercase only + a "case bits" bitfield** — For ASCII names,
-   one bit per character encodes whether it was uppercase.  Halves names
-   memory.  Complex to implement, marginal benefit.
+**Memory savings**: ~140 MB per drive (entire `names_lower` blob).
 
-**Verdict**: Current approach is the right trade-off.  The `names_lower`
-blob is essential for case-insensitive trigram search and the memory cost
-(~140 MB) is acceptable for a tool that processes 7M+ file records.
+**Changes**:
+- `compact.rs`: field removed; trigram build uses scoped temp copy
+- `compact_cache.rs`: bumped to v5 (doesn't write `names_lower`);
+  v4 deserialization still works (reads + skips names_lower)
+- `compact_loader.rs`: incremental updates no longer maintain names_lower
+- `search/query.rs`: `matches()` closures lowercase per-record into a
+  reusable `Vec<u8>` buffer (zero allocation after first use)
+- `search/tree.rs`: tree walks use `to_ascii_lowercase()` on each name
 
-### DS7. Legacy `TreeIndex` (`HashMap<u64, Vec<u64>>`) — 🗑️ Dead Weight
+**Trade-off**: Linear-scan fallback (1–2 char queries) adds ~70 ms of
+on-the-fly lowering for 7M records.  Acceptable for rare queries.
 
-**File**: `crates/uffs-core/src/tree/index.rs`
+### ✅ DS7. `TreeIndex` Removed from Public API (2026-04-02)
 
-Only used in benchmarks (`benches/`).  Not in any production CLI or TUI
-code path.  The `HashMap`-based design has ~40 bytes overhead per entry ×
-7M records = ~280 MB of hash overhead alone.
-
-**Recommendation**: Gate behind `#[cfg(test)]` or remove entirely.  The
-production code path uses `ChildrenIndex` (CSR), which is correct.
+**Status**: Fixed.  `TreeIndex` removed from top-level `pub use` in
+`lib.rs`.  The struct and its tree module remain available internally
+(used by `add_tree_columns` and benchmarks) but are no longer part of
+the public crate API.  No production CLI/TUI/daemon code uses it.
 
 ---
 
@@ -423,14 +372,14 @@ production code path uses `ChildrenIndex` (CSR), which is correct.
 
 | # | Fix | Impact | Effort | Stage |
 |---|-----|--------|--------|-------|
-| 1 | **BufWriter for console stdout** | 🔴 5–20× output speed | 1 line | Output |
+| ~~1~~ | ~~**BufWriter for console stdout**~~ | ✅ **DONE** | — | Output |
 | ~~2~~ | ~~**resolve_path directory cache**~~ | ✅ **DONE** | — | Search |
 | ~~3~~ | ~~**OFFLINE: switch to `load_raw_to_index_direct`**~~ | ✅ **DONE** | — | Ingest |
 | ~~4~~ | ~~**names_lower in-place lowering**~~ | ✅ **ALREADY DONE** | — | Build |
 | ~~5~~ | ~~**intersect_sorted in-place**~~ | ✅ **DONE** | — | Search |
 | ~~6~~ | ~~**Parallelise scatter_postings**~~ | ✅ **DONE** | — | Build |
-| 7 | **Remove/gate legacy TreeIndex** | 🟡 less dead code | ~5 lines | Cleanup |
-| 8 | **Streaming DisplayRow (Cow/borrow)** | 🟡 less alloc for 100K+ results | ~100 lines | Results |
+| ~~7~~ | ~~**DS6 names_lower + DS7 TreeIndex**~~ | ✅ **DONE** | — | Cleanup |
+| ~~8~~ | ~~**DisplayRow: name_start replaces name: String**~~ | ✅ **DONE** | — | Results |
 | 9 | **Direct JSON serialisation** | 🟢 skip DataFrame roundtrip | ~40 lines | Output |
 | ~~10~~ | ~~**SIMD memchr for short queries**~~ | ✅ **DONE** | — | Search |
 

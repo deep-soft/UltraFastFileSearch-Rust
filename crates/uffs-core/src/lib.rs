@@ -96,7 +96,7 @@ pub use path_resolver::{
 };
 pub use query::MftQuery;
 pub use slot_pool::{DriveLoadEstimate, SlotPool, compute_load_budget, estimate_drive_cost};
-pub use tree::{TreeColumn, TreeIndex, add_tree_columns, apply_directory_treesize};
+pub use tree::{TreeColumn, add_tree_columns, apply_directory_treesize};
 // Re-export commonly used types
 pub use uffs_mft::FileFlags;
 pub use uffs_polars::{DataFrame, IntoLazy, LazyFrame, col, columns, lit};

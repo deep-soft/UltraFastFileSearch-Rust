@@ -129,7 +129,7 @@ fn search_compact_finds_file_by_name() {
     let drive = build_test_drive();
     let rows = search_compact_drive(&drive, "readme", 100, false, false);
     assert!(
-        rows.iter().any(|row| row.name == "readme.txt"),
+        rows.iter().any(|row| row.name() == "readme.txt"),
         "search for 'readme' must find readme.txt"
     );
 }
@@ -142,7 +142,7 @@ fn display_row_fields_match_source_data() {
     let rows = search_compact_drive(&drive, "readme", 100, false, false);
     let row = rows
         .iter()
-        .find(|row| row.name == "readme.txt")
+        .find(|row| row.name() == "readme.txt")
         .expect("not found");
     assert_eq!(row.drive, 'C');
     assert_eq!(row.size, 400);
@@ -161,7 +161,7 @@ fn display_row_directory_has_tree_metrics() {
     let rows = search_compact_drive(&drive, "projects", 100, false, false);
     let row = rows
         .iter()
-        .find(|row| row.name == "Projects")
+        .find(|row| row.name() == "Projects")
         .expect("not found");
     assert!(row.is_directory);
     assert_eq!(row.descendants, 2);
@@ -181,7 +181,7 @@ fn multi_drive_search_applies_filters() {
     };
     let result = backend.search("*", false, false, Some(100), FilterMode::All, &filters);
     assert!(
-        !result.rows.iter().any(|row| row.name == "$MFT"),
+        !result.rows.iter().any(|row| row.name() == "$MFT"),
         "hide_system must filter $MFT"
     );
 }
@@ -255,7 +255,7 @@ fn display_row_path_includes_volume_prefix() {
     let rows = search_compact_drive(&drive, "readme", 100, false, false);
     let row = rows
         .iter()
-        .find(|row| row.name == "readme.txt")
+        .find(|row| row.name() == "readme.txt")
         .expect("not found");
     assert!(
         row.path.starts_with("C:\\"),
@@ -316,7 +316,7 @@ fn regex_search_finds_matching_files() {
     let re = regex::Regex::new("(?i)readme").expect("valid regex");
     let rows = search_compact_drive_regex(&drive, &re, 100);
     assert!(
-        rows.iter().any(|row| row.name == "readme.txt"),
+        rows.iter().any(|row| row.name() == "readme.txt"),
         "regex 'readme' must find readme.txt"
     );
 }
@@ -414,7 +414,7 @@ fn ads_on_directory_display_row_is_not_directory() {
     let rows = search_compact_drive(&drive, "myfolder:metadata", 100, false, false);
     let ads_row = rows
         .iter()
-        .find(|row| row.name.contains(':'))
+        .find(|row| row.name().contains(':'))
         .expect("ADS row must exist");
     assert!(
         !ads_row.is_directory,
@@ -431,7 +431,7 @@ fn normal_directory_display_row_is_directory() {
     let rows = search_compact_drive(&drive, "myfolder", 100, false, false);
     let dir_row = rows
         .iter()
-        .find(|row| row.name == "MyFolder")
+        .find(|row| row.name() == "MyFolder")
         .expect("directory row must exist");
     assert!(
         dir_row.is_directory,
@@ -448,7 +448,7 @@ fn case_sensitive_search_misses_wrong_case() {
     let drive = build_test_drive();
     let rows = search_compact_drive(&drive, "README", 100, true, false);
     assert!(
-        !rows.iter().any(|row| row.name == "readme.txt"),
+        !rows.iter().any(|row| row.name() == "readme.txt"),
         "case-sensitive 'README' must not match 'readme.txt'"
     );
 }
@@ -460,7 +460,7 @@ fn case_insensitive_search_finds_any_case() {
     // responsibility)
     let rows = search_compact_drive(&drive, "readme", 100, false, false);
     assert!(
-        rows.iter().any(|row| row.name == "readme.txt"),
+        rows.iter().any(|row| row.name() == "readme.txt"),
         "case-insensitive 'readme' must match 'readme.txt'"
     );
 }
@@ -471,7 +471,7 @@ fn whole_word_search_exact_match() {
     // Whole-word with exact name (no extension)
     let rows = search_compact_drive(&drive, "readme.txt", 100, false, true);
     assert!(
-        rows.iter().any(|row| row.name == "readme.txt"),
+        rows.iter().any(|row| row.name() == "readme.txt"),
         "whole-word exact match must find readme.txt"
     );
 }

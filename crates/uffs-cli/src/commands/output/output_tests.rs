@@ -31,40 +31,40 @@ fn temp_output_path(extension: &str) -> PathBuf {
 
 /// A single `DisplayRow` matching the old `sample_df()` content.
 fn sample_rows() -> Vec<DisplayRow> {
-    vec![DisplayRow {
-        drive: 'C',
-        path: "C:\\Temp\\file.txt".to_owned(),
-        name: "file.txt".to_owned(),
-        size: 123,
-        allocated: 128,
-        is_directory: false,
-        modified: 1_700_001_100_000_000,
-        created: 1_700_001_000_000_000,
-        accessed: 1_700_001_200_000_000,
-        flags: 0,
-        descendants: 0,
-        treesize: 0,
-        tree_allocated: 0,
-    }]
+    vec![DisplayRow::new(
+        'C',
+        "C:\\Temp\\file.txt".to_owned(),
+        123,
+        false,
+        1_700_001_100_000_000,
+        1_700_001_000_000_000,
+        1_700_001_200_000_000,
+        0,
+        128,
+        0,
+        0,
+        0,
+    )]
 }
 
 /// 20 000+ `DisplayRow`s for testing the slow-scan footer guard.
 fn large_sample_rows() -> Vec<DisplayRow> {
     (0..20_000_u32)
-        .map(|idx| DisplayRow {
-            drive: 'C',
-            path: "C:\\Temp\\".to_owned(),
-            name: format!("file{idx}.txt"),
-            size: 100,
-            allocated: 128,
-            is_directory: false,
-            modified: 0,
-            created: 0,
-            accessed: 0,
-            flags: 0,
-            descendants: 0,
-            treesize: 0,
-            tree_allocated: 0,
+        .map(|idx| {
+            DisplayRow::new(
+                'C',
+                format!("C:\\Temp\\file{idx}.txt"),
+                100,
+                false,
+                0,
+                0,
+                0,
+                0,
+                128,
+                0,
+                0,
+                0,
+            )
         })
         .collect()
 }

@@ -4,51 +4,9 @@ use super::*;
 fn test_navigation() {
     let mut app = App::new();
     app.results = vec![
-        DisplayRow {
-            drive: 'C',
-            path: "C:\\a".to_owned(),
-            name: "a".to_owned(),
-            size: 0,
-            is_directory: false,
-            modified: 0,
-            created: 0,
-            accessed: 0,
-            flags: 0,
-            allocated: 0,
-            descendants: 0,
-            treesize: 0,
-            tree_allocated: 0,
-        },
-        DisplayRow {
-            drive: 'C',
-            path: "C:\\b".to_owned(),
-            name: "b".to_owned(),
-            size: 0,
-            is_directory: false,
-            modified: 0,
-            created: 0,
-            accessed: 0,
-            flags: 0,
-            allocated: 0,
-            descendants: 0,
-            treesize: 0,
-            tree_allocated: 0,
-        },
-        DisplayRow {
-            drive: 'C',
-            path: "C:\\c".to_owned(),
-            name: "c".to_owned(),
-            size: 0,
-            is_directory: true,
-            modified: 0,
-            created: 0,
-            accessed: 0,
-            flags: 0,
-            allocated: 0,
-            descendants: 0,
-            treesize: 0,
-            tree_allocated: 0,
-        },
+        DisplayRow::new('C', "C:\\a".to_owned(), 0, false, 0, 0, 0, 0, 0, 0, 0, 0),
+        DisplayRow::new('C', "C:\\b".to_owned(), 0, false, 0, 0, 0, 0, 0, 0, 0, 0),
+        DisplayRow::new('C', "C:\\c".to_owned(), 0, true, 0, 0, 0, 0, 0, 0, 0, 0),
     ];
 
     app.next();
@@ -79,21 +37,20 @@ fn test_has_data() {
 #[test]
 fn test_empty_search_shows_all() {
     let mut app = App::new();
-    app.results = vec![DisplayRow {
-        drive: 'C',
-        path: "C:\\x".to_owned(),
-        name: "x".to_owned(),
-        size: 0,
-        is_directory: false,
-        modified: 0,
-        created: 0,
-        accessed: 0,
-        flags: 0,
-        allocated: 0,
-        descendants: 0,
-        treesize: 0,
-        tree_allocated: 0,
-    }];
+    app.results = vec![DisplayRow::new(
+        'C',
+        "C:\\x".to_owned(),
+        0,
+        false,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )];
     // textarea starts empty → searches for "*" (all files)
     // With no drives loaded, this triggers the "no drives" error
     app.search();

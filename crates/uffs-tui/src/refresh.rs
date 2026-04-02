@@ -49,7 +49,6 @@ pub fn start_refresh(app: &mut App) {
                         letter: thread_letter,
                         records: Vec::new(),
                         names: Vec::new(),
-                        names_lower: Vec::new(),
                         trigram: backend::TrigramIndex::empty(),
                         children: compact::ChildrenIndex::empty(),
                         source: compact::IndexSource::MftFile(thread_source),

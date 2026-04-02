@@ -236,7 +236,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
                 // Put the message in the second column (or first if only one)
                 let msg_idx = usize::from(num_cols > 1);
                 cells[msg_idx] = Cell::from(Line::from(Span::styled(
-                    row.name.clone(),
+                    row.name().to_owned(),
                     Style::default()
                         .fg(get_drive_color(row.drive))
                         .add_modifier(Modifier::BOLD),
@@ -560,7 +560,7 @@ fn build_cell<'a>(
                 .add_modifier(Modifier::BOLD),
         ))),
         TuiColumn::Name => {
-            let fi = devicons::icon_for_file(&row.name, &None);
+            let fi = devicons::icon_for_file(row.name(), &None);
             let icon_str = fi.icon.to_string();
             let icon_color = devicon_color(fi.color);
             let mut spans = vec![
@@ -568,7 +568,7 @@ fn build_cell<'a>(
                 Span::raw(" "),
             ];
             spans.extend(highlight_multi(
-                &row.name,
+                row.name(),
                 highlight_terms,
                 Style::default().fg(Color::Cyan),
                 Style::default()
@@ -622,14 +622,14 @@ fn build_cell<'a>(
             Style::default().fg(Color::Yellow),
         ))),
         TuiColumn::Extension => {
-            let ext = row.name.rsplit('.').next().unwrap_or("");
+            let ext = row.name().rsplit('.').next().unwrap_or("");
             Cell::from(Line::from(Span::styled(
                 ext.to_owned(),
                 Style::default().fg(Color::Cyan),
             )))
         }
         TuiColumn::Type => {
-            let fi = devicons::icon_for_file(&row.name, &None);
+            let fi = devicons::icon_for_file(row.name(), &None);
             Cell::from(Line::from(Span::styled(
                 fi.icon.to_string(),
                 Style::default().fg(devicon_color(fi.color)),

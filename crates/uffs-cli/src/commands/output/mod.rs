@@ -69,7 +69,7 @@ pub(super) fn write_native_results(
     let t_write = std::time::Instant::now();
     if is_console {
         let stdout_handle = std::io::stdout();
-        let mut stdout = stdout_handle.lock();
+        let mut stdout = BufWriter::with_capacity(64 * 1024, stdout_handle.lock());
         match format {
             "json" => export_json(converted_df.as_ref().unwrap_or(&EMPTY_DF), &mut stdout)?,
             "csv" => output_config.write_display_rows(rows, &mut stdout)?,

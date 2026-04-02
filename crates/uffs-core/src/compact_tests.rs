@@ -286,8 +286,11 @@ fn compact_names_lower_is_correct() {
         .find(|rec| rec.name(&drive.names) == "Docs")
         .expect("Docs not found");
 
-    let lower_name = docs_rec.name(&drive.names_lower);
-    assert_eq!(lower_name, "docs", "names_lower must be lowercase");
+    let lower_name = docs_rec.name(&drive.names).to_ascii_lowercase();
+    assert_eq!(
+        lower_name, "docs",
+        "on-the-fly lowering must produce lowercase"
+    );
 }
 
 // ── Test 8: Verify record count matches ────────────────────────

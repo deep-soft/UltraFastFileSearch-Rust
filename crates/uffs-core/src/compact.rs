@@ -210,11 +210,9 @@ pub struct DriveCompactIndex {
     pub letter: char,
     /// Compact records — one per MFT file/directory.
     pub records: Vec<CompactRecord>,
-    /// All filenames concatenated (UTF-8 bytes).
+    /// All filenames concatenated (UTF-8 bytes, original case).
     pub names: Vec<u8>,
-    /// Lowercase copy of names for case-insensitive search.
-    pub names_lower: Vec<u8>,
-    /// Trigram inverted index built on `names_lower`.
+    /// Trigram inverted index built from lowered names.
     pub trigram: TrigramIndex,
     /// CSR children index: `children.get(i)` → child indices of record i.
     pub children: ChildrenIndex,
@@ -426,14 +424,17 @@ pub fn build_compact_index(
     let expanded = expand_links_and_ads(index, &resolver, &resolve_parent, &mut names);
     records.extend(expanded);
 
-    // Clone-then-lowercase avoids the intermediate `String` allocation that
-    // `to_ascii_lowercase().into_bytes()` would create (~150MB saved).
-    let mut names_lower = names.clone();
-    names_lower.make_ascii_lowercase();
     let compact_elapsed = compact_start.elapsed().as_millis();
 
     let tri_start = Instant::now();
-    let trigram = TrigramIndex::build(&records, &names_lower);
+    // Temporary lowercase copy — used only for trigram build, then dropped.
+    // Saves ~140 MB of permanent heap vs keeping names_lower in the struct.
+    let trigram = {
+        let mut names_lower = names.clone();
+        names_lower.make_ascii_lowercase();
+        TrigramIndex::build(&records, &names_lower)
+        // names_lower dropped here
+    };
     let tri_elapsed = tri_start.elapsed().as_millis();
 
     // Build children CSR index from parent_idx (two-pass: count + scatter).
@@ -444,7 +445,6 @@ pub fn build_compact_index(
             letter: drive_letter,
             records,
             names,
-            names_lower,
             trigram,
             children,
             source: IndexSource::MftFile(std::path::PathBuf::from(format!("{drive_letter}:"))),

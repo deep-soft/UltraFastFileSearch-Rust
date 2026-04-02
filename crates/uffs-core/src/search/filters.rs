@@ -224,7 +224,7 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
         return;
     }
     rows.retain(|row| {
-        if filters.hide_system && row.name.starts_with('$') {
+        if filters.hide_system && row.name().starts_with('$') {
             return false;
         }
         if let Some(min) = filters.min_size {
@@ -285,7 +285,7 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
         }
         if !filters.extensions.is_empty() {
             let ext = row
-                .name
+                .name()
                 .rsplit('.')
                 .next()
                 .unwrap_or("")
@@ -295,7 +295,7 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
             }
         }
         if let Some(excl) = &filters.exclude_lower {
-            let name_lower = row.name.to_ascii_lowercase();
+            let name_lower = row.name().to_ascii_lowercase();
             if name_matches(&name_lower, excl) {
                 return false;
             }

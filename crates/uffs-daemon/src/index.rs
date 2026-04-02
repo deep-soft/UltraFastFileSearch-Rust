@@ -579,7 +579,7 @@ impl IndexManager {
         SearchRow {
             drive: row.drive,
             path: row.path.clone(),
-            name: row.name.clone(),
+            name: row.name().to_owned(),
             size: row.size,
             is_directory: row.is_directory,
             modified: row.modified,

@@ -167,20 +167,18 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
 ///
 /// Both types carry the same fields — this is a mechanical mapping.
 fn search_row_to_display_row(row: SearchRow) -> DisplayRow {
-    DisplayRow {
-        drive: row.drive,
-        path: row.path,
-        name: row.name,
-        size: row.size,
-        is_directory: row.is_directory,
-        modified: row.modified,
-        created: row.created,
-        accessed: row.accessed,
-        flags: row.flags,
-        allocated: row.allocated,
-        descendants: row.descendants,
-        treesize: row.treesize,
-        // SearchRow doesn't carry tree_allocated; default to 0.
-        tree_allocated: 0,
-    }
+    DisplayRow::new(
+        row.drive,
+        row.path,
+        row.size,
+        row.is_directory,
+        row.modified,
+        row.created,
+        row.accessed,
+        row.flags,
+        row.allocated,
+        row.descendants,
+        row.treesize,
+        0, // SearchRow doesn't carry tree_allocated
+    )
 }

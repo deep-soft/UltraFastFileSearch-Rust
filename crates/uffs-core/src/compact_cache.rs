@@ -3,10 +3,11 @@
 //! Stores `DriveCompactIndex` as zstd-compressed, AES-256-GCM encrypted
 //! `{DRIVE}_compact.uffs` alongside the full `.uffs` `MftIndex` cache.
 //!
-//! **v4** (current): trigram index is **not** stored on disk — rebuilt from
-//! `names_lower` on load (~1s).  This **halves** on-disk size and decompression
-//! time vs v3.  Writes `trigram_count = 0` as sentinel so the deserializer
-//! knows to rebuild.
+//! **v5** (current): `names_lower` no longer stored on disk — saves ~140 MB
+//! uncompressed.  Trigram rebuilt from on-the-fly lowered names on load.
+//!
+//! **v4**: trigram index not stored on disk — rebuilt from `names_lower` on
+//! load.  Still accepted on load; `names_lower` is read then dropped.
 //!
 //! **v3**: adds `source_epoch` (u64) to the header.  Still accepted on load;
 //! trigram CSR is read if present.
@@ -24,8 +25,8 @@ use crate::trigram::TrigramIndex;
 
 /// Magic bytes for compact cache files.
 const COMPACT_MAGIC: &[u8; 8] = b"UFFSCOM\0";
-/// Current compact cache format version (v4 strips trigram from disk).
-const COMPACT_VERSION: u16 = 4;
+/// Current compact cache format version (v5 strips `names_lower` from disk).
+const COMPACT_VERSION: u16 = 5;
 /// Bytes per `CompactRecord`.
 const RECORD_BYTES: usize = size_of::<CompactRecord>();
 /// zstd compression level for compact cache.
@@ -41,8 +42,8 @@ pub fn compact_cache_path(drive_letter: char) -> PathBuf {
 
 /// Serializes the compact index (records, names, children).
 ///
-/// **v4**: trigram index is NOT written to disk — it's rebuilt on load.
-/// This halves on-disk size (and thus zstd compress/decompress time).
+/// **v5**: neither `names_lower` nor the trigram index is written to disk.
+/// Both are rebuilt from `names` on load.  This saves ~140 MB uncompressed.
 /// A `trigram_count = 0` sentinel is written so the deserializer knows
 /// to rebuild.
 #[must_use]
@@ -55,7 +56,7 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
 
     let total = 26 // header: 8 (magic) + 2 (ver) + 4 (rc) + 4 (nl) + 8 (epoch)
         + record_count * RECORD_BYTES
-        + names_len * 2
+        + names_len          // names only (no names_lower in v5)
         + csr_offsets.len() * 4
         + csr_values.len() * 4
         + 4; // trigram_count sentinel (0)
@@ -72,15 +73,14 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
     // Records — single bulk copy via bytemuck (Pod layout = on-disk layout)
     buf.extend_from_slice(bytemuck::cast_slice(&index.records));
 
-    // Names + names_lower
+    // Names (original case only — v5 drops names_lower from disk)
     buf.extend_from_slice(&index.names);
-    buf.extend_from_slice(&index.names_lower);
 
     // Children CSR — bulk cast (u32 slices → &[u8] via bytemuck, zero-copy on LE)
     buf.extend_from_slice(bytemuck::cast_slice(csr_offsets));
     buf.extend_from_slice(bytemuck::cast_slice(csr_values));
 
-    // v4: trigram_count = 0 sentinel (rebuild on load).
+    // v5: trigram_count = 0 sentinel (rebuild on load).
     buf.extend_from_slice(&0_u32.to_le_bytes());
 
     buf
@@ -88,7 +88,8 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
 
 /// Deserializes a compact index from raw bytes.
 ///
-/// **v4**: `trigram_count = 0` → rebuilt from `names_lower` on load.
+/// **v5**: `names_lower` not on disk — rebuilt on the fly for trigram.
+/// **v4**: `names_lower` on disk, trigram rebuilt.
 /// **v3**: trigram postings + `source_epoch` (still read if present).
 /// **v2**: trigram postings, `source_epoch` = 0 (accepted, triggers rebuild).
 /// **v1**: rejected — returns an error so the caller rebuilds from `MftIndex`.
@@ -101,14 +102,21 @@ pub fn deserialize_compact(
     data: &[u8],
     drive_letter: char,
 ) -> Result<(DriveCompactIndex, u128), &'static str> {
-    let (source_epoch, body_offset) = parse_compact_header(data)?;
+    let (source_epoch, body_offset, version) = parse_compact_header(data)?;
 
     let record_count = read_u32(data, 10) as usize;
     let names_len = read_u32(data, 14) as usize;
     let records_end = body_offset + record_count * RECORD_BYTES;
     let names_end = records_end + names_len;
-    let names_lower_end = names_end + names_len;
-    let csr_offsets_end = names_lower_end + (record_count + 1) * 4;
+
+    // v4 and earlier stored names_lower (same size as names) on disk.
+    // v5+ omits it entirely.
+    let csr_start = if version >= 5 {
+        names_end
+    } else {
+        names_end + names_len // skip names_lower
+    };
+    let csr_offsets_end = csr_start + (record_count + 1) * 4;
     if data.len() < csr_offsets_end {
         return Err("compact cache truncated");
     }
@@ -122,14 +130,10 @@ pub fn deserialize_compact(
         .get(records_end..names_end)
         .ok_or("truncated names")?
         .to_vec();
-    let names_lower = data
-        .get(names_end..names_lower_end)
-        .ok_or("truncated lower")?
-        .to_vec();
 
     // Children CSR — alignment-safe copy into aligned Vec<u32>
     let offsets_slice = data
-        .get(names_lower_end..csr_offsets_end)
+        .get(csr_start..csr_offsets_end)
         .ok_or("truncated CSR")?;
     let total_child_postings = read_u32(offsets_slice, record_count * 4);
     let postings_end = csr_offsets_end + total_child_postings as usize * 4;
@@ -142,7 +146,7 @@ pub fn deserialize_compact(
         aligned_vec_from_bytes(child_vals_slice),
     );
 
-    // ─── Trigram: read from disk (v2/v3) or rebuild (v4+) ──────────
+    // ─── Trigram: read from disk (v2/v3) or rebuild (v4+/v5) ──────
     let tri_start = Instant::now();
     let tri_hdr = postings_end;
     if data.len() < tri_hdr + 4 {
@@ -151,8 +155,11 @@ pub fn deserialize_compact(
     let tri_count = read_u32(data, tri_hdr) as usize;
 
     let trigram = if tri_count == 0 {
-        // v4+: trigram not on disk — rebuild from names_lower.
+        // v4+/v5: trigram not on disk — rebuild from lowered names.
+        let mut names_lower = names.clone();
+        names_lower.make_ascii_lowercase();
         TrigramIndex::build(&records, &names_lower)
+        // names_lower dropped here — not kept in memory
     } else {
         // v2/v3: trigram CSR on disk — read directly.
         let tri_keys_end = tri_hdr + 4 + tri_count * 3;
@@ -187,7 +194,6 @@ pub fn deserialize_compact(
             letter: drive_letter,
             records,
             names,
-            names_lower,
             trigram,
             children,
             source: IndexSource::MftFile(PathBuf::from(format!("{drive_letter}:"))),
@@ -197,8 +203,8 @@ pub fn deserialize_compact(
     ))
 }
 
-/// Validates magic/version and returns `(source_epoch, body_offset)`.
-fn parse_compact_header(data: &[u8]) -> Result<(u64, usize), &'static str> {
+/// Validates magic/version and returns `(source_epoch, body_offset, version)`.
+fn parse_compact_header(data: &[u8]) -> Result<(u64, usize, u16), &'static str> {
     if data.len() < 18 {
         return Err("compact cache too short");
     }
@@ -223,9 +229,9 @@ fn parse_compact_header(data: &[u8]) -> Result<(u64, usize), &'static str> {
             .get(18..26)
             .and_then(|slice| <[u8; 8]>::try_from(slice).ok())
             .map_or(0, u64::from_le_bytes);
-        Ok((epoch, 26))
+        Ok((epoch, 26, version))
     } else {
-        Ok((0, 18))
+        Ok((0, 18, version))
     }
 }
 
@@ -375,7 +381,7 @@ pub fn load_compact_cache(
 
     // Early staleness check — inspect header before full deserialization.
     if mft_build_epoch > 0 {
-        if let Ok((source_epoch, _)) = parse_compact_header(&plaintext) {
+        if let Ok((source_epoch, _, _)) = parse_compact_header(&plaintext) {
             if source_epoch < mft_build_epoch {
                 if profile {
                     eprintln!(

@@ -11,14 +11,25 @@ use crate::compact::DriveCompactIndex;
 const UNLIMITED: usize = usize::MAX;
 
 /// A single displayable search result row.
+///
+/// The filename is **not** stored separately — it is derived from the `path`
+/// field using `name_start` (byte offset where the filename begins within
+/// `path`).  This avoids one heap allocation per result row.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::partial_pub_fields,
+    reason = "name_start is private by design — accessed via name() method"
+)]
 pub struct DisplayRow {
     /// Drive letter this result belongs to.
     pub drive: char,
     /// Full resolved path (e.g., `C:\Users\file.txt`).
     pub path: String,
-    /// Filename only (e.g., `file.txt`).
-    pub name: String,
+    /// Byte offset within `path` where the filename begins.
+    ///
+    /// `self.name()` returns `&self.path[name_start..]`.
+    /// Computed once at construction from the last `\` separator.
+    name_start: u32,
     /// File size in bytes.
     pub size: u64,
     /// Whether this is a directory.
@@ -39,6 +50,56 @@ pub struct DisplayRow {
     pub treesize: u64,
     /// Sum of allocated sizes in entire subtree (directories only).
     pub tree_allocated: u64,
+}
+
+impl DisplayRow {
+    /// Construct a `DisplayRow`, computing `name_start` from the path.
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "flat struct — all fields are required, no logical grouping"
+    )]
+    pub fn new(
+        drive: char,
+        path: String,
+        size: u64,
+        is_directory: bool,
+        modified: i64,
+        created: i64,
+        accessed: i64,
+        flags: u32,
+        allocated: u64,
+        descendants: u32,
+        treesize: u64,
+        tree_allocated: u64,
+    ) -> Self {
+        #[expect(clippy::cast_possible_truncation, reason = "paths < 4GB")]
+        let name_start = path.rfind('\\').map_or(0, |pos| pos + 1) as u32;
+        Self {
+            drive,
+            path,
+            name_start,
+            size,
+            is_directory,
+            modified,
+            created,
+            accessed,
+            flags,
+            allocated,
+            descendants,
+            treesize,
+            tree_allocated,
+        }
+    }
+
+    /// Filename portion of the path (e.g., `file.txt`).
+    ///
+    /// Zero-cost: returns a `&str` slice into the owned `path`.
+    #[must_use]
+    #[inline]
+    pub fn name(&self) -> &str {
+        self.path.get(self.name_start as usize..).unwrap_or("")
+    }
 }
 
 /// Result of a search operation.
@@ -440,7 +501,10 @@ pub fn sort_rows(
                 .iter()
                 .any(|tier| tier.column == SortColumn::Name)
         {
-            ord = row_a.name.to_lowercase().cmp(&row_b.name.to_lowercase());
+            ord = row_a
+                .name()
+                .to_lowercase()
+                .cmp(&row_b.name().to_lowercase());
         }
 
         ord
@@ -454,7 +518,10 @@ fn compare_by_column(
     column: SortColumn,
 ) -> core::cmp::Ordering {
     match column {
-        SortColumn::Name => row_a.name.to_lowercase().cmp(&row_b.name.to_lowercase()),
+        SortColumn::Name => row_a
+            .name()
+            .to_lowercase()
+            .cmp(&row_b.name().to_lowercase()),
         SortColumn::Size => row_a.size.cmp(&row_b.size),
         SortColumn::SizeOnDisk => row_a.allocated.cmp(&row_b.allocated),
         SortColumn::Created => row_a.created.cmp(&row_b.created),
@@ -463,13 +530,13 @@ fn compare_by_column(
         SortColumn::Path => row_a.path.to_lowercase().cmp(&row_b.path.to_lowercase()),
         SortColumn::Drive => row_a.drive.cmp(&row_b.drive),
         SortColumn::Extension => {
-            let ext_a = row_a.name.rsplit('.').next().unwrap_or("").to_lowercase();
-            let ext_b = row_b.name.rsplit('.').next().unwrap_or("").to_lowercase();
+            let ext_a = row_a.name().rsplit('.').next().unwrap_or("").to_lowercase();
+            let ext_b = row_b.name().rsplit('.').next().unwrap_or("").to_lowercase();
             ext_a.cmp(&ext_b)
         }
         SortColumn::Type => {
-            let icon_a = devicons::icon_for_file(&row_a.name, &None).icon;
-            let icon_b = devicons::icon_for_file(&row_b.name, &None).icon;
+            let icon_a = devicons::icon_for_file(row_a.name(), &None).icon;
+            let icon_b = devicons::icon_for_file(row_b.name(), &None).icon;
             icon_a.cmp(&icon_b)
         }
         SortColumn::Descendants => row_a.descendants.cmp(&row_b.descendants),
@@ -538,7 +605,7 @@ pub fn display_rows_to_dataframe(
 ) -> uffs_polars::PolarsResult<uffs_polars::DataFrame> {
     use uffs_polars::{Column, DataFrame, columns};
 
-    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    let names: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
     let paths: Vec<&str> = rows.iter().map(|row| row.path.as_str()).collect();
     let sizes: Vec<u64> = rows.iter().map(|row| row.size).collect();
     let allocated: Vec<u64> = rows.iter().map(|row| row.allocated).collect();
@@ -608,7 +675,6 @@ pub fn dataframe_to_display_rows(
 
     let mut rows = Vec::with_capacity(height);
     for row_idx in 0..height {
-        let name = col_str(data_frame, "name", row_idx).unwrap_or_default();
         let path = col_str(data_frame, "path", row_idx).unwrap_or_default();
         let drive = col_str(data_frame, "drive", row_idx)
             .and_then(|val| val.chars().next())
@@ -624,10 +690,9 @@ pub fn dataframe_to_display_rows(
         let treesize = col_u64(data_frame, "treesize", row_idx);
         let tree_allocated = col_u64(data_frame, "tree_allocated", row_idx);
 
-        rows.push(DisplayRow {
+        rows.push(DisplayRow::new(
             drive,
             path,
-            name,
             size,
             is_directory,
             modified,
@@ -638,7 +703,7 @@ pub fn dataframe_to_display_rows(
             descendants,
             treesize,
             tree_allocated,
-        });
+        ));
     }
     Ok(rows)
 }

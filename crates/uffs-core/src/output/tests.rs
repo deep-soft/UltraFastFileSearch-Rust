@@ -260,37 +260,35 @@ fn test_write_preserves_null_and_boolean_value_formatting() {
 fn test_parity_compat_directory_formatting() {
     use crate::search::backend::DisplayRow;
 
-    let file_row = DisplayRow {
-        drive: 'C',
-        path: "C:\\Temp\\hello.txt".to_owned(),
-        name: "hello.txt".to_owned(),
-        size: 1024,
-        is_directory: false,
-        modified: 0,
-        created: 0,
-        accessed: 0,
-        flags: 0x20,
-        allocated: 4096,
-        descendants: 0,
-        treesize: 0,
-        tree_allocated: 0,
-    };
+    let file_row = DisplayRow::new(
+        'C',
+        "C:\\Temp\\hello.txt".to_owned(),
+        1024,
+        false,
+        0,
+        0,
+        0,
+        0x20,
+        4096,
+        0,
+        0,
+        0,
+    );
 
-    let dir_row = DisplayRow {
-        drive: 'C',
-        path: "C:\\Temp".to_owned(),
-        name: "Temp".to_owned(),
-        size: 0,
-        is_directory: true,
-        modified: 0,
-        created: 0,
-        accessed: 0,
-        flags: 0x10,
-        allocated: 4096,
-        descendants: 5,
-        treesize: 9999,
-        tree_allocated: 55555,
-    };
+    let dir_row = DisplayRow::new(
+        'C',
+        "C:\\Temp".to_owned(),
+        0,
+        true,
+        0,
+        0,
+        0,
+        0x10,
+        4096,
+        5,
+        9999,
+        55555,
+    );
 
     // ── Without parity_compat ──
     let normal_config = OutputConfig::new()
@@ -369,21 +367,20 @@ fn test_parity_compat_directory_formatting() {
 fn test_parity_root_no_double_trailing_backslash() {
     use crate::search::backend::DisplayRow;
 
-    let root_row = DisplayRow {
-        drive: 'G',
-        path: "G:\\".to_owned(),
-        name: ".".to_owned(),
-        size: 0,
-        is_directory: true,
-        modified: 0,
-        created: 0,
-        accessed: 0,
-        flags: 0x10,
-        allocated: 0,
-        descendants: 100,
-        treesize: 500_000,
-        tree_allocated: 600_000,
-    };
+    let root_row = DisplayRow::new(
+        'G',
+        "G:\\".to_owned(),
+        0,
+        true,
+        0,
+        0,
+        0,
+        0x10,
+        0,
+        100,
+        500_000,
+        600_000,
+    );
 
     let config = OutputConfig::new()
         .with_columns("path,name,pathonly,size,sizeondisk")

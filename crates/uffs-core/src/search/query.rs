@@ -116,18 +116,20 @@ pub fn collect_global_top_n(
     }
 }
 
-/// Sort a slice of compact indices by their name in the names blob.
+/// Sort a slice of compact indices by their name (case-insensitive).
 fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactIndex, desc: bool) {
     indices.sort_unstable_by(|&idx_a, &idx_b| {
         let name_a = drive
             .records
             .get(idx_a as usize)
-            .map_or("", |rec| rec.name(&drive.names_lower));
+            .map_or("", |rec| rec.name(&drive.names));
         let name_b = drive
             .records
             .get(idx_b as usize)
-            .map_or("", |rec| rec.name(&drive.names_lower));
-        let ord = name_a.cmp(name_b);
+            .map_or("", |rec| rec.name(&drive.names));
+        let ord = name_a
+            .to_ascii_lowercase()
+            .cmp(&name_b.to_ascii_lowercase());
         if desc { ord.reverse() } else { ord }
     });
 }
@@ -179,19 +181,19 @@ fn collect_global_top_n_numeric(
                 SortColumn::Descendants => i64::from(rec.descendants),
                 SortColumn::Extension | SortColumn::Type => i64::from(rec.extension_id),
                 SortColumn::Name => {
-                    let name_bytes = rec.name(&drive.names_lower).as_bytes();
+                    let name = rec.name(&drive.names);
                     let mut key = [0_u8; 8];
-                    for (dst, src) in key.iter_mut().zip(name_bytes.iter()) {
-                        *dst = *src;
+                    for (dst, src) in key.iter_mut().zip(name.bytes()) {
+                        *dst = src.to_ascii_lowercase();
                     }
                     i64::from_be_bytes(key)
                 }
                 SortColumn::Drive => {
-                    let name_bytes = rec.name(&drive.names_lower).as_bytes();
+                    let name = rec.name(&drive.names);
                     let mut key = [0_u8; 8];
                     key[0] = drive.letter as u8;
-                    for (dst, src) in key[1..].iter_mut().zip(name_bytes.iter()) {
-                        *dst = *src;
+                    for (dst, src) in key[1..].iter_mut().zip(name.bytes()) {
+                        *dst = src.to_ascii_lowercase();
                     }
                     i64::from_be_bytes(key)
                 }
@@ -273,6 +275,54 @@ pub fn search_compact_drive_regex(
     rows
 }
 
+/// Extract the best trigram lookup needle from a search pattern.
+///
+/// For OR-queries (`|`), returns empty (no trigram lookup).  For globs,
+/// extracts the longest literal segment.  For plain substrings, returns
+/// the needle as-is.
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted from search_compact_drive to satisfy too_many_lines lint"
+)]
+fn extract_trigram_needle(needle: &str, is_glob: bool, is_or: bool) -> String {
+    if is_or {
+        String::new()
+    } else if is_glob {
+        needle
+            .split(['*', '?'])
+            .max_by_key(|seg| seg.len())
+            .unwrap_or("")
+            .to_owned()
+    } else {
+        needle.to_owned()
+    }
+}
+
+/// Emit `[CACHE_PROFILE]` timing for a single-drive search.
+#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted from search_compact_drive to satisfy too_many_lines lint"
+)]
+fn log_search_profile(
+    letter: char,
+    tri_ms: u128,
+    match_ms: u128,
+    resolve_ms: u128,
+    match_count: usize,
+    tri_count: usize,
+    total_records: usize,
+) {
+    let scanned = if tri_count > 0 {
+        format!("{tri_count} trigram candidates")
+    } else {
+        format!("{total_records} full scan")
+    };
+    eprintln!(
+        "[CACHE_PROFILE] search_{letter}: trigram={tri_ms} ms  match={match_ms} ms ({match_count} hits from {scanned})  paths={resolve_ms} ms",
+    );
+}
+
 /// Search a single drive's compact index (trigram + glob/substring).
 #[must_use]
 pub fn search_compact_drive(
@@ -290,47 +340,46 @@ pub fn search_compact_drive(
     let is_glob = needle.contains('*') || needle.contains('?');
     let is_or = needle.contains('|');
 
-    let names_blob = if case_sensitive {
-        &drive.names
-    } else {
-        &drive.names_lower
-    };
-
     // Pre-build a SIMD-accelerated substring finder for simple queries.
     // For 1–2 byte needles this is dramatically faster than `str::contains`
     // (memchr uses SSE2/AVX2/NEON vectorised search).
-    let simple_substring = !is_glob && !is_or && !whole_word;
+    let simple_substring = !is_glob && !is_or && !whole_word && !case_sensitive;
     let finder = simple_substring.then(|| memchr::memmem::Finder::new(needle.as_bytes()));
-    let matches = |name: &str| -> bool {
+    // Reusable buffer for on-the-fly lowering (avoids per-record heap alloc).
+    let mut lower_buf: Vec<u8> = Vec::with_capacity(256);
+    let matches = |name: &str, buf: &mut Vec<u8>| -> bool {
         if name.is_empty() || name == "." {
             return false;
         }
         if whole_word {
-            if is_glob || is_or {
-                tree::name_matches(name, needle)
+            if case_sensitive {
+                if is_glob || is_or {
+                    tree::name_matches(name, needle)
+                } else {
+                    name == needle
+                }
             } else {
-                name == needle
+                let lower = name.to_ascii_lowercase();
+                if is_glob || is_or {
+                    tree::name_matches(&lower, needle)
+                } else {
+                    lower == needle
+                }
             }
         } else if let Some(fnd) = &finder {
-            fnd.find(name.as_bytes()).is_some()
-        } else {
+            buf.clear();
+            buf.extend_from_slice(name.as_bytes());
+            buf.make_ascii_lowercase();
+            fnd.find(buf.as_slice()).is_some()
+        } else if case_sensitive {
             tree::name_matches(name, needle)
+        } else {
+            let lower = name.to_ascii_lowercase();
+            tree::name_matches(&lower, needle)
         }
     };
 
-    let trigram_needle = if is_or {
-        String::new()
-    } else if is_glob {
-        // Extract the longest literal (non-wildcard) substring for trigram lookup
-        needle
-            .split(['*', '?'])
-            .max_by_key(|seg| seg.len())
-            .unwrap_or("")
-            .to_owned()
-    } else {
-        needle.to_owned()
-    };
-
+    let trigram_needle = extract_trigram_needle(needle, is_glob, is_or);
     let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
 
     let t_tri = std::time::Instant::now();
@@ -343,36 +392,38 @@ pub fn search_compact_drive(
     let tri_count = candidates.as_ref().map_or(0, Vec::len);
 
     let t_match = std::time::Instant::now();
-    let match_indices: Vec<usize> = candidates.map_or_else(
-        || {
-            drive
-                .records
-                .iter()
-                .enumerate()
-                .filter(|(_, rec)| {
-                    let name = rec.name(names_blob);
-                    matches(name)
-                })
-                .take(limit)
-                .map(|(idx, _)| idx)
-                .collect()
-        },
-        |candidate_indices| {
-            candidate_indices
-                .iter()
-                .filter(|&&idx| {
-                    let rec_idx = idx as usize;
-                    let Some(rec) = drive.records.get(rec_idx) else {
-                        return false;
-                    };
-                    let name = rec.name(names_blob);
-                    matches(name)
-                })
-                .take(limit)
-                .map(|&idx| idx as usize)
-                .collect()
-        },
-    );
+    let match_indices: Vec<usize> = match candidates {
+        None => {
+            let mut out = Vec::new();
+            for (idx, rec) in drive.records.iter().enumerate() {
+                if out.len() >= limit {
+                    break;
+                }
+                let name = rec.name(&drive.names);
+                if matches(name, &mut lower_buf) {
+                    out.push(idx);
+                }
+            }
+            out
+        }
+        Some(candidate_indices) => {
+            let mut out = Vec::with_capacity(candidate_indices.len().min(limit));
+            for &idx in &candidate_indices {
+                if out.len() >= limit {
+                    break;
+                }
+                let rec_idx = idx as usize;
+                let Some(rec) = drive.records.get(rec_idx) else {
+                    continue;
+                };
+                let name = rec.name(&drive.names);
+                if matches(name, &mut lower_buf) {
+                    out.push(rec_idx);
+                }
+            }
+            out
+        }
+    };
     let match_ms = t_match.elapsed().as_millis();
     let match_count = match_indices.len();
 
@@ -380,16 +431,15 @@ pub fn search_compact_drive(
     let rows = indices_to_rows(drive, &match_indices, &volume_prefix);
     let resolve_ms = t_resolve.elapsed().as_millis();
 
-    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
     if profile {
-        let scanned = if tri_count > 0 {
-            format!("{tri_count} trigram candidates")
-        } else {
-            format!("{} full scan", drive.records.len())
-        };
-        eprintln!(
-            "[CACHE_PROFILE] search_{}: trigram={tri_ms} ms  match={match_ms} ms ({match_count} hits from {scanned})  paths={resolve_ms} ms",
+        log_search_profile(
             drive.letter,
+            tri_ms,
+            match_ms,
+            resolve_ms,
+            match_count,
+            tri_count,
+            drive.records.len(),
         );
     }
 
@@ -460,21 +510,20 @@ fn make_display_row(
     // ADS entries on directories must not render as directories
     // (no trailing backslash, name shown, stream size used).
     let is_ads = name.contains(':');
-    DisplayRow {
-        drive: drive_letter,
+    DisplayRow::new(
+        drive_letter,
         path,
-        name: name.to_owned(),
-        size: rec.size,
-        is_directory: rec.is_directory() && !is_ads,
-        modified: rec.modified,
-        created: rec.created,
-        accessed: rec.accessed,
-        flags: rec.flags,
-        allocated: rec.allocated,
-        descendants: rec.descendants,
-        treesize: rec.treesize,
-        tree_allocated: rec.tree_allocated,
-    }
+        rec.size,
+        rec.is_directory() && !is_ads,
+        rec.modified,
+        rec.created,
+        rec.accessed,
+        rec.flags,
+        rec.allocated,
+        rec.descendants,
+        rec.treesize,
+        rec.tree_allocated,
+    )
 }
 
 /// Convert a list of record indices into `DisplayRow`s with resolved paths.

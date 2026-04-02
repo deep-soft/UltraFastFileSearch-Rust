@@ -188,7 +188,7 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
     };
     if segments.len() == 1 {
         return trigram_filtered_records(drive, first_segment, limit, |rec| {
-            let name = rec.name(&drive.names_lower);
+            let name = rec.name(&drive.names).to_ascii_lowercase();
             !name.is_empty() && name != "." && name.contains(first_segment)
         });
     }
@@ -214,7 +214,8 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
             .collect()
     } else {
         trigram_filtered_records(drive, first_segment, usize::MAX, |rec| {
-            rec.is_directory() && segment_matches(rec.name(&drive.names_lower), first_segment)
+            rec.is_directory()
+                && segment_matches(&rec.name(&drive.names).to_ascii_lowercase(), first_segment)
         })
     };
 
@@ -232,8 +233,8 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
                 for &child_idx in drive.children.get(dir_idx as usize) {
                     if let Some(child_rec) = drive.records.get(child_idx as usize) {
                         if child_rec.is_directory() {
-                            let child_name = child_rec.name(&drive.names_lower);
-                            if segment_matches(child_name, segment) {
+                            let child_name = child_rec.name(&drive.names).to_ascii_lowercase();
+                            if segment_matches(&child_name, segment) {
                                 next_dirs.push(child_idx);
                             }
                         }
@@ -260,8 +261,8 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
         for &dir_idx in &candidate_dirs {
             for &child_idx in drive.children.get(dir_idx as usize) {
                 if let Some(child_rec) = drive.records.get(child_idx as usize) {
-                    let child_name = child_rec.name(&drive.names_lower);
-                    if name_matches(child_name, leaf_pattern) {
+                    let child_name = child_rec.name(&drive.names).to_ascii_lowercase();
+                    if name_matches(&child_name, leaf_pattern) {
                         results.push(child_idx);
                         if results.len() >= limit {
                             return results;
@@ -311,7 +312,7 @@ fn collect_all_descendants(
     for &child_idx in drive.children.get(dir_idx as usize) {
         if let Some(child_rec) = drive.records.get(child_idx as usize) {
             if child_rec.name_len > 0 {
-                let name = child_rec.name(&drive.names_lower);
+                let name = child_rec.name(&drive.names).to_ascii_lowercase();
                 if !name.is_empty() && name != "." {
                     out.push(child_idx);
                     if out.len() >= max {
