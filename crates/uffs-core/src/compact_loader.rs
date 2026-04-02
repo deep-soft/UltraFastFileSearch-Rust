@@ -199,7 +199,7 @@ fn load_mft_index_from_file(
             volume_letter: Some(drive_letter),
             forensic: false,
         };
-        uffs_mft::MftReader::load_raw_to_index_with_options(mft_path, &options)?
+        uffs_mft::MftReader::load_raw_to_index_direct(mft_path, &options)?
     };
 
     // Background save: serialize sync (~500ms), compress/encrypt/write in bg

@@ -136,16 +136,16 @@ impl TrigramIndex {
             })
             .collect();
 
-        // Merge chunk counts into global counts.
-        // Iteration order doesn't matter — global_counts is a HashMap (unordered),
-        // and we sort the final keys in the next step.
+        // Merge chunk counts into global counts (keep chunk_counts for parallel
+        // scatter). Iteration order doesn't matter — global_counts is a HashMap
+        // (unordered), and we sort the final keys in the next step.
         let mut global_counts: HashMap<u32, u32> = HashMap::new();
-        for chunk_map in chunk_counts {
+        for chunk_map in &chunk_counts {
             #[expect(
                 clippy::iter_over_hash_type,
                 reason = "merge target is also a HashMap; insertion order is irrelevant — sorted below"
             )]
-            for (tri, cnt) in chunk_map {
+            for (&tri, &cnt) in chunk_map {
                 *global_counts.entry(tri).or_insert(0) += cnt;
             }
         }
@@ -180,8 +180,15 @@ impl TrigramIndex {
         offsets.push(running);
         drop(sorted_keys);
 
-        // ── Pass 2: scatter record_idx into CSR values ──────────────
-        let values = scatter_postings(records, names_lower, &tri_lut, &offsets, running);
+        // ── Pass 2: scatter record_idx into CSR values (parallel) ────
+        let values = scatter_postings_parallel(
+            records,
+            names_lower,
+            &tri_lut,
+            &offsets,
+            running,
+            &chunk_counts,
+        );
         drop(tri_lut);
 
         Self {
@@ -296,68 +303,159 @@ fn intersect_sorted(list_a: &[u32], list_b: &[u32]) -> Vec<u32> {
 }
 
 /// Pass 2 of the counting-sort trigram build: scatter `record_idx` values
-/// into the pre-allocated CSR `values` array.
+/// into the pre-allocated CSR `values` array — **parallel** version.
 ///
-/// Records are visited in order (0, 1, 2, …), so each posting list is
-/// automatically sorted by record index.
+/// Uses the per-chunk counts from Pass 1 to compute non-overlapping write
+/// regions for each chunk, allowing embarrassingly parallel scatter.
+///
+/// Within each chunk, records are visited in order, and chunks themselves
+/// are ordered, so each posting list remains sorted by record index.
 ///
 /// `tri_lut` is a flat lookup table of size `TRIGRAM_LUT_SIZE` mapping
 /// `packed_trigram → key_index`. `u32::MAX` means "trigram not present".
 /// O(1) lookup — no hashing overhead.
+///
+/// Uses `AtomicU32` with `Relaxed` ordering for the shared values array.
+/// On x86-64 this compiles to plain `mov` — zero overhead vs non-atomic
+/// writes. The atomics are a safe alternative to raw pointers in a crate
+/// that forbids `unsafe_code`.
 #[expect(
     clippy::single_call_fn,
     reason = "extracted to keep build() under line limit"
 )]
-fn scatter_postings(
+fn scatter_postings_parallel(
     records: &[CompactRecord],
     names_lower: &[u8],
     tri_lut: &[u32],
     offsets: &[u32],
     total_postings: u32,
+    chunk_counts: &[std::collections::HashMap<u32, u32>],
 ) -> Vec<u32> {
-    let mut values = vec![0_u32; total_postings as usize];
-    let mut write_pos: Vec<u32> = offsets.to_vec();
-    // Single TinyTriSet reused across all records — one allocation total.
-    let mut seen = TinyTriSet::new();
+    use core::sync::atomic::AtomicU32;
 
-    for (record_idx, rec) in records.iter().enumerate() {
-        let start = rec.name_offset as usize;
-        let end = start + rec.name_len as usize;
-        let bytes = match names_lower.get(start..end) {
-            Some(slice) if slice.len() >= 3 => slice,
-            _ => continue,
-        };
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "MFT record count bounded by NTFS limits"
-        )]
-        let rec_idx = record_idx as u32;
+    const CHUNK_SIZE: usize = 64 * 1024;
 
-        seen.clear();
-        for window in bytes.windows(3) {
-            let tri: [u8; 3] = match window.try_into() {
-                Ok(arr) => arr,
-                Err(_) => continue,
-            };
-            let packed = pack_trigram(tri);
-            if !seen.insert(packed) {
-                continue;
+    let num_keys = if offsets.len() > 1 {
+        offsets.len() - 1
+    } else {
+        return Vec::new();
+    };
+
+    // Build per-chunk write-start positions.
+    // chunk_write_pos[c][key_idx] = the first write slot in `values` for
+    // chunk c's records under trigram key_idx.
+    //
+    // We walk chunks in order, accumulating offsets: chunk 0 starts at
+    // the base CSR offsets, chunk 1 starts after chunk 0's counts, etc.
+    let mut chunk_write_pos: Vec<Vec<u32>> = Vec::with_capacity(chunk_counts.len());
+    let mut accumulated: Vec<u32> = offsets.get(..num_keys).map_or_else(Vec::new, Vec::from);
+
+    for chunk_map in chunk_counts {
+        chunk_write_pos.push(accumulated.clone());
+        advance_offsets(&mut accumulated, chunk_map, tri_lut);
+    }
+
+    // Allocate the shared values array as AtomicU32.
+    // Each chunk writes to non-overlapping regions, so there is no actual
+    // contention — Relaxed stores compile to plain MOV on x86-64.
+    let values: Vec<AtomicU32> = (0..total_postings as usize)
+        .map(|_| AtomicU32::new(0))
+        .collect();
+
+    // Parallel scatter: each chunk independently writes its records.
+    records
+        .par_chunks(CHUNK_SIZE)
+        .zip(chunk_write_pos.par_iter())
+        .enumerate()
+        .for_each(|(chunk_idx, (chunk, base_pos))| {
+            let record_offset = chunk_idx * CHUNK_SIZE;
+            let mut write_pos = base_pos.clone();
+            let mut seen = TinyTriSet::new();
+
+            for (local_idx, rec) in chunk.iter().enumerate() {
+                let start = rec.name_offset as usize;
+                let end = start + rec.name_len as usize;
+                let bytes = match names_lower.get(start..end) {
+                    Some(slice) if slice.len() >= 3 => slice,
+                    _ => continue,
+                };
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "MFT record count bounded by NTFS limits"
+                )]
+                let rec_idx = (record_offset + local_idx) as u32;
+
+                seen.clear();
+                scatter_one_record(bytes, rec_idx, tri_lut, &mut write_pos, &values, &mut seen);
             }
-            // Flat LUT: O(1) lookup, no hash
-            let key_idx = match tri_lut.get(packed as usize).copied() {
-                Some(ki) if ki != u32::MAX => ki,
-                _ => continue,
-            };
-            if let Some(pos) = write_pos.get_mut(key_idx as usize) {
-                if let Some(slot) = values.get_mut(*pos as usize) {
-                    *slot = rec_idx;
-                    *pos += 1;
+        });
+
+    // Convert AtomicU32 → u32 (zero-cost: same layout, just unwrap).
+    values.into_iter().map(AtomicU32::into_inner).collect()
+}
+
+/// Advance accumulated offsets by one chunk's trigram counts.
+#[inline]
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted for clarity from scatter_postings_parallel"
+)]
+fn advance_offsets(
+    accumulated: &mut [u32],
+    chunk_map: &std::collections::HashMap<u32, u32>,
+    tri_lut: &[u32],
+) {
+    #[expect(
+        clippy::iter_over_hash_type,
+        reason = "iteration order irrelevant — accumulating counts"
+    )]
+    for (&packed, &cnt) in chunk_map {
+        if let Some(&ki) = tri_lut.get(packed as usize) {
+            if ki != u32::MAX {
+                if let Some(slot) = accumulated.get_mut(ki as usize) {
+                    *slot += cnt;
                 }
             }
         }
     }
+}
 
-    values
+/// Scatter trigrams from one record's name bytes into the atomic values array.
+#[inline]
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted for clarity from scatter_postings_parallel"
+)]
+fn scatter_one_record(
+    bytes: &[u8],
+    rec_idx: u32,
+    tri_lut: &[u32],
+    write_pos: &mut [u32],
+    values: &[core::sync::atomic::AtomicU32],
+    seen: &mut TinyTriSet,
+) {
+    use core::sync::atomic::Ordering;
+
+    for window in bytes.windows(3) {
+        let tri: [u8; 3] = match window.try_into() {
+            Ok(arr) => arr,
+            Err(_) => continue,
+        };
+        let packed = pack_trigram(tri);
+        if !seen.insert(packed) {
+            continue;
+        }
+        let key_idx = match tri_lut.get(packed as usize).copied() {
+            Some(ki) if ki != u32::MAX => ki,
+            _ => continue,
+        };
+        if let Some(pos) = write_pos.get_mut(key_idx as usize) {
+            if let Some(slot) = values.get(*pos as usize) {
+                slot.store(rec_idx, Ordering::Relaxed);
+                *pos += 1;
+            }
+        }
+    }
 }
 
 /// Tiny inline set for deduplicating packed trigram values within a single

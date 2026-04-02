@@ -13,13 +13,13 @@ use crate::ntfs::{ExtendedStandardInfo, NameInfo, ReparsePointHeader, StreamInfo
 ///
 /// **LEGACY MULTI-PASS PIPELINE:** This function is part of the old
 /// `parse_record_full → MftRecordMerger → from_parsed_records` pipeline.
-/// The hot path (`SlidingIocpInline`) now uses direct-to-index parsers that
-/// skip this intermediate allocation. This function is still used by:
+/// The production hot paths now use direct-to-index parsers
+/// (`SlidingIocpInline` for live, `load_raw_to_index_direct` for files)
+/// that skip this intermediate allocation. This function is still used by:
 /// - Legacy read modes (`Parallel`, `Pipelined`, `PipelinedParallel`,
 ///   `SlidingIocp`)
-/// - File-based readers (`load_raw_to_index_with_options`)
+/// - `DataFrame` export (`load_raw_to_dataframe_with_options`)
 /// - Tests and diagnostic tools
-/// - `UFFS_LEGACY_PARSE=1` escape hatch
 ///
 /// This function handles both base records and extension records.
 /// Extension records return `ParseResult::Extension` which must be

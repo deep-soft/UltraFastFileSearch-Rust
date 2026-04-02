@@ -15,14 +15,14 @@ impl MftIndex {
     ///
     /// **LEGACY MULTI-PASS PIPELINE:** This function is the final stage of the
     /// old `parse_record_full → MftRecordMerger → from_parsed_records`
-    /// pipeline. The hot path (`SlidingIocpInline`) now uses direct-to-index
-    /// parsers that build the index incrementally during I/O, skipping this
-    /// separate build phase. This function is still used by:
+    /// pipeline. The production hot paths now use direct-to-index parsers
+    /// (`SlidingIocpInline` for live, `load_raw_to_index_direct` for files)
+    /// that build the index incrementally during I/O, skipping this separate
+    /// build phase. This function is still used by:
     /// - Legacy read modes (`Parallel`, `Pipelined`, `PipelinedParallel`,
     ///   `SlidingIocp`)
-    /// - File-based readers (`load_raw_to_index_with_options`)
+    /// - `DataFrame` export (`load_raw_to_dataframe_with_options`)
     /// - Tests and diagnostic tools
-    /// - `UFFS_LEGACY_PARSE=1` escape hatch
     ///
     /// This directly builds the lean index without going through Polars
     /// `DataFrame`.
