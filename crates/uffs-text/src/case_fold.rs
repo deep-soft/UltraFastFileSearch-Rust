@@ -180,3 +180,109 @@ impl CaseFold {
         core::str::from_utf8(buf.as_slice()).unwrap_or("")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The compiled-in default `$UpCase` table must be exactly 65 536 entries.
+    #[test]
+    fn upcase_table_size() {
+        let fold = CaseFold::default_table();
+        assert_eq!(fold.table.len(), 65_536);
+    }
+
+    /// ASCII lowercase letters must map to their uppercase equivalents.
+    #[test]
+    fn ascii_lowercase_to_uppercase() {
+        let fold = CaseFold::default_table();
+        for lower in b'a'..=b'z' {
+            let upper = lower - b' '; // a=0x61, A=0x41; diff=0x20
+            assert_eq!(
+                fold.fold_char(char::from(lower)),
+                u16::from(upper),
+                "0x{lower:02X} ({}) should fold to 0x{upper:02X} ({})",
+                char::from(lower),
+                char::from(upper),
+            );
+        }
+    }
+
+    /// ASCII uppercase, digits, and printable symbols are identity-mapped.
+    #[test]
+    fn ascii_identity_codepoints() {
+        let fold = CaseFold::default_table();
+        // Uppercase letters
+        for ch in b'A'..=b'Z' {
+            assert_eq!(fold.fold_char(char::from(ch)), u16::from(ch));
+        }
+        // Digits
+        for ch in b'0'..=b'9' {
+            assert_eq!(fold.fold_char(char::from(ch)), u16::from(ch));
+        }
+        // NUL
+        assert_eq!(fold.fold_char('\0'), 0);
+    }
+
+    /// European accented characters must fold correctly (NTFS `$UpCase`).
+    #[test]
+    fn european_accented_characters() {
+        let fold = CaseFold::default_table();
+        // ü (U+00FC) → Ü (U+00DC)
+        assert_eq!(fold.fold_char('\u{00FC}'), 0x00DC, "ü → Ü");
+        // é (U+00E9) → É (U+00C9)
+        assert_eq!(fold.fold_char('\u{00E9}'), 0x00C9, "é → É");
+        // ö (U+00F6) → Ö (U+00D6)
+        assert_eq!(fold.fold_char('\u{00F6}'), 0x00D6, "ö → Ö");
+        // ñ (U+00F1) → Ñ (U+00D1)
+        assert_eq!(fold.fold_char('\u{00F1}'), 0x00D1, "ñ → Ñ");
+        // å (U+00E5) → Å (U+00C5)
+        assert_eq!(fold.fold_char('\u{00E5}'), 0x00C5, "å → Å");
+    }
+
+    /// CJK ideographs have no case — they must be identity-mapped.
+    #[test]
+    fn cjk_identity() {
+        let fold = CaseFold::default_table();
+        // 中 (U+4E2D)
+        assert_eq!(fold.fold_char('\u{4E2D}'), 0x4E2D, "中 identity");
+        // 文 (U+6587)
+        assert_eq!(fold.fold_char('\u{6587}'), 0x6587, "文 identity");
+    }
+
+    /// Cyrillic lowercase must fold to uppercase.
+    #[test]
+    fn cyrillic_folding() {
+        let fold = CaseFold::default_table();
+        // д (U+0434) → Д (U+0414)
+        assert_eq!(fold.fold_char('\u{0434}'), 0x0414, "д → Д");
+        // я (U+044F) → Я (U+042F)
+        assert_eq!(fold.fold_char('\u{044F}'), 0x042F, "я → Я");
+    }
+
+    /// `fold_into` must produce correct case-folded strings.
+    #[test]
+    fn fold_into_mixed_string() {
+        let fold = CaseFold::default_table();
+        let mut buf = Vec::new();
+        let result = fold.fold_into("Hello.TXT", &mut buf);
+        assert_eq!(result, "HELLO.TXT");
+    }
+
+    /// `fold_into` with accented characters.
+    #[test]
+    fn fold_into_accented() {
+        let fold = CaseFold::default_table();
+        let mut buf = Vec::new();
+        let result = fold.fold_into("über", &mut buf);
+        assert_eq!(result, "\u{00DC}BER");
+    }
+
+    /// `cmp_str` must be case-insensitive.
+    #[test]
+    fn cmp_str_case_insensitive() {
+        let fold = CaseFold::default_table();
+        assert_eq!(fold.cmp_str("hello", "HELLO"), core::cmp::Ordering::Equal);
+        assert_eq!(fold.cmp_str("abc", "ABD"), core::cmp::Ordering::Less);
+    }
+}

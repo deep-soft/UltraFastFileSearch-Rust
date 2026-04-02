@@ -1,5 +1,5 @@
 //! Read the NTFS `$UpCase` table from a live Windows volume and
-//! persist it with AES-256-GCM encryption.
+//! persist it as a plain binary file.
 //!
 //! `$UpCase` (FRS 10) stores 128 KB of UTF-16 uppercase mappings.  The
 //! actual table data is **non-resident** — it lives in disk clusters,
@@ -9,13 +9,14 @@
 //!
 //! # Persistence
 //!
-//! Saved files follow the same security model as index caches (see
-//! `docs/architecture/SECURITY_IMPLEMENTATION_PLAN.md`):
+//! Saved files are **not encrypted** — the `$UpCase` table is public
+//! NTFS specification data containing no user information.  The file
+//! format is:
 //!
-//! 1. Serialize: [`UpcaseHeader`] (64 bytes) + raw table (128 KB)
-//! 2. Encrypt: `uffs_security::crypto::encrypt_cache()` → UFFSENC
-//! 3. Write: `crate::cache::atomic_write()` (temp + rename + perms)
-//! 4. Load: `detect_format` → `decrypt_cache` → validate → extract
+//! 1. [`UpcaseHeader`] (64 bytes) — magic, NTFS version, serial, CRC-32
+//! 2. Raw table (128 KB) — `[u16; 65_536]` little-endian
+//!
+//! Total file size: 131,136 bytes.  The raw table starts at offset 64.
 //!
 //! # Usage
 //!
@@ -159,102 +160,54 @@ fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-// ── Persistence (encrypt + atomic write) ──────────────────────────────
+// ── Persistence (plain binary, no encryption) ─────────────────────────
 
-/// Save the `$UpCase` table to an encrypted file.
+/// Save the `$UpCase` table to a plain binary file.
 ///
-/// Follows the same security model as index cache files:
-/// serialize → AES-256-GCM encrypt → atomic write.
+/// The `$UpCase` table is public NTFS specification data with no user
+/// content, so encryption is unnecessary.  The file is written
+/// atomically (temp + rename) with restricted permissions.
+///
+/// File format: [`UpcaseHeader`] (64 bytes) + raw table (128 KB).
 ///
 /// # Errors
 ///
-/// Returns an error if encryption or file I/O fails.  Falls back to
-/// plaintext with a warning if the platform key is unavailable.
+/// Returns an error if file I/O fails.
 pub fn save_upcase_to_file(
     path: &std::path::Path,
     header: &UpcaseHeader,
     table: &[u16; 65_536],
 ) -> Result<()> {
-    let plaintext = header.serialize(table);
-
-    let data = match uffs_security::keystore::get_cache_key() {
-        Ok(key) => match uffs_security::crypto::encrypt_cache(&plaintext, &key) {
-            Ok(encrypted) => encrypted,
-            Err(e) => {
-                tracing::warn!(error = %e, "Encryption failed, saving plaintext $UpCase");
-                plaintext
-            }
-        },
-        Err(e) => {
-            tracing::warn!(error = %e, "Key unavailable, saving plaintext $UpCase");
-            plaintext
-        }
-    };
+    let data = header.serialize(table);
 
     crate::cache::atomic_write(path, &data)
         .map_err(|e| MftError::InvalidData(format!("Failed to write $UpCase file: {e}")))?;
 
     tracing::info!(
         path = %path.display(),
-        encrypted = data.starts_with(b"UFFSENC"),
+        bytes = data.len(),
+        crc32 = format_args!("0x{:08X}", header.table_crc32),
         "Saved $UpCase table"
     );
     Ok(())
 }
 
-/// Load the `$UpCase` table from an encrypted file.
+/// Load the `$UpCase` table from a plain binary file.
 ///
-/// Detects format automatically:
-/// - **UFFSENC**: decrypts with platform key, then parses header + table
-/// - **UFFSUP**: legacy plaintext, parses directly
-/// - **Unknown**: returns an error
+/// Validates magic bytes, format version, and CRC-32 checksum.
 ///
-/// If decryption fails (wrong key / tampered), the file is deleted and
-/// an error returned so the caller can re-read from the live volume.
+/// # Errors
+///
+/// Returns an error if the file is too small, has wrong magic bytes,
+/// unsupported version, or CRC-32 mismatch.
 pub fn load_upcase_from_file(path: &std::path::Path) -> Result<(UpcaseHeader, Box<[u16; 65_536]>)> {
-    use uffs_security::crypto::{CacheFormat, decrypt_cache, detect_format};
-
-    let raw = std::fs::read(path)
+    let data = std::fs::read(path)
         .map_err(|e| MftError::InvalidData(format!("Failed to read {}: {e}", path.display())))?;
 
-    let format = detect_format(&raw);
+    let header = UpcaseHeader::deserialize(&data)?;
 
-    let plaintext = match format {
-        CacheFormat::Encrypted => {
-            let key = uffs_security::keystore::get_cache_key()
-                .map_err(|e| MftError::InvalidData(format!("Key error: {e}")))?;
-            match decrypt_cache(&raw, &key) {
-                Ok(pt) => pt,
-                Err(e) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "UpCase decryption failed — deleting corrupted file"
-                    );
-                    let _ignore = std::fs::remove_file(path);
-                    return Err(MftError::InvalidData(format!(
-                        "UpCase decryption failed (tampered/wrong key): {e}"
-                    )));
-                }
-            }
-        }
-        CacheFormat::LegacyPlaintext | CacheFormat::Unknown => {
-            // Try parsing as raw UFFSUP plaintext.
-            if raw.len() >= 8 && &raw[0..8] == UPCASE_MAGIC {
-                raw
-            } else {
-                return Err(MftError::InvalidData(format!(
-                    "Unknown $UpCase file format: {}",
-                    path.display()
-                )));
-            }
-        }
-    };
-
-    let header = UpcaseHeader::deserialize(&plaintext)?;
-
-    // Extract raw table.
-    let table_bytes = &plaintext[HEADER_SIZE..HEADER_SIZE + UPCASE_SIZE_BYTES];
+    // Extract raw table bytes (starts at offset 64).
+    let table_bytes = &data[HEADER_SIZE..HEADER_SIZE + UPCASE_SIZE_BYTES];
     let u16_slice: &[u16] = bytemuck::cast_slice(table_bytes);
     let mut table = Box::new([0u16; 65_536]);
     table.copy_from_slice(u16_slice);

@@ -30,6 +30,7 @@ pub async fn cmd_save(
     use uffs_mft::platform::{VolumeHandle, detect_drive_type};
 
     // $UpCase mode: save only the 128 KB uppercase mapping table.
+    // Always saves as plain binary (64-byte header + raw table) — no encryption.
     if upcase {
         return cmd_save_upcase(drive, output).await;
     }
@@ -277,8 +278,9 @@ async fn cmd_save_iocp(
 
 /// Save the NTFS `$UpCase` table (128 KB) from a live volume.
 ///
-/// Reads the table via MFT FRS 10 data runs, wraps it with an
-/// [`UpcaseHeader`], encrypts with AES-256-GCM, and writes atomically.
+/// Reads the table via MFT FRS 10 data runs, wraps it with a
+/// 64-byte [`UpcaseHeader`], and writes atomically (no encryption —
+/// `$UpCase` is public NTFS specification data).
 #[cfg(windows)]
 #[expect(clippy::print_stdout, reason = "intentional user-facing CLI output")]
 async fn cmd_save_upcase(drive: char, output: &Path) -> Result<()> {
@@ -321,7 +323,7 @@ async fn cmd_save_upcase(drive: char, output: &Path) -> Result<()> {
         drive: drive_upper,
     };
 
-    // Encrypt + atomic write.
+    // Atomic write (header + raw table, no encryption).
     upcase::save_upcase_to_file(output, &header, &table)
         .with_context(|| format!("Failed to save $UpCase to {}", output.display()))?;
 
@@ -329,7 +331,7 @@ async fn cmd_save_upcase(drive: char, output: &Path) -> Result<()> {
     let abs_path = clean_path_for_display(&abs_path);
     let elapsed = start.elapsed();
 
-    println!("💾 $UpCase table saved (encrypted)");
+    println!("💾 $UpCase table saved");
     println!(
         "  Size:   {} ({} entries)",
         format_bytes(upcase::UPCASE_SIZE_BYTES as u64),
