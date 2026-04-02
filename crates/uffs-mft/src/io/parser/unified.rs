@@ -317,6 +317,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         let rec = &mut index.records[base_ri];
                         rec.stdinfo.set_directory(true);
                         rec.first_stream.flags = 0; // type_name_id=0 for $I30
+
                         rec.first_stream.size.length += size;
                         rec.first_stream.size.allocated += alloc;
                         // Increment counts once for the first $I30 attribute;

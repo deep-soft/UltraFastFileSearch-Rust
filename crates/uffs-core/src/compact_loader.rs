@@ -120,6 +120,7 @@ pub fn load_drive(
 
     // ── Build compact index ────────────────────────────────────────
     let (mut compact, compact_elapsed, tri_elapsed) = build_compact_index(drive_letter, &mft_index);
+
     if let Some(path) = source.file_path() {
         compact.source = IndexSource::MftFile(path.to_path_buf());
     }

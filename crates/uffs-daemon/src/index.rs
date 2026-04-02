@@ -568,6 +568,179 @@ impl IndexManager {
         backend.total_records()
     }
 
+    /// Return the set of currently loaded drive letters.
+    pub async fn loaded_drive_letters(&self) -> Vec<char> {
+        let backend = self.backend.read().await;
+        backend.drives.iter().map(|dr| dr.letter).collect()
+    }
+
+    /// Hot-load a single MFT file if its drive letter is not already loaded.
+    ///
+    /// Returns `Ok(Some(letter))` if loaded, `Ok(None)` if already present.
+    pub async fn load_single_mft_file(
+        &self,
+        mft_path: &std::path::Path,
+        no_cache: bool,
+    ) -> anyhow::Result<Option<char>> {
+        // Infer drive letter from filename (e.g. G_mft.iocp → 'G').
+        let letter = {
+            let stem = mft_path.file_name().and_then(|n| n.to_str()).unwrap_or("X");
+            stem.chars()
+                .next()
+                .filter(char::is_ascii_alphabetic)
+                .map_or('X', |ch| ch.to_ascii_uppercase())
+        };
+
+        // Skip if already loaded.
+        {
+            let backend = self.backend.read().await;
+            if backend.drives.iter().any(|dr| dr.letter == letter) {
+                tracing::debug!(drive = %letter, "Drive already loaded, skipping");
+                return Ok(None);
+            }
+        }
+
+        tracing::info!(
+            drive = %letter,
+            path = %mft_path.display(),
+            "Hot-loading MFT file"
+        );
+
+        let cloned_path = mft_path.to_path_buf();
+        let source = uffs_core::compact::MftSource::File(cloned_path, None);
+        let result =
+            tokio::task::spawn_blocking(move || uffs_core::compact::load_drive(&source, no_cache))
+                .await;
+
+        match result {
+            Ok(Ok((drive_index, timing))) => {
+                let records = drive_index.records.len();
+                tracing::info!(
+                    drive = %letter,
+                    records,
+                    mft_ms = timing.mft,
+                    compact_ms = timing.compact,
+                    trigram_ms = timing.trigram,
+                    "Drive hot-loaded"
+                );
+                self.events.emit(DaemonEvent::DriveLoaded {
+                    drive: letter,
+                    records,
+                    mft_ms: timing.mft,
+                    compact_ms: timing.compact,
+                    trigram_ms: timing.trigram,
+                    drives_loaded: 1,
+                    drives_total: 1,
+                });
+                let mut backend = self.backend.write().await;
+                backend.drives.push(drive_index);
+                drop(backend);
+                Ok(Some(letter))
+            }
+            Ok(Err(load_err)) => {
+                tracing::error!(
+                    path = %mft_path.display(),
+                    error = %load_err,
+                    "Failed to hot-load MFT file"
+                );
+                Err(load_err)
+            }
+            Err(join_err) => {
+                tracing::error!(
+                    path = %mft_path.display(),
+                    error = %join_err,
+                    "Task panicked hot-loading MFT"
+                );
+                anyhow::bail!("Task panicked: {join_err}")
+            }
+        }
+    }
+
+    /// Discover and load a missing drive from the data directory.
+    ///
+    /// Returns `Ok(true)` if the drive was discovered and loaded,
+    /// `Ok(false)` if no MFT file was found for it, or an error.
+    pub async fn discover_and_load_drive(
+        &self,
+        drive_letter: char,
+        no_cache: bool,
+    ) -> anyhow::Result<bool> {
+        let Some(data_dir) = &self.data_dir else {
+            return Ok(false);
+        };
+
+        let drive_lower = drive_letter.to_ascii_lowercase();
+        let drive_subdir = data_dir.join(format!("drive_{drive_lower}"));
+
+        if !drive_subdir.is_dir() {
+            tracing::debug!(
+                drive = %drive_letter,
+                path = %drive_subdir.display(),
+                "No drive_X directory found in data_dir"
+            );
+            return Ok(false);
+        }
+
+        let Some(mft_path) = uffs_mft::discovery::find_best_mft_file(&drive_subdir) else {
+            tracing::debug!(
+                drive = %drive_letter,
+                path = %drive_subdir.display(),
+                "No MFT file found in drive directory"
+            );
+            return Ok(false);
+        };
+
+        // Whether Some (freshly loaded) or None (already present), the
+        // drive is now available.
+        let _loaded = self.load_single_mft_file(&mft_path, no_cache).await?;
+        Ok(true)
+    }
+
+    /// Ensure all requested drives are loaded, auto-discovering from
+    /// `data_dir` if available.
+    ///
+    /// Returns a list of drive letters that could NOT be loaded (no data
+    /// source found).
+    pub async fn ensure_drives_loaded(&self, drives: &[char], no_cache: bool) -> Vec<char> {
+        if drives.is_empty() {
+            return Vec::new();
+        }
+
+        let loaded = self.loaded_drive_letters().await;
+        let mut missing: Vec<char> = Vec::new();
+
+        for &letter in drives {
+            let upper = letter.to_ascii_uppercase();
+            if loaded.contains(&upper) {
+                continue;
+            }
+
+            // Try to auto-discover from data_dir.
+            match self.discover_and_load_drive(upper, no_cache).await {
+                Ok(true) => {
+                    tracing::info!(drive = %upper, "Auto-discovered and loaded missing drive");
+                }
+                Ok(false) => {
+                    tracing::warn!(
+                        drive = %upper,
+                        "Drive not loaded and not discoverable from data_dir"
+                    );
+                    missing.push(upper);
+                }
+                Err(load_err) => {
+                    tracing::error!(
+                        drive = %upper,
+                        error = %load_err,
+                        "Failed to auto-load drive"
+                    );
+                    missing.push(upper);
+                }
+            }
+        }
+
+        missing
+    }
+
     // ── Private helpers ─────────────────────────────────────────────
 
     /// Convert a [`DisplayRow`] to a protocol [`SearchRow`].
@@ -589,6 +762,7 @@ impl IndexManager {
             allocated: row.allocated,
             descendants: row.descendants,
             treesize: row.treesize,
+            tree_allocated: row.tree_allocated,
         }
     }
 

@@ -44,6 +44,34 @@ pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<D
         .await
         .with_context(|| "Daemon did not become ready in time")?;
 
+    // If the CLI was given explicit --mft-file paths, ensure those drives
+    // are loaded in the daemon.  This covers the case where the daemon was
+    // already running (from a previous invocation) and doesn't have the
+    // requested drive.
+    if !config.mft_file.is_empty() {
+        let mft_strings: Vec<String> = config
+            .mft_file
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        match client.load_drive(&mft_strings, config.no_cache).await {
+            Ok(resp) => {
+                for letter in &resp.loaded {
+                    info!(drive = %letter, "Hot-loaded drive into daemon");
+                }
+                for err in &resp.errors {
+                    tracing::warn!(error = %err, "Failed to hot-load drive");
+                }
+            }
+            Err(load_err) => {
+                tracing::warn!(
+                    error = %load_err,
+                    "load_drive RPC failed — search may return incomplete results"
+                );
+            }
+        }
+    }
+
     let response = client
         .search(&params)
         .await
@@ -179,6 +207,6 @@ fn search_row_to_display_row(row: SearchRow) -> DisplayRow {
         row.allocated,
         row.descendants,
         row.treesize,
-        0, // SearchRow doesn't carry tree_allocated
+        row.tree_allocated,
     )
 }

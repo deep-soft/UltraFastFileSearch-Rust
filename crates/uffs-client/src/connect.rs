@@ -444,6 +444,28 @@ impl UffsClient {
         }
     }
 
+    /// Hot-load MFT files into the running daemon.
+    ///
+    /// Files whose drive letter is already loaded are skipped.  Returns
+    /// which drives were loaded, which were already present, and any errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ClientError` on connection, protocol, or timeout failure.
+    pub async fn load_drive(
+        &mut self,
+        mft_files: &[String],
+        no_cache: bool,
+    ) -> Result<crate::protocol::LoadDriveResponse, crate::error::ClientError> {
+        let params = serde_json::json!({
+            "mft_files": mft_files,
+            "no_cache": no_cache,
+        });
+        let result = self.send_request("load_drive", Some(params)).await?;
+        serde_json::from_value(result)
+            .map_err(|err| crate::error::ClientError::Protocol(err.to_string()))
+    }
+
     /// Trigger a drive refresh.
     ///
     /// # Errors

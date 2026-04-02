@@ -199,6 +199,32 @@ pub struct RefreshParams {
     pub drives: Vec<char>,
 }
 
+/// Parameters for the `load_drive` method.
+///
+/// Tells the daemon to hot-load one or more MFT files that it doesn't
+/// already have.  Used when the CLI connects to an already-running daemon
+/// that was started without a particular drive's data.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct LoadDriveParams {
+    /// MFT file paths to load (absolute paths).
+    #[serde(default)]
+    pub mft_files: Vec<String>,
+    /// Skip cache when loading.
+    #[serde(default)]
+    pub no_cache: bool,
+}
+
+/// Response for the `load_drive` method.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LoadDriveResponse {
+    /// Drives that were successfully loaded.
+    pub loaded: Vec<char>,
+    /// Drives that were already present (skipped).
+    pub already_loaded: Vec<char>,
+    /// Errors encountered (drive letter → message).
+    pub errors: Vec<String>,
+}
+
 /// Parameters for the `info` method.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InfoParams {
@@ -273,6 +299,9 @@ pub struct SearchRow {
     pub descendants: u32,
     /// Subtree size.
     pub treesize: u64,
+    /// Sum of allocated sizes in entire subtree (directories only).
+    #[serde(default)]
+    pub tree_allocated: u64,
 }
 
 /// Response for the `drives` method.
@@ -563,6 +592,7 @@ mod tests {
                 allocated: 4096,
                 descendants: 0,
                 treesize: 0,
+                tree_allocated: 0,
             }],
             records_scanned: 1_000_000,
             duration_ms: 8,

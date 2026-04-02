@@ -171,21 +171,35 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     let no_cache = config.no_cache;
 
     // Gather drive letters (Windows only; empty on other platforms).
+    // Always discover ALL NTFS drives, even if the user requested just one.
+    // The daemon should have a complete index so subsequent searches for
+    // different drives don't require a restart.
     #[cfg(windows)]
     let drives: Vec<char> = {
         let explicit = config.drives;
-        if explicit.is_empty() && mft_files.is_empty() {
-            let auto_drives = uffs_mft::detect_ntfs_drives();
-            tracing::info!(
-                count = auto_drives.len(),
-                drives = ?auto_drives,
-                "Auto-discovered NTFS drives"
-            );
-            auto_drives
-        } else {
-            tracing::info!(explicit_drives = ?explicit, mft_file_count = mft_files.len(), "Using explicit sources");
-            explicit
+        // Always discover all NTFS drives; merge with any explicit list.
+        let auto_drives = uffs_mft::detect_ntfs_drives();
+        tracing::info!(
+            count = auto_drives.len(),
+            drives = ?auto_drives,
+            "Auto-discovered NTFS drives"
+        );
+        // Merge: start with auto-discovered, add any explicit that aren't
+        // already present (unusual but possible for non-NTFS volumes).
+        let mut all = auto_drives;
+        for letter in &explicit {
+            if !all.contains(letter) {
+                all.push(*letter);
+            }
         }
+        if !explicit.is_empty() {
+            tracing::info!(
+                explicit = ?explicit,
+                merged = ?all,
+                "Merged explicit drives with auto-discovered"
+            );
+        }
+        all
     };
     #[cfg(not(windows))]
     let drives: Vec<char> = Vec::new();

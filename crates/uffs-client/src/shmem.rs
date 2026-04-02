@@ -29,8 +29,8 @@ pub const SHMEM_THRESHOLD: usize = 100_000;
 /// Magic bytes identifying a UFFS shmem file (`"UFFS"` as `u32` LE).
 const MAGIC: u32 = 0x5346_4655; // b"UFFS" LE
 
-/// Current binary format version.
-const VERSION: u32 = 1;
+/// Current binary format version (bumped when `ShmemRecord` layout changes).
+const VERSION: u32 = 2;
 
 // ── On-disk structures ────────────────────────────────────────────────────
 
@@ -56,7 +56,7 @@ struct ShmemHeader {
     _reserved: u32,
 }
 
-/// Per-row fixed-size record — 80 bytes, naturally aligned.
+/// Per-row fixed-size record — 88 bytes, naturally aligned.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct ShmemRecord {
@@ -84,6 +84,8 @@ struct ShmemRecord {
     _pad2: u32,
     /// Subtree total size (dirs only).
     treesize: u64,
+    /// Subtree allocated size (dirs only).
+    tree_allocated: u64,
     /// Byte offset of the path string in the string table.
     path_off: u32,
     /// Byte length of the path string.
@@ -100,8 +102,8 @@ const _: () = assert!(
     "ShmemHeader layout changed — binary format requires exactly 48 bytes"
 );
 const _: () = assert!(
-    size_of::<ShmemRecord>() == 80,
-    "ShmemRecord layout changed — binary format requires exactly 80 bytes"
+    size_of::<ShmemRecord>() == 88,
+    "ShmemRecord layout changed — binary format requires exactly 88 bytes"
 );
 
 // ── Public API ────────────────────────────────────────────────────────────
@@ -179,6 +181,7 @@ pub fn write_search_results(
             descendants: row.descendants,
             _pad2: 0,
             treesize: row.treesize,
+            tree_allocated: row.tree_allocated,
             path_off,
             path_len,
             name_off,
@@ -340,6 +343,7 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
             allocated: rec.allocated,
             descendants: rec.descendants,
             treesize: rec.treesize,
+            tree_allocated: rec.tree_allocated,
         });
     }
 
@@ -398,6 +402,7 @@ mod tests {
             allocated: 4096,
             descendants: 0,
             treesize: 1024,
+            tree_allocated: 0,
         }
     }
 

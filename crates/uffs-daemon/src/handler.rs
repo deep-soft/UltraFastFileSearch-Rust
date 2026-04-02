@@ -1,8 +1,8 @@
 //! JSON-RPC request handler: dispatches methods to [`IndexManager`].
 
 use uffs_client::protocol::{
-    ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RefreshParams, RpcErrorResponse, RpcRequest,
-    RpcResponse, SearchParams,
+    ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, LoadDriveParams, LoadDriveResponse, RefreshParams,
+    RpcErrorResponse, RpcRequest, RpcResponse, SearchParams,
 };
 
 /// Maximum pattern length to prevent regex `DoS` (`S4.4.3`).
@@ -31,6 +31,7 @@ impl RequestHandler {
             "status" => self.handle_status(id, connections).await,
             "stats" => self.handle_stats(id).await,
             "info" => self.handle_info(id, req).await,
+            "load_drive" => self.handle_load_drive(id, req).await,
             "refresh" => self.handle_refresh(id, req),
             "keepalive" => self.handle_keepalive(id, req),
             "shutdown" => self.handle_shutdown(id, req),
@@ -72,6 +73,20 @@ impl RequestHandler {
                 ),
             ))
             .unwrap_or_default();
+        }
+
+        // Auto-load missing drives from data_dir before searching.
+        if !search_params.drives.is_empty() {
+            let missing = self
+                .index
+                .ensure_drives_loaded(&search_params.drives, false)
+                .await;
+            if !missing.is_empty() {
+                tracing::warn!(
+                    missing_drives = ?missing,
+                    "Some requested drives could not be auto-loaded"
+                );
+            }
         }
 
         let mut response = self.index.search(&search_params).await;
@@ -173,6 +188,50 @@ impl RequestHandler {
         }
 
         let response = self.index.info(file_path).await;
+        let result = serde_json::to_value(&response).unwrap_or_default();
+        serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
+    }
+
+    /// Handle `load_drive` method — hot-load MFT files into the daemon.
+    async fn handle_load_drive(&self, id: u64, req: &RpcRequest) -> String {
+        let params: LoadDriveParams = req
+            .params
+            .as_ref()
+            .and_then(|val| serde_json::from_value(val.clone()).ok())
+            .unwrap_or_default();
+
+        let mut loaded: Vec<char> = Vec::new();
+        let mut already_loaded: Vec<char> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+
+        for mft_file in &params.mft_files {
+            let path = std::path::PathBuf::from(mft_file);
+            match self
+                .index
+                .load_single_mft_file(&path, params.no_cache)
+                .await
+            {
+                Ok(Some(letter)) => loaded.push(letter),
+                Ok(None) => {
+                    // Infer the letter for reporting.
+                    let letter = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .and_then(|stem| stem.chars().next())
+                        .map_or('?', |ch| ch.to_ascii_uppercase());
+                    already_loaded.push(letter);
+                }
+                Err(load_err) => {
+                    errors.push(format!("{}: {load_err}", path.display()));
+                }
+            }
+        }
+
+        let response = LoadDriveResponse {
+            loaded,
+            already_loaded,
+            errors,
+        };
         let result = serde_json::to_value(&response).unwrap_or_default();
         serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
     }
