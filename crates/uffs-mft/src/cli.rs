@@ -156,15 +156,19 @@ pub enum Commands {
     /// uffs_mft save --drive C --output mft_c.mft
     /// uffs_mft save -d C -o mft_c.mft --no-compress
     /// uffs_mft save -d C -o mft_c.raw --raw  # Compatible with other MFT tools
+    /// uffs_mft save --upcase                  # Boot drive → upcase.bin
+    /// uffs_mft save --upcase -d D -o D_upcase.bin
     /// ```
     Save {
-        /// Drive letter to read MFT from (e.g., C, D, E)
+        /// Drive letter to read MFT from (e.g., C, D, E).
+        /// Required for MFT save; defaults to boot drive for --upcase.
         #[arg(short, long, value_name = "LETTER")]
-        drive: char,
+        drive: Option<char>,
 
-        /// Output file path for raw MFT data
+        /// Output file path.
+        /// Required for MFT save; defaults to `upcase.bin` for --upcase.
         #[arg(short, long, value_name = "FILE")]
-        output: PathBuf,
+        output: Option<PathBuf>,
 
         /// Disable compression (default: compressed with zstd)
         #[arg(long)]

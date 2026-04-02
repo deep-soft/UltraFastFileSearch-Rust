@@ -52,6 +52,21 @@ pub async fn dispatch_command(command: Commands) -> Result<()> {
             iocp_concurrency,
             upcase,
         } => {
+            // Resolve defaults: --upcase defaults to boot drive + "upcase.bin";
+            // MFT save requires both --drive and --output.
+            let (drive, output) = if upcase {
+                let d = drive.unwrap_or_else(|| uffs_mft::platform::detect_boot_drive());
+                let o = output.unwrap_or_else(|| std::path::PathBuf::from("upcase.bin"));
+                (d, o)
+            } else {
+                let d = drive.ok_or_else(|| {
+                    anyhow::anyhow!("--drive is required for MFT save (e.g. --drive C)")
+                })?;
+                let o = output.ok_or_else(|| {
+                    anyhow::anyhow!("--output is required for MFT save (e.g. --output mft.bin)")
+                })?;
+                (d, o)
+            };
             windows::cmd_save(
                 drive,
                 &output,

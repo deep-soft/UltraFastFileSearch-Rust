@@ -31,28 +31,28 @@ mod tests {
 
     #[test]
     fn roundtrip_ascii() {
-        let a = b'A' as u16;
-        let b = b'B' as u16;
-        let c = b'C' as u16;
-        let packed = pack_char_trigram(a, b, c);
+        let ch_a = u16::from(b'A');
+        let ch_b = u16::from(b'B');
+        let ch_c = u16::from(b'C');
+        let packed = pack_char_trigram(ch_a, ch_b, ch_c);
         let unpacked = unpack_char_trigram(packed);
-        assert_eq!(unpacked, [a, b, c]);
+        assert_eq!(unpacked, [ch_a, ch_b, ch_c]);
     }
 
     #[test]
     fn roundtrip_unicode() {
-        let a = 0x00DC_u16; // Ü
-        let b = 0x0042_u16; // B
-        let c = 0x0045_u16; // E
-        let packed = pack_char_trigram(a, b, c);
+        let ch_u_uml = 0x00DC_u16; // Ü
+        let ch_b = 0x0042_u16; // B
+        let ch_e = 0x0045_u16; // E
+        let packed = pack_char_trigram(ch_u_uml, ch_b, ch_e);
         let unpacked = unpack_char_trigram(packed);
-        assert_eq!(unpacked, [a, b, c]);
+        assert_eq!(unpacked, [ch_u_uml, ch_b, ch_e]);
     }
 
     #[test]
     fn lexicographic_order() {
-        let abc = pack_char_trigram(b'A' as u16, b'B' as u16, b'C' as u16);
-        let abd = pack_char_trigram(b'A' as u16, b'B' as u16, b'D' as u16);
+        let abc = pack_char_trigram(u16::from(b'A'), u16::from(b'B'), u16::from(b'C'));
+        let abd = pack_char_trigram(u16::from(b'A'), u16::from(b'B'), u16::from(b'D'));
         assert!(abc < abd);
     }
 }

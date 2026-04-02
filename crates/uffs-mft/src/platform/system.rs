@@ -97,6 +97,27 @@ pub fn infer_drive_from_path(path: &Path) -> Option<char> {
     })
 }
 
+/// Returns the boot/system drive letter (from `%SystemDrive%`, typically `C`).
+///
+/// Falls back to `'C'` if the environment variable is missing or malformed.
+#[cfg(windows)]
+#[must_use]
+pub fn detect_boot_drive() -> char {
+    std::env::var("SystemDrive")
+        .ok()
+        .and_then(|s| s.chars().next())
+        .map(|c| c.to_ascii_uppercase())
+        .filter(|c| c.is_ascii_uppercase())
+        .unwrap_or('C')
+}
+
+/// Returns `true` if the given drive letter is the boot/system drive.
+#[cfg(windows)]
+#[must_use]
+pub fn is_boot_drive(drive_letter: char) -> bool {
+    drive_letter.to_ascii_uppercase() == detect_boot_drive()
+}
+
 /// Detects all available NTFS drives on the system.
 #[cfg(windows)]
 #[must_use]

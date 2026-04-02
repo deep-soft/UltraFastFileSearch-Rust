@@ -277,15 +277,15 @@ async fn cmd_save_iocp(
 
 /// Save the NTFS `$UpCase` table (128 KB) from a live volume.
 ///
-/// Opens the volume, reads FRS 10 from the MFT, parses its DATA
-/// attribute data runs, reads the referenced clusters, and writes
-/// the raw `[u16; 65_536]` table to the output file.
+/// Reads the table via MFT FRS 10 data runs, wraps it with an
+/// [`UpcaseHeader`], encrypts with AES-256-GCM, and writes atomically.
 #[cfg(windows)]
 #[expect(clippy::print_stdout, reason = "intentional user-facing CLI output")]
 async fn cmd_save_upcase(drive: char, output: &Path) -> Result<()> {
     use std::time::Instant;
 
-    use uffs_mft::platform::upcase;
+    use uffs_mft::platform::VolumeHandle;
+    use uffs_mft::platform::upcase::{self, UpcaseHeader};
 
     let start = Instant::now();
     let drive_upper = drive.to_ascii_uppercase();
@@ -295,24 +295,49 @@ async fn cmd_save_upcase(drive: char, output: &Path) -> Result<()> {
     println!("═══════════════════════════════════════════════════════════════");
     println!();
 
+    // Read the table from the live volume.
     let table = upcase::read_upcase_table(drive)
         .with_context(|| format!("Failed to read $UpCase from {drive_upper}:"))?;
 
-    // Write raw little-endian u16 bytes.
+    // Get volume metadata for the header.
+    let handle = VolumeHandle::open(drive)
+        .with_context(|| format!("Failed to open {drive_upper}: for metadata"))?;
+    let vol = handle.volume_data();
+
+    // Compute CRC-32 of the raw table bytes.
     let raw_bytes: &[u8] = bytemuck::cast_slice(table.as_ref());
-    std::fs::write(output, raw_bytes)
-        .with_context(|| format!("Failed to write {}", output.display()))?;
+    let table_crc32 = upcase::crc32_table(raw_bytes);
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+
+    let header = UpcaseHeader {
+        ntfs_major: vol.ntfs_major_version,
+        ntfs_minor: vol.ntfs_minor_version,
+        volume_serial: vol.volume_serial_number,
+        table_crc32,
+        timestamp,
+        drive: drive_upper,
+    };
+
+    // Encrypt + atomic write.
+    upcase::save_upcase_to_file(output, &header, &table)
+        .with_context(|| format!("Failed to save $UpCase to {}", output.display()))?;
 
     let abs_path = std::fs::canonicalize(output).unwrap_or_else(|_| output.to_path_buf());
     let abs_path = clean_path_for_display(&abs_path);
     let elapsed = start.elapsed();
 
-    println!("💾 $UpCase table saved");
+    println!("💾 $UpCase table saved (encrypted)");
     println!(
         "  Size:   {} ({} entries)",
         format_bytes(upcase::UPCASE_SIZE_BYTES as u64),
         format_number_commas(65_536)
     );
+    println!("  NTFS:   {}.{}", header.ntfs_major, header.ntfs_minor);
+    println!("  Serial: 0x{:016X}", header.volume_serial);
+    println!("  CRC-32: 0x{:08X}", header.table_crc32);
     println!("  Path:   {}", abs_path.display());
     println!("  Time:   {}", format_duration(elapsed));
 

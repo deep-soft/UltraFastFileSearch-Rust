@@ -231,7 +231,7 @@ fn spawn_detached_no_inherit(
     let mut cmd_wide: Vec<u16> = cmd_line.encode_utf16().chain(core::iter::once(0)).collect();
 
     let si = STARTUPINFOW {
-        cb: core::mem::size_of::<STARTUPINFOW>() as u32,
+        cb: size_of::<STARTUPINFOW>() as u32,
         ..Default::default()
     };
     let mut pi = PROCESS_INFORMATION::default();

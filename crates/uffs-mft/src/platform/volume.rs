@@ -115,6 +115,10 @@ unsafe impl Sync for VolumeHandle {}
 pub struct NtfsVolumeData {
     /// Volume serial number.
     pub volume_serial_number: u64,
+    /// NTFS major version (e.g. 3 for NTFS 3.1).
+    pub ntfs_major_version: u16,
+    /// NTFS minor version (e.g. 1 for NTFS 3.1).
+    pub ntfs_minor_version: u16,
     /// Number of sectors on the volume.
     pub number_of_sectors: u64,
     /// Total number of clusters.
@@ -245,8 +249,13 @@ impl VolumeHandle {
             return Err(MftError::NotNtfs(volume));
         }
 
+        // Note: NTFS major/minor version requires NTFS_EXTENDED_VOLUME_DATA
+        // (not available in NTFS_VOLUME_DATA_BUFFER).  Default to 0; callers
+        // should use `query_ntfs_version()` if they need the actual version.
         Ok(NtfsVolumeData {
             volume_serial_number: buffer.VolumeSerialNumber as u64,
+            ntfs_major_version: 0,
+            ntfs_minor_version: 0,
             number_of_sectors: buffer.NumberSectors as u64,
             total_clusters: buffer.TotalClusters as u64,
             free_clusters: buffer.FreeClusters as u64,

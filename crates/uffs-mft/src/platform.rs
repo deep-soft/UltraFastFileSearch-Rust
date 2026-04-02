@@ -35,7 +35,8 @@ pub use system::is_volume_read_only;
 pub use system::{SystemMemory, query_system_memory};
 #[cfg(windows)]
 pub use system::{
-    detect_drive_type, detect_ntfs_drives, infer_drive_from_path, is_elevated, volume_root_path,
+    detect_boot_drive, detect_drive_type, detect_ntfs_drives, infer_drive_from_path, is_boot_drive,
+    is_elevated, volume_root_path,
 };
 #[cfg(windows)]
 pub(crate) use volume::{

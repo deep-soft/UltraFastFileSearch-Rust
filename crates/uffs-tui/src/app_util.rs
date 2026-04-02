@@ -9,7 +9,11 @@ use ratatui_textarea::TextArea;
 /// - **macOS**: `pbcopy`
 /// - **Windows**: `clip.exe`
 /// - **Linux**: `xclip -selection clipboard` (falls back to `xsel --clipboard`)
-pub(crate) fn copy_to_clipboard(text: &str) -> Result<(), String> {
+#[expect(
+    clippy::single_call_fn,
+    reason = "30-line clipboard helper kept as named function for readability"
+)]
+pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -43,7 +47,7 @@ pub(crate) fn copy_to_clipboard(text: &str) -> Result<(), String> {
 }
 
 /// Create a configured single-line `TextArea` for the search box.
-pub(crate) fn make_search_textarea<'a>() -> TextArea<'a> {
+pub fn make_search_textarea<'a>() -> TextArea<'a> {
     use ratatui::style::{Color, Style};
 
     let mut textarea = TextArea::default();

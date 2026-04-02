@@ -513,7 +513,7 @@ pub async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: bool) ->
 #[cfg(windows)]
 pub async fn cmd_drives() -> Result<()> {
     use tracing::debug;
-    use uffs_mft::platform::{VolumeHandle, detect_drive_type, detect_ntfs_drives};
+    use uffs_mft::platform::{VolumeHandle, detect_drive_type, detect_ntfs_drives, is_boot_drive};
 
     info!("🔍 Detecting NTFS drives...");
 
@@ -532,6 +532,7 @@ pub async fn cmd_drives() -> Result<()> {
         // Collect drive info
         struct DriveInfo {
             letter: char,
+            is_boot: bool,
             label: String,
             drive_type: String,
             total_size: u64,
@@ -578,6 +579,7 @@ pub async fn cmd_drives() -> Result<()> {
 
                 drive_infos.push(DriveInfo {
                     letter: *drive,
+                    is_boot: is_boot_drive(*drive),
                     label,
                     drive_type: drive_type_str.to_string(),
                     total_size,
@@ -609,11 +611,16 @@ pub async fn cmd_drives() -> Result<()> {
             "", "", "", "", "", "", "", "", ""
         );
 
-        // Print each drive
+        // Print each drive (* = boot/system drive)
         for info in &drive_infos {
+            let drive_col = if info.is_boot {
+                format!("{}:*", info.letter)
+            } else {
+                format!("{}:", info.letter)
+            };
             println!(
                 "{:<6} {:<16} {:<5} {:>10} {:>10} {:>10} {:>6.1}% {:>10} {:>12}",
-                format!("{}:", info.letter),
+                drive_col,
                 truncate_string(&info.label, 16),
                 info.drive_type,
                 format_bytes(info.total_size),
@@ -653,6 +660,8 @@ pub async fn cmd_drives() -> Result<()> {
             format_bytes(total_mft),
             format_number_commas(total_records),
         );
+        println!();
+        println!("  * = boot/system drive");
         println!();
     }
 

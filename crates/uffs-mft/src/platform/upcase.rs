@@ -1,4 +1,5 @@
-//! Read the NTFS `$UpCase` table from a live Windows volume.
+//! Read the NTFS `$UpCase` table from a live Windows volume and
+//! persist it with AES-256-GCM encryption.
 //!
 //! `$UpCase` (FRS 10) stores 128 KB of UTF-16 uppercase mappings.  The
 //! actual table data is **non-resident** — it lives in disk clusters,
@@ -6,9 +7,22 @@
 //! regular file, so we read via: open volume → seek to FRS 10 in
 //! MFT → parse DATA attribute data runs → read clusters.
 //!
+//! # Persistence
+//!
+//! Saved files follow the same security model as index caches (see
+//! `docs/architecture/SECURITY_IMPLEMENTATION_PLAN.md`):
+//!
+//! 1. Serialize: [`UpcaseHeader`] (64 bytes) + raw table (128 KB)
+//! 2. Encrypt: `uffs_security::crypto::encrypt_cache()` → UFFSENC
+//! 3. Write: `crate::cache::atomic_write()` (temp + rename + perms)
+//! 4. Load: `detect_format` → `decrypt_cache` → validate → extract
+//!
 //! # Usage
 //!
-//! Called from `uffs_mft save --drive C --output upcase.bin --upcase`.
+//! ```text
+//! uffs_mft save --upcase
+//! uffs_mft save --upcase --drive D --output D_upcase.bin
+//! ```
 
 use crate::error::{MftError, Result};
 #[cfg(windows)]
@@ -20,6 +34,249 @@ const UPCASE_FRS: u64 = 10;
 
 /// Expected data size in bytes (65 536 entries × 2).
 pub const UPCASE_SIZE_BYTES: usize = 65_536 * 2;
+
+/// Magic bytes identifying a UFFS `$UpCase` file (before encryption).
+const UPCASE_MAGIC: &[u8; 8] = b"UFFSUP\0\0";
+
+/// Current upcase file format version.
+const UPCASE_FORMAT_VERSION: u32 = 1;
+
+/// Total header size in bytes (fixed, padded with reserved).
+const HEADER_SIZE: usize = 64;
+
+// ── Header ────────────────────────────────────────────────────────────
+
+/// Metadata header stored alongside the raw `$UpCase` table.
+///
+/// ```text
+/// Offset  Size  Field
+/// 0       8     Magic: b"UFFSUP\0\0"
+/// 8       4     Format version (u32 LE) = 1
+/// 12      2     NTFS major version (u16 LE)
+/// 14      2     NTFS minor version (u16 LE)
+/// 16      8     Volume serial number (u64 LE)
+/// 24      4     CRC-32 of the raw 128 KB table (u32 LE)
+/// 28      8     Timestamp — Unix epoch seconds (u64 LE)
+/// 36      1     Drive letter (ASCII uppercase)
+/// 37      27    Reserved (zeroed)
+/// ─────────────
+/// 64            Raw [u16; 65_536] table data (131 072 bytes)
+/// ```
+#[derive(Debug, Clone)]
+pub struct UpcaseHeader {
+    /// NTFS major version from the source volume.
+    pub ntfs_major: u16,
+    /// NTFS minor version from the source volume.
+    pub ntfs_minor: u16,
+    /// Volume serial number from the source volume.
+    pub volume_serial: u64,
+    /// CRC-32 of the raw 128 KB table bytes.
+    pub table_crc32: u32,
+    /// Timestamp (Unix epoch seconds) when the table was captured.
+    pub timestamp: u64,
+    /// Drive letter (ASCII uppercase).
+    pub drive: char,
+}
+
+impl UpcaseHeader {
+    /// Serializes header + raw table into a byte vector (plaintext).
+    fn serialize(&self, table: &[u16; 65_536]) -> Vec<u8> {
+        let mut buf = vec![0u8; HEADER_SIZE + UPCASE_SIZE_BYTES];
+
+        buf[0..8].copy_from_slice(UPCASE_MAGIC);
+        buf[8..12].copy_from_slice(&UPCASE_FORMAT_VERSION.to_le_bytes());
+        buf[12..14].copy_from_slice(&self.ntfs_major.to_le_bytes());
+        buf[14..16].copy_from_slice(&self.ntfs_minor.to_le_bytes());
+        buf[16..24].copy_from_slice(&self.volume_serial.to_le_bytes());
+        buf[24..28].copy_from_slice(&self.table_crc32.to_le_bytes());
+        buf[28..36].copy_from_slice(&self.timestamp.to_le_bytes());
+        buf[36] = self.drive as u8;
+        // 37..64 reserved (already zeroed)
+
+        let raw: &[u8] = bytemuck::cast_slice(table.as_ref());
+        buf[HEADER_SIZE..].copy_from_slice(raw);
+        buf
+    }
+
+    /// Deserializes header from the first 64 bytes of plaintext.
+    fn deserialize(data: &[u8]) -> Result<Self> {
+        if data.len() < HEADER_SIZE + UPCASE_SIZE_BYTES {
+            return Err(MftError::InvalidData(format!(
+                "$UpCase file too small: {} bytes (need {})",
+                data.len(),
+                HEADER_SIZE + UPCASE_SIZE_BYTES
+            )));
+        }
+        if &data[0..8] != UPCASE_MAGIC {
+            return Err(MftError::InvalidData(
+                "$UpCase file: wrong magic bytes".into(),
+            ));
+        }
+        let version = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+        if version != UPCASE_FORMAT_VERSION {
+            return Err(MftError::InvalidData(format!(
+                "$UpCase file: unsupported version {version} (expected {UPCASE_FORMAT_VERSION})"
+            )));
+        }
+        Ok(Self {
+            ntfs_major: u16::from_le_bytes([data[12], data[13]]),
+            ntfs_minor: u16::from_le_bytes([data[14], data[15]]),
+            volume_serial: u64::from_le_bytes([
+                data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
+            ]),
+            table_crc32: u32::from_le_bytes([data[24], data[25], data[26], data[27]]),
+            timestamp: u64::from_le_bytes([
+                data[28], data[29], data[30], data[31], data[32], data[33], data[34], data[35],
+            ]),
+            drive: data[36] as char,
+        })
+    }
+}
+
+// ── CRC-32 helper ─────────────────────────────────────────────────────
+
+/// Compute CRC-32 of the raw `$UpCase` table bytes.
+///
+/// Public so callers can build an [`UpcaseHeader`] with the correct
+/// checksum before calling [`save_upcase_to_file`].
+pub fn crc32_table(data: &[u8]) -> u32 {
+    crc32(data)
+}
+
+/// Compute CRC-32 of a byte slice (IEEE / ITU-T V.42, same as PNG/ZIP).
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+// ── Persistence (encrypt + atomic write) ──────────────────────────────
+
+/// Save the `$UpCase` table to an encrypted file.
+///
+/// Follows the same security model as index cache files:
+/// serialize → AES-256-GCM encrypt → atomic write.
+///
+/// # Errors
+///
+/// Returns an error if encryption or file I/O fails.  Falls back to
+/// plaintext with a warning if the platform key is unavailable.
+pub fn save_upcase_to_file(
+    path: &std::path::Path,
+    header: &UpcaseHeader,
+    table: &[u16; 65_536],
+) -> Result<()> {
+    let plaintext = header.serialize(table);
+
+    let data = match uffs_security::keystore::get_cache_key() {
+        Ok(key) => match uffs_security::crypto::encrypt_cache(&plaintext, &key) {
+            Ok(encrypted) => encrypted,
+            Err(e) => {
+                tracing::warn!(error = %e, "Encryption failed, saving plaintext $UpCase");
+                plaintext
+            }
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "Key unavailable, saving plaintext $UpCase");
+            plaintext
+        }
+    };
+
+    crate::cache::atomic_write(path, &data)
+        .map_err(|e| MftError::InvalidData(format!("Failed to write $UpCase file: {e}")))?;
+
+    tracing::info!(
+        path = %path.display(),
+        encrypted = data.starts_with(b"UFFSENC"),
+        "Saved $UpCase table"
+    );
+    Ok(())
+}
+
+/// Load the `$UpCase` table from an encrypted file.
+///
+/// Detects format automatically:
+/// - **UFFSENC**: decrypts with platform key, then parses header + table
+/// - **UFFSUP**: legacy plaintext, parses directly
+/// - **Unknown**: returns an error
+///
+/// If decryption fails (wrong key / tampered), the file is deleted and
+/// an error returned so the caller can re-read from the live volume.
+pub fn load_upcase_from_file(path: &std::path::Path) -> Result<(UpcaseHeader, Box<[u16; 65_536]>)> {
+    use uffs_security::crypto::{CacheFormat, decrypt_cache, detect_format};
+
+    let raw = std::fs::read(path)
+        .map_err(|e| MftError::InvalidData(format!("Failed to read {}: {e}", path.display())))?;
+
+    let format = detect_format(&raw);
+
+    let plaintext = match format {
+        CacheFormat::Encrypted => {
+            let key = uffs_security::keystore::get_cache_key()
+                .map_err(|e| MftError::InvalidData(format!("Key error: {e}")))?;
+            match decrypt_cache(&raw, &key) {
+                Ok(pt) => pt,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "UpCase decryption failed — deleting corrupted file"
+                    );
+                    let _ignore = std::fs::remove_file(path);
+                    return Err(MftError::InvalidData(format!(
+                        "UpCase decryption failed (tampered/wrong key): {e}"
+                    )));
+                }
+            }
+        }
+        CacheFormat::LegacyPlaintext | CacheFormat::Unknown => {
+            // Try parsing as raw UFFSUP plaintext.
+            if raw.len() >= 8 && &raw[0..8] == UPCASE_MAGIC {
+                raw
+            } else {
+                return Err(MftError::InvalidData(format!(
+                    "Unknown $UpCase file format: {}",
+                    path.display()
+                )));
+            }
+        }
+    };
+
+    let header = UpcaseHeader::deserialize(&plaintext)?;
+
+    // Extract raw table.
+    let table_bytes = &plaintext[HEADER_SIZE..HEADER_SIZE + UPCASE_SIZE_BYTES];
+    let u16_slice: &[u16] = bytemuck::cast_slice(table_bytes);
+    let mut table = Box::new([0u16; 65_536]);
+    table.copy_from_slice(u16_slice);
+
+    // Verify CRC-32.
+    let actual_crc = crc32(table_bytes);
+    if actual_crc != header.table_crc32 {
+        return Err(MftError::InvalidData(format!(
+            "$UpCase CRC-32 mismatch: file=0x{:08X} computed=0x{actual_crc:08X}",
+            header.table_crc32
+        )));
+    }
+
+    tracing::info!(
+        path = %path.display(),
+        drive = %header.drive,
+        ntfs = %format!("{}.{}", header.ntfs_major, header.ntfs_minor),
+        "Loaded $UpCase table"
+    );
+
+    Ok((header, table))
+}
 
 /// Parsed `$UpCase` metadata extracted from FRS 10.
 #[cfg(windows)]

@@ -1,4 +1,4 @@
-//! Sorting and DataFrame conversion for search results.
+//! Sorting and `DataFrame` conversion for search results.
 //!
 //! Extracted from `backend.rs` for file-size policy compliance.
 //! Re-exported via `pub use` in `backend.rs` — callers see no change.
@@ -222,7 +222,7 @@ pub fn display_rows_to_dataframe(
     let treesize: Vec<u64> = rows.iter().map(|row| row.treesize).collect();
 
     // path_only = directory portion of path (up to and including last backslash).
-    let path_only: Vec<&str> = rows.iter().map(|row| row.path_dir()).collect();
+    let path_only: Vec<&str> = rows.iter().map(DisplayRow::path_dir).collect();
 
     DataFrame::new(
         rows.len(),
