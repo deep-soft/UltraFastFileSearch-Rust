@@ -215,7 +215,6 @@ impl MftReader {
         clippy::too_many_lines,
         reason = "parsing logic with forensic/sequential/parallel branches is inherently complex"
     )]
-    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
     pub fn load_raw_to_index_with_options<P: AsRef<Path>>(
         path: P,
         options: &crate::raw::LoadRawOptions,
@@ -251,7 +250,12 @@ impl MftReader {
         if profile {
             #[expect(clippy::cast_precision_loss, reason = "display-only MB value")]
             let mft_mb = raw.header.original_size as f64 / (1024.0 * 1024.0);
-            eprintln!("[CACHE_PROFILE] mft_read:      {read_ms:>6} ms  ({mft_mb:.1} MB)");
+            tracing::debug!(
+                target: "cache_profile",
+                read_ms = %read_ms,
+                mft_mb = %format_args!("{mft_mb:.1}"),
+                "mft_read"
+            );
         }
         let parse_options = if options.forensic {
             ParseOptions::FORENSIC
@@ -298,12 +302,13 @@ impl MftReader {
             let index = MftIndex::from_parsed_records(raw.header.volume_letter, parsed_records);
             if profile {
                 let build_ms = t_build.elapsed().as_millis();
-                eprintln!(
-                    "[CACHE_PROFILE] mft_parse:     {:>6} ms  ({record_count} records, forensic)",
-                    0
-                );
-                eprintln!(
-                    "[CACHE_PROFILE] mft_build:     {build_ms:>6} ms  (tree_metrics+ext_index+stats)"
+                tracing::debug!(
+                    target: "cache_profile",
+                    parse_ms = 0,
+                    record_count,
+                    mode = "forensic",
+                    build_ms = %build_ms,
+                    "mft_parse_build"
                 );
             }
             Ok(index)
@@ -355,11 +360,13 @@ impl MftReader {
                 let index = MftIndex::from_parsed_records(raw.header.volume_letter, parsed_records);
                 if profile {
                     let build_ms = t_build.elapsed().as_millis();
-                    eprintln!(
-                        "[CACHE_PROFILE] mft_parse:     {parse_ms:>6} ms  ({record_count} records, sequential)"
-                    );
-                    eprintln!(
-                        "[CACHE_PROFILE] mft_build:     {build_ms:>6} ms  (tree_metrics+ext_index+stats)"
+                    tracing::debug!(
+                        target: "cache_profile",
+                        parse_ms = %parse_ms,
+                        record_count,
+                        mode = "sequential",
+                        build_ms = %build_ms,
+                        "mft_parse_build"
                     );
                 }
                 Ok(index)
@@ -451,12 +458,14 @@ impl MftReader {
                 let index = MftIndex::from_parsed_records(raw.header.volume_letter, parsed_records);
                 if profile {
                     let build_ms = t_build.elapsed().as_millis();
-                    eprintln!(
-                        "[CACHE_PROFILE] mft_parse:     {parse_ms:>6} ms  ({record_count} records, parallel/{}T)",
-                        rayon::current_num_threads(),
-                    );
-                    eprintln!(
-                        "[CACHE_PROFILE] mft_build:     {build_ms:>6} ms  (tree_metrics+ext_index+stats)"
+                    tracing::debug!(
+                        target: "cache_profile",
+                        parse_ms = %parse_ms,
+                        record_count,
+                        mode = "parallel",
+                        threads = rayon::current_num_threads(),
+                        build_ms = %build_ms,
+                        "mft_parse_build"
                     );
                 }
                 Ok(index)

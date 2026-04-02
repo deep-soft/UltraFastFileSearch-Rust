@@ -310,12 +310,12 @@ impl UffsClient {
                 path = %path_str,
                 "🗂️ shmem: read bulk results"
             );
-            #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
-            if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
-                eprintln!(
-                    "[CACHE_PROFILE] shmem_read:  {shmem_read_ms:>6} ms  ({row_count} rows from shmem)"
-                );
-            }
+            tracing::debug!(
+                target: "cache_profile",
+                shmem_read_ms = %shmem_read_ms,
+                row_count,
+                "shmem_read"
+            );
             return Ok(shmem_response);
         }
 
@@ -963,19 +963,17 @@ fn spawn_daemon_unix(
     clippy::single_call_fn,
     reason = "platform-specific helper — clarity over inlining"
 )]
-#[expect(
-    clippy::print_stdout,
-    clippy::use_debug,
-    reason = "temporary diagnostic output for debugging daemon start"
-)]
 fn spawn_daemon_windows(
     exe: &std::path::Path,
     args: &[&str],
 ) -> Result<(), crate::error::ClientError> {
     let elevated = is_elevated();
-    println!("[diag] spawn_daemon_windows: exe={}", exe.display());
-    println!("[diag] spawn_daemon_windows: args={args:?}");
-    println!("[diag] spawn_daemon_windows: is_elevated={elevated}");
+    tracing::debug!(
+        exe = %exe.display(),
+        ?args,
+        elevated,
+        "spawn_daemon_windows"
+    );
 
     if elevated {
         // Already elevated — spawn directly via CreateProcessW.
@@ -990,18 +988,18 @@ fn spawn_daemon_windows(
         // CreateProcessW with bInheritHandles=FALSE prevents all handle
         // inheritance, so the daemon is fully detached from the parent's
         // I/O.
-        println!(
-            "[diag] spawn_daemon_windows: spawning via CreateProcessW (no handle inheritance)..."
+        tracing::debug!(
+            "spawn_daemon_windows: spawning via CreateProcessW (no handle inheritance)"
         );
         spawn_detached_no_inherit(exe, args)?;
     } else {
         // Not elevated — use ShellExecuteW "runas" to trigger UAC.
         // ShellExecuteW always creates a fully new process — no handle
         // inheritance issues.
-        println!("[diag] spawn_daemon_windows: NOT elevated, using ShellExecuteW runas");
+        tracing::debug!("spawn_daemon_windows: NOT elevated, using ShellExecuteW runas");
         tracing::info!("Not elevated — requesting elevation via UAC prompt");
         shell_execute_elevated(exe, args)?;
-        println!("[diag] spawn_daemon_windows: ShellExecuteW returned OK");
+        tracing::debug!("spawn_daemon_windows: ShellExecuteW returned OK");
     }
     Ok(())
 }
@@ -1066,10 +1064,7 @@ fn spawn_detached_no_inherit(
 
     match result {
         Ok(()) => {
-            println!(
-                "[diag] spawn_detached_no_inherit: spawned PID={}",
-                pi.dwProcessId
-            );
+            tracing::debug!(pid = pi.dwProcessId, "spawn_detached_no_inherit: spawned");
             tracing::info!(
                 pid = pi.dwProcessId,
                 "Daemon spawned (no handle inheritance)"
@@ -1084,7 +1079,7 @@ fn spawn_detached_no_inherit(
             Ok(())
         }
         Err(win_err) => {
-            println!("[diag] spawn_detached_no_inherit: FAILED: {win_err}");
+            tracing::debug!(error = %win_err, "spawn_detached_no_inherit: FAILED");
             Err(crate::error::ClientError::DaemonStartFailed(format!(
                 "CreateProcessW failed for {}: {win_err}",
                 exe.display()

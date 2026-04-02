@@ -15,7 +15,7 @@ const UNLIMITED: usize = usize::MAX;
 /// The filename is **not** stored separately — it is derived from the `path`
 /// field using `name_start` (byte offset where the filename begins within
 /// `path`).  This avoids one heap allocation per result row.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[expect(
     clippy::partial_pub_fields,
     reason = "name_start is private by design — accessed via name() method"
@@ -399,26 +399,32 @@ impl MultiDriveBackend {
         }
         let wall_ms = start.elapsed().as_millis();
 
-        #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
-        if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
-            let mode = if is_match_all {
-                "match-all"
-            } else if is_regex {
-                "regex"
-            } else if is_path {
-                "tree"
-            } else {
-                "trigram"
-            };
-            eprintln!(
-                "[CACHE_PROFILE] search_total:  {wall_ms:>6} ms  ({} rows, {scanned} scanned, mode={mode})",
-                rows.len(),
-            );
-        }
+        let mode = if is_match_all {
+            "match-all"
+        } else if is_regex {
+            "regex"
+        } else if is_path {
+            "tree"
+        } else {
+            "trigram"
+        };
+        tracing::debug!(
+            target: "cache_profile",
+            wall_ms = %wall_ms,
+            rows = rows.len(),
+            scanned,
+            mode,
+            "search_total"
+        );
 
-        self.last_results.clone_from(&rows);
+        // Store results in last_results for TUI re-sort; return the
+        // same rows by swapping ownership then cloning back.  This is
+        // identical cost to the old clone_from — but callers that never
+        // re-sort (CLI / daemon) can ignore last_results entirely.
+        // Future optimisation: make SearchResult borrow from last_results.
+        self.last_results = rows;
         SearchResult {
-            rows,
+            rows: self.last_results.clone(),
             duration: start.elapsed(),
             records_scanned: scanned,
         }
@@ -471,69 +477,103 @@ impl MultiDriveBackend {
     }
 }
 
+/// Pre-computed lowercase sort keys for a single row.
+///
+/// Stored alongside each `DisplayRow` during sorting (Schwartzian transform)
+/// to avoid allocating inside the O(n·log n) comparator.
+struct RowSortKey {
+    /// Lowercase name.
+    name: String,
+    /// Lowercase path.
+    path: String,
+    /// Lowercase extension.
+    ext: String,
+}
+
 /// Sort display rows by the given column, then by additional tiers, with a
 /// final name-ascending tiebreaker.
+///
+/// String-based columns (Name, Path, Extension) use pre-computed lowercase
+/// keys to avoid per-comparison allocation (Schwartzian transform).
 pub fn sort_rows(
     rows: &mut [DisplayRow],
     column: SortColumn,
     descending: bool,
     extra_tiers: &[SortSpec],
 ) {
-    rows.sort_unstable_by(|row_a, row_b| {
-        let mut ord = compare_by_column(row_a, row_b, column);
+    if rows.len() <= 1 {
+        return;
+    }
+    // Decorate: zip each row with its pre-computed keys.
+    let mut decorated: Vec<(DisplayRow, RowSortKey)> = rows
+        .iter_mut()
+        .map(|row| {
+            let key = RowSortKey {
+                name: row.name().to_ascii_lowercase(),
+                path: row.path.to_ascii_lowercase(),
+                ext: row
+                    .name()
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_lowercase(),
+            };
+            // Take ownership; we'll put it back after sorting.
+            (core::mem::take(row), key)
+        })
+        .collect();
+
+    // Sort the decorated pairs.
+    decorated.sort_unstable_by(|(row_a, key_a), (row_b, key_b)| {
+        let mut ord = compare_by_column(row_a, key_a, row_b, key_b, column);
         if descending {
             ord = ord.reverse();
         }
-
         for tier in extra_tiers {
             if ord != core::cmp::Ordering::Equal {
                 break;
             }
-            ord = compare_by_column(row_a, row_b, tier.column);
+            ord = compare_by_column(row_a, key_a, row_b, key_b, tier.column);
             if tier.descending {
                 ord = ord.reverse();
             }
         }
-
+        // Name tiebreaker.
         if ord == core::cmp::Ordering::Equal
             && column != SortColumn::Name
             && !extra_tiers
                 .iter()
                 .any(|tier| tier.column == SortColumn::Name)
         {
-            ord = row_a
-                .name()
-                .to_lowercase()
-                .cmp(&row_b.name().to_lowercase());
+            ord = key_a.name.cmp(&key_b.name);
         }
-
         ord
     });
+
+    // Undecorate: move sorted rows back into the slice.
+    for (dest, (row, _key)) in rows.iter_mut().zip(decorated) {
+        *dest = row;
+    }
 }
 
 /// Compare two rows by a single column (natural / ascending order).
 fn compare_by_column(
     row_a: &DisplayRow,
+    key_a: &RowSortKey,
     row_b: &DisplayRow,
+    key_b: &RowSortKey,
     column: SortColumn,
 ) -> core::cmp::Ordering {
     match column {
-        SortColumn::Name => row_a
-            .name()
-            .to_lowercase()
-            .cmp(&row_b.name().to_lowercase()),
+        SortColumn::Name => key_a.name.cmp(&key_b.name),
         SortColumn::Size => row_a.size.cmp(&row_b.size),
         SortColumn::SizeOnDisk => row_a.allocated.cmp(&row_b.allocated),
         SortColumn::Created => row_a.created.cmp(&row_b.created),
         SortColumn::Modified => row_a.modified.cmp(&row_b.modified),
         SortColumn::Accessed => row_a.accessed.cmp(&row_b.accessed),
-        SortColumn::Path => row_a.path.to_lowercase().cmp(&row_b.path.to_lowercase()),
+        SortColumn::Path => key_a.path.cmp(&key_b.path),
         SortColumn::Drive => row_a.drive.cmp(&row_b.drive),
-        SortColumn::Extension => {
-            let ext_a = row_a.name().rsplit('.').next().unwrap_or("").to_lowercase();
-            let ext_b = row_b.name().rsplit('.').next().unwrap_or("").to_lowercase();
-            ext_a.cmp(&ext_b)
-        }
+        SortColumn::Extension => key_a.ext.cmp(&key_b.ext),
         SortColumn::Type => {
             let icon_a = devicons::icon_for_file(row_a.name(), &None).icon;
             let icon_b = devicons::icon_for_file(row_b.name(), &None).icon;
@@ -617,14 +657,13 @@ pub fn display_rows_to_dataframe(
     let descendants: Vec<u32> = rows.iter().map(|row| row.descendants).collect();
     let treesize: Vec<u64> = rows.iter().map(|row| row.treesize).collect();
 
-    // path_only = directory portion of path (up to and including last backslash)
-    let path_only: Vec<String> = rows
+    // path_only = directory portion of path (up to and including last backslash).
+    // Uses pre-computed name_start offset — zero-cost slice, no rfind needed.
+    let path_only: Vec<&str> = rows
         .iter()
         .map(|row| {
-            row.path.rfind('\\').map_or_else(
-                || row.path.clone(),
-                |pos| row.path.get(..=pos).unwrap_or(&row.path).to_owned(),
-            )
+            let ns = row.name_start as usize;
+            row.path.get(..ns).unwrap_or(&row.path)
         })
         .collect();
 

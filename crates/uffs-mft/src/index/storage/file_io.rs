@@ -34,7 +34,6 @@ impl MftIndex {
     /// # Errors
     ///
     /// Returns an error if compression, encryption, or file writing fails.
-    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
     pub fn save_to_file(
         &self,
         path: &std::path::Path,
@@ -74,24 +73,19 @@ impl MftIndex {
             #[expect(clippy::cast_precision_loss, reason = "display-only ratio")]
             let ratio = uncompressed_len as f64 / compressed_len as f64;
             let save_total_ms = t_save_total.elapsed().as_millis();
-            eprintln!(
-                "[CACHE_PROFILE] mft_serialize: {serialize_ms:>6} ms  ({:.1} MB)",
-                mb(uncompressed_len),
+            tracing::debug!(
+                target: "cache_profile",
+                serialize_ms = %serialize_ms,
+                uncomp_mb = %format_args!("{:.1}", mb(uncompressed_len)),
+                compress_ms = %compress_ms,
+                comp_mb = %format_args!("{:.1}", mb(compressed_len)),
+                ratio = %format_args!("{ratio:.1}"),
+                encrypt_ms = %encrypt_ms,
+                write_ms = %write_ms,
+                write_mb = %format_args!("{:.1}", mb(data.len())),
+                total_ms = %save_total_ms,
+                "mft_save"
             );
-            eprintln!(
-                "[CACHE_PROFILE] mft_compress:  {compress_ms:>6} ms  ({:.1} MB → {:.1} MB, {ratio:.1}x)",
-                mb(uncompressed_len),
-                mb(compressed_len),
-            );
-            eprintln!(
-                "[CACHE_PROFILE] mft_encrypt:   {encrypt_ms:>6} ms  ({:.1} MB)",
-                mb(compressed_len),
-            );
-            eprintln!(
-                "[CACHE_PROFILE] mft_write:     {write_ms:>6} ms  ({:.1} MB)",
-                mb(data.len()),
-            );
-            eprintln!("[CACHE_PROFILE] mft_save_total:{save_total_ms:>6} ms");
         }
 
         result
@@ -117,7 +111,6 @@ impl MftIndex {
     /// # Errors
     ///
     /// Returns an error if file reading, decryption, or deserialization fails.
-    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
     pub fn load_from_file(
         path: &std::path::Path,
     ) -> Result<(Self, IndexHeader), Box<dyn core::error::Error>> {
@@ -166,7 +159,6 @@ impl MftIndex {
             }
         };
         let decrypt_ms = t1.elapsed().as_millis();
-        let decrypted_len = decrypted.len();
 
         // Decompress if zstd-compressed (backward compat: old caches skip this)
         let t_decompress = std::time::Instant::now();
@@ -193,26 +185,19 @@ impl MftIndex {
         if profile {
             #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
             let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
-            eprintln!(
-                "[CACHE_PROFILE] file_read:     {read_ms:>6} ms  ({:.1} MB)",
-                mb(raw_len)
+            tracing::debug!(
+                target: "cache_profile",
+                read_ms = %read_ms,
+                raw_mb = %format_args!("{:.1}", mb(raw_len)),
+                decrypt_ms = %decrypt_ms,
+                compressed,
+                decompress_ms = %decompress_ms,
+                plain_mb = %format_args!("{:.1}", mb(plaintext_len)),
+                deser_ms = %deser_ms,
+                records = index.len(),
+                total_ms = %total_ms,
+                "mft_load"
             );
-            eprintln!(
-                "[CACHE_PROFILE] decrypt:       {decrypt_ms:>6} ms  ({:.1} MB)",
-                mb(decrypted_len)
-            );
-            if compressed {
-                eprintln!(
-                    "[CACHE_PROFILE] decompress:    {decompress_ms:>6} ms  ({:.1} MB → {:.1} MB)",
-                    mb(decrypted_len),
-                    mb(plaintext_len),
-                );
-            }
-            eprintln!(
-                "[CACHE_PROFILE] deserialize:   {deser_ms:>6} ms  ({} records)",
-                index.len()
-            );
-            eprintln!("[CACHE_PROFILE] total_load:    {total_ms:>6} ms");
         }
 
         Ok((index, header))

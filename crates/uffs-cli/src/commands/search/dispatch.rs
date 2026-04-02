@@ -154,14 +154,13 @@ pub(super) fn finalize_output(
     let output_ms = t_output.elapsed().as_millis();
     let wall_ms = config.start_time.elapsed().as_millis();
 
-    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
-    if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
-        eprintln!(
-            "[CACHE_PROFILE] output_total:  {output_ms:>6} ms  ({} rows)",
-            rows.len(),
-        );
-        eprintln!("[CACHE_PROFILE] wall_total:    {wall_ms:>6} ms");
-    }
+    tracing::debug!(
+        target: "cache_profile",
+        output_ms = %output_ms,
+        rows = rows.len(),
+        wall_ms = %wall_ms,
+        "output_wall_total"
+    );
 
     if config.benchmark {
         print_benchmark_stats_native(rows, elapsed);

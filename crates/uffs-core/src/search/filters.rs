@@ -116,8 +116,16 @@ impl SearchFilters {
     /// Check whether a compact record passes all filters.
     ///
     /// Hot-path predicate used during global top-N scans.
+    ///
+    /// `lower_buf` is a caller-owned reusable buffer for on-the-fly
+    /// lowering (avoids per-record heap allocation for exclude matching).
     #[must_use]
-    pub fn matches_record(&self, rec: &CompactRecord, names: &[u8]) -> bool {
+    pub fn matches_record(
+        &self,
+        rec: &CompactRecord,
+        names: &[u8],
+        lower_buf: &mut Vec<u8>,
+    ) -> bool {
         if self.hide_system {
             let name = rec.name(names);
             if name.starts_with('$') {
@@ -182,15 +190,29 @@ impl SearchFilters {
         }
         if !self.extensions.is_empty() {
             let name = rec.name(names);
-            let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-            if !self.extensions.iter().any(|allowed| allowed == &ext) {
+            let ext = name.rsplit('.').next().unwrap_or("");
+            // Zero-alloc: compare case-insensitively instead of allocating
+            // a lowercase String per record.  `self.extensions` are stored
+            // pre-lowered, and `eq_ignore_ascii_case` handles mixed-case
+            // filenames without allocation.
+            if !self
+                .extensions
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(ext))
+            {
                 return false;
             }
         }
         if let Some(excl) = &self.exclude_lower {
+            // Zero-alloc: lowercase the name in a reusable caller-owned buffer
+            // instead of allocating a new String per record.
             let name = rec.name(names);
-            let name_lower = name.to_ascii_lowercase();
-            if name_matches(&name_lower, excl) {
+            lower_buf.clear();
+            lower_buf.extend_from_slice(name.as_bytes());
+            lower_buf.make_ascii_lowercase();
+            // Name was valid UTF-8 and ASCII lowering preserves UTF-8.
+            let lower_name = core::str::from_utf8(lower_buf).unwrap_or("");
+            if name_matches(lower_name, excl) {
                 return false;
             }
         }
@@ -284,17 +306,20 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
             }
         }
         if !filters.extensions.is_empty() {
-            let ext = row
-                .name()
-                .rsplit('.')
-                .next()
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if !filters.extensions.iter().any(|allowed| allowed == &ext) {
+            let ext = row.name().rsplit('.').next().unwrap_or("");
+            // Zero-alloc: case-insensitive comparison instead of allocating
+            // a lowercase String per row.
+            if !filters
+                .extensions
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(ext))
+            {
                 return false;
             }
         }
         if let Some(excl) = &filters.exclude_lower {
+            // DisplayRow path: allocate a lowercase copy.  This is bounded
+            // by result count (typically < 10 K), not record count (7 M).
             let name_lower = row.name().to_ascii_lowercase();
             if name_matches(&name_lower, excl) {
                 return false;

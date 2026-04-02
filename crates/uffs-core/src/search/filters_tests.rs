@@ -36,7 +36,7 @@ fn filter_min_size_rejects_small_files() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with size=1000 should be rejected by min_size=2000"
     );
 }
@@ -50,7 +50,7 @@ fn filter_max_size_rejects_large_files() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with size=1000 should be rejected by max_size=500"
     );
 }
@@ -67,7 +67,7 @@ fn filter_newer_modified_rejects_old_files() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with modified=200M should be rejected by newer_us=999M"
     );
 }
@@ -81,7 +81,7 @@ fn filter_older_modified_rejects_new_files() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with modified=200M should be rejected by older_us=100M"
     );
 }
@@ -95,7 +95,7 @@ fn filter_newer_created_rejects_old_files() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with created=100M should be rejected by newer_created_us=999M"
     );
 }
@@ -109,7 +109,7 @@ fn filter_newer_accessed_rejects_old_files() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with accessed=300M should be rejected by newer_accessed_us=999M"
     );
 }
@@ -126,7 +126,7 @@ fn filter_attr_require_rejects_missing_bits() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "ARCHIVE file should be rejected when HIDDEN is required"
     );
 }
@@ -141,7 +141,7 @@ fn filter_attr_exclude_rejects_matching_bits() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "ARCHIVE file should be rejected when ARCHIVE is excluded"
     );
 }
@@ -157,7 +157,7 @@ fn filter_extension_rejects_wrong_extension() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         ".jpg should be rejected when only .txt/.pdf are allowed"
     );
 }
@@ -171,7 +171,7 @@ fn filter_extension_accepts_matching_extension() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(&rec, &names),
+        filters.matches_record(&rec, &names, &mut Vec::new()),
         ".txt should be accepted when .txt is allowed"
     );
 }
@@ -181,14 +181,15 @@ fn filter_extension_accepts_matching_extension() {
 #[test]
 fn filter_exclude_rejects_matching_name() {
     let mut names = Vec::new();
-    let rec = test_record("thumbs.db", &mut names);
+    let rec = test_record("Thumbs.DB", &mut names);
+    let mut lower_buf = Vec::new();
     let filters = SearchFilters {
         exclude_lower: Some("thumbs*".to_owned()),
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
-        "thumbs.db should be rejected by exclude=thumbs*"
+        !filters.matches_record(&rec, &names, &mut lower_buf),
+        "Thumbs.DB should be rejected by exclude=thumbs* (case-insensitive via lower_buf)"
     );
 }
 
@@ -203,7 +204,7 @@ fn filter_min_descendants_rejects_low_count() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "dir with 5 descendants should be rejected by min_descendants=10"
     );
 }
@@ -217,7 +218,7 @@ fn filter_max_descendants_rejects_high_count() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "dir with 5 descendants should be rejected by max_descendants=3"
     );
 }
@@ -233,7 +234,7 @@ fn filter_hide_system_rejects_dollar_prefix() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "$MFT should be rejected by hide_system=true"
     );
 }
@@ -252,7 +253,7 @@ fn filter_combined_all_must_pass() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "combined: size passes but date fails → must reject"
     );
 }
@@ -269,7 +270,7 @@ fn filter_all_pass_accepts() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(&rec, &names),
+        filters.matches_record(&rec, &names, &mut Vec::new()),
         "all filters pass → must accept"
     );
 }
@@ -332,7 +333,7 @@ fn filter_older_created_rejects_new_files() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with created=100M should be rejected by older_created_us=50M"
     );
 }
@@ -347,7 +348,7 @@ fn filter_older_created_accepts_old_files() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(&rec, &names),
+        filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with created=100M should be accepted by older_created_us=999M"
     );
 }
@@ -362,7 +363,7 @@ fn filter_older_accessed_rejects_new_files() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(&rec, &names),
+        !filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with accessed=300M should be rejected by older_accessed_us=100M"
     );
 }
@@ -377,7 +378,7 @@ fn filter_older_accessed_accepts_old_files() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(&rec, &names),
+        filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with accessed=300M should be accepted by older_accessed_us=999M"
     );
 }
@@ -392,7 +393,7 @@ fn filter_older_modified_accepts_old_files() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(&rec, &names),
+        filters.matches_record(&rec, &names, &mut Vec::new()),
         "file with modified=200M should be accepted by older_us=999M"
     );
 }

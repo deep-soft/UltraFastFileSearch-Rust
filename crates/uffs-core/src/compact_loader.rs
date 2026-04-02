@@ -63,7 +63,6 @@ impl MftSource {
 /// # Errors
 ///
 /// Returns an error if the MFT data cannot be read or parsed.
-#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
 pub fn load_drive(
     source: &MftSource,
     no_cache: bool,
@@ -132,11 +131,11 @@ pub fn load_drive(
             tracing::warn!(drive = %drive_letter, error = %err, "Failed to start compact cache save");
         }
         let compact_save_ms = t_compact_save.elapsed().as_millis();
-        if std::env::var_os("UFFS_CACHE_PROFILE").is_some() {
-            eprintln!(
-                "[CACHE_PROFILE] compact_save_submit: {compact_save_ms:>4} ms  (serialized, bg thread spawned)"
-            );
-        }
+        tracing::debug!(
+            target: "cache_profile",
+            compact_save_submit_ms = %compact_save_ms,
+            "compact_save_submit (serialized, bg thread spawned)"
+        );
     }
 
     Ok((

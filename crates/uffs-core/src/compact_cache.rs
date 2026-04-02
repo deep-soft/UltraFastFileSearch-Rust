@@ -243,7 +243,6 @@ fn parse_compact_header(data: &[u8]) -> Result<(u64, usize, u16), &'static str> 
 ///
 /// # Errors
 /// Returns an error if compression, encryption, or file writing fails.
-#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
 pub fn save_compact_cache(index: &DriveCompactIndex) -> std::io::Result<()> {
     let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
     let t_total = Instant::now();
@@ -258,10 +257,12 @@ pub fn save_compact_cache(index: &DriveCompactIndex) -> std::io::Result<()> {
     uffs_mft::cache::compress_encrypt_write(serialized, &path, ZSTD_LEVEL, profile, "compact")?;
     if profile {
         let uncomp_mb = uncompressed_len / (1024 * 1024);
-        eprintln!("[CACHE_PROFILE] compact_ser:   {ser_ms:>6} ms  (~{uncomp_mb} MB)");
-        eprintln!(
-            "[CACHE_PROFILE] compact_save:  {:>6} ms  total",
-            t_total.elapsed().as_millis()
+        tracing::debug!(
+            target: "cache_profile",
+            ser_ms = %ser_ms,
+            uncomp_mb,
+            total_ms = %t_total.elapsed().as_millis(),
+            "compact_save"
         );
     }
     Ok(())
@@ -277,7 +278,6 @@ pub fn save_compact_cache(index: &DriveCompactIndex) -> std::io::Result<()> {
 ///
 /// # Errors
 /// Returns an error only if serialization or directory creation fails.
-#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
 pub fn save_compact_cache_background(index: &DriveCompactIndex) -> std::io::Result<()> {
     let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
     let t_ser = Instant::now();
@@ -285,7 +285,7 @@ pub fn save_compact_cache_background(index: &DriveCompactIndex) -> std::io::Resu
     let ser_ms = t_ser.elapsed().as_millis();
     if profile {
         let mb = serialized.len() / (1024 * 1024);
-        eprintln!("[CACHE_PROFILE] compact_ser:   {ser_ms:>6} ms  (~{mb} MB)");
+        tracing::debug!(target: "cache_profile", ser_ms = %ser_ms, mb, "compact_ser");
     }
     let path = compact_cache_path(index.letter);
     if let Some(dir) = path.parent() {
@@ -321,7 +321,6 @@ pub fn save_compact_cache_background(index: &DriveCompactIndex) -> std::io::Resu
 /// This is useful for hot-path searches where the caller knows the compact
 /// cache was just built or the `MftIndex` hasn't changed.
 #[must_use]
-#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
 pub fn load_compact_cache(
     drive_letter: char,
     ttl_seconds: u64,
@@ -383,11 +382,12 @@ pub fn load_compact_cache(
     if mft_build_epoch > 0 {
         if let Ok((source_epoch, _, _)) = parse_compact_header(&plaintext) {
             if source_epoch < mft_build_epoch {
-                if profile {
-                    eprintln!(
-                        "[CACHE_PROFILE] compact: STALE (source_epoch {source_epoch} < mft_epoch {mft_build_epoch})"
-                    );
-                }
+                tracing::debug!(
+                    target: "cache_profile",
+                    source_epoch,
+                    mft_build_epoch,
+                    "compact: STALE"
+                );
                 tracing::debug!(
                     drive = %drive_letter,
                     compact_epoch = source_epoch,
@@ -406,24 +406,26 @@ pub fn load_compact_cache(
     if profile {
         let raw_mb = raw_len / (1024 * 1024);
         let plain_mb = plaintext_len / (1024 * 1024);
-        eprintln!("[CACHE_PROFILE] compact_read:  {read_ms:>6} ms  (~{raw_mb} MB)");
-        eprintln!("[CACHE_PROFILE] compact_dec:   {decrypt_ms:>6} ms");
-        if is_compressed {
-            eprintln!("[CACHE_PROFILE] compact_dz:    {decompress_ms:>6} ms  (~{plain_mb} MB)");
-        }
         let tri_label = if tri_ms > 100 {
             "tri_rebuild"
         } else {
             "tri_load"
         };
-        eprintln!(
-            "[CACHE_PROFILE] compact_deser: {deser_ms:>6} ms  ({} records, {tri_label}={tri_ms} ms)",
-            index.records.len()
-        );
-        eprintln!(
-            "[CACHE_PROFILE] compact_total: {:>6} ms  (source_epoch={})",
-            t_total.elapsed().as_millis(),
-            index.source_epoch,
+        tracing::debug!(
+            target: "cache_profile",
+            read_ms = %read_ms,
+            raw_mb,
+            decrypt_ms = %decrypt_ms,
+            is_compressed,
+            decompress_ms = %decompress_ms,
+            plain_mb,
+            deser_ms = %deser_ms,
+            records = index.records.len(),
+            tri_label,
+            tri_ms = %tri_ms,
+            total_ms = %t_total.elapsed().as_millis(),
+            source_epoch = index.source_epoch,
+            "compact_load"
         );
     }
     Some(index)
@@ -436,15 +438,12 @@ pub fn load_compact_cache(
 /// - If a fresh compact cache exists on disk → loads and returns it.
 /// - Otherwise → builds from the given `MftIndex` → saves → returns.
 ///
-/// Always emits `[CACHE_PROFILE]` timing when `UFFS_CACHE_PROFILE` is set.
+/// Emits `cache_profile` tracing events at `debug` level.
 /// The caller may discard the returned index if only the `MftIndex` is needed.
-#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
 pub fn ensure_compact_cached(
     drive_letter: char,
     mft_index: &uffs_mft::MftIndex,
 ) -> DriveCompactIndex {
-    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
-
     // Try loading existing compact cache (epoch check catches stale caches).
     // Not TTL-only: we have the MftIndex, so mtime validation is cheap & correct.
     if let Some(cached) = load_compact_cache(
@@ -453,12 +452,11 @@ pub fn ensure_compact_cached(
         mft_index.build_epoch,
         false,
     ) {
-        if profile {
-            eprintln!(
-                "[CACHE_PROFILE] compact: loaded from cache ({} records)",
-                cached.records.len()
-            );
-        }
+        tracing::debug!(
+            target: "cache_profile",
+            records = cached.records.len(),
+            "compact: loaded from cache"
+        );
         return cached;
     }
 
@@ -467,19 +465,19 @@ pub fn ensure_compact_cached(
     let (compact, build_ms, tri_ms) = crate::compact::build_compact_index(drive_letter, mft_index);
     let total_build_ms = t_build.elapsed().as_millis();
 
-    if profile {
-        eprintln!(
-            "[CACHE_PROFILE] compact_build: {build_ms:>6} ms  ({} records)",
-            compact.records.len()
-        );
-        eprintln!("[CACHE_PROFILE] compact_tri:   {tri_ms:>6} ms");
-        eprintln!("[CACHE_PROFILE] compact_total: {total_build_ms:>6} ms  (build+trigram)");
-    }
+    tracing::debug!(
+        target: "cache_profile",
+        build_ms = %build_ms,
+        records = compact.records.len(),
+        tri_ms = %tri_ms,
+        total_ms = %total_build_ms,
+        "compact_build"
+    );
 
     // Save to disk (best-effort)
     if let Err(err) = save_compact_cache(&compact) {
         tracing::warn!(drive = %drive_letter, error = %err, "Failed to save compact cache");
-    } else if profile {
+    } else {
         // Report on-disk size of both caches
         let compact_path = compact_cache_path(drive_letter);
         let mft_path = uffs_mft::cache::cache_file_path(drive_letter);
@@ -488,10 +486,13 @@ pub fn ensure_compact_cached(
         let compact_disk_mb = compact_disk / (1024 * 1024);
         let mft_disk_mb = mft_disk / (1024 * 1024);
         let total_disk_mb = compact_disk_mb + mft_disk_mb;
-        eprintln!("[CACHE_PROFILE] ─── disk summary ───");
-        eprintln!("[CACHE_PROFILE] mft_index:     ~{mft_disk_mb} MB on disk");
-        eprintln!("[CACHE_PROFILE] compact_index: ~{compact_disk_mb} MB on disk");
-        eprintln!("[CACHE_PROFILE] total_cache:   ~{total_disk_mb} MB on disk");
+        tracing::debug!(
+            target: "cache_profile",
+            mft_disk_mb,
+            compact_disk_mb,
+            total_disk_mb,
+            "disk_summary"
+        );
     }
 
     compact

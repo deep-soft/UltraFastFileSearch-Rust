@@ -374,9 +374,20 @@ fn display_rows_to_dataframe_values_correct() {
 
 #[test]
 fn display_rows_to_dataframe_path_only_extracts_directory() {
-    let mut rows = vec![row("file.txt", 'C', 100, 0, 0)];
-    let first = rows.first_mut().expect("first");
-    first.path = "C:\\Users\\john\\file.txt".to_owned();
+    let rows = vec![DisplayRow::new(
+        'C',
+        "C:\\Users\\john\\file.txt".to_owned(),
+        100,
+        false,
+        0,
+        0,
+        0,
+        0x20,
+        512,
+        0,
+        0,
+        0,
+    )];
     let df = display_rows_to_dataframe(&rows).expect("DataFrame creation must not fail");
 
     let path_only_col = df.column("path_only").expect("path_only column");

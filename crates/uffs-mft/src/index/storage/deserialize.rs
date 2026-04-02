@@ -659,21 +659,27 @@ impl MftIndex {
         let total_deser_ms = t_deser_start.elapsed().as_millis();
 
         if profile {
-            eprintln!("[CACHE_PROFILE]   parse_fields:  {parse_ms:>6} ms  (binary field-by-field)");
-            eprintln!("[CACHE_PROFILE]   recompute_stats:{stats_ms:>5} ms");
-            if tree_ms > 0 {
-                eprintln!("[CACHE_PROFILE]   tree_metrics:  {tree_ms:>6} ms  (old format)");
-            }
-            if ext_rebuild_ms > 0 {
-                eprintln!(
-                    "[CACHE_PROFILE]   ext_index:     {ext_rebuild_ms:>6} ms  (CSR rebuild, <v10)"
-                );
+            let ext_mode = if ext_rebuild_ms > 0 {
+                "CSR_rebuild"
             } else {
-                eprintln!(
-                    "[CACHE_PROFILE]   ext_index:     {ext_idx_ms:>6} ms  (CSR load, v{version})"
-                );
-            }
-            eprintln!("[CACHE_PROFILE]   deser_total:   {total_deser_ms:>6} ms");
+                "CSR_load"
+            };
+            let ext_ms = if ext_rebuild_ms > 0 {
+                ext_rebuild_ms
+            } else {
+                ext_idx_ms
+            };
+            tracing::debug!(
+                target: "cache_profile",
+                parse_ms = %parse_ms,
+                stats_ms = %stats_ms,
+                tree_ms = %tree_ms,
+                ext_mode,
+                ext_ms = %ext_ms,
+                version,
+                total_ms = %total_deser_ms,
+                "mft_deserialize"
+            );
         }
 
         Ok((index, header))

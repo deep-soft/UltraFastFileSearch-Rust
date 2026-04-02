@@ -30,7 +30,6 @@ pub(super) struct CppFooterContext<'a> {
 ///
 /// For `json` and `table` formats, converts `DisplayRow`s to a `DataFrame`
 /// first (Polars serialisation).  For `csv` and `custom`, writes directly.
-#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
 pub(super) fn write_native_results(
     rows: &[uffs_core::search::backend::DisplayRow],
     format: &str,
@@ -100,13 +99,15 @@ pub(super) fn write_native_results(
     let write_ms = t_write.elapsed().as_millis();
 
     if profile {
-        if needs_df {
-            eprintln!(
-                "[CACHE_PROFILE] output_convert: {convert_ms:>5} ms  ({} rows → DataFrame)",
-                rows.len(),
-            );
-        }
-        eprintln!("[CACHE_PROFILE] output_fmt_io:  {write_ms:>5} ms  (format={format})");
+        tracing::debug!(
+            target: "cache_profile",
+            convert_ms = %convert_ms,
+            needs_df,
+            rows = rows.len(),
+            write_ms = %write_ms,
+            format,
+            "output_fmt_io"
+        );
     }
 
     Ok(())

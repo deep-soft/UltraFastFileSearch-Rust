@@ -149,6 +149,8 @@ fn collect_global_top_n_numeric(
 ) -> Vec<DisplayRow> {
     let has_filters = !search_filters.is_empty() || !matches!(filter_mode, FilterMode::All);
     let mut candidates: Vec<(u16, u32, i64)> = Vec::new();
+    // Reusable buffer for on-the-fly lowering inside filter matching.
+    let mut lower_buf: Vec<u8> = Vec::with_capacity(256);
 
     for (drive_idx, drive) in drives.iter().enumerate() {
         for (rec_idx, rec) in drive.records.iter().enumerate() {
@@ -161,7 +163,7 @@ fn collect_global_top_n_numeric(
                     FilterMode::DirsOnly if !rec.is_directory() => continue,
                     FilterMode::All | FilterMode::FilesOnly | FilterMode::DirsOnly => {}
                 }
-                if !search_filters.matches_record(rec, &drive.names) {
+                if !search_filters.matches_record(rec, &drive.names, &mut lower_buf) {
                     continue;
                 }
             }
@@ -263,12 +265,15 @@ pub fn search_compact_drive_regex(
     let rows = indices_to_rows(drive, &match_indices, &volume_prefix);
     let resolve_ms = t_resolve.elapsed().as_millis();
 
-    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
     if profile {
-        eprintln!(
-            "[CACHE_PROFILE] search_{}: regex_match={match_ms} ms ({match_count} hits from {} scan)  paths={resolve_ms} ms",
-            drive.letter,
-            drive.records.len(),
+        tracing::debug!(
+            target: "cache_profile",
+            drive = %drive.letter,
+            regex_match_ms = %match_ms,
+            match_count,
+            scanned = drive.records.len(),
+            resolve_ms = %resolve_ms,
+            "search_regex"
         );
     }
 
@@ -298,8 +303,7 @@ fn extract_trigram_needle(needle: &str, is_glob: bool, is_or: bool) -> String {
     }
 }
 
-/// Emit `[CACHE_PROFILE]` timing for a single-drive search.
-#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
+/// Emit search timing via `tracing::debug!` for a single-drive search.
 #[expect(
     clippy::single_call_fn,
     reason = "extracted from search_compact_drive to satisfy too_many_lines lint"
@@ -313,14 +317,70 @@ fn log_search_profile(
     tri_count: usize,
     total_records: usize,
 ) {
-    let scanned = if tri_count > 0 {
-        format!("{tri_count} trigram candidates")
+    let scan_mode = if tri_count > 0 { "trigram" } else { "full" };
+    let scan_count = if tri_count > 0 {
+        tri_count
     } else {
-        format!("{total_records} full scan")
+        total_records
     };
-    eprintln!(
-        "[CACHE_PROFILE] search_{letter}: trigram={tri_ms} ms  match={match_ms} ms ({match_count} hits from {scanned})  paths={resolve_ms} ms",
+    tracing::debug!(
+        target: "cache_profile",
+        drive = %letter,
+        tri_ms = %tri_ms,
+        match_ms = %match_ms,
+        match_count,
+        scan_mode,
+        scan_count,
+        resolve_ms = %resolve_ms,
+        "search_compact"
     );
+}
+
+/// Collect record indices that match the name predicate, either from
+/// trigram candidates or a full scan, up to `limit` results.
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted from search_compact_drive to satisfy too_many_lines lint"
+)]
+fn collect_match_indices(
+    drive: &DriveCompactIndex,
+    candidates: Option<Vec<u32>>,
+    limit: usize,
+    lower_buf: &mut Vec<u8>,
+    matches: &dyn Fn(&str, &mut Vec<u8>) -> bool,
+) -> Vec<usize> {
+    match candidates {
+        None => {
+            let mut out = Vec::new();
+            for (idx, rec) in drive.records.iter().enumerate() {
+                if out.len() >= limit {
+                    break;
+                }
+                let name = rec.name(&drive.names);
+                if matches(name, lower_buf) {
+                    out.push(idx);
+                }
+            }
+            out
+        }
+        Some(candidate_indices) => {
+            let mut out = Vec::with_capacity(candidate_indices.len().min(limit));
+            for &idx in &candidate_indices {
+                if out.len() >= limit {
+                    break;
+                }
+                let rec_idx = idx as usize;
+                let Some(rec) = drive.records.get(rec_idx) else {
+                    continue;
+                };
+                let name = rec.name(&drive.names);
+                if matches(name, lower_buf) {
+                    out.push(rec_idx);
+                }
+            }
+            out
+        }
+    }
 }
 
 /// Search a single drive's compact index (trigram + glob/substring).
@@ -392,38 +452,7 @@ pub fn search_compact_drive(
     let tri_count = candidates.as_ref().map_or(0, Vec::len);
 
     let t_match = std::time::Instant::now();
-    let match_indices: Vec<usize> = match candidates {
-        None => {
-            let mut out = Vec::new();
-            for (idx, rec) in drive.records.iter().enumerate() {
-                if out.len() >= limit {
-                    break;
-                }
-                let name = rec.name(&drive.names);
-                if matches(name, &mut lower_buf) {
-                    out.push(idx);
-                }
-            }
-            out
-        }
-        Some(candidate_indices) => {
-            let mut out = Vec::with_capacity(candidate_indices.len().min(limit));
-            for &idx in &candidate_indices {
-                if out.len() >= limit {
-                    break;
-                }
-                let rec_idx = idx as usize;
-                let Some(rec) = drive.records.get(rec_idx) else {
-                    continue;
-                };
-                let name = rec.name(&drive.names);
-                if matches(name, &mut lower_buf) {
-                    out.push(rec_idx);
-                }
-            }
-            out
-        }
-    };
+    let match_indices = collect_match_indices(drive, candidates, limit, &mut lower_buf, &matches);
     let match_ms = t_match.elapsed().as_millis();
     let match_count = match_indices.len();
 
@@ -482,11 +511,14 @@ pub fn search_compact_drive_tree(
         .collect();
     let resolve_ms = t_resolve.elapsed().as_millis();
 
-    #[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
     if profile {
-        eprintln!(
-            "[CACHE_PROFILE] search_{}: tree_walk={tree_ms} ms ({match_count} hits)  paths={resolve_ms} ms",
-            drive.letter,
+        tracing::debug!(
+            target: "cache_profile",
+            drive = %drive.letter,
+            tree_ms = %tree_ms,
+            match_count,
+            resolve_ms = %resolve_ms,
+            "search_tree"
         );
     }
 

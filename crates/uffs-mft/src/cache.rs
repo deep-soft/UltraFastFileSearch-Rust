@@ -348,7 +348,6 @@ pub fn save_to_cache(
 /// Background compression/encryption/write errors are logged but not
 /// propagated (best-effort save).
 #[cfg(feature = "zstd")]
-#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
 pub fn save_to_cache_background(
     index: &MftIndex,
     drive: char,
@@ -368,7 +367,12 @@ pub fn save_to_cache_background(
     if profile {
         #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
         let mb = serialized.len() as f64 / (1024.0 * 1024.0);
-        eprintln!("[CACHE_PROFILE] mft_serialize: {ser_ms:>6} ms  ({mb:.1} MB)");
+        tracing::debug!(
+            target: "cache_profile",
+            ser_ms = %ser_ms,
+            mb = %format_args!("{mb:.1}"),
+            "mft_serialize"
+        );
     }
 
     // Invalidate compact cache before writing new MftIndex.
@@ -581,7 +585,6 @@ pub fn compress_zstd_mt(data: &[u8], level: i32) -> std::io::Result<Vec<u8>> {
 /// Returns an I/O error if any step fails. Since this is typically called
 /// from a background thread, callers should log but not propagate errors.
 #[cfg(feature = "zstd")]
-#[expect(clippy::print_stderr, reason = "UFFS_CACHE_PROFILE diagnostic output")]
 pub fn compress_encrypt_write(
     serialized: Vec<u8>,
     path: &std::path::Path,
@@ -617,17 +620,19 @@ pub fn compress_encrypt_write(
         #[expect(clippy::cast_precision_loss, reason = "display-only ratio")]
         let ratio = uncompressed_len as f64 / compressed_len as f64;
         let total_ms = t_total.elapsed().as_millis();
-        eprintln!(
-            "[CACHE_PROFILE] {label}_bg_compress: {compress_ms:>6} ms  ({:.1} MB → {:.1} MB, {ratio:.1}x)",
-            mb(uncompressed_len),
-            mb(compressed_len),
+        tracing::debug!(
+            target: "cache_profile",
+            label,
+            compress_ms = %compress_ms,
+            uncomp_mb = %format_args!("{:.1}", mb(uncompressed_len)),
+            comp_mb = %format_args!("{:.1}", mb(compressed_len)),
+            ratio = %format_args!("{ratio:.1}"),
+            encrypt_ms = %encrypt_ms,
+            write_ms = %write_ms,
+            write_mb = %format_args!("{:.1}", mb(encrypted.len())),
+            total_ms = %total_ms,
+            "bg_compress_encrypt_write"
         );
-        eprintln!("[CACHE_PROFILE] {label}_bg_encrypt: {encrypt_ms:>6} ms");
-        eprintln!(
-            "[CACHE_PROFILE] {label}_bg_write:   {write_ms:>6} ms  ({:.1} MB)",
-            mb(encrypted.len()),
-        );
-        eprintln!("[CACHE_PROFILE] {label}_bg_total:   {total_ms:>6} ms  (background)");
     }
 
     Ok(())
