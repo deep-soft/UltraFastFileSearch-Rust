@@ -381,7 +381,7 @@ fn run_multi_drive_mode(args: &[String], base_dir: &Path) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Live mode: run C++ and Rust binaries, then compare outputs
+// Live mode: run Rust (cold disk) then C++ (warm cache), then compare outputs
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Maximum retries for transient sharing-violation errors (Windows MFT access)
@@ -628,23 +628,8 @@ fn run_live_drive_parity(
         rust_time: rust_ms,
     };
 
-    // 1. Run C++
-    print!("  [1/3] Running C++ scan...");
-    io::stdout().flush().ok();
-    let cpp_start = Instant::now();
-    let cpp_drives_arg = format!("--drives={drive_upper}");
-    let cpp_result = run_with_retry(cpp_bin, &[pattern, &cpp_drives_arg], &cpp_raw, "C++");
-    let cpp_elapsed = cpp_start.elapsed();
-    match cpp_result {
-        Ok(()) => println!(" ✅ ({})", format_duration(cpp_elapsed)),
-        Err(msg) => {
-            println!(" ❌ SKIPPED — {msg}");
-            return skipped(&msg, cpp_elapsed, Duration::ZERO);
-        }
-    }
-
-    // 2. Run Rust
-    print!("  [2/3] Running Rust scan...");
+    // 1. Run Rust FIRST (cold-disk read — no OS filesystem cache warmth)
+    print!("  [1/3] Running Rust scan (cold)...");
     io::stdout().flush().ok();
     let rust_start = Instant::now();
     let drive_arg = drive_upper.clone();
@@ -668,6 +653,21 @@ fn run_live_drive_parity(
     let rust_elapsed = rust_start.elapsed();
     match rust_result {
         Ok(()) => println!(" ✅ ({})", format_duration(rust_elapsed)),
+        Err(msg) => {
+            println!(" ❌ SKIPPED — {msg}");
+            return skipped(&msg, Duration::ZERO, rust_elapsed);
+        }
+    }
+
+    // 2. Run C++ SECOND (warm-disk read — MFT already in OS cache from Rust)
+    print!("  [2/3] Running C++ scan (warm)...");
+    io::stdout().flush().ok();
+    let cpp_start = Instant::now();
+    let cpp_drives_arg = format!("--drives={drive_upper}");
+    let cpp_result = run_with_retry(cpp_bin, &[pattern, &cpp_drives_arg], &cpp_raw, "C++");
+    let cpp_elapsed = cpp_start.elapsed();
+    match cpp_result {
+        Ok(()) => println!(" ✅ ({})", format_duration(cpp_elapsed)),
         Err(msg) => {
             println!(" ❌ SKIPPED — {msg}");
             return skipped(&msg, cpp_elapsed, rust_elapsed);
@@ -1651,7 +1651,7 @@ fn print_live_summary(results: &[LiveDriveResult]) {
 fn print_timing_table(results: &[LiveDriveResult]) {
     println!();
     println!("╔══════════╦════════════════╦════════════════╦═════════════╦═══════════════════╗");
-    println!("║  Drive   ║   C++ Time     ║   Rust Time    ║  Speedup    ║  Files/sec (Rust) ║");
+    println!("║  Drive   ║  C++ (warm)    ║  Rust (cold)   ║  Speedup    ║  Files/sec (Rust) ║");
     println!("╠══════════╬════════════════╬════════════════╬═════════════╬═══════════════════╣");
 
     let mut total_cpp = Duration::ZERO;
@@ -2295,7 +2295,7 @@ fn print_usage(prog: &str) {
     eprintln!("  {prog} <base_dir> --drive D --regenerate         # Verify drive D only");
     eprintln!("  {prog} <base_dir> --drive D --rust <path>        # Compare existing output");
     eprintln!();
-    eprintln!("LIVE MODE (Windows — run C++ and Rust binaries, then compare):");
+    eprintln!("LIVE MODE (Windows — run Rust cold, then C++ warm, then compare):");
     eprintln!("  {prog} --live                                    # All NTFS drives, auto-detect");
     eprintln!("  {prog} --live --drive C                          # Single drive");
     eprintln!("  {prog} --live --drive C,D,F                      # Multiple drives");
