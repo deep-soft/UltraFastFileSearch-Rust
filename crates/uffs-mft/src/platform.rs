@@ -19,6 +19,8 @@
 mod bitmap;
 mod extents;
 mod system;
+/// `$UpCase` table reading from live NTFS volume.
+pub mod upcase;
 #[cfg(windows)]
 mod volume;
 

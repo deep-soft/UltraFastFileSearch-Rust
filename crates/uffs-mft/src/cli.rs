@@ -191,6 +191,14 @@ pub enum Commands {
         /// Only used with --iocp. Default: 8.
         #[arg(long, default_value = "8")]
         iocp_concurrency: usize,
+
+        /// Save the 128 KB `$UpCase` table instead of the full MFT.
+        ///
+        /// Reads FRS 10 from the MFT on the live volume, parses its
+        /// DATA attribute data runs, reads the referenced clusters,
+        /// and saves the raw `[u16; 65_536]` table to the output file.
+        #[arg(long)]
+        upcase: bool,
     },
 
     /// Load MFT from a saved file and export to parquet/csv

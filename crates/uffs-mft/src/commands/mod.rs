@@ -50,6 +50,7 @@ pub async fn dispatch_command(command: Commands) -> Result<()> {
             raw,
             iocp,
             iocp_concurrency,
+            upcase,
         } => {
             windows::cmd_save(
                 drive,
@@ -59,6 +60,7 @@ pub async fn dispatch_command(command: Commands) -> Result<()> {
                 raw,
                 iocp,
                 iocp_concurrency,
+                upcase,
             )
             .await
         }

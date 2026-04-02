@@ -12,7 +12,7 @@ use crate::display::{clean_path_for_display, format_bytes, format_duration, form
 // Save/Load Raw MFT Commands
 // ============================================================================
 
-/// Save MFT bytes to a file for offline analysis.
+/// Save MFT bytes (or `$UpCase` table) to a file for offline analysis.
 #[cfg(windows)]
 #[expect(clippy::too_many_arguments, reason = "CLI command with many options")]
 pub async fn cmd_save(
@@ -23,10 +23,16 @@ pub async fn cmd_save(
     raw_compat: bool,
     iocp_mode: bool,
     iocp_concurrency: usize,
+    upcase: bool,
 ) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::platform::{VolumeHandle, detect_drive_type};
+
+    // $UpCase mode: save only the 128 KB uppercase mapping table.
+    if upcase {
+        return cmd_save_upcase(drive, output).await;
+    }
 
     // IOCP mode uses a different code path
     if iocp_mode {
@@ -261,6 +267,61 @@ async fn cmd_save_iocp(
     }
     println!();
     println!("⏱️  Completed in {}", format_duration(elapsed));
+
+    Ok(())
+}
+
+// ============================================================================
+// $UpCase Table Save
+// ============================================================================
+
+/// Save the NTFS `$UpCase` table (128 KB) from a live volume.
+///
+/// Opens the volume, reads FRS 10 from the MFT, parses its DATA
+/// attribute data runs, reads the referenced clusters, and writes
+/// the raw `[u16; 65_536]` table to the output file.
+#[cfg(windows)]
+#[expect(clippy::print_stdout, reason = "intentional user-facing CLI output")]
+async fn cmd_save_upcase(drive: char, output: &Path) -> Result<()> {
+    use std::time::Instant;
+
+    use uffs_mft::platform::upcase;
+
+    let start = Instant::now();
+    let drive_upper = drive.to_ascii_uppercase();
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  Reading $UpCase table from {drive_upper}: via raw volume I/O");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!();
+
+    let table = upcase::read_upcase_table(drive)
+        .with_context(|| format!("Failed to read $UpCase from {drive_upper}:"))?;
+
+    // Write raw little-endian u16 bytes.
+    let raw_bytes: &[u8] = bytemuck::cast_slice(table.as_ref());
+    std::fs::write(output, raw_bytes)
+        .with_context(|| format!("Failed to write {}", output.display()))?;
+
+    let abs_path = std::fs::canonicalize(output).unwrap_or_else(|_| output.to_path_buf());
+    let abs_path = clean_path_for_display(&abs_path);
+    let elapsed = start.elapsed();
+
+    println!("💾 $UpCase table saved");
+    println!(
+        "  Size:   {} ({} entries)",
+        format_bytes(upcase::UPCASE_SIZE_BYTES as u64),
+        format_number_commas(65_536)
+    );
+    println!("  Path:   {}", abs_path.display());
+    println!("  Time:   {}", format_duration(elapsed));
+
+    // Quick sanity checks.
+    println!();
+    println!("  Sanity: 'a' → 0x{:04X} (A=0x0041)", table[0x61]);
+    println!("          'z' → 0x{:04X} (Z=0x005A)", table[0x7A]);
+    println!("          ü   → 0x{:04X} (Ü=0x00DC)", table[0x00FC]);
+    println!("          é   → 0x{:04X} (É=0x00C9)", table[0x00E9]);
 
     Ok(())
 }
