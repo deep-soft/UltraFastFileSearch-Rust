@@ -167,9 +167,45 @@ fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
     // Create log directory if it doesn't exist
     drop(fs::create_dir_all(&log_dir));
 
-    // Create rolling file appender (daily rotation)
-    let file_appender = RollingFileAppender::new(Rotation::DAILY, &log_dir, "uffs_tui_log_");
-    let (non_blocking, guard): (NonBlocking, _) = NonBlocking::new(file_appender);
+    // Create rolling file appender (daily rotation).
+    // Use the builder API which returns Result instead of panicking, and retry
+    // briefly to handle transient Windows file-lock races (e.g. previous process
+    // still releasing the log file handle).
+    let max_attempts = 4_u32;
+    let mut file_log_err: Option<String> = None;
+    let mut file_log_attempt = 0_u32;
+    let (non_blocking, guard): (NonBlocking, _) = {
+        let mut last_err = None;
+        let mut appender = None;
+        for attempt in 0..max_attempts {
+            if attempt > 0 {
+                std::thread::sleep(core::time::Duration::from_millis(250));
+            }
+            match RollingFileAppender::builder()
+                .rotation(Rotation::DAILY)
+                .filename_prefix("uffs_tui_log_")
+                .build(&log_dir)
+            {
+                Ok(file_appender) => {
+                    file_log_attempt = attempt;
+                    appender = Some(file_appender);
+                    break;
+                }
+                Err(init_err) => last_err = Some(init_err),
+            }
+        }
+        appender.map_or_else(
+            || {
+                file_log_err = Some(
+                    last_err
+                        .as_ref()
+                        .map_or_else(|| "unknown error".to_owned(), ToString::to_string),
+                );
+                NonBlocking::new(io::sink())
+            },
+            NonBlocking::new,
+        )
+    };
 
     // Terminal filter: -v sets info if RUST_LOG not explicitly set
     // Note: TUI uses stderr for logging to avoid interfering with the UI
@@ -216,6 +252,25 @@ fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
     )]
     tracing::subscriber::set_global_default(subscriber)
         .expect("Failed to set global tracing subscriber");
+
+    // Post-init diagnostics: surface file-appender issues through tracing now
+    // that the subscriber is active.
+    if let Some(err_msg) = &file_log_err {
+        tracing::error!(
+            log_dir = %log_dir.display(),
+            attempts = max_attempts,
+            error = %err_msg,
+            "File logging DISABLED — log file could not be opened after all retries. \
+             All tracing output is terminal-only for this session."
+        );
+    } else if file_log_attempt > 0 {
+        tracing::warn!(
+            log_dir = %log_dir.display(),
+            retries = file_log_attempt,
+            "Log file opened after {file_log_attempt} retries — \
+             previous process may have been slow to release the file handle"
+        );
+    }
 
     guard
 }

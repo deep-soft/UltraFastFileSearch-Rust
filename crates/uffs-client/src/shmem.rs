@@ -509,26 +509,32 @@ mod tests {
 
         const THREADS: usize = 8;
         let barrier = Arc::new(Barrier::new(THREADS));
-        let paths: Vec<PathBuf> = (0..THREADS)
-            .map(|idx| {
-                let bar = Arc::clone(&barrier);
-                thread::spawn(move || {
-                    let row = sample_row(&format!("concurrent_{idx}.txt"));
-                    // Synchronise so all threads call write at roughly the same time.
-                    bar.wait();
-                    let path = write_search_results(&[row], idx as u64, 1, false)
-                        .expect("concurrent write should succeed");
-                    // Read+delete immediately (same as real CLI does).
-                    let resp = read_search_results(&path).expect("read should succeed");
-                    assert_eq!(resp.rows.len(), 1);
-                    let first = resp.rows.first().expect("expected 1 row");
-                    assert_eq!(first.name, format!("concurrent_{idx}.txt"));
-                    assert!(!path.exists(), "shmem file must be deleted after read");
-                    path
-                })
-            })
-            .map(|handle| handle.join().unwrap())
-            .collect();
+        // Spawn all threads first, then join in a separate loop. The barrier
+        // requires all THREADS to reach `wait()` before any can proceed, so
+        // joining inside the spawn iterator would deadlock (lazy evaluation:
+        // spawn → join → spawn …, only 1 thread ever alive).
+        let mut handles = Vec::with_capacity(THREADS);
+        for idx in 0..THREADS {
+            let bar = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                let row = sample_row(&format!("concurrent_{idx}.txt"));
+                // Synchronise so all threads call write at roughly the same time.
+                bar.wait();
+                let path = write_search_results(&[row], idx as u64, 1, false)
+                    .expect("concurrent write should succeed");
+                // Read+delete immediately (same as real CLI does).
+                let resp = read_search_results(&path).expect("read should succeed");
+                assert_eq!(resp.rows.len(), 1);
+                let first = resp.rows.first().expect("expected 1 row");
+                assert_eq!(first.name, format!("concurrent_{idx}.txt"));
+                assert!(!path.exists(), "shmem file must be deleted after read");
+                path
+            }));
+        }
+        let mut paths = Vec::with_capacity(THREADS);
+        for handle in handles {
+            paths.push(handle.join().unwrap());
+        }
 
         // All paths must be unique (atomic counter guarantees this).
         let mut sorted = paths

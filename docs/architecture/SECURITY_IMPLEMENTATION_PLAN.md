@@ -266,12 +266,12 @@ get encryption automatically — no API changes.
 
 | ID | Task | File | Status |
 |----|------|------|--------|
-| S2.5.1 | Add benchmark: `encrypt_cache` throughput (MB/s) for 100MB, 500MB payloads | `crates/uffs-mft/benches/` or inline timing | ⬜ TODO |
-| S2.5.2 | Add benchmark: `decrypt_cache` throughput | Same | ⬜ TODO |
-| S2.5.3 | Add benchmark: end-to-end `save_to_file` (serialize + encrypt + write) vs baseline | Same | ⬜ TODO |
-| S2.5.4 | Add benchmark: end-to-end `load_from_file` (read + decrypt + deserialize) vs baseline | Same | ⬜ TODO |
-| S2.5.5 | Verify: AES-NI / ARM CE is being used (check `aes-gcm` feature flags, run `RUSTFLAGS="-C target-cpu=native"`) | CI config | ⬜ TODO |
-| S2.5.6 | Document results in this file (Performance Results section below) | This document | ⬜ TODO |
+| S2.5.1 | Add benchmark: `encrypt_cache` throughput (MB/s) for 100MB, 500MB payloads | `crates/uffs-security/src/crypto.rs` (inline timing tests) | ✅ DONE |
+| S2.5.2 | Add benchmark: `decrypt_cache` throughput | Same | ✅ DONE |
+| S2.5.3 | Add benchmark: end-to-end `save_to_file` (serialize + encrypt + write) vs baseline | Same | ⬜ TODO (Windows) |
+| S2.5.4 | Add benchmark: end-to-end `load_from_file` (read + decrypt + deserialize) vs baseline | Same | ⬜ TODO (Windows) |
+| S2.5.5 | Verify: AES-NI / ARM CE is being used (check `aes-gcm` feature flags, run `RUSTFLAGS="-C target-cpu=native"`) | CI config | ⚠️ ISSUE — ARM CE not activating; see Performance Results ³ |
+| S2.5.6 | Document results in this file (Performance Results section below) | This document | ✅ DONE (ARM CE baseline; AES-NI TODO) |
 
 **Targets**:
 - Encrypt/decrypt throughput: ≥4 GB/s (AES-NI) or ≥2 GB/s (ARM CE)
@@ -497,8 +497,7 @@ Date        | ID      | Description                              | Commit
 ## Performance Results
 
 Measured via daemon readiness suite (v0.4.49–v0.4.51, Windows, 7 NTFS drives,
-25.8M records). All cache files use UFFSENC v2 (AES-256-GCM). Formal S2.5
-microbenchmarks (isolated encrypt/decrypt throughput) are still TODO.
+25.8M records). All cache files use UFFSENC v2 (AES-256-GCM).
 
 ```
 Benchmark                                | Measured        | Target  | Pass?
@@ -508,10 +507,12 @@ Per-drive cache load rate                | 1.7–2.7M rec/s  | —       | ✅
 Daemon warm search (25.8M records)       | 0ms query       | —       | ✅
 IPC round-trip latency (daemon mode)     | ~200ms median   | <15ms ² | ⚠️ ²
 CLI cold start (spawn + 7-drive load)    | ~39.5s           | —       | ✅
-Encrypt throughput (AES-NI)              |                 | ≥4 GB/s | ⬜ TODO
-Decrypt throughput (AES-NI)              |                 | ≥4 GB/s | ⬜ TODO
-Cache Save (500 MB, NVMe)               |                 | <200ms  | ⬜ TODO
-Cache Load (500 MB, NVMe)               |                 | <100ms  | ⬜ TODO
+Encrypt throughput (ARM CE) ³            | ~230 MB/s       | ≥2 GB/s | ❌ ³
+Decrypt throughput (ARM CE) ³            | ~230 MB/s       | ≥2 GB/s | ❌ ³
+Encrypt throughput (AES-NI)              |                 | ≥4 GB/s | ⬜ TODO (Windows)
+Decrypt throughput (AES-NI)              |                 | ≥4 GB/s | ⬜ TODO (Windows)
+Cache Save (500 MB, NVMe)               |                 | <200ms  | ⬜ TODO (Windows)
+Cache Load (500 MB, NVMe)               |                 | <100ms  | ⬜ TODO (Windows)
 ```
 
 ¹ The startup loads 25.8M records across 7 drives. Per-drive throughput
@@ -524,8 +525,20 @@ Cache Load (500 MB, NVMe)               |                 | <100ms  | ⬜ TODO
   query latency remains 0–1ms for simple queries. The 15ms target was for
   daemon-side IPC only; the 200ms includes CLI process overhead.
 
+³ S2.5 baseline (2026-04-02, macOS, Apple Silicon M-series, `FEAT_AES=1`).
+  End-to-end encrypt/decrypt including Vec allocation, measured with
+  `cargo test -p uffs-security --release -- --ignored`. 100 MB and 500 MB
+  payloads both plateau at ~230 MB/s — flat across sizes suggests the
+  bottleneck is AES-GCM throughput, not allocation. The `aes` crate shows
+  no features enabled (`cargo tree -f '{p} features: {f}'`), indicating the
+  software fallback may be active despite ARM CE availability.
+  **Action:** investigate `aes` crate feature flags and `cpufeatures` 0.2.x
+  ARM CE autodetection; may need explicit `aes/armv8` feature or upgrade to
+  `aes` 0.9+ / `aes-gcm` 0.11+.
+
 **Source:** `DAEMON_IMPLEMENTATION_PLAN.md` §Readiness Verification Results,
-`REFACTOR_MFT_PIPELINE_CONSOLIDATION.md` §Production Validation.
+`REFACTOR_MFT_PIPELINE_CONSOLIDATION.md` §Production Validation,
+`crates/uffs-security/src/crypto.rs` §S2.5 baseline tests.
 
 ---
 

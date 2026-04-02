@@ -462,4 +462,81 @@ mod tests {
         let encrypted = encrypt_cache(plaintext, &key1).expect("encrypt");
         assert!(decrypt_cache(&encrypted, &key2).is_err());
     }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // S2.5 Performance baselines
+    // Run: `cargo test -p uffs-security --release -- --ignored --nocapture`
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Bytes per mebibyte.
+    const BYTES_PER_MB: usize = 1_024 * 1_024;
+
+    /// Measures wall-clock throughput over `runs` iterations, returning MB/s.
+    ///
+    /// Runs the closure once as a warm-up before timing.
+    fn measure_throughput_mb_s(payload_bytes: usize, runs: u32, workload: impl Fn()) -> usize {
+        // Warm-up
+        workload();
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            workload();
+        }
+        let elapsed_us = start.elapsed().as_micros().max(1);
+        // MB/s = (payload_bytes * runs * 1_000_000) / (BYTES_PER_MB * elapsed_us)
+        let payload_u128 = payload_bytes as u128;
+        let mib_u128 = BYTES_PER_MB as u128;
+        let numerator = payload_u128 * u128::from(runs) * 1_000_000_u128;
+        let denominator = mib_u128 * elapsed_us;
+        // Throughput in MB/s fits comfortably in usize on 64-bit targets.
+        usize::try_from(numerator / denominator).unwrap_or(usize::MAX)
+    }
+
+    /// Minimum acceptable throughput (MB/s). Below this the test fails,
+    /// printing the measured value so the regression is visible.
+    const MIN_THROUGHPUT_MB_S: usize = 50;
+
+    /// S2.5.1: encrypt throughput baseline.
+    ///
+    /// Panics if throughput drops below [`MIN_THROUGHPUT_MB_S`], printing
+    /// the measured value for triage.
+    #[test]
+    #[ignore = "S2.5 perf baseline — run with --ignored"]
+    fn baseline_encrypt_throughput() {
+        let key = [0xBE_u8; 32];
+        let runs = 5_u32;
+
+        for size_mb in [100_usize, 500_usize] {
+            let payload = vec![0xAA_u8; size_mb * BYTES_PER_MB];
+            let mb_s = measure_throughput_mb_s(payload.len(), runs, || {
+                drop(encrypt_cache(&payload, &key));
+            });
+            assert!(
+                mb_s >= MIN_THROUGHPUT_MB_S,
+                "encrypt {size_mb} MB: {mb_s} MB/s — below floor of {MIN_THROUGHPUT_MB_S} MB/s",
+            );
+        }
+    }
+
+    /// S2.5.2: decrypt throughput baseline.
+    ///
+    /// Panics if throughput drops below [`MIN_THROUGHPUT_MB_S`], printing
+    /// the measured value for triage.
+    #[test]
+    #[ignore = "S2.5 perf baseline — run with --ignored"]
+    fn baseline_decrypt_throughput() {
+        let key = [0xBF_u8; 32];
+        let runs = 5_u32;
+
+        for size_mb in [100_usize, 500_usize] {
+            let payload = vec![0xBB_u8; size_mb * BYTES_PER_MB];
+            let encrypted = encrypt_cache(&payload, &key).expect("encrypt setup");
+            let mb_s = measure_throughput_mb_s(encrypted.len(), runs, || {
+                drop(decrypt_cache(&encrypted, &key));
+            });
+            assert!(
+                mb_s >= MIN_THROUGHPUT_MB_S,
+                "decrypt {size_mb} MB: {mb_s} MB/s — below floor of {MIN_THROUGHPUT_MB_S} MB/s",
+            );
+        }
+    }
 }
