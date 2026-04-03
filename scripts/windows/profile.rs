@@ -315,23 +315,42 @@ fn main() {
         all_results.push(hot);
     }
 
-    // ── ALL drives (HOT) ────────────────────────────────────────────────
+    // ── ALL drives: COLD → WARM CACHE → HOT ───────────────────────────
     if drives.len() > 1 {
         eprintln!();
-        eprintln!("━━━ ALL drives (HOT): ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        // Make sure daemon has all drives loaded.
-        kill_daemon(&bin);
-        eprintln!("  Starting daemon with all drives...");
-        let _ = Command::new(&bin).args(["*", "--limit", "1"])
-            .stdout(Stdio::null()).stderr(Stdio::null()).status();
-        std::thread::sleep(Duration::from_secs(2));
+        eprintln!("━━━ ALL drives: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-        eprintln!("  [HOT ALL] Running: uffs \"*\" --profile --limit 100");
-        let all = run_profile(&bin, "ALL", "HOT");
-        for line in &all.timing.profile_lines { eprintln!("    {line}"); }
-        eprintln!("  [HOT ALL] Total: {}ms  {}", all.timing.total_ms,
-            if all.success { "✅" } else { "❌" });
-        all_results.push(all);
+        // COLD ALL: kill daemon + delete cache
+        eprintln!("  [COLD] Killing daemon + deleting cache...");
+        kill_daemon(&bin);
+        delete_cache();
+        eprintln!("  [COLD] Running: uffs \"*\" --profile --limit 100");
+        let cold_all = run_profile(&bin, "ALL", "COLD");
+        for line in &cold_all.timing.profile_lines { eprintln!("    {line}"); }
+        eprintln!("  [COLD] Total: {}ms  {}", cold_all.timing.total_ms,
+            if cold_all.success { "✅" } else { "❌" });
+        all_results.push(cold_all);
+
+        // WARM CACHE ALL: kill daemon, cache files remain
+        eprintln!();
+        eprintln!("  [WARM CACHE] Killing daemon (cache files remain)...");
+        kill_daemon(&bin);
+        eprintln!("  [WARM CACHE] Running: uffs \"*\" --profile --limit 100");
+        let warm_all = run_profile(&bin, "ALL", "WARM CACHE");
+        for line in &warm_all.timing.profile_lines { eprintln!("    {line}"); }
+        eprintln!("  [WARM CACHE] Total: {}ms  {}", warm_all.timing.total_ms,
+            if warm_all.success { "✅" } else { "❌" });
+        all_results.push(warm_all);
+
+        // HOT ALL: daemon still running
+        eprintln!();
+        eprintln!("  [HOT] Daemon still running from WARM CACHE phase...");
+        eprintln!("  [HOT] Running: uffs \"*\" --profile --limit 100");
+        let hot_all = run_profile(&bin, "ALL", "HOT");
+        for line in &hot_all.timing.profile_lines { eprintln!("    {line}"); }
+        eprintln!("  [HOT] Total: {}ms  {}", hot_all.timing.total_ms,
+            if hot_all.success { "✅" } else { "❌" });
+        all_results.push(hot_all);
     }
 
     // ── Summary ─────────────────────────────────────────────────────────
