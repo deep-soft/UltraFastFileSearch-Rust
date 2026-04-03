@@ -186,14 +186,30 @@ impl IndexManager {
         });
     }
 
+    /// Per-drive load timeout.  If a single drive's MFT read takes
+    /// longer than this, we skip it rather than blocking the entire
+    /// daemon.  Raw NTFS volume reads can hang indefinitely when a
+    /// drive is unresponsive (bad sectors, sleep, USB disconnect).
+    #[cfg(windows)]
+    const DRIVE_LOAD_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(300);
+
     /// Load live Windows drives — **all drives in parallel**.
     ///
     /// Each drive's MFT read runs on its own blocking thread. Results are
     /// collected via `JoinSet` as they complete (fastest drive first), giving
     /// accurate incremental progress and cutting total wall time from
     /// `sum(per-drive)` to `max(per-drive)`.
+    ///
+    /// Each drive has a [`Self::DRIVE_LOAD_TIMEOUT`] — if exceeded the drive
+    /// is skipped and an error is logged.  This prevents a single stuck
+    /// volume from making the daemon unkillable.
     #[cfg(windows)]
-    pub async fn load_live_drives(&self, drives: &[char], no_cache: bool) {
+    pub async fn load_live_drives(
+        &self,
+        drives: &[char],
+        no_cache: bool,
+        lifecycle: &crate::lifecycle::LifecycleHandle,
+    ) {
         let total = drives.len();
         {
             let mut status = self.status.write().await;
@@ -217,8 +233,32 @@ impl IndexManager {
         }
 
         // Collect results as they complete (fastest drive first).
+        // Each join_next() gets a per-drive timeout so one stuck
+        // volume can't block the entire daemon indefinitely.
         let mut loaded: usize = 0;
-        while let Some(join_result) = join_set.join_next().await {
+        loop {
+            let next = tokio::time::timeout(Self::DRIVE_LOAD_TIMEOUT, join_set.join_next()).await;
+
+            let join_result = match next {
+                Ok(Some(jr)) => jr,
+                Ok(None) => break, // all tasks finished
+                Err(_elapsed) => {
+                    // Timeout — at least one drive is stuck.
+                    let remaining = total.saturating_sub(loaded);
+                    tracing::error!(
+                        remaining,
+                        timeout_secs = Self::DRIVE_LOAD_TIMEOUT.as_secs(),
+                        "Drive load timed out — skipping remaining drives"
+                    );
+                    // Abort the remaining stuck tasks (best-effort;
+                    // kernel-mode I/O may not be interruptible, but
+                    // process::exit at daemon shutdown will clean up).
+                    join_set.abort_all();
+                    loaded = total;
+                    break;
+                }
+            };
+
             match join_result {
                 Ok((letter, Ok((drive_index, timing)))) => {
                     loaded += 1;
@@ -255,15 +295,19 @@ impl IndexManager {
                     let mut backend = self.backend.write().await;
                     backend.drives.push(drive_index);
                 }
-                Ok((letter, Err(e))) => {
+                Ok((letter, Err(err))) => {
                     loaded += 1;
-                    tracing::error!(drive = %letter, error = %e, "Failed to load live drive");
+                    tracing::error!(drive = %letter, error = %err, "Failed to load live drive");
                 }
-                Err(e) => {
+                Err(err) => {
                     loaded += 1;
-                    tracing::error!(error = %e, "Task panicked loading drive");
+                    tracing::error!(error = %err, "Task panicked loading drive");
                 }
             }
+
+            // Update load heartbeat — tells the idle timer we're still
+            // making progress, preventing a false stall-timeout.
+            lifecycle.record_load_progress();
 
             let mut status = self.status.write().await;
             *status = DaemonStatus::Loading {

@@ -1,13 +1,18 @@
 //! Daemon lifecycle: PID file, idle timeout, auto-retire, shutdown.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::path::PathBuf;
 
 use tokio::sync::watch;
 
 use crate::events::{DaemonEvent, EventSender};
+
+/// Maximum time (seconds) a load phase may run without progress before
+/// the daemon force-retires.  Prevents an unkillable zombie when a raw
+/// NTFS volume read hangs in kernel-mode I/O.
+const LOAD_STALL_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 /// Handle given to request handlers to control the lifecycle.
 #[derive(Clone)]
@@ -25,6 +30,10 @@ pub struct LifecycleHandle {
     max_session_tier: Arc<core::sync::atomic::AtomicU8>,
     /// Event broadcaster — connection and lifecycle events.
     events: EventSender,
+    /// Load heartbeat — epoch seconds of the last drive-load progress.
+    /// Updated by `IndexManager` when each drive finishes loading.
+    /// Checked by the idle timer to detect stuck loads.
+    load_heartbeat: Arc<AtomicU64>,
 }
 
 impl LifecycleHandle {
@@ -82,6 +91,17 @@ impl LifecycleHandle {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.as_deref() == Some(provided) || guard.is_none()
     }
+
+    /// Record load progress — called by `IndexManager` each time a drive
+    /// finishes loading.  Updates the heartbeat timestamp so the idle
+    /// timer knows the load phase is still making progress.
+    #[cfg(windows)]
+    pub fn record_load_progress(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |dur| dur.as_secs());
+        self.load_heartbeat.store(now, Ordering::Relaxed);
+    }
 }
 
 /// Lifecycle manager: PID file, idle timer, shutdown coordination.
@@ -113,6 +133,12 @@ impl LifecycleManager {
         let shutdown_nonce_shared = Arc::new(std::sync::Mutex::new(None));
         let active_connections = Arc::new(core::sync::atomic::AtomicUsize::new(0));
         let max_session_tier = Arc::new(core::sync::atomic::AtomicU8::new(0));
+        // Seed the load heartbeat with "now" so the stall detector
+        // doesn't fire before the first drive even starts loading.
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |dur| dur.as_secs());
+        let load_heartbeat = Arc::new(AtomicU64::new(now_epoch));
 
         let pid_path = data_dir.join("daemon.pid");
 
@@ -125,6 +151,7 @@ impl LifecycleManager {
                 active_connections,
                 max_session_tier,
                 events,
+                load_heartbeat,
             },
             pid_path,
             idle_timeout,
@@ -245,16 +272,24 @@ impl LifecycleManager {
         true
     }
 
-    /// Run the idle timer. Returns when shutdown is requested or idle timeout
-    /// fires.
+    /// Run the idle timer. Returns when shutdown is requested, idle
+    /// timeout fires, **or a stalled load is detected**.
+    ///
+    /// ## Dual-purpose heartbeat
+    ///
+    /// During the `Loading` phase, the CLI's `await_ready` polls status
+    /// every 2 s, continuously resetting the idle timer.  Without a
+    /// separate check, a stuck NTFS volume read would keep the daemon
+    /// alive forever.  The **load heartbeat** (`record_load_progress`)
+    /// is updated whenever a drive finishes loading.  If no progress is
+    /// made for [`LOAD_STALL_TIMEOUT_SECS`], the daemon force-retires
+    /// even though IPC activity is still present.
     ///
     /// D2.6.6: Uses differentiated timeouts based on session type:
     /// - CLI sessions (tier 0): use the configured timeout (default 5 min)
-    /// - TUI/GUI/MCP sessions (tier 1): use 3× the configured timeout (default
-    ///   15 min)
+    /// - TUI/GUI/MCP sessions (tier 1): use 3× the configured timeout
     ///
-    /// D2.6.7: Does NOT retire if active connections exist — waits for them to
-    /// close first.
+    /// D2.6.7: Does NOT retire if active connections exist (Ready state).
     pub async fn run_idle_timer(&mut self) {
         let Some(base_timeout) = self.idle_timeout else {
             // --no-retire: just wait for shutdown signal
@@ -263,52 +298,79 @@ impl LifecycleManager {
         };
 
         loop {
-            // D2.6.6: Compute effective timeout based on highest session tier seen
+            // D2.6.6: Compute effective timeout based on highest session tier
             let tier = self.handle.max_session_tier.load(Ordering::Relaxed);
             let effective_timeout = if tier >= 1 {
-                base_timeout.saturating_mul(3) // TUI/GUI/MCP: 3× (e.g. 5min → 15min)
+                base_timeout.saturating_mul(3)
             } else {
-                base_timeout // CLI: base timeout
+                base_timeout
             };
 
             self.handle.idle_reset.store(false, Ordering::Relaxed);
 
-            tokio::select! {
-                () = tokio::time::sleep(effective_timeout) => {
-                    // Check if idle was reset during the sleep
-                    if self.handle.idle_reset.load(Ordering::Relaxed) {
-                        continue;
-                    }
+            // Snapshot the handle's atomics before entering select!,
+            // avoiding a borrow conflict with shutdown_rx.
+            let handle = self.handle.clone();
 
-                    // D2.6.7: Don't retire if active connections exist
-                    let conns = self.handle.active_connections();
-                    if conns > 0 {
-                        tracing::debug!(
-                            connections = conns,
-                            "Idle timeout reached but active connections exist — deferring"
-                        );
-                        continue;
-                    }
-
-                    tracing::info!(
-                        timeout_secs = effective_timeout.as_secs(),
-                        session_tier = tier,
-                        "Idle timeout reached — auto-retiring"
-                    );
-                    self.handle.events.emit(DaemonEvent::ShuttingDown {
-                        reason: format!(
-                            "idle timeout ({}s, tier {})",
-                            effective_timeout.as_secs(),
-                            tier,
-                        ),
-                    });
-                    return;
-                }
+            let timed_out = tokio::select! {
+                () = tokio::time::sleep(effective_timeout) => true,
                 _ = self.shutdown_rx.wait_for(|&done| done) => {
                     tracing::info!("Shutdown requested");
                     return;
                 }
+            };
+
+            if !timed_out {
+                continue;
             }
+
+            // ── Load-stall check (dual-purpose heartbeat) ────────
+            // Even if IPC is active (status polls keeping idle_reset
+            // set), check whether the load phase has stalled.
+            let stall_secs = LOAD_STALL_TIMEOUT_SECS;
+            let last_hb = handle.load_heartbeat.load(Ordering::Relaxed);
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |dur| dur.as_secs());
+            if last_hb > 0 && now_epoch.saturating_sub(last_hb) >= stall_secs {
+                tracing::error!(
+                    stall_secs,
+                    "Load stalled — no drive progress, force-retiring"
+                );
+                handle.events.emit(DaemonEvent::ShuttingDown {
+                    reason: format!("load stalled (no progress for {stall_secs}s)"),
+                });
+                return;
+            }
+
+            // Normal idle path — check if IPC activity reset us
+            if handle.idle_reset.load(Ordering::Relaxed) {
+                continue;
+            }
+
+            // D2.6.7: Don't retire if active connections exist
+            let conns = handle.active_connections();
+            if conns > 0 {
+                tracing::debug!(
+                    connections = conns,
+                    "Idle timeout but active connections — deferring"
+                );
+                continue;
+            }
+
+            tracing::info!(
+                timeout_secs = effective_timeout.as_secs(),
+                session_tier = tier,
+                "Idle timeout reached — auto-retiring"
+            );
+            handle.events.emit(DaemonEvent::ShuttingDown {
+                reason: format!(
+                    "idle timeout ({}s, tier {})",
+                    effective_timeout.as_secs(),
+                    tier,
+                ),
+            });
+            return;
         }
     }
 

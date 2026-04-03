@@ -104,6 +104,23 @@ fn validate_data_sources(
     reason = "temporary: extra tracing for daemon debugging"
 )]
 pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
+    // ── Catastrophe safety net ──────────────────────────────────────
+    // Ensure the daemon process is ALWAYS terminable.  If any thread
+    // panics (e.g. inside a blocking MFT read), the default panic hook
+    // might hang trying to unwind through kernel I/O.  This hook logs
+    // the panic and force-exits so the process never becomes a zombie.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_hook(info);
+        // Force-exit after the default hook has printed the panic info.
+        // This prevents the process from hanging if other threads are
+        // stuck in kernel-mode I/O.
+        #[expect(clippy::exit, reason = "catastrophe safety net — force-exit on panic")]
+        {
+            std::process::exit(101);
+        }
+    }));
+
     tracing::info!(
         pid = std::process::id(),
         version = env!("CARGO_PKG_VERSION"),
@@ -205,6 +222,11 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     tracing::info!("Data sources validated OK");
 
     let load_index = Arc::clone(&idx);
+    // Load heartbeat handle — the load task calls `record_load_progress`
+    // after each drive so the idle timer can detect stalls.
+    // Used only on Windows (inside cfg(windows) block below).
+    #[cfg_attr(not(windows), expect(unused_variables))]
+    let load_lifecycle = lifecycle_mgr.handle();
     let broker_is_available = broker_client::broker_available();
     let load_task = tokio::spawn(async move {
         tracing::info!(mft_files = mft_files.len(), drives = ?drives, "Load task starting");
@@ -228,7 +250,9 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
                 }
             }
             tracing::info!(drives = ?drives, "Loading live drives...");
-            load_index.load_live_drives(&drives, no_cache).await;
+            load_index
+                .load_live_drives(&drives, no_cache, &load_lifecycle)
+                .await;
             tracing::info!("Live drives loaded");
         }
         if broker_is_available {
@@ -278,7 +302,11 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     // Graceful shutdown
     tracing::info!("Daemon shutting down");
     ipc_task.abort();
-    let _ignore = load_task.await;
+    // Give the load task a brief window to finish, then abandon it.
+    // Stuck kernel-mode I/O threads cannot be cancelled, so we don't
+    // wait indefinitely — process::exit at the bottom will clean up.
+    let shutdown_deadline = tokio::time::timeout(core::time::Duration::from_secs(3), load_task);
+    let _ignore = shutdown_deadline.await;
     tracing::info!("Daemon stopped");
 
     // Clean up PID + socket files before exiting.
