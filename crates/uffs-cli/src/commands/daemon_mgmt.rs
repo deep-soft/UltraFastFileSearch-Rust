@@ -64,7 +64,9 @@ async fn daemon_run(
     // background process, no subscriber exists yet.  When called in-process
     // (e.g. `uffs daemon run` from the same CLI binary), a subscriber may
     // already be installed; `try_init` gracefully handles that.
-    let filter = tracing_subscriber::EnvFilter::try_new(log_level)
+    // UFFS_LOG env var overrides --log-level for diagnostic sessions.
+    let log_spec = std::env::var("UFFS_LOG").unwrap_or_else(|_| log_level.to_owned());
+    let filter = tracing_subscriber::EnvFilter::try_new(&log_spec)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let _ignore = tracing_subscriber::fmt()
         .with_env_filter(filter)

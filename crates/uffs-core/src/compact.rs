@@ -572,7 +572,15 @@ pub fn build_compact_index(
         .map(|arc| Box::from(arc.as_ref()))
         .collect();
 
+    let ext_t0 = Instant::now();
     let ext_index = ExtensionIndex::build(&records);
+    let ext_build_ms = ext_t0.elapsed().as_millis();
+    tracing::info!(
+        drive = %drive_letter,
+        entries = ext_index.total_entries(),
+        build_ms = ext_build_ms,
+        "ExtensionIndex built"
+    );
 
     (
         DriveCompactIndex {

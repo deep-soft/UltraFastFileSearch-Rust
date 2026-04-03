@@ -73,8 +73,10 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Initialize tracing (standalone binary owns the subscriber)
-    let filter = tracing_subscriber::EnvFilter::try_new(&cli.log_level)
+    // Initialize tracing (standalone binary owns the subscriber).
+    // UFFS_LOG env var overrides --log-level for diagnostic sessions.
+    let log_spec = std::env::var("UFFS_LOG").unwrap_or_else(|_| cli.log_level.clone());
+    let filter = tracing_subscriber::EnvFilter::try_new(&log_spec)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)

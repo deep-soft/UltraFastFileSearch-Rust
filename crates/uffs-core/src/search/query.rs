@@ -173,6 +173,10 @@ fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactIndex, desc: bo
 
 /// Efficient numeric global top-N using lightweight tuples.
 #[expect(clippy::too_many_lines, reason = "linear scan + heap + fallback path")]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "ext fast-path + full-scan path share sort-key + heap-push logic"
+)]
 fn collect_global_top_n_numeric(
     drives: &[DriveCompactIndex],
     limit: usize,
@@ -279,12 +283,24 @@ fn collect_global_top_n_numeric(
     let ext_fast_path = search_filters.is_ext_only()
         && matches!(filter_mode, FilterMode::All | FilterMode::FilesOnly);
 
+    if ext_fast_path {
+        tracing::debug!(
+            extensions = ?search_filters.extensions,
+            "ext fast-path ACTIVE — will use ExtensionIndex"
+        );
+    }
+
     for (drive_idx, drive) in drives.iter().enumerate() {
         // Resolve extension filter IDs for this drive (once, not per record).
         search_filters.resolve_ext_ids_for_drive(drive);
 
         if ext_fast_path && !search_filters.resolved_ext_ids.is_empty() {
             // ── Fast path: iterate only ext-index candidates ─────
+            tracing::debug!(
+                drive = %drive.letter,
+                resolved_ids = ?search_filters.resolved_ext_ids,
+                "ext fast-path: scanning ext_index candidates"
+            );
             for &ext_id in &search_filters.resolved_ext_ids.clone() {
                 for &rec_idx_u32 in drive.ext_index.get(ext_id) {
                     let rec_idx = rec_idx_u32 as usize;
