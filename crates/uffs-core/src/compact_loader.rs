@@ -240,15 +240,21 @@ fn load_mft_index_live(drive_letter: char, no_cache: bool) -> anyhow::Result<Mft
         }
     };
 
-    // If we are already inside a Tokio runtime (e.g. CLI `#[tokio::main]`),
-    // creating a new `Runtime` would panic with "Cannot start a runtime from
-    // within a runtime".  Use `block_in_place` + the current handle instead.
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(|| handle.block_on(read_index))
-    } else {
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(read_index)
-    }
+    // Run the async MFT read synchronously.
+    //
+    // This function is called from multiple contexts:
+    //   - Tokio worker threads (CLI `#[tokio::main]`)
+    //   - Tokio blocking threads (daemon `JoinSet::spawn_blocking`)
+    //   - No runtime at all (standalone tests)
+    //
+    // A dedicated current-thread runtime is always safe regardless of the
+    // calling context.  The ~50µs overhead is negligible against seconds of
+    // MFT I/O.  This avoids `block_in_place` (panics on blocking threads)
+    // and `handle.block_on` (panics inside a runtime context).
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(read_index)
 }
 
 /// Statistics from in-place USN patching.

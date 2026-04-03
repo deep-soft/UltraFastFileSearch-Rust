@@ -25,6 +25,7 @@ use super::SearchConfig;
 pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<DisplayRow>> {
     let spawn_args = build_daemon_spawn_args(config)?;
     let params = build_search_params(config);
+    let profile = config.profile || config.benchmark;
 
     info!(
         pattern = %params.pattern,
@@ -33,16 +34,20 @@ pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<D
         "🔌 Searching via daemon"
     );
 
+    let t_connect = std::time::Instant::now();
     let mut client = uffs_client::connect::UffsClient::connect_with_args(&spawn_args)
         .await
         .with_context(|| "Failed to connect to UFFS daemon")?;
+    let connect_ms = t_connect.elapsed().as_millis();
 
     // Wait for the daemon to finish loading indices before searching.
     // First search after daemon auto-start would otherwise hit an empty index.
+    let t_ready = std::time::Instant::now();
     client
         .await_ready(core::time::Duration::from_secs(120))
         .await
         .with_context(|| "Daemon did not become ready in time")?;
+    let ready_ms = t_ready.elapsed().as_millis();
 
     // If the CLI was given explicit --mft-file paths, ensure those drives
     // are loaded in the daemon.  This covers the case where the daemon was
@@ -72,10 +77,13 @@ pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<D
         }
     }
 
+    let t_search = std::time::Instant::now();
     let response = client
         .search(&params)
         .await
         .with_context(|| "Daemon search failed")?;
+    let ipc_ms = t_search.elapsed().as_millis();
+    let daemon_ms = response.duration_ms;
 
     info!(
         rows = response.rows.len(),
@@ -85,11 +93,24 @@ pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<D
         "🔌 Daemon search complete"
     );
 
+    let t_convert = std::time::Instant::now();
     let rows: Vec<DisplayRow> = response
         .rows
         .into_iter()
         .map(search_row_to_display_row)
         .collect();
+    let convert_ms = t_convert.elapsed().as_millis();
+
+    // Emit profile breakdown to stderr when --profile or --benchmark is active.
+    #[expect(clippy::print_stderr, reason = "intentional --profile diagnostic output")]
+    if profile {
+        eprintln!("=== PROFILE: Daemon Round-Trip ===");
+        eprintln!("  Connect:         {connect_ms:>6} ms");
+        eprintln!("  Await ready:     {ready_ms:>6} ms");
+        eprintln!("  Search (IPC):    {ipc_ms:>6} ms  (daemon: {daemon_ms} ms, transfer: {} ms)",
+            ipc_ms.saturating_sub(u128::from(daemon_ms)));
+        eprintln!("  Convert rows:    {convert_ms:>6} ms  ({} rows)", rows.len());
+    }
 
     Ok(rows)
 }

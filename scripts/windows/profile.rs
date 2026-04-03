@@ -188,8 +188,16 @@ fn parse_records(lines: &[String]) -> u64 {
 
 fn profile_lines(lines: &[String]) -> Vec<String> {
     lines.iter()
-        .filter(|l| l.contains("[CACHE_PROFILE]") || l.contains("[TIMING]")
-            || l.contains("BENCHMARK") || l.contains("Records found") || l.contains("Total time"))
+        .filter(|l| {
+            l.contains("[CACHE_PROFILE]")
+                || l.contains("[TIMING]")
+                || l.contains("BENCHMARK")
+                || l.contains("Records found")
+                || l.contains("Total time")
+                || l.contains("=== PROFILE")
+                || l.contains("=== TOTAL")
+                || l.contains("Output/write")
+        })
         .cloned().collect()
 }
 

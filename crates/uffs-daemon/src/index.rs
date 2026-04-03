@@ -67,30 +67,38 @@ impl IndexManager {
         &self.events
     }
 
-    /// Load drives from MFT files in the data directory.
+    /// Load drives from MFT files — **all files in parallel**.
     ///
-    /// Each file matching `*_*.uffs`, `*.bin`, `*.raw`, or `*.iocp` is loaded
-    /// as a drive. On Windows, live drives are loaded via the MFT reader.
+    /// Each MFT file is loaded on its own blocking thread via `JoinSet`.
+    /// Results are collected as they complete (fastest first).
     pub async fn load_from_data_dir(&self, mft_files: &[PathBuf], no_cache: bool) {
         let total = mft_files.len();
-        let mut status_guard = self.status.write().await;
-        *status_guard = DaemonStatus::Loading {
-            drives_loaded: 0,
-            drives_total: total,
-        };
-        drop(status_guard);
+        {
+            let mut status_guard = self.status.write().await;
+            *status_guard = DaemonStatus::Loading {
+                drives_loaded: 0,
+                drives_total: total,
+            };
+        }
 
-        for (idx, mft_path) in mft_files.iter().enumerate() {
-            tracing::info!(path = %mft_path.display(), "Loading MFT file");
+        // Spawn all file loads in parallel on blocking threads.
+        let mut join_set = tokio::task::JoinSet::new();
+        for mft_path in mft_files {
+            let path = mft_path.clone();
+            tracing::info!(path = %path.display(), "Loading MFT file (parallel)");
+            join_set.spawn_blocking(move || {
+                let source = uffs_core::compact::MftSource::File(path.clone(), None);
+                let result = uffs_core::compact::load_drive(&source, no_cache);
+                (path, result)
+            });
+        }
 
-            let source = uffs_core::compact::MftSource::File(mft_path.clone(), None);
-            let result = tokio::task::spawn_blocking(move || {
-                uffs_core::compact::load_drive(&source, no_cache)
-            })
-            .await;
-
-            match result {
-                Ok(Ok((drive_index, timing))) => {
+        // Collect results as they complete (fastest first).
+        let mut loaded: usize = 0;
+        while let Some(join_result) = join_set.join_next().await {
+            match join_result {
+                Ok((_path, Ok((drive_index, timing)))) => {
+                    loaded += 1;
                     let letter = drive_index.letter;
                     let records = drive_index.records.len();
                     tracing::info!(
@@ -99,6 +107,8 @@ impl IndexManager {
                         mft_ms = timing.mft,
                         compact_ms = timing.compact,
                         trigram_ms = timing.trigram,
+                        loaded,
+                        total,
                         "Drive loaded"
                     );
                     self.events.emit(DaemonEvent::DriveLoaded {
@@ -107,25 +117,26 @@ impl IndexManager {
                         mft_ms: timing.mft,
                         compact_ms: timing.compact,
                         trigram_ms: timing.trigram,
-                        drives_loaded: idx + 1,
+                        drives_loaded: loaded,
                         drives_total: total,
                     });
                     let mut backend = self.backend.write().await;
                     backend.drives.push(drive_index);
                     drop(backend);
                 }
-                Ok(Err(load_err)) => {
-                    tracing::error!(path = %mft_path.display(), error = %load_err, "Failed to load MFT file");
+                Ok((path, Err(load_err))) => {
+                    loaded += 1;
+                    tracing::error!(path = %path.display(), error = %load_err, "Failed to load MFT file");
                 }
                 Err(join_err) => {
-                    tracing::error!(path = %mft_path.display(), error = %join_err, "Task panicked loading MFT");
+                    loaded += 1;
+                    tracing::error!(error = %join_err, "Task panicked loading MFT");
                 }
             }
 
-            // Update progress
             let mut progress = self.status.write().await;
             *progress = DaemonStatus::Loading {
-                drives_loaded: idx + 1,
+                drives_loaded: loaded,
                 drives_total: total,
             };
             drop(progress);
@@ -150,7 +161,12 @@ impl IndexManager {
         });
     }
 
-    /// Load live Windows drives.
+    /// Load live Windows drives — **all drives in parallel**.
+    ///
+    /// Each drive's MFT read runs on its own blocking thread. Results are
+    /// collected via `JoinSet` as they complete (fastest drive first), giving
+    /// accurate incremental progress and cutting total wall time from
+    /// `sum(per-drive)` to `max(per-drive)`.
     #[cfg(windows)]
     pub async fn load_live_drives(&self, drives: &[char], no_cache: bool) {
         let total = drives.len();
@@ -162,27 +178,25 @@ impl IndexManager {
             };
         }
 
-        for (idx, &letter) in drives.iter().enumerate() {
-            tracing::info!(drive = %letter, "Loading live drive");
+        // Spawn all drives in parallel on blocking threads.
+        let mut join_set = tokio::task::JoinSet::new();
+        for &letter in drives {
+            tracing::info!(drive = %letter, "Loading live drive (parallel)");
+            join_set.spawn_blocking(move || {
+                let result = uffs_core::compact::load_drive(
+                    &uffs_core::compact::MftSource::Live(letter),
+                    no_cache,
+                );
+                (letter, result)
+            });
+        }
 
-            let result = tokio::task::spawn_blocking(move || {
-                #[cfg(windows)]
-                {
-                    uffs_core::compact::load_drive(
-                        &uffs_core::compact::MftSource::Live(letter),
-                        no_cache,
-                    )
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = (letter, no_cache);
-                    Err(anyhow::anyhow!("Live drive loading requires Windows"))
-                }
-            })
-            .await;
-
-            match result {
-                Ok(Ok((drive_index, timing))) => {
+        // Collect results as they complete (fastest drive first).
+        let mut loaded: usize = 0;
+        while let Some(join_result) = join_set.join_next().await {
+            match join_result {
+                Ok((letter, Ok((drive_index, timing)))) => {
+                    loaded += 1;
                     let records = drive_index.records.len();
                     tracing::info!(
                         drive = %letter,
@@ -190,6 +204,8 @@ impl IndexManager {
                         mft_ms = timing.mft,
                         compact_ms = timing.compact,
                         trigram_ms = timing.trigram,
+                        loaded,
+                        total,
                         "Live drive loaded"
                     );
                     self.events.emit(DaemonEvent::DriveLoaded {
@@ -198,23 +214,25 @@ impl IndexManager {
                         mft_ms: timing.mft,
                         compact_ms: timing.compact,
                         trigram_ms: timing.trigram,
-                        drives_loaded: idx + 1,
+                        drives_loaded: loaded,
                         drives_total: total,
                     });
                     let mut backend = self.backend.write().await;
                     backend.drives.push(drive_index);
                 }
-                Ok(Err(e)) => {
+                Ok((letter, Err(e))) => {
+                    loaded += 1;
                     tracing::error!(drive = %letter, error = %e, "Failed to load live drive");
                 }
                 Err(e) => {
-                    tracing::error!(drive = %letter, error = %e, "Task panicked");
+                    loaded += 1;
+                    tracing::error!(error = %e, "Task panicked loading drive");
                 }
             }
 
             let mut status = self.status.write().await;
             *status = DaemonStatus::Loading {
-                drives_loaded: idx + 1,
+                drives_loaded: loaded,
                 drives_total: total,
             };
         }
