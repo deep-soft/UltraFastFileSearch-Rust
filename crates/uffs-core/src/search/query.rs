@@ -316,6 +316,40 @@ fn collect_global_top_n_numeric(
                 }
             }
         } else {
+            if ext_fast_path && !search_filters.extensions.is_empty() {
+                let requested_lower = search_filters
+                    .extensions
+                    .iter()
+                    .map(|ext| ext.to_lowercase())
+                    .collect::<Vec<_>>();
+                let lowercase_only_hits = requested_lower
+                    .iter()
+                    .filter(|ext| {
+                        drive
+                            .ext_names
+                            .iter()
+                            .any(|name| name.as_ref() == ext.as_str())
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let sample_ext_names = drive
+                    .ext_names
+                    .iter()
+                    .filter(|name| !name.is_empty())
+                    .take(8)
+                    .map(AsRef::as_ref)
+                    .collect::<Vec<_>>();
+                tracing::debug!(
+                    drive = %drive.letter,
+                    requested_extensions = ?search_filters.extensions,
+                    requested_lowercase = ?requested_lower,
+                    resolved_ext_ids = ?search_filters.resolved_ext_ids,
+                    lowercase_only_hits = ?lowercase_only_hits,
+                    ext_name_count = drive.ext_names.len(),
+                    ext_name_sample = ?sample_ext_names,
+                    "ext fast-path FALLBACK — no extension IDs resolved, using full scan"
+                );
+            }
             // ── Full-scan path ───────────────────────────────────
             let drive_fold = drive.fold;
             for (rec_idx, rec) in drive.records.iter().enumerate() {

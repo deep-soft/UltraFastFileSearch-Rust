@@ -85,6 +85,32 @@ impl SearchFilters {
         exclude: Option<&str>,
     ) -> Self {
         let now_us = now_unix_micros();
+        let extensions: Vec<String> = ext_filter
+            .map(|ext_list| {
+                let fold = uffs_text::CaseFold::default_table();
+                let mut buf = Vec::with_capacity(32);
+                ext_list
+                    .split(',')
+                    .map(|seg| {
+                        fold.fold_into(seg.trim().trim_start_matches('.'), &mut buf)
+                            .to_owned()
+                    })
+                    .filter(|ext| !ext.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !extensions.is_empty() {
+            tracing::trace!(
+                raw_ext_filter = ext_filter.unwrap_or_default(),
+                normalized_extensions = ?extensions,
+                "normalized extension filter strings"
+            );
+        }
+        let exclude_lower = exclude.map(|excl| {
+            let fold = uffs_text::CaseFold::default_table();
+            let mut buf = Vec::with_capacity(excl.len());
+            fold.fold_into(excl, &mut buf).to_owned()
+        });
         Self {
             hide_system,
             min_size,
@@ -100,37 +126,56 @@ impl SearchFilters {
             attr_exclude: parse_attr_exclude(attr_filter.unwrap_or("")),
             min_descendants,
             max_descendants,
-            extensions: ext_filter
-                .map(|ext_list| {
-                    let fold = uffs_text::CaseFold::default_table();
-                    let mut buf = Vec::with_capacity(32);
-                    ext_list
-                        .split(',')
-                        .map(|seg| {
-                            fold.fold_into(seg.trim().trim_start_matches('.'), &mut buf)
-                                .to_owned()
-                        })
-                        .filter(|ext| !ext.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default(),
+            extensions,
             resolved_ext_ids: Vec::new(),
-            exclude_lower: exclude.map(|excl| {
-                let fold = uffs_text::CaseFold::default_table();
-                let mut buf = Vec::with_capacity(excl.len());
-                fold.fold_into(excl, &mut buf).to_owned()
-            }),
+            exclude_lower,
         }
     }
 
     /// Pre-resolve extension filter strings to `u16` IDs for a specific
     /// drive.  Call this **once per drive** before the hot record loop.
     pub fn resolve_ext_ids_for_drive(&mut self, drive: &crate::compact::DriveCompactIndex) {
-        self.resolved_ext_ids = if self.extensions.is_empty() {
-            Vec::new()
-        } else {
-            drive.resolve_ext_ids(&self.extensions)
-        };
+        if self.extensions.is_empty() {
+            self.resolved_ext_ids.clear();
+            tracing::trace!(drive = %drive.letter, "no extension filter active for drive");
+            return;
+        }
+
+        self.resolved_ext_ids = drive.resolve_ext_ids(&self.extensions);
+
+        let requested_lower = self
+            .extensions
+            .iter()
+            .map(|ext| ext.to_lowercase())
+            .collect::<Vec<_>>();
+        let lowercase_only_hits = requested_lower
+            .iter()
+            .filter(|ext| {
+                drive
+                    .ext_names
+                    .iter()
+                    .any(|name| name.as_ref() == ext.as_str())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let sample_ext_names = drive
+            .ext_names
+            .iter()
+            .filter(|name| !name.is_empty())
+            .take(8)
+            .map(AsRef::as_ref)
+            .collect::<Vec<_>>();
+
+        tracing::debug!(
+            drive = %drive.letter,
+            requested_extensions = ?self.extensions,
+            requested_lowercase = ?requested_lower,
+            resolved_ext_ids = ?self.resolved_ext_ids,
+            lowercase_only_hits = ?lowercase_only_hits,
+            ext_name_count = drive.ext_names.len(),
+            ext_name_sample = ?sample_ext_names,
+            "extension filter resolution for drive"
+        );
     }
 
     /// Returns `true` when the only active filter is `extensions` — no
