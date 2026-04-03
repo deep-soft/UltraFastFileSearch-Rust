@@ -200,28 +200,31 @@ fn print_profile(tm: &ClientTiming) {
         if !prof.drives.is_empty() {
             eprintln!("=== PROFILE: Per-Drive ===");
             eprintln!(
-                "  {:>5}  {:>12}  {:>8}  {:>7}  {:>7}  {:>7}",
-                "Drive", "Records", "Matches", "MFT ms", "Cmpct", "Trigram"
+                "  {:>5}  {:>12}  {:>8}  {:>8}  {:>7}  {:>7}  {:>7}",
+                "Drive", "Records", "Matches", "Cache", "MFT ms", "Cmpct", "Trigram"
             );
             for dp in &prof.drives {
                 eprintln!(
-                    "  {:>5}  {:>12}  {:>8}  {:>7}  {:>7}  {:>7}",
+                    "  {:>5}  {:>12}  {:>8}  {:>8}  {:>7}  {:>7}  {:>7}",
                     format!("{}:", dp.drive),
                     fmt_number(dp.records),
                     fmt_number(dp.matches),
+                    dp.cache_ms,
                     dp.mft_ms,
                     dp.compact_ms,
                     dp.trigram_ms
                 );
             }
+            let total_cache: u64 = prof.drives.iter().map(|dp| dp.cache_ms).sum();
             let total_mft: u64 = prof.drives.iter().map(|dp| dp.mft_ms).sum();
             let total_compact: u64 = prof.drives.iter().map(|dp| dp.compact_ms).sum();
             let total_trigram: u64 = prof.drives.iter().map(|dp| dp.trigram_ms).sum();
             eprintln!(
-                "  {:>5}  {:>12}  {:>8}  {:>7}  {:>7}  {:>7}",
+                "  {:>5}  {:>12}  {:>8}  {:>8}  {:>7}  {:>7}  {:>7}",
                 "SUM",
                 fmt_number(tm.records_scanned),
                 "",
+                total_cache,
                 total_mft,
                 total_compact,
                 total_trigram

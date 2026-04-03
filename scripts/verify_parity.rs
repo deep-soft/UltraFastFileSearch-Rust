@@ -628,8 +628,35 @@ fn run_live_drive_parity(
         rust_time: rust_ms,
     };
 
-    // 1. Run Rust FIRST (cold-disk read — no OS filesystem cache warmth)
-    print!("  [1/3] Running Rust scan (cold)...");
+    // 1. VERY COLD start: kill daemon + delete all cache files before Rust run.
+    //    Without this the daemon may serve in-memory results from a previous
+    //    drive or session, and --no-cache only skips the MFT cache file — it
+    //    doesn't prevent the daemon from using its hot in-memory index.
+    print!("  [1/4] Purging daemon + cache for cold Rust run...");
+    io::stdout().flush().ok();
+    let _ = Command::new(rust_bin)
+        .args(["daemon", "kill"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    std::thread::sleep(Duration::from_secs(1));
+    // Delete compact cache files.
+    if let Ok(local) = env::var("LOCALAPPDATA") {
+        let cache_dir = PathBuf::from(&local).join("uffs").join("cache");
+        if cache_dir.exists() {
+            let _ = fs::remove_dir_all(&cache_dir);
+        }
+    }
+    if let Ok(tmp) = env::var("TEMP") {
+        let legacy = PathBuf::from(&tmp).join("uffs_index_cache");
+        if legacy.exists() {
+            let _ = fs::remove_dir_all(&legacy);
+        }
+    }
+    println!(" ✅");
+
+    // 2. Run Rust (cold-disk read — no daemon, no cache, no OS filesystem cache)
+    print!("  [2/4] Running Rust scan (cold)...");
     io::stdout().flush().ok();
     let rust_start = Instant::now();
     let drive_arg = drive_upper.clone();
@@ -659,8 +686,15 @@ fn run_live_drive_parity(
         }
     }
 
-    // 2. Run C++ SECOND (warm-disk read — MFT already in OS cache from Rust)
-    print!("  [2/3] Running C++ scan (warm)...");
+    // Kill daemon after Rust run — next drive must also start cold.
+    let _ = Command::new(rust_bin)
+        .args(["daemon", "kill"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+
+    // 3. Run C++ (warm-disk read — MFT already in OS cache from Rust)
+    print!("  [3/4] Running C++ scan (warm)...");
     io::stdout().flush().ok();
     let cpp_start = Instant::now();
     let cpp_drives_arg = format!("--drives={drive_upper}");
@@ -690,10 +724,10 @@ fn run_live_drive_parity(
     //     println!("  [3/4] Everything: skipped (es.exe not found)");
     //     false
     // };
-    println!("  [3/3] Everything: disabled (es.exe 2GB IPC limit — see benchmark.ps1 for timing)");
+    println!("  Everything: disabled (es.exe 2GB IPC limit — see benchmark.ps1 for timing)");
 
-    // Compare using the same streaming comparison as offline mode
-    let step = "3/3";
+    // 4. Compare using the same streaming comparison as offline mode
+    let step = "4/4";
     println!("  [{}] Comparing outputs...", step);
     println!();
 

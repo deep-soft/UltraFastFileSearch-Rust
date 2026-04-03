@@ -23,11 +23,13 @@ use crate::events::{DaemonEvent, EventSender};
 /// Field names omit the `_ms` suffix because the unit is documented
 /// once here; all values are milliseconds (`u128`).
 struct StoredDriveTiming {
-    /// MFT read time (milliseconds).
+    /// Compact-cache deserialization time (milliseconds, 0 if cache miss).
+    cache: u128,
+    /// MFT read time (milliseconds, 0 if cache hit).
     mft: u128,
-    /// Compact index build time (milliseconds).
+    /// Compact index build time (milliseconds, 0 if cache hit).
     compact: u128,
-    /// Trigram index build time (milliseconds).
+    /// Trigram index build time (milliseconds, 0 if cache hit).
     trigram: u128,
 }
 
@@ -137,6 +139,7 @@ impl IndexManager {
                     self.drive_timings.write().await.insert(
                         letter,
                         StoredDriveTiming {
+                            cache: timing.cache,
                             mft: timing.mft,
                             compact: timing.compact,
                             trigram: timing.trigram,
@@ -243,6 +246,7 @@ impl IndexManager {
                     self.drive_timings.write().await.insert(
                         letter,
                         StoredDriveTiming {
+                            cache: timing.cache,
                             mft: timing.mft,
                             compact: timing.compact,
                             trigram: timing.trigram,
@@ -429,14 +433,20 @@ impl IndexManager {
             .iter()
             .map(|&(drive, records)| {
                 let matches = rows.iter().filter(|row| row.drive == drive).count();
-                let (mft_ms, compact_ms, trigram_ms) =
-                    timings.get(&drive).map_or((0, 0, 0), |ts| {
-                        (ms_clamp(ts.mft), ms_clamp(ts.compact), ms_clamp(ts.trigram))
+                let (cache_ms, mft_ms, compact_ms, trigram_ms) =
+                    timings.get(&drive).map_or((0, 0, 0, 0), |ts| {
+                        (
+                            ms_clamp(ts.cache),
+                            ms_clamp(ts.mft),
+                            ms_clamp(ts.compact),
+                            ms_clamp(ts.trigram),
+                        )
                     });
                 DriveProfile {
                     drive,
                     records,
                     matches,
+                    cache_ms,
                     mft_ms,
                     compact_ms,
                     trigram_ms,

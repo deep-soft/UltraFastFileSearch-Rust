@@ -310,13 +310,16 @@ pub struct DriveProfile {
     /// Matching rows found in this search.
     pub matches: usize,
     // ── Startup/load timing (captured once at daemon start) ─────
-    /// MFT read time (ms). 0 if not available.
+    /// Compact-cache deserialization time (ms). 0 if cache miss.
+    #[serde(default)]
+    pub cache_ms: u64,
+    /// MFT read time (ms). 0 if cache hit.
     #[serde(default)]
     pub mft_ms: u64,
-    /// Compact index build time (ms).
+    /// Compact index build time (ms). 0 if cache hit.
     #[serde(default)]
     pub compact_ms: u64,
-    /// Trigram index build time (ms).
+    /// Trigram index build time (ms). 0 if cache hit.
     #[serde(default)]
     pub trigram_ms: u64,
 }

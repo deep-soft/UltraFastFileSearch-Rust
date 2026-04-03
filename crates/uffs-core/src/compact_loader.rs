@@ -23,11 +23,14 @@ pub enum IndexSource {
 
 /// Timing breakdown for the compact index build.
 pub struct LoadTiming {
-    /// Time to load/read the MFT (milliseconds).
+    /// Time to deserialize the compact cache (milliseconds, 0 if cache miss).
+    pub cache: u128,
+    /// Time to load/read the MFT (milliseconds, 0 if cache hit).
     pub mft: u128,
-    /// Time to build compact records from `MftIndex` (milliseconds).
+    /// Time to build compact records from `MftIndex` (milliseconds, 0 if cache
+    /// hit).
     pub compact: u128,
-    /// Time to build trigram index (milliseconds).
+    /// Time to build trigram index (milliseconds, 0 if cache hit).
     pub trigram: u128,
 }
 
@@ -87,20 +90,24 @@ pub fn load_drive(
     // only signal. Skipping the mtime check avoids a stat() on the
     // `.uffs` file — safe because we'll USN-patch after cache load.
     if !no_cache {
+        let cache_start = Instant::now();
         if let Some(mut compact) =
             crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS, 0, true)
         {
+            let cache_ms = cache_start.elapsed().as_millis();
             if let Some(path) = source.file_path() {
                 compact.source = IndexSource::MftFile(path.to_path_buf());
             }
             tracing::info!(
                 drive = %drive_letter,
                 records = compact.records.len(),
+                cache_ms,
                 "📦 Cache hit — loaded compact cache"
             );
             return Ok((
                 compact,
                 LoadTiming {
+                    cache: cache_ms,
                     mft: 0,
                     compact: 0,
                     trigram: 0,
@@ -144,6 +151,7 @@ pub fn load_drive(
     Ok((
         compact,
         LoadTiming {
+            cache: 0,
             mft: mft_elapsed,
             compact: compact_elapsed,
             trigram: tri_elapsed,
