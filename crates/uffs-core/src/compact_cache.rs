@@ -23,7 +23,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crate::compact::{ChildrenIndex, CompactRecord, DriveCompactIndex, IndexSource};
+use crate::compact::{
+    ChildrenIndex, CompactRecord, DriveCompactIndex, ExtensionIndex, IndexSource,
+};
 use crate::trigram::TrigramIndex;
 
 /// Magic bytes for compact cache files.
@@ -187,6 +189,8 @@ pub fn deserialize_compact(
         rebuild_ext_names(&records, &names, fold)
     };
 
+    let ext_index = ExtensionIndex::build(&records);
+
     Ok((
         DriveCompactIndex {
             letter: drive_letter,
@@ -194,6 +198,7 @@ pub fn deserialize_compact(
             names,
             trigram,
             children,
+            ext_index,
             fold,
             ext_names,
             source: IndexSource::MftFile(PathBuf::from(format!("{drive_letter}:"))),
@@ -638,12 +643,14 @@ mod tests {
         let fold = uffs_text::CaseFold::default_table();
         let trigram = TrigramIndex::build(&records, &names, fold);
         let children = ChildrenIndex::build(&records);
+        let ext_index = ExtensionIndex::build(&records);
         DriveCompactIndex {
             letter: 'T',
             records,
             names,
             trigram,
             children,
+            ext_index,
             fold,
             ext_names: vec![Box::from("")],
             source: IndexSource::MftFile(PathBuf::from("T:")),

@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 
 use super::backend::{DisplayRow, FilterMode, SortColumn};
 use super::filters::SearchFilters;
-use crate::compact::DriveCompactIndex;
+use crate::compact::{CompactRecord, DriveCompactIndex};
 use crate::search::tree::{self, DirCacheExt as _};
 
 /// Whether cache profiling is enabled (`UFFS_CACHE_PROFILE` env var).
@@ -172,10 +172,6 @@ fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactIndex, desc: bo
 }
 
 /// Efficient numeric global top-N using lightweight tuples.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "drive index and record index bounded by practical limits"
-)]
 #[expect(clippy::too_many_lines, reason = "linear scan + heap + fallback path")]
 fn collect_global_top_n_numeric(
     drives: &[DriveCompactIndex],
@@ -206,28 +202,12 @@ fn collect_global_top_n_numeric(
     // Reusable buffer for on-the-fly CaseFold inside filter matching.
     let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
 
-    for (drive_idx, drive) in drives.iter().enumerate() {
-        let drive_fold = drive.fold;
-        // Resolve extension filter IDs for this drive (once, not per record).
-        search_filters.resolve_ext_ids_for_drive(drive);
-        for (rec_idx, rec) in drive.records.iter().enumerate() {
-            if rec.name_len == 0 {
-                continue;
-            }
-            if has_filters {
-                match filter_mode {
-                    FilterMode::FilesOnly if rec.is_directory() => continue,
-                    FilterMode::DirsOnly if !rec.is_directory() => continue,
-                    FilterMode::All | FilterMode::FilesOnly | FilterMode::DirsOnly => {}
-                }
-                if !search_filters.matches_record(rec, &drive.names, &mut fold_buf, drive_fold) {
-                    continue;
-                }
-            }
-            #[expect(
-                clippy::cast_possible_wrap,
-                reason = "file sizes within i64 range for practical NTFS volumes"
-            )]
+    // ── Per-record processing closure ──────────────────────────────
+    // Shared between the full-scan and ext-index fast paths.
+    #[expect(clippy::cast_possible_wrap, reason = "file sizes within i64 range")]
+    let mut push_record =
+        |drive_idx: usize, rec_idx: usize, rec: &CompactRecord, drive: &DriveCompactIndex| {
+            let drive_fold = drive.fold;
             let sort_key = match sort_column {
                 SortColumn::Size => rec.size as i64,
                 #[expect(
@@ -244,10 +224,7 @@ fn collect_global_top_n_numeric(
                     let mut key = [0_u8; 8];
                     for (dst, ch) in key.iter_mut().zip(name.chars()) {
                         let folded = drive_fold.fold_char(ch);
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "sort key prefix — truncation is acceptable"
-                        )]
+                        #[expect(clippy::cast_possible_truncation, reason = "sort key prefix")]
                         {
                             *dst = folded as u8;
                         }
@@ -260,10 +237,7 @@ fn collect_global_top_n_numeric(
                     key[0] = drive.letter as u8;
                     for (dst, ch) in key[1..].iter_mut().zip(name.chars()) {
                         let folded = drive_fold.fold_char(ch);
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "sort key prefix — truncation is acceptable"
-                        )]
+                        #[expect(clippy::cast_possible_truncation, reason = "sort key prefix")]
                         {
                             *dst = folded as u8;
                         }
@@ -289,7 +263,61 @@ fn collect_global_top_n_numeric(
                     heap_push_capped(&mut heap_asc, entry, limit);
                 }
             } else {
-                fallback.push((drive_idx as u16, rec_idx as u32, sort_key));
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "drive index bounded by practical limits"
+                )]
+                {
+                    fallback.push((drive_idx as u16, rec_idx as u32, sort_key));
+                }
+            }
+        };
+
+    // Check if we can use the extension inverted index (ext-only filter,
+    // no other constraints).  This reduces iteration from O(N) where
+    // N = all records (~25M) to O(K) where K = matching records (~50K).
+    let ext_fast_path = search_filters.is_ext_only()
+        && matches!(filter_mode, FilterMode::All | FilterMode::FilesOnly);
+
+    for (drive_idx, drive) in drives.iter().enumerate() {
+        // Resolve extension filter IDs for this drive (once, not per record).
+        search_filters.resolve_ext_ids_for_drive(drive);
+
+        if ext_fast_path && !search_filters.resolved_ext_ids.is_empty() {
+            // ── Fast path: iterate only ext-index candidates ─────
+            for &ext_id in &search_filters.resolved_ext_ids.clone() {
+                for &rec_idx_u32 in drive.ext_index.get(ext_id) {
+                    let rec_idx = rec_idx_u32 as usize;
+                    if let Some(rec) = drive.records.get(rec_idx) {
+                        if rec.name_len == 0 {
+                            continue;
+                        }
+                        if matches!(filter_mode, FilterMode::FilesOnly) && rec.is_directory() {
+                            continue;
+                        }
+                        push_record(drive_idx, rec_idx, rec, drive);
+                    }
+                }
+            }
+        } else {
+            // ── Full-scan path ───────────────────────────────────
+            let drive_fold = drive.fold;
+            for (rec_idx, rec) in drive.records.iter().enumerate() {
+                if rec.name_len == 0 {
+                    continue;
+                }
+                if has_filters {
+                    match filter_mode {
+                        FilterMode::FilesOnly if rec.is_directory() => continue,
+                        FilterMode::DirsOnly if !rec.is_directory() => continue,
+                        FilterMode::All | FilterMode::FilesOnly | FilterMode::DirsOnly => {}
+                    }
+                    if !search_filters.matches_record(rec, &drive.names, &mut fold_buf, drive_fold)
+                    {
+                        continue;
+                    }
+                }
+                push_record(drive_idx, rec_idx, rec, drive);
             }
         }
     }
@@ -654,7 +682,7 @@ pub fn search_compact_drive_tree(
 /// display hint is adjusted.
 fn make_display_row(
     drive_letter: char,
-    rec: &crate::compact::CompactRecord,
+    rec: &CompactRecord,
     name: &str,
     path: String,
 ) -> DisplayRow {

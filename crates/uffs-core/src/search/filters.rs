@@ -133,6 +133,29 @@ impl SearchFilters {
         };
     }
 
+    /// Returns `true` when the only active filter is `extensions` — no
+    /// size, date, attr, exclude, descendant, or system-hide constraints.
+    /// When this is true and the pattern is match-all (`*`), we can use
+    /// the extension inverted index for O(K) iteration instead of O(N).
+    #[must_use]
+    pub fn is_ext_only(&self) -> bool {
+        !self.extensions.is_empty()
+            && !self.hide_system
+            && self.min_size.is_none()
+            && self.max_size.is_none()
+            && self.newer_us.is_none()
+            && self.older_us.is_none()
+            && self.newer_created_us.is_none()
+            && self.older_created_us.is_none()
+            && self.newer_accessed_us.is_none()
+            && self.older_accessed_us.is_none()
+            && self.attr_require == 0
+            && self.attr_exclude == 0
+            && self.min_descendants.is_none()
+            && self.max_descendants.is_none()
+            && self.exclude_lower.is_none()
+    }
+
     /// Check whether a compact record passes all filters.
     ///
     /// Hot-path predicate used during global top-N scans.

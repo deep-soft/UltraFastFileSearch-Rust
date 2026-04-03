@@ -458,6 +458,8 @@ pub fn apply_usn_patch(
     drive.children = ChildrenIndex::build(&drive.records);
     // Rebuild trigram index using CaseFold — no names_lower clone needed.
     drive.trigram = TrigramIndex::build(&drive.records, &drive.names, drive.fold);
+    // Rebuild extension inverted index so --ext queries reflect USN changes.
+    drive.ext_index = crate::compact::ExtensionIndex::build(&drive.records);
 
     stats
 }
