@@ -284,27 +284,41 @@ pub struct SearchResponse {
 /// Daemon-side timing breakdown returned when `SearchParams::profile` is set.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SearchProfile {
-    /// Time to acquire the RwLock + prepare filters (ms).
+    /// Daemon uptime in milliseconds (time since daemon started).
+    pub uptime_ms: u64,
+    /// Total startup duration: first drive start → last drive ready (ms).
+    pub startup_ms: u64,
+    /// Time to acquire the `RwLock` + prepare filters (ms).
     pub lock_ms: u64,
     /// Pure search time across all drives (ms).
     pub search_ms: u64,
     /// Time to convert `DisplayRow` → `SearchRow` (ms).
     pub row_build_ms: u64,
-    /// JSON serialization time (ms, 0 when shmem is used).
+    /// JSON serialization / shmem write time (ms).
     pub serialize_ms: u64,
     /// Per-drive breakdown.
     pub drives: Vec<DriveProfile>,
 }
 
-/// Per-drive timing within a search.
+/// Per-drive timing within a search (search + load/startup metrics).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DriveProfile {
     /// Drive letter.
     pub drive: char,
     /// Records in this drive's index.
     pub records: usize,
-    /// Matching rows found.
+    /// Matching rows found in this search.
     pub matches: usize,
+    // ── Startup/load timing (captured once at daemon start) ─────
+    /// MFT read time (ms). 0 if not available.
+    #[serde(default)]
+    pub mft_ms: u64,
+    /// Compact index build time (ms).
+    #[serde(default)]
+    pub compact_ms: u64,
+    /// Trigram index build time (ms).
+    #[serde(default)]
+    pub trigram_ms: u64,
 }
 
 /// A single search result row.

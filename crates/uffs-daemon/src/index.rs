@@ -18,6 +18,19 @@ use uffs_core::search::filters::SearchFilters;
 
 use crate::events::{DaemonEvent, EventSender};
 
+/// Per-drive load timing stored for profile reporting.
+///
+/// Field names omit the `_ms` suffix because the unit is documented
+/// once here; all values are milliseconds (`u128`).
+struct StoredDriveTiming {
+    /// MFT read time (milliseconds).
+    mft: u128,
+    /// Compact index build time (milliseconds).
+    compact: u128,
+    /// Trigram index build time (milliseconds).
+    trigram: u128,
+}
+
 /// Manages loaded drive indices and serves queries.
 ///
 /// Thread-safe via `Arc<RwLock<...>>` — multiple readers (search) can
@@ -40,6 +53,8 @@ pub struct IndexManager {
     queries_total_us: AtomicU64,
     /// Duration from daemon start to `Ready` (microseconds, set once).
     startup_duration_us: AtomicU64,
+    /// Per-drive load timing for `--profile` reporting.
+    drive_timings: RwLock<std::collections::HashMap<char, StoredDriveTiming>>,
 }
 
 impl IndexManager {
@@ -59,6 +74,7 @@ impl IndexManager {
             queries_total: AtomicU64::new(0),
             queries_total_us: AtomicU64::new(0),
             startup_duration_us: AtomicU64::new(0),
+            drive_timings: RwLock::new(std::collections::HashMap::new()),
         }
     }
 
@@ -73,13 +89,10 @@ impl IndexManager {
     /// Results are collected as they complete (fastest first).
     pub async fn load_from_data_dir(&self, mft_files: &[PathBuf], no_cache: bool) {
         let total = mft_files.len();
-        {
-            let mut status_guard = self.status.write().await;
-            *status_guard = DaemonStatus::Loading {
-                drives_loaded: 0,
-                drives_total: total,
-            };
-        }
+        *self.status.write().await = DaemonStatus::Loading {
+            drives_loaded: 0,
+            drives_total: total,
+        };
 
         // Spawn all file loads in parallel on blocking threads.
         let mut join_set = tokio::task::JoinSet::new();
@@ -120,6 +133,15 @@ impl IndexManager {
                         drives_loaded: loaded,
                         drives_total: total,
                     });
+                    // Store timing for profile reporting.
+                    self.drive_timings.write().await.insert(
+                        letter,
+                        StoredDriveTiming {
+                            mft: timing.mft,
+                            compact: timing.compact,
+                            trigram: timing.trigram,
+                        },
+                    );
                     let mut backend = self.backend.write().await;
                     backend.drives.push(drive_index);
                     drop(backend);
@@ -217,6 +239,15 @@ impl IndexManager {
                         drives_loaded: loaded,
                         drives_total: total,
                     });
+                    // Store timing for profile reporting.
+                    self.drive_timings.write().await.insert(
+                        letter,
+                        StoredDriveTiming {
+                            mft: timing.mft,
+                            compact: timing.compact,
+                            trigram: timing.trigram,
+                        },
+                    );
                     let mut backend = self.backend.write().await;
                     backend.drives.push(drive_index);
                 }
@@ -272,11 +303,12 @@ impl IndexManager {
     /// with a per-phase timing breakdown so the CLI can print it.
     pub async fn search(&self, params: &SearchParams) -> SearchResponse {
         let query_start = Instant::now();
+        let profiling = params.profile;
 
         // ── Lock acquisition ────────────────────────────────────────
-        let t_lock = Instant::now();
+        let t_lock = profiling.then(Instant::now);
         let mut backend = self.backend.write().await;
-        let lock_us = t_lock.elapsed().as_micros();
+        let lock_us = t_lock.map_or(0, |ts| ts.elapsed().as_micros());
 
         let sort_column = params
             .sort
@@ -309,10 +341,13 @@ impl IndexManager {
             params.exclude.as_deref(),
         );
 
-        // ── Search ──────────────────────────────────────────────────
-        // Snapshot per-drive info before search (for profile).
-        let drive_info: Vec<(char, usize)> = if params.profile {
-            backend.drives.iter().map(|d| (d.letter, d.records.len())).collect()
+        // Snapshot per-drive info (only when profiling).
+        let drive_info: Vec<(char, usize)> = if profiling {
+            backend
+                .drives
+                .iter()
+                .map(|dr| (dr.letter, dr.records.len()))
+                .collect()
         } else {
             Vec::new()
         };
@@ -326,18 +361,22 @@ impl IndexManager {
             &filters,
             &params.drives,
         );
-        let search_us = result.duration.as_micros();
+        let search_us = if profiling {
+            result.duration.as_micros()
+        } else {
+            0
+        };
 
         drop(backend);
 
         // ── Row building ────────────────────────────────────────────
-        let t_rows = Instant::now();
+        let t_rows = profiling.then(Instant::now);
         let rows: Vec<SearchRow> = result
             .rows
             .iter()
             .map(Self::display_row_to_search_row)
             .collect();
-        let row_build_us = t_rows.elapsed().as_micros();
+        let row_build_us = t_rows.map_or(0, |ts| ts.elapsed().as_micros());
 
         // Update perf counters.
         let query_us = query_start.elapsed().as_micros();
@@ -347,31 +386,15 @@ impl IndexManager {
             Ordering::Relaxed,
         );
 
-        let truncated = params
-            .limit
-            .is_some_and(|cap| rows.len() >= cap as usize);
-
+        let truncated = params.limit.is_some_and(|cap| rows.len() >= cap as usize);
         let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
 
-        // ── Profile ─────────────────────────────────────────────────
-        let profile = if params.profile {
-            // Count matches per drive
-            let mut drive_profiles: Vec<DriveProfile> = drive_info
-                .iter()
-                .map(|&(drive, records)| {
-                    let matches = rows.iter().filter(|r| r.drive == drive).count();
-                    DriveProfile { drive, records, matches }
-                })
-                .collect();
-            drive_profiles.sort_by_key(|d| d.drive);
-
-            Some(SearchProfile {
-                lock_ms: u64::try_from(lock_us / 1000).unwrap_or(u64::MAX),
-                search_ms: u64::try_from(search_us / 1000).unwrap_or(u64::MAX),
-                row_build_ms: u64::try_from(row_build_us / 1000).unwrap_or(u64::MAX),
-                serialize_ms: 0, // filled in by handler after JSON serialization
-                drives: drive_profiles,
-            })
+        // Profile (built in a separate method to keep `search` under the line limit).
+        let profile = if profiling {
+            Some(
+                self.build_search_profile(lock_us, search_us, row_build_us, &drive_info, &rows)
+                    .await,
+            )
         } else {
             None
         };
@@ -384,6 +407,52 @@ impl IndexManager {
             shmem_path: None,
             shmem_count: None,
             profile,
+        }
+    }
+
+    /// Build the `SearchProfile` for `--profile` output.
+    async fn build_search_profile(
+        &self,
+        lock_us: u128,
+        search_us: u128,
+        row_build_us: u128,
+        drive_info: &[(char, usize)],
+        rows: &[SearchRow],
+    ) -> SearchProfile {
+        let timings = self.drive_timings.read().await;
+        let startup_us = self.startup_duration_us.load(Ordering::Relaxed);
+
+        let us_to_ms = |us: u128| u64::try_from(us / 1000).unwrap_or(u64::MAX);
+        let ms_clamp = |val: u128| u64::try_from(val).unwrap_or(u64::MAX);
+
+        let mut drive_profiles: Vec<DriveProfile> = drive_info
+            .iter()
+            .map(|&(drive, records)| {
+                let matches = rows.iter().filter(|row| row.drive == drive).count();
+                let (mft_ms, compact_ms, trigram_ms) =
+                    timings.get(&drive).map_or((0, 0, 0), |ts| {
+                        (ms_clamp(ts.mft), ms_clamp(ts.compact), ms_clamp(ts.trigram))
+                    });
+                DriveProfile {
+                    drive,
+                    records,
+                    matches,
+                    mft_ms,
+                    compact_ms,
+                    trigram_ms,
+                }
+            })
+            .collect();
+        drive_profiles.sort_by_key(|dp| dp.drive);
+
+        SearchProfile {
+            uptime_ms: us_to_ms(self.start_time.elapsed().as_micros()),
+            startup_ms: startup_us / 1000,
+            lock_ms: us_to_ms(lock_us),
+            search_ms: us_to_ms(search_us),
+            row_build_ms: us_to_ms(row_build_us),
+            serialize_ms: 0, // filled in by handler after shmem write
+            drives: drive_profiles,
         }
     }
 

@@ -6,20 +6,22 @@
 
 use anyhow::{Context, Result};
 use tracing::info;
-use uffs_client::protocol::{SearchParams, SearchRow};
+use uffs_client::protocol::{SearchParams, SearchProfile, SearchRow};
 use uffs_core::search::backend::DisplayRow;
 
 use super::SearchConfig;
 
 /// Format a number with comma separators (e.g. `1,234,567`).
-fn fmt_number(n: usize) -> String {
-    let s = n.to_string();
-    let mut r = String::new();
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 { r.push(','); }
-        r.push(c);
+fn fmt_number(num: usize) -> String {
+    let digits = num.to_string();
+    let mut result = String::new();
+    for (idx, ch) in digits.chars().rev().enumerate() {
+        if idx > 0 && idx % 3 == 0 {
+            result.push(',');
+        }
+        result.push(ch);
     }
-    r.chars().rev().collect()
+    result.chars().rev().collect()
 }
 
 /// Search via the UFFS daemon.
@@ -116,78 +118,185 @@ pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<D
     let convert_ms = t_convert.elapsed().as_millis();
 
     // Emit profile breakdown to stderr when --profile or --benchmark is active.
-    #[expect(clippy::print_stderr, reason = "intentional --profile diagnostic output")]
     if profile {
-        eprintln!("=== PROFILE: Client → Daemon ===");
-        eprintln!("  Connect:         {connect_ms:>6} ms");
-        eprintln!("  Await ready:     {ready_ms:>6} ms");
-        eprintln!("  Search (IPC):    {ipc_ms:>6} ms  (daemon: {daemon_ms} ms, transfer: {} ms)",
-            ipc_ms.saturating_sub(u128::from(daemon_ms)));
-        eprintln!("  Convert rows:    {convert_ms:>6} ms  ({} rows)", rows.len());
-
-        // Print daemon-side breakdown if the daemon returned it.
-        if let Some(ref prof) = daemon_profile {
-            eprintln!("=== PROFILE: Daemon Internals ===");
-            eprintln!("  Lock acquire:    {:>6} ms", prof.lock_ms);
-            eprintln!("  Search:          {:>6} ms  ({} records scanned)",
-                prof.search_ms, fmt_number(records_scanned));
-            eprintln!("  Row build:       {:>6} ms  ({} → SearchRow)", prof.row_build_ms, rows.len());
-            if prof.serialize_ms > 0 {
-                eprintln!("  Shmem write:     {:>6} ms", prof.serialize_ms);
-            }
-            if !prof.drives.is_empty() {
-                eprintln!("  Per-drive:");
-                for dp in &prof.drives {
-                    eprintln!("    {}: {:>12} records, {:>8} matches",
-                        dp.drive, fmt_number(dp.records), fmt_number(dp.matches));
-                }
-            }
-        }
+        print_profile(&ClientTiming {
+            connect_ms,
+            ready_ms,
+            ipc_ms,
+            daemon_ms,
+            convert_ms,
+            row_count: rows.len(),
+            records_scanned,
+            daemon_profile,
+        });
     }
 
     Ok(rows)
 }
 
+/// Client-side timing data collected during a daemon search.
+struct ClientTiming {
+    /// Time to establish the named-pipe/domain-socket connection (ms).
+    connect_ms: u128,
+    /// Time waiting for the daemon to report `Ready` status (ms).
+    ready_ms: u128,
+    /// Total IPC round-trip time including serialization (ms).
+    ipc_ms: u128,
+    /// Daemon-reported search duration (ms).
+    daemon_ms: u64,
+    /// Time to convert `SearchRow` → `DisplayRow` (ms).
+    convert_ms: u128,
+    /// Number of result rows returned.
+    row_count: usize,
+    /// Total records scanned across all drives.
+    records_scanned: usize,
+    /// Daemon-side profile (populated when `--profile` is active).
+    daemon_profile: Option<SearchProfile>,
+}
+
+/// Print `--profile` diagnostics to stderr.
+///
+/// Extracted from `search_via_daemon` to keep that function under the
+/// 100-line clippy limit.
+#[expect(
+    clippy::print_stderr,
+    reason = "intentional --profile diagnostic output"
+)]
+fn print_profile(tm: &ClientTiming) {
+    eprintln!("=== PROFILE: Client → Daemon ===");
+    eprintln!("  Connect:         {:>6} ms", tm.connect_ms);
+    eprintln!("  Await ready:     {:>6} ms", tm.ready_ms);
+    eprintln!(
+        "  Search (IPC):    {:>6} ms  (daemon: {} ms, transfer: {} ms)",
+        tm.ipc_ms,
+        tm.daemon_ms,
+        tm.ipc_ms.saturating_sub(u128::from(tm.daemon_ms))
+    );
+    eprintln!(
+        "  Convert rows:    {:>6} ms  ({} rows)",
+        tm.convert_ms, tm.row_count
+    );
+
+    if let Some(prof) = &tm.daemon_profile {
+        eprintln!("=== PROFILE: Daemon Internals ===");
+        eprintln!("  Uptime:          {:>6} ms", prof.uptime_ms);
+        eprintln!(
+            "  Startup:         {:>6} ms  (all drives loaded)",
+            prof.startup_ms
+        );
+        eprintln!("  Lock acquire:    {:>6} ms", prof.lock_ms);
+        eprintln!(
+            "  Search:          {:>6} ms  ({} records scanned)",
+            prof.search_ms,
+            fmt_number(tm.records_scanned)
+        );
+        eprintln!(
+            "  Row build:       {:>6} ms  ({} → SearchRow)",
+            prof.row_build_ms, tm.row_count
+        );
+        if prof.serialize_ms > 0 {
+            eprintln!("  Shmem write:     {:>6} ms", prof.serialize_ms);
+        }
+        if !prof.drives.is_empty() {
+            eprintln!("=== PROFILE: Per-Drive ===");
+            eprintln!(
+                "  {:>5}  {:>12}  {:>8}  {:>7}  {:>7}  {:>7}",
+                "Drive", "Records", "Matches", "MFT ms", "Cmpct", "Trigram"
+            );
+            for dp in &prof.drives {
+                eprintln!(
+                    "  {:>5}  {:>12}  {:>8}  {:>7}  {:>7}  {:>7}",
+                    format!("{}:", dp.drive),
+                    fmt_number(dp.records),
+                    fmt_number(dp.matches),
+                    dp.mft_ms,
+                    dp.compact_ms,
+                    dp.trigram_ms
+                );
+            }
+            let total_mft: u64 = prof.drives.iter().map(|dp| dp.mft_ms).sum();
+            let total_compact: u64 = prof.drives.iter().map(|dp| dp.compact_ms).sum();
+            let total_trigram: u64 = prof.drives.iter().map(|dp| dp.trigram_ms).sum();
+            eprintln!(
+                "  {:>5}  {:>12}  {:>8}  {:>7}  {:>7}  {:>7}",
+                "SUM",
+                fmt_number(tm.records_scanned),
+                "",
+                total_mft,
+                total_compact,
+                total_trigram
+            );
+        }
+    }
+}
+
 /// Build daemon spawn arguments from CLI data sources.
 ///
-/// On **Windows** this returns an empty list — the daemon auto-discovers
-/// live NTFS drives.
+/// Forward data-source flags so the daemon loads **only what's needed**:
 ///
-/// Forward data-source flags to the daemon.
-///
-/// On **Windows** the daemon auto-discovers live NTFS drives — no args
-/// needed.  On **Mac/Linux** we forward `--data-dir` and/or `--mft-file`
-/// as-is so the daemon handles discovery internally (DRY).
+/// - **Windows + `--drive C,D`** → `--drive C --drive D` Daemon loads only C
+///   and D (not all 7 drives).
+/// - **Windows + no `--drive`** → empty args Daemon auto-discovers all NTFS
+///   drives (default).
+/// - **Mac/Linux** → `--data-dir` / `--mft-file` forwarded as-is.
 fn build_daemon_spawn_args(config: &SearchConfig<'_>) -> Result<Vec<String>> {
-    // On Windows the daemon discovers live drives automatically.
-    if cfg!(windows) {
-        return Ok(Vec::new());
-    }
-
     let mut args = Vec::new();
 
-    // Forward --data-dir raw — daemon resolves it internally.
-    if let Some(dir) = &config.data_dir {
-        args.push("--data-dir".to_owned());
-        args.push(dir.to_string_lossy().into_owned());
-    }
+    if cfg!(windows) {
+        // Collect the drives the user explicitly asked for.
+        let drives: Vec<char> = config
+            .multi_drives
+            .clone()
+            .or_else(|| config.single_drive.map(|ch| vec![ch]))
+            .unwrap_or_default();
 
-    // Forward explicit --mft-file paths.
-    for mft_path in &config.mft_file {
-        args.push("--mft-file".to_owned());
-        args.push(mft_path.to_string_lossy().into_owned());
-    }
+        if !drives.is_empty() {
+            // Tell the daemon to load ONLY these drives — not all 7.
+            for &letter in &drives {
+                args.push("--drive".to_owned());
+                args.push(letter.to_string());
+            }
+            info!(
+                drives = ?drives,
+                "Forwarding --drive to daemon spawn (selective load)"
+            );
+        }
+        // No drives specified → daemon auto-discovers all.
 
-    // Non-Windows with no data sources → fail fast.
-    if args.is_empty() {
-        anyhow::bail!(
-            "No MFT data source specified.\n\n\
-             On macOS/Linux, provide MFT files via:\n  \
-             --data-dir <path>   (directory containing *_mft.* files)\n  \
-             --mft-file <path>   (one or more MFT capture files)\n\n\
-             The UFFS daemon needs data to search. On Windows, live NTFS\n\
-             drives are discovered automatically."
-        );
+        // Also forward --data-dir / --mft-file if provided on Windows
+        // (e.g. offline analysis of MFT captures).
+        if let Some(dir) = &config.data_dir {
+            args.push("--data-dir".to_owned());
+            args.push(dir.to_string_lossy().into_owned());
+        }
+        for mft_path in &config.mft_file {
+            args.push("--mft-file".to_owned());
+            args.push(mft_path.to_string_lossy().into_owned());
+        }
+    } else {
+        // Forward --data-dir raw — daemon resolves it internally.
+        if let Some(dir) = &config.data_dir {
+            args.push("--data-dir".to_owned());
+            args.push(dir.to_string_lossy().into_owned());
+        }
+
+        // Forward explicit --mft-file paths.
+        for mft_path in &config.mft_file {
+            args.push("--mft-file".to_owned());
+            args.push(mft_path.to_string_lossy().into_owned());
+        }
+
+        // Non-Windows with no data sources → fail fast.
+        if args.is_empty() {
+            anyhow::bail!(
+                "No MFT data source specified.\n\n\
+                 On macOS/Linux, provide MFT files via:\n  \
+                 --data-dir <path>   (directory containing *_mft.* files)\n  \
+                 --mft-file <path>   (one or more MFT capture files)\n\n\
+                 The UFFS daemon needs data to search. On Windows, live NTFS\n\
+                 drives are discovered automatically."
+            );
+        }
     }
 
     if config.no_cache {

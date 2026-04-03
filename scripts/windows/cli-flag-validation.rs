@@ -12,15 +12,19 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 Robert Nio
 //
-// Runs every CLI flag combination against a warm daemon, validates output
-// correctness (not just "didn't crash"), and reports pass/fail with timing.
+// Runs every CLI flag combination at three caching levels and compares
+// per-test timings side-by-side:
+//
+//   COLD       — no daemon, no cache files  (full MFT read + index build)
+//   WARM CACHE — no daemon, cache files exist  (daemon auto-starts from cache)
+//   HOT        — daemon already running  (pure in-memory search)
 //
 // Usage:
 //   rust-script scripts/windows/cli-flag-validation.rs [path-to-uffs-binary]
 //
 // Requirements:
-//   - Daemon must be running (auto-started by first query)
 //   - Windows with NTFS drives (tests reference real drive letters)
+//   - Administrator privileges (MFT reading)
 
 use std::process::Command;
 use std::time::Instant;
@@ -119,16 +123,22 @@ struct TestResult {
     detail: String,
 }
 
+/// Results from running the full test suite at one caching level.
+struct PhaseResult {
+    label: String,
+    results: Vec<TestResult>,
+    wall_ms: u128,
+}
+
 struct TestRunner {
     bin: String,
     results: Vec<TestResult>,
-    fail_fast: bool,
 }
 
 
 impl TestRunner {
     fn new(bin: String) -> Self {
-        Self { bin, results: Vec::new(), fail_fast: true }
+        Self { bin, results: Vec::new() }
     }
 
     /// Run uffs with given args, return (exit_code, stdout, stderr).
@@ -170,55 +180,75 @@ impl TestRunner {
         let timing = format!("{duration_ms:>5}ms").dimmed();
         eprintln!("  [{status}] {timing}  {name}: {detail}");
 
-        let failed = !passed;
         self.results.push(TestResult {
             name: name.to_string(), passed, duration_ms, detail,
         });
-        if failed && self.fail_fast {
-            self.summary();
-            std::process::exit(1);
+    }
+
+    /// Drain results into a `PhaseResult`.
+    fn finish_phase(&mut self, label: &str, wall_ms: u128) -> PhaseResult {
+        PhaseResult {
+            label: label.to_string(),
+            results: std::mem::take(&mut self.results),
+            wall_ms,
         }
     }
 
-    fn summary(&self) {
-        let total = self.results.len();
-        let passed = self.results.iter().filter(|r| r.passed).count();
+    fn phase_summary(phase: &PhaseResult) {
+        let total = phase.results.len();
+        let passed = phase.results.iter().filter(|r| r.passed).count();
         let failed = total - passed;
-        let total_ms: u128 = self.results.iter().map(|r| r.duration_ms).sum();
-        let avg_ms = if total > 0 { total_ms / total as u128 } else { 0 };
+        let sum_ms: u128 = phase.results.iter().map(|r| r.duration_ms).sum();
+        let avg_ms = if total > 0 { sum_ms / total as u128 } else { 0 };
 
         eprintln!();
-        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        eprintln!("  ─── {} ───", phase.label);
         if failed == 0 {
-            eprintln!("  {} {passed}/{total} tests passed in {total_ms}ms (avg {avg_ms}ms)",
-                "✅ ALL PASS".green().bold());
+            eprintln!("  {} {passed}/{total} tests — wall {}ms / sum {sum_ms}ms / avg {avg_ms}ms",
+                "✅".green(), phase.wall_ms);
         } else {
-            eprintln!("  {} {failed}/{total} tests FAILED in {total_ms}ms",
-                "❌ FAILURES".red().bold());
-            for r in &self.results {
+            eprintln!("  {} {failed}/{total} FAILED — wall {}ms / sum {sum_ms}ms",
+                "❌".red(), phase.wall_ms);
+            for r in &phase.results {
                 if !r.passed {
                     eprintln!("     ❌ {}: {}", r.name, r.detail);
                 }
             }
         }
-        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     }
 }
 
-// ── Main + All Tests ─────────────────────────────────────────────────────────
+// ── Cache / Daemon Helpers ──────────────────────────────────────────────────
 
-fn main() {
-    let bin = uffs_bin();
-    eprintln!();
-    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║  UFFS CLI Flag Validation Suite                              ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!("  Binary: {bin}");
-    eprintln!();
+fn kill_daemon(bin: &str) {
+    eprintln!("  Killing daemon...");
+    let _ = Command::new(bin).args(["daemon", "kill"]).output();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+}
 
-    let mut t = TestRunner::new(bin);
+fn delete_cache() {
+    // Secure cache location
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let p = std::path::PathBuf::from(&local).join("uffs").join("cache");
+        if p.exists() {
+            eprintln!("  Deleting cache: {}", p.display());
+            let _ = std::fs::remove_dir_all(&p);
+        }
+    }
+    // Legacy cache location
+    if let Ok(tmp) = std::env::var("TEMP") {
+        let p = std::path::PathBuf::from(&tmp).join("uffs_index_cache");
+        if p.exists() {
+            eprintln!("  Deleting legacy cache: {}", p.display());
+            let _ = std::fs::remove_dir_all(&p);
+        }
+    }
+}
 
-    // ── 1. Warmup (also verifies daemon is alive) ─────────────────────
+// ── Test Suite ───────────────────────────────────────────────────────────────
+
+fn run_test_suite(t: &mut TestRunner) {
+    // ── 1. Warmup (also verifies daemon is alive / auto-starts) ───────
     t.test("T00 warmup / daemon alive", &["*.txt", "--limit", "1"], |stdout, _| {
         if csv_row_count(stdout) < 1 { bail!("No results — daemon may not be running"); }
         Ok("daemon warm".into())
@@ -656,9 +686,156 @@ fn main() {
     t.test("T43 --newer-accessed 7d", &["*", "--newer-accessed", "7d", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
     });
+}
 
-    // ── Summary ───────────────────────────────────────────────────────
-    t.summary();
-    let failed = t.results.iter().filter(|r| !r.passed).count();
-    std::process::exit(if failed == 0 { 0 } else { 1 });
+// ── Cross-Level Summary ─────────────────────────────────────────────────────
+
+fn cross_level_summary(phases: &[PhaseResult]) {
+    eprintln!();
+    eprintln!("╔═══════════════════════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Cross-Level Timing Comparison                                                   ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════════════════════════╝");
+
+    // Header row: test name + one column per phase.
+    let labels: Vec<&str> = phases.iter().map(|p| p.label.as_str()).collect();
+    eprint!("  {:<36}", "Test");
+    for label in &labels {
+        eprint!("  {:>14}", label);
+    }
+    eprintln!("    Status");
+    eprint!("  {:<36}", "────────────────────────────────────");
+    for _ in &labels {
+        eprint!("  {:>14}", "──────────────");
+    }
+    eprintln!("    ──────");
+
+    // Determine the test list from the first phase.
+    let test_count = phases.first().map_or(0, |p| p.results.len());
+    for i in 0..test_count {
+        let name = phases.first().map_or("?", |p| p.results.get(i).map_or("?", |r| r.name.as_str()));
+        // Truncate long test names.
+        let short = if name.len() > 35 { &name[..35] } else { name };
+        eprint!("  {:<36}", short);
+
+        let mut all_pass = true;
+        for phase in phases {
+            if let Some(r) = phase.results.get(i) {
+                let ms = r.duration_ms;
+                let cell = format!("{ms} ms");
+                if r.passed {
+                    eprint!("  {:>14}", cell);
+                } else {
+                    eprint!("  {:>14}", cell.red());
+                    all_pass = false;
+                }
+            } else {
+                eprint!("  {:>14}", "—");
+            }
+        }
+        if all_pass {
+            eprintln!("    {}", "✅".green());
+        } else {
+            eprintln!("    {}", "❌".red());
+        }
+    }
+
+    // Totals row.
+    eprint!("  {:<36}", "TOTAL (sum)");
+    for phase in phases {
+        let sum: u128 = phase.results.iter().map(|r| r.duration_ms).sum();
+        eprint!("  {:>14}", format!("{sum} ms"));
+    }
+    eprintln!();
+    eprint!("  {:<36}", "WALL (phase)");
+    for phase in phases {
+        eprint!("  {:>14}", format!("{} ms", phase.wall_ms));
+    }
+    eprintln!();
+
+    // Speedup row (COLD → HOT).
+    if phases.len() >= 3 {
+        let cold_sum: u128 = phases[0].results.iter().map(|r| r.duration_ms).sum();
+        let hot_sum: u128 = phases[2].results.iter().map(|r| r.duration_ms).sum();
+        if hot_sum > 0 {
+            let speedup = cold_sum as f64 / hot_sum as f64;
+            eprintln!();
+            eprintln!("  {} COLD→HOT sum speedup: {:.1}x",
+                "⚡".yellow(), speedup);
+        }
+        let cold_wall = phases[0].wall_ms;
+        let hot_wall = phases[2].wall_ms;
+        if hot_wall > 0 {
+            let speedup = cold_wall as f64 / hot_wall as f64;
+            eprintln!("  {} COLD→HOT wall speedup: {:.1}x",
+                "⚡".yellow(), speedup);
+        }
+    }
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+
+fn main() {
+    let bin = uffs_bin();
+    eprintln!();
+    eprintln!("╔═══════════════════════════════════════════════════════════════╗");
+    eprintln!("║  UFFS CLI Flag Validation Suite — 3-Level Cache Comparison   ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+    eprintln!("  Binary: {bin}");
+    eprintln!();
+
+    let mut t = TestRunner::new(bin.clone());
+    let mut phases: Vec<PhaseResult> = Vec::new();
+
+    // ═══ Phase 1: COLD — no daemon, no cache files ══════════════════════
+    eprintln!("┌───────────────────────────────────────────────────────────────┐");
+    eprintln!("│  Phase 1: COLD (no daemon, no cache)                         │");
+    eprintln!("└───────────────────────────────────────────────────────────────┘");
+    kill_daemon(&bin);
+    delete_cache();
+    let phase_start = Instant::now();
+    run_test_suite(&mut t);
+    let wall_ms = phase_start.elapsed().as_millis();
+    let phase = t.finish_phase("COLD", wall_ms);
+    TestRunner::phase_summary(&phase);
+    phases.push(phase);
+
+    // ═══ Phase 2: WARM CACHE — cache files exist, no daemon ═════════════
+    eprintln!();
+    eprintln!("┌───────────────────────────────────────────────────────────────┐");
+    eprintln!("│  Phase 2: WARM CACHE (cache files present, no daemon)        │");
+    eprintln!("└───────────────────────────────────────────────────────────────┘");
+    kill_daemon(&bin);
+    // Cache files remain from Phase 1.
+    let phase_start = Instant::now();
+    run_test_suite(&mut t);
+    let wall_ms = phase_start.elapsed().as_millis();
+    let phase = t.finish_phase("WARM CACHE", wall_ms);
+    TestRunner::phase_summary(&phase);
+    phases.push(phase);
+
+    // ═══ Phase 3: HOT — daemon already running ══════════════════════════
+    eprintln!();
+    eprintln!("┌───────────────────────────────────────────────────────────────┐");
+    eprintln!("│  Phase 3: HOT (daemon running from Phase 2)                  │");
+    eprintln!("└───────────────────────────────────────────────────────────────┘");
+    // Daemon is already warm from Phase 2's test run.
+    let phase_start = Instant::now();
+    run_test_suite(&mut t);
+    let wall_ms = phase_start.elapsed().as_millis();
+    let phase = t.finish_phase("HOT", wall_ms);
+    TestRunner::phase_summary(&phase);
+    phases.push(phase);
+
+    // ═══ Cross-Level Summary ════════════════════════════════════════════
+    eprintln!();
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    cross_level_summary(&phases);
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // Exit code: fail if any phase had failures.
+    let total_failures: usize = phases.iter()
+        .flat_map(|p| &p.results)
+        .filter(|r| !r.passed)
+        .count();
+    std::process::exit(if total_failures == 0 { 0 } else { 1 });
 }

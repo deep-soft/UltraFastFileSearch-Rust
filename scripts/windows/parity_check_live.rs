@@ -303,7 +303,7 @@ fn run_drive_parity(
     let diff_file = out_dir.join(format!("diff_{drive_lower}_{timestamp}.txt"));
 
     // 1. Run C++ (with retry for transient errors like sharing violations)
-    print!("  [1/4] Running C++ scan...");
+    print!("  [1/5] Running C++ scan...");
     io::stdout().flush().ok();
     let cpp_start = Instant::now();
     let cpp_drives_arg = format!("--drives={}", drive_upper);
@@ -331,8 +331,27 @@ fn run_drive_parity(
         }
     }
 
-    // 2. Run Rust (with --format custom to match C++ output format)
-    print!("  [2/4] Running Rust scan...");
+    // 2. Run Rust — VERY COLD: kill daemon + delete cache before each drive
+    print!("  [2/5] Purging daemon + cache for cold Rust run...");
+    io::stdout().flush().ok();
+    // Kill any running daemon so it doesn't serve cached results.
+    let _ = Command::new(rust_bin).args(["daemon", "kill"]).output();
+    std::thread::sleep(Duration::from_secs(1));
+    // Delete all cache files to force a full MFT read.
+    if let Ok(local) = env::var("LOCALAPPDATA") {
+        let cache_dir = PathBuf::from(&local).join("uffs").join("cache");
+        if cache_dir.exists() {
+            let _ = fs::remove_dir_all(&cache_dir);
+        }
+    }
+    if let Ok(tmp) = env::var("TEMP") {
+        let legacy = PathBuf::from(&tmp).join("uffs_index_cache");
+        if legacy.exists() {
+            let _ = fs::remove_dir_all(&legacy);
+        }
+    }
+    println!(" ✅");
+    print!("       Running Rust scan (cold)...");
     io::stdout().flush().ok();
     let rust_start = Instant::now();
     let mut rust_args: Vec<&str> = vec![
@@ -371,8 +390,11 @@ fn run_drive_parity(
         }
     }
 
+    // Kill daemon after Rust run — next drive must also start cold.
+    let _ = Command::new(rust_bin).args(["daemon", "kill"]).output();
+
     // 3. Sort both outputs (byte-level stable sort for cross-platform consistency)
-    print!("  [3/4] Sorting outputs...");
+    print!("  [3/5] Sorting outputs...");
     io::stdout().flush().ok();
     let sort_start = Instant::now();
     let cpp_lines = sort_file_to(&cpp_raw, &cpp_sorted);
@@ -384,7 +406,7 @@ fn run_drive_parity(
     println!();
 
     // 4. SHA256 comparison - ordered first, then sorted
-    print!("  [4/4] Computing SHA256...");
+    print!("  [4/5] Computing SHA256...");
     io::stdout().flush().ok();
     let cpp_ordered_hash = sha256_file(&cpp_raw);
     let rust_ordered_hash = sha256_file(&rust_raw);
@@ -393,6 +415,8 @@ fn run_drive_parity(
     println!(" ✅");
     println!();
 
+    // 5. Compare results
+    println!("  [5/5] Comparing results...");
     // Check for strict (ordered) match first
     if cpp_ordered_hash == rust_ordered_hash {
         println!("  ╔═══════════════════════════════════════════════════════════╗");

@@ -413,6 +413,7 @@ impl App {
             ext: None,
             exclude: None,
             hide_system: self.search_filters.hide_system,
+            profile: false,
         };
 
         // `daemon_backend` is `Some` — checked by caller.
