@@ -2,347 +2,164 @@
 
 ## Introduction
 
-This document captures the engineering decisions that make UFFS fast, the real-world benchmark data that validates them, and the evolution from initial prototype to production performance. This is the "secret sauce" document — every optimization is explained with its measured impact.
+This document explains why UFFS is a high-performance MFT search engine, the engineering decisions behind it, and real-world benchmark data from a 7-drive, 26-million-record production system.
 
 ---
 
-## The Optimization Journey
+## Architecture: Three Caching Levels
 
-UFFS performance evolved through three major phases:
+UFFS operates in three performance tiers, each with dramatically different latency:
 
-| Phase | Version | 7-Drive Total | Key Wins |
-|-------|---------|---------------|----------|
-| **Baseline** | v0.1.30 | 315s | Working prototype, no tuning |
-| **Phase 1** | v0.1.39 | 142s (55% faster) | SoA layout, extension skip, I/O overlap |
-| **Phase 2** | v0.2.66 | ~100s | Adaptive concurrency, NVMe tuning |
-| **Production** | v0.3.54 | 72s (77% faster than baseline) | IOCP inline parsing, streaming output |
+| Level | What Happens | Typical Latency (26M records) |
+|-------|-------------|-------------------------------|
+| **COLD** | No daemon, no cache. Raw MFT read from disk, full parse, compact index build, trigram index build, path resolution tree. | 66s (7 drives parallel) |
+| **WARM CACHE** | No daemon, but serialized compact index exists on disk. Daemon starts and deserializes cached index — no MFT read. | 7s |
+| **HOT** | Daemon running with in-memory index. Pure search — no I/O, no startup. | **157ms** (all 7 drives, 26M records) |
+
+The HOT path delivers **420× speedup** over COLD, and single-drive queries return in **6–100ms**.
 
 ---
 
-## Real-World Benchmarks
+## Real-World Benchmarks (v0.4.69)
 
 ### Test Environment
 
 **System**: MASTER-PC — 24 CPU cores
-**Drives**: 7 NTFS volumes (2× NVMe, 5× HDD/USB), mix of sizes
-**Protocol**: 5 rounds per drive, cold start, anomalous first-run outliers excluded
-**Binary**: v0.3.54 release build (`--profile release`, LTO=fat, codegen-units=1)
+**Drives**: 7 NTFS volumes (2× NVMe, 5× HDD/USB)
+**Total records**: 25,842,119 across all drives
+**Binary**: v0.4.69 release build (LTO=fat, codegen-units=1, cross-compiled from macOS via `cargo xwin`)
+**Protocol**: 3-phase per drive — COLD → WARM CACHE → HOT, `--profile --limit 100`
 
-### Full Scan (`*`) — v0.3.54
+### Per-Drive 3-Phase Profile (`*` pattern)
 
-| Drive | Type | Est. MFT Records | MFT Size | Rust | Speedup vs C++ |
-|-------|------|-------------------|----------|------|----------------|
-| C: | NVMe (990 PRO) | ~5M | 4.5 GB | **8.3s** | 3.0× |
-| D: | HDD (7200 RPM) | ~5M | 4.8 GB | **30.9s** | 2.1× |
-| E: | HDD/USB | ~6M | 2.9 GB | **41.1s** | 1.3× |
-| F: | NVMe (980 PRO) | ~2M | 4.5 GB | **5.2s** | 3.0× |
-| G: | USB (small) | ~50K | 44 MB | **0.42s** | 0.9× |
-| M: | HDD/NAS | ~4M | 2.4 GB | **26.5s** | 1.1× |
-| S: | HDD (7200 RPM) | ~10M+ | 11.5 GB | **71.8s** | 1.3× |
-| **ALL** | **parallel** | **~32M** | **~30 GB** | **72.3s** | **1.36×** |
+| Drive | Records | COLD | WARM CACHE | HOT | COLD→HOT Speedup |
+|-------|---------|------|------------|-----|-------------------|
+| C: (NVMe) | 3,423,716 | 7,717ms | 2,417ms | **24ms** | **322×** |
+| D: (HDD) | 7,065,539 | 26,568ms | 4,511ms | **101ms** | **263×** |
+| E: (HDD/USB) | 2,929,519 | 42,609ms | 1,419ms | **21ms** | **2,029×** |
+| F: (NVMe) | 2,221,343 | 4,796ms | 1,742ms | **19ms** | **252×** |
+| G: (USB) | 15,090 | 1,416ms | 660ms | **6ms** | **236×** |
+| M: (HDD/NAS) | 1,908,805 | 26,493ms | 1,414ms | **17ms** | **1,558×** |
+| S: (HDD) | 8,278,102 | 66,828ms | 6,841ms | **79ms** | **846×** |
+| **ALL** | **25,842,119** | **66,074ms** | **7,041ms** | **157ms** | **421×** |
 
-**Key observations:**
-- **NVMe: 3× faster** — Inline parsing and mimalloc dominate when I/O is not the bottleneck
-- **HDD: 1.3–2.1×** — I/O-bound, but bitmap skip and IOCP tuning still help
-- **ALL parallel ≈ slowest single drive** — Multi-drive parallelism works; total limited by S: (72s)
-- **Consistency**: < 1% variance across 5 rounds on most drives
+### HOT Path Timing Breakdown (ALL drives, 157ms)
 
-### Filtered Scan (`*.rs`) — v0.3.54
+```
+Client → Daemon
+  Connect:           4 ms    (named pipe)
+  Await ready:       0 ms    (daemon already warm)
+  Search (IPC):    149 ms    (daemon: 137ms search + 12ms transfer)
+  Convert rows:      0 ms    (100 rows)
+```
 
-| Drive | Rust | Speedup vs C++ | Notes |
-|-------|------|----------------|-------|
-| C: | 7.8–13.8s | 1.0–1.8× | Variance due to OS MFT cache |
-| D: | 24.2s | 2.1× | |
-| F: | 2.9–7.6s | 1.1–2.9× | Cache-warm: 2.9s; cold: 7.6s |
-| S: | 63.7s | 1.0× | I/O dominated |
-| **ALL parallel** | **78.5s** | **0.53× ⚠️** | Known regression target |
-
-**Known issue:** Multi-drive parallel filtered scan is slower than full scan (78s > 72s). Root cause: streaming writer contention and per-drive extension index build overhead. This is a documented optimization target.
-
-### Throughput by Drive Type
-
-| Drive Type | Throughput (v0.1.30) | Throughput (v0.3.54) | Improvement |
-|------------|---------------------|---------------------|-------------|
-| NVMe | 400–550 MB/s | **540–865 MB/s** | ~1.7× |
-| HDD | 53–103 MB/s | **155–160 MB/s** | ~1.8× |
-
-Note: NVMe throughput is limited by parsing speed, not I/O bandwidth. The raw device can deliver 3–7 GB/s, but UFFS achieves ~0.5–0.9 GB/s because record parsing is the bottleneck.
+At 25.8M records searched in 137ms, the HOT path sustains **188 million records/second**.
 
 ---
 
-## The Secret Sauce: Why UFFS Is Fast
+## Why UFFS Is Fast
 
-### Optimization 1: Direct MFT Reading (15× vs Standard APIs)
+### 1. Direct MFT Reading (15× vs Standard APIs)
 
-**Problem:** Windows file enumeration (`FindFirstFile`/`FindNextFile`) requires ~2 syscalls per file, with security checks and handle management for each.
+Windows file enumeration (`FindFirstFile`/`FindNextFile`) requires ~2 syscalls per file. UFFS reads the MFT as a raw byte stream via a single volume handle — one `ReadFile` call processes ~1,000 files (1 MB ÷ 1 KB records), reducing syscall overhead by ~2,000× on a 2M-file drive.
 
-**Solution:** Read the MFT as a raw byte stream via a single volume handle. One `ReadFile` call processes ~1000 files (1MB ÷ 1KB records).
+### 2. Bitmap Skip (40–55% I/O Reduction)
 
-| Approach | Syscalls (2M files) | Time (NVMe) |
-|----------|---------------------|-------------|
-| Standard APIs | ~4,000,000 | 60–120s |
-| Direct MFT read | ~2,000 | **5–8s** |
+The MFT contains records for deleted files. Typical utilization is 40–60%. UFFS reads `$MFT::$BITMAP` first (~250 KB), then trims read ranges to skip contiguous unused regions. On the S: drive (11.5 GB MFT, 45% utilization), this saves ~6.3 GB of disk reads.
 
-This is the foundational design decision. Everything else is incremental on top of this.
+### 3. IOCP Sliding Window (I/O + CPU Overlap)
 
-### Optimization 2: Bitmap Skip (50–80% I/O Reduction)
+I/O Completion Ports with a sliding window of concurrent reads. While buffer N is parsed, buffers N+1..N+K are already in flight. Window size is auto-tuned per drive type: NVMe=32 (deep queue), SSD=8 (NCQ), HDD=2–6 (minimize seeks).
 
-**Problem:** The MFT contains records for all files ever created, including deleted ones. Typical utilization is 40–60% — more than half the I/O is wasted reading empty slots.
+### 4. Inline Parsing (Zero Intermediate Copies)
 
-**Solution:** Read `$MFT::$BITMAP` first (~250 KB) to learn which records are in use. Trim read ranges from both ends of each extent to skip contiguous unused regions.
+`SlidingIocpInline` parses each completed I/O buffer directly into the `MftIndex` as the IOCP completion arrives. No intermediate `Vec<ParsedRecord>`, no second pass, no double-buffering of record data.
 
-**Measured impact:**
+### 5. Compact Memory Layout (224 Bytes/Record)
 
-| Drive | MFT Size | Used Records | Skip % | I/O Saved |
-|-------|----------|-------------|--------|-----------|
-| C: (NVMe) | 4.5 GB | 60% | 40% | 1.8 GB |
-| S: (HDD) | 11.5 GB | 45% | 55% | 6.3 GB |
+Hand-tuned `FileRecord` with bit-packed flags (17 booleans in one `u32`), inline first name/stream (no heap allocation for 95%+ of files), sentinel values instead of `Option<>`, contiguous names buffer with `(offset, length)` references, and 16-bit interned extension IDs.
 
-On HDD, this is the single largest optimization — 6 GB of saved disk reads at ~150 MB/s saves ~40 seconds.
+### 6. mimalloc Global Allocator
 
-### Optimization 3: IOCP Sliding Window (I/O + CPU Overlap)
+Purpose-built for the millions-of-small-allocations workload. ~10–15% throughput improvement on NVMe where parsing is the bottleneck.
 
-**Problem:** Sequential reads waste CPU time waiting for I/O. Parse time is wasted waiting for the next buffer.
+### 7. Extension Index (50–200× for `*.ext` Queries)
 
-**Solution:** I/O Completion Ports with a sliding window of N concurrent reads. While buffer N is being parsed, buffers N+1 through N+K are already in flight.
+Interned 16-bit extension IDs during parsing, with an inverted index `ext_id → Vec<record_index>`. A `*.rs` query on 5K results takes 0.5ms instead of 100ms full-scan.
 
-**Tuning per drive type:**
+### 8. Zero-Allocation Case-Insensitive Matching
 
-| Drive Type | Window Size | Chunk Size | Rationale |
-|------------|-------------|------------|-----------|
-| NVMe | 32 | 4 MB | Deep queue to saturate NVMe command queue |
-| SSD | 8 | 2 MB | Moderate parallelism, SATA NCQ depth |
-| HDD | 2–6 | 1 MB | More concurrent reads = more seeks = slower |
+Byte-level inline comparison without allocating a lowercase copy — eliminates 2–8M heap allocations per search query across 26M records.
 
-**HDD extent-aware tuning:** For HDDs, concurrency is further reduced when the MFT is heavily fragmented (>50 extents → 2 reads in flight) because each concurrent read on a different extent causes a disk seek.
+### 9. Leaf-Peeling Tree Metrics (O(n), No Recursion)
 
-### Optimization 4: Inline Parsing (Zero Intermediate Copies)
+Array-based Kahn-style topological sort for treesize/descendants. O(n) time, O(n) space, no recursion, cache-friendly sequential access. Guaranteed stack safety on any tree depth.
 
-**Problem:** A two-phase approach (read all → then parse all) doubles memory usage and loses cache locality.
+### 10. LCN-Ordered Reads (HDD Only)
 
-**Solution:** `SlidingIocpInline` — parse each completed I/O buffer directly into the `MftIndex` as the IOCP completion arrives. No intermediate `Vec<ParsedRecord>`, no second pass.
+Read chunks sorted by physical disk offset (LCN order) to minimize head movement on fragmented HDDs. 20–30% improvement on HDDs; no effect on NVMe/SSD.
 
-**Measured impact:** The inline path eliminated ~15–20s of DataFrame construction overhead that existed in v0.1.x.
+### 11. Daemon Architecture with Compact Cache
 
-### Optimization 5: Compact Memory Layout (224 Bytes/Record)
+The daemon holds the full index in memory. First search auto-starts the daemon, which persists a serialized compact cache to disk. Subsequent daemon starts deserialize the cache (~3–7s for 26M records) instead of re-reading the MFT (~66s). Once hot, searches are pure in-memory scans — **6–157ms** depending on drive count.
 
-**Problem:** Per-record overhead at the scale of millions of records becomes significant. Naive Rust structs with `Option<>`, `String`, and `Vec` waste cache lines.
+### 12. Trigram Index for Substring Queries
 
-**Solution:** A hand-tuned `FileRecord` at 224 bytes with:
-- **Bit-packed flags**: 17 boolean attributes in a single `u32`
-- **Inline first_name/first_stream**: No heap allocation for the 95%+ of files with one name and one stream
-- **Sentinel values**: `NO_ENTRY = u32::MAX` instead of `Option<u32>` (saves 4 bytes × millions)
-- **Contiguous names buffer**: All filenames in one `String` allocation, referenced by `(offset, length)` pairs
-- **Extension interning**: 16-bit IDs instead of per-name extension strings
-
-**Memory usage for 2M files:**
-
-| Component | Size | Notes |
-|-----------|------|-------|
-| Records | 448 MB | 2M × 224 bytes |
-| Names buffer | 46 MB | ~23 bytes/name avg |
-| FRS lookup | 20 MB | Sparse array for O(1) access |
-| Children + overflow | 60 MB | Links, streams, child lists |
-| **Total** | **~575 MB** | |
-
-### Optimization 6: mimalloc Global Allocator
-
-**Problem:** System allocator throughput degrades under heavy small-allocation pressure (millions of strings, records, linked list nodes during parsing).
-
-**Solution:** `mimalloc` as the global allocator. Purpose-built for this workload pattern.
-
-**Measured impact:** ~10–15% throughput improvement on NVMe drives where parsing is the bottleneck.
-
-### Optimization 7: Extension Index (50× for `*.ext` Queries)
-
-**Problem:** Scanning 2M records for `*.txt` via `ends_with(".txt")` takes ~100ms.
-
-**Solution:** Intern all file extensions during parsing (16-bit IDs), then build an inverted index: `ext_id → Vec<record_index>`. For `*.txt`, look up the extension ID and iterate only matching records.
-
-**Measured impact:**
-
-| Query | Full scan | Extension index | Speedup |
-|-------|-----------|-----------------|---------|
-| `*.txt` (50K results) | 100ms | **2ms** | **50×** |
-| `*.rs` (5K results) | 100ms | **0.5ms** | **200×** |
-
-### Optimization 8: Zero-Allocation Case-Insensitive Matching
-
-**Problem:** `.to_ascii_lowercase()` allocates a new `String` for every comparison. For 2M records × case-insensitive match = 2M heap allocations per search.
-
-**Solution:** Byte-level comparison that converts characters inline without allocating:
-
-```rust
-fn ends_with_ignore_ascii_case(input: &str, suffix_lower: &str) -> bool {
-    input.as_bytes()[start..]
-        .iter()
-        .zip(suffix_lower.as_bytes())
-        .all(|(a, b)| a.to_ascii_lowercase() == *b)
-}
-```
-
-**Measured impact:** Eliminates 2–8M heap allocations per search query.
-
-### Optimization 9: Leaf-Peeling Tree Metrics (O(n), No Recursion)
-
-**Problem:** Computing treesize/descendants for millions of directories via recursive DFS risks stack overflow and has poor cache locality.
-
-**Solution:** Array-based Kahn-style topological sort (leaf peeling). Two flat arrays (`parent_idx`, `pending_children`), process bottom-up by pushing leaves to a stack.
-
-- **Time**: O(n) — each node processed exactly once
-- **Space**: O(n) — two temporary arrays
-- **No recursion** — guaranteed stack safety on any tree depth
-- **Cache-friendly** — array-based sequential access
-
-### Optimization 10: LCN-Ordered Reads (HDD Only)
-
-**Problem:** Reading MFT extents in VCN order (logical) may cause excessive disk seeks when the MFT is fragmented, because consecutive VCN ranges may map to distant physical locations.
-
-**Solution:** Sort read chunks by `disk_offset` (LCN order) before issuing reads. This minimizes head movement on HDDs.
-
-**Measured impact:** 20–30% improvement on fragmented HDDs. No effect on NVMe/SSD (random access is fast).
+Three-character trigram index built during startup. Substring queries intersect trigram posting lists before scanning records, dramatically reducing the search space for patterns like `*config*`.
 
 ---
 
-## Where Time Is Spent (Phase Breakdown)
+## Note on C++ Comparison
 
-### NVMe Drive (C:, ~5M records, 8.3s)
+UFFS includes a C++ reference implementation for parity verification. When comparing COLD timings, the comparison is **not apples-to-apples**:
 
-```
-Phase                Time     %    Bottleneck
-───────────────────────────────────────────────
-Volume open          <1ms   <1%
-Metadata + bitmap     15ms   <1%
-Chunk planning         1ms   <1%
-IOCP read + parse   6.5s    78%   ★ PARSING (CPU-bound)
-Tree metrics        0.8s    10%
-Extension index     0.3s     4%
-Stats + finalize    0.5s     6%
-```
+| | UFFS (Rust) | C++ Reference |
+|-|-------------|---------------|
+| MFT read | ✅ | ✅ |
+| Full path resolution (parent chain walk) | ✅ | ✅ |
+| Compact index build (224 B/record) | ✅ | ❌ |
+| Trigram index build | ✅ | ❌ |
+| Compact cache serialization to disk | ✅ | ❌ |
+| Daemon startup + IPC | ✅ | ❌ (direct) |
+| Tree metrics (descendants, treesize) | ✅ | ❌ |
+| Extension interning + inverted index | ✅ | ❌ |
 
-### HDD Drive (S:, ~10M records, 71.8s)
+UFFS does **significantly more work** during COLD startup (~1.22× slower than C++) because it builds persistent data structures that make every subsequent search instant. The C++ tool re-reads the MFT on every invocation.
 
-```
-Phase                Time     %    Bottleneck
-───────────────────────────────────────────────
-Volume open          <1ms   <1%
-Metadata + bitmap     25ms   <1%
-Chunk planning         2ms   <1%
-IOCP read + parse  68.0s    95%   ★ DISK I/O (seek-bound)
-Tree metrics        1.5s     2%
-Extension index     0.8s     1%
-Stats + finalize    1.3s     2%
-```
+### Parity Comparison (v0.4.69, COLD, 7 drives)
 
-**Key insight:** On NVMe, the bottleneck is CPU (parsing). On HDD, the bottleneck is disk I/O (seeks + sequential read bandwidth). Optimizations must target the right layer for each drive type.
+| Drive | C++ (warm disk) | Rust (cold) | Ratio | Files/sec (Rust) |
+|-------|-----------------|-------------|-------|------------------|
+| C: | 12.1s | 14.2s | 1.17× | 241,821/s |
+| D: | 40.7s | 43.8s | 1.08× | 161,177/s |
+| E: | 43.5s | 48.9s | 1.12× | 59,929/s |
+| F: | 7.1s | 10.5s | 1.48× | 211,822/s |
+| G: | 279ms | 938ms | 3.35× | 16,059/s |
+| M: | 24.1s | 29.4s | 1.22× | 64,882/s |
+| S: | 1m 1.4s | 1m 23.5s | 1.36× | 99,187/s |
+| **TOTAL** | **3m 9.3s** | **3m 51.2s** | **1.22×** | **111,782/s** |
 
----
-
-## Evolution: Key Milestones
-
-### v0.1.30 → v0.1.39: Phase 1 (55% Faster)
-
-| Optimization | Impact | Technique |
-|-------------|--------|-----------|
-| Structure-of-Arrays layout | 18% faster | Skip extension merging in fast path |
-| Bitmap skip | 30–50% I/O reduction | Read $BITMAP first, trim read ranges |
-| I/O overlap | 15% faster | Pipelined reads with IOCP |
-
-Result: 315s → 142s across 7 drives.
-
-### v0.1.39 → v0.2.66: Phase 2 (NVMe Tuning)
-
-| Optimization | Impact | Technique |
-|-------------|--------|-----------|
-| Adaptive concurrency | Automatic | NVMe=32, SSD=8, HDD=2–6 based on drive detection |
-| Adaptive chunk size | Automatic | NVMe=4MB, SSD=2MB, HDD=1MB |
-| NVMe throughput | 2.1–3.4 GB/s | Queue depth 32–64 saturates NVMe command queue |
-
-Result: NVMe C: dropped from 3.1s to 2.16s (raw I/O). HDD unchanged (already at physical limit).
-
-### v0.2.66 → v0.3.54: Production (Inline + Streaming)
-
-| Optimization | Impact | Technique |
-|-------------|--------|-----------|
-| SlidingIocpInline | Eliminated DF build | Parse directly into MftIndex during I/O completion |
-| Streaming output | Immediate results | Channel-based per-drive output-as-ready |
-| Extension index | 50× for *.ext | Interned extension IDs + inverted index |
-| mimalloc | ~10–15% | Purpose-built allocator for many-small-alloc workloads |
-
-Result: 142s → 72s across 7 drives (parallel). NVMe C: end-to-end 8.3s including tree metrics and output.
+After COLD, UFFS never needs to re-read the MFT — the daemon serves all subsequent queries from memory in **6–157ms**.
 
 ---
 
 ## Benchmark Methodology
 
-### Cold Start Protocol
+### 3-Phase Protocol
 
-Each benchmark run:
-1. Flush OS file system cache (`sync` / restart benchmark harness)
-2. 5 sequential rounds per drive, per pattern
-3. Exclude anomalous first-run outliers (OS MFT cache warming)
-4. Report: average, min, max
+Every benchmark runs three caching levels per drive:
 
-### What Is Measured
+1. **COLD** — Kill daemon, delete all cache files, run `uffs "*" --profile --drive X --limit 100`
+2. **WARM CACHE** — Kill daemon (cache files remain), run same command
+3. **HOT** — Daemon still running, run same command
 
-The benchmark measures **end-to-end wall-clock time** including:
-- Volume handle opening
-- NTFS metadata retrieval
-- Bitmap reading and chunk planning
-- Full MFT read + parse
-- Tree metrics computation
-- Extension index building
-- Output formatting and writing to stdout
+This isolates: (1) raw MFT read + full index build, (2) cache deserialization, (3) pure in-memory search.
 
-This is the time the user experiences from pressing Enter to seeing results.
+### Profiling
 
-### Reproducibility
-
-- Use `--benchmark` flag to skip output formatting (isolates MFT reading)
-- Use `--profile` flag for per-phase timing breakdown
-- Use `--no-cache` to ensure fresh MFT reads
-- All benchmarks use release builds (`cargo build --release`)
+Use `--profile` for full per-phase timing breakdown (client connect, daemon startup, search, IPC, per-drive cache/MFT/compact/trigram timing). Use `rust-script scripts\windows\profile.rs` for automated 3-phase profiling across all drives.
 
 ---
 
-## Physical Limits and Theoretical Bounds
-
-### HDD Sequential Read
-
-A 7200 RPM HDD achieves ~150–200 MB/s sequential read. For an 11.5 GB MFT:
-```
-Theoretical minimum = 11.5 GB / 200 MB/s = 57.5s
-UFFS achieved:       71.8s (with bitmap skip reducing effective reads)
-Utilization:         ~80% of theoretical max
-```
-
-Further HDD optimization has diminishing returns — we're within 25% of the physical limit.
-
-### NVMe Sequential Read
-
-A Samsung 990 PRO achieves 7 GB/s sequential read. For a 4.5 GB MFT:
-```
-Theoretical minimum = 4.5 GB / 7 GB/s = 0.64s
-UFFS achieved:       8.3s (including parsing, tree metrics, output)
-I/O time only:       ~1.5s
-Parsing time:        ~5s (the real bottleneck)
-```
-
-NVMe performance is **CPU-bound**, not I/O-bound. Future gains require faster parsing (SIMD, parallel parse across cores).
-
----
-
-## Known Optimization Targets
-
-| Target | Current Impact | Potential | Difficulty |
-|--------|---------------|-----------|------------|
-| Multi-drive filtered scan regression | 78s vs 72s (filtered > full) | Fix to match full-scan time | Medium |
-| SIMD record parsing | N/A | 2–3× parsing speed on NVMe | High |
-| Warm-cache search (< 1s) | Cache + USN implemented | Sub-second repeated queries | Done ✅ |
-| Parallel tree metrics | Single-threaded O(n) | Marginal — already < 1s on NVMe | Low priority |
-
----
-
-*Document Version: 1.0*
-*Last Updated: 2026-03-23*
-*UFFS Version: 0.3.62*
+*Last Updated: 2026-04-03*
+*UFFS Version: 0.4.69*
