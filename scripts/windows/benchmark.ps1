@@ -1,6 +1,6 @@
 # UFFS Benchmark (unified cold / cached)
-# Default: cold start (cache cleared before EACH run)
-# With -Cache: warm start (cache persists across runs)
+# Default: cold start (daemon killed + cache cleared before EACH run)
+# With -Cache: warm start (daemon warmed up, cache persists across runs)
 #
 # Usage:
 #   .\benchmark.ps1 -N 5 -Drive C,D,E,F,G,M,S                    # cold full scan
@@ -20,6 +20,7 @@ param(
     [switch]$EverythingOnly,        # Skip C++ and Rust tests
     [switch]$NoAll,                 # Skip the final "all drives" parallel run
     [switch]$NoEverything,          # Skip Everything benchmark
+    [int]$Timeout = 180,            # Per-run timeout in seconds (default: 3 minutes)
     [string]$RustArgs = "",         # Extra args for Rust (e.g. "--files-only --min-size 1024")
     [string]$CppArgs = ""           # Extra args for C++ (e.g. "--limit=100")
 )
@@ -32,6 +33,7 @@ $UFFS_CPP = "$env:USERPROFILE\bin\uffs.com"
 # Cache location: secure dir (%LOCALAPPDATA%\uffs\cache\), with legacy fallback
 $CACHE_DIR = "$env:LOCALAPPDATA\uffs\cache"
 $CACHE_DIR_LEGACY = "$env:TEMP\uffs_index_cache"
+$isFullScan = ($Pattern -eq "*")
 
 # Everything detection
 $pf86 = ${env:ProgramFiles(x86)}
@@ -58,10 +60,66 @@ $AllDrives = $Drive | ForEach-Object { $_.ToUpper().Trim() } | Where-Object { $_
 
 $mode = if ($Cache) { "Cached (warm)" } else { "Cold Start" }
 
+# ============================================
+# Daemon lifecycle helpers
+# ============================================
+
+function KillDaemon {
+    try { & $UFFS daemon kill 2>&1 | Out-Null } catch {}
+    # Also forcibly stop any lingering uffs processes that are daemon instances
+    Start-Sleep -Milliseconds 500
+}
+
+function ClearCache {
+    Remove-Item $CACHE_DIR -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $CACHE_DIR_LEGACY -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function WarmupDaemon {
+    # Start daemon and wait until ready by running a trivial search
+    Write-Host "   Warming up daemon..." -ForegroundColor DarkGray -NoNewline
+    $warmSw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $warmOut = & $UFFS "warmup_probe_xyzzy" --limit 10 2>&1
+        $warmSw.Stop()
+        Write-Host " ready ($([math]::Round($warmSw.Elapsed.TotalSeconds, 1))s)" -ForegroundColor DarkGray
+    } catch {
+        $warmSw.Stop()
+        Write-Host " FAILED ($([math]::Round($warmSw.Elapsed.TotalSeconds, 1))s)" -ForegroundColor Red
+    }
+}
+
+# ============================================
+# Timeout-wrapped process runner
+# Returns: @{ Ms = elapsed_ms; TimedOut = $bool; ExitCode = int }
+# ============================================
+
+function RunWithTimeout($exePath, [string[]]$argList, $tempOut, $tempErr) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $proc = Start-Process -FilePath $exePath -ArgumentList $argList `
+        -RedirectStandardOutput $tempOut -RedirectStandardError $tempErr `
+        -NoNewWindow -PassThru
+
+    # Poll for completion with timeout
+    $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+    while (-not $proc.HasExited) {
+        if ($deadline.Elapsed.TotalSeconds -ge $Timeout) {
+            # TIMEOUT: kill the process tree
+            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+            $sw.Stop()
+            return @{ Ms = $sw.Elapsed.TotalMilliseconds; TimedOut = $true; ExitCode = -1 }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    $sw.Stop()
+    return @{ Ms = $sw.Elapsed.TotalMilliseconds; TimedOut = $false; ExitCode = $proc.ExitCode }
+}
+
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  UFFS Benchmark — $mode" -ForegroundColor Cyan
+Write-Host "  UFFS Benchmark - $mode" -ForegroundColor Cyan
 Write-Host "  Rounds per test: $N" -ForegroundColor Cyan
 Write-Host "  Pattern: $Pattern" -ForegroundColor Cyan
+Write-Host "  Timeout: ${Timeout}s per run" -ForegroundColor Cyan
 if ($AllDrives.Count -gt 0) {
     Write-Host "  Drives: $($AllDrives -join ', ')" -ForegroundColor Cyan
 }
@@ -77,9 +135,9 @@ Write-Host "  Rust:       $(if (Test-Path $UFFS) { '✅' } else { '❌' }) $rust
 Write-Host "  C++:        $(if (Test-Path $UFFS_CPP) { '✅' } else { '❌' }) $cppVersion" -ForegroundColor Cyan
 Write-Host "  Everything: $(if ($hasEverything) { '✅' } else { '❌' }) $(if ($EVERYTHING_EXE) { $EVERYTHING_EXE } else { '(not found)' })" -ForegroundColor Cyan
 if ($Cache) {
-    Write-Host "  (Cache kept between runs)" -ForegroundColor Cyan
+    Write-Host "  (Daemon kept warm between runs)" -ForegroundColor Cyan
 } else {
-    Write-Host "  (Cache cleared before EACH run)" -ForegroundColor Cyan
+    Write-Host "  (Daemon killed + cache cleared before EACH run)" -ForegroundColor Cyan
 }
 Write-Host "========================================`n" -ForegroundColor Cyan
 
@@ -98,73 +156,95 @@ if ($Cache) {
     }
 }
 
-function BenchRun($label, $exePath, [string[]]$argList) {
+function BenchRun($label, $exePath, [string[]]$argList, [switch]$IsRust) {
     Write-Host "▶ $label" -ForegroundColor Yellow
     $times = @()
-    $isFullScan = ($Pattern -eq "*")
+    $timedOutRuns = 0
+
+    # For Rust full scan ("*"), use --benchmark mode (suppresses stdout entirely,
+    # reports records + timing to stderr).  This avoids the daemon IPC serialisation
+    # of millions of rows and the multi-GB stdout redirect that caused the old
+    # benchmark to hang for 20+ minutes per run.
+    $effectiveArgs = $argList
+    if ($IsRust -and $isFullScan) {
+        $effectiveArgs = $argList + @('--benchmark')
+    }
+
     1..$N | ForEach-Object {
-        # Clear cache before each run in cold mode (both secure + legacy locations)
+        $runNum = $_
+
+        # ── Cold mode: kill daemon + clear cache before EACH run ──
         if (-not $Cache) {
-            Remove-Item $CACHE_DIR -Recurse -Force -ErrorAction SilentlyContinue
-            Remove-Item $CACHE_DIR_LEGACY -Recurse -Force -ErrorAction SilentlyContinue
+            KillDaemon
+            ClearCache
+        }
+        # ── Warm mode: ensure daemon is ready before measuring ──
+        elseif ($IsRust -and $runNum -eq 1) {
+            WarmupDaemon
         }
 
         $tempErr = [System.IO.Path]::GetTempFileName()
-        # Full scan ("*"): stdout → NUL (millions of rows = multi-GB temp file = 10-20s overhead).
-        # Pattern search: stdout → temp file, count lines, log count, delete.
-        # Temp files for pattern searches are typically <100KB — zero overhead.
+        # Full scan: stdout to NUL (--benchmark suppresses output anyway for Rust)
+        # Pattern search: stdout to temp file for match counting
         $tempOut = if ($isFullScan) { "NUL" } else { [System.IO.Path]::GetTempFileName() }
 
         # Show exact command on first run only
-        if ($_ -eq 1) {
-            Write-Host "     CMD: $exePath $($argList -join ' ')" -ForegroundColor DarkGray
+        if ($runNum -eq 1) {
+            Write-Host "     CMD: $exePath $($effectiveArgs -join ' ')" -ForegroundColor DarkGray
         }
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+        $result = RunWithTimeout $exePath $effectiveArgs $tempOut $tempErr
+
+        if ($result.TimedOut) {
+            $timedOutRuns++
+            Write-Host "   Run ${runNum}: TIMEOUT (>${Timeout}s) - killed" -ForegroundColor Red
+            # Kill daemon too - it may be stuck
+            KillDaemon
+        } else {
+            $ms = $result.Ms
+            $times += $ms
+            $secs = [math]::Round($ms / 1000, 2)
+
+            # Count output lines for pattern searches (subtract 1 for CSV header)
+            $matchSuffix = ""
+            if (-not $isFullScan -and (Test-Path $tempOut -ErrorAction SilentlyContinue)) {
+                $raw = [System.IO.File]::ReadAllText($tempOut)
+                $lineCount = ($raw -split "`n" | Where-Object { $_.Trim() }).Count
+                $matchCount = [Math]::Max(0, $lineCount - 1) # exclude CSV header
+                $matchSuffix = "  ($matchCount matches)"
+                Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
+            }
+
+            $exitSuffix = if ($result.ExitCode -ne 0) { "  [exit=$($result.ExitCode)]" } else { "" }
+            Write-Host "   Run ${runNum}: ${secs}s${matchSuffix}${exitSuffix}" -ForegroundColor Gray
+        }
+
+        # Extract profiling lines from stderr (TIMING, DIAG, CACHE_PROFILE, BENCHMARK)
         try {
-            $proc = Start-Process -FilePath $exePath -ArgumentList $argList `
-                -RedirectStandardOutput $tempOut -RedirectStandardError $tempErr `
-                -NoNewWindow -Wait -PassThru
-        } catch {
-            Write-Host "   ⚠️  Error: $_" -ForegroundColor Red
-        }
-        $sw.Stop()
-        $ms = $sw.Elapsed.TotalMilliseconds
-        $times += $ms
-
-        # Count output lines for pattern searches (subtract 1 for CSV header)
-        $matchSuffix = ""
-        if (-not $isFullScan -and (Test-Path $tempOut -ErrorAction SilentlyContinue)) {
-            # Fast line count: read raw, count newlines
-            $raw = [System.IO.File]::ReadAllText($tempOut)
-            $lineCount = ($raw -split "`n" | Where-Object { $_.Trim() }).Count
-            $matchCount = [Math]::Max(0, $lineCount - 1) # exclude CSV header
-            $matchSuffix = "  ($matchCount matches)"
-            Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
-        }
-
-        Write-Host "   Run $_`: $([math]::Round($ms/1000, 2))s$matchSuffix" -ForegroundColor Gray
-
-        # Extract [TIMING], [DIAG], and [CACHE_PROFILE] lines from stderr
-        try {
-            $timingLines = Select-String -Path $tempErr -Pattern '\[TIMING\]|\[DIAG\]|\[CACHE_PROFILE\]' | ForEach-Object { $_.Line }
-            if ($timingLines) {
-                foreach ($line in $timingLines) {
-                    Write-Host "     $line" -ForegroundColor DarkCyan
+            if (Test-Path $tempErr -ErrorAction SilentlyContinue) {
+                $stderrContent = Get-Content -LiteralPath $tempErr -ErrorAction SilentlyContinue
+                foreach ($line in $stderrContent) {
+                    if ($line -match '\[TIMING\]|\[DIAG\]|\[CACHE_PROFILE\]|BENCHMARK MODE') {
+                        Write-Host "     $line" -ForegroundColor DarkCyan
+                    }
                 }
             }
-        } catch {
-            # Ignore errors reading temp file
-        }
+        } catch {}
 
         # Clean up temp files
         Remove-Item $tempErr -Force -ErrorAction SilentlyContinue
+        if (-not $isFullScan) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
     }
 
+    if ($timedOutRuns -gt 0) {
+        Write-Host "   ❌ $timedOutRuns/$N runs timed out (>${Timeout}s)" -ForegroundColor Red
+    }
     if ($times.Count -gt 0) {
         $avg = ($times | Measure-Object -Average).Average
         $min = ($times | Measure-Object -Minimum).Minimum
         $max = ($times | Measure-Object -Maximum).Maximum
-        Write-Host ("{0,-20} avg={1,8:N0} ms   min={2,8:N0}   max={3,8:N0}" -f $label, $avg, $min, $max) -ForegroundColor Green
+        Write-Host ("{0,-20} avg={1,8:N0} ms   min={2,8:N0}   max={3,8:N0}  ({4}/{5} ok)" -f `
+            $label, $avg, $min, $max, $times.Count, $N) -ForegroundColor Green
     }
     Write-Host ""
 }
@@ -297,17 +377,15 @@ function RunDriveBench($driveLetter) {
     Write-Host "📁 DRIVE ${driveLetter}:" -ForegroundColor Yellow
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
     if (-not $CppOnly -and -not $EverythingOnly) {
-        BenchRun "Rust $mode" $UFFS (@("`"$Pattern`"", '--drive', $driveLetter) + $RustExtraArgs)
+        BenchRun "Rust $mode" $UFFS (@("`"$Pattern`"", '--drive', $driveLetter) + $RustExtraArgs) -IsRust
     }
     if (-not $RustOnly -and -not $EverythingOnly -and (Test-Path $UFFS_CPP)) {
         BenchRun "C++ $mode" $UFFS_CPP (@("`"$Pattern`"", "--drives=$driveLetter") + $CppExtraArgs)
     }
     if (-not $RustOnly -and -not $CppOnly -and -not $NoEverything -and -not $Cache) {
-        # Everything only in cold mode — cached mode would only measure es.exe IPC
-        # response time (a single integer), not a full result dump like Rust/C++.
         BenchRunEverything $driveLetter
     } elseif ($Cache -and -not $NoEverything -and -not $RustOnly -and -not $CppOnly) {
-        Write-Host "▶ Everything: skipped in cached mode (unfair — IPC returns count only, not full output)" -ForegroundColor DarkGray
+        Write-Host "▶ Everything: skipped in cached mode (unfair - IPC returns count only, not full output)" -ForegroundColor DarkGray
         Write-Host ""
     }
 }
@@ -317,7 +395,7 @@ function RunAllDrivesBench() {
     Write-Host "🌐 ALL DRIVES:" -ForegroundColor Yellow
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
     if (-not $CppOnly) {
-        BenchRun "Rust $mode" $UFFS (@("`"$Pattern`"") + $RustExtraArgs)
+        BenchRun "Rust $mode" $UFFS (@("`"$Pattern`"") + $RustExtraArgs) -IsRust
     }
     if (-not $RustOnly -and (Test-Path $UFFS_CPP)) {
         BenchRun "C++ $mode" $UFFS_CPP (@("`"$Pattern`"") + $CppExtraArgs)
@@ -378,18 +456,28 @@ if (Test-Path -LiteralPath $benchBak -ErrorAction SilentlyContinue) {
 }
 
 # ============================================
+# Cleanup: kill daemon after benchmarking (cold mode)
+# ============================================
+if (-not $Cache) {
+    KillDaemon
+    Write-Host "🧹 Daemon killed after benchmark" -ForegroundColor DarkGray
+}
+
+# ============================================
 # SUMMARY
 # ============================================
-Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  Benchmark Complete ($mode)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 if ($Cache) {
-    Write-Host "`nThis measures cached performance (MFT index loaded from disk cache)." -ForegroundColor Gray
+    Write-Host "`nWarm benchmark: daemon was kept running between runs." -ForegroundColor Gray
+    Write-Host "First run includes daemon warmup; subsequent runs measure pure search." -ForegroundColor Gray
     Write-Host "Cache location: $CACHE_DIR (secure) / $CACHE_DIR_LEGACY (legacy)" -ForegroundColor Gray
 } else {
-    Write-Host "`nThis measures fresh MFT reads (no cache)." -ForegroundColor Gray
-    Write-Host "Rust saves to cache after each run, but cache is cleared before next run." -ForegroundColor Gray
+    Write-Host "`nCold benchmark: daemon killed + cache cleared before EACH run." -ForegroundColor Gray
+    Write-Host "Each run measures: daemon auto-start + MFT read + search." -ForegroundColor Gray
     Write-Host "Note: OS filesystem cache (RAM) is NOT cleared. Later runs benefit from" -ForegroundColor DarkGray
     Write-Host "MFT data kept in RAM by Windows. C++ has no disk cache (only OS cache)." -ForegroundColor DarkGray
     Write-Host "Everything: each cold run includes startup + MFT indexing + query." -ForegroundColor DarkGray
 }
+Write-Host "Timeout per run: ${Timeout}s. Full-scan ('*') Rust runs use --benchmark mode." -ForegroundColor DarkGray
