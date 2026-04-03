@@ -144,6 +144,9 @@ impl TestRunner {
     /// Run uffs with given args, return (exit_code, stdout, stderr).
     fn run_uffs(&self, args: &[&str]) -> Result<(i32, String, String)> {
         let output = Command::new(&self.bin)
+            .env("RUST_LOG", "trace")
+            .env("RUST_LOG_FILE", "trace")
+            .env("UFFS_LOG", "trace")
             .args(args)
             .output()
             .with_context(|| format!("Failed to execute: {} {}", self.bin, args.join(" ")))?;
@@ -222,7 +225,12 @@ impl TestRunner {
 
 fn kill_daemon(bin: &str) {
     eprintln!("  Killing daemon...");
-    let _ = Command::new(bin).args(["daemon", "kill"]).output();
+    let _ = Command::new(bin)
+        .env("RUST_LOG", "trace")
+        .env("RUST_LOG_FILE", "trace")
+        .env("UFFS_LOG", "trace")
+        .args(["daemon", "kill"])
+        .output();
     std::thread::sleep(std::time::Duration::from_secs(2));
 }
 

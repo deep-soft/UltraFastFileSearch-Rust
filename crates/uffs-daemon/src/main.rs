@@ -65,7 +65,7 @@ struct Cli {
     no_cache: bool,
 
     /// Log level (error, warn, info, debug, trace).
-    #[arg(long, default_value = "info")]
+    #[arg(long, default_value = "trace")]
     log_level: String,
 }
 
@@ -77,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     // UFFS_LOG env var overrides --log-level for diagnostic sessions.
     let log_spec = std::env::var("UFFS_LOG").unwrap_or_else(|_| cli.log_level.clone());
     let filter = tracing_subscriber::EnvFilter::try_new(&log_spec)
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("trace"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
