@@ -10,8 +10,8 @@ use std::time::Instant;
 
 use tokio::sync::RwLock;
 use uffs_client::protocol::{
-    DaemonStatus, DriveInfo, DrivesResponse, SearchParams, SearchResponse, SearchRow,
-    StatsResponse, StatusResponse,
+    DaemonStatus, DriveInfo, DriveProfile, DrivesResponse, SearchParams, SearchProfile,
+    SearchResponse, SearchRow, StatsResponse, StatusResponse,
 };
 use uffs_core::search::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
 use uffs_core::search::filters::SearchFilters;
@@ -267,9 +267,16 @@ impl IndexManager {
     }
 
     /// Execute a search query (updates perf counters).
+    ///
+    /// When `params.profile` is `true`, populates `SearchResponse::profile`
+    /// with a per-phase timing breakdown so the CLI can print it.
     pub async fn search(&self, params: &SearchParams) -> SearchResponse {
         let query_start = Instant::now();
+
+        // ── Lock acquisition ────────────────────────────────────────
+        let t_lock = Instant::now();
         let mut backend = self.backend.write().await;
+        let lock_us = t_lock.elapsed().as_micros();
 
         let sort_column = params
             .sort
@@ -302,6 +309,14 @@ impl IndexManager {
             params.exclude.as_deref(),
         );
 
+        // ── Search ──────────────────────────────────────────────────
+        // Snapshot per-drive info before search (for profile).
+        let drive_info: Vec<(char, usize)> = if params.profile {
+            backend.drives.iter().map(|d| (d.letter, d.records.len())).collect()
+        } else {
+            Vec::new()
+        };
+
         let result = backend.search_drives(
             &params.pattern,
             params.case_sensitive,
@@ -311,7 +326,18 @@ impl IndexManager {
             &filters,
             &params.drives,
         );
+        let search_us = result.duration.as_micros();
+
         drop(backend);
+
+        // ── Row building ────────────────────────────────────────────
+        let t_rows = Instant::now();
+        let rows: Vec<SearchRow> = result
+            .rows
+            .iter()
+            .map(Self::display_row_to_search_row)
+            .collect();
+        let row_build_us = t_rows.elapsed().as_micros();
 
         // Update perf counters.
         let query_us = query_start.elapsed().as_micros();
@@ -323,21 +349,41 @@ impl IndexManager {
 
         let truncated = params
             .limit
-            .is_some_and(|cap| result.rows.len() >= cap as usize);
+            .is_some_and(|cap| rows.len() >= cap as usize);
 
         let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
 
-        SearchResponse {
-            rows: result
-                .rows
+        // ── Profile ─────────────────────────────────────────────────
+        let profile = if params.profile {
+            // Count matches per drive
+            let mut drive_profiles: Vec<DriveProfile> = drive_info
                 .iter()
-                .map(Self::display_row_to_search_row)
-                .collect(),
+                .map(|&(drive, records)| {
+                    let matches = rows.iter().filter(|r| r.drive == drive).count();
+                    DriveProfile { drive, records, matches }
+                })
+                .collect();
+            drive_profiles.sort_by_key(|d| d.drive);
+
+            Some(SearchProfile {
+                lock_ms: u64::try_from(lock_us / 1000).unwrap_or(u64::MAX),
+                search_ms: u64::try_from(search_us / 1000).unwrap_or(u64::MAX),
+                row_build_ms: u64::try_from(row_build_us / 1000).unwrap_or(u64::MAX),
+                serialize_ms: 0, // filled in by handler after JSON serialization
+                drives: drive_profiles,
+            })
+        } else {
+            None
+        };
+
+        SearchResponse {
+            rows,
             records_scanned: result.records_scanned,
             duration_ms,
             truncated,
             shmem_path: None,
             shmem_count: None,
+            profile,
         }
     }
 

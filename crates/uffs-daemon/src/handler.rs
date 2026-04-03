@@ -93,6 +93,7 @@ impl RequestHandler {
         let row_count = response.rows.len();
 
         // D5.1: adaptive routing — use shmem for large result sets.
+        let mut shmem_ms: u128 = 0;
         if row_count > uffs_client::shmem::SHMEM_THRESHOLD {
             let t_shmem = std::time::Instant::now();
             match uffs_client::shmem::write_search_results(
@@ -102,7 +103,7 @@ impl RequestHandler {
                 response.truncated,
             ) {
                 Ok(path) => {
-                    let shmem_ms = t_shmem.elapsed().as_millis();
+                    shmem_ms = t_shmem.elapsed().as_millis();
                     let count = row_count as u64;
                     let path_str = path.to_string_lossy().into_owned();
                     tracing::info!(
@@ -117,7 +118,7 @@ impl RequestHandler {
                     response.rows = Vec::new();
                 }
                 Err(shmem_err) => {
-                    let shmem_ms = t_shmem.elapsed().as_millis();
+                    shmem_ms = t_shmem.elapsed().as_millis();
                     tracing::warn!(
                         error = %shmem_err,
                         rows = row_count,
@@ -128,6 +129,13 @@ impl RequestHandler {
                     // large result sets, but at least it works).
                 }
             }
+        }
+
+        // Back-patch serialize_ms into the profile with shmem write time
+        // (the dominant cost). JSON serialization time is measured below
+        // but can't be included in the JSON itself (chicken-and-egg).
+        if let Some(ref mut prof) = response.profile {
+            prof.serialize_ms = u64::try_from(shmem_ms).unwrap_or(u64::MAX);
         }
 
         let t_serialize = std::time::Instant::now();

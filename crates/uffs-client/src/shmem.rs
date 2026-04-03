@@ -361,6 +361,7 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
         truncated: header.truncated != 0,
         shmem_path: None,
         shmem_count: None,
+        profile: None,
     })
 }
 

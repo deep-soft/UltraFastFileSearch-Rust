@@ -11,6 +11,17 @@ use uffs_core::search::backend::DisplayRow;
 
 use super::SearchConfig;
 
+/// Format a number with comma separators (e.g. `1,234,567`).
+fn fmt_number(n: usize) -> String {
+    let s = n.to_string();
+    let mut r = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 { r.push(','); }
+        r.push(c);
+    }
+    r.chars().rev().collect()
+}
+
 /// Search via the UFFS daemon.
 ///
 /// Connects to a running daemon (auto-starting if needed), sends the search
@@ -78,17 +89,20 @@ pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<D
     }
 
     let t_search = std::time::Instant::now();
-    let response = client
+    let mut response = client
         .search(&params)
         .await
         .with_context(|| "Daemon search failed")?;
     let ipc_ms = t_search.elapsed().as_millis();
     let daemon_ms = response.duration_ms;
 
+    let records_scanned = response.records_scanned;
+    let daemon_profile = response.profile.take();
+
     info!(
         rows = response.rows.len(),
         duration_ms = response.duration_ms,
-        scanned = response.records_scanned,
+        scanned = records_scanned,
         truncated = response.truncated,
         "🔌 Daemon search complete"
     );
@@ -104,12 +118,31 @@ pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<D
     // Emit profile breakdown to stderr when --profile or --benchmark is active.
     #[expect(clippy::print_stderr, reason = "intentional --profile diagnostic output")]
     if profile {
-        eprintln!("=== PROFILE: Daemon Round-Trip ===");
+        eprintln!("=== PROFILE: Client → Daemon ===");
         eprintln!("  Connect:         {connect_ms:>6} ms");
         eprintln!("  Await ready:     {ready_ms:>6} ms");
         eprintln!("  Search (IPC):    {ipc_ms:>6} ms  (daemon: {daemon_ms} ms, transfer: {} ms)",
             ipc_ms.saturating_sub(u128::from(daemon_ms)));
         eprintln!("  Convert rows:    {convert_ms:>6} ms  ({} rows)", rows.len());
+
+        // Print daemon-side breakdown if the daemon returned it.
+        if let Some(ref prof) = daemon_profile {
+            eprintln!("=== PROFILE: Daemon Internals ===");
+            eprintln!("  Lock acquire:    {:>6} ms", prof.lock_ms);
+            eprintln!("  Search:          {:>6} ms  ({} records scanned)",
+                prof.search_ms, fmt_number(records_scanned));
+            eprintln!("  Row build:       {:>6} ms  ({} → SearchRow)", prof.row_build_ms, rows.len());
+            if prof.serialize_ms > 0 {
+                eprintln!("  Shmem write:     {:>6} ms", prof.serialize_ms);
+            }
+            if !prof.drives.is_empty() {
+                eprintln!("  Per-drive:");
+                for dp in &prof.drives {
+                    eprintln!("    {}: {:>12} records, {:>8} matches",
+                        dp.drive, fmt_number(dp.records), fmt_number(dp.matches));
+                }
+            }
+        }
     }
 
     Ok(rows)
@@ -209,6 +242,7 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         ext: config.ext_filter.map(ToOwned::to_owned),
         exclude: config.exclude.map(ToOwned::to_owned),
         hide_system: config.hide_system,
+        profile: config.profile || config.benchmark,
     }
 }
 

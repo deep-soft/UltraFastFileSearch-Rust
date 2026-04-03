@@ -189,6 +189,11 @@ pub struct SearchParams {
     /// Hide system meta-files (names starting with `$`).
     #[serde(default)]
     pub hide_system: bool,
+
+    // ── Profiling ──────────────────────────────────────────────────
+    /// Request detailed timing breakdown from the daemon.
+    #[serde(default)]
+    pub profile: bool,
 }
 
 /// Parameters for the `refresh` method.
@@ -270,6 +275,36 @@ pub struct SearchResponse {
     /// is set).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shmem_count: Option<u64>,
+    /// Detailed timing breakdown from the daemon (only when
+    /// `SearchParams::profile` was `true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<SearchProfile>,
+}
+
+/// Daemon-side timing breakdown returned when `SearchParams::profile` is set.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SearchProfile {
+    /// Time to acquire the RwLock + prepare filters (ms).
+    pub lock_ms: u64,
+    /// Pure search time across all drives (ms).
+    pub search_ms: u64,
+    /// Time to convert `DisplayRow` → `SearchRow` (ms).
+    pub row_build_ms: u64,
+    /// JSON serialization time (ms, 0 when shmem is used).
+    pub serialize_ms: u64,
+    /// Per-drive breakdown.
+    pub drives: Vec<DriveProfile>,
+}
+
+/// Per-drive timing within a search.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DriveProfile {
+    /// Drive letter.
+    pub drive: char,
+    /// Records in this drive's index.
+    pub records: usize,
+    /// Matching rows found.
+    pub matches: usize,
 }
 
 /// A single search result row.
@@ -599,6 +634,7 @@ mod tests {
             truncated: false,
             shmem_path: None,
             shmem_count: None,
+            profile: None,
         };
         let json = serde_json::to_string(&resp).expect("serialize");
         let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");
