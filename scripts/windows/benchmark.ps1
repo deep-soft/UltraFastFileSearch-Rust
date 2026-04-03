@@ -76,13 +76,21 @@ function ClearCache {
 }
 
 function WarmupDaemon {
-    # Start daemon and wait until ready by running a trivial search
-    Write-Host "   Warming up daemon..." -ForegroundColor DarkGray -NoNewline
+    # Warm up by running a real search that forces the daemon to auto-start
+    # and load ALL drives.  "*" --limit 10 blocks until the daemon is Ready
+    # with all drives loaded, then returns 10 rows (negligible output).
+    Write-Host "   Warming up daemon (all drives)..." -ForegroundColor DarkGray -NoNewline
     $warmSw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        $warmOut = & $UFFS "warmup_probe_xyzzy" --limit 10 2>&1
+        & $UFFS "`"*`"" --limit 10 2>&1 | Out-Null
         $warmSw.Stop()
-        Write-Host " ready ($([math]::Round($warmSw.Elapsed.TotalSeconds, 1))s)" -ForegroundColor DarkGray
+        # Verify daemon is truly ready
+        $status = & $UFFS daemon status 2>&1 | Select-String "Status:" | ForEach-Object { $_.Line }
+        if ($status -match "Ready") {
+            Write-Host " ready ($([math]::Round($warmSw.Elapsed.TotalSeconds, 1))s)" -ForegroundColor DarkGray
+        } else {
+            Write-Host " started but status: $status ($([math]::Round($warmSw.Elapsed.TotalSeconds, 1))s)" -ForegroundColor Yellow
+        }
     } catch {
         $warmSw.Stop()
         Write-Host " FAILED ($([math]::Round($warmSw.Elapsed.TotalSeconds, 1))s)" -ForegroundColor Red
