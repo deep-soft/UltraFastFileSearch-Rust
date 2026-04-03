@@ -51,7 +51,7 @@ pub fn collect_global_top_n(
     sort_column: SortColumn,
     sort_desc: bool,
     filter_mode: FilterMode,
-    search_filters: &SearchFilters,
+    search_filters: &mut SearchFilters,
 ) -> Vec<DisplayRow> {
     match sort_column {
         SortColumn::Size
@@ -183,7 +183,7 @@ fn collect_global_top_n_numeric(
     sort_column: SortColumn,
     sort_desc: bool,
     filter_mode: FilterMode,
-    search_filters: &SearchFilters,
+    search_filters: &mut SearchFilters,
 ) -> Vec<DisplayRow> {
     let has_filters = !search_filters.is_empty() || !matches!(filter_mode, FilterMode::All);
 
@@ -208,6 +208,8 @@ fn collect_global_top_n_numeric(
 
     for (drive_idx, drive) in drives.iter().enumerate() {
         let drive_fold = drive.fold;
+        // Resolve extension filter IDs for this drive (once, not per record).
+        search_filters.resolve_ext_ids_for_drive(drive);
         for (rec_idx, rec) in drive.records.iter().enumerate() {
             if rec.name_len == 0 {
                 continue;

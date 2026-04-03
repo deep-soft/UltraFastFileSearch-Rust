@@ -68,6 +68,7 @@ pub fn build_search_filters(state: &SearchState) -> SearchFilters {
                     .collect()
             })
             .unwrap_or_default(),
+        resolved_ext_ids: Vec::new(),
         exclude_lower: state.exclude.as_ref().map(|ex| ex.to_ascii_lowercase()),
     }
 }

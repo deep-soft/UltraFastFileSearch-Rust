@@ -175,11 +175,11 @@ fn multi_drive_search_applies_filters() {
     let drive = build_test_drive();
     let mut backend = MultiDriveBackend::new();
     backend.drives.push(drive);
-    let filters = SearchFilters {
+    let mut filters = SearchFilters {
         hide_system: true,
         ..Default::default()
     };
-    let result = backend.search("*", false, false, Some(100), FilterMode::All, &filters);
+    let result = backend.search("*", false, false, Some(100), FilterMode::All, &mut filters);
     assert!(
         !result.rows.iter().any(|row| row.name() == "$MFT"),
         "hide_system must filter $MFT"
@@ -191,14 +191,14 @@ fn multi_drive_search_files_only() {
     let drive = build_test_drive();
     let mut backend = MultiDriveBackend::new();
     backend.drives.push(drive);
-    let filters = SearchFilters::default();
+    let mut filters = SearchFilters::default();
     let result = backend.search(
         "*",
         false,
         false,
         Some(100),
         FilterMode::FilesOnly,
-        &filters,
+        &mut filters,
     );
     assert!(
         !result.rows.iter().any(|row| row.is_directory),
@@ -211,8 +211,15 @@ fn multi_drive_search_dirs_only() {
     let drive = build_test_drive();
     let mut backend = MultiDriveBackend::new();
     backend.drives.push(drive);
-    let filters = SearchFilters::default();
-    let result = backend.search("*", false, false, Some(100), FilterMode::DirsOnly, &filters);
+    let mut filters = SearchFilters::default();
+    let result = backend.search(
+        "*",
+        false,
+        false,
+        Some(100),
+        FilterMode::DirsOnly,
+        &mut filters,
+    );
     assert!(
         result.rows.iter().all(|row| row.is_directory),
         "DirsOnly must only return dirs"
@@ -228,7 +235,7 @@ fn multi_drive_search_sort_by_size_desc() {
     backend.sort_column = SortColumn::Size;
     backend.sort_desc = true;
     backend.drives.push(drive);
-    let filters = SearchFilters {
+    let mut filters = SearchFilters {
         hide_system: true,
         ..Default::default()
     };
@@ -238,7 +245,7 @@ fn multi_drive_search_sort_by_size_desc() {
         false,
         Some(100),
         FilterMode::FilesOnly,
-        &filters,
+        &mut filters,
     );
     for pair in result.rows.windows(2) {
         let left = pair.first().expect("window has first");
@@ -272,8 +279,8 @@ fn match_all_none_limit_is_unlimited() {
     let drive = build_large_drive(1_500);
     let mut backend = MultiDriveBackend::new();
     backend.drives.push(drive);
-    let filters = SearchFilters::default();
-    let all = backend.search("*", false, false, None, FilterMode::All, &filters);
+    let mut filters = SearchFilters::default();
+    let all = backend.search("*", false, false, None, FilterMode::All, &mut filters);
     assert!(
         all.rows.len() >= 1_500,
         "None must be unlimited, got {}",
@@ -286,8 +293,8 @@ fn match_all_explicit_limit_caps_results() {
     let drive = build_large_drive(1_500);
     let mut backend = MultiDriveBackend::new();
     backend.drives.push(drive);
-    let filters = SearchFilters::default();
-    let cap = backend.search("*", false, false, Some(500), FilterMode::All, &filters);
+    let mut filters = SearchFilters::default();
+    let cap = backend.search("*", false, false, Some(500), FilterMode::All, &mut filters);
     assert!(
         cap.rows.len() <= 500,
         "Some(500) must cap, got {}",
@@ -300,9 +307,9 @@ fn unlimited_returns_more_than_capped() {
     let drive = build_large_drive(1_500);
     let mut backend = MultiDriveBackend::new();
     backend.drives.push(drive);
-    let filters = SearchFilters::default();
-    let all = backend.search("*", false, false, None, FilterMode::All, &filters);
-    let cap = backend.search("*", false, false, Some(500), FilterMode::All, &filters);
+    let mut filters = SearchFilters::default();
+    let all = backend.search("*", false, false, None, FilterMode::All, &mut filters);
+    let cap = backend.search("*", false, false, Some(500), FilterMode::All, &mut filters);
     assert!(all.rows.len() > cap.rows.len(), "unlimited > capped");
 }
 

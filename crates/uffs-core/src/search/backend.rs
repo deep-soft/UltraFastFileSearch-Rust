@@ -248,7 +248,7 @@ impl MultiDriveBackend {
         whole_word: bool,
         result_limit: Option<u32>,
         filter_mode: FilterMode,
-        search_filters: &super::filters::SearchFilters,
+        search_filters: &mut super::filters::SearchFilters,
     ) -> SearchResult {
         self.search_drives(
             pattern,
@@ -279,7 +279,7 @@ impl MultiDriveBackend {
         whole_word: bool,
         result_limit: Option<u32>,
         filter_mode: FilterMode,
-        search_filters: &super::filters::SearchFilters,
+        search_filters: &mut super::filters::SearchFilters,
         drives_filter: &[char],
     ) -> SearchResult {
         let start = Instant::now();

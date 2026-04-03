@@ -52,6 +52,7 @@ pub fn start_refresh(app: &mut App) {
                         trigram: backend::TrigramIndex::empty(),
                         children: compact::ChildrenIndex::empty(),
                         fold: uffs_text::CaseFold::default_table(),
+                        ext_names: Vec::new(),
                         source: compact::IndexSource::MftFile(thread_source),
                         source_epoch: 0,
                     };

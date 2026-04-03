@@ -328,7 +328,7 @@ impl IndexManager {
             _ => FilterMode::All,
         };
 
-        let filters = SearchFilters::from_params(
+        let mut filters = SearchFilters::from_params(
             params.hide_system,
             params.min_size,
             params.max_size,
@@ -362,7 +362,7 @@ impl IndexManager {
             params.whole_word,
             params.limit,
             filter_mode,
-            &filters,
+            &mut filters,
             &params.drives,
         );
         let search_us = if profiling {

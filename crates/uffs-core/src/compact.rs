@@ -218,11 +218,42 @@ pub struct DriveCompactIndex {
     pub children: ChildrenIndex,
     /// NTFS `$UpCase` case folding engine for this volume.
     pub fold: uffs_text::CaseFold,
+    /// Extension name table: `ext_names[extension_id]` → lowercase extension
+    /// string (e.g. `"rs"`, `"txt"`). Index 0 = no extension.
+    /// Used to resolve `--ext` filter strings to `u16` IDs for O(1)
+    /// per-record matching instead of per-record string parsing.
+    pub ext_names: Vec<Box<str>>,
     /// Where this index was loaded from (for future refresh).
     pub source: IndexSource,
     /// `MftIndex.build_epoch` this compact index was built from.
     /// Used as a staleness check when loading from cache.
     pub source_epoch: u64,
+}
+
+impl DriveCompactIndex {
+    /// Resolve extension filter strings to their `u16` IDs on this drive.
+    ///
+    /// Returns a sorted, deduplicated `Vec<u16>` of matching IDs.
+    /// Extensions not found on this drive are silently ignored.
+    ///
+    /// The lookup is a linear scan of `ext_names` (~500–2000 short strings),
+    /// which takes < 1 µs.  This runs **once per search per drive**, not per
+    /// record.
+    #[must_use]
+    pub fn resolve_ext_ids(&self, extensions: &[String]) -> Vec<u16> {
+        let mut ids = Vec::with_capacity(extensions.len());
+        for ext in extensions {
+            for (ext_id, name) in (0_u16..).zip(self.ext_names.iter()) {
+                if name.as_ref() == ext.as_str() {
+                    ids.push(ext_id);
+                    break;
+                }
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
 }
 
 /// Expand hardlinks and ADS into additional `CompactRecord` entries.
@@ -438,6 +469,14 @@ pub fn build_compact_index(
     // Build children CSR index from parent_idx (two-pass: count + scatter).
     let children = ChildrenIndex::build(&records);
 
+    // Copy extension name table from MftIndex (Arc<str> → Box<str>).
+    let ext_names: Vec<Box<str>> = index
+        .extensions
+        .names
+        .iter()
+        .map(|arc| Box::from(arc.as_ref()))
+        .collect();
+
     (
         DriveCompactIndex {
             letter: drive_letter,
@@ -446,6 +485,7 @@ pub fn build_compact_index(
             trigram,
             children,
             fold,
+            ext_names,
             source: IndexSource::MftFile(std::path::PathBuf::from(format!("{drive_letter}:"))),
             source_epoch: index.build_epoch,
         },

@@ -288,8 +288,8 @@ fn build_two_drive_backend() -> MultiDriveBackend {
 #[test]
 fn multi_drive_merges_results_from_both_drives() {
     let mut backend = build_two_drive_backend();
-    let filters = super::super::filters::SearchFilters::default();
-    let result = backend.search("*", false, false, None, FilterMode::All, &filters);
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = backend.search("*", false, false, None, FilterMode::All, &mut filters);
     let drives: std::collections::HashSet<char> = result.rows.iter().map(|row| row.drive).collect();
     assert!(drives.contains(&'C'), "must include drive C results");
     assert!(drives.contains(&'D'), "must include drive D results");
@@ -300,8 +300,8 @@ fn multi_drive_sort_across_drives() {
     let mut backend = build_two_drive_backend();
     backend.sort_column = SortColumn::Size;
     backend.sort_desc = true;
-    let filters = super::super::filters::SearchFilters::default();
-    let result = backend.search("*", false, false, None, FilterMode::FilesOnly, &filters);
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = backend.search("*", false, false, None, FilterMode::FilesOnly, &mut filters);
     // data.csv (800) on D should come before report.txt (400) on C
     let first = result.rows.first().expect("first");
     assert_eq!(
@@ -315,8 +315,8 @@ fn multi_drive_sort_across_drives() {
 #[test]
 fn multi_drive_limit_caps_total() {
     let mut backend = build_two_drive_backend();
-    let filters = super::super::filters::SearchFilters::default();
-    let result = backend.search("*", false, false, Some(2), FilterMode::All, &filters);
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = backend.search("*", false, false, Some(2), FilterMode::All, &mut filters);
     assert!(
         result.rows.len() <= 2,
         "limit must cap across drives, got {}",
@@ -409,8 +409,8 @@ fn display_rows_to_dataframe_path_only_extracts_directory() {
 #[test]
 fn search_empty_pattern_returns_empty() {
     let mut backend = build_two_drive_backend();
-    let filters = super::super::filters::SearchFilters::default();
-    let result = backend.search("", false, false, None, FilterMode::All, &filters);
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = backend.search("", false, false, None, FilterMode::All, &mut filters);
     assert!(
         result.rows.is_empty(),
         "empty pattern must return no results"

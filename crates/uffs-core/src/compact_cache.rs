@@ -28,8 +28,8 @@ use crate::trigram::TrigramIndex;
 
 /// Magic bytes for compact cache files.
 const COMPACT_MAGIC: &[u8; 8] = b"UFFSCOM\0";
-/// Current compact cache format version (v6 stores char-trigram CSR on disk).
-const COMPACT_VERSION: u16 = 6;
+/// Current compact cache format version (v7 adds `ext_names` table).
+const COMPACT_VERSION: u16 = 7;
 /// Bytes per `CompactRecord`.
 const RECORD_BYTES: usize = size_of::<CompactRecord>();
 /// zstd compression level for compact cache.
@@ -44,6 +44,10 @@ pub fn compact_cache_path(drive_letter: char) -> PathBuf {
 }
 
 /// Serializes the compact index (records, names, children, char-trigram CSR).
+///
+/// **v7**: `ext_names` table appended after trigram CSR.
+/// Format: `ext_count: u32`, then `ext_count` length-prefixed strings
+/// (`u16 len` + `len` UTF-8 bytes each).
 ///
 /// **v6**: char-trigram CSR is stored on disk — zero-rebuild on load.
 /// Format after children CSR:
@@ -100,6 +104,15 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
     push_u32(&mut buf, tri_values.len());
     buf.extend_from_slice(bytemuck::cast_slice(tri_values));
 
+    // v7: `ext_names` table — length-prefixed strings.
+    push_u32(&mut buf, index.ext_names.len());
+    for name in &index.ext_names {
+        let bytes = name.as_bytes();
+        let len: u16 = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
+        buf.extend_from_slice(bytes.get(..usize::from(len)).unwrap_or(bytes));
+    }
+
     buf
 }
 
@@ -121,91 +134,58 @@ pub fn deserialize_compact(
 ) -> Result<(DriveCompactIndex, u128), &'static str> {
     let (source_epoch, body_offset, version) = parse_compact_header(data)?;
 
-    let record_count = read_u32(data, 10) as usize;
-    let names_len = read_u32(data, 14) as usize;
-    let records_end = body_offset + record_count * RECORD_BYTES;
-    let names_end = records_end + names_len;
-
-    // v4 and earlier stored names_lower (same size as names) on disk.
-    // v5+ omits it entirely.
-    let csr_start = if version >= 5 {
-        names_end
-    } else {
-        names_end + names_len // skip names_lower
-    };
-    let csr_offsets_end = csr_start + (record_count + 1) * 4;
-    if data.len() < csr_offsets_end {
+    let rc = read_u32(data, 10) as usize;
+    let nl = read_u32(data, 14) as usize;
+    let re = body_offset + rc * RECORD_BYTES;
+    let ne = re + nl;
+    let cs = if version >= 5 { ne } else { ne + nl };
+    let ce = cs + (rc + 1) * 4;
+    if data.len() < ce {
         return Err("compact cache truncated");
     }
 
-    // Records — alignment-safe copy into properly aligned Vec<CompactRecord>
-    let records: Vec<CompactRecord> = aligned_vec_from_bytes(
-        data.get(body_offset..records_end)
-            .ok_or("truncated records")?,
-    );
-    let names = data
-        .get(records_end..names_end)
-        .ok_or("truncated names")?
-        .to_vec();
-
-    // Children CSR — alignment-safe copy into aligned Vec<u32>
-    let offsets_slice = data
-        .get(csr_start..csr_offsets_end)
-        .ok_or("truncated CSR")?;
-    let total_child_postings = read_u32(offsets_slice, record_count * 4);
-    let postings_end = csr_offsets_end + total_child_postings as usize * 4;
-    if data.len() < postings_end {
+    let records: Vec<CompactRecord> =
+        aligned_vec_from_bytes(data.get(body_offset..re).ok_or("truncated records")?);
+    let names = data.get(re..ne).ok_or("truncated names")?.to_vec();
+    let csr_off = data.get(cs..ce).ok_or("truncated CSR")?;
+    let cp = read_u32(csr_off, rc * 4);
+    let pe = ce + cp as usize * 4;
+    if data.len() < pe {
         return Err("truncated CSR postings");
     }
-    let child_vals_slice = data.get(csr_offsets_end..postings_end).ok_or("CSR OOB")?;
-    let children = ChildrenIndex::from_csr(
-        aligned_vec_from_bytes(offsets_slice),
-        aligned_vec_from_bytes(child_vals_slice),
-    );
-
+    let cv = data.get(ce..pe).ok_or("CSR OOB")?;
+    let children =
+        ChildrenIndex::from_csr(aligned_vec_from_bytes(csr_off), aligned_vec_from_bytes(cv));
     let fold = crate::compact::resolve_case_fold(drive_letter);
     let tri_start = Instant::now();
-
-    // ─── Trigram ──────────────────────────────────────────────────
-    let tri_hdr = postings_end;
-    if data.len() < tri_hdr + 4 {
+    if data.len() < pe + 4 {
         return Err("truncated trigram header");
     }
-    let trigram_key_count = read_u32(data, tri_hdr) as usize;
-
-    let trigram = if version >= 6 && trigram_key_count > 0 {
-        // v6: char-trigram CSR on disk — zero-rebuild bulk memcpy.
-        let tri_keys_start = tri_hdr + 4;
-        let tri_keys_end = tri_keys_start + trigram_key_count * 8;
-        let tri_offsets_end = tri_keys_end + (trigram_key_count + 1) * 4;
-        if data.len() < tri_offsets_end + 4 {
-            return Err("truncated trigram CSR (keys/offsets)");
+    let tkc = read_u32(data, pe) as usize;
+    let (trigram, after_tri) = if version >= 6 && tkc > 0 {
+        let (ks, ke, oe) = (pe + 4, pe + 4 + tkc * 8, pe + 4 + tkc * 8 + (tkc + 1) * 4);
+        if data.len() < oe + 4 {
+            return Err("truncated trigram CSR");
         }
-        let tri_keys: Vec<u64> = aligned_vec_from_bytes(
-            data.get(tri_keys_start..tri_keys_end)
-                .ok_or("truncated trigram keys")?,
-        );
-        let tri_offsets: Vec<u32> = aligned_vec_from_bytes(
-            data.get(tri_keys_end..tri_offsets_end)
-                .ok_or("truncated trigram offsets")?,
-        );
-        let tri_values_count = read_u32(data, tri_offsets_end) as usize;
-        let tri_values_start = tri_offsets_end + 4;
-        let tri_values_end = tri_values_start + tri_values_count * 4;
-        if data.len() < tri_values_end {
-            return Err("truncated trigram CSR (values)");
+        let tk: Vec<u64> = aligned_vec_from_bytes(data.get(ks..ke).ok_or("trigram keys")?);
+        let to: Vec<u32> = aligned_vec_from_bytes(data.get(ke..oe).ok_or("trigram offsets")?);
+        let vc = read_u32(data, oe) as usize;
+        let ve = oe + 4 + vc * 4;
+        if data.len() < ve {
+            return Err("truncated trigram values");
         }
-        let tri_values: Vec<u32> = aligned_vec_from_bytes(
-            data.get(tri_values_start..tri_values_end)
-                .ok_or("truncated trigram values")?,
-        );
-        TrigramIndex::from_csr(tri_keys, tri_offsets, tri_values)
+        let tv: Vec<u32> = aligned_vec_from_bytes(data.get(oe + 4..ve).ok_or("trigram values")?);
+        (TrigramIndex::from_csr(tk, to, tv), ve)
     } else {
-        // v5 and earlier: rebuild char-trigrams from names + CaseFold.
-        TrigramIndex::build(&records, &names, fold)
+        (TrigramIndex::build(&records, &names, fold), pe + 4)
     };
-
     let tri_ms = tri_start.elapsed().as_millis();
+
+    let ext_names = if version >= 7 && data.len() >= after_tri + 4 {
+        read_ext_names_table(data, after_tri)
+    } else {
+        rebuild_ext_names(&records, &names, fold)
+    };
 
     Ok((
         DriveCompactIndex {
@@ -215,11 +195,76 @@ pub fn deserialize_compact(
             trigram,
             children,
             fold,
+            ext_names,
             source: IndexSource::MftFile(PathBuf::from(format!("{drive_letter}:"))),
             source_epoch,
         },
         tri_ms,
     ))
+}
+
+/// Read a length-prefixed `ext_names` table from v7+ compact cache bytes.
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted from deserialize_compact for clarity"
+)]
+fn read_ext_names_table(data: &[u8], offset: usize) -> Vec<Box<str>> {
+    let ext_count = read_u32(data, offset) as usize;
+    let mut out = Vec::with_capacity(ext_count);
+    let mut pos = offset + 4;
+    for _ in 0..ext_count {
+        let Some(&lo) = data.get(pos) else { break };
+        let Some(&hi) = data.get(pos + 1) else { break };
+        let slen = usize::from(u16::from_le_bytes([lo, hi]));
+        pos += 2;
+        let Some(slice) = data.get(pos..pos + slen) else {
+            break;
+        };
+        out.push(Box::from(core::str::from_utf8(slice).unwrap_or("")));
+        pos += slen;
+    }
+    out
+}
+
+/// Rebuild `ext_names` from compact records for pre-v7 caches.
+#[expect(
+    clippy::single_call_fn,
+    reason = "legacy v6 fallback — separate concern from v7 deserialization"
+)]
+fn rebuild_ext_names(
+    records: &[CompactRecord],
+    names: &[u8],
+    fold: uffs_text::CaseFold,
+) -> Vec<Box<str>> {
+    let max_id = records
+        .iter()
+        .map(|rec| rec.extension_id)
+        .max()
+        .map_or(0, usize::from);
+    let mut table: Vec<Option<Box<str>>> = vec![None; max_id + 1];
+    if let Some(slot) = table.get_mut(0) {
+        *slot = Some(Box::from(""));
+    }
+    let mut fold_buf = Vec::with_capacity(64);
+    for rec in records {
+        let idx = usize::from(rec.extension_id);
+        if table.get(idx).is_some_and(Option::is_some) {
+            continue;
+        }
+        let nm = rec.name(names);
+        if let Some(dot) = nm.rfind('.') {
+            if let Some(ext_raw) = nm.get(dot + 1..) {
+                let folded = fold.fold_into(ext_raw, &mut fold_buf);
+                if let Some(slot) = table.get_mut(idx) {
+                    *slot = Some(Box::from(folded));
+                }
+            }
+        }
+    }
+    table
+        .into_iter()
+        .map(|opt| opt.unwrap_or_else(|| Box::from("")))
+        .collect()
 }
 
 /// Validates magic/version and returns `(source_epoch, body_offset, version)`.
@@ -600,6 +645,7 @@ mod tests {
             trigram,
             children,
             fold,
+            ext_names: vec![Box::from("")],
             source: IndexSource::MftFile(PathBuf::from("T:")),
             source_epoch: 42,
         }
@@ -681,13 +727,13 @@ mod tests {
     }
 
     #[test]
-    fn v6_header_version() {
+    fn v7_header_version() {
         let index = make_test_index();
         let serialized = serialize_compact(&index);
         let b8 = *serialized.get(8).expect("missing byte 8");
         let b9 = *serialized.get(9).expect("missing byte 9");
         let version = u16::from_le_bytes([b8, b9]);
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -705,5 +751,13 @@ mod tests {
     #[test]
     fn truncated_data_rejected() {
         assert!(deserialize_compact(b"short", 'X').is_err());
+    }
+
+    #[test]
+    fn ext_names_round_trips() {
+        let index = make_test_index();
+        let serialized = serialize_compact(&index);
+        let (deser, _) = deserialize_compact(&serialized, 'T').expect("deser");
+        assert_eq!(deser.ext_names, index.ext_names);
     }
 }

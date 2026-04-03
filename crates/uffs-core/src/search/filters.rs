@@ -51,6 +51,11 @@ pub struct SearchFilters {
     pub max_descendants: Option<u32>,
     /// Allowed extensions (lowercase, without dot). Empty = no filter.
     pub extensions: Vec<String>,
+    /// Pre-resolved extension IDs for the current drive.
+    /// Set via [`resolve_ext_ids_for_drive`](Self::resolve_ext_ids_for_drive)
+    /// before the hot loop — enables O(1) `u16` comparison per record
+    /// instead of per-record string parsing.
+    pub resolved_ext_ids: Vec<u16>,
     /// Exclude pattern (glob, lowered).
     pub exclude_lower: Option<String>,
 }
@@ -109,12 +114,23 @@ impl SearchFilters {
                         .collect()
                 })
                 .unwrap_or_default(),
+            resolved_ext_ids: Vec::new(),
             exclude_lower: exclude.map(|excl| {
                 let fold = uffs_text::CaseFold::default_table();
                 let mut buf = Vec::with_capacity(excl.len());
                 fold.fold_into(excl, &mut buf).to_owned()
             }),
         }
+    }
+
+    /// Pre-resolve extension filter strings to `u16` IDs for a specific
+    /// drive.  Call this **once per drive** before the hot record loop.
+    pub fn resolve_ext_ids_for_drive(&mut self, drive: &crate::compact::DriveCompactIndex) {
+        self.resolved_ext_ids = if self.extensions.is_empty() {
+            Vec::new()
+        } else {
+            drive.resolve_ext_ids(&self.extensions)
+        };
     }
 
     /// Check whether a compact record passes all filters.
@@ -194,11 +210,15 @@ impl SearchFilters {
                 return false;
             }
         }
-        if !self.extensions.is_empty() {
+        if !self.resolved_ext_ids.is_empty() {
+            // Fast path: compare pre-resolved u16 IDs (O(1) per record).
+            if !self.resolved_ext_ids.contains(&rec.extension_id) {
+                return false;
+            }
+        } else if !self.extensions.is_empty() {
+            // Fallback for callers that did not call resolve_ext_ids_for_drive.
             let name = rec.name(names);
             let ext = name.rsplit('.').next().unwrap_or("");
-            // Compare via CaseFold: extensions are stored pre-folded,
-            // and we fold the record's extension on-the-fly.
             let ext_folded = fold.fold_into(ext, fold_buf);
             if !self.extensions.iter().any(|allowed| allowed == ext_folded) {
                 return false;
