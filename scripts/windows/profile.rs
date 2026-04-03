@@ -350,16 +350,13 @@ fn phase_warm(cfg: &Config, drives: &[String]) -> Vec<Measurement> {
 
 fn phase_pattern(cfg: &Config, drives: &[String]) -> Vec<Measurement> {
     if cfg.pattern == "*" {
-        // Only run pattern phase if user specified a non-default pattern
         return vec![];
     }
     println!("\n╔══════════════════════════════════════════════════╗");
     println!("║  PHASE 3: Pattern Search ('{}')  ║", cfg.pattern);
     println!("╚══════════════════════════════════════════════════╝");
 
-    // Ensure daemon warm
     let _ = warmup_daemon(&cfg.bin);
-
     let mut results = Vec::new();
     for drive in drives {
         println!("\n  ◆ Drive {drive}: pattern search");
@@ -370,18 +367,121 @@ fn phase_pattern(cfg: &Config, drives: &[String]) -> Vec<Measurement> {
     results
 }
 
+fn phase_output(cfg: &Config, drives: &[String]) -> Vec<Measurement> {
+    println!("\n╔══════════════════════════════════════════════════╗");
+    println!("║  PHASE 4: Output Overhead (--profile)            ║");
+    println!("╚══════════════════════════════════════════════════╝");
+    println!("  Measures: search + path resolution + CSV serialization + I/O");
+
+    let _ = warmup_daemon(&cfg.bin);
+    let mut results = Vec::new();
+
+    // 4a. Per-drive: write to file (full output pipeline)
+    for drive in drives {
+        let out_file = env::var("TEMP")
+            .map(|t| format!("{}\\uffs_profile_{}.csv", t, drive))
+            .unwrap_or_else(|_| format!("uffs_profile_{}.csv", drive));
+
+        println!("\n  ◆ Drive {drive}: output to file ({out_file})");
+        let args = vec![&cfg.pattern as &str, "--drive", drive, "--out", &out_file, "--profile"];
+        let m = measure(cfg, &format!("File {drive}:"), drive, args);
+        // Clean up temp file
+        let _ = std::fs::remove_file(&out_file);
+        results.push(m);
+    }
+
+    // 4b. Per-drive: stdout to NUL (console output pipeline, discarded)
+    for drive in drives {
+        println!("\n  ◆ Drive {drive}: output to stdout (piped to /dev/null)");
+        let m = measure_stdout_null(cfg, &format!("Stdout {drive}:"), drive);
+        results.push(m);
+    }
+
+    // 4c. All drives: write to file
+    if drives.len() > 1 {
+        let out_file = env::var("TEMP")
+            .map(|t| format!("{}\\uffs_profile_ALL.csv", t))
+            .unwrap_or_else(|_| "uffs_profile_ALL.csv".to_string());
+
+        println!("\n  ◆ All drives: output to file ({out_file})");
+        let args = vec![&cfg.pattern as &str, "--out", &out_file, "--profile"];
+        let m = measure(cfg, "File ALL:", "ALL", args);
+        let _ = std::fs::remove_file(&out_file);
+        results.push(m);
+    }
+
+    results
+}
+
+/// Measure stdout output overhead: run with full output piped to /dev/null.
+/// Captures stderr for CACHE_PROFILE/TIMING lines. Stdout is consumed and discarded.
+fn measure_stdout_null(cfg: &Config, label: &str, drive: &str) -> Measurement {
+    let mut m = Measurement::new(label, drive);
+    for run in 1..=cfg.runs {
+        let start = Instant::now();
+        let mut child = match Command::new(&cfg.bin)
+            .args([&cfg.pattern as &str, "--drive", drive, "--profile"])
+            .env("UFFS_CACHE_PROFILE", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => { eprintln!("  ERROR: spawn failed: {e}"); continue; }
+        };
+        let deadline = Duration::from_secs(cfg.timeout_secs);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    let stderr_lines = child.stderr.take()
+                        .map(|s| BufReader::new(s).lines().flatten().collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    let records = parse_records(&stderr_lines);
+                    m.times_ms.push(elapsed_ms);
+                    if records > 0 { m.records = records; }
+                    let pl = profile_lines(&stderr_lines);
+                    if run == 1 { m.extra = pl.clone(); }
+                    let exit = status.code().map_or(String::new(), |c| if c != 0 { format!(" [exit={c}]") } else { String::new() });
+                    println!("     Run {run}: {}{}", fmt_ms(elapsed_ms), exit);
+                    for l in &pl { println!("       {l}"); }
+                    break;
+                }
+                Ok(None) if start.elapsed() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    m.timeouts += 1;
+                    println!("     Run {run}: TIMEOUT (>{}s) - killed", cfg.timeout_secs);
+                    kill_daemon(&cfg.bin);
+                    break;
+                }
+                _ => std::thread::sleep(Duration::from_millis(200)),
+            }
+        }
+    }
+    m
+}
+
 // ─── Summary table ───────────────────────────────────────────────────────────
 
 fn print_summary(all: &[Measurement]) {
-    println!("\n╔══════════════════════════════════════════════════════════════════════╗");
-    println!("║                     PERFORMANCE SUMMARY                             ║");
-    println!("╠══════════════════════════════════════════════════════════════════════╣");
-    println!("║ {:<18} {:>10} {:>10} {:>10} {:>12} {:>4} ║", "Test", "Avg", "Min", "Max", "Records", "OK");
-    println!("╠══════════════════════════════════════════════════════════════════════╣");
+    println!("\n╔═══════════════════════════════════════════════════════════════════════════╗");
+    println!("║                         PERFORMANCE SUMMARY                              ║");
+    println!("╠═══════════════════════════════════════════════════════════════════════════╣");
+    println!("║ {:<18} {:>10} {:>10} {:>10} {:>14} {:>5} ║", "Test", "Avg", "Min", "Max", "Records", "OK");
+    println!("╠═══════════════════════════════════════════════════════════════════════════╣");
 
+    let mut prev_phase = "";
     for m in all {
+        // Separator between phases (Cold→Warm→Pat→File→Stdout)
+        let phase = m.label.split_whitespace().next().unwrap_or("");
+        if !prev_phase.is_empty() && phase != prev_phase {
+            println!("╟───────────────────────────────────────────────────────────────────────────╢");
+        }
+        prev_phase = phase;
+
         if m.times_ms.is_empty() && m.timeouts > 0 {
-            println!("║ {:<18} {:>10} {:>10} {:>10} {:>12} {:>3}! ║",
+            println!("║ {:<18} {:>10} {:>10} {:>10} {:>14} {:>4}! ║",
                 m.label, "TIMEOUT", "-", "-", "-", m.timeouts);
         } else if !m.times_ms.is_empty() {
             let ok_str = if m.timeouts > 0 {
@@ -389,21 +489,60 @@ fn print_summary(all: &[Measurement]) {
             } else {
                 format!("{}/{}", m.times_ms.len(), m.times_ms.len())
             };
-            println!("║ {:<18} {:>10} {:>10} {:>10} {:>12} {:>4} ║",
+            println!("║ {:<18} {:>10} {:>10} {:>10} {:>14} {:>5} ║",
                 m.label, fmt_ms(m.avg()), fmt_ms(m.min_ms()), fmt_ms(m.max_ms()),
                 fmt_number(m.records), ok_str);
         }
     }
-    println!("╚══════════════════════════════════════════════════════════════════════╝");
+    println!("╚═══════════════════════════════════════════════════════════════════════════╝");
 
     // Throughput analysis
-    println!("\n── Throughput Analysis ──────────────────────────────────────────────");
+    println!("\n── Throughput ──────────────────────────────────────────────────────────");
     for m in all {
         if !m.times_ms.is_empty() && m.records > 0 {
             let avg_secs = m.avg() / 1000.0;
-            let recs_per_sec = m.records as f64 / avg_secs;
-            println!("  {:<18}  {:>12} records/sec  ({} records in {})",
-                m.label, fmt_number(recs_per_sec as u64), fmt_number(m.records), fmt_ms(m.avg()));
+            let rps = m.records as f64 / avg_secs;
+            println!("  {:<18}  {:>12} records/sec  ({} in {})",
+                m.label, fmt_number(rps as u64), fmt_number(m.records), fmt_ms(m.avg()));
+        }
+    }
+
+    // Bottleneck analysis: compare warm vs file vs stdout to show where time goes
+    println!("\n── Bottleneck Analysis ─────────────────────────────────────────────────");
+    let find_avg = |prefix: &str| -> Option<(String, f64, u64)> {
+        all.iter()
+            .find(|m| m.label.starts_with(prefix) && !m.times_ms.is_empty())
+            .map(|m| (m.drive.clone(), m.avg(), m.records))
+    };
+
+    // For the first drive that has all three measurements
+    for m in all {
+        if !m.label.starts_with("Warm ") || m.drive == "ALL" { continue; }
+        let d = &m.drive;
+        let warm = find_avg(&format!("Warm {d}:"));
+        let cold = find_avg(&format!("Cold {d}:"));
+        let file = find_avg(&format!("File {d}:"));
+        let stdout = find_avg(&format!("Stdout {d}:"));
+
+        if let Some((_, warm_ms, recs)) = warm {
+            println!("\n  Drive {d}: ({} records)", fmt_number(recs));
+            if let Some((_, cold_ms, _)) = cold {
+                let startup_ms = cold_ms - warm_ms;
+                println!("    Daemon startup + MFT load:  {:>10}  ({:.0}% of cold)",
+                    fmt_ms(startup_ms), startup_ms / cold_ms * 100.0);
+                println!("    Search (warm):              {:>10}  ({:.0}% of cold)",
+                    fmt_ms(warm_ms), warm_ms / cold_ms * 100.0);
+            }
+            if let Some((_, file_ms, _)) = file {
+                let output_ms = file_ms - warm_ms;
+                println!("    Output to file overhead:    {:>10}  (search {} + write {})",
+                    fmt_ms(output_ms), fmt_ms(warm_ms), fmt_ms(output_ms));
+            }
+            if let Some((_, stdout_ms, _)) = stdout {
+                let output_ms = stdout_ms - warm_ms;
+                println!("    Stdout output overhead:     {:>10}  (search {} + write {})",
+                    fmt_ms(output_ms), fmt_ms(warm_ms), fmt_ms(output_ms));
+            }
         }
     }
 }
@@ -468,6 +607,12 @@ fn main() {
     // Phase 3: Pattern search (only if non-default pattern)
     let pat = phase_pattern(&cfg, &cfg.drives.clone());
     all_measurements.extend(pat);
+
+    // Phase 4: Output overhead (file write, stdout, --profile breakdown)
+    if !cfg.skip_warm {
+        let output = phase_output(&cfg, &cfg.drives.clone());
+        all_measurements.extend(output);
+    }
 
     // Daemon stats after all tests
     println!("\n── Daemon Stats ────────────────────────────────────────────────────");
