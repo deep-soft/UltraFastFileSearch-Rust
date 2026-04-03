@@ -40,6 +40,8 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::all, clippy::pedantic)]
 
+extern crate alloc;
+
 // Suppress unused crate warnings for deps used by sub-modules or reserved
 #[cfg(test)]
 use criterion as _;
@@ -83,7 +85,9 @@ pub use extensions::{
 };
 pub use index_search::{
     IndexPattern, IndexQuery, QueryComplexity, QueryFeatures, QueryMode, SearchResult, TypeFilter,
-    analyze_pattern_complexity, compile_extensions, compile_index_pattern, compile_parsed_pattern,
+    analyze_pattern_complexity, compile_extensions, compile_extensions_with_fold,
+    compile_index_pattern, compile_index_pattern_with_fold, compile_parsed_pattern,
+    compile_parsed_pattern_with_fold,
 };
 #[expect(
     deprecated,

@@ -3,6 +3,7 @@
 use core::mem::size_of;
 
 use rayon::prelude::*;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use uffs_polars::{Column, DataFrame};
 
 use super::arena::NameArena;
@@ -52,7 +53,11 @@ pub struct FastPathResolver {
     /// Volume letter (e.g., 'C').
     volume: char,
     /// Pre-computed paths for caching.
-    path_cache: Vec<Option<String>>,
+    ///
+    /// Uses `FxHashMap<u64, String>` instead of `Vec<Option<String>>` to
+    /// avoid allocating ~168 MB of sparse `None` slots for 7M FRS entries.
+    /// Only actually-resolved paths are stored (typically ~5K entries).
+    path_cache: FxHashMap<u64, String>,
     /// Maximum FRS value (for bounds checking).
     max_frs: u64,
 }
@@ -107,8 +112,8 @@ impl FastPathResolver {
             }
         }
 
-        // Pre-allocate path cache (empty initially)
-        let path_cache = vec![None; entries.len()];
+        // Empty path cache — entries inserted on demand.
+        let path_cache = FxHashMap::with_capacity_and_hasher(0, FxBuildHasher);
 
         Ok(Self {
             entries,
@@ -138,28 +143,23 @@ impl FastPathResolver {
     ///
     /// Caches the result for future lookups.
     pub fn resolve_cached(&mut self, frs: u64) -> String {
-        // Check cache first
-        let frs_idx = uffs_mft::frs_to_usize(frs);
-        if let Some(Some(cached)) = self.path_cache.get(frs_idx) {
+        // Check cache first.
+        if let Some(cached) = self.path_cache.get(&frs) {
             return cached.clone();
         }
 
-        // Build path
+        // Build path.
         let path = self.build_path(frs);
 
-        // Cache it using safe get_mut
-        if let Some(slot) = self.path_cache.get_mut(frs_idx) {
-            *slot = Some(path.clone());
-        }
+        // Cache it.
+        self.path_cache.insert(frs, path.clone());
 
         path
     }
 
     /// Get a cached path if available.
     fn get_cached(&self, frs: u64) -> Option<&str> {
-        self.path_cache
-            .get(uffs_mft::frs_to_usize(frs))
-            .and_then(|opt| opt.as_deref())
+        self.path_cache.get(&frs).map(String::as_str)
     }
 
     /// Build path by walking up the tree.
@@ -389,11 +389,7 @@ impl FastPathResolver {
     #[must_use]
     pub fn stats(&self) -> FastPathResolverStats {
         let entry_count = self.entries.iter().filter(|entry| entry.is_some()).count();
-        let cached_count = self
-            .path_cache
-            .iter()
-            .filter(|entry| entry.is_some())
-            .count();
+        let cached_count = self.path_cache.len();
 
         FastPathResolverStats {
             max_frs: self.max_frs,

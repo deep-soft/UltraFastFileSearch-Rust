@@ -1,9 +1,9 @@
 # 18 — NTFS-Compatible High-Performance Case Folding: Implementation Guide
 
 > **Date:** 2026-04-02
-> **Revised:** 2026-04-02 — architectural restructure: `uffs-text` foundation crate
-> **Last verified:** 2026-04-02 — implementation audit against live codebase
-> **Status:** Phases 0–2 fully implemented ✅ · Phases 3–5 not yet started ❌
+> **Revised:** 2026-04-03 — Phases 2F, 3–5 implemented
+> **Last verified:** 2026-04-03 — implementation audit against live codebase
+> **Status:** All phases implemented ✅ (3C Arc results cancelled — low ROI)
 > **Prerequisite docs:** 15 (bottleneck inventory), 16 (lowercase strategy),
 > 17 ($UpCase cost/benefit analysis)
 >
@@ -15,18 +15,18 @@
 
 ---
 
-## Implementation Status Summary (2026-04-02)
+## Implementation Status Summary (2026-04-03)
 
 | Phase | Step | Description | Status | Notes |
 |---|---|---|---|---|
 | **0** | 0A | `uffs-text` crate scaffold | ✅ Done | `crates/uffs-text/` exists |
 | | 0B | Wire into workspace | ✅ Done | workspace members + deps |
-| | 0C | `CaseFold` struct + fold helpers | ✅ Done | `case_fold.rs`, full API |
+| | 0C | `CaseFold` struct + fold helpers | ✅ Done | `case_fold.rs`, full API incl. `fold_to_u16`, `eq_folded`, `starts_with_folded`, `ends_with_folded`, `contains_folded` |
 | | 0D | Default `$UpCase` table binary | ✅ Done | `upcase_default.bin` (128 KB) |
 | | 0E | Trigram pack/unpack helpers | ✅ Done | `trigram_key.rs` |
-| | 0F | Windows `$UpCase` reader | ❌ Not done | No `upcase.rs` in `uffs-mft`. All code uses `CaseFold::default_table()` |
+| | 0F | Windows `$UpCase` reader | ✅ Done | `platform/upcase.rs` reads live table; `compact.rs::resolve_case_fold()` tries live → fallback to default; diffs logged via tracing |
 | | 0G | Wire `uffs-text` into downstream crates | ✅ Done | `DriveCompactIndex.fold` field, `uffs-text` dep in `uffs-core` |
-| | 0H | `rustc-hash` dep for `FxHashMap` | ✅ Done | Used in `trigram.rs` |
+| | 0H | `rustc-hash` dep for `FxHashMap` | ✅ Done | Used in `trigram.rs`, `tree.rs`, `fast.rs` |
 | **1** | 1A | Change trigram key type to char-based | ✅ Done | Keys are `u64` (packed char trigrams) |
 | | 1B | Replace flat LUT with `FxHashMap` | ✅ Done | `FxHashMap<u64, u32>` in build |
 | | 1C | Rewrite build pass 1 with char-level fold | ✅ Done | Parallel chunks, `CaseFold` |
@@ -38,23 +38,25 @@
 | | 2C | Tree search fold + buffer threading | ✅ Done | `fold_buf` threaded through `tree_search` |
 | | 2D | Numeric sort fast path | ✅ Done | `sort_rows_with_fold` with Schwartzian transform |
 | | 2E | Filter fold swap | ✅ Done | `matches_record(…, fold)` |
-| | 2F | `index_search/pattern.rs` | ⚠️ Partial | Still uses `to_ascii_lowercase()`, not `CaseFold` |
-| **3** | 3A | `BinaryHeap` for global top-N | ❌ Not done | Still collect + sort in `collect_global_top_n_numeric` |
-| | 3B | `FxHashMap` for `DirCache` | ❌ Not done | `tree.rs` uses `HashMap<u32, String>` |
-| | 3C | `Arc<Vec<DisplayRow>>` for results | ❌ Not done | `SearchResult.rows` is `Vec<DisplayRow>` |
-| | 3D | `FxHashMap` for `path_cache` | ❌ Not done | Still `Vec<Option<String>>` |
-| | 3E | `LazyLock` for `CACHE_PROFILE` | ❌ Not done | `env::var_os()` called per invocation |
-| | 3F | Stack-allocated `volume_prefix` | ❌ Not done | Still `format!("{}:\\", drive.letter)` |
-| **4** | 4A | `$UpCase` section in cache header | ❌ Not done | Cache is still v5 |
-| | 4B | Serialize char-trigram CSR | ❌ Not done | Trigrams rebuilt on load (sentinel `0`) |
-| | 4C | Backward-compatible v5 load | ⚠️ Partial | v5 loads fine; trigrams rebuilt with fold; but no v6 format exists |
-| **5** | 5A | Drop `MftIndex` early | ❌ Not done | No explicit `drop(mft_index)` found |
-| | 5B | Scope `MftIndex` in daemon startup | ❌ Not done | |
+| | 2F | `index_search/pattern.rs` | ✅ Done | Pre-folded `Vec<u16>` patterns, `CaseFold`-based zero-alloc matching (6 new comparison methods) |
+| **3** | 3A | `BinaryHeap` for global top-N | ✅ Done | O(N log K) capped heap in `collect_global_top_n_numeric`; fallback for unlimited |
+| | 3B | `FxHashMap` for `DirCache` | ✅ Done | `tree.rs`: `FxHashMap<u32, String>` via `DirCacheExt` trait |
+| | 3C | `Arc<Vec<DisplayRow>>` for results | ❌ Cancelled | Invasive change; conflicts with in-place `sort_rows()`; `clone_from` is already efficient. Low ROI. |
+| | 3D | `FxHashMap` for `path_cache` | ✅ Done | `fast.rs`: `FxHashMap<u64, String>` — eliminates 168 MB sparse alloc |
+| | 3E | `LazyLock` for `CACHE_PROFILE` | ✅ Done | `static CACHE_PROFILE: LazyLock<bool>` — one env read, not 3 per search |
+| | 3F | Stack-allocated `volume_prefix` | ✅ Done | `stack_volume_prefix()` — zero heap alloc per search |
+| **4** | 4A | Cache v6 header | ✅ Done | `COMPACT_VERSION = 6`; no separate `$UpCase` section (uses `CaseFold::default_table()`) |
+| | 4B | Serialize char-trigram CSR | ✅ Done | v6 writes `tri_keys: u64[]`, `tri_offsets: u32[]`, `tri_values: u32[]` — zero-rebuild on load |
+| | 4C | Backward-compatible v5 load | ✅ Done | v5 caches accepted: trigram rebuilt with `CaseFold`; 5 round-trip tests |
+| **5** | 5A | Drop `MftIndex` early | ✅ Done | `drop(mft_index)` in `compact_loader.rs:124` after `build_compact_index()` |
+| | 5B | Scope `MftIndex` in daemon startup | ✅ Done | Daemon uses `load_drive()` → `compact_loader::load_drive()` which has the early drop |
 
-**Summary:** Phases 0–2 (the core correctness work) are complete — NTFS-compatible
-`CaseFold` replaces `to_ascii_lowercase()` in trigram build, search, sort, filter,
-and tree traversal. Phases 3–5 (performance optimisations and cache format upgrade)
-remain unimplemented.
+**Summary:** All phases are complete. NTFS-compatible `CaseFold` replaces
+`to_ascii_lowercase()` across the entire search pipeline: trigram build, search,
+sort, filter, tree traversal, and pattern matching. Performance optimisations
+(BinaryHeap, FxHashMap caches, LazyLock, stack alloc) and cache v6 (persisted
+char-trigram CSR) are all shipped. The only cancelled item is 3C
+(Arc results — low ROI).
 
 ---
 
@@ -194,9 +196,9 @@ uffs_text::CaseFold { table: &'static [u16; 65536] }   ← Copy, threaded everyw
 **Result:** 0 transient clones, 0 per-record heap allocs, full Unicode
 case folding via NTFS's own table, 128 KB total overhead.
 
-> **Remaining work (Phases 3–5):** Performance optimisations (BinaryHeap top-N,
-> FxHashMap caches, Arc results), cache v6 format (persist trigrams + upcase
-> table), and caller-level memory (early MftIndex drop). See status table above.
+> **All phases complete.** Performance optimisations (BinaryHeap top-N,
+> FxHashMap caches, LazyLock, stack alloc), cache v6 (persisted char-trigram
+> CSR — zero-rebuild on load), and early MftIndex drop are all shipped.
 
 ---
 
@@ -209,7 +211,7 @@ Phase 0: Foundation — NEW uffs-text crate
   ├── 0C: ✅ Create CaseFold struct + fold helpers (crates/uffs-text/src/case_fold.rs)
   ├── 0D: ✅ Compile-in default $UpCase table (crates/uffs-text/src/upcase_default.bin)
   ├── 0E: ✅ Add trigram pack/unpack helpers (crates/uffs-text/src/trigram_key.rs)
-  ├── 0F: ❌ Add Windows API $UpCase reader (crates/uffs-mft/src/platform/upcase.rs)
+  ├── 0F: ✅ Live $UpCase reader + resolve_case_fold() with diff logging
   ├── 0G: ✅ Wire uffs-text into uffs-mft and uffs-core dependencies
   └── 0H: ✅ Add rustc-hash dep to uffs-core (for FxHashMap in Phases 1, 3)
           │
@@ -223,31 +225,31 @@ Phase 1: Trigram Migration (depends on 0C, 0D, 0E, 0H) — ✅ COMPLETE
           │            ← eliminates 140 MB × 3 clones (P6)
           │            ← fixes 64 MB LUT waste (P9)
           │
-Phase 2: Fold Swap (depends on 0C) — ✅ COMPLETE (except 2F)
+Phase 2: Fold Swap (depends on 0C) — ✅ COMPLETE
   ├── 2A: ✅ search/query.rs — match loop fold swap (P2)
   ├── 2B: ✅ search/query.rs — sort_indices_by_name zero-alloc (P7)
   ├── 2C: ✅ search/tree.rs — thread fold + buffer through tree search (P14)
   ├── 2D: ✅ search/backend.rs — numeric sort fast path (P4)
   ├── 2E: ✅ search/filters.rs — filter fold swap (P15→C15)
-  └── 2F: ⚠️ index_search/pattern.rs — still uses to_ascii_lowercase()
+  └── 2F: ✅ index_search/pattern.rs — CaseFold pre-folded Vec<u16> matching
           │            ← eliminates millions of per-record allocs
           │
-Phase 3: Performance Optimisations (independent of Phases 1-2) — ❌ NOT STARTED
-  ├── 3A: ❌ BinaryHeap for global top-N (P1) — query.rs
-  ├── 3B: ❌ FxHashMap for DirCache (P3) — tree.rs
-  ├── 3C: ❌ Arc<Vec<DisplayRow>> for results (P5) — backend.rs + callers
-  ├── 3D: ❌ FxHashMap for path_cache (P8) — fast.rs
-  ├── 3E: ❌ LazyLock for CACHE_PROFILE (P10) — query.rs
-  └── 3F: ❌ Stack-allocated volume_prefix (P11) — query.rs
+Phase 3: Performance Optimisations (independent of Phases 1-2) — ✅ COMPLETE (3C cancelled)
+  ├── 3A: ✅ BinaryHeap for global top-N (P1) — query.rs
+  ├── 3B: ✅ FxHashMap for DirCache (P3) — tree.rs
+  ├── 3C: ❌ Arc<Vec<DisplayRow>> for results (P5) — CANCELLED (conflicts with in-place sort)
+  ├── 3D: ✅ FxHashMap for path_cache (P8) — fast.rs
+  ├── 3E: ✅ LazyLock for CACHE_PROFILE (P10) — query.rs
+  └── 3F: ✅ Stack-allocated volume_prefix (P11) — query.rs
           │
-Phase 4: Cache v6 Format (depends on 1A, 0D) — ❌ NOT STARTED
-  ├── 4A: ❌ Add upcase section to cache header
-  ├── 4B: ❌ Serialize char-trigram CSR (new key size)
-  └── 4C: ⚠️ Backward-compatible v5 load (trigrams rebuild; no v6 exists)
+Phase 4: Cache v6 Format (depends on 1A, 0D) — ✅ COMPLETE
+  ├── 4A: ✅ Bump to v6 (COMPACT_VERSION = 6)
+  ├── 4B: ✅ Serialize char-trigram CSR (keys u64[], offsets u32[], values u32[])
+  └── 4C: ✅ Backward-compatible v5 load (trigrams rebuilt with CaseFold)
           │
-Phase 5: Caller-Level Memory (independent) — ❌ NOT STARTED
-  ├── 5A: ❌ Drop MftIndex early after compact build (P15)
-  └── 5B: ❌ Scope MftIndex in CLI/daemon load paths
+Phase 5: Caller-Level Memory (independent) — ✅ COMPLETE
+  ├── 5A: ✅ Drop MftIndex early after compact build (compact_loader.rs:124)
+  └── 5B: ✅ Daemon uses same load_drive() path — MftIndex freed via 5A
 ```
 
 ### Critical Path
@@ -268,7 +270,7 @@ Phase 5 is fully independent.
 
 <a id="phase-0"></a>
 
-## Phase 0 — Foundation: `uffs-text` Crate + CaseFold ✅ (except 0F)
+## Phase 0 — Foundation: `uffs-text` Crate + CaseFold ✅ COMPLETE
 
 ### 0A: ✅ Create `uffs-text` Crate Scaffold
 
@@ -586,7 +588,7 @@ pub const fn unpack_char_trigram(packed: u64) -> [u16; 3] {
 }
 ```
 
-### 0F: ❌ Windows API `$UpCase` Reader
+### 0F: ✅ Windows API `$UpCase` Reader
 
 > **Implementation note (2026-04-02):** This step has NOT been implemented.
 > No `upcase.rs` file exists in `crates/uffs-mft/src/platform/`. All code
@@ -1003,7 +1005,7 @@ allocations. This single change addresses P6 from doc 15.
 
 <a id="phase-2"></a>
 
-## Phase 2 — Search/Filter/Sort Fold Swap ✅ COMPLETE (except 2F)
+## Phase 2 — Search/Filter/Sort Fold Swap ✅ COMPLETE
 
 All changes in this phase follow the same pattern: replace
 `name.to_ascii_lowercase()` (heap alloc) with either:
@@ -1186,12 +1188,11 @@ matching function.
 
 <a id="phase-3"></a>
 
-## Phase 3 — Performance Optimisations (P1, P3, P5, P8, P10, P11) ❌ NOT STARTED
+## Phase 3 — Performance Optimisations (P1, P3, P5, P8, P10, P11) ✅ COMPLETE (3C cancelled)
 
-These are independent of Phases 1–2. They can be done in any order
-and parallelised across developers.
+These are independent of Phases 1–2.
 
-### 3A: ❌ BinaryHeap for Global Top-N (Fixes P1)
+### 3A: ✅ BinaryHeap for Global Top-N (Fixes P1)
 
 **File:** `crates/uffs-core/src/search/query.rs`, lines ~155–210
 
@@ -1233,7 +1234,7 @@ result.sort_unstable_by(/* final sort for display */);
 - Time: O(N log N) → O(N log K) where K = limit (typically 10K)
 - For N=7M, K=10K: log₂(7M) ≈ 23, log₂(10K) ≈ 13 → **~44% faster**
 
-### 3B: ❌ FxHashMap for DirCache (Fixes P3)
+### 3B: ✅ FxHashMap for DirCache (Fixes P3)
 
 **File:** `crates/uffs-core/src/search/tree.rs`, line ~18
 
@@ -1253,7 +1254,12 @@ struct DirCache {
 
 **Impact:** 3–5× faster path resolution for tree search.
 
-### 3C: ❌ `Arc<Vec<DisplayRow>>` for Results (Fixes P5)
+### 3C: ❌ `Arc<Vec<DisplayRow>>` for Results — CANCELLED
+
+> **Cancellation note (2026-04-03):** This change was cancelled because
+> `sort_rows()` mutates `last_results` in-place, which conflicts with Arc
+> sharing (`Arc::make_mut()` would clone if refcount > 1). The existing
+> `clone_from` is already efficient. Low ROI for the invasiveness.
 
 **File:** `crates/uffs-core/src/search/backend.rs`, line ~425
 
@@ -1281,7 +1287,7 @@ from `Vec<DisplayRow>` to `Arc<Vec<DisplayRow>>`. Update:
 
 **Impact:** Eliminates ~2 MB deep clone per search.
 
-### 3D: ❌ FxHashMap for `path_cache` (Fixes P8)
+### 3D: ✅ FxHashMap for `path_cache` (Fixes P8)
 
 **File:** `crates/uffs-core/src/path_resolver/fast.rs`, line ~55
 
@@ -1295,7 +1301,7 @@ path_cache: FxHashMap<u64, String>,  // ~1 MB for ~5K cached paths
 
 **Impact:** 168 MB → ~1 MB for the legacy path cache.
 
-### 3E: ❌ LazyLock for `CACHE_PROFILE` (Fixes P10)
+### 3E: ✅ LazyLock for `CACHE_PROFILE` (Fixes P10)
 
 **File:** `crates/uffs-core/src/search/query.rs`, line ~63
 
@@ -1310,7 +1316,7 @@ let cache_profile = *CACHE_PROFILE;
 
 **Impact:** Eliminates 1 syscall per search. Trivial change.
 
-### 3F: ❌ Stack-Allocated `volume_prefix` (Fixes P11)
+### 3F: ✅ Stack-Allocated `volume_prefix` (Fixes P11)
 
 **File:** `crates/uffs-core/src/search/query.rs`, line ~85
 
@@ -1329,9 +1335,9 @@ let volume_prefix = core::str::from_utf8(&prefix_buf[..3]).unwrap_or("?:\\");
 
 <a id="phase-4"></a>
 
-## Phase 4 — Cache v6 Format ❌ NOT STARTED
+## Phase 4 — Cache v6 Format ✅ COMPLETE
 
-### 4A: ❌ Add `$UpCase` Section to Cache Header
+### 4A: ✅ Bump Cache to v6
 
 **File:** `crates/uffs-core/src/compact_cache.rs`
 
@@ -1346,7 +1352,7 @@ pub struct CacheHeader {
 }
 ```
 
-### 4B: ❌ Serialize Character-Trigram CSR
+### 4B: ✅ Serialize Character-Trigram CSR
 
 The trigram CSR format changes because keys are now `[u16; 3]` instead
 of `[u8; 3]`. The values (`Vec<u32>`) and offsets (`Vec<u32>`) are
@@ -1362,7 +1368,7 @@ let upcase_bytes: &[u8] = bytemuck::cast_slice(fold.table);
 writer.write_all(upcase_bytes)?;  // 128 KB
 ```
 
-### 4C: ⚠️ Backward-Compatible v5 Load
+### 4C: ✅ Backward-Compatible v5 Load
 
 When loading a v5 cache:
 1. No `$UpCase` section → use `CaseFold::default_table()` (from `uffs-text`)
@@ -1396,9 +1402,9 @@ fn load_cache(path: &Path) -> Result<DriveCompactIndex> {
 
 <a id="phase-5"></a>
 
-## Phase 5 — Caller-Level Memory Optimisations ❌ NOT STARTED
+## Phase 5 — Caller-Level Memory Optimisations ✅ COMPLETE
 
-### 5A: ❌ Drop `MftIndex` Early (Fixes P15)
+### 5A: ✅ Drop `MftIndex` Early (Fixes P15)
 
 **File:** CLI/daemon load paths
 
@@ -1411,7 +1417,7 @@ let compact = build_compact_index(&mft_index, fold);  // +896 MB
 drop(mft_index);                              // FREE 1.6 GB ← HERE
 ```
 
-### 5B: ❌ Scope `MftIndex` in Daemon Startup
+### 5B: ✅ Scope `MftIndex` in Daemon Startup
 
 ```rust
 let compact = {
@@ -1579,22 +1585,22 @@ BEFORE (pre-implementation):
   NTFS compatibility:                  Partial
   CaseFold location:                   N/A (inline to_ascii_lowercase)
 
-CURRENT (Phases 0–2 implemented):
+AFTER (all phases implemented):
   Transient memory for case folding:   256 bytes (one reusable buffer)         ✅
   Per-search heap allocs:              ~0 (for fold operations)                ✅
   Trigram LUT memory:                  1.6 MB (FxHashMap)                      ✅
-  Path cache memory (legacy):          168 MB (Vec<Option<String>>)            ❌ still old
-  MftIndex after compact build:        1.6 GB (wasted)                         ❌ no early drop
-  Top-N sort algorithm:                O(N log N), 28 MB                       ❌ no BinaryHeap
+  Path cache memory (legacy):          ~1 MB (FxHashMap<u64, String>)          ✅ Phase 3D
+  MftIndex after compact build:        0 (early drop in compact_loader.rs)     ✅ Phase 5A
+  Top-N sort algorithm:                O(N log K), capped BinaryHeap           ✅ Phase 3A
+  Cache format:                        v6 with persisted char-trigram CSR      ✅ Phase 4
   Case sensitivity:                    Full Unicode via NTFS $UpCase            ✅
-  NTFS compatibility:                  100% (bit-exact match via default table) ✅
+  NTFS compatibility:                  100% (live $UpCase when available)       ✅ Phase 0F
   CaseFold location:                   uffs-text (Layer 0 foundation crate)    ✅
-
-TARGET (all phases):
-  Path cache memory (legacy):          ~1 MB (FxHashMap)                       ❌ Phase 3D
-  MftIndex after compact build:        0 (early drop)                          ❌ Phase 5A
-  Top-N sort algorithm:                O(N log K), 120 KB                      ❌ Phase 3A
-  Cache format:                        v6 with persisted char-trigrams         ❌ Phase 4
+  Live $UpCase reader:                 resolve_case_fold() with diff logging   ✅ Phase 0F
+  CACHE_PROFILE env read:              Once (LazyLock<bool>)                   ✅ Phase 3E
+  Volume prefix allocation:            Stack (zero heap)                       ✅ Phase 3F
+  DirCache hash map:                   FxHashMap<u32, String>                  ✅ Phase 3B
+  Pattern matching (index_search):     CaseFold pre-folded Vec<u16>            ✅ Phase 2F
 
   Total memory saved (all phases):     ~1.85 GB
   Total allocs eliminated:             Millions per search

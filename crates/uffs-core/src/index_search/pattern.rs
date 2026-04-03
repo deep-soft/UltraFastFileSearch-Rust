@@ -1,9 +1,15 @@
 //! Pattern compilation and matching for direct `MftIndex` search.
+//!
+//! Uses `uffs_text::CaseFold` for NTFS-compatible case-insensitive matching.
+//! Pattern strings are pre-folded to `Vec<u16>` at compile time; input strings
+//! are folded char-by-char at match time.  This is zero-allocation for the
+//! common Exact/Prefix/Suffix/Contains variants.
 
 use std::collections::HashSet;
 
 use aho_corasick::AhoCorasick;
 use regex::Regex;
+use uffs_text::CaseFold;
 
 use crate::compiled_pattern::{GlobKind, classify_glob};
 use crate::error::{CoreError, Result};
@@ -12,7 +18,8 @@ use crate::pattern::{ParsedPattern, PatternType};
 /// Compiled pattern for direct matching on `MftIndex`.
 ///
 /// This mirrors `CompiledPattern` but generates match functions instead of
-/// Polars expressions. Uses SIMD-optimized string matching where possible.
+/// Polars expressions.  Case-insensitive matching uses NTFS `$UpCase` folding
+/// via [`CaseFold`] instead of ASCII-only `to_ascii_lowercase()`.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum IndexPattern {
@@ -23,32 +30,32 @@ pub enum IndexPattern {
     Exact {
         /// The exact value to match (case-sensitive).
         value: String,
-        /// Lowercase version for case-insensitive matching.
-        value_lower: String,
+        /// Pre-folded codepoints for case-insensitive matching.
+        folded: Vec<u16>,
     },
 
     /// Prefix match (e.g., `foo*`).
     Prefix {
         /// The prefix to match (case-sensitive).
         prefix: String,
-        /// Lowercase version for case-insensitive matching.
-        prefix_lower: String,
+        /// Pre-folded codepoints for case-insensitive matching.
+        folded: Vec<u16>,
     },
 
     /// Suffix match (e.g., `*bar`, `*.txt`).
     Suffix {
         /// The suffix to match (case-sensitive).
         suffix: String,
-        /// Lowercase version for case-insensitive matching.
-        suffix_lower: String,
+        /// Pre-folded codepoints for case-insensitive matching.
+        folded: Vec<u16>,
     },
 
     /// Literal substring match (e.g., `*needle*`).
     Contains {
         /// The substring to search for (case-sensitive).
         needle: String,
-        /// Lowercase version for case-insensitive matching.
-        needle_lower: String,
+        /// Pre-folded codepoints for case-insensitive matching.
+        folded: Vec<u16>,
     },
 
     /// Prefix AND suffix match (e.g., `foo*bar`).
@@ -57,34 +64,34 @@ pub enum IndexPattern {
         prefix: String,
         /// The suffix to match (case-sensitive).
         suffix: String,
-        /// Lowercase prefix for case-insensitive matching.
-        prefix_lower: String,
-        /// Lowercase suffix for case-insensitive matching.
-        suffix_lower: String,
+        /// Pre-folded prefix codepoints.
+        prefix_folded: Vec<u16>,
+        /// Pre-folded suffix codepoints.
+        suffix_folded: Vec<u16>,
     },
 
     /// Multiple exact matches (hash set lookup).
     ExactSet {
         /// Set of exact values (case-sensitive).
         values: HashSet<String>,
-        /// Lowercase set for case-insensitive matching.
-        values_lower: HashSet<String>,
+        /// Pre-folded sets for case-insensitive matching.
+        folded_set: HashSet<Vec<u16>>,
     },
 
     /// Multiple suffix matches (e.g., extensions).
     SuffixSet {
         /// List of suffixes (case-sensitive).
         suffixes: Vec<String>,
-        /// Lowercase suffixes for case-insensitive matching.
-        suffixes_lower: Vec<String>,
+        /// Pre-folded suffix codepoints for case-insensitive matching.
+        suffixes_folded: Vec<Vec<u16>>,
     },
 
     /// Multiple literal substrings (Aho-Corasick).
     ContainsAny {
         /// Aho-Corasick automaton for case-sensitive matching.
         automaton: AhoCorasick,
-        /// Aho-Corasick automaton for case-insensitive matching.
-        automaton_lower: AhoCorasick,
+        /// Aho-Corasick automaton for case-insensitive matching (folded).
+        automaton_folded: AhoCorasick,
         /// Original patterns for debugging.
         patterns: Vec<String>,
     },
@@ -107,99 +114,95 @@ pub enum IndexPattern {
 impl IndexPattern {
     /// Check if a string matches this pattern.
     ///
-    /// Case-insensitive variants use zero-allocation byte-level comparison
-    /// instead of `.to_ascii_lowercase()` which allocates a new `String` per
-    /// call.  For 8M records this eliminates 8M heap allocations.
+    /// `fold` provides NTFS-compatible case folding for case-insensitive
+    /// matching.  Most variants use zero-allocation char-by-char fold
+    /// comparison.  `ExactSet` and `ContainsAny` may allocate (rare).
     #[inline]
     #[must_use]
-    pub fn matches(&self, input: &str, case_sensitive: bool) -> bool {
+    pub fn matches(&self, input: &str, case_sensitive: bool, fold: CaseFold) -> bool {
         match self {
             Self::Any => true,
-            Self::Exact { value, value_lower } => {
+            Self::Exact { value, folded } => {
                 if case_sensitive {
                     input == value
                 } else {
-                    input.eq_ignore_ascii_case(value_lower)
+                    fold.eq_folded(input, folded)
                 }
             }
-            Self::Prefix {
-                prefix,
-                prefix_lower,
-            } => {
+            Self::Prefix { prefix, folded } => {
                 if case_sensitive {
                     input.starts_with(prefix.as_str())
                 } else {
-                    starts_with_ignore_ascii_case(input, prefix_lower)
+                    fold.starts_with_folded(input, folded)
                 }
             }
-            Self::Suffix {
-                suffix,
-                suffix_lower,
-            } => {
+            Self::Suffix { suffix, folded } => {
                 if case_sensitive {
                     input.ends_with(suffix.as_str())
                 } else {
-                    ends_with_ignore_ascii_case(input, suffix_lower)
+                    fold.ends_with_folded(input, folded)
                 }
             }
-            Self::Contains {
-                needle,
-                needle_lower,
-            } => {
+            Self::Contains { needle, folded } => {
                 if case_sensitive {
                     input.contains(needle.as_str())
                 } else {
-                    contains_ignore_ascii_case(input, needle_lower)
+                    fold.contains_folded(input, folded)
                 }
             }
             Self::PrefixSuffix {
                 prefix,
                 suffix,
-                prefix_lower,
-                suffix_lower,
+                prefix_folded,
+                suffix_folded,
             } => {
                 if case_sensitive {
                     input.starts_with(prefix.as_str()) && input.ends_with(suffix.as_str())
                 } else {
-                    starts_with_ignore_ascii_case(input, prefix_lower)
-                        && ends_with_ignore_ascii_case(input, suffix_lower)
+                    fold.starts_with_folded(input, prefix_folded)
+                        && fold.ends_with_folded(input, suffix_folded)
                 }
             }
-            Self::ExactSet {
-                values,
-                values_lower,
-            } => {
+            Self::ExactSet { values, folded_set } => {
                 if case_sensitive {
                     values.contains(input)
                 } else {
-                    // HashSet lookup requires an owned key — unavoidable alloc.
-                    // But ExactSet is rare (multi-value exact match).
-                    values_lower.contains(&input.to_ascii_lowercase())
+                    // Fold input to Vec<u16> for HashSet lookup — alloc per call,
+                    // but ExactSet is rare.
+                    folded_set.contains(&fold.fold_to_u16(input))
                 }
             }
             Self::SuffixSet {
                 suffixes,
-                suffixes_lower,
+                suffixes_folded,
             } => {
                 if case_sensitive {
                     suffixes.iter().any(|suf| input.ends_with(suf.as_str()))
                 } else {
-                    suffixes_lower
+                    suffixes_folded
                         .iter()
-                        .any(|suf| ends_with_ignore_ascii_case(input, suf))
+                        .any(|suf| fold.ends_with_folded(input, suf))
                 }
             }
             Self::ContainsAny {
                 automaton,
-                automaton_lower,
+                automaton_folded,
                 ..
             } => {
                 if case_sensitive {
                     automaton.is_match(input)
                 } else {
-                    // Aho-Corasick requires the input pre-lowercased — unavoidable.
-                    // But ContainsAny is only used for multi-substring patterns.
-                    automaton_lower.is_match(&input.to_ascii_lowercase())
+                    // Aho-Corasick needs a folded string — use fold_into with
+                    // a thread-local buffer (ContainsAny is rare).
+                    thread_local! {
+                        static BUF: core::cell::RefCell<Vec<u8>> =
+                            core::cell::RefCell::new(Vec::with_capacity(256));
+                    }
+                    BUF.with(|cell| {
+                        let mut buf = cell.borrow_mut();
+                        let folded_str = fold.fold_into(input, &mut buf);
+                        automaton_folded.is_match(folded_str)
+                    })
                 }
             }
             Self::Regex { regex, regex_lower } => {
@@ -211,140 +214,60 @@ impl IndexPattern {
             }
             Self::Or { patterns } => patterns
                 .iter()
-                .any(|pat| pat.matches(input, case_sensitive)),
+                .any(|pat| pat.matches(input, case_sensitive, fold)),
         }
     }
-}
-
-// ── Zero-allocation ASCII case-insensitive helpers ──────────────────────
-//
-// These replace `.to_ascii_lowercase().starts_with(...)` etc. which allocate
-// a new String on every call.  For 8M records per query, this eliminates
-// 8M heap allocations.
-
-/// Check if `haystack` starts with `needle` (ASCII case-insensitive).
-///
-/// `needle` must already be lowercase.
-#[inline]
-fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
-    let hb = haystack.as_bytes();
-    let nb = needle.as_bytes();
-    if hb.len() < nb.len() {
-        return false;
-    }
-    hb.iter()
-        .zip(nb)
-        .all(|(hay, ndl)| hay.to_ascii_lowercase() == *ndl)
-}
-
-/// Check if `haystack` ends with `needle` (ASCII case-insensitive).
-///
-/// `needle` must already be lowercase.
-#[inline]
-fn ends_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
-    let hb = haystack.as_bytes();
-    let nb = needle.as_bytes();
-    if hb.len() < nb.len() {
-        return false;
-    }
-    let start = hb.len() - nb.len();
-    hb.iter()
-        .skip(start)
-        .zip(nb)
-        .all(|(hay, ndl)| hay.to_ascii_lowercase() == *ndl)
-}
-
-/// Check if `haystack` contains `needle` (ASCII case-insensitive).
-///
-/// `needle` must already be lowercase.  Uses a simple sliding-window
-/// approach.  For short needles (typical filenames), this is faster than
-/// allocating a lowercased copy of the entire haystack.
-#[expect(
-    clippy::single_call_fn,
-    reason = "extracted for readability — contains is semantically distinct from starts_with/ends_with"
-)]
-#[inline]
-fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    let hb = haystack.as_bytes();
-    let nb = needle.as_bytes();
-    if hb.len() < nb.len() {
-        return false;
-    }
-    let Some(&first) = nb.first() else {
-        return true;
-    };
-
-    // Sliding window: find candidate positions where first byte matches.
-    for start in 0..=hb.len() - nb.len() {
-        if let Some(hay_byte) = hb.get(start) {
-            if hay_byte.to_ascii_lowercase() == first
-                && hb.get(start..start + nb.len()).is_some_and(|window| {
-                    window
-                        .iter()
-                        .zip(nb)
-                        .all(|(hay, ndl)| hay.to_ascii_lowercase() == *ndl)
-                })
-            {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// Compile a glob pattern into an `IndexPattern`.
+///
+/// Uses the default `$UpCase` table for pre-folding pattern strings.
 ///
 /// # Errors
 ///
 /// Returns an error if the pattern is invalid (e.g., malformed glob or regex).
 pub fn compile_index_pattern(pattern: &str) -> Result<IndexPattern> {
+    compile_index_pattern_with_fold(pattern, CaseFold::default_table())
+}
+
+/// Compile a glob pattern into an `IndexPattern` with a specific `CaseFold`.
+///
+/// # Errors
+///
+/// Returns an error if the pattern is invalid (e.g., malformed glob or regex).
+pub fn compile_index_pattern_with_fold(pattern: &str, fold: CaseFold) -> Result<IndexPattern> {
     let kind = classify_glob(pattern);
     match kind {
         GlobKind::Any => Ok(IndexPattern::Any),
         GlobKind::Exact(value) => {
-            let value_lower = value.to_ascii_lowercase();
-            Ok(IndexPattern::Exact { value, value_lower })
+            let folded = fold.fold_to_u16(&value);
+            Ok(IndexPattern::Exact { value, folded })
         }
         GlobKind::Prefix(prefix) => {
-            let prefix_lower = prefix.to_ascii_lowercase();
-            Ok(IndexPattern::Prefix {
-                prefix,
-                prefix_lower,
-            })
+            let folded = fold.fold_to_u16(&prefix);
+            Ok(IndexPattern::Prefix { prefix, folded })
         }
         GlobKind::Suffix(suffix) => {
-            let suffix_lower = suffix.to_ascii_lowercase();
-            Ok(IndexPattern::Suffix {
-                suffix,
-                suffix_lower,
-            })
+            let folded = fold.fold_to_u16(&suffix);
+            Ok(IndexPattern::Suffix { suffix, folded })
         }
         GlobKind::Extension(ext) => {
             let suffix = format!(".{ext}");
-            let suffix_lower = suffix.to_ascii_lowercase();
-            Ok(IndexPattern::Suffix {
-                suffix,
-                suffix_lower,
-            })
+            let folded = fold.fold_to_u16(&suffix);
+            Ok(IndexPattern::Suffix { suffix, folded })
         }
         GlobKind::Contains(needle) => {
-            let needle_lower = needle.to_ascii_lowercase();
-            Ok(IndexPattern::Contains {
-                needle,
-                needle_lower,
-            })
+            let folded = fold.fold_to_u16(&needle);
+            Ok(IndexPattern::Contains { needle, folded })
         }
         GlobKind::PrefixSuffix { prefix, suffix } => {
-            let prefix_lower = prefix.to_ascii_lowercase();
-            let suffix_lower = suffix.to_ascii_lowercase();
+            let prefix_folded = fold.fold_to_u16(&prefix);
+            let suffix_folded = fold.fold_to_u16(&suffix);
             Ok(IndexPattern::PrefixSuffix {
                 prefix,
                 suffix,
-                prefix_lower,
-                suffix_lower,
+                prefix_folded,
+                suffix_folded,
             })
         }
         GlobKind::Complex(glob_pattern) => {
@@ -388,10 +311,24 @@ pub fn compile_index_pattern(pattern: &str) -> Result<IndexPattern> {
 
 /// Compile a `ParsedPattern` into an `IndexPattern`.
 ///
+/// Uses the default `$UpCase` table for pre-folding.
+///
 /// # Errors
 ///
 /// Returns an error if the pattern is invalid (e.g., malformed glob or regex).
 pub fn compile_parsed_pattern(parsed: &ParsedPattern) -> Result<IndexPattern> {
+    compile_parsed_pattern_with_fold(parsed, CaseFold::default_table())
+}
+
+/// Compile a `ParsedPattern` into an `IndexPattern` with a specific `CaseFold`.
+///
+/// # Errors
+///
+/// Returns an error if the pattern is invalid (e.g., malformed glob or regex).
+pub fn compile_parsed_pattern_with_fold(
+    parsed: &ParsedPattern,
+    fold: CaseFold,
+) -> Result<IndexPattern> {
     // OR operator: split on | and compile each part.
     // "*.txt|*.log" → Or([Suffix(".txt"), Suffix(".log")])
     let pat = parsed.pattern();
@@ -400,7 +337,7 @@ pub fn compile_parsed_pattern(parsed: &ParsedPattern) -> Result<IndexPattern> {
         if parts.len() > 1 {
             let sub_patterns: Result<Vec<IndexPattern>> = parts
                 .iter()
-                .map(|part| compile_index_pattern(part.trim()))
+                .map(|part| compile_index_pattern_with_fold(part.trim(), fold))
                 .collect();
             return Ok(IndexPattern::Or {
                 patterns: sub_patterns?,
@@ -409,7 +346,7 @@ pub fn compile_parsed_pattern(parsed: &ParsedPattern) -> Result<IndexPattern> {
     }
 
     match parsed.pattern_type() {
-        PatternType::Glob => compile_index_pattern(parsed.pattern()),
+        PatternType::Glob => compile_index_pattern_with_fold(parsed.pattern(), fold),
         PatternType::Regex => {
             let pattern_str = parsed.pattern();
             // Auto-anchor with $ if the pattern isn't already end-anchored.
@@ -435,23 +372,25 @@ pub fn compile_parsed_pattern(parsed: &ParsedPattern) -> Result<IndexPattern> {
             Ok(IndexPattern::Regex { regex, regex_lower })
         }
         PatternType::Literal => {
-            // Bare text = substring match (like Everything, WizFile, C++ UFFS).
-            // "nice" finds "nicehouse", "my_nice_file.txt", "venice.jpg".
-            // Combined with is_path_pattern, this also matches against full
-            // paths — so "AppData" finds "C:\Users\john\AppData\Local\".
             let needle = parsed.pattern().to_owned();
-            let needle_lower = needle.to_ascii_lowercase();
-            Ok(IndexPattern::Contains {
-                needle,
-                needle_lower,
-            })
+            let folded = fold.fold_to_u16(&needle);
+            Ok(IndexPattern::Contains { needle, folded })
         }
     }
 }
 
 /// Compile multiple extension patterns into a `SuffixSet`.
+///
+/// Uses the default `$UpCase` table for pre-folding.
 #[must_use]
 pub fn compile_extensions(extensions: &[&str]) -> IndexPattern {
+    compile_extensions_with_fold(extensions, CaseFold::default_table())
+}
+
+/// Compile multiple extension patterns into a `SuffixSet` with a specific
+/// `CaseFold`.
+#[must_use]
+pub fn compile_extensions_with_fold(extensions: &[&str], fold: CaseFold) -> IndexPattern {
     let suffixes: Vec<String> = extensions
         .iter()
         .map(|ext| {
@@ -462,12 +401,9 @@ pub fn compile_extensions(extensions: &[&str]) -> IndexPattern {
             }
         })
         .collect();
-    let suffixes_lower: Vec<String> = suffixes
-        .iter()
-        .map(|suf| suf.to_ascii_lowercase())
-        .collect();
+    let suffixes_folded: Vec<Vec<u16>> = suffixes.iter().map(|suf| fold.fold_to_u16(suf)).collect();
     IndexPattern::SuffixSet {
         suffixes,
-        suffixes_lower,
+        suffixes_folded,
     }
 }

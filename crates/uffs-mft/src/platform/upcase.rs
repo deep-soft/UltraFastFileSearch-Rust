@@ -417,3 +417,110 @@ fn read_clusters(
     }
     Ok(buf)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-trip: build a header + table, save to temp file, load back.
+    #[test]
+    fn save_and_load_roundtrip() -> Result<()> {
+        let fold = uffs_text::CaseFold::default_table();
+        let raw_table = fold.table();
+        let mut table = Box::new([0_u16; 65_536]);
+        table.copy_from_slice(raw_table);
+
+        let raw_bytes: &[u8] = bytemuck::cast_slice(table.as_ref());
+        let table_crc = crc32(raw_bytes);
+
+        let header = UpcaseHeader {
+            ntfs_major: 3,
+            ntfs_minor: 1,
+            volume_serial: 0xDEAD_BEEF_CAFE_1234,
+            table_crc32: table_crc,
+            timestamp: 1_700_000_000,
+            drive: 'C',
+        };
+
+        let dir = std::env::temp_dir().join("uffs_upcase_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("roundtrip.bin");
+
+        save_upcase_to_file(&path, &header, &table)?;
+
+        // File should be exactly 64 + 131072 bytes.
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| MftError::InvalidData(format!("metadata failed: {e}")))?;
+        assert_eq!(meta.len(), (HEADER_SIZE + UPCASE_SIZE_BYTES) as u64);
+
+        let (loaded_hdr, loaded_tbl) = load_upcase_from_file(&path)?;
+        assert_eq!(loaded_hdr.ntfs_major, 3);
+        assert_eq!(loaded_hdr.ntfs_minor, 1);
+        assert_eq!(loaded_hdr.volume_serial, 0xDEAD_BEEF_CAFE_1234);
+        assert_eq!(loaded_hdr.table_crc32, table_crc);
+        assert_eq!(loaded_hdr.drive, 'C');
+
+        // Table contents must match.
+        assert_eq!(loaded_tbl.as_ref(), table.as_ref());
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+        Ok(())
+    }
+
+    /// Load the Windows-captured reference file (`upcase_windows_c.bin`)
+    /// and validate header fields and table sanity against the embedded
+    /// default.
+    #[test]
+    fn load_windows_captured_file() -> Result<()> {
+        // The reference file lives next to the embedded default.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let ref_path = manifest
+            .parent()
+            .ok_or_else(|| MftError::InvalidData("no parent dir".into()))?
+            .join("uffs-text")
+            .join("src")
+            .join("upcase_windows_c.bin");
+
+        if !ref_path.exists() {
+            // Not fatal — the file is only present after a Windows capture.
+            eprintln!("Skipping: {ref_path:?} not found");
+            return Ok(());
+        }
+
+        let (hdr, tbl) = load_upcase_from_file(&ref_path)?;
+
+        // Header sanity.
+        assert_eq!(hdr.drive, 'C');
+        assert_eq!(hdr.table_crc32, 0xCEE8_CFFA);
+
+        // Table must match the embedded default exactly.
+        let fold = uffs_text::CaseFold::default_table();
+        let embedded = fold.table();
+        assert_eq!(
+            tbl.as_ref(),
+            embedded,
+            "Windows-captured table differs from embedded default"
+        );
+
+        // Spot-check folding values.
+        assert_eq!(tbl[0x61], 0x0041, "a → A");
+        assert_eq!(tbl[0x7A], 0x005A, "z → Z");
+        assert_eq!(tbl[0x00FC], 0x00DC, "ü → Ü");
+        assert_eq!(tbl[0x00E9], 0x00C9, "é → É");
+        assert_eq!(tbl[0x4E2D], 0x4E2D, "中 identity");
+        Ok(())
+    }
+
+    /// CRC-32 of the embedded default table must match the Windows capture.
+    #[test]
+    fn embedded_crc32_matches_windows() {
+        let fold = uffs_text::CaseFold::default_table();
+        let raw: &[u8] = bytemuck::cast_slice(fold.table());
+        let crc = crc32(raw);
+        assert_eq!(
+            crc, 0xCEE8_CFFA,
+            "Embedded default CRC-32 0x{crc:08X} != Windows 0xCEE8CFFA"
+        );
+    }
+}

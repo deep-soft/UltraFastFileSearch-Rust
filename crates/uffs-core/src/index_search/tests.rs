@@ -4,11 +4,17 @@ use regex::Regex;
 use uffs_mft::index::{
     IndexNameRef, IndexStreamInfo, LinkInfo, MftIndex, NO_ENTRY, ROOT_FRS, SizeInfo,
 };
+use uffs_text::CaseFold;
 
 use super::*;
 
 type TestError = Box<dyn core::error::Error>;
 type TestResult = Result<(), TestError>;
+
+/// Convenience: default fold for tests.
+fn fold() -> CaseFold {
+    CaseFold::default_table()
+}
 
 fn push_name_ref(index: &mut MftIndex, name: &str) -> Result<IndexNameRef, TestError> {
     let offset = index.add_name(name);
@@ -109,67 +115,67 @@ fn build_index_query_fixture() -> Result<MftIndex, TestError> {
 #[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_any() {
     let pattern = compile_index_pattern("*").unwrap();
-    assert!(pattern.matches("anything", true));
-    assert!(pattern.matches("", true));
+    assert!(pattern.matches("anything", true, fold()));
+    assert!(pattern.matches("", true, fold()));
 }
 
 #[test]
 #[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_exact() {
     let pattern = compile_index_pattern("foo.txt").unwrap();
-    assert!(pattern.matches("foo.txt", true));
-    assert!(!pattern.matches("FOO.TXT", true));
-    assert!(pattern.matches("FOO.TXT", false));
-    assert!(!pattern.matches("foo.txt.bak", true));
+    assert!(pattern.matches("foo.txt", true, fold()));
+    assert!(!pattern.matches("FOO.TXT", true, fold()));
+    assert!(pattern.matches("FOO.TXT", false, fold()));
+    assert!(!pattern.matches("foo.txt.bak", true, fold()));
 }
 
 #[test]
 #[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_prefix() {
     let pattern = compile_index_pattern("foo*").unwrap();
-    assert!(pattern.matches("foo", true));
-    assert!(pattern.matches("foobar", true));
-    assert!(!pattern.matches("barfoo", true));
-    assert!(pattern.matches("FOOBAR", false));
+    assert!(pattern.matches("foo", true, fold()));
+    assert!(pattern.matches("foobar", true, fold()));
+    assert!(!pattern.matches("barfoo", true, fold()));
+    assert!(pattern.matches("FOOBAR", false, fold()));
 }
 
 #[test]
 #[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_suffix() {
     let pattern = compile_index_pattern("*.txt").unwrap();
-    assert!(pattern.matches("foo.txt", true));
-    assert!(pattern.matches(".txt", true));
-    assert!(!pattern.matches("foo.txt.bak", true));
-    assert!(pattern.matches("FOO.TXT", false));
+    assert!(pattern.matches("foo.txt", true, fold()));
+    assert!(pattern.matches(".txt", true, fold()));
+    assert!(!pattern.matches("foo.txt.bak", true, fold()));
+    assert!(pattern.matches("FOO.TXT", false, fold()));
 }
 
 #[test]
 #[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_contains() {
     let pattern = compile_index_pattern("*needle*").unwrap();
-    assert!(pattern.matches("needle", true));
-    assert!(pattern.matches("haystackneedlehaystack", true));
-    assert!(!pattern.matches("haystack", true));
-    assert!(pattern.matches("NEEDLE", false));
+    assert!(pattern.matches("needle", true, fold()));
+    assert!(pattern.matches("haystackneedlehaystack", true, fold()));
+    assert!(!pattern.matches("haystack", true, fold()));
+    assert!(pattern.matches("NEEDLE", false, fold()));
 }
 
 #[test]
 #[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_prefix_suffix() {
     let pattern = compile_index_pattern("foo*bar").unwrap();
-    assert!(pattern.matches("foobar", true));
-    assert!(pattern.matches("foo123bar", true));
-    assert!(!pattern.matches("foobarbaz", true));
-    assert!(!pattern.matches("bazfoobar", true));
+    assert!(pattern.matches("foobar", true, fold()));
+    assert!(pattern.matches("foo123bar", true, fold()));
+    assert!(!pattern.matches("foobarbaz", true, fold()));
+    assert!(!pattern.matches("bazfoobar", true, fold()));
 }
 
 #[test]
 fn test_extensions() {
     let pattern = compile_extensions(&["rs", "toml"]);
-    assert!(pattern.matches("main.rs", true));
-    assert!(pattern.matches("Cargo.toml", true));
-    assert!(!pattern.matches("main.py", true));
-    assert!(pattern.matches("MAIN.RS", false));
+    assert!(pattern.matches("main.rs", true, fold()));
+    assert!(pattern.matches("Cargo.toml", true, fold()));
+    assert!(!pattern.matches("main.py", true, fold()));
+    assert!(pattern.matches("MAIN.RS", false, fold()));
 }
 
 #[test]
@@ -441,7 +447,7 @@ fn test_or_first_match() {
     let parsed = crate::pattern::ParsedPattern::parse("*.txt|*.log").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
     assert!(
-        pattern.matches("file.txt", false),
+        pattern.matches("file.txt", false, fold()),
         "OR: first alternative should match"
     );
 }
@@ -452,7 +458,7 @@ fn test_or_second_match() {
     let parsed = crate::pattern::ParsedPattern::parse("*.txt|*.log").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
     assert!(
-        pattern.matches("file.log", false),
+        pattern.matches("file.log", false, fold()),
         "OR: second alternative should match"
     );
 }
@@ -463,7 +469,7 @@ fn test_or_no_match() {
     let parsed = crate::pattern::ParsedPattern::parse("*.txt|*.log").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
     assert!(
-        !pattern.matches("file.rs", false),
+        !pattern.matches("file.rs", false, fold()),
         "OR: non-matching input should fail"
     );
 }
@@ -474,7 +480,7 @@ fn test_or_both_match() {
     let parsed = crate::pattern::ParsedPattern::parse("foo*|*bar").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
     assert!(
-        pattern.matches("foobar", false),
+        pattern.matches("foobar", false, fold()),
         "OR: input matching both alternatives should pass"
     );
 }
@@ -485,11 +491,11 @@ fn test_or_multi_alternatives() {
     let parsed = crate::pattern::ParsedPattern::parse("nice|cool|awesome").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
     assert!(
-        pattern.matches("cool", false),
+        pattern.matches("cool", false, fold()),
         "OR: middle alternative should match"
     );
     assert!(
-        !pattern.matches("bad", false),
+        !pattern.matches("bad", false, fold()),
         "OR: non-matching should fail"
     );
 }
@@ -514,7 +520,7 @@ fn test_or_pattern_is_simple_complexity() {
 fn test_case_insensitive_default() {
     let pattern = compile_index_pattern("nice").unwrap();
     assert!(
-        pattern.matches("Nice", false),
+        pattern.matches("Nice", false, fold()),
         "case-insensitive: Nice should match nice"
     );
 }
@@ -524,7 +530,7 @@ fn test_case_insensitive_default() {
 fn test_case_insensitive_upper() {
     let pattern = compile_index_pattern("nice").unwrap();
     assert!(
-        pattern.matches("NICE", false),
+        pattern.matches("NICE", false, fold()),
         "case-insensitive: NICE should match nice"
     );
 }
@@ -534,7 +540,7 @@ fn test_case_insensitive_upper() {
 fn test_case_sensitive_mismatch() {
     let pattern = compile_index_pattern("nice").unwrap();
     assert!(
-        !pattern.matches("Nice", true),
+        !pattern.matches("Nice", true, fold()),
         "case-sensitive: Nice should NOT match nice"
     );
 }
@@ -544,7 +550,7 @@ fn test_case_sensitive_mismatch() {
 fn test_case_sensitive_exact() {
     let pattern = compile_index_pattern("nice").unwrap();
     assert!(
-        pattern.matches("nice", true),
+        pattern.matches("nice", true, fold()),
         "case-sensitive: nice should match nice"
     );
 }
@@ -554,7 +560,7 @@ fn test_case_sensitive_exact() {
 fn test_case_insensitive_glob_suffix() {
     let pattern = compile_index_pattern("*.TXT").unwrap();
     assert!(
-        pattern.matches("file.txt", false),
+        pattern.matches("file.txt", false, fold()),
         "case-insensitive: .txt should match .TXT pattern"
     );
 }
@@ -564,7 +570,7 @@ fn test_case_insensitive_glob_suffix() {
 fn test_case_sensitive_glob_suffix() {
     let pattern = compile_index_pattern("*.TXT").unwrap();
     assert!(
-        !pattern.matches("file.txt", true),
+        !pattern.matches("file.txt", true, fold()),
         "case-sensitive: .txt should NOT match .TXT pattern"
     );
 }
@@ -580,15 +586,15 @@ fn test_literal_substring_match() {
     let parsed = crate::pattern::ParsedPattern::parse("nice").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
     assert!(
-        pattern.matches("nicehouse", false),
+        pattern.matches("nicehouse", false, fold()),
         "literal should be substring match"
     );
     assert!(
-        pattern.matches("venice.jpg", false),
+        pattern.matches("venice.jpg", false, fold()),
         "literal should match mid-string"
     );
     assert!(
-        pattern.matches("NICE_FILE", false),
+        pattern.matches("NICE_FILE", false, fold()),
         "literal should match case-insensitive substring"
     );
 }
@@ -599,7 +605,7 @@ fn test_literal_no_substring_match() {
     let parsed = crate::pattern::ParsedPattern::parse("nice").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
     assert!(
-        !pattern.matches("bad.txt", false),
+        !pattern.matches("bad.txt", false, fold()),
         "literal should not match unrelated string"
     );
 }
@@ -612,36 +618,36 @@ fn test_literal_no_substring_match() {
 #[expect(clippy::unwrap_used, reason = "test code")]
 fn test_any_matches_everything() {
     let pattern = compile_index_pattern("*").unwrap();
-    assert!(pattern.matches("anything.txt", false));
-    assert!(pattern.matches("", false));
-    assert!(pattern.matches("C:\\Windows\\System32", false));
+    assert!(pattern.matches("anything.txt", false, fold()));
+    assert!(pattern.matches("", false, fold()));
+    assert!(pattern.matches("C:\\Windows\\System32", false, fold()));
 }
 
 #[test]
 #[expect(clippy::unwrap_used, reason = "test code")]
 fn test_prefix_match() {
     let pattern = compile_index_pattern("foo*").unwrap();
-    assert!(pattern.matches("foobar", false));
-    assert!(pattern.matches("FOO", false));
-    assert!(!pattern.matches("barfoo", false));
+    assert!(pattern.matches("foobar", false, fold()));
+    assert!(pattern.matches("FOO", false, fold()));
+    assert!(!pattern.matches("barfoo", false, fold()));
 }
 
 #[test]
 #[expect(clippy::unwrap_used, reason = "test code")]
 fn test_suffix_match() {
     let pattern = compile_index_pattern("*.rs").unwrap();
-    assert!(pattern.matches("main.rs", false));
-    assert!(pattern.matches("MAIN.RS", false));
-    assert!(!pattern.matches("main.txt", false));
+    assert!(pattern.matches("main.rs", false, fold()));
+    assert!(pattern.matches("MAIN.RS", false, fold()));
+    assert!(!pattern.matches("main.txt", false, fold()));
 }
 
 #[test]
 #[expect(clippy::unwrap_used, reason = "test code")]
 fn test_contains_match() {
     let pattern = compile_index_pattern("*needle*").unwrap();
-    assert!(pattern.matches("hayneedlehay", false));
-    assert!(pattern.matches("NEEDLE", false));
-    assert!(!pattern.matches("haystack", false));
+    assert!(pattern.matches("hayneedlehay", false, fold()));
+    assert!(pattern.matches("NEEDLE", false, fold()));
+    assert!(!pattern.matches("haystack", false, fold()));
 }
 
 #[test]
@@ -649,8 +655,8 @@ fn test_contains_match() {
 fn test_regex_match() {
     let parsed = crate::pattern::ParsedPattern::parse(r">file\d+\.txt").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
-    assert!(pattern.matches("file123.txt", false));
-    assert!(!pattern.matches("fileABC.txt", false));
+    assert!(pattern.matches("file123.txt", false, fold()));
+    assert!(!pattern.matches("fileABC.txt", false, fold()));
 }
 
 // =========================================================================
@@ -668,9 +674,9 @@ fn test_regex_rejects_extension_appearing_mid_filename() {
     let parsed = crate::pattern::ParsedPattern::parse(r">.*\.(jpg|png|heic)").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
 
-    assert!(!pattern.matches("icon.png.vir", false));
-    assert!(!pattern.matches("backup.jpg.bak", false));
-    assert!(!pattern.matches("archive.heic.zip", false));
+    assert!(!pattern.matches("icon.png.vir", false, fold()));
+    assert!(!pattern.matches("backup.jpg.bak", false, fold()));
+    assert!(!pattern.matches("archive.heic.zip", false, fold()));
 }
 
 #[test]
@@ -680,9 +686,9 @@ fn test_regex_rejects_ads_entries() {
     let parsed = crate::pattern::ParsedPattern::parse(r">.*\.(jpg|png|heic)").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
 
-    assert!(!pattern.matches("photo.png:com.dropbox.attrs", false));
-    assert!(!pattern.matches("image.jpg:Zone.Identifier", false));
-    assert!(!pattern.matches("file.heic:$DATA", false));
+    assert!(!pattern.matches("photo.png:com.dropbox.attrs", false, fold()));
+    assert!(!pattern.matches("image.jpg:Zone.Identifier", false, fold()));
+    assert!(!pattern.matches("file.heic:$DATA", false, fold()));
 }
 
 #[test]
@@ -691,12 +697,12 @@ fn test_regex_matches_correct_extensions() {
     let parsed = crate::pattern::ParsedPattern::parse(r">.*\.(jpg|png|heic)").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
 
-    assert!(pattern.matches("photo.jpg", false));
-    assert!(pattern.matches("image.png", false));
-    assert!(pattern.matches("camera.heic", false));
-    assert!(pattern.matches("C:\\Users\\Pictures\\vacation.jpg", false));
+    assert!(pattern.matches("photo.jpg", false, fold()));
+    assert!(pattern.matches("image.png", false, fold()));
+    assert!(pattern.matches("camera.heic", false, fold()));
+    assert!(pattern.matches("C:\\Users\\Pictures\\vacation.jpg", false, fold()));
     assert!(
-        pattern.matches("D:\\Dropbox\\photo.PNG", false),
+        pattern.matches("D:\\Dropbox\\photo.PNG", false, fold()),
         "case-insensitive"
     );
 }
@@ -708,8 +714,8 @@ fn test_regex_with_explicit_dollar_anchor_not_doubled() {
     let parsed = crate::pattern::ParsedPattern::parse(r">.*\.txt$").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
 
-    assert!(pattern.matches("readme.txt", false));
-    assert!(!pattern.matches("readme.txt.bak", false));
+    assert!(pattern.matches("readme.txt", false, fold()));
+    assert!(!pattern.matches("readme.txt.bak", false, fold()));
 }
 
 #[test]
@@ -718,10 +724,10 @@ fn test_regex_single_extension() {
     let parsed = crate::pattern::ParsedPattern::parse(r">.*\.txt").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
 
-    assert!(pattern.matches("readme.txt", false));
-    assert!(pattern.matches("C:\\docs\\readme.txt", false));
-    assert!(!pattern.matches("readme.txt.bak", false));
-    assert!(!pattern.matches("readme.txtx", false));
+    assert!(pattern.matches("readme.txt", false, fold()));
+    assert!(pattern.matches("C:\\docs\\readme.txt", false, fold()));
+    assert!(!pattern.matches("readme.txt.bak", false, fold()));
+    assert!(!pattern.matches("readme.txtx", false, fold()));
 }
 
 #[test]
@@ -731,14 +737,14 @@ fn test_regex_path_prefix_with_extension() {
     let parsed = crate::pattern::ParsedPattern::parse(r">C:\\Users\\.*\.(jpg|png|heic)").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
 
-    assert!(pattern.matches(r"C:\Users\Pictures\vacation.jpg", false));
-    assert!(pattern.matches(r"C:\Users\rnio\photo.png", false));
+    assert!(pattern.matches(r"C:\Users\Pictures\vacation.jpg", false, fold()));
+    assert!(pattern.matches(r"C:\Users\rnio\photo.png", false, fold()));
     assert!(
-        !pattern.matches(r"D:\Photos\vacation.jpg", false),
+        !pattern.matches(r"D:\Photos\vacation.jpg", false, fold()),
         "wrong drive"
     );
     assert!(
-        !pattern.matches(r"C:\Users\file.jpg.tmp", false),
+        !pattern.matches(r"C:\Users\file.jpg.tmp", false, fold()),
         "extension mid-name"
     );
 }
@@ -750,9 +756,9 @@ fn test_regex_digit_pattern_still_anchored() {
     let parsed = crate::pattern::ParsedPattern::parse(r">file\d+\.txt").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
 
-    assert!(pattern.matches("file123.txt", false));
-    assert!(!pattern.matches("file123.txt.bak", false));
-    assert!(!pattern.matches("fileABC.txt", false));
+    assert!(pattern.matches("file123.txt", false, fold()));
+    assert!(!pattern.matches("file123.txt.bak", false, fold()));
+    assert!(!pattern.matches("fileABC.txt", false, fold()));
 }
 
 #[test]

@@ -428,8 +428,8 @@ pub fn build_compact_index(
 
     let compact_elapsed = compact_start.elapsed().as_millis();
 
-    // Use $UpCase case folding — no names_lower clone needed.
-    let fold = uffs_text::CaseFold::default_table();
+    // Try live $UpCase from the NTFS volume; fall back to compiled-in default.
+    let fold = resolve_case_fold(drive_letter);
 
     let tri_start = Instant::now();
     let trigram = TrigramIndex::build(&records, &names, fold);
@@ -458,6 +458,56 @@ pub fn build_compact_index(
 ///
 /// USN Journal handles incremental freshness; this is a safety-net full rescan.
 pub(crate) const INDEX_TTL_SECONDS: u64 = 14400;
+
+// ── Live $UpCase resolution ──────────────────────────────────────────
+
+/// Try to read the live `$UpCase` table from the NTFS volume for
+/// `drive_letter`. On success, log the result at `INFO` and any diffs
+/// from the compiled-in default at `WARN`. On failure, log at `WARN`
+/// and fall back to [`CaseFold::default_table()`].
+pub(crate) fn resolve_case_fold(drive_letter: char) -> uffs_text::CaseFold {
+    match uffs_mft::platform::upcase::read_upcase_table(drive_letter) {
+        Ok(live_table) => {
+            let default = uffs_text::CaseFold::default_table();
+
+            // Compare live vs default.
+            // Leak the box to get a `&'static [u16]` for CaseFold::from_ntfs.
+            let live_fold = uffs_text::CaseFold::from_ntfs(Box::leak(live_table));
+            let diffs = default.diff(&live_fold);
+
+            if diffs.is_empty() {
+                tracing::info!(
+                    drive = %drive_letter,
+                    "$UpCase loaded from live volume — identical to compiled-in default"
+                );
+            } else {
+                tracing::info!(
+                    drive = %drive_letter,
+                    diff_count = diffs.len(),
+                    "$UpCase loaded from live volume — differs from compiled-in default"
+                );
+                for diff in &diffs {
+                    tracing::warn!(
+                        drive = %drive_letter,
+                        codepoint = format_args!("U+{:04X}", diff.codepoint),
+                        default = format_args!("U+{:04X}", diff.default_maps_to),
+                        live = format_args!("U+{:04X}", diff.live_maps_to),
+                        "$UpCase diff"
+                    );
+                }
+            }
+            live_fold
+        }
+        Err(err) => {
+            tracing::warn!(
+                drive = %drive_letter,
+                error = %err,
+                "$UpCase live read failed — falling back to compiled-in default table"
+            );
+            uffs_text::CaseFold::default_table()
+        }
+    }
+}
 
 // ════════════════════════════════════════════════════════════════════════
 // REGRESSION TESTS — Search Pipeline Parity Guards

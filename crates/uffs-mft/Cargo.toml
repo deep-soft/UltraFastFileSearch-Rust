@@ -92,6 +92,7 @@ harness = false
 # - Indexing/slicing without runtime overhead (bounds validated before loops)
 # - Low-level NTFS parsing patterns (shadowing, single-char vars, etc.)
 # - Performance-critical code paths (pedantic lints add overhead or noise)
+# See LOG/2026_04_03_lint_consolidation_roadmap.md for the long-term plan.
 # ─────────────────────────────────────────────────────────────────────────────
 [lints.clippy]
 # Core lint groups - cargo at deny, nursery/pedantic at allow for parser code
@@ -103,8 +104,11 @@ pedantic = { level = "allow", priority = -1 }
 multiple_crate_versions = "allow"
 
 # Critical safety lints remain active
-unwrap_used = "deny"
-expect_used = "deny"
+# Set to "warn" (not "deny") so the CI test lint command's -A flag can
+# override them for test code, while -D warnings in CI production lint
+# still catches them in library/binary code.
+unwrap_used = "warn"
+expect_used = "warn"
 panic = "deny"
 todo = "deny"
 unimplemented = "deny"

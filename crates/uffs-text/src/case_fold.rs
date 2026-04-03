@@ -25,6 +25,17 @@ static DEFAULT_UPCASE_ALIGNED: Aligned128K = Aligned128K {
     data: *include_bytes!("upcase_default.bin"),
 };
 
+/// A single codepoint where the live `$UpCase` table differs from the default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpcaseDiff {
+    /// The BMP codepoint (U+0000–U+FFFF) where the tables disagree.
+    pub codepoint: u16,
+    /// What the compiled-in default table maps this codepoint to.
+    pub default_maps_to: u16,
+    /// What the live volume's table maps this codepoint to.
+    pub live_maps_to: u16,
+}
+
 /// NTFS-compatible case-folding engine.
 ///
 /// Wraps a reference to a `$UpCase` table (128 KB, 65 536 × `u16`).
@@ -133,6 +144,87 @@ impl CaseFold {
         self.cmp_str(lhs, rhs) == core::cmp::Ordering::Equal
     }
 
+    // ── Pre-folded codepoint helpers (Tier 1b — zero-alloc) ────────
+
+    /// Fold a string to a `Vec<u16>` of uppercase codepoints.
+    ///
+    /// Used at compile time to pre-fold pattern strings for later
+    /// zero-allocation matching against folded input chars.
+    #[must_use]
+    pub fn fold_to_u16(&self, text: &str) -> Vec<u16> {
+        text.chars().map(|ch| self.fold_char(ch)).collect()
+    }
+
+    /// Case-insensitive exact equality: fold both inputs char-by-char.
+    ///
+    /// `pattern_folded` must already contain folded codepoints (from
+    /// [`fold_to_u16`](Self::fold_to_u16)).  Zero allocation.
+    #[inline]
+    #[must_use]
+    pub fn eq_folded(&self, input: &str, pattern_folded: &[u16]) -> bool {
+        let mut input_chars = input.chars();
+        for &pat_cp in pattern_folded {
+            match input_chars.next() {
+                Some(ch) if self.fold_char(ch) == pat_cp => {}
+                _ => return false,
+            }
+        }
+        input_chars.next().is_none()
+    }
+
+    /// Case-insensitive prefix check against pre-folded codepoints.
+    ///
+    /// Returns `true` if the first `prefix_folded.len()` characters of
+    /// `input`, when folded, match `prefix_folded` exactly.  Zero
+    /// allocation.
+    #[inline]
+    #[must_use]
+    pub fn starts_with_folded(&self, input: &str, prefix_folded: &[u16]) -> bool {
+        let mut input_chars = input.chars();
+        for &pat_cp in prefix_folded {
+            match input_chars.next() {
+                Some(ch) if self.fold_char(ch) == pat_cp => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Case-insensitive suffix check against pre-folded codepoints.
+    ///
+    /// Returns `true` if the last `suffix_folded.len()` characters of
+    /// `input`, when folded, match `suffix_folded` exactly.  Zero
+    /// allocation.
+    #[inline]
+    #[must_use]
+    pub fn ends_with_folded(&self, input: &str, suffix_folded: &[u16]) -> bool {
+        let mut input_rev = input.chars().rev();
+        for &pat_cp in suffix_folded.iter().rev() {
+            match input_rev.next() {
+                Some(ch) if self.fold_char(ch) == pat_cp => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Case-insensitive substring check against pre-folded codepoints.
+    ///
+    /// Returns `true` if any contiguous subsequence of `input` chars,
+    /// when folded, equals `needle_folded`.  Zero allocation.
+    #[inline]
+    #[must_use]
+    pub fn contains_folded(&self, input: &str, needle_folded: &[u16]) -> bool {
+        if needle_folded.is_empty() {
+            return true;
+        }
+        let input_chars: Vec<u16> = input.chars().map(|ch| self.fold_char(ch)).collect();
+        // Use windows() for safe, panic-free sliding comparison.
+        input_chars
+            .windows(needle_folded.len())
+            .any(|window| window == needle_folded)
+    }
+
     // ── Buffer-reuse fold (Tier 2 — one reusable buffer) ──────────
 
     /// Fold a UTF-8 name into a reusable `u8` buffer as uppercase UTF-8.
@@ -140,6 +232,31 @@ impl CaseFold {
     /// The buffer is cleared and reused — zero heap allocation after the
     /// first call (buffer capacity persists across calls).
     ///
+    /// Compare two `$UpCase` tables and return differing codepoints.
+    ///
+    /// Each entry in the result is `(codepoint, self_maps_to, other_maps_to)`.
+    /// An empty result means the tables are identical.
+    #[must_use]
+    pub fn diff(&self, other: &Self) -> Vec<UpcaseDiff> {
+        self.table
+            .iter()
+            .zip(other.table.iter())
+            .enumerate()
+            .filter(|&(_, (lhs, rhs))| lhs != rhs)
+            .map(|(idx, (&default_val, &live_val))| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "BMP codepoints are always < 65 536"
+                )]
+                UpcaseDiff {
+                    codepoint: idx as u16,
+                    default_maps_to: default_val,
+                    live_maps_to: live_val,
+                }
+            })
+            .collect()
+    }
+
     /// Returns the folded bytes as a `&str` slice into the buffer.
     pub fn fold_into<'buf>(&self, name: &str, buf: &'buf mut Vec<u8>) -> &'buf str {
         buf.clear();
@@ -284,5 +401,67 @@ mod tests {
         let fold = CaseFold::default_table();
         assert_eq!(fold.cmp_str("hello", "HELLO"), core::cmp::Ordering::Equal);
         assert_eq!(fold.cmp_str("abc", "ABD"), core::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn eq_folded_basic() {
+        let fold = CaseFold::default_table();
+        let pat = fold.fold_to_u16("hello");
+        assert!(fold.eq_folded("HELLO", &pat));
+        assert!(fold.eq_folded("hello", &pat));
+        assert!(fold.eq_folded("HeLLo", &pat));
+        assert!(!fold.eq_folded("hell", &pat));
+        assert!(!fold.eq_folded("helloo", &pat));
+    }
+
+    #[test]
+    fn starts_with_folded_basic() {
+        let fold = CaseFold::default_table();
+        let pat = fold.fold_to_u16("foo");
+        assert!(fold.starts_with_folded("foobar", &pat));
+        assert!(fold.starts_with_folded("FOOBAR", &pat));
+        assert!(fold.starts_with_folded("foo", &pat));
+        assert!(!fold.starts_with_folded("fo", &pat));
+        assert!(!fold.starts_with_folded("barfoo", &pat));
+    }
+
+    #[test]
+    fn ends_with_folded_basic() {
+        let fold = CaseFold::default_table();
+        let pat = fold.fold_to_u16(".txt");
+        assert!(fold.ends_with_folded("file.txt", &pat));
+        assert!(fold.ends_with_folded("FILE.TXT", &pat));
+        assert!(fold.ends_with_folded(".txt", &pat));
+        assert!(!fold.ends_with_folded(".tx", &pat));
+        assert!(!fold.ends_with_folded("txt.file", &pat));
+    }
+
+    #[test]
+    fn contains_folded_basic() {
+        let fold = CaseFold::default_table();
+        let pat = fold.fold_to_u16("needle");
+        assert!(fold.contains_folded("hayneedlehay", &pat));
+        assert!(fold.contains_folded("NEEDLE", &pat));
+        assert!(fold.contains_folded("needle", &pat));
+        assert!(!fold.contains_folded("haystack", &pat));
+        assert!(fold.contains_folded("hayneedLE", &pat));
+    }
+
+    #[test]
+    fn contains_folded_empty_needle() {
+        let fold = CaseFold::default_table();
+        let pat = fold.fold_to_u16("");
+        assert!(fold.contains_folded("anything", &pat));
+    }
+
+    #[test]
+    fn folded_helpers_accented() {
+        let fold = CaseFold::default_table();
+        let pat = fold.fold_to_u16("über");
+        assert!(fold.eq_folded("ÜBER", &pat));
+        assert!(fold.eq_folded("über", &pat));
+        assert!(fold.starts_with_folded("überall", &pat));
+        assert!(fold.ends_with_folded("darüber", &pat));
+        assert!(fold.contains_folded("Xüberx", &pat));
     }
 }

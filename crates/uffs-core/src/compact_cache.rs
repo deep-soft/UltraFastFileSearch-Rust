@@ -3,16 +3,19 @@
 //! Stores `DriveCompactIndex` as zstd-compressed, AES-256-GCM encrypted
 //! `{DRIVE}_compact.uffs` alongside the full `.uffs` `MftIndex` cache.
 //!
-//! **v5** (current): `names_lower` no longer stored on disk — saves ~140 MB
-//! uncompressed.  Trigram rebuilt from on-the-fly lowered names on load.
+//! **v6** (current): char-trigram CSR stored on disk (keys `u64[]`, offsets
+//! `u32[]`, values `u32[]`).  Zero rebuild on load — saves ~220 ms.
+//!
+//! **v5**: `names_lower` removed from disk — trigram rebuilt from on-the-fly
+//! `CaseFold` lowered names on load.  Still accepted; trigram rebuilt.
 //!
 //! **v4**: trigram index not stored on disk — rebuilt from `names_lower` on
 //! load.  Still accepted on load; `names_lower` is read then dropped.
 //!
 //! **v3**: adds `source_epoch` (u64) to the header.  Still accepted on load;
-//! trigram CSR is read if present.
+//! old byte-trigram CSR is skipped, char-trigram rebuilt.
 //!
-//! **v2**: trigram posting lists serialized in CSR format (zero rebuild).
+//! **v2**: old byte-trigram posting lists serialized in CSR format.
 //! Accepted on load; `source_epoch` defaults to 0 (always stale).
 //!
 //! **v1** (legacy): rejected — returns error, caller rebuilds.
@@ -25,8 +28,8 @@ use crate::trigram::TrigramIndex;
 
 /// Magic bytes for compact cache files.
 const COMPACT_MAGIC: &[u8; 8] = b"UFFSCOM\0";
-/// Current compact cache format version (v5 strips `names_lower` from disk).
-const COMPACT_VERSION: u16 = 5;
+/// Current compact cache format version (v6 stores char-trigram CSR on disk).
+const COMPACT_VERSION: u16 = 6;
 /// Bytes per `CompactRecord`.
 const RECORD_BYTES: usize = size_of::<CompactRecord>();
 /// zstd compression level for compact cache.
@@ -40,12 +43,15 @@ pub fn compact_cache_path(drive_letter: char) -> PathBuf {
     uffs_mft::cache::cache_dir().join(format!("{drive_letter}_compact.uffs"))
 }
 
-/// Serializes the compact index (records, names, children).
+/// Serializes the compact index (records, names, children, char-trigram CSR).
 ///
-/// **v5**: neither `names_lower` nor the trigram index is written to disk.
-/// Both are rebuilt from `names` on load.  This saves ~140 MB uncompressed.
-/// A `trigram_count = 0` sentinel is written so the deserializer knows
-/// to rebuild.
+/// **v6**: char-trigram CSR is stored on disk — zero-rebuild on load.
+/// Format after children CSR:
+///   - `trigram_key_count: u32`
+///   - `trigram_keys: u64[key_count]`
+///   - `trigram_offsets: u32[key_count + 1]`
+///   - `trigram_values_count: u32`
+///   - `trigram_values: u32[values_count]`
 #[must_use]
 pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
     let record_count = index.records.len();
@@ -54,12 +60,19 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
     // Children CSR — already in contiguous layout.
     let (csr_offsets, csr_values) = index.children.as_csr();
 
+    // Trigram CSR.
+    let (tri_keys, tri_offsets, tri_values) = index.trigram.as_csr();
+
     let total = 26 // header: 8 (magic) + 2 (ver) + 4 (rc) + 4 (nl) + 8 (epoch)
         + record_count * RECORD_BYTES
-        + names_len          // names only (no names_lower in v5)
+        + names_len
         + csr_offsets.len() * 4
         + csr_values.len() * 4
-        + 4; // trigram_count sentinel (0)
+        + 4                         // trigram_key_count
+        + tri_keys.len() * 8        // trigram_keys (u64)
+        + tri_offsets.len() * 4     // trigram_offsets (u32)
+        + 4                         // trigram_values_count
+        + tri_values.len() * 4; // trigram_values (u32)
     let mut buf = Vec::with_capacity(total);
 
     // Header (26 bytes for v3+)
@@ -73,26 +86,30 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
     // Records — single bulk copy via bytemuck (Pod layout = on-disk layout)
     buf.extend_from_slice(bytemuck::cast_slice(&index.records));
 
-    // Names (original case only — v5 drops names_lower from disk)
+    // Names (original case only)
     buf.extend_from_slice(&index.names);
 
     // Children CSR — bulk cast (u32 slices → &[u8] via bytemuck, zero-copy on LE)
     buf.extend_from_slice(bytemuck::cast_slice(csr_offsets));
     buf.extend_from_slice(bytemuck::cast_slice(csr_values));
 
-    // v5: trigram_count = 0 sentinel (rebuild on load).
-    buf.extend_from_slice(&0_u32.to_le_bytes());
+    // v6: char-trigram CSR
+    push_u32(&mut buf, tri_keys.len());
+    buf.extend_from_slice(bytemuck::cast_slice(tri_keys));
+    buf.extend_from_slice(bytemuck::cast_slice(tri_offsets));
+    push_u32(&mut buf, tri_values.len());
+    buf.extend_from_slice(bytemuck::cast_slice(tri_values));
 
     buf
 }
 
 /// Deserializes a compact index from raw bytes.
 ///
-/// **v5**: `names_lower` not on disk — rebuilt on the fly for trigram.
+/// **v6**: char-trigram CSR on disk — zero-rebuild.
+/// **v5**: no trigram on disk — rebuilt with `CaseFold`.
 /// **v4**: `names_lower` on disk, trigram rebuilt.
-/// **v3**: trigram postings + `source_epoch` (still read if present).
-/// **v2**: trigram postings, `source_epoch` = 0 (accepted, triggers rebuild).
-/// **v1**: rejected — returns an error so the caller rebuilds from `MftIndex`.
+/// **v3/v2**: legacy byte-trigram / old format — trigram rebuilt.
+/// **v1**: rejected — returns an error so the caller rebuilds.
 ///
 /// Returns `(DriveCompactIndex, trigram_load_ms)`.
 ///
@@ -146,21 +163,48 @@ pub fn deserialize_compact(
         aligned_vec_from_bytes(child_vals_slice),
     );
 
-    // ─── Trigram: always rebuild with CaseFold (char-level) ─────
-    // v5 and earlier wrote byte-trigrams or no trigrams on disk.
-    // We always rebuild with char-level trigrams + $UpCase folding
-    // for correctness. The old byte-trigram CSR is skipped.
-    let fold = uffs_text::CaseFold::default_table();
-
+    let fold = crate::compact::resolve_case_fold(drive_letter);
     let tri_start = Instant::now();
+
+    // ─── Trigram ──────────────────────────────────────────────────
     let tri_hdr = postings_end;
     if data.len() < tri_hdr + 4 {
         return Err("truncated trigram header");
     }
-    // Skip any existing trigram data on disk (byte-trigrams from v2/v3
-    // are incompatible with the new char-trigram format). Rebuild from
-    // the original-case names + CaseFold.
-    let trigram = TrigramIndex::build(&records, &names, fold);
+    let trigram_key_count = read_u32(data, tri_hdr) as usize;
+
+    let trigram = if version >= 6 && trigram_key_count > 0 {
+        // v6: char-trigram CSR on disk — zero-rebuild bulk memcpy.
+        let tri_keys_start = tri_hdr + 4;
+        let tri_keys_end = tri_keys_start + trigram_key_count * 8;
+        let tri_offsets_end = tri_keys_end + (trigram_key_count + 1) * 4;
+        if data.len() < tri_offsets_end + 4 {
+            return Err("truncated trigram CSR (keys/offsets)");
+        }
+        let tri_keys: Vec<u64> = aligned_vec_from_bytes(
+            data.get(tri_keys_start..tri_keys_end)
+                .ok_or("truncated trigram keys")?,
+        );
+        let tri_offsets: Vec<u32> = aligned_vec_from_bytes(
+            data.get(tri_keys_end..tri_offsets_end)
+                .ok_or("truncated trigram offsets")?,
+        );
+        let tri_values_count = read_u32(data, tri_offsets_end) as usize;
+        let tri_values_start = tri_offsets_end + 4;
+        let tri_values_end = tri_values_start + tri_values_count * 4;
+        if data.len() < tri_values_end {
+            return Err("truncated trigram CSR (values)");
+        }
+        let tri_values: Vec<u32> = aligned_vec_from_bytes(
+            data.get(tri_values_start..tri_values_end)
+                .ok_or("truncated trigram values")?,
+        );
+        TrigramIndex::from_csr(tri_keys, tri_offsets, tri_values)
+    } else {
+        // v5 and earlier: rebuild char-trigrams from names + CaseFold.
+        TrigramIndex::build(&records, &names, fold)
+    };
+
     let tri_ms = tri_start.elapsed().as_millis();
 
     Ok((
@@ -516,4 +560,150 @@ fn aligned_vec_from_bytes<T: bytemuck::Pod>(bytes: &[u8]) -> Vec<T> {
     let dst = bytemuck::cast_slice_mut::<T, u8>(&mut vec);
     dst.copy_from_slice(bytes);
     vec
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal `DriveCompactIndex` with 3 records for testing.
+    fn make_test_index() -> DriveCompactIndex {
+        let names = b"foobarbaz".to_vec(); // "foo" [0..3], "bar" [3..6], "baz" [6..9]
+        let records = vec![
+            CompactRecord {
+                name_offset: 0,
+                name_len: 3,
+                parent_idx: u32::MAX,
+                flags: 0x0010, // directory
+                ..CompactRecord::default()
+            },
+            CompactRecord {
+                name_offset: 3,
+                name_len: 3,
+                parent_idx: 0,
+                ..CompactRecord::default()
+            },
+            CompactRecord {
+                name_offset: 6,
+                name_len: 3,
+                parent_idx: 0,
+                ..CompactRecord::default()
+            },
+        ];
+        let fold = uffs_text::CaseFold::default_table();
+        let trigram = TrigramIndex::build(&records, &names, fold);
+        let children = ChildrenIndex::build(&records);
+        DriveCompactIndex {
+            letter: 'T',
+            records,
+            names,
+            trigram,
+            children,
+            fold,
+            source: IndexSource::MftFile(PathBuf::from("T:")),
+            source_epoch: 42,
+        }
+    }
+
+    #[test]
+    fn v6_round_trip_preserves_trigram() {
+        let index = make_test_index();
+        let (tri_keys, tri_offsets, tri_values) = index.trigram.as_csr();
+        let original_key_count = tri_keys.len();
+        assert!(original_key_count > 0, "test index should have trigrams");
+
+        let serialized = serialize_compact(&index);
+        let (loaded, tri_ms) = deserialize_compact(&serialized, 'T').unwrap();
+
+        // Trigram loaded from disk — should be fast (< 10ms on any hardware).
+        assert!(
+            tri_ms < 500,
+            "trigram took {tri_ms}ms — should be near-zero for cached CSR"
+        );
+
+        // Verify trigram CSR is identical.
+        let (loaded_keys, loaded_offsets, loaded_values) = loaded.trigram.as_csr();
+        assert_eq!(loaded_keys, tri_keys, "trigram keys mismatch");
+        assert_eq!(loaded_offsets, tri_offsets, "trigram offsets mismatch");
+        assert_eq!(loaded_values, tri_values, "trigram values mismatch");
+
+        // Verify other fields survived.
+        assert_eq!(loaded.letter, 'T');
+        assert_eq!(loaded.records.len(), 3);
+        assert_eq!(loaded.names, b"foobarbaz");
+        assert_eq!(loaded.source_epoch, 42);
+    }
+
+    #[test]
+    fn v5_backward_compat_rebuilds_trigram() {
+        // Serialize a v6 index, then patch the version to v5 and replace
+        // the trigram section with the v5 sentinel (trigram_count = 0).
+        let index = make_test_index();
+        let mut serialized = serialize_compact(&index);
+
+        // Patch version to 5.
+        serialized
+            .get_mut(8..10)
+            .expect("buffer too short for version")
+            .copy_from_slice(&5_u16.to_le_bytes());
+
+        // Find the trigram section: after children CSR.
+        // Children CSR starts after names, offsets are (records+1)*4, then values.
+        let record_count = index.records.len();
+        let names_len = index.names.len();
+        let records_end = 26 + record_count * RECORD_BYTES;
+        let names_end = records_end + names_len;
+        let csr_offsets_end = names_end + (record_count + 1) * 4;
+        let total_children = index.children.total_children();
+        let postings_end = csr_offsets_end + total_children * 4;
+
+        // Truncate at postings_end + 4 (v5 sentinel: trigram_count = 0).
+        serialized.truncate(postings_end + 4);
+        serialized
+            .get_mut(postings_end..postings_end + 4)
+            .expect("buffer too short for trigram sentinel")
+            .copy_from_slice(&0_u32.to_le_bytes());
+
+        let (loaded, _tri_ms) = deserialize_compact(&serialized, 'T').unwrap();
+
+        // Trigram was rebuilt — should match the original.
+        let (orig_keys, orig_offsets, orig_values) = index.trigram.as_csr();
+        let (loaded_keys, loaded_offsets, loaded_values) = loaded.trigram.as_csr();
+        assert_eq!(loaded_keys, orig_keys, "rebuilt trigram keys mismatch");
+        assert_eq!(
+            loaded_offsets, orig_offsets,
+            "rebuilt trigram offsets mismatch"
+        );
+        assert_eq!(
+            loaded_values, orig_values,
+            "rebuilt trigram values mismatch"
+        );
+    }
+
+    #[test]
+    fn v6_header_version() {
+        let index = make_test_index();
+        let serialized = serialize_compact(&index);
+        let b8 = *serialized.get(8).expect("missing byte 8");
+        let b9 = *serialized.get(9).expect("missing byte 9");
+        let version = u16::from_le_bytes([b8, b9]);
+        assert_eq!(version, 6);
+    }
+
+    #[test]
+    fn v1_rejected() {
+        let mut data = vec![0_u8; 64];
+        data.get_mut(..8)
+            .expect("buffer too short for magic")
+            .copy_from_slice(COMPACT_MAGIC);
+        data.get_mut(8..10)
+            .expect("buffer too short for version")
+            .copy_from_slice(&1_u16.to_le_bytes());
+        assert!(deserialize_compact(&data, 'X').is_err());
+    }
+
+    #[test]
+    fn truncated_data_rejected() {
+        assert!(deserialize_compact(b"short", 'X').is_err());
+    }
 }

@@ -3,10 +3,45 @@
 //! Per-drive search (trigram, regex, tree) and global top-N collection
 //! for match-all queries. Called by `MultiDriveBackend::search()`.
 
+use alloc::collections::BinaryHeap;
+use std::sync::LazyLock;
+
 use super::backend::{DisplayRow, FilterMode, SortColumn};
 use super::filters::SearchFilters;
 use crate::compact::DriveCompactIndex;
-use crate::search::tree;
+use crate::search::tree::{self, DirCacheExt as _};
+
+/// Whether cache profiling is enabled (`UFFS_CACHE_PROFILE` env var).
+///
+/// Read once at first access to avoid a syscall per search.
+static CACHE_PROFILE: LazyLock<bool> =
+    LazyLock::new(|| std::env::var_os("UFFS_CACHE_PROFILE").is_some());
+
+/// Entry for the top-N binary heap used by `collect_global_top_n_numeric`.
+#[derive(Eq, PartialEq)]
+struct HeapEntry {
+    /// Sort key used for ordering.
+    sort_key: i64,
+    /// Drive index.
+    drive_idx: u16,
+    /// Record index within the drive.
+    rec_idx: u32,
+}
+
+impl Ord for HeapEntry {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.sort_key
+            .cmp(&other.sort_key)
+            .then_with(|| self.drive_idx.cmp(&other.drive_idx))
+            .then_with(|| self.rec_idx.cmp(&other.rec_idx))
+    }
+}
+
+impl PartialOrd for HeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// Collect the global top-N records across ALL drives for `*` match-all.
 #[must_use]
@@ -47,7 +82,8 @@ pub fn collect_global_top_n(
                 let Some(drive) = drives.get(drive_idx) else {
                     continue;
                 };
-                let volume_prefix = format!("{}:\\", drive.letter);
+                let mut vp_buf = [0_u8; 4];
+                let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
 
                 let mut roots: Vec<u32> = drive
                     .records
@@ -85,7 +121,7 @@ pub fn collect_global_top_n(
                     let path = tree::resolve_path_cached(
                         drive,
                         idx as usize,
-                        &volume_prefix,
+                        volume_prefix,
                         &mut dir_cache,
                     );
                     path_results.push(make_display_row(drive.letter, rec, name, path));
@@ -140,6 +176,7 @@ fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactIndex, desc: bo
     clippy::cast_possible_truncation,
     reason = "drive index and record index bounded by practical limits"
 )]
+#[expect(clippy::too_many_lines, reason = "linear scan + heap + fallback path")]
 fn collect_global_top_n_numeric(
     drives: &[DriveCompactIndex],
     limit: usize,
@@ -149,7 +186,23 @@ fn collect_global_top_n_numeric(
     search_filters: &SearchFilters,
 ) -> Vec<DisplayRow> {
     let has_filters = !search_filters.is_empty() || !matches!(filter_mode, FilterMode::All);
-    let mut candidates: Vec<(u16, u32, i64)> = Vec::new();
+
+    // For bounded queries use a BinaryHeap capped at `limit` — O(N log K)
+    // instead of O(N log N).  For "unlimited" (limit >= 1M or usize::MAX)
+    // fall back to collect-sort-truncate since a heap that large is wasteful.
+    let use_heap = limit < 1_000_000;
+    let mut heap_desc: BinaryHeap<core::cmp::Reverse<HeapEntry>> = if use_heap && sort_desc {
+        BinaryHeap::with_capacity(limit.saturating_add(1))
+    } else {
+        BinaryHeap::new()
+    };
+    let mut heap_asc: BinaryHeap<HeapEntry> = if use_heap && !sort_desc {
+        BinaryHeap::with_capacity(limit.saturating_add(1))
+    } else {
+        BinaryHeap::new()
+    };
+    let mut fallback: Vec<(u16, u32, i64)> = Vec::new();
+
     // Reusable buffer for on-the-fly CaseFold inside filter matching.
     let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
 
@@ -217,10 +270,44 @@ fn collect_global_top_n_numeric(
                 }
                 SortColumn::Modified | SortColumn::Path => rec.modified,
             };
-            candidates.push((drive_idx as u16, rec_idx as u32, sort_key));
+
+            if use_heap {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "drive index and record index bounded by practical limits"
+                )]
+                let entry = HeapEntry {
+                    sort_key,
+                    drive_idx: drive_idx as u16,
+                    rec_idx: rec_idx as u32,
+                };
+                if sort_desc {
+                    heap_push_capped(&mut heap_desc, core::cmp::Reverse(entry), limit);
+                } else {
+                    heap_push_capped(&mut heap_asc, entry, limit);
+                }
+            } else {
+                fallback.push((drive_idx as u16, rec_idx as u32, sort_key));
+            }
         }
     }
 
+    // Merge into sorted candidates Vec.
+    let mut candidates: Vec<(u16, u32, i64)> = if use_heap {
+        if sort_desc {
+            heap_desc
+                .into_iter()
+                .map(|rev| (rev.0.drive_idx, rev.0.rec_idx, rev.0.sort_key))
+                .collect()
+        } else {
+            heap_asc
+                .into_iter()
+                .map(|he| (he.drive_idx, he.rec_idx, he.sort_key))
+                .collect()
+        }
+    } else {
+        fallback
+    };
     if sort_desc {
         candidates.sort_unstable_by_key(|entry| core::cmp::Reverse(entry.2));
     } else {
@@ -239,11 +326,12 @@ fn collect_global_top_n_numeric(
             if name.is_empty() {
                 return None;
             }
-            let volume_prefix = format!("{}:\\", drive.letter);
+            let mut vp_buf = [0_u8; 4];
+            let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
             let cache = dir_caches
                 .entry(drive_idx)
                 .or_insert_with(|| tree::DirCache::with_capacity(256));
-            let path = tree::resolve_path_cached(drive, rec_idx as usize, &volume_prefix, cache);
+            let path = tree::resolve_path_cached(drive, rec_idx as usize, volume_prefix, cache);
             Some(make_display_row(drive.letter, rec, name, path))
         })
         .collect();
@@ -259,8 +347,9 @@ pub fn search_compact_drive_regex(
     compiled_re: &regex::Regex,
     limit: usize,
 ) -> Vec<DisplayRow> {
-    let volume_prefix = format!("{}:\\", drive.letter);
-    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
+    let mut vp_buf = [0_u8; 4];
+    let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
+    let profile = *CACHE_PROFILE;
 
     let t_match = std::time::Instant::now();
     let match_indices: Vec<usize> = drive
@@ -278,7 +367,7 @@ pub fn search_compact_drive_regex(
     let match_count = match_indices.len();
 
     let t_resolve = std::time::Instant::now();
-    let rows = indices_to_rows(drive, &match_indices, &volume_prefix);
+    let rows = indices_to_rows(drive, &match_indices, volume_prefix);
     let resolve_ms = t_resolve.elapsed().as_millis();
 
     if profile {
@@ -412,7 +501,8 @@ pub fn search_compact_drive(
         return Vec::new();
     }
 
-    let volume_prefix = format!("{}:\\", drive.letter);
+    let mut vp_buf = [0_u8; 4];
+    let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
     let is_glob = needle.contains('*') || needle.contains('?');
     let is_or = needle.contains('|');
 
@@ -466,7 +556,7 @@ pub fn search_compact_drive(
     };
 
     let trigram_needle = extract_trigram_needle(needle, is_glob, is_or);
-    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
+    let profile = *CACHE_PROFILE;
 
     let t_tri = std::time::Instant::now();
     let candidates = if !case_sensitive && trigram_needle.len() >= 3 {
@@ -483,7 +573,7 @@ pub fn search_compact_drive(
     let match_count = match_indices.len();
 
     let t_resolve = std::time::Instant::now();
-    let rows = indices_to_rows(drive, &match_indices, &volume_prefix);
+    let rows = indices_to_rows(drive, &match_indices, volume_prefix);
     let resolve_ms = t_resolve.elapsed().as_millis();
 
     if profile {
@@ -508,8 +598,9 @@ pub fn search_compact_drive_tree(
     pattern_lower: &str,
     limit: usize,
 ) -> Vec<DisplayRow> {
-    let volume_prefix = format!("{}:\\", drive.letter);
-    let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
+    let mut vp_buf = [0_u8; 4];
+    let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
+    let profile = *CACHE_PROFILE;
 
     let t_tree = std::time::Instant::now();
     let match_indices = tree::tree_search(drive, pattern_lower, limit);
@@ -529,7 +620,7 @@ pub fn search_compact_drive_tree(
             let path = tree::resolve_path_cached(
                 drive,
                 record_idx as usize,
-                &volume_prefix,
+                volume_prefix,
                 &mut dir_cache,
             );
             Some(make_display_row(drive.letter, rec, name, path))
@@ -582,6 +673,37 @@ fn make_display_row(
         rec.treesize,
         rec.tree_allocated,
     )
+}
+
+/// Build a `"X:\\"` volume prefix on the stack.
+///
+/// Returns a 3-byte `&str` without heap allocation.  Uses safe
+/// `from_utf8` with a fallback — the bytes are always valid ASCII.
+#[inline]
+fn stack_volume_prefix(buf: &mut [u8; 4], letter: char) -> &str {
+    buf[0] = letter.to_ascii_uppercase() as u8;
+    buf[1] = b':';
+    buf[2] = b'\\';
+    core::str::from_utf8(buf.get(..3).unwrap_or(b"?:\\")).unwrap_or("?:\\")
+}
+
+/// Push an element into a `BinaryHeap` capped at `limit`.
+///
+/// If the heap is below capacity, always push.  If at capacity, only push
+/// if the new element would displace the current top (and pop the old top).
+/// This keeps the heap at most `limit` entries.
+#[inline]
+fn heap_push_capped<T: Ord>(heap: &mut BinaryHeap<T>, entry: T, limit: usize) {
+    if heap.len() < limit {
+        heap.push(entry);
+    } else if let Some(top) = heap.peek() {
+        if entry < *top {
+            // New entry is "better" — displace the worst.
+            // (For Reverse<T> this means the underlying T is *larger*.)
+            drop(heap.pop());
+            heap.push(entry);
+        }
+    }
 }
 
 /// Convert a list of record indices into `DisplayRow`s with resolved paths.

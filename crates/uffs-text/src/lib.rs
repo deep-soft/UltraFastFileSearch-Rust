@@ -20,5 +20,5 @@
 mod case_fold;
 mod trigram_key;
 
-pub use case_fold::CaseFold;
+pub use case_fold::{CaseFold, UpcaseDiff};
 pub use trigram_key::{pack_char_trigram, unpack_char_trigram};

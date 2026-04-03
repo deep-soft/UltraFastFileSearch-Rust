@@ -5,7 +5,7 @@
 //! Also provides glob matching (`*`, `?`, `**`) and path resolution
 //! via parent chain traversal.
 
-use std::collections::HashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::compact::DriveCompactIndex;
 
@@ -14,8 +14,20 @@ use crate::compact::DriveCompactIndex;
 /// Caches resolved directory paths (keyed by record index) so that sibling
 /// files sharing the same parent don't re-walk the entire parent chain.
 /// For 10K results in the same directory, this eliminates ~90% of parent
-/// walks.
-pub type DirCache = HashMap<u32, String>;
+/// walks.  Uses `FxHashMap` (3–5× faster than `HashMap` for integer keys).
+pub type DirCache = FxHashMap<u32, String>;
+
+/// Trait extension to add `with_capacity` to `DirCache` (`FxHashMap`).
+pub(crate) trait DirCacheExt {
+    /// Create a new `DirCache` with the given capacity.
+    fn with_capacity(capacity: usize) -> Self;
+}
+
+impl DirCacheExt for DirCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_and_hasher(capacity, FxBuildHasher)
+    }
+}
 
 /// Resolve a record's full path by walking the parent chain in the compact
 /// index.

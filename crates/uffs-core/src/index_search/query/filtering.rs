@@ -1,6 +1,7 @@
 //! Shared record-filter helpers for `IndexQuery` execution.
 
 use uffs_mft::index::{FileRecord, MftIndex};
+use uffs_text::CaseFold;
 
 use super::TypeFilter;
 use crate::index_search::IndexPattern;
@@ -13,6 +14,8 @@ pub(super) struct RecordFilter<'a> {
     pattern: Option<&'a IndexPattern>,
     /// Whether pattern matching should be case-sensitive.
     case_sensitive: bool,
+    /// NTFS case-folding engine for case-insensitive matching.
+    fold: CaseFold,
     /// File-vs-directory filter.
     type_filter: TypeFilter,
     /// Minimum first-stream size.
@@ -24,7 +27,7 @@ pub(super) struct RecordFilter<'a> {
 impl<'a> RecordFilter<'a> {
     /// Create a reusable record filter.
     #[must_use]
-    pub(super) const fn new(
+    pub(super) fn new(
         index: &'a MftIndex,
         pattern: Option<&'a IndexPattern>,
         case_sensitive: bool,
@@ -36,6 +39,7 @@ impl<'a> RecordFilter<'a> {
             index,
             pattern,
             case_sensitive,
+            fold: CaseFold::default_table(),
             type_filter,
             min_size,
             max_size,
@@ -65,7 +69,7 @@ impl<'a> RecordFilter<'a> {
 
         if let Some(pat) = self.pattern {
             let name = self.index.record_name(record);
-            if !pat.matches(name, self.case_sensitive) {
+            if !pat.matches(name, self.case_sensitive, self.fold) {
                 return false;
             }
         }

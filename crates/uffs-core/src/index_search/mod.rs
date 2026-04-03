@@ -48,7 +48,8 @@ mod routing;
 mod tests;
 
 pub use self::pattern::{
-    IndexPattern, compile_extensions, compile_index_pattern, compile_parsed_pattern,
+    IndexPattern, compile_extensions, compile_extensions_with_fold, compile_index_pattern,
+    compile_index_pattern_with_fold, compile_parsed_pattern, compile_parsed_pattern_with_fold,
 };
 pub use self::query::{IndexQuery, QueryOptions, TypeFilter};
 pub use self::result::SearchResult;
