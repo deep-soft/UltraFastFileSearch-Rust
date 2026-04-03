@@ -312,6 +312,40 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     // Clean up PID + socket files before exiting.
     drop(lifecycle_mgr);
 
+    // ── Force-terminate safety net ───────────────────────────────
+    //
+    // Spawn a watchdog thread BEFORE calling `process::exit`.
+    // If threads are stuck in kernel-mode I/O (raw NTFS volume reads),
+    // `process::exit()` may itself hang because the C runtime's atexit
+    // handlers try to join threads that are blocked in non-interruptible
+    // system calls.
+    //
+    // The watchdog sleeps for a grace period, then calls
+    // `process::abort()` which raises SIGABRT and forces the OS to
+    // tear down the process — including all kernel-mode waiters.
+    tracing::info!("Spawning shutdown watchdog (5s grace period)");
+    std::thread::Builder::new()
+        .name("shutdown-watchdog".into())
+        .spawn(|| {
+            std::thread::sleep(core::time::Duration::from_secs(5));
+            // process::exit did not complete in 5 s — threads are stuck
+            // in kernel I/O.  Force-terminate via abort().
+            //
+            // Use eprintln! as a last-resort — tracing may not flush
+            // before abort().  print_stderr is intentional here: this is
+            // a catastrophe path where the structured logging subsystem
+            // may be unavailable.
+            let msg = "Shutdown watchdog: process::exit stuck for 5s — calling abort()";
+            tracing::error!("{msg}");
+            #[expect(
+                clippy::print_stderr,
+                reason = "catastrophe path — tracing may be dead"
+            )]
+            let _: () = eprintln!("[CATASTROPHE] {msg}");
+            std::process::abort();
+        })
+        .ok(); // best-effort; if thread spawn fails, exit may still work
+
     // Force-exit the process.  The Windows IPC server uses
     // `std::os::windows::net::UnixListener` with `spawn_blocking(accept)`
     // and per-connection `std::thread::spawn` bridge threads.  These

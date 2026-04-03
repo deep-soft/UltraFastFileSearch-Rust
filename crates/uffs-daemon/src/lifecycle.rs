@@ -100,7 +100,9 @@ impl LifecycleHandle {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |dur| dur.as_secs());
-        self.load_heartbeat.store(now, Ordering::Relaxed);
+        let prev = self.load_heartbeat.swap(now, Ordering::Relaxed);
+        let delta = now.saturating_sub(prev);
+        tracing::debug!(heartbeat_delta_secs = delta, "Load heartbeat updated");
     }
 }
 
@@ -325,16 +327,24 @@ impl LifecycleManager {
             }
 
             // ── Load-stall check (dual-purpose heartbeat) ────────
-            // Even if IPC is active (status polls keeping idle_reset
-            // set), check whether the load phase has stalled.
+            // Checked BEFORE the idle_reset gate so it fires even when
+            // the CLI's `await_ready` polls keep resetting the timer.
             let stall_secs = LOAD_STALL_TIMEOUT_SECS;
             let last_hb = handle.load_heartbeat.load(Ordering::Relaxed);
             let now_epoch = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |dur| dur.as_secs());
-            if last_hb > 0 && now_epoch.saturating_sub(last_hb) >= stall_secs {
+            let hb_age = now_epoch.saturating_sub(last_hb);
+            tracing::debug!(
+                heartbeat_age_secs = hb_age,
+                stall_threshold = stall_secs,
+                idle_reset = handle.idle_reset.load(Ordering::Relaxed),
+                "Idle timer tick — checking load heartbeat"
+            );
+            if last_hb > 0 && hb_age >= stall_secs {
                 tracing::error!(
                     stall_secs,
+                    heartbeat_age_secs = hb_age,
                     "Load stalled — no drive progress, force-retiring"
                 );
                 handle.events.emit(DaemonEvent::ShuttingDown {
@@ -343,7 +353,7 @@ impl LifecycleManager {
                 return;
             }
 
-            // Normal idle path — check if IPC activity reset us
+            // Normal idle path — check if IPC activity reset us.
             if handle.idle_reset.load(Ordering::Relaxed) {
                 continue;
             }
