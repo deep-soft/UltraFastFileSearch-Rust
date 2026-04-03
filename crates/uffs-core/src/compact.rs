@@ -338,8 +338,12 @@ impl DriveCompactIndex {
     pub fn resolve_ext_ids(&self, extensions: &[String]) -> Vec<u16> {
         let mut ids = Vec::with_capacity(extensions.len());
         for ext in extensions {
+            let normalized = ext.trim().trim_start_matches('.').to_lowercase();
+            if normalized.is_empty() {
+                continue;
+            }
             for (ext_id, name) in (0_u16..).zip(self.ext_names.iter()) {
-                if name.as_ref() == ext.as_str() {
+                if name.as_ref() == normalized {
                     ids.push(ext_id);
                     break;
                 }

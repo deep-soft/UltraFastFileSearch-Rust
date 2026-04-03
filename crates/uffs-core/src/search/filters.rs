@@ -8,6 +8,30 @@ use super::backend::{DisplayRow, FilterMode};
 use crate::compact::CompactRecord;
 use crate::search::tree::name_matches;
 
+/// Lowercase a string into a reusable UTF-8 buffer and return the borrowed
+/// string view.
+fn lowercase_into<'a>(input: &str, buf: &'a mut Vec<u8>) -> &'a str {
+    buf.clear();
+    for ch in input.chars() {
+        for lower in ch.to_lowercase() {
+            let mut char_buf = [0_u8; 4];
+            let encoded = lower.encode_utf8(&mut char_buf);
+            buf.extend_from_slice(encoded.as_bytes());
+        }
+    }
+    core::str::from_utf8(buf.as_slice()).map_or("", |lowered| lowered)
+}
+
+/// Return `true` if a normalized extension matches an allowed filter token.
+///
+/// The fast/common path compares already-lowercased strings directly. The
+/// fallback branch keeps manual test fixtures and any direct struct
+/// construction robust if a caller supplied mixed-case extension tokens.
+#[must_use]
+fn extension_matches_filter(allowed: &str, normalized_extension: &str) -> bool {
+    allowed == normalized_extension || allowed.to_lowercase() == normalized_extension
+}
+
 /// Apply filter mode to a set of display rows.
 pub fn apply_filter(rows: &mut Vec<DisplayRow>, filter: FilterMode) {
     match filter {
@@ -87,14 +111,9 @@ impl SearchFilters {
         let now_us = now_unix_micros();
         let extensions: Vec<String> = ext_filter
             .map(|ext_list| {
-                let fold = uffs_text::CaseFold::default_table();
-                let mut buf = Vec::with_capacity(32);
                 ext_list
                     .split(',')
-                    .map(|seg| {
-                        fold.fold_into(seg.trim().trim_start_matches('.'), &mut buf)
-                            .to_owned()
-                    })
+                    .map(|segment| segment.trim().trim_start_matches('.').to_lowercase())
                     .filter(|ext| !ext.is_empty())
                     .collect()
             })
@@ -287,8 +306,12 @@ impl SearchFilters {
             // Fallback for callers that did not call resolve_ext_ids_for_drive.
             let name = rec.name(names);
             let ext = name.rsplit('.').next().unwrap_or("");
-            let ext_folded = fold.fold_into(ext, fold_buf);
-            if !self.extensions.iter().any(|allowed| allowed == ext_folded) {
+            let normalized_ext = lowercase_into(ext, fold_buf);
+            if !self
+                .extensions
+                .iter()
+                .any(|allowed| extension_matches_filter(allowed, normalized_ext))
+            {
                 return false;
             }
         }
@@ -393,11 +416,11 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
         }
         if !filters.extensions.is_empty() {
             let ext = row.name().rsplit('.').next().unwrap_or("");
-            let ext_folded = fold.fold_into(ext, &mut fold_buf);
+            let normalized_ext = lowercase_into(ext, &mut fold_buf);
             if !filters
                 .extensions
                 .iter()
-                .any(|allowed| allowed == ext_folded)
+                .any(|allowed| extension_matches_filter(allowed, normalized_ext))
             {
                 return false;
             }

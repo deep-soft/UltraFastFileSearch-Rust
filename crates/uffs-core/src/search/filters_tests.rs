@@ -1,7 +1,9 @@
 //! Tests for `SearchFilters`, `matches_record`, and `apply_search_filters`.
 
+use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS};
+
 use super::*;
-use crate::compact::CompactRecord;
+use crate::compact::{CompactRecord, DriveCompactIndex, build_compact_index};
 
 /// Helper: a basic `CompactRecord` with known values.
 fn test_record(name: &str, names: &mut Vec<u8>) -> CompactRecord {
@@ -23,6 +25,33 @@ fn test_record(name: &str, names: &mut Vec<u8>) -> CompactRecord {
         tree_allocated: 5120,
         _pad: [0; 4],
     }
+}
+
+/// Helper: build a compact drive with a single `readme.rs` file.
+fn test_drive_with_rs_file() -> DriveCompactIndex {
+    let mut idx = MftIndex::new('C');
+
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    let name = "readme.rs";
+    let off = idx.add_name(name);
+    let ext = idx.intern_extension(name);
+    let rec = idx.get_or_create(100);
+    rec.first_name.name = IndexNameRef::new(
+        off,
+        u16::try_from(name.len()).expect("name too long"),
+        true,
+        ext,
+    );
+    rec.first_name.parent_frs = ROOT_FRS;
+    rec.stdinfo.flags = 0x20;
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    drive
 }
 
 // ── Size filters ──────────────────────────────────────────────────
@@ -224,6 +253,80 @@ fn filter_extension_accepts_matching_extension() {
         ),
         ".txt should be accepted when .txt is allowed"
     );
+}
+
+#[test]
+fn from_params_normalizes_extensions_to_lowercase_without_dot() {
+    let filters = SearchFilters::from_params(
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(" .RS, JPG ,PnG "),
+        None,
+    );
+
+    assert_eq!(filters.extensions, ["rs", "jpg", "png"]);
+}
+
+#[test]
+fn resolve_ext_ids_for_drive_accepts_mixed_case_extensions() {
+    let drive = test_drive_with_rs_file();
+    let mut filters = SearchFilters::from_params(
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("RS"),
+        None,
+    );
+
+    filters.resolve_ext_ids_for_drive(&drive);
+
+    assert_eq!(
+        filters.resolved_ext_ids.len(),
+        1,
+        "must resolve one extension id"
+    );
+    let resolved_id = filters.resolved_ext_ids.first().copied();
+    let resolved_name = resolved_id.and_then(|id| drive.ext_names.get(usize::from(id)));
+    assert_eq!(resolved_name.map(AsRef::as_ref), Some("rs"));
+}
+
+#[test]
+fn resolve_ext_ids_for_drive_is_robust_to_manual_uppercase_filters() {
+    let drive = test_drive_with_rs_file();
+    let mut filters = SearchFilters {
+        extensions: vec!["RS".to_owned()],
+        ..Default::default()
+    };
+
+    filters.resolve_ext_ids_for_drive(&drive);
+
+    assert_eq!(
+        filters.resolved_ext_ids.len(),
+        1,
+        "uppercase filter must still resolve"
+    );
+    let resolved_id = filters.resolved_ext_ids.first().copied();
+    let resolved_name = resolved_id.and_then(|id| drive.ext_names.get(usize::from(id)));
+    assert_eq!(resolved_name.map(AsRef::as_ref), Some("rs"));
 }
 
 // ── Exclude pattern ───────────────────────────────────────────────
