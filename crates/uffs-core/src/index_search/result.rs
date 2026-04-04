@@ -143,7 +143,7 @@ impl SearchResult {
 
     /// Check if this is an Alternate Data Stream (ADS).
     #[must_use]
-    pub fn is_ads(&self) -> bool {
+    pub const fn is_ads(&self) -> bool {
         !self.stream_name.is_empty()
     }
 

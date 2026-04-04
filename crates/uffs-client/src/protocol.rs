@@ -514,6 +514,17 @@ impl SearchParams {
     }
 
     /// Canonicalize a legacy comma-separated sort string plus `sort_desc` flag.
+    ///
+    /// Supports three direction syntaxes:
+    /// - Prefix: `-size` means descending, bare `size` means ascending
+    /// - Suffix: `size:desc` or `size:asc` (explicit)
+    /// - Flag:   `--sort-desc` flips the first field to descending
+    ///
+    /// **First field:** ascending by default; descending if prefixed with `-`
+    /// or if `sort_desc` is true.
+    ///
+    /// **Secondary fields:** use field-type defaults (numeric/time → desc,
+    /// string → asc) unless overridden with prefix or suffix.
     #[must_use]
     pub fn canonicalize_legacy_sort(sort: &str, sort_desc: bool) -> Vec<SearchSortSpec> {
         sort.split(',')
@@ -524,11 +535,18 @@ impl SearchParams {
                     return None;
                 }
 
-                let (field, explicit_direction) = trimmed
-                    .split_once(':')
-                    .map_or((trimmed, None), |(lhs, rhs)| (lhs.trim(), Some(rhs.trim())));
+                // Check for `-` prefix (e.g. "-modified" → descending).
+                let (has_dash_prefix, after_dash) = trimmed
+                    .strip_prefix('-')
+                    .map_or((false, trimmed), |rest| (true, rest));
 
-                // Parse explicit direction token (e.g. "size:desc").
+                let (field, explicit_direction) = after_dash
+                    .split_once(':')
+                    .map_or((after_dash, None), |(lhs, rhs)| {
+                        (lhs.trim(), Some(rhs.trim()))
+                    });
+
+                // Parse explicit suffix direction token (e.g. "size:desc").
                 let parsed_dir = explicit_direction.and_then(|dir| {
                     match dir.trim().to_ascii_lowercase().as_str() {
                         "asc" | "ascending" => Some(SearchSortDirection::Asc),
@@ -537,20 +555,27 @@ impl SearchParams {
                     }
                 });
 
+                // Resolve direction: suffix > prefix > flag (first field) > default.
                 let direction = parsed_dir.or_else(|| {
-                    // First field inherits --sort-desc; others use field-type default.
-                    let default = match field.trim().to_ascii_lowercase().as_str() {
+                    if has_dash_prefix {
+                        return Some(SearchSortDirection::Desc);
+                    }
+                    if index == 0 {
+                        // First field: ascending unless --sort-desc is set.
+                        return Some(if sort_desc {
+                            SearchSortDirection::Desc
+                        } else {
+                            SearchSortDirection::Asc
+                        });
+                    }
+                    // Secondary fields: field-type default.
+                    Some(match field.trim().to_ascii_lowercase().as_str() {
                         "size" | "sizeondisk" | "size_on_disk" | "allocated" | "created"
                         | "modified" | "written" | "date" | "accessed" | "descendants"
                         | "treesize" | "tree_size" | "treeallocated" | "tree_allocated" => {
                             SearchSortDirection::Desc
                         }
                         _ => SearchSortDirection::Asc,
-                    };
-                    Some(if index == 0 && sort_desc {
-                        SearchSortDirection::Desc
-                    } else {
-                        default
                     })
                 });
 
@@ -1004,17 +1029,81 @@ mod tests {
     }
 
     /// Canonical helpers preserve legacy single-flag sort semantics.
+    ///
+    /// First field: ascending by default (no `--sort-desc`).
+    /// Secondary fields: field-type defaults (numeric → desc, string → asc).
+    /// `--sort-desc` flag flips the first field to descending.
+    /// `-` prefix forces descending on any individual field.
     #[test]
     fn canonicalize_legacy_sort_preserves_primary_sort_desc_override() {
+        // --sort size,name (no --sort-desc) → first=asc, second=field default
         let specs = SearchParams::canonicalize_legacy_sort("size,name", false);
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].field, "size");
-        assert_eq!(specs[0].direction, Some(SearchSortDirection::Desc));
+        assert_eq!(
+            specs[0].direction,
+            Some(SearchSortDirection::Asc),
+            "first field defaults to asc without --sort-desc"
+        );
         assert_eq!(specs[1].field, "name");
-        assert_eq!(specs[1].direction, Some(SearchSortDirection::Asc));
+        assert_eq!(
+            specs[1].direction,
+            Some(SearchSortDirection::Asc),
+            "name (string) defaults to asc"
+        );
 
+        // --sort name --sort-desc → first field flipped to desc
         let desc_specs = SearchParams::canonicalize_legacy_sort("name", true);
         assert_eq!(desc_specs[0].direction, Some(SearchSortDirection::Desc));
+    }
+
+    /// `-` prefix forces descending on individual sort fields.
+    #[test]
+    fn canonicalize_legacy_sort_dash_prefix_descending() {
+        // -modified,name → modified=desc, name=asc(default)
+        let specs = SearchParams::canonicalize_legacy_sort("-modified,name", false);
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].field, "modified");
+        assert_eq!(
+            specs[0].direction,
+            Some(SearchSortDirection::Desc),
+            "dash prefix forces descending"
+        );
+        assert_eq!(specs[1].field, "name");
+        assert_eq!(
+            specs[1].direction,
+            Some(SearchSortDirection::Asc),
+            "name defaults to asc"
+        );
+
+        // -size alone
+        let single = SearchParams::canonicalize_legacy_sort("-size", false);
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].field, "size");
+        assert_eq!(single[0].direction, Some(SearchSortDirection::Desc));
+    }
+
+    /// Secondary numeric fields use field-type defaults (desc for
+    /// size/time/descendants).
+    #[test]
+    fn canonicalize_legacy_sort_secondary_field_defaults() {
+        let specs = SearchParams::canonicalize_legacy_sort("name,size,modified", false);
+        assert_eq!(specs.len(), 3);
+        assert_eq!(
+            specs[0].direction,
+            Some(SearchSortDirection::Asc),
+            "first field = asc"
+        );
+        assert_eq!(
+            specs[1].direction,
+            Some(SearchSortDirection::Desc),
+            "secondary size defaults to desc"
+        );
+        assert_eq!(
+            specs[2].direction,
+            Some(SearchSortDirection::Desc),
+            "secondary modified defaults to desc"
+        );
     }
 
     /// Canonical helpers prefer the new filter field over the legacy one.

@@ -202,7 +202,7 @@ impl TrigramIndex {
 
     /// Number of unique trigrams in the index.
     #[must_use]
-    pub fn posting_count(&self) -> usize {
+    pub const fn posting_count(&self) -> usize {
         self.keys.len()
     }
 
@@ -289,10 +289,10 @@ fn intersect_in_place(result: &mut Vec<u32>, other: &[u32]) {
             }
             j += 1;
         }
-        if other.get(j).copied() == Some(val) {
-            if let Some(slot) = result.get_mut(write) {
-                *slot = val;
-            }
+        if other.get(j).copied() == Some(val)
+            && let Some(slot) = result.get_mut(write)
+        {
+            *slot = val;
             write += 1;
             j += 1;
         }
@@ -414,10 +414,10 @@ fn advance_offsets(
         reason = "iteration order irrelevant — accumulating counts"
     )]
     for (&packed, &cnt) in chunk_map {
-        if let Some(&ki) = tri_lut.get(&packed) {
-            if let Some(slot) = accumulated.get_mut(ki as usize) {
-                *slot += cnt;
-            }
+        if let Some(&ki) = tri_lut.get(&packed)
+            && let Some(slot) = accumulated.get_mut(ki as usize)
+        {
+            *slot += cnt;
         }
     }
 }
@@ -450,11 +450,11 @@ fn scatter_one_record(
         let Some(key_idx) = tri_lut.get(&packed).copied() else {
             continue;
         };
-        if let Some(pos) = write_pos.get_mut(key_idx as usize) {
-            if let Some(slot) = values.get(*pos as usize) {
-                slot.store(rec_idx, Ordering::Relaxed);
-                *pos += 1;
-            }
+        if let Some(pos) = write_pos.get_mut(key_idx as usize)
+            && let Some(slot) = values.get(*pos as usize)
+        {
+            slot.store(rec_idx, Ordering::Relaxed);
+            *pos += 1;
         }
     }
 }

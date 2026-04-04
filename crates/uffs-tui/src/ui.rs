@@ -468,10 +468,10 @@ fn highlight_matches(
     let mut last_end = 0;
 
     for (start, matched) in lower.match_indices(needle) {
-        if start > last_end {
-            if let Some(before) = text.get(last_end..start) {
-                spans.push(Span::styled(before.to_owned(), normal_style));
-            }
+        if start > last_end
+            && let Some(before) = text.get(last_end..start)
+        {
+            spans.push(Span::styled(before.to_owned(), normal_style));
         }
         let end = start + matched.len();
         if let Some(hit) = text.get(start..end) {
@@ -480,10 +480,10 @@ fn highlight_matches(
         last_end = end;
     }
 
-    if last_end < text.len() {
-        if let Some(tail) = text.get(last_end..) {
-            spans.push(Span::styled(tail.to_owned(), normal_style));
-        }
+    if last_end < text.len()
+        && let Some(tail) = text.get(last_end..)
+    {
+        spans.push(Span::styled(tail.to_owned(), normal_style));
     }
 
     if spans.is_empty() {
@@ -499,16 +499,16 @@ fn highlight_matches(
 /// Hex strings from devicons are always 7-byte ASCII (`#RRGGBB`), so
 /// byte-level `.get()` slicing is safe.
 fn devicon_color(hex: &str) -> Color {
-    if hex.len() == 7 && hex.starts_with('#') {
-        if let (Some(rr), Some(gg), Some(bb)) = (hex.get(1..3), hex.get(3..5), hex.get(5..7)) {
-            if let (Ok(red), Ok(green), Ok(blue)) = (
-                u8::from_str_radix(rr, 16),
-                u8::from_str_radix(gg, 16),
-                u8::from_str_radix(bb, 16),
-            ) {
-                return Color::Rgb(red, green, blue);
-            }
-        }
+    if hex.len() == 7
+        && hex.starts_with('#')
+        && let (Some(rr), Some(gg), Some(bb)) = (hex.get(1..3), hex.get(3..5), hex.get(5..7))
+        && let (Ok(red), Ok(green), Ok(blue)) = (
+            u8::from_str_radix(rr, 16),
+            u8::from_str_radix(gg, 16),
+            u8::from_str_radix(bb, 16),
+        )
+    {
+        return Color::Rgb(red, green, blue);
     }
     Color::White
 }

@@ -260,7 +260,7 @@ impl App {
     }
 
     /// Move selection to next item.
-    pub fn next(&mut self) {
+    pub const fn next(&mut self) {
         let len = self.results.len();
         if len == 0 {
             return;
@@ -279,7 +279,7 @@ impl App {
     }
 
     /// Move selection to previous item.
-    pub fn previous(&mut self) {
+    pub const fn previous(&mut self) {
         let len = self.results.len();
         if len == 0 {
             return;

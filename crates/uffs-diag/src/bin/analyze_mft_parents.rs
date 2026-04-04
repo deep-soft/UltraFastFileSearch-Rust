@@ -138,10 +138,10 @@ fn analyze_parents(df: &DataFrame) -> Result<()> {
     let mut dir_set = HashSet::new();
     if let Some(is_directory_series) = is_dir_col {
         for (idx, is_directory_opt) in is_directory_series.into_iter().enumerate() {
-            if is_directory_opt == Some(true) {
-                if let Some(frs) = frs_col.get(idx) {
-                    dir_set.insert(frs);
-                }
+            if is_directory_opt == Some(true)
+                && let Some(frs) = frs_col.get(idx)
+            {
+                dir_set.insert(frs);
             }
         }
     } else {

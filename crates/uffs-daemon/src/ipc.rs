@@ -266,11 +266,11 @@ impl IpcServer {
         loop {
             match event_rx.recv().await {
                 Ok(event) => {
-                    if let Some(json_line) = event_to_json_line(&event) {
-                        if out_tx.send(json_line).await.is_err() {
-                            // Client disconnected.
-                            return;
-                        }
+                    if let Some(json_line) = event_to_json_line(&event)
+                        && out_tx.send(json_line).await.is_err()
+                    {
+                        // Client disconnected.
+                        return;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {

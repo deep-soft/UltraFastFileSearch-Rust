@@ -202,7 +202,7 @@ impl SearchFilters {
     /// When this is true and the pattern is match-all (`*`), we can use
     /// the extension inverted index for O(K) iteration instead of O(N).
     #[must_use]
-    pub fn is_ext_only(&self) -> bool {
+    pub const fn is_ext_only(&self) -> bool {
         !self.extensions.is_empty()
             && !self.hide_system
             && self.min_size.is_none()
@@ -241,45 +241,45 @@ impl SearchFilters {
                 return false;
             }
         }
-        if let Some(min) = self.min_size {
-            if rec.size < min {
-                return false;
-            }
+        if let Some(min) = self.min_size
+            && rec.size < min
+        {
+            return false;
         }
-        if let Some(max) = self.max_size {
-            if rec.size > max {
-                return false;
-            }
+        if let Some(max) = self.max_size
+            && rec.size > max
+        {
+            return false;
         }
-        if let Some(bound) = self.newer_us {
-            if rec.modified < bound {
-                return false;
-            }
+        if let Some(bound) = self.newer_us
+            && rec.modified < bound
+        {
+            return false;
         }
-        if let Some(bound) = self.older_us {
-            if rec.modified >= bound {
-                return false;
-            }
+        if let Some(bound) = self.older_us
+            && rec.modified >= bound
+        {
+            return false;
         }
-        if let Some(bound) = self.newer_created_us {
-            if rec.created < bound {
-                return false;
-            }
+        if let Some(bound) = self.newer_created_us
+            && rec.created < bound
+        {
+            return false;
         }
-        if let Some(bound) = self.older_created_us {
-            if rec.created >= bound {
-                return false;
-            }
+        if let Some(bound) = self.older_created_us
+            && rec.created >= bound
+        {
+            return false;
         }
-        if let Some(bound) = self.newer_accessed_us {
-            if rec.accessed < bound {
-                return false;
-            }
+        if let Some(bound) = self.newer_accessed_us
+            && rec.accessed < bound
+        {
+            return false;
         }
-        if let Some(bound) = self.older_accessed_us {
-            if rec.accessed >= bound {
-                return false;
-            }
+        if let Some(bound) = self.older_accessed_us
+            && rec.accessed >= bound
+        {
+            return false;
         }
         if self.attr_require != 0 && (rec.flags & self.attr_require) != self.attr_require {
             return false;
@@ -287,15 +287,15 @@ impl SearchFilters {
         if self.attr_exclude != 0 && (rec.flags & self.attr_exclude) != 0 {
             return false;
         }
-        if let Some(min) = self.min_descendants {
-            if rec.descendants < min {
-                return false;
-            }
+        if let Some(min) = self.min_descendants
+            && rec.descendants < min
+        {
+            return false;
         }
-        if let Some(max) = self.max_descendants {
-            if rec.descendants > max {
-                return false;
-            }
+        if let Some(max) = self.max_descendants
+            && rec.descendants > max
+        {
+            return false;
         }
         if !self.resolved_ext_ids.is_empty() {
             // Fast path: compare pre-resolved u16 IDs (O(1) per record).
@@ -328,7 +328,7 @@ impl SearchFilters {
 
     /// Returns `true` if all filters are at their default (no-op) values.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         !self.hide_system
             && self.min_size.is_none()
             && self.max_size.is_none()
@@ -358,45 +358,45 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
         if filters.hide_system && row.name().starts_with('$') {
             return false;
         }
-        if let Some(min) = filters.min_size {
-            if row.size < min {
-                return false;
-            }
+        if let Some(min) = filters.min_size
+            && row.size < min
+        {
+            return false;
         }
-        if let Some(max) = filters.max_size {
-            if row.size > max {
-                return false;
-            }
+        if let Some(max) = filters.max_size
+            && row.size > max
+        {
+            return false;
         }
-        if let Some(bound) = filters.newer_us {
-            if row.modified < bound {
-                return false;
-            }
+        if let Some(bound) = filters.newer_us
+            && row.modified < bound
+        {
+            return false;
         }
-        if let Some(bound) = filters.older_us {
-            if row.modified >= bound {
-                return false;
-            }
+        if let Some(bound) = filters.older_us
+            && row.modified >= bound
+        {
+            return false;
         }
-        if let Some(bound) = filters.newer_created_us {
-            if row.created < bound {
-                return false;
-            }
+        if let Some(bound) = filters.newer_created_us
+            && row.created < bound
+        {
+            return false;
         }
-        if let Some(bound) = filters.older_created_us {
-            if row.created >= bound {
-                return false;
-            }
+        if let Some(bound) = filters.older_created_us
+            && row.created >= bound
+        {
+            return false;
         }
-        if let Some(bound) = filters.newer_accessed_us {
-            if row.accessed < bound {
-                return false;
-            }
+        if let Some(bound) = filters.newer_accessed_us
+            && row.accessed < bound
+        {
+            return false;
         }
-        if let Some(bound) = filters.older_accessed_us {
-            if row.accessed >= bound {
-                return false;
-            }
+        if let Some(bound) = filters.older_accessed_us
+            && row.accessed >= bound
+        {
+            return false;
         }
         if filters.attr_require != 0 && (row.flags & filters.attr_require) != filters.attr_require {
             return false;
@@ -404,15 +404,15 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
         if filters.attr_exclude != 0 && (row.flags & filters.attr_exclude) != 0 {
             return false;
         }
-        if let Some(min) = filters.min_descendants {
-            if row.descendants < min {
-                return false;
-            }
+        if let Some(min) = filters.min_descendants
+            && row.descendants < min
+        {
+            return false;
         }
-        if let Some(max) = filters.max_descendants {
-            if row.descendants > max {
-                return false;
-            }
+        if let Some(max) = filters.max_descendants
+            && row.descendants > max
+        {
+            return false;
         }
         if !filters.extensions.is_empty() {
             let ext = row.name().rsplit('.').next().unwrap_or("");
@@ -500,15 +500,15 @@ pub fn parse_time_bound(spec: &str, now_us: i64, is_newer: bool) -> Option<i64> 
 fn parse_iso_date(trimmed: &str) -> Option<i64> {
     if trimmed.len() == 10 && trimmed.as_bytes().get(4) == Some(&b'-') {
         let parts: Vec<&str> = trimmed.split('-').collect();
-        if let [year_s, month_s, day_s] = parts.as_slice() {
-            if let (Ok(year), Ok(month), Ok(day)) = (
+        if let [year_s, month_s, day_s] = parts.as_slice()
+            && let (Ok(year), Ok(month), Ok(day)) = (
                 year_s.parse::<i64>(),
                 month_s.parse::<i64>(),
                 day_s.parse::<i64>(),
-            ) {
-                let days = ymd_to_days(year, month, day);
-                return Some(days * US_PER_DAY);
-            }
+            )
+        {
+            let days = ymd_to_days(year, month, day);
+            return Some(days * US_PER_DAY);
         }
     }
     None

@@ -1069,10 +1069,10 @@ impl IndexManager {
     fn resolve_projection_fields(projection: &[String]) -> Vec<FieldId> {
         let mut resolved = Vec::new();
         for raw in projection {
-            if let Some(field) = FieldId::parse(raw) {
-                if !resolved.contains(&field) {
-                    resolved.push(field);
-                }
+            if let Some(field) = FieldId::parse(raw)
+                && !resolved.contains(&field)
+            {
+                resolved.push(field);
             }
         }
         resolved

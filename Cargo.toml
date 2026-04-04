@@ -10,14 +10,14 @@
 # DataFrames for blazing-fast queries.
 # Contact: 50460704+githubrobbi@users.noreply.github.com for licensing inquiries
 #
-# Last Updated: January 2026 - Rust 1.85+ / Edition 2024
+# Last Updated: April 2026 - Nightly (1.96+) / Edition 2024
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Workspace Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     # ── Foundation ──
     "crates/uffs-polars",   # 🚀 Polars facade (compilation isolation)
@@ -46,9 +46,9 @@ exclude = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.4.79"
+version = "0.4.80"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.94"
 license = "MPL-2.0 OR LicenseRef-UFFS-Commercial"
 repository = "https://github.com/githubrobbi/UltraFastFileSearch"
 authors = ["Robert Nio <50460704+githubrobbi@users.noreply.github.com>"]
@@ -79,7 +79,7 @@ uffs-daemon   = { path = "crates/uffs-daemon" }
 # polars = { git = "https://github.com/pola-rs/polars", branch = "main", default-features = false }
 
 # ───── Async Runtime ─────
-tokio = { version = "1.50.0", features = ["full", "macros", "rt-multi-thread", "time", "tracing"] }
+tokio = { version = "1.51.0", features = ["full", "macros", "rt-multi-thread", "time", "tracing"] }
 
 # ───── Windows APIs (Windows only) ─────
 windows = { version = "0.62.2", features = [
@@ -134,9 +134,18 @@ tracing-appender = "0.2.4"
 chrono = { version = "0.4.44", features = ["serde"] }
 dirs-next = "2.0.0"
 
+# ───── Hashing ─────
+rustc-hash = "2.1.2"
+
+# ───── Formatting / Encoding ─────
+itoa = "1.0.18"
+sha2 = "0.11.0"
+hex = "0.4.3"
+
 # ───── Testing & Benchmarking ─────
 criterion = "0.8.2"
 proptest = "1.11.0"
+assert_cmd = "2.2.0"
 
 # ───── Memory Allocator ─────
 # mimalloc reduces fragmentation and improves allocation performance for large datasets
@@ -162,7 +171,7 @@ zstd = { version = "0.13.3", features = ["zstdmt"] }
 # ═══════════════════════════════════════════════════════════════════════════════
 # All crates inherit these STRICTEST possible clippy settings for maximum code quality
 # This ensures consistent, high-quality standards across the entire workspace
-# Updated: January 2026 - Rust 1.85+ / Edition 2024
+# Updated: April 2026 - Nightly (1.96+) / Edition 2024
 
 [workspace.lints.clippy]
 # ───── Core lint groups (strictest levels) ─────
@@ -265,6 +274,23 @@ used_underscore_binding = "warn"        # Don't use underscore bindings
 useless_let_if_seq = "warn"             # Simplify let-if sequences
 zero_sized_map_values = "warn"          # Avoid zero-sized map values
 
+# ───── Restriction lints (hand-picked — we do NOT enable the whole group) ─────
+as_pointer_underscore = "deny"          # Dangerous pointer casts with inferred type (1.85+)
+cfg_not_test = "warn"                   # Catch cfg(not(test)) misuse
+deref_by_slicing = "warn"              # Use &* instead of &v[..]
+empty_line_after_doc_comments = "warn" # Clean doc comment style
+empty_line_after_outer_attr = "warn"   # Clean attribute style
+four_forward_slashes = "warn"          # Catch //// (typo for ///)
+iter_filter_is_ok = "warn"             # Use flatten() instead of filter + is_ok
+iter_filter_is_some = "warn"           # Use flatten() instead of filter + is_some
+manual_is_power_of_two = "warn"        # Use is_power_of_two()
+pathbuf_init_then_push = "warn"        # Use PathBuf::from directly
+pub_underscore_fields = "warn"         # Don't expose _prefixed fields
+renamed_function_params = "warn"       # Trait impls must match param names
+set_contains_or_insert = "warn"        # Use entry API for sets
+unnecessary_map_or = "warn"            # Simplify map_or calls (1.92+)
+unnecessary_result_map_or_else = "warn" # Simplify Result::map_or_else
+
 # ───── Additional 2026 cutting-edge lints ─────
 assigning_clones = "warn"               # Use clone_from instead of clone + assign
 collection_is_never_read = "warn"       # Detect unused collections
@@ -357,6 +383,7 @@ rust_2024_compatibility = { level = "warn", priority = -1 }  # Ensure 2024 editi
 # ───── Future-proofing lints ─────
 future_incompatible = { level = "deny", priority = -1 }  # Catch future breaking changes
 nonstandard_style = { level = "warn", priority = -1 }    # Consistent naming conventions
+unexpected_cfgs = "warn"                # Catch typos / stale cfg attributes
 # ───── Additional safety lints ─────
 unsafe_op_in_unsafe_fn = "deny"         # Require unsafe blocks inside unsafe fn
 unused_crate_dependencies = "warn"      # Detect unused dependencies
@@ -405,6 +432,7 @@ lto = "fat"
 panic = "abort"
 strip = "symbols"
 rpath = false
+# trim-paths = "object"                 # Reproducible builds (not yet stable in Cargo)
 
 [profile.profiling]
 inherits = "release"

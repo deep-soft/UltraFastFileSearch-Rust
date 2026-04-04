@@ -874,13 +874,13 @@ fn stack_volume_prefix(buf: &mut [u8; 4], letter: char) -> &str {
 fn heap_push_capped<T: Ord>(heap: &mut BinaryHeap<T>, entry: T, limit: usize) {
     if heap.len() < limit {
         heap.push(entry);
-    } else if let Some(top) = heap.peek() {
-        if entry < *top {
-            // New entry is "better" — displace the worst.
-            // (For Reverse<T> this means the underlying T is *larger*.)
-            drop(heap.pop());
-            heap.push(entry);
-        }
+    } else if let Some(top) = heap.peek()
+        && entry < *top
+    {
+        // New entry is "better" — displace the worst.
+        // (For Reverse<T> this means the underlying T is *larger*.)
+        drop(heap.pop());
+        heap.push(entry);
     }
 }
 

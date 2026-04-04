@@ -65,5 +65,5 @@ uffs-daemon.workspace = true
 workspace = true
 
 [dev-dependencies]
-assert_cmd = "2.2.0"
+assert_cmd.workspace = true
 

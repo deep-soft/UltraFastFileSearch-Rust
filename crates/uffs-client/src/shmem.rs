@@ -374,13 +374,13 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
 ///
 /// Called on daemon startup to clean stale files from previous sessions.
 pub fn cleanup_stale_shmem_files() {
-    if let Ok(dir) = shmem_dir() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "bin") {
-                    drop(std::fs::remove_file(&path));
-                }
+    if let Ok(dir) = shmem_dir()
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "bin") {
+                drop(std::fs::remove_file(&path));
             }
         }
     }

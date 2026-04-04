@@ -56,15 +56,15 @@ impl<'a> RecordFilter<'a> {
         }
 
         let size = record.first_stream.size.length;
-        if let Some(min) = self.min_size {
-            if size < min {
-                return false;
-            }
+        if let Some(min) = self.min_size
+            && size < min
+        {
+            return false;
         }
-        if let Some(max) = self.max_size {
-            if size > max {
-                return false;
-            }
+        if let Some(max) = self.max_size
+            && size > max
+        {
+            return false;
         }
 
         if let Some(pat) = self.pattern {

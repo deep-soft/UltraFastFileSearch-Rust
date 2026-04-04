@@ -499,16 +499,16 @@ impl LifecycleManager {
         reason = "exe hash verifier — public API for clients"
     )]
     pub fn expected_daemon_exe_hash() -> u64 {
-        if let Ok(current) = std::env::current_exe() {
-            if let Some(dir) = current.parent() {
-                let daemon = dir.join("uffs-daemon");
-                if daemon.exists() {
-                    return Self::fnv1a_hash(daemon.to_string_lossy().as_bytes());
-                }
-                let daemon_exe = dir.join("uffs-daemon.exe");
-                if daemon_exe.exists() {
-                    return Self::fnv1a_hash(daemon_exe.to_string_lossy().as_bytes());
-                }
+        if let Ok(current) = std::env::current_exe()
+            && let Some(dir) = current.parent()
+        {
+            let daemon = dir.join("uffs-daemon");
+            if daemon.exists() {
+                return Self::fnv1a_hash(daemon.to_string_lossy().as_bytes());
+            }
+            let daemon_exe = dir.join("uffs-daemon.exe");
+            if daemon_exe.exists() {
+                return Self::fnv1a_hash(daemon_exe.to_string_lossy().as_bytes());
             }
         }
         0_u64

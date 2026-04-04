@@ -133,7 +133,7 @@ async fn daemon_start(
     tracing::info!("[daemon_start] connected, entering await_ready");
 
     client
-        .await_ready(core::time::Duration::from_secs(120))
+        .await_ready(core::time::Duration::from_mins(2))
         .await
         .with_context(|| "Daemon did not become ready in time")?;
 
@@ -282,12 +282,11 @@ async fn daemon_kill() {
         uffs_client::connect::parse_pid_file(&pid_path).map(|(file_pid, _, _, _)| file_pid);
 
     // No PID file → try discovering via live socket.
-    if pid.is_none() {
-        if let Ok(mut client) = UffsClient::connect_raw().await {
-            if let Ok(status) = client.status().await {
-                pid = Some(status.pid);
-            }
-        }
+    if pid.is_none()
+        && let Ok(mut client) = UffsClient::connect_raw().await
+        && let Ok(status) = client.status().await
+    {
+        pid = Some(status.pid);
     }
 
     if let Some(target_pid) = pid {
@@ -396,7 +395,7 @@ async fn daemon_restart() -> Result<()> {
         .with_context(|| "Failed to start restarted daemon")?;
 
     client
-        .await_ready(core::time::Duration::from_secs(120))
+        .await_ready(core::time::Duration::from_mins(2))
         .await
         .with_context(|| "Restarted daemon did not become ready in time")?;
 

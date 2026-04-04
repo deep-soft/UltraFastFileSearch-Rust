@@ -457,10 +457,11 @@ where
         }
 
         // 0b. Check auto-refresh timer
-        if let Some(timer_rx) = &app.auto_refresh_rx {
-            if timer_rx.try_recv().is_ok() && !app.refreshing {
-                refresh::start_refresh(app);
-            }
+        if let Some(timer_rx) = &app.auto_refresh_rx
+            && timer_rx.try_recv().is_ok()
+            && !app.refreshing
+        {
+            refresh::start_refresh(app);
         }
 
         // 1. Always render first — input box is always up-to-date
@@ -471,22 +472,22 @@ where
         if needs_search {
             // Drain any queued keystrokes (non-blocking)
             while event::poll(core::time::Duration::ZERO)? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        if is_exit_key(&app.keymap, key) {
-                            return Ok(());
-                        }
-                        if app.keymap.matches(key, Action::NavDown) {
-                            app.next();
-                        } else if app.keymap.matches(key, Action::NavUp) {
-                            app.previous();
-                        } else if app.keymap.matches(key, Action::SortCycle) {
-                            app.cycle_sort();
-                        } else if app.keymap.matches(key, Action::SortDirection) {
-                            app.toggle_sort_direction();
-                        } else {
-                            app.textarea.input(key);
-                        }
+                if let Event::Key(key) = event::read()?
+                    && key.kind == KeyEventKind::Press
+                {
+                    if is_exit_key(&app.keymap, key) {
+                        return Ok(());
+                    }
+                    if app.keymap.matches(key, Action::NavDown) {
+                        app.next();
+                    } else if app.keymap.matches(key, Action::NavUp) {
+                        app.previous();
+                    } else if app.keymap.matches(key, Action::SortCycle) {
+                        app.cycle_sort();
+                    } else if app.keymap.matches(key, Action::SortDirection) {
+                        app.toggle_sort_direction();
+                    } else {
+                        app.textarea.input(key);
                     }
                 }
             }

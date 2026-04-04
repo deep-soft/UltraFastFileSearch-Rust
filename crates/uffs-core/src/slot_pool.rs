@@ -112,9 +112,9 @@ impl Drop for SlotGuard<'_> {
 }
 
 impl core::fmt::Debug for SlotPool {
-    fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let guard = self.state.lock().unwrap_or_else(unpoison);
-        fmt.debug_struct("SlotPool")
+        f.debug_struct("SlotPool")
             .field("available", &guard.0)
             .field("total", &guard.1)
             .finish()

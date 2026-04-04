@@ -68,33 +68,33 @@ struct IndexStats {
 
 /// Count true values in a boolean column.
 fn count_bool_column(df: &uffs_polars::DataFrame, name: &str) -> u64 {
-    if let Ok(column) = df.column(name) {
-        if let Ok(bool_arr) = column.bool() {
-            return u64::from(bool_arr.sum().unwrap_or(0));
-        }
+    if let Ok(column) = df.column(name)
+        && let Ok(bool_arr) = column.bool()
+    {
+        return u64::from(bool_arr.sum().unwrap_or(0));
     }
     0
 }
 
 /// Sum values in a u64 column.
 fn sum_u64_column(df: &uffs_polars::DataFrame, name: &str) -> u64 {
-    if let Ok(column) = df.column(name) {
-        if let Ok(u64_arr) = column.u64() {
-            return u64_arr.iter().flatten().sum();
-        }
+    if let Ok(column) = df.column(name)
+        && let Ok(u64_arr) = column.u64()
+    {
+        return u64_arr.iter().flatten().sum();
     }
     0
 }
 
 /// Count entries where u16 column value > 1.
 fn count_multi_value_u16(df: &uffs_polars::DataFrame, name: &str) -> u64 {
-    if let Ok(column) = df.column(name) {
-        if let Ok(u16_arr) = column.u16() {
-            return u16_arr
-                .iter()
-                .filter(|val| val.is_some_and(|num| num > 1))
-                .count() as u64;
-        }
+    if let Ok(column) = df.column(name)
+        && let Ok(u16_arr) = column.u16()
+    {
+        return u16_arr
+            .iter()
+            .filter(|val| val.is_some_and(|num| num > 1))
+            .count() as u64;
     }
     0
 }

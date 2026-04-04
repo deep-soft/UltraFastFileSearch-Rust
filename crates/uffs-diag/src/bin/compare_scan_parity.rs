@@ -479,7 +479,7 @@ fn compare_dataframes(
             |mut local_stats, path| {
                 // Progress reporting (atomic, occasional)
                 let current = progress.fetch_add(1, Ordering::Relaxed);
-                if current % 500_000 == 0 && current > 0 {
+                if current.is_multiple_of(500_000) && current > 0 {
                     println!(
                         "  Progress: {}/{} ({:.1}%)",
                         current,
@@ -622,7 +622,7 @@ fn format_num(n: usize) -> String {
     let s = n.to_string();
     let mut result = String::new();
     for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
+        if i > 0 && i.is_multiple_of(3) {
             result.push(',');
         }
         result.push(c);

@@ -368,12 +368,12 @@ impl OutputConfig {
                 }
             }
             DataType::String => {
-                if let Ok(val) = series.str() {
-                    if let Some(str_val) = val.get(row_idx) {
-                        row_buffer.push_str(&self.quote);
-                        row_buffer.push_str(str_val);
-                        row_buffer.push_str(&self.quote);
-                    }
+                if let Ok(val) = series.str()
+                    && let Some(str_val) = val.get(row_idx)
+                {
+                    row_buffer.push_str(&self.quote);
+                    row_buffer.push_str(str_val);
+                    row_buffer.push_str(&self.quote);
                 }
             }
             DataType::UInt64 => {
@@ -429,32 +429,34 @@ impl OutputConfig {
                 // C++ uses Windows' FileTimeToLocalFileTime() which applies the CURRENT
                 // timezone offset to ALL timestamps, ignoring historical DST transitions.
                 // We match this by using a fixed offset computed once at startup.
-                if let Ok(AnyValue::Datetime(ts, TimeUnit::Microseconds, _)) = series.get(row_idx) {
-                    // Use div_euclid/rem_euclid for correct handling of negative timestamps.
-                    // rem_euclid(1_000_000) always returns [0, 999_999] for any i64 input.
-                    let secs = ts.div_euclid(1_000_000);
-                    let micros_i64 = ts.rem_euclid(1_000_000);
-                    // Safe: rem_euclid(1_000_000) is always in [0, 999_999], fits in u32
-                    let micros = u32::try_from(micros_i64).unwrap_or(0);
-                    if let Some(utc_dt) = chrono::DateTime::from_timestamp(secs, micros * 1000) {
-                        // Apply fixed timezone offset (computed once at startup)
-                        // This matches established behavior: same offset for all timestamps
-                        if let Some(timezone_offset) = fixed_tz {
-                            let local_dt = utc_dt.with_timezone(timezone_offset);
-                            // Format WITHOUT subseconds to match C++ output exactly
-                            Self::append_display(row_buffer, local_dt.format("%Y-%m-%d %H:%M:%S"));
-                        } else {
-                            // Fallback: format as UTC if offset is invalid
-                            Self::append_display(row_buffer, utc_dt.format("%Y-%m-%d %H:%M:%S"));
-                        }
+                if let Ok(AnyValue::Datetime(ts, TimeUnit::Microseconds, _)) = series.get(row_idx)
+                    && let Some(utc_dt) = {
+                        // Use div_euclid/rem_euclid for correct handling of negative timestamps.
+                        // rem_euclid(1_000_000) always returns [0, 999_999] for any i64 input.
+                        let secs = ts.div_euclid(1_000_000);
+                        let micros_i64 = ts.rem_euclid(1_000_000);
+                        // Safe: rem_euclid(1_000_000) is always in [0, 999_999], fits in u32
+                        let micros = u32::try_from(micros_i64).unwrap_or(0);
+                        chrono::DateTime::from_timestamp(secs, micros * 1000)
+                    }
+                {
+                    // Apply fixed timezone offset (computed once at startup)
+                    // This matches established behavior: same offset for all timestamps
+                    if let Some(timezone_offset) = fixed_tz {
+                        let local_dt = utc_dt.with_timezone(timezone_offset);
+                        // Format WITHOUT subseconds to match C++ output exactly
+                        Self::append_display(row_buffer, local_dt.format("%Y-%m-%d %H:%M:%S"));
+                    } else {
+                        // Fallback: format as UTC if offset is invalid
+                        Self::append_display(row_buffer, utc_dt.format("%Y-%m-%d %H:%M:%S"));
                     }
                 }
             }
             _ => {
-                if let Ok(val) = series.get(row_idx) {
-                    if !matches!(val, AnyValue::Null) {
-                        Self::append_display(row_buffer, val);
-                    }
+                if let Ok(val) = series.get(row_idx)
+                    && !matches!(val, AnyValue::Null)
+                {
+                    Self::append_display(row_buffer, val);
                 }
             }
         }

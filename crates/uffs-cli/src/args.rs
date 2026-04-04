@@ -233,11 +233,15 @@ pub struct Cli {
 
     /// Sort results by column(s), comma-separated for multi-tier
     ///
-    /// Examples: size, modified, name, size,name, modified,size,name
+    /// Prefix with `-` for descending, e.g. `-size` or `-modified,name`.
+    /// Use `:asc`/`:desc` suffix for explicit direction, e.g. `size:asc`.
+    /// Without direction, `--sort X` uses ascending; `--sort-desc` flips it.
+    ///
+    /// Examples: size, modified, name, -size,name, modified:desc,size:asc
     /// Available: size, sizeondisk, modified, created, accessed, name,
     ///   ext, descendants, hidden, system, archive, readonly,
     ///   compressed, encrypted, directory
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     pub sort: Option<String>,
 
     /// Reverse sort order (descending)

@@ -59,7 +59,7 @@ pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<D
     // First search after daemon auto-start would otherwise hit an empty index.
     let t_ready = std::time::Instant::now();
     client
-        .await_ready(core::time::Duration::from_secs(120))
+        .await_ready(core::time::Duration::from_mins(2))
         .await
         .with_context(|| "Daemon did not become ready in time")?;
     let ready_ms = t_ready.elapsed().as_millis();

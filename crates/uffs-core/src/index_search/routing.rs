@@ -42,11 +42,11 @@ impl QueryMode {
 }
 
 impl core::fmt::Display for QueryMode {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Auto => write!(formatter, "auto"),
-            Self::ForceIndex => write!(formatter, "index"),
-            Self::ForceDataFrame => write!(formatter, "dataframe"),
+            Self::Auto => write!(f, "auto"),
+            Self::ForceIndex => write!(f, "index"),
+            Self::ForceDataFrame => write!(f, "dataframe"),
         }
     }
 }

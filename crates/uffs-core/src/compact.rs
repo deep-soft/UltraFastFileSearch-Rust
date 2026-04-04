@@ -123,10 +123,10 @@ impl ChildrenIndex {
         let mut counts = vec![0_u32; records.len()];
         for rec in records {
             let parent = rec.parent_idx;
-            if parent != u32::MAX {
-                if let Some(cnt) = counts.get_mut(parent as usize) {
-                    *cnt += 1;
-                }
+            if parent != u32::MAX
+                && let Some(cnt) = counts.get_mut(parent as usize)
+            {
+                *cnt += 1;
             }
         }
 
@@ -144,18 +144,17 @@ impl ChildrenIndex {
         let mut write_pos = offsets.clone();
         for (idx, rec) in records.iter().enumerate() {
             let parent = rec.parent_idx;
-            if parent != u32::MAX {
-                if let Some(pos) = write_pos.get_mut(parent as usize) {
-                    if let Some(slot) = values.get_mut(*pos as usize) {
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "record count bounded by NTFS limits, fits u32"
-                        )]
-                        let child_idx = idx as u32;
-                        *slot = child_idx;
-                        *pos += 1;
-                    }
-                }
+            if parent != u32::MAX
+                && let Some(pos) = write_pos.get_mut(parent as usize)
+                && let Some(slot) = values.get_mut(*pos as usize)
+            {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "record count bounded by NTFS limits, fits u32"
+                )]
+                let child_idx = idx as u32;
+                *slot = child_idx;
+                *pos += 1;
             }
         }
 
@@ -184,13 +183,13 @@ impl ChildrenIndex {
 
     /// Total number of child entries across all records.
     #[must_use]
-    pub fn total_children(&self) -> usize {
+    pub const fn total_children(&self) -> usize {
         self.values.len()
     }
 
     /// Number of records tracked (one slot per record).
     #[must_use]
-    pub fn record_count(&self) -> usize {
+    pub const fn record_count(&self) -> usize {
         self.offsets.len().saturating_sub(1)
     }
 
@@ -255,16 +254,16 @@ impl ExtensionIndex {
                 continue;
             }
             let eid = rec.extension_id as usize;
-            if let Some(pos) = write_pos.get_mut(eid) {
-                if let Some(slot) = values.get_mut(*pos as usize) {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "record index bounded by NTFS limits"
-                    )]
-                    let idx_u32 = idx as u32;
-                    *slot = idx_u32;
-                    *pos += 1;
-                }
+            if let Some(pos) = write_pos.get_mut(eid)
+                && let Some(slot) = values.get_mut(*pos as usize)
+            {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "record index bounded by NTFS limits"
+                )]
+                let idx_u32 = idx as u32;
+                *slot = idx_u32;
+                *pos += 1;
             }
         }
 
@@ -291,7 +290,7 @@ impl ExtensionIndex {
 
     /// Total number of indexed record entries.
     #[must_use]
-    pub fn total_entries(&self) -> usize {
+    pub const fn total_entries(&self) -> usize {
         self.values.len()
     }
 }

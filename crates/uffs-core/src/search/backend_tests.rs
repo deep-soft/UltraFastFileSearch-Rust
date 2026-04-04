@@ -126,6 +126,43 @@ fn parse_sort_spec_empty_string() {
     assert!(specs.is_empty());
 }
 
+/// Regression: `-size` prefix means descending (T84, T87).
+#[test]
+fn parse_sort_spec_dash_prefix_forces_descending() {
+    let specs = parse_sort_spec("-size");
+    assert_eq!(specs.len(), 1);
+    let first = specs.first().expect("must have one spec");
+    assert_eq!(first.column, SortColumn::Size);
+    assert!(first.descending, "dash prefix must force descending");
+}
+
+/// Regression: `-modified,name` → modified desc, name asc (T67).
+#[test]
+fn parse_sort_spec_dash_prefix_multi_tier() {
+    let specs = parse_sort_spec("-modified,name");
+    assert_eq!(specs.len(), 2);
+    let first = specs.first().expect("first");
+    assert_eq!(first.column, SortColumn::Modified);
+    assert!(first.descending, "dash prefix must force descending");
+    let second = specs.get(1).expect("second");
+    assert_eq!(second.column, SortColumn::Name);
+    assert!(!second.descending, "name without dash should be asc");
+}
+
+/// Regression: dash prefix mixed with colon-suffix direction.
+#[test]
+fn parse_sort_spec_dash_prefix_with_colon_suffix() {
+    // Colon suffix takes precedence over dash prefix.
+    let specs = parse_sort_spec("-size:asc");
+    assert_eq!(specs.len(), 1);
+    let first = specs.first().expect("first");
+    assert_eq!(first.column, SortColumn::Size);
+    assert!(
+        !first.descending,
+        "explicit :asc suffix must override dash prefix"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // format_sort_spec
 // ═══════════════════════════════════════════════════════════════════════

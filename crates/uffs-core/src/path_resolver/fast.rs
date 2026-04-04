@@ -368,11 +368,11 @@ impl FastPathResolver {
                 }
 
                 // Append stream name for ADS (e.g., "file.txt:Zone.Identifier")
-                if let Some(stream) = stream_name {
-                    if !stream.is_empty() {
-                        path.push(':');
-                        path.push_str(stream);
-                    }
+                if let Some(stream) = stream_name
+                    && !stream.is_empty()
+                {
+                    path.push(':');
+                    path.push_str(stream);
                 }
                 path
             })

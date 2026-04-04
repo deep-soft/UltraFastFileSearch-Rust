@@ -46,13 +46,13 @@ impl NameArena {
 
     /// Total bytes used by the arena.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.buffer.len()
     }
 
     /// Check if the arena is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 }

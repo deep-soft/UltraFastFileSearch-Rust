@@ -69,7 +69,7 @@ impl DaemonBackend {
                 // Wait for daemon to finish loading before returning.
                 let ready = self
                     .rt
-                    .block_on(client.await_ready(core::time::Duration::from_secs(120)));
+                    .block_on(client.await_ready(core::time::Duration::from_mins(2)));
                 if let Err(ready_err) = ready {
                     return Err(format!("Daemon not ready: {ready_err}"));
                 }
@@ -137,10 +137,10 @@ impl DaemonBackend {
 
     /// Set session type to TUI (gives longer idle timeout).
     pub fn set_session_tui(&mut self) {
-        if self.ensure_connected().is_ok() {
-            if let Some(client) = self.client.as_mut() {
-                drop(self.rt.block_on(client.set_session_type("tui")));
-            }
+        if self.ensure_connected().is_ok()
+            && let Some(client) = self.client.as_mut()
+        {
+            drop(self.rt.block_on(client.set_session_type("tui")));
         }
     }
 

@@ -250,13 +250,13 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
             let mut next_dirs = Vec::new();
             for &dir_idx in &candidate_dirs {
                 for &child_idx in drive.children.get(dir_idx as usize) {
-                    if let Some(child_rec) = drive.records.get(child_idx as usize) {
-                        if child_rec.is_directory() {
-                            let child_name =
-                                fold.fold_into(child_rec.name(&drive.names), &mut fold_buf);
-                            if segment_matches(child_name, segment) {
-                                next_dirs.push(child_idx);
-                            }
+                    if let Some(child_rec) = drive.records.get(child_idx as usize)
+                        && child_rec.is_directory()
+                    {
+                        let child_name =
+                            fold.fold_into(child_rec.name(&drive.names), &mut fold_buf);
+                        if segment_matches(child_name, segment) {
+                            next_dirs.push(child_idx);
                         }
                     }
                 }
@@ -307,14 +307,15 @@ fn collect_descendant_dirs(
         return;
     }
     for &child_idx in drive.children.get(dir_idx as usize) {
-        if let Some(child_rec) = drive.records.get(child_idx as usize) {
-            if child_rec.is_directory() && child_rec.name_len > 0 {
-                out.push(child_idx);
-                if out.len() >= max {
-                    return;
-                }
-                collect_descendant_dirs(drive, child_idx, out, max);
+        if let Some(child_rec) = drive.records.get(child_idx as usize)
+            && child_rec.is_directory()
+            && child_rec.name_len > 0
+        {
+            out.push(child_idx);
+            if out.len() >= max {
+                return;
             }
+            collect_descendant_dirs(drive, child_idx, out, max);
         }
     }
 }
@@ -330,18 +331,18 @@ fn collect_all_descendants(
         return;
     }
     for &child_idx in drive.children.get(dir_idx as usize) {
-        if let Some(child_rec) = drive.records.get(child_idx as usize) {
-            if child_rec.name_len > 0 {
-                let name = child_rec.name(&drive.names);
-                if !name.is_empty() && name != "." {
-                    out.push(child_idx);
-                    if out.len() >= max {
-                        return;
-                    }
+        if let Some(child_rec) = drive.records.get(child_idx as usize)
+            && child_rec.name_len > 0
+        {
+            let name = child_rec.name(&drive.names);
+            if !name.is_empty() && name != "." {
+                out.push(child_idx);
+                if out.len() >= max {
+                    return;
                 }
-                if child_rec.is_directory() {
-                    collect_all_descendants(drive, child_idx, out, max);
-                }
+            }
+            if child_rec.is_directory() {
+                collect_all_descendants(drive, child_idx, out, max);
             }
         }
     }
@@ -380,10 +381,10 @@ fn trigram_filtered_records(
                 if out.len() >= limit {
                     break;
                 }
-                if let Some(rec) = drive.records.get(idx as usize) {
-                    if predicate(rec) {
-                        out.push(idx);
-                    }
+                if let Some(rec) = drive.records.get(idx as usize)
+                    && predicate(rec)
+                {
+                    out.push(idx);
                 }
             }
             out

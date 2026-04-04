@@ -70,49 +70,49 @@ pub async fn index(
         anyhow::bail!("No drives specified");
     }
 
-    if let Some(&drive_letter) = drive_list.first() {
-        if drive_list.len() == 1 {
-            info!(drive = %drive_letter, "Indexing drive");
+    if let Some(&drive_letter) = drive_list.first()
+        && drive_list.len() == 1
+    {
+        info!(drive = %drive_letter, "Indexing drive");
 
-            let reader = MftReader::open(drive_letter)
-                .with_context(|| format!("Failed to open drive {drive_letter}:"))?;
+        let reader = MftReader::open(drive_letter)
+            .with_context(|| format!("Failed to open drive {drive_letter}:"))?;
 
-            let progress_disabled = std::env::var("UFFS_NO_PROGRESS")
-                .is_ok_and(|val| val == "1" || val.eq_ignore_ascii_case("true"));
+        let progress_disabled = std::env::var("UFFS_NO_PROGRESS")
+            .is_ok_and(|val| val == "1" || val.eq_ignore_ascii_case("true"));
 
-            let progress_bar: Option<ProgressBar> = if progress_disabled {
-                None
-            } else {
-                let bar = ProgressBar::new(0);
-                let template = format!(
-                    "{{spinner:.cyan}} [{drive_letter}:] [{{elapsed_precise}}] {{bar:40.cyan/blue}} {{bytes}}/{{total_bytes}} 📖 reading MFT..."
-                );
-                bar.set_style(
-                    ProgressStyle::default_bar()
-                        .template(&template)
-                        .unwrap_or_else(|_| ProgressStyle::default_bar())
-                        .progress_chars("━━╸"),
-                );
-                Some(bar)
-            };
+        let progress_bar: Option<ProgressBar> = if progress_disabled {
+            None
+        } else {
+            let bar = ProgressBar::new(0);
+            let template = format!(
+                "{{spinner:.cyan}} [{drive_letter}:] [{{elapsed_precise}}] {{bar:40.cyan/blue}} {{bytes}}/{{total_bytes}} 📖 reading MFT..."
+            );
+            bar.set_style(
+                ProgressStyle::default_bar()
+                    .template(&template)
+                    .unwrap_or_else(|_| ProgressStyle::default_bar())
+                    .progress_chars("━━╸"),
+            );
+            Some(bar)
+        };
 
-            let mut df = reader.read_with_progress(move |progress: MftProgress| {
-                if let Some(bar) = &progress_bar {
-                    if let Some(total) = progress.total_records {
-                        bar.set_length(progress.bytes_read.max(total));
-                    }
-                    bar.set_position(progress.bytes_read);
+        let mut df = reader.read_with_progress(move |progress: MftProgress| {
+            if let Some(bar) = &progress_bar {
+                if let Some(total) = progress.total_records {
+                    bar.set_length(progress.bytes_read.max(total));
                 }
-            })?;
+                bar.set_position(progress.bytes_read);
+            }
+        })?;
 
-            info!(records = df.height(), "Read records");
+        info!(records = df.height(), "Read records");
 
-            MftReader::save_parquet(&mut df, &output)
-                .with_context(|| format!("Failed to save index to {}", output.display()))?;
+        MftReader::save_parquet(&mut df, &output)
+            .with_context(|| format!("Failed to save index to {}", output.display()))?;
 
-            info!(path = %output.display(), "Index saved");
-            return Ok(());
-        }
+        info!(path = %output.display(), "Index saved");
+        return Ok(());
     }
 
     index_multi_drive(&drive_list, &output).await

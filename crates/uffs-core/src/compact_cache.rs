@@ -265,12 +265,12 @@ fn rebuild_ext_names(
             continue;
         }
         let nm = rec.name(names);
-        if let Some(dot) = nm.rfind('.') {
-            if let Some(ext_raw) = nm.get(dot + 1..) {
-                let folded = fold.fold_into(ext_raw, &mut fold_buf);
-                if let Some(slot) = table.get_mut(idx) {
-                    *slot = Some(Box::from(folded));
-                }
+        if let Some(dot) = nm.rfind('.')
+            && let Some(ext_raw) = nm.get(dot + 1..)
+        {
+            let folded = fold.fold_into(ext_raw, &mut fold_buf);
+            if let Some(slot) = table.get_mut(idx) {
+                *slot = Some(Box::from(folded));
             }
         }
     }
@@ -419,16 +419,15 @@ pub fn load_compact_cache(
     // Skipped when `trust_ttl_only` — caller trusts the TTL is sufficient.
     if !trust_ttl_only {
         let mft_path = uffs_mft::cache::cache_file_path(drive_letter);
-        if let Ok(mft_meta) = std::fs::metadata(&mft_path) {
-            if let Ok(mft_mtime) = mft_meta.modified() {
-                if mft_mtime > compact_mtime {
-                    tracing::debug!(
-                        drive = %drive_letter,
-                        "Compact cache older than MftIndex cache — rebuilding"
-                    );
-                    return None;
-                }
-            }
+        if let Ok(mft_meta) = std::fs::metadata(&mft_path)
+            && let Ok(mft_mtime) = mft_meta.modified()
+            && mft_mtime > compact_mtime
+        {
+            tracing::debug!(
+                drive = %drive_letter,
+                "Compact cache older than MftIndex cache — rebuilding"
+            );
+            return None;
         }
     }
 
@@ -456,24 +455,23 @@ pub fn load_compact_cache(
     let plaintext_len = plaintext.len();
 
     // Early staleness check — inspect header before full deserialization.
-    if mft_build_epoch > 0 {
-        if let Ok((source_epoch, _, _)) = parse_compact_header(&plaintext) {
-            if source_epoch < mft_build_epoch {
-                tracing::debug!(
-                    target: "cache_profile",
-                    source_epoch,
-                    mft_build_epoch,
-                    "compact: STALE"
-                );
-                tracing::debug!(
-                    drive = %drive_letter,
-                    compact_epoch = source_epoch,
-                    mft_epoch = mft_build_epoch,
-                    "Compact cache stale (source_epoch < mft build_epoch) — rebuilding"
-                );
-                return None;
-            }
-        }
+    if mft_build_epoch > 0
+        && let Ok((source_epoch, _, _)) = parse_compact_header(&plaintext)
+        && source_epoch < mft_build_epoch
+    {
+        tracing::debug!(
+            target: "cache_profile",
+            source_epoch,
+            mft_build_epoch,
+            "compact: STALE"
+        );
+        tracing::debug!(
+            drive = %drive_letter,
+            compact_epoch = source_epoch,
+            mft_epoch = mft_build_epoch,
+            "Compact cache stale (source_epoch < mft build_epoch) — rebuilding"
+        );
+        return None;
     }
 
     let t_deser = Instant::now();
@@ -607,7 +605,7 @@ fn read_u32(data: &[u8], offset: usize) -> u32 {
 fn aligned_vec_from_bytes<T: bytemuck::Pod>(bytes: &[u8]) -> Vec<T> {
     let elem_size = size_of::<T>();
     assert!(
-        elem_size > 0 && bytes.len() % elem_size == 0,
+        elem_size > 0 && bytes.len().is_multiple_of(elem_size),
         "byte slice length {} is not a multiple of element size {}",
         bytes.len(),
         elem_size,

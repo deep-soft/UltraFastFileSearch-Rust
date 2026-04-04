@@ -95,12 +95,12 @@ impl ParsedPattern {
         let first = chars.next();
         let second = chars.next();
 
-        if let (Some(drive_char), Some(':')) = (first, second) {
-            if drive_char.is_ascii_alphabetic() {
-                let drive = drive_char.to_ascii_uppercase();
-                let remaining = input.get(2..).unwrap_or("");
-                return (Some(drive), remaining);
-            }
+        if let (Some(drive_char), Some(':')) = (first, second)
+            && drive_char.is_ascii_alphabetic()
+        {
+            let drive = drive_char.to_ascii_uppercase();
+            let remaining = input.get(2..).unwrap_or("");
+            return (Some(drive), remaining);
         }
 
         (None, input)
@@ -116,11 +116,12 @@ impl ParsedPattern {
         let second = chars.next();
         let third = chars.next();
 
-        if let (Some(drive_char), Some(':'), Some(sep)) = (first, second, third) {
-            if drive_char.is_ascii_alphabetic() && (sep == '\\' || sep == '/') {
-                let drive = drive_char.to_ascii_uppercase();
-                return (Some(drive), pattern);
-            }
+        if let (Some(drive_char), Some(':'), Some(sep)) = (first, second, third)
+            && drive_char.is_ascii_alphabetic()
+            && (sep == '\\' || sep == '/')
+        {
+            let drive = drive_char.to_ascii_uppercase();
+            return (Some(drive), pattern);
         }
 
         (None, pattern)

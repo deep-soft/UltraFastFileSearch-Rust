@@ -81,12 +81,12 @@ path = "src/bin/verify_iocp_capture.rs"
 anyhow.workspace = true
 
 # Date/time formatting for reports
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono.workspace = true
 rayon.workspace = true
 
 # Cryptographic hashing for verification
-sha2 = "0.10"
-hex = "0.4"
+sha2.workspace = true
+hex.workspace = true
 
 # MFT reading (for raw file parsing and Windows extent diagnostics)
 uffs-mft.workspace = true

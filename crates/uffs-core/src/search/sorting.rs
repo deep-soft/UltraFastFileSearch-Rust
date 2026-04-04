@@ -160,16 +160,28 @@ fn compare_by_column(
 
 /// Parse a `--sort` value like `"name:asc,modified:desc"` into sort specs.
 ///
+/// Supports three direction syntaxes:
+/// - Prefix: `-size` means descending, bare `size` means ascending
+/// - Suffix: `size:desc` or `size:asc` (explicit)
+///
+/// Without any direction hint, the field-type default is used.
+///
 /// Any field recognised by `FieldId::parse` that is also sortable is accepted.
 #[must_use]
 pub fn parse_sort_spec(sort_str: &str) -> Vec<SortSpec> {
     let mut specs = Vec::new();
     for raw_part in sort_str.split(',') {
         let trimmed = raw_part.trim();
-        let (col_str, dir_str) = if let Some((col, dir)) = trimmed.split_once(':') {
+
+        // Check for `-` prefix (e.g. "-modified" → descending).
+        let (has_dash_prefix, after_dash) = trimmed
+            .strip_prefix('-')
+            .map_or((false, trimmed), |rest| (true, rest));
+
+        let (col_str, dir_str) = if let Some((col, dir)) = after_dash.split_once(':') {
             (col.trim(), Some(dir.trim()))
         } else {
-            (trimmed, None)
+            (after_dash, None)
         };
         let Some(field) = FieldId::parse(col_str) else {
             continue;
@@ -180,6 +192,7 @@ pub fn parse_sort_spec(sort_str: &str) -> Vec<SortSpec> {
         let descending = match dir_str {
             Some("desc") => true,
             Some("asc") => false,
+            _ if has_dash_prefix => true,
             _ => matches!(
                 field.default_sort_direction(),
                 Some(super::field::SortDirection::Descending)

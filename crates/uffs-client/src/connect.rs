@@ -222,7 +222,7 @@ impl UffsClient {
         loop {
             let mut line = String::new();
             let read_result = tokio::time::timeout(
-                core::time::Duration::from_secs(300),
+                core::time::Duration::from_mins(5),
                 self.reader.read_line(&mut line),
             )
             .await
@@ -239,16 +239,17 @@ impl UffsClient {
             let trimmed = line.trim();
 
             // Check if this is a notification (has "method" but no "id")
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if value.get("method").is_some() && value.get("id").is_none() {
-                    // It's a notification — route to channel
-                    if let Ok(notif) =
-                        serde_json::from_value::<crate::protocol::RpcNotification>(value)
-                    {
-                        drop(self.notification_tx.send(notif));
-                    }
-                    continue; // keep reading for the actual response
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
+                && value.get("method").is_some()
+                && value.get("id").is_none()
+            {
+                // It's a notification — route to channel
+                if let Ok(notif) =
+                    serde_json::from_value::<crate::protocol::RpcNotification>(value)
+                {
+                    drop(self.notification_tx.send(notif));
                 }
+                continue; // keep reading for the actual response
             }
 
             // It's a response — could be success (has `result`) or error (has `error`).
