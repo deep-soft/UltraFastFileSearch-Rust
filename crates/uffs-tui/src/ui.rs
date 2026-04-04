@@ -170,7 +170,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
     // Sort indicator helper — appends ▲/▼ to the active column header
     let sort_arrow = if app.sort_desc() { " ▼" } else { " ▲" };
     let current_sort = app.sort_column();
-    let col_header = |col: backend::SortColumn, label: &str| -> Line<'static> {
+    let col_header = |col: backend::FieldId, label: &str| -> Line<'static> {
         if col == current_sort {
             Line::from(vec![
                 Span::styled(
@@ -193,7 +193,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
     let vis = &app.visible_columns;
     let header_cells: Vec<Cell> = vis
         .iter()
-        .map(|col| Cell::from(col_header(col.to_sort_column(), col.label())))
+        .map(|col| Cell::from(col_header(col.nearest_sort_field(), col.tui_label())))
         .collect();
     let header = Row::new(header_cells)
         .style(
@@ -263,7 +263,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .border_style(results_border)
                 .title({
-                    let sort_label = app.sort_column().label();
+                    let sort_label = app.sort_column().tui_label();
                     let dir_label = if app.sort_desc() { "▼" } else { "▲" };
                     let filter_label = app.filter_label();
                     let mode_label = if app.input_text().is_empty() {
@@ -543,14 +543,14 @@ fn truncate_path(path: &str, max_len: usize) -> String {
     reason = "large cell-rendering logic; separation keeps table-drawing code readable"
 )]
 fn build_cell<'a>(
-    col: backend::TuiColumn,
+    col: backend::FieldId,
     row: &backend::DisplayRow,
     highlight_terms: &[&str],
     drive_colors: &std::collections::HashMap<char, Color>,
 ) -> Cell<'a> {
-    use backend::TuiColumn;
+    use backend::FieldId;
     match col {
-        TuiColumn::Drive => Cell::from(Line::from(Span::styled(
+        FieldId::Drive => Cell::from(Line::from(Span::styled(
             row.drive.to_string(),
             Style::default()
                 .fg(drive_colors
@@ -559,7 +559,7 @@ fn build_cell<'a>(
                     .unwrap_or(Color::White))
                 .add_modifier(Modifier::BOLD),
         ))),
-        TuiColumn::Name => {
+        FieldId::Name => {
             let fi = devicons::icon_for_file(row.name(), &None);
             let icon_str = fi.icon.to_string();
             let icon_color = devicon_color(fi.color);
@@ -577,23 +577,23 @@ fn build_cell<'a>(
             ));
             Cell::from(Line::from(spans))
         }
-        TuiColumn::Size => Cell::from(Line::from(Span::styled(
+        FieldId::Size => Cell::from(Line::from(Span::styled(
             uffs_core::format::format_bytes(row.size),
             Style::default().fg(Color::Yellow),
         ))),
-        TuiColumn::Modified => Cell::from(Line::from(Span::styled(
+        FieldId::Modified => Cell::from(Line::from(Span::styled(
             uffs_core::format::format_timestamp(row.modified),
             Style::default().fg(Color::DarkGray),
         ))),
-        TuiColumn::Created => Cell::from(Line::from(Span::styled(
+        FieldId::Created => Cell::from(Line::from(Span::styled(
             uffs_core::format::format_timestamp(row.created),
             Style::default().fg(Color::DarkGray),
         ))),
-        TuiColumn::Accessed => Cell::from(Line::from(Span::styled(
+        FieldId::Accessed => Cell::from(Line::from(Span::styled(
             uffs_core::format::format_timestamp(row.accessed),
             Style::default().fg(Color::DarkGray),
         ))),
-        TuiColumn::Path => {
+        FieldId::Path => {
             let path_display = truncate_path(&row.path, 60);
             let path_spans = highlight_multi(
                 &path_display,
@@ -605,7 +605,7 @@ fn build_cell<'a>(
             );
             Cell::from(Line::from(path_spans))
         }
-        TuiColumn::PathOnly => {
+        FieldId::PathOnly => {
             let dir = row
                 .path
                 .rfind('\\')
@@ -617,18 +617,18 @@ fn build_cell<'a>(
                 Style::default().fg(Color::DarkGray),
             )))
         }
-        TuiColumn::SizeOnDisk => Cell::from(Line::from(Span::styled(
+        FieldId::SizeOnDisk => Cell::from(Line::from(Span::styled(
             uffs_core::format::format_bytes(row.allocated),
             Style::default().fg(Color::Yellow),
         ))),
-        TuiColumn::Extension => {
+        FieldId::Extension => {
             let ext = row.name().rsplit('.').next().unwrap_or("");
             Cell::from(Line::from(Span::styled(
                 ext.to_owned(),
                 Style::default().fg(Color::Cyan),
             )))
         }
-        TuiColumn::Type => {
+        FieldId::Type => {
             let fi = devicons::icon_for_file(row.name(), &None);
             Cell::from(Line::from(Span::styled(
                 fi.icon.to_string(),
@@ -636,34 +636,34 @@ fn build_cell<'a>(
             )))
         }
         // ── formatted attribute string ─────────────────────────────
-        TuiColumn::Attributes => Cell::from(Line::from(Span::styled(
+        FieldId::Attributes => Cell::from(Line::from(Span::styled(
             format_ntfs_attrs(row.flags),
             Style::default().fg(Color::Magenta),
         ))),
-        TuiColumn::AttributeValue => Cell::from(Line::from(Span::styled(
+        FieldId::AttributeValue => Cell::from(Line::from(Span::styled(
             format!("{:06X}", row.flags),
             Style::default().fg(Color::DarkGray),
         ))),
         // ── individual attribute booleans ───────────────────────────
-        TuiColumn::Hidden => attr_cell(row.flags, 0x0002),
-        TuiColumn::System => attr_cell(row.flags, 0x0004),
-        TuiColumn::Archive => attr_cell(row.flags, 0x0020),
-        TuiColumn::ReadOnly => attr_cell(row.flags, 0x0001),
-        TuiColumn::Compressed => attr_cell(row.flags, 0x0800),
-        TuiColumn::Encrypted => attr_cell(row.flags, 0x4000),
-        TuiColumn::Sparse => attr_cell(row.flags, 0x0200),
-        TuiColumn::Reparse => attr_cell(row.flags, 0x0400),
-        TuiColumn::Offline => attr_cell(row.flags, 0x1000),
-        TuiColumn::NotIndexed => attr_cell(row.flags, 0x2000),
-        TuiColumn::Temporary => attr_cell(row.flags, 0x0100),
-        TuiColumn::Virtual => attr_cell(row.flags, 0x0001_0000),
-        TuiColumn::Pinned => attr_cell(row.flags, 0x0008_0000),
-        TuiColumn::Unpinned => attr_cell(row.flags, 0x0010_0000),
-        TuiColumn::Integrity => attr_cell(row.flags, 0x8000),
-        TuiColumn::NoScrub => attr_cell(row.flags, 0x0002_0000),
-        TuiColumn::DirectoryFlag => attr_cell(row.flags, 0x0010),
+        FieldId::Hidden => attr_cell(row.flags, 0x0002),
+        FieldId::System => attr_cell(row.flags, 0x0004),
+        FieldId::Archive => attr_cell(row.flags, 0x0020),
+        FieldId::ReadOnly => attr_cell(row.flags, 0x0001),
+        FieldId::Compressed => attr_cell(row.flags, 0x0800),
+        FieldId::Encrypted => attr_cell(row.flags, 0x4000),
+        FieldId::Sparse => attr_cell(row.flags, 0x0200),
+        FieldId::Reparse => attr_cell(row.flags, 0x0400),
+        FieldId::Offline => attr_cell(row.flags, 0x1000),
+        FieldId::NotIndexed => attr_cell(row.flags, 0x2000),
+        FieldId::Temporary => attr_cell(row.flags, 0x0100),
+        FieldId::Virtual => attr_cell(row.flags, 0x0001_0000),
+        FieldId::Pinned => attr_cell(row.flags, 0x0008_0000),
+        FieldId::Unpinned => attr_cell(row.flags, 0x0010_0000),
+        FieldId::Integrity => attr_cell(row.flags, 0x8000),
+        FieldId::NoScrub => attr_cell(row.flags, 0x0002_0000),
+        FieldId::DirectoryFlag => attr_cell(row.flags, 0x0010),
         // ── tree metrics ───────────────────────────────────────────
-        TuiColumn::Descendants => Cell::from(Line::from(Span::styled(
+        FieldId::Descendants => Cell::from(Line::from(Span::styled(
             if row.descendants > 0 {
                 format!("{}", row.descendants)
             } else {
@@ -671,13 +671,22 @@ fn build_cell<'a>(
             },
             Style::default().fg(Color::Cyan),
         ))),
-        TuiColumn::TreeSize => Cell::from(Line::from(Span::styled(
+        FieldId::TreeSize => Cell::from(Line::from(Span::styled(
             if row.treesize > 0 {
                 uffs_core::format::format_bytes(row.treesize)
             } else {
                 String::new()
             },
             Style::default().fg(Color::Yellow),
+        ))),
+        // Remaining FieldId variants: show canonical name as fallback.
+        FieldId::TreeAllocated
+        | FieldId::Bulkiness
+        | FieldId::RecallOnOpen
+        | FieldId::RecallOnDataAccess
+        | FieldId::ParityAttributes => Cell::from(Line::from(Span::styled(
+            col.canonical_name().to_owned(),
+            Style::default().fg(Color::DarkGray),
         ))),
     }
 }

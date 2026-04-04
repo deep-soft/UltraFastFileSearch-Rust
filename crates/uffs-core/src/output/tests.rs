@@ -261,6 +261,7 @@ fn test_parity_compat_directory_formatting() {
     use crate::search::backend::DisplayRow;
 
     let file_row = DisplayRow::new(
+        0,
         'C',
         "C:\\Temp\\hello.txt".to_owned(),
         1024,
@@ -276,6 +277,7 @@ fn test_parity_compat_directory_formatting() {
     );
 
     let dir_row = DisplayRow::new(
+        0,
         'C',
         "C:\\Temp".to_owned(),
         0,
@@ -368,6 +370,7 @@ fn test_parity_root_no_double_trailing_backslash() {
     use crate::search::backend::DisplayRow;
 
     let root_row = DisplayRow::new(
+        0,
         'G',
         "G:\\".to_owned(),
         0,

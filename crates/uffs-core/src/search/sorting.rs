@@ -3,7 +3,9 @@
 //! Extracted from `backend.rs` for file-size policy compliance.
 //! Re-exported via `pub use` in `backend.rs` — callers see no change.
 
-use super::backend::{DisplayRow, SortColumn, SortSpec};
+use super::backend::{DisplayRow, SortSpec};
+use super::derived::{bulkiness_for_row, semantic_type_for_row, tree_allocated_for_row};
+use super::field::FieldId;
 
 /// Pre-computed folded sort keys for a single row.
 ///
@@ -14,8 +16,12 @@ struct RowSortKey {
     name: String,
     /// Folded path.
     path: String,
+    /// Folded directory path only.
+    path_only: String,
     /// Folded extension.
     ext: String,
+    /// Folded semantic type/category.
+    file_type: String,
 }
 
 /// Sort display rows by the given column, then by additional tiers, with a
@@ -26,7 +32,7 @@ struct RowSortKey {
 /// transform).
 pub fn sort_rows(
     rows: &mut [DisplayRow],
-    column: SortColumn,
+    column: FieldId,
     descending: bool,
     extra_tiers: &[SortSpec],
 ) {
@@ -42,7 +48,7 @@ pub fn sort_rows(
 /// Sort display rows using a specific `CaseFold` engine.
 pub fn sort_rows_with_fold(
     rows: &mut [DisplayRow],
-    column: SortColumn,
+    column: FieldId,
     descending: bool,
     extra_tiers: &[SortSpec],
     fold: uffs_text::CaseFold,
@@ -58,8 +64,12 @@ pub fn sort_rows_with_fold(
             let key = RowSortKey {
                 name: fold.fold_into(row.name(), &mut fold_buf).to_owned(),
                 path: fold.fold_into(&row.path, &mut fold_buf).to_owned(),
+                path_only: fold.fold_into(row.path_dir(), &mut fold_buf).to_owned(),
                 ext: fold
                     .fold_into(row.name().rsplit('.').next().unwrap_or(""), &mut fold_buf)
+                    .to_owned(),
+                file_type: fold
+                    .fold_into(semantic_type_for_row(row), &mut fold_buf)
                     .to_owned(),
             };
             // Take ownership; we'll put it back after sorting.
@@ -84,10 +94,8 @@ pub fn sort_rows_with_fold(
         }
         // Name tiebreaker.
         if ord == core::cmp::Ordering::Equal
-            && column != SortColumn::Name
-            && !extra_tiers
-                .iter()
-                .any(|tier| tier.column == SortColumn::Name)
+            && column != FieldId::Name
+            && !extra_tiers.iter().any(|tier| tier.column == FieldId::Name)
         {
             ord = key_a.name.cmp(&key_b.name);
         }
@@ -106,28 +114,53 @@ fn compare_by_column(
     key_a: &RowSortKey,
     row_b: &DisplayRow,
     key_b: &RowSortKey,
-    column: SortColumn,
+    column: FieldId,
 ) -> core::cmp::Ordering {
     match column {
-        SortColumn::Name => key_a.name.cmp(&key_b.name),
-        SortColumn::Size => row_a.size.cmp(&row_b.size),
-        SortColumn::SizeOnDisk => row_a.allocated.cmp(&row_b.allocated),
-        SortColumn::Created => row_a.created.cmp(&row_b.created),
-        SortColumn::Modified => row_a.modified.cmp(&row_b.modified),
-        SortColumn::Accessed => row_a.accessed.cmp(&row_b.accessed),
-        SortColumn::Path => key_a.path.cmp(&key_b.path),
-        SortColumn::Drive => row_a.drive.cmp(&row_b.drive),
-        SortColumn::Extension => key_a.ext.cmp(&key_b.ext),
-        SortColumn::Type => {
-            let icon_a = devicons::icon_for_file(row_a.name(), &None).icon;
-            let icon_b = devicons::icon_for_file(row_b.name(), &None).icon;
-            icon_a.cmp(&icon_b)
-        }
-        SortColumn::Descendants => row_a.descendants.cmp(&row_b.descendants),
+        FieldId::Size => row_a.size.cmp(&row_b.size),
+        FieldId::SizeOnDisk => row_a.allocated.cmp(&row_b.allocated),
+        FieldId::Created => row_a.created.cmp(&row_b.created),
+        FieldId::Modified => row_a.modified.cmp(&row_b.modified),
+        FieldId::Accessed => row_a.accessed.cmp(&row_b.accessed),
+        FieldId::Path => key_a.path.cmp(&key_b.path),
+        FieldId::PathOnly => key_a.path_only.cmp(&key_b.path_only),
+        FieldId::Drive => row_a.drive.cmp(&row_b.drive),
+        FieldId::Extension => key_a.ext.cmp(&key_b.ext),
+        FieldId::Type => key_a.file_type.cmp(&key_b.file_type),
+        FieldId::Descendants => row_a.descendants.cmp(&row_b.descendants),
+        FieldId::TreeAllocated => tree_allocated_for_row(row_a).cmp(&tree_allocated_for_row(row_b)),
+        FieldId::Bulkiness => bulkiness_for_row(row_a).cmp(&bulkiness_for_row(row_b)),
+        // Non-sortable / unsortable fields: fall back to name ordering.
+        FieldId::Name
+        | FieldId::Attributes
+        | FieldId::AttributeValue
+        | FieldId::Hidden
+        | FieldId::System
+        | FieldId::Archive
+        | FieldId::ReadOnly
+        | FieldId::Compressed
+        | FieldId::Encrypted
+        | FieldId::Sparse
+        | FieldId::Reparse
+        | FieldId::Offline
+        | FieldId::NotIndexed
+        | FieldId::Temporary
+        | FieldId::Virtual
+        | FieldId::Pinned
+        | FieldId::Unpinned
+        | FieldId::TreeSize
+        | FieldId::Integrity
+        | FieldId::NoScrub
+        | FieldId::DirectoryFlag
+        | FieldId::RecallOnOpen
+        | FieldId::RecallOnDataAccess
+        | FieldId::ParityAttributes => key_a.name.cmp(&key_b.name),
     }
 }
 
 /// Parse a `--sort` value like `"name:asc,modified:desc"` into sort specs.
+///
+/// Any field recognised by `FieldId::parse` that is also sortable is accepted.
 #[must_use]
 pub fn parse_sort_spec(sort_str: &str) -> Vec<SortSpec> {
     let mut specs = Vec::new();
@@ -138,58 +171,42 @@ pub fn parse_sort_spec(sort_str: &str) -> Vec<SortSpec> {
         } else {
             (trimmed, None)
         };
-        let parsed_column = match col_str.to_ascii_lowercase().as_str() {
-            "name" => Some(SortColumn::Name),
-            "size" => Some(SortColumn::Size),
-            "sizeondisk" | "allocated" => Some(SortColumn::SizeOnDisk),
-            "created" => Some(SortColumn::Created),
-            "modified" | "date" | "written" => Some(SortColumn::Modified),
-            "accessed" => Some(SortColumn::Accessed),
-            "path" => Some(SortColumn::Path),
-            "drive" => Some(SortColumn::Drive),
-            "ext" | "extension" => Some(SortColumn::Extension),
-            "type" => Some(SortColumn::Type),
-            "descendants" => Some(SortColumn::Descendants),
-            _ => None,
+        let Some(field) = FieldId::parse(col_str) else {
+            continue;
         };
-        if let Some(column) = parsed_column {
-            let descending = match dir_str {
-                Some("desc") => true,
-                Some("asc") => false,
-                _ => match column {
-                    SortColumn::Size
-                    | SortColumn::SizeOnDisk
-                    | SortColumn::Created
-                    | SortColumn::Modified
-                    | SortColumn::Accessed
-                    | SortColumn::Descendants => true,
-                    SortColumn::Name
-                    | SortColumn::Path
-                    | SortColumn::Drive
-                    | SortColumn::Extension
-                    | SortColumn::Type => false,
-                },
-            };
-            specs.push(SortSpec { column, descending });
+        if !field.metadata().sortable {
+            continue;
         }
+        let descending = match dir_str {
+            Some("desc") => true,
+            Some("asc") => false,
+            _ => matches!(
+                field.default_sort_direction(),
+                Some(super::field::SortDirection::Descending)
+            ),
+        };
+        specs.push(SortSpec {
+            column: field,
+            descending,
+        });
     }
     specs
 }
 
 /// Format the current sort state back into a CLI-compatible sort string.
 #[must_use]
-pub fn format_sort_spec(primary: SortColumn, primary_desc: bool, extra: &[SortSpec]) -> String {
+pub fn format_sort_spec(primary: FieldId, primary_desc: bool, extra: &[SortSpec]) -> String {
     let mut parts = Vec::with_capacity(1 + extra.len());
     let dir = |desc: bool| if desc { "desc" } else { "asc" };
     parts.push(format!(
         "{}:{}",
-        primary.label().to_ascii_lowercase(),
+        primary.canonical_name(),
         dir(primary_desc)
     ));
     for spec in extra {
         parts.push(format!(
             "{}:{}",
-            spec.column.label().to_ascii_lowercase(),
+            spec.column.canonical_name(),
             dir(spec.descending)
         ));
     }
@@ -220,6 +237,8 @@ pub fn display_rows_to_dataframe(
     let drives: Vec<String> = rows.iter().map(|row| format!("{}:", row.drive)).collect();
     let descendants: Vec<u32> = rows.iter().map(|row| row.descendants).collect();
     let treesize: Vec<u64> = rows.iter().map(|row| row.treesize).collect();
+    let tree_allocated: Vec<u64> = rows.iter().map(tree_allocated_for_row).collect();
+    let bulkiness: Vec<u64> = rows.iter().map(bulkiness_for_row).collect();
 
     // path_only = directory portion of path (up to and including last backslash).
     let path_only: Vec<&str> = rows.iter().map(DisplayRow::path_dir).collect();
@@ -239,6 +258,8 @@ pub fn display_rows_to_dataframe(
             Column::new("drive".into(), &drives),
             Column::new("descendants".into(), &descendants),
             Column::new("treesize".into(), &treesize),
+            Column::new("tree_allocated".into(), &tree_allocated),
+            Column::new("bulkiness".into(), &bulkiness),
         ],
     )
 }
@@ -287,6 +308,7 @@ pub fn dataframe_to_display_rows(
         let tree_allocated = col_u64(data_frame, "tree_allocated", row_idx);
 
         rows.push(DisplayRow::new(
+            row_idx as u32,
             drive,
             path,
             size,

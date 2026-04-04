@@ -110,6 +110,7 @@ impl DaemonBackend {
             .into_iter()
             .map(|row| {
                 DisplayRow::new(
+                    0,
                     row.drive,
                     row.path,
                     row.size,
@@ -121,7 +122,7 @@ impl DaemonBackend {
                     row.allocated,
                     row.descendants,
                     row.treesize,
-                    0,
+                    row.tree_allocated,
                 )
             })
             .collect();

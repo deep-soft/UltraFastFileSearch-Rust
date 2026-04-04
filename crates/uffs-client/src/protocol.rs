@@ -82,6 +82,111 @@ pub const ERR_INVALID_PARAMS: i32 = -32602;
 /// Internal error.
 pub const ERR_INTERNAL: i32 = -32603;
 
+/// Canonical result filter mode for file-vs-directory selection.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchFilterMode {
+    /// Return both files and directories.
+    All,
+    /// Return files only.
+    Files,
+    /// Return directories only.
+    Dirs,
+}
+
+/// Canonical sort direction in the daemon wire contract.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchSortDirection {
+    /// Ascending order.
+    Asc,
+    /// Descending order.
+    Desc,
+}
+
+/// Canonical sort clause in the daemon wire contract.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SearchSortSpec {
+    /// Canonical field name or accepted alias.
+    pub field: String,
+    /// Explicit direction. When omitted, the daemon applies the field default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direction: Option<SearchSortDirection>,
+}
+
+/// Canonical predicate operator in the daemon wire contract.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchPredicateOp {
+    /// Equality comparison.
+    Eq,
+    /// Inequality comparison.
+    Ne,
+    /// Strictly less-than comparison.
+    Lt,
+    /// Less-than-or-equal comparison.
+    Lte,
+    /// Strictly greater-than comparison.
+    Gt,
+    /// Greater-than-or-equal comparison.
+    Gte,
+    /// Membership in a set of values.
+    In,
+    /// Exclusion from a set of values.
+    NotIn,
+    /// Field contains all listed values.
+    HasAll,
+    /// Field contains any listed value.
+    HasAny,
+    /// Field contains none of the listed values.
+    HasNone,
+    /// Pattern/glob match.
+    Match,
+    /// Negated pattern/glob match.
+    NotMatch,
+}
+
+/// Canonical predicate value in the daemon wire contract.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum SearchPredicateValue {
+    /// String scalar.
+    String(String),
+    /// String list.
+    StringList(Vec<String>),
+    /// Unsigned integer scalar.
+    U64(u64),
+    /// Signed integer scalar.
+    I64(i64),
+    /// Boolean scalar.
+    Bool(bool),
+}
+
+/// Canonical predicate clause in the daemon wire contract.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SearchPredicate {
+    /// Canonical field name or accepted alias.
+    pub field: String,
+    /// Comparison operator.
+    pub op: SearchPredicateOp,
+    /// Predicate operand.
+    pub value: SearchPredicateValue,
+}
+
+/// Canonical response shaping mode for direct daemon callers.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchResponseMode {
+    /// Traditional full-row response.
+    Rows,
+    /// Projected JSON objects keyed by projected field name.
+    Json,
+    /// Projected CSV text using daemon defaults.
+    Csv,
+    /// Projected table text using daemon defaults.
+    Table,
+}
+
 // Application error codes (daemon-specific)
 /// Daemon is still loading indices.
 pub const ERR_NOT_READY: i32 = -1;
@@ -97,7 +202,7 @@ pub const ERR_BAD_PATTERN: i32 = -2;
 /// All filter fields mirror the CLI surface; see
 /// [`uffs_core::search::filters::SearchFilters`] for semantics.
 /// Every field is optional — omitted fields impose no constraint.
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "JSON wire type — bools are the natural encoding"
@@ -117,6 +222,9 @@ pub struct SearchParams {
     /// Sort column name (e.g. `"modified"`, `"size"`, `"name"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort: Option<String>,
+    /// Canonical ordered sort clauses. Preferred over legacy `sort`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sorts: Vec<SearchSortSpec>,
     /// Sort direction: `true` = descending.
     #[serde(default)]
     pub sort_desc: bool,
@@ -130,9 +238,21 @@ pub struct SearchParams {
     /// Filter mode: `"all"` (default), `"files"`, `"dirs"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
+    /// Canonical filter mode. Preferred over legacy `filter`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter_mode: Option<SearchFilterMode>,
+    /// Canonical predicates. Preferred over legacy filter fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub predicates: Vec<SearchPredicate>,
     /// Specific drives to search (empty = all loaded).
     #[serde(default)]
     pub drives: Vec<char>,
+    /// Requested projection fields in canonical order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projection: Vec<String>,
+    /// Requested response shaping mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_mode: Option<SearchResponseMode>,
 
     // ── Size filters ───────────────────────────────────────────────
     /// Minimum file size in bytes.
@@ -194,6 +314,253 @@ pub struct SearchParams {
     /// Request detailed timing breakdown from the daemon.
     #[serde(default)]
     pub profile: bool,
+}
+
+impl SearchParams {
+    /// Resolve the effective filter mode, preferring the canonical field.
+    #[must_use]
+    pub fn resolved_filter_mode(&self) -> SearchFilterMode {
+        self.filter_mode.unwrap_or(match self.filter.as_deref() {
+            Some("files") => SearchFilterMode::Files,
+            Some("dirs") => SearchFilterMode::Dirs,
+            _ => SearchFilterMode::All,
+        })
+    }
+
+    /// Resolve the effective sort clauses, preferring the canonical vector.
+    #[must_use]
+    pub fn resolved_sorts(&self) -> Vec<SearchSortSpec> {
+        if self.sorts.is_empty() {
+            self.sort.as_deref().map_or_else(Vec::new, |sort| {
+                Self::canonicalize_legacy_sort(sort, self.sort_desc)
+            })
+        } else {
+            self.sorts.clone()
+        }
+    }
+
+    /// Resolve the effective canonical predicate list.
+    #[must_use]
+    pub fn resolved_predicates(&self) -> Vec<SearchPredicate> {
+        if !self.predicates.is_empty() {
+            return self.predicates.clone();
+        }
+
+        let mut predicates = Vec::new();
+        self.push_bound_predicates(&mut predicates);
+        self.push_legacy_time_predicates(&mut predicates);
+        self.push_extension_and_exclude(&mut predicates);
+        self.push_attr_predicates(&mut predicates);
+
+        if self.hide_system {
+            predicates.push(SearchPredicate {
+                field: "system_name".to_owned(),
+                op: SearchPredicateOp::Eq,
+                value: SearchPredicateValue::Bool(false),
+            });
+        }
+
+        predicates
+    }
+
+    /// Push size and descendant bound predicates from legacy fields.
+    fn push_bound_predicates(&self, predicates: &mut Vec<SearchPredicate>) {
+        if let Some(min_size) = self.min_size {
+            predicates.push(SearchPredicate {
+                field: "size".to_owned(),
+                op: SearchPredicateOp::Gte,
+                value: SearchPredicateValue::U64(min_size),
+            });
+        }
+        if let Some(max_size) = self.max_size {
+            predicates.push(SearchPredicate {
+                field: "size".to_owned(),
+                op: SearchPredicateOp::Lte,
+                value: SearchPredicateValue::U64(max_size),
+            });
+        }
+        if let Some(min_descendants) = self.min_descendants {
+            predicates.push(SearchPredicate {
+                field: "descendants".to_owned(),
+                op: SearchPredicateOp::Gte,
+                value: SearchPredicateValue::U64(u64::from(min_descendants)),
+            });
+        }
+        if let Some(max_descendants) = self.max_descendants {
+            predicates.push(SearchPredicate {
+                field: "descendants".to_owned(),
+                op: SearchPredicateOp::Lte,
+                value: SearchPredicateValue::U64(u64::from(max_descendants)),
+            });
+        }
+    }
+
+    /// Push all six legacy time-bound predicates (newer/older ×
+    /// modified/created/accessed).
+    fn push_legacy_time_predicates(&self, predicates: &mut Vec<SearchPredicate>) {
+        for (field, op, spec) in [
+            ("modified", SearchPredicateOp::Gte, self.newer.as_deref()),
+            ("modified", SearchPredicateOp::Lt, self.older.as_deref()),
+            (
+                "created",
+                SearchPredicateOp::Gte,
+                self.newer_created.as_deref(),
+            ),
+            (
+                "created",
+                SearchPredicateOp::Lt,
+                self.older_created.as_deref(),
+            ),
+            (
+                "accessed",
+                SearchPredicateOp::Gte,
+                self.newer_accessed.as_deref(),
+            ),
+            (
+                "accessed",
+                SearchPredicateOp::Lt,
+                self.older_accessed.as_deref(),
+            ),
+        ] {
+            if let Some(val) = spec {
+                predicates.push(SearchPredicate {
+                    field: field.to_owned(),
+                    op,
+                    value: SearchPredicateValue::String(val.to_owned()),
+                });
+            }
+        }
+    }
+
+    /// Push extension filter and exclude predicates from legacy fields.
+    fn push_extension_and_exclude(&self, predicates: &mut Vec<SearchPredicate>) {
+        if let Some(ext) = self.ext.as_deref() {
+            let values = ext
+                .split(',')
+                .map(|segment| segment.trim().trim_start_matches('.').to_owned())
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>();
+            if !values.is_empty() {
+                predicates.push(SearchPredicate {
+                    field: "extension".to_owned(),
+                    op: SearchPredicateOp::In,
+                    value: SearchPredicateValue::StringList(values),
+                });
+            }
+        }
+
+        if let Some(exclude) = self.exclude.as_ref() {
+            predicates.push(SearchPredicate {
+                field: "name".to_owned(),
+                op: SearchPredicateOp::NotMatch,
+                value: SearchPredicateValue::String(exclude.clone()),
+            });
+        }
+    }
+
+    /// Push attribute require/exclude predicates from legacy `--attr` flag.
+    fn push_attr_predicates(&self, predicates: &mut Vec<SearchPredicate>) {
+        let mut required = Vec::new();
+        let mut excluded = Vec::new();
+        if let Some(attr) = self.attr.as_deref() {
+            for part in attr.split(',') {
+                let trimmed = part.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Some(name) = trimmed.strip_prefix('!') {
+                    excluded.push(name.to_ascii_lowercase());
+                } else {
+                    required.push(trimmed.to_ascii_lowercase());
+                }
+            }
+        }
+        if !required.is_empty() {
+            predicates.push(SearchPredicate {
+                field: "attributes".to_owned(),
+                op: SearchPredicateOp::HasAll,
+                value: SearchPredicateValue::StringList(required),
+            });
+        }
+        if !excluded.is_empty() {
+            predicates.push(SearchPredicate {
+                field: "attributes".to_owned(),
+                op: SearchPredicateOp::HasNone,
+                value: SearchPredicateValue::StringList(excluded),
+            });
+        }
+    }
+
+    /// Resolve the requested response mode.
+    #[must_use]
+    pub fn resolved_response_mode(&self) -> SearchResponseMode {
+        self.response_mode.unwrap_or(SearchResponseMode::Rows)
+    }
+
+    /// Fill additive canonical fields from legacy fields in one shared place.
+    pub fn populate_canonical_fields(&mut self) {
+        if self.filter_mode.is_none() {
+            self.filter_mode = Some(self.resolved_filter_mode());
+        }
+        if self.sorts.is_empty() {
+            self.sorts = self.resolved_sorts();
+        }
+        if self.predicates.is_empty() {
+            self.predicates = self.resolved_predicates();
+        }
+        if self.response_mode.is_none() {
+            self.response_mode = Some(self.resolved_response_mode());
+        }
+    }
+
+    /// Canonicalize a legacy comma-separated sort string plus `sort_desc` flag.
+    #[must_use]
+    pub fn canonicalize_legacy_sort(sort: &str, sort_desc: bool) -> Vec<SearchSortSpec> {
+        sort.split(',')
+            .enumerate()
+            .filter_map(|(index, raw_part)| {
+                let trimmed = raw_part.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+
+                let (field, explicit_direction) = trimmed
+                    .split_once(':')
+                    .map_or((trimmed, None), |(lhs, rhs)| (lhs.trim(), Some(rhs.trim())));
+
+                // Parse explicit direction token (e.g. "size:desc").
+                let parsed_dir = explicit_direction.and_then(|dir| {
+                    match dir.trim().to_ascii_lowercase().as_str() {
+                        "asc" | "ascending" => Some(SearchSortDirection::Asc),
+                        "desc" | "descending" => Some(SearchSortDirection::Desc),
+                        _ => None,
+                    }
+                });
+
+                let direction = parsed_dir.or_else(|| {
+                    // First field inherits --sort-desc; others use field-type default.
+                    let default = match field.trim().to_ascii_lowercase().as_str() {
+                        "size" | "sizeondisk" | "size_on_disk" | "allocated" | "created"
+                        | "modified" | "written" | "date" | "accessed" | "descendants"
+                        | "treesize" | "tree_size" | "treeallocated" | "tree_allocated" => {
+                            SearchSortDirection::Desc
+                        }
+                        _ => SearchSortDirection::Asc,
+                    };
+                    Some(if index == 0 && sort_desc {
+                        SearchSortDirection::Desc
+                    } else {
+                        default
+                    })
+                });
+
+                Some(SearchSortSpec {
+                    field: field.to_owned(),
+                    direction,
+                })
+            })
+            .collect()
+    }
 }
 
 /// Parameters for the `refresh` method.
@@ -279,6 +646,21 @@ pub struct SearchResponse {
     /// `SearchParams::profile` was `true`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<SearchProfile>,
+    /// Effective canonical sort clauses applied by the daemon.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applied_sorts: Vec<SearchSortSpec>,
+    /// Effective projection fields applied by the daemon.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applied_projection: Vec<String>,
+    /// Response shaping mode for the payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_mode: Option<SearchResponseMode>,
+    /// Projected rows for direct daemon callers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projected_rows: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
+    /// Rendered text for CSV/table direct daemon callers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projected_text: Option<String>,
 }
 
 /// Daemon-side timing breakdown returned when `SearchParams::profile` is set.
@@ -560,6 +942,7 @@ pub fn format_time(unix_micros: i64) -> String {
 // ────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
 
@@ -601,6 +984,13 @@ mod tests {
             pattern: "*.rs".to_owned(),
             case_sensitive: true,
             limit: Some(100),
+            sorts: vec![SearchSortSpec {
+                field: "size".to_owned(),
+                direction: Some(SearchSortDirection::Desc),
+            }],
+            filter_mode: Some(SearchFilterMode::Files),
+            projection: vec!["path".to_owned(), "size".to_owned()],
+            response_mode: Some(SearchResponseMode::Json),
             ..Default::default()
         };
         let json = serde_json::to_value(&params).expect("serialize");
@@ -608,6 +998,35 @@ mod tests {
         assert_eq!(parsed.pattern, "*.rs");
         assert!(parsed.case_sensitive);
         assert_eq!(parsed.limit, Some(100));
+        assert_eq!(parsed.sorts.len(), 1);
+        assert_eq!(parsed.filter_mode, Some(SearchFilterMode::Files));
+        assert_eq!(parsed.response_mode, Some(SearchResponseMode::Json));
+    }
+
+    /// Canonical helpers preserve legacy single-flag sort semantics.
+    #[test]
+    fn canonicalize_legacy_sort_preserves_primary_sort_desc_override() {
+        let specs = SearchParams::canonicalize_legacy_sort("size,name", false);
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].field, "size");
+        assert_eq!(specs[0].direction, Some(SearchSortDirection::Desc));
+        assert_eq!(specs[1].field, "name");
+        assert_eq!(specs[1].direction, Some(SearchSortDirection::Asc));
+
+        let desc_specs = SearchParams::canonicalize_legacy_sort("name", true);
+        assert_eq!(desc_specs[0].direction, Some(SearchSortDirection::Desc));
+    }
+
+    /// Canonical helpers prefer the new filter field over the legacy one.
+    #[test]
+    fn resolved_filter_mode_prefers_canonical_field() {
+        let params = SearchParams {
+            filter: Some("dirs".to_owned()),
+            filter_mode: Some(SearchFilterMode::Files),
+            ..Default::default()
+        };
+
+        assert_eq!(params.resolved_filter_mode(), SearchFilterMode::Files);
     }
 
     /// D2.2.5: `DaemonStatus` serialize/deserialize.
@@ -652,6 +1071,20 @@ mod tests {
             shmem_path: None,
             shmem_count: None,
             profile: None,
+            applied_sorts: vec![SearchSortSpec {
+                field: "modified".to_owned(),
+                direction: Some(SearchSortDirection::Desc),
+            }],
+            applied_projection: vec!["path".to_owned(), "size".to_owned()],
+            response_mode: Some(SearchResponseMode::Rows),
+            projected_rows: Some(vec![serde_json::Map::from_iter([
+                (
+                    "path".to_owned(),
+                    serde_json::Value::String("C:\\test.rs".to_owned()),
+                ),
+                ("size".to_owned(), serde_json::Value::from(1024_u64)),
+            ])]),
+            projected_text: None,
         };
         let json = serde_json::to_string(&resp).expect("serialize");
         let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");
@@ -659,5 +1092,8 @@ mod tests {
         let first_row = parsed.rows.first().expect("at least one row");
         assert_eq!(first_row.name, "test.rs");
         assert_eq!(parsed.duration_ms, 8);
+        assert_eq!(parsed.applied_sorts.len(), 1);
+        assert_eq!(parsed.applied_projection.len(), 2);
+        assert!(parsed.projected_rows.is_some());
     }
 }

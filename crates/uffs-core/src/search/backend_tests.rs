@@ -8,6 +8,7 @@ use super::*;
 /// Build a minimal `DisplayRow` for sort / aggregation tests.
 fn row(name: &str, drive: char, size: u64, modified: i64, created: i64) -> DisplayRow {
     DisplayRow::new(
+        0,
         drive,
         format!("{drive}:\\{name}"),
         size,
@@ -25,6 +26,7 @@ fn row(name: &str, drive: char, size: u64, modified: i64, created: i64) -> Displ
 
 fn dir_row(name: &str, drive: char, descendants: u32, treesize: u64) -> DisplayRow {
     DisplayRow::new(
+        0,
         drive,
         format!("{drive}:\\{name}"),
         0,
@@ -336,7 +338,7 @@ fn display_rows_to_dataframe_column_count_and_height() {
     ];
     let df = display_rows_to_dataframe(&rows).expect("DataFrame creation must not fail");
     assert_eq!(df.height(), 2, "row count");
-    assert_eq!(df.width(), 12, "column count must be 12");
+    assert_eq!(df.width(), 14, "column count must be 14");
 }
 
 #[test]
@@ -375,6 +377,7 @@ fn display_rows_to_dataframe_values_correct() {
 #[test]
 fn display_rows_to_dataframe_path_only_extracts_directory() {
     let rows = vec![DisplayRow::new(
+        0,
         'C',
         "C:\\Users\\john\\file.txt".to_owned(),
         100,

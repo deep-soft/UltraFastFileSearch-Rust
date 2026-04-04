@@ -6,6 +6,8 @@
 
 pub mod backend;
 pub mod columns;
+pub mod derived;
+pub mod field;
 pub mod filters;
 pub mod query;
 mod sorting;

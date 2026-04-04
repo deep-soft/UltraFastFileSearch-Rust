@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use ratatui::widgets::TableState;
 use ratatui_textarea::TextArea;
 
-use crate::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
+use crate::backend::{DisplayRow, FieldId, FilterMode, MultiDriveBackend};
 use crate::client_backend::DaemonBackend;
 use crate::compact::{DriveCompactIndex, LoadTiming};
 use crate::history::{HistoryEntry, SearchState};
@@ -99,7 +99,7 @@ pub struct App {
     ///
     /// Defaults to [`crate::backend::DEFAULT_COLUMNS`].  Overridden by
     /// `--columns` in a history entry.
-    pub visible_columns: Vec<crate::backend::TuiColumn>,
+    pub visible_columns: Vec<FieldId>,
     /// The full [`SearchState`] from the currently active history entry.
     ///
     /// Used as the base when saving a modified search so that extended
@@ -374,7 +374,7 @@ impl App {
 
     /// Search via daemon IPC.
     fn search_via_daemon(&mut self, pattern: &str) {
-        use uffs_client::protocol::SearchParams;
+        use uffs_client::protocol::{SearchFilterMode, SearchParams, SearchResponseMode};
 
         let effective_limit = self.effective_limit(pattern);
 
@@ -384,21 +384,36 @@ impl App {
             FilterMode::All => None,
         };
 
-        let sort_label = self.sort_column().label().to_ascii_lowercase();
+        let sort_label = self.sort_column().canonical_name().to_ascii_lowercase();
         let sort = Some(format!(
             "{sort_label}:{}",
             if self.sort_desc() { "desc" } else { "asc" }
         ));
 
-        let params = SearchParams {
+        let projection = self
+            .visible_columns
+            .iter()
+            .map(|column| column.canonical_name().to_owned())
+            .collect::<Vec<_>>();
+        let mut params = SearchParams {
             pattern: pattern.to_owned(),
             case_sensitive: self.case_sensitive,
             whole_word: self.whole_word,
             sort,
+            sorts: Vec::new(),
             sort_desc: self.sort_desc(),
             limit: effective_limit,
             filter,
+            filter_mode: Some(if self.filter_mode == FilterMode::FilesOnly {
+                SearchFilterMode::Files
+            } else if self.filter_mode == FilterMode::DirsOnly {
+                SearchFilterMode::Dirs
+            } else {
+                SearchFilterMode::All
+            }),
             drives: Vec::new(),
+            projection,
+            response_mode: Some(SearchResponseMode::Rows),
             min_size: self.search_filters.min_size,
             max_size: self.search_filters.max_size,
             min_descendants: self.search_filters.min_descendants,
@@ -414,7 +429,9 @@ impl App {
             exclude: None,
             hide_system: self.search_filters.hide_system,
             profile: false,
+            predicates: Vec::new(),
         };
+        params.populate_canonical_fields();
 
         // `daemon_backend` is `Some` — checked by caller.
         let db = self.daemon_backend.as_mut();
@@ -507,7 +524,7 @@ impl App {
 
     /// Get the current sort column.
     #[must_use]
-    pub const fn sort_column(&self) -> SortColumn {
+    pub const fn sort_column(&self) -> FieldId {
         self.backend.sort_column
     }
 

@@ -362,6 +362,11 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
         shmem_path: None,
         shmem_count: None,
         profile: None,
+        applied_sorts: Vec::new(),
+        applied_projection: Vec::new(),
+        response_mode: None,
+        projected_rows: None,
+        projected_text: None,
     })
 }
 

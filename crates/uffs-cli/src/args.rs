@@ -449,7 +449,7 @@ pub enum DaemonAction {
         no_cache: bool,
 
         /// Log level.
-        #[arg(long, default_value = "trace")]
+        #[arg(long, default_value = "info")]
         log_level: String,
     },
 }

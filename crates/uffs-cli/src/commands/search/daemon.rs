@@ -6,7 +6,9 @@
 
 use anyhow::{Context, Result};
 use tracing::info;
-use uffs_client::protocol::{SearchParams, SearchProfile, SearchRow};
+use uffs_client::protocol::{
+    SearchFilterMode, SearchParams, SearchProfile, SearchResponseMode, SearchRow,
+};
 use uffs_core::search::backend::DisplayRow;
 
 use super::SearchConfig;
@@ -330,16 +332,41 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
 
     // limit=0 in CLI means unlimited → None for daemon.
     let limit = (config.limit > 0).then_some(config.limit);
+    let filter_mode = if config.files_only {
+        Some(SearchFilterMode::Files)
+    } else if config.dirs_only {
+        Some(SearchFilterMode::Dirs)
+    } else {
+        Some(SearchFilterMode::All)
+    };
+    let sorts = config.sort.map_or_else(Vec::new, |sort| {
+        SearchParams::canonicalize_legacy_sort(sort, config.sort_desc)
+    });
+    let projection = config
+        .output_config
+        .columns
+        .as_ref()
+        .map(|columns| {
+            columns
+                .iter()
+                .map(|column| column.canonical_name().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
 
-    SearchParams {
+    let mut params = SearchParams {
         pattern: config.pattern.to_owned(),
         case_sensitive: config.effective_case_sensitive,
         whole_word: false, // word wrapping is done in pattern parsing already
         sort: config.sort.map(ToOwned::to_owned),
+        sorts,
         sort_desc: config.sort_desc,
         limit,
         filter,
+        filter_mode,
         drives,
+        projection,
+        response_mode: Some(SearchResponseMode::Rows),
         min_size: config.min_size,
         max_size: config.max_size,
         min_descendants: config.min_descendants,
@@ -355,7 +382,10 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         exclude: config.exclude.map(ToOwned::to_owned),
         hide_system: config.hide_system,
         profile: config.profile || config.benchmark,
-    }
+        predicates: Vec::new(),
+    };
+    params.populate_canonical_fields();
+    params
 }
 
 /// Convert a daemon [`SearchRow`] to a [`DisplayRow`].
@@ -363,6 +393,7 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
 /// Both types carry the same fields — this is a mechanical mapping.
 fn search_row_to_display_row(row: SearchRow) -> DisplayRow {
     DisplayRow::new(
+        0,
         row.drive,
         row.path,
         row.size,

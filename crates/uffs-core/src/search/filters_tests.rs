@@ -464,6 +464,7 @@ fn filter_all_pass_accepts() {
 fn apply_search_filters_matches_compact_behavior() {
     let mut rows = vec![
         DisplayRow::new(
+            0,
             'C',
             "C:\\file.txt".to_owned(),
             1000,
@@ -478,6 +479,7 @@ fn apply_search_filters_matches_compact_behavior() {
             0,
         ),
         DisplayRow::new(
+            0,
             'C',
             "C:\\$MFT".to_owned(),
             500_000,
@@ -604,4 +606,116 @@ fn filter_older_modified_accepts_old_files() {
         ),
         "file with modified=200M should be accepted by older_us=999M"
     );
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// TIME GRAMMAR TESTS — Named Time Ranges
+// ════════════════════════════════════════════════════════════════════════
+
+/// Microseconds per day constant for tests.
+const US_PER_DAY: i64 = 86_400 * 1_000_000;
+
+#[test]
+fn parse_time_bound_duration_7d() {
+    let now = 100 * US_PER_DAY;
+    let result = parse_time_bound("7d", now, true).unwrap();
+    assert_eq!(result, now - 7 * US_PER_DAY);
+}
+
+#[test]
+fn parse_time_bound_duration_24h() {
+    let now = 100 * US_PER_DAY;
+    let result = parse_time_bound("24h", now, true).unwrap();
+    assert_eq!(result, now - 24 * 3600 * 1_000_000);
+}
+
+#[test]
+fn parse_time_bound_iso_date() {
+    let result = parse_time_bound("1970-01-02", 0, true).unwrap();
+    assert_eq!(result, US_PER_DAY); // Jan 2 1970 = 1 day from epoch
+}
+
+#[test]
+fn parse_time_bound_today() {
+    let now = 100 * US_PER_DAY + 42_000_000; // 100 days + offset
+    let result = parse_time_bound("today", now, true).unwrap();
+    assert_eq!(result, 100 * US_PER_DAY); // midnight of day 100
+}
+
+#[test]
+fn parse_time_bound_yesterday_newer() {
+    let now = 100 * US_PER_DAY + 42_000_000;
+    let result = parse_time_bound("yesterday", now, true).unwrap();
+    assert_eq!(result, 99 * US_PER_DAY);
+}
+
+#[test]
+fn parse_time_bound_yesterday_older() {
+    let now = 100 * US_PER_DAY + 42_000_000;
+    let result = parse_time_bound("yesterday", now, false).unwrap();
+    assert_eq!(result, 100 * US_PER_DAY); // today midnight = end of yesterday
+}
+
+#[test]
+fn parse_time_bound_last_7d() {
+    let now = 100 * US_PER_DAY;
+    let result = parse_time_bound("last_7d", now, true).unwrap();
+    assert_eq!(result, now - 7 * US_PER_DAY);
+}
+
+#[test]
+fn parse_time_bound_last_30d() {
+    let now = 100 * US_PER_DAY;
+    let result = parse_time_bound("last_30d", now, true).unwrap();
+    assert_eq!(result, now - 30 * US_PER_DAY);
+}
+
+#[test]
+fn parse_time_bound_this_year() {
+    // 2026-04-04 ≈ day 20548 from epoch. Jan 1 2026 ≈ day 20454.
+    let now_us = 20548 * US_PER_DAY;
+    let result = parse_time_bound("this_year", now_us, true).unwrap();
+    // Should be Jan 1 of current year.
+    let jan1_days = (2026 - 1970) * 365 + (2026 - 1969) / 4;
+    assert_eq!(result, jan1_days * US_PER_DAY);
+}
+
+#[test]
+fn parse_time_bound_this_month() {
+    // Day 100 from epoch = April 11, 1970. Day 1 of April = day 90.
+    let now_us = 100 * US_PER_DAY;
+    let result = parse_time_bound("this_month", now_us, true).unwrap();
+    // Should be start of current month.
+    assert!(result <= now_us);
+    assert!(result >= now_us - 31 * US_PER_DAY);
+}
+
+#[test]
+fn parse_time_bound_last_year_newer() {
+    let now_us = 20548 * US_PER_DAY;
+    let result = parse_time_bound("last_year", now_us, true).unwrap();
+    let jan1_2025 = (2025 - 1970) * 365 + (2025 - 1969) / 4;
+    assert_eq!(result, jan1_2025 * US_PER_DAY);
+}
+
+#[test]
+fn parse_time_bound_last_year_older() {
+    let now_us = 20548 * US_PER_DAY;
+    let result = parse_time_bound("last_year", now_us, false).unwrap();
+    let jan1_2026 = (2026 - 1970) * 365 + (2026 - 1969) / 4;
+    assert_eq!(result, jan1_2026 * US_PER_DAY);
+}
+
+#[test]
+fn parse_time_bound_unknown_returns_none() {
+    assert!(parse_time_bound("foobar", 100 * US_PER_DAY, true).is_none());
+}
+
+#[test]
+fn parse_time_bound_this_week() {
+    // Thursday epoch + 7 days = another Thursday.
+    let now_us = 7 * US_PER_DAY;
+    let result = parse_time_bound("this_week", now_us, true).unwrap();
+    // Should be Monday = day 4 from epoch (epoch was Thursday).
+    assert_eq!(result, 4 * US_PER_DAY);
 }

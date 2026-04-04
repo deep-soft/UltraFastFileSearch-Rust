@@ -6,7 +6,9 @@
 use alloc::collections::BinaryHeap;
 use std::sync::LazyLock;
 
-use super::backend::{DisplayRow, FilterMode, SortColumn};
+use super::backend::{DisplayRow, FilterMode};
+use super::derived::bulkiness_for_row;
+use super::field::FieldId;
 use super::filters::SearchFilters;
 use crate::compact::{CompactRecord, DriveCompactIndex};
 use crate::search::tree::{self, DirCacheExt as _};
@@ -44,31 +46,22 @@ impl PartialOrd for HeapEntry {
 }
 
 /// Collect the global top-N records across ALL drives for `*` match-all.
+///
+/// Dispatches to either tree-walk (Path sort) or numeric sort based on
+/// `sort_column`. The exhaustive match contributes most of the line count; no
+/// logic to extract.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn collect_global_top_n(
     drives: &[DriveCompactIndex],
     limit: usize,
-    sort_column: SortColumn,
+    sort_column: FieldId,
     sort_desc: bool,
     filter_mode: FilterMode,
     search_filters: &mut SearchFilters,
 ) -> Vec<DisplayRow> {
     match sort_column {
-        SortColumn::Size
-        | SortColumn::SizeOnDisk
-        | SortColumn::Created
-        | SortColumn::Modified
-        | SortColumn::Accessed
-        | SortColumn::Drive
-        | SortColumn::Descendants => collect_global_top_n_numeric(
-            drives,
-            limit,
-            sort_column,
-            sort_desc,
-            filter_mode,
-            search_filters,
-        ),
-        SortColumn::Path => {
+        FieldId::Path | FieldId::PathOnly => {
             // Hierarchical depth-first tree walk for Path sort
             let mut path_results = Vec::with_capacity(limit);
             let mut drive_order: Vec<usize> = (0..drives.len()).collect();
@@ -124,7 +117,7 @@ pub fn collect_global_top_n(
                         volume_prefix,
                         &mut dir_cache,
                     );
-                    path_results.push(make_display_row(drive.letter, rec, name, path));
+                    path_results.push(make_display_row(idx, drive.letter, rec, name, path));
 
                     let child_slice = drive.children.get(idx as usize);
                     if !child_slice.is_empty() {
@@ -139,16 +132,50 @@ pub fn collect_global_top_n(
 
             path_results
         }
-        SortColumn::Name | SortColumn::Extension | SortColumn::Type => {
-            collect_global_top_n_numeric(
-                drives,
-                limit,
-                sort_column,
-                sort_desc,
-                filter_mode,
-                search_filters,
-            )
-        }
+        // All other fields (Size, Name, Extension, Created, Modified, etc.)
+        // use the generic numeric sort/collect path.
+        FieldId::Size
+        | FieldId::SizeOnDisk
+        | FieldId::Created
+        | FieldId::Modified
+        | FieldId::Accessed
+        | FieldId::Drive
+        | FieldId::Descendants
+        | FieldId::TreeAllocated
+        | FieldId::Bulkiness
+        | FieldId::Name
+        | FieldId::Extension
+        | FieldId::Type
+        | FieldId::Attributes
+        | FieldId::AttributeValue
+        | FieldId::Hidden
+        | FieldId::System
+        | FieldId::Archive
+        | FieldId::ReadOnly
+        | FieldId::Compressed
+        | FieldId::Encrypted
+        | FieldId::Sparse
+        | FieldId::Reparse
+        | FieldId::Offline
+        | FieldId::NotIndexed
+        | FieldId::Temporary
+        | FieldId::Virtual
+        | FieldId::Pinned
+        | FieldId::Unpinned
+        | FieldId::TreeSize
+        | FieldId::Integrity
+        | FieldId::NoScrub
+        | FieldId::DirectoryFlag
+        | FieldId::RecallOnOpen
+        | FieldId::RecallOnDataAccess
+        | FieldId::ParityAttributes => collect_global_top_n_numeric(
+            drives,
+            limit,
+            sort_column,
+            sort_desc,
+            filter_mode,
+            search_filters,
+        ),
     }
 }
 
@@ -177,10 +204,15 @@ fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactIndex, desc: bo
     clippy::cognitive_complexity,
     reason = "ext fast-path + full-scan path share sort-key + heap-push logic"
 )]
+/// Core numeric sort + collect logic for all non-path-sorted fields.
+///
+/// Extracted from `collect_global_top_n` because inlining 300 lines of sort-key
+/// extraction + heap management would make the dispatch function unreadable.
+#[allow(clippy::single_call_fn)]
 fn collect_global_top_n_numeric(
     drives: &[DriveCompactIndex],
     limit: usize,
-    sort_column: SortColumn,
+    sort_column: FieldId,
     sort_desc: bool,
     filter_mode: FilterMode,
     search_filters: &mut SearchFilters,
@@ -213,17 +245,55 @@ fn collect_global_top_n_numeric(
         |drive_idx: usize, rec_idx: usize, rec: &CompactRecord, drive: &DriveCompactIndex| {
             let drive_fold = drive.fold;
             let sort_key = match sort_column {
-                SortColumn::Size => rec.size as i64,
+                FieldId::Size => rec.size as i64,
                 #[expect(
                     clippy::cast_possible_wrap,
                     reason = "allocated sizes within i64 range"
                 )]
-                SortColumn::SizeOnDisk => rec.allocated as i64,
-                SortColumn::Created => rec.created,
-                SortColumn::Accessed => rec.accessed,
-                SortColumn::Descendants => i64::from(rec.descendants),
-                SortColumn::Extension | SortColumn::Type => i64::from(rec.extension_id),
-                SortColumn::Name => {
+                FieldId::SizeOnDisk => rec.allocated as i64,
+                FieldId::Created => rec.created,
+                FieldId::Accessed => rec.accessed,
+                FieldId::Descendants => i64::from(rec.descendants),
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "allocated values are expected within i64 range"
+                )]
+                FieldId::TreeAllocated => {
+                    if rec.is_directory() {
+                        rec.tree_allocated as i64
+                    } else {
+                        rec.allocated as i64
+                    }
+                }
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "scaled bulkiness metric is expected within i64 range"
+                )]
+                FieldId::Bulkiness => {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "record index bounded by NTFS limits (<4B records)"
+                    )]
+                    let ri = rec_idx as u32;
+                    let row = DisplayRow::new(
+                        ri,
+                        drive.letter,
+                        String::new(),
+                        rec.size,
+                        rec.is_directory(),
+                        rec.modified,
+                        rec.created,
+                        rec.accessed,
+                        rec.flags,
+                        rec.allocated,
+                        rec.descendants,
+                        rec.treesize,
+                        rec.tree_allocated,
+                    );
+                    bulkiness_for_row(&row) as i64
+                }
+                FieldId::Extension | FieldId::Type => i64::from(rec.extension_id),
+                FieldId::Name => {
                     let name = rec.name(&drive.names);
                     let mut key = [0_u8; 8];
                     for (dst, ch) in key.iter_mut().zip(name.chars()) {
@@ -235,7 +305,7 @@ fn collect_global_top_n_numeric(
                     }
                     i64::from_be_bytes(key)
                 }
-                SortColumn::Drive => {
+                FieldId::Drive => {
                     let name = rec.name(&drive.names);
                     let mut key = [0_u8; 8];
                     key[0] = drive.letter as u8;
@@ -248,7 +318,33 @@ fn collect_global_top_n_numeric(
                     }
                     i64::from_be_bytes(key)
                 }
-                SortColumn::Modified | SortColumn::Path => rec.modified,
+                // Modified is the default; Path/PathOnly handled by tree walk above.
+                FieldId::Path
+                | FieldId::PathOnly
+                | FieldId::Modified
+                | FieldId::Attributes
+                | FieldId::AttributeValue
+                | FieldId::Hidden
+                | FieldId::System
+                | FieldId::Archive
+                | FieldId::ReadOnly
+                | FieldId::Compressed
+                | FieldId::Encrypted
+                | FieldId::Sparse
+                | FieldId::Reparse
+                | FieldId::Offline
+                | FieldId::NotIndexed
+                | FieldId::Temporary
+                | FieldId::Virtual
+                | FieldId::Pinned
+                | FieldId::Unpinned
+                | FieldId::TreeSize
+                | FieldId::Integrity
+                | FieldId::NoScrub
+                | FieldId::DirectoryFlag
+                | FieldId::RecallOnOpen
+                | FieldId::RecallOnDataAccess
+                | FieldId::ParityAttributes => rec.modified,
             };
 
             if use_heap {
@@ -412,7 +508,7 @@ fn collect_global_top_n_numeric(
                 .entry(drive_idx)
                 .or_insert_with(|| tree::DirCache::with_capacity(256));
             let path = tree::resolve_path_cached(drive, rec_idx as usize, volume_prefix, cache);
-            Some(make_display_row(drive.letter, rec, name, path))
+            Some(make_display_row(rec_idx, drive.letter, rec, name, path))
         })
         .collect();
 
@@ -703,7 +799,7 @@ pub fn search_compact_drive_tree(
                 volume_prefix,
                 &mut dir_cache,
             );
-            Some(make_display_row(drive.letter, rec, name, path))
+            Some(make_display_row(record_idx, drive.letter, rec, name, path))
         })
         .collect();
     let resolve_ms = t_resolve.elapsed().as_millis();
@@ -731,6 +827,7 @@ pub fn search_compact_drive_tree(
 /// field preserves the NTFS ground truth — only the `is_directory`
 /// display hint is adjusted.
 fn make_display_row(
+    record_index: u32,
     drive_letter: char,
     rec: &CompactRecord,
     name: &str,
@@ -740,6 +837,7 @@ fn make_display_row(
     // (no trailing backslash, name shown, stream size used).
     let is_ads = name.contains(':');
     DisplayRow::new(
+        record_index,
         drive_letter,
         path,
         rec.size,
@@ -802,7 +900,12 @@ fn indices_to_rows(
                 return None;
             }
             let path = tree::resolve_path_cached(drive, record_idx, volume_prefix, &mut dir_cache);
-            Some(make_display_row(drive.letter, rec, name, path))
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "record index bounded by NTFS limits (<4B records)"
+            )]
+            let ri = record_idx as u32;
+            Some(make_display_row(ri, drive.letter, rec, name, path))
         })
         .collect()
 }

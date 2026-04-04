@@ -204,7 +204,7 @@ impl OutputConfig {
     pub fn needs_tree_columns(&self) -> bool {
         self.columns
             .as_ref()
-            .is_some_and(|cols| cols.iter().any(OutputColumn::is_tree_column))
+            .is_some_and(|cols| cols.iter().any(|col| col.is_tree_field()))
     }
 
     /// Get the list of requested tree columns.
@@ -212,11 +212,7 @@ impl OutputConfig {
     pub fn get_tree_columns(&self) -> Vec<crate::tree::TreeColumn> {
         self.columns
             .as_ref()
-            .map(|cols| {
-                cols.iter()
-                    .filter_map(OutputColumn::to_tree_column)
-                    .collect()
-            })
+            .map(|cols| cols.iter().filter_map(|col| col.to_tree_column()).collect())
             .unwrap_or_default()
     }
 
@@ -672,6 +668,22 @@ fn write_display_row_columns(
             OutputColumn::Bulkiness => {
                 buf.push_str(OutputColumn::Bulkiness.default_value());
             }
+            OutputColumn::Drive => {
+                buf.push(row.drive);
+            }
+            OutputColumn::Extension => {
+                buf.push_str(&cfg.quote);
+                if let Some(dot) = row.name().rfind('.') {
+                    buf.push_str(row.name().get(dot + 1..).unwrap_or(""));
+                }
+                buf.push_str(&cfg.quote);
+            }
+            // Any other FieldId variant not in the output set — skip.
+            #[expect(
+                unreachable_patterns,
+                reason = "forward-compat for new FieldId variants"
+            )]
+            _ => {}
         }
     }
 }

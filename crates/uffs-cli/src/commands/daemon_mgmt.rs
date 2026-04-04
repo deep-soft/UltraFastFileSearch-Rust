@@ -67,7 +67,7 @@ async fn daemon_run(
     // UFFS_LOG env var overrides --log-level for diagnostic sessions.
     let log_spec = std::env::var("UFFS_LOG").unwrap_or_else(|_| log_level.to_owned());
     let filter = tracing_subscriber::EnvFilter::try_new(&log_spec)
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("trace"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let _ignore = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)

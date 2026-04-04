@@ -32,6 +32,7 @@ fn temp_output_path(extension: &str) -> PathBuf {
 /// A single `DisplayRow` matching the old `sample_df()` content.
 fn sample_rows() -> Vec<DisplayRow> {
     vec![DisplayRow::new(
+        0,
         'C',
         "C:\\Temp\\file.txt".to_owned(),
         123,
@@ -52,6 +53,7 @@ fn large_sample_rows() -> Vec<DisplayRow> {
     (0..20_000_u32)
         .map(|idx| {
             DisplayRow::new(
+                idx,
                 'C',
                 format!("C:\\Temp\\file{idx}.txt"),
                 100,

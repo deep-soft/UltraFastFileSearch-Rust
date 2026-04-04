@@ -3,13 +3,14 @@
 
 // ── Re-exports from uffs-core (all search types, sort, filters) ─────────
 pub use uffs_core::search::backend::{
-    DisplayRow, FilterMode, MultiDriveBackend, SortColumn, format_sort_spec, parse_sort_spec,
+    DisplayRow, FilterMode, MultiDriveBackend, format_sort_spec, parse_sort_spec,
 };
+pub use uffs_core::search::field::FieldId;
 pub use uffs_core::search::filters::{SearchFilters, apply_filter, apply_search_filters};
 pub use uffs_core::trigram::TrigramIndex;
 
 // Re-exported from `crate::columns`.
-pub use crate::columns::{DEFAULT_COLUMNS, TuiColumn, parse_columns};
+pub use crate::columns::{DEFAULT_COLUMNS, parse_columns};
 use crate::compact::DriveCompactIndex;
 
 // ── TUI-specific: drive color palettes ──────────────────────────────────

@@ -6,6 +6,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use crate::compact::DriveCompactIndex;
+use crate::search::field::FieldId;
 
 /// Sentinel: no truncation — return every matching record.
 const UNLIMITED: usize = usize::MAX;
@@ -21,6 +22,8 @@ const UNLIMITED: usize = usize::MAX;
     reason = "name_start is private by design — accessed via name() method"
 )]
 pub struct DisplayRow {
+    /// Record index within the compact/cache file.
+    pub record_index: u32,
     /// Drive letter this result belongs to.
     pub drive: char,
     /// Full resolved path (e.g., `C:\Users\file.txt`).
@@ -60,6 +63,7 @@ impl DisplayRow {
         reason = "flat struct — all fields are required, no logical grouping"
     )]
     pub fn new(
+        record_index: u32,
         drive: char,
         path: String,
         size: u64,
@@ -76,6 +80,7 @@ impl DisplayRow {
         #[expect(clippy::cast_possible_truncation, reason = "paths < 4GB")]
         let name_start = path.rfind('\\').map_or(0, |pos| pos + 1) as u32;
         Self {
+            record_index,
             drive,
             path,
             name_start,
@@ -123,53 +128,8 @@ pub struct SearchResult {
     pub records_scanned: usize,
 }
 
-/// Columns available for sorting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SortColumn {
-    /// Sort by filename.
-    #[default]
-    Name,
-    /// Sort by file size.
-    Size,
-    /// Sort by allocated size on disk.
-    SizeOnDisk,
-    /// Sort by creation time.
-    Created,
-    /// Sort by last modified time.
-    Modified,
-    /// Sort by last access time.
-    Accessed,
-    /// Sort by full path.
-    Path,
-    /// Sort by drive letter.
-    Drive,
-    /// Sort by file extension.
-    Extension,
-    /// Sort by devicon file type.
-    Type,
-    /// Sort by descendant count.
-    Descendants,
-}
-
-impl SortColumn {
-    /// Human-readable label for status bar display.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Name => "Name",
-            Self::Size => "Size",
-            Self::SizeOnDisk => "SizeOnDisk",
-            Self::Created => "Created",
-            Self::Modified => "Modified",
-            Self::Accessed => "Accessed",
-            Self::Path => "Path",
-            Self::Drive => "Drive",
-            Self::Extension => "Extension",
-            Self::Type => "Type",
-            Self::Descendants => "Descendants",
-        }
-    }
-}
+/// Legacy type alias — all sort columns are now `FieldId`.
+pub type SortColumn = FieldId;
 
 /// Filter mode for file/directory results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -186,8 +146,8 @@ pub enum FilterMode {
 /// Parsed sort specification: column + direction.
 #[derive(Debug, Clone, Copy)]
 pub struct SortSpec {
-    /// Which column to sort by.
-    pub column: SortColumn,
+    /// Which field to sort by.
+    pub column: FieldId,
     /// `true` = descending (biggest / newest first).
     pub descending: bool,
 }
@@ -199,7 +159,7 @@ pub struct MultiDriveBackend {
     /// Last search results (kept for re-sorting without re-searching).
     pub last_results: Vec<DisplayRow>,
     /// Current (primary) sort column.
-    pub sort_column: SortColumn,
+    pub sort_column: FieldId,
     /// Primary sort direction (`true` = descending).
     pub sort_desc: bool,
     /// Additional sort tiers beyond the primary.
@@ -219,7 +179,7 @@ impl MultiDriveBackend {
         Self {
             drives: Vec::new(),
             last_results: Vec::new(),
-            sort_column: SortColumn::Modified,
+            sort_column: FieldId::Modified,
             sort_desc: true,
             extra_sort_tiers: Vec::new(),
         }
@@ -449,7 +409,7 @@ impl MultiDriveBackend {
     }
 
     /// Re-sort the last results by a different column.
-    pub fn sort(&mut self, column: SortColumn, descending: bool) {
+    pub fn sort(&mut self, column: FieldId, descending: bool) {
         self.sort_column = column;
         self.sort_desc = descending;
         self.extra_sort_tiers.clear();
@@ -458,20 +418,12 @@ impl MultiDriveBackend {
 
     /// Cycle to the next sort column with a sensible default direction.
     pub fn cycle_sort(&mut self) {
-        let (new_column, new_desc) = match self.sort_column {
-            SortColumn::Name => (SortColumn::Size, true),
-            SortColumn::Size => (SortColumn::SizeOnDisk, true),
-            SortColumn::SizeOnDisk => (SortColumn::Created, true),
-            SortColumn::Created => (SortColumn::Modified, true),
-            SortColumn::Modified => (SortColumn::Accessed, true),
-            SortColumn::Accessed => (SortColumn::Path, false),
-            SortColumn::Path => (SortColumn::Drive, false),
-            SortColumn::Drive => (SortColumn::Extension, false),
-            SortColumn::Extension => (SortColumn::Type, false),
-            SortColumn::Type => (SortColumn::Descendants, true),
-            SortColumn::Descendants => (SortColumn::Name, false),
-        };
-        self.sort_column = new_column;
+        let next = self.sort_column.cycle_next();
+        let new_desc = matches!(
+            next.default_sort_direction(),
+            Some(crate::search::field::SortDirection::Descending)
+        );
+        self.sort_column = next;
         self.sort_desc = new_desc;
         self.extra_sort_tiers.clear();
         sort_rows(

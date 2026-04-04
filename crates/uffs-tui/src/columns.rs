@@ -1,8 +1,9 @@
 //! TUI column definitions — re-exported from `uffs-core` with
 //! TUI-specific width constraints (ratatui dependency).
 
-// Re-export all generic column types from uffs-core
-pub use uffs_core::search::columns::{DEFAULT_COLUMNS, TuiColumn, parse_columns};
+// Re-export column helpers from uffs-core.
+pub use uffs_core::search::columns::{DEFAULT_COLUMNS, parse_columns};
+use uffs_core::search::field::FieldId;
 
 /// Default width constraint for a column (TUI-specific, depends on ratatui).
 #[must_use]
@@ -10,37 +11,44 @@ pub use uffs_core::search::columns::{DEFAULT_COLUMNS, TuiColumn, parse_columns};
     clippy::single_call_fn,
     reason = "layout helper — clarity over inlining into render loop"
 )]
-pub const fn default_constraint(col: TuiColumn) -> ratatui::layout::Constraint {
+pub const fn default_constraint(col: FieldId) -> ratatui::layout::Constraint {
     use ratatui::layout::Constraint;
     match col {
-        TuiColumn::Drive => Constraint::Length(3),
-        TuiColumn::Name => Constraint::Min(20),
-        TuiColumn::Path => Constraint::Length(62),
-        TuiColumn::PathOnly => Constraint::Length(52),
-        TuiColumn::Size | TuiColumn::SizeOnDisk | TuiColumn::TreeSize => Constraint::Length(12),
-        TuiColumn::Created | TuiColumn::Modified | TuiColumn::Accessed => Constraint::Length(19),
-        TuiColumn::Extension => Constraint::Length(10),
-        TuiColumn::Type => Constraint::Length(6),
-        TuiColumn::Attributes | TuiColumn::AttributeValue | TuiColumn::Descendants => {
+        FieldId::Drive => Constraint::Length(3),
+        FieldId::Name => Constraint::Min(20),
+        FieldId::Path => Constraint::Length(62),
+        FieldId::PathOnly => Constraint::Length(52),
+        FieldId::Size
+        | FieldId::SizeOnDisk
+        | FieldId::TreeSize
+        | FieldId::TreeAllocated
+        | FieldId::Bulkiness => Constraint::Length(12),
+        FieldId::Created | FieldId::Modified | FieldId::Accessed => Constraint::Length(19),
+        FieldId::Extension => Constraint::Length(10),
+        FieldId::Type => Constraint::Length(6),
+        FieldId::Attributes | FieldId::AttributeValue | FieldId::Descendants => {
             Constraint::Length(8)
         }
         // Boolean attribute columns — narrow
-        TuiColumn::Hidden
-        | TuiColumn::System
-        | TuiColumn::Archive
-        | TuiColumn::ReadOnly
-        | TuiColumn::Compressed
-        | TuiColumn::Encrypted
-        | TuiColumn::Sparse
-        | TuiColumn::Reparse
-        | TuiColumn::Offline
-        | TuiColumn::NotIndexed
-        | TuiColumn::Temporary
-        | TuiColumn::Virtual
-        | TuiColumn::Pinned
-        | TuiColumn::Unpinned
-        | TuiColumn::Integrity
-        | TuiColumn::NoScrub
-        | TuiColumn::DirectoryFlag => Constraint::Length(4),
+        FieldId::Hidden
+        | FieldId::System
+        | FieldId::Archive
+        | FieldId::ReadOnly
+        | FieldId::Compressed
+        | FieldId::Encrypted
+        | FieldId::Sparse
+        | FieldId::Reparse
+        | FieldId::Offline
+        | FieldId::NotIndexed
+        | FieldId::Temporary
+        | FieldId::Virtual
+        | FieldId::Pinned
+        | FieldId::Unpinned
+        | FieldId::Integrity
+        | FieldId::NoScrub
+        | FieldId::DirectoryFlag
+        | FieldId::RecallOnOpen
+        | FieldId::RecallOnDataAccess => Constraint::Length(4),
+        FieldId::ParityAttributes => Constraint::Length(8),
     }
 }

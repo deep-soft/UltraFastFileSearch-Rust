@@ -4,9 +4,9 @@ use super::*;
 fn test_navigation() {
     let mut app = App::new();
     app.results = vec![
-        DisplayRow::new('C', "C:\\a".to_owned(), 0, false, 0, 0, 0, 0, 0, 0, 0, 0),
-        DisplayRow::new('C', "C:\\b".to_owned(), 0, false, 0, 0, 0, 0, 0, 0, 0, 0),
-        DisplayRow::new('C', "C:\\c".to_owned(), 0, true, 0, 0, 0, 0, 0, 0, 0, 0),
+        DisplayRow::new(0, 'C', "C:\\a".to_owned(), 0, false, 0, 0, 0, 0, 0, 0, 0, 0),
+        DisplayRow::new(0, 'C', "C:\\b".to_owned(), 0, false, 0, 0, 0, 0, 0, 0, 0, 0),
+        DisplayRow::new(0, 'C', "C:\\c".to_owned(), 0, true, 0, 0, 0, 0, 0, 0, 0, 0),
     ];
 
     app.next();
@@ -38,6 +38,7 @@ fn test_has_data() {
 fn test_empty_search_shows_all() {
     let mut app = App::new();
     app.results = vec![DisplayRow::new(
+        0,
         'C',
         "C:\\x".to_owned(),
         0,

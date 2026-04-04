@@ -10,10 +10,16 @@ use std::time::Instant;
 
 use tokio::sync::RwLock;
 use uffs_client::protocol::{
-    DaemonStatus, DriveInfo, DriveProfile, DrivesResponse, SearchParams, SearchProfile,
-    SearchResponse, SearchRow, StatsResponse, StatusResponse,
+    DaemonStatus, DriveInfo, DriveProfile, DrivesResponse, SearchFilterMode, SearchParams,
+    SearchPredicate, SearchPredicateOp, SearchPredicateValue, SearchProfile, SearchResponse,
+    SearchResponseMode, SearchRow, SearchSortDirection, SearchSortSpec, StatsResponse,
+    StatusResponse,
 };
-use uffs_core::search::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortColumn};
+use uffs_core::search::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortSpec};
+use uffs_core::search::derived::{
+    bulkiness_for_row, semantic_type_for_row, tree_allocated_for_row,
+};
+use uffs_core::search::field::{FieldId, SortDirection};
 use uffs_core::search::filters::SearchFilters;
 
 use crate::events::{DaemonEvent, EventSender};
@@ -349,45 +355,71 @@ impl IndexManager {
     ///
     /// When `params.profile` is `true`, populates `SearchResponse::profile`
     /// with a per-phase timing breakdown so the CLI can print it.
+    #[allow(clippy::too_many_lines)]
     pub async fn search(&self, params: &SearchParams) -> SearchResponse {
         let query_start = Instant::now();
         let profiling = params.profile;
+        let mut effective_params = params.clone();
+        effective_params.populate_canonical_fields();
+        let applied_sorts = Self::resolve_applied_sorts(&effective_params);
+        let projection_fields = Self::resolve_projection_fields(&effective_params.projection);
+        let applied_projection: Vec<String> = projection_fields
+            .iter()
+            .map(|field| field.canonical_name().to_owned())
+            .collect();
+        let response_mode = effective_params.resolved_response_mode();
+        let requires_post_filter =
+            Self::predicates_require_post_filter(&effective_params.predicates);
 
         // ── Lock acquisition ────────────────────────────────────────
         let t_lock = profiling.then(Instant::now);
         let mut backend = self.backend.write().await;
         let lock_us = t_lock.map_or(0, |ts| ts.elapsed().as_micros());
 
-        let sort_column = params
-            .sort
-            .as_deref()
-            .and_then(Self::parse_sort_column)
-            .unwrap_or(SortColumn::Modified);
+        let (sort_column, sort_desc, extra_sort_tiers) =
+            applied_sorts
+                .first()
+                .map_or((FieldId::Modified, true, Vec::new()), |primary| {
+                    let extra = applied_sorts
+                        .iter()
+                        .skip(1)
+                        .filter_map(Self::sort_spec_to_backend)
+                        .map(|(column, descending)| SortSpec { column, descending })
+                        .collect();
+                    let (column, descending) =
+                        Self::sort_spec_to_backend(primary).unwrap_or((FieldId::Modified, true));
+                    (column, descending, extra)
+                });
         backend.sort_column = sort_column;
-        backend.sort_desc = params.sort_desc;
+        backend.sort_desc = sort_desc;
+        backend.extra_sort_tiers = extra_sort_tiers;
 
-        let filter_mode = match params.filter.as_deref() {
-            Some("files") => FilterMode::FilesOnly,
-            Some("dirs") => FilterMode::DirsOnly,
-            _ => FilterMode::All,
+        let filter_mode = match effective_params.resolved_filter_mode() {
+            SearchFilterMode::Files => FilterMode::FilesOnly,
+            SearchFilterMode::Dirs => FilterMode::DirsOnly,
+            SearchFilterMode::All => FilterMode::All,
         };
 
         let mut filters = SearchFilters::from_params(
-            params.hide_system,
-            params.min_size,
-            params.max_size,
-            params.min_descendants,
-            params.max_descendants,
-            params.newer.as_deref(),
-            params.older.as_deref(),
-            params.newer_created.as_deref(),
-            params.older_created.as_deref(),
-            params.newer_accessed.as_deref(),
-            params.older_accessed.as_deref(),
-            params.attr.as_deref(),
-            params.ext.as_deref(),
-            params.exclude.as_deref(),
+            effective_params.hide_system,
+            effective_params.min_size,
+            effective_params.max_size,
+            effective_params.min_descendants,
+            effective_params.max_descendants,
+            effective_params.newer.as_deref(),
+            effective_params.older.as_deref(),
+            effective_params.newer_created.as_deref(),
+            effective_params.older_created.as_deref(),
+            effective_params.newer_accessed.as_deref(),
+            effective_params.older_accessed.as_deref(),
+            effective_params.attr.as_deref(),
+            effective_params.ext.as_deref(),
+            effective_params.exclude.as_deref(),
         );
+
+        // Overlay canonical predicates that can be compiled into the hot
+        // path (size / descendant bounds).
+        Self::compile_predicates_into_filters(&mut filters, &effective_params.predicates);
 
         // Snapshot per-drive info (only when profiling).
         let drive_info: Vec<(char, usize)> = if profiling {
@@ -401,13 +433,17 @@ impl IndexManager {
         };
 
         let result = backend.search_drives(
-            &params.pattern,
-            params.case_sensitive,
-            params.whole_word,
-            params.limit,
+            &effective_params.pattern,
+            effective_params.case_sensitive,
+            effective_params.whole_word,
+            if requires_post_filter {
+                None
+            } else {
+                effective_params.limit
+            },
             filter_mode,
             &mut filters,
-            &params.drives,
+            &effective_params.drives,
         );
         let search_us = if profiling {
             result.duration.as_micros()
@@ -419,8 +455,14 @@ impl IndexManager {
 
         // ── Row building ────────────────────────────────────────────
         let t_rows = profiling.then(Instant::now);
-        let rows: Vec<SearchRow> = result
-            .rows
+        let mut filtered_rows = result.rows;
+        if requires_post_filter {
+            filtered_rows.retain(|row| Self::matches_predicates(row, &effective_params.predicates));
+        }
+        if let Some(limit) = effective_params.limit {
+            filtered_rows.truncate(limit as usize);
+        }
+        let rows: Vec<SearchRow> = filtered_rows
             .iter()
             .map(Self::display_row_to_search_row)
             .collect();
@@ -434,7 +476,9 @@ impl IndexManager {
             Ordering::Relaxed,
         );
 
-        let truncated = params.limit.is_some_and(|cap| rows.len() >= cap as usize);
+        let truncated = effective_params
+            .limit
+            .is_some_and(|cap| rows.len() >= cap as usize);
         let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
 
         // Profile (built in a separate method to keep `search` under the line limit).
@@ -447,14 +491,36 @@ impl IndexManager {
             None
         };
 
+        let projected_rows = (matches!(response_mode, SearchResponseMode::Json)
+            && !projection_fields.is_empty())
+        .then(|| {
+            rows.iter()
+                .map(|row| Self::project_search_row(row, &projection_fields))
+                .collect()
+        });
+        let projected_text = (matches!(
+            response_mode,
+            SearchResponseMode::Csv | SearchResponseMode::Table
+        ) && !projection_fields.is_empty())
+        .then(|| Self::render_projected_text(&rows, &projection_fields, response_mode));
+
         SearchResponse {
-            rows,
+            rows: if projected_rows.is_some() || projected_text.is_some() {
+                Vec::new()
+            } else {
+                rows
+            },
             records_scanned: result.records_scanned,
             duration_ms,
             truncated,
             shmem_path: None,
             shmem_count: None,
             profile,
+            applied_sorts,
+            applied_projection,
+            response_mode: Some(response_mode),
+            projected_rows,
+            projected_text,
         }
     }
 
@@ -953,25 +1019,731 @@ impl IndexManager {
         }
     }
 
-    /// Parse a sort column name string.
-    #[expect(
-        clippy::single_call_fn,
-        reason = "parsing helper — clarity over inlining"
-    )]
-    fn parse_sort_column(name: &str) -> Option<SortColumn> {
-        match name.to_ascii_lowercase().as_str() {
-            "name" => Some(SortColumn::Name),
-            "size" => Some(SortColumn::Size),
-            "sizeondisk" | "allocated" => Some(SortColumn::SizeOnDisk),
-            "created" => Some(SortColumn::Created),
-            "modified" | "date" | "written" => Some(SortColumn::Modified),
-            "accessed" => Some(SortColumn::Accessed),
-            "path" => Some(SortColumn::Path),
-            "drive" => Some(SortColumn::Drive),
-            "ext" | "extension" => Some(SortColumn::Extension),
-            "type" => Some(SortColumn::Type),
-            "descendants" => Some(SortColumn::Descendants),
-            _ => None,
+    /// Normalize the effective canonical sort clauses supported by the daemon.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn resolve_applied_sorts(params: &SearchParams) -> Vec<SearchSortSpec> {
+        params
+            .resolved_sorts()
+            .into_iter()
+            .filter_map(|spec| {
+                let field = FieldId::parse(&spec.field)?;
+                if !field.metadata().sortable {
+                    return None;
+                }
+                let direction = spec.direction.or_else(|| {
+                    Some(
+                        if matches!(
+                            field.default_sort_direction(),
+                            Some(SortDirection::Descending)
+                        ) {
+                            SearchSortDirection::Desc
+                        } else {
+                            SearchSortDirection::Asc
+                        },
+                    )
+                });
+                Some(SearchSortSpec {
+                    field: field.canonical_name().to_owned(),
+                    direction,
+                })
+            })
+            .collect()
+    }
+
+    /// Convert a canonical sort clause to backend sorting state.
+    #[must_use]
+    fn sort_spec_to_backend(spec: &SearchSortSpec) -> Option<(FieldId, bool)> {
+        let field = FieldId::parse(&spec.field)?;
+        if !field.metadata().sortable {
+            return None;
+        }
+        let descending =
+            spec.direction.unwrap_or(SearchSortDirection::Asc) == SearchSortDirection::Desc;
+        Some((field, descending))
+    }
+
+    /// Normalize the effective projection fields supported by the daemon.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn resolve_projection_fields(projection: &[String]) -> Vec<FieldId> {
+        let mut resolved = Vec::new();
+        for raw in projection {
+            if let Some(field) = FieldId::parse(raw) {
+                if !resolved.contains(&field) {
+                    resolved.push(field);
+                }
+            }
+        }
+        resolved
+    }
+
+    /// Build one projected JSON object from a `SearchRow`.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn project_search_row(
+        row: &SearchRow,
+        projection: &[FieldId],
+    ) -> serde_json::Map<String, serde_json::Value> {
+        projection
+            .iter()
+            .map(|&field| {
+                (
+                    field.canonical_name().to_owned(),
+                    Self::projected_value(row, field),
+                )
+            })
+            .collect()
+    }
+
+    /// Convert one canonical field from a `SearchRow` into JSON.
+    #[must_use]
+    fn projected_value(row: &SearchRow, field: FieldId) -> serde_json::Value {
+        match field {
+            FieldId::Drive => serde_json::Value::String(row.drive.to_string()),
+            FieldId::Path => serde_json::Value::String(row.path.clone()),
+            FieldId::Name => serde_json::Value::String(row.name.clone()),
+            FieldId::PathOnly => serde_json::Value::String(
+                row.path
+                    .rsplit_once('\\')
+                    .map_or_else(String::new, |(path_only, _)| path_only.to_owned()),
+            ),
+            FieldId::Size => serde_json::Value::from(row.size),
+            FieldId::SizeOnDisk => serde_json::Value::from(row.allocated),
+            FieldId::Created => serde_json::Value::from(row.created),
+            FieldId::Modified => serde_json::Value::from(row.modified),
+            FieldId::Accessed => serde_json::Value::from(row.accessed),
+            FieldId::Extension => {
+                serde_json::Value::String(Self::search_row_extension(row).to_owned())
+            }
+            FieldId::Type => serde_json::Value::String(Self::search_row_type(row).to_owned()),
+            FieldId::Attributes | FieldId::AttributeValue => serde_json::Value::from(row.flags),
+            FieldId::Hidden => serde_json::Value::from(Self::flag_set(row.flags, "hidden")),
+            FieldId::System => serde_json::Value::from(Self::flag_set(row.flags, "system")),
+            FieldId::Archive => serde_json::Value::from(Self::flag_set(row.flags, "archive")),
+            FieldId::ReadOnly => serde_json::Value::from(Self::flag_set(row.flags, "readonly")),
+            FieldId::Compressed => serde_json::Value::from(Self::flag_set(row.flags, "compressed")),
+            FieldId::Encrypted => serde_json::Value::from(Self::flag_set(row.flags, "encrypted")),
+            FieldId::Sparse => serde_json::Value::from(Self::flag_set(row.flags, "sparse")),
+            FieldId::Reparse => serde_json::Value::from(Self::flag_set(row.flags, "reparse")),
+            FieldId::Offline => serde_json::Value::from(Self::flag_set(row.flags, "offline")),
+            FieldId::NotIndexed => serde_json::Value::from(Self::flag_set(row.flags, "notindexed")),
+            FieldId::Temporary => serde_json::Value::from(Self::flag_set(row.flags, "temporary")),
+            FieldId::Virtual => serde_json::Value::from(Self::flag_set(row.flags, "virtual")),
+            FieldId::Pinned => serde_json::Value::from(Self::flag_set(row.flags, "pinned")),
+            FieldId::Unpinned => serde_json::Value::from(Self::flag_set(row.flags, "unpinned")),
+            FieldId::Descendants => serde_json::Value::from(row.descendants),
+            FieldId::TreeSize => serde_json::Value::from(row.treesize),
+            FieldId::TreeAllocated => serde_json::Value::from(Self::search_row_tree_allocated(row)),
+            FieldId::Bulkiness => serde_json::Value::from(Self::search_row_bulkiness(row)),
+            FieldId::Integrity => serde_json::Value::from(Self::flag_set(row.flags, "integrity")),
+            FieldId::NoScrub => serde_json::Value::from(Self::flag_set(row.flags, "noscrub")),
+            FieldId::DirectoryFlag => serde_json::Value::from(row.is_directory),
+            FieldId::RecallOnOpen => {
+                serde_json::Value::from(row.flags & Self::FLAG_RECALL_ON_OPEN != 0)
+            }
+            FieldId::RecallOnDataAccess => {
+                serde_json::Value::from(row.flags & Self::FLAG_RECALL_ON_DATA_ACCESS != 0)
+            }
+            FieldId::ParityAttributes => {
+                serde_json::Value::from(row.flags & Self::PARITY_FLAG_MASK)
+            }
         }
     }
+
+    /// Return whether any canonical predicates require daemon-side
+    /// post-filtering.
+    ///
+    /// A predicate is "hot" (handled by `SearchFilters` without post-filter)
+    /// when its field has `FieldAccess::Hot` and the hot-path filter pipeline
+    /// already covers its operator.  Everything else needs post-filtering
+    /// against the materialised `DisplayRow`.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn predicates_require_post_filter(predicates: &[SearchPredicate]) -> bool {
+        predicates.iter().any(|predicate| {
+            let Some(field) = FieldId::parse(&predicate.field) else {
+                return true;
+            };
+            // The hot-path `compile_predicates_into_filters` compiles these
+            // field+op combinations into `SearchFilters` so they run inside the
+            // compact record loop.  Anything not listed here needs post-filter.
+            let compiled_to_hot_path = match field {
+                // Size: Gte/Lte/Gt/Lt compiled into min_size/max_size.
+                FieldId::Size => matches!(
+                    predicate.op,
+                    SearchPredicateOp::Gte
+                        | SearchPredicateOp::Lte
+                        | SearchPredicateOp::Gt
+                        | SearchPredicateOp::Lt
+                ),
+                // Descendants: Gte/Lte/Gt/Lt compiled into min/max_descendants.
+                FieldId::Descendants => matches!(
+                    predicate.op,
+                    SearchPredicateOp::Gte
+                        | SearchPredicateOp::Lte
+                        | SearchPredicateOp::Gt
+                        | SearchPredicateOp::Lt
+                ),
+                // Timestamps: Gte/Lt compiled into newer_*/older_* bounds.
+                FieldId::Modified | FieldId::Created | FieldId::Accessed => {
+                    matches!(predicate.op, SearchPredicateOp::Gte | SearchPredicateOp::Lt)
+                }
+                // Extension: In compiled into extensions list.
+                FieldId::Extension => predicate.op == SearchPredicateOp::In,
+                // Attributes: HasAll/HasNone compiled into attr_require/exclude.
+                FieldId::Attributes => matches!(
+                    predicate.op,
+                    SearchPredicateOp::HasAll | SearchPredicateOp::HasNone
+                ),
+                // Name: NotMatch compiled into exclude_lower glob.
+                FieldId::Name => predicate.op == SearchPredicateOp::NotMatch,
+                FieldId::Drive
+                | FieldId::Path
+                | FieldId::PathOnly
+                | FieldId::SizeOnDisk
+                | FieldId::Type
+                | FieldId::AttributeValue
+                | FieldId::Hidden
+                | FieldId::System
+                | FieldId::Archive
+                | FieldId::ReadOnly
+                | FieldId::Compressed
+                | FieldId::Encrypted
+                | FieldId::Sparse
+                | FieldId::Reparse
+                | FieldId::Offline
+                | FieldId::NotIndexed
+                | FieldId::Temporary
+                | FieldId::Virtual
+                | FieldId::Pinned
+                | FieldId::Unpinned
+                | FieldId::TreeSize
+                | FieldId::TreeAllocated
+                | FieldId::Bulkiness
+                | FieldId::Integrity
+                | FieldId::NoScrub
+                | FieldId::DirectoryFlag
+                | FieldId::RecallOnOpen
+                | FieldId::RecallOnDataAccess
+                | FieldId::ParityAttributes => false,
+            };
+            !compiled_to_hot_path
+        })
+    }
+
+    /// Overlay canonical predicates onto an existing `SearchFilters`.
+    ///
+    /// This compiles hot-path predicates into the compiled filter fields
+    /// so they are evaluated during the fast record loop rather than in
+    /// the slower post-filter pass.  Predicates that cannot be compiled
+    /// into the hot path are silently skipped — they will be handled by
+    /// `matches_predicate` during post-filtering.
+    #[allow(
+        clippy::single_call_fn,
+        clippy::wildcard_enum_match_arm,
+        clippy::too_many_lines
+    )]
+    fn compile_predicates_into_filters(
+        filters: &mut SearchFilters,
+        predicates: &[SearchPredicate],
+    ) {
+        for predicate in predicates {
+            let Some(field) = FieldId::parse(&predicate.field) else {
+                continue;
+            };
+            match field {
+                FieldId::Size => {
+                    if let SearchPredicateValue::U64(val) = &predicate.value {
+                        match predicate.op {
+                            SearchPredicateOp::Gte => {
+                                let merged = filters.min_size.map_or(*val, |cur| cur.max(*val));
+                                filters.min_size = Some(merged);
+                            }
+                            SearchPredicateOp::Lte => {
+                                let merged = filters.max_size.map_or(*val, |cur| cur.min(*val));
+                                filters.max_size = Some(merged);
+                            }
+                            SearchPredicateOp::Gt => {
+                                let lower = val.saturating_add(1);
+                                let merged = filters.min_size.map_or(lower, |cur| cur.max(lower));
+                                filters.min_size = Some(merged);
+                            }
+                            SearchPredicateOp::Lt => {
+                                let upper = val.saturating_sub(1);
+                                let merged = filters.max_size.map_or(upper, |cur| cur.min(upper));
+                                filters.max_size = Some(merged);
+                            }
+                            SearchPredicateOp::Eq
+                            | SearchPredicateOp::Ne
+                            | SearchPredicateOp::In
+                            | SearchPredicateOp::NotIn
+                            | SearchPredicateOp::HasAll
+                            | SearchPredicateOp::HasAny
+                            | SearchPredicateOp::HasNone
+                            | SearchPredicateOp::Match
+                            | SearchPredicateOp::NotMatch => {}
+                        }
+                    }
+                }
+                FieldId::Descendants => {
+                    if let SearchPredicateValue::U64(val) = &predicate.value {
+                        let val32 = u32::try_from(*val).unwrap_or(u32::MAX);
+                        match predicate.op {
+                            SearchPredicateOp::Gte => {
+                                let merged =
+                                    filters.min_descendants.map_or(val32, |cur| cur.max(val32));
+                                filters.min_descendants = Some(merged);
+                            }
+                            SearchPredicateOp::Lte => {
+                                let merged =
+                                    filters.max_descendants.map_or(val32, |cur| cur.min(val32));
+                                filters.max_descendants = Some(merged);
+                            }
+                            SearchPredicateOp::Gt => {
+                                let lower = val32.saturating_add(1);
+                                let merged =
+                                    filters.min_descendants.map_or(lower, |cur| cur.max(lower));
+                                filters.min_descendants = Some(merged);
+                            }
+                            SearchPredicateOp::Lt => {
+                                let upper = val32.saturating_sub(1);
+                                let merged =
+                                    filters.max_descendants.map_or(upper, |cur| cur.min(upper));
+                                filters.max_descendants = Some(merged);
+                            }
+                            SearchPredicateOp::Eq
+                            | SearchPredicateOp::Ne
+                            | SearchPredicateOp::In
+                            | SearchPredicateOp::NotIn
+                            | SearchPredicateOp::HasAll
+                            | SearchPredicateOp::HasAny
+                            | SearchPredicateOp::HasNone
+                            | SearchPredicateOp::Match
+                            | SearchPredicateOp::NotMatch => {}
+                        }
+                    }
+                }
+                // ── Timestamp predicates (string time specs → i64 µs) ──
+                FieldId::Modified | FieldId::Created | FieldId::Accessed => {
+                    if let SearchPredicateValue::String(spec) = &predicate.value {
+                        let now_us = uffs_core::search::filters::now_unix_micros();
+                        let is_newer =
+                            matches!(predicate.op, SearchPredicateOp::Gte | SearchPredicateOp::Gt);
+                        if let Some(bound) =
+                            uffs_core::search::filters::parse_time_bound(spec, now_us, is_newer)
+                        {
+                            match (field, &predicate.op) {
+                                (FieldId::Modified, SearchPredicateOp::Gte) => {
+                                    let merged =
+                                        filters.newer_us.map_or(bound, |cur| cur.max(bound));
+                                    filters.newer_us = Some(merged);
+                                }
+                                (FieldId::Modified, SearchPredicateOp::Lt) => {
+                                    let merged =
+                                        filters.older_us.map_or(bound, |cur| cur.min(bound));
+                                    filters.older_us = Some(merged);
+                                }
+                                (FieldId::Created, SearchPredicateOp::Gte) => {
+                                    let merged = filters
+                                        .newer_created_us
+                                        .map_or(bound, |cur| cur.max(bound));
+                                    filters.newer_created_us = Some(merged);
+                                }
+                                (FieldId::Created, SearchPredicateOp::Lt) => {
+                                    let merged = filters
+                                        .older_created_us
+                                        .map_or(bound, |cur| cur.min(bound));
+                                    filters.older_created_us = Some(merged);
+                                }
+                                (FieldId::Accessed, SearchPredicateOp::Gte) => {
+                                    let merged = filters
+                                        .newer_accessed_us
+                                        .map_or(bound, |cur| cur.max(bound));
+                                    filters.newer_accessed_us = Some(merged);
+                                }
+                                (FieldId::Accessed, SearchPredicateOp::Lt) => {
+                                    let merged = filters
+                                        .older_accessed_us
+                                        .map_or(bound, |cur| cur.min(bound));
+                                    filters.older_accessed_us = Some(merged);
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else if let SearchPredicateValue::I64(val) = &predicate.value {
+                        // Direct i64 timestamp µs value.
+                        match (field, &predicate.op) {
+                            (FieldId::Modified, SearchPredicateOp::Gte) => {
+                                let merged = filters.newer_us.map_or(*val, |cur| cur.max(*val));
+                                filters.newer_us = Some(merged);
+                            }
+                            (FieldId::Modified, SearchPredicateOp::Lt) => {
+                                let merged = filters.older_us.map_or(*val, |cur| cur.min(*val));
+                                filters.older_us = Some(merged);
+                            }
+                            (FieldId::Created, SearchPredicateOp::Gte) => {
+                                let merged =
+                                    filters.newer_created_us.map_or(*val, |cur| cur.max(*val));
+                                filters.newer_created_us = Some(merged);
+                            }
+                            (FieldId::Created, SearchPredicateOp::Lt) => {
+                                let merged =
+                                    filters.older_created_us.map_or(*val, |cur| cur.min(*val));
+                                filters.older_created_us = Some(merged);
+                            }
+                            (FieldId::Accessed, SearchPredicateOp::Gte) => {
+                                let merged =
+                                    filters.newer_accessed_us.map_or(*val, |cur| cur.max(*val));
+                                filters.newer_accessed_us = Some(merged);
+                            }
+                            (FieldId::Accessed, SearchPredicateOp::Lt) => {
+                                let merged =
+                                    filters.older_accessed_us.map_or(*val, |cur| cur.min(*val));
+                                filters.older_accessed_us = Some(merged);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                // ── Extension predicate → hot-path ext filter ──────────
+                FieldId::Extension if predicate.op == SearchPredicateOp::In => {
+                    if let SearchPredicateValue::StringList(values) = &predicate.value {
+                        filters.extensions.extend(values.iter().cloned());
+                    }
+                }
+                // ── Attribute predicates → hot-path attr bitmask ───────
+                FieldId::Attributes => {
+                    if let SearchPredicateValue::StringList(values) = &predicate.value {
+                        match predicate.op {
+                            SearchPredicateOp::HasAll => {
+                                for name in values {
+                                    filters.attr_require |=
+                                        uffs_core::search::filters::attr_bit(name);
+                                }
+                            }
+                            SearchPredicateOp::HasNone => {
+                                for name in values {
+                                    filters.attr_exclude |=
+                                        uffs_core::search::filters::attr_bit(name);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                // ── Exclude pattern → hot-path exclude glob ────────────
+                FieldId::Name if predicate.op == SearchPredicateOp::NotMatch => {
+                    if let SearchPredicateValue::String(pattern) = &predicate.value {
+                        filters.exclude_lower = Some(pattern.to_ascii_lowercase());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Apply canonical predicates against a materialized display row.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn matches_predicates(row: &DisplayRow, predicates: &[SearchPredicate]) -> bool {
+        predicates
+            .iter()
+            .all(|predicate| Self::matches_predicate(row, predicate))
+    }
+
+    /// Apply a single canonical predicate.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn matches_predicate(row: &DisplayRow, predicate: &SearchPredicate) -> bool {
+        let Some(field) = FieldId::parse(&predicate.field) else {
+            return true;
+        };
+
+        match field {
+            FieldId::PathOnly => Self::match_string(row.path_dir(), predicate),
+            FieldId::Path => Self::match_string(&row.path, predicate),
+            FieldId::Name => Self::match_string(row.name(), predicate),
+            FieldId::Drive => Self::match_string(&row.drive.to_string(), predicate),
+            FieldId::Extension => Self::match_string(
+                row.name().rsplit_once('.').map_or("", |(_, ext)| ext),
+                predicate,
+            ),
+            FieldId::Type => Self::match_string(semantic_type_for_row(row), predicate),
+            FieldId::Size => Self::match_u64(row.size, predicate),
+            FieldId::SizeOnDisk => Self::match_u64(row.allocated, predicate),
+            FieldId::Created => Self::match_i64(row.created, predicate),
+            FieldId::Modified => Self::match_i64(row.modified, predicate),
+            FieldId::Accessed => Self::match_i64(row.accessed, predicate),
+            FieldId::Descendants => Self::match_u64(u64::from(row.descendants), predicate),
+            FieldId::TreeSize => Self::match_u64(row.treesize, predicate),
+            FieldId::TreeAllocated => Self::match_u64(tree_allocated_for_row(row), predicate),
+            FieldId::Bulkiness => Self::match_u64(bulkiness_for_row(row), predicate),
+            FieldId::Attributes | FieldId::AttributeValue => {
+                Self::match_attributes(row.flags, predicate)
+            }
+            // ── Bool-typed attribute fields ─────────────────────────
+            FieldId::Hidden => Self::match_bool(row.flags & 0x02 != 0, predicate),
+            FieldId::System => Self::match_bool(row.flags & 0x04 != 0, predicate),
+            FieldId::Archive => Self::match_bool(row.flags & 0x20 != 0, predicate),
+            FieldId::ReadOnly => Self::match_bool(row.flags & 0x01 != 0, predicate),
+            FieldId::Compressed => Self::match_bool(row.flags & 0x800 != 0, predicate),
+            FieldId::Encrypted => Self::match_bool(row.flags & 0x4000 != 0, predicate),
+            FieldId::Sparse => Self::match_bool(row.flags & 0x200 != 0, predicate),
+            FieldId::Reparse => Self::match_bool(row.flags & 0x400 != 0, predicate),
+            FieldId::Offline => Self::match_bool(row.flags & 0x1000 != 0, predicate),
+            FieldId::NotIndexed => Self::match_bool(row.flags & 0x2000 != 0, predicate),
+            FieldId::Temporary => Self::match_bool(row.flags & 0x100 != 0, predicate),
+            FieldId::Virtual => Self::match_bool(row.flags & 0x0001_0000 != 0, predicate),
+            FieldId::Pinned => Self::match_bool(row.flags & 0x0008_0000 != 0, predicate),
+            FieldId::Unpinned => Self::match_bool(row.flags & 0x0010_0000 != 0, predicate),
+            FieldId::Integrity => Self::match_bool(row.flags & 0x8000 != 0, predicate),
+            FieldId::NoScrub => Self::match_bool(row.flags & 0x0002_0000 != 0, predicate),
+            FieldId::DirectoryFlag => Self::match_bool(row.is_directory, predicate),
+            FieldId::RecallOnOpen => {
+                Self::match_bool(row.flags & Self::FLAG_RECALL_ON_OPEN != 0, predicate)
+            }
+            FieldId::RecallOnDataAccess => {
+                Self::match_bool(row.flags & Self::FLAG_RECALL_ON_DATA_ACCESS != 0, predicate)
+            }
+            FieldId::ParityAttributes => {
+                Self::match_u64(u64::from(row.flags & Self::PARITY_FLAG_MASK), predicate)
+            }
+        }
+    }
+
+    /// Render projected rows as CSV/table text for direct daemon callers.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn render_projected_text(
+        rows: &[SearchRow],
+        projection: &[FieldId],
+        response_mode: SearchResponseMode,
+    ) -> String {
+        let header = projection
+            .iter()
+            .map(|field| field.canonical_name())
+            .collect::<Vec<_>>();
+        let body = rows
+            .iter()
+            .map(|row| {
+                projection
+                    .iter()
+                    .map(|&field| Self::projected_value(row, field).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        match response_mode {
+            SearchResponseMode::Csv => {
+                let mut lines = Vec::with_capacity(body.len() + 1);
+                lines.push(header.join(","));
+                lines.extend(body.into_iter().map(|values| values.join(",")));
+                lines.join("\n")
+            }
+            SearchResponseMode::Table => {
+                let mut lines = Vec::with_capacity(body.len() + 1);
+                lines.push(header.join("\t"));
+                lines.extend(body.into_iter().map(|values| values.join("\t")));
+                lines.join("\n")
+            }
+            SearchResponseMode::Rows | SearchResponseMode::Json => String::new(),
+        }
+    }
+
+    /// Return the extension shown to direct daemon callers.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn search_row_extension(row: &SearchRow) -> &str {
+        row.name.rsplit_once('.').map_or("", |(_, ext)| ext)
+    }
+
+    /// Return the semantic type shown to direct daemon callers.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn search_row_type(row: &SearchRow) -> &'static str {
+        if row.is_directory {
+            "directory"
+        } else {
+            let temp = DisplayRow::new(
+                0,
+                row.drive,
+                row.path.clone(),
+                row.size,
+                row.is_directory,
+                row.modified,
+                row.created,
+                row.accessed,
+                row.flags,
+                row.allocated,
+                row.descendants,
+                row.treesize,
+                row.tree_allocated,
+            );
+            semantic_type_for_row(&temp)
+        }
+    }
+
+    /// Return the tree allocated value shown to direct daemon callers.
+    #[must_use]
+    const fn search_row_tree_allocated(row: &SearchRow) -> u64 {
+        if row.is_directory {
+            row.tree_allocated
+        } else {
+            row.allocated
+        }
+    }
+
+    /// Return the fixed-point bulkiness metric shown to direct daemon callers.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn search_row_bulkiness(row: &SearchRow) -> u64 {
+        let logical = if row.is_directory {
+            row.treesize
+        } else {
+            row.size
+        };
+        let allocated = Self::search_row_tree_allocated(row);
+        allocated
+            .saturating_mul(1_000_000)
+            .checked_div(logical)
+            .unwrap_or(0)
+    }
+
+    /// Match a string predicate.
+    #[must_use]
+    fn match_string(actual: &str, predicate: &SearchPredicate) -> bool {
+        match (&predicate.op, &predicate.value) {
+            (SearchPredicateOp::Eq, SearchPredicateValue::String(expected)) => {
+                actual.eq_ignore_ascii_case(expected)
+            }
+            (SearchPredicateOp::Ne, SearchPredicateValue::String(expected)) => {
+                !actual.eq_ignore_ascii_case(expected)
+            }
+            (SearchPredicateOp::In, SearchPredicateValue::StringList(values)) => values
+                .iter()
+                .any(|value| actual.eq_ignore_ascii_case(value)),
+            (SearchPredicateOp::NotIn, SearchPredicateValue::StringList(values)) => values
+                .iter()
+                .all(|value| !actual.eq_ignore_ascii_case(value)),
+            (SearchPredicateOp::Match, SearchPredicateValue::String(pattern)) => {
+                Self::wildcard_match(actual, pattern)
+            }
+            (SearchPredicateOp::NotMatch, SearchPredicateValue::String(pattern)) => {
+                !Self::wildcard_match(actual, pattern)
+            }
+            _ => true,
+        }
+    }
+
+    /// Case-insensitive wildcard match supporting `*` and `?`.
+    #[must_use]
+    #[allow(clippy::indexing_slicing)]
+    fn wildcard_match(actual_str: &str, pattern_str: &str) -> bool {
+        let actual_bytes = actual_str.to_ascii_lowercase().into_bytes();
+        let pattern_bytes = pattern_str.to_ascii_lowercase().into_bytes();
+        let mut dp = vec![false; actual_bytes.len() + 1];
+        dp[0] = true;
+        for token in pattern_bytes {
+            match token {
+                b'*' => {
+                    let mut seen = false;
+                    for slot in &mut dp {
+                        seen |= *slot;
+                        *slot = seen;
+                    }
+                }
+                b'?' => {
+                    for idx in (1..dp.len()).rev() {
+                        dp[idx] = dp[idx - 1];
+                    }
+                    dp[0] = false;
+                }
+                byte => {
+                    for idx in (1..dp.len()).rev() {
+                        dp[idx] = dp[idx - 1] && actual_bytes[idx - 1] == byte;
+                    }
+                    dp[0] = false;
+                }
+            }
+        }
+        dp[actual_bytes.len()]
+    }
+
+    /// Match a boolean predicate.
+    #[must_use]
+    const fn match_bool(actual: bool, predicate: &SearchPredicate) -> bool {
+        match (&predicate.op, &predicate.value) {
+            (SearchPredicateOp::Eq, SearchPredicateValue::Bool(expected)) => actual == *expected,
+            (SearchPredicateOp::Ne, SearchPredicateValue::Bool(expected)) => actual != *expected,
+            _ => true,
+        }
+    }
+
+    /// Match an unsigned numeric predicate.
+    #[must_use]
+    const fn match_u64(actual: u64, predicate: &SearchPredicate) -> bool {
+        match (&predicate.op, &predicate.value) {
+            (SearchPredicateOp::Eq, SearchPredicateValue::U64(expected)) => actual == *expected,
+            (SearchPredicateOp::Ne, SearchPredicateValue::U64(expected)) => actual != *expected,
+            (SearchPredicateOp::Lt, SearchPredicateValue::U64(expected)) => actual < *expected,
+            (SearchPredicateOp::Lte, SearchPredicateValue::U64(expected)) => actual <= *expected,
+            (SearchPredicateOp::Gt, SearchPredicateValue::U64(expected)) => actual > *expected,
+            (SearchPredicateOp::Gte, SearchPredicateValue::U64(expected)) => actual >= *expected,
+            _ => true,
+        }
+    }
+
+    /// Match a signed numeric predicate.
+    #[must_use]
+    const fn match_i64(actual: i64, predicate: &SearchPredicate) -> bool {
+        match (&predicate.op, &predicate.value) {
+            (SearchPredicateOp::Eq, SearchPredicateValue::I64(expected)) => actual == *expected,
+            (SearchPredicateOp::Ne, SearchPredicateValue::I64(expected)) => actual != *expected,
+            (SearchPredicateOp::Lt, SearchPredicateValue::I64(expected)) => actual < *expected,
+            (SearchPredicateOp::Lte, SearchPredicateValue::I64(expected)) => actual <= *expected,
+            (SearchPredicateOp::Gt, SearchPredicateValue::I64(expected)) => actual > *expected,
+            (SearchPredicateOp::Gte, SearchPredicateValue::I64(expected)) => actual >= *expected,
+            _ => true,
+        }
+    }
+
+    /// Match an attribute-list predicate against raw NTFS flags.
+    #[must_use]
+    #[allow(clippy::single_call_fn)]
+    fn match_attributes(flags: u32, predicate: &SearchPredicate) -> bool {
+        let SearchPredicateValue::StringList(values) = &predicate.value else {
+            return true;
+        };
+        match predicate.op {
+            SearchPredicateOp::HasAll => values.iter().all(|name| Self::flag_set(flags, name)),
+            SearchPredicateOp::HasAny => values.iter().any(|name| Self::flag_set(flags, name)),
+            SearchPredicateOp::HasNone => values.iter().all(|name| !Self::flag_set(flags, name)),
+            SearchPredicateOp::Eq
+            | SearchPredicateOp::Ne
+            | SearchPredicateOp::Lt
+            | SearchPredicateOp::Lte
+            | SearchPredicateOp::Gt
+            | SearchPredicateOp::Gte
+            | SearchPredicateOp::In
+            | SearchPredicateOp::NotIn
+            | SearchPredicateOp::Match
+            | SearchPredicateOp::NotMatch => true,
+        }
+    }
+
+    /// Test whether one named NTFS attribute bit is set in the raw flags.
+    #[must_use]
+    fn flag_set(flags: u32, name: &str) -> bool {
+        flags & uffs_core::search::filters::attr_bit(name) != 0
+    }
+
+    /// `FILE_ATTRIBUTE_RECALL_ON_OPEN` raw NTFS bit.
+    const FLAG_RECALL_ON_OPEN: u32 = 0x0004_0000;
+
+    /// `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` raw NTFS bit.
+    const FLAG_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+
+    /// C++ parity mask over the raw NTFS attribute flags.
+    const PARITY_FLAG_MASK: u32 = 0x001A_EE37;
 }

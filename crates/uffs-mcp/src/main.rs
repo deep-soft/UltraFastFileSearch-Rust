@@ -282,7 +282,7 @@ impl McpServer {
             .and_then(Value::as_str)
             .unwrap_or("*")
             .to_owned();
-        let search_params = SearchParams {
+        let mut search_params = SearchParams {
             pattern,
             case_sensitive: arguments
                 .get("case_sensitive")
@@ -306,6 +306,7 @@ impl McpServer {
                 .map(String::from),
             ..Default::default()
         };
+        search_params.populate_canonical_fields();
         let response = self
             .client
             .search(&search_params)
