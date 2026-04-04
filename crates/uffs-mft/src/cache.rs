@@ -136,15 +136,15 @@ pub fn migrate_legacy_cache() {
             }
 
             // Ensure secure dir exists before first move
-            if moved == 0 {
-                if let Err(e) = create_secure_dir(&secure) {
-                    tracing::warn!(
-                        path = %secure.display(),
-                        error = %e,
-                        "Failed to create secure cache dir during migration"
-                    );
-                    return;
-                }
+            if moved == 0
+                && let Err(e) = create_secure_dir(&secure)
+            {
+                tracing::warn!(
+                    path = %secure.display(),
+                    error = %e,
+                    "Failed to create secure cache dir during migration"
+                );
+                return;
             }
 
             let src = entry.path();
@@ -465,12 +465,12 @@ pub fn list_cached_drives() -> Vec<char> {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str() {
                 // Parse "C_index.uffs" -> 'C'
-                if name.ends_with("_index.uffs") && name.len() >= 12 {
-                    if let Some(drive_char) = name.chars().next() {
-                        if drive_char.is_ascii_alphabetic() {
-                            drives.push(drive_char.to_ascii_uppercase());
-                        }
-                    }
+                if name.ends_with("_index.uffs")
+                    && name.len() >= 12
+                    && let Some(drive_char) = name.chars().next()
+                    && drive_char.is_ascii_alphabetic()
+                {
+                    drives.push(drive_char.to_ascii_uppercase());
                 }
             }
         }

@@ -113,12 +113,12 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 parse_standard_info_full(data, offset, &mut std_info);
             }
             Some(AttributeType::FileName) if attr_header.is_non_resident == 0 => {
-                if let Some(name_info) = parse_file_name_full(data, offset, frs) {
-                    if name_info.namespace != 2 {
-                        // Skip DOS-only names
-                        primary.update(&name_info);
-                        names.push(name_info);
-                    }
+                if let Some(name_info) = parse_file_name_full(data, offset, frs)
+                    && name_info.namespace != 2
+                {
+                    // Skip DOS-only names
+                    primary.update(&name_info);
+                    names.push(name_info);
                 }
             }
             Some(AttributeType::Data) => {
@@ -151,12 +151,11 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                             .unwrap_or([0, 0]),
                     ) as usize;
                     let rp_offset = offset + value_offset;
-                    if rp_offset + size_of::<ReparsePointHeader>() <= data.len() {
-                        if let Ok((rp_header, _)) =
+                    if rp_offset + size_of::<ReparsePointHeader>() <= data.len()
+                        && let Ok((rp_header, _)) =
                             ReparsePointHeader::read_from_prefix(&data[rp_offset..])
-                        {
-                            reparse_tag = rp_header.reparse_tag;
-                        }
+                    {
+                        reparse_tag = rp_header.reparse_tag;
                     }
                     (value_length, 0_u64, true)
                 } else {

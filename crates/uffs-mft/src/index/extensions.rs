@@ -95,13 +95,13 @@ impl ExtensionTable {
 
     /// Get the total number of unique extensions (including "no extension").
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.names.len()
     }
 
     /// Returns true if the table is empty (only has the "no extension" entry).
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.names.len() <= 1
     }
 
@@ -260,13 +260,13 @@ impl ExtensionIndex {
 
     /// Returns true if the index is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.postings.is_empty()
     }
 
     /// Returns the total number of postings.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.postings.len()
     }
 }

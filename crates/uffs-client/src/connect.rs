@@ -244,8 +244,7 @@ impl UffsClient {
                 && value.get("id").is_none()
             {
                 // It's a notification — route to channel
-                if let Ok(notif) =
-                    serde_json::from_value::<crate::protocol::RpcNotification>(value)
+                if let Ok(notif) = serde_json::from_value::<crate::protocol::RpcNotification>(value)
                 {
                     drop(self.notification_tx.send(notif));
                 }

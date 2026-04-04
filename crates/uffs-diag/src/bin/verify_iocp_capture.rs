@@ -200,14 +200,11 @@ fn load_and_hash_raw(path: &Path) -> Result<HashResult> {
     print!("   Reading file...");
     let _ = std::io::stdout().flush();
 
-    let raw = load_raw_mft(
-        path,
-        &LoadRawOptions {
-            header_only: false,
-            volume_letter: None,
-            forensic: false,
-        },
-    )
+    let raw = load_raw_mft(path, &LoadRawOptions {
+        header_only: false,
+        volume_letter: None,
+        forensic: false,
+    })
     .context("Failed to load raw MFT")?;
 
     println!(" done ({:.2} GB)", raw.data.len() as f64 / BYTES_TO_GIB);

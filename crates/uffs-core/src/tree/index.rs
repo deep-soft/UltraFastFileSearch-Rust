@@ -125,14 +125,11 @@ impl TreeIndex {
                 children.entry(parent).or_default().push(frs);
             }
 
-            nodes.insert(
-                frs,
-                NodeInfo {
-                    is_directory,
-                    size,
-                    allocated_size,
-                },
-            );
+            nodes.insert(frs, NodeInfo {
+                is_directory,
+                size,
+                allocated_size,
+            });
         }
 
         Self {
@@ -170,14 +167,11 @@ impl TreeIndex {
             .fold(
                 || HashMap::with_capacity(data.len() / rayon::current_num_threads()),
                 |mut map, &(frs, _, is_directory, size, allocated_size)| {
-                    map.insert(
-                        frs,
-                        NodeInfo {
-                            is_directory,
-                            size,
-                            allocated_size,
-                        },
-                    );
+                    map.insert(frs, NodeInfo {
+                        is_directory,
+                        size,
+                        allocated_size,
+                    });
                     map
                 },
             )

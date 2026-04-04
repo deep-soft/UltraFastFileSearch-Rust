@@ -201,26 +201,20 @@ mod tests {
 
         let error = classify_binary_task_error("uffs_mft", &join_error);
 
-        assert!(matches!(
-            error,
-            uffs_mft::MftError::Cancelled {
-                operation: "uffs_mft",
-                ..
-            }
-        ));
+        assert!(matches!(error, uffs_mft::MftError::Cancelled {
+            operation: "uffs_mft",
+            ..
+        }));
     }
 
     #[test]
     fn test_shutdown_requested_error_is_cancelled() {
         let error = shutdown_requested_error("uffs_mft");
 
-        assert!(matches!(
-            error,
-            uffs_mft::MftError::Cancelled {
-                operation: "uffs_mft",
-                ..
-            }
-        ));
+        assert!(matches!(error, uffs_mft::MftError::Cancelled {
+            operation: "uffs_mft",
+            ..
+        }));
     }
 
     #[test]
@@ -228,12 +222,9 @@ mod tests {
         let error =
             ctrl_c_listener_error("uffs_mft", &std::io::Error::other("listener unavailable"));
 
-        assert!(matches!(
-            error,
-            uffs_mft::MftError::WaitFailed {
-                operation: "uffs_mft",
-                ..
-            }
-        ));
+        assert!(matches!(error, uffs_mft::MftError::WaitFailed {
+            operation: "uffs_mft",
+            ..
+        }));
     }
 }

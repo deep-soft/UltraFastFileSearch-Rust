@@ -309,7 +309,7 @@ impl IocpCaptureWriter {
 
     /// Returns the number of chunks captured so far.
     #[must_use]
-    pub fn chunk_count(&self) -> usize {
+    pub const fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
 

@@ -70,99 +70,84 @@ mod tests {
 
     #[test]
     fn test_no_args_prints_top_level_help() {
-        assert_success(
-            "no_args_help",
-            &[],
-            &["Command-line interface for UFFS", "Usage:", "[PATTERN]"],
-        );
+        assert_success("no_args_help", &[], &[
+            "Command-line interface for UFFS",
+            "Usage:",
+            "[PATTERN]",
+        ]);
     }
 
     #[test]
     fn test_help_flag_prints_examples() {
-        assert_success(
-            "help_flag",
-            &["--help"],
-            &[
-                "Search is the default action",
-                "uffs '*.txt'",
-                "uffs index -d C index.parquet",
-            ],
-        );
+        assert_success("help_flag", &["--help"], &[
+            "Search is the default action",
+            "uffs '*.txt'",
+            "uffs index -d C index.parquet",
+        ]);
     }
 
     #[test]
     fn test_version_flag_prints_binary_version() {
-        assert_success(
-            "version_flag",
-            &["--version"],
-            &["uffs", env!("CARGO_PKG_VERSION")],
-        );
+        assert_success("version_flag", &["--version"], &[
+            "uffs",
+            env!("CARGO_PKG_VERSION"),
+        ]);
     }
 
     #[test]
     fn test_unknown_flag_reports_error() {
-        assert_failure(
-            "unknown_flag",
-            &["--bogus"],
-            &["unexpected argument '--bogus'", "Usage:"],
-        );
+        assert_failure("unknown_flag", &["--bogus"], &[
+            "unexpected argument '--bogus'",
+            "Usage:",
+        ]);
     }
 
     #[test]
     fn test_index_help_prints_examples() {
-        assert_success(
-            "index_help",
-            &["index", "--help"],
-            &[
-                "Build an index from drive MFT(s)",
-                "uffs index --drives C,D,E out.parquet",
-            ],
-        );
+        assert_success("index_help", &["index", "--help"], &[
+            "Build an index from drive MFT(s)",
+            "uffs index --drives C,D,E out.parquet",
+        ]);
     }
 
     #[test]
     fn test_info_help_prints_required_path_argument() {
-        assert_success(
-            "info_help",
-            &["info", "--help"],
-            &["Show information about an index file", "<PATH>"],
-        );
+        assert_success("info_help", &["info", "--help"], &[
+            "Show information about an index file",
+            "<PATH>",
+        ]);
     }
 
     #[test]
     fn test_stats_help_prints_top_option() {
-        assert_success(
-            "stats_help",
-            &["stats", "--help"],
-            &["Show statistics about files in an index", "--top <TOP>"],
-        );
+        assert_success("stats_help", &["stats", "--help"], &[
+            "Show statistics about files in an index",
+            "--top <TOP>",
+        ]);
     }
 
     #[test]
     fn test_index_requires_output_argument() {
-        assert_failure(
-            "index_missing_output",
-            &["index"],
-            &["required arguments were not provided", "<OUTPUT>"],
-        );
+        assert_failure("index_missing_output", &["index"], &[
+            "required arguments were not provided",
+            "<OUTPUT>",
+        ]);
     }
 
     #[test]
     fn test_info_requires_path_argument() {
-        assert_failure(
-            "info_missing_path",
-            &["info"],
-            &["required arguments were not provided", "<PATH>"],
-        );
+        assert_failure("info_missing_path", &["info"], &[
+            "required arguments were not provided",
+            "<PATH>",
+        ]);
     }
 
     #[test]
     fn test_stats_requires_path_argument() {
-        assert_failure(
-            "stats_missing_path",
-            &["stats"],
-            &["required arguments were not provided", "<PATH>"],
-        );
+        assert_failure("stats_missing_path", &["stats"], &[
+            "required arguments were not provided",
+            "<PATH>",
+        ]);
     }
 
     #[test]
@@ -176,11 +161,10 @@ mod tests {
 
     #[test]
     fn test_search_rejects_invalid_drive_letter() {
-        assert_failure(
-            "search_invalid_drive",
-            &["*.rs", "--drive", "1"],
-            &["invalid value '1'", "must be A-Z"],
-        );
+        assert_failure("search_invalid_drive", &["*.rs", "--drive", "1"], &[
+            "invalid value '1'",
+            "must be A-Z",
+        ]);
     }
 
     #[test]
@@ -199,10 +183,11 @@ mod tests {
         // Drive letters are auto-inferred from filenames (C.bin → C:).
         // The command will fail (files don't exist) but must NOT fail with
         // an argument-conflict error.
-        let output = run_cli(
-            "search_mft_multi_file",
-            &["*.rs", "--mft-file", "C.bin,D.bin"],
-        );
+        let output = run_cli("search_mft_multi_file", &[
+            "*.rs",
+            "--mft-file",
+            "C.bin,D.bin",
+        ]);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             !stderr.contains("cannot be used with"),
@@ -230,11 +215,10 @@ mod tests {
 
     #[test]
     fn test_search_rejects_non_numeric_limit() {
-        assert_failure(
-            "search_invalid_limit",
-            &["*.rs", "--limit", "abc"],
-            &["invalid value 'abc'", "--limit <LIMIT>"],
-        );
+        assert_failure("search_invalid_limit", &["*.rs", "--limit", "abc"], &[
+            "invalid value 'abc'",
+            "--limit <LIMIT>",
+        ]);
     }
 
     #[test]
@@ -329,10 +313,12 @@ mod tests {
     fn test_name_only_accepts_plain_literal() {
         // Should not error on validation (will fail later because no MFT file,
         // but the --name-only + pattern validation should pass)
-        let output = run_cli(
-            "name_only_plain",
-            &["hallo", "--name-only", "--mft-file", "nonexistent.bin"],
-        );
+        let output = run_cli("name_only_plain", &[
+            "hallo",
+            "--name-only",
+            "--mft-file",
+            "nonexistent.bin",
+        ]);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             !stderr.contains("--name-only cannot be used with path patterns"),
@@ -342,10 +328,12 @@ mod tests {
 
     #[test]
     fn test_name_only_accepts_glob_pattern() {
-        let output = run_cli(
-            "name_only_glob",
-            &["*.txt", "--name-only", "--mft-file", "nonexistent.bin"],
-        );
+        let output = run_cli("name_only_glob", &[
+            "*.txt",
+            "--name-only",
+            "--mft-file",
+            "nonexistent.bin",
+        ]);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             !stderr.contains("--name-only cannot be used with path patterns"),
@@ -357,15 +345,12 @@ mod tests {
     fn test_name_only_accepts_regex_with_backslash_escapes() {
         // Regex patterns start with > and may contain \. for escaped dots.
         // These backslashes are regex syntax, not path separators.
-        let output = run_cli(
-            "name_only_regex",
-            &[
-                r">.*\.(jpg|png)",
-                "--name-only",
-                "--mft-file",
-                "nonexistent.bin",
-            ],
-        );
+        let output = run_cli("name_only_regex", &[
+            r">.*\.(jpg|png)",
+            "--name-only",
+            "--mft-file",
+            "nonexistent.bin",
+        ]);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             !stderr.contains("--name-only cannot be used with path patterns"),
@@ -378,11 +363,9 @@ mod tests {
     #[test]
     fn test_pipeline_flag_is_rejected() {
         // Step 4 removed --pipeline flag entirely. Verify it's not accepted.
-        assert_failure(
-            "pipeline_rejected",
-            &["*.rs", "--pipeline", "unified"],
-            &["unexpected argument '--pipeline'"],
-        );
+        assert_failure("pipeline_rejected", &["*.rs", "--pipeline", "unified"], &[
+            "unexpected argument '--pipeline'",
+        ]);
     }
 
     #[test]
@@ -399,10 +382,11 @@ mod tests {
     fn test_query_mode_flag_is_rejected() {
         // --query-mode was removed along with --pipeline in Step 4.
         // Verify the flag is no longer accepted.
-        let output = run_cli(
-            "query_mode_rejected",
-            &["*.rs", "--query-mode", "dataframe"],
-        );
+        let output = run_cli("query_mode_rejected", &[
+            "*.rs",
+            "--query-mode",
+            "dataframe",
+        ]);
         let stderr = String::from_utf8_lossy(&output.stderr);
         // If it was removed, clap rejects it. If not, this test catches
         // accidental re-introduction.

@@ -129,22 +129,22 @@ impl PathResolver {
         let mut current_idx = idx;
 
         loop {
-            if let Some(cached) = dir_cache.get(current_idx) {
-                if !cached.is_empty() {
-                    out.push_str(cached);
-                    for &ci in chain.iter().rev() {
-                        if let Some(rec) = index.records.get(ci) {
-                            let name = index.record_name(rec);
-                            if !name.is_empty() && name != "." {
-                                if !out.ends_with('\\') {
-                                    out.push('\\');
-                                }
-                                out.push_str(name);
+            if let Some(cached) = dir_cache.get(current_idx)
+                && !cached.is_empty()
+            {
+                out.push_str(cached);
+                for &ci in chain.iter().rev() {
+                    if let Some(rec) = index.records.get(ci) {
+                        let name = index.record_name(rec);
+                        if !name.is_empty() && name != "." {
+                            if !out.ends_with('\\') {
+                                out.push('\\');
                             }
+                            out.push_str(name);
                         }
                     }
-                    return;
                 }
+                return;
             }
 
             let Some(record) = index.records.get(current_idx) else {
@@ -200,36 +200,36 @@ impl PathResolver {
         // Walk up parent chain, checking cache at each step.
         loop {
             // Check if this ancestor is already cached.
-            if let Some(cached) = dir_cache.get(current_idx) {
-                if !cached.is_empty() {
-                    // Build path: cached prefix + remaining components
-                    if chain.is_empty() {
-                        return cached.clone();
-                    }
-                    let mut total_len = cached.len();
-                    for &ci in &chain {
-                        if let Some(rec) = index.records.get(ci) {
-                            let name = index.record_name(rec);
-                            if !name.is_empty() && name != "." {
-                                total_len += 1 + name.len();
-                            }
-                        }
-                    }
-                    let mut path = String::with_capacity(total_len);
-                    path.push_str(cached);
-                    for &ci in chain.iter().rev() {
-                        if let Some(rec) = index.records.get(ci) {
-                            let name = index.record_name(rec);
-                            if !name.is_empty() && name != "." {
-                                if !path.ends_with('\\') {
-                                    path.push('\\');
-                                }
-                                path.push_str(name);
-                            }
-                        }
-                    }
-                    return path;
+            if let Some(cached) = dir_cache.get(current_idx)
+                && !cached.is_empty()
+            {
+                // Build path: cached prefix + remaining components
+                if chain.is_empty() {
+                    return cached.clone();
                 }
+                let mut total_len = cached.len();
+                for &ci in &chain {
+                    if let Some(rec) = index.records.get(ci) {
+                        let name = index.record_name(rec);
+                        if !name.is_empty() && name != "." {
+                            total_len += 1 + name.len();
+                        }
+                    }
+                }
+                let mut path = String::with_capacity(total_len);
+                path.push_str(cached);
+                for &ci in chain.iter().rev() {
+                    if let Some(rec) = index.records.get(ci) {
+                        let name = index.record_name(rec);
+                        if !name.is_empty() && name != "." {
+                            if !path.ends_with('\\') {
+                                path.push('\\');
+                            }
+                            path.push_str(name);
+                        }
+                    }
+                }
+                return path;
             }
 
             let Some(record) = index.records.get(current_idx) else {
@@ -393,11 +393,12 @@ impl PathResolver {
     /// Mark system metafiles (FRS 0-15 except root) as invalid.
     fn mark_system_metafiles_invalid(&mut self, index: &MftIndex) {
         for (idx, record) in index.records.iter().enumerate() {
-            if record.frs <= SYSTEM_METAFILE_MAX_FRS && record.frs != ROOT_FRS {
-                if let Some(state) = self.state.get_mut(idx) {
-                    *state = path_state::INVALID;
-                    self.invalid_count += 1;
-                }
+            if record.frs <= SYSTEM_METAFILE_MAX_FRS
+                && record.frs != ROOT_FRS
+                && let Some(state) = self.state.get_mut(idx)
+            {
+                *state = path_state::INVALID;
+                self.invalid_count += 1;
             }
         }
     }
@@ -423,14 +424,13 @@ impl PathResolver {
                 let Some(child_info) = index.children.get(child_entry as usize) else {
                     break;
                 };
-                if let Some(child_idx) = index.frs_to_idx_opt(child_info.child_frs) {
-                    if let Some(state) = self.state.get_mut(child_idx) {
-                        if *state == path_state::UNSEEN {
-                            *state = path_state::INVALID;
-                            self.invalid_count += 1;
-                            queue.push_back(child_idx);
-                        }
-                    }
+                if let Some(child_idx) = index.frs_to_idx_opt(child_info.child_frs)
+                    && let Some(state) = self.state.get_mut(child_idx)
+                    && *state == path_state::UNSEEN
+                {
+                    *state = path_state::INVALID;
+                    self.invalid_count += 1;
+                    queue.push_back(child_idx);
                 }
                 child_entry = child_info.next_entry;
             }

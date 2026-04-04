@@ -522,39 +522,30 @@ mod tests {
 
         let error = classify_cli_task_error("uffs", &join_error);
 
-        assert!(matches!(
-            error,
-            uffs_mft::MftError::Cancelled {
-                operation: "uffs",
-                ..
-            }
-        ));
+        assert!(matches!(error, uffs_mft::MftError::Cancelled {
+            operation: "uffs",
+            ..
+        }));
     }
 
     #[test]
     fn test_shutdown_requested_error_is_cancelled() {
         let error = shutdown_requested_error("uffs");
 
-        assert!(matches!(
-            error,
-            uffs_mft::MftError::Cancelled {
-                operation: "uffs",
-                ..
-            }
-        ));
+        assert!(matches!(error, uffs_mft::MftError::Cancelled {
+            operation: "uffs",
+            ..
+        }));
     }
 
     #[test]
     fn test_ctrl_c_listener_error_is_wait_failed() {
         let error = ctrl_c_listener_error("uffs", &std::io::Error::other("listener unavailable"));
 
-        assert!(matches!(
-            error,
-            uffs_mft::MftError::WaitFailed {
-                operation: "uffs",
-                ..
-            }
-        ));
+        assert!(matches!(error, uffs_mft::MftError::WaitFailed {
+            operation: "uffs",
+            ..
+        }));
     }
 }
 

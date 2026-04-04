@@ -25,7 +25,7 @@ pub use self::header::IndexHeader;
 pub fn aligned_vec_from_bytes<T: bytemuck::Pod>(bytes: &[u8]) -> Vec<T> {
     let elem_size = size_of::<T>();
     assert!(
-        elem_size > 0 && bytes.len() % elem_size == 0,
+        elem_size > 0 && bytes.len().is_multiple_of(elem_size),
         "byte slice length {} is not a multiple of element size {}",
         bytes.len(),
         elem_size,

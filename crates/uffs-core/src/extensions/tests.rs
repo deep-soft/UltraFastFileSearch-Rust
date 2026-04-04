@@ -86,17 +86,14 @@ fn test_no_extension_file() {
 fn create_ext_test_df() -> DataFrame {
     DataFrame::new_infer_height(vec![
         Column::new("frs".into(), &[1_u64, 2, 3, 4, 5, 6]),
-        Column::new(
-            "name".into(),
-            &[
-                "photo.jpg",
-                "document.txt",
-                "image.jpg",
-                "README",
-                "script.py",
-                "data.txt",
-            ],
-        ),
+        Column::new("name".into(), &[
+            "photo.jpg",
+            "document.txt",
+            "image.jpg",
+            "README",
+            "script.py",
+            "data.txt",
+        ]),
     ])
     .unwrap()
 }
@@ -179,16 +176,13 @@ fn test_extension_index_hidden_files() -> TestResult {
 fn test_add_ext_column() -> TestResult {
     let df = DataFrame::new_infer_height(vec![
         Column::new("frs".into(), &[1_u64, 2, 3, 4, 5]),
-        Column::new(
-            "name".into(),
-            &[
-                "photo.jpg",
-                "document.txt",
-                "README",
-                ".gitignore",
-                "archive.tar.gz",
-            ],
-        ),
+        Column::new("name".into(), &[
+            "photo.jpg",
+            "document.txt",
+            "README",
+            ".gitignore",
+            "archive.tar.gz",
+        ]),
     ])?;
 
     let result = add_ext_column(df)?;

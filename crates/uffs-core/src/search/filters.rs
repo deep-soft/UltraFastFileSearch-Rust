@@ -436,6 +436,61 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Size parsing helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Parse a human-readable size string into bytes.
+///
+/// Accepts plain integers (bytes) and suffixes: `B`, `KB`, `MB`, `GB`, `TB`.
+/// The suffix is **case-insensitive**.  A bare number with no suffix is
+/// treated as bytes.
+///
+/// # Examples
+///
+/// ```
+/// # use uffs_core::search::filters::parse_size;
+/// assert_eq!(parse_size("1024"), Ok(1024));
+/// assert_eq!(parse_size("1KB"),  Ok(1024));
+/// assert_eq!(parse_size("10mb"), Ok(10 * 1024 * 1024));
+/// assert_eq!(parse_size("1GB"),  Ok(1024 * 1024 * 1024));
+/// assert_eq!(parse_size("2TB"),  Ok(2 * 1024 * 1024 * 1024 * 1024));
+/// assert_eq!(parse_size("0"),    Ok(0));
+/// assert!(parse_size("abc").is_err());
+/// ```
+pub fn parse_size(spec: &str) -> Result<u64, String> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return Err("empty size specification".to_owned());
+    }
+
+    let upper = trimmed.to_ascii_uppercase();
+
+    // Try stripping known suffixes longest-first.
+    let (num_str, multiplier) = if let Some(n) = upper.strip_suffix("TB") {
+        (n, 1024_u64 * 1024 * 1024 * 1024)
+    } else if let Some(n) = upper.strip_suffix("GB") {
+        (n, 1024_u64 * 1024 * 1024)
+    } else if let Some(n) = upper.strip_suffix("MB") {
+        (n, 1024_u64 * 1024)
+    } else if let Some(n) = upper.strip_suffix("KB") {
+        (n, 1024_u64)
+    } else if let Some(n) = upper.strip_suffix('B') {
+        (n, 1_u64)
+    } else {
+        (upper.as_str(), 1_u64)
+    };
+
+    let num_str = num_str.trim();
+    let count: u64 = num_str
+        .parse()
+        .map_err(|_| format!("invalid size: {spec}"))?;
+
+    count
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("size overflows u64: {spec}"))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Time / attribute parsing helpers
 // ═══════════════════════════════════════════════════════════════════════════
 

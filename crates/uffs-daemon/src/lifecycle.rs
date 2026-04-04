@@ -447,10 +447,10 @@ impl LifecycleManager {
 
     /// `FNV-1a` 64-bit hash (no external dep needed).
     fn fnv1a_hash(data: &[u8]) -> u64 {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut hash: u64 = 0xCBF2_9CE4_8422_2325;
         for &byte in data {
             hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0100_0000_01b3);
+            hash = hash.wrapping_mul(0x0100_0000_01B3);
         }
         hash
     }

@@ -145,23 +145,22 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                 if attr_header.is_non_resident == 0 {
                     let vo = rd_u16(data, offset + 20) as usize;
                     let si_off = offset + vo;
-                    if si_off + size_of::<StandardInformation>() <= data.len() {
-                        if let Ok((si, _)) = StandardInformation::read_from_prefix(&data[si_off..])
-                        {
-                            // Fast path: map raw NTFS flags directly to our
-                            // compact bitmask — skips the intermediate
-                            // ExtendedStandardInfo struct entirely.
-                            let mut info =
-                                crate::index::StandardInfo::from_raw_ntfs_flags(si.file_attributes);
-                            info.created = filetime_to_unix_micros(si.creation_time);
-                            info.modified = filetime_to_unix_micros(si.modification_time);
-                            info.accessed = filetime_to_unix_micros(si.access_time);
-                            info.mft_changed = filetime_to_unix_micros(si.mft_change_time);
-                            if is_directory {
-                                info.set_directory(true);
-                            }
-                            index.records[base_ri].stdinfo = info;
+                    if si_off + size_of::<StandardInformation>() <= data.len()
+                        && let Ok((si, _)) = StandardInformation::read_from_prefix(&data[si_off..])
+                    {
+                        // Fast path: map raw NTFS flags directly to our
+                        // compact bitmask — skips the intermediate
+                        // ExtendedStandardInfo struct entirely.
+                        let mut info =
+                            crate::index::StandardInfo::from_raw_ntfs_flags(si.file_attributes);
+                        info.created = filetime_to_unix_micros(si.creation_time);
+                        info.modified = filetime_to_unix_micros(si.modification_time);
+                        info.accessed = filetime_to_unix_micros(si.access_time);
+                        info.mft_changed = filetime_to_unix_micros(si.mft_change_time);
+                        if is_directory {
+                            info.set_directory(true);
                         }
+                        index.records[base_ri].stdinfo = info;
                     }
                 }
             }
@@ -172,71 +171,68 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                 if attr_header.is_non_resident == 0 {
                     let vo = rd_u16(data, offset + 20) as usize;
                     let fn_off = offset + vo;
-                    if fn_off + size_of::<FileNameAttribute>() <= data.len() {
-                        if let Ok((fn_attr, _)) =
+                    if fn_off + size_of::<FileNameAttribute>() <= data.len()
+                        && let Ok((fn_attr, _)) =
                             FileNameAttribute::read_from_prefix(&data[fn_off..])
-                        {
-                            // C++ line 271: skip DOS-only names
-                            if fn_attr.file_name_namespace != 2 {
-                                let parent_frs = file_reference_to_frs(fn_attr.parent_directory);
-                                let name_len = fn_attr.file_name_length as usize;
-                                let ns = fn_off + size_of::<FileNameAttribute>();
+                        && fn_attr.file_name_namespace != 2
+                    {
+                        // C++ line 271: skip DOS-only names
+                        let parent_frs = file_reference_to_frs(fn_attr.parent_directory);
+                        let name_len = fn_attr.file_name_length as usize;
+                        let ns = fn_off + size_of::<FileNameAttribute>();
 
-                                if ns + name_len * 2 <= data.len() {
-                                    let nb = &data[ns..ns + name_len * 2];
-                                    decode_utf16le_into(nb, name_buf);
+                        if ns + name_len * 2 <= data.len() {
+                            let nb = &data[ns..ns + name_len * 2];
+                            decode_utf16le_into(nb, name_buf);
 
-                                    // C++ lines 273-278: push old first_name to chain
-                                    // Copy first_name before mutating (borrow checker)
-                                    let old_valid =
-                                        index.records[base_ri].first_name.name.is_valid();
-                                    let old_first = index.records[base_ri].first_name; // Copy
-                                    if old_valid {
-                                        let link_idx = index.links.len() as u32;
-                                        index.links.push(old_first);
-                                        index.records[base_ri].first_name.next_entry = link_idx;
-                                    }
-
-                                    // C++ lines 281-289: overwrite first_name
-                                    let name_off = index.add_name(name_buf);
-                                    let is_ascii = name_buf.is_ascii();
-                                    let ext_id = index.intern_extension(name_buf);
-                                    let name_ref = IndexNameRef::new(
-                                        name_off,
-                                        name_buf.len() as u16,
-                                        is_ascii,
-                                        ext_id,
-                                    );
-
-                                    index.records[base_ri].first_name.name = name_ref;
-                                    index.records[base_ri].first_name.parent_frs = parent_frs;
-
-                                    // C++ lines 293-304: build parent-child
-                                    // name_index = name_count BEFORE increment
-                                    // (C++ line 302)
-                                    let name_index = index.records[base_ri].name_count;
-
-                                    if parent_frs != frs_base && parent_frs != u64::from(NO_ENTRY) {
-                                        let parent_ri = index.ensure_record(parent_frs) as usize;
-                                        let child_idx = index.children.len() as u32;
-                                        let old_fc = index.records[parent_ri].first_child;
-                                        index.records[parent_ri].first_child = child_idx;
-
-                                        index.children.push(ChildInfo {
-                                            next_entry: old_fc,
-                                            _pad0: [0; 4],
-                                            child_frs: frs_base,
-                                            name_index,
-                                            _pad1: [0; 6],
-                                        });
-                                    }
-
-                                    // C++ line 307: ++name_count
-                                    // With zero-based counts, ALWAYS increment
-                                    // (including the first name).
-                                    index.records[base_ri].name_count += 1;
-                                }
+                            // C++ lines 273-278: push old first_name to chain
+                            // Copy first_name before mutating (borrow checker)
+                            let old_valid = index.records[base_ri].first_name.name.is_valid();
+                            let old_first = index.records[base_ri].first_name; // Copy
+                            if old_valid {
+                                let link_idx = index.links.len() as u32;
+                                index.links.push(old_first);
+                                index.records[base_ri].first_name.next_entry = link_idx;
                             }
+
+                            // C++ lines 281-289: overwrite first_name
+                            let name_off = index.add_name(name_buf);
+                            let is_ascii = name_buf.is_ascii();
+                            let ext_id = index.intern_extension(name_buf);
+                            let name_ref = IndexNameRef::new(
+                                name_off,
+                                name_buf.len() as u16,
+                                is_ascii,
+                                ext_id,
+                            );
+
+                            index.records[base_ri].first_name.name = name_ref;
+                            index.records[base_ri].first_name.parent_frs = parent_frs;
+
+                            // C++ lines 293-304: build parent-child
+                            // name_index = name_count BEFORE increment
+                            // (C++ line 302)
+                            let name_index = index.records[base_ri].name_count;
+
+                            if parent_frs != frs_base && parent_frs != u64::from(NO_ENTRY) {
+                                let parent_ri = index.ensure_record(parent_frs) as usize;
+                                let child_idx = index.children.len() as u32;
+                                let old_fc = index.records[parent_ri].first_child;
+                                index.records[parent_ri].first_child = child_idx;
+
+                                index.children.push(ChildInfo {
+                                    next_entry: old_fc,
+                                    _pad0: [0; 4],
+                                    child_frs: frs_base,
+                                    name_index,
+                                    _pad1: [0; 6],
+                                });
+                            }
+
+                            // C++ line 307: ++name_count
+                            // With zero-based counts, ALWAYS increment
+                            // (including the first name).
+                            index.records[base_ri].name_count += 1;
                         }
                     }
                 }

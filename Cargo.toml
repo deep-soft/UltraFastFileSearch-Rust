@@ -37,18 +37,17 @@ members = [
     # ── Tools ──
     "crates/uffs-diag",     # 🔬 Retained workspace-only diagnostic tools (not shipped in dist/)
 ]
-exclude = [
-    # Vendored reference tools / external code (kept out of the main workspace)
-    "vendor/mft-reader-rs",
-]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.4.80"
+version = "0.4.81"
 edition = "2024"
-rust-version = "1.94"
+# MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
+# but Polars is built with features = ["nightly", "simd"] which requires
+# a nightly toolchain. See rust-toolchain.toml for the pinned nightly channel.
+rust-version = "1.91"
 license = "MPL-2.0 OR LicenseRef-UFFS-Commercial"
 repository = "https://github.com/githubrobbi/UltraFastFileSearch"
 authors = ["Robert Nio <50460704+githubrobbi@users.noreply.github.com>"]
@@ -74,9 +73,8 @@ uffs-daemon   = { path = "crates/uffs-daemon" }
 # It is a top-level diagnostic/tool crate, not a shared runtime dependency.
 
 # ───── Polars (via facade crate for compilation isolation) ─────
-# NOTE: Polars is pulled from git main branch in uffs-polars crate
-# CI step 'update_polars_git' pins the lockfile to latest main HEAD
-# polars = { git = "https://github.com/pola-rs/polars", branch = "main", default-features = false }
+# Polars is pinned to a specific commit in crates/uffs-polars/Cargo.toml (rev = "...").
+# Run `just polars` to bump to the latest main HEAD.
 
 # ───── Async Runtime ─────
 tokio = { version = "1.51.0", features = ["full", "macros", "rt-multi-thread", "time", "tracing"] }
@@ -101,14 +99,25 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# ───── Serialization ─────
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+toml = "1.1.2"
+
 # ───── Data Structures ─────
 bitflags = "2.11.0"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 smallvec = "1.15.1"
 zerocopy = { version = "0.8", features = ["derive"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-toml = "1.1.2"
+
+# ───── Error Handling ─────
+thiserror = "2.0.18"
+anyhow = "1.0.102"
+
+# ───── Logging & Tracing ─────
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["fmt", "time", "env-filter"] }
+tracing-appender = "0.2.4"
 
 # ───── CLI ─────
 clap = { version = "4.6.0", features = ["derive", "env", "unicode", "wrap_help"] }
@@ -120,18 +129,16 @@ crossterm = "0.29.0"
 ratatui-textarea = { version = "0.8.0", features = ["crossterm", "search"] }
 devicons = "0.6.12"
 
-# ───── Error Handling ─────
-thiserror = "2.0.18"
-anyhow = "1.0.102"
-
-# ───── Logging & Tracing ─────
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["fmt", "time", "env-filter"] }
-tracing-appender = "0.2.4"
+# ───── Pattern Matching ─────
+regex = "1.12.3"
+memchr = "2.8.0"
+aho-corasick = "1.1.4"
+globset = "0.4.18"
 
 # ───── Time ─────
-# Note: chrono version constrained by Polars git dependency (requires <= 0.4.41)
 chrono = { version = "0.4.44", features = ["serde"] }
+
+# ───── Directories ─────
 dirs-next = "2.0.0"
 
 # ───── Hashing ─────
@@ -142,21 +149,15 @@ itoa = "1.0.18"
 sha2 = "0.11.0"
 hex = "0.4.3"
 
-# ───── Testing & Benchmarking ─────
-criterion = "0.8.2"
-proptest = "1.11.0"
-assert_cmd = "2.2.0"
-
-# ───── Memory Allocator ─────
-# mimalloc reduces fragmentation and improves allocation performance for large datasets
-mimalloc = "0.1.48"
-regex = "1.12.3"
-memchr = "2.8.0"
-aho-corasick = "1.1.4"
-globset = "0.4.18"
+# ───── Parallelism ─────
 rayon = "1.11.0"
-libc = "0.2"
+
+# ───── Memory ─────
+mimalloc = "0.1.48"
 memmap2 = "0.9.10"
+
+# ───── System ─────
+libc = "0.2"
 
 # ───── Security / Crypto ─────
 aes-gcm = "0.10"
@@ -165,6 +166,11 @@ security-framework = "3.7.0"
 
 # ───── Compression ─────
 zstd = { version = "0.13.3", features = ["zstdmt"] }
+
+# ───── Testing & Benchmarking ─────
+criterion = "0.8.2"
+proptest = "1.11.0"
+assert_cmd = "2.2.0"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # WORKSPACE-WIDE SUPER STRICT LINTING CONFIGURATION (2026 CUTTING-EDGE STANDARDS)
@@ -291,88 +297,110 @@ set_contains_or_insert = "warn"        # Use entry API for sets
 unnecessary_map_or = "warn"            # Simplify map_or calls (1.92+)
 unnecessary_result_map_or_else = "warn" # Simplify Result::map_or_else
 
-# ───── Additional 2026 cutting-edge lints ─────
-assigning_clones = "warn"               # Use clone_from instead of clone + assign
-collection_is_never_read = "warn"       # Detect unused collections
-debug_assert_with_mut_call = "warn"     # Avoid side effects in debug_assert
-default_numeric_fallback = "warn"       # Explicit numeric types
-empty_drop = "warn"                     # Remove empty Drop implementations
-empty_structs_with_brackets = "warn"    # Use unit struct syntax
-equatable_if_let = "warn"               # Use == instead of if let for equality
+# ───── Error handling & safety ─────
 error_impl_error = "warn"               # Proper Error trait implementations
 exit = "deny"                           # No std::process::exit
-filetype_is_file = "warn"               # Use is_file() properly
-float_arithmetic = "warn"               # Be careful with float arithmetic
-format_push_string = "warn"             # Use write! instead of format! + push
 get_unwrap = "deny"                     # Use get().ok_or() instead
-if_then_some_else_none = "warn"         # Use bool::then instead
-impl_trait_in_params = "warn"           # Prefer generics over impl Trait in params
+let_underscore_must_use = "warn"        # Don't ignore must_use values
+map_err_ignore = "warn"                 # Don't ignore map_err values
+mem_forget = "deny"                     # Avoid mem::forget
+missing_assert_message = "warn"         # Add messages to assertions
+missing_asserts_for_indexing = "warn"   # Assert before indexing
+try_err = "warn"                        # Use ? instead of try!
+
+# ───── Memory & allocation ─────
+assigning_clones = "warn"               # Use clone_from instead of clone + assign
+rc_buffer = "warn"                      # Avoid Rc<String> or Rc<Vec>
+rc_mutex = "warn"                       # Avoid Rc<Mutex<T>>
+read_zero_byte_vec = "warn"             # Avoid reading into zero-capacity vec
+significant_drop_in_scrutinee = "warn"  # Avoid drops in match scrutinee
+significant_drop_tightening = "warn"    # Tighten significant drop scope
+
+# ───── Concurrency & performance ─────
+mutex_atomic = "warn"                   # Use atomics instead of mutex for simple types
+stable_sort_primitive = "warn"          # Use unstable_sort for primitives
 infinite_loop = "warn"                  # Detect infinite loops
+
+# ───── Iterator patterns ─────
+collection_is_never_read = "warn"       # Detect unused collections
 iter_on_empty_collections = "warn"      # Avoid iterating empty collections
 iter_on_single_items = "warn"           # Use std::iter::once instead
 iter_over_hash_type = "warn"            # Non-deterministic iteration order
-let_underscore_must_use = "warn"        # Don't ignore must_use values
-let_underscore_untyped = "warn"         # Type underscore bindings
+needless_collect = "warn"               # Avoid unnecessary collect()
+needless_for_each = "warn"              # Use for loop instead of for_each
+
+# ───── String & formatting ─────
+format_push_string = "warn"             # Use write! instead of format! + push
+manual_string_new = "warn"              # Use String::new()
+needless_raw_string_hashes = "warn"     # Minimize raw string hashes
+needless_raw_strings = "warn"           # Avoid unnecessary raw strings
+string_lit_chars_any = "warn"           # Use contains instead of chars().any()
+
+# ───── Numeric & type precision ─────
+default_numeric_fallback = "warn"       # Explicit numeric types
+float_arithmetic = "warn"               # Be careful with float arithmetic
+suspicious_xor_used_as_pow = "warn"     # Detect ^ used as power
+unreadable_literal = "warn"             # Use underscores in large literals
+
+# ───── Idiomatic patterns ─────
+equatable_if_let = "warn"               # Use == instead of if let for equality
+if_then_some_else_none = "warn"         # Use bool::then instead
 manual_assert = "warn"                  # Use assert! macro
 manual_instant_elapsed = "warn"         # Use Instant::elapsed()
 manual_is_ascii_check = "warn"          # Use is_ascii methods
 manual_let_else = "warn"                # Use let-else syntax
 manual_ok_or = "warn"                   # Use ok_or instead of match
-manual_string_new = "warn"              # Use String::new()
-map_err_ignore = "warn"                 # Don't ignore map_err values
-mem_forget = "deny"                     # Avoid mem::forget
-min_ident_chars = "warn"                # Minimum identifier length
-missing_assert_message = "warn"         # Add messages to assertions
-missing_asserts_for_indexing = "warn"   # Assert before indexing
+option_if_let_else = "warn"             # Use map_or_else instead
+verbose_file_reads = "warn"             # Use fs::read_to_string
+
+# ───── Control flow & logic ─────
+debug_assert_with_mut_call = "warn"     # Avoid side effects in debug_assert
 mixed_read_write_in_expression = "warn" # Avoid read+write in same expression
-mutex_atomic = "warn"                   # Use atomics instead of mutex for simple types
-needless_collect = "warn"               # Avoid unnecessary collect()
-needless_for_each = "warn"              # Use for loop instead of for_each
-needless_raw_string_hashes = "warn"     # Minimize raw string hashes
-needless_raw_strings = "warn"           # Avoid unnecessary raw strings
+same_functions_in_if_condition = "warn" # Avoid duplicate function calls
+
+# ───── Code style & structure ─────
+empty_drop = "warn"                     # Remove empty Drop implementations
+empty_structs_with_brackets = "warn"    # Use unit struct syntax
+impl_trait_in_params = "warn"           # Prefer generics over impl Trait in params
+let_underscore_untyped = "warn"         # Type underscore bindings
+min_ident_chars = "warn"                # Minimum identifier length
 no_effect_underscore_binding = "warn"   # Remove no-effect underscore bindings
 nonstandard_macro_braces = "warn"       # Consistent macro brace style
-option_if_let_else = "warn"             # Use map_or_else instead
 partial_pub_fields = "warn"             # Consistent field visibility
-print_stderr = "warn"                   # Use proper logging instead
-print_stdout = "warn"                   # Use proper logging instead
 pub_without_shorthand = "warn"          # Use pub(crate) shorthand
-rc_buffer = "warn"                      # Avoid Rc<String> or Rc<Vec>
-rc_mutex = "warn"                       # Avoid Rc<Mutex<T>>
-read_zero_byte_vec = "warn"             # Avoid reading into zero-capacity vec
 redundant_type_annotations = "warn"     # Remove redundant type annotations
 ref_patterns = "warn"                   # Avoid ref patterns
 rest_pat_in_fully_bound_structs = "warn" # Avoid .. in fully bound structs
-same_functions_in_if_condition = "warn" # Avoid duplicate function calls
 semicolon_inside_block = "warn"         # Consistent semicolon placement
 semicolon_outside_block = "warn"        # Consistent semicolon placement
-significant_drop_in_scrutinee = "warn"  # Avoid drops in match scrutinee
-significant_drop_tightening = "warn"    # Tighten significant drop scope
 single_call_fn = "warn"                 # Inline single-call functions
-stable_sort_primitive = "warn"          # Use unstable_sort for primitives
-std_instead_of_alloc = "warn"           # Use alloc when std not needed
-std_instead_of_core = "warn"            # Use core when std not needed
-string_lit_chars_any = "warn"           # Use contains instead of chars().any()
-# string_to_string removed - superseded by implicit_clone (already enabled)
-suspicious_xor_used_as_pow = "warn"     # Detect ^ used as power
-tests_outside_test_module = "warn"      # Keep tests in test modules
-try_err = "warn"                        # Use ? instead of try!
-unneeded_field_pattern = "warn"         # Remove unneeded field patterns
 unnecessary_self_imports = "warn"       # Remove unnecessary self imports
 unnecessary_struct_initialization = "warn" # Simplify struct initialization
-unreadable_literal = "warn"             # Use underscores in large literals
+unneeded_field_pattern = "warn"         # Remove unneeded field patterns
+
+# ───── Filesystem ─────
+filetype_is_file = "warn"               # Use is_file() properly
+
+# ───── Output discipline ─────
+print_stderr = "warn"                   # Use proper logging instead
+print_stdout = "warn"                   # Use proper logging instead
+use_debug = "warn"                      # Avoid Debug in production
+
+# ───── Portability ─────
+std_instead_of_alloc = "warn"           # Use alloc when std not needed
+std_instead_of_core = "warn"            # Use core when std not needed
+
+# ───── Testing hygiene ─────
+tests_outside_test_module = "warn"      # Keep tests in test modules
+
+# ───── Unused / dead code ─────
 unused_async = "warn"                   # Remove unused async
 unused_peekable = "warn"                # Remove unused peekable
 unused_rounding = "warn"                # Remove unused rounding
-use_debug = "warn"                      # Avoid Debug in production
-verbose_file_reads = "warn"             # Use fs::read_to_string
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Professional Platform Exceptions (Rust Master Approach)
-# ═══════════════════════════════════════════════════════════════════════════════
-# Multiple crate versions: Keep as ALLOW for necessary functionality
-# Rationale: External deps (polars, tokio ecosystem) bring version conflicts
-# We ACKNOWLEDGE this situation as necessary for professional platform
+# ───── Exceptions ─────
+# External deps (polars, tokio ecosystem) pull transitive version conflicts
+# that we cannot resolve. Acknowledged and allowed.
 multiple_crate_versions = "allow"
 
 [workspace.lints.rust]
@@ -525,20 +553,4 @@ targets = [
 ]
 pr-run-mode = "plan"
 allow-dirty = ["ci"]
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Vendor patches (DISABLED)
-# ─────────────────────────────────────────────────────────────────────────────
-# The vendor/ directory contains patched versions of fs4, errno, stacker, and
-# winapi-util with updated windows-sys dependencies. These were created to fix
-# windows-targets version mismatches, but the real issue was COFF archive size
-# limits with polars debug builds. The xwin-dev profile (with reduced debug info
-# for polars crates) is the actual fix. Vendor patches kept for reference.
-#
-# [patch.crates-io]
-# fs4 = { path = "vendor/fs4" }
-# errno = { path = "vendor/errno" }
-# stacker = { path = "vendor/stacker" }
-# winapi-util = { path = "vendor/winapi-util" }
-
 

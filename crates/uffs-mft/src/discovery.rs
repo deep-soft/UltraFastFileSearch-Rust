@@ -52,17 +52,15 @@ pub fn discover_mft_files(data_dir: &Path) -> Vec<PathBuf> {
         let Some(name) = path.file_name().and_then(|os_name| os_name.to_str()) else {
             continue;
         };
-        if let Some(letter) = name.strip_prefix("drive_") {
-            if letter.len() == 1
-                && letter
-                    .chars()
-                    .next()
-                    .is_some_and(|ch| ch.is_ascii_alphabetic())
-            {
-                if let Some(best) = find_best_mft_file(&path) {
-                    mft_files.push(best);
-                }
-            }
+        if let Some(letter) = name.strip_prefix("drive_")
+            && letter.len() == 1
+            && letter
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_alphabetic())
+            && let Some(best) = find_best_mft_file(&path)
+        {
+            mft_files.push(best);
         }
     }
 

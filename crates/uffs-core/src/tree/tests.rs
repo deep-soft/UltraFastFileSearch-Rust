@@ -15,15 +15,13 @@ fn create_test_df() -> DataFrame {
     DataFrame::new_infer_height(vec![
         Column::new("frs".into(), &[5_u64, 100, 101, 102, 103, 104]),
         Column::new("parent_frs".into(), &[0_u64, 5, 100, 101, 100, 103]),
-        Column::new(
-            "is_directory".into(),
-            &[true, true, true, false, true, false],
-        ),
+        Column::new("is_directory".into(), &[
+            true, true, true, false, true, false,
+        ]),
         Column::new("size".into(), &[0_u64, 0, 0, 1000, 0, 50000]),
-        Column::new(
-            "allocated_size".into(),
-            &[4096_u64, 4096, 4096, 4096, 4096, 53248],
-        ),
+        Column::new("allocated_size".into(), &[
+            4096_u64, 4096, 4096, 4096, 4096, 53248,
+        ]),
     ])
     .unwrap()
 }
@@ -133,32 +131,21 @@ fn test_bulkiness_with_many_small_files() {
     // parent (frs=1) with 10 small files (100 bytes each) and 1 large file (10000
     // bytes)
     let df = DataFrame::new_infer_height(vec![
-        Column::new(
-            "frs".into(),
-            &[1_u64, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
-        ),
-        Column::new(
-            "parent_frs".into(),
-            &[0_u64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ),
-        Column::new(
-            "is_directory".into(),
-            &[
-                true, false, false, false, false, false, false, false, false, false, false, false,
-            ],
-        ),
-        Column::new(
-            "size".into(),
-            &[
-                0_u64, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 10000,
-            ],
-        ),
-        Column::new(
-            "allocated_size".into(),
-            &[
-                4096_u64, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 10000,
-            ],
-        ),
+        Column::new("frs".into(), &[
+            1_u64, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+        ]),
+        Column::new("parent_frs".into(), &[
+            0_u64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        ]),
+        Column::new("is_directory".into(), &[
+            true, false, false, false, false, false, false, false, false, false, false, false,
+        ]),
+        Column::new("size".into(), &[
+            0_u64, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 10000,
+        ]),
+        Column::new("allocated_size".into(), &[
+            4096_u64, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 10000,
+        ]),
     ])
     .unwrap();
 

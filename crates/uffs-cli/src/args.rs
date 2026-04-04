@@ -34,6 +34,14 @@ pub fn parse_drive_letter(input: &str) -> Result<char, String> {
     Ok(ch.to_ascii_uppercase())
 }
 
+/// Parse a human-readable size string for clap `value_parser`.
+///
+/// Delegates to [`uffs_core::search::filters::parse_size`] which accepts
+/// bare integers (bytes) and suffixes: `B`, `KB`, `MB`, `GB`, `TB`.
+fn parse_size_arg(input: &str) -> Result<u64, String> {
+    uffs_core::search::filters::parse_size(input)
+}
+
 /// UFFS - Ultra Fast File Search using direct MFT reading
 #[derive(Parser)]
 #[command(name = "uffs")]
@@ -130,12 +138,12 @@ pub struct Cli {
     #[arg(long)]
     pub no_cache: bool,
 
-    /// Minimum file size in bytes
-    #[arg(long)]
+    /// Minimum file size (e.g. 100KB, 10MB, 1GB, or raw bytes)
+    #[arg(long, value_parser = parse_size_arg)]
     pub min_size: Option<u64>,
 
-    /// Maximum file size in bytes
-    #[arg(long)]
+    /// Maximum file size (e.g. 100KB, 10MB, 1GB, or raw bytes)
+    #[arg(long, value_parser = parse_size_arg)]
     pub max_size: Option<u64>,
 
     /// Minimum descendant count (directories only)

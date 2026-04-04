@@ -142,15 +142,15 @@ impl IndexManager {
                         drives_total: total,
                     });
                     // Store timing for profile reporting.
-                    self.drive_timings.write().await.insert(
-                        letter,
-                        StoredDriveTiming {
+                    self.drive_timings
+                        .write()
+                        .await
+                        .insert(letter, StoredDriveTiming {
                             cache: timing.cache,
                             mft: timing.mft,
                             compact: timing.compact,
                             trigram: timing.trigram,
-                        },
-                    );
+                        });
                     let mut backend = self.backend.write().await;
                     backend.drives.push(drive_index);
                     drop(backend);
@@ -289,15 +289,15 @@ impl IndexManager {
                         drives_total: total,
                     });
                     // Store timing for profile reporting.
-                    self.drive_timings.write().await.insert(
-                        letter,
-                        StoredDriveTiming {
+                    self.drive_timings
+                        .write()
+                        .await
+                        .insert(letter, StoredDriveTiming {
                             cache: timing.cache,
                             mft: timing.mft,
                             compact: timing.compact,
                             trigram: timing.trigram,
-                        },
-                    );
+                        });
                     let mut backend = self.backend.write().await;
                     backend.drives.push(drive_index);
                 }

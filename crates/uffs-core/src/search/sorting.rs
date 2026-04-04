@@ -256,25 +256,22 @@ pub fn display_rows_to_dataframe(
     // path_only = directory portion of path (up to and including last backslash).
     let path_only: Vec<&str> = rows.iter().map(DisplayRow::path_dir).collect();
 
-    DataFrame::new(
-        rows.len(),
-        vec![
-            Column::new(columns::NAME.into(), &names),
-            Column::new(columns::PATH.into(), &paths),
-            Column::new("path_only".into(), &path_only),
-            Column::new(columns::SIZE.into(), &sizes),
-            Column::new("allocated_size".into(), &allocated),
-            Column::new(columns::CREATED.into(), &created),
-            Column::new(columns::MODIFIED.into(), &modified),
-            Column::new(columns::ACCESSED.into(), &accessed),
-            Column::new(columns::FLAGS.into(), &flags),
-            Column::new("drive".into(), &drives),
-            Column::new("descendants".into(), &descendants),
-            Column::new("treesize".into(), &treesize),
-            Column::new("tree_allocated".into(), &tree_allocated),
-            Column::new("bulkiness".into(), &bulkiness),
-        ],
-    )
+    DataFrame::new(rows.len(), vec![
+        Column::new(columns::NAME.into(), &names),
+        Column::new(columns::PATH.into(), &paths),
+        Column::new("path_only".into(), &path_only),
+        Column::new(columns::SIZE.into(), &sizes),
+        Column::new("allocated_size".into(), &allocated),
+        Column::new(columns::CREATED.into(), &created),
+        Column::new(columns::MODIFIED.into(), &modified),
+        Column::new(columns::ACCESSED.into(), &accessed),
+        Column::new(columns::FLAGS.into(), &flags),
+        Column::new("drive".into(), &drives),
+        Column::new("descendants".into(), &descendants),
+        Column::new("treesize".into(), &treesize),
+        Column::new("tree_allocated".into(), &tree_allocated),
+        Column::new("bulkiness".into(), &bulkiness),
+    ])
 }
 
 /// Convert a legacy Polars `DataFrame` into `Vec<DisplayRow>`.

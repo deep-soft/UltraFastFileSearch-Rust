@@ -280,7 +280,7 @@ fn test_parse_file_name_full_reads_unaligned_payload() {
     let name = "abc.txt";
     let name_utf16: Vec<u16> = name.encode_utf16().collect();
     let mut data = vec![0_u8; fn_offset + 66 + name_utf16.len() * 2];
-    let parent_directory = (7_u64 << 48_u32) | 0x002a_u64;
+    let parent_directory = (7_u64 << 48_u32) | 0x002A_u64;
     let creation_time = 116_444_736_000_000_100_i64;
     let modification_time = 116_444_736_000_000_200_i64;
     let mft_change_time = 116_444_736_000_000_300_i64;
@@ -350,13 +350,10 @@ fn test_parse_record_forensic_reads_unaligned_extension_record_slice() {
         AttributeType::FileName,
         &create_file_name_value(42, "ext-name.txt", 1),
     );
-    let record = create_test_record_with_attributes(
-        extension_frs,
-        true,
-        false,
-        base_file_reference,
-        &[file_name_attr],
-    );
+    let record =
+        create_test_record_with_attributes(extension_frs, true, false, base_file_reference, &[
+            file_name_attr,
+        ]);
     let mut storage = vec![0_u8; record.len() + 1];
     storage[1..].copy_from_slice(&record);
 

@@ -158,10 +158,10 @@ fn test_compile_glob_prefix_suffix() -> TestResult {
 fn test_compile_glob_complex() -> TestResult {
     let parsed = ParsedPattern::parse("file?.txt")?;
     let compiled = compile_pattern(&parsed)?;
-    assert!(matches!(
-        compiled,
-        CompiledPattern::Regex { anchored: true, .. }
-    ));
+    assert!(matches!(compiled, CompiledPattern::Regex {
+        anchored: true,
+        ..
+    }));
     Ok(())
 }
 
@@ -169,13 +169,10 @@ fn test_compile_glob_complex() -> TestResult {
 fn test_compile_regex() -> TestResult {
     let parsed = ParsedPattern::parse(r">.*\.log$")?;
     let compiled = compile_pattern(&parsed)?;
-    assert!(matches!(
-        compiled,
-        CompiledPattern::Regex {
-            anchored: false,
-            ..
-        }
-    ));
+    assert!(matches!(compiled, CompiledPattern::Regex {
+        anchored: false,
+        ..
+    }));
     Ok(())
 }
 
@@ -378,10 +375,10 @@ fn test_suffix_case_sensitive_integration() -> TestResult {
         "$I07QSZ8.TXT",
         "test.TXT",
     ];
-    let df = DataFrame::new(
-        input_names.len(),
-        vec![Column::new("name".into(), &input_names)],
-    )?;
+    let df = DataFrame::new(input_names.len(), vec![Column::new(
+        "name".into(),
+        &input_names,
+    )])?;
 
     // Test case-sensitive suffix matching
     let pattern = CompiledPattern::Suffix(".txt".to_owned());
@@ -410,10 +407,10 @@ fn test_dollar_prefix_files_matched() -> TestResult {
         "normal.txt",
         "$BITMAP",
     ];
-    let df = DataFrame::new(
-        input_names.len(),
-        vec![Column::new("name".into(), &input_names)],
-    )?;
+    let df = DataFrame::new(input_names.len(), vec![Column::new(
+        "name".into(),
+        &input_names,
+    )])?;
 
     // Test that files starting with $ are matched by *.txt pattern
     let pattern = CompiledPattern::Suffix(".txt".to_owned());

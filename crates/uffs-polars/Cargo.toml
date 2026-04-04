@@ -11,9 +11,9 @@
 #
 # All other crates depend on this instead of Polars directly.
 #
-# NOTE: Pinned to a known-good commit via rev=... to prevent upstream
-#       breakage (e.g. polars main@7335a6c8 removed SinkedPathInfo).
-#       To upgrade: update the rev hash below and run `cargo update -p polars`.
+# NOTE: Polars is pinned to a specific main branch commit for deterministic builds.
+#       Run `just polars` to bump to the latest main HEAD.
+#       This avoids surprise recompiles while keeping upgrades intentional.
 # ============================================================================
 
 [package]
@@ -42,10 +42,9 @@ test = false
 # POLARS SOURCE COMPILATION (ISOLATED HERE)
 # ──────────────────────────────────────────────────────────────────────────────
 [dependencies]
-# ONLY Polars - all other dependencies provided by consuming crates
-# Pinned to known-good commit (polars main@7335a6c8 broke SinkedPathInfo).
-# To upgrade: update rev hash, run `cargo update -p polars`.
-polars = { git = "https://github.com/pola-rs/polars", rev = "95691e960cce347d5a6c5a79d6e44188f2fc4ac7", default-features = false, features = [
+# ONLY Polars — all other dependencies provided by consuming crates.
+# Pinned to a specific commit on main. Bump via: just polars
+polars = { git = "https://github.com/pola-rs/polars", rev = "dc672654005214c1572dc8516ac6899a63cd4d27", default-features = false, features = [
     # ===== Core Features =====
     "lazy",              # Lazy evaluation (query optimization)
     "new_streaming",     # New streaming engine (replaces deprecated "streaming")

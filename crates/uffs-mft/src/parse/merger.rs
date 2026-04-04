@@ -111,73 +111,73 @@ impl MftRecordMerger {
         // Merge all extensions into their base records
         for ext in self.extensions {
             let base_frs = frs_to_usize(ext.base_frs);
-            if base_frs < self.base_records.len() {
-                if let Some(ref mut base) = self.base_records[base_frs] {
-                    // Merge names from extension records (no dedup — matches established behavior)
-                    // C++ increments name_count for EVERY FILE_NAME attribute encountered,
-                    // including "duplicates" across base+extension records.
-                    for name in ext.names {
-                        base.names.push(name);
-                    }
-                    // Merge streams from extension records
-                    //
-                    // legacy-output parity: C++ counts each primary attribute (LowestVCN == 0) as a
-                    // separate stream via ++stream_count. It does NOT merge same-name
-                    // non-$DATA streams — each internal attribute type instance is counted
-                    // separately. However, $DATA streams (named ADS or unnamed default) may
-                    // appear as continuation extents that should be merged by name.
-                    //
-                    // Internal streams (names like "$EA", "$OBJECT_ID", etc.) from extension
-                    // records are separate attribute instances that C++ counts individually.
-                    for stream in ext.streams {
-                        // Check if this is an internal/system stream (name starts with
-                        // "$" + uppercase letter). These are non-$DATA attribute types
-                        // that C++ counts as separate streams.
-                        let is_internal = stream
-                            .name
-                            .strip_prefix('$')
-                            .and_then(|rest| rest.chars().next())
-                            .is_some_and(|ch| ch.is_ascii_uppercase());
+            if base_frs < self.base_records.len()
+                && let Some(ref mut base) = self.base_records[base_frs]
+            {
+                // Merge names from extension records (no dedup — matches established behavior)
+                // C++ increments name_count for EVERY FILE_NAME attribute encountered,
+                // including "duplicates" across base+extension records.
+                for name in ext.names {
+                    base.names.push(name);
+                }
+                // Merge streams from extension records
+                //
+                // legacy-output parity: C++ counts each primary attribute (LowestVCN == 0) as a
+                // separate stream via ++stream_count. It does NOT merge same-name
+                // non-$DATA streams — each internal attribute type instance is counted
+                // separately. However, $DATA streams (named ADS or unnamed default) may
+                // appear as continuation extents that should be merged by name.
+                //
+                // Internal streams (names like "$EA", "$OBJECT_ID", etc.) from extension
+                // records are separate attribute instances that C++ counts individually.
+                for stream in ext.streams {
+                    // Check if this is an internal/system stream (name starts with
+                    // "$" + uppercase letter). These are non-$DATA attribute types
+                    // that C++ counts as separate streams.
+                    let is_internal = stream
+                        .name
+                        .strip_prefix('$')
+                        .and_then(|rest| rest.chars().next())
+                        .is_some_and(|ch| ch.is_ascii_uppercase());
 
-                        if is_internal {
-                            // Internal stream: always push as new (C++ counts each separately)
-                            base.streams.push(stream);
-                        } else if let Some(existing) =
-                            base.streams.iter_mut().find(|s| s.name == stream.name)
-                        {
-                            // $DATA stream (unnamed or named ADS): merge sizes
-                            // This handles continuation extents split across segments
-                            existing.size += stream.size;
-                            existing.allocated_size += stream.allocated_size;
-                            existing.is_sparse |= stream.is_sparse;
-                            existing.is_compressed |= stream.is_compressed;
-                            existing.is_resident &= stream.is_resident;
-                        } else {
-                            // New $DATA stream (ADS not in base): add it
-                            base.streams.push(stream);
-                        }
+                    if is_internal {
+                        // Internal stream: always push as new (C++ counts each separately)
+                        base.streams.push(stream);
+                    } else if let Some(existing) =
+                        base.streams.iter_mut().find(|s| s.name == stream.name)
+                    {
+                        // $DATA stream (unnamed or named ADS): merge sizes
+                        // This handles continuation extents split across segments
+                        existing.size += stream.size;
+                        existing.allocated_size += stream.allocated_size;
+                        existing.is_sparse |= stream.is_sparse;
+                        existing.is_compressed |= stream.is_compressed;
+                        existing.is_resident &= stream.is_resident;
+                    } else {
+                        // New $DATA stream (ADS not in base): add it
+                        base.streams.push(stream);
                     }
-                    // Merge directory index sizes from extension records
-                    // For directories, $I30 attributes may be split across extension records
-                    if ext.dir_index_size > 0 || ext.dir_index_allocated > 0 {
-                        // Find or create the default stream (empty name) for directory
-                        if let Some(default_stream) =
-                            base.streams.iter_mut().find(|s| s.name.is_empty())
-                        {
-                            // Add extension's $I30 sizes to existing default stream
-                            default_stream.size += ext.dir_index_size;
-                            default_stream.allocated_size += ext.dir_index_allocated;
-                        } else {
-                            // Create default stream for directory index
-                            base.streams.push(StreamInfo {
-                                name: String::new(),
-                                size: ext.dir_index_size,
-                                allocated_size: ext.dir_index_allocated,
-                                is_sparse: false,
-                                is_compressed: false,
-                                is_resident: ext.dir_index_allocated == 0,
-                            });
-                        }
+                }
+                // Merge directory index sizes from extension records
+                // For directories, $I30 attributes may be split across extension records
+                if ext.dir_index_size > 0 || ext.dir_index_allocated > 0 {
+                    // Find or create the default stream (empty name) for directory
+                    if let Some(default_stream) =
+                        base.streams.iter_mut().find(|s| s.name.is_empty())
+                    {
+                        // Add extension's $I30 sizes to existing default stream
+                        default_stream.size += ext.dir_index_size;
+                        default_stream.allocated_size += ext.dir_index_allocated;
+                    } else {
+                        // Create default stream for directory index
+                        base.streams.push(StreamInfo {
+                            name: String::new(),
+                            size: ext.dir_index_size,
+                            allocated_size: ext.dir_index_allocated,
+                            is_sparse: false,
+                            is_compressed: false,
+                            is_resident: ext.dir_index_allocated == 0,
+                        });
                     }
                 }
             }
@@ -238,7 +238,7 @@ impl MftRecordMerger {
 
     /// Returns the number of pending extensions.
     #[must_use]
-    pub fn extension_count(&self) -> usize {
+    pub const fn extension_count(&self) -> usize {
         self.extensions.len()
     }
 
@@ -268,73 +268,73 @@ impl MftRecordMerger {
         for ext in self.extensions {
             // FRS values are bounded by MFT size, always < 2^32 on real systems
             let base_frs = usize::try_from(ext.base_frs).unwrap_or(usize::MAX);
-            if base_frs < self.base_records.len() {
-                if let Some(ref mut base) = self.base_records[base_frs] {
-                    // Merge names from extension records (no dedup — matches established behavior)
-                    // C++ increments name_count for EVERY FILE_NAME attribute encountered,
-                    // including "duplicates" across base+extension records.
-                    for name in ext.names {
-                        base.names.push(name);
-                    }
-                    // Merge streams from extension records
-                    //
-                    // legacy-output parity: C++ counts each primary attribute (LowestVCN == 0) as a
-                    // separate stream via ++stream_count. It does NOT merge same-name
-                    // non-$DATA streams — each internal attribute type instance is counted
-                    // separately. However, $DATA streams (named ADS or unnamed default) may
-                    // appear as continuation extents that should be merged by name.
-                    //
-                    // Internal streams (names like "$EA", "$OBJECT_ID", etc.) from extension
-                    // records are separate attribute instances that C++ counts individually.
-                    for stream in ext.streams {
-                        // Check if this is an internal/system stream (name starts with
-                        // "$" + uppercase letter). These are non-$DATA attribute types
-                        // that C++ counts as separate streams.
-                        let is_internal = stream
-                            .name
-                            .strip_prefix('$')
-                            .and_then(|rest| rest.chars().next())
-                            .is_some_and(|ch| ch.is_ascii_uppercase());
+            if base_frs < self.base_records.len()
+                && let Some(ref mut base) = self.base_records[base_frs]
+            {
+                // Merge names from extension records (no dedup — matches established behavior)
+                // C++ increments name_count for EVERY FILE_NAME attribute encountered,
+                // including "duplicates" across base+extension records.
+                for name in ext.names {
+                    base.names.push(name);
+                }
+                // Merge streams from extension records
+                //
+                // legacy-output parity: C++ counts each primary attribute (LowestVCN == 0) as a
+                // separate stream via ++stream_count. It does NOT merge same-name
+                // non-$DATA streams — each internal attribute type instance is counted
+                // separately. However, $DATA streams (named ADS or unnamed default) may
+                // appear as continuation extents that should be merged by name.
+                //
+                // Internal streams (names like "$EA", "$OBJECT_ID", etc.) from extension
+                // records are separate attribute instances that C++ counts individually.
+                for stream in ext.streams {
+                    // Check if this is an internal/system stream (name starts with
+                    // "$" + uppercase letter). These are non-$DATA attribute types
+                    // that C++ counts as separate streams.
+                    let is_internal = stream
+                        .name
+                        .strip_prefix('$')
+                        .and_then(|rest| rest.chars().next())
+                        .is_some_and(|ch| ch.is_ascii_uppercase());
 
-                        if is_internal {
-                            // Internal stream: always push as new (C++ counts each separately)
-                            base.streams.push(stream);
-                        } else if let Some(existing) =
-                            base.streams.iter_mut().find(|s| s.name == stream.name)
-                        {
-                            // $DATA stream (unnamed or named ADS): merge sizes
-                            // This handles continuation extents split across segments
-                            existing.size += stream.size;
-                            existing.allocated_size += stream.allocated_size;
-                            existing.is_sparse |= stream.is_sparse;
-                            existing.is_compressed |= stream.is_compressed;
-                            existing.is_resident &= stream.is_resident;
-                        } else {
-                            // New $DATA stream (ADS not in base): add it
-                            base.streams.push(stream);
-                        }
+                    if is_internal {
+                        // Internal stream: always push as new (C++ counts each separately)
+                        base.streams.push(stream);
+                    } else if let Some(existing) =
+                        base.streams.iter_mut().find(|s| s.name == stream.name)
+                    {
+                        // $DATA stream (unnamed or named ADS): merge sizes
+                        // This handles continuation extents split across segments
+                        existing.size += stream.size;
+                        existing.allocated_size += stream.allocated_size;
+                        existing.is_sparse |= stream.is_sparse;
+                        existing.is_compressed |= stream.is_compressed;
+                        existing.is_resident &= stream.is_resident;
+                    } else {
+                        // New $DATA stream (ADS not in base): add it
+                        base.streams.push(stream);
                     }
-                    // Merge directory index sizes from extension records
-                    // For directories, $I30 attributes may be split across extension records
-                    if ext.dir_index_size > 0 || ext.dir_index_allocated > 0 {
-                        // Find or create the default stream (empty name) for directory
-                        if let Some(default_stream) =
-                            base.streams.iter_mut().find(|s| s.name.is_empty())
-                        {
-                            // Add extension's $I30 sizes to existing default stream
-                            default_stream.size += ext.dir_index_size;
-                            default_stream.allocated_size += ext.dir_index_allocated;
-                        } else {
-                            // Create default stream for directory index
-                            base.streams.push(StreamInfo {
-                                name: String::new(),
-                                size: ext.dir_index_size,
-                                allocated_size: ext.dir_index_allocated,
-                                is_sparse: false,
-                                is_compressed: false,
-                                is_resident: ext.dir_index_allocated == 0,
-                            });
-                        }
+                }
+                // Merge directory index sizes from extension records
+                // For directories, $I30 attributes may be split across extension records
+                if ext.dir_index_size > 0 || ext.dir_index_allocated > 0 {
+                    // Find or create the default stream (empty name) for directory
+                    if let Some(default_stream) =
+                        base.streams.iter_mut().find(|s| s.name.is_empty())
+                    {
+                        // Add extension's $I30 sizes to existing default stream
+                        default_stream.size += ext.dir_index_size;
+                        default_stream.allocated_size += ext.dir_index_allocated;
+                    } else {
+                        // Create default stream for directory index
+                        base.streams.push(StreamInfo {
+                            name: String::new(),
+                            size: ext.dir_index_size,
+                            allocated_size: ext.dir_index_allocated,
+                            is_sparse: false,
+                            is_compressed: false,
+                            is_resident: ext.dir_index_allocated == 0,
+                        });
                     }
                 }
             }

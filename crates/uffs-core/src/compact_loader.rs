@@ -104,15 +104,12 @@ pub fn load_drive(
                 cache_ms,
                 "📦 Cache hit — loaded compact cache"
             );
-            return Ok((
-                compact,
-                LoadTiming {
-                    cache: cache_ms,
-                    mft: 0,
-                    compact: 0,
-                    trigram: 0,
-                },
-            ));
+            return Ok((compact, LoadTiming {
+                cache: cache_ms,
+                mft: 0,
+                compact: 0,
+                trigram: 0,
+            }));
         }
     }
 
@@ -148,15 +145,12 @@ pub fn load_drive(
         );
     }
 
-    Ok((
-        compact,
-        LoadTiming {
-            cache: 0,
-            mft: mft_elapsed,
-            compact: compact_elapsed,
-            trigram: tri_elapsed,
-        },
-    ))
+    Ok((compact, LoadTiming {
+        cache: 0,
+        mft: mft_elapsed,
+        compact: compact_elapsed,
+        trigram: tri_elapsed,
+    }))
 }
 
 /// Load `MftIndex` from an offline file (cache → cold parse).

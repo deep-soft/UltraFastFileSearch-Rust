@@ -174,15 +174,13 @@ fn test_add_descendants_column() {
     let df = DataFrame::new_infer_height(vec![
         Column::new("frs".into(), &[5_u64, 100, 101, 102, 103, 104]),
         Column::new("parent_frs".into(), &[0_u64, 5, 100, 101, 100, 103]),
-        Column::new(
-            "is_directory".into(),
-            &[true, true, true, false, true, false],
-        ),
+        Column::new("is_directory".into(), &[
+            true, true, true, false, true, false,
+        ]),
         Column::new("size".into(), &[0_u64, 0, 0, 1000, 0, 50000]),
-        Column::new(
-            "allocated_size".into(),
-            &[4096_u64, 4096, 4096, 4096, 4096, 53248],
-        ),
+        Column::new("allocated_size".into(), &[
+            4096_u64, 4096, 4096, 4096, 4096, 53248,
+        ]),
     ])
     .unwrap();
 

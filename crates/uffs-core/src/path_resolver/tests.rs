@@ -194,16 +194,13 @@ fn test_fast_add_path_column_auto() -> TestResult {
 #[test]
 fn test_add_path_only_column() -> TestResult {
     // Create a DataFrame with path column
-    let df = DataFrame::new_infer_height(vec![Column::new(
-        "path".into(),
-        &[
-            "G:\\",
-            "G:\\MFT_TEST\\",
-            "G:\\MFT_TEST\\Backup\\",
-            "G:\\MFT_TEST\\Backup\\backup1.bak",
-            "G:\\MFT_TEST\\Backup\\doc1_hardlink.txt",
-        ],
-    )])?;
+    let df = DataFrame::new_infer_height(vec![Column::new("path".into(), &[
+        "G:\\",
+        "G:\\MFT_TEST\\",
+        "G:\\MFT_TEST\\Backup\\",
+        "G:\\MFT_TEST\\Backup\\backup1.bak",
+        "G:\\MFT_TEST\\Backup\\doc1_hardlink.txt",
+    ])])?;
 
     let result = add_path_only_column(&df)?;
 

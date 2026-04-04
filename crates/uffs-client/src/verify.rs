@@ -102,10 +102,10 @@ pub fn verify_daemon_pid_file(pid_path: &std::path::Path) -> bool {
     // FNV-1a 64-bit hash (must match uffs-daemon/lifecycle.rs)
     let actual_hash = {
         let data = exe_path.to_string_lossy();
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut hash: u64 = 0xCBF2_9CE4_8422_2325;
         for &byte in data.as_bytes() {
             hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0100_0000_01b3);
+            hash = hash.wrapping_mul(0x0100_0000_01B3);
         }
         hash
     };

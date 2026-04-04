@@ -1,14 +1,41 @@
-# UFFS rustfmt configuration
+# UFFS rustfmt configuration — Nightly / Edition 2024
 # Copyright 2025-2026 Robert Nio
 # SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Requires nightly rustfmt (unstable_features = true).
+# Run: cargo fmt          (uses nightly via rust-toolchain.toml)
+# Check: cargo fmt --check
 
+# ───── Nightly & Edition ─────
+unstable_features = true
+edition = "2024"                        # Parse edition 2024 syntax (let-chains, etc.)
+style_edition = "2024"                  # Use 2024 style guide formatting rules
+
+# ───── Layout ─────
 max_width = 100
+newline_style = "Unix"
+use_small_heuristics = "Default"
+overflow_delimited_expr = true          # Let closures/arrays/blocks overflow the line width
+
+# ───── Imports ─────
 imports_granularity = "Module"
 group_imports = "StdExternalCrate"
+reorder_imports = true
+reorder_modules = true
+
+# ───── Comments & Docs ─────
 wrap_comments = true
 format_code_in_doc_comments = true
 normalize_comments = true
-newline_style = "Unix"
-use_small_heuristics = "Default"
-reorder_imports = true
-reorder_modules = true
+normalize_doc_attributes = true         # Normalize #[doc = "..."] to /// comments
+
+# ───── Macros ─────
+format_macro_matchers = true            # Format macro_rules! matcher arms
+format_macro_bodies = true              # Format macro body expressions
+
+# ───── Idiomatic Shorthand ─────
+use_field_init_shorthand = true         # Foo { x } instead of Foo { x: x }
+use_try_shorthand = true                # ? instead of try!()
+
+# ───── Hex & Literals ─────
+hex_literal_case = "Upper"              # 0xDEAD_BEEF not 0xdead_beef

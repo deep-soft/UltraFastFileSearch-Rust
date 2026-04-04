@@ -719,3 +719,62 @@ fn parse_time_bound_this_week() {
     // Should be Monday = day 4 from epoch (epoch was Thursday).
     assert_eq!(result, 4 * US_PER_DAY);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// parse_size tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn parse_size_plain_bytes() {
+    assert_eq!(parse_size("0").unwrap(), 0);
+    assert_eq!(parse_size("1024").unwrap(), 1024);
+    assert_eq!(parse_size("999999").unwrap(), 999_999);
+}
+
+#[test]
+fn parse_size_b_suffix() {
+    assert_eq!(parse_size("512B").unwrap(), 512);
+    assert_eq!(parse_size("512b").unwrap(), 512);
+}
+
+#[test]
+fn parse_size_kb() {
+    assert_eq!(parse_size("1KB").unwrap(), 1024);
+    assert_eq!(parse_size("1kb").unwrap(), 1024);
+    assert_eq!(parse_size("100KB").unwrap(), 100 * 1024);
+}
+
+#[test]
+fn parse_size_mb() {
+    assert_eq!(parse_size("1MB").unwrap(), 1024 * 1024);
+    assert_eq!(parse_size("10mb").unwrap(), 10 * 1024 * 1024);
+    assert_eq!(parse_size("100Mb").unwrap(), 100 * 1024 * 1024);
+}
+
+#[test]
+fn parse_size_gb() {
+    assert_eq!(parse_size("1GB").unwrap(), 1024 * 1024 * 1024);
+    assert_eq!(parse_size("2gb").unwrap(), 2 * 1024 * 1024 * 1024);
+}
+
+#[test]
+fn parse_size_tb() {
+    assert_eq!(parse_size("1TB").unwrap(), 1024_u64 * 1024 * 1024 * 1024);
+    assert_eq!(
+        parse_size("2tb").unwrap(),
+        2 * 1024_u64 * 1024 * 1024 * 1024
+    );
+}
+
+#[test]
+fn parse_size_whitespace() {
+    assert_eq!(parse_size("  1MB  ").unwrap(), 1024 * 1024);
+}
+
+#[test]
+fn parse_size_invalid() {
+    assert!(parse_size("").is_err());
+    assert!(parse_size("abc").is_err());
+    assert!(parse_size("MB").is_err());
+    assert!(parse_size("-1KB").is_err());
+}

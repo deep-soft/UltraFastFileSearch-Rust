@@ -3,7 +3,8 @@
 
 // Re-export everything from uffs-core
 pub use uffs_core::search::filters::{
-    SearchFilters, now_unix_micros, parse_attr_exclude, parse_attr_require, parse_time_bound,
+    SearchFilters, now_unix_micros, parse_attr_exclude, parse_attr_require, parse_size,
+    parse_time_bound,
 };
 
 use crate::history::SearchState;

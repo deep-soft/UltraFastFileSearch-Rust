@@ -509,7 +509,7 @@ impl MftIndex {
 
     /// Returns the number of child entries in the index.
     #[must_use]
-    pub fn children_count(&self) -> usize {
+    pub const fn children_count(&self) -> usize {
         self.children.len()
     }
 }

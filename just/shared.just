@@ -1,4 +1,5 @@
 # Shared settings, flags, helpers, and bootstrap.
+# Updated: April 2026 — Nightly (1.96+) / Edition 2024
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
@@ -14,6 +15,9 @@ export CARGO_HTTP_TIMEOUT := "30"
 export CARGO_HTTP_MULTIPLEXING := "true"
 export RUSTC_WRAPPER := ""
 
+# Clippy flags — supplement workspace.lints (belt-and-suspenders for CI).
+# Workspace Cargo.toml [workspace.lints] is the source of truth; these ensure
+# the justfile lint recipes stay strict even if workspace lints drift.
 common_flags := "-D clippy::pedantic -D clippy::nursery -D clippy::cargo -A clippy::multiple_crate_versions -W clippy::panic -W clippy::todo -W clippy::unimplemented -D warnings"
 prod_flags := common_flags + " -W clippy::unwrap_used -W clippy::expect_used -W clippy::missing_docs_in_private_items"
 test_flags := common_flags + " -A clippy::unwrap_used -A clippy::expect_used"
@@ -48,7 +52,7 @@ _install-component COMPONENT:
 setup:
     #!/usr/bin/env bash
     printf "\033[0;34m🔧 Universal Smart Development Environment Setup\033[0m\n"
-    printf "\033[0;34m   Installing essential Rust development tools...\033[0m\n"
+    printf "\033[0;34m   Nightly toolchain + essential Rust development tools\033[0m\n"
     just _install-if-missing cargo-binstall cargo-binstall
     just _install-if-missing cargo-watch cargo-watch
     just _install-if-missing cargo-nextest cargo-nextest
@@ -60,6 +64,7 @@ setup:
     just _install-if-missing cargo-udeps cargo-udeps
     just _install-if-missing cargo-machete cargo-machete
     just _install-if-missing cargo-expand cargo-expand
+    just _install-if-missing cargo-semver-checks cargo-semver-checks
     just _install-if-missing rust-script rust-script
     just _install-if-missing cargo-criterion cargo-criterion
     just _install-if-missing cargo-update cargo-update
@@ -67,6 +72,7 @@ setup:
     just _install-component llvm-tools-preview
     just _install-component miri
     printf "\033[0;32m✅ Development environment setup complete!\033[0m\n"
+    printf "\033[0;34mToolchain: $(rustc --version)\033[0m\n"
     printf "\033[0;34mNext steps:\033[0m\n"
     printf "  • Run 'just go' to validate everything safely\n"
     printf "  • Run 'just phase2-ship' for the explicit ship lane\n"

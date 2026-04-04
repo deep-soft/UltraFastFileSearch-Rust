@@ -55,10 +55,10 @@ pub(super) fn parse_extension_record(
 
         match AttributeType::from_u32(attr_header.type_code) {
             Some(AttributeType::FileName) if attr_header.is_non_resident == 0 => {
-                if let Some(name_info) = parse_file_name_full(data, offset, frs) {
-                    if name_info.namespace != 2 {
-                        names.push(name_info);
-                    }
+                if let Some(name_info) = parse_file_name_full(data, offset, frs)
+                    && name_info.namespace != 2
+                {
+                    names.push(name_info);
                 }
             }
             Some(AttributeType::Data) => {

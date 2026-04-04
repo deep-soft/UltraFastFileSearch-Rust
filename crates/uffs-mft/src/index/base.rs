@@ -339,10 +339,11 @@ impl MftIndex {
         if let Some(dot_pos) = filename.rfind('.') {
             // Make sure it's not a hidden file (e.g., ".gitignore")
             // and not at the end (e.g., "file.")
-            if dot_pos > 0 && dot_pos < filename.len() - 1 {
-                if let Some(extension) = filename.get(dot_pos + 1..) {
-                    return self.extensions.intern(extension);
-                }
+            if dot_pos > 0
+                && dot_pos < filename.len() - 1
+                && let Some(extension) = filename.get(dot_pos + 1..)
+            {
+                return self.extensions.intern(extension);
             }
         }
 
@@ -401,13 +402,13 @@ impl MftIndex {
 
     /// Number of records in the index
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.records.len()
     }
 
     /// Check if index is empty
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
 
@@ -428,7 +429,7 @@ impl MftIndex {
 
     /// Memory usage estimate in bytes
     #[must_use]
-    pub fn memory_usage(&self) -> usize {
+    pub const fn memory_usage(&self) -> usize {
         use core::mem::size_of;
         size_of::<Self>()
             + self.records.capacity() * size_of::<FileRecord>()

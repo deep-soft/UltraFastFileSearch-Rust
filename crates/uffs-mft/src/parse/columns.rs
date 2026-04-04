@@ -143,13 +143,13 @@ impl ParsedColumns {
 
     /// Returns the number of records stored.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.frs.len()
     }
 
     /// Returns true if no records are stored.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.frs.is_empty()
     }
 

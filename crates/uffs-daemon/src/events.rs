@@ -181,10 +181,10 @@ mod tests {
             version: "0.4.53".to_owned(),
         });
         let event = rx.try_recv().unwrap();
-        assert!(matches!(
-            event,
-            DaemonEvent::DaemonStarting { pid: 1234, .. }
-        ));
+        assert!(matches!(event, DaemonEvent::DaemonStarting {
+            pid: 1234,
+            ..
+        }));
     }
 
     #[test]
@@ -351,10 +351,10 @@ mod tests {
             loop {
                 match sub.recv().await {
                     Ok(event) => {
-                        if let Some(json_line) = event_to_json_line(&event) {
-                            if out_tx.send(json_line).await.is_err() {
-                                return;
-                            }
+                        if let Some(json_line) = event_to_json_line(&event)
+                            && out_tx.send(json_line).await.is_err()
+                        {
+                            return;
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => return,

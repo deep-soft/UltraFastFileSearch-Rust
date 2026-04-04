@@ -329,13 +329,13 @@ pub fn save_raw_mft<P: AsRef<Path>>(
 fn detect_record_size_from_first_record(data: &[u8]) -> u32 {
     // bytes_allocated is at offset 28 in FileRecordSegmentHeader
     // Use get() with try_into to avoid indexing panics
-    if let Some(bytes) = data.get(28..32) {
-        if let Ok(arr) = <[u8; 4]>::try_from(bytes) {
-            let bytes_allocated = u32::from_le_bytes(arr);
-            // Sanity check: record size should be 1024, 2048, or 4096
-            if bytes_allocated == 1024 || bytes_allocated == 2048 || bytes_allocated == 4096 {
-                return bytes_allocated;
-            }
+    if let Some(bytes) = data.get(28..32)
+        && let Ok(arr) = <[u8; 4]>::try_from(bytes)
+    {
+        let bytes_allocated = u32::from_le_bytes(arr);
+        // Sanity check: record size should be 1024, 2048, or 4096
+        if bytes_allocated == 1024 || bytes_allocated == 2048 || bytes_allocated == 4096 {
+            return bytes_allocated;
         }
     }
     DEFAULT_RECORD_SIZE
@@ -560,14 +560,11 @@ fn load_iocp_as_raw_mft<P: AsRef<Path>>(path: P, options: &LoadRawOptions) -> Re
 ///
 /// Returns an error if reading fails or file format is invalid.
 pub fn load_raw_mft_header<P: AsRef<Path>>(path: P) -> Result<RawMftHeader> {
-    let result = load_raw_mft(
-        path,
-        &LoadRawOptions {
-            header_only: true,
-            volume_letter: None,
-            forensic: false,
-        },
-    )?;
+    let result = load_raw_mft(path, &LoadRawOptions {
+        header_only: true,
+        volume_letter: None,
+        forensic: false,
+    })?;
     Ok(result.header)
 }
 

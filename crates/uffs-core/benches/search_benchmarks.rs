@@ -89,7 +89,11 @@ fn create_test_dataframe(num_rows: usize) -> DataFrame {
 
         if is_dir {
             // Directories are children of root or previous directories
-            parent_values.push(if dir_count % 3 == 0 { 5 } else { current_dir });
+            parent_values.push(if dir_count.is_multiple_of(3) {
+                5
+            } else {
+                current_dir
+            });
             name_values.push(format!("dir_{i}"));
             size_values.push(0);
             alloc_values.push(4096);
@@ -288,15 +292,12 @@ fn bench_tree_column_computation(c: &mut Criterion) {
             b.iter_batched(
                 || TreeIndex::from_dataframe(df).expect("valid tree"),
                 |mut tree| {
-                    tree.add_columns(
-                        df,
-                        &[
-                            TreeColumn::Descendants,
-                            TreeColumn::TreeSize,
-                            TreeColumn::TreeAllocated,
-                            TreeColumn::Bulkiness,
-                        ],
-                    )
+                    tree.add_columns(df, &[
+                        TreeColumn::Descendants,
+                        TreeColumn::TreeSize,
+                        TreeColumn::TreeAllocated,
+                        TreeColumn::Bulkiness,
+                    ])
                 },
                 BatchSize::SmallInput,
             )

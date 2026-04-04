@@ -63,10 +63,12 @@ fn test_sort_directory_children_basic() {
         current_idx = child.next_entry;
     }
 
-    assert_eq!(
-        sorted_names,
-        vec!["apple.txt", "Banana.txt", "cherry.txt", "zebra.txt"]
-    );
+    assert_eq!(sorted_names, vec![
+        "apple.txt",
+        "Banana.txt",
+        "cherry.txt",
+        "zebra.txt"
+    ]);
 }
 
 #[test]

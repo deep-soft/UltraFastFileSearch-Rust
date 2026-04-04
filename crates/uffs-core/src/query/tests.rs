@@ -69,30 +69,24 @@ fn test_chained_filters() -> TestResult {
 fn create_pattern_test_df() -> core::result::Result<DataFrame, uffs_polars::PolarsError> {
     DataFrame::new_infer_height(vec![
         Column::new("frs".into(), &[1_u64, 2, 3, 4, 5, 6]),
-        Column::new(
-            "name".into(),
-            &[
-                "photo.jpg",
-                "document.txt",
-                "readme.md",
-                "config.json",
-                "main.rs",
-                "test.rs",
-            ],
-        ),
+        Column::new("name".into(), &[
+            "photo.jpg",
+            "document.txt",
+            "readme.md",
+            "config.json",
+            "main.rs",
+            "test.rs",
+        ]),
         Column::new("size".into(), &[1000_u64, 2000, 500, 300, 1500, 800]),
-        Column::new(
-            "is_directory".into(),
-            &[false, false, false, false, false, false],
-        ),
-        Column::new(
-            "is_hidden".into(),
-            &[false, false, false, false, false, false],
-        ),
-        Column::new(
-            "is_system".into(),
-            &[false, false, false, false, false, false],
-        ),
+        Column::new("is_directory".into(), &[
+            false, false, false, false, false, false,
+        ]),
+        Column::new("is_hidden".into(), &[
+            false, false, false, false, false, false,
+        ]),
+        Column::new("is_system".into(), &[
+            false, false, false, false, false, false,
+        ]),
     ])
 }
 

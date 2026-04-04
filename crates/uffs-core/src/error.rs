@@ -139,13 +139,10 @@ mod tests {
             reason: "deadline exceeded".to_owned(),
         });
 
-        assert!(matches!(
-            error,
-            CoreError::Timeout {
-                operation: "load_index",
-                ..
-            }
-        ));
+        assert!(matches!(error, CoreError::Timeout {
+            operation: "load_index",
+            ..
+        }));
     }
 
     #[test]
@@ -155,13 +152,10 @@ mod tests {
             reason: "shutdown requested".to_owned(),
         });
 
-        assert!(matches!(
-            error,
-            CoreError::Cancelled {
-                operation: "load_index",
-                ..
-            }
-        ));
+        assert!(matches!(error, CoreError::Cancelled {
+            operation: "load_index",
+            ..
+        }));
     }
 
     #[test]

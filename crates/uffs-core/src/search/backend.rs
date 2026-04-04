@@ -426,24 +426,16 @@ impl MultiDriveBackend {
         self.sort_column = next;
         self.sort_desc = new_desc;
         self.extra_sort_tiers.clear();
-        sort_rows(
-            &mut self.last_results,
-            self.sort_column,
-            self.sort_desc,
-            &[],
-        );
+        sort_rows(&mut self.last_results, self.sort_column, self.sort_desc, &[
+        ]);
     }
 
     /// Toggle sort direction (ascending ↔ descending) and re-sort.
     pub fn toggle_sort_direction(&mut self) {
         self.sort_desc = !self.sort_desc;
         self.extra_sort_tiers.clear();
-        sort_rows(
-            &mut self.last_results,
-            self.sort_column,
-            self.sort_desc,
-            &[],
-        );
+        sort_rows(&mut self.last_results, self.sort_column, self.sort_desc, &[
+        ]);
     }
 }
 
