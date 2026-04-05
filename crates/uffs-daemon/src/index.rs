@@ -8,7 +8,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use tokio::sync::RwLock;
+use std::sync::Arc;
+
+use tokio::sync::{RwLock, Semaphore};
 use uffs_client::protocol::{
     DaemonStatus, DriveInfo, DriveProfile, DrivesResponse, SearchFilterMode, SearchParams,
     SearchPredicate, SearchPredicateOp, SearchPredicateValue, SearchProfile, SearchResponse,
@@ -16,7 +18,7 @@ use uffs_client::protocol::{
     StatusResponse,
 };
 use uffs_core::search::backend::{
-    DisplayRow, FilterMode, MultiDriveBackend, SearchRequest, SortSpec,
+    DisplayRow, DriveIndex, FilterMode, SearchRequest, SortSpec, search_index,
 };
 use uffs_core::search::derived::{
     bulkiness_for_row, semantic_type_for_row, tree_allocated_for_row,
@@ -43,11 +45,15 @@ struct StoredDriveTiming {
 
 /// Manages loaded drive indices and serves queries.
 ///
-/// Thread-safe via `Arc<RwLock<...>>` — multiple readers (search) can
-/// run concurrently, writers (load/refresh) get exclusive access.
+/// Concurrent queries clone the inner `Arc<DriveIndex>` under a read lock
+/// (< 1 μs), then search the snapshot with no lock held.  Mutations
+/// (load, refresh, remove) swap the `Arc` pointer under a write lock
+/// (< 1 μs).  In-flight queries keep the old snapshot alive until they
+/// finish.
 pub struct IndexManager {
-    /// The search backend holding all loaded drives.
-    backend: RwLock<MultiDriveBackend>,
+    /// Shared index snapshot: read lock to clone Arc (< 1 μs), write lock
+    /// only during load/refresh/remove (pointer swap, < 1 μs).
+    index: RwLock<Arc<DriveIndex>>,
     /// Current daemon status.
     status: RwLock<DaemonStatus>,
     /// When the daemon started.
@@ -56,6 +62,10 @@ pub struct IndexManager {
     data_dir: Option<PathBuf>,
     /// Event broadcaster — pushes notifications to all connected clients.
     events: EventSender,
+    // ── Concurrency control ────────────────────────────────────────
+    /// Limits simultaneous search operations to prevent CPU/memory
+    /// exhaustion.  Permits = available parallelism (CPU cores).
+    search_semaphore: Semaphore,
     // ── Performance counters ────────────────────────────────────────
     /// Total search queries served.
     queries_total: AtomicU64,
@@ -72,8 +82,10 @@ impl IndexManager {
     #[must_use]
     #[expect(clippy::single_call_fn, reason = "constructor — structural separation")]
     pub fn new(data_dir: Option<PathBuf>, events: EventSender) -> Self {
+        let cpus = std::thread::available_parallelism()
+            .map_or(4, std::num::NonZeroUsize::get);
         Self {
-            backend: RwLock::new(MultiDriveBackend::new()),
+            index: RwLock::new(Arc::new(DriveIndex::new())),
             status: RwLock::new(DaemonStatus::Loading {
                 drives_loaded: 0,
                 drives_total: 0,
@@ -81,6 +93,7 @@ impl IndexManager {
             start_time: Instant::now(),
             data_dir,
             events,
+            search_semaphore: Semaphore::new(cpus),
             queries_total: AtomicU64::new(0),
             queries_total_us: AtomicU64::new(0),
             startup_duration_us: AtomicU64::new(0),
@@ -153,9 +166,7 @@ impl IndexManager {
                             compact: timing.compact,
                             trigram: timing.trigram,
                         });
-                    let mut backend = self.backend.write().await;
-                    backend.drives.push(drive_index);
-                    drop(backend);
+                    self.add_drive(drive_index).await;
                 }
                 Ok((path, Err(load_err))) => {
                     loaded += 1;
@@ -178,10 +189,10 @@ impl IndexManager {
         // Mark as ready + record startup duration.
         self.set_ready().await;
 
-        let backend = self.backend.read().await;
-        let drive_count = backend.drives.len();
-        let total_records = backend.total_records();
-        drop(backend);
+        let snap = self.snapshot().await;
+        let drive_count = snap.drives.len();
+        let total_records = snap.total_records();
+        drop(snap);
         tracing::info!(
             drives = drive_count,
             total_records,
@@ -300,8 +311,7 @@ impl IndexManager {
                             compact: timing.compact,
                             trigram: timing.trigram,
                         });
-                    let mut backend = self.backend.write().await;
-                    backend.drives.push(drive_index);
+                    self.add_drive(drive_index).await;
                 }
                 Ok((letter, Err(err))) => {
                     loaded += 1;
@@ -326,10 +336,10 @@ impl IndexManager {
 
         self.set_ready().await;
 
-        let backend = self.backend.read().await;
-        let drive_count = backend.drives.len();
-        let total_records = backend.total_records();
-        drop(backend);
+        let snap = self.snapshot().await;
+        let drive_count = snap.drives.len();
+        let total_records = snap.total_records();
+        drop(snap);
         self.events.emit(DaemonEvent::DaemonReady {
             drives: drive_count,
             total_records,
@@ -353,12 +363,74 @@ impl IndexManager {
         );
     }
 
+    // ── Atomic drive mutations ─────────────────────────────────────
+
+    /// Add a drive to the shared index via atomic pointer swap.
+    ///
+    /// Clones the `Vec` of `Arc` pointers (< 100 bytes), appends the new
+    /// drive, and swaps.  In-flight queries keep the old snapshot.
+    async fn add_drive(&self, drive: uffs_core::compact::DriveCompactIndex) {
+        let mut guard = self.index.write().await;
+        let mut drives = guard.drives.clone();
+        drives.push(Arc::new(drive));
+        *guard = Arc::new(DriveIndex { drives });
+    }
+
+    /// Replace a drive by letter (for refresh) via atomic pointer swap.
+    ///
+    /// Builds a new snapshot with the old drive removed and the new one
+    /// appended.  Write lock held for < 1 μs (pointer swap only).
+    async fn replace_drive(
+        &self,
+        letter: char,
+        new_drive: uffs_core::compact::DriveCompactIndex,
+    ) {
+        let mut guard = self.index.write().await;
+        let mut drives: Vec<Arc<uffs_core::compact::DriveCompactIndex>> = guard
+            .drives
+            .iter()
+            .filter(|d| !d.letter.eq_ignore_ascii_case(&letter))
+            .cloned()
+            .collect();
+        drives.push(Arc::new(new_drive));
+        *guard = Arc::new(DriveIndex { drives });
+    }
+
+    /// Snapshot the current index (< 1 μs).  Callers search the returned
+    /// `Arc` with no lock held.
+    async fn snapshot(&self) -> Arc<DriveIndex> {
+        let guard = self.index.read().await;
+        Arc::clone(&guard)
+    }
+
+
     /// Execute a search query (updates perf counters).
     ///
     /// When `params.profile` is `true`, populates `SearchResponse::profile`
     /// with a per-phase timing breakdown so the CLI can print it.
     #[allow(clippy::too_many_lines)]
     pub async fn search(&self, params: &SearchParams) -> SearchResponse {
+        // Acquire a concurrency permit — blocks if too many searches
+        // are already in flight (prevents CPU/memory exhaustion).
+        let _permit = match self.search_semaphore.acquire().await {
+            Ok(permit) => permit,
+            Err(_closed) => {
+                return SearchResponse {
+                    rows: Vec::new(),
+                    records_scanned: 0,
+                    duration_ms: 0,
+                    truncated: false,
+                    shmem_path: None,
+                    shmem_count: None,
+                    profile: None,
+                    applied_sorts: Vec::new(),
+                    applied_projection: Vec::new(),
+                    response_mode: None,
+                    projected_rows: None,
+                };
+            }
+        };
+
         let query_start = Instant::now();
         let profiling = params.profile;
         let mut effective_params = params.clone();
@@ -373,9 +445,9 @@ impl IndexManager {
         let requires_post_filter =
             Self::predicates_require_post_filter(&effective_params.predicates);
 
-        // ── Lock acquisition ────────────────────────────────────────
+        // ── Snapshot the index (< 1 μs) ────────────────────────────
         let t_lock = profiling.then(Instant::now);
-        let mut backend = self.backend.write().await;
+        let snapshot = self.snapshot().await;
         let lock_us = t_lock.map_or(0, |ts| ts.elapsed().as_micros());
 
         let (sort_column, sort_desc, extra_sort_tiers) =
@@ -392,9 +464,6 @@ impl IndexManager {
                         Self::sort_spec_to_backend(primary).unwrap_or((FieldId::Modified, true));
                     (column, descending, extra)
                 });
-        backend.sort_column = sort_column;
-        backend.sort_desc = sort_desc;
-        backend.extra_sort_tiers = extra_sort_tiers;
 
         let filter_mode = match effective_params.resolved_filter_mode() {
             SearchFilterMode::Files => FilterMode::FilesOnly,
@@ -442,11 +511,7 @@ impl IndexManager {
 
         // Snapshot per-drive info (only when profiling).
         let drive_info: Vec<(char, usize)> = if profiling {
-            backend
-                .drives
-                .iter()
-                .map(|dr| (dr.letter, dr.records.len()))
-                .collect()
+            snapshot.drive_summary()
         } else {
             Vec::new()
         };
@@ -471,23 +536,84 @@ impl IndexManager {
         } else {
             effective_params.limit
         };
-        let result = backend.search(SearchRequest {
-            pattern: &effective_params.pattern,
-            case_sensitive: effective_params.case_sensitive,
-            whole_word: effective_params.whole_word,
-            match_path: effective_params.match_path,
-            result_limit: search_limit,
-            filter_mode,
-            search_filters: &mut filters,
-            drives_filter: &effective_params.drives,
+
+        // ── Execute search on a blocking thread with timeout ────────
+        // `search_index` uses rayon `par_iter`, which blocks the current
+        // thread.  `spawn_blocking` prevents it from starving the tokio
+        // runtime.
+        let pattern = effective_params.pattern.clone();
+        let case_sensitive = effective_params.case_sensitive;
+        let whole_word = effective_params.whole_word;
+        let match_path = effective_params.match_path;
+        let drives = effective_params.drives.clone();
+        let search_handle = tokio::task::spawn_blocking(move || {
+            search_index(
+                &snapshot,
+                SearchRequest {
+                    pattern: &pattern,
+                    case_sensitive,
+                    whole_word,
+                    match_path,
+                    result_limit: search_limit,
+                    filter_mode,
+                    search_filters: &mut filters,
+                    drives_filter: &drives,
+                },
+                sort_column,
+                sort_desc,
+                &extra_sort_tiers,
+            )
         });
+
+        let search_outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            search_handle,
+        )
+        .await;
+
+        let result = match search_outcome {
+            Ok(Ok(r)) => r,
+            Ok(Err(_join_err)) => {
+                tracing::error!("search task panicked");
+                return SearchResponse {
+                    rows: Vec::new(),
+                    records_scanned: 0,
+                    duration_ms: 0,
+                    truncated: false,
+                    shmem_path: None,
+                    shmem_count: None,
+                    profile: None,
+                    applied_sorts: Vec::new(),
+                    applied_projection: Vec::new(),
+                    response_mode: None,
+                    projected_rows: None,
+                };
+            }
+            Err(_timeout) => {
+                tracing::warn!(
+                    pattern = %effective_params.pattern,
+                    "search timed out after 30s"
+                );
+                return SearchResponse {
+                    rows: Vec::new(),
+                    records_scanned: 0,
+                    duration_ms: 30_000,
+                    truncated: false,
+                    shmem_path: None,
+                    shmem_count: None,
+                    profile: None,
+                    applied_sorts: Vec::new(),
+                    applied_projection: Vec::new(),
+                    response_mode: None,
+                    projected_rows: None,
+                };
+            }
+        };
         let search_us = if profiling {
             result.duration.as_micros()
         } else {
             0
         };
-
-        drop(backend);
 
         // ── Row building ────────────────────────────────────────────
         let t_rows = profiling.then(Instant::now);
@@ -608,9 +734,9 @@ impl IndexManager {
 
     /// Get loaded drives info.
     pub async fn drives(&self) -> DrivesResponse {
-        let backend = self.backend.read().await;
+        let snap = self.snapshot().await;
         DrivesResponse {
-            drives: backend
+            drives: snap
                 .drives
                 .iter()
                 .map(|dr| DriveInfo {
@@ -689,8 +815,8 @@ impl IndexManager {
     /// Refresh specific drives (or all if empty).
     pub async fn refresh(&self, drives: &[char]) {
         let drives_to_refresh: Vec<char> = if drives.is_empty() {
-            let backend = self.backend.read().await;
-            backend.drives.iter().map(|dr| dr.letter).collect()
+            let snap = self.snapshot().await;
+            snap.drives.iter().map(|dr| dr.letter).collect()
         } else {
             drives.to_vec()
         };
@@ -708,13 +834,13 @@ impl IndexManager {
         // Refresh each drive sequentially
         for &letter in &drives_to_refresh {
             // Find the drive source to reload
-            let backend_snap = self.backend.read().await;
-            let drive_source = backend_snap
+            let snap = self.snapshot().await;
+            let drive_source = snap
                 .drives
                 .iter()
                 .find(|dr| dr.letter == letter)
                 .map(|dr| dr.source.clone());
-            drop(backend_snap);
+            drop(snap);
 
             let Some(source) = drive_source else {
                 tracing::warn!(drive = %letter, "Drive not found for refresh");
@@ -745,17 +871,7 @@ impl IndexManager {
             match result {
                 Ok(Ok((new_drive, timing))) => {
                     let records = new_drive.records.len();
-                    let mut backend_wr = self.backend.write().await;
-                    if let Some(pos) = backend_wr.drives.iter().position(|dr| dr.letter == letter) {
-                        // `pos` was just validated by `position()`.
-                        #[expect(clippy::indexing_slicing, reason = "pos from position()")]
-                        {
-                            backend_wr.drives[pos] = new_drive;
-                        }
-                    } else {
-                        backend_wr.drives.push(new_drive);
-                    }
-                    drop(backend_wr);
+                    self.replace_drive(letter, new_drive).await;
                     tracing::info!(
                         drive = %letter,
                         records,
@@ -789,13 +905,13 @@ impl IndexManager {
 
     /// Look up a file by path and return all available fields (D2.3.7).
     pub async fn info(&self, file_path: &str) -> uffs_client::protocol::InfoResponse {
-        let backend = self.backend.read().await;
+        let snap = self.snapshot().await;
         let path_lower = file_path.to_ascii_lowercase();
 
         let mut found_record = None;
 
         // Search all drives for a matching path
-        'outer: for drive in &backend.drives {
+        'outer: for drive in &snap.drives {
             let volume_prefix = format!("{}:\\", drive.letter);
             for (idx, rec) in drive.records.iter().enumerate() {
                 if rec.name_len == 0 {
@@ -825,7 +941,7 @@ impl IndexManager {
             }
         }
 
-        drop(backend);
+        drop(snap);
 
         uffs_client::protocol::InfoResponse {
             found: found_record.is_some(),
@@ -841,20 +957,20 @@ impl IndexManager {
 
     /// Check if the daemon has any loaded drives.
     pub async fn has_drives(&self) -> bool {
-        let backend = self.backend.read().await;
-        !backend.drives.is_empty()
+        let guard = self.index.read().await;
+        !guard.drives.is_empty()
     }
 
     /// Total records across all drives.
     pub async fn total_records(&self) -> usize {
-        let backend = self.backend.read().await;
-        backend.total_records()
+        let guard = self.index.read().await;
+        guard.total_records()
     }
 
     /// Return the set of currently loaded drive letters.
     pub async fn loaded_drive_letters(&self) -> Vec<char> {
-        let backend = self.backend.read().await;
-        backend.drives.iter().map(|dr| dr.letter).collect()
+        let snap = self.snapshot().await;
+        snap.drives.iter().map(|dr| dr.letter).collect()
     }
 
     /// Hot-load a single MFT file if its drive letter is not already loaded.
@@ -876,8 +992,8 @@ impl IndexManager {
 
         // Skip if already loaded.
         {
-            let backend = self.backend.read().await;
-            if backend.drives.iter().any(|dr| dr.letter == letter) {
+            let snap = self.snapshot().await;
+            if snap.drives.iter().any(|dr| dr.letter == letter) {
                 tracing::debug!(drive = %letter, "Drive already loaded, skipping");
                 return Ok(None);
             }
@@ -915,9 +1031,7 @@ impl IndexManager {
                     drives_loaded: 1,
                     drives_total: 1,
                 });
-                let mut backend = self.backend.write().await;
-                backend.drives.push(drive_index);
-                drop(backend);
+                self.add_drive(drive_index).await;
                 Ok(Some(letter))
             }
             Ok(Err(load_err)) => {

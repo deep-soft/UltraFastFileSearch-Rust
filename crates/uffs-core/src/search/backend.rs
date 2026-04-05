@@ -1,6 +1,7 @@
 //! Search backend types: display rows, sort columns, filter modes, and
 //! multi-drive search orchestration.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -197,6 +198,52 @@ impl<'a> SearchRequest<'a> {
             search_filters,
             drives_filter: &[],
         }
+    }
+}
+
+/// Shared, immutable index snapshot for concurrent query access.
+///
+/// Holds all loaded drives wrapped in per-drive `Arc`s.  Wrapped in an
+/// outer `Arc` so concurrent queries can hold cheap references while
+/// mutations (load, refresh, remove) atomically swap the pointer.
+///
+/// Created by the daemon's `IndexManager` — the TUI uses
+/// [`MultiDriveBackend`] directly.
+pub struct DriveIndex {
+    /// Per-drive compact indices, each individually `Arc`-wrapped so
+    /// adding/removing a single drive copies only `Arc` pointers (~8
+    /// bytes each), not the underlying record data (~250 MB/drive).
+    pub drives: Vec<Arc<DriveCompactIndex>>,
+}
+
+impl DriveIndex {
+    /// Create an empty index with no drives loaded.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            drives: Vec::new(),
+        }
+    }
+
+    /// Total record count across all loaded drives.
+    #[must_use]
+    pub fn total_records(&self) -> usize {
+        self.drives.iter().map(|dr| dr.records.len()).sum()
+    }
+
+    /// List loaded drives with record counts.
+    #[must_use]
+    pub fn drive_summary(&self) -> Vec<(char, usize)> {
+        self.drives
+            .iter()
+            .map(|dr| (dr.letter, dr.records.len()))
+            .collect()
+    }
+}
+
+impl Default for DriveIndex {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -475,6 +522,175 @@ impl MultiDriveBackend {
         self.extra_sort_tiers.clear();
         sort_rows(&mut self.last_results, self.sort_column, self.sort_desc, &[
         ]);
+    }
+}
+
+// ── Free-function search for concurrent access ───────────────────────
+
+/// Execute a search against a shared [`DriveIndex`] snapshot.
+///
+/// All per-query state (sort, filters, limit) is passed as parameters —
+/// this function **never mutates the index**, so it is safe to call from
+/// multiple threads/tasks simultaneously.
+///
+/// This is the daemon-facing entry point.  The TUI continues to use
+/// [`MultiDriveBackend::search()`] which wraps its own per-query state.
+#[expect(
+    clippy::too_many_lines,
+    reason = "search dispatch with three modes and a drive filter — mirrors MultiDriveBackend::search"
+)]
+pub fn search_index(
+    index: &DriveIndex,
+    req: SearchRequest<'_>,
+    sort_column: FieldId,
+    sort_desc: bool,
+    extra_sort_tiers: &[SortSpec],
+) -> SearchResult {
+    let SearchRequest {
+        pattern,
+        case_sensitive,
+        whole_word,
+        match_path,
+        result_limit,
+        filter_mode,
+        search_filters,
+        drives_filter,
+    } = req;
+
+    let start = Instant::now();
+
+    if pattern.is_empty() {
+        return SearchResult {
+            rows: Vec::new(),
+            duration: start.elapsed(),
+            records_scanned: 0,
+        };
+    }
+
+    // Filter drives without mutation — just skip non-matching ones.
+    let active_drives: Vec<&DriveCompactIndex> = index
+        .drives
+        .iter()
+        .filter(|dr| {
+            drives_filter.is_empty()
+                || drives_filter
+                    .iter()
+                    .any(|fl| fl.eq_ignore_ascii_case(&dr.letter))
+        })
+        .map(Arc::as_ref)
+        .collect();
+
+    let is_match_all = pattern == "*";
+    let is_regex = pattern.starts_with('>') && pattern.len() > 1;
+    let limit = result_limit.map_or(UNLIMITED, |val| val as usize);
+
+    // Fold needle using $UpCase from the first drive.
+    let fold = active_drives
+        .first()
+        .map_or_else(uffs_text::CaseFold::default_table, |drive| drive.fold);
+    let needle = if case_sensitive {
+        pattern.to_owned()
+    } else {
+        let mut buf = Vec::with_capacity(pattern.len());
+        fold.fold_into(pattern, &mut buf).to_owned()
+    };
+    let is_path = !is_match_all && !is_regex && crate::search::tree::is_path_pattern(&needle);
+
+    let mut rows = Vec::new();
+
+    if is_match_all {
+        rows = super::query::collect_global_top_n(
+            &active_drives,
+            limit,
+            sort_column,
+            sort_desc,
+            filter_mode,
+            search_filters,
+        );
+        if search_filters.needs_display_row_filter() {
+            super::filters::apply_search_filters(&mut rows, search_filters);
+        }
+    } else if is_regex {
+        let regex_pattern = needle.strip_prefix('>').unwrap_or(&needle);
+        match regex::RegexBuilder::new(regex_pattern)
+            .case_insensitive(!case_sensitive)
+            .build()
+        {
+            Ok(compiled_re) => {
+                let drive_results: Vec<Vec<DisplayRow>> = active_drives
+                    .par_iter()
+                    .map(|drive| {
+                        super::query::search_compact_drive_regex(drive, &compiled_re, limit)
+                    })
+                    .collect();
+                for drive_rows in drive_results {
+                    rows.extend(drive_rows);
+                }
+                super::filters::apply_filter(&mut rows, filter_mode);
+                super::filters::apply_search_filters(&mut rows, search_filters);
+                sort_rows(&mut rows, sort_column, sort_desc, extra_sort_tiers);
+                rows.truncate(limit);
+            }
+            Err(_err) => {
+                return SearchResult {
+                    rows: Vec::new(),
+                    duration: start.elapsed(),
+                    records_scanned: 0,
+                };
+            }
+        }
+    } else {
+        let drive_results: Vec<Vec<DisplayRow>> = active_drives
+            .par_iter()
+            .map(|drive| {
+                if is_path {
+                    super::query::search_compact_drive_tree(drive, &needle, limit)
+                } else {
+                    super::query::search_compact_drive(
+                        drive,
+                        &needle,
+                        limit,
+                        case_sensitive,
+                        whole_word,
+                        match_path,
+                    )
+                }
+            })
+            .collect();
+        for drive_rows in drive_results {
+            rows.extend(drive_rows);
+        }
+        super::filters::apply_filter(&mut rows, filter_mode);
+        super::filters::apply_search_filters(&mut rows, search_filters);
+        sort_rows(&mut rows, sort_column, sort_desc, extra_sort_tiers);
+        rows.truncate(limit);
+    }
+
+    let scanned = active_drives.iter().map(|dr| dr.records.len()).sum();
+    let wall_ms = start.elapsed().as_millis();
+
+    let mode = if is_match_all {
+        "match-all"
+    } else if is_regex {
+        "regex"
+    } else if is_path {
+        "tree"
+    } else {
+        "trigram"
+    };
+    tracing::debug!(
+        target: "cache_profile",
+        wall_ms = %wall_ms,
+        rows = rows.len(),
+        scanned,
+        mode,
+        "search_index_total"
+    );
+
+    SearchResult {
+        rows,
+        duration: start.elapsed(),
+        records_scanned: scanned,
     }
 }
 

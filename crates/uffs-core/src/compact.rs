@@ -328,6 +328,12 @@ pub struct DriveCompactIndex {
     pub source_epoch: u64,
 }
 
+impl AsRef<DriveCompactIndex> for DriveCompactIndex {
+    fn as_ref(&self) -> &DriveCompactIndex {
+        self
+    }
+}
+
 impl DriveCompactIndex {
     /// Resolve extension filter strings to their `u16` IDs on this drive.
     ///

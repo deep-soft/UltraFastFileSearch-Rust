@@ -52,8 +52,8 @@ impl PartialOrd for HeapEntry {
 /// logic to extract.
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub fn collect_global_top_n(
-    drives: &[DriveCompactIndex],
+pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
+    drives: &[D],
     limit: usize,
     sort_column: FieldId,
     sort_desc: bool,
@@ -67,14 +67,15 @@ pub fn collect_global_top_n(
             let mut drive_order: Vec<usize> = (0..drives.len()).collect();
             #[expect(clippy::indexing_slicing, reason = "indices from 0..len, always valid")]
             drive_order.sort_unstable_by(|&idx_a, &idx_b| {
-                let ord = drives[idx_a].letter.cmp(&drives[idx_b].letter);
+                let ord = drives[idx_a].as_ref().letter.cmp(&drives[idx_b].as_ref().letter);
                 if sort_desc { ord.reverse() } else { ord }
             });
 
             for &drive_idx in &drive_order {
-                let Some(drive) = drives.get(drive_idx) else {
+                let Some(drive_ref) = drives.get(drive_idx) else {
                     continue;
                 };
+                let drive = drive_ref.as_ref();
                 let mut vp_buf = [0_u8; 4];
                 let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
 
@@ -211,8 +212,8 @@ fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactIndex, desc: bo
 /// Extracted from `collect_global_top_n` because inlining 300 lines of sort-key
 /// extraction + heap management would make the dispatch function unreadable.
 #[allow(clippy::single_call_fn)]
-fn collect_global_top_n_numeric(
-    drives: &[DriveCompactIndex],
+fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
+    drives: &[D],
     limit: usize,
     sort_column: FieldId,
     sort_desc: bool,
@@ -406,7 +407,8 @@ fn collect_global_top_n_numeric(
         );
     }
 
-    for (drive_idx, drive) in drives.iter().enumerate() {
+    for (drive_idx, drive_ref) in drives.iter().enumerate() {
+        let drive = drive_ref.as_ref();
         // Resolve extension filter IDs for this drive (once, not per record).
         search_filters.resolve_ext_ids_for_drive(drive);
 
@@ -516,7 +518,7 @@ fn collect_global_top_n_numeric(
     let mut rows: Vec<DisplayRow> = candidates
         .iter()
         .filter_map(|&(drive_idx, rec_idx, _)| {
-            let drive = drives.get(drive_idx as usize)?;
+            let drive = drives.get(drive_idx as usize)?.as_ref();
             let rec = drive.records.get(rec_idx as usize)?;
             let name = rec.name(&drive.names);
             if name.is_empty() {

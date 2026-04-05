@@ -15,7 +15,10 @@ use crate::index::IndexManager;
 use crate::lifecycle::LifecycleHandle;
 
 /// Maximum concurrent connections.
-const MAX_CONNECTIONS: usize = 32;
+///
+/// Raised to 256 to support concurrent queries (searches no longer hold
+/// an exclusive write lock — see `daemon-concurrent-queries` design doc).
+const MAX_CONNECTIONS: usize = 256;
 
 /// Maximum message size (16 MB).
 const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;

@@ -559,3 +559,121 @@ fn sort_by_treesize_ascending() {
         "treesize asc: smallest first"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// search_index() free function — concurrent-safe API
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Build a `DriveIndex` with two drives (C: and D:) for `search_index` tests.
+fn build_two_drive_index() -> DriveIndex {
+    use std::sync::Arc;
+
+    use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS, SizeInfo};
+
+    use crate::compact::build_compact_index;
+
+    let mut drives = Vec::new();
+    for (letter, file_name, file_size) in [('C', "report.txt", 400_u64), ('D', "data.csv", 800)] {
+        let mut idx = MftIndex::new(letter);
+        let root_off = idx.add_name(".");
+        let root = idx.get_or_create(ROOT_FRS);
+        root.stdinfo.set_directory(true);
+        root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+        root.first_name.parent_frs = ROOT_FRS;
+
+        let f_off = idx.add_name(file_name);
+        let f_ext = idx.intern_extension(file_name);
+        let file_rec = idx.get_or_create(200);
+        file_rec.first_name.name = IndexNameRef::new(
+            f_off,
+            u16::try_from(file_name.len()).expect("name too long"),
+            true,
+            f_ext,
+        );
+        file_rec.first_name.parent_frs = ROOT_FRS;
+        file_rec.first_stream.size = SizeInfo {
+            length: file_size,
+            allocated: file_size.next_multiple_of(512),
+        };
+        file_rec.stdinfo.flags = 0x20;
+
+        let (drive, _, _) = build_compact_index(letter, &idx);
+        drives.push(Arc::new(drive));
+    }
+    DriveIndex { drives }
+}
+
+#[test]
+fn search_index_returns_results_from_both_drives() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest::new("*", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    let drives: std::collections::HashSet<char> =
+        result.rows.iter().map(|row| row.drive).collect();
+    assert!(drives.contains(&'C'), "must include C: results");
+    assert!(drives.contains(&'D'), "must include D: results");
+}
+
+#[test]
+fn search_index_drives_filter_excludes_non_matching() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            drives_filter: &['C'],
+            ..SearchRequest::new("*", &mut filters)
+        },
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    assert!(
+        result.rows.iter().all(|r| r.drive == 'C'),
+        "drive filter must exclude D: results"
+    );
+    assert!(
+        !result.rows.is_empty(),
+        "must have at least one C: result"
+    );
+}
+
+#[test]
+fn search_index_concurrent_calls_do_not_interfere() {
+    use std::sync::Arc;
+
+    let index = Arc::new(build_two_drive_index());
+    let idx1 = Arc::clone(&index);
+    let idx2 = Arc::clone(&index);
+
+    let (r1, r2) = rayon::join(
+        || {
+            let mut f = super::super::filters::SearchFilters::default();
+            search_index(
+                &idx1,
+                SearchRequest::new("*", &mut f),
+                FieldId::Size,
+                true,
+                &[],
+            )
+        },
+        || {
+            let mut f = super::super::filters::SearchFilters::default();
+            search_index(
+                &idx2,
+                SearchRequest::new("*", &mut f),
+                FieldId::Modified,
+                false,
+                &[],
+            )
+        },
+    );
+    assert!(!r1.rows.is_empty(), "concurrent search 1 must return rows");
+    assert!(!r2.rows.is_empty(), "concurrent search 2 must return rows");
+}

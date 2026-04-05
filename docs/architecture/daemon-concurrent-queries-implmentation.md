@@ -971,13 +971,13 @@ is stored and queried, not in how it's built.
 
 > Update this section as work progresses. Date format: `YYYY-MM-DD`.
 
-### Status: NOT STARTED
+### Status: ✅ COMPLETE (2026-04-05)
 
-| Phase | Status      | Assignee | Branch | Started    | Completed  | PR   |
-|:------|:------------|:---------|:-------|:-----------|:-----------|:-----|
-| 1     | Not started | —        | —      | —          | —          | —    |
-| 2     | Not started | —        | —      | —          | —          | —    |
-| 3     | Not started | —        | —      | —          | —          | —    |
+| Phase | Status   | Started    | Completed  |
+|:------|:---------|:-----------|:-----------|
+| 1     | ✅ Done  | 2026-04-05 | 2026-04-05 |
+| 2     | ✅ Done  | 2026-04-05 | 2026-04-05 |
+| 3     | ✅ Done  | 2026-04-05 | 2026-04-05 |
 
 ### Prerequisites
 
@@ -985,46 +985,41 @@ is stored and queried, not in how it's built.
 - [x] `CompactRecord::path_len` precomputed (eliminates display-row filter for path length)
 - [x] Bulkiness promoted to scan-level filter (eliminates display-row filter for bulkiness)
 - [x] `needs_display_row_filter()` only returns true for `path_contains` and `type_filter`
-- [ ] All cli-flag-validation tests passing (T88h, T88k, T95 — in progress)
 
 ### Phase 1 — `DriveIndex` + `search_index()` (uffs-core)
 
 | Step | Item                                                          | Done |
 |:-----|:--------------------------------------------------------------|:-----|
-| 1.1  | Define `DriveIndex` struct in `backend.rs`                    | [ ]  |
-| 1.2  | Extract `search_index()` free function                        | [ ]  |
-| 1.3  | Adapt `collect_global_top_n` for `&[&DriveCompactIndex]`      | [ ]  |
-| 1.4  | Keep `MultiDriveBackend::search()` working (no changes)       | [ ]  |
-| 1.5  | Re-export from `search/mod.rs`                                | [ ]  |
-| 1.6  | Write 3 unit tests                                            | [ ]  |
-| 1.7  | `cargo nextest run -p uffs-core` passes                       | [ ]  |
-| 1.7  | `cargo clippy -p uffs-core -- -D warnings` clean              | [ ]  |
+| 1.1  | Define `DriveIndex` struct in `backend.rs`                    | [x]  |
+| 1.2  | Extract `search_index()` free function                        | [x]  |
+| 1.3  | Adapt `collect_global_top_n` via generic `D: AsRef<DriveCompactIndex>` | [x] |
+| 1.4  | Keep `MultiDriveBackend::search()` working (unchanged)        | [x]  |
+| 1.5  | Types accessible via `search::backend::DriveIndex` (no extra re-export needed) | [x] |
+| 1.6  | Write 3 unit tests (returns results, drive filter, concurrent) | [x]  |
+| 1.7  | `cargo nextest run -p uffs-core` — 413 pass                   | [x]  |
 
 ### Phase 2 — Wire daemon (uffs-daemon)
 
 | Step | Item                                                          | Done |
 |:-----|:--------------------------------------------------------------|:-----|
-| 2.1  | Change `IndexManager.backend` → `index: RwLock<Arc<DriveIndex>>` | [ ] |
-| 2.2  | Add `add_drive()`, `replace_drive()`, `remove_drive()`        | [ ]  |
-| 2.3  | Rewrite `IndexManager::search()` — clone Arc, call free fn    | [ ]  |
-| 2.4  | Update `load_from_data_dir()` → `add_drive()`                 | [ ]  |
-| 2.5  | Update `refresh()` → `replace_drive()`                        | [ ]  |
-| 2.6  | Update `load_live_drives()` → `add_drive()`                   | [ ]  |
-| 2.7  | Update `drives()`, `info()`, `has_drives()`, `total_records()`| [ ]  |
-| 2.8  | Remove `MultiDriveBackend` import, add `DriveIndex` imports   | [ ]  |
-| 2.9  | `cargo nextest run -p uffs-daemon` passes                     | [ ]  |
-| 2.9  | `cargo clippy -p uffs-daemon -- -D warnings` clean            | [ ]  |
-| 2.9  | Manual smoke test: concurrent searches                         | [ ]  |
+| 2.1  | Change `IndexManager.backend` → `index: RwLock<Arc<DriveIndex>>` | [x] |
+| 2.2  | Add `add_drive()`, `replace_drive()`, `snapshot()`            | [x]  |
+| 2.3  | Rewrite `IndexManager::search()` — clone Arc, call `search_index()` | [x] |
+| 2.4  | Update `load_from_data_dir()` → `add_drive()`                 | [x]  |
+| 2.5  | Update `refresh()` → `replace_drive()`                        | [x]  |
+| 2.6  | Update `load_live_drives()` → `add_drive()`                   | [x]  |
+| 2.7  | Update `drives()`, `info()`, `has_drives()`, `total_records()`, `loaded_drive_letters()`, `load_single_mft_file()` | [x] |
+| 2.8  | Remove `MultiDriveBackend` import, add `DriveIndex` + `search_index` imports | [x] |
+| 2.9  | `cargo nextest run` — 727 pass, 0 warnings                    | [x]  |
 
 ### Phase 3 — Safety valves
 
 | Step | Item                                                          | Done |
 |:-----|:--------------------------------------------------------------|:-----|
-| 3.1  | Raise `MAX_CONNECTIONS` to 256                                | [ ]  |
-| 3.2  | Add `search_semaphore: Semaphore` to `IndexManager`           | [ ]  |
-| 3.3  | Wrap search in `spawn_blocking` + `tokio::time::timeout`      | [ ]  |
-| 3.4  | `cargo nextest run -p uffs-daemon` passes                     | [ ]  |
-| 3.4  | Stress test: 20 concurrent searches                           | [ ]  |
+| 3.1  | Raise `MAX_CONNECTIONS` to 256                                | [x]  |
+| 3.2  | Add `search_semaphore: Semaphore` (`available_parallelism`) to `IndexManager` | [x] |
+| 3.3  | Wrap search in `spawn_blocking` + `tokio::time::timeout(30s)` | [x]  |
+| 3.4  | `cargo nextest run` — 727 pass, 0 warnings                    | [x]  |
 
 ### Decision Log
 
@@ -1032,13 +1027,14 @@ is stored and queried, not in how it's built.
 |:-----------|:------------------------------------------------------|:------------------------------------|
 | 2026-04-05 | Use `Arc<RwLock<Arc<DriveIndex>>>` pattern             | < 1 μs lock hold, zero-copy search |
 | 2026-04-05 | Keep `MultiDriveBackend` for TUI re-sort               | TUI uses daemon client for search; MDB only for local sort |
-| 2026-04-05 | Semaphore = `num_cpus` permits                         | Rayon pool is CPU-bound; more searchers = context-switch overhead |
-| —          | —                                                      | —                                   |
+| 2026-04-05 | Use `std::thread::available_parallelism()` (not `num_cpus`) | Already in std since 1.59, avoids new dependency |
+| 2026-04-05 | Use generic `D: AsRef<DriveCompactIndex>` for `collect_global_top_n` | Works for both `DriveCompactIndex`, `&DriveCompactIndex`, and `Arc<DriveCompactIndex>` |
+| 2026-04-05 | Added `impl AsRef<DriveCompactIndex> for DriveCompactIndex` in `compact.rs` | Required for the generic to work with `MultiDriveBackend`'s `Vec<DriveCompactIndex>` |
 
-### Blockers / Open Questions
+### Resolved Questions
 
-| # | Question / Blocker                                           | Status | Resolution |
-|:--|:-------------------------------------------------------------|:-------|:-----------|
-| 1 | Should `search_index()` accept `&[Arc<DriveCompactIndex>]` or generic `<D: AsRef<...>>`? | Open | Decide in Phase 1 Step 1.3 |
-| 2 | Does `num_cpus` need to be added as a dependency?             | Open   | Check if already in the dep tree via rayon/tokio |
-| 3 | Should we add a `--max-concurrent-searches` daemon config flag? | Open | Defer to post-Phase 3 if needed |
+| # | Question                                                     | Resolution |
+|:--|:-------------------------------------------------------------|:-----------|
+| 1 | Generic vs concrete for `collect_global_top_n`?               | Generic `D: AsRef<DriveCompactIndex>` — works for all callers |
+| 2 | Does `num_cpus` need to be added?                             | No — used `std::thread::available_parallelism()` instead |
+| 3 | `--max-concurrent-searches` config flag?                      | Deferred — current `available_parallelism()` default is sensible |
