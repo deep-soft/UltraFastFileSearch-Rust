@@ -207,11 +207,25 @@ fn main() -> Result<()> {
     println!("  limit:       {}", cli.limit);
     println!("  per level:   {} queries ({} warmup)", cli.queries_per_level, cli.warmup);
 
+    if !sock.exists() {
+        bail!(
+            "Socket not found: {}\n\
+             The daemon is not running. Start it first:\n\
+             \n\
+             Windows:  uffs daemon start\n\
+             macOS:    target/release/uffs daemon start --data-dir ~/uffs_data",
+            sock.display()
+        );
+    }
     let probe = send_search(&sock, 0, &patterns[0], cli.limit);
     if !probe.ok {
         bail!(
-            "Cannot reach daemon: {:?}\nMake sure the daemon is running: uffs daemon start",
-            probe.error
+            "Cannot reach daemon at {}: {:?}\n\
+             Make sure the daemon is running and has loaded data.\n\
+             \n\
+             Windows:  uffs daemon start\n\
+             macOS:    target/release/uffs daemon start --data-dir ~/uffs_data",
+            sock.display(), probe.error
         );
     }
     println!("  probe:       {} ({} rows)\n", "OK".green().bold(), probe.rows);
