@@ -1415,38 +1415,37 @@ fn filter_combined_all_new_fields() {
     );
 }
 
-
 // ── needs_display_row_filter ─────────────────────────────────────
 
 #[test]
 fn needs_display_row_filter_false_when_empty() {
-    let f = SearchFilters::default();
+    let filters = SearchFilters::default();
     assert!(
-        !f.needs_display_row_filter(),
+        !filters.needs_display_row_filter(),
         "default filters need no display-row pass"
     );
 }
 
 #[test]
 fn needs_display_row_filter_true_for_type_filter() {
-    let f = SearchFilters {
+    let filters = SearchFilters {
         type_filter: Some("code".to_owned()),
         ..Default::default()
     };
     assert!(
-        f.needs_display_row_filter(),
+        filters.needs_display_row_filter(),
         "type_filter requires display-row pass"
     );
 }
 
 #[test]
 fn needs_display_row_filter_true_for_path_contains() {
-    let f = SearchFilters {
+    let filters = SearchFilters {
         path_contains_lower: Some("windows".to_owned()),
         ..Default::default()
     };
     assert!(
-        f.needs_display_row_filter(),
+        filters.needs_display_row_filter(),
         "path_contains requires display-row pass"
     );
 }
@@ -1456,12 +1455,12 @@ fn bulkiness_does_not_require_display_row_filter() {
     // Bulkiness is computed from size/allocated fields available on
     // CompactRecord, so it is checked at scan level in matches_record,
     // not as a display-row post-filter.
-    let f = SearchFilters {
+    let filters = SearchFilters {
         min_bulkiness: Some(200),
         ..Default::default()
     };
     assert!(
-        !f.needs_display_row_filter(),
+        !filters.needs_display_row_filter(),
         "bulkiness should NOT require display-row pass"
     );
 }
@@ -1470,12 +1469,12 @@ fn bulkiness_does_not_require_display_row_filter() {
 fn path_len_does_not_require_display_row_filter() {
     // path_len is precomputed on CompactRecord, so it is checked at
     // scan level in matches_record, not as a display-row post-filter.
-    let f = SearchFilters {
+    let filters = SearchFilters {
         min_path_len: Some(100),
         ..Default::default()
     };
     assert!(
-        !f.needs_display_row_filter(),
+        !filters.needs_display_row_filter(),
         "path_len should NOT require display-row pass"
     );
 }
@@ -1487,8 +1486,36 @@ fn path_len_does_not_require_display_row_filter() {
 fn apply_type_filter_rejects_wrong_extension() {
     let mut rows = vec![
         // .rs is "code"; .jpg is NOT code
-        DisplayRow::new(0, 'C', "C:\\src\\main.rs".to_owned(), 100, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
-        DisplayRow::new(0, 'C', "C:\\pics\\photo.jpg".to_owned(), 5000, false, 0, 0, 0, 0x20, 8192, 0, 0, 0),
+        DisplayRow::new(
+            0,
+            'C',
+            "C:\\src\\main.rs".to_owned(),
+            100,
+            false,
+            0,
+            0,
+            0,
+            0x20,
+            4096,
+            0,
+            0,
+            0,
+        ),
+        DisplayRow::new(
+            0,
+            'C',
+            "C:\\pics\\photo.jpg".to_owned(),
+            5000,
+            false,
+            0,
+            0,
+            0,
+            0x20,
+            8192,
+            0,
+            0,
+            0,
+        ),
     ];
     let filters = SearchFilters {
         type_filter: Some("code".to_owned()),
@@ -1503,16 +1530,53 @@ fn apply_type_filter_rejects_wrong_extension() {
 #[test]
 fn apply_path_contains_filters_by_substring() {
     let mut rows = vec![
-        DisplayRow::new(0, 'C', "C:\\Windows\\System32\\cmd.exe".to_owned(), 100, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
-        DisplayRow::new(0, 'C', "C:\\Users\\hello.exe".to_owned(), 200, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
+        DisplayRow::new(
+            0,
+            'C',
+            "C:\\Windows\\System32\\cmd.exe".to_owned(),
+            100,
+            false,
+            0,
+            0,
+            0,
+            0x20,
+            4096,
+            0,
+            0,
+            0,
+        ),
+        DisplayRow::new(
+            0,
+            'C',
+            "C:\\Users\\hello.exe".to_owned(),
+            200,
+            false,
+            0,
+            0,
+            0,
+            0x20,
+            4096,
+            0,
+            0,
+            0,
+        ),
     ];
     let filters = SearchFilters {
         path_contains_lower: Some("windows".to_owned()),
         ..Default::default()
     };
     apply_search_filters(&mut rows, &filters);
-    assert_eq!(rows.len(), 1, "only path containing 'windows' should remain");
-    assert!(rows.first().expect("rows non-empty").path.contains("Windows"));
+    assert_eq!(
+        rows.len(),
+        1,
+        "only path containing 'windows' should remain"
+    );
+    assert!(
+        rows.first()
+            .expect("rows non-empty")
+            .path
+            .contains("Windows")
+    );
 }
 
 /// Regression T98: --min-bulkiness filter must reject rows with low bulkiness.
@@ -1523,9 +1587,37 @@ fn apply_path_contains_filters_by_substring() {
 fn apply_min_bulkiness_rejects_low_ratio() {
     let mut rows = vec![
         // allocated=4096, size=4096 → bulkiness=1_000_000 (100%)
-        DisplayRow::new(0, 'C', "C:\\tight.bin".to_owned(), 4096, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
+        DisplayRow::new(
+            0,
+            'C',
+            "C:\\tight.bin".to_owned(),
+            4096,
+            false,
+            0,
+            0,
+            0,
+            0x20,
+            4096,
+            0,
+            0,
+            0,
+        ),
         // allocated=20480, size=4096 → bulkiness=5_000_000 (500%)
-        DisplayRow::new(0, 'C', "C:\\bloated.bin".to_owned(), 4096, false, 0, 0, 0, 0x20, 20480, 0, 0, 0),
+        DisplayRow::new(
+            0,
+            'C',
+            "C:\\bloated.bin".to_owned(),
+            4096,
+            false,
+            0,
+            0,
+            0,
+            0x20,
+            20480,
+            0,
+            0,
+            0,
+        ),
     ];
     let filters = SearchFilters {
         min_bulkiness: Some(2_000_000), // ≥200% on per-million scale
@@ -1540,10 +1632,40 @@ fn apply_min_bulkiness_rejects_low_ratio() {
 #[test]
 fn apply_min_path_len_rejects_short_paths() {
     let short = "C:\\a.txt"; // 8 chars
-    let long = "C:\\".to_owned() + &"x".repeat(200) + ".txt"; // 208 chars
+    let mut long = String::from("C:\\");
+    long.push_str(&"x".repeat(200));
+    long.push_str(".txt"); // 208 chars
     let mut rows = vec![
-        DisplayRow::new(0, 'C', short.to_owned(), 100, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
-        DisplayRow::new(0, 'C', long.clone(), 200, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
+        DisplayRow::new(
+            0,
+            'C',
+            short.to_owned(),
+            100,
+            false,
+            0,
+            0,
+            0,
+            0x20,
+            4096,
+            0,
+            0,
+            0,
+        ),
+        DisplayRow::new(
+            0,
+            'C',
+            long,
+            200,
+            false,
+            0,
+            0,
+            0,
+            0x20,
+            4096,
+            0,
+            0,
+            0,
+        ),
     ];
     let filters = SearchFilters {
         min_path_len: Some(200),

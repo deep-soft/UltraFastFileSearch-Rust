@@ -6,9 +6,8 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
+use alloc::sync::Arc;
 use std::time::Instant;
-
-use std::sync::Arc;
 
 use tokio::sync::{RwLock, Semaphore};
 use uffs_client::protocol::{
@@ -82,8 +81,7 @@ impl IndexManager {
     #[must_use]
     #[expect(clippy::single_call_fn, reason = "constructor — structural separation")]
     pub fn new(data_dir: Option<PathBuf>, events: EventSender) -> Self {
-        let cpus = std::thread::available_parallelism()
-            .map_or(4, std::num::NonZeroUsize::get);
+        let cpus = std::thread::available_parallelism().map_or(4, core::num::NonZeroUsize::get);
         Self {
             index: RwLock::new(Arc::new(DriveIndex::new())),
             status: RwLock::new(DaemonStatus::Loading {
@@ -380,16 +378,12 @@ impl IndexManager {
     ///
     /// Builds a new snapshot with the old drive removed and the new one
     /// appended.  Write lock held for < 1 μs (pointer swap only).
-    async fn replace_drive(
-        &self,
-        letter: char,
-        new_drive: uffs_core::compact::DriveCompactIndex,
-    ) {
+    async fn replace_drive(&self, letter: char, new_drive: uffs_core::compact::DriveCompactIndex) {
         let mut guard = self.index.write().await;
         let mut drives: Vec<Arc<uffs_core::compact::DriveCompactIndex>> = guard
             .drives
             .iter()
-            .filter(|d| !d.letter.eq_ignore_ascii_case(&letter))
+            .filter(|drv| !drv.letter.eq_ignore_ascii_case(&letter))
             .cloned()
             .collect();
         drives.push(Arc::new(new_drive));
@@ -402,7 +396,6 @@ impl IndexManager {
         let guard = self.index.read().await;
         Arc::clone(&guard)
     }
-
 
     /// Execute a search query (updates perf counters).
     ///
@@ -565,14 +558,11 @@ impl IndexManager {
             )
         });
 
-        let search_outcome = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            search_handle,
-        )
-        .await;
+        let search_outcome =
+            tokio::time::timeout(core::time::Duration::from_secs(30), search_handle).await;
 
         let result = match search_outcome {
-            Ok(Ok(r)) => r,
+            Ok(Ok(res)) => res,
             Ok(Err(_join_err)) => {
                 tracing::error!("search task panicked");
                 return SearchResponse {
@@ -1205,12 +1195,13 @@ impl IndexManager {
         }
         // When no direction is specified, honour the field's natural default
         // (e.g. Size/TreeSize → Descending, Name → Ascending).
-        let descending = match spec.direction {
-            Some(dir) => dir == SearchSortDirection::Desc,
-            None => meta
-                .default_sort_direction
-                .is_some_and(|d| d == SortDirection::Descending),
-        };
+        let descending = spec.direction.map_or_else(
+            || {
+                meta.default_sort_direction
+                    .is_some_and(|dir| dir == SortDirection::Descending)
+            },
+            |dir| dir == SearchSortDirection::Desc,
+        );
         Some((field, descending))
     }
 

@@ -32,7 +32,8 @@ use crate::trigram::TrigramIndex;
 const COMPACT_MAGIC: &[u8; 8] = b"UFFSCOM\0";
 /// Current compact cache format version.
 /// - v7: `ext_names` table
-/// - v8: `path_len: u16` added to `CompactRecord` (uses 2 bytes of former `_pad`)
+/// - v8: `path_len: u16` added to `CompactRecord` (uses 2 bytes of former
+///   `_pad`)
 const COMPACT_VERSION: u16 = 8;
 /// Bytes per `CompactRecord`.
 const RECORD_BYTES: usize = size_of::<CompactRecord>();

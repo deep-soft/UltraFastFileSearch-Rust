@@ -67,7 +67,10 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
             let mut drive_order: Vec<usize> = (0..drives.len()).collect();
             #[expect(clippy::indexing_slicing, reason = "indices from 0..len, always valid")]
             drive_order.sort_unstable_by(|&idx_a, &idx_b| {
-                let ord = drives[idx_a].as_ref().letter.cmp(&drives[idx_b].as_ref().letter);
+                let ord = drives[idx_a]
+                    .as_ref()
+                    .letter
+                    .cmp(&drives[idx_b].as_ref().letter);
                 if sort_desc { ord.reverse() } else { ord }
             });
 

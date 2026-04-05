@@ -173,7 +173,8 @@ pub fn semantic_type_from_extension(ext: &str) -> &'static str {
     }
 }
 
-/// Return the extension list for a semantic type category (if extension-mappable).
+/// Return the extension list for a semantic type category (if
+/// extension-mappable).
 ///
 /// Types like `"directory"`, `"file"`, and `"other"` return `None` because
 /// they are not defined by a fixed set of extensions.
@@ -201,8 +202,7 @@ pub fn extensions_for_type(type_name: &str) -> Option<&'static [&'static str]> {
         "system" => Some(SYSTEM),
         "cert" => Some(CERTS),
         "ebook" => Some(EBOOKS),
-        // Not extension-mappable:
-        "directory" | "file" | "other" => None,
+        // Not extension-mappable (directory/file/other and unknown):
         _ => None,
     }
 }
@@ -510,10 +510,27 @@ mod tests {
     #[test]
     fn extensions_for_type_covers_all_mappable_categories() {
         let mappable = [
-            "document", "picture", "video", "audio", "archive", "code",
-            "executable", "script", "web", "font", "database", "config",
-            "log", "backup", "disk", "data", "cad", "shortcut", "system",
-            "cert", "ebook",
+            "document",
+            "picture",
+            "video",
+            "audio",
+            "archive",
+            "code",
+            "executable",
+            "script",
+            "web",
+            "font",
+            "database",
+            "config",
+            "log",
+            "backup",
+            "disk",
+            "data",
+            "cad",
+            "shortcut",
+            "system",
+            "cert",
+            "ebook",
         ];
         for cat in mappable {
             assert!(

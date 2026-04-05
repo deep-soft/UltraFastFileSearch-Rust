@@ -62,8 +62,8 @@ pub struct CompactRecord {
     pub name_len: u16,
     /// Interned extension ID (0 = no extension).
     pub extension_id: u16,
-    /// Full path length in UTF-8 bytes (e.g. `C:\Windows\System32\cmd.exe` = 28).
-    /// Precomputed at index build time via top-down parent-chain walk.
+    /// Full path length in UTF-8 bytes (e.g. `C:\Windows\System32\cmd.exe` =
+    /// 28). Precomputed at index build time via top-down parent-chain walk.
     /// Saturates at `u16::MAX` (65 535) for extremely deep paths.
     pub path_len: u16,
 
@@ -328,8 +328,8 @@ pub struct DriveCompactIndex {
     pub source_epoch: u64,
 }
 
-impl AsRef<DriveCompactIndex> for DriveCompactIndex {
-    fn as_ref(&self) -> &DriveCompactIndex {
+impl AsRef<Self> for DriveCompactIndex {
+    fn as_ref(&self) -> &Self {
         self
     }
 }
@@ -504,38 +504,41 @@ fn expand_links_and_ads(
 ///
 /// Character counting matches `str::chars().count()` so the precomputed
 /// value agrees with the display-row path-length filter.
-pub fn compute_path_lengths(
-    records: &mut [CompactRecord],
-    names: &[u8],
-    drive_letter: char,
-) {
+pub fn compute_path_lengths(records: &mut [CompactRecord], names: &[u8], drive_letter: char) {
     // Drive prefix in characters: the letter (1 char) + colon (1 char) = 2.
     // A `char` is always exactly one Unicode scalar value, so the letter
     // always contributes 1 to the char count regardless of its UTF-8
     // byte length.  Suppress the unused-variable lint by reading the
     // parameter — if this ever becomes `&str` the arithmetic changes.
-    let _ = drive_letter;
+    // `drive_letter` is read to guarantee callers pass a valid letter;
+    // the arithmetic only cares about "1 char + 1 colon".
+    debug_assert!(
+        drive_letter.is_ascii_alphabetic(),
+        "drive_letter must be ASCII A-Z, got {drive_letter:?}"
+    );
     let drive_prefix_chars: u32 = 1 /* letter */ + 1 /* ':' */;
 
     // Build forward adjacency list (parent → children) for top-down BFS.
-    let n = records.len();
-    let mut children_of: Vec<Vec<u32>> = vec![Vec::new(); n];
+    let record_count = records.len();
+    let mut children_of: Vec<Vec<u32>> = vec![Vec::new(); record_count];
     let mut roots: Vec<u32> = Vec::new();
 
-    for (i, rec) in records.iter().enumerate() {
+    for (idx, rec) in records.iter().enumerate() {
         let pi = rec.parent_idx;
         if pi == u32::MAX {
-            roots.push(i as u32);
-        } else if (pi as usize) < n {
-            children_of[pi as usize].push(i as u32);
+            #[allow(clippy::cast_possible_truncation)] // idx < record_count ≤ u32::MAX by design
+            roots.push(idx as u32);
+        } else if let Some(siblings) = children_of.get_mut(pi as usize) {
+            #[allow(clippy::cast_possible_truncation)] // idx < record_count ≤ u32::MAX by design
+            siblings.push(idx as u32);
         }
     }
 
     // BFS from roots.
-    let mut queue = std::collections::VecDeque::with_capacity(roots.len());
+    let mut queue = alloc::collections::VecDeque::with_capacity(roots.len());
     for &root in &roots {
-        let r = &records[root as usize];
-        let name_chars = name_char_count(r, names);
+        let Some(rec) = records.get(root as usize) else { continue };
+        let name_chars = name_char_count(rec, names);
         let pl = if name_chars == 0 {
             // Drive root directory: "C:\"
             drive_prefix_chars + 1
@@ -543,17 +546,24 @@ pub fn compute_path_lengths(
             // Top-level file/dir: "C:\<name>"
             drive_prefix_chars + 1 + name_chars
         };
-        records[root as usize].path_len = pl.min(u16::MAX as u32) as u16;
+        if let Some(slot) = records.get_mut(root as usize) {
+            #[allow(clippy::cast_possible_truncation)] // clamped to u16::MAX
+            { slot.path_len = pl.min(u32::from(u16::MAX)) as u16; }
+        }
         queue.push_back(root);
     }
 
     while let Some(idx) = queue.pop_front() {
-        let parent_pl = records[idx as usize].path_len as u32;
-        for &child in &children_of[idx as usize] {
-            let child_chars = name_char_count(&records[child as usize], names);
+        let parent_pl = records.get(idx as usize).map_or(0, |rec| u32::from(rec.path_len));
+        let children: Vec<u32> = children_of.get(idx as usize).map_or_else(Vec::new, Clone::clone);
+        for &child in &children {
+            let child_chars = records.get(child as usize).map_or(0, |rec| name_char_count(rec, names));
             // path = parent_path + "\" + name
             let pl = parent_pl.saturating_add(1).saturating_add(child_chars);
-            records[child as usize].path_len = pl.min(u16::MAX as u32) as u16;
+            if let Some(slot) = records.get_mut(child as usize) {
+                #[allow(clippy::cast_possible_truncation)] // clamped to u16::MAX
+                { slot.path_len = pl.min(u32::from(u16::MAX)) as u16; }
+            }
             queue.push_back(child);
         }
     }
@@ -567,12 +577,12 @@ pub fn compute_path_lengths(
 fn name_char_count(rec: &CompactRecord, names: &[u8]) -> u32 {
     let start = rec.name_offset as usize;
     let end = start + rec.name_len as usize;
+    #[allow(clippy::cast_possible_truncation)] // filenames are always < u32::MAX chars
     names
         .get(start..end)
         .and_then(|slice| core::str::from_utf8(slice).ok())
-        .map_or(rec.name_len as u32, |s| s.chars().count() as u32)
+        .map_or_else(|| u32::from(rec.name_len), |name| name.chars().count() as u32)
 }
-
 
 /// Build a `DriveCompactIndex` from a loaded `MftIndex`.
 ///

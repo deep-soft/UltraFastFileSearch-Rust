@@ -413,7 +413,6 @@ fn test_parity_root_no_double_trailing_backslash() {
     );
 }
 
-
 // ── Regression tests for T101–T118: computed columns in `--columns all` ──
 
 /// `CPP_COLUMN_ORDER` ("--columns all") must include Tree Size, Tree Allocated,
@@ -431,14 +430,8 @@ fn cpp_column_order_includes_computed_columns() {
     assert!(has(OutputColumn::Bulkiness), "Bulkiness missing from all");
     assert!(has(OutputColumn::Type), "Type missing from all");
     assert!(has(OutputColumn::Extension), "Extension missing from all");
-    assert!(
-        has(OutputColumn::NameLength),
-        "NameLength missing from all"
-    );
-    assert!(
-        has(OutputColumn::PathLength),
-        "PathLength missing from all"
-    );
+    assert!(has(OutputColumn::NameLength), "NameLength missing from all");
+    assert!(has(OutputColumn::PathLength), "PathLength missing from all");
 }
 
 /// Display names must use spaces for multi-word columns so that CSV header
@@ -457,14 +450,24 @@ fn tree_column_display_names_have_spaces() {
     );
 }
 
-/// Regression T101/T118: `write_display_rows` must emit TreeSize and
-/// TreeAllocated values for directory rows when those columns are requested.
+/// Regression T101/T118: `write_display_rows` must emit `TreeSize` and
+/// `TreeAllocated` values for directory rows when those columns are requested.
 #[test]
 fn write_display_rows_emits_treesize_and_tree_allocated() {
     use crate::search::backend::DisplayRow;
 
     let dir_row = DisplayRow::new(
-        0, 'C', "C:\\Big".to_owned(), 0, true, 0, 0, 0, 0x10, 4096, 42,
+        0,
+        'C',
+        "C:\\Big".to_owned(),
+        0,
+        true,
+        0,
+        0,
+        0,
+        0x10,
+        4096,
+        42,
         104_857_600, // treesize = 100 MB
         209_715_200, // tree_allocated = 200 MB
     );
@@ -498,14 +501,25 @@ fn write_display_rows_emits_treesize_and_tree_allocated() {
     );
 }
 
-/// Regression: NameLength and PathLength columns must emit actual values.
+/// Regression: `NameLength` and `PathLength` columns must emit actual values.
 #[test]
 fn write_display_rows_emits_name_length_and_path_length() {
     use crate::search::backend::DisplayRow;
 
     let row = DisplayRow::new(
-        0, 'C', "C:\\Very\\Long\\Path\\readme.txt".to_owned(), 100, false, 0, 0, 0, 0x20, 4096,
-        0, 0, 0,
+        0,
+        'C',
+        "C:\\Very\\Long\\Path\\readme.txt".to_owned(),
+        100,
+        false,
+        0,
+        0,
+        0,
+        0x20,
+        4096,
+        0,
+        0,
+        0,
     );
 
     let config = OutputConfig::new()
@@ -519,7 +533,8 @@ fn write_display_rows_emits_name_length_and_path_length() {
         .unwrap();
     let csv = String::from_utf8(out).unwrap();
 
-    // name = "readme.txt" (10 chars), path = "C:\Very\Long\Path\readme.txt" (28 chars)
+    // name = "readme.txt" (10 chars), path = "C:\Very\Long\Path\readme.txt" (28
+    // chars)
     assert!(csv.contains(",10,"), "name length must be 10, got: {csv}");
     assert!(csv.contains(",28\n"), "path length must be 28, got: {csv}");
 }

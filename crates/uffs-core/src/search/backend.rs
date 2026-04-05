@@ -1,7 +1,7 @@
 //! Search backend types: display rows, sort columns, filter modes, and
 //! multi-drive search orchestration.
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -184,10 +184,7 @@ impl<'a> SearchRequest<'a> {
     ///
     /// All optional flags default to `false` / `None` / `FilterMode::All`.
     #[must_use]
-    pub fn new(
-        pattern: &'a str,
-        search_filters: &'a mut super::filters::SearchFilters,
-    ) -> Self {
+    pub const fn new(pattern: &'a str, search_filters: &'a mut super::filters::SearchFilters) -> Self {
         Self {
             pattern,
             case_sensitive: false,
@@ -219,10 +216,8 @@ pub struct DriveIndex {
 impl DriveIndex {
     /// Create an empty index with no drives loaded.
     #[must_use]
-    pub fn new() -> Self {
-        Self {
-            drives: Vec::new(),
-        }
+    pub const fn new() -> Self {
+        Self { drives: Vec::new() }
     }
 
     /// Total record count across all loaded drives.

@@ -95,7 +95,8 @@ pub struct SearchFilters {
     /// CLI percentages must be converted via `from_params` which multiplies
     /// by 10 000.
     pub min_bulkiness: Option<u64>,
-    /// Maximum bulkiness in **per-million** scale (see [`Self::min_bulkiness`]).
+    /// Maximum bulkiness in **per-million** scale (see
+    /// [`Self::min_bulkiness`]).
     pub max_bulkiness: Option<u64>,
 
     // ── Length filters ──────────────────────────────────────────────
@@ -260,20 +261,19 @@ impl SearchFilters {
         //
         // Un-mappable types ("directory", "file", "other") stay as
         // `type_filter` for post-filter via `apply_search_filters`.
+        #[allow(clippy::shadow_reuse)] // intentional: refine extensions with type_filter
         let (extensions, type_filter) = if let Some(type_name) = params.type_filter {
             let lower = type_name.to_ascii_lowercase();
-            if let Some(type_exts) =
-                crate::search::derived::extensions_for_type(&lower)
-            {
+            if let Some(type_exts) = crate::search::derived::extensions_for_type(&lower) {
                 let merged = if extensions.is_empty() {
                     // No --ext: use the full type extension list.
-                    type_exts.iter().map(|e| (*e).to_owned()).collect()
+                    type_exts.iter().map(|ext| (*ext).to_owned()).collect()
                 } else {
                     // --ext present: intersect (keep only exts that
                     // belong to BOTH the explicit list and the type).
                     extensions
                         .into_iter()
-                        .filter(|e| type_exts.contains(&e.as_str()))
+                        .filter(|ext| type_exts.contains(&ext.as_str()))
                         .collect()
                 };
                 (merged, None)
@@ -320,8 +320,8 @@ impl SearchFilters {
             // CLI bulkiness is a user-facing percentage (200 = 200%).
             // Internal scale is per-million (1_000_000 = 100%).
             // Convert: percentage × 10_000 = per-million.
-            min_bulkiness: params.min_bulkiness.map(|p| p.saturating_mul(10_000)),
-            max_bulkiness: params.max_bulkiness.map(|p| p.saturating_mul(10_000)),
+            min_bulkiness: params.min_bulkiness.map(|pct| pct.saturating_mul(10_000)),
+            max_bulkiness: params.max_bulkiness.map(|pct| pct.saturating_mul(10_000)),
             min_name_len: params.min_name_len,
             max_name_len: params.max_name_len,
             min_path_len: params.min_path_len,
@@ -642,11 +642,10 @@ impl SearchFilters {
             } else {
                 (rec.size, rec.allocated)
             };
-            let bulk = if logical == 0 {
-                0
-            } else {
-                allocated.saturating_mul(crate::search::derived::BULKINESS_SCALE) / logical
-            };
+            let bulk = allocated
+                .saturating_mul(crate::search::derived::BULKINESS_SCALE)
+                .checked_div(logical)
+                .unwrap_or(0);
             if let Some(min) = self.min_bulkiness
                 && bulk < min
             {

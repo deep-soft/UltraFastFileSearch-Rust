@@ -523,7 +523,6 @@ fn search_empty_pattern_returns_empty() {
     );
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════
 // Regression: TreeSize sort must use treesize, not modified time (T67a)
 // ═══════════════════════════════════════════════════════════════════════
@@ -536,7 +535,7 @@ fn sort_by_treesize_uses_treesize_not_modified() {
         dir_row("medium", 'C', 7, 100_000),
     ];
     sort_rows(&mut rows, FieldId::TreeSize, true, &[]);
-    let sizes: Vec<u64> = rows.iter().map(|r| r.treesize).collect();
+    let sizes: Vec<u64> = rows.iter().map(|row| row.treesize).collect();
     assert_eq!(
         sizes,
         vec![1_000_000, 100_000, 1_000],
@@ -552,7 +551,7 @@ fn sort_by_treesize_ascending() {
         dir_row("medium", 'C', 7, 100_000),
     ];
     sort_rows(&mut rows, FieldId::TreeSize, false, &[]);
-    let sizes: Vec<u64> = rows.iter().map(|r| r.treesize).collect();
+    let sizes: Vec<u64> = rows.iter().map(|row| row.treesize).collect();
     assert_eq!(
         sizes,
         vec![1_000, 100_000, 1_000_000],
@@ -566,7 +565,7 @@ fn sort_by_treesize_ascending() {
 
 /// Build a `DriveIndex` with two drives (C: and D:) for `search_index` tests.
 fn build_two_drive_index() -> DriveIndex {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS, SizeInfo};
 
@@ -614,8 +613,7 @@ fn search_index_returns_results_from_both_drives() {
         true,
         &[],
     );
-    let drives: std::collections::HashSet<char> =
-        result.rows.iter().map(|row| row.drive).collect();
+    let drives: std::collections::HashSet<char> = result.rows.iter().map(|row| row.drive).collect();
     assert!(drives.contains(&'C'), "must include C: results");
     assert!(drives.contains(&'D'), "must include D: results");
 }
@@ -635,18 +633,15 @@ fn search_index_drives_filter_excludes_non_matching() {
         &[],
     );
     assert!(
-        result.rows.iter().all(|r| r.drive == 'C'),
+        result.rows.iter().all(|row| row.drive == 'C'),
         "drive filter must exclude D: results"
     );
-    assert!(
-        !result.rows.is_empty(),
-        "must have at least one C: result"
-    );
+    assert!(!result.rows.is_empty(), "must have at least one C: result");
 }
 
 #[test]
 fn search_index_concurrent_calls_do_not_interfere() {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     let index = Arc::new(build_two_drive_index());
     let idx1 = Arc::clone(&index);
@@ -654,20 +649,20 @@ fn search_index_concurrent_calls_do_not_interfere() {
 
     let (r1, r2) = rayon::join(
         || {
-            let mut f = super::super::filters::SearchFilters::default();
+            let mut filters = super::super::filters::SearchFilters::default();
             search_index(
                 &idx1,
-                SearchRequest::new("*", &mut f),
+                SearchRequest::new("*", &mut filters),
                 FieldId::Size,
                 true,
                 &[],
             )
         },
         || {
-            let mut f = super::super::filters::SearchFilters::default();
+            let mut filters = super::super::filters::SearchFilters::default();
             search_index(
                 &idx2,
-                SearchRequest::new("*", &mut f),
+                SearchRequest::new("*", &mut filters),
                 FieldId::Modified,
                 false,
                 &[],
