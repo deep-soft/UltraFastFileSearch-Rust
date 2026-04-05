@@ -521,8 +521,8 @@ fn rows_to_csv(resp: &serde_json::Value) -> String {
         let path = row.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let path_only = row.get("path_only").and_then(|v| v.as_str())
             .unwrap_or_else(|| {
-                // Derive from path: everything before the last separator
-                path.rfind(|c| c == '\\' || c == '/').map_or("", |i| &path[..i])
+                // Derive from path: everything up to and including the last separator
+                path.rfind(|c| c == '\\' || c == '/').map_or("", |i| &path[..=i])
             });
         let size = row.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
         let allocated = row.get("allocated_size")
@@ -2389,9 +2389,7 @@ fn define_tests() -> Vec<TestSpec> {
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
-            let path = col_val(row, &h, "Path Only");
-            let name = col_val(row, &h, "Name");
-            let full = format!("{path}{name}");
+            let full = col_val(row, &h, "Path");
             if full.chars().count() < 200 {
                 bail!("Row {i}: path len {} < 200", full.chars().count());
             }
