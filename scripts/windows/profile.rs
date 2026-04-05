@@ -269,27 +269,51 @@ fn print_summary(results: &[RunResult]) {
     }
     eprintln!("{bar_bot}");
 
-    // Speedup analysis.
+    // ── Speedup table ─────────────────────────────────────────────────
+    const SW: usize = 68;
+    let sbar_top = format!("╔{:═<SW$}╗", "");
+    let sbar_mid = format!("╠{:═<SW$}╣", "");
+    let sbar_div = format!("╟{:─<SW$}╢", "");
+    let sbar_bot = format!("╚{:═<SW$}╝", "");
+
     eprintln!();
-    eprintln!("── Speedup ─────────────────────────────────────────────────────────────────────────────");
+    eprintln!("{sbar_top}");
+    eprintln!("║{:^SW$}║", "SPEEDUP");
+    eprintln!("{sbar_mid}");
+    eprintln!("║ {:<5} {:>11} {:>11} {:>11} {:>11} {:>11} ║",
+        "Drive", "Cold", "Warm", "Hot", "C→H", "C→W");
+    eprintln!("{sbar_mid}");
+
     let mut seen = Vec::new();
     for r in results { if !seen.contains(&r.drive) { seen.push(r.drive.clone()); } }
+    let mut first = true;
     for drive in &seen {
         let cold = results.iter().find(|r| r.drive == *drive && r.phase == "COLD");
         let warm = results.iter().find(|r| r.drive == *drive && r.phase == "WARM CACHE");
         let hot  = results.iter().find(|r| r.drive == *drive && r.phase == "HOT");
         if let (Some(c), Some(h)) = (cold, hot) {
             if h.timing.total_ms > 0 {
-                let speedup = c.timing.total_ms as f64 / h.timing.total_ms as f64;
-                eprint!("  {drive}:  COLD {} → HOT {} = {speedup:.1}×",
-                    fmt_dur(c.timing.total_ms).trim(), fmt_dur(h.timing.total_ms).trim());
-                if let Some(w) = warm {
-                    eprint!("  (WARM: {})", fmt_dur(w.timing.total_ms).trim());
-                }
-                eprintln!();
+                if !first { eprintln!("{sbar_div}"); }
+                first = false;
+                let cold_hot = c.timing.total_ms as f64 / h.timing.total_ms as f64;
+                let warm_dur = warm.map_or(0, |w| w.timing.total_ms);
+                let cold_warm = if warm_dur > 0 {
+                    format!("{:>8.1}×  ", c.timing.total_ms as f64 / warm_dur as f64)
+                } else {
+                    format!("{:>11}", "—")
+                };
+                eprintln!("║ {:<5} {} {} {} {:>8.1}×   {} ║",
+                    format!("{drive}:"),
+                    fmt_dur(c.timing.total_ms),
+                    fmt_dur(warm_dur),
+                    fmt_dur(h.timing.total_ms),
+                    cold_hot,
+                    cold_warm,
+                );
             }
         }
     }
+    eprintln!("{sbar_bot}");
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
