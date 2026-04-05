@@ -89,10 +89,13 @@ pub struct SearchFilters {
     pub path_contains_lower: Option<String>,
     /// File type/category filter (e.g. `"code"`, `"document"`, `"picture"`).
     pub type_filter: Option<String>,
-    /// Minimum bulkiness (allocated/size × 1 000 000). 1 000 000 = perfectly
-    /// packed.
+    /// Minimum bulkiness in **per-million** scale.
+    ///
+    /// `1_000_000` = 100% (perfectly packed).  `2_000_000` = 200%.
+    /// CLI percentages must be converted via `from_params` which multiplies
+    /// by 10 000.
     pub min_bulkiness: Option<u64>,
-    /// Maximum bulkiness.
+    /// Maximum bulkiness in **per-million** scale (see [`Self::min_bulkiness`]).
     pub max_bulkiness: Option<u64>,
 
     // ── Length filters ──────────────────────────────────────────────
@@ -272,8 +275,11 @@ impl SearchFilters {
             exclude_lower,
             path_contains_lower,
             type_filter: params.type_filter.map(str::to_ascii_lowercase),
-            min_bulkiness: params.min_bulkiness,
-            max_bulkiness: params.max_bulkiness,
+            // CLI bulkiness is a user-facing percentage (200 = 200%).
+            // Internal scale is per-million (1_000_000 = 100%).
+            // Convert: percentage × 10_000 = per-million.
+            min_bulkiness: params.min_bulkiness.map(|p| p.saturating_mul(10_000)),
+            max_bulkiness: params.max_bulkiness.map(|p| p.saturating_mul(10_000)),
             min_name_len: params.min_name_len,
             max_name_len: params.max_name_len,
             min_path_len: params.min_path_len,

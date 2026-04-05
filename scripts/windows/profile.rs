@@ -188,34 +188,90 @@ fn parse_args() -> (PathBuf, Vec<String>) {
     (bin, drives)
 }
 
+// ─── Formatting helpers ─────────────────────────────────────────────────────
+//
+// Mirrors the style from crates/uffs-mft/src/display.rs:
+//   numbers right-aligned, units left-aligned, fixed 11-char width.
+
+/// Format milliseconds as a human-readable duration (fixed 11 chars).
+///
+/// Layout matches `crates/uffs-mft/src/display.rs` — right-aligned numbers,
+/// left-aligned units:
+///
+/// - `< 1 s`:  `    543 ms ` — `{:>7} ms `
+/// - `1–60 s`: ` 7 s 792 ms` — `{:>2} s {:>3} ms`
+/// - `≥ 60 s`: ` 1 m  05 s ` — `{:>2} m  {:>2} s `
+fn fmt_dur(ms: u64) -> String {
+    if ms < 1_000 {
+        format!("{ms:>7} ms ")
+    } else if ms < 60_000 {
+        let s = ms / 1000;
+        let frac = ms % 1000;
+        format!("{s:>2} s {frac:>3} ms")
+    } else {
+        let total_s = (ms + 500) / 1000;
+        let m = total_s / 60;
+        let s = total_s % 60;
+        format!("{m:>2} m  {s:02} s ")
+    }
+}
+
+/// Format a number with comma separators (right-justified, 14 chars).
+fn fmt_num(s: &str) -> String {
+    // The records_scanned field is already a formatted string from the daemon.
+    // If it contains only digits, add commas; otherwise pass through.
+    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return format!("{s:>14}");
+    }
+    let mut result = String::with_capacity(digits.len() + digits.len() / 3);
+    for (idx, ch) in digits.chars().rev().enumerate() {
+        if idx > 0 && idx % 3 == 0 {
+            result.push(',');
+        }
+        result.push(ch);
+    }
+    let formatted: String = result.chars().rev().collect();
+    format!("{formatted:>14}")
+}
+
 // ─── Summary ────────────────────────────────────────────────────────────────
 
 fn print_summary(results: &[RunResult]) {
+    // Inner width: 1+5 + 1+12 + 6*(1+11) + 1+14 + 1+2 + 1 = 113.
+    const W: usize = 113;
+    let bar_top    = format!("╔{:═<W$}╗", "");
+    let bar_mid    = format!("╠{:═<W$}╣", "");
+    let bar_div    = format!("╟{:─<W$}╢", "");
+    let bar_bot    = format!("╚{:═<W$}╝", "");
+
     eprintln!();
-    eprintln!("╔═══════════════════════════════════════════════════════════════════════════════════════════╗");
-    eprintln!("║                         PERFORMANCE SUMMARY (--profile)                                  ║");
-    eprintln!("╠═══════════════════════════════════════════════════════════════════════════════════════════╣");
-    eprintln!("║ {:<6} {:<12} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>14} {:>3} ║",
-        "Drive", "Phase", "Total", "Connct", "Ready", "Startup", "Search", "IPC", "Records", "OK");
-    eprintln!("╠═══════════════════════════════════════════════════════════════════════════════════════════╣");
+    eprintln!("{bar_top}");
+    eprintln!("║{:^W$}║", "PERFORMANCE SUMMARY (--profile)");
+    eprintln!("{bar_mid}");
+    eprintln!("║ {:<5} {:<12} {:>11} {:>11} {:>11} {:>11} {:>11} {:>11} {:>14} {:>2} ║",
+        "Drive", "Phase", "Total", "Connct", "Ready", "Startup", "Search", "IPC", "Records", "");
+    eprintln!("{bar_mid}");
     let mut prev_drive = String::new();
     for r in results {
         if !prev_drive.is_empty() && r.drive != prev_drive {
-            eprintln!("╟───────────────────────────────────────────────────────────────────────────────────────────╢");
+            eprintln!("{bar_div}");
         }
         prev_drive.clone_from(&r.drive);
         let ok = if r.success { "✅" } else { "❌" };
         let t = &r.timing;
-        eprintln!("║ {:<6} {:<12} {:>6}ms {:>6}ms {:>6}ms {:>6}ms {:>6}ms {:>6}ms {:>14} {:>3} ║",
+        eprintln!("║ {:<5} {:<12} {} {} {} {} {} {} {} {} ║",
             format!("{}:", r.drive), r.phase,
-            t.total_ms, t.connect_ms, t.ready_ms, t.startup_ms,
-            t.daemon_search_ms, t.ipc_ms, t.records_scanned, ok);
+            fmt_dur(t.total_ms), fmt_dur(t.connect_ms),
+            fmt_dur(t.ready_ms), fmt_dur(t.startup_ms),
+            fmt_dur(t.daemon_search_ms), fmt_dur(t.ipc_ms),
+            fmt_num(&t.records_scanned), ok);
     }
-    eprintln!("╚═══════════════════════════════════════════════════════════════════════════════════════════╝");
+    eprintln!("{bar_bot}");
 
     // Speedup analysis.
     eprintln!();
-    eprintln!("── Speedup ─────────────────────────────────────────────────────────────");
+    eprintln!("── Speedup ─────────────────────────────────────────────────────────────────────────────");
     let mut seen = Vec::new();
     for r in results { if !seen.contains(&r.drive) { seen.push(r.drive.clone()); } }
     for drive in &seen {
@@ -225,10 +281,10 @@ fn print_summary(results: &[RunResult]) {
         if let (Some(c), Some(h)) = (cold, hot) {
             if h.timing.total_ms > 0 {
                 let speedup = c.timing.total_ms as f64 / h.timing.total_ms as f64;
-                eprint!("  {drive}:  COLD {}ms → HOT {}ms = {speedup:.1}x",
-                    c.timing.total_ms, h.timing.total_ms);
+                eprint!("  {drive}:  COLD {} → HOT {} = {speedup:.1}×",
+                    fmt_dur(c.timing.total_ms).trim(), fmt_dur(h.timing.total_ms).trim());
                 if let Some(w) = warm {
-                    eprint!("  (WARM CACHE: {}ms)", w.timing.total_ms);
+                    eprint!("  (WARM: {})", fmt_dur(w.timing.total_ms).trim());
                 }
                 eprintln!();
             }
@@ -265,15 +321,16 @@ fn main() {
     }
 
     eprintln!();
-    eprintln!("╔══════════════════════════════════════════════════════════════╗");
-    eprintln!("║          UFFS Performance Profiler (3-Phase)                 ║");
-    eprintln!("╠══════════════════════════════════════════════════════════════╣");
-    eprintln!("║  Binary:   {:<48}║", version);
-    eprintln!("║  Drives:   {:<48}║", drives.join(", "));
-    eprintln!("║  Pattern:  {:<48}║", "*");
-    eprintln!("║  Limit:    {:<48}║", "100 rows");
-    eprintln!("║  Phases:   {:<48}║", "COLD → WARM CACHE → HOT");
-    eprintln!("╚══════════════════════════════════════════════════════════════╝");
+    const HW: usize = 60;
+    eprintln!("╔{:═<HW$}╗", "");
+    eprintln!("║{:^HW$}║", "UFFS Performance Profiler (3-Phase)");
+    eprintln!("╠{:═<HW$}╣", "");
+    eprintln!("║  Binary:   {:<w$}║", version, w = HW - 13);
+    eprintln!("║  Drives:   {:<w$}║", drives.join(", "), w = HW - 13);
+    eprintln!("║  Pattern:  {:<w$}║", "*", w = HW - 13);
+    eprintln!("║  Limit:    {:<w$}║", "100 rows", w = HW - 13);
+    eprintln!("║  Phases:   {:<w$}║", "COLD → WARM CACHE → HOT", w = HW - 13);
+    eprintln!("╚{:═<HW$}╝", "");
 
     let total_start = Instant::now();
     let mut all_results: Vec<RunResult> = Vec::new();

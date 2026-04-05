@@ -540,3 +540,40 @@ fn search_empty_pattern_returns_empty() {
         "empty pattern must return no results"
     );
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// Regression: TreeSize sort must use treesize, not modified time (T67a)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn sort_by_treesize_uses_treesize_not_modified() {
+    let mut rows = vec![
+        dir_row("small", 'C', 5, 1_000),
+        dir_row("large", 'C', 10, 1_000_000),
+        dir_row("medium", 'C', 7, 100_000),
+    ];
+    sort_rows(&mut rows, FieldId::TreeSize, true, &[]);
+    let sizes: Vec<u64> = rows.iter().map(|r| r.treesize).collect();
+    assert_eq!(
+        sizes,
+        vec![1_000_000, 100_000, 1_000],
+        "treesize desc: largest first"
+    );
+}
+
+#[test]
+fn sort_by_treesize_ascending() {
+    let mut rows = vec![
+        dir_row("large", 'C', 10, 1_000_000),
+        dir_row("small", 'C', 5, 1_000),
+        dir_row("medium", 'C', 7, 100_000),
+    ];
+    sort_rows(&mut rows, FieldId::TreeSize, false, &[]);
+    let sizes: Vec<u64> = rows.iter().map(|r| r.treesize).collect();
+    assert_eq!(
+        sizes,
+        vec![1_000, 100_000, 1_000_000],
+        "treesize asc: smallest first"
+    );
+}

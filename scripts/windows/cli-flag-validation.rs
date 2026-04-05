@@ -257,8 +257,8 @@ fn delete_cache() {
 
 fn run_test_suite(t: &mut TestRunner) {
     // ── 1. Warmup (also verifies daemon is alive / auto-starts) ───────
-    t.test("T00 warmup / daemon alive", &["*.txt", "--limit", "1"], |stdout, _| {
-        if csv_row_count(stdout) < 1 { bail!("No results — daemon may not be running"); }
+    t.test("T00 warmup / daemon alive", &["*", "--limit", "10"], |stdout, _| {
+        if csv_row_count(stdout) < 10 { bail!("No results — daemon may not be running"); }
         Ok("daemon warm".into())
     });
 

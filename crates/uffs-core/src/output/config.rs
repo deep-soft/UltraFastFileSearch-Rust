@@ -666,12 +666,11 @@ fn write_display_row_columns(
             OutputColumn::Bulkiness => {
                 // Allocated-to-logical ratio × 100 (integer percentage).
                 // 100 = perfectly packed. >100 = cluster slack / waste.
-                // 0 for zero-byte files (avoid div-by-zero).
-                let pct = row
-                    .allocated
-                    .saturating_mul(100)
-                    .checked_div(row.size)
-                    .unwrap_or(0);
+                // 0 for zero-byte files. Directories use tree metrics.
+                let per_million =
+                    crate::search::derived::bulkiness_for_row(row);
+                // Convert per-million → percentage (÷ 10_000).
+                let pct = per_million / 10_000;
                 buf.push_str(itoa_buf.format(pct));
             }
             OutputColumn::Drive => {

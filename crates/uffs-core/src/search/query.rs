@@ -320,6 +320,17 @@ fn collect_global_top_n_numeric(
                     }
                     i64::from_be_bytes(key)
                 }
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "treesize values within i64 range"
+                )]
+                FieldId::TreeSize => {
+                    if rec.is_directory() {
+                        rec.treesize as i64
+                    } else {
+                        rec.size as i64
+                    }
+                }
                 // Modified is the default; Path/PathOnly handled by tree walk above.
                 FieldId::Path
                 | FieldId::PathOnly
@@ -340,7 +351,6 @@ fn collect_global_top_n_numeric(
                 | FieldId::Virtual
                 | FieldId::Pinned
                 | FieldId::Unpinned
-                | FieldId::TreeSize
                 | FieldId::Integrity
                 | FieldId::NoScrub
                 | FieldId::DirectoryFlag

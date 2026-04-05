@@ -830,6 +830,27 @@ fn from_params_expands_documents_collection() {
     assert!(filters.extensions.contains(&"rs".to_owned()));
 }
 
+/// Regression: `from_params` must convert CLI percentage to per-million scale.
+/// `--min-bulkiness 200` (200%) → internal `2_000_000`.
+#[test]
+fn from_params_converts_bulkiness_percentage_to_per_million() {
+    let filters = SearchFilters::from_params(&SearchFilterParams {
+        min_bulkiness: Some(200),
+        max_bulkiness: Some(500),
+        ..Default::default()
+    });
+    assert_eq!(
+        filters.min_bulkiness,
+        Some(2_000_000),
+        "200% → 2_000_000 per-million"
+    );
+    assert_eq!(
+        filters.max_bulkiness,
+        Some(5_000_000),
+        "500% → 5_000_000 per-million"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Attribute presets
 // ═══════════════════════════════════════════════════════════════════════════

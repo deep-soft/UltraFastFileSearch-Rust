@@ -449,12 +449,19 @@ impl IndexManager {
             Vec::new()
         };
 
+        // When post-filters (predicates, type, in-path, bulkiness, etc.)
+        // are active, remove the search limit so the engine returns ALL
+        // matching records.  Post-filtering happens after path resolution,
+        // so limiting beforehand would discard valid rows.  The final
+        // limit is applied after filtering (see `filtered_rows.truncate`).
+        let needs_post_filter =
+            requires_post_filter || filters.needs_display_row_filter();
         let result = backend.search_drives(
             &effective_params.pattern,
             effective_params.case_sensitive,
             effective_params.whole_word,
             effective_params.match_path,
-            if requires_post_filter {
+            if needs_post_filter {
                 None
             } else {
                 effective_params.limit
