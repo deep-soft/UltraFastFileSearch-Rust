@@ -1651,21 +1651,7 @@ fn apply_min_path_len_rejects_short_paths() {
             0,
             0,
         ),
-        DisplayRow::new(
-            0,
-            'C',
-            long,
-            200,
-            false,
-            0,
-            0,
-            0,
-            0x20,
-            4096,
-            0,
-            0,
-            0,
-        ),
+        DisplayRow::new(0, 'C', long, 200, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
     ];
     let filters = SearchFilters {
         min_path_len: Some(200),

@@ -4,9 +4,9 @@
 //! the compact search indices for all loaded drives and delegates to
 //! `uffs_core::search` for query execution.
 
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
-use alloc::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::{RwLock, Semaphore};

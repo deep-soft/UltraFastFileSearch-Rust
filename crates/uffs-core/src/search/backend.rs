@@ -184,7 +184,10 @@ impl<'a> SearchRequest<'a> {
     ///
     /// All optional flags default to `false` / `None` / `FilterMode::All`.
     #[must_use]
-    pub const fn new(pattern: &'a str, search_filters: &'a mut super::filters::SearchFilters) -> Self {
+    pub const fn new(
+        pattern: &'a str,
+        search_filters: &'a mut super::filters::SearchFilters,
+    ) -> Self {
         Self {
             pattern,
             case_sensitive: false,

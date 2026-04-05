@@ -537,7 +537,9 @@ pub fn compute_path_lengths(records: &mut [CompactRecord], names: &[u8], drive_l
     // BFS from roots.
     let mut queue = alloc::collections::VecDeque::with_capacity(roots.len());
     for &root in &roots {
-        let Some(rec) = records.get(root as usize) else { continue };
+        let Some(rec) = records.get(root as usize) else {
+            continue;
+        };
         let name_chars = name_char_count(rec, names);
         let pl = if name_chars == 0 {
             // Drive root directory: "C:\"
@@ -548,21 +550,31 @@ pub fn compute_path_lengths(records: &mut [CompactRecord], names: &[u8], drive_l
         };
         if let Some(slot) = records.get_mut(root as usize) {
             #[allow(clippy::cast_possible_truncation)] // clamped to u16::MAX
-            { slot.path_len = pl.min(u32::from(u16::MAX)) as u16; }
+            {
+                slot.path_len = pl.min(u32::from(u16::MAX)) as u16;
+            }
         }
         queue.push_back(root);
     }
 
     while let Some(idx) = queue.pop_front() {
-        let parent_pl = records.get(idx as usize).map_or(0, |rec| u32::from(rec.path_len));
-        let children: Vec<u32> = children_of.get(idx as usize).map_or_else(Vec::new, Clone::clone);
+        let parent_pl = records
+            .get(idx as usize)
+            .map_or(0, |rec| u32::from(rec.path_len));
+        let children: Vec<u32> = children_of
+            .get(idx as usize)
+            .map_or_else(Vec::new, Clone::clone);
         for &child in &children {
-            let child_chars = records.get(child as usize).map_or(0, |rec| name_char_count(rec, names));
+            let child_chars = records
+                .get(child as usize)
+                .map_or(0, |rec| name_char_count(rec, names));
             // path = parent_path + "\" + name
             let pl = parent_pl.saturating_add(1).saturating_add(child_chars);
             if let Some(slot) = records.get_mut(child as usize) {
                 #[allow(clippy::cast_possible_truncation)] // clamped to u16::MAX
-                { slot.path_len = pl.min(u32::from(u16::MAX)) as u16; }
+                {
+                    slot.path_len = pl.min(u32::from(u16::MAX)) as u16;
+                }
             }
             queue.push_back(child);
         }
@@ -581,7 +593,10 @@ fn name_char_count(rec: &CompactRecord, names: &[u8]) -> u32 {
     names
         .get(start..end)
         .and_then(|slice| core::str::from_utf8(slice).ok())
-        .map_or_else(|| u32::from(rec.name_len), |name| name.chars().count() as u32)
+        .map_or_else(
+            || u32::from(rec.name_len),
+            |name| name.chars().count() as u32,
+        )
 }
 
 /// Build a `DriveCompactIndex` from a loaded `MftIndex`.
