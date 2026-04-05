@@ -687,24 +687,28 @@ fn run_tests_parallel(bin: &str, specs: &[TestSpec], data_dir: &Option<String>) 
 
     let mut results: Vec<TestResult> = Vec::with_capacity(specs.len());
 
-    // 1. Run direct tests — all in parallel (no process overhead).
+    // 1. Run direct tests — bounded parallelism to avoid flooding the daemon.
+    //    The stress test shows peak throughput at c=16–32; beyond that, queries
+    //    queue up and individual latencies balloon.
     if !direct_specs.is_empty() {
-        let direct_results: Vec<TestResult> = std::thread::scope(|s| {
-            let handles: Vec<_> = direct_specs.iter().enumerate().map(|(i, spec)| {
-                let sock_ref = &sock;
-                s.spawn(move || run_one_test_direct(sock_ref, bin, spec, data_dir, i as u64))
-            }).collect();
-            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
-                name: "???".into(), cli: "???".into(), api: String::new(), passed: false, duration_ms: 0,
-                detail: "thread panicked".into(),
-            })).collect()
-        });
-        for r in &direct_results {
-            let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
-            let timing = format!("{:>5}ms", r.duration_ms).dimmed();
-            eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
+        for chunk in direct_specs.chunks(max_par) {
+            let chunk_results: Vec<TestResult> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunk.iter().enumerate().map(|(i, spec)| {
+                    let sock_ref = &sock;
+                    s.spawn(move || run_one_test_direct(sock_ref, bin, spec, data_dir, i as u64))
+                }).collect();
+                handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
+                    name: "???".into(), cli: "???".into(), api: String::new(), passed: false, duration_ms: 0,
+                    detail: "thread panicked".into(),
+                })).collect()
+            });
+            for r in &chunk_results {
+                let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
+                let timing = format!("{:>5}ms", r.duration_ms).dimmed();
+                eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
+            }
+            results.extend(chunk_results);
         }
-        results.extend(direct_results);
     }
 
     // 2. Run CLI-only tests — bounded parallelism.
