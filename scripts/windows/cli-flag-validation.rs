@@ -3,7 +3,10 @@
 //! [dependencies]
 //! anyhow = "1.0"
 //! colored = "2.0"
+//! serde = { version = "1.0", features = ["derive"] }
 //! serde_json = "1.0"
+//! dirs-next = "2.0"
+//! uds_windows = "1.1"
 //! ```
 // =============================================================================
 // scripts/windows/cli-flag-validation.rs — CLI Flag Validation Suite
@@ -27,11 +30,14 @@
 //   - Windows with NTFS drives (tests reference real drive letters)
 //   - Administrator privileges (MFT reading)
 
+use std::io::Write;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
+use serde_json::json;
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -220,7 +226,10 @@ fn assert_rows(stdout: &str, min: usize, max: usize) -> Result<String> {
 
 struct TestResult {
     name: String,
+    /// The `uffs.exe` CLI command to reproduce (always present).
     cli: String,
+    /// The daemon JSON-RPC params (only for direct/socket tests).
+    api: String,
     passed: bool,
     duration_ms: u128,
     detail: String,
@@ -231,6 +240,328 @@ struct TestSpec {
     name: String,
     args: Vec<String>,
     validate: Box<dyn Fn(&str, &str) -> Result<String> + Send + Sync>,
+}
+
+// ── CLI-only flag detection ─────────────────────────────────────────────
+
+/// Flags that require the CLI process (output formatting / modes not in SearchParams).
+const CLI_ONLY_FLAGS: &[&str] = &[
+    "--format", "--out", "--benchmark", "--sep", "--quotes",
+    "--header", "--name-only", "--smart-case", "--columns",
+];
+
+/// Returns true if this test's args require spawning a CLI process.
+fn requires_cli(args: &[String]) -> bool {
+    for (i, a) in args.iter().enumerate() {
+        // --columns all → direct is fine (we output all columns).
+        // --columns Name,Size,... → needs CLI for column projection.
+        if a == "--columns" {
+            if args.get(i + 1).map_or(false, |v| v.eq_ignore_ascii_case("all")) {
+                continue; // --columns all is fine for direct
+            }
+            return true; // specific columns need CLI
+        }
+        if CLI_ONLY_FLAGS.iter().any(|f| a == f) {
+            return true;
+        }
+    }
+    false
+}
+
+// ── Daemon socket communication ─────────────────────────────────────────
+
+fn daemon_socket_path() -> PathBuf {
+    let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join("uffs").join("daemon.sock")
+}
+
+/// Send a JSON-RPC request to the daemon and read the response.
+/// Uses line-based protocol: write JSON + newline, read lines until we get the
+/// response with matching `id`.
+fn send_jsonrpc(sock: &PathBuf, request: &serde_json::Value) -> Result<serde_json::Value> {
+    use std::io::BufRead;
+
+    let payload = serde_json::to_string(request)? + "\n";
+    let timeout = std::time::Duration::from_secs(60);
+
+    #[cfg(unix)]
+    let stream = {
+        let s = std::os::unix::net::UnixStream::connect(sock)
+            .with_context(|| format!("Cannot connect to daemon at {}", sock.display()))?;
+        s.set_read_timeout(Some(timeout))?;
+        s.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+        s
+    };
+    #[cfg(windows)]
+    let stream = {
+        let s = uds_windows::UnixStream::connect(sock)
+            .with_context(|| format!("Cannot connect to daemon at {}", sock.display()))?;
+        s.set_read_timeout(Some(timeout))?;
+        s.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+        s
+    };
+
+    // Write request.
+    (&stream).write_all(payload.as_bytes())?;
+
+    // Read lines until we get the response with matching id.
+    let mut reader = std::io::BufReader::new(&stream);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Err(e) => bail!("read: {e}"),
+            Ok(0) => bail!("EOF before response"),
+            Ok(_) => {}
+        }
+        if line.trim().is_empty() { continue; }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+            // Skip notifications (no "id" field).
+            if v.get("id").is_some() {
+                return Ok(v);
+            }
+        }
+    }
+}
+
+/// Parse CLI args into a JSON-RPC search request.
+fn args_to_search_request(args: &[String], id: u64) -> serde_json::Value {
+    let mut pattern = String::new();
+    let mut params = json!({});
+    let obj = params.as_object_mut().unwrap();
+
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        match arg {
+            // Positional: pattern
+            s if !s.starts_with('-') && pattern.is_empty() => { pattern = s.to_string(); }
+            // Core
+            "--limit" =>            { i += 1; if let Some(v) = args.get(i) {
+                let n = v.parse::<u32>().unwrap_or(100);
+                if n > 0 { obj.insert("limit".into(), json!(n)); }
+                // limit=0 means unlimited → omit from params
+            } }
+            "--case-sensitive" =>   { obj.insert("case_sensitive".into(), json!(true)); }
+            "--whole-word" | "--word" => { obj.insert("whole_word".into(), json!(true)); }
+            // Filter mode
+            "--files-only" =>       { obj.insert("filter".into(), json!("files")); }
+            "--dirs-only" =>        { obj.insert("filter".into(), json!("dirs")); }
+            // Size
+            "--min-size" =>         { i += 1; if let Some(v) = args.get(i) { obj.insert("min_size".into(), json!(parse_size(v))); } }
+            "--max-size" =>         { i += 1; if let Some(v) = args.get(i) { obj.insert("max_size".into(), json!(parse_size(v))); } }
+            // Descendants
+            "--min-descendants" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("min_descendants".into(), json!(v.parse::<u32>().unwrap_or(0))); } }
+            "--max-descendants" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("max_descendants".into(), json!(v.parse::<u32>().unwrap_or(0))); } }
+            // Time
+            "--newer" =>            { i += 1; if let Some(v) = args.get(i) { obj.insert("newer".into(), json!(v)); } }
+            "--older" =>            { i += 1; if let Some(v) = args.get(i) { obj.insert("older".into(), json!(v)); } }
+            "--newer-created" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("newer_created".into(), json!(v)); } }
+            "--older-created" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("older_created".into(), json!(v)); } }
+            "--newer-accessed" =>   { i += 1; if let Some(v) = args.get(i) { obj.insert("newer_accessed".into(), json!(v)); } }
+            "--older-accessed" =>   { i += 1; if let Some(v) = args.get(i) { obj.insert("older_accessed".into(), json!(v)); } }
+            // Attributes
+            "--attr" =>             { i += 1; if let Some(v) = args.get(i) { obj.insert("attr".into(), json!(v)); } }
+            "--hide-system" =>      { obj.insert("hide_system".into(), json!(true)); }
+            // Extension
+            "--ext" =>              { i += 1; if let Some(v) = args.get(i) { obj.insert("ext".into(), json!(v)); } }
+            // Exclude
+            "--exclude" =>          { i += 1; if let Some(v) = args.get(i) { obj.insert("exclude".into(), json!(v)); } }
+            // Path
+            "--in-path" =>          { i += 1; if let Some(v) = args.get(i) { obj.insert("path_contains".into(), json!(v)); } }
+            // Type
+            "--type" =>             { i += 1; if let Some(v) = args.get(i) { obj.insert("type_filter".into(), json!(v)); } }
+            // Bulkiness
+            "--min-bulkiness" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("min_bulkiness".into(), json!(v.parse::<u64>().unwrap_or(0))); } }
+            "--max-bulkiness" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("max_bulkiness".into(), json!(v.parse::<u64>().unwrap_or(0))); } }
+            // Name/path length
+            "--min-name-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("min_name_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
+            "--max-name-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("max_name_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
+            "--min-path-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("min_path_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
+            "--max-path-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("max_path_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
+            // Size-on-disk
+            "--min-size-on-disk" => { i += 1; if let Some(v) = args.get(i) { obj.insert("min_allocated".into(), json!(parse_size(v))); } }
+            "--max-size-on-disk" => { i += 1; if let Some(v) = args.get(i) { obj.insert("max_allocated".into(), json!(parse_size(v))); } }
+            // Treesize
+            "--min-treesize" =>     { i += 1; if let Some(v) = args.get(i) { obj.insert("min_treesize".into(), json!(parse_size(v))); } }
+            "--max-treesize" =>     { i += 1; if let Some(v) = args.get(i) { obj.insert("max_treesize".into(), json!(parse_size(v))); } }
+            "--min-tree-allocated" => { i += 1; if let Some(v) = args.get(i) { obj.insert("min_tree_allocated".into(), json!(parse_size(v))); } }
+            // Month
+            "--month" =>            { i += 1; if let Some(v) = args.get(i) {
+                let months: Vec<u32> = v.split(',').filter_map(|m| m.trim().parse().ok()).collect();
+                obj.insert("allowed_months".into(), json!(months));
+            }}
+            // Drive
+            "--drive" | "--drives" => { i += 1; if let Some(v) = args.get(i) {
+                let drives: Vec<char> = v.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+                obj.insert("drives".into(), json!(drives));
+            }}
+            // Sort (handle colon syntax: "size:desc", "-size")
+            "--sort" =>             { i += 1; if let Some(v) = args.get(i) { parse_sort(v, obj); } }
+            "--sort-desc" =>        { obj.insert("sort_desc".into(), json!(true)); }
+            // Begins-with, ends-with, contains, not-contains → predicates
+            "--begins-with" =>      { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "starts_with", v); } }
+            "--ends-with" =>        { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "ends_with", v); } }
+            "--contains" =>         { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "contains", v); } }
+            "--not-contains" =>     { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "not_match", v); } }
+            // Output-only flags — ignore (handled by CLI process, shouldn't reach here)
+            "--columns" | "--data-dir" => { i += 1; /* skip value */ }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // Handle pattern prefixes: "path:", "dir:", "file:"
+    if pattern.starts_with("path:") {
+        obj.insert("match_path".into(), json!(true));
+        pattern = pattern[5..].to_string();
+    } else if pattern.starts_with("dir:") {
+        obj.insert("filter".into(), json!("dirs"));
+        pattern = pattern[4..].to_string();
+    } else if pattern.starts_with("file:") {
+        obj.insert("filter".into(), json!("files"));
+        pattern = pattern[5..].to_string();
+    }
+
+    obj.insert("pattern".into(), json!(pattern));
+
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "search",
+        "params": params
+    })
+}
+
+/// Parse sort flag, handling colon syntax and dash prefix.
+fn parse_sort(val: &str, obj: &mut serde_json::Map<String, serde_json::Value>) {
+    // Multiple sort: "treesize,name" or "treesize:desc,name:asc"
+    let parts: Vec<&str> = val.split(',').collect();
+    if parts.len() > 1 || val.contains(':') {
+        let sorts: Vec<serde_json::Value> = parts.iter().map(|p| {
+            if let Some((col, dir)) = p.split_once(':') {
+                json!({"field": col, "descending": dir == "desc"})
+            } else if p.starts_with('-') {
+                json!({"field": &p[1..], "descending": true})
+            } else {
+                json!({"field": p, "descending": false})
+            }
+        }).collect();
+        obj.insert("sorts".into(), json!(sorts));
+    } else if val.starts_with('-') {
+        obj.insert("sort".into(), json!(&val[1..]));
+        obj.insert("sort_desc".into(), json!(true));
+    } else {
+        obj.insert("sort".into(), json!(val));
+    }
+}
+
+/// Add a predicate to the params.
+fn add_predicate(obj: &mut serde_json::Map<String, serde_json::Value>, field: &str, op: &str, value: &str) {
+    let pred = json!({"field": field, "op": op, "value": {"kind": "string", "value": value}});
+    let preds = obj.entry("predicates").or_insert_with(|| json!([]));
+    preds.as_array_mut().unwrap().push(pred);
+}
+
+/// Parse size strings like "100MB", "1048576", "10kb".
+fn parse_size(s: &str) -> u64 {
+    let s = s.trim().to_uppercase();
+    if let Ok(n) = s.parse::<u64>() { return n; }
+    let (num_str, multiplier) = if s.ends_with("GB") { (&s[..s.len()-2], 1024*1024*1024) }
+        else if s.ends_with("MB") { (&s[..s.len()-2], 1024*1024) }
+        else if s.ends_with("KB") { (&s[..s.len()-2], 1024) }
+        else if s.ends_with("TB") { (&s[..s.len()-2], 1024u64*1024*1024*1024) }
+        else { return s.parse().unwrap_or(0); };
+    num_str.trim().parse::<u64>().unwrap_or(0) * multiplier
+}
+
+/// Convert daemon JSON response rows to CSV format matching CLI output.
+/// Convert daemon JSON response rows to CSV matching `--columns all` output.
+///
+/// Header names match `OutputColumn::display_name()` so existing validators
+/// (which use `col_val(row, &h, "Directory Flag")` etc.) work unchanged.
+fn rows_to_csv(resp: &serde_json::Value) -> String {
+    let rows = resp.get("result")
+        .and_then(|r| r.get("rows"))
+        .and_then(|r| r.as_array());
+    let rows = match rows {
+        Some(r) => r,
+        None => return String::new(),
+    };
+
+    // Matches CPP_COLUMN_ORDER display names from OutputColumn.
+    let header = "Path,Name,Path Only,Size,Size on Disk,Created,Last Written,Last Accessed,Descendants,Read-only,Hidden,System,Directory Flag,Archive,Sparse,Reparse,Compressed,Offline,Not content indexed file,Encrypted,Integrity,No scrub file,Recall on open,Pinned,Unpinned,Recall on data access,Attributes,Tree Size,Tree Allocated";
+    let mut out = String::from(header);
+    out.push('\n');
+
+    for row in rows {
+        let name = row.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let path = row.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let path_only = row.get("path_only").and_then(|v| v.as_str())
+            .unwrap_or_else(|| {
+                // Derive from path: everything before the last separator
+                path.rfind(|c| c == '\\' || c == '/').map_or("", |i| &path[..i])
+            });
+        let size = row.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let allocated = row.get("allocated_size")
+            .or_else(|| row.get("allocated"))
+            .or_else(|| row.get("size_on_disk"))
+            .and_then(|v| v.as_u64()).unwrap_or(0);
+        let created = row.get("created").and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| row.get("created").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default());
+        let modified = row.get("modified").and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| row.get("modified").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default());
+        let accessed = row.get("accessed").and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| row.get("accessed").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default());
+        let descendants = row.get("descendants").and_then(|v| v.as_u64()).unwrap_or(0);
+        let treesize = row.get("treesize").or_else(|| row.get("tree_size"))
+            .and_then(|v| v.as_u64()).unwrap_or(0);
+        let tree_alloc = row.get("tree_allocated").and_then(|v| v.as_u64()).unwrap_or(0);
+        let flags = row.get("flags").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        // Decompose NTFS flags into boolean 0/1 columns.
+        let b = |bit: u64| -> u8 { if flags & bit != 0 { 1 } else { 0 } };
+        let readonly    = b(0x0001);
+        let hidden      = b(0x0002);
+        let system      = b(0x0004);
+        let directory   = b(0x0010);
+        let archive     = b(0x0020);
+        let sparse      = b(0x0200);
+        let reparse     = b(0x0400);
+        let compressed  = b(0x0800);
+        let offline     = b(0x1000);
+        let not_indexed = b(0x2000);
+        let encrypted   = b(0x4000);
+        let integrity   = b(0x8000);
+        let no_scrub    = if flags & 0x20000 != 0 { 1u8 } else { 0 };
+        let recall_open = if flags & 0x40000 != 0 { 1u8 } else { 0 };
+        let pinned      = if flags & 0x80000 != 0 { 1u8 } else { 0 };
+        let unpinned    = if flags & 0x100000 != 0 { 1u8 } else { 0 };
+        let recall_data = if flags & 0x400000 != 0 { 1u8 } else { 0 };
+
+        // Escape commas in name/path
+        let esc = |s: &str| -> String {
+            if s.contains(',') || s.contains('"') { format!("\"{}\"", s.replace('"', "\"\"")) }
+            else { s.to_string() }
+        };
+
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            esc(path), esc(name), esc(path_only),
+            size, allocated,
+            created, modified, accessed,
+            descendants,
+            readonly, hidden, system, directory, archive,
+            sparse, reparse, compressed, offline, not_indexed,
+            encrypted, integrity, no_scrub, recall_open,
+            pinned, unpinned, recall_data,
+            flags, treesize, tree_alloc,
+        ));
+    }
+    out
 }
 
 /// Run uffs with given args, return (exit_code, stdout, stderr).
@@ -258,10 +589,41 @@ fn cli_string(bin: &str, args: &[String]) -> String {
     parts.join(" ")
 }
 
-/// Run a single test spec against the given binary.
-/// If `data_dir` is Some, injects `--data-dir <path>` into the args so the
-/// CLI can find the daemon/data on non-Windows platforms.
-fn run_one_test(bin: &str, spec: &TestSpec, data_dir: &Option<String>) -> TestResult {
+/// Run a single test via direct daemon JSON-RPC.
+fn run_one_test_direct(sock: &PathBuf, bin: &str, spec: &TestSpec, data_dir: &Option<String>, id: u64) -> TestResult {
+    // Build both the CLI command (for reproduction) and the API request.
+    let mut cli_args = spec.args.clone();
+    if let Some(ref dir) = data_dir {
+        cli_args.push("--data-dir".to_string());
+        cli_args.push(dir.clone());
+    }
+    let cli = cli_string(bin, &cli_args);
+    let request = args_to_search_request(&spec.args, id);
+    let api = serde_json::to_string_pretty(&request.get("params").unwrap_or(&json!({})))
+        .unwrap_or_default();
+    let start = Instant::now();
+
+    let (passed, detail) = match send_jsonrpc(sock, &request) {
+        Ok(resp) => {
+            if let Some(err) = resp.get("error") {
+                (false, format!("RPC error: {}", err))
+            } else {
+                let csv = rows_to_csv(&resp);
+                match (spec.validate)(&csv, "") {
+                    Ok(msg) => (true, format!("{msg} [direct]")),
+                    Err(e) => (false, format!("{e}")),
+                }
+            }
+        }
+        Err(e) => (false, format!("Socket error: {e}")),
+    };
+
+    let duration_ms = start.elapsed().as_millis();
+    TestResult { name: spec.name.clone(), cli, api, passed, duration_ms, detail }
+}
+
+/// Run a single test via CLI process spawn.
+fn run_one_test_cli(bin: &str, spec: &TestSpec, data_dir: &Option<String>) -> TestResult {
     let mut args = spec.args.clone();
     if let Some(ref dir) = data_dir {
         args.push("--data-dir".to_string());
@@ -278,7 +640,7 @@ fn run_one_test(bin: &str, spec: &TestSpec, data_dir: &Option<String>) -> TestRe
                 (false, format!("Exit code {code}. stderr: {}", stderr.lines().next().unwrap_or("")))
             } else {
                 match (spec.validate)(&stdout, &stderr) {
-                    Ok(msg) => (true, msg),
+                    Ok(msg) => (true, format!("{msg} [cli]")),
                     Err(e) => (false, format!("{e}")),
                 }
             }
@@ -286,7 +648,7 @@ fn run_one_test(bin: &str, spec: &TestSpec, data_dir: &Option<String>) -> TestRe
         Err(e) => (false, format!("Execution failed: {e}")),
     };
 
-    TestResult { name: spec.name.clone(), cli, passed, duration_ms, detail }
+    TestResult { name: spec.name.clone(), cli, api: String::new(), passed, duration_ms, detail }
 }
 
 /// Concurrency limit for parallel process spawning.
@@ -300,31 +662,72 @@ fn max_parallelism() -> usize {
         .unwrap_or(8)
 }
 
-/// Run all test specs in parallel using std::thread::scope, with bounded
-/// concurrency to avoid overwhelming the OS with process spawns.
+/// Run all test specs: direct daemon queries for most, CLI fallback for output-only tests.
+/// Direct tests run fully parallel (lightweight socket I/O).
+/// CLI-only tests run in bounded chunks (heavy process spawns).
 fn run_tests_parallel(bin: &str, specs: &[TestSpec], data_dir: &Option<String>) -> (Vec<TestResult>, u128) {
     let max_par = max_parallelism();
+    let sock = daemon_socket_path();
     let wall_start = Instant::now();
 
-    // Process specs in chunks of `max_par` to avoid spawning all at once.
+    // Split into direct vs CLI-only.
+    let mut direct_specs: Vec<&TestSpec> = Vec::new();
+    let mut cli_specs: Vec<&TestSpec> = Vec::new();
+    for spec in specs {
+        if requires_cli(&spec.args) {
+            cli_specs.push(spec);
+        } else {
+            direct_specs.push(spec);
+        }
+    }
+
+    eprintln!("  → {} direct (daemon socket) + {} CLI (process spawn)",
+        direct_specs.len(), cli_specs.len());
+    eprintln!();
+
     let mut results: Vec<TestResult> = Vec::with_capacity(specs.len());
-    for chunk in specs.chunks(max_par) {
-        let chunk_results: Vec<TestResult> = std::thread::scope(|s| {
-            let handles: Vec<_> = chunk.iter().map(|spec| {
-                s.spawn(|| run_one_test(bin, spec, data_dir))
+
+    // 1. Run direct tests — all in parallel (no process overhead).
+    if !direct_specs.is_empty() {
+        let direct_results: Vec<TestResult> = std::thread::scope(|s| {
+            let handles: Vec<_> = direct_specs.iter().enumerate().map(|(i, spec)| {
+                let sock_ref = &sock;
+                s.spawn(move || run_one_test_direct(sock_ref, bin, spec, data_dir, i as u64))
             }).collect();
             handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
-                name: "???".into(), cli: "???".into(), passed: false, duration_ms: 0,
+                name: "???".into(), cli: "???".into(), api: String::new(), passed: false, duration_ms: 0,
                 detail: "thread panicked".into(),
             })).collect()
         });
-        // Print results as each chunk completes (live feedback).
-        for r in &chunk_results {
+        for r in &direct_results {
             let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
             let timing = format!("{:>5}ms", r.duration_ms).dimmed();
             eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
         }
-        results.extend(chunk_results);
+        results.extend(direct_results);
+    }
+
+    // 2. Run CLI-only tests — bounded parallelism.
+    if !cli_specs.is_empty() {
+        eprintln!();
+        eprintln!("  ── CLI-only tests (process spawn, parallelism: {max_par}) ──");
+        for chunk in cli_specs.chunks(max_par) {
+            let chunk_results: Vec<TestResult> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunk.iter().map(|spec| {
+                    s.spawn(|| run_one_test_cli(bin, spec, data_dir))
+                }).collect();
+                handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
+                    name: "???".into(), cli: "???".into(), api: String::new(), passed: false, duration_ms: 0,
+                    detail: "thread panicked".into(),
+                })).collect()
+            });
+            for r in &chunk_results {
+                let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
+                let timing = format!("{:>5}ms", r.duration_ms).dimmed();
+                eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
+            }
+            results.extend(chunk_results);
+        }
     }
 
     let wall_ms = wall_start.elapsed().as_millis();
@@ -358,13 +761,20 @@ fn print_results(results: &[TestResult], wall_ms: u128, max_par: usize) {
         eprintln!("  {} {failed}/{total} FAILED — wall {wall_ms}ms / sum {sum_ms}ms",
             "❌".red());
         eprintln!();
-        eprintln!("  ┌─ Failed Tests (reproduce with exact CLI) ─────────────────────────┐");
+        eprintln!("  ┌─ Failed Tests ──────────────────────────────────────────────────────┐");
         for r in results {
             if !r.passed {
                 eprintln!("  │");
                 eprintln!("  │  {} {}", "❌".red(), r.name);
-                eprintln!("  │  Error:  {}", r.detail);
-                eprintln!("  │  CLI:    {}", r.cli.yellow());
+                eprintln!("  │  {}: {}", "Error".red().bold(), r.detail);
+                eprintln!("  │  {}:   {}", "CLI".yellow().bold(), r.cli);
+                if !r.api.is_empty() {
+                    // Indent each line of the pretty-printed JSON.
+                    eprintln!("  │  {}:   {}", "API".cyan().bold(), r.api.lines().next().unwrap_or(""));
+                    for line in r.api.lines().skip(1) {
+                        eprintln!("  │         {line}");
+                    }
+                }
             }
         }
         eprintln!("  │");
@@ -457,6 +867,36 @@ fn startup_timing(bin: &str, data_dir: &Option<String>) {
     eprintln!("  └──────────┴────────────┴────────────┴────────────┴───────────┘");
     eprintln!();
 }
+
+/// Ensure daemon is running and ready before tests.
+/// If startup_timing already ran, daemon is up from the HOT phase.
+/// If --tests filter skipped startup_timing, start the daemon now.
+fn ensure_daemon_ready(bin: &str, data_dir: &Option<String>) {
+    let sock = daemon_socket_path();
+    // Quick probe: try connecting to the socket.
+    let probe = send_jsonrpc(&sock, &json!({
+        "jsonrpc": "2.0", "id": 0, "method": "search",
+        "params": {"pattern": "*", "limit": 1}
+    }));
+
+    if probe.is_ok() {
+        eprintln!("  Daemon: {} (socket responsive)", "READY".green().bold());
+        return;
+    }
+
+    // Daemon not running — start it (blocking).
+    eprintln!("  Daemon not running, starting...");
+    let mut start_args: Vec<String> = vec!["daemon".into(), "start".into()];
+    if let Some(ref dir) = data_dir {
+        start_args.push("--data-dir".into());
+        start_args.push(dir.clone());
+    }
+    let t0 = Instant::now();
+    let _ = run_uffs(bin, &start_args);
+    let ms = t0.elapsed().as_millis();
+    eprintln!("  Daemon: {} (started in {}ms)", "READY".green().bold(), ms);
+}
+
 
 // ── Cache / Daemon Helpers ──────────────────────────────────────────────────
 
@@ -2140,6 +2580,9 @@ fn main() {
     if !has_filter {
         startup_timing(&args.bin, &args.data_dir);
     }
+
+    // ═══ Ensure daemon is running before tests ═════════════════════════
+    ensure_daemon_ready(&args.bin, &args.data_dir);
 
     // ═══ Phase 2: Parallel Validation ════════════════════════════════════
     let all_specs = define_tests();
