@@ -66,41 +66,71 @@ fn socket_path() -> PathBuf {
     base.join("uffs").join("daemon.sock")
 }
 
-/// Find the uffs binary: explicit flag → PATH → ./target/release/uffs[.exe]
+/// Find the uffs binary: explicit flag → well-known locations → PATH → local build.
 fn find_uffs_bin(explicit: &Option<PathBuf>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         if p.exists() { return Some(p.clone()); }
     }
+    // Well-known locations (matches cli-flag-validation.rs pattern).
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
+    let candidates = [
+        format!("{home}\\bin\\uffs.exe"),
+        format!("{home}/bin/uffs.exe"),
+        format!("{home}/bin/uffs"),
+        "target/release/uffs.exe".to_string(),
+        "target\\release\\uffs.exe".to_string(),
+        "target/release/uffs".to_string(),
+    ];
+    for c in &candidates {
+        if std::path::Path::new(c).exists() {
+            return Some(PathBuf::from(c));
+        }
+    }
     // Check PATH
-    if let Ok(output) = std::process::Command::new(if cfg!(windows) { "where" } else { "which" })
-        .arg("uffs")
-        .output()
-    {
+    let which_cmd = if cfg!(windows) { "where" } else { "which" };
+    if let Ok(output) = std::process::Command::new(which_cmd).arg("uffs").output() {
         if output.status.success() {
             let p = String::from_utf8_lossy(&output.stdout).trim().lines().next().unwrap_or("").to_string();
             if !p.is_empty() { return Some(PathBuf::from(p)); }
         }
     }
-    // Check local build
-    let ext = if cfg!(windows) { "uffs.exe" } else { "uffs" };
-    let local = PathBuf::from("target").join("release").join(ext);
-    if local.exists() { return Some(local); }
     None
+}
+
+/// Check if daemon is running via `uffs daemon status`.
+fn daemon_running_via_cli(bin: &PathBuf) -> bool {
+    if let Ok(out) = std::process::Command::new(bin).args(["daemon", "status"]).output() {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        stdout.contains("Ready") || stdout.contains("Loading")
+    } else {
+        false
+    }
 }
 
 /// Start the daemon if not already running, wait for it to be ready.
 fn ensure_daemon(sock: &PathBuf, cli: &Cli) -> Result<()> {
-    // Already running?
+    let bin = find_uffs_bin(&cli.uffs_bin);
+
+    // Already running? Check socket probe first, then CLI fallback.
     if sock.exists() {
         let probe = send_search(sock, 0, "*.txt", 1);
         if probe.ok { return Ok(()); }
+        // Socket exists but probe failed — try CLI check (may be socket
+        // type mismatch between uds_windows and std::os::windows::net).
+        if let Some(ref b) = bin {
+            if daemon_running_via_cli(b) {
+                println!("  daemon:       {} (verified via CLI)\n", "RUNNING".green().bold());
+                return Ok(());
+            }
+        }
     }
 
-    let bin = find_uffs_bin(&cli.uffs_bin)
-        .ok_or_else(|| anyhow::anyhow!(
-            "Cannot find uffs binary.\n\
-             Provide --uffs-bin <path>, add uffs to PATH, or build with: cargo build --release -p uffs-cli"
-        ))?;
+    let bin = bin.ok_or_else(|| anyhow::anyhow!(
+        "Cannot find uffs binary.\n\
+         Provide --uffs-bin <path>, add uffs to PATH, or build with: cargo build --release -p uffs-cli"
+    ))?;
     println!("  uffs binary:  {}", bin.display());
 
     // Build args
