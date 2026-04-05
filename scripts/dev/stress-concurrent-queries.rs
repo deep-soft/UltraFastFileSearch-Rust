@@ -7,6 +7,7 @@
 //! serde = { version = "1.0", features = ["derive"] }
 //! serde_json = "1.0"
 //! dirs-next = "2.0"
+//! uds_windows = "1.1"
 //! ```
 // =============================================================================
 // Concurrent query stress test for the UFFS daemon.
@@ -22,13 +23,21 @@
 //   rust-script scripts/dev/stress-concurrent-queries.rs --max-concurrency 64 --queries-per-level 200
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use clap::Parser;
 use colored::Colorize;
+
+// ── Cross-platform Unix domain socket ────────────────────────────────
+// macOS/Linux: std::os::unix::net::UnixStream  (stable)
+// Windows:     uds_windows::UnixStream           (Win10 1803+, stable crate)
+
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+#[cfg(windows)]
+use uds_windows::UnixStream;
 
 #[derive(Parser)]
 #[command(name = "stress-concurrent-queries", about = "Concurrent query stress test")]
