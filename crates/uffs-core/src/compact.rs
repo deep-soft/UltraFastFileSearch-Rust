@@ -62,6 +62,10 @@ pub struct CompactRecord {
     pub name_len: u16,
     /// Interned extension ID (0 = no extension).
     pub extension_id: u16,
+    /// Full path length in UTF-8 bytes (e.g. `C:\Windows\System32\cmd.exe` = 28).
+    /// Precomputed at index build time via top-down parent-chain walk.
+    /// Saturates at `u16::MAX` (65 535) for extremely deep paths.
+    pub path_len: u16,
 
     /// Explicit tail padding for 8-byte struct alignment.
     /// Required by `bytemuck::Pod` — no implicit padding allowed.
@@ -69,7 +73,7 @@ pub struct CompactRecord {
         clippy::pub_underscore_fields,
         reason = "bytemuck Pod requires all fields same visibility"
     )]
-    pub _pad: [u8; 4],
+    pub _pad: [u8; 2],
 }
 
 impl CompactRecord {
@@ -401,7 +405,8 @@ fn expand_links_and_ads(
                     descendants: record.descendants,
                     treesize: record.treesize,
                     tree_allocated: record.tree_allocated,
-                    _pad: [0; 4],
+                    path_len: 0,
+                    _pad: [0; 2],
                 });
                 link_entry = link.next_entry;
             }
@@ -471,7 +476,8 @@ fn expand_links_and_ads(
                             descendants: 0,
                             treesize: 0,
                             tree_allocated: 0,
-                            _pad: [0; 4],
+                            path_len: 0,
+                            _pad: [0; 2],
                         });
                     }
                 }
@@ -481,6 +487,86 @@ fn expand_links_and_ads(
     }
     extra
 }
+
+/// Compute `path_len` (in **characters**, not bytes) for every record
+/// via top-down BFS.
+///
+/// Root entries (`parent_idx == u32::MAX`) get
+/// `path_len = 2 + 1 + name_chars` (e.g. `"C:\" + name`), and children
+/// accumulate `parent.path_len + 1 (separator) + name_chars`.
+/// Saturates at `u16::MAX` (65 535) for extremely deep paths.
+///
+/// Character counting matches `str::chars().count()` so the precomputed
+/// value agrees with the display-row path-length filter.
+pub fn compute_path_lengths(
+    records: &mut [CompactRecord],
+    names: &[u8],
+    drive_letter: char,
+) {
+    // Drive prefix in characters: the letter (1 char) + colon (1 char) = 2.
+    // A `char` is always exactly one Unicode scalar value, so the letter
+    // always contributes 1 to the char count regardless of its UTF-8
+    // byte length.  Suppress the unused-variable lint by reading the
+    // parameter — if this ever becomes `&str` the arithmetic changes.
+    let _ = drive_letter;
+    let drive_prefix_chars: u32 = 1 /* letter */ + 1 /* ':' */;
+
+    // Build forward adjacency list (parent → children) for top-down BFS.
+    let n = records.len();
+    let mut children_of: Vec<Vec<u32>> = vec![Vec::new(); n];
+    let mut roots: Vec<u32> = Vec::new();
+
+    for (i, rec) in records.iter().enumerate() {
+        let pi = rec.parent_idx;
+        if pi == u32::MAX {
+            roots.push(i as u32);
+        } else if (pi as usize) < n {
+            children_of[pi as usize].push(i as u32);
+        }
+    }
+
+    // BFS from roots.
+    let mut queue = std::collections::VecDeque::with_capacity(roots.len());
+    for &root in &roots {
+        let r = &records[root as usize];
+        let name_chars = name_char_count(r, names);
+        let pl = if name_chars == 0 {
+            // Drive root directory: "C:\"
+            drive_prefix_chars + 1
+        } else {
+            // Top-level file/dir: "C:\<name>"
+            drive_prefix_chars + 1 + name_chars
+        };
+        records[root as usize].path_len = pl.min(u16::MAX as u32) as u16;
+        queue.push_back(root);
+    }
+
+    while let Some(idx) = queue.pop_front() {
+        let parent_pl = records[idx as usize].path_len as u32;
+        for &child in &children_of[idx as usize] {
+            let child_chars = name_char_count(&records[child as usize], names);
+            // path = parent_path + "\" + name
+            let pl = parent_pl.saturating_add(1).saturating_add(child_chars);
+            records[child as usize].path_len = pl.min(u16::MAX as u32) as u16;
+            queue.push_back(child);
+        }
+    }
+}
+
+/// Count the number of Unicode characters in a record's filename.
+///
+/// Falls back to `name_len` (byte count) if the name slice is not valid
+/// UTF-8 — this is correct for ASCII names and a safe upper bound
+/// otherwise.
+fn name_char_count(rec: &CompactRecord, names: &[u8]) -> u32 {
+    let start = rec.name_offset as usize;
+    let end = start + rec.name_len as usize;
+    names
+        .get(start..end)
+        .and_then(|slice| core::str::from_utf8(slice).ok())
+        .map_or(rec.name_len as u32, |s| s.chars().count() as u32)
+}
+
 
 /// Build a `DriveCompactIndex` from a loaded `MftIndex`.
 ///
@@ -545,7 +631,8 @@ pub fn build_compact_index(
                 descendants: record.descendants,
                 treesize: record.treesize,
                 tree_allocated: record.tree_allocated,
-                _pad: [0; 4],
+                path_len: 0,
+                _pad: [0; 2],
             }
         })
         .collect();
@@ -554,6 +641,10 @@ pub fn build_compact_index(
     let mut names = index.names.as_bytes().to_vec();
     let expanded = expand_links_and_ads(index, &resolver, &resolve_parent, &mut names);
     records.extend(expanded);
+
+    // Phase 4: compute path_len (in characters) for every record via
+    // top-down BFS.  path_len = char count of "C:\dir\name".
+    compute_path_lengths(&mut records, &names, drive_letter);
 
     let compact_elapsed = compact_start.elapsed().as_millis();
 

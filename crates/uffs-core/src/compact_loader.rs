@@ -405,7 +405,11 @@ pub fn apply_usn_patch(
                     descendants: 0,
                     treesize: 0,
                     tree_allocated: 0,
-                    _pad: [0; 4],
+                    // path_len is set to 0 here; the full-array
+                    // `compute_path_lengths` call after the USN loop
+                    // will populate the correct value for all records.
+                    path_len: 0,
+                    _pad: [0; 2],
                 };
 
                 drive.records.push(new_rec);
@@ -450,6 +454,8 @@ pub fn apply_usn_patch(
     // Both are necessary so newly created/renamed files appear in tree
     // traversal AND trigram search.
     drive.children = ChildrenIndex::build(&drive.records);
+    // Recompute path_len for all records (picks up creates + renames).
+    crate::compact::compute_path_lengths(&mut drive.records, &drive.names, drive.letter);
     // Rebuild trigram index using CaseFold — no names_lower clone needed.
     drive.trigram = TrigramIndex::build(&drive.records, &drive.names, drive.fold);
     // Rebuild extension inverted index so --ext queries reflect USN changes.

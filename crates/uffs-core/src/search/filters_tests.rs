@@ -23,7 +23,8 @@ fn test_record(name: &str, names: &mut Vec<u8>) -> CompactRecord {
         descendants: 5,
         treesize: 5000,
         tree_allocated: 5120,
-        _pad: [0; 4],
+        path_len: 0,
+        _pad: [0; 2],
     }
 }
 
@@ -1451,26 +1452,31 @@ fn needs_display_row_filter_true_for_path_contains() {
 }
 
 #[test]
-fn needs_display_row_filter_true_for_bulkiness() {
+fn bulkiness_does_not_require_display_row_filter() {
+    // Bulkiness is computed from size/allocated fields available on
+    // CompactRecord, so it is checked at scan level in matches_record,
+    // not as a display-row post-filter.
     let f = SearchFilters {
         min_bulkiness: Some(200),
         ..Default::default()
     };
     assert!(
-        f.needs_display_row_filter(),
-        "min_bulkiness requires display-row pass"
+        !f.needs_display_row_filter(),
+        "bulkiness should NOT require display-row pass"
     );
 }
 
 #[test]
-fn needs_display_row_filter_true_for_path_len() {
+fn path_len_does_not_require_display_row_filter() {
+    // path_len is precomputed on CompactRecord, so it is checked at
+    // scan level in matches_record, not as a display-row post-filter.
     let f = SearchFilters {
         min_path_len: Some(100),
         ..Default::default()
     };
     assert!(
-        f.needs_display_row_filter(),
-        "min_path_len requires display-row pass"
+        !f.needs_display_row_filter(),
+        "path_len should NOT require display-row pass"
     );
 }
 

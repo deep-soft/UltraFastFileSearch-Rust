@@ -152,6 +152,54 @@ pub struct SortSpec {
     pub descending: bool,
 }
 
+/// Parameters for a search operation on [`MultiDriveBackend`].
+///
+/// Bundles all search-time knobs into a single struct so callers (daemon,
+/// CLI, tests) use one consistent API and `search` stays under the
+/// `clippy::too_many_arguments` threshold.
+#[derive(Debug)]
+pub struct SearchRequest<'a> {
+    /// The search pattern (glob, substring, regex with `>` prefix, or `*`).
+    pub pattern: &'a str,
+    /// Whether matching is case-sensitive.
+    pub case_sensitive: bool,
+    /// Whether to match whole words only.
+    pub whole_word: bool,
+    /// Whether to match against the full path (not just filename).
+    pub match_path: bool,
+    /// Maximum number of results to return (`None` = unlimited).
+    pub result_limit: Option<u32>,
+    /// File / directory filter mode.
+    pub filter_mode: FilterMode,
+    /// Mutable search filters (extensions, dates, size, etc.).
+    pub search_filters: &'a mut super::filters::SearchFilters,
+    /// Drive-letter filter: only search drives whose letter is in this
+    /// slice.  An empty slice means "search all loaded drives".
+    pub drives_filter: &'a [char],
+}
+
+impl<'a> SearchRequest<'a> {
+    /// Create a minimal request with only the required fields.
+    ///
+    /// All optional flags default to `false` / `None` / `FilterMode::All`.
+    #[must_use]
+    pub fn new(
+        pattern: &'a str,
+        search_filters: &'a mut super::filters::SearchFilters,
+    ) -> Self {
+        Self {
+            pattern,
+            case_sensitive: false,
+            whole_word: false,
+            match_path: false,
+            result_limit: None,
+            filter_mode: FilterMode::All,
+            search_filters,
+            drives_filter: &[],
+        }
+    }
+}
+
 /// Multi-drive search backend backed by compact indices.
 pub struct MultiDriveBackend {
     /// Loaded drives (compact index, ~72 bytes/record).
@@ -200,22 +248,20 @@ impl MultiDriveBackend {
             .collect()
     }
 
-    /// Search across all loaded drives.
+    /// Search all loaded drives using the given request.
+    ///
+    /// This is the single search entry point.  Results are sorted by the
+    /// backend's current `sort_column` / `sort_desc`, then truncated to
+    /// `result_limit`.
+    ///
+    /// When `drives_filter` is non-empty, only drives whose letter is in
+    /// the slice are searched.
     #[expect(
-        clippy::too_many_arguments,
-        reason = "thin wrapper over search_drives; bundling into a struct would change public API across CLI/TUI/daemon"
+        clippy::too_many_lines,
+        reason = "search dispatch with three modes and a drive filter"
     )]
-    pub fn search(
-        &mut self,
-        pattern: &str,
-        case_sensitive: bool,
-        whole_word: bool,
-        match_path: bool,
-        result_limit: Option<u32>,
-        filter_mode: FilterMode,
-        search_filters: &mut super::filters::SearchFilters,
-    ) -> SearchResult {
-        self.search_drives(
+    pub fn search(&mut self, req: SearchRequest<'_>) -> SearchResult {
+        let SearchRequest {
             pattern,
             case_sensitive,
             whole_word,
@@ -223,32 +269,9 @@ impl MultiDriveBackend {
             result_limit,
             filter_mode,
             search_filters,
-            &[],
-        )
-    }
+            drives_filter,
+        } = req;
 
-    /// Search with an optional drive-letter filter.
-    ///
-    /// When `drives_filter` is non-empty, only drives whose letter is in
-    /// the slice are searched. An empty slice means "search all loaded
-    /// drives".
-    #[expect(
-        clippy::too_many_lines,
-        clippy::too_many_arguments,
-        reason = "search dispatch with three modes and a drive filter; bundling params into a
-                  struct would change the public API across CLI/TUI/daemon callers"
-    )]
-    pub fn search_drives(
-        &mut self,
-        pattern: &str,
-        case_sensitive: bool,
-        whole_word: bool,
-        match_path: bool,
-        result_limit: Option<u32>,
-        filter_mode: FilterMode,
-        search_filters: &mut super::filters::SearchFilters,
-        drives_filter: &[char],
-    ) -> SearchResult {
         let start = Instant::now();
         let mut rows = Vec::new();
 

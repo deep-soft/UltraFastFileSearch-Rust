@@ -633,6 +633,40 @@ impl SearchFilters {
         {
             return false;
         }
+        // ── Bulkiness filters (scan-level, no path needed) ────────
+        if self.min_bulkiness.is_some() || self.max_bulkiness.is_some() {
+            let (logical, allocated) = if rec.is_directory() {
+                (rec.treesize, rec.tree_allocated)
+            } else {
+                (rec.size, rec.allocated)
+            };
+            let bulk = if logical == 0 {
+                0
+            } else {
+                allocated.saturating_mul(crate::search::derived::BULKINESS_SCALE) / logical
+            };
+            if let Some(min) = self.min_bulkiness
+                && bulk < min
+            {
+                return false;
+            }
+            if let Some(max) = self.max_bulkiness
+                && bulk > max
+            {
+                return false;
+            }
+        }
+        // ── Path-length filters (precomputed on CompactRecord) ────
+        if let Some(min) = self.min_path_len
+            && rec.path_len < min
+        {
+            return false;
+        }
+        if let Some(max) = self.max_path_len
+            && rec.path_len > max
+        {
+            return false;
+        }
         // ── Month-of-year filter ───────────────────────────────────
         if !self.allowed_months.is_empty() {
             let month = month_from_unix_micros(rec.modified);
@@ -680,20 +714,19 @@ impl SearchFilters {
     }
 
     /// Returns `true` if any filter requires a resolved `DisplayRow`
-    /// (full path, semantic type, bulkiness).
+    /// (full path, semantic type).
     ///
     /// These cannot be evaluated on a `CompactRecord` because they need
     /// the resolved path string.  The `collect_global_top_n` hot-path
     /// only runs `matches_record`; callers must run
     /// `apply_search_filters` afterwards when this returns `true`.
+    ///
+    /// Note: bulkiness and path-length are checked at scan level in
+    /// `matches_record` (bulkiness uses `size`/`allocated`, path-length
+    /// uses the precomputed `path_len` field on `CompactRecord`).
     #[must_use]
     pub const fn needs_display_row_filter(&self) -> bool {
-        self.path_contains_lower.is_some()
-            || self.type_filter.is_some()
-            || self.min_bulkiness.is_some()
-            || self.max_bulkiness.is_some()
-            || self.min_path_len.is_some()
-            || self.max_path_len.is_some()
+        self.path_contains_lower.is_some() || self.type_filter.is_some()
     }
 }
 
@@ -817,6 +850,8 @@ fn apply_derived_filters(row: &DisplayRow, filters: &SearchFilters) -> bool {
         }
     }
     // ── Path-length filters ────────────────────────────────────
+    // Note: path_len is measured in Unicode characters, consistent with
+    // the precomputed `CompactRecord::path_len` used at scan level.
     if filters.min_path_len.is_some() || filters.max_path_len.is_some() {
         #[expect(
             clippy::cast_possible_truncation,

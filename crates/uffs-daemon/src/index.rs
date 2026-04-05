@@ -15,7 +15,9 @@ use uffs_client::protocol::{
     SearchResponseMode, SearchRow, SearchSortDirection, SearchSortSpec, StatsResponse,
     StatusResponse,
 };
-use uffs_core::search::backend::{DisplayRow, FilterMode, MultiDriveBackend, SortSpec};
+use uffs_core::search::backend::{
+    DisplayRow, FilterMode, MultiDriveBackend, SearchRequest, SortSpec,
+};
 use uffs_core::search::derived::{
     bulkiness_for_row, semantic_type_for_row, tree_allocated_for_row,
 };
@@ -469,16 +471,16 @@ impl IndexManager {
         } else {
             effective_params.limit
         };
-        let result = backend.search_drives(
-            &effective_params.pattern,
-            effective_params.case_sensitive,
-            effective_params.whole_word,
-            effective_params.match_path,
-            search_limit,
+        let result = backend.search(SearchRequest {
+            pattern: &effective_params.pattern,
+            case_sensitive: effective_params.case_sensitive,
+            whole_word: effective_params.whole_word,
+            match_path: effective_params.match_path,
+            result_limit: search_limit,
             filter_mode,
-            &mut filters,
-            &effective_params.drives,
-        );
+            search_filters: &mut filters,
+            drives_filter: &effective_params.drives,
+        });
         let search_us = if profiling {
             result.duration.as_micros()
         } else {

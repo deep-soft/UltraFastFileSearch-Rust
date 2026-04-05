@@ -30,8 +30,10 @@ use crate::trigram::TrigramIndex;
 
 /// Magic bytes for compact cache files.
 const COMPACT_MAGIC: &[u8; 8] = b"UFFSCOM\0";
-/// Current compact cache format version (v7 adds `ext_names` table).
-const COMPACT_VERSION: u16 = 7;
+/// Current compact cache format version.
+/// - v7: `ext_names` table
+/// - v8: `path_len: u16` added to `CompactRecord` (uses 2 bytes of former `_pad`)
+const COMPACT_VERSION: u16 = 8;
 /// Bytes per `CompactRecord`.
 const RECORD_BYTES: usize = size_of::<CompactRecord>();
 /// zstd compression level for compact cache.
@@ -740,13 +742,13 @@ mod tests {
     }
 
     #[test]
-    fn v7_header_version() {
+    fn v8_header_version() {
         let index = make_test_index();
         let serialized = serialize_compact(&index);
         let b8 = *serialized.get(8).expect("missing byte 8");
         let b9 = *serialized.get(9).expect("missing byte 9");
         let version = u16::from_le_bytes([b8, b9]);
-        assert_eq!(version, 7);
+        assert_eq!(version, COMPACT_VERSION);
     }
 
     #[test]
