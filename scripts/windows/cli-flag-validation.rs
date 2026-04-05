@@ -12,12 +12,13 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 Robert Nio
 //
-// Runs every CLI flag combination at three caching levels and compares
-// per-test timings side-by-side:
+// Phase 1 — Startup timing:  measures a single query at three caching levels:
+//   COLD  — no daemon, no cache files  (full MFT read + index build)
+//   WARM  — no daemon, cache files exist  (daemon auto-starts from cache)
+//   HOT   — daemon already running  (pure in-memory search)
 //
-//   COLD       — no daemon, no cache files  (full MFT read + index build)
-//   WARM CACHE — no daemon, cache files exist  (daemon auto-starts from cache)
-//   HOT        — daemon already running  (pure in-memory search)
+// Phase 2 — Parallel validation:  runs ALL 141 tests concurrently against
+//   the HOT daemon from Phase 1.
 //
 // Usage:
 //   rust-script scripts/windows/cli-flag-validation.rs [path-to-uffs-binary]
@@ -118,107 +119,190 @@ fn assert_rows(stdout: &str, min: usize, max: usize) -> Result<String> {
 
 struct TestResult {
     name: String,
+    cli: String,
     passed: bool,
     duration_ms: u128,
     detail: String,
 }
 
-/// Results from running the full test suite at one caching level.
-struct PhaseResult {
-    label: String,
-    results: Vec<TestResult>,
-    wall_ms: u128,
+/// A test specification: name + args + validator closure.
+struct TestSpec {
+    name: String,
+    args: Vec<String>,
+    validate: Box<dyn Fn(&str, &str) -> Result<String> + Send + Sync>,
 }
 
-struct TestRunner {
-    bin: String,
-    results: Vec<TestResult>,
+/// Run uffs with given args, return (exit_code, stdout, stderr).
+fn run_uffs(bin: &str, args: &[String]) -> Result<(i32, String, String)> {
+    let output = Command::new(bin)
+        .args(args)
+        .output()
+        .with_context(|| format!("Failed to execute: {} {}", bin, args.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ")))?;
+    let code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Ok((code, stdout, stderr))
 }
 
-
-impl TestRunner {
-    fn new(bin: String) -> Self {
-        Self { bin, results: Vec::new() }
-    }
-
-    /// Run uffs with given args, return (exit_code, stdout, stderr).
-    fn run_uffs(&self, args: &[&str]) -> Result<(i32, String, String)> {
-        let output = Command::new(&self.bin)
-            .env("RUST_LOG", "trace")
-            .env("RUST_LOG_FILE", "trace")
-            .env("UFFS_LOG", "trace")
-            .args(args)
-            .output()
-            .with_context(|| format!("Failed to execute: {} {}", self.bin, args.join(" ")))?;
-        let code = output.status.code().unwrap_or(-1);
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        Ok((code, stdout, stderr))
-    }
-
-    /// Run a named test. Validate closure returns Ok(detail) or Err(reason).
-    fn test<F>(&mut self, name: &str, args: &[&str], validate: F)
-    where
-        F: FnOnce(&str, &str) -> Result<String>,
-    {
-        let start = Instant::now();
-        let result = self.run_uffs(args);
-        let duration_ms = start.elapsed().as_millis();
-
-        let (passed, detail) = match result {
-            Ok((code, stdout, stderr)) => {
-                if code != 0 {
-                    (false, format!("Exit code {code}. stderr: {}", stderr.lines().next().unwrap_or("")))
-                } else {
-                    match validate(&stdout, &stderr) {
-                        Ok(msg) => (true, msg),
-                        Err(e) => (false, format!("{e}")),
-                    }
-                }
-            }
-            Err(e) => (false, format!("Execution failed: {e}")),
-        };
-
-        let status = if passed { "PASS".green().bold() } else { "FAIL".red().bold() };
-        let timing = format!("{duration_ms:>5}ms").dimmed();
-        eprintln!("  [{status}] {timing}  {name}: {detail}");
-
-        self.results.push(TestResult {
-            name: name.to_string(), passed, duration_ms, detail,
-        });
-    }
-
-    /// Drain results into a `PhaseResult`.
-    fn finish_phase(&mut self, label: &str, wall_ms: u128) -> PhaseResult {
-        PhaseResult {
-            label: label.to_string(),
-            results: std::mem::take(&mut self.results),
-            wall_ms,
-        }
-    }
-
-    fn phase_summary(phase: &PhaseResult) {
-        let total = phase.results.len();
-        let passed = phase.results.iter().filter(|r| r.passed).count();
-        let failed = total - passed;
-        let sum_ms: u128 = phase.results.iter().map(|r| r.duration_ms).sum();
-        let avg_ms = if total > 0 { sum_ms / total as u128 } else { 0 };
-
-        eprintln!();
-        eprintln!("  ─── {} ───", phase.label);
-        if failed == 0 {
-            eprintln!("  {} {passed}/{total} tests — wall {}ms / sum {sum_ms}ms / avg {avg_ms}ms",
-                "✅".green(), phase.wall_ms);
+/// Build the CLI string for display/reproduction.
+fn cli_string(bin: &str, args: &[String]) -> String {
+    let mut parts = vec![bin.to_string()];
+    for a in args {
+        if a.contains(' ') || a.contains('*') || a.contains('>') || a.contains('<') {
+            parts.push(format!("\"{a}\""));
         } else {
-            eprintln!("  {} {failed}/{total} FAILED — wall {}ms / sum {sum_ms}ms",
-                "❌".red(), phase.wall_ms);
-            for r in &phase.results {
-                if !r.passed {
-                    eprintln!("     ❌ {}: {}", r.name, r.detail);
+            parts.push(a.clone());
+        }
+    }
+    parts.join(" ")
+}
+
+/// Run a single test spec against the given binary.
+fn run_one_test(bin: &str, spec: &TestSpec) -> TestResult {
+    let cli = cli_string(bin, &spec.args);
+    let start = Instant::now();
+    let result = run_uffs(bin, &spec.args);
+    let duration_ms = start.elapsed().as_millis();
+
+    let (passed, detail) = match result {
+        Ok((code, stdout, stderr)) => {
+            if code != 0 {
+                (false, format!("Exit code {code}. stderr: {}", stderr.lines().next().unwrap_or("")))
+            } else {
+                match (spec.validate)(&stdout, &stderr) {
+                    Ok(msg) => (true, msg),
+                    Err(e) => (false, format!("{e}")),
                 }
             }
         }
+        Err(e) => (false, format!("Execution failed: {e}")),
+    };
+
+    TestResult { name: spec.name.clone(), cli, passed, duration_ms, detail }
+}
+
+/// Run all test specs in parallel using std::thread::scope.
+fn run_tests_parallel(bin: &str, specs: &[TestSpec]) -> (Vec<TestResult>, u128) {
+    let wall_start = Instant::now();
+    let results: Vec<TestResult> = std::thread::scope(|s| {
+        let handles: Vec<_> = specs.iter().map(|spec| {
+            s.spawn(|| run_one_test(bin, spec))
+        }).collect();
+        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
+            name: "???".into(), cli: "???".into(), passed: false, duration_ms: 0, detail: "thread panicked".into(),
+        })).collect()
+    });
+    let wall_ms = wall_start.elapsed().as_millis();
+    (results, wall_ms)
+}
+
+/// Helper to build a TestSpec from a name, args slice, and validator.
+fn spec<F>(name: &str, args: &[&str], validate: F) -> TestSpec
+where
+    F: Fn(&str, &str) -> Result<String> + Send + Sync + 'static,
+{
+    TestSpec {
+        name: name.to_string(),
+        args: args.iter().map(|s| s.to_string()).collect(),
+        validate: Box::new(validate),
     }
+}
+
+fn print_results(results: &[TestResult], wall_ms: u128) {
+    // Per-test lines (compact).
+    for r in results {
+        let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
+        let timing = format!("{:>5}ms", r.duration_ms).dimmed();
+        eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
+    }
+
+    let total = results.len();
+    let passed = results.iter().filter(|r| r.passed).count();
+    let failed = total - passed;
+    let sum_ms: u128 = results.iter().map(|r| r.duration_ms).sum();
+    let avg_ms = if total > 0 { sum_ms / total as u128 } else { 0 };
+
+    eprintln!();
+    if failed == 0 {
+        eprintln!("  {} {passed}/{total} tests — wall {wall_ms}ms / sum {sum_ms}ms / avg {avg_ms}ms",
+            "✅".green());
+    } else {
+        eprintln!("  {} {failed}/{total} FAILED — wall {wall_ms}ms / sum {sum_ms}ms",
+            "❌".red());
+        eprintln!();
+        eprintln!("  ┌─ Failed Tests (reproduce with exact CLI) ─────────────────────────┐");
+        for r in results {
+            if !r.passed {
+                eprintln!("  │");
+                eprintln!("  │  {} {}", "❌".red(), r.name);
+                eprintln!("  │  Error:  {}", r.detail);
+                eprintln!("  │  CLI:    {}", r.cli.yellow());
+            }
+        }
+        eprintln!("  │");
+        eprintln!("  └──────────────────────────────────────────────────────────────────────┘");
+    }
+}
+
+// ── Startup Timing ─────────────────────────────────────────────────────────
+
+struct StartupTiming {
+    label: String,
+    duration_ms: u128,
+    rows: usize,
+}
+
+fn measure_startup(bin: &str, label: &str) -> StartupTiming {
+    let args: Vec<String> = ["*", "--limit", "1"].iter().map(|s| s.to_string()).collect();
+    let start = Instant::now();
+    let result = run_uffs(bin, &args);
+    let duration_ms = start.elapsed().as_millis();
+    let rows = match &result {
+        Ok((_, stdout, _)) => csv_row_count(stdout),
+        Err(_) => 0,
+    };
+    StartupTiming { label: label.to_string(), duration_ms, rows }
+}
+
+fn startup_timing(bin: &str) {
+    eprintln!("┌───────────────────────────────────────────────────────────────┐");
+    eprintln!("│  Startup Timing: COLD → WARM → HOT                          │");
+    eprintln!("└───────────────────────────────────────────────────────────────┘");
+
+    // COLD: no daemon, no cache
+    kill_daemon(bin);
+    delete_cache();
+    eprintln!("  COLD (no daemon, no cache)...");
+    let cold = measure_startup(bin, "COLD");
+    eprintln!("    {} {}ms ({} rows)", "COLD".yellow().bold(), cold.duration_ms, cold.rows);
+
+    // WARM: no daemon, cache files remain
+    kill_daemon(bin);
+    eprintln!("  WARM (cache present, no daemon)...");
+    let warm = measure_startup(bin, "WARM");
+    eprintln!("    {} {}ms ({} rows)", "WARM".cyan().bold(), warm.duration_ms, warm.rows);
+
+    // HOT: daemon still running from warm
+    eprintln!("  HOT  (daemon running)...");
+    let hot = measure_startup(bin, "HOT");
+    eprintln!("    {}  {}ms ({} rows)", "HOT".green().bold(), hot.duration_ms, hot.rows);
+
+    // Summary table
+    eprintln!();
+    eprintln!("  ┌──────────┬────────────┬───────────┐");
+    eprintln!("  │ {:^8} │ {:>10} │ {:>9} │", "Phase", "Time", "Speedup");
+    eprintln!("  ├──────────┼────────────┼───────────┤");
+    for t in &[&cold, &warm, &hot] {
+        let speedup = if t.label == "COLD" {
+            "—".to_string()
+        } else {
+            let s = cold.duration_ms as f64 / t.duration_ms.max(1) as f64;
+            format!("{s:.1}x")
+        };
+        eprintln!("  │ {:^8} │ {:>7} ms │ {:>9} │", t.label, t.duration_ms, speedup);
+    }
+    eprintln!("  └──────────┴────────────┴───────────┘");
+    eprintln!();
 }
 
 // ── Cache / Daemon Helpers ──────────────────────────────────────────────────
@@ -255,15 +339,17 @@ fn delete_cache() {
 
 // ── Test Suite ───────────────────────────────────────────────────────────────
 
-fn run_test_suite(t: &mut TestRunner) {
+fn define_tests() -> Vec<TestSpec> {
+    let mut specs: Vec<TestSpec> = Vec::new();
+
     // ── 1. Warmup (also verifies daemon is alive / auto-starts) ───────
-    t.test("T00 warmup / daemon alive", &["*", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T00 warmup / daemon alive", &["*", "--limit", "10"], |stdout, _| {
         if csv_row_count(stdout) < 10 { bail!("No results — daemon may not be running"); }
         Ok("daemon warm".into())
-    });
+    }));
 
     // ── 2. --files-only ───────────────────────────────────────────────
-    t.test("T01 --files-only", &["*.txt", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T01 --files-only", &["*.txt", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -271,10 +357,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if dir == "1" { bail!("Row {i} is a directory (Directory Flag=1)"); }
         }
         Ok(format!("{} rows, all files", rows.len()))
-    });
+    }));
 
     // ── 3. --dirs-only ────────────────────────────────────────────────
-    t.test("T02 --dirs-only", &["Windows", "--dirs-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T02 --dirs-only", &["Windows", "--dirs-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -282,10 +368,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if dir != "1" { bail!("Row {i} is not a directory (Directory Flag={dir})"); }
         }
         Ok(format!("{} rows, all directories", rows.len()))
-    });
+    }));
 
     // ── 4. --hide-system ──────────────────────────────────────────────
-    t.test("T03 --hide-system", &["$*", "--limit", "20", "--hide-system"], |stdout, _| {
+    specs.push(spec("T03 --hide-system", &["$*", "--limit", "20", "--hide-system"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         // With --hide-system, no file should start with $
         for (i, row) in rows.iter().enumerate() {
@@ -293,10 +379,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if name.starts_with('$') { bail!("Row {i}: {name} starts with $ despite --hide-system"); }
         }
         Ok(format!("{} rows, no $-prefixed files", rows.len()))
-    });
+    }));
 
     // ── 5. --ext single ───────────────────────────────────────────────
-    t.test("T04 --ext rs", &["*", "--ext", "rs", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T04 --ext rs", &["*", "--ext", "rs", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -306,10 +392,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all .rs", rows.len()))
-    });
+    }));
 
     // ── 6. --ext multiple ─────────────────────────────────────────────
-    t.test("T05 --ext jpg,png,gif", &["*", "--ext", "jpg,png,gif", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T05 --ext jpg,png,gif", &["*", "--ext", "jpg,png,gif", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         let exts = ["jpg", "png", "gif"];
@@ -320,10 +406,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all image extensions", rows.len()))
-    });
+    }));
 
     // ── 7. --min-size ─────────────────────────────────────────────────
-    t.test("T06 --min-size 100MB", &["*", "--min-size", "104857600", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T06 --min-size 100MB", &["*", "--min-size", "104857600", "--files-only", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -331,10 +417,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if size < 104_857_600 { bail!("Row {i}: size={size} < 100MB"); }
         }
         Ok(format!("{} rows, all >= 100MB", rows.len()))
-    });
+    }));
 
     // ── 8. --max-size ─────────────────────────────────────────────────
-    t.test("T07 --max-size 1KB", &["*", "--max-size", "1024", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T07 --max-size 1KB", &["*", "--max-size", "1024", "--files-only", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -342,10 +428,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if size > 1024 { bail!("Row {i}: size={size} > 1KB"); }
         }
         Ok(format!("{} rows, all <= 1KB", rows.len()))
-    });
+    }));
 
     // ── 9. --min-size + --max-size combined ───────────────────────────
-    t.test("T08 --min/max-size 1MB..10MB", &["*.pdf", "--min-size", "1048576", "--max-size", "10485760", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T08 --min/max-size 1MB..10MB", &["*.pdf", "--min-size", "1048576", "--max-size", "10485760", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let size: u64 = col_val(row, &h, "Size").parse().unwrap_or(0);
@@ -354,10 +440,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all 1MB..10MB", rows.len()))
-    });
+    }));
 
     // ── 10. --sort size ascending ─────────────────────────────────────
-    t.test("T09 --sort size (asc)", &["*.exe", "--sort", "size", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T09 --sort size (asc)", &["*.exe", "--sort", "size", "--files-only", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.len() < 2 { return Ok("< 2 rows, skip sort check".into()); }
         let sizes: Vec<u64> = rows.iter().map(|r| col_val(r, &h, "Size").parse().unwrap_or(0)).collect();
@@ -365,10 +451,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if w[0] > w[1] { bail!("Not ascending: {} > {}", w[0], w[1]); }
         }
         Ok(format!("{} rows, sorted asc", rows.len()))
-    });
+    }));
 
     // ── 11. --sort size descending ────────────────────────────────────
-    t.test("T10 --sort size --sort-desc", &["*.exe", "--sort", "size", "--sort-desc", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T10 --sort size --sort-desc", &["*.exe", "--sort", "size", "--sort-desc", "--files-only", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.len() < 2 { return Ok("< 2 rows, skip sort check".into()); }
         let sizes: Vec<u64> = rows.iter().map(|r| col_val(r, &h, "Size").parse().unwrap_or(0)).collect();
@@ -376,20 +462,20 @@ fn run_test_suite(t: &mut TestRunner) {
             if w[0] < w[1] { bail!("Not descending: {} < {}", w[0], w[1]); }
         }
         Ok(format!("{} rows, sorted desc", rows.len()))
-    });
+    }));
 
     // ── 12. --sort modified ───────────────────────────────────────────
-    t.test("T11 --sort modified", &["*.log", "--sort", "modified", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T11 --sort modified", &["*.log", "--sort", "modified", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── 13. --sort multi-tier ─────────────────────────────────────────
-    t.test("T12 --sort size,name", &["*.dll", "--sort", "size,name", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T12 --sort size,name", &["*.dll", "--sort", "size,name", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── 14. --attr hidden ─────────────────────────────────────────────
-    t.test("T13 --attr hidden", &["*", "--attr", "hidden", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T13 --attr hidden", &["*", "--attr", "hidden", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -397,10 +483,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if hidden != "1" { bail!("Row {i}: Hidden={hidden}, expected 1"); }
         }
         Ok(format!("{} rows, all hidden", rows.len()))
-    });
+    }));
 
     // ── 15. --attr !hidden ────────────────────────────────────────────
-    t.test("T14 --attr !hidden", &["*", "--attr", "!hidden", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T14 --attr !hidden", &["*", "--attr", "!hidden", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -408,10 +494,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if hidden == "1" { bail!("Row {i}: Hidden=1, expected 0"); }
         }
         Ok(format!("{} rows, none hidden", rows.len()))
-    });
+    }));
 
     // ── 16. --attr compressed ─────────────────────────────────────────
-    t.test("T15 --attr compressed", &["*", "--attr", "compressed", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T15 --attr compressed", &["*", "--attr", "compressed", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         // compressed files may not exist on all systems — 0 rows is ok
         for (i, row) in rows.iter().enumerate() {
@@ -419,20 +505,20 @@ fn run_test_suite(t: &mut TestRunner) {
             if c != "1" { bail!("Row {i}: Compressed={c}, expected 1"); }
         }
         Ok(format!("{} rows, all compressed", rows.len()))
-    });
+    }));
 
     // ── 17. --exclude ─────────────────────────────────────────────────
-    t.test("T16 --exclude backup*", &["*.txt", "--exclude", "backup*", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T16 --exclude backup*", &["*.txt", "--exclude", "backup*", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let name = col_val(row, &h, "Name").to_lowercase();
             if name.starts_with("backup") { bail!("Row {i}: {name} matches exclude pattern"); }
         }
         Ok(format!("{} rows, no backup* files", rows.len()))
-    });
+    }));
 
     // ── 18. --name-only ───────────────────────────────────────────────
-    t.test("T17 --name-only", &["readme", "--name-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T17 --name-only", &["readme", "--name-only", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -440,10 +526,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if !name.contains("readme") { bail!("Row {i}: {name} does not contain 'readme'"); }
         }
         Ok(format!("{} rows, all contain 'readme'", rows.len()))
-    });
+    }));
 
     // ── 19. --case (case-sensitive) ───────────────────────────────────
-    t.test("T18 --case sensitive", &["README", "--case", "--name-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T18 --case sensitive", &["README", "--case", "--name-only", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         // All results should have exact case "README" in filename
         for (i, row) in rows.iter().enumerate() {
@@ -451,15 +537,15 @@ fn run_test_suite(t: &mut TestRunner) {
             if !name.contains("README") { bail!("Row {i}: {name} — case mismatch"); }
         }
         Ok(format!("{} rows, case-sensitive match", rows.len()))
-    });
+    }));
 
     // ── 20. --word (whole word) ───────────────────────────────────────
-    t.test("T19 --word", &["test", "--word", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T19 --word", &["test", "--word", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── 21. --format json (NDJSON — one JSON object per line) ────────
-    t.test("T20 --format json", &["*.rs", "--format", "json", "--limit", "5"], |stdout, _| {
+    specs.push(spec("T20 --format json", &["*.rs", "--format", "json", "--limit", "5"], |stdout, _| {
         let items: Vec<serde_json::Value> = stdout
             .lines()
             .filter(|l| !l.trim().is_empty())
@@ -474,62 +560,62 @@ fn run_test_suite(t: &mut TestRunner) {
             bail!("JSON item missing 'Name' field: {first}");
         }
         Ok(format!("{} NDJSON items", items.len()))
-    });
+    }));
 
     // ── 22. --format table ────────────────────────────────────────────
-    t.test("T21 --format table", &["*.rs", "--format", "table", "--limit", "5"], |stdout, _| {
+    specs.push(spec("T21 --format table", &["*.rs", "--format", "table", "--limit", "5"], |stdout, _| {
         // Table format should have alignment characters or separator lines
         let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
         if lines.is_empty() { bail!("No output"); }
         Ok(format!("{} lines of table output", lines.len()))
-    });
+    }));
 
     // ── 23. --columns selective ───────────────────────────────────────
-    t.test("T22 --columns Name,Size,Path Only", &["*.txt", "--columns", "Name,Size,Path Only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T22 --columns Name,Size,Path Only", &["*.txt", "--columns", "Name,Size,Path Only", "--limit", "10"], |stdout, _| {
         let header = stdout.lines().next().unwrap_or("");
         // Should only have the requested columns
         let col_count = header.split(',').count();
         if col_count > 5 { bail!("Too many columns ({col_count}), expected ~3"); }
         Ok(format!("{col_count} columns in output"))
-    });
+    }));
 
     // ── 24. --dirs-only + --min-descendants ───────────────────────────
-    t.test("T23 --min-descendants 100", &["*", "--dirs-only", "--min-descendants", "100", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T23 --min-descendants 100", &["*", "--dirs-only", "--min-descendants", "100", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let desc: u64 = col_val(row, &h, "Descendants").parse().unwrap_or(0);
             if desc < 100 { bail!("Row {i}: descendants={desc} < 100"); }
         }
         Ok(format!("{} dirs with 100+ descendants", rows.len()))
-    });
+    }));
 
     // ── 25. --dirs-only + --max-descendants 0 (empty dirs) ───────────
-    t.test("T24 --max-descendants 0", &["*", "--dirs-only", "--max-descendants", "0", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T24 --max-descendants 0", &["*", "--dirs-only", "--max-descendants", "0", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let desc: u64 = col_val(row, &h, "Descendants").parse().unwrap_or(999);
             if desc != 0 { bail!("Row {i}: descendants={desc}, expected 0"); }
         }
         Ok(format!("{} empty directories", rows.len()))
-    });
+    }));
 
     // ── 26. --newer 7d ────────────────────────────────────────────────
-    t.test("T25 --newer 7d", &["*.log", "--newer", "7d", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T25 --newer 7d", &["*.log", "--newer", "7d", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── 27. --older 365d ──────────────────────────────────────────────
-    t.test("T26 --older 365d", &["*.doc", "--older", "365d", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T26 --older 365d", &["*.doc", "--older", "365d", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── 28. --newer-created 30d ───────────────────────────────────────
-    t.test("T27 --newer-created 30d", &["*", "--newer-created", "30d", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T27 --newer-created 30d", &["*", "--newer-created", "30d", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── 29. --drive C ─────────────────────────────────────────────────
-    t.test("T28 --drive C", &["*.exe", "--drive", "C", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T28 --drive C", &["*.exe", "--drive", "C", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -539,10 +625,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all on C:", rows.len()))
-    });
+    }));
 
     // ── 30. --drives C,D ──────────────────────────────────────────────
-    t.test("T29 --drives C,D", &["*.exe", "--drives", "C,D", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T29 --drives C,D", &["*.exe", "--drives", "C,D", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         for (i, row) in rows.iter().enumerate() {
@@ -552,17 +638,17 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all on C: or D:", rows.len()))
-    });
+    }));
 
     // ── 31. --sep and --quotes ────────────────────────────────────────
-    t.test("T30 --sep | --quotes '", &["*.txt", "--sep", "|", "--quotes", "'", "--limit", "5"], |stdout, _| {
+    specs.push(spec("T30 --sep | --quotes '", &["*.txt", "--sep", "|", "--quotes", "'", "--limit", "5"], |stdout, _| {
         let first_line = stdout.lines().next().unwrap_or("");
         if !first_line.contains('|') { bail!("No pipe separator in header: {first_line}"); }
         Ok(format!("pipe-separated output"))
-    });
+    }));
 
     // ── 32. --out file ────────────────────────────────────────────────
-    t.test("T31 --out file", &["*.rs", "--limit", "100", "--out", "test_cli_validation_out.csv"], |_stdout, _| {
+    specs.push(spec("T31 --out file", &["*.rs", "--limit", "100", "--out", "test_cli_validation_out.csv"], |_stdout, _| {
         let path = std::path::Path::new("test_cli_validation_out.csv");
         if !path.exists() { bail!("Output file not created"); }
         let content = std::fs::read_to_string(path).unwrap_or_default();
@@ -570,27 +656,27 @@ fn run_test_suite(t: &mut TestRunner) {
         let lines = content.lines().filter(|l| !l.is_empty()).count();
         if lines < 2 { bail!("Output file has {lines} lines, expected at least 2"); }
         Ok(format!("{lines} lines written to file"))
-    });
+    }));
 
     // ── 33. --benchmark ───────────────────────────────────────────────
-    t.test("T32 --benchmark", &["*.rs", "--benchmark"], |stdout, _| {
+    specs.push(spec("T32 --benchmark", &["*.rs", "--benchmark"], |stdout, _| {
         // Benchmark mode should produce no CSV output (or minimal output)
         // but should exit successfully
         Ok(format!("{} bytes stdout (benchmark mode)", stdout.len()))
-    });
+    }));
 
     // ── 34. Regex pattern ─────────────────────────────────────────────
-    t.test("T33 regex >.*\\.config$", &[">.*\\.config$", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T33 regex >.*\\.config$", &[">.*\\.config$", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let name = col_val(row, &h, "Name").to_lowercase();
             if !name.ends_with(".config") { bail!("Row {i}: {name} doesn't end with .config"); }
         }
         Ok(format!("{} rows, all .config files", rows.len()))
-    });
+    }));
 
     // ── 35. Combined stress test ──────────────────────────────────────
-    t.test("T34 combined stress", &[
+    specs.push(spec("T34 combined stress", &[
         "*.pdf", "--files-only", "--min-size", "1048576", "--sort", "size",
         "--sort-desc", "--attr", "!hidden", "--newer", "365d", "--limit", "10",
         "--format", "csv", "--columns", "Name,Size,Path Only",
@@ -609,7 +695,7 @@ fn run_test_suite(t: &mut TestRunner) {
             if size < 1_048_576 { bail!("Row {i}: size={size} < 1MB"); }
         }
         Ok(format!("{} rows, all constraints satisfied", rows.len()))
-    });
+    }));
 
     // ═══ EXTENDED TESTS (beyond original 34) ════════════════════════
     // Tests T35+ validate the unified search infrastructure built during
@@ -624,39 +710,39 @@ fn run_test_suite(t: &mut TestRunner) {
     //  - Combined stress tests
 
     // ── T35. --limit 0 (unlimited) ───────────────────────────────────
-    t.test("T35 --limit 0 (unlimited)", &["*.dll", "--limit", "0", "--drive", "C", "--files-only"], |stdout, _| {
+    specs.push(spec("T35 --limit 0 (unlimited)", &["*.dll", "--limit", "0", "--drive", "C", "--files-only"], |stdout, _| {
         let count = csv_row_count(stdout);
         if count < 100 { bail!("Expected many DLLs, got {count}"); }
         Ok(format!("{count} rows (unlimited)"))
-    });
+    }));
 
     // ── T36. --older-created ─────────────────────────────────────────
-    t.test("T36 --older-created 365d", &["*", "--older-created", "365d", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T36 --older-created 365d", &["*", "--older-created", "365d", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T37. --attr system ───────────────────────────────────────────
-    t.test("T37 --attr system", &["*", "--attr", "system", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T37 --attr system", &["*", "--attr", "system", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let sys = col_val(row, &h, "System");
             if sys != "1" { bail!("Row {i}: System={sys}, expected 1"); }
         }
         Ok(format!("{} rows, all system files", rows.len()))
-    });
+    }));
 
     // ── T38. --attr readonly ─────────────────────────────────────────
-    t.test("T38 --attr readonly", &["*", "--attr", "readonly", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T38 --attr readonly", &["*", "--attr", "readonly", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let ro = col_val(row, &h, "Read-only");
             if ro != "1" { bail!("Row {i}: Read-only={ro}, expected 1"); }
         }
         Ok(format!("{} rows, all readonly", rows.len()))
-    });
+    }));
 
     // ── T39. --attr combined: system,!hidden ─────────────────────────
-    t.test("T39 --attr system,!hidden", &["*", "--attr", "system,!hidden", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T39 --attr system,!hidden", &["*", "--attr", "system,!hidden", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let sys = col_val(row, &h, "System");
@@ -665,17 +751,17 @@ fn run_test_suite(t: &mut TestRunner) {
             if hid == "1" { bail!("Row {i}: Hidden=1, expected 0"); }
         }
         Ok(format!("{} rows, system but not hidden", rows.len()))
-    });
+    }));
 
     // ── T40. Empty result set (no crash) ─────────────────────────────
-    t.test("T40 no results (graceful)", &["xyzzy_nonexistent_file_pattern_12345", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T40 no results (graceful)", &["xyzzy_nonexistent_file_pattern_12345", "--limit", "10"], |stdout, _| {
         let count = csv_row_count(stdout);
         if count != 0 { bail!("Expected 0 rows, got {count}"); }
         Ok("0 rows, graceful empty result".into())
-    });
+    }));
 
     // ── T41. --header false ──────────────────────────────────────────
-    t.test("T41 --header false", &["*.exe", "--header", "false", "--limit", "5", "--drive", "C"], |stdout, _| {
+    specs.push(spec("T41 --header false", &["*.exe", "--header", "false", "--limit", "5", "--drive", "C"], |stdout, _| {
         let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
         if let Some(first) = lines.first() {
             if first.starts_with("\"Path\"") || first.starts_with("Path,") {
@@ -683,10 +769,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} lines, no header", lines.len()))
-    });
+    }));
 
     // ── T42. --smart-case ────────────────────────────────────────────
-    t.test("T42 --smart-case (lowercase = insensitive)", &["readme", "--smart-case", "--name-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T42 --smart-case (lowercase = insensitive)", &["readme", "--smart-case", "--name-only", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.is_empty() { bail!("No rows"); }
         let has_mixed_case = rows.iter().any(|r| {
@@ -694,12 +780,12 @@ fn run_test_suite(t: &mut TestRunner) {
             name != name.to_lowercase()
         });
         Ok(format!("{} rows, mixed case={has_mixed_case}", rows.len()))
-    });
+    }));
 
     // ── T43. --newer-accessed ────────────────────────────────────────
-    t.test("T43 --newer-accessed 7d", &["*", "--newer-accessed", "7d", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T43 --newer-accessed 7d", &["*", "--newer-accessed", "7d", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // TIME GRAMMAR TESTS — Named Time Ranges
@@ -708,78 +794,78 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T44. --newer today ───────────────────────────────────────────
-    t.test("T44 --newer today", &["*", "--newer", "today", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T44 --newer today", &["*", "--newer", "today", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T45. --newer yesterday ───────────────────────────────────────
-    t.test("T45 --newer yesterday", &["*", "--newer", "yesterday", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T45 --newer yesterday", &["*", "--newer", "yesterday", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T46. --newer this_week ───────────────────────────────────────
-    t.test("T46 --newer this_week", &["*", "--newer", "this_week", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T46 --newer this_week", &["*", "--newer", "this_week", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T47. --newer last_7d ─────────────────────────────────────────
-    t.test("T47 --newer last_7d", &["*", "--newer", "last_7d", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T47 --newer last_7d", &["*", "--newer", "last_7d", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T48. --newer last_30d ────────────────────────────────────────
-    t.test("T48 --newer last_30d", &["*", "--newer", "last_30d", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T48 --newer last_30d", &["*", "--newer", "last_30d", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T49. --newer this_month ──────────────────────────────────────
-    t.test("T49 --newer this_month", &["*", "--newer", "this_month", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T49 --newer this_month", &["*", "--newer", "this_month", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T50. --newer this_year / ytd ─────────────────────────────────
-    t.test("T50 --newer this_year", &["*", "--newer", "this_year", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T50 --newer this_year", &["*", "--newer", "this_year", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T51. --older last_year ───────────────────────────────────────
-    t.test("T51 --older last_year", &["*", "--older", "last_year", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T51 --older last_year", &["*", "--older", "last_year", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T52. --newer last_90d ────────────────────────────────────────
-    t.test("T52 --newer last_90d", &["*", "--newer", "last_90d", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T52 --newer last_90d", &["*", "--newer", "last_90d", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T53. --newer last_365d ───────────────────────────────────────
-    t.test("T53 --newer last_365d", &["*", "--newer", "last_365d", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T53 --newer last_365d", &["*", "--newer", "last_365d", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T54. --newer-created today ───────────────────────────────────
-    t.test("T54 --newer-created today", &["*", "--newer-created", "today", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T54 --newer-created today", &["*", "--newer-created", "today", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T55. --newer-accessed this_week ──────────────────────────────
-    t.test("T55 --newer-accessed this_week", &["*", "--newer-accessed", "this_week", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T55 --newer-accessed this_week", &["*", "--newer-accessed", "this_week", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T56. Time grammar: newer last_week + older this_week ─────────
     // Files modified last week but NOT this week (bounded range).
-    t.test("T56 bounded time range (last_week)", &[
+    specs.push(spec("T56 bounded time range (last_week)", &[
         "*", "--newer", "last_week", "--older", "this_week",
         "--files-only", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T57. ISO date bound ──────────────────────────────────────────
-    t.test("T57 --newer 2025-01-01", &["*", "--newer", "2025-01-01", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T57 --newer 2025-01-01", &["*", "--newer", "2025-01-01", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // SORT TESTS — All Sortable FieldId Variants
@@ -788,7 +874,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T58. --sort name ─────────────────────────────────────────────
-    t.test("T58 --sort name", &["*.txt", "--sort", "name", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T58 --sort name", &["*.txt", "--sort", "name", "--limit", "10"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.len() >= 2 {
             let names: Vec<String> = rows.iter().map(|r| col_val(r, &h, "Name").to_lowercase()).collect();
@@ -797,40 +883,40 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, sorted by name asc", rows.len()))
-    });
+    }));
 
     // ── T59. --sort path ─────────────────────────────────────────────
-    t.test("T59 --sort path", &["*.txt", "--sort", "path", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T59 --sort path", &["*.txt", "--sort", "path", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── T60. --sort created ──────────────────────────────────────────
-    t.test("T60 --sort created", &["*.exe", "--sort", "created", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T60 --sort created", &["*.exe", "--sort", "created", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── T61. --sort accessed ─────────────────────────────────────────
-    t.test("T61 --sort accessed", &["*.exe", "--sort", "accessed", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T61 --sort accessed", &["*.exe", "--sort", "accessed", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── T62. --sort extension ────────────────────────────────────────
-    t.test("T62 --sort extension", &["*.*", "--sort", "extension", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T62 --sort extension", &["*.*", "--sort", "extension", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── T63. --sort drive ────────────────────────────────────────────
-    t.test("T63 --sort drive", &["*.exe", "--sort", "drive", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T63 --sort drive", &["*.exe", "--sort", "drive", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── T64. --sort allocated (SizeOnDisk) ───────────────────────────
-    t.test("T64 --sort allocated", &["*.exe", "--sort", "allocated", "--files-only", "--limit", "10", "--sort-desc"], |stdout, _| {
+    specs.push(spec("T64 --sort allocated", &["*.exe", "--sort", "allocated", "--files-only", "--limit", "10", "--sort-desc"], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── T65. --sort descendants ──────────────────────────────────────
-    t.test("T65 --sort descendants --sort-desc", &["*", "--dirs-only", "--sort", "descendants", "--sort-desc", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T65 --sort descendants --sort-desc", &["*", "--dirs-only", "--sort", "descendants", "--sort-desc", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.len() >= 2 {
             let vals: Vec<u64> = rows.iter().map(|r| col_val(r, &h, "Descendants").parse().unwrap_or(0)).collect();
@@ -839,10 +925,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, sorted desc by descendants", rows.len()))
-    });
+    }));
 
     // ── T66. Multi-sort: size desc, then name asc ────────────────────
-    t.test("T66 multi-sort size,-name", &["*.dll", "--sort", "size,-name", "--files-only", "--limit", "20"], |stdout, _| {
+    specs.push(spec("T66 multi-sort size,-name", &["*.dll", "--sort", "size,-name", "--files-only", "--limit", "20"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         if rows.len() >= 2 {
             // Just verify no crash and basic ordering.
@@ -852,12 +938,12 @@ fn run_test_suite(t: &mut TestRunner) {
             let _ = sizes;
         }
         Ok(format!("{} rows, multi-sort applied", rows.len()))
-    });
+    }));
 
     // ── T67. Multi-sort: modified desc, name asc ─────────────────────
-    t.test("T67 multi-sort -modified,name", &["*.log", "--sort", "-modified,name", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T67 multi-sort -modified,name", &["*.log", "--sort", "-modified,name", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // DERIVED FIELD SORT TESTS — Tree metrics, bulkiness, lengths
@@ -866,7 +952,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T67a. --sort treesize (largest subtrees first) ───────────────
-    t.test("T67a --sort treesize", &[
+    specs.push(spec("T67a --sort treesize", &[
         "*", "--dirs-only", "--sort", "treesize", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -877,10 +963,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, sorted by treesize desc", rows.len()))
-    });
+    }));
 
     // ── T67b. --sort treeallocated ───────────────────────────────────
-    t.test("T67b --sort treeallocated", &[
+    specs.push(spec("T67b --sort treeallocated", &[
         "*", "--dirs-only", "--sort", "treeallocated", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -891,17 +977,17 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, sorted by treeallocated desc", rows.len()))
-    });
+    }));
 
     // ── T67c. --sort bulkiness ───────────────────────────────────────
-    t.test("T67c --sort bulkiness", &[
+    specs.push(spec("T67c --sort bulkiness", &[
         "*", "--files-only", "--min-size", "1024", "--sort", "bulkiness", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── T67d. --sort namelength (longest names first) ────────────────
-    t.test("T67d --sort namelength", &[
+    specs.push(spec("T67d --sort namelength", &[
         "*", "--files-only", "--sort", "namelength", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -912,49 +998,49 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, sorted by name length desc", rows.len()))
-    });
+    }));
 
     // ── T67e. --sort pathlength (longest paths first) ────────────────
-    t.test("T67e --sort pathlength", &[
+    specs.push(spec("T67e --sort pathlength", &[
         "*", "--files-only", "--sort", "pathlength", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── T67f. --sort path_only ───────────────────────────────────────
-    t.test("T67f --sort path_only", &[
+    specs.push(spec("T67f --sort path_only", &[
         "*.exe", "--sort", "path_only", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 1, 10)
-    });
+    }));
 
     // ── T67g. --sort type (semantic category) ────────────────────────
-    t.test("T67g --sort type", &[
+    specs.push(spec("T67g --sort type", &[
         "*", "--files-only", "--sort", "type", "--limit", "20"
     ], |stdout, _| {
         assert_rows(stdout, 1, 20)
-    });
+    }));
 
     // ── T67h. multi-sort: treesize desc, name asc ────────────────────
-    t.test("T67h multi-sort treesize,name", &[
+    specs.push(spec("T67h multi-sort treesize,name", &[
         "*", "--dirs-only", "--sort", "treesize,name", "--limit", "20", "--columns", "all"
     ], |stdout, _| {
         assert_rows(stdout, 1, 20)
-    });
+    }));
 
     // ── T67i. multi-sort: type asc, size desc ────────────────────────
-    t.test("T67i multi-sort type,-size", &[
+    specs.push(spec("T67i multi-sort type,-size", &[
         "*", "--files-only", "--sort", "type,-size", "--limit", "20"
     ], |stdout, _| {
         assert_rows(stdout, 1, 20)
-    });
+    }));
 
     // ── T67j. multi-sort: hidden desc, bulkiness desc ────────────────
-    t.test("T67j multi-sort hidden,bulkiness", &[
+    specs.push(spec("T67j multi-sort hidden,bulkiness", &[
         "*", "--files-only", "--min-size", "1024", "--sort", "hidden,bulkiness", "--limit", "20"
     ], |stdout, _| {
         assert_rows(stdout, 1, 20)
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // BOOL ATTRIBUTE MATRIX
@@ -964,67 +1050,67 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T68. --attr archive ──────────────────────────────────────────
-    t.test("T68 --attr archive", &["*", "--attr", "archive", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T68 --attr archive", &["*", "--attr", "archive", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let v = col_val(row, &h, "Archive");
             if v != "1" { bail!("Row {i}: Archive={v}"); }
         }
         Ok(format!("{} rows, all have archive attr", rows.len()))
-    });
+    }));
 
     // ── T69. --attr sparse (may be empty) ────────────────────────────
-    t.test("T69 --attr sparse", &["*", "--attr", "sparse", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T69 --attr sparse", &["*", "--attr", "sparse", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let v = col_val(row, &h, "Sparse");
             if v != "1" { bail!("Row {i}: Sparse={v}"); }
         }
         Ok(format!("{} rows with sparse attr", rows.len()))
-    });
+    }));
 
     // ── T70. --attr reparse (junctions/symlinks) ─────────────────────
-    t.test("T70 --attr reparse", &["*", "--attr", "reparse", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T70 --attr reparse", &["*", "--attr", "reparse", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let v = col_val(row, &h, "Reparse");
             if v != "1" { bail!("Row {i}: Reparse={v}"); }
         }
         Ok(format!("{} rows with reparse attr", rows.len()))
-    });
+    }));
 
     // ── T71. --attr offline (may be empty) ───────────────────────────
-    t.test("T71 --attr offline", &["*", "--attr", "offline", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T71 --attr offline", &["*", "--attr", "offline", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let v = col_val(row, &h, "Offline");
             if v != "1" { bail!("Row {i}: Offline={v}"); }
         }
         Ok(format!("{} rows with offline attr", rows.len()))
-    });
+    }));
 
     // ── T72. --attr encrypted (may be empty) ─────────────────────────
-    t.test("T72 --attr encrypted", &["*", "--attr", "encrypted", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T72 --attr encrypted", &["*", "--attr", "encrypted", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let v = col_val(row, &h, "Encrypted");
             if v != "1" { bail!("Row {i}: Encrypted={v}"); }
         }
         Ok(format!("{} rows with encrypted attr", rows.len()))
-    });
+    }));
 
     // ── T73. --attr !system (exclude system) ─────────────────────────
-    t.test("T73 --attr !system", &["*", "--attr", "!system", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T73 --attr !system", &["*", "--attr", "!system", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let v = col_val(row, &h, "System");
             if v == "1" { bail!("Row {i}: System=1 despite !system"); }
         }
         Ok(format!("{} rows, no system files", rows.len()))
-    });
+    }));
 
     // ── T74. --attr hidden,system (combined require) ─────────────────
-    t.test("T74 --attr hidden,system", &["*", "--attr", "hidden,system", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
+    specs.push(spec("T74 --attr hidden,system", &["*", "--attr", "hidden,system", "--files-only", "--limit", "10", "--columns", "all"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         for (i, row) in rows.iter().enumerate() {
             let hid = col_val(row, &h, "Hidden");
@@ -1033,7 +1119,7 @@ fn run_test_suite(t: &mut TestRunner) {
             if sys != "1" { bail!("Row {i}: System={sys}"); }
         }
         Ok(format!("{} rows, all hidden+system", rows.len()))
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // COMBINED / STRESS TESTS
@@ -1043,7 +1129,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T75. Size range + time range + extension ─────────────────────
-    t.test("T75 size+time+ext combined", &[
+    specs.push(spec("T75 size+time+ext combined", &[
         "*", "--ext", "exe,dll", "--min-size", "1048576", "--newer", "last_365d",
         "--files-only", "--sort", "size", "--sort-desc", "--limit", "10"
     ], |stdout, _| {
@@ -1063,10 +1149,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all constraints met", rows.len()))
-    });
+    }));
 
     // ── T76. Dirs + descendants range + sort ─────────────────────────
-    t.test("T76 dirs + desc range + sort", &[
+    specs.push(spec("T76 dirs + desc range + sort", &[
         "*", "--dirs-only", "--min-descendants", "10", "--max-descendants", "1000",
         "--sort", "descendants", "--sort-desc", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
@@ -1082,10 +1168,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, desc 10..1000 sorted", rows.len()))
-    });
+    }));
 
     // ── T77. Hidden files with recent modification ───────────────────
-    t.test("T77 hidden + --newer last_30d", &[
+    specs.push(spec("T77 hidden + --newer last_30d", &[
         "*", "--attr", "hidden", "--newer", "last_30d",
         "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
@@ -1095,10 +1181,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if hid != "1" { bail!("Row {i}: Hidden={hid}"); }
         }
         Ok(format!("{} hidden files from last 30 days", rows.len()))
-    });
+    }));
 
     // ── T78. Exclude + extension + size ──────────────────────────────
-    t.test("T78 exclude + ext + size", &[
+    specs.push(spec("T78 exclude + ext + size", &[
         "*.log", "--exclude", "debug*", "--max-size", "1048576",
         "--files-only", "--limit", "10"
     ], |stdout, _| {
@@ -1110,10 +1196,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if size > 1_048_576 { bail!("Row {i}: size={size} > 1MB"); }
         }
         Ok(format!("{} rows, all constraints met", rows.len()))
-    });
+    }));
 
     // ── T79. --columns selective + --format json ─────────────────────
-    t.test("T79 projection + json format", &[
+    specs.push(spec("T79 projection + json format", &[
         "*.rs", "--columns", "Name,Size,Modified", "--format", "json", "--limit", "5"
     ], |stdout, _| {
         let items: Vec<serde_json::Value> = stdout
@@ -1129,33 +1215,33 @@ fn run_test_suite(t: &mut TestRunner) {
             bail!("Missing Name in projected JSON");
         }
         Ok(format!("{} projected JSON items", items.len()))
-    });
+    }));
 
     // ── T80. --columns all (wide output, no crash) ───────────────────
-    t.test("T80 --columns all (wide)", &["*.exe", "--columns", "all", "--limit", "5", "--drive", "C"], |stdout, _| {
+    specs.push(spec("T80 --columns all (wide)", &["*.exe", "--columns", "all", "--limit", "5", "--drive", "C"], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
         // "all" should produce many columns (>= 20).
         if h.len() < 15 { bail!("Expected >= 15 columns, got {}", h.len()); }
         Ok(format!("{} cols × {} rows", h.len(), rows.len()))
-    });
+    }));
 
     // ── T81. Time created range: this_year ───────────────────────────
-    t.test("T81 --newer-created this_year", &["*", "--newer-created", "this_year", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T81 --newer-created this_year", &["*", "--newer-created", "this_year", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T82. Time accessed range: last_week ──────────────────────────
-    t.test("T82 --newer-accessed last_week", &["*", "--newer-accessed", "last_week", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T82 --newer-accessed last_week", &["*", "--newer-accessed", "last_week", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T83. Multi-sort 3 fields: drive, extension, size ─────────────
-    t.test("T83 multi-sort drive,ext,-size", &["*.*", "--sort", "drive,extension,-size", "--files-only", "--limit", "20"], |stdout, _| {
+    specs.push(spec("T83 multi-sort drive,ext,-size", &["*.*", "--sort", "drive,extension,-size", "--files-only", "--limit", "20"], |stdout, _| {
         assert_rows(stdout, 1, 20)
-    });
+    }));
 
     // ── T84. Large file search with all constraints ──────────────────
-    t.test("T84 mega combined", &[
+    specs.push(spec("T84 mega combined", &[
         "*.exe", "--files-only", "--min-size", "10485760", "--max-size", "1073741824",
         "--attr", "!hidden,!system", "--newer", "last_365d", "--sort", "-size",
         "--drive", "C", "--limit", "10", "--columns", "Name,Size,Modified,Path Only"
@@ -1168,24 +1254,24 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all constraints satisfied", rows.len()))
-    });
+    }));
 
     // ── T85. --format table + --columns selective ────────────────────
-    t.test("T85 table format + projection", &[
+    specs.push(spec("T85 table format + projection", &[
         "*.dll", "--format", "table", "--columns", "Name,Size", "--limit", "5", "--drive", "C"
     ], |stdout, _| {
         let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
         if lines.is_empty() { bail!("No table output"); }
         Ok(format!("{} table lines", lines.len()))
-    });
+    }));
 
     // ── T86. --older-accessed ─────────────────────────────────────────
-    t.test("T86 --older-accessed 365d", &["*", "--older-accessed", "365d", "--files-only", "--limit", "10"], |stdout, _| {
+    specs.push(spec("T86 --older-accessed 365d", &["*", "--older-accessed", "365d", "--files-only", "--limit", "10"], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T87. Extension filter with sort by modified ──────────────────
-    t.test("T87 ext + sort modified", &[
+    specs.push(spec("T87 ext + sort modified", &[
         "*", "--ext", "txt,log,md", "--sort", "-modified", "--files-only", "--limit", "10"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1196,10 +1282,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, ext filtered + sorted", rows.len()))
-    });
+    }));
 
     // ── T88. Name-only with hide-system and time bound ───────────────
-    t.test("T88 name-only + hide-system + newer", &[
+    specs.push(spec("T88 name-only + hide-system + newer", &[
         "config", "--name-only", "--hide-system", "--newer", "last_90d",
         "--files-only", "--limit", "10"
     ], |stdout, _| {
@@ -1210,7 +1296,7 @@ fn run_test_suite(t: &mut TestRunner) {
             if name.starts_with('$') { bail!("Row {i}: {name} starts with $ despite hide-system"); }
         }
         Ok(format!("{} rows", rows.len()))
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // SEARCH MODE TESTS — Scope prefixes, pattern sugar, path filter
@@ -1219,7 +1305,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T88a. path: prefix (match against full path) ─────────────────
-    t.test("T88a path: prefix", &[
+    specs.push(spec("T88a path: prefix", &[
         "path:*windows*", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1233,10 +1319,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all paths contain 'windows'", rows.len()))
-    });
+    }));
 
     // ── T88b. dir: prefix (directories only) ─────────────────────────
-    t.test("T88b dir: prefix", &[
+    specs.push(spec("T88b dir: prefix", &[
         "dir:*system*", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1248,10 +1334,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all directories", rows.len()))
-    });
+    }));
 
     // ── T88c. file: prefix (files only) ──────────────────────────────
-    t.test("T88c file: prefix", &[
+    specs.push(spec("T88c file: prefix", &[
         "file:*.dll", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1267,10 +1353,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all .dll files", rows.len()))
-    });
+    }));
 
     // ── T88d. --begins-with ──────────────────────────────────────────
-    t.test("T88d --begins-with", &[
+    specs.push(spec("T88d --begins-with", &[
         "--begins-with", "note", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1281,10 +1367,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all begin with 'note'", rows.len()))
-    });
+    }));
 
     // ── T88e. --ends-with ────────────────────────────────────────────
-    t.test("T88e --ends-with", &[
+    specs.push(spec("T88e --ends-with", &[
         "--ends-with", ".log", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1295,10 +1381,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all end with '.log'", rows.len()))
-    });
+    }));
 
     // ── T88f. --contains ─────────────────────────────────────────────
-    t.test("T88f --contains", &[
+    specs.push(spec("T88f --contains", &[
         "--contains", "setup", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1309,10 +1395,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all contain 'setup'", rows.len()))
-    });
+    }));
 
     // ── T88g. --not-contains (exclusion) ─────────────────────────────
-    t.test("T88g --not-contains", &[
+    specs.push(spec("T88g --not-contains", &[
         "*.log", "--not-contains", "debug", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1326,10 +1412,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, no 'debug' in names", rows.len()))
-    });
+    }));
 
     // ── T88h. --in-path + filename pattern ───────────────────────────
-    t.test("T88h --in-path + pattern", &[
+    specs.push(spec("T88h --in-path + pattern", &[
         "*.exe", "--in-path", "*windows*", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1345,11 +1431,11 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, .exe files in *windows*", rows.len()))
-    });
+    }));
 
     // ── T88i. path: prefix vs --in-path distinction ──────────────────
     // path: matches filename too; --in-path matches directory only.
-    t.test("T88i path: vs --in-path", &[
+    specs.push(spec("T88i path: vs --in-path", &[
         "path:*notepad*", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1363,10 +1449,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, path: matched", rows.len()))
-    });
+    }));
 
     // ── T88j. --contains + --not-contains combined ───────────────────
-    t.test("T88j --contains + --not-contains", &[
+    specs.push(spec("T88j --contains + --not-contains", &[
         "--contains", "update", "--not-contains", "old",
         "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
@@ -1381,10 +1467,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, contains 'update' but not 'old'", rows.len()))
-    });
+    }));
 
     // ── T88k. dir: prefix + sort by treesize ─────────────────────────
-    t.test("T88k dir: prefix + sort treesize", &[
+    specs.push(spec("T88k dir: prefix + sort treesize", &[
         "dir:*program*", "--sort", "treesize", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1401,10 +1487,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} dirs sorted by treesize", rows.len()))
-    });
+    }));
 
     // ── T88l. --begins-with + --ext combined ─────────────────────────
-    t.test("T88l --begins-with + --ext", &[
+    specs.push(spec("T88l --begins-with + --ext", &[
         "--begins-with", "win", "--ext", "exe,dll", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1418,7 +1504,7 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, begins-with + ext", rows.len()))
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // TYPE FILTER TESTS — Semantic file categorization
@@ -1426,7 +1512,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T89. --type code ─────────────────────────────────────────────
-    t.test("T89 --type code", &[
+    specs.push(spec("T89 --type code", &[
         "*", "--type", "code", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1439,17 +1525,17 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all code files", rows.len()))
-    });
+    }));
 
     // ── T90. --type document ─────────────────────────────────────────
-    t.test("T90 --type document", &[
+    specs.push(spec("T90 --type document", &[
         "*", "--type", "document", "--files-only", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T91. --type executable ───────────────────────────────────────
-    t.test("T91 --type executable", &[
+    specs.push(spec("T91 --type executable", &[
         "*", "--type", "executable", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1462,17 +1548,17 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all executables", rows.len()))
-    });
+    }));
 
     // ── T92. --type picture ──────────────────────────────────────────
-    t.test("T92 --type picture", &[
+    specs.push(spec("T92 --type picture", &[
         "*", "--type", "picture", "--files-only", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T93. --type system ───────────────────────────────────────────
-    t.test("T93 --type system", &[
+    specs.push(spec("T93 --type system", &[
         "*", "--type", "system", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1484,10 +1570,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all system type", rows.len()))
-    });
+    }));
 
     // ── T94. --type combined with sort ───────────────────────────────
-    t.test("T94 --type code + sort size", &[
+    specs.push(spec("T94 --type code + sort size", &[
         "*", "--type", "code", "--files-only", "--sort", "-size", "--limit", "10"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1498,7 +1584,7 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} code files sorted by size desc", rows.len()))
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // IN-PATH FILTER TESTS — Directory path glob matching
@@ -1506,7 +1592,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T95. --in-path windows ───────────────────────────────────────
-    t.test("T95 --in-path *windows*", &[
+    specs.push(spec("T95 --in-path *windows*", &[
         "*.dll", "--in-path", "*windows*", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1518,10 +1604,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all in *windows*", rows.len()))
-    });
+    }));
 
     // ── T96. --in-path system32 ──────────────────────────────────────
-    t.test("T96 --in-path *system32*", &[
+    specs.push(spec("T96 --in-path *system32*", &[
         "*.dll", "--in-path", "*system32*", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1532,10 +1618,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all in *system32*", rows.len()))
-    });
+    }));
 
     // ── T97. --in-path combined with --exclude ───────────────────────
-    t.test("T97 --in-path + --exclude", &[
+    specs.push(spec("T97 --in-path + --exclude", &[
         "*.exe", "--in-path", "*windows*", "--exclude", "setup*",
         "--files-only", "--limit", "10"
     ], |stdout, _| {
@@ -1547,7 +1633,7 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, in-path + exclude", rows.len()))
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // BULKINESS FILTER TESTS — Waste ratio filtering
@@ -1555,7 +1641,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T98. --min-bulkiness 200 (files using ≥2× their size) ────────
-    t.test("T98 --min-bulkiness 200", &[
+    specs.push(spec("T98 --min-bulkiness 200", &[
         "*", "--min-bulkiness", "200", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         // We can't directly check bulkiness from CSV columns (it's derived),
@@ -1570,10 +1656,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all bulkiness >= 200%", rows.len()))
-    });
+    }));
 
     // ── T99. --max-bulkiness 100 (perfectly packed) ──────────────────
-    t.test("T99 --max-bulkiness 100", &[
+    specs.push(spec("T99 --max-bulkiness 100", &[
         "*", "--max-bulkiness", "100", "--files-only", "--min-size", "1024",
         "--limit", "10", "--columns", "all"
     ], |stdout, _| {
@@ -1587,10 +1673,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all bulkiness <= 100%", rows.len()))
-    });
+    }));
 
     // ── T100. --min-bulkiness + --min-size combined ──────────────────
-    t.test("T100 bulkiness + size combined", &[
+    specs.push(spec("T100 bulkiness + size combined", &[
         "*", "--min-bulkiness", "500", "--min-size", "1048576",
         "--files-only", "--limit", "10"
     ], |stdout, _| {
@@ -1600,7 +1686,7 @@ fn run_test_suite(t: &mut TestRunner) {
             if size < 1_048_576 { bail!("Row {i}: size={size} < 1MB"); }
         }
         Ok(format!("{} rows, bulky large files", rows.len()))
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // TREE METRICS TESTS — Subtree size filters for directories
@@ -1608,7 +1694,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T101. --min-treesize 100MB (large directory subtrees) ────────
-    t.test("T101 --min-treesize 100MB", &[
+    specs.push(spec("T101 --min-treesize 100MB", &[
         "*", "--dirs-only", "--min-treesize", "104857600", "--limit", "10",
         "--sort", "-size", "--columns", "all"
     ], |stdout, _| {
@@ -1619,10 +1705,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if ts < 104_857_600 { bail!("Row {i}: Tree Size={ts} < 100MB"); }
         }
         Ok(format!("{} dirs with treesize >= 100MB", rows.len()))
-    });
+    }));
 
     // ── T102. --max-treesize 1MB (small directory subtrees) ──────────
-    t.test("T102 --max-treesize 1MB", &[
+    specs.push(spec("T102 --max-treesize 1MB", &[
         "*", "--dirs-only", "--max-treesize", "1048576", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1631,10 +1717,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if ts > 1_048_576 { bail!("Row {i}: Tree Size={ts} > 1MB"); }
         }
         Ok(format!("{} dirs with treesize <= 1MB", rows.len()))
-    });
+    }));
 
     // ── T103. --min-tree-allocated 100MB ─────────────────────────────
-    t.test("T103 --min-tree-allocated 100MB", &[
+    specs.push(spec("T103 --min-tree-allocated 100MB", &[
         "*", "--dirs-only", "--min-tree-allocated", "104857600", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1643,7 +1729,7 @@ fn run_test_suite(t: &mut TestRunner) {
             if ta < 104_857_600 { bail!("Row {i}: Tree Allocated={ta} < 100MB"); }
         }
         Ok(format!("{} dirs with tree-allocated >= 100MB", rows.len()))
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // NAME / PATH LENGTH TESTS
@@ -1651,7 +1737,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T104. --min-name-length 50 (long filenames) ──────────────────
-    t.test("T104 --min-name-length 50", &[
+    specs.push(spec("T104 --min-name-length 50", &[
         "*", "--min-name-length", "50", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1662,10 +1748,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all names >= 50 chars", rows.len()))
-    });
+    }));
 
     // ── T105. --max-name-length 8 (short filenames) ──────────────────
-    t.test("T105 --max-name-length 8", &[
+    specs.push(spec("T105 --max-name-length 8", &[
         "*", "--max-name-length", "8", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1676,10 +1762,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all names <= 8 chars", rows.len()))
-    });
+    }));
 
     // ── T106. --min-path-length 200 (deep paths) ─────────────────────
-    t.test("T106 --min-path-length 200", &[
+    specs.push(spec("T106 --min-path-length 200", &[
         "*", "--min-path-length", "200", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1692,14 +1778,14 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, all paths >= 200 chars", rows.len()))
-    });
+    }));
 
     // ── T107. --max-path-length 30 (short paths) ─────────────────────
-    t.test("T107 --max-path-length 30", &[
+    specs.push(spec("T107 --max-path-length 30", &[
         "*", "--max-path-length", "30", "--files-only", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // SIZE ON DISK TESTS — Allocated size filters
@@ -1707,7 +1793,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T108. --min-size-on-disk 100MB ───────────────────────────────
-    t.test("T108 --min-size-on-disk 100MB", &[
+    specs.push(spec("T108 --min-size-on-disk 100MB", &[
         "*", "--min-size-on-disk", "104857600", "--files-only", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1717,10 +1803,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if alloc < 104_857_600 { bail!("Row {i}: Size on Disk={alloc} < 100MB"); }
         }
         Ok(format!("{} rows, all allocated >= 100MB", rows.len()))
-    });
+    }));
 
     // ── T109. --max-size-on-disk 4096 ────────────────────────────────
-    t.test("T109 --max-size-on-disk 4096", &[
+    specs.push(spec("T109 --max-size-on-disk 4096", &[
         "*", "--max-size-on-disk", "4096", "--files-only", "--min-size", "1",
         "--limit", "10", "--columns", "all"
     ], |stdout, _| {
@@ -1730,7 +1816,7 @@ fn run_test_suite(t: &mut TestRunner) {
             if alloc > 4096 { bail!("Row {i}: Size on Disk={alloc} > 4096"); }
         }
         Ok(format!("{} rows, all allocated <= 4096", rows.len()))
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // MONTH FILTER TESTS — Month-of-year filtering
@@ -1738,32 +1824,32 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T110. --month jan ────────────────────────────────────────────
-    t.test("T110 --month jan", &[
+    specs.push(spec("T110 --month jan", &[
         "*", "--month", "jan", "--files-only", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T111. --month Q4 (Oct/Nov/Dec) ───────────────────────────────
-    t.test("T111 --month Q4", &[
+    specs.push(spec("T111 --month Q4", &[
         "*", "--month", "Q4", "--files-only", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T112. --month combo: jan,feb,mar ─────────────────────────────
-    t.test("T112 --month jan,feb,mar", &[
+    specs.push(spec("T112 --month jan,feb,mar", &[
         "*", "--month", "jan,feb,mar", "--files-only", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ── T113. --month + --newer combined ─────────────────────────────
-    t.test("T113 --month jan + --newer last_365d", &[
+    specs.push(spec("T113 --month jan + --newer last_365d", &[
         "*", "--month", "jan", "--newer", "last_365d", "--files-only", "--limit", "10"
     ], |stdout, _| {
         assert_rows(stdout, 0, 10)
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // BOOL ATTRIBUTE SORT TESTS — Sort by flag bit value
@@ -1771,7 +1857,7 @@ fn run_test_suite(t: &mut TestRunner) {
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T114. --sort hidden:desc (hidden files first) ────────────────
-    t.test("T114 --sort hidden:desc", &[
+    specs.push(spec("T114 --sort hidden:desc", &[
         "*", "--sort", "hidden:desc", "--limit", "20", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1786,10 +1872,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, hidden sorted desc", rows.len()))
-    });
+    }));
 
     // ── T115. --sort compressed:desc ─────────────────────────────────
-    t.test("T115 --sort compressed:desc", &[
+    specs.push(spec("T115 --sort compressed:desc", &[
         "*", "--sort", "compressed:desc", "--limit", "20", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1803,10 +1889,10 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, compressed sorted desc", rows.len()))
-    });
+    }));
 
     // ── T116. --sort directory:desc ──────────────────────────────────
-    t.test("T116 --sort directory:desc", &[
+    specs.push(spec("T116 --sort directory:desc", &[
         "*", "--sort", "directory:desc", "--limit", "20", "--columns", "all"
     ], |stdout, _| {
         let (h, rows) = parse_csv(stdout);
@@ -1820,14 +1906,14 @@ fn run_test_suite(t: &mut TestRunner) {
             }
         }
         Ok(format!("{} rows, directory sorted desc", rows.len()))
-    });
+    }));
 
     // ═══════════════════════════════════════════════════════════════════
     // COMBINED — New filter mega-stress tests
     // ═══════════════════════════════════════════════════════════════════
 
     // ── T117. type + in-path + size combined ─────────────────────────
-    t.test("T117 type + in-path + size", &[
+    specs.push(spec("T117 type + in-path + size", &[
         "*", "--type", "system", "--in-path", "*windows*", "--min-size", "1048576",
         "--files-only", "--sort", "-size", "--limit", "10"
     ], |stdout, _| {
@@ -1837,10 +1923,10 @@ fn run_test_suite(t: &mut TestRunner) {
             if size < 1_048_576 { bail!("Row {i}: size={size} < 1MB"); }
         }
         Ok(format!("{} rows, all constraints met", rows.len()))
-    });
+    }));
 
     // ── T118. tree metrics + descendants combined ────────────────────
-    t.test("T118 treesize + descendants", &[
+    specs.push(spec("T118 treesize + descendants", &[
         "*", "--dirs-only", "--min-treesize", "10485760", "--min-descendants", "10",
         "--sort", "-size", "--limit", "10", "--columns", "all"
     ], |stdout, _| {
@@ -1852,157 +1938,46 @@ fn run_test_suite(t: &mut TestRunner) {
             if desc < 10 { bail!("Row {i}: descendants={desc} < 10"); }
         }
         Ok(format!("{} dirs, treesize+desc constraints met", rows.len()))
-    });
-}
+    }));
 
-// ── Cross-Level Summary ─────────────────────────────────────────────────────
-
-fn cross_level_summary(phases: &[PhaseResult]) {
-    eprintln!();
-    eprintln!("╔═══════════════════════════════════════════════════════════════════════════════════╗");
-    eprintln!("║  Cross-Level Timing Comparison                                                   ║");
-    eprintln!("╚═══════════════════════════════════════════════════════════════════════════════════╝");
-
-    // Header row: test name + one column per phase.
-    let labels: Vec<&str> = phases.iter().map(|p| p.label.as_str()).collect();
-    eprint!("  {:<36}", "Test");
-    for label in &labels {
-        eprint!("  {:>14}", label);
-    }
-    eprintln!("    Status");
-    eprint!("  {:<36}", "────────────────────────────────────");
-    for _ in &labels {
-        eprint!("  {:>14}", "──────────────");
-    }
-    eprintln!("    ──────");
-
-    // Determine the test list from the first phase.
-    let test_count = phases.first().map_or(0, |p| p.results.len());
-    for i in 0..test_count {
-        let name = phases.first().map_or("?", |p| p.results.get(i).map_or("?", |r| r.name.as_str()));
-        // Truncate long test names.
-        let short = if name.len() > 35 { &name[..35] } else { name };
-        eprint!("  {:<36}", short);
-
-        let mut all_pass = true;
-        for phase in phases {
-            if let Some(r) = phase.results.get(i) {
-                let ms = r.duration_ms;
-                let cell = format!("{ms} ms");
-                if r.passed {
-                    eprint!("  {:>14}", cell);
-                } else {
-                    eprint!("  {:>14}", cell.red());
-                    all_pass = false;
-                }
-            } else {
-                eprint!("  {:>14}", "—");
-            }
-        }
-        if all_pass {
-            eprintln!("    {}", "✅".green());
-        } else {
-            eprintln!("    {}", "❌".red());
-        }
-    }
-
-    // Totals row.
-    eprint!("  {:<36}", "TOTAL (sum)");
-    for phase in phases {
-        let sum: u128 = phase.results.iter().map(|r| r.duration_ms).sum();
-        eprint!("  {:>14}", format!("{sum} ms"));
-    }
-    eprintln!();
-    eprint!("  {:<36}", "WALL (phase)");
-    for phase in phases {
-        eprint!("  {:>14}", format!("{} ms", phase.wall_ms));
-    }
-    eprintln!();
-
-    // Speedup row (COLD → HOT).
-    if phases.len() >= 3 {
-        let cold_sum: u128 = phases[0].results.iter().map(|r| r.duration_ms).sum();
-        let hot_sum: u128 = phases[2].results.iter().map(|r| r.duration_ms).sum();
-        if hot_sum > 0 {
-            let speedup = cold_sum as f64 / hot_sum as f64;
-            eprintln!();
-            eprintln!("  {} COLD→HOT sum speedup: {:.1}x",
-                "⚡".yellow(), speedup);
-        }
-        let cold_wall = phases[0].wall_ms;
-        let hot_wall = phases[2].wall_ms;
-        if hot_wall > 0 {
-            let speedup = cold_wall as f64 / hot_wall as f64;
-            eprintln!("  {} COLD→HOT wall speedup: {:.1}x",
-                "⚡".yellow(), speedup);
-        }
-    }
+    specs
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
     let bin = uffs_bin();
+    let total_start = Instant::now();
     eprintln!();
     eprintln!("╔═══════════════════════════════════════════════════════════════╗");
-    eprintln!("║  UFFS CLI Flag Validation Suite — 3-Level Cache Comparison   ║");
+    eprintln!("║  UFFS CLI Flag Validation Suite                              ║");
     eprintln!("╚═══════════════════════════════════════════════════════════════╝");
     eprintln!("  Binary: {bin}");
     eprintln!();
 
-    let mut t = TestRunner::new(bin.clone());
-    let mut phases: Vec<PhaseResult> = Vec::new();
+    // ═══ Phase 1: Startup Timing (COLD → WARM → HOT) ════════════════════
+    startup_timing(&bin);
 
-    // ═══ Phase 1: COLD — no daemon, no cache files ══════════════════════
+    // ═══ Phase 2: Parallel Validation (all tests, HOT daemon) ════════════
     eprintln!("┌───────────────────────────────────────────────────────────────┐");
-    eprintln!("│  Phase 1: COLD (no daemon, no cache)                         │");
+    eprintln!("│  Parallel Validation (141 tests, HOT daemon)                 │");
     eprintln!("└───────────────────────────────────────────────────────────────┘");
-    kill_daemon(&bin);
-    delete_cache();
-    let phase_start = Instant::now();
-    run_test_suite(&mut t);
-    let wall_ms = phase_start.elapsed().as_millis();
-    let phase = t.finish_phase("COLD", wall_ms);
-    TestRunner::phase_summary(&phase);
-    phases.push(phase);
 
-    // ═══ Phase 2: WARM CACHE — cache files exist, no daemon ═════════════
+    let specs = define_tests();
+    let test_count = specs.len();
+    eprintln!("  Launching {test_count} tests in parallel...");
     eprintln!();
-    eprintln!("┌───────────────────────────────────────────────────────────────┐");
-    eprintln!("│  Phase 2: WARM CACHE (cache files present, no daemon)        │");
-    eprintln!("└───────────────────────────────────────────────────────────────┘");
-    kill_daemon(&bin);
-    // Cache files remain from Phase 1.
-    let phase_start = Instant::now();
-    run_test_suite(&mut t);
-    let wall_ms = phase_start.elapsed().as_millis();
-    let phase = t.finish_phase("WARM CACHE", wall_ms);
-    TestRunner::phase_summary(&phase);
-    phases.push(phase);
 
-    // ═══ Phase 3: HOT — daemon already running ══════════════════════════
-    eprintln!();
-    eprintln!("┌───────────────────────────────────────────────────────────────┐");
-    eprintln!("│  Phase 3: HOT (daemon running from Phase 2)                  │");
-    eprintln!("└───────────────────────────────────────────────────────────────┘");
-    // Daemon is already warm from Phase 2's test run.
-    let phase_start = Instant::now();
-    run_test_suite(&mut t);
-    let wall_ms = phase_start.elapsed().as_millis();
-    let phase = t.finish_phase("HOT", wall_ms);
-    TestRunner::phase_summary(&phase);
-    phases.push(phase);
+    let (results, wall_ms) = run_tests_parallel(&bin, &specs);
+    print_results(&results, wall_ms);
 
-    // ═══ Cross-Level Summary ════════════════════════════════════════════
+    let total_ms = total_start.elapsed().as_millis();
     eprintln!();
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    cross_level_summary(&phases);
+    eprintln!("  Total time: {}ms", total_ms);
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Exit code: fail if any phase had failures.
-    let total_failures: usize = phases.iter()
-        .flat_map(|p| &p.results)
-        .filter(|r| !r.passed)
-        .count();
+    // Exit code: fail if any test failed.
+    let total_failures = results.iter().filter(|r| !r.passed).count();
     std::process::exit(if total_failures == 0 { 0 } else { 1 });
 }
