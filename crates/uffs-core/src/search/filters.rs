@@ -240,8 +240,10 @@ impl SearchFilters {
             fold_table.fold_into(excl, &mut buf).to_owned()
         });
         let path_contains_lower = params.path_contains.map(|pat| {
-            let mut buf = Vec::with_capacity(pat.len());
-            fold_table.fold_into(pat, &mut buf).to_owned()
+            // path_dir() is lowered via `to_ascii_lowercase()`, so the
+            // pattern must also be plain ASCII-lowered — NOT $UpCase folded
+            // (which produces uppercase and would mismatch).
+            pat.to_ascii_lowercase()
         });
 
         // ── Promote type_filter → extensions for early filtering ─────
