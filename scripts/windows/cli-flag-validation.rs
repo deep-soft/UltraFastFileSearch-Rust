@@ -270,17 +270,44 @@ fn run_one_test(bin: &str, spec: &TestSpec, data_dir: &Option<String>) -> TestRe
     TestResult { name: spec.name.clone(), cli, passed, duration_ms, detail }
 }
 
-/// Run all test specs in parallel using std::thread::scope.
+/// Concurrency limit for parallel process spawning.
+///
+/// Spawning 141 `uffs.exe` processes at once crushes Windows (process creation
+/// + Defender scanning + DLL loading).  Cap to CPU core count for optimal
+/// throughput without resource starvation.
+fn max_parallelism() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8)
+}
+
+/// Run all test specs in parallel using std::thread::scope, with bounded
+/// concurrency to avoid overwhelming the OS with process spawns.
 fn run_tests_parallel(bin: &str, specs: &[TestSpec], data_dir: &Option<String>) -> (Vec<TestResult>, u128) {
+    let max_par = max_parallelism();
     let wall_start = Instant::now();
-    let results: Vec<TestResult> = std::thread::scope(|s| {
-        let handles: Vec<_> = specs.iter().map(|spec| {
-            s.spawn(|| run_one_test(bin, spec, data_dir))
-        }).collect();
-        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
-            name: "???".into(), cli: "???".into(), passed: false, duration_ms: 0, detail: "thread panicked".into(),
-        })).collect()
-    });
+
+    // Process specs in chunks of `max_par` to avoid spawning all at once.
+    let mut results: Vec<TestResult> = Vec::with_capacity(specs.len());
+    for chunk in specs.chunks(max_par) {
+        let chunk_results: Vec<TestResult> = std::thread::scope(|s| {
+            let handles: Vec<_> = chunk.iter().map(|spec| {
+                s.spawn(|| run_one_test(bin, spec, data_dir))
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
+                name: "???".into(), cli: "???".into(), passed: false, duration_ms: 0,
+                detail: "thread panicked".into(),
+            })).collect()
+        });
+        // Print results as each chunk completes (live feedback).
+        for r in &chunk_results {
+            let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
+            let timing = format!("{:>5}ms", r.duration_ms).dimmed();
+            eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
+        }
+        results.extend(chunk_results);
+    }
+
     let wall_ms = wall_start.elapsed().as_millis();
     (results, wall_ms)
 }
@@ -297,14 +324,7 @@ where
     }
 }
 
-fn print_results(results: &[TestResult], wall_ms: u128) {
-    // Per-test lines (compact).
-    for r in results {
-        let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
-        let timing = format!("{:>5}ms", r.duration_ms).dimmed();
-        eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
-    }
-
+fn print_results(results: &[TestResult], wall_ms: u128, max_par: usize) {
     let total = results.len();
     let passed = results.iter().filter(|r| r.passed).count();
     let failed = total - passed;
@@ -313,7 +333,7 @@ fn print_results(results: &[TestResult], wall_ms: u128) {
 
     eprintln!();
     if failed == 0 {
-        eprintln!("  {} {passed}/{total} tests — wall {wall_ms}ms / sum {sum_ms}ms / avg {avg_ms}ms",
+        eprintln!("  {} {passed}/{total} tests — wall {wall_ms}ms / sum {sum_ms}ms / avg {avg_ms}ms (parallelism: {max_par})",
             "✅".green());
     } else {
         eprintln!("  {} {failed}/{total} FAILED — wall {wall_ms}ms / sum {sum_ms}ms",
@@ -2082,11 +2102,12 @@ fn main() {
 
     let specs = define_tests();
     let test_count = specs.len();
-    eprintln!("  Launching {test_count} tests in parallel...");
+    let max_par = max_parallelism();
+    eprintln!("  Launching {test_count} tests (parallelism: {max_par})...");
     eprintln!();
 
     let (results, wall_ms) = run_tests_parallel(&bin, &specs, &data_dir);
-    print_results(&results, wall_ms);
+    print_results(&results, wall_ms, max_par);
 
     let total_ms = total_start.elapsed().as_millis();
     eprintln!();
