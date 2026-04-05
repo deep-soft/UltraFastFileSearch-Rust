@@ -240,10 +240,17 @@ fn cli_string(bin: &str, args: &[String]) -> String {
 }
 
 /// Run a single test spec against the given binary.
-fn run_one_test(bin: &str, spec: &TestSpec) -> TestResult {
-    let cli = cli_string(bin, &spec.args);
+/// If `data_dir` is Some, injects `--data-dir <path>` into the args so the
+/// CLI can find the daemon/data on non-Windows platforms.
+fn run_one_test(bin: &str, spec: &TestSpec, data_dir: &Option<String>) -> TestResult {
+    let mut args = spec.args.clone();
+    if let Some(ref dir) = data_dir {
+        args.push("--data-dir".to_string());
+        args.push(dir.clone());
+    }
+    let cli = cli_string(bin, &args);
     let start = Instant::now();
-    let result = run_uffs(bin, &spec.args);
+    let result = run_uffs(bin, &args);
     let duration_ms = start.elapsed().as_millis();
 
     let (passed, detail) = match result {
@@ -264,11 +271,11 @@ fn run_one_test(bin: &str, spec: &TestSpec) -> TestResult {
 }
 
 /// Run all test specs in parallel using std::thread::scope.
-fn run_tests_parallel(bin: &str, specs: &[TestSpec]) -> (Vec<TestResult>, u128) {
+fn run_tests_parallel(bin: &str, specs: &[TestSpec], data_dir: &Option<String>) -> (Vec<TestResult>, u128) {
     let wall_start = Instant::now();
     let results: Vec<TestResult> = std::thread::scope(|s| {
         let handles: Vec<_> = specs.iter().map(|spec| {
-            s.spawn(|| run_one_test(bin, spec))
+            s.spawn(|| run_one_test(bin, spec, data_dir))
         }).collect();
         handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
             name: "???".into(), cli: "???".into(), passed: false, duration_ms: 0, detail: "thread panicked".into(),
@@ -2078,7 +2085,7 @@ fn main() {
     eprintln!("  Launching {test_count} tests in parallel...");
     eprintln!();
 
-    let (results, wall_ms) = run_tests_parallel(&bin, &specs);
+    let (results, wall_ms) = run_tests_parallel(&bin, &specs, &data_dir);
     print_results(&results, wall_ms);
 
     let total_ms = total_start.elapsed().as_millis();
