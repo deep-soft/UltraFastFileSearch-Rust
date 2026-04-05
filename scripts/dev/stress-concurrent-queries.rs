@@ -133,52 +133,36 @@ fn ensure_daemon(sock: &PathBuf, cli: &Cli) -> Result<()> {
     ))?;
     println!("  uffs binary:  {}", bin.display());
 
-    // Build args
-    let mut args = vec!["daemon".to_string(), "run".to_string()];
+    // Build args: `uffs daemon start` blocks until "Daemon started and ready."
+    let mut args = vec!["daemon", "start"];
+    let data_dir_str;
     if let Some(ref dir) = cli.data_dir {
-        args.push("--data-dir".to_string());
-        args.push(dir.to_string_lossy().into_owned());
+        args.push("--data-dir");
+        data_dir_str = dir.to_string_lossy().into_owned();
+        args.push(&data_dir_str);
     }
-    args.push("--log-level".to_string());
-    args.push("warn".to_string());
 
     println!("  starting:     {} {}", bin.display(), args.join(" "));
 
-    // Spawn detached
-    let mut cmd = std::process::Command::new(&bin);
-    cmd.args(&args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    let t0 = Instant::now();
+    let output = std::process::Command::new(&bin)
+        .args(&args)
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run `uffs daemon start`: {e}"))?;
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let elapsed = t0.elapsed();
+
+    if !output.status.success() {
+        bail!(
+            "`uffs daemon start` failed (exit {}):\nstdout: {}\nstderr: {}",
+            output.status.code().unwrap_or(-1), stdout.trim(), stderr.trim()
+        );
     }
 
-    let _child = cmd.spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn daemon: {e}"))?;
-
-    // Wait for socket + ready (up to 120s)
-    println!("  waiting for daemon to load...");
-    let deadline = Instant::now() + Duration::from_secs(120);
-    let mut delay = Duration::from_millis(250);
-    loop {
-        std::thread::sleep(delay);
-        if sock.exists() {
-            let probe = send_search(sock, 0, "*.txt", 1);
-            if probe.ok {
-                println!("  daemon:       {}\n", "READY".green().bold());
-                return Ok(());
-            }
-        }
-        if Instant::now() > deadline {
-            bail!("Daemon did not become ready within 120s");
-        }
-        delay = (delay * 2).min(Duration::from_secs(2));
-    }
+    println!("  daemon:       {} ({:.1}s)\n", "READY".green().bold(), elapsed.as_secs_f64());
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
