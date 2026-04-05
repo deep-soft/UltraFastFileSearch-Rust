@@ -35,17 +35,36 @@ use colored::Colorize;
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
-/// Find the uffs binary. First CLI arg overrides.
-fn uffs_bin() -> String {
-    std::env::args().nth(1).unwrap_or_else(|| {
+/// Parse CLI args: optional --data-dir, optional --bin, auto-detect binary.
+///
+/// Usage:
+///   rust-script cli-flag-validation.rs [--data-dir <path>] [--bin <path>]
+fn parse_script_args() -> (String, Option<String>) {
+    let args: Vec<String> = std::env::args().collect();
+    let mut data_dir: Option<String> = None;
+    let mut bin_override: Option<String> = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--data-dir" => { data_dir = args.get(i + 1).cloned(); i += 2; }
+            "--bin"      => { bin_override = args.get(i + 1).cloned(); i += 2; }
+            _            => { i += 1; }
+        }
+    }
+
+    let bin = bin_override.unwrap_or_else(|| {
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_else(|_| ".".to_string());
         let candidates = [
             format!("{home}\\bin\\uffs.exe"),
             format!("{home}/bin/uffs.exe"),
+            format!("{home}/bin/uffs"),
             "target/release/uffs.exe".to_string(),
+            "target/release/uffs".to_string(),
             "target/debug/uffs.exe".to_string(),
+            "target/debug/uffs".to_string(),
         ];
         for c in &candidates {
             if std::path::Path::new(c).exists() {
@@ -53,7 +72,9 @@ fn uffs_bin() -> String {
             }
         }
         "uffs".to_string()
-    })
+    });
+
+    (bin, data_dir)
 }
 
 // ── Validation Helpers ───────────────────────────────────────────────────────
@@ -248,23 +269,43 @@ fn print_results(results: &[TestResult], wall_ms: u128) {
 
 struct StartupTiming {
     label: String,
-    duration_ms: u128,
+    startup_ms: u128,
+    query_ms: u128,
+    total_ms: u128,
     rows: usize,
 }
 
-fn measure_startup(bin: &str, label: &str) -> StartupTiming {
-    let args: Vec<String> = ["*", "--limit", "1"].iter().map(|s| s.to_string()).collect();
-    let start = Instant::now();
-    let result = run_uffs(bin, &args);
-    let duration_ms = start.elapsed().as_millis();
+/// Start daemon (blocking), then measure first query.
+fn measure_startup(bin: &str, label: &str, data_dir: &Option<String>) -> StartupTiming {
+    // 1. Start daemon (blocking — waits until "Daemon started and ready.")
+    let mut start_args: Vec<String> = vec!["daemon".into(), "start".into()];
+    if let Some(ref dir) = data_dir {
+        start_args.push("--data-dir".into());
+        start_args.push(dir.clone());
+    }
+    let t0 = Instant::now();
+    let _ = run_uffs(bin, &start_args);
+    let startup_ms = t0.elapsed().as_millis();
+
+    // 2. First query against running daemon.
+    let query_args: Vec<String> = ["*", "--limit", "1"].iter().map(|s| s.to_string()).collect();
+    let t1 = Instant::now();
+    let result = run_uffs(bin, &query_args);
+    let query_ms = t1.elapsed().as_millis();
+
     let rows = match &result {
         Ok((_, stdout, _)) => csv_row_count(stdout),
         Err(_) => 0,
     };
-    StartupTiming { label: label.to_string(), duration_ms, rows }
+    StartupTiming {
+        label: label.to_string(),
+        startup_ms, query_ms,
+        total_ms: startup_ms + query_ms,
+        rows,
+    }
 }
 
-fn startup_timing(bin: &str) {
+fn startup_timing(bin: &str, data_dir: &Option<String>) {
     eprintln!("┌───────────────────────────────────────────────────────────────┐");
     eprintln!("│  Startup Timing: COLD → WARM → HOT                          │");
     eprintln!("└───────────────────────────────────────────────────────────────┘");
@@ -273,35 +314,40 @@ fn startup_timing(bin: &str) {
     kill_daemon(bin);
     delete_cache();
     eprintln!("  COLD (no daemon, no cache)...");
-    let cold = measure_startup(bin, "COLD");
-    eprintln!("    {} {}ms ({} rows)", "COLD".yellow().bold(), cold.duration_ms, cold.rows);
+    let cold = measure_startup(bin, "COLD", data_dir);
+    eprintln!("    {} startup {}ms + query {}ms = {}ms ({} rows)",
+        "COLD".yellow().bold(), cold.startup_ms, cold.query_ms, cold.total_ms, cold.rows);
 
     // WARM: no daemon, cache files remain
     kill_daemon(bin);
     eprintln!("  WARM (cache present, no daemon)...");
-    let warm = measure_startup(bin, "WARM");
-    eprintln!("    {} {}ms ({} rows)", "WARM".cyan().bold(), warm.duration_ms, warm.rows);
+    let warm = measure_startup(bin, "WARM", data_dir);
+    eprintln!("    {} startup {}ms + query {}ms = {}ms ({} rows)",
+        "WARM".cyan().bold(), warm.startup_ms, warm.query_ms, warm.total_ms, warm.rows);
 
     // HOT: daemon still running from warm
     eprintln!("  HOT  (daemon running)...");
-    let hot = measure_startup(bin, "HOT");
-    eprintln!("    {}  {}ms ({} rows)", "HOT".green().bold(), hot.duration_ms, hot.rows);
+    let hot = measure_startup(bin, "HOT", data_dir);
+    eprintln!("    {}  startup {}ms + query {}ms = {}ms ({} rows)",
+        "HOT".green().bold(), hot.startup_ms, hot.query_ms, hot.total_ms, hot.rows);
 
     // Summary table
     eprintln!();
-    eprintln!("  ┌──────────┬────────────┬───────────┐");
-    eprintln!("  │ {:^8} │ {:>10} │ {:>9} │", "Phase", "Time", "Speedup");
-    eprintln!("  ├──────────┼────────────┼───────────┤");
+    eprintln!("  ┌──────────┬────────────┬────────────┬────────────┬───────────┐");
+    eprintln!("  │ {:^8} │ {:>10} │ {:>10} │ {:>10} │ {:>9} │",
+        "Phase", "Startup", "Query", "Total", "Speedup");
+    eprintln!("  ├──────────┼────────────┼────────────┼────────────┼───────────┤");
     for t in &[&cold, &warm, &hot] {
         let speedup = if t.label == "COLD" {
             "—".to_string()
         } else {
-            let s = cold.duration_ms as f64 / t.duration_ms.max(1) as f64;
+            let s = cold.total_ms as f64 / t.total_ms.max(1) as f64;
             format!("{s:.1}x")
         };
-        eprintln!("  │ {:^8} │ {:>7} ms │ {:>9} │", t.label, t.duration_ms, speedup);
+        eprintln!("  │ {:^8} │ {:>7} ms │ {:>7} ms │ {:>7} ms │ {:>9} │",
+            t.label, t.startup_ms, t.query_ms, t.total_ms, speedup);
     }
-    eprintln!("  └──────────┴────────────┴───────────┘");
+    eprintln!("  └──────────┴────────────┴────────────┴────────────┴───────────┘");
     eprintln!();
 }
 
@@ -1946,17 +1992,20 @@ fn define_tests() -> Vec<TestSpec> {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let bin = uffs_bin();
+    let (bin, data_dir) = parse_script_args();
     let total_start = Instant::now();
     eprintln!();
     eprintln!("╔═══════════════════════════════════════════════════════════════╗");
     eprintln!("║  UFFS CLI Flag Validation Suite                              ║");
     eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!("  Binary: {bin}");
+    eprintln!("  Binary:   {bin}");
+    if let Some(ref d) = data_dir {
+        eprintln!("  Data dir: {d}");
+    }
     eprintln!();
 
     // ═══ Phase 1: Startup Timing (COLD → WARM → HOT) ════════════════════
-    startup_timing(&bin);
+    startup_timing(&bin, &data_dir);
 
     // ═══ Phase 2: Parallel Validation (all tests, HOT daemon) ════════════
     eprintln!("┌───────────────────────────────────────────────────────────────┐");
