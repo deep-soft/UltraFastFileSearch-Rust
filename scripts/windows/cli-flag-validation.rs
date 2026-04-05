@@ -39,6 +39,10 @@ use colored::Colorize;
 ///
 /// Usage:
 ///   rust-script cli-flag-validation.rs [--data-dir <path>] [--bin <path>]
+///
+/// On macOS/Linux: builds a fresh release binary via `cargo build --release`,
+/// auto-detects `~/uffs_data` as data dir.
+/// On Windows: looks for `~/bin/uffs.exe`, then `target/release/uffs.exe`.
 fn parse_script_args() -> (String, Option<String>) {
     let args: Vec<String> = std::env::args().collect();
     let mut data_dir: Option<String> = None;
@@ -54,27 +58,84 @@ fn parse_script_args() -> (String, Option<String>) {
     }
 
     let bin = bin_override.unwrap_or_else(|| {
-        let home = std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_else(|_| ".".to_string());
-        let candidates = [
-            format!("{home}\\bin\\uffs.exe"),
-            format!("{home}/bin/uffs.exe"),
-            format!("{home}/bin/uffs"),
-            "target/release/uffs.exe".to_string(),
-            "target/release/uffs".to_string(),
-            "target/debug/uffs.exe".to_string(),
-            "target/debug/uffs".to_string(),
-        ];
-        for c in &candidates {
-            if std::path::Path::new(c).exists() {
-                return c.clone();
+        if cfg!(windows) {
+            // Windows: ~/bin/uffs.exe → target/release → PATH
+            let home = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
+            let candidates = [
+                format!("{home}\\bin\\uffs.exe"),
+                "target\\release\\uffs.exe".to_string(),
+            ];
+            for c in &candidates {
+                if std::path::Path::new(c).exists() { return c.clone(); }
             }
+            "uffs".to_string()
+        } else {
+            // macOS/Linux: build fresh binary, use target/release/uffs
+            ensure_fresh_release_build()
         }
-        "uffs".to_string()
     });
 
+    // On non-Windows, auto-detect ~/uffs_data if --data-dir wasn't given.
+    if data_dir.is_none() && !cfg!(windows) {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let default = format!("{home}/uffs_data");
+        if std::path::Path::new(&default).is_dir() {
+            data_dir = Some(default);
+        }
+    }
+
     (bin, data_dir)
+}
+
+/// Find the workspace root by walking up from cwd looking for Cargo.toml + .cargo.
+fn find_workspace_root() -> std::path::PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut dir = cwd.as_path();
+    loop {
+        if dir.join("Cargo.toml").exists() && dir.join(".cargo").exists() {
+            return dir.to_path_buf();
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => break,
+        }
+    }
+    cwd
+}
+
+/// Build a fresh release binary and return the path to it (macOS/Linux).
+fn ensure_fresh_release_build() -> String {
+    let workspace = find_workspace_root();
+    let binary_path = workspace.join("target").join("release").join("uffs");
+
+    eprintln!("╔══════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Building fresh release binary...                                ║");
+    eprintln!("╚══════════════════════════════════════════════════════════════════╝");
+    eprintln!("  Workspace: {}", workspace.display());
+
+    let start = Instant::now();
+    let status = Command::new("cargo")
+        .args(["build", "--release", "-p", "uffs-cli"])
+        .current_dir(&workspace)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            eprintln!("  ✅ Build completed in {:.1}s", start.elapsed().as_secs_f64());
+            eprintln!("  Binary: {}", binary_path.display());
+            eprintln!();
+        }
+        Ok(s) => {
+            eprintln!("  ❌ cargo build --release failed (exit {s})");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("  ❌ Failed to run cargo: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    binary_path.to_string_lossy().into_owned()
 }
 
 // ── Validation Helpers ───────────────────────────────────────────────────────
