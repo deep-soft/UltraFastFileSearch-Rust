@@ -456,18 +456,16 @@ impl IndexManager {
         // • Predicates (parsed `size:>1M` etc.) — unbounded: these are
         //   arbitrary user expressions so we must scan everything.
         // • Display-row filters (--in-path, --min-bulkiness, --min-path-len)
-        //   — bounded over-fetch: multiply the limit by 100× so we
-        //   gather enough candidates without risking OOM on drives with
-        //   millions of matches.
+        //   — also unbounded.  The hit rate of path-based filters can be
+        //   extremely low (e.g. --in-path *windows* matches <1% of files),
+        //   so any fixed multiplier risks returning 0 rows.  The final
+        //   limit is applied after filtering (see `filtered_rows.truncate`
+        //   below).
         //
         // Note: --type is already promoted to extensions at scan level
         // (see `from_params`), so it does NOT contribute here.
-        let search_limit = if requires_post_filter {
+        let search_limit = if requires_post_filter || filters.needs_display_row_filter() {
             None
-        } else if filters.needs_display_row_filter() {
-            effective_params
-                .limit
-                .map(|l| l.saturating_mul(100).max(1_000))
         } else {
             effective_params.limit
         };
@@ -1085,11 +1083,18 @@ impl IndexManager {
     #[must_use]
     fn sort_spec_to_backend(spec: &SearchSortSpec) -> Option<(FieldId, bool)> {
         let field = FieldId::parse(&spec.field)?;
-        if !field.metadata().sortable {
+        let meta = field.metadata();
+        if !meta.sortable {
             return None;
         }
-        let descending =
-            spec.direction.unwrap_or(SearchSortDirection::Asc) == SearchSortDirection::Desc;
+        // When no direction is specified, honour the field's natural default
+        // (e.g. Size/TreeSize → Descending, Name → Ascending).
+        let descending = match spec.direction {
+            Some(dir) => dir == SearchSortDirection::Desc,
+            None => meta
+                .default_sort_direction
+                .is_some_and(|d| d == SortDirection::Descending),
+        };
         Some((field, descending))
     }
 
