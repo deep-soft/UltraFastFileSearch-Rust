@@ -1392,3 +1392,137 @@ fn filter_combined_all_new_fields() {
         "all new filter fields should pass with matching test record"
     );
 }
+
+
+// ── needs_display_row_filter ─────────────────────────────────────
+
+#[test]
+fn needs_display_row_filter_false_when_empty() {
+    let f = SearchFilters::default();
+    assert!(
+        !f.needs_display_row_filter(),
+        "default filters need no display-row pass"
+    );
+}
+
+#[test]
+fn needs_display_row_filter_true_for_type_filter() {
+    let f = SearchFilters {
+        type_filter: Some("code".to_owned()),
+        ..Default::default()
+    };
+    assert!(
+        f.needs_display_row_filter(),
+        "type_filter requires display-row pass"
+    );
+}
+
+#[test]
+fn needs_display_row_filter_true_for_path_contains() {
+    let f = SearchFilters {
+        path_contains_lower: Some("windows".to_owned()),
+        ..Default::default()
+    };
+    assert!(
+        f.needs_display_row_filter(),
+        "path_contains requires display-row pass"
+    );
+}
+
+#[test]
+fn needs_display_row_filter_true_for_bulkiness() {
+    let f = SearchFilters {
+        min_bulkiness: Some(200),
+        ..Default::default()
+    };
+    assert!(
+        f.needs_display_row_filter(),
+        "min_bulkiness requires display-row pass"
+    );
+}
+
+#[test]
+fn needs_display_row_filter_true_for_path_len() {
+    let f = SearchFilters {
+        min_path_len: Some(100),
+        ..Default::default()
+    };
+    assert!(
+        f.needs_display_row_filter(),
+        "min_path_len requires display-row pass"
+    );
+}
+
+// ── apply_search_filters regression tests (T88h–T118) ───────────
+
+/// Regression T89/T91/T93: --type filter must reject non-matching files.
+#[test]
+fn apply_type_filter_rejects_wrong_extension() {
+    let mut rows = vec![
+        // .rs is "code"; .jpg is NOT code
+        DisplayRow::new(0, 'C', "C:\\src\\main.rs".to_owned(), 100, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
+        DisplayRow::new(0, 'C', "C:\\pics\\photo.jpg".to_owned(), 5000, false, 0, 0, 0, 0x20, 8192, 0, 0, 0),
+    ];
+    let filters = SearchFilters {
+        type_filter: Some("code".to_owned()),
+        ..Default::default()
+    };
+    apply_search_filters(&mut rows, &filters);
+    assert_eq!(rows.len(), 1, "only .rs (code) should remain");
+    assert_eq!(rows.first().expect("rows non-empty").name(), "main.rs");
+}
+
+/// Regression T88h/T95: --in-path filter must match resolved path substring.
+#[test]
+fn apply_path_contains_filters_by_substring() {
+    let mut rows = vec![
+        DisplayRow::new(0, 'C', "C:\\Windows\\System32\\cmd.exe".to_owned(), 100, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
+        DisplayRow::new(0, 'C', "C:\\Users\\hello.exe".to_owned(), 200, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
+    ];
+    let filters = SearchFilters {
+        path_contains_lower: Some("windows".to_owned()),
+        ..Default::default()
+    };
+    apply_search_filters(&mut rows, &filters);
+    assert_eq!(rows.len(), 1, "only path containing 'windows' should remain");
+    assert!(rows.first().expect("rows non-empty").path.contains("Windows"));
+}
+
+/// Regression T98: --min-bulkiness filter must reject rows with low bulkiness.
+///
+/// Internal bulkiness uses per-million scale: `1_000_000` = 100% (perfectly
+/// packed).  A `min_bulkiness` of `2_000_000` means "at least 200%".
+#[test]
+fn apply_min_bulkiness_rejects_low_ratio() {
+    let mut rows = vec![
+        // allocated=4096, size=4096 → bulkiness=1_000_000 (100%)
+        DisplayRow::new(0, 'C', "C:\\tight.bin".to_owned(), 4096, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
+        // allocated=20480, size=4096 → bulkiness=5_000_000 (500%)
+        DisplayRow::new(0, 'C', "C:\\bloated.bin".to_owned(), 4096, false, 0, 0, 0, 0x20, 20480, 0, 0, 0),
+    ];
+    let filters = SearchFilters {
+        min_bulkiness: Some(2_000_000), // ≥200% on per-million scale
+        ..Default::default()
+    };
+    apply_search_filters(&mut rows, &filters);
+    assert_eq!(rows.len(), 1, "only bloated (500%) should pass >=200%");
+    assert_eq!(rows.first().expect("rows non-empty").name(), "bloated.bin");
+}
+
+/// Regression T106: --min-path-length must reject short paths.
+#[test]
+fn apply_min_path_len_rejects_short_paths() {
+    let short = "C:\\a.txt"; // 8 chars
+    let long = "C:\\".to_owned() + &"x".repeat(200) + ".txt"; // 208 chars
+    let mut rows = vec![
+        DisplayRow::new(0, 'C', short.to_owned(), 100, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
+        DisplayRow::new(0, 'C', long.clone(), 200, false, 0, 0, 0, 0x20, 4096, 0, 0, 0),
+    ];
+    let filters = SearchFilters {
+        min_path_len: Some(200),
+        ..Default::default()
+    };
+    apply_search_filters(&mut rows, &filters);
+    assert_eq!(rows.len(), 1, "only path >=200 chars should remain");
+    assert!(rows.first().expect("rows non-empty").path.len() >= 200);
+}

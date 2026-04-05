@@ -412,3 +412,114 @@ fn test_parity_root_no_double_trailing_backslash() {
         "root: size=treesize, sizeondisk=tree_allocated, got: {output}"
     );
 }
+
+
+// ── Regression tests for T101–T118: computed columns in `--columns all` ──
+
+/// `CPP_COLUMN_ORDER` ("--columns all") must include Tree Size, Tree Allocated,
+/// Bulkiness, Type, Extension, Name Length, and Path Length.
+#[test]
+fn cpp_column_order_includes_computed_columns() {
+    use super::CPP_COLUMN_ORDER;
+
+    let has = |col: OutputColumn| CPP_COLUMN_ORDER.contains(&col);
+    assert!(has(OutputColumn::TreeSize), "TreeSize missing from all");
+    assert!(
+        has(OutputColumn::TreeAllocated),
+        "TreeAllocated missing from all"
+    );
+    assert!(has(OutputColumn::Bulkiness), "Bulkiness missing from all");
+    assert!(has(OutputColumn::Type), "Type missing from all");
+    assert!(has(OutputColumn::Extension), "Extension missing from all");
+    assert!(
+        has(OutputColumn::NameLength),
+        "NameLength missing from all"
+    );
+    assert!(
+        has(OutputColumn::PathLength),
+        "PathLength missing from all"
+    );
+}
+
+/// Display names must use spaces for multi-word columns so that CSV header
+/// lookups like `col_val(row, &h, "Tree Size")` succeed.
+#[test]
+fn tree_column_display_names_have_spaces() {
+    assert_eq!(
+        OutputColumn::TreeSize.display_name(),
+        "Tree Size",
+        "TreeSize display name must be 'Tree Size'"
+    );
+    assert_eq!(
+        OutputColumn::TreeAllocated.display_name(),
+        "Tree Allocated",
+        "TreeAllocated display name must be 'Tree Allocated'"
+    );
+}
+
+/// Regression T101/T118: `write_display_rows` must emit TreeSize and
+/// TreeAllocated values for directory rows when those columns are requested.
+#[test]
+fn write_display_rows_emits_treesize_and_tree_allocated() {
+    use crate::search::backend::DisplayRow;
+
+    let dir_row = DisplayRow::new(
+        0, 'C', "C:\\Big".to_owned(), 0, true, 0, 0, 0, 0x10, 4096, 42,
+        104_857_600, // treesize = 100 MB
+        209_715_200, // tree_allocated = 200 MB
+    );
+
+    let config = OutputConfig::new()
+        .with_columns("name,treesize,treeallocated")
+        .with_header(true)
+        .with_quote("\"");
+
+    let mut out = Vec::new();
+    config
+        .write_display_rows(core::slice::from_ref(&dir_row), &mut out)
+        .unwrap();
+    let csv = String::from_utf8(out).unwrap();
+
+    assert!(
+        csv.contains("\"Tree Size\""),
+        "header must contain 'Tree Size', got: {csv}"
+    );
+    assert!(
+        csv.contains("\"Tree Allocated\""),
+        "header must contain 'Tree Allocated', got: {csv}"
+    );
+    assert!(
+        csv.contains("104857600"),
+        "treesize value must be emitted, got: {csv}"
+    );
+    assert!(
+        csv.contains("209715200"),
+        "tree_allocated value must be emitted, got: {csv}"
+    );
+}
+
+/// Regression: NameLength and PathLength columns must emit actual values.
+#[test]
+fn write_display_rows_emits_name_length_and_path_length() {
+    use crate::search::backend::DisplayRow;
+
+    let row = DisplayRow::new(
+        0, 'C', "C:\\Very\\Long\\Path\\readme.txt".to_owned(), 100, false, 0, 0, 0, 0x20, 4096,
+        0, 0, 0,
+    );
+
+    let config = OutputConfig::new()
+        .with_columns("name,namelength,pathlength")
+        .with_header(false)
+        .with_quote("\"");
+
+    let mut out = Vec::new();
+    config
+        .write_display_rows(core::slice::from_ref(&row), &mut out)
+        .unwrap();
+    let csv = String::from_utf8(out).unwrap();
+
+    // name = "readme.txt" (10 chars), path = "C:\Very\Long\Path\readme.txt" (28 chars)
+    assert!(csv.contains(",10,"), "name length must be 10, got: {csv}");
+    assert!(csv.contains(",28\n"), "path length must be 28, got: {csv}");
+}

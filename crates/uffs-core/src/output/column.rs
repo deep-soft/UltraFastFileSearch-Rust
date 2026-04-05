@@ -74,4 +74,12 @@ pub const CPP_COLUMN_ORDER: &[FieldId] = &[
     FieldId::RecallOnDataAccess, // 0x400000
     // ── Raw aggregate ───────────────────────────────────────────────
     FieldId::Attributes,
+    // ── Computed / derived columns ──────────────────────────────────
+    FieldId::TreeSize,
+    FieldId::TreeAllocated,
+    FieldId::Bulkiness,
+    FieldId::Type,
+    FieldId::Extension,
+    FieldId::NameLength,
+    FieldId::PathLength,
 ];

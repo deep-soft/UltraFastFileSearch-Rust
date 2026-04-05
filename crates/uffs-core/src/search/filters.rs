@@ -632,6 +632,23 @@ impl SearchFilters {
             && self.max_tree_allocated.is_none()
             && self.allowed_months.is_empty()
     }
+
+    /// Returns `true` if any filter requires a resolved `DisplayRow`
+    /// (full path, semantic type, bulkiness).
+    ///
+    /// These cannot be evaluated on a `CompactRecord` because they need
+    /// the resolved path string.  The `collect_global_top_n` hot-path
+    /// only runs `matches_record`; callers must run
+    /// `apply_search_filters` afterwards when this returns `true`.
+    #[must_use]
+    pub const fn needs_display_row_filter(&self) -> bool {
+        self.path_contains_lower.is_some()
+            || self.type_filter.is_some()
+            || self.min_bulkiness.is_some()
+            || self.max_bulkiness.is_some()
+            || self.min_path_len.is_some()
+            || self.max_path_len.is_some()
+    }
 }
 
 /// Apply extended search filters to display rows (in-place).

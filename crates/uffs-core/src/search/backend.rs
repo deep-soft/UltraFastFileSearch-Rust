@@ -304,6 +304,14 @@ impl MultiDriveBackend {
                 filter_mode,
                 search_filters,
             );
+            // Post-filters that require resolved paths (type, path_contains,
+            // bulkiness, path_length) are not applied inside
+            // `collect_global_top_n` — they operate on `DisplayRow`, not
+            // `CompactRecord`.  Apply them here, matching the regex and
+            // normal-search branches.
+            if search_filters.needs_display_row_filter() {
+                super::filters::apply_search_filters(&mut rows, search_filters);
+            }
         } else if is_regex {
             let regex_pattern = needle.strip_prefix('>').unwrap_or(&needle);
             match regex::RegexBuilder::new(regex_pattern)

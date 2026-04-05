@@ -685,7 +685,22 @@ fn write_display_row_columns(
                 buf.push_str(&cfg.quote);
             }
             // Newly added columns that have no dedicated text formatter yet.
-            OutputColumn::NameLength | OutputColumn::PathLength => {}
+            OutputColumn::NameLength => {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "NTFS filenames ≤255 chars, fits u16"
+                )]
+                let len = row.name().chars().count() as u16;
+                buf.push_str(itoa_buf.format(len));
+            }
+            OutputColumn::PathLength => {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "path lengths fit u16 for practical NTFS volumes"
+                )]
+                let len = row.path.chars().count() as u16;
+                buf.push_str(itoa_buf.format(len));
+            }
         }
     }
 }
