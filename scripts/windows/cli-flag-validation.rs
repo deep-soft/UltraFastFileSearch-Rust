@@ -35,24 +35,43 @@ use colored::Colorize;
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
-/// Parse CLI args: optional --data-dir, optional --bin, auto-detect binary.
+/// Parsed script arguments.
+struct ScriptArgs {
+    bin: String,
+    data_dir: Option<String>,
+    /// Optional test filter: e.g. "T1,T2,T3" → only run matching tests.
+    /// Matches against the test ID prefix (case-insensitive).
+    test_filter: Vec<String>,
+}
+
+/// Parse CLI args.
 ///
 /// Usage:
-///   rust-script cli-flag-validation.rs [--data-dir <path>] [--bin <path>]
+///   rust-script cli-flag-validation.rs [--data-dir <path>] [--bin <path>] [--tests T1,T2,T88h]
 ///
 /// On macOS/Linux: builds a fresh release binary via `cargo build --release`,
 /// auto-detects `~/uffs_data` as data dir.
 /// On Windows: looks for `~/bin/uffs.exe`, then `target/release/uffs.exe`.
-fn parse_script_args() -> (String, Option<String>) {
+fn parse_script_args() -> ScriptArgs {
     let args: Vec<String> = std::env::args().collect();
     let mut data_dir: Option<String> = None;
     let mut bin_override: Option<String> = None;
+    let mut test_filter: Vec<String> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--data-dir" => { data_dir = args.get(i + 1).cloned(); i += 2; }
             "--bin"      => { bin_override = args.get(i + 1).cloned(); i += 2; }
+            "--tests"    => {
+                if let Some(val) = args.get(i + 1) {
+                    test_filter = val.split(',')
+                        .map(|s| s.trim().to_uppercase())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+                i += 2;
+            }
             _            => { i += 1; }
         }
     }
@@ -84,7 +103,7 @@ fn parse_script_args() -> (String, Option<String>) {
         }
     }
 
-    (bin, data_dir)
+    ScriptArgs { bin, data_dir, test_filter }
 }
 
 /// Find the workspace root by walking up from cwd looking for Cargo.toml + .cargo.
@@ -2079,34 +2098,73 @@ fn define_tests() -> Vec<TestSpec> {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+/// Extract the test ID (e.g. "T88H") from a test name like "T88h --in-path + pattern".
+fn test_id(name: &str) -> String {
+    // Take everything up to the first space.
+    name.split_whitespace()
+        .next()
+        .unwrap_or(name)
+        .to_uppercase()
+}
+
+/// Filter test specs by the --tests filter. Empty filter = run all.
+fn filter_tests(specs: Vec<TestSpec>, filter: &[String]) -> Vec<TestSpec> {
+    if filter.is_empty() { return specs; }
+    specs.into_iter().filter(|s| {
+        let id = test_id(&s.name);
+        filter.iter().any(|f| id == *f)
+    }).collect()
+}
+
 fn main() {
-    let (bin, data_dir) = parse_script_args();
+    let args = parse_script_args();
     let total_start = Instant::now();
     eprintln!();
     eprintln!("╔═══════════════════════════════════════════════════════════════╗");
     eprintln!("║  UFFS CLI Flag Validation Suite                              ║");
     eprintln!("╚═══════════════════════════════════════════════════════════════╝");
-    eprintln!("  Binary:   {bin}");
-    if let Some(ref d) = data_dir {
+    eprintln!("  Binary:   {}", args.bin);
+    if let Some(ref d) = args.data_dir {
         eprintln!("  Data dir: {d}");
+    }
+    if !args.test_filter.is_empty() {
+        eprintln!("  Filter:   {}", args.test_filter.join(", "));
     }
     eprintln!();
 
+    let has_filter = !args.test_filter.is_empty();
+
     // ═══ Phase 1: Startup Timing (COLD → WARM → HOT) ════════════════════
-    startup_timing(&bin, &data_dir);
+    // Skip startup timing when running individual tests (daemon should
+    // already be running).
+    if !has_filter {
+        startup_timing(&args.bin, &args.data_dir);
+    }
 
-    // ═══ Phase 2: Parallel Validation (all tests, HOT daemon) ════════════
-    eprintln!("┌───────────────────────────────────────────────────────────────┐");
-    eprintln!("│  Parallel Validation (141 tests, HOT daemon)                 │");
-    eprintln!("└───────────────────────────────────────────────────────────────┘");
+    // ═══ Phase 2: Parallel Validation ════════════════════════════════════
+    let all_specs = define_tests();
+    let specs = filter_tests(all_specs, &args.test_filter);
 
-    let specs = define_tests();
+    if specs.is_empty() {
+        eprintln!("  {} No tests matched filter: {:?}", "⚠".yellow(), args.test_filter);
+        eprintln!("  Available test IDs: T00, T01, ..., T118");
+        std::process::exit(1);
+    }
+
     let test_count = specs.len();
     let max_par = max_parallelism();
+
+    eprintln!("┌───────────────────────────────────────────────────────────────┐");
+    if has_filter {
+        eprintln!("│  Running {} selected test(s)                                  │", test_count);
+    } else {
+        eprintln!("│  Parallel Validation ({test_count} tests, HOT daemon)                 │");
+    }
+    eprintln!("└───────────────────────────────────────────────────────────────┘");
     eprintln!("  Launching {test_count} tests (parallelism: {max_par})...");
     eprintln!();
 
-    let (results, wall_ms) = run_tests_parallel(&bin, &specs, &data_dir);
+    let (results, wall_ms) = run_tests_parallel(&args.bin, &specs, &args.data_dir);
     print_results(&results, wall_ms, max_par);
 
     let total_ms = total_start.elapsed().as_millis();
