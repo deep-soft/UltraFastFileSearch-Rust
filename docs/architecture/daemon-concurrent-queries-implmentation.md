@@ -1038,3 +1038,43 @@ is stored and queried, not in how it's built.
 | 1 | Generic vs concrete for `collect_global_top_n`?               | Generic `D: AsRef<DriveCompactIndex>` — works for all callers |
 | 2 | Does `num_cpus` need to be added?                             | No — used `std::thread::available_parallelism()` instead |
 | 3 | `--max-concurrent-searches` config flag?                      | Deferred — current `available_parallelism()` default is sensible |
+
+
+### Benchmark Results (2026-04-05)
+
+Stress test: `rust-script scripts/dev/stress-concurrent-queries.rs`
+— 25.9M records, 7 NTFS drives, 100 queries per concurrency level, 5 patterns.
+
+#### Windows (production, ~12-core desktop)
+
+| Concurrency | p50 (ms) | Mean (ms) | Throughput (qps) |
+|---:|---:|---:|---:|
+| 1 | 1.5 | 1.6 | 590 |
+| 2 | 2.2 | 2.9 | 562 |
+| 4 | 3.2 | 3.2 | 1,112 |
+| 8 | 4.6 | 4.3 | 1,520 |
+| 16 | 6.1 | 6.8 | 1,874 |
+| **32** | **11.9** | **12.5** | **2,004** ← peak |
+| 64 | 17.6 | 18.7 | 1,927 |
+| 128 | 28.8 | 27.9 | 1,775 |
+
+- **Peak**: 2,004 qps at c=32
+- **Saturation**: c=4 (mean crosses 2× baseline)
+- **Reliability**: 0 failures / 800 queries
+
+#### macOS (Apple Silicon, development)
+
+| Concurrency | p50 (ms) | Mean (ms) | Throughput (qps) |
+|---:|---:|---:|---:|
+| 1 | 0.6 | 0.7 | 1,309 |
+| 2 | 0.6 | 0.6 | 2,945 |
+| 4 | 0.7 | 0.7 | 4,634 |
+| 8 | 1.2 | 1.2 | 5,268 |
+| 16 | 2.3 | 2.5 | 4,911 |
+| **32** | **3.9** | **4.2** | **5,844** ← peak |
+| 64 | 8.3 | 9.4 | 4,753 |
+| 128 | 14.3 | 13.1 | 5,204 |
+
+- **Peak**: 5,844 qps at c=32
+- **Saturation**: c=16 (mean crosses 2× baseline)
+- **Reliability**: 0 failures / 800 queries
