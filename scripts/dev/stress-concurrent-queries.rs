@@ -52,11 +52,103 @@ struct Cli {
     limit: u32,
     #[arg(long, default_value = "10")]
     warmup: usize,
+    /// Data directory for daemon auto-start (macOS/Linux only).
+    /// On Windows the daemon auto-discovers NTFS drives.
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    /// Path to the uffs binary.  Auto-detected from PATH or ./target/release/.
+    #[arg(long)]
+    uffs_bin: Option<PathBuf>,
 }
 
 fn socket_path() -> PathBuf {
     let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     base.join("uffs").join("daemon.sock")
+}
+
+/// Find the uffs binary: explicit flag → PATH → ./target/release/uffs[.exe]
+fn find_uffs_bin(explicit: &Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        if p.exists() { return Some(p.clone()); }
+    }
+    // Check PATH
+    if let Ok(output) = std::process::Command::new(if cfg!(windows) { "where" } else { "which" })
+        .arg("uffs")
+        .output()
+    {
+        if output.status.success() {
+            let p = String::from_utf8_lossy(&output.stdout).trim().lines().next().unwrap_or("").to_string();
+            if !p.is_empty() { return Some(PathBuf::from(p)); }
+        }
+    }
+    // Check local build
+    let ext = if cfg!(windows) { "uffs.exe" } else { "uffs" };
+    let local = PathBuf::from("target").join("release").join(ext);
+    if local.exists() { return Some(local); }
+    None
+}
+
+/// Start the daemon if not already running, wait for it to be ready.
+fn ensure_daemon(sock: &PathBuf, cli: &Cli) -> Result<()> {
+    // Already running?
+    if sock.exists() {
+        let probe = send_search(sock, 0, "*.txt", 1);
+        if probe.ok { return Ok(()); }
+    }
+
+    let bin = find_uffs_bin(&cli.uffs_bin)
+        .ok_or_else(|| anyhow::anyhow!(
+            "Cannot find uffs binary.\n\
+             Provide --uffs-bin <path>, add uffs to PATH, or build with: cargo build --release -p uffs-cli"
+        ))?;
+    println!("  uffs binary:  {}", bin.display());
+
+    // Build args
+    let mut args = vec!["daemon".to_string(), "run".to_string()];
+    if let Some(ref dir) = cli.data_dir {
+        args.push("--data-dir".to_string());
+        args.push(dir.to_string_lossy().into_owned());
+    }
+    args.push("--log-level".to_string());
+    args.push("warn".to_string());
+
+    println!("  starting:     {} {}", bin.display(), args.join(" "));
+
+    // Spawn detached
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
+
+    let _child = cmd.spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn daemon: {e}"))?;
+
+    // Wait for socket + ready (up to 120s)
+    println!("  waiting for daemon to load...");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut delay = Duration::from_millis(250);
+    loop {
+        std::thread::sleep(delay);
+        if sock.exists() {
+            let probe = send_search(sock, 0, "*.txt", 1);
+            if probe.ok {
+                println!("  daemon:       {}\n", "READY".green().bold());
+                return Ok(());
+            }
+        }
+        if Instant::now() > deadline {
+            bail!("Daemon did not become ready within 120s");
+        }
+        delay = (delay * 2).min(Duration::from_secs(2));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -207,25 +299,14 @@ fn main() -> Result<()> {
     println!("  limit:       {}", cli.limit);
     println!("  per level:   {} queries ({} warmup)", cli.queries_per_level, cli.warmup);
 
-    if !sock.exists() {
-        bail!(
-            "Socket not found: {}\n\
-             The daemon is not running. Start it first:\n\
-             \n\
-             Windows:  uffs daemon start\n\
-             macOS:    target/release/uffs daemon start --data-dir ~/uffs_data",
-            sock.display()
-        );
-    }
+    // Auto-start daemon if not running.
+    ensure_daemon(&sock, &cli)?;
+
     let probe = send_search(&sock, 0, &patterns[0], cli.limit);
     if !probe.ok {
         bail!(
-            "Cannot reach daemon at {}: {:?}\n\
-             Make sure the daemon is running and has loaded data.\n\
-             \n\
-             Windows:  uffs daemon start\n\
-             macOS:    target/release/uffs daemon start --data-dir ~/uffs_data",
-            sock.display(), probe.error
+            "Daemon is running but search failed: {:?}",
+            probe.error
         );
     }
     println!("  probe:       {} ({} rows)\n", "OK".green().bold(), probe.rows);
