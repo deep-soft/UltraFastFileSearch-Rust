@@ -449,23 +449,34 @@ impl IndexManager {
             Vec::new()
         };
 
-        // When post-filters (predicates, type, in-path, bulkiness, etc.)
-        // are active, remove the search limit so the engine returns ALL
-        // matching records.  Post-filtering happens after path resolution,
-        // so limiting beforehand would discard valid rows.  The final
-        // limit is applied after filtering (see `filtered_rows.truncate`).
-        let needs_post_filter =
-            requires_post_filter || filters.needs_display_row_filter();
+        // When post-filters are active the search must return more rows
+        // than the user-requested limit, because some rows will be
+        // discarded after path resolution.
+        //
+        // • Predicates (parsed `size:>1M` etc.) — unbounded: these are
+        //   arbitrary user expressions so we must scan everything.
+        // • Display-row filters (--in-path, --min-bulkiness, --min-path-len)
+        //   — bounded over-fetch: multiply the limit by 100× so we
+        //   gather enough candidates without risking OOM on drives with
+        //   millions of matches.
+        //
+        // Note: --type is already promoted to extensions at scan level
+        // (see `from_params`), so it does NOT contribute here.
+        let search_limit = if requires_post_filter {
+            None
+        } else if filters.needs_display_row_filter() {
+            effective_params
+                .limit
+                .map(|l| l.saturating_mul(100).max(1_000))
+        } else {
+            effective_params.limit
+        };
         let result = backend.search_drives(
             &effective_params.pattern,
             effective_params.case_sensitive,
             effective_params.whole_word,
             effective_params.match_path,
-            if needs_post_filter {
-                None
-            } else {
-                effective_params.limit
-            },
+            search_limit,
             filter_mode,
             &mut filters,
             &effective_params.drives,

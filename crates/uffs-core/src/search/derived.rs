@@ -173,6 +173,40 @@ pub fn semantic_type_from_extension(ext: &str) -> &'static str {
     }
 }
 
+/// Return the extension list for a semantic type category (if extension-mappable).
+///
+/// Types like `"directory"`, `"file"`, and `"other"` return `None` because
+/// they are not defined by a fixed set of extensions.
+#[must_use]
+pub fn extensions_for_type(type_name: &str) -> Option<&'static [&'static str]> {
+    match type_name {
+        "document" => Some(collections::DOCUMENTS),
+        "picture" => Some(collections::PICTURES),
+        "video" => Some(collections::VIDEOS),
+        "audio" => Some(collections::MUSIC),
+        "archive" => Some(collections::ARCHIVES),
+        "code" => Some(collections::CODE),
+        "executable" => Some(EXECUTABLES),
+        "script" => Some(SCRIPTS),
+        "web" => Some(WEB),
+        "font" => Some(FONTS),
+        "database" => Some(DATABASES),
+        "config" => Some(CONFIGS),
+        "log" => Some(LOGS),
+        "backup" => Some(BACKUPS),
+        "disk" => Some(DISK_IMAGES),
+        "data" => Some(DATA),
+        "cad" => Some(CAD),
+        "shortcut" => Some(SHORTCUTS),
+        "system" => Some(SYSTEM),
+        "cert" => Some(CERTS),
+        "ebook" => Some(EBOOKS),
+        // Not extension-mappable:
+        "directory" | "file" | "other" => None,
+        _ => None,
+    }
+}
+
 /// Tree-allocated metric for projection/sort/filter.
 #[must_use]
 pub const fn tree_allocated_for_row(row: &DisplayRow) -> u64 {
@@ -455,5 +489,37 @@ mod tests {
         assert!(ALL_TYPE_CATEGORIES.contains(&"directory"));
         assert!(ALL_TYPE_CATEGORIES.contains(&"file"));
         assert!(ALL_TYPE_CATEGORIES.contains(&"other"));
+    }
+
+    // ── extensions_for_type ──────────────────────────────────────────
+
+    #[test]
+    fn extensions_for_type_code_contains_rs() {
+        let exts = extensions_for_type("code").unwrap();
+        assert!(exts.contains(&"rs"), "code should contain rs");
+        assert!(exts.contains(&"py"), "code should contain py");
+    }
+
+    #[test]
+    fn extensions_for_type_unmappable_returns_none() {
+        assert!(extensions_for_type("directory").is_none());
+        assert!(extensions_for_type("file").is_none());
+        assert!(extensions_for_type("other").is_none());
+    }
+
+    #[test]
+    fn extensions_for_type_covers_all_mappable_categories() {
+        let mappable = [
+            "document", "picture", "video", "audio", "archive", "code",
+            "executable", "script", "web", "font", "database", "config",
+            "log", "backup", "disk", "data", "cad", "shortcut", "system",
+            "cert", "ebook",
+        ];
+        for cat in mappable {
+            assert!(
+                extensions_for_type(cat).is_some(),
+                "expected Some for type {cat}"
+            );
+        }
     }
 }

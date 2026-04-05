@@ -243,6 +243,46 @@ impl SearchFilters {
             let mut buf = Vec::with_capacity(pat.len());
             fold_table.fold_into(pat, &mut buf).to_owned()
         });
+
+        // ── Promote type_filter → extensions for early filtering ─────
+        //
+        // When the type maps to a known extension list (e.g. "code" →
+        // [rs, py, js, …]) we push those extensions into `extensions` so
+        // that `matches_record` can filter records during the scan (O(1)
+        // per record via ext-index) instead of the expensive post-filter
+        // path that requires full path resolution for every candidate.
+        //
+        // If --ext was also provided, the type list is a superset — we
+        // intersect them so only extensions satisfying BOTH constraints
+        // survive.
+        //
+        // Un-mappable types ("directory", "file", "other") stay as
+        // `type_filter` for post-filter via `apply_search_filters`.
+        let (extensions, type_filter) = if let Some(type_name) = params.type_filter {
+            let lower = type_name.to_ascii_lowercase();
+            if let Some(type_exts) =
+                crate::search::derived::extensions_for_type(&lower)
+            {
+                let merged = if extensions.is_empty() {
+                    // No --ext: use the full type extension list.
+                    type_exts.iter().map(|e| (*e).to_owned()).collect()
+                } else {
+                    // --ext present: intersect (keep only exts that
+                    // belong to BOTH the explicit list and the type).
+                    extensions
+                        .into_iter()
+                        .filter(|e| type_exts.contains(&e.as_str()))
+                        .collect()
+                };
+                (merged, None)
+            } else {
+                // Un-mappable type (directory/file/other) — keep post-filter.
+                (extensions, Some(lower))
+            }
+        } else {
+            (extensions, None)
+        };
+
         Self {
             hide_system: params.hide_system,
             hide_ads: params.hide_ads,
@@ -274,7 +314,7 @@ impl SearchFilters {
             resolved_ext_ids: Vec::new(),
             exclude_lower,
             path_contains_lower,
-            type_filter: params.type_filter.map(str::to_ascii_lowercase),
+            type_filter,
             // CLI bulkiness is a user-facing percentage (200 = 200%).
             // Internal scale is per-million (1_000_000 = 100%).
             // Convert: percentage × 10_000 = per-million.

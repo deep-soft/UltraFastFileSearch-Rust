@@ -198,12 +198,12 @@ fn parse_args() -> (PathBuf, Vec<String>) {
 /// Layout matches `crates/uffs-mft/src/display.rs` — right-aligned numbers,
 /// left-aligned units:
 ///
-/// - `< 1 s`:  `    543 ms ` — `{:>7} ms `
-/// - `1–60 s`: ` 7 s 792 ms` — `{:>2} s {:>3} ms`
+/// - `< 1 s`:  `      543 ms` — `{:>8} ms`  (ms unit at pos 9–10)
+/// - `1–60 s`: ` 7 s 792 ms` — `{:>2} s {:>3} ms` (ms unit at pos 9–10)
 /// - `≥ 60 s`: ` 1 m  05 s ` — `{:>2} m  {:>2} s `
 fn fmt_dur(ms: u64) -> String {
     if ms < 1_000 {
-        format!("{ms:>7} ms ")
+        format!("{ms:>8} ms")
     } else if ms < 60_000 {
         let s = ms / 1000;
         let frac = ms % 1000;
