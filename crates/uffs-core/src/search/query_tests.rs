@@ -127,7 +127,7 @@ fn build_large_drive(count: usize) -> DriveCompactIndex {
 #[test]
 fn search_compact_finds_file_by_name() {
     let drive = build_test_drive();
-    let rows = search_compact_drive(&drive, "readme", 100, false, false);
+    let rows = search_compact_drive(&drive, "readme", 100, false, false, false);
     assert!(
         rows.iter().any(|row| row.name() == "readme.txt"),
         "search for 'readme' must find readme.txt"
@@ -139,7 +139,7 @@ fn search_compact_finds_file_by_name() {
 #[test]
 fn display_row_fields_match_source_data() {
     let drive = build_test_drive();
-    let rows = search_compact_drive(&drive, "readme", 100, false, false);
+    let rows = search_compact_drive(&drive, "readme", 100, false, false, false);
     let row = rows
         .iter()
         .find(|row| row.name() == "readme.txt")
@@ -158,7 +158,7 @@ fn display_row_fields_match_source_data() {
 #[test]
 fn display_row_directory_has_tree_metrics() {
     let drive = build_test_drive();
-    let rows = search_compact_drive(&drive, "projects", 100, false, false);
+    let rows = search_compact_drive(&drive, "projects", 100, false, false, false);
     let row = rows
         .iter()
         .find(|row| row.name() == "Projects")
@@ -179,7 +179,15 @@ fn multi_drive_search_applies_filters() {
         hide_system: true,
         ..Default::default()
     };
-    let result = backend.search("*", false, false, Some(100), FilterMode::All, &mut filters);
+    let result = backend.search(
+        "*",
+        false,
+        false,
+        false,
+        Some(100),
+        FilterMode::All,
+        &mut filters,
+    );
     assert!(
         !result.rows.iter().any(|row| row.name() == "$MFT"),
         "hide_system must filter $MFT"
@@ -194,6 +202,7 @@ fn multi_drive_search_files_only() {
     let mut filters = SearchFilters::default();
     let result = backend.search(
         "*",
+        false,
         false,
         false,
         Some(100),
@@ -214,6 +223,7 @@ fn multi_drive_search_dirs_only() {
     let mut filters = SearchFilters::default();
     let result = backend.search(
         "*",
+        false,
         false,
         false,
         Some(100),
@@ -243,6 +253,7 @@ fn multi_drive_search_sort_by_size_desc() {
         "*",
         false,
         false,
+        false,
         Some(100),
         FilterMode::FilesOnly,
         &mut filters,
@@ -259,7 +270,7 @@ fn multi_drive_search_sort_by_size_desc() {
 #[test]
 fn display_row_path_includes_volume_prefix() {
     let drive = build_test_drive();
-    let rows = search_compact_drive(&drive, "readme", 100, false, false);
+    let rows = search_compact_drive(&drive, "readme", 100, false, false, false);
     let row = rows
         .iter()
         .find(|row| row.name() == "readme.txt")
@@ -280,7 +291,15 @@ fn match_all_none_limit_is_unlimited() {
     let mut backend = MultiDriveBackend::new();
     backend.drives.push(drive);
     let mut filters = SearchFilters::default();
-    let all = backend.search("*", false, false, None, FilterMode::All, &mut filters);
+    let all = backend.search(
+        "*",
+        false,
+        false,
+        false,
+        None,
+        FilterMode::All,
+        &mut filters,
+    );
     assert!(
         all.rows.len() >= 1_500,
         "None must be unlimited, got {}",
@@ -294,7 +313,15 @@ fn match_all_explicit_limit_caps_results() {
     let mut backend = MultiDriveBackend::new();
     backend.drives.push(drive);
     let mut filters = SearchFilters::default();
-    let cap = backend.search("*", false, false, Some(500), FilterMode::All, &mut filters);
+    let cap = backend.search(
+        "*",
+        false,
+        false,
+        false,
+        Some(500),
+        FilterMode::All,
+        &mut filters,
+    );
     assert!(
         cap.rows.len() <= 500,
         "Some(500) must cap, got {}",
@@ -308,8 +335,24 @@ fn unlimited_returns_more_than_capped() {
     let mut backend = MultiDriveBackend::new();
     backend.drives.push(drive);
     let mut filters = SearchFilters::default();
-    let all = backend.search("*", false, false, None, FilterMode::All, &mut filters);
-    let cap = backend.search("*", false, false, Some(500), FilterMode::All, &mut filters);
+    let all = backend.search(
+        "*",
+        false,
+        false,
+        false,
+        None,
+        FilterMode::All,
+        &mut filters,
+    );
+    let cap = backend.search(
+        "*",
+        false,
+        false,
+        false,
+        Some(500),
+        FilterMode::All,
+        &mut filters,
+    );
     assert!(all.rows.len() > cap.rows.len(), "unlimited > capped");
 }
 
@@ -418,7 +461,7 @@ fn ads_on_directory_display_row_is_not_directory() {
     let drive = build_ads_on_dir_drive();
     // needle must be lowered — search_compact_drive expects pre-lowered for
     // case-insensitive
-    let rows = search_compact_drive(&drive, "myfolder:metadata", 100, false, false);
+    let rows = search_compact_drive(&drive, "myfolder:metadata", 100, false, false, false);
     let ads_row = rows
         .iter()
         .find(|row| row.name().contains(':'))
@@ -435,7 +478,7 @@ fn normal_directory_display_row_is_directory() {
     let drive = build_ads_on_dir_drive();
     // needle must be lowered — search_compact_drive expects pre-lowered for
     // case-insensitive
-    let rows = search_compact_drive(&drive, "myfolder", 100, false, false);
+    let rows = search_compact_drive(&drive, "myfolder", 100, false, false, false);
     let dir_row = rows
         .iter()
         .find(|row| row.name() == "MyFolder")
@@ -453,7 +496,7 @@ fn normal_directory_display_row_is_directory() {
 #[test]
 fn case_sensitive_search_misses_wrong_case() {
     let drive = build_test_drive();
-    let rows = search_compact_drive(&drive, "README", 100, true, false);
+    let rows = search_compact_drive(&drive, "README", 100, true, false, false);
     assert!(
         !rows.iter().any(|row| row.name() == "readme.txt"),
         "case-sensitive 'README' must not match 'readme.txt'"
@@ -465,7 +508,7 @@ fn case_insensitive_search_finds_any_case() {
     let drive = build_test_drive();
     // needle must be pre-lowered for case-insensitive search (caller's
     // responsibility)
-    let rows = search_compact_drive(&drive, "readme", 100, false, false);
+    let rows = search_compact_drive(&drive, "readme", 100, false, false, false);
     assert!(
         rows.iter().any(|row| row.name() == "readme.txt"),
         "case-insensitive 'readme' must match 'readme.txt'"
@@ -476,7 +519,7 @@ fn case_insensitive_search_finds_any_case() {
 fn whole_word_search_exact_match() {
     let drive = build_test_drive();
     // Whole-word with exact name (no extension)
-    let rows = search_compact_drive(&drive, "readme.txt", 100, false, true);
+    let rows = search_compact_drive(&drive, "readme.txt", 100, false, true, false);
     assert!(
         rows.iter().any(|row| row.name() == "readme.txt"),
         "whole-word exact match must find readme.txt"

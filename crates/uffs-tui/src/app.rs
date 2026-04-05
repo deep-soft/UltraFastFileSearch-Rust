@@ -372,8 +372,8 @@ impl App {
         }
     }
 
-    /// Search via daemon IPC.
-    fn search_via_daemon(&mut self, pattern: &str) {
+    /// Build daemon search parameters from the current TUI state.
+    fn build_daemon_params(&self, pattern: &str) -> uffs_client::protocol::SearchParams {
         use uffs_client::protocol::{SearchFilterMode, SearchParams, SearchResponseMode};
 
         let effective_limit = self.effective_limit(pattern);
@@ -399,6 +399,7 @@ impl App {
             pattern: pattern.to_owned(),
             case_sensitive: self.case_sensitive,
             whole_word: self.whole_word,
+            match_path: false, // TUI uses name-only by default
             sort,
             sorts: Vec::new(),
             sort_desc: self.sort_desc(),
@@ -427,11 +428,33 @@ impl App {
             attr: None,
             ext: None,
             exclude: None,
+            path_contains: None,
+            type_filter: None,
+            min_bulkiness: None,
+            max_bulkiness: None,
+            min_name_len: self.search_filters.min_name_len,
+            max_name_len: self.search_filters.max_name_len,
+            min_path_len: self.search_filters.min_path_len,
+            max_path_len: self.search_filters.max_path_len,
+            min_allocated: self.search_filters.min_allocated,
+            max_allocated: self.search_filters.max_allocated,
+            min_treesize: self.search_filters.min_treesize,
+            max_treesize: self.search_filters.max_treesize,
+            min_tree_allocated: self.search_filters.min_tree_allocated,
+            max_tree_allocated: self.search_filters.max_tree_allocated,
+            allowed_months: self.search_filters.allowed_months.clone(),
             hide_system: self.search_filters.hide_system,
+            hide_ads: self.search_filters.hide_ads,
             profile: false,
             predicates: Vec::new(),
         };
         params.populate_canonical_fields();
+        params
+    }
+
+    /// Search via daemon IPC.
+    fn search_via_daemon(&mut self, pattern: &str) {
+        let params = self.build_daemon_params(pattern);
 
         // `daemon_backend` is `Some` — checked by caller.
         let db = self.daemon_backend.as_mut();

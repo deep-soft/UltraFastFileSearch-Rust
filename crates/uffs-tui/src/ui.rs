@@ -688,6 +688,14 @@ fn build_cell<'a>(
             col.canonical_name().to_owned(),
             Style::default().fg(Color::DarkGray),
         ))),
+        FieldId::NameLength => Cell::from(Line::from(Span::styled(
+            format!("{}", row.name().chars().count()),
+            Style::default().fg(Color::Cyan),
+        ))),
+        FieldId::PathLength => Cell::from(Line::from(Span::styled(
+            format!("{}", row.path.chars().count()),
+            Style::default().fg(Color::Cyan),
+        ))),
     }
 }
 

@@ -50,5 +50,6 @@ pub const fn default_constraint(col: FieldId) -> ratatui::layout::Constraint {
         | FieldId::RecallOnOpen
         | FieldId::RecallOnDataAccess => Constraint::Length(4),
         FieldId::ParityAttributes => Constraint::Length(8),
+        FieldId::NameLength | FieldId::PathLength => Constraint::Length(5),
     }
 }

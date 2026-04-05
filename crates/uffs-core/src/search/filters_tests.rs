@@ -257,22 +257,10 @@ fn filter_extension_accepts_matching_extension() {
 
 #[test]
 fn from_params_normalizes_extensions_to_lowercase_without_dot() {
-    let filters = SearchFilters::from_params(
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(" .RS, JPG ,PnG "),
-        None,
-    );
+    let filters = SearchFilters::from_params(&SearchFilterParams {
+        ext_filter: Some(" .RS, JPG ,PnG "),
+        ..Default::default()
+    });
 
     assert_eq!(filters.extensions, ["rs", "jpg", "png"]);
 }
@@ -280,22 +268,10 @@ fn from_params_normalizes_extensions_to_lowercase_without_dot() {
 #[test]
 fn resolve_ext_ids_for_drive_accepts_mixed_case_extensions() {
     let drive = test_drive_with_rs_file();
-    let mut filters = SearchFilters::from_params(
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some("RS"),
-        None,
-    );
+    let mut filters = SearchFilters::from_params(&SearchFilterParams {
+        ext_filter: Some("RS"),
+        ..Default::default()
+    });
 
     filters.resolve_ext_ids_for_drive(&drive);
 
@@ -777,4 +753,642 @@ fn parse_size_invalid() {
     assert!(parse_size("abc").is_err());
     assert!(parse_size("MB").is_err());
     assert!(parse_size("-1KB").is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Month extraction + parsing
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn month_from_unix_micros_epoch() {
+    // 1970-01-01 00:00:00 UTC → January
+    assert_eq!(month_from_unix_micros(0), 1);
+}
+
+#[test]
+fn month_from_unix_micros_december() {
+    // 2025-12-15 00:00:00 UTC → December
+    // Dec 15 2025 = roughly 20437 days
+    let us = 1_765_756_800_000_000_i64; // 2025-12-15 00:00 UTC
+    assert_eq!(month_from_unix_micros(us), 12);
+}
+
+#[test]
+fn parse_month_spec_single_month() {
+    assert_eq!(parse_month_spec("january"), vec![1]);
+    assert_eq!(parse_month_spec("Jan"), vec![1]);
+    assert_eq!(parse_month_spec("dec"), vec![12]);
+}
+
+#[test]
+fn parse_month_spec_quarter() {
+    assert_eq!(parse_month_spec("Q1"), vec![1, 2, 3]);
+    assert_eq!(parse_month_spec("q4"), vec![10, 11, 12]);
+}
+
+#[test]
+fn parse_month_spec_combo() {
+    assert_eq!(parse_month_spec("jan,feb"), vec![1, 2]);
+    assert_eq!(parse_month_spec("Q1,october"), vec![1, 2, 3, 10]);
+}
+
+#[test]
+fn parse_month_spec_dedup() {
+    // Q1 includes jan; jan should not appear twice
+    assert_eq!(parse_month_spec("Q1,jan"), vec![1, 2, 3]);
+}
+
+#[test]
+fn parse_month_spec_unknown_ignored() {
+    assert_eq!(parse_month_spec("foo"), Vec::<u32>::new());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Extension collection expansion
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn from_params_expands_extension_collections() {
+    let filters = SearchFilters::from_params(&SearchFilterParams {
+        ext_filter: Some("executables"),
+        ..Default::default()
+    });
+    assert!(filters.extensions.contains(&"exe".to_owned()));
+    assert!(filters.extensions.contains(&"bat".to_owned()));
+    assert!(filters.extensions.contains(&"ps1".to_owned()));
+}
+
+#[test]
+fn from_params_expands_documents_collection() {
+    let filters = SearchFilters::from_params(&SearchFilterParams {
+        ext_filter: Some("documents,rs"),
+        ..Default::default()
+    });
+    // Should contain both expanded docs and the literal "rs"
+    assert!(filters.extensions.contains(&"pdf".to_owned()));
+    assert!(filters.extensions.contains(&"docx".to_owned()));
+    assert!(filters.extensions.contains(&"rs".to_owned()));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Attribute presets
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn parse_attr_require_system_files_preset() {
+    let bits = parse_attr_require("system-files");
+    // system-files → hidden (0x2) + system (0x4) = 6
+    assert_eq!(bits, 0x2 | 0x4);
+}
+
+#[test]
+fn parse_attr_exclude_user_files_preset() {
+    let bits = parse_attr_exclude("user-files");
+    // user-files → !hidden + !system
+    assert_eq!(bits, 0x2 | 0x4);
+}
+
+#[test]
+fn parse_attr_require_compressed_encrypted_preset() {
+    let bits = parse_attr_require("compressed-encrypted");
+    // compressed (0x800) + encrypted (0x4000)
+    assert_eq!(bits, 0x0800 | 0x4000);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// hide_ads filter
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn filter_hide_ads_rejects_colon_in_name() {
+    let mut names = Vec::new();
+    let rec = test_record("file.txt:Zone.Identifier", &mut names);
+    let filters = SearchFilters {
+        hide_ads: true,
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "ADS names containing ':' should be rejected"
+    );
+}
+
+#[test]
+fn filter_hide_ads_accepts_normal_names() {
+    let mut names = Vec::new();
+    let rec = test_record("readme.txt", &mut names);
+    let filters = SearchFilters {
+        hide_ads: true,
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "Normal names without ':' should pass hide_ads"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Name-length filters
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn filter_min_name_len_rejects_short_names() {
+    let mut names = Vec::new();
+    let rec = test_record("a.txt", &mut names); // 5 chars
+    let filters = SearchFilters {
+        min_name_len: Some(10),
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "name 'a.txt' (5 chars) should be rejected by min_name_len=10"
+    );
+}
+
+#[test]
+fn filter_min_name_len_accepts_long_names() {
+    let mut names = Vec::new();
+    let rec = test_record("long_filename.txt", &mut names); // 17 chars
+    let filters = SearchFilters {
+        min_name_len: Some(10),
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "name 'long_filename.txt' (17 chars) should pass min_name_len=10"
+    );
+}
+
+#[test]
+fn filter_max_name_len_rejects_long_names() {
+    let mut names = Vec::new();
+    let rec = test_record("very_long_filename.txt", &mut names); // 22 chars
+    let filters = SearchFilters {
+        max_name_len: Some(10),
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "name 'very_long_filename.txt' (22 chars) should be rejected by max_name_len=10"
+    );
+}
+
+#[test]
+fn filter_max_name_len_accepts_short_names() {
+    let mut names = Vec::new();
+    let rec = test_record("hi.rs", &mut names); // 5 chars
+    let filters = SearchFilters {
+        max_name_len: Some(10),
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "name 'hi.rs' (5 chars) should pass max_name_len=10"
+    );
+}
+
+#[test]
+fn filter_name_len_range() {
+    let mut names = Vec::new();
+    let rec = test_record("medium.txt", &mut names); // 10 chars
+    let filters = SearchFilters {
+        min_name_len: Some(5),
+        max_name_len: Some(15),
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "name 'medium.txt' (10 chars) should pass 5..15 range"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Size-on-disk (allocated) filters
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn filter_min_allocated_rejects_small_allocation() {
+    let mut names = Vec::new();
+    let rec = test_record("file.txt", &mut names); // allocated = 1024
+    let filters = SearchFilters {
+        min_allocated: Some(4096),
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "allocated=1024 should be rejected by min_allocated=4096"
+    );
+}
+
+#[test]
+fn filter_min_allocated_accepts_large_allocation() {
+    let mut names = Vec::new();
+    let rec = test_record("file.txt", &mut names); // allocated = 1024
+    let filters = SearchFilters {
+        min_allocated: Some(512),
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "allocated=1024 should pass min_allocated=512"
+    );
+}
+
+#[test]
+fn filter_max_allocated_rejects_large_allocation() {
+    let mut names = Vec::new();
+    let rec = test_record("file.txt", &mut names); // allocated = 1024
+    let filters = SearchFilters {
+        max_allocated: Some(512),
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "allocated=1024 should be rejected by max_allocated=512"
+    );
+}
+
+#[test]
+fn filter_max_allocated_accepts_small_allocation() {
+    let mut names = Vec::new();
+    let rec = test_record("file.txt", &mut names); // allocated = 1024
+    let filters = SearchFilters {
+        max_allocated: Some(2048),
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "allocated=1024 should pass max_allocated=2048"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Tree-size filters
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn filter_min_treesize_rejects_small_tree() {
+    let mut names = Vec::new();
+    let rec = test_record("project", &mut names); // treesize = 5000
+    let filters = SearchFilters {
+        min_treesize: Some(10_000),
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "treesize=5000 should be rejected by min_treesize=10000"
+    );
+}
+
+#[test]
+fn filter_min_treesize_accepts_large_tree() {
+    let mut names = Vec::new();
+    let rec = test_record("project", &mut names); // treesize = 5000
+    let filters = SearchFilters {
+        min_treesize: Some(1000),
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "treesize=5000 should pass min_treesize=1000"
+    );
+}
+
+#[test]
+fn filter_max_treesize_rejects_large_tree() {
+    let mut names = Vec::new();
+    let rec = test_record("project", &mut names); // treesize = 5000
+    let filters = SearchFilters {
+        max_treesize: Some(1000),
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "treesize=5000 should be rejected by max_treesize=1000"
+    );
+}
+
+#[test]
+fn filter_max_treesize_accepts_small_tree() {
+    let mut names = Vec::new();
+    let rec = test_record("project", &mut names); // treesize = 5000
+    let filters = SearchFilters {
+        max_treesize: Some(10_000),
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "treesize=5000 should pass max_treesize=10000"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Tree-allocated filters
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn filter_min_tree_allocated_rejects_small_tree() {
+    let mut names = Vec::new();
+    let rec = test_record("project", &mut names); // tree_allocated = 5120
+    let filters = SearchFilters {
+        min_tree_allocated: Some(10_000),
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "tree_allocated=5000 should be rejected by min_tree_allocated=10000"
+    );
+}
+
+#[test]
+fn filter_max_tree_allocated_accepts_small_tree() {
+    let mut names = Vec::new();
+    let rec = test_record("project", &mut names); // tree_allocated = 5120
+    let filters = SearchFilters {
+        max_tree_allocated: Some(10_000),
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "tree_allocated=5000 should pass max_tree_allocated=10000"
+    );
+}
+
+#[test]
+fn filter_max_tree_allocated_rejects_large_tree() {
+    let mut names = Vec::new();
+    let rec = test_record("project", &mut names); // tree_allocated = 5120
+    let filters = SearchFilters {
+        max_tree_allocated: Some(1000),
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "tree_allocated=5000 should be rejected by max_tree_allocated=1000"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Month-of-year filter
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn filter_allowed_months_accepts_matching_month() {
+    let mut names = Vec::new();
+    // test_record sets modified = 200_000_000 µs = 200 seconds = 1970-01-01 → month
+    // 1
+    let rec = test_record("file.txt", &mut names);
+    let filters = SearchFilters {
+        allowed_months: vec![1],
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "month=1 (January) should match modified=200_000_000µs"
+    );
+}
+
+#[test]
+fn filter_allowed_months_rejects_non_matching_month() {
+    let mut names = Vec::new();
+    // test_record modified = 200_000_000 µs → month 1 (January)
+    let rec = test_record("file.txt", &mut names);
+    let filters = SearchFilters {
+        allowed_months: vec![6, 7, 8], // summer months
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "months [6,7,8] should reject file modified in month 1"
+    );
+}
+
+#[test]
+fn filter_empty_months_means_no_filter() {
+    let mut names = Vec::new();
+    let rec = test_record("file.txt", &mut names);
+    let filters = SearchFilters {
+        allowed_months: vec![],
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "empty allowed_months should pass all records"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Combined new + old filters
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn filter_combined_allocated_plus_size() {
+    let mut names = Vec::new();
+    let rec = test_record("data.bin", &mut names); // size=1000, allocated=1024
+    let filters = SearchFilters {
+        min_size: Some(500),
+        max_allocated: Some(2048),
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "size=1000 >= 500 AND allocated=1024 <= 2048 should pass"
+    );
+}
+
+#[test]
+fn filter_combined_name_len_plus_size() {
+    let mut names = Vec::new();
+    let rec = test_record("a.txt", &mut names); // name len=5, size=1000
+    let filters = SearchFilters {
+        min_name_len: Some(10), // 5 < 10 → reject
+        min_size: Some(500),
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "name_len=5 < 10 should reject even though size passes"
+    );
+}
+
+#[test]
+fn filter_combined_treesize_plus_descendants() {
+    let mut names = Vec::new();
+    let rec = test_record("project", &mut names); // treesize=5000, descendants=5
+    let filters = SearchFilters {
+        min_treesize: Some(1000),
+        min_descendants: Some(5),
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "treesize=5000 >= 1000 AND descendants=10 >= 5 should pass"
+    );
+}
+
+#[test]
+fn filter_combined_month_plus_attr() {
+    let mut names = Vec::new();
+    let rec = test_record("file.txt", &mut names); // flags=0x20 (archive), month=1
+    let filters = SearchFilters {
+        attr_require: 0x20,      // archive bit
+        allowed_months: vec![1], // January
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "archive flag set + month=11 should pass"
+    );
+}
+
+#[test]
+fn filter_combined_all_new_fields() {
+    let mut names = Vec::new();
+    let rec = test_record("medium.txt", &mut names); // 10 chars, sz=1000, alloc=1024, ts=5000, ta=5000, month=11
+    let filters = SearchFilters {
+        min_name_len: Some(5),
+        max_name_len: Some(20),
+        min_allocated: Some(512),
+        max_allocated: Some(4096),
+        min_treesize: Some(1000),
+        max_treesize: Some(10_000),
+        min_tree_allocated: Some(1000),
+        max_tree_allocated: Some(10_000),
+        allowed_months: vec![1], // January (modified=200_000_000µs)
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(
+            &rec,
+            &names,
+            &mut Vec::new(),
+            uffs_text::CaseFold::default_table()
+        ),
+        "all new filter fields should pass with matching test record"
+    );
 }

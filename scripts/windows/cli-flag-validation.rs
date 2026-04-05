@@ -860,6 +860,103 @@ fn run_test_suite(t: &mut TestRunner) {
     });
 
     // ═══════════════════════════════════════════════════════════════════
+    // DERIVED FIELD SORT TESTS — Tree metrics, bulkiness, lengths
+    // Validates newly-wired sort columns in compare_by_column:
+    //  treesize, tree_allocated, bulkiness, namelength, pathlength, path_only, type
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T67a. --sort treesize (largest subtrees first) ───────────────
+    t.test("T67a --sort treesize", &[
+        "*", "--dirs-only", "--sort", "treesize", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.len() >= 2 {
+            let vals: Vec<u64> = rows.iter().map(|r| col_val(r, &h, "Tree Size").parse().unwrap_or(0)).collect();
+            for w in vals.windows(2) {
+                if w[0] < w[1] { bail!("Not desc: {} < {}", w[0], w[1]); }
+            }
+        }
+        Ok(format!("{} rows, sorted by treesize desc", rows.len()))
+    });
+
+    // ── T67b. --sort treeallocated ───────────────────────────────────
+    t.test("T67b --sort treeallocated", &[
+        "*", "--dirs-only", "--sort", "treeallocated", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.len() >= 2 {
+            let vals: Vec<u64> = rows.iter().map(|r| col_val(r, &h, "Tree Allocated").parse().unwrap_or(0)).collect();
+            for w in vals.windows(2) {
+                if w[0] < w[1] { bail!("Not desc: {} < {}", w[0], w[1]); }
+            }
+        }
+        Ok(format!("{} rows, sorted by treeallocated desc", rows.len()))
+    });
+
+    // ── T67c. --sort bulkiness ───────────────────────────────────────
+    t.test("T67c --sort bulkiness", &[
+        "*", "--files-only", "--min-size", "1024", "--sort", "bulkiness", "--limit", "10"
+    ], |stdout, _| {
+        assert_rows(stdout, 1, 10)
+    });
+
+    // ── T67d. --sort namelength (longest names first) ────────────────
+    t.test("T67d --sort namelength", &[
+        "*", "--files-only", "--sort", "namelength", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.len() >= 2 {
+            let lens: Vec<usize> = rows.iter().map(|r| col_val(r, &h, "Name").chars().count()).collect();
+            for w in lens.windows(2) {
+                if w[0] < w[1] { bail!("Not desc: {} < {}", w[0], w[1]); }
+            }
+        }
+        Ok(format!("{} rows, sorted by name length desc", rows.len()))
+    });
+
+    // ── T67e. --sort pathlength (longest paths first) ────────────────
+    t.test("T67e --sort pathlength", &[
+        "*", "--files-only", "--sort", "pathlength", "--limit", "10"
+    ], |stdout, _| {
+        assert_rows(stdout, 1, 10)
+    });
+
+    // ── T67f. --sort path_only ───────────────────────────────────────
+    t.test("T67f --sort path_only", &[
+        "*.exe", "--sort", "path_only", "--limit", "10"
+    ], |stdout, _| {
+        assert_rows(stdout, 1, 10)
+    });
+
+    // ── T67g. --sort type (semantic category) ────────────────────────
+    t.test("T67g --sort type", &[
+        "*", "--files-only", "--sort", "type", "--limit", "20"
+    ], |stdout, _| {
+        assert_rows(stdout, 1, 20)
+    });
+
+    // ── T67h. multi-sort: treesize desc, name asc ────────────────────
+    t.test("T67h multi-sort treesize,name", &[
+        "*", "--dirs-only", "--sort", "treesize,name", "--limit", "20", "--columns", "all"
+    ], |stdout, _| {
+        assert_rows(stdout, 1, 20)
+    });
+
+    // ── T67i. multi-sort: type asc, size desc ────────────────────────
+    t.test("T67i multi-sort type,-size", &[
+        "*", "--files-only", "--sort", "type,-size", "--limit", "20"
+    ], |stdout, _| {
+        assert_rows(stdout, 1, 20)
+    });
+
+    // ── T67j. multi-sort: hidden desc, bulkiness desc ────────────────
+    t.test("T67j multi-sort hidden,bulkiness", &[
+        "*", "--files-only", "--min-size", "1024", "--sort", "hidden,bulkiness", "--limit", "20"
+    ], |stdout, _| {
+        assert_rows(stdout, 1, 20)
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
     // BOOL ATTRIBUTE MATRIX
     // Validates all 17 bool-typed attribute fields through --attr flag.
     // Each test verifies the correct column reads "1" for require,
@@ -1113,6 +1210,648 @@ fn run_test_suite(t: &mut TestRunner) {
             if name.starts_with('$') { bail!("Row {i}: {name} starts with $ despite hide-system"); }
         }
         Ok(format!("{} rows", rows.len()))
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SEARCH MODE TESTS — Scope prefixes, pattern sugar, path filter
+    // Validates path:/dir:/file: prefixes, --begins-with, --ends-with,
+    // --contains, --not-contains, and --in-path + pattern combos.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T88a. path: prefix (match against full path) ─────────────────
+    t.test("T88a path: prefix", &[
+        "path:*windows*", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.is_empty() { bail!("No rows"); }
+        for (i, row) in rows.iter().enumerate() {
+            let path = col_val(row, &h, "Path Only").to_lowercase();
+            let name = col_val(row, &h, "Name").to_lowercase();
+            let full = format!("{path}{name}");
+            if !full.contains("windows") {
+                bail!("Row {i}: full path '{full}' doesn't contain 'windows'");
+            }
+        }
+        Ok(format!("{} rows, all paths contain 'windows'", rows.len()))
+    });
+
+    // ── T88b. dir: prefix (directories only) ─────────────────────────
+    t.test("T88b dir: prefix", &[
+        "dir:*system*", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.is_empty() { bail!("No rows"); }
+        for (i, row) in rows.iter().enumerate() {
+            let dir_flag = col_val(row, &h, "Directory Flag");
+            if dir_flag != "1" {
+                bail!("Row {i}: dir: prefix returned non-directory (Directory Flag={dir_flag})");
+            }
+        }
+        Ok(format!("{} rows, all directories", rows.len()))
+    });
+
+    // ── T88c. file: prefix (files only) ──────────────────────────────
+    t.test("T88c file: prefix", &[
+        "file:*.dll", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.is_empty() { bail!("No rows"); }
+        for (i, row) in rows.iter().enumerate() {
+            let dir_flag = col_val(row, &h, "Directory Flag");
+            if dir_flag == "1" {
+                bail!("Row {i}: file: prefix returned directory");
+            }
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if !name.ends_with(".dll") {
+                bail!("Row {i}: {name} doesn't end with .dll");
+            }
+        }
+        Ok(format!("{} rows, all .dll files", rows.len()))
+    });
+
+    // ── T88d. --begins-with ──────────────────────────────────────────
+    t.test("T88d --begins-with", &[
+        "--begins-with", "note", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if !name.starts_with("note") {
+                bail!("Row {i}: {name} doesn't start with 'note'");
+            }
+        }
+        Ok(format!("{} rows, all begin with 'note'", rows.len()))
+    });
+
+    // ── T88e. --ends-with ────────────────────────────────────────────
+    t.test("T88e --ends-with", &[
+        "--ends-with", ".log", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if !name.ends_with(".log") {
+                bail!("Row {i}: {name} doesn't end with '.log'");
+            }
+        }
+        Ok(format!("{} rows, all end with '.log'", rows.len()))
+    });
+
+    // ── T88f. --contains ─────────────────────────────────────────────
+    t.test("T88f --contains", &[
+        "--contains", "setup", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if !name.contains("setup") {
+                bail!("Row {i}: {name} doesn't contain 'setup'");
+            }
+        }
+        Ok(format!("{} rows, all contain 'setup'", rows.len()))
+    });
+
+    // ── T88g. --not-contains (exclusion) ─────────────────────────────
+    t.test("T88g --not-contains", &[
+        "*.log", "--not-contains", "debug", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if name.contains("debug") {
+                bail!("Row {i}: {name} contains 'debug' despite --not-contains");
+            }
+            if !name.ends_with(".log") {
+                bail!("Row {i}: {name} not a .log file");
+            }
+        }
+        Ok(format!("{} rows, no 'debug' in names", rows.len()))
+    });
+
+    // ── T88h. --in-path + filename pattern ───────────────────────────
+    t.test("T88h --in-path + pattern", &[
+        "*.exe", "--in-path", "*windows*", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.is_empty() { bail!("No rows"); }
+        for (i, row) in rows.iter().enumerate() {
+            let path = col_val(row, &h, "Path Only").to_lowercase();
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if !path.contains("windows") {
+                bail!("Row {i}: path={path} doesn't contain 'windows'");
+            }
+            if !name.ends_with(".exe") {
+                bail!("Row {i}: {name} not .exe");
+            }
+        }
+        Ok(format!("{} rows, .exe files in *windows*", rows.len()))
+    });
+
+    // ── T88i. path: prefix vs --in-path distinction ──────────────────
+    // path: matches filename too; --in-path matches directory only.
+    t.test("T88i path: vs --in-path", &[
+        "path:*notepad*", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        // path: should match files named "notepad*" OR in paths containing "notepad"
+        for (i, row) in rows.iter().enumerate() {
+            let path = col_val(row, &h, "Path Only").to_lowercase();
+            let name = col_val(row, &h, "Name").to_lowercase();
+            let full = format!("{path}{name}");
+            if !full.contains("notepad") {
+                bail!("Row {i}: full path '{full}' doesn't contain 'notepad'");
+            }
+        }
+        Ok(format!("{} rows, path: matched", rows.len()))
+    });
+
+    // ── T88j. --contains + --not-contains combined ───────────────────
+    t.test("T88j --contains + --not-contains", &[
+        "--contains", "update", "--not-contains", "old",
+        "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if !name.contains("update") {
+                bail!("Row {i}: {name} doesn't contain 'update'");
+            }
+            if name.contains("old") {
+                bail!("Row {i}: {name} contains 'old' despite --not-contains");
+            }
+        }
+        Ok(format!("{} rows, contains 'update' but not 'old'", rows.len()))
+    });
+
+    // ── T88k. dir: prefix + sort by treesize ─────────────────────────
+    t.test("T88k dir: prefix + sort treesize", &[
+        "dir:*program*", "--sort", "treesize", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let dir_flag = col_val(row, &h, "Directory Flag");
+            if dir_flag != "1" {
+                bail!("Row {i}: dir: prefix returned non-directory");
+            }
+        }
+        if rows.len() >= 2 {
+            let sizes: Vec<u64> = rows.iter().map(|r| col_val(r, &h, "Tree Size").parse().unwrap_or(0)).collect();
+            for w in sizes.windows(2) {
+                if w[0] < w[1] { bail!("Treesize not desc: {} < {}", w[0], w[1]); }
+            }
+        }
+        Ok(format!("{} dirs sorted by treesize", rows.len()))
+    });
+
+    // ── T88l. --begins-with + --ext combined ─────────────────────────
+    t.test("T88l --begins-with + --ext", &[
+        "--begins-with", "win", "--ext", "exe,dll", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if !name.starts_with("win") {
+                bail!("Row {i}: {name} doesn't start with 'win'");
+            }
+            if !name.ends_with(".exe") && !name.ends_with(".dll") {
+                bail!("Row {i}: {name} not .exe/.dll");
+            }
+        }
+        Ok(format!("{} rows, begins-with + ext", rows.len()))
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // TYPE FILTER TESTS — Semantic file categorization
+    // Validates --type <category> post-filter via semantic_type_for_row().
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T89. --type code ─────────────────────────────────────────────
+    t.test("T89 --type code", &[
+        "*", "--type", "code", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.is_empty() { bail!("No rows"); }
+        let code_exts = ["rs","py","js","ts","java","c","cpp","h","hpp","go","rb","php","swift","kt"];
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if !code_exts.iter().any(|e| name.ends_with(&format!(".{e}"))) {
+                bail!("Row {i}: {name} is not a code file");
+            }
+        }
+        Ok(format!("{} rows, all code files", rows.len()))
+    });
+
+    // ── T90. --type document ─────────────────────────────────────────
+    t.test("T90 --type document", &[
+        "*", "--type", "document", "--files-only", "--limit", "10"
+    ], |stdout, _| {
+        assert_rows(stdout, 0, 10)
+    });
+
+    // ── T91. --type executable ───────────────────────────────────────
+    t.test("T91 --type executable", &[
+        "*", "--type", "executable", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.is_empty() { bail!("No rows"); }
+        let exec_exts = ["exe","msi","bat","cmd","ps1","com","scr"];
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if !exec_exts.iter().any(|e| name.ends_with(&format!(".{e}"))) {
+                bail!("Row {i}: {name} is not an executable");
+            }
+        }
+        Ok(format!("{} rows, all executables", rows.len()))
+    });
+
+    // ── T92. --type picture ──────────────────────────────────────────
+    t.test("T92 --type picture", &[
+        "*", "--type", "picture", "--files-only", "--limit", "10"
+    ], |stdout, _| {
+        assert_rows(stdout, 0, 10)
+    });
+
+    // ── T93. --type system ───────────────────────────────────────────
+    t.test("T93 --type system", &[
+        "*", "--type", "system", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        let sys_exts = ["sys","dll","drv","ocx","cpl","ax","mui"];
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if !sys_exts.iter().any(|e| name.ends_with(&format!(".{e}"))) {
+                bail!("Row {i}: {name} is not a system file type");
+            }
+        }
+        Ok(format!("{} rows, all system type", rows.len()))
+    });
+
+    // ── T94. --type combined with sort ───────────────────────────────
+    t.test("T94 --type code + sort size", &[
+        "*", "--type", "code", "--files-only", "--sort", "-size", "--limit", "10"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.len() >= 2 {
+            let sizes: Vec<u64> = rows.iter().map(|r| col_val(r, &h, "Size").parse().unwrap_or(0)).collect();
+            for w in sizes.windows(2) {
+                if w[0] < w[1] { bail!("Not descending: {} < {}", w[0], w[1]); }
+            }
+        }
+        Ok(format!("{} code files sorted by size desc", rows.len()))
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // IN-PATH FILTER TESTS — Directory path glob matching
+    // Validates --in-path <glob> post-filter on directory portion of path.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T95. --in-path windows ───────────────────────────────────────
+    t.test("T95 --in-path *windows*", &[
+        "*.dll", "--in-path", "*windows*", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.is_empty() { bail!("No rows"); }
+        for (i, row) in rows.iter().enumerate() {
+            let path = col_val(row, &h, "Path Only").to_lowercase();
+            if !path.contains("windows") {
+                bail!("Row {i}: path={path} doesn't contain 'windows'");
+            }
+        }
+        Ok(format!("{} rows, all in *windows*", rows.len()))
+    });
+
+    // ── T96. --in-path system32 ──────────────────────────────────────
+    t.test("T96 --in-path *system32*", &[
+        "*.dll", "--in-path", "*system32*", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let path = col_val(row, &h, "Path Only").to_lowercase();
+            if !path.contains("system32") {
+                bail!("Row {i}: path={path} doesn't contain 'system32'");
+            }
+        }
+        Ok(format!("{} rows, all in *system32*", rows.len()))
+    });
+
+    // ── T97. --in-path combined with --exclude ───────────────────────
+    t.test("T97 --in-path + --exclude", &[
+        "*.exe", "--in-path", "*windows*", "--exclude", "setup*",
+        "--files-only", "--limit", "10"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name").to_lowercase();
+            if name.starts_with("setup") {
+                bail!("Row {i}: {name} matches exclude pattern");
+            }
+        }
+        Ok(format!("{} rows, in-path + exclude", rows.len()))
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // BULKINESS FILTER TESTS — Waste ratio filtering
+    // Validates --min-bulkiness / --max-bulkiness post-filter.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T98. --min-bulkiness 200 (files using ≥2× their size) ────────
+    t.test("T98 --min-bulkiness 200", &[
+        "*", "--min-bulkiness", "200", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        // We can't directly check bulkiness from CSV columns (it's derived),
+        // but we can verify allocated > size for each row.
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let size: u64 = col_val(row, &h, "Size").parse().unwrap_or(1);
+            let alloc: u64 = col_val(row, &h, "Size on Disk").parse().unwrap_or(0);
+            if size > 0 {
+                let bulk = alloc * 100 / size;
+                if bulk < 200 { bail!("Row {i}: bulkiness={bulk}% < 200%"); }
+            }
+        }
+        Ok(format!("{} rows, all bulkiness >= 200%", rows.len()))
+    });
+
+    // ── T99. --max-bulkiness 100 (perfectly packed) ──────────────────
+    t.test("T99 --max-bulkiness 100", &[
+        "*", "--max-bulkiness", "100", "--files-only", "--min-size", "1024",
+        "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let size: u64 = col_val(row, &h, "Size").parse().unwrap_or(1);
+            let alloc: u64 = col_val(row, &h, "Size on Disk").parse().unwrap_or(u64::MAX);
+            if size > 0 {
+                let bulk = alloc * 100 / size;
+                if bulk > 100 { bail!("Row {i}: bulkiness={bulk}% > 100%"); }
+            }
+        }
+        Ok(format!("{} rows, all bulkiness <= 100%", rows.len()))
+    });
+
+    // ── T100. --min-bulkiness + --min-size combined ──────────────────
+    t.test("T100 bulkiness + size combined", &[
+        "*", "--min-bulkiness", "500", "--min-size", "1048576",
+        "--files-only", "--limit", "10"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let size: u64 = col_val(row, &h, "Size").parse().unwrap_or(0);
+            if size < 1_048_576 { bail!("Row {i}: size={size} < 1MB"); }
+        }
+        Ok(format!("{} rows, bulky large files", rows.len()))
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // TREE METRICS TESTS — Subtree size filters for directories
+    // Validates --min/max-treesize and --min/max-tree-allocated.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T101. --min-treesize 100MB (large directory subtrees) ────────
+    t.test("T101 --min-treesize 100MB", &[
+        "*", "--dirs-only", "--min-treesize", "104857600", "--limit", "10",
+        "--sort", "-size", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.is_empty() { bail!("No rows"); }
+        for (i, row) in rows.iter().enumerate() {
+            let ts: u64 = col_val(row, &h, "Tree Size").parse().unwrap_or(0);
+            if ts < 104_857_600 { bail!("Row {i}: Tree Size={ts} < 100MB"); }
+        }
+        Ok(format!("{} dirs with treesize >= 100MB", rows.len()))
+    });
+
+    // ── T102. --max-treesize 1MB (small directory subtrees) ──────────
+    t.test("T102 --max-treesize 1MB", &[
+        "*", "--dirs-only", "--max-treesize", "1048576", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let ts: u64 = col_val(row, &h, "Tree Size").parse().unwrap_or(u64::MAX);
+            if ts > 1_048_576 { bail!("Row {i}: Tree Size={ts} > 1MB"); }
+        }
+        Ok(format!("{} dirs with treesize <= 1MB", rows.len()))
+    });
+
+    // ── T103. --min-tree-allocated 100MB ─────────────────────────────
+    t.test("T103 --min-tree-allocated 100MB", &[
+        "*", "--dirs-only", "--min-tree-allocated", "104857600", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let ta: u64 = col_val(row, &h, "Tree Allocated").parse().unwrap_or(0);
+            if ta < 104_857_600 { bail!("Row {i}: Tree Allocated={ta} < 100MB"); }
+        }
+        Ok(format!("{} dirs with tree-allocated >= 100MB", rows.len()))
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // NAME / PATH LENGTH TESTS
+    // Validates --min/max-name-length and --min/max-path-length.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T104. --min-name-length 50 (long filenames) ──────────────────
+    t.test("T104 --min-name-length 50", &[
+        "*", "--min-name-length", "50", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name");
+            if name.chars().count() < 50 {
+                bail!("Row {i}: name len {} < 50: {name}", name.chars().count());
+            }
+        }
+        Ok(format!("{} rows, all names >= 50 chars", rows.len()))
+    });
+
+    // ── T105. --max-name-length 8 (short filenames) ──────────────────
+    t.test("T105 --max-name-length 8", &[
+        "*", "--max-name-length", "8", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let name = col_val(row, &h, "Name");
+            if name.chars().count() > 8 {
+                bail!("Row {i}: name len {} > 8: {name}", name.chars().count());
+            }
+        }
+        Ok(format!("{} rows, all names <= 8 chars", rows.len()))
+    });
+
+    // ── T106. --min-path-length 200 (deep paths) ─────────────────────
+    t.test("T106 --min-path-length 200", &[
+        "*", "--min-path-length", "200", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let path = col_val(row, &h, "Path Only");
+            let name = col_val(row, &h, "Name");
+            let full = format!("{path}{name}");
+            if full.chars().count() < 200 {
+                bail!("Row {i}: path len {} < 200", full.chars().count());
+            }
+        }
+        Ok(format!("{} rows, all paths >= 200 chars", rows.len()))
+    });
+
+    // ── T107. --max-path-length 30 (short paths) ─────────────────────
+    t.test("T107 --max-path-length 30", &[
+        "*", "--max-path-length", "30", "--files-only", "--limit", "10"
+    ], |stdout, _| {
+        assert_rows(stdout, 0, 10)
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SIZE ON DISK TESTS — Allocated size filters
+    // Validates --min/max-size-on-disk.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T108. --min-size-on-disk 100MB ───────────────────────────────
+    t.test("T108 --min-size-on-disk 100MB", &[
+        "*", "--min-size-on-disk", "104857600", "--files-only", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.is_empty() { bail!("No rows"); }
+        for (i, row) in rows.iter().enumerate() {
+            let alloc: u64 = col_val(row, &h, "Size on Disk").parse().unwrap_or(0);
+            if alloc < 104_857_600 { bail!("Row {i}: Size on Disk={alloc} < 100MB"); }
+        }
+        Ok(format!("{} rows, all allocated >= 100MB", rows.len()))
+    });
+
+    // ── T109. --max-size-on-disk 4096 ────────────────────────────────
+    t.test("T109 --max-size-on-disk 4096", &[
+        "*", "--max-size-on-disk", "4096", "--files-only", "--min-size", "1",
+        "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let alloc: u64 = col_val(row, &h, "Size on Disk").parse().unwrap_or(u64::MAX);
+            if alloc > 4096 { bail!("Row {i}: Size on Disk={alloc} > 4096"); }
+        }
+        Ok(format!("{} rows, all allocated <= 4096", rows.len()))
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MONTH FILTER TESTS — Month-of-year filtering
+    // Validates --month <spec> parsed via parse_month_spec().
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T110. --month jan ────────────────────────────────────────────
+    t.test("T110 --month jan", &[
+        "*", "--month", "jan", "--files-only", "--limit", "10"
+    ], |stdout, _| {
+        assert_rows(stdout, 0, 10)
+    });
+
+    // ── T111. --month Q4 (Oct/Nov/Dec) ───────────────────────────────
+    t.test("T111 --month Q4", &[
+        "*", "--month", "Q4", "--files-only", "--limit", "10"
+    ], |stdout, _| {
+        assert_rows(stdout, 0, 10)
+    });
+
+    // ── T112. --month combo: jan,feb,mar ─────────────────────────────
+    t.test("T112 --month jan,feb,mar", &[
+        "*", "--month", "jan,feb,mar", "--files-only", "--limit", "10"
+    ], |stdout, _| {
+        assert_rows(stdout, 0, 10)
+    });
+
+    // ── T113. --month + --newer combined ─────────────────────────────
+    t.test("T113 --month jan + --newer last_365d", &[
+        "*", "--month", "jan", "--newer", "last_365d", "--files-only", "--limit", "10"
+    ], |stdout, _| {
+        assert_rows(stdout, 0, 10)
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // BOOL ATTRIBUTE SORT TESTS — Sort by flag bit value
+    // Validates field_to_attr_bit() sorting (true/false grouping).
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T114. --sort hidden:desc (hidden files first) ────────────────
+    t.test("T114 --sort hidden:desc", &[
+        "*", "--sort", "hidden:desc", "--limit", "20", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.len() < 2 { return Ok("< 2 rows, skip".into()); }
+        // First rows should have Hidden=1, later rows Hidden=0
+        let flags: Vec<&str> = rows.iter().map(|r| col_val(r, &h, "Hidden")).collect();
+        let mut seen_zero = false;
+        for (i, f) in flags.iter().enumerate() {
+            if *f != "1" { seen_zero = true; }
+            if seen_zero && *f == "1" {
+                bail!("Row {i}: Hidden=1 after Hidden=0 — not sorted desc");
+            }
+        }
+        Ok(format!("{} rows, hidden sorted desc", rows.len()))
+    });
+
+    // ── T115. --sort compressed:desc ─────────────────────────────────
+    t.test("T115 --sort compressed:desc", &[
+        "*", "--sort", "compressed:desc", "--limit", "20", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.len() < 2 { return Ok("< 2 rows, skip".into()); }
+        let flags: Vec<&str> = rows.iter().map(|r| col_val(r, &h, "Compressed")).collect();
+        let mut seen_zero = false;
+        for (i, f) in flags.iter().enumerate() {
+            if *f != "1" { seen_zero = true; }
+            if seen_zero && *f == "1" {
+                bail!("Row {i}: Compressed=1 after 0 — not sorted desc");
+            }
+        }
+        Ok(format!("{} rows, compressed sorted desc", rows.len()))
+    });
+
+    // ── T116. --sort directory:desc ──────────────────────────────────
+    t.test("T116 --sort directory:desc", &[
+        "*", "--sort", "directory:desc", "--limit", "20", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        if rows.len() < 2 { return Ok("< 2 rows, skip".into()); }
+        let flags: Vec<&str> = rows.iter().map(|r| col_val(r, &h, "Directory Flag")).collect();
+        let mut seen_zero = false;
+        for (i, f) in flags.iter().enumerate() {
+            if *f != "1" { seen_zero = true; }
+            if seen_zero && *f == "1" {
+                bail!("Row {i}: Dir=1 after Dir=0 — not sorted desc");
+            }
+        }
+        Ok(format!("{} rows, directory sorted desc", rows.len()))
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    // COMBINED — New filter mega-stress tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T117. type + in-path + size combined ─────────────────────────
+    t.test("T117 type + in-path + size", &[
+        "*", "--type", "system", "--in-path", "*windows*", "--min-size", "1048576",
+        "--files-only", "--sort", "-size", "--limit", "10"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let size: u64 = col_val(row, &h, "Size").parse().unwrap_or(0);
+            if size < 1_048_576 { bail!("Row {i}: size={size} < 1MB"); }
+        }
+        Ok(format!("{} rows, all constraints met", rows.len()))
+    });
+
+    // ── T118. tree metrics + descendants combined ────────────────────
+    t.test("T118 treesize + descendants", &[
+        "*", "--dirs-only", "--min-treesize", "10485760", "--min-descendants", "10",
+        "--sort", "-size", "--limit", "10", "--columns", "all"
+    ], |stdout, _| {
+        let (h, rows) = parse_csv(stdout);
+        for (i, row) in rows.iter().enumerate() {
+            let ts: u64 = col_val(row, &h, "Tree Size").parse().unwrap_or(0);
+            let desc: u64 = col_val(row, &h, "Descendants").parse().unwrap_or(0);
+            if ts < 10_485_760 { bail!("Row {i}: Tree Size={ts} < 10MB"); }
+            if desc < 10 { bail!("Row {i}: descendants={desc} < 10"); }
+        }
+        Ok(format!("{} dirs, treesize+desc constraints met", rows.len()))
     });
 }
 

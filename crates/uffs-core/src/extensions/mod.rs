@@ -58,6 +58,65 @@ pub mod collections {
     pub const CODE: &[&str] = &[
         "rs", "py", "js", "ts", "java", "c", "cpp", "h", "hpp", "go", "rb", "php", "swift", "kt",
     ];
+
+    /// Executable / script file extensions (Windows-centric).
+    pub const EXECUTABLES: &[&str] = &[
+        "exe", "msi", "bat", "cmd", "ps1", "com", "scr", "vbs", "wsf", "dll", "sys",
+    ];
+}
+
+/// Expand a single token that may be a collection alias into its extensions.
+///
+/// If `token` is a known alias (e.g. `"documents"`), returns the list of
+/// extensions.  Otherwise returns `None` (treat as a literal extension).
+#[must_use]
+pub fn expand_collection(token: &str) -> Option<&'static [&'static str]> {
+    match token {
+        "pictures" | "images" => Some(collections::PICTURES),
+        "documents" | "docs" => Some(collections::DOCUMENTS),
+        "videos" | "video" => Some(collections::VIDEOS),
+        "music" | "audio" => Some(collections::MUSIC),
+        "archives" | "compressed" => Some(collections::ARCHIVES),
+        "code" | "source" => Some(collections::CODE),
+        "executables" | "exec" => Some(collections::EXECUTABLES),
+        _ => None,
+    }
+}
+
+/// Expand all collection aliases in a comma-separated extension spec.
+///
+/// Tokens that are known collection aliases (e.g. `"executables"`) are
+/// replaced with the individual extensions.  Literal extensions pass through
+/// unchanged.  The result is a normalised comma-separated string of
+/// primitive extension names.
+///
+/// ```
+/// # use uffs_core::extensions::expand_ext_spec;
+/// assert_eq!(expand_ext_spec("rs"), "rs");
+/// assert_eq!(
+///     expand_ext_spec("executables"),
+///     "exe,msi,bat,cmd,ps1,com,scr,vbs,wsf,dll,sys",
+/// );
+/// assert!(expand_ext_spec("documents,rs").contains("pdf"));
+/// assert!(expand_ext_spec("documents,rs").ends_with(",rs"));
+/// ```
+#[must_use]
+pub fn expand_ext_spec(spec: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for raw in spec.split(',') {
+        let token = raw.trim().to_ascii_lowercase();
+        let token_ref = token.as_str();
+        // Strip leading dot if present.
+        let clean = token_ref.strip_prefix('.').unwrap_or(token_ref);
+        if let Some(exts) = expand_collection(clean) {
+            out.extend(exts.iter().copied());
+        } else {
+            // Literal ext — push owned slice.  Since we're building a
+            // String anyway, this is fine.
+            out.push(raw.trim());
+        }
+    }
+    out.join(",")
 }
 
 /// Extension filter for matching files by extension.
@@ -101,18 +160,12 @@ impl ExtensionFilter {
             }
 
             // Check if it's a collection alias
-            match part.as_str() {
-                "pictures" | "images" => filter.add_collection(collections::PICTURES),
-                "documents" | "docs" => filter.add_collection(collections::DOCUMENTS),
-                "videos" | "video" => filter.add_collection(collections::VIDEOS),
-                "music" | "audio" => filter.add_collection(collections::MUSIC),
-                "archives" | "compressed" => filter.add_collection(collections::ARCHIVES),
-                "code" | "source" => filter.add_collection(collections::CODE),
-                _ => {
-                    // Individual extension - strip leading dot if present
-                    let ext = part.strip_prefix('.').unwrap_or(&part);
-                    filter.extensions.insert(ext.to_owned());
-                }
+            if let Some(exts) = expand_collection(&part) {
+                filter.add_collection(exts);
+            } else {
+                // Individual extension - strip leading dot if present
+                let ext = part.strip_prefix('.').unwrap_or(&part);
+                filter.extensions.insert(ext.to_owned());
             }
         }
 

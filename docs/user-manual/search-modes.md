@@ -4,8 +4,8 @@ UFFS supports several search modes that determine how your pattern is
 interpreted and matched against the NTFS Master File Table.  Choosing the
 right mode can dramatically improve both precision and performance.
 
-> **See also:** [CLI Overview](cli-overview.md) · [Filters](filters.md) ·
-> [Sorting](sorting.md)
+> **See also:** [Concepts](concepts.md) · [CLI Overview](cli-overview.md) ·
+> [Filters](filters.md) · [Sorting](sorting.md)
 
 ---
 
@@ -262,7 +262,97 @@ uffs '*' --newer 1d
 
 ---
 
-## 10  Drive Scoping
+## 10  Scope Prefixes
+
+UFFS supports **Everything-compatible scope prefixes** that modify how
+the pattern is applied.  Prefix the pattern with `path:`, `dir:`, or
+`file:` to change the search scope:
+
+| Prefix | Effect | Equivalent |
+|--------|--------|------------|
+| `path:` | Match against the **full path** (not just filename) | path matching enabled |
+| `dir:` | Only search **directories** | `--dirs-only` |
+| `file:` | Only search **files** | `--files-only` |
+
+### Examples
+
+```bash
+# Find any path containing "projects" (matches directory components)
+uffs 'path:projects'
+
+# Find any path containing windows\system32
+uffs 'path:*windows\system32*'
+
+# Find directories named "build"
+uffs 'dir:build'
+
+# Find files named "README" (no directories)
+uffs 'file:README*'
+```
+
+> **Implementation:** These are client-side sugar.  `path:` sets
+> `match_path=true` on the `SearchParams`.  `dir:` sets `dirs_only=true`.
+> `file:` sets `files_only=true`.  The prefix is stripped before sending
+> the pattern to the daemon.
+
+---
+
+## 11  Pattern Sugar Flags
+
+These flags generate patterns from simple keywords, saving you from
+writing glob syntax:
+
+| Flag | Effect | Equivalent Pattern |
+|------|--------|-------------------|
+| `--begins-with <PREFIX>` | Files starting with PREFIX | `PREFIX*` |
+| `--ends-with <SUFFIX>` | Files ending with SUFFIX | `*SUFFIX` |
+| `--contains <NEEDLE>` | Files containing NEEDLE | `*NEEDLE*` |
+| `--not-contains <NEEDLE>` | Exclude files containing NEEDLE | `--exclude '*NEEDLE*'` |
+
+### Examples
+
+```bash
+# All files starting with "report"
+uffs --begins-with report
+
+# All files ending with "_backup"
+uffs --ends-with _backup
+
+# All files containing "invoice" in their name
+uffs --contains invoice
+
+# All .log files, but exclude those containing "debug"
+uffs '*.log' --not-contains debug
+```
+
+> `--begins-with`, `--ends-with`, and `--contains` are mutually exclusive
+> with each other and with providing a pattern directly.  `--not-contains`
+> can be combined with any of them (it maps to `--exclude`).
+
+---
+
+## 12  Path Directory Filter
+
+The `--in-path` flag restricts results to files whose **directory path**
+matches a glob — independent of the search pattern.  This is different
+from `path:` (which matches the pattern against the full path).
+
+```bash
+# .rs files only under directories containing "projects"
+uffs '*.rs' --in-path '*projects*'
+
+# DLLs only under System32
+uffs '*.dll' --in-path '*windows\system32*'
+```
+
+> **`path:` vs `--in-path`:** `path:report` matches "report" anywhere in
+> the full path (including the filename).  `--in-path '*report*'` matches
+> "report" only in the directory portion — the filename is excluded from
+> the match.  See [Filters §8](filters.md) for details.
+
+---
+
+## 13  Drive Scoping
 
 You can scope your search to specific drives using three methods:
 
@@ -291,7 +381,7 @@ Drive letters are case-insensitive.  You may include the colon
 
 ---
 
-## 11  Performance Mental Model
+## 14  Performance Mental Model
 
 Not all searches are equal.  Here is a rough performance ranking from
 fastest to slowest:
@@ -315,24 +405,38 @@ fastest to slowest:
 
 ---
 
-## 12  Quick Reference
+## 15  Quick Reference
 
 ```text
 PATTERN SYNTAX
-  *.txt              Glob — all .txt files
-  report             Literal — paths containing "report"
-  >.*\.log$          Regex — files ending in .log
-  c:/projects/*      Path-aware glob — on C: under projects
-  *                  Match-all — every file and directory
+  *.txt                Glob — all .txt files
+  report               Literal — paths containing "report"
+  >.*\.log$            Regex — files ending in .log
+  c:/projects/*        Path-aware glob — on C: under projects
+  *                    Match-all — every file and directory
+
+SCOPE PREFIXES (Everything-compatible)
+  path:report          Match "report" against full path
+  dir:build            Only match directories named "build"
+  file:README*         Only match files starting with "README"
 
 MODIFIERS
-  --case             Case-sensitive matching
-  --smart-case       Auto case-sensitive if pattern has uppercase
-  --word             Whole-word boundaries (\b…\b)
-  --name-only        Match filename only, not full path
+  --case               Case-sensitive matching
+  --smart-case         Auto case-sensitive if pattern has uppercase
+  --word               Whole-word boundaries (\b…\b)
+  --name-only          Match filename only, not full path
+
+PATTERN SUGAR
+  --begins-with PREFIX Sugar for 'PREFIX*'
+  --ends-with SUFFIX   Sugar for '*SUFFIX'
+  --contains NEEDLE    Sugar for '*NEEDLE*'
+  --not-contains NEEDLE Sugar for --exclude '*NEEDLE*'
+
+PATH FILTER
+  --in-path <GLOB>     Filter by directory path (not filename)
 
 DRIVE SCOPING
-  --drive C          Single drive
-  --drives C,D,E     Multiple drives
-  c:/*.ext           Drive prefix in pattern
+  --drive C            Single drive
+  --drives C,D,E       Multiple drives
+  c:/*.ext             Drive prefix in pattern
 ```

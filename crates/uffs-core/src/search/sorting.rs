@@ -92,12 +92,15 @@ pub fn sort_rows_with_fold(
                 ord = ord.reverse();
             }
         }
-        // Name tiebreaker.
+        // Name tiebreaker (case-folded, then raw for determinism).
         if ord == core::cmp::Ordering::Equal
             && column != FieldId::Name
             && !extra_tiers.iter().any(|tier| tier.column == FieldId::Name)
         {
-            ord = key_a.name.cmp(&key_b.name);
+            ord = key_a
+                .name
+                .cmp(&key_b.name)
+                .then_with(|| row_a.name().cmp(row_b.name()));
         }
         ord
     });
@@ -109,6 +112,15 @@ pub fn sort_rows_with_fold(
 }
 
 /// Compare two rows by a single column (natural / ascending order).
+///
+/// String-based columns use a **two-phase comparison** for deterministic
+/// ordering:
+///   1. Case-folded keys (groups variants together: `TEXT` ≈ `text`)
+///   2. Unicode codepoint tiebreaker (deterministic within the group: `TEXT` <
+///      `text`)
+///
+/// This ensures stable, reproducible sort order regardless of the
+/// underlying `sort_unstable_by` implementation.
 fn compare_by_column(
     row_a: &DisplayRow,
     key_a: &RowSortKey,
@@ -122,19 +134,36 @@ fn compare_by_column(
         FieldId::Created => row_a.created.cmp(&row_b.created),
         FieldId::Modified => row_a.modified.cmp(&row_b.modified),
         FieldId::Accessed => row_a.accessed.cmp(&row_b.accessed),
-        FieldId::Path => key_a.path.cmp(&key_b.path),
-        FieldId::PathOnly => key_a.path_only.cmp(&key_b.path_only),
+        FieldId::Path => key_a
+            .path
+            .cmp(&key_b.path)
+            .then_with(|| row_a.path.cmp(&row_b.path)),
+        FieldId::PathOnly => key_a
+            .path_only
+            .cmp(&key_b.path_only)
+            .then_with(|| row_a.path_dir().cmp(row_b.path_dir())),
         FieldId::Drive => row_a.drive.cmp(&row_b.drive),
-        FieldId::Extension => key_a.ext.cmp(&key_b.ext),
-        FieldId::Type => key_a.file_type.cmp(&key_b.file_type),
+        FieldId::Extension => key_a.ext.cmp(&key_b.ext).then_with(|| {
+            let ext_a = row_a.name().rsplit('.').next().unwrap_or("");
+            let ext_b = row_b.name().rsplit('.').next().unwrap_or("");
+            ext_a.cmp(ext_b)
+        }),
+        FieldId::Type => key_a
+            .file_type
+            .cmp(&key_b.file_type)
+            .then_with(|| semantic_type_for_row(row_a).cmp(semantic_type_for_row(row_b))),
         FieldId::Descendants => row_a.descendants.cmp(&row_b.descendants),
+        FieldId::TreeSize => row_a.treesize.cmp(&row_b.treesize),
         FieldId::TreeAllocated => tree_allocated_for_row(row_a).cmp(&tree_allocated_for_row(row_b)),
         FieldId::Bulkiness => bulkiness_for_row(row_a).cmp(&bulkiness_for_row(row_b)),
-        // Non-sortable / unsortable fields: fall back to name ordering.
-        FieldId::Name
-        | FieldId::Attributes
-        | FieldId::AttributeValue
-        | FieldId::Hidden
+        FieldId::NameLength => row_a
+            .name()
+            .chars()
+            .count()
+            .cmp(&row_b.name().chars().count()),
+        FieldId::PathLength => row_a.path.chars().count().cmp(&row_b.path.chars().count()),
+        // ── Boolean attribute fields: sort by flag bit, tiebreak on name ──
+        FieldId::Hidden
         | FieldId::System
         | FieldId::Archive
         | FieldId::ReadOnly
@@ -148,13 +177,83 @@ fn compare_by_column(
         | FieldId::Virtual
         | FieldId::Pinned
         | FieldId::Unpinned
-        | FieldId::TreeSize
         | FieldId::Integrity
         | FieldId::NoScrub
         | FieldId::DirectoryFlag
         | FieldId::RecallOnOpen
-        | FieldId::RecallOnDataAccess
-        | FieldId::ParityAttributes => key_a.name.cmp(&key_b.name),
+        | FieldId::RecallOnDataAccess => {
+            let mask = field_to_attr_bit(column);
+            let a_set = row_a.flags & mask != 0;
+            let b_set = row_b.flags & mask != 0;
+            // true > false so that desc puts flagged files first
+            a_set
+                .cmp(&b_set)
+                .then_with(|| key_a.name.cmp(&key_b.name))
+                .then_with(|| row_a.name().cmp(row_b.name()))
+        }
+        // ── Remaining non-sortable fields: name tiebreaker ──
+        FieldId::Name
+        | FieldId::Attributes
+        | FieldId::AttributeValue
+        | FieldId::ParityAttributes => key_a
+            .name
+            .cmp(&key_b.name)
+            .then_with(|| row_a.name().cmp(row_b.name())),
+    }
+}
+
+/// Map a boolean-attribute `FieldId` to its NTFS `FILE_ATTRIBUTE_*` bitmask.
+///
+/// Non-boolean fields return `0` — the caller skips attribute-based sorting.
+///
+/// Kept as a separate function (rather than inlined into `compare_by_column`)
+/// because inlining 42 match arms into a nested closure harms readability.
+#[expect(
+    clippy::single_call_fn,
+    reason = "clarity: 42-arm match is better as a named helper"
+)]
+const fn field_to_attr_bit(field: FieldId) -> u32 {
+    match field {
+        FieldId::Hidden => 0x0002,
+        FieldId::System => 0x0004,
+        FieldId::Archive => 0x0020,
+        FieldId::ReadOnly => 0x0001,
+        FieldId::Compressed => 0x0800,
+        FieldId::Encrypted => 0x4000,
+        FieldId::Sparse => 0x0200,
+        FieldId::Reparse => 0x0400,
+        FieldId::Offline => 0x1000,
+        FieldId::NotIndexed => 0x2000,
+        FieldId::Temporary => 0x0100,
+        FieldId::Virtual => 0x0001_0000,
+        FieldId::Pinned => 0x0008_0000,
+        FieldId::Unpinned => 0x0010_0000,
+        FieldId::Integrity => 0x8000,
+        FieldId::NoScrub => 0x0002_0000,
+        FieldId::DirectoryFlag => 0x0010,
+        FieldId::RecallOnOpen => 0x0004_0000,
+        FieldId::RecallOnDataAccess => 0x0040_0000,
+        // Non-boolean fields — no attribute bit.
+        FieldId::Drive
+        | FieldId::Path
+        | FieldId::Name
+        | FieldId::PathOnly
+        | FieldId::Size
+        | FieldId::SizeOnDisk
+        | FieldId::Created
+        | FieldId::Modified
+        | FieldId::Accessed
+        | FieldId::Extension
+        | FieldId::Type
+        | FieldId::Attributes
+        | FieldId::AttributeValue
+        | FieldId::Descendants
+        | FieldId::TreeSize
+        | FieldId::TreeAllocated
+        | FieldId::Bulkiness
+        | FieldId::ParityAttributes
+        | FieldId::NameLength
+        | FieldId::PathLength => 0,
     }
 }
 

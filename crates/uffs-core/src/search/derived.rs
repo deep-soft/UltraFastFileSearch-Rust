@@ -8,18 +8,62 @@ pub const BULKINESS_SCALE: u64 = 1_000_000;
 
 /// Executable file extensions.
 const EXECUTABLES: &[&str] = &["exe", "msi", "bat", "cmd", "ps1", "com", "scr"];
+/// Script / interpreted file extensions (not compiled code).
+const SCRIPTS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "csh", "ksh", "awk", "sed", "lua", "pl", "pm", "tcl",
+];
+/// Web / markup file extensions.
+const WEB: &[&str] = &[
+    "html", "htm", "css", "scss", "less", "sass", "jsx", "tsx", "vue", "svelte", "wasm", "xhtml",
+];
 /// Font file extensions.
-const FONTS: &[&str] = &["ttf", "otf", "woff", "woff2", "eot"];
+const FONTS: &[&str] = &["ttf", "otf", "woff", "woff2", "eot", "fon"];
 /// Database file extensions.
-const DATABASES: &[&str] = &["db", "sqlite", "mdb", "accdb", "sql", "ldf", "mdf", "ndf"];
+const DATABASES: &[&str] = &[
+    "db", "sqlite", "sqlite3", "mdb", "accdb", "sql", "ldf", "mdf", "ndf", "dbf",
+];
 /// Configuration file extensions.
-const CONFIGS: &[&str] = &["ini", "cfg", "conf", "yaml", "yml", "toml", "json", "xml"];
+const CONFIGS: &[&str] = &[
+    "ini",
+    "cfg",
+    "conf",
+    "yaml",
+    "yml",
+    "toml",
+    "json",
+    "xml",
+    "env",
+    "properties",
+    "reg",
+    "inf",
+    "plist",
+];
 /// Log file extensions.
-const LOGS: &[&str] = &["log", "out", "err", "trace"];
+const LOGS: &[&str] = &["log", "out", "err", "trace", "evt", "evtx"];
 /// Backup/temporary file extensions.
-const BACKUPS: &[&str] = &["bak", "old", "orig", "swp", "tmp", "temp"];
+const BACKUPS: &[&str] = &["bak", "old", "orig", "swp", "tmp", "temp", "~"];
 /// Disk image / virtual disk extensions.
-const DISK_IMAGES: &[&str] = &["vmdk", "vhd", "vhdx", "vdi", "qcow2", "img", "wim"];
+const DISK_IMAGES: &[&str] = &[
+    "vmdk", "vhd", "vhdx", "vdi", "qcow2", "img", "wim", "iso", "dmg",
+];
+/// Data / serialization file extensions.
+const DATA: &[&str] = &[
+    "csv", "tsv", "parquet", "avro", "arrow", "ndjson", "jsonl", "dat", "sav", "hdf5",
+];
+/// CAD / 3D model file extensions.
+const CAD: &[&str] = &[
+    "dwg", "dxf", "step", "stp", "stl", "obj", "fbx", "blend", "3ds", "gltf", "glb",
+];
+/// Shortcut / link file extensions.
+const SHORTCUTS: &[&str] = &["lnk", "url", "desktop", "webloc"];
+/// System / driver file extensions.
+const SYSTEM: &[&str] = &["sys", "dll", "drv", "ocx", "cpl", "ax", "mui"];
+/// Certificate / security file extensions.
+const CERTS: &[&str] = &[
+    "pem", "crt", "cer", "der", "pfx", "p12", "key", "csr", "jks",
+];
+/// E-book file extensions.
+const EBOOKS: &[&str] = &["epub", "mobi", "azw", "azw3", "djvu", "cbr", "cbz"];
 
 /// Return the lowercase extension without a leading dot.
 #[must_use]
@@ -51,6 +95,34 @@ pub fn semantic_type_for_row(row: &DisplayRow) -> &'static str {
     semantic_type_from_extension(&ext_lower)
 }
 
+/// All known type categories for CLI `--type` help / validation.
+pub const ALL_TYPE_CATEGORIES: &[&str] = &[
+    "archive",
+    "audio",
+    "backup",
+    "cad",
+    "cert",
+    "code",
+    "config",
+    "data",
+    "database",
+    "directory",
+    "disk",
+    "document",
+    "ebook",
+    "executable",
+    "file",
+    "font",
+    "log",
+    "other",
+    "picture",
+    "script",
+    "shortcut",
+    "system",
+    "video",
+    "web",
+];
+
 /// Semantic type/category name for an extension.
 #[must_use]
 pub fn semantic_type_from_extension(ext: &str) -> &'static str {
@@ -68,6 +140,10 @@ pub fn semantic_type_from_extension(ext: &str) -> &'static str {
         "code"
     } else if EXECUTABLES.contains(&ext) {
         "executable"
+    } else if SCRIPTS.contains(&ext) {
+        "script"
+    } else if WEB.contains(&ext) {
+        "web"
     } else if FONTS.contains(&ext) {
         "font"
     } else if DATABASES.contains(&ext) {
@@ -80,6 +156,18 @@ pub fn semantic_type_from_extension(ext: &str) -> &'static str {
         "backup"
     } else if DISK_IMAGES.contains(&ext) {
         "disk"
+    } else if DATA.contains(&ext) {
+        "data"
+    } else if CAD.contains(&ext) {
+        "cad"
+    } else if SHORTCUTS.contains(&ext) {
+        "shortcut"
+    } else if SYSTEM.contains(&ext) {
+        "system"
+    } else if CERTS.contains(&ext) {
+        "cert"
+    } else if EBOOKS.contains(&ext) {
+        "ebook"
     } else {
         "other"
     }
@@ -115,46 +203,257 @@ mod tests {
     use super::*;
     use crate::search::backend::DisplayRow;
 
-    #[test]
-    fn semantic_type_categorizes_known_extensions() {
-        let row = DisplayRow::new(
+    fn file_row(path: &str, size: u64) -> DisplayRow {
+        DisplayRow::new(
             0,
             'C',
-            "C:\\docs\\report.pdf".to_owned(),
-            12,
+            path.to_owned(),
+            size,
             false,
             0,
             0,
             0,
             0x20,
-            16,
+            size,
             0,
             0,
-            16,
-        );
-        assert_eq!(semantic_type_for_row(&row), "document");
-        assert_eq!(semantic_type_from_extension("rs"), "code");
-        assert_eq!(semantic_type_from_extension("zip"), "archive");
+            0,
+        )
     }
 
-    #[test]
-    fn bulkiness_uses_tree_metrics_for_directories() {
-        let row = DisplayRow::new(
+    fn dir_row(path: &str, treesize: u64, tree_alloc: u64) -> DisplayRow {
+        DisplayRow::new(
             0,
             'C',
-            "C:\\dir".to_owned(),
-            12,
+            path.to_owned(),
+            0,
             true,
             0,
             0,
             0,
             0x10,
-            16,
+            0,
             3,
-            200,
-            300,
+            treesize,
+            tree_alloc,
+        )
+    }
+
+    // ── semantic_type_for_row ─────────────────────────────────────────
+
+    #[test]
+    fn semantic_type_directory() {
+        assert_eq!(
+            semantic_type_for_row(&dir_row("C:\\mydir", 0, 0)),
+            "directory"
         );
+    }
+
+    #[test]
+    fn semantic_type_file_no_extension() {
+        assert_eq!(semantic_type_for_row(&file_row("C:\\Makefile", 10)), "file");
+    }
+
+    // ── semantic_type_from_extension — all 21 categories ─────────────
+
+    #[test]
+    fn semantic_type_document() {
+        for ext in &["pdf", "docx", "txt", "md", "rtf"] {
+            assert_eq!(semantic_type_from_extension(ext), "document", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_picture() {
+        for ext in &["jpg", "png", "gif", "svg", "bmp", "heic"] {
+            assert_eq!(semantic_type_from_extension(ext), "picture", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_video() {
+        for ext in &["mp4", "mkv", "mov", "avi", "wmv"] {
+            assert_eq!(semantic_type_from_extension(ext), "video", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_audio() {
+        for ext in &["mp3", "flac", "wav", "aac", "ogg"] {
+            assert_eq!(semantic_type_from_extension(ext), "audio", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_archive() {
+        for ext in &["zip", "rar", "7z", "tar", "gz"] {
+            assert_eq!(semantic_type_from_extension(ext), "archive", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_code() {
+        for ext in &["rs", "py", "js", "java", "c", "go", "cpp", "ts"] {
+            assert_eq!(semantic_type_from_extension(ext), "code", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_executable() {
+        for ext in &["exe", "msi", "bat", "cmd", "ps1"] {
+            assert_eq!(semantic_type_from_extension(ext), "executable", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_script() {
+        for ext in &["sh", "bash", "lua", "pl"] {
+            assert_eq!(semantic_type_from_extension(ext), "script", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_web() {
+        for ext in &["html", "css", "jsx", "vue", "wasm"] {
+            assert_eq!(semantic_type_from_extension(ext), "web", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_font() {
+        for ext in &["ttf", "otf", "woff", "woff2"] {
+            assert_eq!(semantic_type_from_extension(ext), "font", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_database() {
+        for ext in &["db", "sqlite", "sql", "mdf"] {
+            assert_eq!(semantic_type_from_extension(ext), "database", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_config() {
+        for ext in &["ini", "yaml", "toml", "json", "xml"] {
+            assert_eq!(semantic_type_from_extension(ext), "config", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_log() {
+        for ext in &["log", "out", "err"] {
+            assert_eq!(semantic_type_from_extension(ext), "log", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_backup() {
+        for ext in &["bak", "old", "tmp", "swp"] {
+            assert_eq!(semantic_type_from_extension(ext), "backup", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_disk_image() {
+        // Note: "iso" is in ARCHIVES (checked before DISK_IMAGES), so it maps to
+        // "archive".
+        for ext in &["vmdk", "vhd", "img", "wim"] {
+            assert_eq!(semantic_type_from_extension(ext), "disk", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_data() {
+        // Note: "csv" is in DOCUMENTS (checked before DATA), so it maps to "document".
+        for ext in &["parquet", "avro", "arrow", "ndjson"] {
+            assert_eq!(semantic_type_from_extension(ext), "data", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_system() {
+        for ext in &["sys", "dll", "drv"] {
+            assert_eq!(semantic_type_from_extension(ext), "system", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_cert() {
+        for ext in &["pem", "crt", "cer", "pfx"] {
+            assert_eq!(semantic_type_from_extension(ext), "cert", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_ebook() {
+        for ext in &["epub", "mobi"] {
+            assert_eq!(semantic_type_from_extension(ext), "ebook", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_shortcut() {
+        assert_eq!(semantic_type_from_extension("lnk"), "shortcut");
+        assert_eq!(semantic_type_from_extension("url"), "shortcut");
+    }
+
+    #[test]
+    fn semantic_type_cad() {
+        for ext in &["dwg", "dxf", "stl"] {
+            assert_eq!(semantic_type_from_extension(ext), "cad", "ext={ext}");
+        }
+    }
+
+    #[test]
+    fn semantic_type_unknown_is_other() {
+        assert_eq!(semantic_type_from_extension("xyz123"), "other");
+        assert_eq!(semantic_type_from_extension("zzz"), "other");
+    }
+
+    // ── bulkiness & tree_allocated ────────────────────────────────────
+
+    #[test]
+    fn bulkiness_uses_tree_metrics_for_directories() {
+        let row = dir_row("C:\\dir", 200, 300);
         assert_eq!(tree_allocated_for_row(&row), 300);
         assert_eq!(bulkiness_for_row(&row), 1_500_000);
+    }
+
+    #[test]
+    fn bulkiness_uses_file_metrics_for_files() {
+        let row = DisplayRow::new(
+            0,
+            'C',
+            "C:\\f.txt".to_owned(),
+            1000,
+            false,
+            0,
+            0,
+            0,
+            0x20,
+            4096,
+            0,
+            0,
+            0,
+        );
+        assert_eq!(tree_allocated_for_row(&row), 4096);
+        assert_eq!(bulkiness_for_row(&row), 4_096_000); // 4096/1000 * 1M
+    }
+
+    #[test]
+    fn bulkiness_zero_logical_size_returns_zero() {
+        let row = file_row("C:\\empty", 0);
+        assert_eq!(bulkiness_for_row(&row), 0);
+    }
+
+    #[test]
+    fn all_type_categories_cover_known_list() {
+        // Ensure the static list is complete (24 categories)
+        assert_eq!(ALL_TYPE_CATEGORIES.len(), 24);
+        assert!(ALL_TYPE_CATEGORIES.contains(&"code"));
+        assert!(ALL_TYPE_CATEGORIES.contains(&"directory"));
+        assert!(ALL_TYPE_CATEGORIES.contains(&"file"));
+        assert!(ALL_TYPE_CATEGORIES.contains(&"other"));
     }
 }

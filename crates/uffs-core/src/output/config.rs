@@ -631,15 +631,11 @@ fn write_display_row_columns(
                 buf.push_str(itoa_buf.format(row.treesize));
             }
             OutputColumn::TreeAllocated => {
-                // tree_allocated not in DisplayRow — fall back to allocated
-                buf.push_str(itoa_buf.format(row.allocated));
+                buf.push_str(itoa_buf.format(row.tree_allocated));
             }
             OutputColumn::Type => {
-                // Extract extension from name
                 buf.push_str(&cfg.quote);
-                if let Some(dot) = row.name().rfind('.') {
-                    buf.push_str(row.name().get(dot + 1..).unwrap_or(""));
-                }
+                buf.push_str(crate::search::derived::semantic_type_for_row(row));
                 buf.push_str(&cfg.quote);
             }
             OutputColumn::Attributes | OutputColumn::AttributeValue => {
@@ -668,7 +664,15 @@ fn write_display_row_columns(
             OutputColumn::RecallOnOpen => push_flag(buf, cfg, flags, attr::RECALL_ON_OPEN),
             OutputColumn::RecallOnDataAccess => push_flag(buf, cfg, flags, attr::RECALL_ON_DATA),
             OutputColumn::Bulkiness => {
-                buf.push_str(OutputColumn::Bulkiness.default_value());
+                // Allocated-to-logical ratio × 100 (integer percentage).
+                // 100 = perfectly packed. >100 = cluster slack / waste.
+                // 0 for zero-byte files (avoid div-by-zero).
+                let pct = row
+                    .allocated
+                    .saturating_mul(100)
+                    .checked_div(row.size)
+                    .unwrap_or(0);
+                buf.push_str(itoa_buf.format(pct));
             }
             OutputColumn::Drive => {
                 buf.push(row.drive);
@@ -680,12 +684,8 @@ fn write_display_row_columns(
                 }
                 buf.push_str(&cfg.quote);
             }
-            // Any other FieldId variant not in the output set — skip.
-            #[expect(
-                unreachable_patterns,
-                reason = "forward-compat for new FieldId variants"
-            )]
-            _ => {}
+            // Newly added columns that have no dedicated text formatter yet.
+            OutputColumn::NameLength | OutputColumn::PathLength => {}
         }
     }
 }

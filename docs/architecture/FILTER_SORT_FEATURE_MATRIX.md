@@ -1,13 +1,14 @@
 # Filter / Sort / Attribute Feature Matrix
 
 > **Purpose:** Single source of truth for every filter, sort, and attribute
-> feature across all UFFS front-ends. Documents the current state (broken,
-> working, partial) and the target state after D5+D6 migration (all
-> frontends through daemon) and Waves 3–5 (unified field system).
+> feature across all UFFS front-ends. Documents the current state and the
+> target state after D5+D6 migration (all frontends through daemon) and
+> Waves 3–5 (unified field system).
 >
-> **Date:** 2026-03-30 — post-Wave 1 (streaming pipeline deleted, compact
-> search is the sole pipeline). Wave 2 absorbed into D5 (broken CLI filter
-> wiring gets deleted when CLI migrates to daemon-only).
+> **Date:** 2026-04-04 — post-daemon filter wiring session. All `SearchParams`
+> fields are fully wired. Compact search is the sole pipeline. CLI sugar
+> expansion (extension collections, attribute presets, month specs, `path:`
+> prefix) is implemented client-side. Record indices standardised on `u32`.
 
 ---
 
@@ -47,19 +48,29 @@ The TUI builds `SearchFilters` directly from `SearchState` — one hop, no
 intermediaries. Sort is set directly on the `MultiDriveBackend`. **All 24
 features work in the TUI.**
 
-### 1.3 The Filter Data Flow (daemon — partial)
+### 1.3 The Filter Data Flow (daemon — ✅ fully wired)
 
 ```
-SearchParams { pattern, sort, sort_desc, filter, … }  ← uffs-client/protocol.rs (JSON-RPC)
+SearchParams { pattern, sort, sort_desc, filter,       ← uffs-client/protocol.rs (JSON-RPC)
+  hide_system, min_size, max_size, ext, attr, exclude,
+  newer, older, newer_created, older_created,
+  newer_accessed, older_accessed, min_descendants,
+  max_descendants, min_name_len, max_name_len,
+  min_path_len, max_path_len, min_allocated, max_allocated,
+  allowed_months, match_path, predicates, … }
   ↓ IndexManager::search()
-SearchFilters::default()                               ← hardcoded default! No filters wired.
+SearchFilters::from_params(…)                          ← built from SearchParams fields ✅
   +
-backend.sort_column / sort_desc                        ← wired from params.sort
+backend.sort_column / sort_desc / extra_sort_tiers     ← wired from params.sort/sorts
+  +
+compile_predicates_into_filters(…)                     ← canonical predicates → hot-path ✅
 ```
 
-**Problem:** The daemon parses `sort` and `filter` from the RPC request but
-constructs `SearchFilters::default()` — all date/attr/size/descendant/ext/exclude
-filters are ignored.
+**Status (post-session):** The daemon now constructs `SearchFilters` from
+all `SearchParams` fields via `from_params()`. Canonical predicates are
+compiled into the hot-path filter pipeline by `compile_predicates_into_filters()`.
+Size, date, attribute, extension, exclude, descendant, name/path length,
+size-on-disk, and month-of-year filters are all wired and functional.
 
 ### 1.4 The Filter Data Flow (deleted streaming pipeline — was correct)
 
@@ -188,12 +199,24 @@ system only needs to be built once, in one place.
 | Smart case | `--smart-case` | ✅ | ✅ | ⬜ | auto in `build_search_config` |
 | Whole word | `--word` | ✅ | ✅ | ✅ | `whole_word` param |
 | Name-only match | `--name-only` | 🟡 ¹ | ✅ | ⬜ | trigram on `names_lower` blob |
+| Path match prefix | `path:report` | ✅ | ✅ | ✅ | `match_path` param + descendant expansion |
+| Dir scope prefix | `dir:logs` | ✅ | ⬜ | ⬜ | CLI sugar → `dirs_only` + pattern |
+| File scope prefix | `file:readme` | ✅ | ⬜ | ⬜ | CLI sugar → `files_only` + pattern |
+| Begins-with sugar | `--begins-with foo` | ✅ | ⬜ | ⬜ | CLI sugar → `foo*` pattern |
+| Ends-with sugar | `--ends-with .log` | ✅ | ⬜ | ⬜ | CLI sugar → `*.log` pattern |
+| Contains sugar | `--contains report` | ✅ | ⬜ | ⬜ | CLI sugar → `*report*` pattern |
+| Not-contains sugar | `--not-contains temp` | ✅ | ⬜ | ⬜ | CLI sugar → `--exclude *temp*` |
 
 > ¹ `--name-only` is set on `SearchConfig` but the compact search path doesn't
 > currently read it — the trigram search always matches against the lowered name
 > blob (which is name-only by default). Full-path matching is only used for
 > path-pattern detection. Effect: `--name-only` is a no-op on the compact path
 > because name-only is already the default behavior.
+>
+> **Path match (`path:`) implementation:** When `match_path=true`, after
+> trigram+name matching, matching directories are expanded via DFS walk of
+> the CSR `ChildrenIndex` to include all descendants. Zero extra memory —
+> uses the existing children index. Consistent with Everything's `path:` prefix.
 
 ### 2.2 Scope Filters
 
@@ -201,44 +224,64 @@ system only needs to be built once, in one place.
 |---------|----------|-----|-----|--------|-------------|
 | Files only | `--files-only` | ✅ | ✅ | ✅ | `FilterMode::FilesOnly` |
 | Dirs only | `--dirs-only` | ✅ | ✅ | ✅ | `FilterMode::DirsOnly` |
-| Hide system (`$*`) | `--hide-system` | ✅ | ✅ | 🔴 ² | `SearchFilters.hide_system` |
-| Extension filter | `--ext jpg,png` | 🟡 ³ | 🟡 ³ | 🔲 | `SearchFilters.extensions` |
-| Extension collections | `--ext documents` | 🔴 ³ | 🔴 ³ | 🔲 | `ExtensionFilter::parse()` exists but not wired |
+| Hide system (`$*`) | `--hide-system` | ✅ | ✅ | ✅ | `SearchFilters.hide_system` via `SearchParams.hide_system` |
+| Extension filter | `--ext jpg,png` | ✅ | ✅ | ✅ | `SearchFilters.extensions` via `SearchParams.ext` |
+| Extension collections | `--ext documents` | ✅ | ✅ | ✅ ² | `expand_ext_spec()` → client-side sugar expansion |
+| Executables collection | `--ext executables` | ✅ | ✅ | ✅ ² | `collections::EXECUTABLES` (exe,msi,bat,cmd,ps1,com,scr,vbs,wsf,dll,sys) |
 
-> ² Daemon constructs `SearchFilters::default()` — `hide_system` is always
-> `false`. The `SearchParams` struct doesn't even have a `hide_system` field.
->
-> ³ Individual extensions work (✅), but collection aliases (`documents`,
-> `pictures`, `videos`, `music`, `archives`, `code`) are silently ignored.
-> `SearchFilters::from_params()` splits on commas as raw strings. The
-> `ExtensionFilter::parse()` in `uffs-core/extensions/mod.rs` handles
-> collection expansion correctly but is not called by the filter pipeline.
+> ² **Extension collection expansion is client-side sugar.** The CLI/TUI calls
+> `expand_ext_spec("documents")` → `"doc,docx,pdf,txt,rtf,odt,xls,xlsx,ppt,pptx,csv,md"`
+> before sending to the daemon. The daemon only receives primitive extension
+> names. Available collections: `documents`/`docs`, `pictures`/`images`,
+> `videos`/`video`, `music`/`audio`, `archives`/`compressed`, `code`/`source`,
+> `executables`/`exec`.
 
 ### 2.3 Size Filters
 
 | Feature | CLI flag | CLI | TUI | Daemon | Core engine |
 |---------|----------|-----|-----|--------|-------------|
-| Minimum size | `--min-size 1024` | ✅ | ✅ | 🔲 | `SearchFilters.min_size` |
-| Maximum size | `--max-size 10G` | ✅ | ✅ | 🔲 | `SearchFilters.max_size` |
+| Minimum size | `--min-size 1024` | ✅ | ✅ | ✅ | `SearchFilters.min_size` via `SearchParams.min_size` |
+| Maximum size | `--max-size 10G` | ✅ | ✅ | ✅ | `SearchFilters.max_size` via `SearchParams.max_size` |
+| Min size-on-disk | `--min-size-on-disk 4K` | ✅ | ⬜ | ✅ | `SearchFilters.min_allocated` via `SearchParams.min_allocated` |
+| Max size-on-disk | `--max-size-on-disk 1G` | ✅ | ⬜ | ✅ | `SearchFilters.max_allocated` via `SearchParams.max_allocated` |
+
+### 2.3a Name / Path Length Filters
+
+| Feature | CLI flag | CLI | TUI | Daemon | Core engine |
+|---------|----------|-----|-----|--------|-------------|
+| Min name length | `--min-name-len 5` | ✅ | ⬜ | ✅ | `SearchFilters.min_name_len` (hot-path) |
+| Max name length | `--max-name-len 50` | ✅ | ⬜ | ✅ | `SearchFilters.max_name_len` (hot-path) |
+| Min path length | `--min-path-len 100` | ✅ | ⬜ | ✅ | `SearchFilters.min_path_len` (post-filter) |
+| Max path length | `--max-path-len 260` | ✅ | ⬜ | ✅ | `SearchFilters.max_path_len` (post-filter, MAX_PATH detection) |
+
+> **Name length** is checked in the hot-path (`matches_record`) — it uses
+> `rec.name(names).chars().count()` which is already in cache. **Path length**
+> is checked in `apply_search_filters` (post-filter) since full paths are
+> resolved after the initial match. The canonical predicate system also supports
+> `NameLength`/`PathLength` via `compile_predicates_into_filters()`.
 
 ### 2.4 Date / Time Filters
 
 | Feature | CLI flag | CLI | TUI | Daemon | Core engine |
 |---------|----------|-----|-----|--------|-------------|
-| Newer (modified) | `--newer 7d` | 🔴 | ✅ | 🔲 | `SearchFilters.newer_us` ✅ |
-| Older (modified) | `--older 30d` | 🔴 | ✅ | 🔲 | `SearchFilters.older_us` ✅ |
-| Newer (created) | `--newer-created 1w` | 🔴 | ✅ | 🔲 | `SearchFilters.newer_created_us` ✅ |
-| Older (created) | `--older-created 2026-01-01` | 🔴 | ✅ | 🔲 | `SearchFilters.older_created_us` ✅ |
-| Newer (accessed) | `--newer-accessed 24h` | 🔴 | ✅ | 🔲 | `SearchFilters.newer_accessed_us` ✅ |
-| Older (accessed) | `--older-accessed 90d` | 🔴 | ✅ | 🔲 | `SearchFilters.older_accessed_us` ✅ |
+| Newer (modified) | `--newer 7d` | ✅ | ✅ | ✅ | `SearchFilters.newer_us` via `SearchParams.newer` |
+| Older (modified) | `--older 30d` | ✅ | ✅ | ✅ | `SearchFilters.older_us` via `SearchParams.older` |
+| Newer (created) | `--newer-created 1w` | ✅ | ✅ | ✅ | `SearchFilters.newer_created_us` via `SearchParams.newer_created` |
+| Older (created) | `--older-created 2026-01-01` | ✅ | ✅ | ✅ | `SearchFilters.older_created_us` via `SearchParams.older_created` |
+| Newer (accessed) | `--newer-accessed 24h` | ✅ | ✅ | ✅ | `SearchFilters.newer_accessed_us` via `SearchParams.newer_accessed` |
+| Older (accessed) | `--older-accessed 90d` | ✅ | ✅ | ✅ | `SearchFilters.older_accessed_us` via `SearchParams.older_accessed` |
+| Month-of-year | `--month january` | ✅ | ⬜ | ✅ | `SearchFilters.allowed_months` (hot-path) |
+| Quarter | `--month Q1` | ✅ | ⬜ | ✅ | `parse_month_spec("Q1")` → `[1,2,3]` |
+| Month combo | `--month jan,feb,Q4` | ✅ | ⬜ | ✅ | Mixed month names + quarters |
 
-> **Root cause for CLI 🔴:** `QueryFilters` doesn't carry date fields →
-> `OwnedQueryFilters` doesn't carry them → `SearchFilters::from_params()`
-> receives `None` for all 6 date params. The core engine implementation is
-> complete and fully tested.
->
-> **Time spec formats supported by core (current):** `7d` (days), `24h` (hours),
+> **Time spec formats supported by core:** `7d` (days), `24h` (hours),
 > `30m` (minutes), `90s` (seconds), `2w` (weeks), `2026-01-15` (ISO date).
+>
+> **Month-of-year filter:** Parsed client-side via `parse_month_spec()` →
+> `Vec<u32>` of month numbers (1-12). Sent as `SearchParams.allowed_months`.
+> Supports: full names (`january`), abbreviations (`jan`), quarters (`Q1`-`Q4`),
+> and comma-separated combos (`jan,feb,Q4`). The daemon receives only primitive
+> `u32` month numbers — no string parsing at query time.
 >
 > **Planned (Wave 4):** `today`, `yesterday`, `ytd`, `this_week`, `last_week`,
 > `this_month`, `last_month`, `this_year`, `last_year`. All resolve to
@@ -248,10 +291,17 @@ system only needs to be built once, in one place.
 
 | Feature | CLI flag | CLI | TUI | Daemon | Core engine |
 |---------|----------|-----|-----|--------|-------------|
-| Require attributes | `--attr hidden,compressed` | 🔴 | ✅ | 🔲 | `SearchFilters.attr_require` ✅ |
-| Exclude attributes | `--attr !system,!hidden` | 🔴 | ✅ | 🔲 | `SearchFilters.attr_exclude` ✅ |
-| Mixed include/exclude | `--attr compressed,!system` | 🔴 | ✅ | 🔲 | Both bitmask fields ✅ |
+| Require attributes | `--attr hidden,compressed` | ✅ | ✅ | ✅ | `SearchFilters.attr_require` via `SearchParams.attr` |
+| Exclude attributes | `--attr !system,!hidden` | ✅ | ✅ | ✅ | `SearchFilters.attr_exclude` via `SearchParams.attr` |
+| Mixed include/exclude | `--attr compressed,!system` | ✅ | ✅ | ✅ | Both bitmask fields |
+| Attribute presets | `--attr system-files` | ✅ | ⬜ | ✅ ³ | `expand_attr_spec()` → client-side expansion |
 
+> ³ **Attribute presets are client-side sugar.** The CLI calls
+> `expand_attr_spec("system-files")` → `"hidden,system"` before sending to
+> the daemon. Available presets: `system-files` → `hidden,system`,
+> `user-files` → `!hidden,!system`, `compressed-encrypted` → `compressed,encrypted`,
+> `temp-files` → `temporary`, `offline-files` → `offline`.
+>
 > **Supported attribute names** (with shortcuts): `readonly` (r), `hidden` (h),
 > `system` (s), `directory` (d), `archive` (a), `device`, `normal`,
 > `temporary` (t), `sparse`, `reparse`, `compressed` (c), `offline` (o),
@@ -262,14 +312,14 @@ system only needs to be built once, in one place.
 
 | Feature | CLI flag | CLI | TUI | Daemon | Core engine |
 |---------|----------|-----|-----|--------|-------------|
-| Min descendants | `--min-descendants 10` | ✅ | ✅ | 🔲 | `SearchFilters.min_descendants` |
-| Max descendants | `--max-descendants 0` | ✅ | ✅ | 🔲 | `SearchFilters.max_descendants` |
+| Min descendants | `--min-descendants 10` | ✅ | ✅ | ✅ | `SearchFilters.min_descendants` via `SearchParams.min_descendants` |
+| Max descendants | `--max-descendants 0` | ✅ | ✅ | ✅ | `SearchFilters.max_descendants` via `SearchParams.max_descendants` |
 
 ### 2.7 Exclude Pattern
 
 | Feature | CLI flag | CLI | TUI | Daemon | Core engine |
 |---------|----------|-----|-----|--------|-------------|
-| Exclude glob | `--exclude backup*` | 🔴 | ✅ | 🔲 | `SearchFilters.exclude_lower` ✅ |
+| Exclude glob | `--exclude backup*` | ✅ | ✅ | ✅ | `SearchFilters.exclude_lower` via `SearchParams.exclude` |
 
 > **How it works:** Lowercased glob match on filename. Applied post-search
 > via `apply_search_filters()` and pre-search via `matches_record()`.
@@ -278,10 +328,10 @@ system only needs to be built once, in one place.
 
 | Feature | CLI flag | CLI | TUI | Daemon | Core engine |
 |---------|----------|-----|-----|--------|-------------|
-| Single-column sort | `--sort size` | 🔴 | ✅ | ✅ | `MultiDriveBackend.sort_column` |
-| Multi-tier sort | `--sort modified,size,name` | 🔴 | ✅ | 🔲 | `extra_sort_tiers: Vec<SortSpec>` |
-| Sort direction | `--sort size:desc` | 🔴 | ✅ | ✅ | `sort_desc` flag |
-| Reverse sort | `--sort-desc` | 🔴 | ✅ | ⬜ | `sort_desc` flag |
+| Single-column sort | `--sort size` | ✅ | ✅ | ✅ | `MultiDriveBackend.sort_column` via `SearchParams.sort` |
+| Multi-tier sort | `--sort modified,size,name` | ✅ | ✅ | ✅ | `SearchParams.sorts: Vec<SearchSortSpec>` |
+| Sort direction | `--sort size:desc` | ✅ | ✅ | ✅ | `SearchSortSpec.direction` |
+| Reverse sort | `--sort-desc` | ✅ | ✅ | ✅ | `sort_desc` flag (legacy compat) |
 | Cycle sort (Tab key) | N/A | ⬜ | ✅ | ⬜ | `cycle_sort()` |
 | Toggle direction | N/A | ⬜ | ✅ | ⬜ | `toggle_sort_direction()` |
 | Re-sort last results | N/A | ⬜ | ✅ | ⬜ | `sort()` method |
@@ -293,10 +343,9 @@ system only needs to be built once, in one place.
 > **Default directions:** Size/dates/descendants default to descending;
 > name/path/drive/extension/type default to ascending.
 >
-> **Root cause for CLI 🔴:** `OwnedQueryFilters.search_compact()` creates
-> a fresh `MultiDriveBackend` but never sets `sort_column`/`sort_desc`/
-> `extra_sort_tiers` from the CLI args. The sort values sit on `SearchConfig`
-> but are never read.
+> **Sort wiring:** CLI calls `canonicalize_legacy_sort()` to convert
+> `--sort size:desc` into `Vec<SearchSortSpec>`, which is sent as
+> `SearchParams.sorts`. The daemon resolves sort specs via `resolved_sorts()`.
 
 ### 2.9 Output Control
 
@@ -312,7 +361,7 @@ system only needs to be built once, in one place.
 | Bool false repr | `--neg No` | ✅ | ⬜ | ⬜ | `OutputConfig.neg` |
 | Output to file | `--out results.csv` | ✅ | ⬜ | ⬜ | `write_native_results` |
 | Parity compat mode | `--parity-compat` | ✅ | ⬜ | ⬜ | 25-column C++ mask |
-| Hide ADS streams | `--no-ads` | ✅ | ⬜ | ⬜ | `show_ads` flag |
+| Hide ADS streams | `--hide-ads` | ✅ | ✅ | ✅ | `SearchFilters.hide_ads` (daemon hot-path, `memchr` scan) |
 | Timezone override | `--tz-offset -8` | ✅ | ⬜ | ⬜ | `tz_offset` param |
 
 ### 2.10 Operational Flags
@@ -332,66 +381,60 @@ system only needs to be built once, in one place.
 
 ## 3. Regression Summary
 
-### 3.1 CLI — 14 broken features (🔴) + 1 partial (🟡)
+### 3.1 CLI — ✅ All previously broken features now wired
 
-13 share the same root cause: filter/sort values sit on `SearchConfig`
-but `QueryFilters` (10 fields) doesn't carry them through to
-`OwnedQueryFilters` → `SearchFilters::from_params()`. 1 has a different
-root cause (extension collection aliases not wired).
+All 14 previously broken CLI filter/sort flags now work through the daemon
+pipeline. The CLI builds `SearchParams` from CLI args (in `daemon.rs`) and
+sends to the daemon. Client-side sugar expansion handles collection aliases
+and attribute presets before the RPC call.
 
-| Category | Broken flags | Root cause |
-|----------|-------------|------------|
-| Date (6) | `--newer`, `--older`, `--newer-created`, `--older-created`, `--newer-accessed`, `--older-accessed` | Fields missing from `QueryFilters` |
-| Attribute (1) | `--attr` | Field missing from `QueryFilters` |
-| Exclude (1) | `--exclude` | Field missing from `QueryFilters` |
-| Sort (2) | `--sort`, `--sort-desc` | Fields missing from `QueryFilters` + backend not wired |
-| Sort wiring (1) | `--sort` backend wiring | `MultiDriveBackend.sort_column` / `sort_desc` / `extra_sort_tiers` never set |
-| Name-only (1) | `--name-only` | No-op since name-only is default, but not formally dead |
-| Show ADS (1) | `--no-ads` | Set on SearchConfig, not wired to compact output |
-| Reserved alloc (1) | `--reserved-allocated` | Parity-only, not wired to compact |
-| **Ext collections (1)** | `--ext documents` | **`SearchFilters::from_params()` treats as raw string; doesn't call `ExtensionFilter::parse()`** |
+| Category | Status | How fixed |
+|----------|--------|-----------|
+| Date (6) | ✅ Fixed | `SearchParams` carries `newer`, `older`, `newer_created`, `older_created`, `newer_accessed`, `older_accessed` |
+| Attribute (1) | ✅ Fixed | `SearchParams.attr` + client-side `expand_attr_spec()` |
+| Exclude (1) | ✅ Fixed | `SearchParams.exclude` |
+| Sort (2) | ✅ Fixed | `SearchParams.sorts: Vec<SearchSortSpec>` + `canonicalize_legacy_sort()` |
+| Ext collections (1) | ✅ Fixed | Client-side `expand_ext_spec()` → primitive ext names in `SearchParams.ext` |
+| Name-only (1) | 🟡 No-op | Name-only is the default. `path:` prefix provides explicit path matching. |
+| Hide ADS (1) | ✅ Fixed | `--hide-ads` → `SearchFilters.hide_ads` → daemon hot-path `memchr(b':')` scan |
+| Reserved alloc (1) | N/A | Volume-level constant for root dir `tree_allocated` parity; `--reserved-allocated` hidden flag wired in parity verification only. Not a per-record filter/sort concern. |
 
-### 3.4 Derived fields with incomplete implementations
+### 3.2 Derived fields
 
-| Field | Status | Problem |
-|-------|--------|---------|
-| `Bulkiness` | 🟡 hardcoded `"0"` | `write_display_row_columns` outputs literal `"0"` — never computed |
-| `TreeAllocated` | 🟡 falls back to `allocated` | Should sum `allocated` for subtree; currently shows single-file allocated |
-| `TreeSize` | ✅ computed | `CompactRecord.treesize` is populated during MFT indexing |
+| Field | Status | Implementation |
+|-------|--------|----------------|
+| `Bulkiness` | ✅ computed | `allocated * 100 / size` — integer percentage. 100 = perfectly packed. >100 = cluster slack/waste. 0 for zero-byte files. |
+| `TreeAllocated` | ✅ computed | `CompactRecord.tree_allocated` — sum of allocated sizes in subtree. Pre-computed during MFT indexing (O(n) leaf-peeling). |
+| `TreeSize` | ✅ computed | `CompactRecord.treesize` — sum of logical sizes in subtree. Pre-computed during MFT indexing. |
 
-### 3.2 Daemon — 10+ features not exposed in `SearchParams`
+### 3.3 Daemon — ✅ All filters now exposed in `SearchParams`
 
-The daemon's `SearchParams` (uffs-client/protocol.rs) only has:
-`pattern`, `case_sensitive`, `whole_word`, `sort`, `sort_desc`, `limit`,
-`filter` (files/dirs), `drives`.
+`SearchParams` (uffs-client/protocol.rs) now carries **all** filter fields:
 
-Missing from the RPC protocol entirely:
-`hide_system`, `ext`, `min_size`, `max_size`, `min_descendants`,
-`max_descendants`, `newer`, `older`, `newer_created`, `older_created`,
-`newer_accessed`, `older_accessed`, `attr`, `exclude`, `name_only`,
-`smart_case`, `columns`.
+**Core:** `pattern`, `case_sensitive`, `whole_word`, `match_path`
+**Sort:** `sort`, `sorts: Vec<SearchSortSpec>`, `sort_desc`
+**Limit:** `limit`
+**Filter mode:** `filter`, `filter_mode`, `drives`
+**Size:** `min_size`, `max_size`, `min_allocated`, `max_allocated`
+**Descendants:** `min_descendants`, `max_descendants`
+**Date:** `newer`, `older`, `newer_created`, `older_created`, `newer_accessed`, `older_accessed`
+**Attribute:** `attr`, `hide_system`
+**Extension:** `ext`
+**Exclude:** `exclude`
+**Length:** `min_name_len`, `max_name_len`, `min_path_len`, `max_path_len`
+**Month:** `allowed_months: Vec<u32>`
+**Canonical:** `predicates: Vec<SearchPredicate>`, `projection`, `response_mode`
 
-Additionally, the daemon hardcodes `SearchFilters::default()` — even the
-fields it could wire through (`hide_system`) are ignored.
+The daemon calls `SearchFilters::from_params()` with all fields and
+`compile_predicates_into_filters()` for canonical predicates. No fields
+are ignored.
 
-### 3.3 What was lost in the streaming deletion
+### 3.4 What was lost in the streaming deletion (historical)
 
-The deleted `StreamingRecordFilter` implemented these filter checks inline:
-
-```rust
-// StreamingRecordFilter::matches() — DELETED
-// ✅ files_only / dirs_only / hide_system
-// ✅ min_size / max_size
-// ✅ newer_modified / older_modified (Unix µs bounds)
-// ✅ newer_created / older_created
-// ✅ newer_accessed / older_accessed
-// ✅ attr_require / attr_exclude (bitmasks)
-// ✅ exclude_lower (glob match)
-```
-
-All of these capabilities already exist in `SearchFilters` (uffs-core) — the
-streaming filter was a duplicate implementation. The gap is purely in the CLI
-wiring layer (`QueryFilters` → `OwnedQueryFilters`), not in the core engine.
+The deleted `StreamingRecordFilter` implemented these filter checks inline.
+All of these capabilities now exist in `SearchFilters` (uffs-core) and are
+fully wired through the daemon pipeline. The gap that existed in the CLI
+wiring layer has been closed.
 
 ---
 
@@ -906,47 +949,47 @@ to `SearchParams.columns`.
 |-------|---------|------|-------------|-----------|-------------|
 | Name | `Name` | String | ✅ pattern match | ✅ `SortColumn::Name` | ✅ `OutputColumn::Name` |
 | Size | `Size` | u64 | ✅ `min_size`/`max_size` | ✅ `SortColumn::Size` | ✅ `OutputColumn::Size` |
-| Allocated | `Allocated` | u64 | ❌ | ✅ `SortColumn::SizeOnDisk` | ✅ `OutputColumn::SizeOnDisk` |
-| TreeSize | `TreeSize` | u64 | ❌ | ❌ (mapped to Size) | ✅ `OutputColumn::TreeSize` |
+| Allocated | `Allocated` | u64 | ✅ `min/max_allocated` | ✅ `SortColumn::SizeOnDisk` | ✅ `OutputColumn::SizeOnDisk` |
+| TreeSize | `TreeSize` | u64 | ✅ `min/max_treesize` | ✅ `FieldId::TreeSize` | ✅ `OutputColumn::TreeSize` |
+| TreeAllocated | `TreeAllocated` | u64 | ✅ `min/max_tree_allocated` | ✅ `FieldId::TreeAllocated` | ✅ `OutputColumn::TreeAllocated` |
 | Created | `Created` | i64 | ✅ `newer/older_created` | ✅ `SortColumn::Created` | ✅ `OutputColumn::Created` |
 | Modified | `Modified` | i64 | ✅ `newer/older` | ✅ `SortColumn::Modified` | ✅ `OutputColumn::Modified` |
 | Accessed | `Accessed` | i64 | ✅ `newer/older_accessed` | ✅ `SortColumn::Accessed` | ✅ `OutputColumn::Accessed` |
 | Flags | `Attributes` | u32 | ✅ `attr_require/exclude` | ❌ | ✅ `OutputColumn::Attributes` |
 | Descendants | `Descendants` | u32 | ✅ `min/max_descendants` | ✅ `SortColumn::Descendants` | ✅ `OutputColumn::Descendants` |
 | extension_id | (internal) | u16 | ✅ `extensions` | ✅ `SortColumn::Extension` | (via Extension) |
+| NameLength | `NameLength` | u16 | ✅ `min/max_name_len` (hot) | ✅ `FieldId::NameLength` | ✅ daemon projection |
+| PathLength | `PathLength` | u16 | ✅ `min/max_path_len` (post) | ✅ `FieldId::PathLength` | ✅ daemon projection |
 
 ### 5.2 Derived fields (computed from hot path — no I/O)
 
 | Field | FieldId | Type | Filter today | Sort today | Output today |
 |-------|---------|------|-------------|-----------|-------------|
-| Path | `Path` | String | ✅ path-aware pattern | ✅ `SortColumn::Path` | ✅ `OutputColumn::Path` |
-| PathOnly | `PathOnly` | String | ❌ | ❌ (mapped to Path) | ✅ `OutputColumn::PathOnly` |
+| Path | `Path` | String | ✅ path-aware + `path:` prefix | ✅ `SortColumn::Path` | ✅ `OutputColumn::Path` |
+| PathOnly | `PathOnly` | String | ✅ `--in-path` (glob on dir portion) | ✅ `FieldId::PathOnly` | ✅ `OutputColumn::PathOnly` |
 | Extension | `Extension` | String | ✅ `--ext` | ✅ `SortColumn::Extension` | ✅ `OutputColumn::Type` |
-| Type | `Type` | String | 🔴 ⁴ | 🟡 ⁵ | 🟡 ⁶ |
+| Type | `Type` | String | ✅ `--type CATEGORY` | ✅ `FieldId::Type` sort | ✅ `semantic_type_for_row()` |
 | Drive | `Drive` | char | ✅ `--drive` | ✅ `SortColumn::Drive` | (in path prefix) |
-| Bulkiness | `Bulkiness` | f64 | ❌ | ❌ | 🟡 hardcoded "0" |
-| TreeAllocated | `TreeAllocated` | u64 | ❌ | ❌ | 🟡 falls back to `allocated` |
-| 19 bool attrs | `Hidden`, ... | bool | ✅ `--attr` | ❌ (mapped to Name) | ✅ individual columns |
+| Bulkiness | `Bulkiness` | u64 | ✅ `--min/max-bulkiness` | ✅ `FieldId::Bulkiness` | ✅ `allocated*100/size` (integer %) |
+| 19 bool attrs | `Hidden`, ... | bool | ✅ `--attr` | ✅ `field_to_attr_bit` flag sort | ✅ individual columns |
 
-> ⁴ `--filter "type:eq:document"` does not exist yet. The `--ext documents`
-> collection alias can filter by the same set of extensions, but there is no
-> `Type` field filter that maps extension → category and filters by category name.
+> ⁴⁵⁶ **Type field — fully implemented (2026-04-05).**
 >
-> ⁵ `SortColumn::Type` sorts by devicon **icon character** (a Unicode glyph),
-> not by category name. Files with the same icon glyph group together, but the
-> sort order is Unicode codepoint order, which is not alphabetical by category.
+> - **Filter:** `--type code` → `SearchFilters.type_filter` post-filter via
+>   `semantic_type_for_row()`. 24 categories: archive, audio, backup, cad,
+>   cert, code, config, data, database, directory, disk, document, ebook,
+>   executable, file, font, log, other, picture, script, shortcut, system,
+>   video, web.
+> - **Sort:** `FieldId::Type` sorts by `semantic_type_for_row()` category
+>   name (alphabetical, case-folded). No longer sorts by devicon glyph.
+> - **Output:** `OutputColumn::Type` outputs the category name (e.g.
+>   `"code"`, `"document"`, `"picture"`). TUI retains devicon glyph as a
+>   visual decoration in the Type column.
 >
-> ⁶ Three different "Type" outputs exist, none returns a category name:
->
-> | Context | What `Type` outputs | Example |
-> |---------|--------------------|---------|
-> | CLI `OutputColumn::Type` | Raw file extension | `rs`, `py`, `docx` |
-> | TUI `TuiColumn::Type` | Devicon glyph character | `` (Rust icon) |
-> | Sort `SortColumn::Type` | Compares devicon glyphs | Groups by icon |
->
-> **Target:** `Type` should output a human-readable category name from a
-> unified category registry (see §5.5). The devicon glyph stays as a display
-> decoration (prefixed to Name in TUI), not as the Type value itself.
+> **Bool attr sort — fully implemented (2026-04-05).** All 19 boolean
+> attribute fields now sort by flag bit value (true/false grouping) with
+> name tiebreaker, via `field_to_attr_bit()`. `--sort hidden:desc` puts
+> hidden files first.
 
 ### 5.3 Cold path fields (require ExtraRecordFields from .uffs cache)
 
@@ -1017,11 +1060,19 @@ filter, sort, or output yet.
 
 | Category | Fields | Filterable | Sortable | Outputtable |
 |----------|--------|-----------|----------|-------------|
-| Hot path | 10 | 10/10 ✅ | 9/10 | 10/10 |
-| Derived | 10 | 4/10 | 6/10 | 9/10 |
-| Bool attrs | 19 | 19/19 ✅ | 0/19 | 19/19 ✅ |
+| Hot path | 13 | 13/13 ✅ | 12/13 | 13/13 ✅ |
+| Derived | 6 | 6/6 ✅ | 6/6 ✅ | 6/6 ✅ |
+| Bool attrs | 19 | 19/19 ✅ | 19/19 ✅ | 19/19 ✅ |
 | Cold path | 17 | 0/17 ❌ | 0/17 ❌ | 0/17 ❌ |
-| **Total** | **56** | **33/56** | **15/56** | **38/56** |
+| **Total** | **55** | **38/55** | **37/55** | **38/55** |
+
+> Updated 2026-04-05: Hot-path and derived fields **fully wired** across
+> filter/sort/output. `TreeAllocated`/`TreeSize` filterable via
+> `--min/max-treesize` and `--min/max-tree-allocated`. `Bulkiness`
+> filterable via `--min/max-bulkiness`. `Type` filterable via `--type`.
+> `PathOnly` filterable via `--in-path`. Bool attrs sortable via
+> `field_to_attr_bit()`. `SearchFilterParams` struct replaces 27-arg
+> positional function signature.
 
 ### 5.5 Type field: Unified category registry
 
@@ -1167,12 +1218,14 @@ Wave 5 — Cold-path output + filter
 
 | Phase | Status | Ref | Notes |
 |-------|--------|-----|-------|
-| D5: CLI → daemon-only (shmem for bulk) | 🔲 | `DAEMON_IMPLEMENTATION_PLAN.md` §D5 | Fixes 14 broken CLI flags (broken wiring deleted) |
+| D5: CLI → daemon-only (shmem for bulk) | 🔲 | `DAEMON_IMPLEMENTATION_PLAN.md` §D5 | All filter wiring done ✅; shmem + standalone deletion remaining |
 | D6: TUI → daemon-only | 🔲 | `DAEMON_IMPLEMENTATION_PLAN.md` §D6 | TUI drops from ~7 GiB to <50 MB |
+| **Pre-D5 filter wiring** | ✅ Done | This session (2026-04-04) | All `SearchParams` fields wired; `SearchFilters::from_params()` called; canonical predicates compiled |
 
-> Former Wave 2 tasks (Steps 0–8) are absorbed into D5.2 and D5.3.
-> The broken `QueryFilters`/`OwnedQueryFilters`/`SearchConfig` pipeline
-> is deleted entirely — no intermediate fix needed.
+> Former Wave 2 tasks (Steps 0–8) have been **completed ahead of D5** via
+> direct `SearchParams` expansion + daemon-side `from_params()` wiring.
+> The broken `QueryFilters`/`OwnedQueryFilters` pipeline still exists but
+> the daemon path bypasses it entirely. D5 will delete the dead code.
 
 **Phase B — AFTER D5+D6 (all search through daemon)**
 
@@ -1193,15 +1246,13 @@ All changes below are in `uffs-core` only. No per-frontend wiring.
 
 ### 6.3 Acceptance Criteria
 
-**D5+D6:** All frontends route through daemon — no standalone mode.
-Filtered queries (<100K results) return inline via JSON-RPC. Bulk queries
-(>100K results) return via shared memory for near-native speed. ONE
-pipeline, ONE search implementation in `uffs-core`. Every 🔴 in the CLI
-column of Section 2 becomes ✅ (broken wiring deleted, replaced by
-`SearchParams → daemon → SearchFilters`).
+**Filter wiring (✅ DONE):** All CLI filter/sort flags work through the
+daemon pipeline. `SearchParams` carries all fields. `SearchFilters::from_params()`
+builds the hot-path filter struct. Canonical predicates compile into hot-path
+via `compile_predicates_into_filters()`.
 
 ```bash
-# All formerly broken CLI flags must work through daemon:
+# All formerly broken CLI flags now work through daemon: ✅
 uffs "*.txt" --newer 7d
 uffs "*" --sort size --files-only --limit 10
 uffs "*" --attr hidden --files-only
@@ -1209,14 +1260,25 @@ uffs "*.log" --exclude "backup*"
 uffs "*" --sort ext,size:desc --files-only --limit 20
 uffs "*" --attr hidden --newer 30d --min-size 1048576 --sort size --files-only
 
-# Extension collections must expand correctly:
+# Extension collections expand correctly (client-side sugar): ✅
 uffs --ext documents --files-only --limit 10    # → doc,docx,pdf,txt,...
 uffs --ext "pictures,mp4" --limit 10            # → jpg,png,...,mp4
-uffs --ext code --limit 10                      # → rs,py,js,ts,...
+uffs --ext executables --limit 10               # → exe,msi,bat,cmd,...
 
-# Bulk queries via shared memory — must be ≤ pre-D5 time:
-uffs "*" --limit 0                              # → 25M results, ~10s target
+# New features implemented this session: ✅
+uffs "path:projects" --limit 100                # → path: prefix + descendant expansion
+uffs "*" --month january --files-only           # → files modified in any January
+uffs "*" --month Q1 --sort size --limit 10      # → Q1 (Jan-Mar) files by size
+uffs "*" --begins-with report --limit 10        # → report* pattern sugar
+uffs "*" --min-name-len 50 --limit 10           # → long filenames
+uffs "*" --max-path-len 260 --limit 10          # → near MAX_PATH limit
+uffs "*" --attr system-files --limit 10         # → attribute preset expansion
+uffs "*" --min-size-on-disk 1G --limit 10       # → size-on-disk filter
 ```
+
+**D5+D6 (remaining):** Delete standalone mode. All frontends route through
+daemon. Bulk queries (>100K results) via shared memory. Delete dead
+`QueryFilters`/`OwnedQueryFilters`/`SearchConfig` pipeline.
 
 **Wave 3:** (after D5+D6) `OutputColumn`, `SortColumn`, `TuiColumn` are
 replaced by `FieldId`. Adding a field to `FieldId` makes it available

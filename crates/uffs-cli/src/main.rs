@@ -290,74 +290,185 @@ async fn run() -> Result<()> {
             commands::daemon(&action).await?;
         }
         None => {
-            // Default action: search
-            if let Some(pattern) = cli.pattern {
-                // Validate --name-only: incompatible with patterns containing path separators
-                if cli.name_only
-                    && (pattern.contains('\\') || pattern.contains('/'))
-                    && !pattern.starts_with('>')
-                {
-                    anyhow::bail!(
-                        "--name-only cannot be used with path patterns (pattern contains '\\' or '/'). \
-                         Remove the path from the pattern or drop --name-only."
-                    );
-                }
-
-                commands::search(
-                    &pattern,
-                    cli.drive,
-                    cli.drives,
-                    cli.mft_file,
-                    cli.data_dir,
-                    cli.files_only,
-                    cli.dirs_only,
-                    cli.hide_system,
-                    cli.profile,
-                    cli.benchmark,
-                    cli.no_cache,
-                    cli.min_size,
-                    cli.max_size,
-                    cli.min_descendants,
-                    cli.max_descendants,
-                    cli.limit,
-                    &cli.format,
-                    cli.case,
-                    cli.smart_case,
-                    cli.attr.as_deref(),
-                    cli.newer.as_deref(),
-                    cli.older.as_deref(),
-                    cli.newer_created.as_deref(),
-                    cli.older_created.as_deref(),
-                    cli.newer_accessed.as_deref(),
-                    cli.older_accessed.as_deref(),
-                    cli.exclude.as_deref(),
-                    cli.word,
-                    cli.sort.as_deref(),
-                    cli.sort_desc,
-                    cli.ext.as_deref(),
-                    &cli.out,
-                    if cli.parity_compat {
-                        "parity"
-                    } else {
-                        &cli.columns
-                    },
-                    &cli.sep,
-                    &cli.quotes,
-                    cli.header,
-                    &cli.pos,
-                    &cli.neg,
-                    cli.tz_offset,
-                )
-                .await?;
-            } else {
-                // No pattern provided - show help
-                use clap::CommandFactory;
-                Cli::command().print_help()?;
-            }
+            run_search(cli).await?;
         }
     }
 
     Ok(())
+}
+
+/// Handle the default search subcommand.
+///
+/// Extracted from `run()` to stay under the `too_many_lines` lint limit.
+async fn run_search(mut cli: Cli) -> Result<()> {
+    // Synthesise pattern from --begins-with / --ends-with / --contains (take to
+    // avoid partial move)
+    let raw_pattern = cli
+        .pattern
+        .take()
+        .or_else(|| cli.begins_with.take().map(|prefix| format!("{prefix}*")))
+        .or_else(|| cli.ends_with.take().map(|suffix| format!("*{suffix}")))
+        .or_else(|| cli.contains.take().map(|needle| format!("*{needle}*")));
+
+    // Merge --not-contains into --exclude (take to avoid partial move of `cli`)
+    let exclude = match (cli.exclude.take(), cli.not_contains.take()) {
+        (Some(ex), Some(nc)) => Some(format!("{ex},*{nc}*")),
+        (Some(ex), None) => Some(ex),
+        (None, Some(nc)) => Some(format!("*{nc}*")),
+        (None, None) => None,
+    };
+
+    if let Some(resolved) = raw_pattern {
+        let (match_path, pattern) = parse_scope_prefix(resolved, &mut cli);
+        validate_name_only(&cli, &pattern)?;
+        dispatch_search(cli, &pattern, exclude.as_deref(), match_path).await?;
+    } else {
+        use clap::CommandFactory;
+        Cli::command().print_help()?;
+    }
+
+    Ok(())
+}
+
+/// Parse Everything-style scope prefixes (`path:`, `dir:`, `file:`) from the
+/// resolved pattern and update the CLI flags accordingly.
+fn parse_scope_prefix(resolved: String, cli: &mut Cli) -> (bool, String) {
+    if let Some(rest) = resolved.strip_prefix("path:") {
+        (true, rest.to_owned())
+    } else if let Some(rest) = resolved.strip_prefix("dir:") {
+        cli.dirs_only = true;
+        (false, rest.to_owned())
+    } else if let Some(rest) = resolved.strip_prefix("file:") {
+        cli.files_only = true;
+        (false, rest.to_owned())
+    } else {
+        (false, resolved)
+    }
+}
+
+/// Validate `--name-only`: incompatible with patterns containing path
+/// separators.
+fn validate_name_only(cli: &Cli, pattern: &str) -> Result<()> {
+    if cli.name_only
+        && (pattern.contains('\\') || pattern.contains('/'))
+        && !pattern.starts_with('>')
+    {
+        anyhow::bail!(
+            "--name-only cannot be used with path patterns (pattern contains '\\' or '/'). \
+             Remove the path from the pattern or drop --name-only."
+        );
+    }
+    Ok(())
+}
+
+/// Expand filter aliases and dispatch to the actual search command.
+async fn dispatch_search(
+    cli: Cli,
+    pattern: &str,
+    exclude: Option<&str>,
+    match_path: bool,
+) -> Result<()> {
+    // Expand collection aliases / presets
+    let ext_expanded = cli
+        .ext
+        .as_deref()
+        .map(uffs_core::extensions::expand_ext_spec);
+    let attr_expanded = cli
+        .attr
+        .as_deref()
+        .map(uffs_core::search::filters::expand_attr_spec);
+    let month_expanded: Vec<u32> = cli
+        .month
+        .as_deref()
+        .map(uffs_core::search::filters::parse_month_spec)
+        .unwrap_or_default();
+
+    // Merge --exact-size / --exact-descendants
+    let (min_size, max_size) = (
+        cli.exact_size.or(cli.min_size),
+        cli.exact_size.or(cli.max_size),
+    );
+    let (min_desc, max_desc) = (
+        cli.exact_descendants.or(cli.min_descendants),
+        cli.exact_descendants.or(cli.max_descendants),
+    );
+
+    // Merge --between START,END → newer + older
+    let (bn, bo) = cli.between.as_ref().map_or((None, None), |between| {
+        let mut parts = between.splitn(2, ',');
+        (
+            parts.next().map(String::from),
+            parts.next().map(String::from),
+        )
+    });
+    let (newer, older) = (
+        cli.newer.as_deref().or(bn.as_deref()),
+        cli.older.as_deref().or(bo.as_deref()),
+    );
+
+    commands::search(
+        pattern,
+        cli.drive,
+        cli.drives,
+        cli.mft_file,
+        cli.data_dir,
+        cli.files_only,
+        cli.dirs_only,
+        cli.hide_system,
+        cli.hide_ads,
+        cli.profile,
+        cli.benchmark,
+        cli.no_cache,
+        min_size,
+        max_size,
+        min_desc,
+        max_desc,
+        cli.limit,
+        &cli.format,
+        cli.case,
+        cli.smart_case,
+        attr_expanded.as_deref(),
+        newer,
+        older,
+        cli.newer_created.as_deref(),
+        cli.older_created.as_deref(),
+        cli.newer_accessed.as_deref(),
+        cli.older_accessed.as_deref(),
+        exclude,
+        cli.in_path.as_deref(),
+        cli.type_filter.as_deref(),
+        cli.min_bulkiness,
+        cli.max_bulkiness,
+        cli.min_name_length,
+        cli.max_name_length,
+        cli.min_path_length,
+        cli.max_path_length,
+        cli.exact_size_on_disk.or(cli.min_size_on_disk),
+        cli.exact_size_on_disk.or(cli.max_size_on_disk),
+        cli.min_treesize,
+        cli.max_treesize,
+        cli.min_tree_allocated,
+        cli.max_tree_allocated,
+        &month_expanded,
+        match_path,
+        cli.word,
+        cli.sort.as_deref(),
+        cli.sort_desc,
+        ext_expanded.as_deref(),
+        &cli.out,
+        if cli.parity_compat {
+            "parity"
+        } else {
+            &cli.columns
+        },
+        &cli.sep,
+        &cli.quotes,
+        cli.header,
+        &cli.pos,
+        &cli.neg,
+        cli.tz_offset,
+    )
+    .await
 }
 
 /// Runs the CLI while listening for Ctrl+C so shutdown reaches long-running

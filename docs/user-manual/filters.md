@@ -5,8 +5,8 @@ pattern matching.  Filters are applied server-side inside the daemon — only
 matching rows are returned to the CLI, so adding filters never makes a
 search slower; it makes it faster by reducing output.
 
-> **See also:** [CLI Overview](cli-overview.md) · [Search Modes](search-modes.md) ·
-> [Sorting](sorting.md)
+> **See also:** [Concepts](concepts.md) · [CLI Overview](cli-overview.md) ·
+> [Search Modes](search-modes.md) · [Sorting](sorting.md)
 
 ---
 
@@ -336,7 +336,202 @@ path) and is always case-insensitive.
 
 ---
 
-## 8  Result Limit
+## 8  Path Filter
+
+The `--in-path` flag filters by the **directory portion** of the resolved
+path.  It matches a glob pattern against everything *except* the filename —
+useful for limiting results to a specific directory tree without changing
+the search pattern.
+
+```bash
+# Only .rs files under directories containing "projects"
+uffs '*.rs' --in-path '*projects*'
+
+# Only files under Windows\System32
+uffs '*.dll' --in-path '*windows\system32*'
+
+# Combine with exclude — files in temp dirs but not backup dirs
+uffs '*.dat' --in-path '*temp*' --exclude '*backup*'
+```
+
+The glob is matched **case-insensitively** against the directory path only
+(not the filename).  This is a post-filter — applied after path resolution.
+
+---
+
+## 9  Type Filter
+
+The `--type` flag filters by **semantic file category**.  UFFS maps file
+extensions to 24 human-readable categories and lets you filter, sort, and
+output by category name.
+
+```bash
+uffs '*' --type code          # All source code files
+uffs '*' --type picture       # All images
+uffs '*' --type executable    # All executables
+uffs '*' --type database      # All database files
+```
+
+### Available Categories
+
+| Category | Extensions |
+|----------|-----------|
+| `archive` | zip, rar, 7z, tar, gz, bz2, xz |
+| `audio` | mp3, wav, flac, aac, ogg, wma, m4a, opus, aiff |
+| `backup` | bak, old, orig, swp, tmp, temp |
+| `cad` | dwg, dxf, step, stl, obj, fbx, blend, gltf, glb |
+| `cert` | pem, crt, cer, pfx, p12, key, jks |
+| `code` | rs, py, js, ts, java, c, cpp, h, go, rb, php, swift, kt |
+| `config` | ini, cfg, yaml, yml, toml, json, xml, env, reg, plist |
+| `data` | csv, tsv, parquet, avro, arrow, ndjson, dat, hdf5 |
+| `database` | db, sqlite, mdb, sql, ldf, mdf, ndf, dbf |
+| `disk` | vmdk, vhd, vhdx, vdi, qcow2, img, wim, iso, dmg |
+| `document` | doc, docx, pdf, txt, rtf, odt, xls, xlsx, ppt, pptx, csv, md |
+| `ebook` | epub, mobi, azw, djvu, cbr, cbz |
+| `executable` | exe, msi, bat, cmd, ps1, com, scr |
+| `font` | ttf, otf, woff, woff2, eot, fon |
+| `log` | log, out, err, trace, evt, evtx |
+| `picture` | jpg, jpeg, png, gif, bmp, tiff, webp, svg, ico, raw, heic |
+| `script` | sh, bash, zsh, lua, pl, tcl, awk, sed |
+| `shortcut` | lnk, url, desktop, webloc |
+| `system` | sys, dll, drv, ocx, cpl, ax, mui |
+| `video` | mp4, avi, mkv, mov, wmv, flv, webm, mpeg, m4v, 3gp |
+| `web` | html, htm, css, scss, jsx, tsx, vue, svelte, wasm |
+| `directory` | (NTFS directory flag) |
+| `file` | (no extension) |
+| `other` | (unknown extension) |
+
+> `--type` is a post-filter.  Directories use the `directory` category.
+> Files without an extension use `file`.  Extensions not in any category
+> map to `other`.
+
+---
+
+## 10  Bulkiness Filter
+
+Bulkiness measures the **waste ratio** between allocated disk space and
+logical file size.  A perfectly packed file has bulkiness = 100 (100%).
+A file allocating 5× its logical size has bulkiness = 500.
+
+| Flag | Meaning |
+|------|---------|
+| `--min-bulkiness <N>` | Only files/dirs with bulkiness ≥ N% |
+| `--max-bulkiness <N>` | Only files/dirs with bulkiness ≤ N% |
+
+```bash
+# Find files wasting ≥5× their logical size
+uffs '*' --min-bulkiness 500 --files-only
+
+# Find perfectly packed files (no waste)
+uffs '*' --min-bulkiness 100 --max-bulkiness 100 --files-only
+
+# Large files with high waste
+uffs '*' --min-size 1MB --min-bulkiness 1000
+```
+
+> For directories, bulkiness uses the subtree metrics:
+> `tree_allocated × 100 / treesize`.
+
+---
+
+## 11  Size on Disk Filters
+
+Size on Disk (`SizeOnDisk` / allocated size) reflects the actual bytes
+consumed on the physical volume, which may differ from the logical size
+due to NTFS compression, sparse files, or cluster alignment.
+
+| Flag | Meaning |
+|------|---------|
+| `--min-size-on-disk <SIZE>` | Only files with allocated size ≥ value |
+| `--max-size-on-disk <SIZE>` | Only files with allocated size ≤ value |
+| `--exact-size-on-disk <SIZE>` | Shortcut for min = max = value |
+
+```bash
+# Compressed files using < 1MB on disk despite larger logical size
+uffs '*' --attr compressed --max-size-on-disk 1MB --min-size 10MB
+
+# Files consuming at least 1GB on disk
+uffs '*' --min-size-on-disk 1GB --files-only
+```
+
+---
+
+## 12  Tree Size / Tree Allocated Filters
+
+Tree metrics aggregate **subtree totals** for directories.  `TreeSize` is
+the sum of logical sizes of all descendants; `TreeAllocated` is the sum of
+allocated sizes.
+
+| Flag | Meaning |
+|------|---------|
+| `--min-treesize <SIZE>` | Directories with subtree size ≥ value |
+| `--max-treesize <SIZE>` | Directories with subtree size ≤ value |
+| `--min-tree-allocated <SIZE>` | Directories with subtree allocated ≥ value |
+| `--max-tree-allocated <SIZE>` | Directories with subtree allocated ≤ value |
+
+```bash
+# Directories containing at least 1 GB of files
+uffs '*' --dirs-only --min-treesize 1GB --sort treesize --sort-desc
+
+# Directories using less than 100 MB on disk
+uffs '*' --dirs-only --max-tree-allocated 100MB
+```
+
+---
+
+## 13  Name & Path Length Filters
+
+| Flag | Meaning |
+|------|---------|
+| `--min-name-length <N>` | Filenames with at least N characters |
+| `--max-name-length <N>` | Filenames with at most N characters |
+| `--min-path-length <N>` | Full paths with at least N characters |
+| `--max-path-length <N>` | Full paths with at most N characters |
+
+```bash
+# Find files with very long names (> 100 chars)
+uffs '*' --min-name-length 100 --files-only
+
+# Find paths approaching MAX_PATH (260 chars)
+uffs '*' --min-path-length 240
+
+# Short filenames (8.3 candidates)
+uffs '*' --max-name-length 12 --files-only
+```
+
+> Name length is checked in the hot-path.  Path length is a post-filter
+> (requires resolved full path).
+
+---
+
+## 14  Month-of-Year Filter
+
+The `--month` flag filters by the **month** of the last-modified timestamp,
+across all years.  Useful for seasonal analysis.
+
+```bash
+# Files modified in January (any year)
+uffs '*' --month jan
+
+# Files modified in Q4 (Oct/Nov/Dec)
+uffs '*' --month Q4
+
+# Files modified in summer months
+uffs '*' --month jun,jul,aug
+```
+
+### Accepted Formats
+
+| Format | Example | Expands to |
+|--------|---------|------------|
+| Full name | `january` | Month 1 |
+| Abbreviation | `jan` | Month 1 |
+| Quarter | `Q1` | Months 1, 2, 3 |
+| Combo | `jan,feb,Q4` | Months 1, 2, 10, 11, 12 |
+
+---
+
+## 15  Result Limit
 
 The `--limit` (or `-n`) flag caps the number of results returned.
 
@@ -352,7 +547,7 @@ A limit of `0` (the default) means unlimited.
 
 ---
 
-## 9  Combining Filters — Recipes
+## 16  Combining Filters — Recipes
 
 Filters are **ANDed together** — every filter must pass for a row to
 appear.  This makes it easy to build precise queries by stacking filters.
@@ -395,43 +590,94 @@ uffs '*' --dirs-only --min-descendants 500 --sort descendants --sort-desc --limi
 
 ---
 
-## 10  Quick Reference
+### Find Wasteful Files (High Bulkiness)
+
+```bash
+uffs '*' --files-only --min-bulkiness 500 --sort bulkiness --sort-desc --limit 20
+```
+
+### Find Source Code Modified in January
+
+```bash
+uffs '*' --type code --month jan --files-only
+```
+
+### Files in a Specific Directory Tree
+
+```bash
+uffs '*.log' --in-path '*windows\system32*' --newer 7d
+```
+
+### Largest Directory Subtrees
+
+```bash
+uffs '*' --dirs-only --min-treesize 10GB --sort treesize --sort-desc --limit 20
+```
+
+---
+
+## 17  Quick Reference
 
 ```text
 SCOPE
-  --files-only             Files only (no directories)
-  --dirs-only              Directories only (no files)
-  --hide-system            Hide $-prefixed NTFS system files
+  --files-only               Files only (no directories)
+  --dirs-only                Directories only (no files)
+  --hide-system              Hide $-prefixed NTFS system files
 
 SIZE
-  --min-size <SIZE>        Minimum file size (e.g. 100MB, 1GB, or raw bytes)
-  --max-size <SIZE>        Maximum file size (e.g. 100KB, 10MB, or raw bytes)
+  --min-size <SIZE>          Minimum logical file size (e.g. 100MB)
+  --max-size <SIZE>          Maximum logical file size
+  --min-size-on-disk <SIZE>  Minimum allocated (on-disk) size
+  --max-size-on-disk <SIZE>  Maximum allocated (on-disk) size
+  --exact-size-on-disk <SIZE> Exact allocated size (min = max)
 
 DATE / TIME
-  --newer <SPEC>           Modified within / after  (7d, 24h, 2026-01-15)
-  --older <SPEC>           Modified before
-  --newer-created <SPEC>   Created within / after
-  --older-created <SPEC>   Created before
-  --newer-accessed <SPEC>  Accessed within / after
-  --older-accessed <SPEC>  Accessed before
+  --newer <SPEC>             Modified within / after  (7d, 24h, 2026-01-15)
+  --older <SPEC>             Modified before
+  --newer-created <SPEC>     Created within / after
+  --older-created <SPEC>     Created before
+  --newer-accessed <SPEC>    Accessed within / after
+  --older-accessed <SPEC>    Accessed before
+  --month <SPEC>             Month-of-year filter (jan, Q4, jun,jul,aug)
 
 ATTRIBUTES
-  --attr <LIST>            Require/exclude NTFS attrs (hidden, !system, …)
+  --attr <LIST>              Require/exclude NTFS attrs (hidden, !system, …)
 
 DESCENDANTS
-  --min-descendants <N>    Minimum child count (dirs)
-  --max-descendants <N>    Maximum child count (dirs)
+  --min-descendants <N>      Minimum child count (dirs)
+  --max-descendants <N>      Maximum child count (dirs)
 
-EXTENSIONS
-  --ext <LIST>             Filter by extension or collection alias
+EXTENSIONS & TYPE
+  --ext <LIST>               Filter by extension or collection alias
+  --type <CATEGORY>          Filter by semantic type (code, picture, …)
 
-EXCLUDE
-  --exclude <GLOB>         Exclude files matching glob
+PATH
+  --in-path <GLOB>           Filter by directory path glob
+  --exclude <GLOB>           Exclude files matching filename glob
+
+TREE METRICS
+  --min-treesize <SIZE>      Minimum subtree logical size (dirs)
+  --max-treesize <SIZE>      Maximum subtree logical size
+  --min-tree-allocated <SIZE> Minimum subtree allocated size (dirs)
+  --max-tree-allocated <SIZE> Maximum subtree allocated size
+
+BULKINESS
+  --min-bulkiness <N>        Minimum waste ratio (100 = 1×, 500 = 5×)
+  --max-bulkiness <N>        Maximum waste ratio
+
+NAME / PATH LENGTH
+  --min-name-length <N>      Minimum filename character count
+  --max-name-length <N>      Maximum filename character count
+  --min-path-length <N>      Minimum full path character count
+  --max-path-length <N>      Maximum full path character count
 
 LIMIT
-  -n, --limit <N>          Maximum result count (0 = unlimited)
+  -n, --limit <N>            Maximum result count (0 = unlimited)
 
 TIME SPEC FORMATS
-  90s / 30m / 24h / 7d / 2w     Relative durations
-  2026-01-15                     ISO date (YYYY-MM-DD)
+  90s / 30m / 24h / 7d / 2w       Relative durations
+  2026-01-15                       ISO date (YYYY-MM-DD)
+  today / yesterday / this_week    Named ranges
+  last_7d / last_30d / last_90d    Named durations
+  this_month / this_year / ytd     Calendar ranges
 ```

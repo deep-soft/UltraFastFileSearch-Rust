@@ -144,6 +144,12 @@ pub enum SearchPredicateOp {
     Match,
     /// Negated pattern/glob match.
     NotMatch,
+    /// Case-insensitive substring containment.
+    Contains,
+    /// Case-insensitive prefix match.
+    StartsWith,
+    /// Case-insensitive suffix match.
+    EndsWith,
 }
 
 /// Canonical predicate value in the daemon wire contract.
@@ -181,10 +187,6 @@ pub enum SearchResponseMode {
     Rows,
     /// Projected JSON objects keyed by projected field name.
     Json,
-    /// Projected CSV text using daemon defaults.
-    Csv,
-    /// Projected table text using daemon defaults.
-    Table,
 }
 
 // Application error codes (daemon-specific)
@@ -217,6 +219,13 @@ pub struct SearchParams {
     /// Whole-word matching.
     #[serde(default)]
     pub whole_word: bool,
+    /// Match pattern against the full path (not just the filename).
+    ///
+    /// When true, directory records whose name matches the pattern will also
+    /// contribute all their descendants to the result set.  Default (`false`)
+    /// matches filename-only, consistent with Everything's default behaviour.
+    #[serde(default)]
+    pub match_path: bool,
 
     // ── Sort ────────────────────────────────────────────────────────
     /// Sort column name (e.g. `"modified"`, `"size"`, `"name"`).
@@ -304,11 +313,68 @@ pub struct SearchParams {
     /// Exclude glob pattern (e.g. `"backup*"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude: Option<String>,
+    /// Directory-path pattern (glob). Only matches against the directory
+    /// portion of the path, not the filename.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_contains: Option<String>,
+    /// File type/category filter (e.g. `"code"`, `"document"`, `"picture"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_filter: Option<String>,
+    /// Minimum bulkiness percentage (100 = perfectly packed, >100 = wasteful).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_bulkiness: Option<u64>,
+    /// Maximum bulkiness percentage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_bulkiness: Option<u64>,
+
+    // ── Length filters ─────────────────────────────────────────────
+    /// Minimum filename length in characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_name_len: Option<u16>,
+    /// Maximum filename length in characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_name_len: Option<u16>,
+    /// Minimum full-path length in characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_path_len: Option<u16>,
+    /// Maximum full-path length in characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_path_len: Option<u16>,
+
+    // ── Size-on-disk filters ──────────────────────────────────────
+    /// Minimum allocated (on-disk) size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_allocated: Option<u64>,
+    /// Maximum allocated (on-disk) size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_allocated: Option<u64>,
+
+    // ── Tree metric filters ────────────────────────────────────────
+    /// Minimum subtree logical size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_treesize: Option<u64>,
+    /// Maximum subtree logical size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_treesize: Option<u64>,
+    /// Minimum subtree allocated (on-disk) size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_tree_allocated: Option<u64>,
+    /// Maximum subtree allocated (on-disk) size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tree_allocated: Option<u64>,
+
+    // ── Month-of-year filter ──────────────────────────────────────
+    /// Allowed month numbers (1-12).  Empty = no month filter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_months: Vec<u32>,
 
     // ── Misc ───────────────────────────────────────────────────────
     /// Hide system meta-files (names starting with `$`).
     #[serde(default)]
     pub hide_system: bool,
+    /// Hide NTFS Alternate Data Streams from results.
+    #[serde(default)]
+    pub hide_ads: bool,
 
     // ── Profiling ──────────────────────────────────────────────────
     /// Request detailed timing breakdown from the daemon.
@@ -683,9 +749,6 @@ pub struct SearchResponse {
     /// Projected rows for direct daemon callers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub projected_rows: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
-    /// Rendered text for CSV/table direct daemon callers.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub projected_text: Option<String>,
 }
 
 /// Daemon-side timing breakdown returned when `SearchParams::profile` is set.
@@ -1173,7 +1236,6 @@ mod tests {
                 ),
                 ("size".to_owned(), serde_json::Value::from(1024_u64)),
             ])]),
-            projected_text: None,
         };
         let json = serde_json::to_string(&resp).expect("serialize");
         let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");

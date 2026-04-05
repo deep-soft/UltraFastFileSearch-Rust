@@ -20,7 +20,7 @@ use uffs_core::search::derived::{
     bulkiness_for_row, semantic_type_for_row, tree_allocated_for_row,
 };
 use uffs_core::search::field::{FieldId, SortDirection};
-use uffs_core::search::filters::SearchFilters;
+use uffs_core::search::filters::{SearchFilterParams, SearchFilters};
 
 use crate::events::{DaemonEvent, EventSender};
 
@@ -400,22 +400,39 @@ impl IndexManager {
             SearchFilterMode::All => FilterMode::All,
         };
 
-        let mut filters = SearchFilters::from_params(
-            effective_params.hide_system,
-            effective_params.min_size,
-            effective_params.max_size,
-            effective_params.min_descendants,
-            effective_params.max_descendants,
-            effective_params.newer.as_deref(),
-            effective_params.older.as_deref(),
-            effective_params.newer_created.as_deref(),
-            effective_params.older_created.as_deref(),
-            effective_params.newer_accessed.as_deref(),
-            effective_params.older_accessed.as_deref(),
-            effective_params.attr.as_deref(),
-            effective_params.ext.as_deref(),
-            effective_params.exclude.as_deref(),
-        );
+        let ep = &effective_params;
+        let mut filters = SearchFilters::from_params(&SearchFilterParams {
+            hide_system: ep.hide_system,
+            hide_ads: ep.hide_ads,
+            min_size: ep.min_size,
+            max_size: ep.max_size,
+            min_descendants: ep.min_descendants,
+            max_descendants: ep.max_descendants,
+            newer: ep.newer.as_deref(),
+            older: ep.older.as_deref(),
+            newer_created: ep.newer_created.as_deref(),
+            older_created: ep.older_created.as_deref(),
+            newer_accessed: ep.newer_accessed.as_deref(),
+            older_accessed: ep.older_accessed.as_deref(),
+            attr_filter: ep.attr.as_deref(),
+            ext_filter: ep.ext.as_deref(),
+            exclude: ep.exclude.as_deref(),
+            path_contains: ep.path_contains.as_deref(),
+            type_filter: ep.type_filter.as_deref(),
+            min_bulkiness: ep.min_bulkiness,
+            max_bulkiness: ep.max_bulkiness,
+            min_name_len: ep.min_name_len,
+            max_name_len: ep.max_name_len,
+            min_path_len: ep.min_path_len,
+            max_path_len: ep.max_path_len,
+            min_allocated: ep.min_allocated,
+            max_allocated: ep.max_allocated,
+            min_treesize: ep.min_treesize,
+            max_treesize: ep.max_treesize,
+            min_tree_allocated: ep.min_tree_allocated,
+            max_tree_allocated: ep.max_tree_allocated,
+            allowed_months: &ep.allowed_months,
+        });
 
         // Overlay canonical predicates that can be compiled into the hot
         // path (size / descendant bounds).
@@ -436,6 +453,7 @@ impl IndexManager {
             &effective_params.pattern,
             effective_params.case_sensitive,
             effective_params.whole_word,
+            effective_params.match_path,
             if requires_post_filter {
                 None
             } else {
@@ -498,14 +516,9 @@ impl IndexManager {
                 .map(|row| Self::project_search_row(row, &projection_fields))
                 .collect()
         });
-        let projected_text = (matches!(
-            response_mode,
-            SearchResponseMode::Csv | SearchResponseMode::Table
-        ) && !projection_fields.is_empty())
-        .then(|| Self::render_projected_text(&rows, &projection_fields, response_mode));
 
         SearchResponse {
-            rows: if projected_rows.is_some() || projected_text.is_some() {
+            rows: if projected_rows.is_some() {
                 Vec::new()
             } else {
                 rows
@@ -520,7 +533,6 @@ impl IndexManager {
             applied_projection,
             response_mode: Some(response_mode),
             projected_rows,
-            projected_text,
         }
     }
 
@@ -1097,7 +1109,14 @@ impl IndexManager {
     }
 
     /// Convert one canonical field from a `SearchRow` into JSON.
+    ///
+    /// Kept as a named helper (54-line match) for readability — the caller
+    /// is already a nested iterator.
     #[must_use]
+    #[expect(
+        clippy::single_call_fn,
+        reason = "54-arm match is clearer as a named helper"
+    )]
     fn projected_value(row: &SearchRow, field: FieldId) -> serde_json::Value {
         match field {
             FieldId::Drive => serde_json::Value::String(row.drive.to_string()),
@@ -1148,6 +1167,8 @@ impl IndexManager {
             FieldId::ParityAttributes => {
                 serde_json::Value::from(row.flags & Self::PARITY_FLAG_MASK)
             }
+            FieldId::NameLength => serde_json::Value::from(row.name.chars().count()),
+            FieldId::PathLength => serde_json::Value::from(row.path.chars().count()),
         }
     }
 
@@ -1227,6 +1248,17 @@ impl IndexManager {
                 | FieldId::RecallOnOpen
                 | FieldId::RecallOnDataAccess
                 | FieldId::ParityAttributes => false,
+                // Length predicates are compiled into hot-path min/max filters.
+                FieldId::NameLength | FieldId::PathLength => {
+                    matches!(
+                        predicate.op,
+                        SearchPredicateOp::Gte
+                            | SearchPredicateOp::Lte
+                            | SearchPredicateOp::Gt
+                            | SearchPredicateOp::Lt
+                            | SearchPredicateOp::Eq
+                    ) && matches!(predicate.value, SearchPredicateValue::U64(_))
+                }
             };
             !compiled_to_hot_path
         })
@@ -1282,7 +1314,10 @@ impl IndexManager {
                             | SearchPredicateOp::HasAny
                             | SearchPredicateOp::HasNone
                             | SearchPredicateOp::Match
-                            | SearchPredicateOp::NotMatch => {}
+                            | SearchPredicateOp::NotMatch
+                            | SearchPredicateOp::Contains
+                            | SearchPredicateOp::StartsWith
+                            | SearchPredicateOp::EndsWith => {}
                         }
                     }
                 }
@@ -1320,7 +1355,10 @@ impl IndexManager {
                             | SearchPredicateOp::HasAny
                             | SearchPredicateOp::HasNone
                             | SearchPredicateOp::Match
-                            | SearchPredicateOp::NotMatch => {}
+                            | SearchPredicateOp::NotMatch
+                            | SearchPredicateOp::Contains
+                            | SearchPredicateOp::StartsWith
+                            | SearchPredicateOp::EndsWith => {}
                         }
                     }
                 }
@@ -1438,6 +1476,75 @@ impl IndexManager {
                         filters.exclude_lower = Some(pattern.to_ascii_lowercase());
                     }
                 }
+                // ── Name/path length → hot-path length filters ──────────
+                FieldId::NameLength => {
+                    if let SearchPredicateValue::U64(val) = &predicate.value {
+                        let val16 = u16::try_from(*val).unwrap_or(u16::MAX);
+                        match predicate.op {
+                            SearchPredicateOp::Gte => {
+                                let merged =
+                                    filters.min_name_len.map_or(val16, |cur| cur.max(val16));
+                                filters.min_name_len = Some(merged);
+                            }
+                            SearchPredicateOp::Lte => {
+                                let merged =
+                                    filters.max_name_len.map_or(val16, |cur| cur.min(val16));
+                                filters.max_name_len = Some(merged);
+                            }
+                            SearchPredicateOp::Gt => {
+                                let lower = val16.saturating_add(1);
+                                let merged =
+                                    filters.min_name_len.map_or(lower, |cur| cur.max(lower));
+                                filters.min_name_len = Some(merged);
+                            }
+                            SearchPredicateOp::Lt => {
+                                let upper = val16.saturating_sub(1);
+                                let merged =
+                                    filters.max_name_len.map_or(upper, |cur| cur.min(upper));
+                                filters.max_name_len = Some(merged);
+                            }
+                            SearchPredicateOp::Eq => {
+                                filters.min_name_len = Some(val16);
+                                filters.max_name_len = Some(val16);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                FieldId::PathLength => {
+                    if let SearchPredicateValue::U64(val) = &predicate.value {
+                        let val16 = u16::try_from(*val).unwrap_or(u16::MAX);
+                        match predicate.op {
+                            SearchPredicateOp::Gte => {
+                                let merged =
+                                    filters.min_path_len.map_or(val16, |cur| cur.max(val16));
+                                filters.min_path_len = Some(merged);
+                            }
+                            SearchPredicateOp::Lte => {
+                                let merged =
+                                    filters.max_path_len.map_or(val16, |cur| cur.min(val16));
+                                filters.max_path_len = Some(merged);
+                            }
+                            SearchPredicateOp::Gt => {
+                                let lower = val16.saturating_add(1);
+                                let merged =
+                                    filters.min_path_len.map_or(lower, |cur| cur.max(lower));
+                                filters.min_path_len = Some(merged);
+                            }
+                            SearchPredicateOp::Lt => {
+                                let upper = val16.saturating_sub(1);
+                                let merged =
+                                    filters.max_path_len.map_or(upper, |cur| cur.min(upper));
+                                filters.max_path_len = Some(merged);
+                            }
+                            SearchPredicateOp::Eq => {
+                                filters.min_path_len = Some(val16);
+                                filters.max_path_len = Some(val16);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1509,45 +1616,8 @@ impl IndexManager {
             FieldId::ParityAttributes => {
                 Self::match_u64(u64::from(row.flags & Self::PARITY_FLAG_MASK), predicate)
             }
-        }
-    }
-
-    /// Render projected rows as CSV/table text for direct daemon callers.
-    #[must_use]
-    #[allow(clippy::single_call_fn)]
-    fn render_projected_text(
-        rows: &[SearchRow],
-        projection: &[FieldId],
-        response_mode: SearchResponseMode,
-    ) -> String {
-        let header = projection
-            .iter()
-            .map(|field| field.canonical_name())
-            .collect::<Vec<_>>();
-        let body = rows
-            .iter()
-            .map(|row| {
-                projection
-                    .iter()
-                    .map(|&field| Self::projected_value(row, field).to_string())
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-
-        match response_mode {
-            SearchResponseMode::Csv => {
-                let mut lines = Vec::with_capacity(body.len() + 1);
-                lines.push(header.join(","));
-                lines.extend(body.into_iter().map(|values| values.join(",")));
-                lines.join("\n")
-            }
-            SearchResponseMode::Table => {
-                let mut lines = Vec::with_capacity(body.len() + 1);
-                lines.push(header.join("\t"));
-                lines.extend(body.into_iter().map(|values| values.join("\t")));
-                lines.join("\n")
-            }
-            SearchResponseMode::Rows | SearchResponseMode::Json => String::new(),
+            FieldId::NameLength => Self::match_u64(row.name().chars().count() as u64, predicate),
+            FieldId::PathLength => Self::match_u64(row.path.chars().count() as u64, predicate),
         }
     }
 
@@ -1632,6 +1702,35 @@ impl IndexManager {
             (SearchPredicateOp::NotMatch, SearchPredicateValue::String(pattern)) => {
                 !Self::wildcard_match(actual, pattern)
             }
+            // Substring containment ops — case-insensitive.
+            (SearchPredicateOp::HasAll, SearchPredicateValue::StringList(values)) => {
+                let lower = actual.to_ascii_lowercase();
+                values
+                    .iter()
+                    .all(|val| lower.contains(&*val.to_ascii_lowercase()))
+            }
+            (SearchPredicateOp::HasAny, SearchPredicateValue::StringList(values)) => {
+                let lower = actual.to_ascii_lowercase();
+                values
+                    .iter()
+                    .any(|val| lower.contains(&*val.to_ascii_lowercase()))
+            }
+            (SearchPredicateOp::HasNone, SearchPredicateValue::StringList(values)) => {
+                let lower = actual.to_ascii_lowercase();
+                values
+                    .iter()
+                    .all(|val| !lower.contains(&*val.to_ascii_lowercase()))
+            }
+            // Substring / prefix / suffix ops.
+            (SearchPredicateOp::Contains, SearchPredicateValue::String(needle)) => actual
+                .to_ascii_lowercase()
+                .contains(&*needle.to_ascii_lowercase()),
+            (SearchPredicateOp::StartsWith, SearchPredicateValue::String(prefix)) => actual
+                .to_ascii_lowercase()
+                .starts_with(&*prefix.to_ascii_lowercase()),
+            (SearchPredicateOp::EndsWith, SearchPredicateValue::String(suffix)) => actual
+                .to_ascii_lowercase()
+                .ends_with(&*suffix.to_ascii_lowercase()),
             _ => true,
         }
     }
@@ -1728,7 +1827,10 @@ impl IndexManager {
             | SearchPredicateOp::In
             | SearchPredicateOp::NotIn
             | SearchPredicateOp::Match
-            | SearchPredicateOp::NotMatch => true,
+            | SearchPredicateOp::NotMatch
+            | SearchPredicateOp::Contains
+            | SearchPredicateOp::StartsWith
+            | SearchPredicateOp::EndsWith => true,
         }
     }
 

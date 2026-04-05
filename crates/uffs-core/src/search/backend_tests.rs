@@ -282,6 +282,66 @@ fn sort_multi_tier_size_then_name() {
     assert_eq!(rows.get(2).expect("third").name(), "beta.txt");
 }
 
+#[test]
+fn sort_by_type_groups_by_semantic_category() {
+    // .rs → code, .zip → archive, .jpg → picture
+    // ascending: archive < code < picture
+    let mut rows = vec![
+        row("photo.jpg", 'C', 100, 0, 0),
+        row("main.rs", 'C', 200, 0, 0),
+        row("backup.zip", 'C', 50, 0, 0),
+    ];
+    sort_rows(&mut rows, SortColumn::Type, false, &[]);
+    assert_eq!(rows.first().expect("first").name(), "backup.zip"); // archive
+    assert_eq!(rows.get(1).expect("second").name(), "main.rs"); // code
+    assert_eq!(rows.get(2).expect("third").name(), "photo.jpg"); // picture
+}
+
+#[test]
+fn sort_by_type_descending() {
+    let mut rows = vec![
+        row("photo.jpg", 'C', 100, 0, 0),
+        row("main.rs", 'C', 200, 0, 0),
+        row("backup.zip", 'C', 50, 0, 0),
+    ];
+    sort_rows(&mut rows, SortColumn::Type, true, &[]);
+    assert_eq!(rows.first().expect("first").name(), "photo.jpg"); // picture
+    assert_eq!(rows.get(1).expect("second").name(), "main.rs"); // code
+    assert_eq!(rows.get(2).expect("third").name(), "backup.zip"); // archive
+}
+
+#[test]
+fn sort_by_type_then_size() {
+    // Two code files with different sizes
+    let mut rows = vec![
+        row("big.rs", 'C', 5000, 0, 0),
+        row("small.rs", 'C', 100, 0, 0),
+        row("photo.jpg", 'C', 300, 0, 0),
+    ];
+    let tiers = vec![SortSpec {
+        column: SortColumn::Size,
+        descending: true,
+    }];
+    sort_rows(&mut rows, SortColumn::Type, false, &tiers);
+    // code first (asc), then picture; within code, big before small (desc)
+    assert_eq!(rows.first().expect("first").name(), "big.rs");
+    assert_eq!(rows.get(1).expect("second").name(), "small.rs");
+    assert_eq!(rows.get(2).expect("third").name(), "photo.jpg");
+}
+
+#[test]
+fn sort_by_descendants_in_dir() {
+    let mut rows = vec![
+        dir_row("few", 'C', 5, 100),
+        dir_row("many", 'C', 50, 500),
+        dir_row("empty", 'C', 0, 0),
+    ];
+    sort_rows(&mut rows, SortColumn::Descendants, true, &[]);
+    assert_eq!(rows.first().expect("first").name(), "many");
+    assert_eq!(rows.get(1).expect("second").name(), "few");
+    assert_eq!(rows.get(2).expect("third").name(), "empty");
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Multi-drive aggregation
 // ═══════════════════════════════════════════════════════════════════════
@@ -328,7 +388,15 @@ fn build_two_drive_backend() -> MultiDriveBackend {
 fn multi_drive_merges_results_from_both_drives() {
     let mut backend = build_two_drive_backend();
     let mut filters = super::super::filters::SearchFilters::default();
-    let result = backend.search("*", false, false, None, FilterMode::All, &mut filters);
+    let result = backend.search(
+        "*",
+        false,
+        false,
+        false,
+        None,
+        FilterMode::All,
+        &mut filters,
+    );
     let drives: std::collections::HashSet<char> = result.rows.iter().map(|row| row.drive).collect();
     assert!(drives.contains(&'C'), "must include drive C results");
     assert!(drives.contains(&'D'), "must include drive D results");
@@ -340,7 +408,15 @@ fn multi_drive_sort_across_drives() {
     backend.sort_column = SortColumn::Size;
     backend.sort_desc = true;
     let mut filters = super::super::filters::SearchFilters::default();
-    let result = backend.search("*", false, false, None, FilterMode::FilesOnly, &mut filters);
+    let result = backend.search(
+        "*",
+        false,
+        false,
+        false,
+        None,
+        FilterMode::FilesOnly,
+        &mut filters,
+    );
     // data.csv (800) on D should come before report.txt (400) on C
     let first = result.rows.first().expect("first");
     assert_eq!(
@@ -355,7 +431,15 @@ fn multi_drive_sort_across_drives() {
 fn multi_drive_limit_caps_total() {
     let mut backend = build_two_drive_backend();
     let mut filters = super::super::filters::SearchFilters::default();
-    let result = backend.search("*", false, false, Some(2), FilterMode::All, &mut filters);
+    let result = backend.search(
+        "*",
+        false,
+        false,
+        false,
+        Some(2),
+        FilterMode::All,
+        &mut filters,
+    );
     assert!(
         result.rows.len() <= 2,
         "limit must cap across drives, got {}",
@@ -450,7 +534,7 @@ fn display_rows_to_dataframe_path_only_extracts_directory() {
 fn search_empty_pattern_returns_empty() {
     let mut backend = build_two_drive_backend();
     let mut filters = super::super::filters::SearchFilters::default();
-    let result = backend.search("", false, false, None, FilterMode::All, &mut filters);
+    let result = backend.search("", false, false, false, None, FilterMode::All, &mut filters);
     assert!(
         result.rows.is_empty(),
         "empty pattern must return no results"

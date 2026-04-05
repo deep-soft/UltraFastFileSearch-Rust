@@ -104,6 +104,26 @@ pub struct SearchState {
     /// NTFS attribute filter, e.g. `"hidden,!system"` (`--attr`).
     pub attr: Option<String>,
 
+    // ── length filters ─────────────────────────────────────────────
+    /// Minimum filename length in characters (`--min-name-length`).
+    pub min_name_len: Option<u16>,
+    /// Maximum filename length in characters (`--max-name-length`).
+    pub max_name_len: Option<u16>,
+    /// Minimum full-path length in characters (`--min-path-length`).
+    pub min_path_len: Option<u16>,
+    /// Maximum full-path length in characters (`--max-path-length`).
+    pub max_path_len: Option<u16>,
+
+    // ── size-on-disk filters ───────────────────────────────────────
+    /// Minimum allocated (on-disk) size in bytes (`--min-size-on-disk`).
+    pub min_allocated: Option<u64>,
+    /// Maximum allocated (on-disk) size in bytes (`--max-size-on-disk`).
+    pub max_allocated: Option<u64>,
+
+    // ── month-of-year filter ───────────────────────────────────────
+    /// Month/quarter filter spec, e.g. `"jan"`, `"Q1"` (`--month`).
+    pub month: Option<String>,
+
     // ── column selection ───────────────────────────────────────────
     /// Visible columns and their order, e.g. `"name,size,modified,path"`
     /// (`--columns`).  `None` = default column set.
@@ -204,6 +224,31 @@ pub fn search_state_to_cli(pattern: &str, state: &SearchState) -> String {
     if let Some(max) = state.max_descendants {
         parts.push(format!("--max-descendants {max}"));
     }
+
+    // 6b. length filters ─────────────────────────────────────────────
+    if let Some(len) = state.min_name_len {
+        parts.push(format!("--min-name-length {len}"));
+    }
+    if let Some(len) = state.max_name_len {
+        parts.push(format!("--max-name-length {len}"));
+    }
+    if let Some(len) = state.min_path_len {
+        parts.push(format!("--min-path-length {len}"));
+    }
+    if let Some(len) = state.max_path_len {
+        parts.push(format!("--max-path-length {len}"));
+    }
+
+    // 6c. size-on-disk filters ─────────────────────────────────────
+    if let Some(alloc) = state.min_allocated {
+        parts.push(format!("--min-size-on-disk {alloc}"));
+    }
+    if let Some(alloc) = state.max_allocated {
+        parts.push(format!("--max-size-on-disk {alloc}"));
+    }
+
+    // 6d. month filter ─────────────────────────────────────────────
+    push_opt(&mut parts, "--month", state.month.as_ref());
 
     // 7. pattern filters ────────────────────────────────────────────
     push_opt(&mut parts, "--exclude", state.exclude.as_ref());
@@ -350,6 +395,34 @@ pub fn cli_to_search_state(cli: &str) -> Option<(String, SearchState)> {
             "--columns" => {
                 idx += 1;
                 state.columns = tokens.get(idx).cloned();
+            }
+            "--min-name-length" => {
+                idx += 1;
+                state.min_name_len = tokens.get(idx).and_then(|tok| tok.parse().ok());
+            }
+            "--max-name-length" => {
+                idx += 1;
+                state.max_name_len = tokens.get(idx).and_then(|tok| tok.parse().ok());
+            }
+            "--min-path-length" => {
+                idx += 1;
+                state.min_path_len = tokens.get(idx).and_then(|tok| tok.parse().ok());
+            }
+            "--max-path-length" => {
+                idx += 1;
+                state.max_path_len = tokens.get(idx).and_then(|tok| tok.parse().ok());
+            }
+            "--min-size-on-disk" => {
+                idx += 1;
+                state.min_allocated = tokens.get(idx).and_then(|tok| tok.parse().ok());
+            }
+            "--max-size-on-disk" => {
+                idx += 1;
+                state.max_allocated = tokens.get(idx).and_then(|tok| tok.parse().ok());
+            }
+            "--month" => {
+                idx += 1;
+                state.month = tokens.get(idx).cloned();
             }
             // ── positional (pattern) ───────────────────────────────
             _ if !token.starts_with("--") && pattern.is_empty() => {

@@ -116,6 +116,10 @@ pub struct Cli {
     #[arg(long)]
     pub hide_system: bool,
 
+    /// Hide NTFS Alternate Data Streams from results
+    #[arg(long)]
+    pub hide_ads: bool,
+
     /// Show detailed timing breakdown for performance profiling
     #[arg(long)]
     pub profile: bool,
@@ -159,6 +163,85 @@ pub struct Cli {
     /// Example: --max-descendants 0 (empty directories)
     #[arg(long)]
     pub max_descendants: Option<u32>,
+
+    /// Exact descendant count (shortcut for --min-descendants N
+    /// --max-descendants N)
+    #[arg(long)]
+    pub exact_descendants: Option<u32>,
+
+    /// Minimum filename length in characters
+    ///
+    /// Example: --min-name-length 20
+    #[arg(long)]
+    pub min_name_length: Option<u16>,
+
+    /// Maximum filename length in characters
+    ///
+    /// Example: --max-name-length 10
+    #[arg(long)]
+    pub max_name_length: Option<u16>,
+
+    /// Minimum full-path length in characters
+    ///
+    /// Example: --min-path-length 100
+    #[arg(long)]
+    pub min_path_length: Option<u16>,
+
+    /// Maximum full-path length in characters (useful for `MAX_PATH` detection)
+    ///
+    /// Example: --max-path-length 260
+    #[arg(long)]
+    pub max_path_length: Option<u16>,
+
+    /// Minimum on-disk (allocated) size (e.g. 100KB, 10MB, 1GB)
+    #[arg(long, value_parser = parse_size_arg)]
+    pub min_size_on_disk: Option<u64>,
+
+    /// Maximum on-disk (allocated) size (e.g. 100KB, 10MB, 1GB)
+    #[arg(long, value_parser = parse_size_arg)]
+    pub max_size_on_disk: Option<u64>,
+
+    /// Exact file size (shortcut for --min-size N --max-size N)
+    #[arg(long, value_parser = parse_size_arg)]
+    pub exact_size: Option<u64>,
+
+    /// Exact on-disk size (shortcut for --min-size-on-disk N --max-size-on-disk
+    /// N)
+    #[arg(long, value_parser = parse_size_arg)]
+    pub exact_size_on_disk: Option<u64>,
+
+    /// Minimum subtree logical size (e.g. 1GB — directories with at least 1GB
+    /// of files)
+    #[arg(long, value_parser = parse_size_arg)]
+    pub min_treesize: Option<u64>,
+
+    /// Maximum subtree logical size
+    #[arg(long, value_parser = parse_size_arg)]
+    pub max_treesize: Option<u64>,
+
+    /// Minimum subtree on-disk size (e.g. 10GB — directories using at least
+    /// 10GB on disk)
+    #[arg(long, value_parser = parse_size_arg)]
+    pub min_tree_allocated: Option<u64>,
+
+    /// Maximum subtree on-disk size
+    #[arg(long, value_parser = parse_size_arg)]
+    pub max_tree_allocated: Option<u64>,
+
+    /// Filter by month-of-year or quarter (applied to modified time)
+    ///
+    /// Accepts month names (january, jan), quarters (Q1..Q4), or
+    /// comma-separated combos (jan,feb or Q1,Q3).
+    /// Matches files from ANY year in the given months.
+    #[arg(long)]
+    pub month: Option<String>,
+
+    /// Time range shorthand: --between START,END
+    ///
+    /// Equivalent to --newer START --older END. Accepts same time specs.
+    /// Example: --between 2026-01-01,2026-03-31
+    #[arg(long)]
+    pub between: Option<String>,
 
     /// Maximum number of results (0 = unlimited)
     #[arg(short = 'n', long, default_value = "0")]
@@ -222,6 +305,61 @@ pub struct Cli {
     /// Example: uffs *.txt --exclude backup*
     #[arg(long)]
     pub exclude: Option<String>,
+
+    /// Filter by directory path (glob pattern matched against directory portion
+    /// only)
+    ///
+    /// Example: uffs *.rs --in-path projects
+    /// Example: uffs *.log --in-path *temp*
+    #[arg(long)]
+    pub in_path: Option<String>,
+
+    /// Filter by file type/category
+    ///
+    /// Categories: archive, audio, backup, cad, cert, code, config,
+    ///   data, database, directory, disk, document, ebook, executable,
+    ///   file, font, log, other, picture, script, shortcut, system, video, web
+    ///
+    /// Example: uffs "*" --type code
+    /// Example: uffs "*" --type picture
+    #[arg(long = "type", value_name = "CATEGORY")]
+    pub type_filter: Option<String>,
+
+    /// Minimum bulkiness — allocated-to-size ratio as percentage
+    ///
+    /// 100 = perfectly packed, 200 = 2× wasted space.
+    /// Example: uffs "*" --min-bulkiness 500  (files wasting ≥5× their size)
+    #[arg(long)]
+    pub min_bulkiness: Option<u64>,
+
+    /// Maximum bulkiness
+    #[arg(long)]
+    pub max_bulkiness: Option<u64>,
+
+    /// Match files whose name begins with PREFIX (sugar for 'PREFIX*')
+    ///
+    /// Example: uffs --begins-with report
+    #[arg(long, conflicts_with = "pattern")]
+    pub begins_with: Option<String>,
+
+    /// Match files whose name ends with SUFFIX (sugar for '*SUFFIX')
+    ///
+    /// Example: uffs --ends-with _backup
+    #[arg(long, conflicts_with = "pattern")]
+    pub ends_with: Option<String>,
+
+    /// Match files whose name contains NEEDLE (sugar for '*NEEDLE*')
+    ///
+    /// Example: uffs --contains invoice
+    #[arg(long, conflicts_with = "pattern")]
+    pub contains: Option<String>,
+
+    /// Exclude files whose name contains NEEDLE (sugar for --exclude
+    /// '*NEEDLE*')
+    ///
+    /// Example: uffs *.log --not-contains debug
+    #[arg(long)]
+    pub not_contains: Option<String>,
 
     /// Whole word matching (wraps pattern in \b...\b regex)
     ///

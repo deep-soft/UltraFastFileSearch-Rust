@@ -49,6 +49,8 @@ pub fn apply_filter(rows: &mut Vec<DisplayRow>, filter: FilterMode) {
 pub struct SearchFilters {
     /// Hide files whose name starts with `$`.
     pub hide_system: bool,
+    /// Hide NTFS Alternate Data Streams (names containing `:`).
+    pub hide_ads: bool,
     /// Minimum file size in bytes.
     pub min_size: Option<u64>,
     /// Maximum file size in bytes.
@@ -82,73 +84,257 @@ pub struct SearchFilters {
     pub resolved_ext_ids: Vec<u16>,
     /// Exclude pattern (glob, lowered).
     pub exclude_lower: Option<String>,
+    /// Directory-path pattern (glob, lowered). Matches against `path_dir()`
+    /// only.
+    pub path_contains_lower: Option<String>,
+    /// File type/category filter (e.g. `"code"`, `"document"`, `"picture"`).
+    pub type_filter: Option<String>,
+    /// Minimum bulkiness (allocated/size × 1 000 000). 1 000 000 = perfectly
+    /// packed.
+    pub min_bulkiness: Option<u64>,
+    /// Maximum bulkiness.
+    pub max_bulkiness: Option<u64>,
+
+    // ── Length filters ──────────────────────────────────────────────
+    /// Minimum filename length (characters).
+    pub min_name_len: Option<u16>,
+    /// Maximum filename length (characters).
+    pub max_name_len: Option<u16>,
+    /// Minimum full-path length (characters).
+    pub min_path_len: Option<u16>,
+    /// Maximum full-path length (characters, useful for `MAX_PATH` detection).
+    pub max_path_len: Option<u16>,
+
+    // ── Size-on-disk filters ───────────────────────────────────────
+    /// Minimum allocated (on-disk) size in bytes.
+    pub min_allocated: Option<u64>,
+    /// Maximum allocated (on-disk) size in bytes.
+    pub max_allocated: Option<u64>,
+
+    // ── Tree metric filters ─────────────────────────────────────────
+    /// Minimum subtree logical size in bytes (directories).
+    pub min_treesize: Option<u64>,
+    /// Maximum subtree logical size in bytes (directories).
+    pub max_treesize: Option<u64>,
+    /// Minimum subtree allocated (on-disk) size in bytes (directories).
+    pub min_tree_allocated: Option<u64>,
+    /// Maximum subtree allocated (on-disk) size in bytes (directories).
+    pub max_tree_allocated: Option<u64>,
+
+    // ── Month-of-year / quarter filter ─────────────────────────────
+    /// Set of allowed months (1-12). Empty = no filter.
+    /// Used for "every January" or "Q1" style queries.
+    pub allowed_months: Vec<u32>,
+}
+
+/// Raw parameter inputs for constructing [`SearchFilters`].
+///
+/// All fields default to `None` / `false` / empty — callers only set what
+/// they need.  This replaces the former 27-argument positional function
+/// signature with a named-field struct that is self-documenting and
+/// extensible without touching every call site.
+#[derive(Debug, Default)]
+pub struct SearchFilterParams<'a> {
+    /// Hide system files (names starting with `$`).
+    pub hide_system: bool,
+    /// Hide NTFS Alternate Data Streams.
+    pub hide_ads: bool,
+    /// Minimum file size in bytes.
+    pub min_size: Option<u64>,
+    /// Maximum file size in bytes.
+    pub max_size: Option<u64>,
+    /// Minimum descendant count (directories).
+    pub min_descendants: Option<u32>,
+    /// Maximum descendant count (directories).
+    pub max_descendants: Option<u32>,
+    /// Modified-time lower bound spec (e.g. `"1h"`, `"2024-01-01"`).
+    pub newer: Option<&'a str>,
+    /// Modified-time upper bound spec.
+    pub older: Option<&'a str>,
+    /// Created-time lower bound spec.
+    pub newer_created: Option<&'a str>,
+    /// Created-time upper bound spec.
+    pub older_created: Option<&'a str>,
+    /// Accessed-time lower bound spec.
+    pub newer_accessed: Option<&'a str>,
+    /// Accessed-time upper bound spec.
+    pub older_accessed: Option<&'a str>,
+    /// NTFS attribute filter string (e.g. `"hidden,!system"`).
+    pub attr_filter: Option<&'a str>,
+    /// Extension filter string (e.g. `"rs,jpg,pictures"`).
+    pub ext_filter: Option<&'a str>,
+    /// Exclude pattern (glob, e.g. `"backup*"`).
+    pub exclude: Option<&'a str>,
+    /// Directory-path pattern (glob, matched against dir portion only).
+    pub path_contains: Option<&'a str>,
+    /// File type/category filter (e.g. `"code"`, `"document"`).
+    pub type_filter: Option<&'a str>,
+    /// Minimum bulkiness percentage (e.g. `200` = allocated ≥ 2× size).
+    pub min_bulkiness: Option<u64>,
+    /// Maximum bulkiness percentage.
+    pub max_bulkiness: Option<u64>,
+    /// Minimum filename length (characters).
+    pub min_name_len: Option<u16>,
+    /// Maximum filename length (characters).
+    pub max_name_len: Option<u16>,
+    /// Minimum full-path length (characters).
+    pub min_path_len: Option<u16>,
+    /// Maximum full-path length (characters).
+    pub max_path_len: Option<u16>,
+    /// Minimum allocated (on-disk) size in bytes.
+    pub min_allocated: Option<u64>,
+    /// Maximum allocated (on-disk) size in bytes.
+    pub max_allocated: Option<u64>,
+    /// Minimum subtree logical size in bytes.
+    pub min_treesize: Option<u64>,
+    /// Maximum subtree logical size in bytes.
+    pub max_treesize: Option<u64>,
+    /// Minimum subtree allocated (on-disk) size in bytes.
+    pub min_tree_allocated: Option<u64>,
+    /// Maximum subtree allocated (on-disk) size in bytes.
+    pub max_tree_allocated: Option<u64>,
+    /// Allowed month numbers (1-12).
+    pub allowed_months: &'a [u32],
 }
 
 impl SearchFilters {
-    /// Build `SearchFilters` from individual CLI-style parameter strings.
+    /// Build `SearchFilters` from a [`SearchFilterParams`] struct.
     ///
     /// This is the generic constructor shared by CLI, TUI, daemon, etc.
     /// All time-spec parsing and attribute parsing happens here so the
     /// hot-path `matches_record` loop is branch-only.
     #[must_use]
-    #[expect(clippy::too_many_arguments, reason = "mirrors CLI parameter surface")]
-    pub fn from_params(
-        hide_system: bool,
-        min_size: Option<u64>,
-        max_size: Option<u64>,
-        min_descendants: Option<u32>,
-        max_descendants: Option<u32>,
-        newer: Option<&str>,
-        older: Option<&str>,
-        newer_created: Option<&str>,
-        older_created: Option<&str>,
-        newer_accessed: Option<&str>,
-        older_accessed: Option<&str>,
-        attr_filter: Option<&str>,
-        ext_filter: Option<&str>,
-        exclude: Option<&str>,
-    ) -> Self {
+    pub fn from_params(params: &SearchFilterParams<'_>) -> Self {
         let now_us = now_unix_micros();
-        let extensions: Vec<String> = ext_filter
+        let extensions: Vec<String> = params
+            .ext_filter
             .map(|ext_list| {
-                ext_list
-                    .split(',')
-                    .map(|segment| segment.trim().trim_start_matches('.').to_lowercase())
-                    .filter(|ext| !ext.is_empty())
-                    .collect()
+                let mut exts = Vec::new();
+                for segment in ext_list.split(',') {
+                    let token = segment.trim().trim_start_matches('.').to_lowercase();
+                    if token.is_empty() {
+                        continue;
+                    }
+                    if let Some(collection) = crate::extensions::expand_collection(&token) {
+                        exts.extend(collection.iter().map(|ext| (*ext).to_owned()));
+                    } else {
+                        exts.push(token);
+                    }
+                }
+                exts
             })
             .unwrap_or_default();
         if !extensions.is_empty() {
             tracing::trace!(
-                raw_ext_filter = ext_filter.unwrap_or_default(),
+                raw_ext_filter = params.ext_filter.unwrap_or_default(),
                 normalized_extensions = ?extensions,
                 "normalized extension filter strings"
             );
         }
-        let exclude_lower = exclude.map(|excl| {
-            let fold = uffs_text::CaseFold::default_table();
+        let fold_table = uffs_text::CaseFold::default_table();
+        let exclude_lower = params.exclude.map(|excl| {
             let mut buf = Vec::with_capacity(excl.len());
-            fold.fold_into(excl, &mut buf).to_owned()
+            fold_table.fold_into(excl, &mut buf).to_owned()
+        });
+        let path_contains_lower = params.path_contains.map(|pat| {
+            let mut buf = Vec::with_capacity(pat.len());
+            fold_table.fold_into(pat, &mut buf).to_owned()
         });
         Self {
-            hide_system,
-            min_size,
-            max_size,
-            newer_us: newer.and_then(|spec| parse_time_bound(spec, now_us, true)),
-            older_us: older.and_then(|spec| parse_time_bound(spec, now_us, false)),
-            newer_created_us: newer_created.and_then(|spec| parse_time_bound(spec, now_us, true)),
-            older_created_us: older_created.and_then(|spec| parse_time_bound(spec, now_us, false)),
-            newer_accessed_us: newer_accessed.and_then(|spec| parse_time_bound(spec, now_us, true)),
-            older_accessed_us: older_accessed
+            hide_system: params.hide_system,
+            hide_ads: params.hide_ads,
+            min_size: params.min_size,
+            max_size: params.max_size,
+            newer_us: params
+                .newer
+                .and_then(|spec| parse_time_bound(spec, now_us, true)),
+            older_us: params
+                .older
                 .and_then(|spec| parse_time_bound(spec, now_us, false)),
-            attr_require: parse_attr_require(attr_filter.unwrap_or("")),
-            attr_exclude: parse_attr_exclude(attr_filter.unwrap_or("")),
-            min_descendants,
-            max_descendants,
+            newer_created_us: params
+                .newer_created
+                .and_then(|spec| parse_time_bound(spec, now_us, true)),
+            older_created_us: params
+                .older_created
+                .and_then(|spec| parse_time_bound(spec, now_us, false)),
+            newer_accessed_us: params
+                .newer_accessed
+                .and_then(|spec| parse_time_bound(spec, now_us, true)),
+            older_accessed_us: params
+                .older_accessed
+                .and_then(|spec| parse_time_bound(spec, now_us, false)),
+            attr_require: parse_attr_require(params.attr_filter.unwrap_or("")),
+            attr_exclude: parse_attr_exclude(params.attr_filter.unwrap_or("")),
+            min_descendants: params.min_descendants,
+            max_descendants: params.max_descendants,
             extensions,
             resolved_ext_ids: Vec::new(),
             exclude_lower,
+            path_contains_lower,
+            type_filter: params.type_filter.map(str::to_ascii_lowercase),
+            min_bulkiness: params.min_bulkiness,
+            max_bulkiness: params.max_bulkiness,
+            min_name_len: params.min_name_len,
+            max_name_len: params.max_name_len,
+            min_path_len: params.min_path_len,
+            max_path_len: params.max_path_len,
+            min_allocated: params.min_allocated,
+            max_allocated: params.max_allocated,
+            min_treesize: params.min_treesize,
+            max_treesize: params.max_treesize,
+            min_tree_allocated: params.min_tree_allocated,
+            max_tree_allocated: params.max_tree_allocated,
+            allowed_months: params.allowed_months.to_vec(),
         }
+    }
+
+    /// Set the minimum filename length filter.
+    #[must_use]
+    pub const fn with_min_name_len(mut self, len: Option<u16>) -> Self {
+        self.min_name_len = len;
+        self
+    }
+
+    /// Set the maximum filename length filter.
+    #[must_use]
+    pub const fn with_max_name_len(mut self, len: Option<u16>) -> Self {
+        self.max_name_len = len;
+        self
+    }
+
+    /// Set the minimum full-path length filter.
+    #[must_use]
+    pub const fn with_min_path_len(mut self, len: Option<u16>) -> Self {
+        self.min_path_len = len;
+        self
+    }
+
+    /// Set the maximum full-path length filter.
+    #[must_use]
+    pub const fn with_max_path_len(mut self, len: Option<u16>) -> Self {
+        self.max_path_len = len;
+        self
+    }
+
+    /// Set the minimum allocated (on-disk) size filter.
+    #[must_use]
+    pub const fn with_min_allocated(mut self, size: Option<u64>) -> Self {
+        self.min_allocated = size;
+        self
+    }
+
+    /// Set the maximum allocated (on-disk) size filter.
+    #[must_use]
+    pub const fn with_max_allocated(mut self, size: Option<u64>) -> Self {
+        self.max_allocated = size;
+        self
+    }
+
+    /// Set the allowed months filter (1-12).
+    #[must_use]
+    pub fn with_allowed_months(mut self, months: Vec<u32>) -> Self {
+        self.allowed_months = months;
+        self
     }
 
     /// Pre-resolve extension filter strings to `u16` IDs for a specific
@@ -205,6 +391,7 @@ impl SearchFilters {
     pub const fn is_ext_only(&self) -> bool {
         !self.extensions.is_empty()
             && !self.hide_system
+            && !self.hide_ads
             && self.min_size.is_none()
             && self.max_size.is_none()
             && self.newer_us.is_none()
@@ -218,6 +405,21 @@ impl SearchFilters {
             && self.min_descendants.is_none()
             && self.max_descendants.is_none()
             && self.exclude_lower.is_none()
+            && self.path_contains_lower.is_none()
+            && self.type_filter.is_none()
+            && self.min_bulkiness.is_none()
+            && self.max_bulkiness.is_none()
+            && self.min_name_len.is_none()
+            && self.max_name_len.is_none()
+            && self.min_path_len.is_none()
+            && self.max_path_len.is_none()
+            && self.min_allocated.is_none()
+            && self.max_allocated.is_none()
+            && self.min_treesize.is_none()
+            && self.max_treesize.is_none()
+            && self.min_tree_allocated.is_none()
+            && self.max_tree_allocated.is_none()
+            && self.allowed_months.is_empty()
     }
 
     /// Check whether a compact record passes all filters.
@@ -235,9 +437,12 @@ impl SearchFilters {
         fold_buf: &mut Vec<u8>,
         fold: uffs_text::CaseFold,
     ) -> bool {
-        if self.hide_system {
+        if self.hide_system || self.hide_ads {
             let name = rec.name(names);
-            if name.starts_with('$') {
+            if self.hide_system && name.starts_with('$') {
+                return false;
+            }
+            if self.hide_ads && memchr::memchr(b':', name.as_bytes()).is_some() {
                 return false;
             }
         }
@@ -323,6 +528,72 @@ impl SearchFilters {
                 return false;
             }
         }
+        self.matches_derived(rec, names)
+    }
+
+    /// Check derived/computed filters: name length, allocated, tree metrics,
+    /// month.
+    ///
+    /// Split from [`matches_record`] to keep each function under the
+    /// `too_many_lines` lint threshold.
+    fn matches_derived(&self, rec: &CompactRecord, names: &[u8]) -> bool {
+        // ── Name-length filters (chars, not bytes) ─────────────────
+        if self.min_name_len.is_some() || self.max_name_len.is_some() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "filenames on NTFS are ≤255 chars, fits u16"
+            )]
+            let name_len = rec.name(names).chars().count() as u16;
+            if let Some(min) = self.min_name_len
+                && name_len < min
+            {
+                return false;
+            }
+            if let Some(max) = self.max_name_len
+                && name_len > max
+            {
+                return false;
+            }
+        }
+        // ── Size-on-disk filters ───────────────────────────────────
+        if let Some(min) = self.min_allocated
+            && rec.allocated < min
+        {
+            return false;
+        }
+        if let Some(max) = self.max_allocated
+            && rec.allocated > max
+        {
+            return false;
+        }
+        // ── Tree metric filters ─────────────────────────────────────
+        if let Some(min) = self.min_treesize
+            && rec.treesize < min
+        {
+            return false;
+        }
+        if let Some(max) = self.max_treesize
+            && rec.treesize > max
+        {
+            return false;
+        }
+        if let Some(min) = self.min_tree_allocated
+            && rec.tree_allocated < min
+        {
+            return false;
+        }
+        if let Some(max) = self.max_tree_allocated
+            && rec.tree_allocated > max
+        {
+            return false;
+        }
+        // ── Month-of-year filter ───────────────────────────────────
+        if !self.allowed_months.is_empty() {
+            let month = month_from_unix_micros(rec.modified);
+            if !self.allowed_months.contains(&month) {
+                return false;
+            }
+        }
         true
     }
 
@@ -330,6 +601,7 @@ impl SearchFilters {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         !self.hide_system
+            && !self.hide_ads
             && self.min_size.is_none()
             && self.max_size.is_none()
             && self.newer_us.is_none()
@@ -344,6 +616,21 @@ impl SearchFilters {
             && self.max_descendants.is_none()
             && self.extensions.is_empty()
             && self.exclude_lower.is_none()
+            && self.path_contains_lower.is_none()
+            && self.type_filter.is_none()
+            && self.min_bulkiness.is_none()
+            && self.max_bulkiness.is_none()
+            && self.min_name_len.is_none()
+            && self.max_name_len.is_none()
+            && self.min_path_len.is_none()
+            && self.max_path_len.is_none()
+            && self.min_allocated.is_none()
+            && self.max_allocated.is_none()
+            && self.min_treesize.is_none()
+            && self.max_treesize.is_none()
+            && self.min_tree_allocated.is_none()
+            && self.max_tree_allocated.is_none()
+            && self.allowed_months.is_empty()
     }
 }
 
@@ -356,6 +643,9 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
     let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
     rows.retain(|row| {
         if filters.hide_system && row.name().starts_with('$') {
+            return false;
+        }
+        if filters.hide_ads && row.name().contains(':') {
             return false;
         }
         if let Some(min) = filters.min_size
@@ -431,8 +721,211 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
                 return false;
             }
         }
-        true
+        apply_derived_filters(row, filters)
     });
+}
+
+/// Derived / post-filter checks for `apply_search_filters`.
+///
+/// Extracted to keep the retain closure under the `cognitive_complexity`
+/// and `too_many_lines` lint thresholds — a 105-line helper is clearer
+/// than inlining into the already-complex `retain` closure.
+#[expect(
+    clippy::single_call_fn,
+    reason = "factored out for cognitive_complexity + too_many_lines"
+)]
+fn apply_derived_filters(row: &DisplayRow, filters: &SearchFilters) -> bool {
+    // ── Name-length filters ────────────────────────────────────
+    if filters.min_name_len.is_some() || filters.max_name_len.is_some() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "NTFS filenames ≤255 chars, fits u16"
+        )]
+        let name_len = row.name().chars().count() as u16;
+        if let Some(min) = filters.min_name_len
+            && name_len < min
+        {
+            return false;
+        }
+        if let Some(max) = filters.max_name_len
+            && name_len > max
+        {
+            return false;
+        }
+    }
+    // ── Path-length filters ────────────────────────────────────
+    if filters.min_path_len.is_some() || filters.max_path_len.is_some() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "path lengths fit u16 for practical NTFS volumes"
+        )]
+        let path_len = row.path.chars().count() as u16;
+        if let Some(min) = filters.min_path_len
+            && path_len < min
+        {
+            return false;
+        }
+        if let Some(max) = filters.max_path_len
+            && path_len > max
+        {
+            return false;
+        }
+    }
+    // ── Directory-path pattern filter ───────────────────────────
+    if let Some(pat) = &filters.path_contains_lower {
+        let dir = row.path_dir();
+        let dir_lower = dir.to_ascii_lowercase();
+        if !name_matches(&dir_lower, pat) {
+            return false;
+        }
+    }
+    // ── Type/category filter ────────────────────────────────────
+    if let Some(wanted) = &filters.type_filter
+        && crate::search::derived::semantic_type_for_row(row) != wanted.as_str()
+    {
+        return false;
+    }
+    // ── Bulkiness filters ───────────────────────────────────────
+    if filters.min_bulkiness.is_some() || filters.max_bulkiness.is_some() {
+        let bulk = crate::search::derived::bulkiness_for_row(row);
+        if let Some(min) = filters.min_bulkiness
+            && bulk < min
+        {
+            return false;
+        }
+        if let Some(max) = filters.max_bulkiness
+            && bulk > max
+        {
+            return false;
+        }
+    }
+    // ── Size-on-disk filters ───────────────────────────────────
+    if let Some(min) = filters.min_allocated
+        && row.allocated < min
+    {
+        return false;
+    }
+    if let Some(max) = filters.max_allocated
+        && row.allocated > max
+    {
+        return false;
+    }
+    // ── Tree metric filters ─────────────────────────────────────
+    if let Some(min) = filters.min_treesize
+        && row.treesize < min
+    {
+        return false;
+    }
+    if let Some(max) = filters.max_treesize
+        && row.treesize > max
+    {
+        return false;
+    }
+    if let Some(min) = filters.min_tree_allocated
+        && row.tree_allocated < min
+    {
+        return false;
+    }
+    if let Some(max) = filters.max_tree_allocated
+        && row.tree_allocated > max
+    {
+        return false;
+    }
+    // ── Month-of-year filter ───────────────────────────────────
+    if !filters.allowed_months.is_empty() {
+        let month = month_from_unix_micros(row.modified);
+        if !filters.allowed_months.contains(&month) {
+            return false;
+        }
+    }
+    true
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Month extraction
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extract the month (1-12) from a Unix-microsecond timestamp.
+///
+/// Uses civil-time decomposition without any external crate.
+///
+/// ```
+/// # use uffs_core::search::filters::month_from_unix_micros;
+/// // 2026-01-15 00:00:00 UTC → January
+/// assert_eq!(month_from_unix_micros(1_768_435_200_000_000), 1);
+/// // 2026-07-01 00:00:00 UTC → July
+/// assert_eq!(month_from_unix_micros(1_782_864_000_000_000), 7);
+/// ```
+#[must_use]
+pub const fn month_from_unix_micros(us: i64) -> u32 {
+    // Convert µs → days since Unix epoch.
+    let total_secs = us / 1_000_000;
+    // Integer floor-division that rounds towards −∞.
+    let day = if total_secs >= 0 {
+        total_secs / 86400
+    } else {
+        (total_secs - 86399) / 86400
+    };
+    // Civil date from day count (algorithm from Howard Hinnant).
+    // <https://howardhinnant.github.io/date_algorithms.html#civil_from_days>
+    let z = day + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097; // day-of-era  [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day-of-year [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let civil_month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "month is always 1-12"
+    )]
+    let month = civil_month as u32;
+    month
+}
+
+/// Parse a month/quarter spec into a vector of allowed months (1-12).
+///
+/// Accepts:
+/// - Month names: `january`, `jan`, `february`, `feb`, … , `december`, `dec`
+/// - Quarter names: `Q1`, `Q2`, `Q3`, `Q4`
+/// - Comma-separated combinations: `jan,feb`, `Q1,Q3`
+///
+/// ```
+/// # use uffs_core::search::filters::parse_month_spec;
+/// assert_eq!(parse_month_spec("january"), vec![1]);
+/// assert_eq!(parse_month_spec("Q1"), vec![1, 2, 3]);
+/// assert_eq!(parse_month_spec("jan,feb"), vec![1, 2]);
+/// assert_eq!(parse_month_spec("Q2,october"), vec![4, 5, 6, 10]);
+/// ```
+#[must_use]
+pub fn parse_month_spec(spec: &str) -> Vec<u32> {
+    let mut months = Vec::new();
+    for token in spec.split(',') {
+        let lower = token.trim().to_ascii_lowercase();
+        match lower.as_str() {
+            "january" | "jan" => months.push(1),
+            "february" | "feb" => months.push(2),
+            "march" | "mar" => months.push(3),
+            "april" | "apr" => months.push(4),
+            "may" => months.push(5),
+            "june" | "jun" => months.push(6),
+            "july" | "jul" => months.push(7),
+            "august" | "aug" => months.push(8),
+            "september" | "sep" => months.push(9),
+            "october" | "oct" => months.push(10),
+            "november" | "nov" => months.push(11),
+            "december" | "dec" => months.push(12),
+            "q1" => months.extend_from_slice(&[1, 2, 3]),
+            "q2" => months.extend_from_slice(&[4, 5, 6]),
+            "q3" => months.extend_from_slice(&[7, 8, 9]),
+            "q4" => months.extend_from_slice(&[10, 11, 12]),
+            _ => {} // silently ignore unknown tokens
+        }
+    }
+    months.sort_unstable();
+    months.dedup();
+    months
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -445,19 +938,33 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
 /// The suffix is **case-insensitive**.  A bare number with no suffix is
 /// treated as bytes.
 ///
+/// # Errors
+///
+/// Returns `Err` if the spec is empty, contains non-numeric characters
+/// (after stripping the suffix), or the result overflows `u64`.
+///
 /// # Examples
 ///
 /// ```
 /// # use uffs_core::search::filters::parse_size;
 /// assert_eq!(parse_size("1024"), Ok(1024));
-/// assert_eq!(parse_size("1KB"),  Ok(1024));
+/// assert_eq!(parse_size("1KB"), Ok(1024));
 /// assert_eq!(parse_size("10mb"), Ok(10 * 1024 * 1024));
-/// assert_eq!(parse_size("1GB"),  Ok(1024 * 1024 * 1024));
-/// assert_eq!(parse_size("2TB"),  Ok(2 * 1024 * 1024 * 1024 * 1024));
-/// assert_eq!(parse_size("0"),    Ok(0));
+/// assert_eq!(parse_size("1GB"), Ok(1024 * 1024 * 1024));
+/// assert_eq!(parse_size("2TB"), Ok(2 * 1024 * 1024 * 1024 * 1024));
+/// assert_eq!(parse_size("0"), Ok(0));
 /// assert!(parse_size("abc").is_err());
 /// ```
 pub fn parse_size(spec: &str) -> Result<u64, String> {
+    // Suffix table: longest-first to avoid prefix ambiguity.
+    const SUFFIXES: &[(&str, u64)] = &[
+        ("TB", 1024 * 1024 * 1024 * 1024),
+        ("GB", 1024 * 1024 * 1024),
+        ("MB", 1024 * 1024),
+        ("KB", 1024),
+        ("B", 1),
+    ];
+
     let trimmed = spec.trim();
     if trimmed.is_empty() {
         return Err("empty size specification".to_owned());
@@ -465,25 +972,15 @@ pub fn parse_size(spec: &str) -> Result<u64, String> {
 
     let upper = trimmed.to_ascii_uppercase();
 
-    // Try stripping known suffixes longest-first.
-    let (num_str, multiplier) = if let Some(n) = upper.strip_suffix("TB") {
-        (n, 1024_u64 * 1024 * 1024 * 1024)
-    } else if let Some(n) = upper.strip_suffix("GB") {
-        (n, 1024_u64 * 1024 * 1024)
-    } else if let Some(n) = upper.strip_suffix("MB") {
-        (n, 1024_u64 * 1024)
-    } else if let Some(n) = upper.strip_suffix("KB") {
-        (n, 1024_u64)
-    } else if let Some(n) = upper.strip_suffix('B') {
-        (n, 1_u64)
-    } else {
-        (upper.as_str(), 1_u64)
-    };
+    let (digits, multiplier) = SUFFIXES
+        .iter()
+        .find_map(|(suffix, mult)| upper.strip_suffix(suffix).map(|rest| (rest, *mult)))
+        .unwrap_or((upper.as_str(), 1));
 
-    let num_str = num_str.trim();
-    let count: u64 = num_str
+    let count: u64 = digits
+        .trim()
         .parse()
-        .map_err(|_| format!("invalid size: {spec}"))?;
+        .map_err(|_parse_err| format!("invalid size: {spec}"))?;
 
     count
         .checked_mul(multiplier)
@@ -648,6 +1145,52 @@ fn parse_named_time_range(name: &str, now_us: i64, is_newer: bool) -> Option<i64
         "last_30d" | "last30d" => Some(now_us - 30 * US_PER_DAY),
         "last_90d" | "last90d" => Some(now_us - 90 * US_PER_DAY),
         "last_365d" | "last365d" => Some(now_us - 365 * US_PER_DAY),
+        // next_* periods — for finding files with future timestamps
+        // (clock skew, timezone issues, scheduled items).
+        "next_day" | "nextday" | "tomorrow" => {
+            if is_newer {
+                Some(today_start + US_PER_DAY)
+            } else {
+                Some(today_start + 2 * US_PER_DAY)
+            }
+        }
+        "next_week" | "nextweek" => {
+            let days_since_epoch = today_start / US_PER_DAY;
+            let dow = (days_since_epoch + 3) % 7;
+            let this_monday = today_start - dow * US_PER_DAY;
+            let next_monday = this_monday + 7 * US_PER_DAY;
+            if is_newer {
+                Some(next_monday)
+            } else {
+                Some(next_monday + 7 * US_PER_DAY)
+            }
+        }
+        "next_month" | "nextmonth" => {
+            let days_since_epoch = today_start / US_PER_DAY;
+            let (year, month, day) = days_to_ymd(days_since_epoch);
+            let this_month_start = today_start - (day - 1) * US_PER_DAY;
+            let days = days_in_month(year, month);
+            let next_month_start = this_month_start + days * US_PER_DAY;
+            if is_newer {
+                Some(next_month_start)
+            } else {
+                let (ny, nm) = if month == 12 {
+                    (year + 1, 1)
+                } else {
+                    (year, month + 1)
+                };
+                Some(next_month_start + days_in_month(ny, nm) * US_PER_DAY)
+            }
+        }
+        "next_year" | "nextyear" => {
+            let days_since_epoch = today_start / US_PER_DAY;
+            let (year, _, _) = days_to_ymd(days_since_epoch);
+            if is_newer {
+                Some(ymd_to_days(year + 1, 1, 1) * US_PER_DAY)
+            } else {
+                Some(ymd_to_days(year + 2, 1, 1) * US_PER_DAY)
+            }
+        }
         _ => None,
     }
 }
@@ -742,13 +1285,76 @@ pub fn attr_bit(name: &str) -> u32 {
     }
 }
 
+/// Expand an attribute preset name into its raw spec string.
+///
+/// Returns `None` if the token is not a known preset.
+fn expand_attr_preset(token: &str) -> Option<&'static str> {
+    match token {
+        "system-files" | "system_files" | "sysfiles" => Some("hidden,system"),
+        "user-files" | "user_files" | "userfiles" => Some("!hidden,!system"),
+        "compressed-encrypted" | "compressed_encrypted" | "compenc" => Some("compressed,encrypted"),
+        _ => None,
+    }
+}
+
+/// Expand all preset aliases in a comma-separated attribute spec.
+///
+/// Tokens that are known presets (e.g. `"system-files"`) are replaced with
+/// their primitive equivalents.  Other tokens pass through unchanged.
+///
+/// ```
+/// # use uffs_core::search::filters::expand_attr_spec;
+/// assert_eq!(expand_attr_spec("system-files"), "hidden,system");
+/// assert_eq!(expand_attr_spec("user-files"), "!hidden,!system");
+/// assert_eq!(expand_attr_spec("hidden,readonly"), "hidden,readonly");
+/// assert_eq!(
+///     expand_attr_spec("compressed-encrypted,readonly"),
+///     "compressed,encrypted,readonly",
+/// );
+/// ```
+#[must_use]
+pub fn expand_attr_spec(spec: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for raw in spec.split(',') {
+        let token = raw.trim();
+        let lower = token.to_ascii_lowercase();
+        // Check for negated presets: "!system-files" → "!hidden,!system"
+        if let Some(inner) = lower.strip_prefix('!')
+            && let Some(expanded) = expand_attr_preset(inner)
+        {
+            // Expanded preset may contain its own '!' prefixes.
+            for sub in expanded.split(',') {
+                out.push(sub);
+            }
+            continue;
+        }
+        if let Some(expanded) = expand_attr_preset(&lower) {
+            for sub in expanded.split(',') {
+                out.push(sub);
+            }
+        } else {
+            out.push(token);
+        }
+    }
+    out.join(",")
+}
+
 /// Parse required attribute bits from an attr spec like `"hidden,compressed"`.
+///
+/// Supports preset aliases: `system-files` → `hidden,system`,
+/// `user-files` → `!hidden,!system`.
 #[must_use]
 pub fn parse_attr_require(spec: &str) -> u32 {
     let mut bits = 0_u32;
     for raw_part in spec.split(',') {
         let lowered = raw_part.trim().to_ascii_lowercase();
-        if !lowered.starts_with('!') {
+        if lowered.starts_with('!') {
+            continue;
+        }
+        // Check for presets first.
+        if let Some(expanded) = expand_attr_preset(&lowered) {
+            bits |= parse_attr_require(expanded);
+        } else {
             bits |= attr_bit(&lowered);
         }
     }
@@ -756,13 +1362,26 @@ pub fn parse_attr_require(spec: &str) -> u32 {
 }
 
 /// Parse excluded attribute bits from an attr spec like `"!system,!hidden"`.
+///
+/// Supports preset aliases: `user-files` → `!hidden,!system`.
 #[must_use]
 pub fn parse_attr_exclude(spec: &str) -> u32 {
     let mut bits = 0_u32;
     for raw_part in spec.split(',') {
         let lowered = raw_part.trim().to_ascii_lowercase();
         if let Some(name) = lowered.strip_prefix('!') {
-            bits |= attr_bit(name);
+            if let Some(expanded) = expand_attr_preset(name) {
+                bits |= parse_attr_exclude(expanded);
+            } else {
+                bits |= attr_bit(name);
+            }
+        }
+        // Also check if the whole token (without !) is a preset that
+        // contains exclusion rules.
+        if !lowered.starts_with('!')
+            && let Some(expanded) = expand_attr_preset(&lowered)
+        {
+            bits |= parse_attr_exclude(expanded);
         }
     }
     bits

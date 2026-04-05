@@ -168,7 +168,9 @@ pub fn collect_global_top_n(
         | FieldId::DirectoryFlag
         | FieldId::RecallOnOpen
         | FieldId::RecallOnDataAccess
-        | FieldId::ParityAttributes => collect_global_top_n_numeric(
+        | FieldId::ParityAttributes
+        | FieldId::NameLength
+        | FieldId::PathLength => collect_global_top_n_numeric(
             drives,
             limit,
             sort_column,
@@ -345,6 +347,14 @@ fn collect_global_top_n_numeric(
                 | FieldId::RecallOnOpen
                 | FieldId::RecallOnDataAccess
                 | FieldId::ParityAttributes => rec.modified,
+                #[expect(clippy::cast_possible_wrap, reason = "filename lengths fit i64")]
+                FieldId::NameLength => rec.name(&drive.names).chars().count() as i64,
+                #[expect(clippy::cast_possible_wrap, reason = "path lengths fit i64")]
+                FieldId::PathLength => {
+                    // Use name length as a proxy at the sort-key stage
+                    // (full path unavailable here).
+                    rec.name(&drive.names).chars().count() as i64
+                }
             };
 
             if use_heap {
@@ -528,7 +538,8 @@ pub fn search_compact_drive_regex(
     let profile = *CACHE_PROFILE;
 
     let t_match = std::time::Instant::now();
-    let match_indices: Vec<usize> = drive
+    #[allow(clippy::cast_possible_truncation)]
+    let match_indices: Vec<u32> = drive
         .records
         .iter()
         .enumerate()
@@ -537,7 +548,7 @@ pub fn search_compact_drive_regex(
             !name.is_empty() && compiled_re.is_match(name)
         })
         .take(limit)
-        .map(|(idx, _)| idx)
+        .map(|(idx, _)| idx as u32)
         .collect();
     let match_ms = t_match.elapsed().as_millis();
     let match_count = match_indices.len();
@@ -629,7 +640,7 @@ fn collect_match_indices(
     limit: usize,
     lower_buf: &mut Vec<u8>,
     matches: &dyn Fn(&str, &mut Vec<u8>) -> bool,
-) -> Vec<usize> {
+) -> Vec<u32> {
     match candidates {
         None => {
             let mut out = Vec::new();
@@ -639,7 +650,8 @@ fn collect_match_indices(
                 }
                 let name = rec.name(&drive.names);
                 if matches(name, lower_buf) {
-                    out.push(idx);
+                    #[allow(clippy::cast_possible_truncation)]
+                    out.push(idx as u32);
                 }
             }
             out
@@ -650,13 +662,12 @@ fn collect_match_indices(
                 if out.len() >= limit {
                     break;
                 }
-                let rec_idx = idx as usize;
-                let Some(rec) = drive.records.get(rec_idx) else {
+                let Some(rec) = drive.records.get(idx as usize) else {
                     continue;
                 };
                 let name = rec.name(&drive.names);
                 if matches(name, lower_buf) {
-                    out.push(rec_idx);
+                    out.push(idx);
                 }
             }
             out
@@ -672,6 +683,7 @@ pub fn search_compact_drive(
     limit: usize,
     case_sensitive: bool,
     whole_word: bool,
+    match_path: bool,
 ) -> Vec<DisplayRow> {
     if needle.is_empty() {
         return Vec::new();
@@ -744,9 +756,15 @@ pub fn search_compact_drive(
     let tri_count = candidates.as_ref().map_or(0, Vec::len);
 
     let t_match = std::time::Instant::now();
-    let match_indices = collect_match_indices(drive, candidates, limit, &mut fold_buf, &matches);
+    let mut match_indices =
+        collect_match_indices(drive, candidates, limit, &mut fold_buf, &matches);
     let match_ms = t_match.elapsed().as_millis();
     let match_count = match_indices.len();
+
+    // ── path mode: expand matching directories to include all descendants ──
+    if match_path && !match_indices.is_empty() {
+        expand_directory_descendants(drive, &mut match_indices);
+    }
 
     let t_resolve = std::time::Instant::now();
     let rows = indices_to_rows(drive, &match_indices, volume_prefix);
@@ -765,6 +783,41 @@ pub fn search_compact_drive(
     }
 
     rows
+}
+
+/// DFS expansion: for every matching directory, collect all descendant indices.
+///
+/// Extracted from `search_compact_drive` to stay under the `too_many_lines`
+/// lint limit (the caller was 103/100 before extraction).
+#[expect(
+    clippy::single_call_fn,
+    reason = "factored out to keep search_compact_drive under too_many_lines"
+)]
+fn expand_directory_descendants(drive: &DriveCompactIndex, indices: &mut Vec<u32>) {
+    let mut extra: Vec<u32> = Vec::new();
+    let mut stack: Vec<u32> = Vec::new();
+    for &idx in indices.iter() {
+        if let Some(rec) = drive.records.get(idx as usize)
+            && rec.is_directory()
+        {
+            stack.push(idx);
+            while let Some(dir_idx) = stack.pop() {
+                for &child_idx in drive.children.get(dir_idx as usize) {
+                    extra.push(child_idx);
+                    if let Some(child_rec) = drive.records.get(child_idx as usize)
+                        && child_rec.is_directory()
+                    {
+                        stack.push(child_idx);
+                    }
+                }
+            }
+        }
+    }
+    if !extra.is_empty() {
+        indices.extend(extra);
+        indices.sort_unstable();
+        indices.dedup();
+    }
 }
 
 /// Search a single drive using tree-based path traversal.
@@ -887,25 +940,25 @@ fn heap_push_capped<T: Ord>(heap: &mut BinaryHeap<T>, entry: T, limit: usize) {
 /// Convert a list of record indices into `DisplayRow`s with resolved paths.
 fn indices_to_rows(
     drive: &DriveCompactIndex,
-    indices: &[usize],
+    indices: &[u32],
     volume_prefix: &str,
 ) -> Vec<DisplayRow> {
     let mut dir_cache = tree::DirCache::with_capacity(256);
     indices
         .iter()
         .filter_map(|&record_idx| {
-            let rec = drive.records.get(record_idx)?;
+            let rec = drive.records.get(record_idx as usize)?;
             let name = rec.name(&drive.names);
             if name.is_empty() {
                 return None;
             }
-            let path = tree::resolve_path_cached(drive, record_idx, volume_prefix, &mut dir_cache);
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "record index bounded by NTFS limits (<4B records)"
-            )]
-            let ri = record_idx as u32;
-            Some(make_display_row(ri, drive.letter, rec, name, path))
+            let path = tree::resolve_path_cached(
+                drive,
+                record_idx as usize,
+                volume_prefix,
+                &mut dir_cache,
+            );
+            Some(make_display_row(record_idx, drive.letter, rec, name, path))
         })
         .collect()
 }

@@ -77,6 +77,10 @@ pub enum FieldId {
     RecallOnDataAccess,
     /// Legacy parity-masked attribute value.
     ParityAttributes,
+    /// Filename length in characters.
+    NameLength,
+    /// Full-path length in characters.
+    PathLength,
 }
 
 /// Canonical field kinds used by predicate compilation.
@@ -188,6 +192,8 @@ impl FieldId {
         Self::RecallOnOpen,
         Self::RecallOnDataAccess,
         Self::ParityAttributes,
+        Self::NameLength,
+        Self::PathLength,
     ];
 
     /// Parse a field name or alias into the canonical identifier.
@@ -416,8 +422,8 @@ impl FieldId {
                 aliases: &["h"],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "H",
@@ -431,8 +437,8 @@ impl FieldId {
                 aliases: &["s"],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "S",
@@ -446,8 +452,8 @@ impl FieldId {
                 aliases: &["a"],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "A",
@@ -461,8 +467,8 @@ impl FieldId {
                 aliases: &["readonly", "read-only", "read only", "r"],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "R",
@@ -476,8 +482,8 @@ impl FieldId {
                 aliases: &[],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "C",
@@ -491,8 +497,8 @@ impl FieldId {
                 aliases: &[],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "E",
@@ -506,8 +512,8 @@ impl FieldId {
                 aliases: &[],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "Sp",
@@ -521,8 +527,8 @@ impl FieldId {
                 aliases: &[],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "Rp",
@@ -536,8 +542,8 @@ impl FieldId {
                 aliases: &["o"],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "O",
@@ -557,8 +563,8 @@ impl FieldId {
                 ],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "NI",
@@ -572,8 +578,8 @@ impl FieldId {
                 aliases: &["temp"],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "T",
@@ -587,8 +593,8 @@ impl FieldId {
                 aliases: &[],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "V",
@@ -602,8 +608,8 @@ impl FieldId {
                 aliases: &[],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "Pin",
@@ -617,8 +623,8 @@ impl FieldId {
                 aliases: &[],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "Unp",
@@ -692,8 +698,8 @@ impl FieldId {
                 aliases: &[],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "Int",
@@ -707,8 +713,8 @@ impl FieldId {
                 aliases: &["noscrub", "no scrub", "no scrub file"],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "NS",
@@ -719,11 +725,11 @@ impl FieldId {
             Self::DirectoryFlag => FieldMeta {
                 id: self,
                 canonical_name: "directory_flag",
-                aliases: &["directoryflag", "directory flag"],
+                aliases: &["directoryflag", "directory flag", "directory", "dir"],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "Dir?",
@@ -737,8 +743,8 @@ impl FieldId {
                 aliases: &["recallonopen", "recall on open"],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "RcO",
@@ -752,8 +758,8 @@ impl FieldId {
                 aliases: &["recallondataaccess", "recall on data access"],
                 field_type: FieldType::Bool,
                 access: FieldAccess::Hot,
-                sortable: false,
-                default_sort_direction: None,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
                 filterable: true,
                 projectable: true,
                 tui_label: "RcD",
@@ -774,6 +780,36 @@ impl FieldId {
                 tui_label: "PAttr",
                 display_name: "Attributes",
                 df_column: "parity_flags",
+                default_value: "0",
+            },
+            Self::NameLength => FieldMeta {
+                id: self,
+                canonical_name: "name_length",
+                aliases: &["namelength", "name_len", "namelen"],
+                field_type: FieldType::Numeric,
+                access: FieldAccess::Derived,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
+                filterable: true,
+                projectable: true,
+                tui_label: "NLen",
+                display_name: "Name Length",
+                df_column: "",
+                default_value: "0",
+            },
+            Self::PathLength => FieldMeta {
+                id: self,
+                canonical_name: "path_length",
+                aliases: &["pathlength", "path_len", "pathlen"],
+                field_type: FieldType::Numeric,
+                access: FieldAccess::Derived,
+                sortable: true,
+                default_sort_direction: Some(SortDirection::Descending),
+                filterable: true,
+                projectable: true,
+                tui_label: "PLen",
+                display_name: "Path Length",
+                df_column: "",
                 default_value: "0",
             },
         }
@@ -864,7 +900,9 @@ impl FieldId {
             | Self::DirectoryFlag
             | Self::RecallOnOpen
             | Self::RecallOnDataAccess
-            | Self::ParityAttributes => None,
+            | Self::ParityAttributes
+            | Self::NameLength
+            | Self::PathLength => None,
         }
     }
 
@@ -920,6 +958,8 @@ impl FieldId {
             Self::Descendants => Self::Descendants,
             Self::TreeAllocated => Self::TreeAllocated,
             Self::Bulkiness => Self::Bulkiness,
+            Self::NameLength => Self::NameLength,
+            Self::PathLength => Self::PathLength,
             Self::Name
             | Self::Attributes
             | Self::AttributeValue
@@ -991,14 +1031,31 @@ mod tests {
             FieldId::Size.metadata().default_sort_direction,
             Some(SortDirection::Descending)
         );
-        assert_eq!(FieldId::ReadOnly.metadata().default_sort_direction, None);
+        // Boolean attribute fields default to descending (flagged first).
+        assert_eq!(
+            FieldId::ReadOnly.metadata().default_sort_direction,
+            Some(SortDirection::Descending)
+        );
+        // Non-sortable fields have no default direction.
+        assert_eq!(
+            FieldId::ParityAttributes.metadata().default_sort_direction,
+            None
+        );
     }
 
     #[test]
     fn field_id_sortable_matches_metadata() {
         assert!(FieldId::Size.metadata().sortable);
         assert!(FieldId::Descendants.metadata().sortable);
-        assert!(!FieldId::ReadOnly.metadata().sortable);
+        // Boolean attribute fields are sortable (groups true/false via
+        // field_to_attr_bit).
+        assert!(FieldId::ReadOnly.metadata().sortable);
+        assert!(FieldId::Hidden.metadata().sortable);
+        assert!(FieldId::System.metadata().sortable);
+        assert!(FieldId::Compressed.metadata().sortable);
+        assert!(FieldId::DirectoryFlag.metadata().sortable);
+        // Non-sortable fields.
+        assert!(!FieldId::ParityAttributes.metadata().sortable);
     }
 
     #[test]

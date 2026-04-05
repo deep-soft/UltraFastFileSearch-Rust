@@ -201,11 +201,16 @@ impl MultiDriveBackend {
     }
 
     /// Search across all loaded drives.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "thin wrapper over search_drives; bundling into a struct would change public API across CLI/TUI/daemon"
+    )]
     pub fn search(
         &mut self,
         pattern: &str,
         case_sensitive: bool,
         whole_word: bool,
+        match_path: bool,
         result_limit: Option<u32>,
         filter_mode: FilterMode,
         search_filters: &mut super::filters::SearchFilters,
@@ -214,6 +219,7 @@ impl MultiDriveBackend {
             pattern,
             case_sensitive,
             whole_word,
+            match_path,
             result_limit,
             filter_mode,
             search_filters,
@@ -237,6 +243,7 @@ impl MultiDriveBackend {
         pattern: &str,
         case_sensitive: bool,
         whole_word: bool,
+        match_path: bool,
         result_limit: Option<u32>,
         filter_mode: FilterMode,
         search_filters: &mut super::filters::SearchFilters,
@@ -351,6 +358,7 @@ impl MultiDriveBackend {
                             limit,
                             case_sensitive,
                             whole_word,
+                            match_path,
                         )
                     }
                 })

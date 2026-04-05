@@ -45,6 +45,8 @@ struct SearchConfig<'a> {
     dirs_only: bool,
     /// Hide system files (files starting with $).
     hide_system: bool,
+    /// Hide NTFS Alternate Data Streams from results.
+    hide_ads: bool,
     /// Extension filter string (e.g., "pictures,mp4,pdf").
     ext_filter: Option<&'a str>,
     /// Minimum file size filter.
@@ -73,6 +75,39 @@ struct SearchConfig<'a> {
     older_accessed: Option<&'a str>,
     /// Exclude patterns.
     exclude: Option<&'a str>,
+    /// Directory-path pattern (glob, matched against directory portion only).
+    in_path: Option<&'a str>,
+    /// File type/category filter.
+    type_filter: Option<&'a str>,
+    /// Minimum bulkiness percentage.
+    min_bulkiness: Option<u64>,
+    /// Maximum bulkiness percentage.
+    max_bulkiness: Option<u64>,
+    /// Minimum filename length filter.
+    min_name_length: Option<u16>,
+    /// Maximum filename length filter.
+    max_name_length: Option<u16>,
+    /// Minimum path length filter.
+    min_path_length: Option<u16>,
+    /// Maximum path length filter.
+    max_path_length: Option<u16>,
+    /// Minimum on-disk size filter.
+    min_size_on_disk: Option<u64>,
+    /// Maximum on-disk size filter.
+    max_size_on_disk: Option<u64>,
+    /// Minimum subtree logical size filter.
+    min_treesize: Option<u64>,
+    /// Maximum subtree logical size filter.
+    max_treesize: Option<u64>,
+    /// Minimum subtree on-disk size filter.
+    min_tree_allocated: Option<u64>,
+    /// Maximum subtree on-disk size filter.
+    max_tree_allocated: Option<u64>,
+    /// Allowed month numbers (1-12), already resolved from CLI spec.
+    allowed_months: &'a [u32],
+    /// Match pattern against full path (expand directory name matches
+    /// to include all descendants).
+    match_path: bool,
     /// Sort column.
     sort: Option<&'a str>,
     /// Sort descending.
@@ -120,6 +155,7 @@ pub async fn search(
     files_only: bool,
     dirs_only: bool,
     hide_system: bool,
+    hide_ads: bool,
     profile: bool,
     benchmark: bool,
     no_cache: bool,
@@ -139,6 +175,22 @@ pub async fn search(
     newer_accessed: Option<&str>,
     older_accessed: Option<&str>,
     exclude: Option<&str>,
+    in_path: Option<&str>,
+    type_filter: Option<&str>,
+    min_bulkiness: Option<u64>,
+    max_bulkiness: Option<u64>,
+    min_name_length: Option<u16>,
+    max_name_length: Option<u16>,
+    min_path_length: Option<u16>,
+    max_path_length: Option<u16>,
+    min_size_on_disk: Option<u64>,
+    max_size_on_disk: Option<u64>,
+    min_treesize: Option<u64>,
+    max_treesize: Option<u64>,
+    min_tree_allocated: Option<u64>,
+    max_tree_allocated: Option<u64>,
+    allowed_months: &[u32],
+    match_path: bool,
     word: bool,
     sort: Option<&str>,
     sort_desc: bool,
@@ -164,6 +216,7 @@ pub async fn search(
         files_only,
         dirs_only,
         hide_system,
+        hide_ads,
         profile,
         benchmark,
         no_cache,
@@ -183,6 +236,22 @@ pub async fn search(
         newer_accessed,
         older_accessed,
         exclude,
+        in_path,
+        type_filter,
+        min_bulkiness,
+        max_bulkiness,
+        min_name_length,
+        max_name_length,
+        min_path_length,
+        max_path_length,
+        min_size_on_disk,
+        max_size_on_disk,
+        min_treesize,
+        max_treesize,
+        min_tree_allocated,
+        max_tree_allocated,
+        allowed_months,
+        match_path,
         word,
         sort,
         sort_desc,
