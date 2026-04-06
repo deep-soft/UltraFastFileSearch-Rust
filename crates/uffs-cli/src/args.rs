@@ -542,7 +542,7 @@ pub enum Commands {
         /// Special kind: count (returns total matching count only).
         preset: String,
 
-        /// Output format: table (default), json.
+        /// Output format: table (default), json, csv, tsv.
         #[arg(long, default_value = "table")]
         format: String,
     },

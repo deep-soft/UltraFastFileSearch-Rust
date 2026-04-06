@@ -74,11 +74,17 @@ pub async fn aggregate(preset: &str, format: &str) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Aggregate query failed: {e}"))?;
 
     // Output results.
-    if format == "json" {
-        let json = serde_json::to_string_pretty(&response.aggregations)?;
-        println!("{json}");
-    } else {
-        print_table_results(&response.aggregations)?;
+    match format {
+        "json" => {
+            let json = serde_json::to_string_pretty(&response.aggregations)?;
+            println!("{json}");
+        }
+        "csv" | "tsv" => {
+            print_csv_results(&response.aggregations, format == "tsv")?;
+        }
+        _ => {
+            print_table_results(&response.aggregations)?;
+        }
     }
 
     Ok(())
@@ -154,5 +160,69 @@ fn print_table_results(results: &[AggregateResultWire]) -> Result<()> {
     }
 
     writeln!(stdout)?;
+    Ok(())
+}
+
+
+/// Print aggregate results in CSV/TSV format.
+fn print_csv_results(results: &[AggregateResultWire], tsv: bool) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    let sep = if tsv { '\t' } else { ',' };
+
+    for result in results {
+        let label = result.label.as_deref().unwrap_or(&result.kind);
+
+        match result.kind.as_str() {
+            "count" => {
+                writeln!(stdout, "# {label}")?;
+                writeln!(stdout, "count")?;
+                if let Some(v) = result.value {
+                    writeln!(stdout, "{v}")?;
+                }
+            }
+            "stats" => {
+                if let Some(stats) = &result.stats {
+                    writeln!(stdout, "# {label}")?;
+                    writeln!(stdout, "count{sep}sum{sep}min{sep}max{sep}avg{sep}waste_bytes{sep}waste_pct")?;
+                    writeln!(
+                        stdout,
+                        "{}{sep}{}{sep}{}{sep}{}{sep}{:.2}{sep}{}{sep}{:.2}",
+                        stats.count, stats.sum, stats.min, stats.max, stats.avg,
+                        stats.waste_bytes, stats.waste_pct
+                    )?;
+                }
+            }
+            "buckets" | "rollup" => {
+                writeln!(stdout, "# {label}")?;
+                writeln!(
+                    stdout,
+                    "key{sep}count{sep}total_bytes{sep}total_allocated{sep}avg_size{sep}share_count{sep}share_bytes"
+                )?;
+                for row in &result.buckets {
+                    writeln!(
+                        stdout,
+                        "{}{sep}{}{sep}{}{sep}{}{sep}{:.2}{sep}{:.2}{sep}{:.2}",
+                        row.key,
+                        row.count,
+                        row.total_bytes,
+                        row.total_allocated.unwrap_or(0),
+                        row.avg_size.unwrap_or(0.0),
+                        row.share_count.unwrap_or(0.0),
+                        row.share_bytes.unwrap_or(0.0),
+                    )?;
+                }
+            }
+            "missing" | "distinct" | "duplicates" => {
+                writeln!(stdout, "# {label}")?;
+                writeln!(stdout, "value")?;
+                if let Some(v) = result.value {
+                    writeln!(stdout, "{v}")?;
+                }
+            }
+            _ => {}
+        }
+        writeln!(stdout)?;
+    }
+
     Ok(())
 }
