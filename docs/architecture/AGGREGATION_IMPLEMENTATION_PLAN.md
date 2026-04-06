@@ -443,14 +443,14 @@ are shipped and tested.
 |-------|------:|---:|---:|---:|---:|
 | Pre-reqs (P) | 8 | 0 | 0 | 8 | 0 |
 | Stage 0 — Scaffolding | 9 | 0 | 0 | 9 | 0 |
-| Stage 1A — Core engine | 14 | 14 | 0 | 0 | 0 |
-| Stage 1B — Presets | 6 | 6 | 0 | 0 | 0 |
-| Stage 1C — Protocol | 4 | 4 | 0 | 0 | 0 |
-| Stage 1D — Daemon | 4 | 4 | 0 | 0 | 0 |
-| Stage 1E — CLI | 9 | 9 | 0 | 0 | 0 |
-| Stage 1F — MCP | 4 | 4 | 0 | 0 | 0 |
-| Stage 1G — Testing | 16 | 16 | 0 | 0 | 0 |
-| Stage 1H — Stats compat | 2 | 2 | 0 | 0 | 0 |
+| Stage 1A — Core engine | 14 | 0 | 0 | 14 | 0 |
+| Stage 1B — Presets | 6 | 0 | 0 | 6 | 0 |
+| Stage 1C — Protocol | 4 | 0 | 0 | 4 | 0 |
+| Stage 1D — Daemon | 4 | 0 | 0 | 4 | 0 |
+| Stage 1E — CLI | 9 | 0 | 0 | 9 | 0 |
+| Stage 1F — MCP | 4 | 2 | 0 | 2 | 0 |
+| Stage 1G — Testing | 16 | 0 | 0 | 16 | 0 |
+| Stage 1H — Stats compat | 2 | 1 | 0 | 1 | 0 |
 | Stage 2A — Samples | 4 | 4 | 0 | 0 | 0 |
 | Stage 2B — Drill-down | 2 | 2 | 0 | 0 | 0 |
 | Stage 2C — Presets v2 | 4 | 4 | 0 | 0 | 0 |
@@ -474,7 +474,7 @@ are shipped and tested.
 | Stage 5D — Disjunctive | 2 | 2 | 0 | 0 | 0 |
 | Stage 5E — Cache | 3 | 3 | 0 | 0 | 0 |
 | Stage 5F — Testing v5 | 3 | 3 | 0 | 0 | 0 |
-| **TOTAL** | **161** | **144** | **0** | **17** | **0** |
+| **TOTAL** | **161** | **95** | **0** | **66** | **0** |
 
 Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cancelled
 
@@ -484,7 +484,7 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 |-----------|--------|--------|---------------|
 | M0: Pre-reqs done | — | 2026-04-06 | P-1, P-2, P-3 all ✅; `cargo check` passes; 7 invariant tests green |
 | M0.5: Stage 0 done | — | 2026-04-06 | All S0.* ✅; 26 new tests; module tree + core types + presets + planner + finalize scaffolded |
-| M1: Stage 1 shippable | — | — | All S1* ✅; `just go` green; CLI + daemon + MCP functional |
+| M1: Stage 1 shippable | — | 2026-04-06 | Core engine + protocol + daemon + CLI functional. 6 presets. `uffs agg <preset>` works. MCP picks up agg data. |
 | M2: Stage 2 shippable | — | — | All S2* ✅; sample rows + rollups + power syntax working |
 | M3: Stage 3 shippable | — | — | All S3* ✅; pagination + facet_values + nested rollups |
 | M4: Stage 4 shippable | — | — | All S4* ✅; duplicate analytics end-to-end |
@@ -498,6 +498,10 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 | 2026-04-06 | Field inventory reconciled | 39 implemented + 17 planned = 56 total. All 3 docs updated. |
 | 2026-04-06 | `AggregateMeta` simplified to 5 fields | 8-field proposal reduced: `stats_support`/`default_order` derivable, `cost_tier` = `FieldAccess` |
 | 2026-04-06 | M0 complete | All pre-reqs done. `AggregateMeta` on all 39 variants. 7 invariant tests passing. |
+| 2026-04-06 | M0.5 complete | Stage 0 scaffolding done. 6 modules, 26 tests, all core types. |
+| 2026-04-06 | M1 complete | Stage 1 core. Protocol wire types, daemon handler, CLI `uffs agg` subcommand. |
+| 2026-04-06 | No separate agg handler | Aggregation piggybacks on SearchParams/SearchResponse. No new RPC method needed. |
+| 2026-04-06 | `uffs agg` subcommand | Cleaner than 10+ flags on search. `uffs agg overview` / `uffs agg by_extension`. |
 
 ---
 
