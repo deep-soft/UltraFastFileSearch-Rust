@@ -18,7 +18,7 @@ pub struct AggregateSpec {
 impl AggregateSpec {
     /// Create a new aggregate spec with the given kind.
     #[must_use]
-    pub fn new(kind: AggregateKind) -> Self {
+    pub const fn new(kind: AggregateKind) -> Self {
         Self { kind, label: None }
     }
 
@@ -52,7 +52,7 @@ pub enum AggregateKind {
         field: FieldId,
         /// Maximum number of groups to return.
         top: u16,
-        /// Metrics to compute per group (default: count + total_bytes).
+        /// Metrics to compute per group (default: count + `total_bytes`).
         metrics: Vec<BucketMetric>,
     },
 
@@ -177,7 +177,8 @@ pub enum ScalarMetric {
     MissingCount,
 }
 
-/// A metric computed per bucket/group in a terms, histogram, or range aggregation.
+/// A metric computed per bucket/group in a terms, histogram, or range
+/// aggregation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BucketMetric {
     /// Number of records in the bucket.
@@ -201,7 +202,6 @@ pub enum BucketMetric {
     /// Share of total bytes (percentage).
     ShareOfTotalBytes,
 }
-
 
 /// Calendar-aligned time intervals for date histogram aggregation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -241,6 +241,10 @@ impl CalendarInterval {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::panic,
+    reason = "test assertions use panic! for non-matching enum arms"
+)]
 mod tests {
     use super::*;
 
@@ -280,13 +284,31 @@ mod tests {
 
     #[test]
     fn calendar_interval_parse() {
-        assert_eq!(CalendarInterval::parse("month"), Some(CalendarInterval::Month));
+        assert_eq!(
+            CalendarInterval::parse("month"),
+            Some(CalendarInterval::Month)
+        );
         assert_eq!(CalendarInterval::parse("M"), Some(CalendarInterval::Month));
-        assert_eq!(CalendarInterval::parse("yearly"), Some(CalendarInterval::Year));
-        assert_eq!(CalendarInterval::parse("hourly"), Some(CalendarInterval::Hour));
-        assert_eq!(CalendarInterval::parse("weekly"), Some(CalendarInterval::Week));
-        assert_eq!(CalendarInterval::parse("quarterly"), Some(CalendarInterval::Quarter));
-        assert_eq!(CalendarInterval::parse("daily"), Some(CalendarInterval::Day));
+        assert_eq!(
+            CalendarInterval::parse("yearly"),
+            Some(CalendarInterval::Year)
+        );
+        assert_eq!(
+            CalendarInterval::parse("hourly"),
+            Some(CalendarInterval::Hour)
+        );
+        assert_eq!(
+            CalendarInterval::parse("weekly"),
+            Some(CalendarInterval::Week)
+        );
+        assert_eq!(
+            CalendarInterval::parse("quarterly"),
+            Some(CalendarInterval::Quarter)
+        );
+        assert_eq!(
+            CalendarInterval::parse("daily"),
+            Some(CalendarInterval::Day)
+        );
         assert!(CalendarInterval::parse("millennium").is_none());
     }
 

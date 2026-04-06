@@ -5,9 +5,9 @@
 //! `feed()` is called for every matching record. After scanning,
 //! `finalize()` produces the data needed for the response.
 
+use super::spec::{AggregateKind, BucketMetric, ScalarMetric};
 use crate::compact::{CompactRecord, DriveCompactIndex};
 use crate::search::field::FieldId;
-use super::spec::{AggregateKind, BucketMetric, ScalarMetric};
 
 /// Running statistics for a single group or global scope.
 ///
@@ -32,7 +32,7 @@ pub struct StatsAccumulator {
 impl StatsAccumulator {
     /// Create a new empty stats accumulator.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             count: 0,
             sum: 0,
@@ -44,7 +44,7 @@ impl StatsAccumulator {
 
     /// Feed a value from a record.
     #[inline]
-    pub fn feed_value(&mut self, value: u64, allocated: u64) {
+    pub const fn feed_value(&mut self, value: u64, allocated: u64) {
         self.count += 1;
         self.sum += value;
         if value < self.min {
@@ -57,7 +57,7 @@ impl StatsAccumulator {
     }
 
     /// Merge another accumulator into this one.
-    pub fn merge(&mut self, other: &Self) {
+    pub const fn merge(&mut self, other: &Self) {
         self.count += other.count;
         self.sum += other.sum;
         if other.min < self.min {
@@ -81,7 +81,7 @@ impl StatsAccumulator {
 
     /// Compute waste bytes: `sum_allocated - sum`.
     #[must_use]
-    pub fn waste_bytes(&self) -> u64 {
+    pub const fn waste_bytes(&self) -> u64 {
         self.sum_allocated.saturating_sub(self.sum)
     }
 
@@ -141,8 +141,8 @@ pub enum AccumulatorKind {
     /// Group-by terms: maps key → stats.
     Terms {
         /// Per-group accumulators, keyed by a u64-encoded group key.
-        /// For extension_id: key = extension_id as u64.
-        /// For drive: key = drive_letter as u64.
+        /// For `extension_id`: key = `extension_id` as u64.
+        /// For drive: key = `drive_letter` as u64.
         /// For bool: key = 0 or 1.
         /// For type: key = category ordinal.
         groups: std::collections::HashMap<u64, StatsAccumulator>,
@@ -163,7 +163,7 @@ pub enum AccumulatorKind {
     /// Date histogram with calendar intervals.
     DateHistogram {
         /// Maps truncated-timestamp → stats.
-        buckets: std::collections::BTreeMap<i64, StatsAccumulator>,
+        buckets: alloc::collections::BTreeMap<i64, StatsAccumulator>,
         /// Calendar interval for truncation.
         calendar: super::spec::CalendarInterval,
         /// Requested metrics.
@@ -240,7 +240,7 @@ impl GroupAccumulator {
                 metrics,
             } => (
                 AccumulatorKind::DateHistogram {
-                    buckets: std::collections::BTreeMap::new(),
+                    buckets: alloc::collections::BTreeMap::new(),
                     calendar: *calendar,
                     metrics: metrics.clone(),
                 },
@@ -254,9 +254,7 @@ impl GroupAccumulator {
                 let bucket_count = boundaries.len() + 1;
                 (
                     AccumulatorKind::Histogram {
-                        buckets: (0..bucket_count)
-                            .map(|_| StatsAccumulator::new())
-                            .collect(),
+                        buckets: (0..bucket_count).map(|_| StatsAccumulator::new()).collect(),
                         boundaries: boundaries.clone(),
                         metrics: metrics.clone(),
                     },
@@ -322,9 +320,7 @@ impl GroupAccumulator {
             }
             AccumulatorKind::Terms { groups, .. } => {
                 let key = extract_group_key(field, record, drive);
-                let stats = groups
-                    .entry(key)
-                    .or_insert_with(StatsAccumulator::new);
+                let stats = groups.entry(key).or_insert_with(StatsAccumulator::new);
                 stats.feed_value(record.size, record.allocated);
             }
             AccumulatorKind::Histogram {
@@ -374,10 +370,7 @@ impl GroupAccumulator {
             (AccumulatorKind::Count { count: a }, AccumulatorKind::Count { count: b }) => {
                 *a += b;
             }
-            (
-                AccumulatorKind::Stats { stats: a, .. },
-                AccumulatorKind::Stats { stats: b, .. },
-            ) => {
+            (AccumulatorKind::Stats { stats: a, .. }, AccumulatorKind::Stats { stats: b, .. }) => {
                 a.merge(b);
             }
             (
@@ -429,7 +422,6 @@ impl GroupAccumulator {
             _ => {} // mismatched kinds — should not happen
         }
     }
-
 }
 
 /// Extract a numeric value from a record for stats/histogram.
@@ -452,7 +444,7 @@ fn extract_value(field: Option<FieldId>, record: &CompactRecord) -> u64 {
 
 /// Extract a timestamp from a record.
 #[inline]
-fn extract_timestamp(field: Option<FieldId>, record: &CompactRecord) -> i64 {
+const fn extract_timestamp(field: Option<FieldId>, record: &CompactRecord) -> i64 {
     match field {
         Some(FieldId::Created) => record.created,
         Some(FieldId::Modified) => record.modified,
@@ -463,40 +455,40 @@ fn extract_timestamp(field: Option<FieldId>, record: &CompactRecord) -> i64 {
 
 /// Extract a group key (encoded as u64) from a record.
 #[inline]
-fn extract_group_key(field: Option<FieldId>, record: &CompactRecord, drive: &DriveCompactIndex) -> u64 {
+fn extract_group_key(
+    field: Option<FieldId>,
+    record: &CompactRecord,
+    drive: &DriveCompactIndex,
+) -> u64 {
     match field {
         Some(FieldId::Extension) => u64::from(record.extension_id),
         Some(FieldId::Drive) => u64::from(drive.letter as u32),
-        Some(FieldId::DirectoryFlag) => {
-            if record.flags & 0x0010 != 0 { 1 } else { 0 }
-        }
-        Some(FieldId::Hidden) => if record.flags & 0x0002 != 0 { 1 } else { 0 },
-        Some(FieldId::System) => if record.flags & 0x0004 != 0 { 1 } else { 0 },
-        Some(FieldId::ReadOnly) => if record.flags & 0x0001 != 0 { 1 } else { 0 },
-        Some(FieldId::Compressed) => if record.flags & 0x0800 != 0 { 1 } else { 0 },
-        Some(FieldId::Encrypted) => if record.flags & 0x4000 != 0 { 1 } else { 0 },
-        Some(FieldId::Archive) => if record.flags & 0x0020 != 0 { 1 } else { 0 },
-        Some(FieldId::Sparse) => if record.flags & 0x0200 != 0 { 1 } else { 0 },
-        Some(FieldId::Reparse) => if record.flags & 0x0400 != 0 { 1 } else { 0 },
-        Some(FieldId::Temporary) => if record.flags & 0x0100 != 0 { 1 } else { 0 },
-        Some(FieldId::Offline) => if record.flags & 0x1000 != 0 { 1 } else { 0 },
-        Some(FieldId::NotIndexed) => if record.flags & 0x2000 != 0 { 1 } else { 0 },
-        Some(FieldId::Virtual) => if record.flags & 0x10000 != 0 { 1 } else { 0 },
-        Some(FieldId::Integrity) => if record.flags & 0x8000 != 0 { 1 } else { 0 },
-        Some(FieldId::NoScrub) => if record.flags & 0x20000 != 0 { 1 } else { 0 },
-        Some(FieldId::Pinned) => if record.flags & 0x80000 != 0 { 1 } else { 0 },
-        Some(FieldId::Unpinned) => if record.flags & 0x100000 != 0 { 1 } else { 0 },
-        Some(FieldId::RecallOnOpen) => if record.flags & 0x40000 != 0 { 1 } else { 0 },
-        Some(FieldId::RecallOnDataAccess) => {
-            if record.flags & 0x400000 != 0 { 1 } else { 0 }
-        }
+        Some(FieldId::DirectoryFlag) => u64::from(record.flags & 0x0010 != 0),
+        Some(FieldId::Hidden) => u64::from(record.flags & 0x0002 != 0),
+        Some(FieldId::System) => u64::from(record.flags & 0x0004 != 0),
+        Some(FieldId::ReadOnly) => u64::from(record.flags & 0x0001 != 0),
+        Some(FieldId::Compressed) => u64::from(record.flags & 0x0800 != 0),
+        Some(FieldId::Encrypted) => u64::from(record.flags & 0x4000 != 0),
+        Some(FieldId::Archive) => u64::from(record.flags & 0x0020 != 0),
+        Some(FieldId::Sparse) => u64::from(record.flags & 0x0200 != 0),
+        Some(FieldId::Reparse) => u64::from(record.flags & 0x0400 != 0),
+        Some(FieldId::Temporary) => u64::from(record.flags & 0x0100 != 0),
+        Some(FieldId::Offline) => u64::from(record.flags & 0x1000 != 0),
+        Some(FieldId::NotIndexed) => u64::from(record.flags & 0x2000 != 0),
+        Some(FieldId::Virtual) => u64::from(record.flags & 0x10000 != 0),
+        Some(FieldId::Integrity) => u64::from(record.flags & 0x8000 != 0),
+        Some(FieldId::NoScrub) => u64::from(record.flags & 0x20000 != 0),
+        Some(FieldId::Pinned) => u64::from(record.flags & 0x80000 != 0),
+        Some(FieldId::Unpinned) => u64::from(record.flags & 0x100000 != 0),
+        Some(FieldId::RecallOnOpen) => u64::from(record.flags & 0x40000 != 0),
+        Some(FieldId::RecallOnDataAccess) => u64::from(record.flags & 0x400000 != 0),
         _ => 0,
     }
 }
 
 /// Check if a field has a "missing" value for this record.
 #[inline]
-fn is_missing(field: Option<FieldId>, record: &CompactRecord) -> bool {
+const fn is_missing(field: Option<FieldId>, record: &CompactRecord) -> bool {
     match field {
         Some(FieldId::Extension) => record.extension_id == 0,
         Some(FieldId::Size) => record.size == 0,
@@ -509,7 +501,7 @@ fn is_missing(field: Option<FieldId>, record: &CompactRecord) -> bool {
 }
 
 /// Truncate a microsecond timestamp to a calendar interval boundary.
-fn truncate_timestamp(ts_us: i64, calendar: super::spec::CalendarInterval) -> i64 {
+const fn truncate_timestamp(ts_us: i64, calendar: super::spec::CalendarInterval) -> i64 {
     use super::spec::CalendarInterval;
     let secs = ts_us / 1_000_000;
     let truncated_secs = match calendar {
@@ -526,12 +518,8 @@ fn truncate_timestamp(ts_us: i64, calendar: super::spec::CalendarInterval) -> i6
             // use chrono in a later stage.
             (secs / 2_592_000) * 2_592_000
         }
-        CalendarInterval::Quarter => {
-            (secs / 7_776_000) * 7_776_000
-        }
-        CalendarInterval::Year => {
-            (secs / 31_536_000) * 31_536_000
-        }
+        CalendarInterval::Quarter => (secs / 7_776_000) * 7_776_000,
+        CalendarInterval::Year => (secs / 31_536_000) * 31_536_000,
     };
     truncated_secs * 1_000_000
 }

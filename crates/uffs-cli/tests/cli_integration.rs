@@ -143,11 +143,10 @@ mod tests {
     }
 
     #[test]
-    fn test_stats_requires_path_argument() {
-        assert_failure("stats_missing_path", &["stats"], &[
-            "required arguments were not provided",
-            "<PATH>",
-        ]);
+    fn test_stats_accepts_optional_path() {
+        // Path is now optional — `uffs stats` without a path connects
+        // to the daemon. Verify help text shows [PATH] as optional.
+        assert_success("stats_optional_path", &["stats", "--help"], &["[PATH]"]);
     }
 
     #[test]

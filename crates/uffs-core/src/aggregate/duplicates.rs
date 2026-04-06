@@ -4,13 +4,13 @@
 //! candidate duplicate groups. Optionally verifies via first-bytes
 //! comparison or full SHA-256 hash.
 
+use core::hash::{Hash, Hasher};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 
-use crate::compact::{CompactRecord, DriveCompactIndex};
-use crate::search::field::FieldId;
 use super::accumulators::StatsAccumulator;
 use super::spec::DuplicateVerify;
+use crate::compact::{CompactRecord, DriveCompactIndex};
+use crate::search::field::FieldId;
 
 /// Composite key for duplicate grouping.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -40,14 +40,13 @@ impl CompositeKey {
                 FieldId::Extension => components.push(u64::from(record.extension_id)),
                 FieldId::Modified => components.push(record.modified as u64),
                 FieldId::Created => components.push(record.created as u64),
-                FieldId::Name => {
+                FieldId::Name
                     // Hash the name for the composite key.
-                    if idx < drive.names.len() {
+                    if idx < drive.names.len() => {
                         let mut hasher = std::collections::hash_map::DefaultHasher::new();
                         drive.names[idx].hash(&mut hasher);
                         name_hash = hasher.finish();
                     }
-                }
                 _ => {}
             }
         }
@@ -143,7 +142,7 @@ impl DuplicateAccumulator {
     }
 
     /// Set the current drive ordinal (call before scanning each drive).
-    pub fn set_drive_ordinal(&mut self, ordinal: u8) {
+    pub const fn set_drive_ordinal(&mut self, ordinal: u8) {
         self.current_drive = ordinal;
     }
 

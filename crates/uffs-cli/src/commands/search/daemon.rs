@@ -314,6 +314,7 @@ fn build_daemon_spawn_args(config: &SearchConfig<'_>) -> Result<Vec<String>> {
 ///
 /// Maps every CLI flag to the corresponding `SearchParams` field so the
 /// daemon applies the same filters.
+#[allow(clippy::too_many_lines, reason = "1:1 mapping of CLI flags to params")]
 fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
     let filter = if config.files_only {
         Some("files".to_owned())
@@ -403,10 +404,10 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         aggregations: config
             .agg_specs
             .iter()
-            .map(|s| uffs_client::protocol::AggregateSpecWire {
-                kind: if s == "count" {
+            .map(|spec| uffs_client::protocol::AggregateSpecWire {
+                kind: if spec == "count" {
                     "count".to_owned()
-                } else if uffs_core::aggregate::presets::AggregatePreset::parse(s).is_some() {
+                } else if uffs_core::aggregate::presets::AggregatePreset::parse(spec).is_some() {
                     "preset".to_owned()
                 } else {
                     // Raw power syntax → just pass through as "raw" kind
@@ -419,14 +420,12 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
                 calendar: None,
                 boundaries: vec![],
                 metrics: vec![],
-                preset: if uffs_core::aggregate::presets::AggregatePreset::parse(s).is_some() {
-                    Some(s.clone())
-                } else {
-                    None
-                },
+                preset: uffs_core::aggregate::presets::AggregatePreset::parse(spec)
+                    .is_some()
+                    .then(|| spec.clone()),
             })
             .collect(),
-        include_rows: config.agg_specs.is_empty(),
+        include_rows: config.agg_specs.is_empty() || config.force_rows,
     };
     params.populate_canonical_fields();
     params

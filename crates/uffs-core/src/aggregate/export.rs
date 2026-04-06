@@ -4,7 +4,7 @@
 
 use std::io::Write;
 
-use super::finalize::{AggregateResponse, AggregateResult, AggregateResultData, BucketRow};
+use super::finalize::{AggregateResponse, AggregateResultData, BucketRow};
 
 /// Export format for aggregate results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,8 +74,13 @@ fn export_csv<W: Write>(
                 writeln!(
                     writer,
                     "{field}{sep_char}{}{sep_char}{}{sep_char}{}{sep_char}{}{sep_char}{:.2}{sep_char}{}{sep_char}{:.2}",
-                    stats.count, stats.sum, stats.min, stats.max, stats.avg,
-                    stats.waste_bytes, stats.waste_pct
+                    stats.count,
+                    stats.sum,
+                    stats.min,
+                    stats.max,
+                    stats.avg,
+                    stats.waste_bytes,
+                    stats.waste_pct
                 )?;
             }
 
@@ -137,20 +142,26 @@ fn write_bucket_csv<W: Write>(
         writeln!(
             writer,
             "{}{sep}{}{sep}{}{sep}{}{sep}{:.2}{sep}{}{sep}{:.2}{sep}{:.2}{sep}{:.2}",
-            row.key, row.count, row.total_bytes, row.total_allocated,
-            row.avg_size, row.waste_bytes, row.waste_pct,
-            row.share_of_total_count, row.share_of_total_bytes
+            row.key,
+            row.count,
+            row.total_bytes,
+            row.total_allocated,
+            row.avg_size,
+            row.waste_bytes,
+            row.waste_pct,
+            row.share_of_total_count,
+            row.share_of_total_bytes
         )?;
     }
     Ok(())
 }
 
 /// Write as JSON.
-fn export_json<W: Write>(
-    _response: &AggregateResponse,
-    writer: &mut W,
-) -> std::io::Result<()> {
+fn export_json<W: Write>(_response: &AggregateResponse, writer: &mut W) -> std::io::Result<()> {
     // JSON export is handled by serde at the protocol layer.
     // This is a lightweight fallback for non-daemon usage.
-    writeln!(writer, "{{\"note\": \"Use --format json on the CLI for full JSON output\"}}")
+    writeln!(
+        writer,
+        "{{\"note\": \"Use --format json on the CLI for full JSON output\"}}"
+    )
 }

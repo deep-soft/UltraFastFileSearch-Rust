@@ -132,6 +132,43 @@ pub struct Cli {
     #[arg(long = "agg", value_name = "SPEC")]
     pub agg: Vec<String>,
 
+    /// Show only the total matching count (no rows).
+    ///
+    /// Shorthand for `--agg count`. Suppresses row output.
+    #[arg(long)]
+    pub count: bool,
+
+    /// Show a facet breakdown by field (no rows).
+    ///
+    /// Accepts `FIELD` or `FIELD:TOP` (default top=20).
+    /// Shorthand for `--agg "terms:FIELD,top=TOP"`.
+    /// Examples: `--facet extension`  `--facet type:10`
+    #[arg(long, value_name = "FIELD[:TOP]")]
+    pub facet: Vec<String>,
+
+    /// Show scalar statistics for a numeric field (no rows).
+    ///
+    /// Shorthand for `--agg "stats:FIELD"`.
+    /// Examples: `--stats size`  `--stats allocated_size`
+    #[arg(long, value_name = "FIELD")]
+    pub stats: Vec<String>,
+
+    /// Show a histogram for a field (no rows).
+    ///
+    /// Accepts `FIELD` or `FIELD:INTERVAL`.
+    /// Shorthand for `--agg "hist:FIELD,interval=INTERVAL"`.
+    /// Examples: `--histogram size`  `--histogram size:1048576`
+    #[arg(long, value_name = "FIELD[:INTERVAL]")]
+    pub histogram: Vec<String>,
+
+    /// Include matching rows alongside aggregate results.
+    ///
+    /// By default, aggregate flags (`--count`, `--facet`, `--stats`,
+    /// `--histogram`, `--agg`) suppress row output. Use `--rows` to
+    /// get both rows and aggregates.
+    #[arg(long)]
+    pub rows: bool,
+
     /// Debug tree metrics computation (prints detailed hardlink handling info)
     #[arg(long, hide = true)]
     pub debug_tree: bool,
@@ -517,11 +554,14 @@ pub enum Commands {
     },
 
     /// Show statistics about files in an index
+    ///
+    /// Without a path, connects to the daemon and runs the `overview`
+    /// aggregate preset. With a path, loads a parquet index file.
     Stats {
-        /// Index file path
-        path: PathBuf,
+        /// Index file path (optional; omit to use daemon)
+        path: Option<PathBuf>,
 
-        /// Show top N largest files
+        /// Show top N largest files (parquet mode only)
         #[arg(long, default_value = "10")]
         top: u32,
     },
@@ -533,19 +573,19 @@ pub enum Commands {
     /// only aggregate results.
     ///
     /// Examples:
-    ///   uffs aggregate overview          # Full filesystem overview
-    ///   uffs aggregate by_extension      # Top 50 extensions
-    ///   uffs aggregate by_type           # Breakdown by file type
-    ///   uffs aggregate by_drive          # Per-drive totals
-    ///   uffs aggregate by_size           # Size distribution
-    ///   uffs aggregate by_age            # Age distribution
-    ///   uffs aggregate count             # Simple total count
+    ///   `uffs aggregate overview`          # Full filesystem overview
+    ///   `uffs aggregate by_extension`      # Top 50 extensions
+    ///   `uffs aggregate by_type`           # Breakdown by file type
+    ///   `uffs aggregate by_drive`          # Per-drive totals
+    ///   `uffs aggregate by_size`           # Size distribution
+    ///   `uffs aggregate by_age`            # Age distribution
+    ///   `uffs aggregate count`             # Simple total count
     #[command(alias = "agg")]
     Aggregate {
         /// Preset name or aggregation kind.
         ///
-        /// Available presets: overview, by_type, by_extension, by_drive,
-        /// by_size, by_age.
+        /// Available presets: `overview`, `by_type`, `by_extension`,
+        /// `by_drive`, `by_size`, `by_age`.
         ///
         /// Special kind: count (returns total matching count only).
         preset: String,

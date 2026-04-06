@@ -6,10 +6,9 @@
 
 use std::collections::HashMap;
 
-use crate::compact::{CompactRecord, DriveCompactIndex};
-
 use super::accumulators::StatsAccumulator;
 use super::spec::RollupMode;
+use crate::compact::{CompactRecord, DriveCompactIndex};
 
 /// A rollup accumulator — groups records by a key derived from
 /// path ancestry or drive letter.
@@ -39,15 +38,10 @@ impl RollupAccumulator {
     pub fn feed(&mut self, record: &CompactRecord, drive: &DriveCompactIndex, idx: usize) {
         let key = match self.mode {
             RollupMode::Drive => u32::from(drive.letter as u8),
-            RollupMode::Path { depth } => {
-                ancestor_at_depth(record, drive, idx, depth)
-            }
+            RollupMode::Path { depth } => ancestor_at_depth(record, drive, idx, depth),
         };
 
-        let stats = self
-            .groups
-            .entry(key)
-            .or_insert_with(StatsAccumulator::new);
+        let stats = self.groups.entry(key).or_default();
         stats.feed_value(record.size, record.allocated);
     }
 
@@ -122,6 +116,7 @@ fn ancestor_at_depth(
 ///
 /// For drive rollups, key is the drive letter ordinal.
 /// For path rollups, key is the record index → look up name.
+#[must_use]
 pub fn resolve_rollup_key(key: u32, mode: &RollupMode, drive: &DriveCompactIndex) -> String {
     match mode {
         RollupMode::Drive => {

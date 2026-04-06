@@ -37,12 +37,12 @@ pub const SIZE_BUCKET_COUNT: usize = 7;
 
 /// Size bucket boundary upper limits (exclusive).
 const SIZE_BOUNDARIES: [u64; 6] = [
-    1_024,              // < 1 KB
-    102_400,            // < 100 KB
-    1_048_576,          // < 1 MB
-    104_857_600,        // < 100 MB
-    1_073_741_824,      // < 1 GB
-    10_737_418_240,     // < 10 GB
+    1_024,          // < 1 KB
+    102_400,        // < 100 KB
+    1_048_576,      // < 1 MB
+    104_857_600,    // < 100 MB
+    1_073_741_824,  // < 1 GB
+    10_737_418_240, // < 10 GB
 ];
 
 impl SizeBucket {
@@ -120,16 +120,15 @@ pub enum AgeBucket {
 /// Number of age bucket variants.
 pub const AGE_BUCKET_COUNT: usize = 8;
 
-
 /// Age bucket boundary thresholds in microseconds (age from now).
 const AGE_BOUNDARIES_US: [i64; 7] = [
-    86_400_000_000,           // 1 day
-    604_800_000_000,          // 7 days
-    2_592_000_000_000,        // 30 days
-    7_776_000_000_000,        // 90 days
-    31_536_000_000_000,       // 365 days
-    94_608_000_000_000,       // 3 years
-    315_360_000_000_000,      // 10 years
+    86_400_000_000,      // 1 day
+    604_800_000_000,     // 7 days
+    2_592_000_000_000,   // 30 days
+    7_776_000_000_000,   // 90 days
+    31_536_000_000_000,  // 365 days
+    94_608_000_000_000,  // 3 years
+    315_360_000_000_000, // 10 years
 ];
 
 impl AgeBucket {
@@ -196,9 +195,9 @@ pub enum PathRiskBucket {
     Safe = 0,
     /// 128 – 199 chars. Getting long.
     Long = 1,
-    /// 200 – 259 chars. Approaching MAX_PATH.
+    /// 200 – 259 chars. Approaching `MAX_PATH`.
     Warning = 2,
-    /// ≥ 260 chars. At or beyond MAX_PATH.
+    /// ≥ 260 chars. At or beyond `MAX_PATH`.
     Critical = 3,
 }
 
@@ -233,12 +232,8 @@ impl PathRiskBucket {
     }
 
     /// All bucket variants in order.
-    pub const ALL: [Self; PATH_RISK_BUCKET_COUNT] = [
-        Self::Safe,
-        Self::Long,
-        Self::Warning,
-        Self::Critical,
-    ];
+    pub const ALL: [Self; PATH_RISK_BUCKET_COUNT] =
+        [Self::Safe, Self::Long, Self::Warning, Self::Critical];
 }
 
 #[cfg(test)]

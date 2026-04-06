@@ -5,7 +5,7 @@
 //! preset is requested multiple times before the index changes.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::finalize::AggregateResponse;
@@ -50,18 +50,24 @@ impl AggregateCache {
     /// Create a cache with the default 60-second TTL.
     #[must_use]
     pub fn default_ttl() -> Self {
-        Self::new(Duration::from_secs(60))
+        Self::new(Duration::from_mins(1))
     }
 
     /// Set the current drive index version.
     ///
     /// When this changes, all existing cache entries are invalidated.
     pub fn set_index_version(&self, version: u64) {
-        let mut current = self.index_version.lock().unwrap_or_else(|e| e.into_inner());
+        let mut current = self
+            .index_version
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if *current != version {
             *current = version;
             // Invalidate all entries.
-            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             entries.clear();
         }
     }
@@ -72,7 +78,10 @@ impl AggregateCache {
     /// to a different index version.
     #[must_use]
     pub fn get(&self, spec_hash: u64) -> Option<AggregateResponse> {
-        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = entries.get(&spec_hash)?;
 
         // Check TTL.
@@ -81,7 +90,10 @@ impl AggregateCache {
         }
 
         // Check index version.
-        let current_version = *self.index_version.lock().unwrap_or_else(|e| e.into_inner());
+        let current_version = *self
+            .index_version
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if entry.index_version != current_version {
             return None;
         }
@@ -91,13 +103,19 @@ impl AggregateCache {
 
     /// Insert a result into the cache.
     pub fn put(&self, spec_hash: u64, response: AggregateResponse) {
-        let current_version = *self.index_version.lock().unwrap_or_else(|e| e.into_inner());
+        let current_version = *self
+            .index_version
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = CacheEntry {
             response,
             created: Instant::now(),
             index_version: current_version,
         };
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Evict expired entries first.
         entries.retain(|_, e| e.created.elapsed() <= self.ttl);
@@ -107,14 +125,20 @@ impl AggregateCache {
 
     /// Clear all cached entries.
     pub fn clear(&self) {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.clear();
     }
 
     /// Number of entries currently in cache.
     #[must_use]
     pub fn len(&self) -> usize {
-        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.len()
     }
 
@@ -130,13 +154,14 @@ impl AggregateCache {
 /// This is a simple hash function for cache keying — not cryptographic.
 #[must_use]
 pub fn hash_specs(specs_key: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
+    use core::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     specs_key.hash(&mut hasher);
     hasher.finish()
 }
 
 #[cfg(test)]
+#[allow(clippy::min_ident_chars, reason = "test code")]
 mod tests {
     use super::*;
 
@@ -146,7 +171,7 @@ mod tests {
         let response = AggregateResponse { results: vec![] };
         let hash = hash_specs("test_key");
 
-        cache.put(hash, response.clone());
+        cache.put(hash, response);
         let cached = cache.get(hash);
         assert!(cached.is_some());
     }

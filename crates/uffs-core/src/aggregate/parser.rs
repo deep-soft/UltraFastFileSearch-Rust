@@ -13,8 +13,11 @@
 //! - `missing:extension`
 //! - `distinct:extension`
 
+use super::spec::{
+    AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, DuplicateVerify, RollupMode,
+    ScalarMetric,
+};
 use crate::search::field::FieldId;
-use super::spec::*;
 
 /// Parse a single `--agg` specification string into an `AggregateSpec`.
 ///
@@ -78,7 +81,7 @@ fn split_field_and_options(s: &str) -> (&str, &str) {
     }
 }
 
-/// Parse a field name to FieldId.
+/// Parse a field name to `FieldId`.
 fn parse_field(name: &str) -> Result<FieldId, String> {
     FieldId::parse(name).ok_or_else(|| format!("Unknown field: `{name}`"))
 }
@@ -173,7 +176,7 @@ fn parse_histogram(rest: &str) -> Result<AggregateSpec, String> {
     }))
 }
 
-/// Parse "field,calendar=INTERVAL" → DateHistogram spec.
+/// Parse "field,calendar=INTERVAL" → `DateHistogram` spec.
 fn parse_date_histogram(rest: &str) -> Result<AggregateSpec, String> {
     let (field_str, opts_str) = split_field_and_options(rest);
     let field = parse_field(field_str)?;
@@ -219,9 +222,9 @@ fn parse_range(rest: &str) -> Result<AggregateSpec, String> {
                     // Each bin can be "A..B" or just "A". Extract the boundary values.
                     for part in boundary_str.split("..") {
                         if !part.is_empty() {
-                            let val: u64 = part.parse().map_err(|_| {
-                                format!("Invalid range boundary: `{part}`")
-                            })?;
+                            let val: u64 = part
+                                .parse()
+                                .map_err(|_| format!("Invalid range boundary: `{part}`"))?;
                             if !boundaries.contains(&val) {
                                 boundaries.push(val);
                             }
@@ -273,7 +276,11 @@ fn parse_rollup(rest: &str) -> Result<AggregateSpec, String> {
     let mode = match mode_str {
         "drive" => RollupMode::Drive,
         "path" | "folder" | "dir" => RollupMode::Path { depth },
-        _ => return Err(format!("Unknown rollup mode: `{mode_str}`. Use 'path' or 'drive'.")),
+        _ => {
+            return Err(format!(
+                "Unknown rollup mode: `{mode_str}`. Use 'path' or 'drive'."
+            ));
+        }
     };
 
     Ok(AggregateSpec::new(AggregateKind::Rollup {
@@ -314,7 +321,9 @@ fn parse_duplicates(rest: &str) -> Result<AggregateSpec, String> {
             "top" => top = v.parse().map_err(|_| format!("Invalid top: `{v}`"))?,
             "sample" => sample = v.parse().map_err(|_| format!("Invalid sample: `{v}`"))?,
             "max_groups" => {
-                max_groups = v.parse().map_err(|_| format!("Invalid max_groups: `{v}`"))?;
+                max_groups = v
+                    .parse()
+                    .map_err(|_| format!("Invalid max_groups: `{v}`"))?;
             }
             _ => {}
         }
@@ -340,7 +349,10 @@ fn parse_preset(rest: &str) -> Result<AggregateSpec, String> {
     }
     // Return a Count as placeholder — the caller should expand the preset.
     // For now, we signal via label that this is a preset.
-    Ok(AggregateSpec::with_label(AggregateKind::Count, format!("__preset__{name}")))
+    Ok(AggregateSpec::with_label(
+        AggregateKind::Count,
+        format!("__preset__{name}"),
+    ))
 }
 
 /// Parse "field" → Missing spec.
@@ -399,13 +411,12 @@ pub fn parse_and_expand_agg_specs(inputs: &[&str]) -> Result<Vec<AggregateSpec>,
         let spec = parse_agg_spec(input)?;
 
         // Check if this is a preset placeholder.
-        if let Some(label) = &spec.label {
-            if let Some(name) = label.strip_prefix("__preset__") {
-                if let Some(preset) = super::presets::AggregatePreset::parse(name) {
-                    result.extend(preset.expand());
-                    continue;
-                }
-            }
+        if let Some(label) = &spec.label
+            && let Some(name) = label.strip_prefix("__preset__")
+            && let Some(preset) = super::presets::AggregatePreset::parse(name)
+        {
+            result.extend(preset.expand());
+            continue;
         }
 
         result.push(spec);
@@ -415,6 +426,10 @@ pub fn parse_and_expand_agg_specs(inputs: &[&str]) -> Result<Vec<AggregateSpec>,
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::panic,
+    reason = "test assertions use panic! for non-matching enum arms"
+)]
 mod tests {
     use super::*;
 
@@ -531,7 +546,10 @@ mod tests {
     #[test]
     fn parse_histogram() {
         let spec = parse_agg_spec("hist:size,interval=1024").unwrap();
-        if let AggregateKind::Histogram { field, interval, .. } = &spec.kind {
+        if let AggregateKind::Histogram {
+            field, interval, ..
+        } = &spec.kind
+        {
             assert_eq!(*field, FieldId::Size);
             assert_eq!(*interval, 1024);
         } else {

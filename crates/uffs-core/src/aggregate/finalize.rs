@@ -6,7 +6,6 @@
 
 use super::accumulators::{AccumulatorKind, GroupAccumulator, StatsAccumulator};
 use super::planner::AggregatePlan;
-
 use crate::compact::DriveCompactIndex;
 
 /// Options controlling finalization behavior.
@@ -58,7 +57,7 @@ pub enum AggregateResultData {
         /// Computed statistics.
         stats: StatsResult,
     },
-    /// Grouped bucket results (terms, histogram, date_histogram, range).
+    /// Grouped bucket results (terms, histogram, `date_histogram`, range).
     Buckets {
         /// Field name.
         field: String,
@@ -145,7 +144,6 @@ pub struct BucketRow {
     pub share_of_total_bytes: f64,
 }
 
-
 impl BucketRow {
     /// Create a bucket row from a stats accumulator and context.
     fn from_stats(
@@ -201,10 +199,10 @@ pub(crate) fn finalize(
 /// Compute total bytes across all accumulators (for share-of-total).
 fn compute_global_bytes(accumulators: &[GroupAccumulator]) -> u64 {
     for acc in accumulators {
-        if let AccumulatorKind::Stats { stats, .. } = &acc.kind {
-            if acc.field == Some(crate::search::field::FieldId::Size) {
-                return stats.sum;
-            }
+        if let AccumulatorKind::Stats { stats, .. } = &acc.kind
+            && acc.field == Some(crate::search::field::FieldId::Size)
+        {
+            return stats.sum;
         }
     }
     0
@@ -221,7 +219,7 @@ fn finalize_one(
     let label = acc.label.clone();
     let field_name = acc
         .field
-        .map(|f| f.metadata().canonical_name.to_string())
+        .map(|f| f.metadata().canonical_name.to_owned())
         .unwrap_or_default();
 
     let data = match acc.kind {
@@ -325,7 +323,7 @@ fn finalize_one(
 
         AccumulatorKind::Rollup { inner, .. } => {
             let mode_str = match inner.mode {
-                super::spec::RollupMode::Drive => "drive".to_string(),
+                super::spec::RollupMode::Drive => "drive".to_owned(),
                 super::spec::RollupMode::Path { depth } => format!("path(depth={depth})"),
             };
             let entries = inner.finalize();
@@ -382,16 +380,16 @@ fn resolve_group_key(
         }
         Some(FieldId::DirectoryFlag) => {
             if key == 1 {
-                "directory".to_string()
+                "directory".to_owned()
             } else {
-                "file".to_string()
+                "file".to_owned()
             }
         }
         Some(f) if f.metadata().field_type == crate::search::field::FieldType::Bool => {
             if key == 1 {
-                "true".to_string()
+                "true".to_owned()
             } else {
-                "false".to_string()
+                "false".to_owned()
             }
         }
         _ => format!("{key}"),
@@ -432,7 +430,16 @@ fn format_timestamp_key(ts_us: i64) -> String {
     let month_days: [i64; 12] = [
         31,
         if leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut m = 1_u32;
     for &md in &month_days {

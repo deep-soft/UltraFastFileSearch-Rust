@@ -42,7 +42,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.4.95"
+version = "0.4.96"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
@@ -373,7 +373,7 @@ ref_patterns = "warn"                   # Avoid ref patterns
 rest_pat_in_fully_bound_structs = "warn" # Avoid .. in fully bound structs
 semicolon_inside_block = "warn"         # Consistent semicolon placement
 semicolon_outside_block = "warn"        # Consistent semicolon placement
-single_call_fn = "warn"                 # Inline single-call functions
+single_call_fn = "allow"                # Intentional: helper functions improve readability even if called once
 unnecessary_self_imports = "warn"       # Remove unnecessary self imports
 unnecessary_struct_initialization = "warn" # Simplify struct initialization
 unneeded_field_pattern = "warn"         # Remove unneeded field patterns

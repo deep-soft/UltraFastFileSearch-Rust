@@ -4,9 +4,7 @@
 //! Each preset expands into a `Vec<AggregateSpec>` that can be passed
 //! directly to the aggregation engine.
 
-use super::spec::{
-    AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, ScalarMetric,
-};
+use super::spec::{AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, ScalarMetric};
 use crate::search::field::FieldId;
 
 /// Named aggregate presets.
@@ -100,7 +98,8 @@ impl AggregatePreset {
     ];
 }
 
-/// Overview: count + files-vs-dirs + size stats + type facet + drive facet + monthly histogram.
+/// Overview: count + files-vs-dirs + size stats + type facet + drive facet +
+/// monthly histogram.
 fn expand_overview() -> Vec<AggregateSpec> {
     let default_metrics = vec![
         BucketMetric::Count,
@@ -144,7 +143,7 @@ fn expand_overview() -> Vec<AggregateSpec> {
             AggregateKind::Terms {
                 field: FieldId::Drive,
                 top: 26,
-                metrics: default_metrics.clone(),
+                metrics: default_metrics,
             },
             "by_drive",
         ),
@@ -459,6 +458,10 @@ fn expand_cleanup() -> Vec<AggregateSpec> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::panic,
+    reason = "test assertions use panic! for non-matching enum arms"
+)]
 mod tests {
     use super::*;
 

@@ -284,7 +284,7 @@ async fn run() -> Result<()> {
             commands::info(&path)?;
         }
         Some(Commands::Stats { path, top }) => {
-            commands::stats(&path, top)?;
+            commands::stats(path.as_deref(), top).await?;
         }
         Some(Commands::Aggregate { preset, format }) => {
             commands::aggregate(&preset, &format).await?;
@@ -365,6 +365,7 @@ fn validate_name_only(cli: &Cli, pattern: &str) -> Result<()> {
 }
 
 /// Expand filter aliases and dispatch to the actual search command.
+#[allow(clippy::too_many_lines, reason = "CLI dispatch maps many flags")]
 async fn dispatch_search(
     cli: Cli,
     pattern: &str,
@@ -470,7 +471,31 @@ async fn dispatch_search(
         &cli.pos,
         &cli.neg,
         cli.tz_offset,
-        cli.agg,
+        {
+            let mut agg = cli.agg;
+            if cli.count && !agg.iter().any(|item| item == "count") {
+                agg.push("count".to_owned());
+            }
+            for facet in &cli.facet {
+                if let Some((field, top)) = facet.split_once(':') {
+                    agg.push(format!("terms:{field},top={top}"));
+                } else {
+                    agg.push(format!("terms:{facet},top=20"));
+                }
+            }
+            for stat in &cli.stats {
+                agg.push(format!("stats:{stat}"));
+            }
+            for hist in &cli.histogram {
+                if let Some((field, interval)) = hist.split_once(':') {
+                    agg.push(format!("hist:{field},interval={interval}"));
+                } else {
+                    agg.push(format!("hist:{hist}"));
+                }
+            }
+            agg
+        },
+        cli.rows,
     )
     .await
 }

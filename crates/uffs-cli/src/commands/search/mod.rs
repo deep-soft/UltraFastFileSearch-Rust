@@ -124,6 +124,8 @@ struct SearchConfig<'a> {
     start_time: std::time::Instant,
     /// Aggregate specs (from --agg flag).
     agg_specs: Vec<String>,
+    /// Force row output even when aggregates are present (--rows flag).
+    force_rows: bool,
 }
 
 /// Search for files matching a pattern.
@@ -206,6 +208,7 @@ pub async fn search(
     neg: &str,
     tz_offset: Option<i32>,
     agg_specs: Vec<String>,
+    force_rows: bool,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
     debug!("[TIMING] search() entered at 0ms");
@@ -268,6 +271,7 @@ pub async fn search(
         neg,
         tz_offset,
         agg_specs,
+        force_rows,
         start_time,
     )?;
 

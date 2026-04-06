@@ -3,9 +3,9 @@
 //! The [`AggregatePlan`] compiles a set of [`AggregateSpec`]s into an
 //! execution plan that the engine uses to create and manage accumulators.
 
+use super::AggregateError;
 use super::accumulators::GroupAccumulator;
 use super::spec::{AggregateKind, AggregateSpec};
-use super::AggregateError;
 
 /// A compiled aggregate execution plan.
 ///
@@ -49,13 +49,13 @@ impl AggregatePlan {
 
     /// Number of specs in this plan.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.specs.len()
     }
 
     /// Whether this plan has no specs.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.specs.is_empty()
     }
 
@@ -68,8 +68,8 @@ impl AggregatePlan {
                 let meta = field.metadata();
                 if !meta.aggregate.aggregatable {
                     return Err(AggregateError::UnsupportedField {
-                        field: meta.canonical_name.to_string(),
-                        operation: "stats (sum/min/max/avg)".to_string(),
+                        field: meta.canonical_name.to_owned(),
+                        operation: "stats (sum/min/max/avg)".to_owned(),
                     });
                 }
                 Ok(())
@@ -79,20 +79,19 @@ impl AggregatePlan {
                 let meta = field.metadata();
                 if !meta.aggregate.groupable {
                     return Err(AggregateError::UnsupportedField {
-                        field: meta.canonical_name.to_string(),
-                        operation: "terms (group-by)".to_string(),
+                        field: meta.canonical_name.to_owned(),
+                        operation: "terms (group-by)".to_owned(),
                     });
                 }
                 Ok(())
             }
 
-            AggregateKind::Histogram { field, .. }
-            | AggregateKind::Range { field, .. } => {
+            AggregateKind::Histogram { field, .. } | AggregateKind::Range { field, .. } => {
                 let meta = field.metadata();
                 if !meta.aggregate.bucket_support {
                     return Err(AggregateError::UnsupportedField {
-                        field: meta.canonical_name.to_string(),
-                        operation: "histogram/range (bucket)".to_string(),
+                        field: meta.canonical_name.to_owned(),
+                        operation: "histogram/range (bucket)".to_owned(),
                     });
                 }
                 Ok(())
@@ -102,8 +101,8 @@ impl AggregatePlan {
                 let meta = field.metadata();
                 if !meta.aggregate.bucket_support {
                     return Err(AggregateError::UnsupportedField {
-                        field: meta.canonical_name.to_string(),
-                        operation: "date_histogram".to_string(),
+                        field: meta.canonical_name.to_owned(),
+                        operation: "date_histogram".to_owned(),
                     });
                 }
                 Ok(())
@@ -115,8 +114,8 @@ impl AggregatePlan {
                 let meta = field.metadata();
                 if !meta.aggregate.groupable {
                     return Err(AggregateError::UnsupportedField {
-                        field: meta.canonical_name.to_string(),
-                        operation: "distinct count".to_string(),
+                        field: meta.canonical_name.to_owned(),
+                        operation: "distinct count".to_owned(),
                     });
                 }
                 Ok(())

@@ -19,7 +19,7 @@ pub struct AggregateCursor {
 impl AggregateCursor {
     /// Create a new cursor starting at the beginning.
     #[must_use]
-    pub fn new(result_index: usize, page_size: usize) -> Self {
+    pub const fn new(result_index: usize, page_size: usize) -> Self {
         Self {
             result_index,
             offset: 0,
@@ -29,7 +29,7 @@ impl AggregateCursor {
 
     /// Advance the cursor by one page. Returns `None` if at end.
     #[must_use]
-    pub fn next(&self) -> Self {
+    pub const fn next(&self) -> Self {
         Self {
             result_index: self.result_index,
             offset: self.offset + self.page_size,
@@ -97,11 +97,7 @@ pub fn paginate_result(
     let page_rows = rows[start..end].to_vec();
     let has_more = end < total;
 
-    let next_cursor = if has_more {
-        Some(cursor.next().encode())
-    } else {
-        None
-    };
+    let next_cursor = has_more.then(|| cursor.next().encode());
 
     Some(PaginatedBuckets {
         rows: page_rows,

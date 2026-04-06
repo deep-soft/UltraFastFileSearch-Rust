@@ -1,13 +1,25 @@
+// CLI aggregate formatter: tabular output with terse loop vars, println for
+// user-facing output, and controlled precision casts for display.
+#![allow(
+    clippy::min_ident_chars,
+    clippy::print_stdout,
+    clippy::redundant_pub_crate,
+    clippy::default_numeric_fallback,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    reason = "CLI display code: terse loop vars, stdout output, display casts"
+)]
+
 //! Aggregate command implementation.
 //!
 //! Runs aggregate analytics via the daemon and prints results.
 
 use std::io::Write;
 
-use anyhow::{Context, Result, bail};
-use uffs_client::protocol::{
-    AggregateResultWire, AggregateSpecWire, SearchParams,
-};
+use anyhow::{Result, bail};
+use uffs_client::protocol::{AggregateResultWire, AggregateSpecWire, SearchParams};
 
 use super::{format_number, format_size};
 
@@ -91,14 +103,11 @@ pub async fn aggregate(preset: &str, format: &str) -> Result<()> {
 }
 
 /// Print aggregate results in a human-readable table format.
-fn print_table_results(results: &[AggregateResultWire]) -> Result<()> {
+pub(crate) fn print_table_results(results: &[AggregateResultWire]) -> Result<()> {
     let mut stdout = std::io::stdout().lock();
 
     for result in results {
-        let label = result
-            .label
-            .as_deref()
-            .unwrap_or(&result.kind);
+        let label = result.label.as_deref().unwrap_or(&result.kind);
 
         writeln!(stdout, "\n=== {label} ===")?;
 
@@ -116,7 +125,12 @@ fn print_table_results(results: &[AggregateResultWire]) -> Result<()> {
                     writeln!(stdout, "  Max:    {}", format_size(stats.max))?;
                     writeln!(stdout, "  Avg:    {}", format_size(stats.avg as u64))?;
                     if stats.waste_bytes > 0 {
-                        writeln!(stdout, "  Waste:  {} ({:.1}%)", format_size(stats.waste_bytes), stats.waste_pct)?;
+                        writeln!(
+                            stdout,
+                            "  Waste:  {} ({:.1}%)",
+                            format_size(stats.waste_bytes),
+                            stats.waste_pct
+                        )?;
                     }
                 }
             }
@@ -125,25 +139,40 @@ fn print_table_results(results: &[AggregateResultWire]) -> Result<()> {
                     writeln!(stdout, "  (no data)")?;
                 } else {
                     // Table header.
-                    writeln!(stdout, "  {:<30} {:>12} {:>14} {:>8} {:>8}",
-                        "Key", "Count", "Total Size", "Count%", "Size%")?;
-                    writeln!(stdout, "  {:-<30} {:-<12} {:-<14} {:-<8} {:-<8}",
-                        "", "", "", "", "")?;
+                    writeln!(
+                        stdout,
+                        "  {:<30} {:>12} {:>14} {:>8} {:>8}",
+                        "Key", "Count", "Total Size", "Count%", "Size%"
+                    )?;
+                    writeln!(
+                        stdout,
+                        "  {:-<30} {:-<12} {:-<14} {:-<8} {:-<8}",
+                        "", "", "", "", ""
+                    )?;
                     for row in &result.buckets {
                         let share_c = row.share_count.unwrap_or(0.0);
                         let share_b = row.share_bytes.unwrap_or(0.0);
-                        writeln!(stdout, "  {:<30} {:>12} {:>14} {:>7.1}% {:>7.1}%",
+                        writeln!(
+                            stdout,
+                            "  {:<30} {:>12} {:>14} {:>7.1}% {:>7.1}%",
                             row.key,
                             format_number(row.count),
                             format_size(row.total_bytes),
                             share_c,
-                            share_b)?;
+                            share_b
+                        )?;
                     }
                     if let Some(other) = result.other_count {
                         if other > 0 {
-                            writeln!(stdout, "  ... and {} more groups ({} records)",
-                                result.total_groups.unwrap_or(0).saturating_sub(result.buckets.len()),
-                                format_number(other))?;
+                            writeln!(
+                                stdout,
+                                "  ... and {} more groups ({} records)",
+                                result
+                                    .total_groups
+                                    .unwrap_or(0)
+                                    .saturating_sub(result.buckets.len()),
+                                format_number(other)
+                            )?;
                         }
                     }
                 }
@@ -162,7 +191,6 @@ fn print_table_results(results: &[AggregateResultWire]) -> Result<()> {
     writeln!(stdout)?;
     Ok(())
 }
-
 
 /// Print aggregate results in CSV/TSV format.
 fn print_csv_results(results: &[AggregateResultWire], tsv: bool) -> Result<()> {
@@ -183,12 +211,20 @@ fn print_csv_results(results: &[AggregateResultWire], tsv: bool) -> Result<()> {
             "stats" => {
                 if let Some(stats) = &result.stats {
                     writeln!(stdout, "# {label}")?;
-                    writeln!(stdout, "count{sep}sum{sep}min{sep}max{sep}avg{sep}waste_bytes{sep}waste_pct")?;
+                    writeln!(
+                        stdout,
+                        "count{sep}sum{sep}min{sep}max{sep}avg{sep}waste_bytes{sep}waste_pct"
+                    )?;
                     writeln!(
                         stdout,
                         "{}{sep}{}{sep}{}{sep}{}{sep}{:.2}{sep}{}{sep}{:.2}",
-                        stats.count, stats.sum, stats.min, stats.max, stats.avg,
-                        stats.waste_bytes, stats.waste_pct
+                        stats.count,
+                        stats.sum,
+                        stats.min,
+                        stats.max,
+                        stats.avg,
+                        stats.waste_bytes,
+                        stats.waste_pct
                     )?;
                 }
             }
