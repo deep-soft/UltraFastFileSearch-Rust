@@ -124,6 +124,14 @@ pub struct Cli {
     #[arg(long)]
     pub profile: bool,
 
+    /// Run aggregate analytics alongside search results.
+    ///
+    /// Pass one or more aggregate specs using power syntax.
+    /// Examples: --agg count  --agg "terms:extension,top=50"
+    ///           --agg "stats:size"  --agg "preset:overview"
+    #[arg(long = "agg", value_name = "SPEC")]
+    pub agg: Vec<String>,
+
     /// Debug tree metrics computation (prints detailed hardlink handling info)
     #[arg(long, hide = true)]
     pub debug_tree: bool,

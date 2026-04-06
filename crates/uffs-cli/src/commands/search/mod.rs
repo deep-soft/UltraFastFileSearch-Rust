@@ -122,6 +122,8 @@ struct SearchConfig<'a> {
     output_targets: Vec<char>,
     /// Start time for profiling.
     start_time: std::time::Instant,
+    /// Aggregate specs (from --agg flag).
+    agg_specs: Vec<String>,
 }
 
 /// Search for files matching a pattern.
@@ -203,6 +205,7 @@ pub async fn search(
     pos: &str,
     neg: &str,
     tz_offset: Option<i32>,
+    agg_specs: Vec<String>,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
     debug!("[TIMING] search() entered at 0ms");
@@ -264,6 +267,7 @@ pub async fn search(
         pos,
         neg,
         tz_offset,
+        agg_specs,
         start_time,
     )?;
 

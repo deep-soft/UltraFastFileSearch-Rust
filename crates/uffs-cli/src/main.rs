@@ -470,6 +470,7 @@ async fn dispatch_search(
         &cli.pos,
         &cli.neg,
         cli.tz_offset,
+        cli.agg,
     )
     .await
 }

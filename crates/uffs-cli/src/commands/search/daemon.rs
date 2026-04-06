@@ -400,8 +400,33 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         hide_ads: config.hide_ads,
         profile: config.profile || config.benchmark,
         predicates: Vec::new(),
-        aggregations: Vec::new(),
-        include_rows: true,
+        aggregations: config
+            .agg_specs
+            .iter()
+            .map(|s| uffs_client::protocol::AggregateSpecWire {
+                kind: if s == "count" {
+                    "count".to_owned()
+                } else if uffs_core::aggregate::presets::AggregatePreset::parse(s).is_some() {
+                    "preset".to_owned()
+                } else {
+                    // Raw power syntax → just pass through as "raw" kind
+                    "raw".to_owned()
+                },
+                label: None,
+                field: None,
+                top: None,
+                interval: None,
+                calendar: None,
+                boundaries: vec![],
+                metrics: vec![],
+                preset: if uffs_core::aggregate::presets::AggregatePreset::parse(s).is_some() {
+                    Some(s.clone())
+                } else {
+                    None
+                },
+            })
+            .collect(),
+        include_rows: config.agg_specs.is_empty(),
     };
     params.populate_canonical_fields();
     params

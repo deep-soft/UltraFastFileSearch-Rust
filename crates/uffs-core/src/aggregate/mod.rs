@@ -19,6 +19,7 @@
 
 pub mod accumulators;
 pub mod buckets;
+pub mod cache;
 pub mod duplicates;
 pub mod export;
 pub mod finalize;
@@ -32,6 +33,7 @@ pub mod spec;
 // Re-export core public types.
 pub use accumulators::GroupAccumulator;
 pub use buckets::{AgeBucket, SizeBucket};
+pub use cache::AggregateCache;
 pub use duplicates::{DuplicateAccumulator, DuplicateResult};
 pub use export::{ExportFormat, export_results};
 pub use finalize::{AggregateResponse, BucketRow, FinalizeOptions};
