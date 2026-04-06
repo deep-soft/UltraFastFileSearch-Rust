@@ -121,6 +121,10 @@ impl AggregatePlan {
                 }
                 Ok(())
             }
+
+            AggregateKind::Rollup { .. } => Ok(()),
+
+            AggregateKind::Duplicates { .. } => Ok(()),
         }
     }
 }

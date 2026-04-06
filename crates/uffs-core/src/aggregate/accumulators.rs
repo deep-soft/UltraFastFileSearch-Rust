@@ -179,6 +179,18 @@ pub enum AccumulatorKind {
         /// Set of seen values (as u64-encoded keys).
         seen: std::collections::HashSet<u64>,
     },
+    /// Path/drive rollup accumulator.
+    Rollup {
+        /// Inner rollup accumulator.
+        inner: super::rollup::RollupAccumulator,
+        /// Requested metrics.
+        metrics: Vec<BucketMetric>,
+    },
+    /// Duplicate detection accumulator.
+    Duplicates {
+        /// Inner duplicate accumulator.
+        inner: super::duplicates::DuplicateAccumulator,
+    },
 }
 
 impl GroupAccumulator {
@@ -260,6 +272,30 @@ impl GroupAccumulator {
                 },
                 Some(*field),
             ),
+            AggregateKind::Rollup { mode, top, metrics } => (
+                AccumulatorKind::Rollup {
+                    inner: super::rollup::RollupAccumulator::new(*mode, *top),
+                    metrics: metrics.clone(),
+                },
+                None,
+            ),
+            AggregateKind::Duplicates {
+                keys,
+                verify,
+                top: _,
+                sample,
+                max_groups,
+            } => (
+                AccumulatorKind::Duplicates {
+                    inner: super::duplicates::DuplicateAccumulator::new(
+                        keys.clone(),
+                        *verify,
+                        *max_groups,
+                        *sample,
+                    ),
+                },
+                None,
+            ),
         };
 
         Self {
@@ -323,6 +359,12 @@ impl GroupAccumulator {
                 let key = extract_group_key(field, record, drive);
                 seen.insert(key);
             }
+            AccumulatorKind::Rollup { inner, .. } => {
+                inner.feed(record, drive, _idx);
+            }
+            AccumulatorKind::Duplicates { inner } => {
+                inner.feed(record, drive, _idx);
+            }
         }
     }
 
@@ -377,6 +419,13 @@ impl GroupAccumulator {
                     a.insert(*key);
                 }
             }
+            (
+                AccumulatorKind::Rollup { inner: a, .. },
+                AccumulatorKind::Rollup { inner: b, .. },
+            ) => {
+                a.merge(b);
+            }
+            // Duplicates don't merge across drives — they run per-drive then finalize.
             _ => {} // mismatched kinds — should not happen
         }
     }

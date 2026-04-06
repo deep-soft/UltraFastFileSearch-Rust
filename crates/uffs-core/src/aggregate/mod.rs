@@ -19,18 +19,26 @@
 
 pub mod accumulators;
 pub mod buckets;
+pub mod duplicates;
 pub mod finalize;
+pub mod parser;
 pub mod planner;
 pub mod presets;
+pub mod rollup;
 pub mod spec;
 
 // Re-export core public types.
 pub use accumulators::GroupAccumulator;
 pub use buckets::{AgeBucket, SizeBucket};
+pub use duplicates::{DuplicateAccumulator, DuplicateResult};
 pub use finalize::{AggregateResponse, BucketRow, FinalizeOptions};
 pub use planner::AggregatePlan;
 pub use presets::AggregatePreset;
-pub use spec::{AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, ScalarMetric};
+pub use rollup::RollupAccumulator;
+pub use spec::{
+    AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, DuplicateVerify, RollupMode,
+    ScalarMetric, TopHitsSpec,
+};
 
 use crate::compact::DriveCompactIndex;
 

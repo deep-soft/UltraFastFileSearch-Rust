@@ -97,6 +97,67 @@ pub enum AggregateKind {
         /// Which field.
         field: FieldId,
     },
+
+    /// Rollup: group by path depth or drive, then compute sub-aggregates.
+    Rollup {
+        /// Rollup mode.
+        mode: RollupMode,
+        /// Maximum groups to return.
+        top: u16,
+        /// Metrics per group.
+        metrics: Vec<BucketMetric>,
+    },
+
+    /// Duplicate candidate detection.
+    Duplicates {
+        /// Fields to use as composite group key.
+        keys: Vec<FieldId>,
+        /// Verification mode.
+        verify: DuplicateVerify,
+        /// Maximum duplicate groups to return.
+        top: u16,
+        /// Sample rows per group.
+        sample: u8,
+        /// Maximum groups to track (OOM guard).
+        max_groups: u32,
+    },
+}
+
+/// Rollup mode for path-based or drive-based rollups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RollupMode {
+    /// Group by drive letter.
+    Drive,
+    /// Group by path at a specific depth from drive root.
+    Path {
+        /// Depth from drive root (1 = top-level folder).
+        depth: u8,
+    },
+}
+
+/// Duplicate verification mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DuplicateVerify {
+    /// No verification — candidates only (fastest).
+    None,
+    /// Compare first N bytes of each file.
+    FirstBytes {
+        /// Bytes to compare (default: 4096).
+        count: u32,
+    },
+    /// Full SHA-256 hash verification.
+    Sha256,
+}
+
+/// Specification for sample rows within a bucket.
+#[derive(Debug, Clone)]
+pub struct TopHitsSpec {
+    /// Number of sample rows per bucket (1–5).
+    pub count: u8,
+    /// Sort sample rows by this field (descending).
+    pub sort_field: FieldId,
+    /// Fields to include in sample row output.
+    pub projection: Vec<FieldId>,
 }
 
 /// A scalar metric computed over a set of records.

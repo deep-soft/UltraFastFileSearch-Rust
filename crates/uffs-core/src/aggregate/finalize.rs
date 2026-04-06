@@ -85,6 +85,18 @@ pub enum AggregateResultData {
         /// Number of distinct values seen.
         count: u64,
     },
+    /// Rollup result (path/drive grouping).
+    Rollup {
+        /// Rollup mode description.
+        mode: String,
+        /// Grouped bucket rows.
+        rows: Vec<BucketRow>,
+    },
+    /// Duplicate detection result.
+    Duplicates {
+        /// Full duplicate result data.
+        result: super::duplicates::DuplicateResult,
+    },
 }
 
 /// Scalar statistics result.
@@ -310,6 +322,35 @@ fn finalize_one(
             field: field_name,
             count: seen.len() as u64,
         },
+
+        AccumulatorKind::Rollup { inner, .. } => {
+            let mode_str = match inner.mode {
+                super::spec::RollupMode::Drive => "drive".to_string(),
+                super::spec::RollupMode::Path { depth } => format!("path(depth={depth})"),
+            };
+            let entries = inner.finalize();
+            let rows: Vec<_> = entries
+                .into_iter()
+                .map(|(key, stats)| {
+                    let key_str = if drives.is_empty() {
+                        format!("{key}")
+                    } else {
+                        super::rollup::resolve_rollup_key(key, &inner.mode, drives[0])
+                    };
+                    BucketRow::from_stats(key_str, stats, total_matched, total_bytes)
+                })
+                .collect();
+            AggregateResultData::Rollup {
+                mode: mode_str,
+                rows,
+            }
+        }
+
+        AccumulatorKind::Duplicates { inner } => {
+            let dup_top = 100; // default
+            let result = inner.finalize(dup_top);
+            AggregateResultData::Duplicates { result }
+        }
     };
 
     AggregateResult { label, data }

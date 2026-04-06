@@ -27,6 +27,16 @@ pub enum AggregatePreset {
     BySize,
     /// Age distribution by modification time.
     ByAge,
+    /// Storage analysis: waste, allocated vs logical, per-drive.
+    Storage,
+    /// Activity: recent files, created/modified/accessed timelines.
+    Activity,
+    /// Top folders: path rollup at depth 1.
+    TopFolders,
+    /// Duplicate candidates: group by size+name.
+    Duplicates,
+    /// Cleanup: zero-byte files, temp files, old files.
+    Cleanup,
 }
 
 impl AggregatePreset {
@@ -42,6 +52,11 @@ impl AggregatePreset {
             "by_drive" | "bydrive" | "drive" => Some(Self::ByDrive),
             "by_size" | "bysize" | "size" => Some(Self::BySize),
             "by_age" | "byage" | "age" => Some(Self::ByAge),
+            "storage" => Some(Self::Storage),
+            "activity" => Some(Self::Activity),
+            "top_folders" | "topfolders" | "folders" => Some(Self::TopFolders),
+            "duplicates" | "dups" => Some(Self::Duplicates),
+            "cleanup" => Some(Self::Cleanup),
             _ => None,
         }
     }
@@ -56,6 +71,11 @@ impl AggregatePreset {
             Self::ByDrive => expand_by_drive(),
             Self::BySize => expand_by_size(),
             Self::ByAge => expand_by_age(),
+            Self::Storage => expand_storage(),
+            Self::Activity => expand_activity(),
+            Self::TopFolders => expand_top_folders(),
+            Self::Duplicates => expand_duplicates(),
+            Self::Cleanup => expand_cleanup(),
         }
     }
 
@@ -67,6 +87,11 @@ impl AggregatePreset {
         "by_drive",
         "by_size",
         "by_age",
+        "storage",
+        "activity",
+        "top_folders",
+        "duplicates",
+        "cleanup",
     ];
 }
 
@@ -244,6 +269,142 @@ fn expand_by_age() -> Vec<AggregateSpec> {
         },
         "by_age",
     )]
+}
+
+/// Storage: waste analysis + allocated vs logical + per-drive breakdown.
+fn expand_storage() -> Vec<AggregateSpec> {
+    vec![
+        AggregateSpec::with_label(
+            AggregateKind::Stats {
+                field: FieldId::Size,
+                metrics: vec![ScalarMetric::Sum],
+            },
+            "logical_size",
+        ),
+        AggregateSpec::with_label(
+            AggregateKind::Stats {
+                field: FieldId::SizeOnDisk,
+                metrics: vec![ScalarMetric::Sum],
+            },
+            "allocated_size",
+        ),
+        AggregateSpec::with_label(
+            AggregateKind::Terms {
+                field: FieldId::Drive,
+                top: 26,
+                metrics: vec![
+                    BucketMetric::Count,
+                    BucketMetric::TotalBytes,
+                    BucketMetric::TotalAllocated,
+                    BucketMetric::WasteBytes,
+                    BucketMetric::WastePct,
+                ],
+            },
+            "waste_by_drive",
+        ),
+        AggregateSpec::with_label(
+            AggregateKind::Terms {
+                field: FieldId::Extension,
+                top: 20,
+                metrics: vec![
+                    BucketMetric::Count,
+                    BucketMetric::TotalBytes,
+                    BucketMetric::WasteBytes,
+                    BucketMetric::WastePct,
+                ],
+            },
+            "waste_by_extension",
+        ),
+    ]
+}
+
+/// Activity: recent files + creation/modification timelines.
+fn expand_activity() -> Vec<AggregateSpec> {
+    vec![
+        AggregateSpec::with_label(
+            AggregateKind::DateHistogram {
+                field: FieldId::Modified,
+                calendar: CalendarInterval::Month,
+                metrics: vec![BucketMetric::Count, BucketMetric::TotalBytes],
+            },
+            "modified_monthly",
+        ),
+        AggregateSpec::with_label(
+            AggregateKind::DateHistogram {
+                field: FieldId::Created,
+                calendar: CalendarInterval::Month,
+                metrics: vec![BucketMetric::Count, BucketMetric::TotalBytes],
+            },
+            "created_monthly",
+        ),
+        AggregateSpec::with_label(
+            AggregateKind::DateHistogram {
+                field: FieldId::Accessed,
+                calendar: CalendarInterval::Month,
+                metrics: vec![BucketMetric::Count],
+            },
+            "accessed_monthly",
+        ),
+    ]
+}
+
+/// Top folders: path rollup at depth 1.
+fn expand_top_folders() -> Vec<AggregateSpec> {
+    use super::spec::RollupMode;
+    vec![AggregateSpec::with_label(
+        AggregateKind::Rollup {
+            mode: RollupMode::Path { depth: 1 },
+            top: 30,
+            metrics: vec![
+                BucketMetric::Count,
+                BucketMetric::TotalBytes,
+                BucketMetric::TotalAllocated,
+                BucketMetric::WasteBytes,
+                BucketMetric::ShareOfTotalBytes,
+            ],
+        },
+        "top_folders",
+    )]
+}
+
+/// Duplicate candidates: group by size+name.
+fn expand_duplicates() -> Vec<AggregateSpec> {
+    use super::spec::DuplicateVerify;
+    vec![AggregateSpec::with_label(
+        AggregateKind::Duplicates {
+            keys: vec![FieldId::Size, FieldId::Name],
+            verify: DuplicateVerify::None,
+            top: 100,
+            sample: 2,
+            max_groups: 500_000,
+        },
+        "duplicate_candidates",
+    )]
+}
+
+/// Cleanup: missing extensions, zero-byte files, large temp files.
+fn expand_cleanup() -> Vec<AggregateSpec> {
+    vec![
+        AggregateSpec::with_label(
+            AggregateKind::Missing {
+                field: FieldId::Extension,
+            },
+            "no_extension",
+        ),
+        AggregateSpec::with_label(
+            AggregateKind::Missing {
+                field: FieldId::Size,
+            },
+            "zero_byte_files",
+        ),
+        AggregateSpec::with_label(
+            AggregateKind::Distinct {
+                field: FieldId::Extension,
+            },
+            "distinct_extensions",
+        ),
+        AggregateSpec::with_label(AggregateKind::Count, "total_files"),
+    ]
 }
 
 #[cfg(test)]

@@ -866,6 +866,47 @@ impl IndexManager {
                         AggregateResultData::Distinct { field, count } => {
                             ("distinct".to_owned(), Some(field), Some(count), None, vec![], None, None)
                         }
+                        AggregateResultData::Rollup { mode, rows } => (
+                            "rollup".to_owned(),
+                            Some(mode),
+                            None,
+                            None,
+                            rows.into_iter()
+                                .map(|r| BucketWire {
+                                    key: r.key,
+                                    count: r.count,
+                                    total_bytes: r.total_bytes,
+                                    total_allocated: Some(r.total_allocated),
+                                    avg_size: Some(r.avg_size),
+                                    share_count: Some(r.share_of_total_count),
+                                    share_bytes: Some(r.share_of_total_bytes),
+                                })
+                                .collect(),
+                            None,
+                            None,
+                        ),
+                        AggregateResultData::Duplicates { result } => (
+                            "duplicates".to_owned(),
+                            None,
+                            Some(result.candidate_files),
+                            None,
+                            result
+                                .groups
+                                .into_iter()
+                                .take(20) // Limit wire output
+                                .map(|g| BucketWire {
+                                    key: format!("{}x{}", g.count, g.file_size),
+                                    count: g.count,
+                                    total_bytes: g.total_bytes,
+                                    total_allocated: Some(g.reclaimable_bytes),
+                                    avg_size: Some(g.file_size as f64),
+                                    share_count: None,
+                                    share_bytes: None,
+                                })
+                                .collect(),
+                            None,
+                            Some(result.candidate_groups),
+                        ),
                     };
 
                 AggregateResultWire {
