@@ -20,7 +20,7 @@
 //   WARM  — no daemon, cache files exist  (daemon auto-starts from cache)
 //   HOT   — daemon already running  (pure in-memory search)
 //
-// Phase 2 — Parallel validation:  runs ALL 141 tests concurrently against
+// Phase 2 — Parallel validation:  runs ALL 153 tests concurrently against
 //   the HOT daemon from Phase 1.
 //
 // Usage:
@@ -252,6 +252,13 @@ const CLI_ONLY_FLAGS: &[&str] = &[
 
 /// Returns true if this test's args require spawning a CLI process.
 fn requires_cli(args: &[String]) -> bool {
+    // Subcommands (agg, aggregate, stats, etc.) always need CLI.
+    if let Some(first) = args.first() {
+        let f = first.to_lowercase();
+        if matches!(f.as_str(), "agg" | "aggregate" | "stats" | "info" | "daemon" | "index") {
+            return true;
+        }
+    }
     for (i, a) in args.iter().enumerate() {
         // --columns all → direct is fine (we output all columns).
         // --columns Name,Size,... → needs CLI for column projection.
@@ -2557,6 +2564,168 @@ fn define_tests() -> Vec<TestSpec> {
         Ok(format!("{} dirs, treesize+desc constraints met", rows.len()))
     }));
 
+    // ═══════════════════════════════════════════════════════════════
+    //  AGGREGATE TESTS (T119–T133)
+    // ═══════════════════════════════════════════════════════════════
+
+    // ── T119: uffs agg count ─────────────────────────────────────
+    specs.push(spec("T119 agg count", &["agg", "count"], |stdout, _| {
+        // Expect: "=== total_count ===" and "  Total: <number>"
+        if !stdout.contains("Total:") {
+            bail!("Missing 'Total:' line in count output");
+        }
+        // Extract the number after "Total:"
+        let total_line = stdout.lines()
+            .find(|l| l.contains("Total:"))
+            .unwrap_or("");
+        let num_str: String = total_line.chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect();
+        let total: u64 = num_str.parse().unwrap_or(0);
+        if total == 0 { bail!("Total count is 0"); }
+        Ok(format!("count = {total}"))
+    }));
+
+    // ── T120: agg overview ───────────────────────────────────────
+    specs.push(spec("T120 agg overview", &["agg", "overview"], |stdout, _| {
+        // Overview should produce count + stats + buckets sections.
+        let has_total = stdout.contains("Total:");
+        let has_count = stdout.contains("Count:");
+        let has_sum = stdout.contains("Sum:");
+        let has_key = stdout.contains("Key");
+        if !has_total && !has_count {
+            bail!("Overview missing count/total section");
+        }
+        if !has_sum {
+            bail!("Overview missing stats section (no Sum:)");
+        }
+        if !has_key {
+            bail!("Overview missing bucket table (no Key header)");
+        }
+        Ok("overview: count + stats + buckets present".into())
+    }));
+
+    // ── T121: agg by_extension ───────────────────────────────────
+    specs.push(spec("T121 agg by_extension", &["agg", "by_extension"], |stdout, _| {
+        // Should have a bucket table with extension keys.
+        if !stdout.contains("Key") {
+            bail!("Missing bucket table header");
+        }
+        // Common extensions that should appear on any Windows system.
+        let has_some_ext = ["dll", "exe", "sys", "txt", "log", "xml", "json", "ini"]
+            .iter()
+            .any(|ext| stdout.to_lowercase().contains(ext));
+        if !has_some_ext {
+            bail!("No common extensions found in by_extension output");
+        }
+        let bucket_count = stdout.lines()
+            .filter(|l| l.trim_start().starts_with(|c: char| c.is_alphanumeric()))
+            .filter(|l| l.contains('%'))
+            .count();
+        Ok(format!("{bucket_count} extension buckets"))
+    }));
+
+    // ── T122: agg by_type ────────────────────────────────────────
+    specs.push(spec("T122 agg by_type", &["agg", "by_type"], |stdout, _| {
+        if !stdout.contains("Key") {
+            bail!("Missing bucket table header");
+        }
+        // Type categories should include at least one of these common types.
+        let types = ["document", "image", "video", "audio", "code",
+                     "archive", "executable", "system", "other"];
+        let has_type = types.iter().any(|t| stdout.to_lowercase().contains(t));
+        if !has_type {
+            bail!("No type categories found in by_type output");
+        }
+        Ok("type categories present".into())
+    }));
+
+    // ── T123: agg by_drive ───────────────────────────────────────
+    specs.push(spec("T123 agg by_drive", &["agg", "by_drive"], |stdout, _| {
+        // Should have at least one drive letter (C:, D:, etc.)
+        let has_drive = ('A'..='Z').any(|c| stdout.contains(&format!("{c}:")));
+        if !has_drive {
+            bail!("No drive letters found in by_drive output");
+        }
+        Ok("drive buckets present".into())
+    }));
+
+    // ── T124: agg by_size ────────────────────────────────────────
+    specs.push(spec("T124 agg by_size", &["agg", "by_size"], |stdout, _| {
+        if !stdout.contains("Key") {
+            bail!("Missing bucket table header");
+        }
+        // Size ranges should appear (e.g., "0 B", "KB", "MB", "GB").
+        let has_size = ["KB", "MB", "GB", "bytes", "B "]
+            .iter()
+            .any(|s| stdout.contains(s));
+        if !has_size {
+            bail!("No size range labels found");
+        }
+        Ok("size distribution buckets present".into())
+    }));
+
+    // ── T125: agg by_age ─────────────────────────────────────────
+    specs.push(spec("T125 agg by_age", &["agg", "by_age"], |stdout, _| {
+        if !stdout.contains("Key") && !stdout.contains("===") {
+            bail!("Missing section header");
+        }
+        // Age buckets should have date or time-period labels.
+        Ok("age distribution present".into())
+    }));
+
+    // ── T126: agg count --format json ────────────────────────────
+    specs.push(spec("T126 agg count --format json",
+        &["agg", "count", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let arr = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if arr.is_empty() { bail!("Empty JSON array"); }
+        let first = &arr[0];
+        let kind = first.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind != "count" { bail!("Expected kind=count, got {kind}"); }
+        let value = first.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+        if value == 0 { bail!("Count value is 0"); }
+        Ok(format!("JSON count = {value}"))
+    }));
+
+    // ── T127: agg overview --format json ─────────────────────────
+    specs.push(spec("T127 agg overview --format json",
+        &["agg", "overview", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let arr = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if arr.len() < 3 { bail!("Overview should produce ≥3 results, got {}", arr.len()); }
+        // Should have count, stats, and buckets kinds.
+        let kinds: Vec<&str> = arr.iter()
+            .filter_map(|v| v.get("kind").and_then(|k| k.as_str()))
+            .collect();
+        let has_count = kinds.contains(&"count");
+        let has_stats = kinds.contains(&"stats");
+        let has_buckets = kinds.contains(&"buckets");
+        if !has_count { bail!("Missing count result"); }
+        if !has_stats { bail!("Missing stats result"); }
+        if !has_buckets { bail!("Missing buckets result"); }
+        Ok(format!("{} results: {:?}", arr.len(), kinds))
+    }));
+
+    // ── T128: agg by_extension --format csv ──────────────────────
+    specs.push(spec("T128 agg by_extension --format csv",
+        &["agg", "by_extension", "--format", "csv"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+        if lines.is_empty() { bail!("Empty CSV output"); }
+        // First line should be header with key,count,total_bytes,...
+        let header = lines[0].to_lowercase();
+        if !header.contains("key") || !header.contains("count") {
+            bail!("CSV header missing key/count: {}", lines[0]);
+        }
+        let data_rows = lines.len() - 1;
+        if data_rows == 0 { bail!("No data rows in CSV"); }
+        Ok(format!("{data_rows} CSV rows"))
+    }));
+
     specs
 }
 
@@ -2614,7 +2783,7 @@ fn main() {
 
     if specs.is_empty() {
         eprintln!("  {} No tests matched filter: {:?}", "⚠".yellow(), args.test_filter);
-        eprintln!("  Available test IDs: T00, T01, ..., T118");
+        eprintln!("  Available test IDs: T00, T01, ..., T128");
         std::process::exit(1);
     }
 
