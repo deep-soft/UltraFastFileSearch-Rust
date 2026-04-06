@@ -447,6 +447,8 @@ impl App {
             hide_ads: self.search_filters.hide_ads,
             profile: false,
             predicates: Vec::new(),
+            aggregations: Vec::new(),
+            include_rows: true,
         };
         params.populate_canonical_fields();
         params

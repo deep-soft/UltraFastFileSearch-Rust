@@ -420,6 +420,7 @@ impl IndexManager {
                     applied_projection: Vec::new(),
                     response_mode: None,
                     projected_rows: None,
+                aggregations: vec![],
                 };
             }
         };
@@ -539,6 +540,7 @@ impl IndexManager {
         let whole_word = effective_params.whole_word;
         let match_path = effective_params.match_path;
         let drives = effective_params.drives.clone();
+        let agg_snapshot = snapshot.clone();
         let search_handle = tokio::task::spawn_blocking(move || {
             search_index(
                 &snapshot,
@@ -577,6 +579,7 @@ impl IndexManager {
                     applied_projection: Vec::new(),
                     response_mode: None,
                     projected_rows: None,
+                aggregations: vec![],
                 };
             }
             Err(_timeout) => {
@@ -596,6 +599,7 @@ impl IndexManager {
                     applied_projection: Vec::new(),
                     response_mode: None,
                     projected_rows: None,
+                aggregations: vec![],
                 };
             }
         };
@@ -651,6 +655,13 @@ impl IndexManager {
                 .collect()
         });
 
+        // ── Aggregation (if requested) ─────────────────────────────
+        let agg_results = if !effective_params.aggregations.is_empty() {
+            Self::run_aggregations(&agg_snapshot, &effective_params.aggregations)
+        } else {
+            vec![]
+        };
+
         SearchResponse {
             rows: if projected_rows.is_some() {
                 Vec::new()
@@ -667,6 +678,7 @@ impl IndexManager {
             applied_projection,
             response_mode: Some(response_mode),
             projected_rows,
+            aggregations: agg_results,
         }
     }
 
@@ -744,6 +756,130 @@ impl IndexManager {
                 })
                 .collect(),
         }
+    }
+
+    /// Run aggregation specs from wire format against loaded drives.
+    fn run_aggregations(
+        snapshot: &DriveIndex,
+        wire_specs: &[uffs_client::protocol::AggregateSpecWire],
+    ) -> Vec<uffs_client::protocol::AggregateResultWire> {
+        use uffs_client::protocol::{
+            AggregateResultWire, AggregateSpecWire, BucketWire, StatsWire,
+        };
+        use uffs_core::aggregate::finalize::{AggregateResultData, FinalizeOptions};
+        use uffs_core::aggregate::presets::AggregatePreset;
+        use uffs_core::aggregate::spec::{AggregateKind, AggregateSpec, BucketMetric};
+
+        // Convert wire specs to core specs.
+        let mut specs: Vec<AggregateSpec> = Vec::new();
+        for ws in wire_specs {
+            match ws.kind.as_str() {
+                "preset" => {
+                    if let Some(name) = &ws.preset {
+                        if let Some(preset) = AggregatePreset::parse(name) {
+                            specs.extend(preset.expand());
+                        }
+                    }
+                }
+                "count" => {
+                    specs.push(AggregateSpec::new(AggregateKind::Count));
+                }
+                _ => {
+                    // TODO: parse other kinds from wire format in Stage 2
+                }
+            }
+        }
+
+        if specs.is_empty() {
+            return vec![];
+        }
+
+        // Run aggregation.
+        let drive_refs: Vec<&uffs_core::compact::DriveCompactIndex> =
+            snapshot.drives.iter().map(|arc| arc.as_ref()).collect();
+        let options = FinalizeOptions::default();
+        let output = match uffs_core::aggregate::run_aggregate(
+            &drive_refs,
+            &specs,
+            &options,
+        ) {
+            Ok(output) => output,
+            Err(_) => return vec![],
+        };
+
+        // Convert results to wire format.
+        output
+            .response
+            .results
+            .into_iter()
+            .map(|result| {
+                let (kind, field, value, stats, buckets, other_count, total_groups) =
+                    match result.data {
+                        AggregateResultData::Count { value } => {
+                            ("count".to_owned(), None, Some(value), None, vec![], None, None)
+                        }
+                        AggregateResultData::Stats { field, stats } => (
+                            "stats".to_owned(),
+                            Some(field),
+                            None,
+                            Some(StatsWire {
+                                count: stats.count,
+                                sum: stats.sum,
+                                min: stats.min,
+                                max: stats.max,
+                                avg: stats.avg,
+                                waste_bytes: stats.waste_bytes,
+                                waste_pct: stats.waste_pct,
+                            }),
+                            vec![],
+                            None,
+                            None,
+                        ),
+                        AggregateResultData::Buckets {
+                            field,
+                            rows,
+                            other_count,
+                            total_groups,
+                            ..
+                        } => (
+                            "buckets".to_owned(),
+                            Some(field),
+                            None,
+                            None,
+                            rows.into_iter()
+                                .map(|r| BucketWire {
+                                    key: r.key,
+                                    count: r.count,
+                                    total_bytes: r.total_bytes,
+                                    total_allocated: Some(r.total_allocated),
+                                    avg_size: Some(r.avg_size),
+                                    share_count: Some(r.share_of_total_count),
+                                    share_bytes: Some(r.share_of_total_bytes),
+                                })
+                                .collect(),
+                            Some(other_count),
+                            Some(total_groups),
+                        ),
+                        AggregateResultData::Missing { field, count } => {
+                            ("missing".to_owned(), Some(field), Some(count), None, vec![], None, None)
+                        }
+                        AggregateResultData::Distinct { field, count } => {
+                            ("distinct".to_owned(), Some(field), Some(count), None, vec![], None, None)
+                        }
+                    };
+
+                AggregateResultWire {
+                    label: result.label,
+                    kind,
+                    field,
+                    value,
+                    stats,
+                    buckets,
+                    other_count,
+                    total_groups,
+                }
+            })
+            .collect()
     }
 
     /// Get daemon performance statistics.

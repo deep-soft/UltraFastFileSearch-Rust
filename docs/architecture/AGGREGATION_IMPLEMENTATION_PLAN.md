@@ -99,15 +99,15 @@ Total: 39  Aggregatable: 11  Groupable: 24  Bucketable: 11
 
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
-| S0.1 | Create `crates/uffs-core/src/aggregate/mod.rs` with module declarations. | `aggregate/mod.rs` | §24 | — | ⬜ |
-| S0.2 | Create `aggregate/spec.rs`: `AggregateSpec`, `AggregateKind`, `AggregateDomain`, `ExactnessMode`, `ScalarMetric`, `BucketMetric` enums. | `aggregate/spec.rs` | §12.3–§12.5 | S0.1 | ⬜ |
-| S0.3 | Create `aggregate/presets.rs`: `AggregatePreset` enum with `expand()` → `Vec<AggregateSpec>`. Implement `overview` only. | `aggregate/presets.rs` | §11.1 | S0.2 | ⬜ |
-| S0.4 | Create `aggregate/accumulators.rs`: `GroupAccumulator` struct with `new()`, `feed()`, `merge()`, `finalize()`. | `aggregate/accumulators.rs` | §18 | S0.1 | ⬜ |
-| S0.5 | Create `aggregate/buckets.rs`: `classify_size()`, `classify_age()`, `classify_path_risk()`. Size, age, and path-risk bucket constants. | `aggregate/buckets.rs` | §9.3 | S0.1 | ⬜ |
-| S0.6 | Create `aggregate/planner.rs`: `AggregatePlan` struct, `compile()` fn that splits specs into hot/derived/deep. | `aggregate/planner.rs` | §17.2 | S0.2, P-3 | ⬜ |
-| S0.7 | Create `aggregate/finalize.rs`: bucket sorting, truncation, `other_count`, exactness flags. | `aggregate/finalize.rs` | §19 | S0.4 | ⬜ |
-| S0.8 | Wire `pub mod aggregate;` into `crates/uffs-core/src/lib.rs`. | `lib.rs` | §24 | S0.1 | ⬜ |
-| S0.9 | Compile check: `cargo check -p uffs-core`. | — | — | S0.1–S0.8 | ⬜ |
+| S0.1 | Create `crates/uffs-core/src/aggregate/mod.rs` with module declarations + `run_aggregate()` entry point + `scan_drive()`. | `aggregate/mod.rs` | §24 | — | ✅ |
+| S0.2 | Create `aggregate/spec.rs`: `AggregateSpec`, `AggregateKind` (Count/Stats/Terms/Histogram/DateHistogram/Range/Missing/Distinct), `ScalarMetric`, `BucketMetric`, `CalendarInterval`. | `aggregate/spec.rs` | §12.3–§12.5 | S0.1 | ✅ |
+| S0.3 | Create `aggregate/presets.rs`: 6 presets (Overview/ByType/ByExtension/ByDrive/BySize/ByAge) with `expand()` + `parse()`. | `aggregate/presets.rs` | §11.1 | S0.2 | ✅ |
+| S0.4 | Create `aggregate/accumulators.rs`: `StatsAccumulator`, `GroupAccumulator` with `from_kind()`, `feed()`, `merge()`, extract helpers. | `aggregate/accumulators.rs` | §18 | S0.1 | ✅ |
+| S0.5 | Create `aggregate/buckets.rs`: `SizeBucket` (7 tiers), `AgeBucket` (8 tiers), `PathRiskBucket` (4 tiers) with `classify()`/`label()`. | `aggregate/buckets.rs` | §9.3 | S0.1 | ✅ |
+| S0.6 | Create `aggregate/planner.rs`: `AggregatePlan::compile()` with field validation against `AggregateMeta`. | `aggregate/planner.rs` | §17.2 | S0.2, P-3 | ✅ |
+| S0.7 | Create `aggregate/finalize.rs`: `finalize()` → `AggregateResponse`, `BucketRow::from_stats()`, `resolve_group_key()`, `format_range_key()`, `format_timestamp_key()`. | `aggregate/finalize.rs` | §19 | S0.4 | ✅ |
+| S0.8 | Wire `pub mod aggregate;` into `crates/uffs-core/src/lib.rs`. | `lib.rs` | §24 | S0.1 | ✅ |
+| S0.9 | Compile check + 26 new tests pass: `cargo check -p uffs-core`, `cargo test -p uffs-core`. | — | — | S0.1–S0.8 | ✅ |
 
 
 ---
@@ -442,7 +442,7 @@ are shipped and tested.
 | Stage | Tasks | ⬜ | 🔧 | ✅ | ❌ |
 |-------|------:|---:|---:|---:|---:|
 | Pre-reqs (P) | 8 | 0 | 0 | 8 | 0 |
-| Stage 0 — Scaffolding | 9 | 9 | 0 | 0 | 0 |
+| Stage 0 — Scaffolding | 9 | 0 | 0 | 9 | 0 |
 | Stage 1A — Core engine | 14 | 14 | 0 | 0 | 0 |
 | Stage 1B — Presets | 6 | 6 | 0 | 0 | 0 |
 | Stage 1C — Protocol | 4 | 4 | 0 | 0 | 0 |
@@ -474,7 +474,7 @@ are shipped and tested.
 | Stage 5D — Disjunctive | 2 | 2 | 0 | 0 | 0 |
 | Stage 5E — Cache | 3 | 3 | 0 | 0 | 0 |
 | Stage 5F — Testing v5 | 3 | 3 | 0 | 0 | 0 |
-| **TOTAL** | **161** | **153** | **0** | **8** | **0** |
+| **TOTAL** | **161** | **144** | **0** | **17** | **0** |
 
 Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cancelled
 
@@ -483,6 +483,7 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 | Milestone | Target | Actual | Gate criteria |
 |-----------|--------|--------|---------------|
 | M0: Pre-reqs done | — | 2026-04-06 | P-1, P-2, P-3 all ✅; `cargo check` passes; 7 invariant tests green |
+| M0.5: Stage 0 done | — | 2026-04-06 | All S0.* ✅; 26 new tests; module tree + core types + presets + planner + finalize scaffolded |
 | M1: Stage 1 shippable | — | — | All S1* ✅; `just go` green; CLI + daemon + MCP functional |
 | M2: Stage 2 shippable | — | — | All S2* ✅; sample rows + rollups + power syntax working |
 | M3: Stage 3 shippable | — | — | All S3* ✅; pagination + facet_values + nested rollups |

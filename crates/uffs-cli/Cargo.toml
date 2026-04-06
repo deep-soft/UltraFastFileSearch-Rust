@@ -57,6 +57,7 @@ chrono.workspace = true
 mimalloc.workspace = true
 uffs-client.workspace = true
 uffs-daemon.workspace = true
+serde_json.workspace = true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lints (inherit from workspace)

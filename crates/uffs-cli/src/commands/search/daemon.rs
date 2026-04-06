@@ -400,6 +400,8 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         hide_ads: config.hide_ads,
         profile: config.profile || config.benchmark,
         predicates: Vec::new(),
+        aggregations: Vec::new(),
+        include_rows: true,
     };
     params.populate_canonical_fields();
     params

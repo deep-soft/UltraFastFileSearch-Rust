@@ -518,6 +518,35 @@ pub enum Commands {
         top: u32,
     },
 
+    /// Run aggregate analytics on the filesystem index
+    ///
+    /// Runs one of the built-in presets or a custom aggregation spec
+    /// against all loaded drives in the daemon. No rows are returned —
+    /// only aggregate results.
+    ///
+    /// Examples:
+    ///   uffs aggregate overview          # Full filesystem overview
+    ///   uffs aggregate by_extension      # Top 50 extensions
+    ///   uffs aggregate by_type           # Breakdown by file type
+    ///   uffs aggregate by_drive          # Per-drive totals
+    ///   uffs aggregate by_size           # Size distribution
+    ///   uffs aggregate by_age            # Age distribution
+    ///   uffs aggregate count             # Simple total count
+    #[command(alias = "agg")]
+    Aggregate {
+        /// Preset name or aggregation kind.
+        ///
+        /// Available presets: overview, by_type, by_extension, by_drive,
+        /// by_size, by_age.
+        ///
+        /// Special kind: count (returns total matching count only).
+        preset: String,
+
+        /// Output format: table (default), json.
+        #[arg(long, default_value = "table")]
+        format: String,
+    },
+
     /// Manage the UFFS background daemon
     ///
     /// The daemon runs automatically when you search. Use this subcommand

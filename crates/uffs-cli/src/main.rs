@@ -286,6 +286,9 @@ async fn run() -> Result<()> {
         Some(Commands::Stats { path, top }) => {
             commands::stats(&path, top)?;
         }
+        Some(Commands::Aggregate { preset, format }) => {
+            commands::aggregate(&preset, &format).await?;
+        }
         Some(Commands::Daemon { action }) => {
             commands::daemon(&action).await?;
         }

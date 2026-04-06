@@ -204,7 +204,7 @@ pub const ERR_BAD_PATTERN: i32 = -2;
 /// All filter fields mirror the CLI surface; see
 /// [`uffs_core::search::filters::SearchFilters`] for semantics.
 /// Every field is optional — omitted fields impose no constraint.
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "JSON wire type — bools are the natural encoding"
@@ -380,6 +380,187 @@ pub struct SearchParams {
     /// Request detailed timing breakdown from the daemon.
     #[serde(default)]
     pub profile: bool,
+
+    // ── Aggregation ────────────────────────────────────────────────
+    /// Aggregation specs to compute alongside or instead of rows.
+    ///
+    /// When non-empty, the daemon runs the aggregation engine in addition
+    /// to (or instead of) returning rows, depending on `include_rows`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aggregations: Vec<AggregateSpecWire>,
+    /// Whether to include result rows in the response.
+    ///
+    /// Defaults to `true`. Set to `false` for aggregate-only queries
+    /// (equivalent to `--count` or `--aggregate` without `--rows`).
+    #[serde(default = "default_true")]
+    pub include_rows: bool,
+}
+
+/// Default-true helper for serde.
+const fn default_true() -> bool {
+    true
+}
+
+impl Default for SearchParams {
+    fn default() -> Self {
+        Self {
+            pattern: String::new(),
+            case_sensitive: false,
+            whole_word: false,
+            match_path: false,
+            sort: None,
+            sorts: vec![],
+            sort_desc: false,
+            limit: None,
+            filter: None,
+            filter_mode: None,
+            predicates: vec![],
+            drives: vec![],
+            projection: vec![],
+            response_mode: None,
+            min_size: None,
+            max_size: None,
+            min_descendants: None,
+            max_descendants: None,
+            newer: None,
+            older: None,
+            newer_created: None,
+            older_created: None,
+            newer_accessed: None,
+            older_accessed: None,
+            attr: None,
+            ext: None,
+            exclude: None,
+            path_contains: None,
+            type_filter: None,
+            min_bulkiness: None,
+            max_bulkiness: None,
+            min_name_len: None,
+            max_name_len: None,
+            min_path_len: None,
+            max_path_len: None,
+            min_allocated: None,
+            max_allocated: None,
+            min_treesize: None,
+            max_treesize: None,
+            min_tree_allocated: None,
+            max_tree_allocated: None,
+            allowed_months: vec![],
+            hide_system: false,
+            hide_ads: false,
+            profile: false,
+            aggregations: vec![],
+            include_rows: true,
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Aggregation wire types
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Wire format for a single aggregation specification.
+///
+/// This is the JSON-serializable form of `uffs_core::aggregate::spec::AggregateSpec`.
+/// It uses tagged-enum style for `kind` to make JSON schemas self-describing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregateSpecWire {
+    /// The aggregation kind (e.g. `"count"`, `"terms"`, `"stats"`).
+    pub kind: String,
+    /// Optional label for this aggregation in the output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Field to aggregate on (required for most kinds except `"count"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// Maximum groups for terms aggregation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top: Option<u16>,
+    /// Bucket interval for histogram aggregation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval: Option<u64>,
+    /// Calendar interval for date histogram (e.g. `"month"`, `"day"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<String>,
+    /// Range boundaries for range aggregation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boundaries: Vec<u64>,
+    /// Metrics to compute per bucket/group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub metrics: Vec<String>,
+    /// Preset name (when `kind` is `"preset"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+}
+
+/// Wire format for an aggregate result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregateResultWire {
+    /// Label for this result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The result kind (mirrors the spec kind).
+    pub kind: String,
+    /// Field name (if applicable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// Scalar value (for count/missing/distinct).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<u64>,
+    /// Scalar statistics (for stats kind).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stats: Option<StatsWire>,
+    /// Bucket rows (for terms/histogram/date_histogram/range).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buckets: Vec<BucketWire>,
+    /// Count of records beyond top-N (for terms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other_count: Option<u64>,
+    /// Total groups before truncation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_groups: Option<usize>,
+}
+
+/// Wire format for scalar statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatsWire {
+    /// Record count.
+    pub count: u64,
+    /// Sum of values.
+    pub sum: u64,
+    /// Minimum value.
+    pub min: u64,
+    /// Maximum value.
+    pub max: u64,
+    /// Average value.
+    pub avg: f64,
+    /// Waste bytes.
+    pub waste_bytes: u64,
+    /// Waste percentage.
+    pub waste_pct: f64,
+}
+
+/// Wire format for a single bucket row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BucketWire {
+    /// Bucket key (display string).
+    pub key: String,
+    /// Record count in this bucket.
+    pub count: u64,
+    /// Total bytes in this bucket.
+    pub total_bytes: u64,
+    /// Total allocated bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_allocated: Option<u64>,
+    /// Average file size.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_size: Option<f64>,
+    /// Share of total count (percentage).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share_count: Option<f64>,
+    /// Share of total bytes (percentage).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share_bytes: Option<f64>,
 }
 
 impl SearchParams {
@@ -749,6 +930,9 @@ pub struct SearchResponse {
     /// Projected rows for direct daemon callers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub projected_rows: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
+    /// Aggregation results (present when `SearchParams::aggregations` was non-empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aggregations: Vec<AggregateResultWire>,
 }
 
 /// Daemon-side timing breakdown returned when `SearchParams::profile` is set.
@@ -1236,6 +1420,7 @@ mod tests {
                 ),
                 ("size".to_owned(), serde_json::Value::from(1024_u64)),
             ])]),
+        aggregations: vec![],
         };
         let json = serde_json::to_string(&resp).expect("serialize");
         let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");

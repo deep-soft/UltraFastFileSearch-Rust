@@ -366,6 +366,7 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
         applied_projection: Vec::new(),
         response_mode: None,
         projected_rows: None,
+    aggregations: vec![],
     })
 }
 
