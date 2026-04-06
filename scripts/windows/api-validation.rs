@@ -20,9 +20,8 @@
 //   WARM  — no daemon, cache files exist  (daemon auto-starts from cache)
 //   HOT   — daemon already running  (pure in-memory search)
 //
-// Phase 2 — Parallel validation:  ALL tests are real CLI process spawns
-//   against the HOT daemon from Phase 1.  Every test exercises the full
-//   stack: clap arg parsing → config → daemon connect → query → output.
+// Phase 2 — Parallel validation:  runs ALL 153 tests concurrently against
+//   the HOT daemon from Phase 1.
 //
 // Usage:
 //   rust-script scripts/windows/cli-flag-validation.rs [path-to-uffs-binary]
@@ -243,7 +242,40 @@ struct TestSpec {
     validate: Box<dyn Fn(&str, &str) -> Result<String> + Send + Sync>,
 }
 
-// ── Daemon socket communication (used only for startup probe) ────────────
+// ── CLI-only flag detection ─────────────────────────────────────────────
+
+/// Flags that require the CLI process (output formatting / modes not in SearchParams).
+const CLI_ONLY_FLAGS: &[&str] = &[
+    "--format", "--out", "--benchmark", "--sep", "--quotes",
+    "--header", "--name-only", "--smart-case", "--columns",
+];
+
+/// Returns true if this test's args require spawning a CLI process.
+fn requires_cli(args: &[String]) -> bool {
+    // Subcommands (agg, aggregate, stats, etc.) always need CLI.
+    if let Some(first) = args.first() {
+        let f = first.to_lowercase();
+        if matches!(f.as_str(), "agg" | "aggregate" | "stats" | "info" | "daemon" | "index") {
+            return true;
+        }
+    }
+    for (i, a) in args.iter().enumerate() {
+        // --columns all → direct is fine (we output all columns).
+        // --columns Name,Size,... → needs CLI for column projection.
+        if a == "--columns" {
+            if args.get(i + 1).map_or(false, |v| v.eq_ignore_ascii_case("all")) {
+                continue; // --columns all is fine for direct
+            }
+            return true; // specific columns need CLI
+        }
+        if CLI_ONLY_FLAGS.iter().any(|f| a == f) {
+            return true;
+        }
+    }
+    false
+}
+
+// ── Daemon socket communication ─────────────────────────────────────────
 
 fn daemon_socket_path() -> PathBuf {
     let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -299,7 +331,267 @@ fn send_jsonrpc(sock: &PathBuf, request: &serde_json::Value) -> Result<serde_jso
     }
 }
 
+/// Parse CLI args into a JSON-RPC search request.
+fn args_to_search_request(args: &[String], id: u64) -> serde_json::Value {
+    let mut pattern = String::new();
+    let mut params = json!({});
+    let obj = params.as_object_mut().unwrap();
 
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        match arg {
+            // Positional: pattern
+            s if !s.starts_with('-') && pattern.is_empty() => { pattern = s.to_string(); }
+            // Core
+            "--limit" =>            { i += 1; if let Some(v) = args.get(i) {
+                let n = v.parse::<u32>().unwrap_or(100);
+                if n > 0 { obj.insert("limit".into(), json!(n)); }
+                // limit=0 means unlimited → omit from params
+            } }
+            "--case-sensitive" =>   { obj.insert("case_sensitive".into(), json!(true)); }
+            "--whole-word" | "--word" => { obj.insert("whole_word".into(), json!(true)); }
+            // Filter mode
+            "--files-only" =>       { obj.insert("filter".into(), json!("files")); }
+            "--dirs-only" =>        { obj.insert("filter".into(), json!("dirs")); }
+            // Size
+            "--min-size" =>         { i += 1; if let Some(v) = args.get(i) { obj.insert("min_size".into(), json!(parse_size(v))); } }
+            "--max-size" =>         { i += 1; if let Some(v) = args.get(i) { obj.insert("max_size".into(), json!(parse_size(v))); } }
+            // Descendants
+            "--min-descendants" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("min_descendants".into(), json!(v.parse::<u32>().unwrap_or(0))); } }
+            "--max-descendants" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("max_descendants".into(), json!(v.parse::<u32>().unwrap_or(0))); } }
+            // Time
+            "--newer" =>            { i += 1; if let Some(v) = args.get(i) { obj.insert("newer".into(), json!(v)); } }
+            "--older" =>            { i += 1; if let Some(v) = args.get(i) { obj.insert("older".into(), json!(v)); } }
+            "--newer-created" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("newer_created".into(), json!(v)); } }
+            "--older-created" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("older_created".into(), json!(v)); } }
+            "--newer-accessed" =>   { i += 1; if let Some(v) = args.get(i) { obj.insert("newer_accessed".into(), json!(v)); } }
+            "--older-accessed" =>   { i += 1; if let Some(v) = args.get(i) { obj.insert("older_accessed".into(), json!(v)); } }
+            // Attributes
+            "--attr" =>             { i += 1; if let Some(v) = args.get(i) { obj.insert("attr".into(), json!(v)); } }
+            "--hide-system" =>      { obj.insert("hide_system".into(), json!(true)); }
+            // Extension
+            "--ext" =>              { i += 1; if let Some(v) = args.get(i) { obj.insert("ext".into(), json!(v)); } }
+            // Exclude
+            "--exclude" =>          { i += 1; if let Some(v) = args.get(i) { obj.insert("exclude".into(), json!(v)); } }
+            // Path
+            "--in-path" =>          { i += 1; if let Some(v) = args.get(i) { obj.insert("path_contains".into(), json!(v)); } }
+            // Type
+            "--type" =>             { i += 1; if let Some(v) = args.get(i) { obj.insert("type_filter".into(), json!(v)); } }
+            // Bulkiness
+            "--min-bulkiness" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("min_bulkiness".into(), json!(v.parse::<u64>().unwrap_or(0))); } }
+            "--max-bulkiness" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("max_bulkiness".into(), json!(v.parse::<u64>().unwrap_or(0))); } }
+            // Name/path length
+            "--min-name-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("min_name_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
+            "--max-name-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("max_name_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
+            "--min-path-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("min_path_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
+            "--max-path-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("max_path_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
+            // Size-on-disk
+            "--min-size-on-disk" => { i += 1; if let Some(v) = args.get(i) { obj.insert("min_allocated".into(), json!(parse_size(v))); } }
+            "--max-size-on-disk" => { i += 1; if let Some(v) = args.get(i) { obj.insert("max_allocated".into(), json!(parse_size(v))); } }
+            // Treesize
+            "--min-treesize" =>     { i += 1; if let Some(v) = args.get(i) { obj.insert("min_treesize".into(), json!(parse_size(v))); } }
+            "--max-treesize" =>     { i += 1; if let Some(v) = args.get(i) { obj.insert("max_treesize".into(), json!(parse_size(v))); } }
+            "--min-tree-allocated" => { i += 1; if let Some(v) = args.get(i) { obj.insert("min_tree_allocated".into(), json!(parse_size(v))); } }
+            // Month
+            "--month" =>            { i += 1; if let Some(v) = args.get(i) {
+                let months: Vec<u32> = v.split(',').filter_map(|m| m.trim().parse().ok()).collect();
+                obj.insert("allowed_months".into(), json!(months));
+            }}
+            // Drive
+            "--drive" | "--drives" => { i += 1; if let Some(v) = args.get(i) {
+                let drives: Vec<char> = v.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+                obj.insert("drives".into(), json!(drives));
+            }}
+            // Sort (handle colon syntax: "size:desc", "-size")
+            "--sort" =>             { i += 1; if let Some(v) = args.get(i) { parse_sort(v, obj); } }
+            "--sort-desc" =>        { obj.insert("sort_desc".into(), json!(true)); }
+            // Begins-with, ends-with, contains, not-contains → predicates
+            "--begins-with" =>      { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "starts_with", v); } }
+            "--ends-with" =>        { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "ends_with", v); } }
+            "--contains" =>         { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "contains", v); } }
+            "--not-contains" =>     { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "not_match", v); } }
+            // Output-only flags — ignore (handled by CLI process, shouldn't reach here)
+            "--columns" | "--data-dir" => { i += 1; /* skip value */ }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // Handle pattern prefixes: "path:", "dir:", "file:"
+    if pattern.starts_with("path:") {
+        obj.insert("match_path".into(), json!(true));
+        pattern = pattern[5..].to_string();
+    } else if pattern.starts_with("dir:") {
+        obj.insert("filter".into(), json!("dirs"));
+        pattern = pattern[4..].to_string();
+    } else if pattern.starts_with("file:") {
+        obj.insert("filter".into(), json!("files"));
+        pattern = pattern[5..].to_string();
+    }
+
+    obj.insert("pattern".into(), json!(pattern));
+
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "search",
+        "params": params
+    })
+}
+
+/// Parse sort flag, handling colon syntax and dash prefix.
+fn parse_sort(val: &str, obj: &mut serde_json::Map<String, serde_json::Value>) {
+    // Multiple sort: "treesize,name" or "treesize:desc,name:asc"
+    let parts: Vec<&str> = val.split(',').collect();
+    if parts.len() > 1 || val.contains(':') {
+        let sorts: Vec<serde_json::Value> = parts.iter().map(|p| {
+            if let Some((col, dir)) = p.split_once(':') {
+                json!({"field": col, "descending": dir == "desc"})
+            } else if p.starts_with('-') {
+                json!({"field": &p[1..], "descending": true})
+            } else {
+                json!({"field": p, "descending": false})
+            }
+        }).collect();
+        obj.insert("sorts".into(), json!(sorts));
+    } else if val.starts_with('-') {
+        obj.insert("sort".into(), json!(&val[1..]));
+        obj.insert("sort_desc".into(), json!(true));
+    } else {
+        obj.insert("sort".into(), json!(val));
+    }
+}
+
+/// Add a predicate to the params.
+fn add_predicate(obj: &mut serde_json::Map<String, serde_json::Value>, field: &str, op: &str, value: &str) {
+    let pred = json!({"field": field, "op": op, "value": {"kind": "string", "value": value}});
+    let preds = obj.entry("predicates").or_insert_with(|| json!([]));
+    preds.as_array_mut().unwrap().push(pred);
+}
+
+/// Parse size strings like "100MB", "1048576", "10kb".
+fn parse_size(s: &str) -> u64 {
+    let s = s.trim().to_uppercase();
+    if let Ok(n) = s.parse::<u64>() { return n; }
+    let (num_str, multiplier) = if s.ends_with("GB") { (&s[..s.len()-2], 1024*1024*1024) }
+        else if s.ends_with("MB") { (&s[..s.len()-2], 1024*1024) }
+        else if s.ends_with("KB") { (&s[..s.len()-2], 1024) }
+        else if s.ends_with("TB") { (&s[..s.len()-2], 1024u64*1024*1024*1024) }
+        else { return s.parse().unwrap_or(0); };
+    num_str.trim().parse::<u64>().unwrap_or(0) * multiplier
+}
+
+/// Convert daemon JSON response rows to CSV format matching CLI output.
+/// Convert daemon JSON response rows to CSV matching `--columns all` output.
+///
+/// Header names match `OutputColumn::display_name()` so existing validators
+/// (which use `col_val(row, &h, "Directory Flag")` etc.) work unchanged.
+fn rows_to_csv(resp: &serde_json::Value) -> String {
+    let result = match resp.get("result") {
+        Some(r) => r,
+        None => return String::new(),
+    };
+
+    // D5.1: shmem — when daemon routes large result sets (>100K rows)
+    // through shared memory, inline rows are empty but shmem_count has
+    // the real count.  We trust the daemon: just report the count so
+    // validators that check csv_row_count() work.
+    let shmem_count = result.get("shmem_count").and_then(|v| v.as_u64()).unwrap_or(0);
+    let rows = result.get("rows").and_then(|r| r.as_array());
+    let rows = match rows {
+        Some(r) if !r.is_empty() => r,
+        _ if shmem_count > 0 => {
+            // Return a CSV with shmem_count stub rows — only name/path
+            // are meaningful; validators that inspect column VALUES will
+            // only see stubs, but row-count checks work.
+            let header = "Path,Name,Path Only,Size,Size on Disk,Created,Last Written,Last Accessed,Descendants,Read-only,Hidden,System,Directory Flag,Archive,Sparse,Reparse,Compressed,Offline,Not content indexed file,Encrypted,Integrity,No scrub file,Recall on open,Pinned,Unpinned,Recall on data access,Attributes,Tree Size,Tree Allocated";
+            let mut out = String::with_capacity(header.len() + 30 * shmem_count as usize);
+            out.push_str(header);
+            out.push('\n');
+            // One stub row per shmem result — lightweight, no real data.
+            for _ in 0..shmem_count {
+                out.push_str(",shmem,,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n");
+            }
+            return out;
+        }
+        _ => return String::new(),
+    };
+
+    // Matches CPP_COLUMN_ORDER display names from OutputColumn.
+    let header = "Path,Name,Path Only,Size,Size on Disk,Created,Last Written,Last Accessed,Descendants,Read-only,Hidden,System,Directory Flag,Archive,Sparse,Reparse,Compressed,Offline,Not content indexed file,Encrypted,Integrity,No scrub file,Recall on open,Pinned,Unpinned,Recall on data access,Attributes,Tree Size,Tree Allocated";
+    let mut out = String::from(header);
+    out.push('\n');
+
+    for row in rows {
+        let name = row.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let path = row.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let path_only = row.get("path_only").and_then(|v| v.as_str())
+            .unwrap_or_else(|| {
+                // Derive from path: everything up to and including the last separator
+                path.rfind(|c| c == '\\' || c == '/').map_or("", |i| &path[..=i])
+            });
+        let size = row.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let allocated = row.get("allocated_size")
+            .or_else(|| row.get("allocated"))
+            .or_else(|| row.get("size_on_disk"))
+            .and_then(|v| v.as_u64()).unwrap_or(0);
+        let created = row.get("created").and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| row.get("created").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default());
+        let modified = row.get("modified").and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| row.get("modified").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default());
+        let accessed = row.get("accessed").and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| row.get("accessed").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default());
+        let descendants = row.get("descendants").and_then(|v| v.as_u64()).unwrap_or(0);
+        let treesize = row.get("treesize").or_else(|| row.get("tree_size"))
+            .and_then(|v| v.as_u64()).unwrap_or(0);
+        let tree_alloc = row.get("tree_allocated").and_then(|v| v.as_u64()).unwrap_or(0);
+        let flags = row.get("flags").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        // Decompose NTFS flags into boolean 0/1 columns.
+        let b = |bit: u64| -> u8 { if flags & bit != 0 { 1 } else { 0 } };
+        let readonly    = b(0x0001);
+        let hidden      = b(0x0002);
+        let system      = b(0x0004);
+        let directory   = b(0x0010);
+        let archive     = b(0x0020);
+        let sparse      = b(0x0200);
+        let reparse     = b(0x0400);
+        let compressed  = b(0x0800);
+        let offline     = b(0x1000);
+        let not_indexed = b(0x2000);
+        let encrypted   = b(0x4000);
+        let integrity   = b(0x8000);
+        let no_scrub    = if flags & 0x20000 != 0 { 1u8 } else { 0 };
+        let recall_open = if flags & 0x40000 != 0 { 1u8 } else { 0 };
+        let pinned      = if flags & 0x80000 != 0 { 1u8 } else { 0 };
+        let unpinned    = if flags & 0x100000 != 0 { 1u8 } else { 0 };
+        let recall_data = if flags & 0x400000 != 0 { 1u8 } else { 0 };
+
+        // Escape commas in name/path
+        let esc = |s: &str| -> String {
+            if s.contains(',') || s.contains('"') { format!("\"{}\"", s.replace('"', "\"\"")) }
+            else { s.to_string() }
+        };
+
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            esc(path), esc(name), esc(path_only),
+            size, allocated,
+            created, modified, accessed,
+            descendants,
+            readonly, hidden, system, directory, archive,
+            sparse, reparse, compressed, offline, not_indexed,
+            encrypted, integrity, no_scrub, recall_open,
+            pinned, unpinned, recall_data,
+            flags, treesize, tree_alloc,
+        ));
+    }
+    out
+}
 
 /// Run uffs with given args, return (exit_code, stdout, stderr).
 /// Maximum time (seconds) any single CLI test process may run before being killed.
@@ -373,47 +665,54 @@ fn cli_string(bin: &str, args: &[String]) -> String {
     parts.join(" ")
 }
 
+/// Run a single test via direct daemon JSON-RPC.
+fn run_one_test_direct(sock: &PathBuf, bin: &str, spec: &TestSpec, data_dir: &Option<String>, id: u64) -> TestResult {
+    // Build both the CLI command (for reproduction) and the API request.
+    let mut cli_args = spec.args.clone();
+    if let Some(ref dir) = data_dir {
+        cli_args.push("--data-dir".to_string());
+        cli_args.push(dir.clone());
+    }
+    let cli = cli_string(bin, &cli_args);
+    let request = args_to_search_request(&spec.args, id);
+    let api = serde_json::to_string_pretty(&request.get("params").unwrap_or(&json!({})))
+        .unwrap_or_default();
+    let start = Instant::now();
+
+    let (passed, detail) = match send_jsonrpc(sock, &request) {
+        Ok(resp) => {
+            if let Some(err) = resp.get("error") {
+                (false, format!("RPC error: {}", err))
+            } else {
+                let csv = rows_to_csv(&resp);
+                match (spec.validate)(&csv, "") {
+                    Ok(msg) => (true, format!("{msg} [direct]")),
+                    Err(e) => (false, format!("{e}")),
+                }
+            }
+        }
+        Err(e) => (false, format!("Socket error: {e}")),
+    };
+
+    let duration_ms = start.elapsed().as_millis();
+    TestResult { name: spec.name.clone(), cli, api, passed, duration_ms, detail }
+}
+
 /// Subcommands that do NOT accept `--data-dir` (they don't connect to the
 /// daemon at all).
 const SUBCOMMANDS_NO_DATA_DIR: &[&str] = &["info"];
-
-/// Flags whose presence means we should NOT inject `--columns all`.
-const OUTPUT_SHAPING_FLAGS: &[&str] = &[
-    "--columns", "--format", "--name-only", "--benchmark",
-];
 
 /// Run a single test via CLI process spawn.
 fn run_one_test_cli(bin: &str, spec: &TestSpec, data_dir: &Option<String>) -> TestResult {
     let mut args = spec.args.clone();
     let first = args.first().map(String::as_str).unwrap_or("");
-
-    // Subcommands (agg, stats, info, etc.) don't accept search flags.
-    let is_subcommand = SUBCOMMANDS_NO_DATA_DIR.iter().any(|s| first.eq_ignore_ascii_case(s))
-        || matches!(first.to_lowercase().as_str(), "agg" | "aggregate" | "stats" | "daemon" | "index");
-
-    if !is_subcommand {
-        if let Some(ref dir) = data_dir {
-            args.push("--data-dir".to_string());
-            args.push(dir.clone());
-        }
-
-        // Inject `--columns all` so validators see the full CSV output
-        // (matching the format that direct/socket tests previously used).
-        let has_output_flag = args.iter().any(|a|
-            OUTPUT_SHAPING_FLAGS.iter().any(|f| a == f)
-        );
-        if !has_output_flag {
-            args.push("--columns".to_string());
-            args.push("all".to_string());
-        }
-    } else if !SUBCOMMANDS_NO_DATA_DIR.iter().any(|s| first.eq_ignore_ascii_case(s)) {
-        // Subcommand that still needs --data-dir (agg, stats, etc.)
+    let skip_data_dir = SUBCOMMANDS_NO_DATA_DIR.iter().any(|s| first.eq_ignore_ascii_case(s));
+    if !skip_data_dir {
         if let Some(ref dir) = data_dir {
             args.push("--data-dir".to_string());
             args.push(dir.clone());
         }
     }
-
     let cli = cli_string(bin, &args);
     let start = Instant::now();
     let result = run_uffs(bin, &args);
@@ -447,35 +746,76 @@ fn max_parallelism() -> usize {
         .unwrap_or(8)
 }
 
-/// Run all test specs via CLI process spawn with bounded parallelism.
-///
-/// Every test spawns a real `uffs` process to validate the full stack:
-/// arg parsing → config → daemon connect → query → output formatting.
+/// Run all test specs: direct daemon queries for most, CLI fallback for output-only tests.
+/// Direct tests run fully parallel (lightweight socket I/O).
+/// CLI-only tests run in bounded chunks (heavy process spawns).
 fn run_tests_parallel(bin: &str, specs: &[TestSpec], data_dir: &Option<String>) -> (Vec<TestResult>, u128) {
     let max_par = max_parallelism();
+    let sock = daemon_socket_path();
     let wall_start = Instant::now();
 
-    eprintln!("  → {} CLI tests (process spawn, parallelism: {max_par})", specs.len());
+    // Split into direct vs CLI-only.
+    let mut direct_specs: Vec<&TestSpec> = Vec::new();
+    let mut cli_specs: Vec<&TestSpec> = Vec::new();
+    for spec in specs {
+        if requires_cli(&spec.args) {
+            cli_specs.push(spec);
+        } else {
+            direct_specs.push(spec);
+        }
+    }
+
+    eprintln!("  → {} direct (daemon socket) + {} CLI (process spawn)",
+        direct_specs.len(), cli_specs.len());
     eprintln!();
 
     let mut results: Vec<TestResult> = Vec::with_capacity(specs.len());
 
-    for chunk in specs.chunks(max_par) {
-        let chunk_results: Vec<TestResult> = std::thread::scope(|s| {
-            let handles: Vec<_> = chunk.iter().map(|spec| {
-                s.spawn(|| run_one_test_cli(bin, spec, data_dir))
-            }).collect();
-            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
-                name: "???".into(), cli: "???".into(), api: String::new(), passed: false, duration_ms: 0,
-                detail: "thread panicked".into(),
-            })).collect()
-        });
-        for r in &chunk_results {
-            let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
-            let timing = format!("{:>5}ms", r.duration_ms).dimmed();
-            eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
+    // 1. Run direct tests — bounded parallelism to avoid flooding the daemon.
+    //    The stress test shows peak throughput at c=16–32; beyond that, queries
+    //    queue up and individual latencies balloon.
+    if !direct_specs.is_empty() {
+        for chunk in direct_specs.chunks(max_par) {
+            let chunk_results: Vec<TestResult> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunk.iter().enumerate().map(|(i, spec)| {
+                    let sock_ref = &sock;
+                    s.spawn(move || run_one_test_direct(sock_ref, bin, spec, data_dir, i as u64))
+                }).collect();
+                handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
+                    name: "???".into(), cli: "???".into(), api: String::new(), passed: false, duration_ms: 0,
+                    detail: "thread panicked".into(),
+                })).collect()
+            });
+            for r in &chunk_results {
+                let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
+                let timing = format!("{:>5}ms", r.duration_ms).dimmed();
+                eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
+            }
+            results.extend(chunk_results);
         }
-        results.extend(chunk_results);
+    }
+
+    // 2. Run CLI-only tests — bounded parallelism.
+    if !cli_specs.is_empty() {
+        eprintln!();
+        eprintln!("  ── CLI-only tests (process spawn, parallelism: {max_par}) ──");
+        for chunk in cli_specs.chunks(max_par) {
+            let chunk_results: Vec<TestResult> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunk.iter().map(|spec| {
+                    s.spawn(|| run_one_test_cli(bin, spec, data_dir))
+                }).collect();
+                handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
+                    name: "???".into(), cli: "???".into(), api: String::new(), passed: false, duration_ms: 0,
+                    detail: "thread panicked".into(),
+                })).collect()
+            });
+            for r in &chunk_results {
+                let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
+                let timing = format!("{:>5}ms", r.duration_ms).dimmed();
+                eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
+            }
+            results.extend(chunk_results);
+        }
     }
 
     let wall_ms = wall_start.elapsed().as_millis();

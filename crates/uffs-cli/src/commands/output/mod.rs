@@ -40,10 +40,11 @@ pub(super) fn write_native_results(
     pattern: &str,
 ) -> Result<()> {
     let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
-    let is_console = matches!(
-        out.to_lowercase().as_str(),
-        "console" | "con" | "term" | "terminal"
-    );
+    let is_console = out.is_empty()
+        || matches!(
+            out.to_lowercase().as_str(),
+            "console" | "con" | "term" | "terminal"
+        );
 
     let footer_ctx = CppFooterContext {
         output_targets,

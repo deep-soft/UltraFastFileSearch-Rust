@@ -158,32 +158,32 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
                         rec.size as i64
                     }
                 }
+                // Boolean attribute flags: extract the individual bit as 0/1.
+                FieldId::DirectoryFlag => i64::from(rec.is_directory()),
+                FieldId::Hidden => i64::from(rec.flags & 0x0002 != 0),
+                FieldId::System => i64::from(rec.flags & 0x0004 != 0),
+                FieldId::ReadOnly => i64::from(rec.flags & 0x0001 != 0),
+                FieldId::Archive => i64::from(rec.flags & 0x0020 != 0),
+                FieldId::Compressed => i64::from(rec.flags & 0x0800 != 0),
+                FieldId::Encrypted => i64::from(rec.flags & 0x4000 != 0),
+                FieldId::Sparse => i64::from(rec.flags & 0x0200 != 0),
+                FieldId::Reparse => i64::from(rec.flags & 0x0400 != 0),
+                FieldId::Offline => i64::from(rec.flags & 0x1000 != 0),
+                FieldId::NotIndexed => i64::from(rec.flags & 0x2000 != 0),
+                FieldId::Temporary => i64::from(rec.flags & 0x0100 != 0),
+                FieldId::Integrity => i64::from(rec.flags & 0x8000 != 0),
+                FieldId::NoScrub => i64::from(rec.flags & 0x0002_0000 != 0),
+                FieldId::Pinned => i64::from(rec.flags & 0x0008_0000 != 0),
+                FieldId::Unpinned => i64::from(rec.flags & 0x0010_0000 != 0),
+                FieldId::RecallOnOpen => i64::from(rec.flags & 0x0004_0000 != 0),
+                FieldId::RecallOnDataAccess => i64::from(rec.flags & 0x0040_0000 != 0),
+                // Composite attribute fields use the raw flags value.
+                FieldId::Attributes | FieldId::AttributeValue | FieldId::ParityAttributes => {
+                    i64::from(rec.flags)
+                }
+                FieldId::Virtual => i64::from(rec.flags & 0x0001_0000 != 0),
                 // Modified is the default; Path/PathOnly handled by tree walk above.
-                FieldId::Path
-                | FieldId::PathOnly
-                | FieldId::Modified
-                | FieldId::Attributes
-                | FieldId::AttributeValue
-                | FieldId::Hidden
-                | FieldId::System
-                | FieldId::Archive
-                | FieldId::ReadOnly
-                | FieldId::Compressed
-                | FieldId::Encrypted
-                | FieldId::Sparse
-                | FieldId::Reparse
-                | FieldId::Offline
-                | FieldId::NotIndexed
-                | FieldId::Temporary
-                | FieldId::Virtual
-                | FieldId::Pinned
-                | FieldId::Unpinned
-                | FieldId::Integrity
-                | FieldId::NoScrub
-                | FieldId::DirectoryFlag
-                | FieldId::RecallOnOpen
-                | FieldId::RecallOnDataAccess
-                | FieldId::ParityAttributes => rec.modified,
+                FieldId::Path | FieldId::PathOnly | FieldId::Modified => rec.modified,
                 #[expect(clippy::cast_possible_wrap, reason = "filename lengths fit i64")]
                 FieldId::NameLength => rec.name(&drive.names).chars().count() as i64,
                 #[expect(clippy::cast_possible_wrap, reason = "path lengths fit i64")]
@@ -319,17 +319,39 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
     // Merge into sorted candidates Vec.
     let mut candidates: Vec<(u16, u32, i64)> = if use_heap {
         if sort_desc {
-            heap_desc
+            let desc_vec: Vec<_> = heap_desc
                 .into_iter()
                 .map(|rev| (rev.0.drive_idx, rev.0.rec_idx, rev.0.sort_key))
-                .collect()
+                .collect();
+            tracing::debug!(
+                sort_column = ?sort_column,
+                sort_desc,
+                heap_size = desc_vec.len(),
+                keys = ?desc_vec.iter().map(|entry| entry.2).collect::<Vec<_>>(),
+                "[3] numeric_top_n heap_desc candidates"
+            );
+            desc_vec
         } else {
-            heap_asc
+            let asc_vec: Vec<_> = heap_asc
                 .into_iter()
                 .map(|he| (he.drive_idx, he.rec_idx, he.sort_key))
-                .collect()
+                .collect();
+            tracing::debug!(
+                sort_column = ?sort_column,
+                sort_desc,
+                heap_size = asc_vec.len(),
+                keys = ?asc_vec.iter().map(|entry| entry.2).collect::<Vec<_>>(),
+                "[3] numeric_top_n heap_asc candidates"
+            );
+            asc_vec
         }
     } else {
+        tracing::debug!(
+            sort_column = ?sort_column,
+            sort_desc,
+            fallback_size = fallback.len(),
+            "[3] numeric_top_n FALLBACK (no heap)"
+        );
         fallback
     };
     if sort_desc {

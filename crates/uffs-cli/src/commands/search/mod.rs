@@ -20,7 +20,7 @@ mod util;
 
 /// Full search configuration — all parameters needed for daemon search.
 #[expect(clippy::struct_excessive_bools, reason = "mirrors CLI parameters")]
-struct SearchConfig<'a> {
+pub struct SearchConfig<'a> {
     /// Search pattern.
     pattern: &'a str,
     /// Single drive letter override.
@@ -126,6 +126,80 @@ struct SearchConfig<'a> {
     agg_specs: Vec<String>,
     /// Force row output even when aggregates are present (--rows flag).
     force_rows: bool,
+}
+
+impl<'a> SearchConfig<'a> {
+    /// Create a minimal config for aggregate-only queries (no rows).
+    ///
+    /// Uses `"*"` as pattern (match everything), no filters, and the given
+    /// aggregate specs.  The `data_dir` / `mft_file` are forwarded to the
+    /// daemon for auto-start on macOS/Linux.
+    pub(crate) fn aggregate_only(
+        pattern: &'a str,
+        agg_specs: Vec<String>,
+        format: &'a str,
+        data_dir: Option<PathBuf>,
+        mft_file: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            pattern,
+            single_drive: None,
+            multi_drives: None,
+            mft_file,
+            data_dir,
+            effective_case_sensitive: false,
+            profile: false,
+            benchmark: false,
+            no_cache: false,
+            files_only: false,
+            dirs_only: false,
+            hide_system: false,
+            hide_ads: false,
+            ext_filter: None,
+            min_size: None,
+            max_size: None,
+            min_descendants: None,
+            max_descendants: None,
+            // Use limit=1 (not 0) because the daemon treats 0/None as
+            // unlimited, which would serialize all 25M+ records.  The
+            // aggregate engine runs over the full index regardless of
+            // limit, so limiting rows to 1 is harmless.
+            limit: 1,
+            attr_filter: None,
+            newer: None,
+            older: None,
+            newer_created: None,
+            older_created: None,
+            newer_accessed: None,
+            older_accessed: None,
+            exclude: None,
+            in_path: None,
+            type_filter: None,
+            min_bulkiness: None,
+            max_bulkiness: None,
+            min_name_length: None,
+            max_name_length: None,
+            min_path_length: None,
+            max_path_length: None,
+            min_size_on_disk: None,
+            max_size_on_disk: None,
+            min_treesize: None,
+            max_treesize: None,
+            min_tree_allocated: None,
+            max_tree_allocated: None,
+            allowed_months: &[],
+            match_path: false,
+            sort: None,
+            sort_desc: false,
+            format,
+            out: "",
+            output_config: OutputConfig::default(),
+            output_targets: Vec::new(),
+            start_time: std::time::Instant::now(),
+            agg_specs,
+            force_rows: false,
+        }
+    }
 }
 
 /// Search for files matching a pattern.
@@ -275,6 +349,14 @@ pub async fn search(
         start_time,
     )?;
 
-    let rows = daemon::search_via_daemon(&config).await?;
-    dispatch::finalize_output(&rows, &config)
+    run_with_config(&config).await
+}
+
+/// Execute a search/aggregate via the daemon using a pre-built config.
+///
+/// This is the shared core used by both the search command and the
+/// aggregate subcommand.
+pub async fn run_with_config(config: &SearchConfig<'_>) -> Result<()> {
+    let (rows, aggregations) = daemon::search_via_daemon(config).await?;
+    dispatch::finalize_output(&rows, &aggregations, config)
 }

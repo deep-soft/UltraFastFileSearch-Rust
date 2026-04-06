@@ -1,8 +1,9 @@
 //! Stats command implementation.
 //!
 //! Supports two modes:
-//! - **Daemon mode** (no path): runs the `overview` aggregate preset via the
-//!   daemon, producing a rich summary with counts, size stats, and breakdowns.
+//! - **Daemon mode** (no path): routed through `SearchConfig::aggregate_only`
+//!   + `run_with_config` in `main.rs` — reuses the full search daemon
+//!   lifecycle (auto-start, await_ready, data-dir forwarding).
 //! - **Parquet mode** (path given): legacy path that loads a parquet index file
 //!   and computes basic stats with Polars queries.
 
@@ -13,53 +14,20 @@ use anyhow::{Context, Result};
 
 use super::format_size;
 
-/// Show statistics about files.
+/// Show statistics about files from a parquet index.
 ///
-/// When `path` is `None`, connects to the daemon and runs the `overview`
-/// aggregate preset. When `path` is `Some`, loads a parquet index file for
-/// legacy stats.
+/// Daemon-mode stats are handled in `main.rs` via the search path.
 ///
 /// # Errors
 ///
-/// Returns an error if the daemon or index cannot be reached, or I/O fails.
+/// Returns an error if the index cannot be loaded or I/O fails.
 pub async fn stats(path: Option<&Path>, top: u32) -> Result<()> {
     match path {
-        None => stats_via_daemon().await,
+        None => {
+            anyhow::bail!("stats without a path should be routed through search path in main.rs")
+        }
         Some(dir) => stats_from_parquet(dir, top),
     }
-}
-
-/// Run `overview` preset aggregate via the daemon and print the results.
-async fn stats_via_daemon() -> Result<()> {
-    use uffs_client::protocol::{AggregateSpecWire, SearchParams};
-
-    let params = SearchParams {
-        pattern: "*".to_owned(),
-        aggregations: vec![AggregateSpecWire {
-            kind: "preset".to_owned(),
-            label: None,
-            field: None,
-            top: None,
-            interval: None,
-            calendar: None,
-            boundaries: vec![],
-            metrics: vec![],
-            preset: Some("overview".to_owned()),
-        }],
-        include_rows: false,
-        ..Default::default()
-    };
-
-    let mut client = uffs_client::connect::UffsClient::connect()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to connect to daemon: {err}"))?;
-
-    let response = client
-        .search(&params)
-        .await
-        .map_err(|err| anyhow::anyhow!("Stats query failed: {err}"))?;
-
-    super::aggregate::print_table_results(&response.aggregations)
 }
 
 /// Legacy parquet-based stats.

@@ -208,11 +208,7 @@ fn compare_by_column(
 ///
 /// Kept as a separate function (rather than inlined into `compare_by_column`)
 /// because inlining 42 match arms into a nested closure harms readability.
-#[expect(
-    clippy::single_call_fn,
-    reason = "clarity: 42-arm match is better as a named helper"
-)]
-const fn field_to_attr_bit(field: FieldId) -> u32 {
+pub const fn field_to_attr_bit(field: FieldId) -> u32 {
     match field {
         FieldId::Hidden => 0x0002,
         FieldId::System => 0x0004,

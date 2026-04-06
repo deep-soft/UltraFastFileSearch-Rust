@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -171,14 +172,19 @@ pub(super) fn build_search_config<'a>(
 ///
 /// For json/table formats, a small `DataFrame` is created from the result rows
 /// only (not the full MFT) to reuse existing Polars serialization.
+/// Aggregate results (if any) are printed after the rows.
 pub(super) fn finalize_output(
     rows: &[uffs_core::search::backend::DisplayRow],
+    aggregations: &[uffs_client::protocol::AggregateResultWire],
     config: &SearchConfig<'_>,
 ) -> Result<()> {
     let elapsed = config.start_time.elapsed();
     let t_output = std::time::Instant::now();
 
-    if !config.benchmark {
+    // Skip row output when running aggregate-only (unless --rows was given).
+    let has_aggs = !aggregations.is_empty();
+    let show_rows = !config.benchmark && (!has_aggs || config.force_rows);
+    if show_rows {
         write_native_results(
             rows,
             config.format,
@@ -189,6 +195,26 @@ pub(super) fn finalize_output(
             config.pattern,
         )?;
     }
+
+    // Print aggregate results (from --agg, --count, --facet, etc.)
+    if !aggregations.is_empty() {
+        match config.format {
+            "json" => {
+                let json = serde_json::to_string_pretty(aggregations)?;
+                writeln!(std::io::stdout(), "{json}")?;
+            }
+            "csv" | "tsv" => {
+                crate::commands::aggregate::print_csv_results(
+                    aggregations,
+                    config.format == "tsv",
+                )?;
+            }
+            _ => {
+                crate::commands::aggregate::print_table_results(aggregations)?;
+            }
+        }
+    }
+
     let output_ms = t_output.elapsed().as_millis();
     let wall_ms = config.start_time.elapsed().as_millis();
 

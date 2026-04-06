@@ -38,6 +38,87 @@ mod lifecycle;
 /// JSON-RPC protocol types.
 mod protocol;
 
+/// Default log file location: `<data-local-dir>/uffs/uffs_daemon.log`.
+///
+/// Falls back to `./uffs_daemon.log` if the platform data directory
+/// cannot be determined.
+fn default_log_file() -> PathBuf {
+    dirs_next::data_local_dir().map_or_else(
+        || PathBuf::from("uffs_daemon.log"),
+        |dir| dir.join("uffs").join("uffs_daemon.log"),
+    )
+}
+
+/// Initialise tracing for the daemon process.
+///
+/// * `log_file = Some(path)` — write to that file (append mode). A path of
+///   `"-"` or empty string uses [`default_log_file`].
+/// * `log_file = None` **and** the effective log level is `debug` or `trace` —
+///   automatically write to [`default_log_file`] so that diagnostic output is
+///   never lost to `/dev/null`.
+/// * `log_file = None` with a higher level — write to stdout.
+///
+/// Returns a guard that **must** be held until the daemon exits —
+/// dropping it flushes the non-blocking writer.
+#[must_use]
+pub fn init_tracing(
+    log_spec: &str,
+    log_file: Option<&std::path::Path>,
+) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let filter = tracing_subscriber::EnvFilter::try_new(log_spec)
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    // Decide whether to use a file writer.
+    let is_verbose = {
+        let lower = log_spec.to_ascii_lowercase();
+        lower.contains("debug") || lower.contains("trace")
+    };
+    let effective_file: Option<PathBuf> = match log_file {
+        Some(path) => {
+            let resolved = if path.as_os_str().is_empty() || path == std::path::Path::new("-") {
+                default_log_file()
+            } else {
+                path.to_path_buf()
+            };
+            Some(resolved)
+        }
+        None if is_verbose => Some(default_log_file()),
+        None => None,
+    };
+
+    if let Some(resolved) = effective_file {
+        // Ensure parent directory exists.
+        if let Some(parent) = resolved.parent() {
+            let _ignore = std::fs::create_dir_all(parent);
+        }
+
+        let file_appender = tracing_appender::rolling::never(
+            resolved
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(".")),
+            resolved
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("uffs_daemon.log")),
+        );
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        // `try_init` — a subscriber may already exist when invoked via
+        // the embedded `uffs daemon run` path.
+        let _ignore = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(non_blocking)
+            .try_init();
+        Some(guard)
+    } else {
+        let _ignore = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .try_init();
+        None
+    }
+}
+
 /// Configuration for [`run_daemon`].
 pub struct DaemonConfig {
     /// MFT files to load.
@@ -54,6 +135,11 @@ pub struct DaemonConfig {
     pub no_cache: bool,
     /// Log level string (e.g. "info", "debug").
     pub log_level: String,
+    /// Optional log file path.  When set, daemon tracing output is
+    /// written to this file instead of stdout.  If the value is empty
+    /// or `"-"`, the daemon defaults to `./uffs_daemon.log` in the
+    /// current working directory.
+    pub log_file: Option<PathBuf>,
 }
 
 /// Bail if the daemon has nothing to serve.

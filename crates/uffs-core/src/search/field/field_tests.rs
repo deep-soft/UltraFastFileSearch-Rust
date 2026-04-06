@@ -18,7 +18,9 @@ fn field_id_parse_accepts_common_aliases() {
         ("allocated", FieldId::SizeOnDisk),
         ("written", FieldId::Modified),
         ("ext", FieldId::Extension),
-        ("directory", FieldId::Type),
+        ("directory", FieldId::DirectoryFlag),
+        ("dir", FieldId::DirectoryFlag),
+        ("folder", FieldId::Type),
         ("r", FieldId::ReadOnly),
         ("notcontent", FieldId::NotIndexed),
         ("decendents", FieldId::Descendants),
@@ -113,6 +115,45 @@ fn field_id_tree_field_detection() {
     assert!(FieldId::TreeAllocated.is_tree_field());
     assert!(FieldId::Bulkiness.is_tree_field());
     assert!(!FieldId::Size.is_tree_field());
+}
+
+// ── Alias collision guard ────────────────────────────────────
+
+/// Every alias and canonical name must resolve to exactly one `FieldId`.
+///
+/// This test prevents the class of bug where two fields claim the same
+/// alias — `FieldId::parse` does a linear scan and silently returns the
+/// first match, so the second field becomes unreachable by that name.
+#[test]
+fn field_id_no_alias_collisions() {
+    use std::collections::HashMap;
+
+    let mut seen: HashMap<String, FieldId> = HashMap::new();
+    for &field in FieldId::ALL {
+        let meta = field.metadata();
+
+        // Check canonical name.
+        let canon = meta.canonical_name.to_ascii_lowercase();
+        assert!(
+            !seen.contains_key(&canon),
+            "alias collision: canonical name \"{canon}\" claimed by \
+             both {:?} and {field:?}",
+            seen.get(&canon)
+        );
+        seen.insert(canon, field);
+
+        // Check each alias.
+        for alias in meta.aliases {
+            let key = alias.to_ascii_lowercase();
+            assert!(
+                !seen.contains_key(&key),
+                "alias collision: \"{key}\" claimed by both \
+                 {:?} and {field:?}",
+                seen.get(&key)
+            );
+            seen.insert(key, field);
+        }
+    }
 }
 
 // ── Aggregate capability tests ─────────────────────────────────

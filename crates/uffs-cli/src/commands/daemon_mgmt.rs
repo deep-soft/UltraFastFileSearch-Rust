@@ -31,19 +31,41 @@ pub async fn daemon(action: &DaemonAction) -> Result<()> {
             no_retire,
             no_cache,
             log_level,
+            log_file,
         } => {
-            daemon_run(
+            daemon_run(&DaemonRunParams {
                 mft_files,
-                data_dir.as_ref(),
+                data_dir: data_dir.as_ref(),
                 drives,
-                *idle_timeout,
-                *no_retire,
-                *no_cache,
+                idle_timeout: *idle_timeout,
+                no_retire: *no_retire,
+                no_cache: *no_cache,
                 log_level,
-            )
+                log_file: log_file.as_deref(),
+            })
             .await
         }
     }
+}
+
+/// Parameters for `daemon_run`, grouped to stay under the argument-count limit.
+struct DaemonRunParams<'a> {
+    /// MFT file paths to load.
+    mft_files: &'a [std::path::PathBuf],
+    /// Optional data directory override.
+    data_dir: Option<&'a std::path::PathBuf>,
+    /// Drive letters to scan.
+    drives: &'a [char],
+    /// Idle timeout in seconds.
+    idle_timeout: u64,
+    /// Disable retirement of stale indices.
+    no_retire: bool,
+    /// Disable on-disk caching.
+    no_cache: bool,
+    /// Log level spec (e.g. `"info"`, `"debug"`).
+    log_level: &'a str,
+    /// Optional log file path.
+    log_file: Option<&'a std::path::Path>,
 }
 
 /// `uffs daemon run` — run the daemon in-process (embedded mode).
@@ -51,36 +73,24 @@ pub async fn daemon(action: &DaemonAction) -> Result<()> {
 /// This is the same daemon logic as the standalone `uffs-daemon` binary,
 /// invoked by the client's auto-start mechanism so only a single `uffs`
 /// binary needs to be deployed.
-async fn daemon_run(
-    mft_files: &[std::path::PathBuf],
-    data_dir: Option<&std::path::PathBuf>,
-    drives: &[char],
-    idle_timeout: u64,
-    no_retire: bool,
-    no_cache: bool,
-    log_level: &str,
-) -> Result<()> {
+async fn daemon_run(params: &DaemonRunParams<'_>) -> Result<()> {
     // Initialise tracing for the daemon — when launched as a detached
     // background process, no subscriber exists yet.  When called in-process
     // (e.g. `uffs daemon run` from the same CLI binary), a subscriber may
     // already be installed; `try_init` gracefully handles that.
     // UFFS_LOG env var overrides --log-level for diagnostic sessions.
-    let log_spec = std::env::var("UFFS_LOG").unwrap_or_else(|_| log_level.to_owned());
-    let filter = tracing_subscriber::EnvFilter::try_new(&log_spec)
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let _ignore = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .try_init();
+    let log_spec = std::env::var("UFFS_LOG").unwrap_or_else(|_| params.log_level.to_owned());
+    let _guard = uffs_daemon::init_tracing(&log_spec, params.log_file);
 
     uffs_daemon::run_daemon(uffs_daemon::DaemonConfig {
-        mft_files: mft_files.to_vec(),
-        data_dir: data_dir.cloned(),
-        drives: drives.to_vec(),
-        idle_timeout,
-        no_retire,
-        no_cache,
-        log_level: log_level.to_owned(),
+        mft_files: params.mft_files.to_vec(),
+        data_dir: params.data_dir.cloned(),
+        drives: params.drives.to_vec(),
+        idle_timeout: params.idle_timeout,
+        no_retire: params.no_retire,
+        no_cache: params.no_cache,
+        log_level: params.log_level.to_owned(),
+        log_file: params.log_file.map(std::path::Path::to_path_buf),
     })
     .await
     .with_context(|| "daemon run failed")

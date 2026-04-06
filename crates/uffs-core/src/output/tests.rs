@@ -77,7 +77,10 @@ fn test_parse_column_aliases() {
         OutputColumn::parse("notcontent"),
         Some(OutputColumn::NotIndexed)
     );
-    assert_eq!(OutputColumn::parse("directory"), Some(OutputColumn::Type));
+    assert_eq!(
+        OutputColumn::parse("directory"),
+        Some(OutputColumn::DirectoryFlag)
+    );
     // CPP typo support
     assert_eq!(
         OutputColumn::parse("decendents"),

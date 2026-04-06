@@ -81,6 +81,13 @@ impl IndexManager {
             },
             |dir| dir == SearchSortDirection::Desc,
         );
+        tracing::debug!(
+            field_name = &*spec.field,
+            field = ?field,
+            spec_direction = ?spec.direction,
+            descending,
+            "[0] sort_spec_to_backend"
+        );
         Some((field, descending))
     }
 

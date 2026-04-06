@@ -63,6 +63,14 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
     filter_mode: FilterMode,
     search_filters: &mut SearchFilters,
 ) -> Vec<DisplayRow> {
+    tracing::debug!(
+        sort_column = ?sort_column,
+        sort_desc,
+        limit,
+        filter_mode = ?filter_mode,
+        drives = drives.len(),
+        "[2] collect_global_top_n entry"
+    );
     match sort_column {
         FieldId::Path | FieldId::PathOnly => {
             // Hierarchical depth-first tree walk for Path sort

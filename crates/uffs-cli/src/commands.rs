@@ -9,7 +9,7 @@ use indicatif::MultiProgress;
 use indicatif::{ProgressBar, ProgressStyle};
 
 /// Aggregate analytics subcommand.
-mod aggregate;
+pub mod aggregate;
 /// Daemon management subcommands.
 mod daemon_mgmt;
 /// Index subcommand implementation.
@@ -19,11 +19,10 @@ mod info;
 /// Output helpers for search results.
 mod output;
 /// Search command implementation.
-mod search;
+pub mod search;
 /// Stats subcommand implementation.
 mod stats;
 
-pub use self::aggregate::aggregate;
 pub use self::daemon_mgmt::daemon;
 pub use self::index::index;
 pub use self::info::info;

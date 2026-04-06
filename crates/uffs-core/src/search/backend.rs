@@ -596,6 +596,15 @@ pub fn search_index(
 
     let mut rows = Vec::new();
 
+    tracing::debug!(
+        pattern,
+        sort_column = ?sort_column,
+        sort_desc,
+        limit,
+        is_match_all,
+        "[1] search_index entry"
+    );
+
     if is_match_all {
         rows = super::query::collect_global_top_n(
             &active_drives,

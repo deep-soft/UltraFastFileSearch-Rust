@@ -564,6 +564,17 @@ pub enum Commands {
         /// Show top N largest files (parquet mode only)
         #[arg(long, default_value = "10")]
         top: u32,
+
+        /// Data directory containing `drive_*` subdirectories with MFT files.
+        ///
+        /// Forwarded to daemon when auto-starting (same as search
+        /// `--data-dir`).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+
+        /// Raw MFT file(s) to load (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        mft_file: Vec<PathBuf>,
     },
 
     /// Run aggregate analytics on the filesystem index
@@ -593,6 +604,17 @@ pub enum Commands {
         /// Output format: table (default), json, csv, tsv.
         #[arg(long, default_value = "table")]
         format: String,
+
+        /// Data directory containing `drive_*` subdirectories with MFT files.
+        ///
+        /// Forwarded to daemon when auto-starting (same as search
+        /// `--data-dir`).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+
+        /// Raw MFT file(s) to load (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        mft_file: Vec<PathBuf>,
     },
 
     /// Manage the UFFS background daemon
@@ -678,5 +700,13 @@ pub enum DaemonAction {
         /// Log level.
         #[arg(long, default_value = "info")]
         log_level: String,
+
+        /// Write daemon logs to a file instead of stdout.
+        ///
+        /// When the daemon is spawned as a detached process its stdout is
+        /// `/dev/null`, so setting `--log-file` is the only way to capture
+        /// tracing output.  Pass `"-"` for the default `./uffs_daemon.log`.
+        #[arg(long, value_name = "PATH")]
+        log_file: Option<PathBuf>,
     },
 }

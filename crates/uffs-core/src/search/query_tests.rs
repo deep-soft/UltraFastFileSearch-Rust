@@ -482,3 +482,577 @@ fn whole_word_search_exact_match() {
         "whole-word exact match must find readme.txt"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// collect_global_top_n — boolean flag sort keys
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Build a test drive where two files differ only by a single NTFS attribute
+/// flag.  `flagged_name` has the bit set; `unflagged_name` does not.
+///
+/// Both files have identical modified timestamps so any sort that falls back
+/// to `rec.modified` will produce an UNSTABLE order — the test catches this.
+fn build_flag_test_drive(
+    flag_bit: u32,
+    flagged_name: &str,
+    unflagged_name: &str,
+) -> DriveCompactIndex {
+    let mut idx = MftIndex::new('C');
+
+    // Root directory.
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // File WITH the flag.
+    let f1_off = idx.add_name(flagged_name);
+    let f1_ext = idx.intern_extension(flagged_name);
+    let f1 = idx.get_or_create(100);
+    f1.first_name.name = IndexNameRef::new(
+        f1_off,
+        u16::try_from(flagged_name.len()).expect("name"),
+        true,
+        f1_ext,
+    );
+    f1.first_name.parent_frs = ROOT_FRS;
+    f1.first_stream.size = SizeInfo {
+        length: 100,
+        allocated: 512,
+    };
+    f1.stdinfo.flags = flag_bit | 0x20; // flag + archive
+    f1.stdinfo.modified = 5_000_000;
+    f1.stdinfo.created = 5_000_000;
+
+    // File WITHOUT the flag — same timestamps.
+    let f2_off = idx.add_name(unflagged_name);
+    let f2_ext = idx.intern_extension(unflagged_name);
+    let f2 = idx.get_or_create(101);
+    f2.first_name.name = IndexNameRef::new(
+        f2_off,
+        u16::try_from(unflagged_name.len()).expect("name"),
+        true,
+        f2_ext,
+    );
+    f2.first_name.parent_frs = ROOT_FRS;
+    f2.first_stream.size = SizeInfo {
+        length: 100,
+        allocated: 512,
+    };
+    f2.stdinfo.flags = 0x20; // archive only, flag NOT set
+    f2.stdinfo.modified = 5_000_000; // same as f1 — deliberate
+    f2.stdinfo.created = 5_000_000;
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    drive
+}
+
+/// Verify that sorting by a boolean flag field places the flagged record
+/// first when descending, and last when ascending.
+///
+/// This test covers the TOP-N heap path in `collect_global_top_n_numeric`
+/// (pattern `"*"` with a limit), which uses a numeric sort key.  A past
+/// regression fell back to `rec.modified` for all boolean fields, making
+/// boolean sorts effectively random.
+fn assert_boolean_sort(field: FieldId, flag_bit: u32) {
+    let drive = build_flag_test_drive(flag_bit, "flagged.dat", "plain.dat");
+    let drives = vec![drive];
+    let mut filters = SearchFilters::default();
+
+    // Descending: flagged record should come first.
+    let rows_desc = collect_global_top_n(&drives, 10, field, true, FilterMode::All, &mut filters);
+    assert!(
+        rows_desc.len() >= 2,
+        "{field:?} desc: expected ≥2 rows, got {}",
+        rows_desc.len()
+    );
+    assert_eq!(
+        rows_desc.first().expect("first").name(),
+        "flagged.dat",
+        "{field:?} desc: flagged record must sort first"
+    );
+
+    // Ascending: flagged record should come last.
+    let rows_asc = collect_global_top_n(&drives, 10, field, false, FilterMode::All, &mut filters);
+    assert!(
+        rows_asc.len() >= 2,
+        "{field:?} asc: expected ≥2 rows, got {}",
+        rows_asc.len()
+    );
+    assert_eq!(
+        rows_asc.last().expect("last").name(),
+        "flagged.dat",
+        "{field:?} asc: flagged record must sort last"
+    );
+}
+
+#[test]
+fn top_n_sort_by_directory_flag() {
+    // DirectoryFlag uses is_directory() (bit 0x0010).
+    let mut idx = MftIndex::new('C');
+
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // A directory.
+    let dir_off = idx.add_name("mydir");
+    let dir_ext = idx.intern_extension("mydir");
+    let dir_rec = idx.get_or_create(100);
+    dir_rec.stdinfo.set_directory(true);
+    dir_rec.stdinfo.flags = 0x0010; // directory
+    dir_rec.first_name.name = IndexNameRef::new(dir_off, 5, true, dir_ext);
+    dir_rec.first_name.parent_frs = ROOT_FRS;
+    dir_rec.stdinfo.modified = 5_000_000;
+
+    // A file with the same timestamp.
+    let file_off = idx.add_name("myfile.txt");
+    let file_ext = idx.intern_extension("myfile.txt");
+    let file_rec = idx.get_or_create(101);
+    file_rec.stdinfo.flags = 0x0020; // archive, NOT directory
+    file_rec.first_name.name = IndexNameRef::new(file_off, 10, true, file_ext);
+    file_rec.first_name.parent_frs = ROOT_FRS;
+    file_rec.first_stream.size = SizeInfo {
+        length: 50,
+        allocated: 512,
+    };
+    file_rec.stdinfo.modified = 5_000_000;
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    let drives = vec![drive];
+    let mut filters = SearchFilters::default();
+
+    // Desc: directory first.
+    let rows = collect_global_top_n(
+        &drives,
+        10,
+        FieldId::DirectoryFlag,
+        true,
+        FilterMode::All,
+        &mut filters,
+    );
+    assert!(rows.len() >= 2, "expected ≥2 rows, got {}", rows.len());
+    assert_eq!(
+        rows.first().expect("first").name(),
+        "mydir",
+        "DirectoryFlag desc: directory must sort first"
+    );
+    assert_eq!(
+        rows.last().expect("last").name(),
+        "myfile.txt",
+        "DirectoryFlag desc: file must sort last"
+    );
+}
+
+#[test]
+fn top_n_sort_by_hidden_flag() {
+    assert_boolean_sort(FieldId::Hidden, 0x0002);
+}
+
+#[test]
+fn top_n_sort_by_system_flag() {
+    assert_boolean_sort(FieldId::System, 0x0004);
+}
+
+#[test]
+fn top_n_sort_by_readonly_flag() {
+    assert_boolean_sort(FieldId::ReadOnly, 0x0001);
+}
+
+#[test]
+fn top_n_sort_by_compressed_flag() {
+    assert_boolean_sort(FieldId::Compressed, 0x0800);
+}
+
+#[test]
+fn top_n_sort_by_encrypted_flag() {
+    assert_boolean_sort(FieldId::Encrypted, 0x4000);
+}
+
+#[test]
+fn top_n_sort_by_sparse_flag() {
+    assert_boolean_sort(FieldId::Sparse, 0x0200);
+}
+
+#[test]
+fn top_n_sort_by_reparse_flag() {
+    assert_boolean_sort(FieldId::Reparse, 0x0400);
+}
+
+#[test]
+fn top_n_sort_by_offline_flag() {
+    assert_boolean_sort(FieldId::Offline, 0x1000);
+}
+
+#[test]
+fn top_n_sort_by_not_indexed_flag() {
+    assert_boolean_sort(FieldId::NotIndexed, 0x2000);
+}
+
+#[test]
+fn top_n_sort_by_integrity_flag() {
+    assert_boolean_sort(FieldId::Integrity, 0x8000);
+}
+
+#[test]
+fn top_n_sort_by_no_scrub_flag() {
+    assert_boolean_sort(FieldId::NoScrub, 0x0002_0000);
+}
+
+#[test]
+fn top_n_sort_by_pinned_flag() {
+    assert_boolean_sort(FieldId::Pinned, 0x0008_0000);
+}
+
+#[test]
+fn top_n_sort_by_unpinned_flag() {
+    assert_boolean_sort(FieldId::Unpinned, 0x0010_0000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Heap eviction — more records than limit
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Build a drive with `n_files` regular files and `n_dirs` directories.
+///
+/// ALL records share the same `modified` timestamp so any sort that
+/// falls back to `rec.modified` will produce arbitrary (wrong) order.
+fn build_mixed_drive(n_files: usize, n_dirs: usize) -> DriveCompactIndex {
+    let mut idx = MftIndex::new('C');
+
+    // Root directory (FRS 5).
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // Files first (FRS 100..).
+    for i in 0..n_files {
+        let frs = (i as u64) + 100;
+        let name = format!("file_{i:04}.dat");
+        let off = idx.add_name(&name);
+        let ext = idx.intern_extension(&name);
+        let rec = idx.get_or_create(frs);
+        rec.first_name.name =
+            IndexNameRef::new(off, u16::try_from(name.len()).expect("name"), true, ext);
+        rec.first_name.parent_frs = ROOT_FRS;
+        rec.first_stream.size = SizeInfo {
+            length: 100,
+            allocated: 512,
+        };
+        rec.stdinfo.flags = 0x20; // archive only, NOT directory
+        rec.stdinfo.modified = 5_000_000; // same timestamp for all
+        rec.stdinfo.created = 5_000_000;
+    }
+
+    // Directories (FRS 10_000..).
+    for i in 0..n_dirs {
+        let frs = (i as u64) + 10_000;
+        let name = format!("dir_{i:04}");
+        let off = idx.add_name(&name);
+        let ext = idx.intern_extension(&name);
+        let rec = idx.get_or_create(frs);
+        rec.stdinfo.set_directory(true);
+        rec.stdinfo.flags = 0x10; // directory flag
+        rec.first_name.name =
+            IndexNameRef::new(off, u16::try_from(name.len()).expect("name"), true, ext);
+        rec.first_name.parent_frs = ROOT_FRS;
+        rec.stdinfo.modified = 5_000_000; // same timestamp
+        rec.stdinfo.created = 5_000_000;
+    }
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    drive
+}
+
+/// Heap eviction: 30 files + 10 dirs, limit 5, sort directory:desc.
+///
+/// The heap processes files FIRST (FRS 100-129), filling with key=0.
+/// Then directories (FRS 10000-10009) arrive with key=1 and must EVICT
+/// the files.  Result: all 5 slots should be directories.
+#[test]
+fn heap_eviction_directory_desc_dirs_come_last() {
+    let drive = build_mixed_drive(30, 10);
+    let drives = vec![drive];
+    let mut filters = SearchFilters::default();
+
+    let rows = collect_global_top_n(
+        &drives,
+        5,
+        FieldId::DirectoryFlag,
+        true,
+        FilterMode::All,
+        &mut filters,
+    );
+    assert_eq!(rows.len(), 5, "expected 5 rows");
+    for (i, row) in rows.iter().enumerate() {
+        assert!(
+            row.is_directory,
+            "row {i} '{}' must be directory (DirectoryFlag desc, limit 5, 10 dirs available)",
+            row.name()
+        );
+    }
+}
+
+/// Heap eviction: same setup but ascending — all 5 should be files.
+#[test]
+fn heap_eviction_directory_asc_files_come_last() {
+    let drive = build_mixed_drive(30, 10);
+    let drives = vec![drive];
+    let mut filters = SearchFilters::default();
+
+    let rows = collect_global_top_n(
+        &drives,
+        5,
+        FieldId::DirectoryFlag,
+        false,
+        FilterMode::All,
+        &mut filters,
+    );
+    assert_eq!(rows.len(), 5, "expected 5 rows");
+    for (i, row) in rows.iter().enumerate() {
+        assert!(
+            !row.is_directory,
+            "row {i} '{}' must be file (DirectoryFlag asc, limit 5, 30 files available)",
+            row.name()
+        );
+    }
+}
+
+/// Heap eviction with hidden flag: 20 normal + 10 hidden, limit 5, desc.
+#[test]
+fn heap_eviction_hidden_desc() {
+    let mut idx = MftIndex::new('C');
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // 20 normal files (no hidden flag).
+    for i in 0_u64..20 {
+        let frs = i + 100;
+        let name = format!("normal_{i:04}.dat");
+        let off = idx.add_name(&name);
+        let ext = idx.intern_extension(&name);
+        let rec = idx.get_or_create(frs);
+        rec.first_name.name =
+            IndexNameRef::new(off, u16::try_from(name.len()).expect("name"), true, ext);
+        rec.first_name.parent_frs = ROOT_FRS;
+        rec.first_stream.size = SizeInfo {
+            length: 100,
+            allocated: 512,
+        };
+        rec.stdinfo.flags = 0x20; // archive only
+        rec.stdinfo.modified = 5_000_000;
+    }
+    // 10 hidden files.
+    for i in 0_u64..10 {
+        let frs = i + 10_000;
+        let name = format!("hidden_{i:04}.dat");
+        let off = idx.add_name(&name);
+        let ext = idx.intern_extension(&name);
+        let rec = idx.get_or_create(frs);
+        rec.first_name.name =
+            IndexNameRef::new(off, u16::try_from(name.len()).expect("name"), true, ext);
+        rec.first_name.parent_frs = ROOT_FRS;
+        rec.first_stream.size = SizeInfo {
+            length: 100,
+            allocated: 512,
+        };
+        rec.stdinfo.flags = 0x22; // archive + hidden
+        rec.stdinfo.modified = 5_000_000;
+    }
+    let (drive, _, _) = build_compact_index('C', &idx);
+    let drives = vec![drive];
+    let mut filters = SearchFilters::default();
+
+    let rows = collect_global_top_n(
+        &drives,
+        5,
+        FieldId::Hidden,
+        true,
+        FilterMode::All,
+        &mut filters,
+    );
+    assert_eq!(rows.len(), 5);
+    for (i, row) in rows.iter().enumerate() {
+        assert!(
+            row.flags & 0x0002 != 0,
+            "row {i} '{}' flags=0x{:X} must have hidden bit (Hidden desc, limit 5)",
+            row.name(),
+            row.flags
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// search_index integration — pattern "*" with boolean sort
+// ═══════════════════════════════════════════════════════════════════════
+
+/// End-to-end test through `search_index` (the daemon's entry point).
+///
+/// Pattern `"*"` triggers the `is_match_all` path → `collect_global_top_n`.
+/// This test verifies the EXACT code path that the daemon uses when the
+/// CLI sends `--sort directory:desc --limit 5`.
+#[test]
+fn search_index_star_sort_directory_desc() {
+    use alloc::sync::Arc;
+
+    use crate::search::backend::{DriveIndex, SearchRequest, search_index};
+
+    let drive = build_mixed_drive(30, 10);
+    let index = DriveIndex {
+        drives: vec![Arc::new(drive)],
+    };
+    let mut filters = SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            pattern: "*",
+            case_sensitive: false,
+            whole_word: false,
+            match_path: false,
+            result_limit: Some(5),
+            filter_mode: FilterMode::All,
+            search_filters: &mut filters,
+            drives_filter: &[],
+        },
+        FieldId::DirectoryFlag,
+        true, // descending
+        &[],
+    );
+    assert_eq!(result.rows.len(), 5, "expected 5 rows from search_index");
+    for (i, row) in result.rows.iter().enumerate() {
+        assert!(
+            row.is_directory,
+            "search_index row {i} '{}' flags=0x{:X} must be directory \
+             (sort=DirectoryFlag desc, limit=5, 10 dirs available)",
+            row.name(),
+            row.flags
+        );
+    }
+}
+
+/// Same test but ascending — all 5 should be files.
+#[test]
+fn search_index_star_sort_directory_asc() {
+    use alloc::sync::Arc;
+
+    use crate::search::backend::{DriveIndex, SearchRequest, search_index};
+
+    let drive = build_mixed_drive(30, 10);
+    let index = DriveIndex {
+        drives: vec![Arc::new(drive)],
+    };
+    let mut filters = SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            pattern: "*",
+            case_sensitive: false,
+            whole_word: false,
+            match_path: false,
+            result_limit: Some(5),
+            filter_mode: FilterMode::All,
+            search_filters: &mut filters,
+            drives_filter: &[],
+        },
+        FieldId::DirectoryFlag,
+        false, // ascending
+        &[],
+    );
+    assert_eq!(result.rows.len(), 5, "expected 5 rows from search_index");
+    for (i, row) in result.rows.iter().enumerate() {
+        assert!(
+            !row.is_directory,
+            "search_index row {i} '{}' flags=0x{:X} must be file \
+             (sort=DirectoryFlag asc, limit=5, 30 files available)",
+            row.name(),
+            row.flags
+        );
+    }
+}
+
+/// Integration: sort by hidden flag through `search_index`.
+#[test]
+fn search_index_star_sort_hidden_desc() {
+    use alloc::sync::Arc;
+
+    use crate::search::backend::{DriveIndex, SearchRequest, search_index};
+
+    // Reuse the hidden drive from heap_eviction_hidden_desc.
+    let mut idx = MftIndex::new('C');
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+    for i in 0_u64..20 {
+        let frs = i + 100;
+        let name = format!("normal_{i:04}.dat");
+        let off = idx.add_name(&name);
+        let ext = idx.intern_extension(&name);
+        let rec = idx.get_or_create(frs);
+        rec.first_name.name =
+            IndexNameRef::new(off, u16::try_from(name.len()).expect("name"), true, ext);
+        rec.first_name.parent_frs = ROOT_FRS;
+        rec.first_stream.size = SizeInfo {
+            length: 100,
+            allocated: 512,
+        };
+        rec.stdinfo.flags = 0x20;
+        rec.stdinfo.modified = 5_000_000;
+    }
+    for i in 0_u64..10 {
+        let frs = i + 10_000;
+        let name = format!("hidden_{i:04}.dat");
+        let off = idx.add_name(&name);
+        let ext = idx.intern_extension(&name);
+        let rec = idx.get_or_create(frs);
+        rec.first_name.name =
+            IndexNameRef::new(off, u16::try_from(name.len()).expect("name"), true, ext);
+        rec.first_name.parent_frs = ROOT_FRS;
+        rec.first_stream.size = SizeInfo {
+            length: 100,
+            allocated: 512,
+        };
+        rec.stdinfo.flags = 0x22; // archive + hidden
+        rec.stdinfo.modified = 5_000_000;
+    }
+    let (drive, _, _) = build_compact_index('C', &idx);
+    let index = DriveIndex {
+        drives: vec![Arc::new(drive)],
+    };
+    let mut filters = SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            pattern: "*",
+            case_sensitive: false,
+            whole_word: false,
+            match_path: false,
+            result_limit: Some(5),
+            filter_mode: FilterMode::All,
+            search_filters: &mut filters,
+            drives_filter: &[],
+        },
+        FieldId::Hidden,
+        true,
+        &[],
+    );
+    assert_eq!(result.rows.len(), 5);
+    for (i, row) in result.rows.iter().enumerate() {
+        assert!(
+            row.flags & 0x0002 != 0,
+            "search_index row {i} '{}' flags=0x{:X} must be hidden \
+             (sort=Hidden desc, limit=5)",
+            row.name(),
+            row.flags
+        );
+    }
+}

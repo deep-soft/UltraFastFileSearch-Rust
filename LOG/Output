@@ -1,641 +1,219 @@
-(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts/windows/cli-flag-validation.rs
+   ~/Pr/GitHub/UltraFastFileSearch  on   main !13 ?1  rust-script scripts/windows/cli-flag-validation.rs T116                                                  1 ✘  took 3m 48s   at 11:50:14 
+╔══════════════════════════════════════════════════════════════════╗
+║  Building fresh release binary...                                ║
+╚══════════════════════════════════════════════════════════════════╝
+  Workspace: /Users/rnio/Private/Github/UltraFastFileSearch
+   Compiling uffs-core v0.4.96 (/Users/rnio/Private/Github/UltraFastFileSearch/crates/uffs-core)
+   Compiling uffs-daemon v0.4.96 (/Users/rnio/Private/Github/UltraFastFileSearch/crates/uffs-daemon)
+   Compiling uffs-cli v0.4.96 (/Users/rnio/Private/Github/UltraFastFileSearch/crates/uffs-cli)
+    Finished `release` profile [optimized] target(s) in 1m 53s
+  ✅ Build completed in 113.2s
+  Binary: /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs
+
 
 ╔═══════════════════════════════════════════════════════════════╗
-║  UFFS CLI Flag Validation Suite — 3-Level Cache Comparison   ║
+║  UFFS CLI Flag Validation Suite                              ║
 ╚═══════════════════════════════════════════════════════════════╝
-  Binary: C:\Users\rnio\bin\uffs.exe
+  Binary:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs
+  Data dir: /Users/rnio/uffs_data
 
 ┌───────────────────────────────────────────────────────────────┐
-│  Phase 1: COLD (no daemon, no cache)                         │
+│  Startup Timing: COLD → WARM → HOT                          │
 └───────────────────────────────────────────────────────────────┘
   Killing daemon...
-  [PASS] 65815ms  T00 warmup / daemon alive: daemon warm
-  [PASS]   295ms  T01 --files-only: 10 rows, all files
-  [PASS]   244ms  T02 --dirs-only: 10 rows, all directories
-  [PASS]   751ms  T03 --hide-system: 0 rows, no $-prefixed files
-  [PASS]   210ms  T04 --ext rs: 10 rows, all .rs
-  [PASS]   247ms  T05 --ext jpg,png,gif: 10 rows, all image extensions
-  [PASS]   370ms  T06 --min-size 100MB: 10 rows, all >= 100MB
-  [PASS]   461ms  T07 --max-size 1KB: 10 rows, all <= 1KB
-  [PASS]   204ms  T08 --min/max-size 1MB..10MB: 10 rows, all 1MB..10MB
-  [PASS]   197ms  T09 --sort size (asc): 10 rows, sorted asc
-  [PASS]   193ms  T10 --sort size --sort-desc: 10 rows, sorted desc
-  [PASS]   192ms  T11 --sort modified: 10 rows
-  [PASS]   200ms  T12 --sort size,name: 10 rows
-  [PASS]   377ms  T13 --attr hidden: 10 rows, all hidden
-  [PASS]   666ms  T14 --attr !hidden: 10 rows, none hidden
-  [PASS]   465ms  T15 --attr compressed: 10 rows, all compressed
-  [PASS]   191ms  T16 --exclude backup*: 10 rows, no backup* files
-  [PASS]   194ms  T17 --name-only: 10 rows, all contain 'readme'
-  [PASS]   229ms  T18 --case sensitive: 10 rows, case-sensitive match
-  [PASS]   190ms  T19 --word: 10 rows
-  [PASS]   197ms  T20 --format json: 5 NDJSON items
-  [PASS]   200ms  T21 --format table: 62 lines of table output
-  [PASS]   201ms  T22 --columns Name,Size,Path Only: 3 columns in output
-  [PASS]   316ms  T23 --min-descendants 100: 10 dirs with 100+ descendants
-  [PASS]   303ms  T24 --max-descendants 0: 10 empty directories
-  [PASS]   199ms  T25 --newer 7d: 1 rows
-  [PASS]   191ms  T26 --older 365d: 10 rows
-  [PASS]   343ms  T27 --newer-created 30d: 10 rows
-  [PASS]   197ms  T28 --drive C: 10 rows, all on C:
-  [PASS]   194ms  T29 --drives C,D: 10 rows, all on C: or D:
-  [PASS]   200ms  T30 --sep | --quotes ': pipe-separated output
-  [PASS]   193ms  T31 --out file: 101 lines written to file
-  [PASS]   535ms  T32 --benchmark: 0 bytes stdout (benchmark mode)
-  [PASS]   246ms  T33 regex >.*\.config$: 10 rows, all .config files
-  [PASS]   206ms  T34 combined stress: 0 rows, all constraints satisfied
-  [PASS]   764ms  T35 --limit 0 (unlimited): 165062 rows (unlimited)
-  [PASS]   651ms  T36 --older-created 365d: 10 rows
-  [PASS]   373ms  T37 --attr system: 10 rows, all system files
-  [PASS]   390ms  T38 --attr readonly: 10 rows, all readonly
-  [PASS]   384ms  T39 --attr system,!hidden: 10 rows, system but not hidden
-  [PASS]   189ms  T40 no results (graceful): 0 rows, graceful empty result
-  [PASS]   200ms  T41 --header false: 5 lines, no header
-  [PASS]   204ms  T42 --smart-case (lowercase = insensitive): 10 rows, mixed case=true
-  [PASS]   373ms  T43 --newer-accessed 7d: 10 rows
-  [PASS]   365ms  T44 --newer today: 10 rows
-  [PASS]   367ms  T45 --newer yesterday: 10 rows
-  [PASS]   343ms  T46 --newer this_week: 10 rows
-  [PASS]   376ms  T47 --newer last_7d: 10 rows
-  [PASS]   409ms  T48 --newer last_30d: 10 rows
-  [PASS]   370ms  T49 --newer this_month: 10 rows
-  [PASS]   380ms  T50 --newer this_year: 10 rows
-  [PASS]   655ms  T51 --older last_year: 10 rows
-  [PASS]   384ms  T52 --newer last_90d: 10 rows
-  [PASS]   397ms  T53 --newer last_365d: 10 rows
-  [PASS]   369ms  T54 --newer-created today: 10 rows
-  [PASS]   378ms  T55 --newer-accessed this_week: 10 rows
-  [PASS]   374ms  T56 bounded time range (last_week): 10 rows
-  [PASS]   406ms  T57 --newer 2025-01-01: 10 rows
-  [PASS]   194ms  T58 --sort name: 10 rows, sorted by name asc
-  [PASS]   198ms  T59 --sort path: 10 rows
-  [PASS]   203ms  T60 --sort created: 10 rows
-  [PASS]   193ms  T61 --sort accessed: 10 rows
-  [PASS]   197ms  T62 --sort extension: 10 rows
-  [PASS]   204ms  T63 --sort drive: 10 rows
-  [PASS]   201ms  T64 --sort allocated: 10 rows
-  [PASS]   354ms  T65 --sort descendants --sort-desc: 10 rows, sorted desc by descendants
-  [PASS]   196ms  T66 multi-sort size,-name: 20 rows, multi-sort applied
-  [PASS]   201ms  T67 multi-sort -modified,name: 10 rows
-  [PASS]   343ms  T67a --sort treesize: 10 rows, sorted by treesize desc
-  [PASS]   354ms  T67b --sort treeallocated: 10 rows, sorted by treeallocated desc
-  [PASS]   701ms  T67c --sort bulkiness: 10 rows
-  [PASS]  1231ms  T67d --sort namelength: 10 rows, sorted by name length desc
-  [PASS]  1242ms  T67e --sort pathlength: 10 rows
-  [PASS]   194ms  T67f --sort path_only: 10 rows
-  [PASS]   700ms  T67g --sort type: 20 rows
-  [PASS]   357ms  T67h multi-sort treesize,name: 20 rows
-  [PASS]   709ms  T67i multi-sort type,-size: 20 rows
-  [PASS]   603ms  T67j multi-sort hidden,bulkiness: 20 rows
-  [PASS]   612ms  T68 --attr archive: 10 rows, all have archive attr
-  [PASS]   378ms  T69 --attr sparse: 10 rows with sparse attr
-  [PASS]   393ms  T70 --attr reparse: 10 rows with reparse attr
-  [PASS]   372ms  T71 --attr offline: 10 rows with offline attr
-  [PASS]   387ms  T72 --attr encrypted: 0 rows with encrypted attr
-  [PASS]   683ms  T73 --attr !system: 10 rows, no system files
-  [PASS]   384ms  T74 --attr hidden,system: 10 rows, all hidden+system
-  [PASS]   360ms  T75 size+time+ext combined: 10 rows, all constraints met
-  [PASS]   315ms  T76 dirs + desc range + sort: 10 rows, desc 10..1000 sorted
-  [PASS]   374ms  T77 hidden + --newer last_30d: 10 hidden files from last 30 days
-  [PASS]   197ms  T78 exclude + ext + size: 10 rows, all constraints met
-  [PASS]   206ms  T79 projection + json format: 5 projected JSON items
-  [PASS]   210ms  T80 --columns all (wide): 27 cols × 5 rows
-  [PASS]   393ms  T81 --newer-created this_year: 10 rows
-  [PASS]   379ms  T82 --newer-accessed last_week: 10 rows
-  [PASS]   196ms  T83 multi-sort drive,ext,-size: 20 rows
-  [PASS]   208ms  T84 mega combined: 0 rows, all constraints satisfied
-  [PASS]   206ms  T85 table format + projection: 66 table lines
-  [PASS]   583ms  T86 --older-accessed 365d: 10 rows
-  [PASS]   211ms  T87 ext + sort modified: 10 rows, ext filtered + sorted
-  [PASS]   273ms  T88 name-only + hide-system + newer: 10 rows
-  [PASS]   198ms  T88a path: prefix: 10 rows, all paths contain 'windows'
-  [PASS]   197ms  T88b dir: prefix: 10 rows, all directories
-  [PASS]   193ms  T88c file: prefix: 10 rows, all .dll files
-  [PASS]   194ms  T88d --begins-with: 10 rows, all begin with 'note'
-  [PASS]   202ms  T88e --ends-with: 10 rows, all end with '.log'
-  [PASS]   198ms  T88f --contains: 10 rows, all contain 'setup'
-  [PASS]   198ms  T88g --not-contains: 10 rows, no 'debug' in names
-  [FAIL]   193ms  T88h --in-path + pattern: No rows
-  [PASS]   198ms  T88i path: vs --in-path: 10 rows, path: matched
-  [PASS]   198ms  T88j --contains + --not-contains: 10 rows, contains 'update' but not 'old'
-  [PASS]   202ms  T88k dir: prefix + sort treesize: 10 dirs sorted by treesize
-  [PASS]   194ms  T88l --begins-with + --ext: 10 rows, begins-with + ext
-  [FAIL]   675ms  T89 --type code: Row 0: silentuninstall.cmd is not a code file
-  [PASS]   668ms  T90 --type document: 10 rows
-  [FAIL]   677ms  T91 --type executable: Row 2: 100_0371.jpg is not an executable
-  [PASS]   665ms  T92 --type picture: 10 rows
-  [FAIL]   680ms  T93 --type system: Row 0: silentuninstall.cmd is not a system file type
-  [PASS]   691ms  T94 --type code + sort size: 10 code files sorted by size desc
-  [FAIL]   192ms  T95 --in-path *windows*: No rows
-  [PASS]   193ms  T96 --in-path *system32*: 0 rows, all in *system32*
-  [PASS]   195ms  T97 --in-path + --exclude: 0 rows, in-path + exclude
-  [FAIL]   679ms  T98 --min-bulkiness 200: Row 0: bulkiness=0% < 200%
-  [PASS]   574ms  T99 --max-bulkiness 100: 10 rows, all bulkiness <= 100%
-  [PASS]   393ms  T100 bulkiness + size combined: 10 rows, bulky large files
-  [FAIL]   322ms  T101 --min-treesize 100MB: Row 0: Tree Size=0 < 100MB
-  [FAIL]   348ms  T102 --max-treesize 1MB: Row 0: Tree Size=18446744073709551615 > 1MB
-  [FAIL]   334ms  T103 --min-tree-allocated 100MB: Row 0: Tree Allocated=0 < 100MB
-  [PASS]  1101ms  T104 --min-name-length 50: 10 rows, all names >= 50 chars
-  [PASS]  1115ms  T105 --max-name-length 8: 10 rows, all names <= 8 chars
-  [FAIL]   675ms  T106 --min-path-length 200: Row 0: path len 110 < 200
-  [PASS]   676ms  T107 --max-path-length 30: 10 rows
-  [PASS]   465ms  T108 --min-size-on-disk 100MB: 10 rows, all allocated >= 100MB
-  [PASS]   565ms  T109 --max-size-on-disk 4096: 10 rows, all allocated <= 4096
-  [PASS]   688ms  T110 --month jan: 10 rows
-  [PASS]   739ms  T111 --month Q4: 10 rows
-  [PASS]   736ms  T112 --month jan,feb,mar: 10 rows
-  [PASS]   393ms  T113 --month jan + --newer last_365d: 10 rows
-  [PASS]   352ms  T114 --sort hidden:desc: 20 rows, hidden sorted desc
-  [PASS]   354ms  T115 --sort compressed:desc: 20 rows, compressed sorted desc
-  [PASS]   344ms  T116 --sort directory:desc: 20 rows, directory sorted desc
-  [PASS]   362ms  T117 type + in-path + size: 10 rows, all constraints met
-  [FAIL]   315ms  T118 treesize + descendants: Row 0: Tree Size=0 < 10MB
-
-  ─── COLD ───
-  ❌ 11/141 FAILED — wall 119174ms / sum 118939ms
-     ❌ T88h --in-path + pattern: No rows
-     ❌ T89 --type code: Row 0: silentuninstall.cmd is not a code file
-     ❌ T91 --type executable: Row 2: 100_0371.jpg is not an executable
-     ❌ T93 --type system: Row 0: silentuninstall.cmd is not a system file type
-     ❌ T95 --in-path *windows*: No rows
-     ❌ T98 --min-bulkiness 200: Row 0: bulkiness=0% < 200%
-     ❌ T101 --min-treesize 100MB: Row 0: Tree Size=0 < 100MB
-     ❌ T102 --max-treesize 1MB: Row 0: Tree Size=18446744073709551615 > 1MB
-     ❌ T103 --min-tree-allocated 100MB: Row 0: Tree Allocated=0 < 100MB
-     ❌ T106 --min-path-length 200: Row 0: path len 110 < 200
-     ❌ T118 treesize + descendants: Row 0: Tree Size=0 < 10MB
-
-┌───────────────────────────────────────────────────────────────┐
-│  Phase 2: WARM CACHE (cache files present, no daemon)        │
-└───────────────────────────────────────────────────────────────┘
+  COLD (no daemon, no cache)...
+    COLD startup 5899ms + query 110ms = 6009ms (1 rows)
   Killing daemon...
-  [PASS]  4983ms  T00 warmup / daemon alive: daemon warm
-  [PASS]   208ms  T01 --files-only: 10 rows, all files
-  [PASS]   215ms  T02 --dirs-only: 10 rows, all directories
-  [PASS]   724ms  T03 --hide-system: 0 rows, no $-prefixed files
-  [PASS]   219ms  T04 --ext rs: 10 rows, all .rs
-  [PASS]   258ms  T05 --ext jpg,png,gif: 10 rows, all image extensions
-  [PASS]   394ms  T06 --min-size 100MB: 10 rows, all >= 100MB
-  [PASS]   520ms  T07 --max-size 1KB: 10 rows, all <= 1KB
-  [PASS]   216ms  T08 --min/max-size 1MB..10MB: 10 rows, all 1MB..10MB
-  [PASS]   218ms  T09 --sort size (asc): 10 rows, sorted asc
-  [PASS]   207ms  T10 --sort size --sort-desc: 10 rows, sorted desc
-  [PASS]   214ms  T11 --sort modified: 10 rows
-  [PASS]   208ms  T12 --sort size,name: 10 rows
-  [PASS]   415ms  T13 --attr hidden: 10 rows, all hidden
-  [PASS]   661ms  T14 --attr !hidden: 10 rows, none hidden
-  [PASS]   464ms  T15 --attr compressed: 10 rows, all compressed
-  [PASS]   197ms  T16 --exclude backup*: 10 rows, no backup* files
-  [PASS]   196ms  T17 --name-only: 10 rows, all contain 'readme'
-  [PASS]   228ms  T18 --case sensitive: 10 rows, case-sensitive match
-  [PASS]   200ms  T19 --word: 10 rows
-  [PASS]   198ms  T20 --format json: 5 NDJSON items
-  [PASS]   204ms  T21 --format table: 62 lines of table output
-  [PASS]   200ms  T22 --columns Name,Size,Path Only: 3 columns in output
-  [PASS]   335ms  T23 --min-descendants 100: 10 dirs with 100+ descendants
-  [PASS]   347ms  T24 --max-descendants 0: 10 empty directories
-  [PASS]   202ms  T25 --newer 7d: 1 rows
-  [PASS]   198ms  T26 --older 365d: 10 rows
-  [PASS]   387ms  T27 --newer-created 30d: 10 rows
-  [PASS]   194ms  T28 --drive C: 10 rows, all on C:
-  [PASS]   199ms  T29 --drives C,D: 10 rows, all on C: or D:
-  [PASS]   197ms  T30 --sep | --quotes ': pipe-separated output
-  [PASS]   200ms  T31 --out file: 101 lines written to file
-  [PASS]   523ms  T32 --benchmark: 0 bytes stdout (benchmark mode)
-  [PASS]   240ms  T33 regex >.*\.config$: 10 rows, all .config files
-  [PASS]   193ms  T34 combined stress: 0 rows, all constraints satisfied
-  [PASS]   760ms  T35 --limit 0 (unlimited): 165062 rows (unlimited)
-  [PASS]   640ms  T36 --older-created 365d: 10 rows
-  [PASS]   392ms  T37 --attr system: 10 rows, all system files
-  [PASS]   403ms  T38 --attr readonly: 10 rows, all readonly
-  [PASS]   384ms  T39 --attr system,!hidden: 10 rows, system but not hidden
-  [PASS]   192ms  T40 no results (graceful): 0 rows, graceful empty result
-  [PASS]   192ms  T41 --header false: 5 lines, no header
-  [PASS]   199ms  T42 --smart-case (lowercase = insensitive): 10 rows, mixed case=true
-  [PASS]   379ms  T43 --newer-accessed 7d: 10 rows
-  [PASS]   371ms  T44 --newer today: 10 rows
-  [PASS]   366ms  T45 --newer yesterday: 10 rows
-  [PASS]   368ms  T46 --newer this_week: 10 rows
-  [PASS]   376ms  T47 --newer last_7d: 10 rows
-  [PASS]   370ms  T48 --newer last_30d: 10 rows
-  [PASS]   364ms  T49 --newer this_month: 10 rows
-  [PASS]   387ms  T50 --newer this_year: 10 rows
-  [PASS]   678ms  T51 --older last_year: 10 rows
-  [PASS]   418ms  T52 --newer last_90d: 10 rows
-  [PASS]   425ms  T53 --newer last_365d: 10 rows
-  [PASS]   380ms  T54 --newer-created today: 10 rows
-  [PASS]   379ms  T55 --newer-accessed this_week: 10 rows
-  [PASS]   364ms  T56 bounded time range (last_week): 10 rows
-  [PASS]   404ms  T57 --newer 2025-01-01: 10 rows
-  [PASS]   194ms  T58 --sort name: 10 rows, sorted by name asc
-  [PASS]   203ms  T59 --sort path: 10 rows
-  [PASS]   192ms  T60 --sort created: 10 rows
-  [PASS]   191ms  T61 --sort accessed: 10 rows
-  [PASS]   195ms  T62 --sort extension: 10 rows
-  [PASS]   203ms  T63 --sort drive: 10 rows
-  [PASS]   202ms  T64 --sort allocated: 10 rows
-  [PASS]   352ms  T65 --sort descendants --sort-desc: 10 rows, sorted desc by descendants
-  [PASS]   199ms  T66 multi-sort size,-name: 20 rows, multi-sort applied
-  [PASS]   197ms  T67 multi-sort -modified,name: 10 rows
-  [PASS]   351ms  T67a --sort treesize: 10 rows, sorted by treesize desc
-  [PASS]   353ms  T67b --sort treeallocated: 10 rows, sorted by treeallocated desc
-  [PASS]   713ms  T67c --sort bulkiness: 10 rows
-  [PASS]  1233ms  T67d --sort namelength: 10 rows, sorted by name length desc
-  [PASS]  1235ms  T67e --sort pathlength: 10 rows
-  [PASS]   193ms  T67f --sort path_only: 10 rows
-  [PASS]   711ms  T67g --sort type: 20 rows
-  [PASS]   348ms  T67h multi-sort treesize,name: 20 rows
-  [PASS]   719ms  T67i multi-sort type,-size: 20 rows
-  [PASS]   590ms  T67j multi-sort hidden,bulkiness: 20 rows
-  [PASS]   612ms  T68 --attr archive: 10 rows, all have archive attr
-  [PASS]   384ms  T69 --attr sparse: 10 rows with sparse attr
-  [PASS]   404ms  T70 --attr reparse: 10 rows with reparse attr
-  [PASS]   389ms  T71 --attr offline: 10 rows with offline attr
-  [PASS]   388ms  T72 --attr encrypted: 0 rows with encrypted attr
-  [PASS]   677ms  T73 --attr !system: 10 rows, no system files
-  [PASS]   384ms  T74 --attr hidden,system: 10 rows, all hidden+system
-  [PASS]   376ms  T75 size+time+ext combined: 10 rows, all constraints met
-  [PASS]   315ms  T76 dirs + desc range + sort: 10 rows, desc 10..1000 sorted
-  [PASS]   375ms  T77 hidden + --newer last_30d: 10 hidden files from last 30 days
-  [PASS]   198ms  T78 exclude + ext + size: 10 rows, all constraints met
-  [PASS]   195ms  T79 projection + json format: 5 projected JSON items
-  [PASS]   197ms  T80 --columns all (wide): 27 cols × 5 rows
-  [PASS]   402ms  T81 --newer-created this_year: 10 rows
-  [PASS]   397ms  T82 --newer-accessed last_week: 10 rows
-  [PASS]   192ms  T83 multi-sort drive,ext,-size: 20 rows
-  [PASS]   193ms  T84 mega combined: 0 rows, all constraints satisfied
-  [PASS]   195ms  T85 table format + projection: 66 table lines
-  [PASS]   591ms  T86 --older-accessed 365d: 10 rows
-  [PASS]   208ms  T87 ext + sort modified: 10 rows, ext filtered + sorted
-  [PASS]   268ms  T88 name-only + hide-system + newer: 10 rows
-  [PASS]   196ms  T88a path: prefix: 10 rows, all paths contain 'windows'
-  [PASS]   202ms  T88b dir: prefix: 10 rows, all directories
-  [PASS]   201ms  T88c file: prefix: 10 rows, all .dll files
-  [PASS]   201ms  T88d --begins-with: 10 rows, all begin with 'note'
-  [PASS]   193ms  T88e --ends-with: 10 rows, all end with '.log'
-  [PASS]   196ms  T88f --contains: 10 rows, all contain 'setup'
-  [PASS]   200ms  T88g --not-contains: 10 rows, no 'debug' in names
-  [FAIL]   216ms  T88h --in-path + pattern: No rows
-  [PASS]   195ms  T88i path: vs --in-path: 10 rows, path: matched
-  [PASS]   198ms  T88j --contains + --not-contains: 10 rows, contains 'update' but not 'old'
-  [PASS]   199ms  T88k dir: prefix + sort treesize: 10 dirs sorted by treesize
-  [PASS]   203ms  T88l --begins-with + --ext: 10 rows, begins-with + ext
-  [FAIL]   677ms  T89 --type code: Row 0: silentuninstall.cmd is not a code file
-  [PASS]   678ms  T90 --type document: 10 rows
-  [FAIL]   665ms  T91 --type executable: Row 2: 100_0371.jpg is not an executable
-  [PASS]   677ms  T92 --type picture: 10 rows
-  [FAIL]   677ms  T93 --type system: Row 0: silentuninstall.cmd is not a system file type
-  [PASS]   685ms  T94 --type code + sort size: 10 code files sorted by size desc
-  [FAIL]   200ms  T95 --in-path *windows*: No rows
-  [PASS]   197ms  T96 --in-path *system32*: 0 rows, all in *system32*
-  [PASS]   198ms  T97 --in-path + --exclude: 0 rows, in-path + exclude
-  [FAIL]   666ms  T98 --min-bulkiness 200: Row 0: bulkiness=0% < 200%
-  [PASS]   585ms  T99 --max-bulkiness 100: 10 rows, all bulkiness <= 100%
-  [PASS]   396ms  T100 bulkiness + size combined: 10 rows, bulky large files
-  [FAIL]   321ms  T101 --min-treesize 100MB: Row 0: Tree Size=0 < 100MB
-  [FAIL]   345ms  T102 --max-treesize 1MB: Row 0: Tree Size=18446744073709551615 > 1MB
-  [FAIL]   330ms  T103 --min-tree-allocated 100MB: Row 0: Tree Allocated=0 < 100MB
-  [PASS]  1095ms  T104 --min-name-length 50: 10 rows, all names >= 50 chars
-  [PASS]  1125ms  T105 --max-name-length 8: 10 rows, all names <= 8 chars
-  [FAIL]   678ms  T106 --min-path-length 200: Row 0: path len 110 < 200
-  [PASS]   677ms  T107 --max-path-length 30: 10 rows
-  [PASS]   463ms  T108 --min-size-on-disk 100MB: 10 rows, all allocated >= 100MB
-  [PASS]   572ms  T109 --max-size-on-disk 4096: 10 rows, all allocated <= 4096
-  [PASS]   688ms  T110 --month jan: 10 rows
-  [PASS]   728ms  T111 --month Q4: 10 rows
-  [PASS]   726ms  T112 --month jan,feb,mar: 10 rows
-  [PASS]   395ms  T113 --month jan + --newer last_365d: 10 rows
-  [PASS]   363ms  T114 --sort hidden:desc: 20 rows, hidden sorted desc
-  [PASS]   347ms  T115 --sort compressed:desc: 20 rows, compressed sorted desc
-  [PASS]   355ms  T116 --sort directory:desc: 20 rows, directory sorted desc
-  [PASS]   390ms  T117 type + in-path + size: 10 rows, all constraints met
-  [FAIL]   307ms  T118 treesize + descendants: Row 0: Tree Size=0 < 10MB
+  WARM (cache present, no daemon)...
+    WARM startup 5859ms + query 110ms = 5969ms (1 rows)
+  HOT  (daemon running)...
+    HOT  startup 55ms + query 110ms = 165ms (1 rows)
 
-  ─── WARM CACHE ───
-  ❌ 11/141 FAILED — wall 58705ms / sum 58473ms
-     ❌ T88h --in-path + pattern: No rows
-     ❌ T89 --type code: Row 0: silentuninstall.cmd is not a code file
-     ❌ T91 --type executable: Row 2: 100_0371.jpg is not an executable
-     ❌ T93 --type system: Row 0: silentuninstall.cmd is not a system file type
-     ❌ T95 --in-path *windows*: No rows
-     ❌ T98 --min-bulkiness 200: Row 0: bulkiness=0% < 200%
-     ❌ T101 --min-treesize 100MB: Row 0: Tree Size=0 < 100MB
-     ❌ T102 --max-treesize 1MB: Row 0: Tree Size=18446744073709551615 > 1MB
-     ❌ T103 --min-tree-allocated 100MB: Row 0: Tree Allocated=0 < 100MB
-     ❌ T106 --min-path-length 200: Row 0: path len 110 < 200
-     ❌ T118 treesize + descendants: Row 0: Tree Size=0 < 10MB
+  ┌──────────┬────────────┬────────────┬────────────┬───────────┐
+  │  Phase   │    Startup │      Query │      Total │   Speedup │
+  ├──────────┼────────────┼────────────┼────────────┼───────────┤
+  │   COLD   │    5899 ms │     110 ms │    6009 ms │         — │
+  │   WARM   │    5859 ms │     110 ms │    5969 ms │      1.0x │
+  │   HOT    │      55 ms │     110 ms │     165 ms │     36.4x │
+  └──────────┴────────────┴────────────┴────────────┴───────────┘
+
+  Daemon: READY (socket responsive)
+┌───────────────────────────────────────────────────────────────┐
+│  Parallel Validation (151 tests, HOT daemon)                 │
+└───────────────────────────────────────────────────────────────┘
+  Launching 151 tests (parallelism: 16)...
+
+  → 151 CLI tests (process spawn, parallelism: 16)
+
+  [PASS]   161ms  T00 warmup / daemon alive: daemon warm [cli]
+  [PASS]   108ms  T01 --files-only: 10 rows, all files [cli]
+  [PASS]   106ms  T02 --dirs-only: 10 rows, all directories [cli]
+  [PASS]   376ms  T03 --hide-system: 0 rows, no $-prefixed files [cli]
+  [PASS]   217ms  T04 --ext rs: 10 rows, all .rs [cli]
+  [PASS]   107ms  T05 --ext jpg,png,gif: 10 rows, all image extensions [cli]
+  [PASS]   106ms  T06 --min-size 100MB: 10 rows, all >= 100MB [cli]
+  [PASS]   271ms  T07 --max-size 1KB: 10 rows, all <= 1KB [cli]
+  [PASS]   108ms  T08 --min/max-size 1MB..10MB: 10 rows, all 1MB..10MB [cli]
+  [PASS]   105ms  T09 --sort size (asc): 10 rows, sorted asc [cli]
+  [PASS]   106ms  T10 --sort size --sort-desc: 10 rows, sorted desc [cli]
+  [PASS]   106ms  T11 --sort modified: 10 rows [cli]
+  [PASS]   107ms  T12 --sort size,name: 10 rows [cli]
+  [PASS]   211ms  T13 --attr hidden: 10 rows, all hidden [cli]
+  [PASS]   321ms  T14 --attr !hidden: 10 rows, none hidden [cli]
+  [PASS]   160ms  T15 --attr compressed: 10 rows, all compressed [cli]
+  [PASS]    54ms  T16 --exclude backup*: 10 rows, no backup* files [cli]
+  [PASS]    55ms  T17 --name-only: 10 rows, all contain 'readme' [cli]
+  [PASS]   108ms  T18 --case sensitive: 10 rows, case-sensitive match [cli]
+  [PASS]    51ms  T19 --word: 10 rows [cli]
+  [PASS]   107ms  T20 --format json: 5 NDJSON items [cli]
+  [PASS]   107ms  T21 --format table: 28 lines of table output [cli]
+  [PASS]   107ms  T22 --columns Name,Size,Path Only: 3 columns in output [cli]
+  [PASS]   107ms  T23 --min-descendants 100: 10 dirs with 100+ descendants [cli]
+  [PASS]   110ms  T24 --max-descendants 0: 10 empty directories [cli]
+  [PASS]   110ms  T25 --newer 7d: 0 rows [cli]
+  [PASS]   110ms  T26 --older 365d: 10 rows [cli]
+  [PASS]   162ms  T27 --newer-created 30d: 10 rows [cli]
+  [PASS]   107ms  T28 --drive C: 10 rows, all on C: [cli]
+  [PASS]   107ms  T29 --drives C,D: 10 rows, all on C: or D: [cli]
+  [PASS]   109ms  T30 --sep | --quotes ': pipe-separated output [cli]
+  [PASS]    55ms  T31 --out file: 101 lines written to file [cli]
+  [PASS]   215ms  T32 --benchmark: 0 bytes stdout (benchmark mode) [cli]
+  [PASS]   160ms  T33 regex >.*\.config$: 10 rows, all .config files [cli]
+  [PASS]    55ms  T34 combined stress: 0 rows, all constraints satisfied [cli]
+  [PASS]   444ms  T35 --limit 0 (unlimited): 163498 rows (unlimited) [cli]
+  [PASS]   334ms  T36 --older-created 365d: 10 rows [cli]
+  [PASS]   160ms  T37 --attr system: 10 rows, all system files [cli]
+  [PASS]   215ms  T38 --attr readonly: 10 rows, all readonly [cli]
+  [PASS]   224ms  T39 --attr system,!hidden: 10 rows, system but not hidden [cli]
+  [PASS]   169ms  T40 no results (graceful): 0 rows, graceful empty result [cli]
+  [PASS]    55ms  T41 --header false: 5 lines, no header [cli]
+  [PASS]   169ms  T42 --smart-case (lowercase = insensitive): 10 rows, mixed case=true [cli]
+  [PASS]   169ms  T43 --newer-accessed 7d: 10 rows [cli]
+  [PASS]   169ms  T44 --newer today: 10 rows [cli]
+  [PASS]   224ms  T45 --newer yesterday: 10 rows [cli]
+  [PASS]   212ms  T46 --newer this_week: 10 rows [cli]
+  [PASS]   212ms  T47 --newer last_7d: 10 rows [cli]
+  [PASS]   163ms  T48 --newer last_30d: 10 rows [cli]
+  [PASS]   108ms  T49 --newer this_month: 10 rows [cli]
+  [PASS]   163ms  T50 --newer this_year: 10 rows [cli]
+  [PASS]   273ms  T51 --older last_year: 10 rows [cli]
+  [PASS]   163ms  T52 --newer last_90d: 10 rows [cli]
+  [PASS]   165ms  T53 --newer last_365d: 10 rows [cli]
+  [PASS]   163ms  T54 --newer-created today: 10 rows [cli]
+  [PASS]   165ms  T55 --newer-accessed this_week: 10 rows [cli]
+  [PASS]   163ms  T56 bounded time range (last_week): 10 rows [cli]
+  [PASS]   163ms  T57 --newer 2025-01-01: 10 rows [cli]
+  [PASS]   108ms  T58 --sort name: 10 rows, sorted by name asc [cli]
+  [PASS]   111ms  T59 --sort path: 10 rows [cli]
+  [PASS]    55ms  T60 --sort created: 10 rows [cli]
+  [PASS]   108ms  T61 --sort accessed: 10 rows [cli]
+  [PASS]    55ms  T62 --sort extension: 10 rows [cli]
+  [PASS]   110ms  T63 --sort drive: 10 rows [cli]
+  [PASS]    55ms  T64 --sort allocated: 10 rows [cli]
+  [PASS]   109ms  T65 --sort descendants --sort-desc: 10 rows, sorted desc by descendants [cli]
+  [PASS]    79ms  T66 multi-sort size,-name: 20 rows, multi-sort applied [cli]
+  [PASS]   107ms  T67 multi-sort -modified,name: 10 rows [cli]
+  [PASS]   162ms  T67a --sort treesize: 10 rows, sorted by treesize desc [cli]
+  [PASS]   162ms  T67b --sort treeallocated: 10 rows, sorted by treeallocated desc [cli]
+  [PASS]   326ms  T67c --sort bulkiness: 10 rows [cli]
+  [PASS]   652ms  T67d --sort namelength: 10 rows, sorted by name length desc [cli]
+  [PASS]   652ms  T67e --sort pathlength: 10 rows [cli]
+  [PASS]   142ms  T67f --sort path_only: 10 rows [cli]
+  [PASS]   327ms  T67g --sort type: 20 rows [cli]
+  [PASS]   162ms  T67h multi-sort treesize,name: 20 rows [cli]
+  [PASS]   622ms  T67i multi-sort type,-size: 20 rows [cli]
+  [PASS]   216ms  T67j multi-sort hidden,bulkiness: 20 rows [cli]
+  [PASS]   271ms  T68 --attr archive: 10 rows, all have archive attr [cli]
+  [PASS]   217ms  T69 --attr sparse: 10 rows with sparse attr [cli]
+  [PASS]   161ms  T70 --attr reparse: 10 rows with reparse attr [cli]
+  [PASS]   163ms  T71 --attr offline: 10 rows with offline attr [cli]
+  [PASS]   164ms  T72 --attr encrypted: 0 rows with encrypted attr [cli]
+  [PASS]   271ms  T73 --attr !system: 10 rows, no system files [cli]
+  [PASS]   161ms  T74 --attr hidden,system: 10 rows, all hidden+system [cli]
+  [PASS]   165ms  T75 size+time+ext combined: 10 rows, all constraints met [cli]
+  [PASS]   110ms  T76 dirs + desc range + sort: 10 rows, desc 10..1000 sorted [cli]
+  [PASS]   110ms  T77 hidden + --newer last_30d: 10 hidden files from last 30 days [cli]
+  [PASS]    55ms  T78 exclude + ext + size: 10 rows, all constraints met [cli]
+  [PASS]   110ms  T79 projection + json format: 5 projected JSON items [cli]
+  [PASS]   110ms  T80 --columns all (wide): 34 cols × 5 rows [cli]
+  [PASS]   164ms  T81 --newer-created this_year: 10 rows [cli]
+  [PASS]   161ms  T82 --newer-accessed last_week: 10 rows [cli]
+  [PASS]    55ms  T83 multi-sort drive,ext,-size: 20 rows [cli]
+  [PASS]   110ms  T84 mega combined: 3 rows, all constraints satisfied [cli]
+  [PASS]   110ms  T85 table format + projection: 28 table lines [cli]
+  [PASS]   219ms  T86 --older-accessed 365d: 10 rows [cli]
+  [PASS]    55ms  T87 ext + sort modified: 10 rows, ext filtered + sorted [cli]
+  [PASS]   107ms  T88 name-only + hide-system + newer: 10 rows [cli]
+  [PASS]   109ms  T88a path: prefix: 10 rows, all paths contain 'windows' [cli]
+  [PASS]    55ms  T88b dir: prefix: 10 rows, all directories [cli]
+  [PASS]   109ms  T88c file: prefix: 10 rows, all .dll files [cli]
+  [PASS]   109ms  T88d --begins-with: 10 rows, all begin with 'note' [cli]
+  [PASS]    54ms  T88e --ends-with: 10 rows, all end with '.log' [cli]
+  [PASS]    62ms  T88f --contains: 10 rows, all contain 'setup' [cli]
+  [PASS]   109ms  T88g --not-contains: 10 rows, no 'debug' in names [cli]
+  [PASS]   109ms  T88h --in-path + pattern: 10 rows, .exe files in *windows* [cli]
+  [PASS]   106ms  T88i path: vs --in-path: 10 rows, path: matched [cli]
+  [PASS]   106ms  T88j --contains + --not-contains: 10 rows, contains 'update' but not 'old' [cli]
+  [PASS]   106ms  T88k dir: prefix + sort treesize desc: 10 dirs sorted by treesize desc [cli]
+  [PASS]    55ms  T88l --begins-with + --ext: 10 rows, begins-with + ext [cli]
+  [PASS]   106ms  T89 --type code: 10 rows, all code files [cli]
+  [PASS]   111ms  T90 --type document: 10 rows [cli]
+  [PASS]    53ms  T91 --type executable: 10 rows, all executables [cli]
+  [PASS]   107ms  T92 --type picture: 10 rows [cli]
+  [PASS]    56ms  T93 --type system: 10 rows, all system type [cli]
+  [PASS]   106ms  T94 --type code + sort size: 10 code files sorted by size desc [cli]
+  [PASS]   321ms  T95 --in-path *windows*: 10 rows, all in *windows* [cli]
+  [PASS]   217ms  T96 --in-path *system32*: 10 rows, all in *system32* [cli]
+  [PASS]   160ms  T97 --in-path + --exclude: 10 rows, in-path + exclude [cli]
+  [PASS]   321ms  T98 --min-bulkiness 200: 10 rows, all bulkiness >= 200% [cli]
+  [PASS]   272ms  T99 --max-bulkiness 100: 10 rows, all bulkiness <= 100% [cli]
+  [PASS]   165ms  T100 bulkiness + size combined: 1 rows, bulky large files [cli]
+  [PASS]   158ms  T101 --min-treesize 100MB: 10 dirs with treesize >= 100MB [cli]
+  [PASS]   163ms  T102 --max-treesize 1MB: 10 dirs with treesize <= 1MB [cli]
+  [PASS]   165ms  T103 --min-tree-allocated 100MB: 10 dirs with tree-allocated >= 100MB [cli]
+  [PASS]   541ms  T104 --min-name-length 50: 10 rows, all names >= 50 chars [cli]
+  [PASS]   545ms  T105 --max-name-length 8: 10 rows, all names <= 8 chars [cli]
+  [PASS]   271ms  T106 --min-path-length 200: 10 rows, all paths >= 200 chars [cli]
+  [PASS]   216ms  T107 --max-path-length 30: 10 rows [cli]
+  [PASS]   213ms  T108 --min-size-on-disk 100MB: 10 rows, all allocated >= 100MB [cli]
+  [PASS]   213ms  T109 --max-size-on-disk 4096: 10 rows, all allocated <= 4096 [cli]
+  [PASS]   375ms  T110 --month jan: 10 rows [cli]
+  [PASS]   381ms  T111 --month Q4: 10 rows [cli]
+  [PASS]   375ms  T112 --month jan,feb,mar: 10 rows [cli]
+  [PASS]   161ms  T113 --month jan + --newer last_365d: 10 rows [cli]
+  [PASS]   107ms  T114 --sort hidden:desc: 20 rows, hidden sorted desc [cli]
+  [PASS]   355ms  T115 --sort compressed:desc: 20 rows, compressed sorted desc [cli]
+  [FAIL]   161ms  T116 --sort directory:desc: Row 19: Dir=1 after Dir=0 — not sorted desc
+  [PASS]   216ms  T117 type + in-path + size: 10 rows, all constraints met [cli]
+  [PASS]   161ms  T118 treesize + descendants: 10 dirs, treesize+desc constraints met [cli]
+  [PASS]   159ms  T119 agg count: count = 25846853 [cli]
+  [PASS]   868ms  T120 agg overview: overview: count + stats + buckets present [cli]
+  [PASS]   320ms  T121 agg by_extension: 50 extension buckets [cli]
+  [PASS]   270ms  T122 agg by_type: type categories present [cli]
+  [PASS]   275ms  T123 agg by_drive: drive buckets present [cli]
+  [PASS]   269ms  T124 agg by_size: size distribution buckets present [cli]
+  [PASS]   380ms  T125 agg by_age: age distribution present [cli]
+  [PASS]   165ms  T126 agg count --format json: JSON count = 25846853 [cli]
+  [PASS]   814ms  T127 agg overview --format json: 6 results: ["count", "buckets", "stats", "buckets", "buckets", "buckets"] [cli]
+  [PASS]   267ms  T128 agg by_extension --format csv: 50 CSV rows [cli]
+
+  ❌ 1/151 FAILED — wall 4639ms / sum 28134ms
+
+  ┌─ Failed Tests ──────────────────────────────────────────────────────┐
+  │
+  │  ❌ T116 --sort directory:desc
+  │  Error: Row 19: Dir=1 after Dir=0 — not sorted desc
+  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs "*" --sort directory:desc --limit 20 --columns all --data-dir /Users/rnio/uffs_data
+  │
+  └──────────────────────────────────────────────────────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Total time: 21939ms
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ┌───────────────────────────────────────────────────────────────┐
-│  Phase 3: HOT (daemon running from Phase 2)                  │
+│  Cleanup: checking for orphan uffs processes                 │
 └───────────────────────────────────────────────────────────────┘
-  [PASS]   202ms  T00 warmup / daemon alive: daemon warm
-  [PASS]   192ms  T01 --files-only: 10 rows, all files
-  [PASS]   196ms  T02 --dirs-only: 10 rows, all directories
-  [PASS]   687ms  T03 --hide-system: 0 rows, no $-prefixed files
-  [PASS]   203ms  T04 --ext rs: 10 rows, all .rs
-  [PASS]   234ms  T05 --ext jpg,png,gif: 10 rows, all image extensions
-  [PASS]   360ms  T06 --min-size 100MB: 10 rows, all >= 100MB
-  [PASS]   465ms  T07 --max-size 1KB: 10 rows, all <= 1KB
-  [PASS]   192ms  T08 --min/max-size 1MB..10MB: 10 rows, all 1MB..10MB
-  [PASS]   202ms  T09 --sort size (asc): 10 rows, sorted asc
-  [PASS]   202ms  T10 --sort size --sort-desc: 10 rows, sorted desc
-  [PASS]   194ms  T11 --sort modified: 10 rows
-  [PASS]   201ms  T12 --sort size,name: 10 rows
-  [PASS]   379ms  T13 --attr hidden: 10 rows, all hidden
-  [PASS]   657ms  T14 --attr !hidden: 10 rows, none hidden
-  [PASS]   467ms  T15 --attr compressed: 10 rows, all compressed
-  [PASS]   190ms  T16 --exclude backup*: 10 rows, no backup* files
-  [PASS]   194ms  T17 --name-only: 10 rows, all contain 'readme'
-  [PASS]   234ms  T18 --case sensitive: 10 rows, case-sensitive match
-  [PASS]   197ms  T19 --word: 10 rows
-  [PASS]   199ms  T20 --format json: 5 NDJSON items
-  [PASS]   198ms  T21 --format table: 62 lines of table output
-  [PASS]   195ms  T22 --columns Name,Size,Path Only: 3 columns in output
-  [PASS]   310ms  T23 --min-descendants 100: 10 dirs with 100+ descendants
-  [PASS]   306ms  T24 --max-descendants 0: 10 empty directories
-  [PASS]   200ms  T25 --newer 7d: 1 rows
-  [PASS]   198ms  T26 --older 365d: 10 rows
-  [PASS]   384ms  T27 --newer-created 30d: 10 rows
-  [PASS]   199ms  T28 --drive C: 10 rows, all on C:
-  [PASS]   195ms  T29 --drives C,D: 10 rows, all on C: or D:
-  [PASS]   192ms  T30 --sep | --quotes ': pipe-separated output
-  [PASS]   197ms  T31 --out file: 101 lines written to file
-  [PASS]   510ms  T32 --benchmark: 0 bytes stdout (benchmark mode)
-  [PASS]   250ms  T33 regex >.*\.config$: 10 rows, all .config files
-  [PASS]   215ms  T34 combined stress: 0 rows, all constraints satisfied
-  [PASS]   793ms  T35 --limit 0 (unlimited): 165062 rows (unlimited)
-  [PASS]   660ms  T36 --older-created 365d: 10 rows
-  [PASS]   386ms  T37 --attr system: 10 rows, all system files
-  [PASS]   395ms  T38 --attr readonly: 10 rows, all readonly
-  [PASS]   391ms  T39 --attr system,!hidden: 10 rows, system but not hidden
-  [PASS]   196ms  T40 no results (graceful): 0 rows, graceful empty result
-  [PASS]   208ms  T41 --header false: 5 lines, no header
-  [PASS]   204ms  T42 --smart-case (lowercase = insensitive): 10 rows, mixed case=true
-  [PASS]   386ms  T43 --newer-accessed 7d: 10 rows
-  [PASS]   388ms  T44 --newer today: 10 rows
-  [PASS]   371ms  T45 --newer yesterday: 10 rows
-  [PASS]   379ms  T46 --newer this_week: 10 rows
-  [PASS]   371ms  T47 --newer last_7d: 10 rows
-  [PASS]   379ms  T48 --newer last_30d: 10 rows
-  [PASS]   369ms  T49 --newer this_month: 10 rows
-  [PASS]   386ms  T50 --newer this_year: 10 rows
-  [PASS]   651ms  T51 --older last_year: 10 rows
-  [PASS]   380ms  T52 --newer last_90d: 10 rows
-  [PASS]   392ms  T53 --newer last_365d: 10 rows
-  [PASS]   392ms  T54 --newer-created today: 10 rows
-  [PASS]   379ms  T55 --newer-accessed this_week: 10 rows
-  [PASS]   366ms  T56 bounded time range (last_week): 10 rows
-  [PASS]   406ms  T57 --newer 2025-01-01: 10 rows
-  [PASS]   197ms  T58 --sort name: 10 rows, sorted by name asc
-  [PASS]   195ms  T59 --sort path: 10 rows
-  [PASS]   195ms  T60 --sort created: 10 rows
-  [PASS]   204ms  T61 --sort accessed: 10 rows
-  [PASS]   201ms  T62 --sort extension: 10 rows
-  [PASS]   203ms  T63 --sort drive: 10 rows
-  [PASS]   207ms  T64 --sort allocated: 10 rows
-  [PASS]   373ms  T65 --sort descendants --sort-desc: 10 rows, sorted desc by descendants
-  [PASS]   204ms  T66 multi-sort size,-name: 20 rows, multi-sort applied
-  [PASS]   203ms  T67 multi-sort -modified,name: 10 rows
-  [PASS]   348ms  T67a --sort treesize: 10 rows, sorted by treesize desc
-  [PASS]   358ms  T67b --sort treeallocated: 10 rows, sorted by treeallocated desc
-  [PASS]   704ms  T67c --sort bulkiness: 10 rows
-  [PASS]  1260ms  T67d --sort namelength: 10 rows, sorted by name length desc
-  [PASS]  1240ms  T67e --sort pathlength: 10 rows
-  [PASS]   191ms  T67f --sort path_only: 10 rows
-  [PASS]   708ms  T67g --sort type: 20 rows
-  [PASS]   342ms  T67h multi-sort treesize,name: 20 rows
-  [PASS]   704ms  T67i multi-sort type,-size: 20 rows
-  [PASS]   594ms  T67j multi-sort hidden,bulkiness: 20 rows
-  [PASS]   618ms  T68 --attr archive: 10 rows, all have archive attr
-  [PASS]   383ms  T69 --attr sparse: 10 rows with sparse attr
-  [PASS]   411ms  T70 --attr reparse: 10 rows with reparse attr
-  [PASS]   386ms  T71 --attr offline: 10 rows with offline attr
-  [PASS]   382ms  T72 --attr encrypted: 0 rows with encrypted attr
-  [PASS]   664ms  T73 --attr !system: 10 rows, no system files
-  [PASS]   385ms  T74 --attr hidden,system: 10 rows, all hidden+system
-  [PASS]   363ms  T75 size+time+ext combined: 10 rows, all constraints met
-  [PASS]   312ms  T76 dirs + desc range + sort: 10 rows, desc 10..1000 sorted
-  [PASS]   377ms  T77 hidden + --newer last_30d: 10 hidden files from last 30 days
-  [PASS]   197ms  T78 exclude + ext + size: 10 rows, all constraints met
-  [PASS]   197ms  T79 projection + json format: 5 projected JSON items
-  [PASS]   193ms  T80 --columns all (wide): 27 cols × 5 rows
-  [PASS]   385ms  T81 --newer-created this_year: 10 rows
-  [PASS]   387ms  T82 --newer-accessed last_week: 10 rows
-  [PASS]   197ms  T83 multi-sort drive,ext,-size: 20 rows
-  [PASS]   199ms  T84 mega combined: 0 rows, all constraints satisfied
-  [PASS]   194ms  T85 table format + projection: 66 table lines
-  [PASS]   588ms  T86 --older-accessed 365d: 10 rows
-  [PASS]   205ms  T87 ext + sort modified: 10 rows, ext filtered + sorted
-  [PASS]   273ms  T88 name-only + hide-system + newer: 10 rows
-  [PASS]   201ms  T88a path: prefix: 10 rows, all paths contain 'windows'
-  [PASS]   199ms  T88b dir: prefix: 10 rows, all directories
-  [PASS]   192ms  T88c file: prefix: 10 rows, all .dll files
-  [PASS]   196ms  T88d --begins-with: 10 rows, all begin with 'note'
-  [PASS]   199ms  T88e --ends-with: 10 rows, all end with '.log'
-  [PASS]   194ms  T88f --contains: 10 rows, all contain 'setup'
-  [PASS]   199ms  T88g --not-contains: 10 rows, no 'debug' in names
-  [FAIL]   196ms  T88h --in-path + pattern: No rows
-  [PASS]   196ms  T88i path: vs --in-path: 10 rows, path: matched
-  [PASS]   195ms  T88j --contains + --not-contains: 10 rows, contains 'update' but not 'old'
-  [PASS]   191ms  T88k dir: prefix + sort treesize: 10 dirs sorted by treesize
-  [PASS]   193ms  T88l --begins-with + --ext: 10 rows, begins-with + ext
-  [FAIL]   691ms  T89 --type code: Row 0: silentuninstall.cmd is not a code file
-  [PASS]   681ms  T90 --type document: 10 rows
-  [FAIL]   698ms  T91 --type executable: Row 2: 100_0371.jpg is not an executable
-  [PASS]   678ms  T92 --type picture: 10 rows
-  [FAIL]   669ms  T93 --type system: Row 0: silentuninstall.cmd is not a system file type
-  [PASS]   689ms  T94 --type code + sort size: 10 code files sorted by size desc
-  [FAIL]   192ms  T95 --in-path *windows*: No rows
-  [PASS]   195ms  T96 --in-path *system32*: 0 rows, all in *system32*
-  [PASS]   197ms  T97 --in-path + --exclude: 0 rows, in-path + exclude
-  [FAIL]   679ms  T98 --min-bulkiness 200: Row 0: bulkiness=0% < 200%
-  [PASS]   584ms  T99 --max-bulkiness 100: 10 rows, all bulkiness <= 100%
-  [PASS]   385ms  T100 bulkiness + size combined: 10 rows, bulky large files
-  [FAIL]   326ms  T101 --min-treesize 100MB: Row 0: Tree Size=0 < 100MB
-  [FAIL]   347ms  T102 --max-treesize 1MB: Row 0: Tree Size=18446744073709551615 > 1MB
-  [FAIL]   321ms  T103 --min-tree-allocated 100MB: Row 0: Tree Allocated=0 < 100MB
-  [PASS]  1097ms  T104 --min-name-length 50: 10 rows, all names >= 50 chars
-  [PASS]  1110ms  T105 --max-name-length 8: 10 rows, all names <= 8 chars
-  [FAIL]   671ms  T106 --min-path-length 200: Row 0: path len 110 < 200
-  [PASS]   681ms  T107 --max-path-length 30: 10 rows
-  [PASS]   471ms  T108 --min-size-on-disk 100MB: 10 rows, all allocated >= 100MB
-  [PASS]   563ms  T109 --max-size-on-disk 4096: 10 rows, all allocated <= 4096
-  [PASS]   690ms  T110 --month jan: 10 rows
-  [PASS]   716ms  T111 --month Q4: 10 rows
-  [PASS]   724ms  T112 --month jan,feb,mar: 10 rows
-  [PASS]   401ms  T113 --month jan + --newer last_365d: 10 rows
-  [PASS]   339ms  T114 --sort hidden:desc: 20 rows, hidden sorted desc
-  [PASS]   342ms  T115 --sort compressed:desc: 20 rows, compressed sorted desc
-  [PASS]   344ms  T116 --sort directory:desc: 20 rows, directory sorted desc
-  [PASS]   399ms  T117 type + in-path + size: 10 rows, all constraints met
-  [FAIL]   311ms  T118 treesize + descendants: Row 0: Tree Size=0 < 10MB
+  ✅ No orphan uffs processes found.
 
-  ─── HOT ───
-  ❌ 11/141 FAILED — wall 53524ms / sum 53293ms
-     ❌ T88h --in-path + pattern: No rows
-     ❌ T89 --type code: Row 0: silentuninstall.cmd is not a code file
-     ❌ T91 --type executable: Row 2: 100_0371.jpg is not an executable
-     ❌ T93 --type system: Row 0: silentuninstall.cmd is not a system file type
-     ❌ T95 --in-path *windows*: No rows
-     ❌ T98 --min-bulkiness 200: Row 0: bulkiness=0% < 200%
-     ❌ T101 --min-treesize 100MB: Row 0: Tree Size=0 < 100MB
-     ❌ T102 --max-treesize 1MB: Row 0: Tree Size=18446744073709551615 > 1MB
-     ❌ T103 --min-tree-allocated 100MB: Row 0: Tree Allocated=0 < 100MB
-     ❌ T106 --min-path-length 200: Row 0: path len 110 < 200
-     ❌ T118 treesize + descendants: Row 0: Tree Size=0 < 10MB
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-╔═══════════════════════════════════════════════════════════════════════════════════╗
-║  Cross-Level Timing Comparison                                                   ║
-╚═══════════════════════════════════════════════════════════════════════════════════╝
-  Test                                            COLD      WARM CACHE             HOT    Status
-  ────────────────────────────────────  ──────────────  ──────────────  ──────────────    ──────
-  T00 warmup / daemon alive                   65815 ms         4983 ms          202 ms    ✅
-  T01 --files-only                              295 ms          208 ms          192 ms    ✅
-  T02 --dirs-only                               244 ms          215 ms          196 ms    ✅
-  T03 --hide-system                             751 ms          724 ms          687 ms    ✅
-  T04 --ext rs                                  210 ms          219 ms          203 ms    ✅
-  T05 --ext jpg,png,gif                         247 ms          258 ms          234 ms    ✅
-  T06 --min-size 100MB                          370 ms          394 ms          360 ms    ✅
-  T07 --max-size 1KB                            461 ms          520 ms          465 ms    ✅
-  T08 --min/max-size 1MB..10MB                  204 ms          216 ms          192 ms    ✅
-  T09 --sort size (asc)                         197 ms          218 ms          202 ms    ✅
-  T10 --sort size --sort-desc                   193 ms          207 ms          202 ms    ✅
-  T11 --sort modified                           192 ms          214 ms          194 ms    ✅
-  T12 --sort size,name                          200 ms          208 ms          201 ms    ✅
-  T13 --attr hidden                             377 ms          415 ms          379 ms    ✅
-  T14 --attr !hidden                            666 ms          661 ms          657 ms    ✅
-  T15 --attr compressed                         465 ms          464 ms          467 ms    ✅
-  T16 --exclude backup*                         191 ms          197 ms          190 ms    ✅
-  T17 --name-only                               194 ms          196 ms          194 ms    ✅
-  T18 --case sensitive                          229 ms          228 ms          234 ms    ✅
-  T19 --word                                    190 ms          200 ms          197 ms    ✅
-  T20 --format json                             197 ms          198 ms          199 ms    ✅
-  T21 --format table                            200 ms          204 ms          198 ms    ✅
-  T22 --columns Name,Size,Path Only             201 ms          200 ms          195 ms    ✅
-  T23 --min-descendants 100                     316 ms          335 ms          310 ms    ✅
-  T24 --max-descendants 0                       303 ms          347 ms          306 ms    ✅
-  T25 --newer 7d                                199 ms          202 ms          200 ms    ✅
-  T26 --older 365d                              191 ms          198 ms          198 ms    ✅
-  T27 --newer-created 30d                       343 ms          387 ms          384 ms    ✅
-  T28 --drive C                                 197 ms          194 ms          199 ms    ✅
-  T29 --drives C,D                              194 ms          199 ms          195 ms    ✅
-  T30 --sep | --quotes '                        200 ms          197 ms          192 ms    ✅
-  T31 --out file                                193 ms          200 ms          197 ms    ✅
-  T32 --benchmark                               535 ms          523 ms          510 ms    ✅
-  T33 regex >.*\.config$                        246 ms          240 ms          250 ms    ✅
-  T34 combined stress                           206 ms          193 ms          215 ms    ✅
-  T35 --limit 0 (unlimited)                     764 ms          760 ms          793 ms    ✅
-  T36 --older-created 365d                      651 ms          640 ms          660 ms    ✅
-  T37 --attr system                             373 ms          392 ms          386 ms    ✅
-  T38 --attr readonly                           390 ms          403 ms          395 ms    ✅
-  T39 --attr system,!hidden                     384 ms          384 ms          391 ms    ✅
-  T40 no results (graceful)                     189 ms          192 ms          196 ms    ✅
-  T41 --header false                            200 ms          192 ms          208 ms    ✅
-  T42 --smart-case (lowercase = insen           204 ms          199 ms          204 ms    ✅
-  T43 --newer-accessed 7d                       373 ms          379 ms          386 ms    ✅
-  T44 --newer today                             365 ms          371 ms          388 ms    ✅
-  T45 --newer yesterday                         367 ms          366 ms          371 ms    ✅
-  T46 --newer this_week                         343 ms          368 ms          379 ms    ✅
-  T47 --newer last_7d                           376 ms          376 ms          371 ms    ✅
-  T48 --newer last_30d                          409 ms          370 ms          379 ms    ✅
-  T49 --newer this_month                        370 ms          364 ms          369 ms    ✅
-  T50 --newer this_year                         380 ms          387 ms          386 ms    ✅
-  T51 --older last_year                         655 ms          678 ms          651 ms    ✅
-  T52 --newer last_90d                          384 ms          418 ms          380 ms    ✅
-  T53 --newer last_365d                         397 ms          425 ms          392 ms    ✅
-  T54 --newer-created today                     369 ms          380 ms          392 ms    ✅
-  T55 --newer-accessed this_week                378 ms          379 ms          379 ms    ✅
-  T56 bounded time range (last_week)            374 ms          364 ms          366 ms    ✅
-  T57 --newer 2025-01-01                        406 ms          404 ms          406 ms    ✅
-  T58 --sort name                               194 ms          194 ms          197 ms    ✅
-  T59 --sort path                               198 ms          203 ms          195 ms    ✅
-  T60 --sort created                            203 ms          192 ms          195 ms    ✅
-  T61 --sort accessed                           193 ms          191 ms          204 ms    ✅
-  T62 --sort extension                          197 ms          195 ms          201 ms    ✅
-  T63 --sort drive                              204 ms          203 ms          203 ms    ✅
-  T64 --sort allocated                          201 ms          202 ms          207 ms    ✅
-  T65 --sort descendants --sort-desc            354 ms          352 ms          373 ms    ✅
-  T66 multi-sort size,-name                     196 ms          199 ms          204 ms    ✅
-  T67 multi-sort -modified,name                 201 ms          197 ms          203 ms    ✅
-  T67a --sort treesize                          343 ms          351 ms          348 ms    ✅
-  T67b --sort treeallocated                     354 ms          353 ms          358 ms    ✅
-  T67c --sort bulkiness                         701 ms          713 ms          704 ms    ✅
-  T67d --sort namelength                       1231 ms         1233 ms         1260 ms    ✅
-  T67e --sort pathlength                       1242 ms         1235 ms         1240 ms    ✅
-  T67f --sort path_only                         194 ms          193 ms          191 ms    ✅
-  T67g --sort type                              700 ms          711 ms          708 ms    ✅
-  T67h multi-sort treesize,name                 357 ms          348 ms          342 ms    ✅
-  T67i multi-sort type,-size                    709 ms          719 ms          704 ms    ✅
-  T67j multi-sort hidden,bulkiness              603 ms          590 ms          594 ms    ✅
-  T68 --attr archive                            612 ms          612 ms          618 ms    ✅
-  T69 --attr sparse                             378 ms          384 ms          383 ms    ✅
-  T70 --attr reparse                            393 ms          404 ms          411 ms    ✅
-  T71 --attr offline                            372 ms          389 ms          386 ms    ✅
-  T72 --attr encrypted                          387 ms          388 ms          382 ms    ✅
-  T73 --attr !system                            683 ms          677 ms          664 ms    ✅
-  T74 --attr hidden,system                      384 ms          384 ms          385 ms    ✅
-  T75 size+time+ext combined                    360 ms          376 ms          363 ms    ✅
-  T76 dirs + desc range + sort                  315 ms          315 ms          312 ms    ✅
-  T77 hidden + --newer last_30d                 374 ms          375 ms          377 ms    ✅
-  T78 exclude + ext + size                      197 ms          198 ms          197 ms    ✅
-  T79 projection + json format                  206 ms          195 ms          197 ms    ✅
-  T80 --columns all (wide)                      210 ms          197 ms          193 ms    ✅
-  T81 --newer-created this_year                 393 ms          402 ms          385 ms    ✅
-  T82 --newer-accessed last_week                379 ms          397 ms          387 ms    ✅
-  T83 multi-sort drive,ext,-size                196 ms          192 ms          197 ms    ✅
-  T84 mega combined                             208 ms          193 ms          199 ms    ✅
-  T85 table format + projection                 206 ms          195 ms          194 ms    ✅
-  T86 --older-accessed 365d                     583 ms          591 ms          588 ms    ✅
-  T87 ext + sort modified                       211 ms          208 ms          205 ms    ✅
-  T88 name-only + hide-system + newer           273 ms          268 ms          273 ms    ✅
-  T88a path: prefix                             198 ms          196 ms          201 ms    ✅
-  T88b dir: prefix                              197 ms          202 ms          199 ms    ✅
-  T88c file: prefix                             193 ms          201 ms          192 ms    ✅
-  T88d --begins-with                            194 ms          201 ms          196 ms    ✅
-  T88e --ends-with                              202 ms          193 ms          199 ms    ✅
-  T88f --contains                               198 ms          196 ms          194 ms    ✅
-  T88g --not-contains                           198 ms          200 ms          199 ms    ✅
-  T88h --in-path + pattern                      193 ms          216 ms          196 ms    ❌
-  T88i path: vs --in-path                       198 ms          195 ms          196 ms    ✅
-  T88j --contains + --not-contains              198 ms          198 ms          195 ms    ✅
-  T88k dir: prefix + sort treesize              202 ms          199 ms          191 ms    ✅
-  T88l --begins-with + --ext                    194 ms          203 ms          193 ms    ✅
-  T89 --type code                               675 ms          677 ms          691 ms    ❌
-  T90 --type document                           668 ms          678 ms          681 ms    ✅
-  T91 --type executable                         677 ms          665 ms          698 ms    ❌
-  T92 --type picture                            665 ms          677 ms          678 ms    ✅
-  T93 --type system                             680 ms          677 ms          669 ms    ❌
-  T94 --type code + sort size                   691 ms          685 ms          689 ms    ✅
-  T95 --in-path *windows*                       192 ms          200 ms          192 ms    ❌
-  T96 --in-path *system32*                      193 ms          197 ms          195 ms    ✅
-  T97 --in-path + --exclude                     195 ms          198 ms          197 ms    ✅
-  T98 --min-bulkiness 200                       679 ms          666 ms          679 ms    ❌
-  T99 --max-bulkiness 100                       574 ms          585 ms          584 ms    ✅
-  T100 bulkiness + size combined                393 ms          396 ms          385 ms    ✅
-  T101 --min-treesize 100MB                     322 ms          321 ms          326 ms    ❌
-  T102 --max-treesize 1MB                       348 ms          345 ms          347 ms    ❌
-  T103 --min-tree-allocated 100MB               334 ms          330 ms          321 ms    ❌
-  T104 --min-name-length 50                    1101 ms         1095 ms         1097 ms    ✅
-  T105 --max-name-length 8                     1115 ms         1125 ms         1110 ms    ✅
-  T106 --min-path-length 200                    675 ms          678 ms          671 ms    ❌
-  T107 --max-path-length 30                     676 ms          677 ms          681 ms    ✅
-  T108 --min-size-on-disk 100MB                 465 ms          463 ms          471 ms    ✅
-  T109 --max-size-on-disk 4096                  565 ms          572 ms          563 ms    ✅
-  T110 --month jan                              688 ms          688 ms          690 ms    ✅
-  T111 --month Q4                               739 ms          728 ms          716 ms    ✅
-  T112 --month jan,feb,mar                      736 ms          726 ms          724 ms    ✅
-  T113 --month jan + --newer last_365           393 ms          395 ms          401 ms    ✅
-  T114 --sort hidden:desc                       352 ms          363 ms          339 ms    ✅
-  T115 --sort compressed:desc                   354 ms          347 ms          342 ms    ✅
-  T116 --sort directory:desc                    344 ms          355 ms          344 ms    ✅
-  T117 type + in-path + size                    362 ms          390 ms          399 ms    ✅
-  T118 treesize + descendants                   315 ms          307 ms          311 ms    ❌
-  TOTAL (sum)                                118939 ms        58473 ms        53293 ms
-  WALL (phase)                               119174 ms        58705 ms        53524 ms
-
-  ⚡ COLD→HOT sum speedup: 2.2x
-  ⚡ COLD→HOT wall speedup: 2.2x
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-(production) ~\GitHub\UltraFastFileSearch on main>
+    ~/Pr/GitHub/UltraFastFileSearch  on   main !15 ?1                                                                                                           1 ✘  took 2m 16s   at 11:56:21 

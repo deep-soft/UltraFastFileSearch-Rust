@@ -672,3 +672,284 @@ fn search_index_concurrent_calls_do_not_interfere() {
     assert!(!r1.rows.is_empty(), "concurrent search 1 must return rows");
     assert!(!r2.rows.is_empty(), "concurrent search 2 must return rows");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Boolean flag sorting — compare_by_column, sort_rows, field_to_attr_bit
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Build a `DisplayRow` with explicit NTFS flags.
+///
+/// `is_directory` is derived from `flags & 0x0010`.  All rows share
+/// identical timestamps (`modified = 5000`) so any sort that falls back
+/// to `modified` instead of the flag value will produce unstable order.
+fn flagged_row(name: &str, flags: u32) -> DisplayRow {
+    DisplayRow::new(
+        0,
+        'C',
+        format!("C:\\{name}"),
+        100,
+        flags & 0x0010 != 0,
+        5000,
+        5000,
+        5000,
+        flags,
+        512,
+        0,
+        0,
+        0,
+    )
+}
+
+// ── field_to_attr_bit ────────────────────────────────────────────────
+
+/// Verify every boolean `FieldId` maps to the documented NTFS
+/// `FILE_ATTRIBUTE_*` constant.  A wrong value here silently breaks
+/// sorting for that flag.
+#[test]
+fn field_to_attr_bit_matches_ntfs_constants() {
+    use crate::search::sorting::field_to_attr_bit;
+
+    let expected: &[(FieldId, u32)] = &[
+        (FieldId::ReadOnly, 0x0001),
+        (FieldId::Hidden, 0x0002),
+        (FieldId::System, 0x0004),
+        (FieldId::DirectoryFlag, 0x0010),
+        (FieldId::Archive, 0x0020),
+        (FieldId::Temporary, 0x0100),
+        (FieldId::Sparse, 0x0200),
+        (FieldId::Reparse, 0x0400),
+        (FieldId::Compressed, 0x0800),
+        (FieldId::Offline, 0x1000),
+        (FieldId::NotIndexed, 0x2000),
+        (FieldId::Encrypted, 0x4000),
+        (FieldId::Integrity, 0x8000),
+        (FieldId::Virtual, 0x0001_0000),
+        (FieldId::NoScrub, 0x0002_0000),
+        (FieldId::RecallOnOpen, 0x0004_0000),
+        (FieldId::Pinned, 0x0008_0000),
+        (FieldId::Unpinned, 0x0010_0000),
+        (FieldId::RecallOnDataAccess, 0x0040_0000),
+    ];
+    for &(field, ntfs_bit) in expected {
+        assert_eq!(
+            field_to_attr_bit(field),
+            ntfs_bit,
+            "{field:?}: expected 0x{ntfs_bit:08X}, got 0x{:08X}",
+            field_to_attr_bit(field)
+        );
+    }
+}
+
+/// Non-boolean fields must return 0 (no attribute bit).
+#[test]
+fn field_to_attr_bit_returns_zero_for_non_boolean_fields() {
+    use crate::search::sorting::field_to_attr_bit;
+
+    let non_boolean = [
+        FieldId::Name,
+        FieldId::Path,
+        FieldId::PathOnly,
+        FieldId::Size,
+        FieldId::SizeOnDisk,
+        FieldId::Created,
+        FieldId::Modified,
+        FieldId::Accessed,
+        FieldId::Extension,
+        FieldId::Type,
+        FieldId::Descendants,
+        FieldId::TreeSize,
+    ];
+    for field in non_boolean {
+        assert_eq!(
+            field_to_attr_bit(field),
+            0,
+            "{field:?} should return 0 (non-boolean)"
+        );
+    }
+}
+
+// ── sort_rows: boolean flags ─────────────────────────────────────────
+
+/// Parametric helper: build two rows that differ only by a single flag
+/// bit, verify `sort_rows` puts the flagged row first (desc) / last (asc).
+///
+/// Both rows have identical timestamps to catch any fallback to `modified`.
+fn assert_sort_rows_boolean(field: SortColumn, flag_bit: u32) {
+    // Use a base of 0 (no flags) so that `plain` never has the tested bit.
+    // Add archive (0x20) only when NOT testing archive itself.
+    let base = if flag_bit == 0x0020 { 0_u32 } else { 0x20 };
+    let flagged = flagged_row("flagged.dat", flag_bit | base);
+    let plain = flagged_row("plain.dat", base);
+
+    // ── Descending: flagged first ──
+    let mut rows_desc = vec![plain.clone(), flagged.clone()]; // wrong order
+    sort_rows(&mut rows_desc, field, true, &[]);
+    assert_eq!(
+        rows_desc.first().expect("first").name(),
+        "flagged.dat",
+        "{field:?} desc: flagged row must sort first"
+    );
+    assert_eq!(
+        rows_desc.last().expect("last").name(),
+        "plain.dat",
+        "{field:?} desc: plain row must sort last"
+    );
+
+    // ── Ascending: flagged last ──
+    let mut rows_asc = vec![flagged, plain];
+    sort_rows(&mut rows_asc, field, false, &[]);
+    assert_eq!(
+        rows_asc.first().expect("first").name(),
+        "plain.dat",
+        "{field:?} asc: plain row must sort first"
+    );
+    assert_eq!(
+        rows_asc.last().expect("last").name(),
+        "flagged.dat",
+        "{field:?} asc: flagged row must sort last"
+    );
+}
+
+#[test]
+fn sort_rows_directory_flag() {
+    // DirectoryFlag needs special handling: is_directory derives from flags.
+    let dir = flagged_row("mydir", 0x0010);
+    let file = flagged_row("myfile.dat", 0x0020);
+
+    let mut rows_desc = vec![file.clone(), dir.clone()];
+    sort_rows(&mut rows_desc, SortColumn::DirectoryFlag, true, &[]);
+    assert_eq!(
+        rows_desc.first().expect("first").name(),
+        "mydir",
+        "DirectoryFlag desc: directory must sort first"
+    );
+    assert_eq!(
+        rows_desc.last().expect("last").name(),
+        "myfile.dat",
+        "DirectoryFlag desc: file must sort last"
+    );
+
+    let mut rows_asc = vec![dir, file];
+    sort_rows(&mut rows_asc, SortColumn::DirectoryFlag, false, &[]);
+    assert_eq!(
+        rows_asc.first().expect("first").name(),
+        "myfile.dat",
+        "DirectoryFlag asc: file must sort first"
+    );
+    assert_eq!(
+        rows_asc.last().expect("last").name(),
+        "mydir",
+        "DirectoryFlag asc: directory must sort last"
+    );
+}
+
+#[test]
+fn sort_rows_hidden_flag() {
+    assert_sort_rows_boolean(SortColumn::Hidden, 0x0002);
+}
+#[test]
+fn sort_rows_system_flag() {
+    assert_sort_rows_boolean(SortColumn::System, 0x0004);
+}
+#[test]
+fn sort_rows_readonly_flag() {
+    assert_sort_rows_boolean(SortColumn::ReadOnly, 0x0001);
+}
+#[test]
+fn sort_rows_archive_flag() {
+    assert_sort_rows_boolean(SortColumn::Archive, 0x0020);
+}
+#[test]
+fn sort_rows_compressed_flag() {
+    assert_sort_rows_boolean(SortColumn::Compressed, 0x0800);
+}
+#[test]
+fn sort_rows_encrypted_flag() {
+    assert_sort_rows_boolean(SortColumn::Encrypted, 0x4000);
+}
+#[test]
+fn sort_rows_sparse_flag() {
+    assert_sort_rows_boolean(SortColumn::Sparse, 0x0200);
+}
+#[test]
+fn sort_rows_reparse_flag() {
+    assert_sort_rows_boolean(SortColumn::Reparse, 0x0400);
+}
+#[test]
+fn sort_rows_offline_flag() {
+    assert_sort_rows_boolean(SortColumn::Offline, 0x1000);
+}
+#[test]
+fn sort_rows_not_indexed_flag() {
+    assert_sort_rows_boolean(SortColumn::NotIndexed, 0x2000);
+}
+#[test]
+fn sort_rows_integrity_flag() {
+    assert_sort_rows_boolean(SortColumn::Integrity, 0x8000);
+}
+#[test]
+fn sort_rows_no_scrub_flag() {
+    assert_sort_rows_boolean(SortColumn::NoScrub, 0x0002_0000);
+}
+#[test]
+fn sort_rows_pinned_flag() {
+    assert_sort_rows_boolean(SortColumn::Pinned, 0x0008_0000);
+}
+#[test]
+fn sort_rows_unpinned_flag() {
+    assert_sort_rows_boolean(SortColumn::Unpinned, 0x0010_0000);
+}
+
+// ── sort_rows: multi-row boolean stability ───────────────────────────
+
+/// With 5 rows (3 flagged, 2 unflagged), verify sort produces a clean
+/// partition: all flagged records in one block, all unflagged in the other,
+/// with name-based tiebreaking within each block.
+#[test]
+fn sort_rows_directory_flag_multi_row_stability() {
+    let mut rows = vec![
+        flagged_row("delta.txt", 0x0020),   // file
+        flagged_row("alpha_dir", 0x0010),   // directory
+        flagged_row("gamma.txt", 0x0020),   // file
+        flagged_row("beta_dir", 0x0010),    // directory
+        flagged_row("epsilon_dir", 0x0010), // directory
+    ];
+
+    sort_rows(&mut rows, SortColumn::DirectoryFlag, true, &[]);
+    let names: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
+
+    // Desc: all dirs first, then all files.
+    // Within each group: name tiebreaker is also reversed (desc),
+    // so names appear Z→A within each flag partition.
+    assert_eq!(
+        names,
+        &[
+            "epsilon_dir",
+            "beta_dir",
+            "alpha_dir",
+            "gamma.txt",
+            "delta.txt",
+        ],
+        "DirectoryFlag desc: dirs first, then files, name-desc within each"
+    );
+}
+
+/// Ascending: files first, then directories, alphabetical within each block.
+#[test]
+fn sort_rows_directory_flag_multi_row_ascending() {
+    let mut rows = vec![
+        flagged_row("delta.txt", 0x0020), // file
+        flagged_row("alpha_dir", 0x0010), // directory
+        flagged_row("gamma.txt", 0x0020), // file
+        flagged_row("beta_dir", 0x0010),  // directory
+    ];
+
+    sort_rows(&mut rows, SortColumn::DirectoryFlag, false, &[]);
+    let names: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
+
+    assert_eq!(
+        names,
+        &["delta.txt", "gamma.txt", "alpha_dir", "beta_dir",],
+        "DirectoryFlag asc: files first, then dirs, alphabetical within each"
+    );
+}

@@ -18,89 +18,10 @@
 
 use std::io::Write;
 
-use anyhow::{Result, bail};
-use uffs_client::protocol::{AggregateResultWire, AggregateSpecWire, SearchParams};
+use anyhow::Result;
+use uffs_client::protocol::AggregateResultWire;
 
 use super::{format_number, format_size};
-
-/// Run an aggregate preset or count against the daemon.
-///
-/// # Errors
-///
-/// Returns an error if the daemon cannot be reached or the preset
-/// is not recognized.
-#[expect(
-    clippy::single_call_fn,
-    reason = "public CLI command handler called from main dispatch"
-)]
-pub async fn aggregate(preset: &str, format: &str) -> Result<()> {
-    // Build the aggregate-only SearchParams.
-    let wire_spec = if preset == "count" {
-        AggregateSpecWire {
-            kind: "count".to_owned(),
-            label: Some("total_count".to_owned()),
-            field: None,
-            top: None,
-            interval: None,
-            calendar: None,
-            boundaries: vec![],
-            metrics: vec![],
-            preset: None,
-        }
-    } else {
-        // Validate preset name.
-        if uffs_core::aggregate::presets::AggregatePreset::parse(preset).is_none() {
-            bail!(
-                "Unknown preset: `{preset}`. Available presets: {}",
-                uffs_core::aggregate::presets::AggregatePreset::ALL_NAMES.join(", ")
-            );
-        }
-        AggregateSpecWire {
-            kind: "preset".to_owned(),
-            label: None,
-            field: None,
-            top: None,
-            interval: None,
-            calendar: None,
-            boundaries: vec![],
-            metrics: vec![],
-            preset: Some(preset.to_owned()),
-        }
-    };
-
-    let params = SearchParams {
-        pattern: "*".to_owned(),
-        aggregations: vec![wire_spec],
-        include_rows: false,
-        ..Default::default()
-    };
-
-    // Connect to daemon and run the aggregation.
-    let mut client = uffs_client::connect::UffsClient::connect()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect to daemon: {e}"))?;
-
-    let response = client
-        .search(&params)
-        .await
-        .map_err(|e| anyhow::anyhow!("Aggregate query failed: {e}"))?;
-
-    // Output results.
-    match format {
-        "json" => {
-            let json = serde_json::to_string_pretty(&response.aggregations)?;
-            println!("{json}");
-        }
-        "csv" | "tsv" => {
-            print_csv_results(&response.aggregations, format == "tsv")?;
-        }
-        _ => {
-            print_table_results(&response.aggregations)?;
-        }
-    }
-
-    Ok(())
-}
 
 /// Print aggregate results in a human-readable table format.
 pub(crate) fn print_table_results(results: &[AggregateResultWire]) -> Result<()> {
@@ -193,7 +114,7 @@ pub(crate) fn print_table_results(results: &[AggregateResultWire]) -> Result<()>
 }
 
 /// Print aggregate results in CSV/TSV format.
-fn print_csv_results(results: &[AggregateResultWire], tsv: bool) -> Result<()> {
+pub(crate) fn print_csv_results(results: &[AggregateResultWire], tsv: bool) -> Result<()> {
     let mut stdout = std::io::stdout().lock();
     let sep = if tsv { '\t' } else { ',' };
 

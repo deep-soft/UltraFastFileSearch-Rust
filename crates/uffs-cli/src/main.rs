@@ -261,15 +261,24 @@ fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
 /// doesn't show backtraces for user-facing errors like "file not found".
 #[tracing::instrument(level = "info", skip_all)]
 async fn run() -> Result<()> {
-    // Check for -v/--verbose flag early to set log level before initializing
-    // logging This allows `uffs -v ...` to show info-level logs without
-    // RUST_LOG=info
-    let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
-
-    // Initialize logging with terminal + file support
-    let _guard = init_logging(verbose);
-
     let cli = Cli::parse();
+
+    // `uffs daemon run` manages its own tracing subscriber so it can
+    // honour --log-level / --log-file.  Skip the CLI's init_logging for
+    // that subcommand — otherwise `try_init` in `daemon_run` silently
+    // fails because the global subscriber is already installed.
+    let is_daemon_run = matches!(
+        &cli.command,
+        Some(Commands::Daemon {
+            action: args::DaemonAction::Run { .. }
+        })
+    );
+    let _guard = if is_daemon_run {
+        None
+    } else {
+        let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
+        Some(init_logging(verbose))
+    };
 
     // Handle subcommands or default search action
     match cli.command {
@@ -283,11 +292,48 @@ async fn run() -> Result<()> {
         Some(Commands::Info { path }) => {
             commands::info(&path)?;
         }
-        Some(Commands::Stats { path, top }) => {
-            commands::stats(path.as_deref(), top).await?;
+        Some(Commands::Stats {
+            path,
+            top,
+            data_dir,
+            mft_file,
+        }) => {
+            if let Some(stats_path) = path {
+                commands::stats(Some(&stats_path), top).await?;
+            } else {
+                // Daemon mode: run overview preset through search path.
+                let config = commands::search::SearchConfig::aggregate_only(
+                    "*",
+                    vec!["overview".to_owned()],
+                    "table",
+                    data_dir,
+                    mft_file,
+                );
+                commands::search::run_with_config(&config).await?;
+            }
         }
-        Some(Commands::Aggregate { preset, format }) => {
-            commands::aggregate(&preset, &format).await?;
+        Some(Commands::Aggregate {
+            preset,
+            format,
+            data_dir,
+            mft_file,
+        }) => {
+            // Route through the standard search path — aggregate-only,
+            // no rows returned.  The search daemon lifecycle (auto-start,
+            // await_ready, data-dir forwarding) is handled automatically.
+            // Pass the preset name directly — `build_search_params`
+            // detects known preset names via `AggregatePreset::parse`
+            // and sets `kind: "preset"` + `preset: Some(name)` on the
+            // wire automatically.
+            let agg_spec = preset;
+            let config = commands::search::SearchConfig::aggregate_only(
+                "*",
+                vec![agg_spec],
+                &format,
+                data_dir,
+                mft_file,
+            );
+            commands::search::run_with_config(&config).await?;
         }
         Some(Commands::Daemon { action }) => {
             commands::daemon(&action).await?;

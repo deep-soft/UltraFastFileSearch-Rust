@@ -236,7 +236,7 @@ impl FieldId {
             Self::Type => FieldMeta {
                 id: self,
                 canonical_name: "type",
-                aliases: &["directory"],
+                aliases: &["folder"],
                 field_type: FieldType::Enum,
                 access: FieldAccess::Derived,
                 sortable: true,

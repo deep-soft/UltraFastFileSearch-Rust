@@ -134,7 +134,7 @@ fn test_mcp_tools_list() {
     let resp = send_and_read(
         &mut stdin,
         &mut stdout,
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
     );
 
     if let Some(body) = &resp {
@@ -172,7 +172,7 @@ fn test_mcp_resources_list() {
     let resp = send_and_read(
         &mut stdin,
         &mut stdout,
-        r#"{"jsonrpc":"2.0","id":3,"method":"resources/list"}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"resources/list","params":{}}"#,
     );
 
     if let Some(body) = &resp {
@@ -205,7 +205,7 @@ fn test_mcp_prompts_list() {
     let resp = send_and_read(
         &mut stdin,
         &mut stdout,
-        r#"{"jsonrpc":"2.0","id":4,"method":"prompts/list"}"#,
+        r#"{"jsonrpc":"2.0","id":4,"method":"prompts/list","params":{}}"#,
     );
 
     if let Some(body) = &resp {

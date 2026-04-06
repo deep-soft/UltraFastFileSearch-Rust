@@ -51,7 +51,7 @@ the search engine (typically by MFT record number).
 
 | Column Name | Aliases | Default | Description |
 |-------------|---------|---------|-------------|
-| `type` | — | asc | Semantic file category (`code`, `picture`, …) |
+| `type` | `folder` | asc | Semantic file category (`code`, `picture`, …) |
 | `descendants` | — | desc | Direct child count (directories) |
 | `tree_size` | `treesize` | desc | Sum of logical sizes in subtree ([concept](concepts.md#2--tree-size--tree-allocated)) |
 | `tree_allocated` | `treeallocated` | desc | Sum of allocated sizes in subtree |
@@ -78,7 +78,7 @@ name tiebreaker within each group.
 | `offline` | `o` | desc | Offline/tiered first |
 | `not_indexed` | `notindexed` | desc | Not-indexed first |
 | `temporary` | `temp` | desc | Temp files first |
-| `directory_flag` | `directoryflag` | desc | Directories first |
+| `directory_flag` | `directory`, `dir`, `directoryflag` | desc | Directories first |
 | `virtual` | — | desc | Virtual files first |
 | `pinned` | — | desc | Pinned files first |
 | `unpinned` | — | desc | Unpinned files first |
@@ -294,7 +294,7 @@ CORE COLUMNS
   ext             asc     File extension (case-folded)
 
 DERIVED COLUMNS
-  type            asc     Semantic file category (code, picture, …)
+  type (folder)   asc     Semantic file category (code, picture, …)
   descendants     desc    Direct child count (directories)
   treesize        desc    Subtree logical size total
   treeallocated   desc    Subtree allocated size total
@@ -303,7 +303,7 @@ DERIVED COLUMNS
   pathlength      desc    Full path character count
 
 BOOLEAN ATTRIBUTE COLUMNS (19)
-  hidden          desc    compressed      desc    directory_flag  desc
+  hidden          desc    compressed      desc    directory_flag (directory, dir)  desc
   system          desc    encrypted       desc    virtual         desc
   archive         desc    sparse          desc    pinned          desc
   read_only       desc    reparse         desc    unpinned        desc

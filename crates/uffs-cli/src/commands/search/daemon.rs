@@ -37,7 +37,12 @@ fn fmt_number(num: usize) -> String {
 /// - **Mac/Linux:** the caller must supply `--data-dir` or `--mft-file` via the
 ///   CLI.  These paths are forwarded to the daemon when auto-starting. If
 ///   neither is provided, returns a descriptive error immediately.
-pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<DisplayRow>> {
+pub(super) async fn search_via_daemon(
+    config: &SearchConfig<'_>,
+) -> Result<(
+    Vec<DisplayRow>,
+    Vec<uffs_client::protocol::AggregateResultWire>,
+)> {
     let spawn_args = build_daemon_spawn_args(config)?;
     let params = build_search_params(config);
     let profile = config.profile || config.benchmark;
@@ -102,9 +107,11 @@ pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<D
 
     let records_scanned = response.records_scanned;
     let daemon_profile = response.profile.take();
+    let aggregations = core::mem::take(&mut response.aggregations);
 
     info!(
         rows = response.rows.len(),
+        aggregations = aggregations.len(),
         duration_ms = response.duration_ms,
         scanned = records_scanned,
         truncated = response.truncated,
@@ -133,7 +140,7 @@ pub(super) async fn search_via_daemon(config: &SearchConfig<'_>) -> Result<Vec<D
         });
     }
 
-    Ok(rows)
+    Ok((rows, aggregations))
 }
 
 /// Client-side timing data collected during a daemon search.
@@ -307,6 +314,19 @@ fn build_daemon_spawn_args(config: &SearchConfig<'_>) -> Result<Vec<String>> {
     if config.no_cache {
         args.push("--no-cache".to_owned());
     }
+
+    // Forward daemon log configuration from environment variables so that
+    // `UFFS_LOG=debug` or `UFFS_LOG_FILE=/tmp/daemon.log` set before a
+    // search command automatically propagate to the auto-spawned daemon.
+    if let Ok(log_level) = std::env::var("UFFS_LOG") {
+        args.push("--log-level".to_owned());
+        args.push(log_level);
+    }
+    if let Ok(log_file) = std::env::var("UFFS_LOG_FILE") {
+        args.push("--log-file".to_owned());
+        args.push(log_file);
+    }
+
     Ok(args)
 }
 

@@ -31,6 +31,7 @@ use thiserror as _;
 use tokio as _;
 use tracing as _;
 use tracing_appender as _;
+use tracing_subscriber as _;
 use uffs_client as _;
 use uffs_core as _;
 use uffs_mft as _;
@@ -67,6 +68,13 @@ struct Cli {
     /// Log level (error, warn, info, debug, trace).
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Write daemon logs to this file instead of stdout.
+    ///
+    /// When set, all tracing output is appended to the specified file.
+    /// Use `"-"` or omit the path to default to `./uffs_daemon.log`.
+    #[arg(long, value_name = "PATH")]
+    log_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -76,12 +84,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialize tracing (standalone binary owns the subscriber).
     // UFFS_LOG env var overrides --log-level for diagnostic sessions.
     let log_spec = std::env::var("UFFS_LOG").unwrap_or_else(|_| cli.log_level.clone());
-    let filter = tracing_subscriber::EnvFilter::try_new(&log_spec)
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .init();
+    let _guard = uffs_daemon::init_tracing(&log_spec, cli.log_file.as_deref());
 
     uffs_daemon::run_daemon(uffs_daemon::DaemonConfig {
         mft_files: cli.mft_files,
@@ -91,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
         no_retire: cli.no_retire,
         no_cache: cli.no_cache,
         log_level: cli.log_level,
+        log_file: cli.log_file,
     })
     .await
 }
