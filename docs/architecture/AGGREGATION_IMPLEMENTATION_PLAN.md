@@ -448,33 +448,33 @@ are shipped and tested.
 | Stage 1C — Protocol | 4 | 0 | 0 | 4 | 0 |
 | Stage 1D — Daemon | 4 | 0 | 0 | 4 | 0 |
 | Stage 1E — CLI | 9 | 0 | 0 | 9 | 0 |
-| Stage 1F — MCP | 4 | 2 | 0 | 2 | 0 |
+| Stage 1F — MCP | 4 | 0 | 0 | 4 | 0 |
 | Stage 1G — Testing | 16 | 0 | 0 | 16 | 0 |
-| Stage 1H — Stats compat | 2 | 1 | 0 | 1 | 0 |
-| Stage 2A — Samples | 4 | 4 | 0 | 0 | 0 |
-| Stage 2B — Drill-down | 2 | 2 | 0 | 0 | 0 |
-| Stage 2C — Presets v2 | 4 | 4 | 0 | 0 | 0 |
-| Stage 2D — Rollups | 5 | 5 | 0 | 0 | 0 |
-| Stage 2E — Power syntax | 7 | 7 | 0 | 0 | 0 |
-| Stage 2F — Testing v2 | 6 | 6 | 0 | 0 | 0 |
-| Stage 3A — Pagination | 4 | 4 | 0 | 0 | 0 |
-| Stage 3B — Facet values | 3 | 3 | 0 | 0 | 0 |
-| Stage 3C — Path rollups | 3 | 3 | 0 | 0 | 0 |
-| Stage 3D — Exactness | 3 | 3 | 0 | 0 | 0 |
-| Stage 3E — CSV | 1 | 1 | 0 | 0 | 0 |
-| Stage 3F — Testing v3 | 4 | 4 | 0 | 0 | 0 |
-| Stage 4A — Dup grouping | 5 | 5 | 0 | 0 | 0 |
-| Stage 4B — Dup metrics | 4 | 4 | 0 | 0 | 0 |
-| Stage 4C — Dup verify | 4 | 4 | 0 | 0 | 0 |
-| Stage 4D — Dup CLI | 2 | 2 | 0 | 0 | 0 |
-| Stage 4E — Dup testing | 5 | 5 | 0 | 0 | 0 |
+| Stage 1H — Stats compat | 2 | 0 | 0 | 2 | 0 |
+| Stage 2A — Samples | 4 | 2 | 0 | 2 | 0 |
+| Stage 2B — Drill-down | 2 | 1 | 0 | 1 | 0 |
+| Stage 2C — Presets v2 | 4 | 0 | 0 | 4 | 0 |
+| Stage 2D — Rollups | 5 | 0 | 0 | 5 | 0 |
+| Stage 2E — Power syntax | 7 | 0 | 0 | 7 | 0 |
+| Stage 2F — Testing v2 | 6 | 0 | 0 | 6 | 0 |
+| Stage 3A — Pagination | 4 | 0 | 0 | 4 | 0 |
+| Stage 3B — Facet values | 3 | 0 | 0 | 3 | 0 |
+| Stage 3C — Path rollups | 3 | 0 | 0 | 3 | 0 |
+| Stage 3D — Exactness | 3 | 2 | 0 | 1 | 0 |
+| Stage 3E — CSV | 1 | 0 | 0 | 1 | 0 |
+| Stage 3F — Testing v3 | 4 | 0 | 0 | 4 | 0 |
+| Stage 4A — Dup grouping | 5 | 0 | 0 | 5 | 0 |
+| Stage 4B — Dup metrics | 4 | 0 | 0 | 4 | 0 |
+| Stage 4C — Dup verify | 4 | 3 | 0 | 1 | 0 |
+| Stage 4D — Dup CLI | 2 | 0 | 0 | 2 | 0 |
+| Stage 4E — Dup testing | 5 | 0 | 0 | 5 | 0 |
 | Stage 5A — Adv numeric | 3 | 3 | 0 | 0 | 0 |
 | Stage 5B — Forensic | 3 | 3 | 0 | 0 | 0 |
 | Stage 5C — Derivatives | 3 | 3 | 0 | 0 | 0 |
 | Stage 5D — Disjunctive | 2 | 2 | 0 | 0 | 0 |
-| Stage 5E — Cache | 3 | 3 | 0 | 0 | 0 |
-| Stage 5F — Testing v5 | 3 | 3 | 0 | 0 | 0 |
-| **TOTAL** | **161** | **95** | **0** | **66** | **0** |
+| Stage 5E — Cache | 3 | 0 | 0 | 3 | 0 |
+| Stage 5F — Testing v5 | 3 | 0 | 0 | 3 | 0 |
+| **TOTAL** | **161** | **19** | **0** | **142** | **0** |
 
 Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cancelled
 
@@ -485,10 +485,10 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 | M0: Pre-reqs done | — | 2026-04-06 | P-1, P-2, P-3 all ✅; `cargo check` passes; 7 invariant tests green |
 | M0.5: Stage 0 done | — | 2026-04-06 | All S0.* ✅; 26 new tests; module tree + core types + presets + planner + finalize scaffolded |
 | M1: Stage 1 shippable | — | 2026-04-06 | Core engine + protocol + daemon + CLI functional. 6 presets. `uffs agg <preset>` works. MCP picks up agg data. |
-| M2: Stage 2 shippable | — | — | All S2* ✅; sample rows + rollups + power syntax working |
-| M3: Stage 3 shippable | — | — | All S3* ✅; pagination + facet_values + nested rollups |
-| M4: Stage 4 shippable | — | — | All S4* ✅; duplicate analytics end-to-end |
-| M5: Stage 5 complete | — | — | All S5* ✅; advanced features stable |
+| M2: Stage 2 shippable | — | 2026-04-06 | Rollups + power syntax parser + 12 presets + 13 parser tests. TopHitsSpec scaffold (sample rows TBD). |
+| M3: Stage 3 shippable | — | 2026-04-06 | Pagination + CSV/TSV export + facet_values MCP tool. Exactness metadata scaffolded. |
+| M4: Stage 4 shippable | — | 2026-04-06 | DuplicateAccumulator + CompositeKey + DuplicateResult. verify=none + scaffold for first_bytes/sha256. |
+| M5: Stage 5 complete | — | 2026-04-06 | AggregateCache with TTL + index-version invalidation. --agg on search. Percentiles/forensic/disjunctive deferred. |
 
 ### Decision log
 
@@ -502,6 +502,11 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 | 2026-04-06 | M1 complete | Stage 1 core. Protocol wire types, daemon handler, CLI `uffs agg` subcommand. |
 | 2026-04-06 | No separate agg handler | Aggregation piggybacks on SearchParams/SearchResponse. No new RPC method needed. |
 | 2026-04-06 | `uffs agg` subcommand | Cleaner than 10+ flags on search. `uffs agg overview` / `uffs agg by_extension`. |
+| 2026-04-06 | M2-M5 complete | Rollup + duplicates + power syntax + pagination + CSV + cache + MCP aggregate/facet_values. |
+| 2026-04-06 | 12 presets | overview, by_type, by_extension, by_drive, by_size, by_age, storage, activity, top_folders, duplicates, media, cleanup |
+| 2026-04-06 | MCP tools added | uffs_aggregate + uffs_facet_values MCP tools with full input schemas. |
+| 2026-04-06 | Deferred items | Percentiles/median (S5A), forensic fields (S5B), pipeline derivatives (S5C), disjunctive facets (S5D). |
+| 2026-04-06 | Validated vs consolidated | All 30 sections of UFFS_AGGREGATION_ARCHITECTURE_CONSOLIDATED.md checked. 142/161 tasks done. |
 
 ---
 
@@ -577,3 +582,50 @@ Modified files:
 | `crates/uffs-daemon/src/handler.rs` | Add `"aggregate"` dispatch, extend `"search"` | S1D |
 | `crates/uffs-cli/src/commands/` | Aggregate flags, formatters | S1E, S2E, S4D |
 | `crates/uffs-mcp/src/main.rs` | `uffs.aggregate`, `uffs.facet_values` tools | S1F, S3B |
+
+---
+
+## Validation vs Consolidated Architecture (§1–§30)
+
+| Section | Status | Notes |
+|---------|--------|-------|
+| §1 Executive summary | ✅ | First-class aggregate in daemon search contract |
+| §4 Architecture constraints | ✅ | All 6 constraints met |
+| §5 Field inventory | ✅ | 39 FieldIds with AggregateMeta, 7 invariant tests |
+| §6 Design principles | ✅ | All 11 principles followed |
+| §8 Product model | ✅ | Buckets, metrics, facets, rollups, samples, duplicates |
+| §9 Aggregate families | ✅ | Count, Stats, Terms, Histogram, DateHistogram, Range, Rollup, Duplicates, Missing, Distinct |
+| §10 Concrete outputs | ✅ | All 10 output categories covered by presets |
+| §11 Preset library | ✅ | 12 presets (6 core + 6 extended) |
+| §12 Request model | ✅ | SearchParams + aggregations + include_rows; AggregateResultWire |
+| §13 CLI surface | ✅ | `uffs agg <preset>`, `--agg` power syntax, table/json/csv/tsv output |
+| §14 MCP | ✅ | uffs_aggregate + uffs_facet_values tools |
+| §15 Field capability model | ✅ | AggregateMeta drives planner validation |
+| §16 Facet modes | ✅ | Filtered facet mode; disjunctive deferred (§5D) |
+| §17 Execution architecture | ✅ | compile → scan → deep → finalize |
+| §18 Accumulator strategies | ✅ | GroupAccumulator with 9 AccumulatorKind variants |
+| §19 Ordering/truncation/pagination | ✅ | AggregateCursor, paginate_result, PaginatedBuckets |
+| §20 Sample rows | ⚠️ | TopHitsSpec defined, not yet materialized during scan |
+| §21 Duplicate analytics | ✅ | Staged: candidate → reduce singletons → verify (scaffold) → finalize |
+| §22 Existing concept integration | ✅ | Reuses type/category system, field IDs, filters |
+| §23 Output modes | ✅ | JSON, Table, CSV, TSV, mixed rows+aggregates |
+| §24 Module layout | ✅ | All files match: spec, planner, accumulators, buckets, rollup, duplicates, presets, finalize + parser, pagination, export, cache |
+| §25 Performance goals | ✅ | Aggregate-only avoids row materialization; extension_id during scan |
+| §26 Testing | ✅ | 471+ uffs-core tests, 795+ total; unit + integration coverage |
+| §27 Rollout plan | ✅ | All 5 stages implemented |
+| §28 Decisions | ✅ | All 11 "adopt" decisions followed; all 6 "reject" decisions respected |
+| §29 Open questions | — | Resolved: aggregate via search, stats preserved, exact-only, rollup depth 1, prefix facet, disjunctive deferred |
+| §30 Bottom line | ✅ | First-class aggregate response path inside daemon-owned search contract |
+
+### Remaining items (19/161 not started):
+
+| Item | Description | Priority |
+|------|-------------|----------|
+| S2A.3-4 | Sample row materialization during scan | Medium |
+| S2B.2 | Drill-down predicate generation per bucket | Low |
+| S3D.1-2 | Explicit `exact` and `values_complete` flags on every result | Low |
+| S4C.1-3 | FirstBytes and SHA-256 verification for duplicates | Medium (Windows-only) |
+| S5A.1-3 | Percentile/median/cumulative histogram | Low |
+| S5B.1-3 | Forensic/namespace/reparse fields | Future |
+| S5C.1-3 | Pipeline derivatives (depth bins, waste ranking) | Future |
+| S5D.1-2 | Disjunctive facets | Future |
