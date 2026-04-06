@@ -53,6 +53,7 @@ use tokio as _;
 // Module declarations
 // ============================================================================
 
+pub mod aggregate;
 pub mod compact;
 pub mod compact_cache;
 pub mod compact_loader;

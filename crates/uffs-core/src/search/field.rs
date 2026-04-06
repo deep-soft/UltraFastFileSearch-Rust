@@ -83,6 +83,55 @@ pub enum FieldId {
     PathLength,
 }
 
+/// Cardinality hint for aggregation planning.
+///
+/// Tells the aggregation engine what kind of accumulator to expect
+/// when this field is used as a group-by key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cardinality {
+    /// Tiny, fixed set of values (≤ 26). Use array-indexed accumulator.
+    /// Examples: drive letter, bool attrs, directory flag.
+    Fixed,
+    /// Small value space (≤ ~100). Use small `HashMap`.
+    /// Examples: semantic type / `FileCategory` (~24 variants).
+    Low,
+    /// Medium value space (≤ ~10 000). Use `HashMap`.
+    /// Examples: file extensions (~2 000 on a typical system).
+    Medium,
+    /// Large value space (≤ ~1 000 000). Guard with top-N + `other_count`.
+    /// Examples: folder paths, directory names.
+    High,
+    /// Potentially millions of distinct values. Only aggregate on explicit request.
+    /// Examples: full path, file name (for duplicate detection).
+    Unbounded,
+}
+
+/// Aggregation capability metadata for a single field.
+///
+/// Populated on every [`FieldId`] and read by the aggregation engine to
+/// decide what operations are valid, which accumulator strategy to use,
+/// and how to finalize/sort buckets.
+///
+/// This struct is `Copy` and const-constructable so it can be returned
+/// from `FieldId::metadata()` (a `const fn`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AggregateMeta {
+    /// Can numeric aggregate functions (sum, min, max, avg) be applied?
+    /// True for numeric and timestamp fields.
+    pub aggregatable: bool,
+    /// Can this field be used as a group-by / terms key?
+    /// True for enum, string, and bool fields.
+    pub groupable: bool,
+    /// Can this field be bucketed into ranges or histograms?
+    /// True for numeric and timestamp fields.
+    pub bucket_support: bool,
+    /// Expected number-of-distinct-values hint.
+    pub cardinality: Cardinality,
+    /// Default top-N limit when used as a terms aggregation key.
+    /// 0 means "not suitable for terms by default — use histogram/range instead".
+    pub default_top: u16,
+}
+
 /// Canonical field kinds used by predicate compilation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldType {
@@ -150,6 +199,8 @@ pub struct FieldMeta {
     pub df_column: &'static str,
     /// Default fallback value when the column is missing from a `DataFrame`.
     pub default_value: &'static str,
+    /// Aggregation capability metadata.
+    pub aggregate: AggregateMeta,
 }
 
 impl FieldId {
@@ -235,6 +286,13 @@ impl FieldId {
                 display_name: "Drive",
                 df_column: "",
                 default_value: "",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 26,
+                },
             },
             Self::Path => FieldMeta {
                 id: self,
@@ -250,6 +308,13 @@ impl FieldId {
                 display_name: "Path",
                 df_column: "path",
                 default_value: "",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: false,
+                    bucket_support: false,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::Name => FieldMeta {
                 id: self,
@@ -265,6 +330,13 @@ impl FieldId {
                 display_name: "Name",
                 df_column: "name",
                 default_value: "",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 100,
+                },
             },
             Self::PathOnly => FieldMeta {
                 id: self,
@@ -280,6 +352,13 @@ impl FieldId {
                 display_name: "Path Only",
                 df_column: "path_only",
                 default_value: "",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 30,
+                },
             },
             Self::Size => FieldMeta {
                 id: self,
@@ -295,6 +374,13 @@ impl FieldId {
                 display_name: "Size",
                 df_column: "size",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::SizeOnDisk => FieldMeta {
                 id: self,
@@ -310,6 +396,13 @@ impl FieldId {
                 display_name: "Size on Disk",
                 df_column: "allocated_size",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::Created => FieldMeta {
                 id: self,
@@ -325,6 +418,13 @@ impl FieldId {
                 display_name: "Created",
                 df_column: "created",
                 default_value: "",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::Modified => FieldMeta {
                 id: self,
@@ -340,6 +440,13 @@ impl FieldId {
                 display_name: "Last Written",
                 df_column: "modified",
                 default_value: "",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::Accessed => FieldMeta {
                 id: self,
@@ -355,6 +462,13 @@ impl FieldId {
                 display_name: "Last Accessed",
                 df_column: "accessed",
                 default_value: "",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::Extension => FieldMeta {
                 id: self,
@@ -370,6 +484,13 @@ impl FieldId {
                 display_name: "Extension",
                 df_column: "",
                 default_value: "",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Medium,
+                    default_top: 50,
+                },
             },
             Self::Type => FieldMeta {
                 id: self,
@@ -385,6 +506,13 @@ impl FieldId {
                 display_name: "Type",
                 df_column: "type",
                 default_value: "",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Low,
+                    default_top: 30,
+                },
             },
             Self::Attributes => FieldMeta {
                 id: self,
@@ -400,6 +528,13 @@ impl FieldId {
                 display_name: "Attributes",
                 df_column: "flags",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: false,
+                    bucket_support: false,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::AttributeValue => FieldMeta {
                 id: self,
@@ -415,6 +550,13 @@ impl FieldId {
                 display_name: "AttributeValue",
                 df_column: "flags",
                 default_value: "",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: false,
+                    bucket_support: false,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::Hidden => FieldMeta {
                 id: self,
@@ -430,6 +572,13 @@ impl FieldId {
                 display_name: "Hidden",
                 df_column: "is_hidden",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::System => FieldMeta {
                 id: self,
@@ -445,6 +594,13 @@ impl FieldId {
                 display_name: "System",
                 df_column: "is_system",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Archive => FieldMeta {
                 id: self,
@@ -460,6 +616,13 @@ impl FieldId {
                 display_name: "Archive",
                 df_column: "is_archive",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::ReadOnly => FieldMeta {
                 id: self,
@@ -475,6 +638,13 @@ impl FieldId {
                 display_name: "Read-only",
                 df_column: "is_readonly",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Compressed => FieldMeta {
                 id: self,
@@ -490,6 +660,13 @@ impl FieldId {
                 display_name: "Compressed",
                 df_column: "is_compressed",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Encrypted => FieldMeta {
                 id: self,
@@ -505,6 +682,13 @@ impl FieldId {
                 display_name: "Encrypted",
                 df_column: "is_encrypted",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Sparse => FieldMeta {
                 id: self,
@@ -520,6 +704,13 @@ impl FieldId {
                 display_name: "Sparse",
                 df_column: "is_sparse",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Reparse => FieldMeta {
                 id: self,
@@ -535,6 +726,13 @@ impl FieldId {
                 display_name: "Reparse",
                 df_column: "is_reparse",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Offline => FieldMeta {
                 id: self,
@@ -550,6 +748,13 @@ impl FieldId {
                 display_name: "Offline",
                 df_column: "is_offline",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::NotIndexed => FieldMeta {
                 id: self,
@@ -571,6 +776,13 @@ impl FieldId {
                 display_name: "Not content indexed file",
                 df_column: "is_not_indexed",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Temporary => FieldMeta {
                 id: self,
@@ -586,6 +798,13 @@ impl FieldId {
                 display_name: "Temporary",
                 df_column: "is_temporary",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Virtual => FieldMeta {
                 id: self,
@@ -601,6 +820,13 @@ impl FieldId {
                 display_name: "Virtual",
                 df_column: "is_virtual",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Pinned => FieldMeta {
                 id: self,
@@ -616,6 +842,13 @@ impl FieldId {
                 display_name: "Pinned",
                 df_column: "is_pinned",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Unpinned => FieldMeta {
                 id: self,
@@ -631,6 +864,13 @@ impl FieldId {
                 display_name: "Unpinned",
                 df_column: "is_unpinned",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::Descendants => FieldMeta {
                 id: self,
@@ -646,6 +886,13 @@ impl FieldId {
                 display_name: "Descendants",
                 df_column: "descendants",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::TreeSize => FieldMeta {
                 id: self,
@@ -661,6 +908,13 @@ impl FieldId {
                 display_name: "Tree Size",
                 df_column: "treesize",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::TreeAllocated => FieldMeta {
                 id: self,
@@ -676,6 +930,13 @@ impl FieldId {
                 display_name: "Tree Allocated",
                 df_column: "tree_allocated",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::Bulkiness => FieldMeta {
                 id: self,
@@ -691,6 +952,13 @@ impl FieldId {
                 display_name: "Bulkiness",
                 df_column: "bulkiness",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::Integrity => FieldMeta {
                 id: self,
@@ -706,6 +974,13 @@ impl FieldId {
                 display_name: "Integrity",
                 df_column: "is_integrity_stream",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::NoScrub => FieldMeta {
                 id: self,
@@ -721,6 +996,13 @@ impl FieldId {
                 display_name: "No scrub file",
                 df_column: "is_no_scrub_data",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::DirectoryFlag => FieldMeta {
                 id: self,
@@ -736,6 +1018,13 @@ impl FieldId {
                 display_name: "Directory Flag",
                 df_column: "is_directory",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::RecallOnOpen => FieldMeta {
                 id: self,
@@ -751,6 +1040,13 @@ impl FieldId {
                 display_name: "Recall on open",
                 df_column: "is_recall_on_open",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::RecallOnDataAccess => FieldMeta {
                 id: self,
@@ -766,6 +1062,13 @@ impl FieldId {
                 display_name: "Recall on data access",
                 df_column: "is_recall_on_data_access",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: true,
+                    bucket_support: false,
+                    cardinality: Cardinality::Fixed,
+                    default_top: 2,
+                },
             },
             Self::ParityAttributes => FieldMeta {
                 id: self,
@@ -781,6 +1084,13 @@ impl FieldId {
                 display_name: "Attributes",
                 df_column: "parity_flags",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: false,
+                    groupable: false,
+                    bucket_support: false,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::NameLength => FieldMeta {
                 id: self,
@@ -796,6 +1106,13 @@ impl FieldId {
                 display_name: "Name Length",
                 df_column: "",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
             Self::PathLength => FieldMeta {
                 id: self,
@@ -811,6 +1128,13 @@ impl FieldId {
                 display_name: "Path Length",
                 df_column: "",
                 default_value: "0",
+                aggregate: AggregateMeta {
+                    aggregatable: true,
+                    groupable: false,
+                    bucket_support: true,
+                    cardinality: Cardinality::Unbounded,
+                    default_top: 0,
+                },
             },
         }
     }
@@ -1095,5 +1419,222 @@ mod tests {
         assert!(FieldId::TreeAllocated.is_tree_field());
         assert!(FieldId::Bulkiness.is_tree_field());
         assert!(!FieldId::Size.is_tree_field());
+    }
+
+    // ── Aggregate capability tests ─────────────────────────────────
+
+    #[test]
+    fn aggregate_capability_table() {
+        // This test IS the generated capability table. Run with --nocapture
+        // to see it. The printed output is the authoritative reference for
+        // which fields support which aggregation operations.
+        println!();
+        println!(
+            "{:<22} {:>6} {:>5} {:>6} {:>7} {:>10} {:>3}",
+            "Field", "Type", "Agg", "Group", "Bucket", "Cardinality", "Top"
+        );
+        println!("{}", "-".repeat(65));
+        for &field in FieldId::ALL {
+            let m = field.metadata();
+            let a = &m.aggregate;
+            println!(
+                "{:<22} {:>6} {:>5} {:>6} {:>7} {:>10} {:>3}",
+                m.canonical_name,
+                format!("{:?}", m.field_type),
+                if a.aggregatable { "yes" } else { "-" },
+                if a.groupable { "yes" } else { "-" },
+                if a.bucket_support { "yes" } else { "-" },
+                format!("{:?}", a.cardinality),
+                if a.default_top > 0 {
+                    format!("{}", a.default_top)
+                } else {
+                    "-".to_string()
+                },
+            );
+        }
+        println!("{}", "-".repeat(65));
+
+        // Summary counts
+        let total = FieldId::ALL.len();
+        let agg = FieldId::ALL
+            .iter()
+            .filter(|f| f.metadata().aggregate.aggregatable)
+            .count();
+        let grp = FieldId::ALL
+            .iter()
+            .filter(|f| f.metadata().aggregate.groupable)
+            .count();
+        let bkt = FieldId::ALL
+            .iter()
+            .filter(|f| f.metadata().aggregate.bucket_support)
+            .count();
+        println!("Total: {total}  Aggregatable: {agg}  Groupable: {grp}  Bucketable: {bkt}");
+    }
+
+    #[test]
+    fn every_field_has_valid_aggregate_meta() {
+        for &field in FieldId::ALL {
+            let m = field.metadata();
+            let a = &m.aggregate;
+
+            // Numeric and Timestamp fields should be aggregatable.
+            if matches!(m.field_type, FieldType::Numeric | FieldType::Timestamp) {
+                assert!(
+                    a.aggregatable,
+                    "{:?} is {:?} but not aggregatable",
+                    field, m.field_type
+                );
+            }
+
+            // Bool fields should be groupable (they make ideal facets).
+            if m.field_type == FieldType::Bool {
+                assert!(
+                    a.groupable,
+                    "{:?} is Bool but not groupable",
+                    field
+                );
+                assert_eq!(
+                    a.cardinality,
+                    Cardinality::Fixed,
+                    "{:?} is Bool but cardinality is not Fixed",
+                    field
+                );
+            }
+
+            // Groupable fields must have default_top > 0.
+            if a.groupable {
+                assert!(
+                    a.default_top > 0,
+                    "{:?} is groupable but default_top is 0",
+                    field
+                );
+            }
+
+            // Non-groupable fields should have default_top == 0.
+            if !a.groupable {
+                assert_eq!(
+                    a.default_top, 0,
+                    "{:?} is not groupable but has default_top={}",
+                    field, a.default_top
+                );
+            }
+
+            // Bucket support should only be on numeric/timestamp fields.
+            if a.bucket_support {
+                assert!(
+                    matches!(m.field_type, FieldType::Numeric | FieldType::Timestamp),
+                    "{:?} has bucket_support but is {:?}",
+                    field, m.field_type
+                );
+            }
+
+            // Fixed cardinality should only be on Bool/Enum fields.
+            if a.cardinality == Cardinality::Fixed {
+                assert!(
+                    matches!(m.field_type, FieldType::Bool | FieldType::Enum),
+                    "{:?} has Fixed cardinality but is {:?}",
+                    field, m.field_type
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn aggregate_bool_fields_are_facets() {
+        // All 19 bool attribute fields + DirectoryFlag should be groupable
+        // with Fixed cardinality and default_top=2.
+        let bool_fields: Vec<_> = FieldId::ALL
+            .iter()
+            .filter(|f| f.metadata().field_type == FieldType::Bool)
+            .collect();
+
+        assert!(
+            bool_fields.len() >= 19,
+            "Expected at least 19 bool fields, got {}",
+            bool_fields.len()
+        );
+
+        for &&field in &bool_fields {
+            let a = field.metadata().aggregate;
+            assert!(a.groupable, "{field:?} is Bool but not groupable");
+            assert_eq!(a.cardinality, Cardinality::Fixed, "{field:?}");
+            assert_eq!(a.default_top, 2, "{field:?}");
+            assert!(!a.aggregatable, "{field:?} Bool should not be aggregatable");
+            assert!(!a.bucket_support, "{field:?} Bool should not have bucket support");
+        }
+    }
+
+    #[test]
+    fn aggregate_numeric_fields_are_aggregatable_and_bucketable() {
+        let numeric_fields: Vec<_> = FieldId::ALL
+            .iter()
+            .filter(|f| f.metadata().field_type == FieldType::Numeric)
+            .collect();
+
+        assert!(
+            numeric_fields.len() >= 8,
+            "Expected at least 8 numeric fields, got {}",
+            numeric_fields.len()
+        );
+
+        for &&field in &numeric_fields {
+            let a = field.metadata().aggregate;
+            assert!(a.aggregatable, "{field:?} is Numeric but not aggregatable");
+            assert!(a.bucket_support, "{field:?} is Numeric but not bucketable");
+            assert!(!a.groupable, "{field:?} Numeric should not be groupable");
+        }
+    }
+
+    #[test]
+    fn aggregate_timestamp_fields_are_aggregatable_and_bucketable() {
+        let ts_fields = [FieldId::Created, FieldId::Modified, FieldId::Accessed];
+        for field in ts_fields {
+            let a = field.metadata().aggregate;
+            assert!(a.aggregatable, "{field:?}");
+            assert!(a.bucket_support, "{field:?}");
+            assert!(!a.groupable, "{field:?} Timestamp should not be groupable");
+        }
+    }
+
+    #[test]
+    fn aggregate_key_fields_have_correct_cardinality() {
+        assert_eq!(
+            FieldId::Drive.metadata().aggregate.cardinality,
+            Cardinality::Fixed
+        );
+        assert_eq!(
+            FieldId::Type.metadata().aggregate.cardinality,
+            Cardinality::Low
+        );
+        assert_eq!(
+            FieldId::Extension.metadata().aggregate.cardinality,
+            Cardinality::Medium
+        );
+        assert_eq!(
+            FieldId::Name.metadata().aggregate.cardinality,
+            Cardinality::Unbounded
+        );
+        assert_eq!(
+            FieldId::PathOnly.metadata().aggregate.cardinality,
+            Cardinality::Unbounded
+        );
+    }
+
+    #[test]
+    fn aggregate_non_aggregatable_fields() {
+        // Path, Attributes, AttributeValue, ParityAttributes should not be
+        // aggregatable, groupable, or bucketable.
+        let inert = [
+            FieldId::Path,
+            FieldId::Attributes,
+            FieldId::AttributeValue,
+            FieldId::ParityAttributes,
+        ];
+        for field in inert {
+            let a = field.metadata().aggregate;
+            assert!(!a.aggregatable, "{field:?}");
+            assert!(!a.groupable, "{field:?}");
+            assert!(!a.bucket_support, "{field:?}");
+        }
     }
 }

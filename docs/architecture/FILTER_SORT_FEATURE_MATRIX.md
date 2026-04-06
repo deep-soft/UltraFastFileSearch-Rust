@@ -477,88 +477,109 @@ Each enum has its own `parse()`, its own name strings, its own mapping to
 
 ### 4.3 Target: One `FieldId` enum, type-driven dispatch
 
+> **Reconciled 2026-04-06.** Code currently has **39 variants** (see field.rs).
+> This target enum shows all 56 (39 implemented + 17 cold-path planned for Wave 5).
+> Fields marked ✅ exist in code; fields marked ❌ are planned but not yet in the enum.
+> Four fields (marked ²) were added organically after this target was first written.
+
 ```rust
 /// Every addressable field in the UFFS schema.
 /// Used by filter, sort, output, and all frontends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FieldId {
     // ── Core Identity ──────────────────────────────────────
-    Path,           // String  — derived: parent chain walk
-    Name,           // String  — from CompactRecord (names blob)
-    PathOnly,       // String  — derived: Path minus filename
-    Extension,      // String  — derived: after last dot in Name
-    Type,           // String  — derived: devicon category from Extension
-    Drive,          // char    — from DriveCompactIndex.letter
+    Path,           // ✅ String  — derived: parent chain walk
+    Name,           // ✅ String  — from CompactRecord (names blob)
+    PathOnly,       // ✅ String  — derived: Path minus filename
+    Extension,      // ✅ String  — derived: after last dot in Name
+    Type,           // ✅ String  — derived: semantic category from Extension
+    Drive,          // ✅ char    — from DriveCompactIndex.letter
 
     // ── Size & Storage ─────────────────────────────────────
-    Size,           // u64     — CompactRecord.size
-    Allocated,      // u64     — CompactRecord.allocated
-    TreeSize,       // u64     — CompactRecord.treesize
-    TreeAllocated,  // u64     — CompactRecord.allocated (fallback)
-    Bulkiness,      // f64     — derived: allocated / size
+    Size,           // ✅ u64     — CompactRecord.size
+    SizeOnDisk,     // ✅ u64     — CompactRecord.allocated  (target called this `Allocated`)
+    TreeSize,       // ✅ u64     — CompactRecord.treesize
+    TreeAllocated,  // ✅ u64     — CompactRecord.tree_allocated
+    Bulkiness,      // ✅ f64     — derived: allocated / size
 
     // ── Time: $STANDARD_INFORMATION (hot path) ─────────────
-    Created,        // i64 µs  — CompactRecord.created
-    Modified,       // i64 µs  — CompactRecord.modified
-    Accessed,       // i64 µs  — CompactRecord.accessed
+    Created,        // ✅ i64 µs  — CompactRecord.created
+    Modified,       // ✅ i64 µs  — CompactRecord.modified
+    Accessed,       // ✅ i64 µs  — CompactRecord.accessed
 
-    // ── Time: $FILE_NAME (cold path) ───────────────────────
-    FnCreated,      // i64 µs  — ExtraRecordFields.fn_created
-    FnModified,     // i64 µs  — ExtraRecordFields.fn_modified
-    FnAccessed,     // i64 µs  — ExtraRecordFields.fn_accessed
-    FnMftChanged,   // i64 µs  — ExtraRecordFields.fn_mft_changed
-
-    // ── Structure ──────────────────────────────────────────
-    Frs,            // u64     — from MftIndex (not in CompactRecord)
-    ParentFrs,      // u64     — from MftIndex
-    BaseFrs,        // u64     — ExtraRecordFields.base_frs
-    SequenceNumber, // u16     — ExtraRecordFields.sequence_number
-    Namespace,      // u8      — ExtraRecordFields.namespace (0=POSIX,1=Win32,2=DOS,3=Win32+DOS)
-                    //          Filter/output use string names: "posix","win32","dos","win32dos"
-    NameCount,      // u16     — from MftIndex (not in CompactRecord)
-    StreamCount,    // u16     — from MftIndex
-    Descendants,    // u32     — CompactRecord.descendants
-
-    // ── Journaling (cold path) ─────────────────────────────
-    Usn,            // u64     — ExtraRecordFields.stdinfo_usn
-    Lsn,            // u64     — ExtraRecordFields.lsn
-
-    // ── Security (cold path) ───────────────────────────────
-    SecurityId,     // u32     — ExtraRecordFields.security_id
-    OwnerId,        // u32     — ExtraRecordFields.owner_id
-
-    // ── Reparse ────────────────────────────────────────────
-    ReparseTag,     // u32     — ExtraRecordFields.reparse_tag
-
-    // ── Attribute booleans (from CompactRecord.flags) ──────
-    ReadOnly,       // bool    — flags & 0x0001
-    Hidden,         // bool    — flags & 0x0002
-    System,         // bool    — flags & 0x0004
-    Directory,      // bool    — flags & 0x0010
-    Archive,        // bool    — flags & 0x0020
-    Temporary,      // bool    — flags & 0x0100
-    Sparse,         // bool    — flags & 0x0200
-    Reparse,        // bool    — flags & 0x0400
-    Compressed,     // bool    — flags & 0x0800
-    Offline,        // bool    — flags & 0x1000
-    NotIndexed,     // bool    — flags & 0x2000
-    Encrypted,      // bool    — flags & 0x4000
-    Integrity,      // bool    — flags & 0x8000
-    Virtual,        // bool    — flags & 0x10000
-    NoScrub,        // bool    — flags & 0x20000
-    RecallOnOpen,   // bool    — flags & 0x40000
-    Pinned,         // bool    — flags & 0x80000
-    Unpinned,       // bool    — flags & 0x100000
-    RecallOnDataAccess, // bool — flags & 0x400000
+    // ── Length fields (added after original target) ²────────
+    NameLength,     // ✅² u16   — CompactRecord.name_len
+    PathLength,     // ✅² u16   — derived: full path length
 
     // ── Raw aggregate ──────────────────────────────────────
-    Attributes,     // u32     — CompactRecord.flags (raw bitmask)
-    ForensicFlags,  // u8      — ExtraRecordFields.forensic_flags (bitmask → named strings)
+    Attributes,     // ✅ u32     — CompactRecord.flags (formatted attribute string)
+    AttributeValue, // ✅² u32   — CompactRecord.flags (raw numeric value)
+    ParityAttributes, // ✅² u32 — legacy 25-column C++ mask (may deprecate)
+
+    // ── Structure ──────────────────────────────────────────
+    Descendants,    // ✅ u32     — CompactRecord.descendants
+    DirectoryFlag,  // ✅ bool   — flags & 0x0010  (target called this `Directory`)
+
+    // ── Attribute booleans (from CompactRecord.flags) ──────
+    ReadOnly,       // ✅ bool    — flags & 0x0001
+    Hidden,         // ✅ bool    — flags & 0x0002
+    System,         // ✅ bool    — flags & 0x0004
+    Archive,        // ✅ bool    — flags & 0x0020
+    Temporary,      // ✅ bool    — flags & 0x0100
+    Sparse,         // ✅ bool    — flags & 0x0200
+    Reparse,        // ✅ bool    — flags & 0x0400
+    Compressed,     // ✅ bool    — flags & 0x0800
+    Offline,        // ✅ bool    — flags & 0x1000
+    NotIndexed,     // ✅ bool    — flags & 0x2000
+    Encrypted,      // ✅ bool    — flags & 0x4000
+    Integrity,      // ✅ bool    — flags & 0x8000
+    Virtual,        // ✅ bool    — flags & 0x10000
+    NoScrub,        // ✅ bool    — flags & 0x20000
+    RecallOnOpen,   // ✅ bool    — flags & 0x40000
+    Pinned,         // ✅ bool    — flags & 0x80000
+    Unpinned,       // ✅ bool    — flags & 0x100000
+    RecallOnDataAccess, // ✅ bool — flags & 0x400000
+
+    // ═══════════════════════════════════════════════════════
+    // BELOW: 17 cold-path fields — planned for Wave 5.
+    // NOT YET IN CODE. Require ExtraRecordFields / MFT re-read.
+    // ═══════════════════════════════════════════════════════
+
+    // ── Time: $FILE_NAME (cold path) ───────────────────────
+    FnCreated,      // ❌ i64 µs  — ExtraRecordFields.fn_created
+    FnModified,     // ❌ i64 µs  — ExtraRecordFields.fn_modified
+    FnAccessed,     // ❌ i64 µs  — ExtraRecordFields.fn_accessed
+    FnMftChanged,   // ❌ i64 µs  — ExtraRecordFields.fn_mft_changed
+
+    // ── Structure (cold path) ──────────────────────────────
+    Frs,            // ❌ u64     — from MftIndex (not in CompactRecord)
+    ParentFrs,      // ❌ u64     — from MftIndex
+    BaseFrs,        // ❌ u64     — ExtraRecordFields.base_frs
+    SequenceNumber, // ❌ u16     — ExtraRecordFields.sequence_number
+    Namespace,      // ❌ u8      — ExtraRecordFields.namespace (0=POSIX,1=Win32,2=DOS,3=Win32+DOS)
+    NameCount,      // ❌ u16     — from MftIndex (not in CompactRecord)
+    StreamCount,    // ❌ u16     — from MftIndex
+
+    // ── Journaling (cold path) ─────────────────────────────
+    Usn,            // ❌ u64     — ExtraRecordFields.stdinfo_usn
+    Lsn,            // ❌ u64     — ExtraRecordFields.lsn
+
+    // ── Security (cold path) ───────────────────────────────
+    SecurityId,     // ❌ u32     — ExtraRecordFields.security_id
+    OwnerId,        // ❌ u32     — ExtraRecordFields.owner_id
+
+    // ── Reparse (cold path) ────────────────────────────────
+    ReparseTag,     // ❌ u32     — ExtraRecordFields.reparse_tag
+
+    // ── Forensic (cold path) ───────────────────────────────
+    ForensicFlags,  // ❌ u8      — ExtraRecordFields.forensic_flags (bitmask → named strings)
                     //          "deleted","corrupt","extension","has_data","has_i30","unified"
 }
 ```
 
-Total: **52 fields** (from the target state document in LOG/Output).
+Total: **56 fields** — 39 implemented (✅) + 17 cold-path planned (❌).
+Previously reported as "52 fields"; 4 fields were added after the original
+target was written (marked ² above).
 
 ### 4.4 Field metadata table (derived at compile time)
 
@@ -1058,13 +1079,29 @@ filter, sort, or output yet.
 
 ### 5.4 Coverage summary
 
-| Category | Fields | Filterable | Sortable | Outputtable |
-|----------|--------|-----------|----------|-------------|
-| Hot path | 13 | 13/13 ✅ | 12/13 | 13/13 ✅ |
-| Derived | 6 | 6/6 ✅ | 6/6 ✅ | 6/6 ✅ |
-| Bool attrs | 19 | 19/19 ✅ | 19/19 ✅ | 19/19 ✅ |
-| Cold path | 17 | 0/17 ❌ | 0/17 ❌ | 0/17 ❌ |
-| **Total** | **55** | **38/55** | **37/55** | **38/55** |
+> **Reconciled 2026-04-06.** Code has **39 `FieldId` variants** (see §4.3).
+> The prior "55" total was a counting artifact (see explanation below table).
+
+| Category | `FieldId` variants | Filterable | Sortable | Outputtable |
+|----------|-------------------|-----------|----------|-------------|
+| Hot path (size, timestamps, flags, descendants, name/path length) | 13 | 13/13 ✅ | 12/13 | 13/13 ✅ |
+| Derived (Path, PathOnly, Extension, Type, Drive, Bulkiness) | 6 | 6/6 ✅ | 6/6 ✅ | 6/6 ✅ |
+| Bool attrs (Hidden … RecallOnDataAccess) | 19 | 19/19 ✅ | 19/19 ✅ | 19/19 ✅ |
+| Code-only additions² (AttributeValue, ParityAttributes, NameLength, PathLength) | — | — | — | — |
+| Cold path (not yet in `FieldId` — Wave 5) | 17 | 0/17 ❌ | 0/17 ❌ | 0/17 ❌ |
+| **Total (implemented)** | **39** | **38/39** | **37/39** | **38/39** |
+| **Total (including planned)** | **56** | **38/56** | **37/56** | **38/56** |
+
+> ² Four fields (NameLength, PathLength, AttributeValue, ParityAttributes)
+> were added to code after the original 52-variant target was written.
+> NameLength and PathLength are already counted in "Hot path" above (rows
+> in §5.1). AttributeValue and ParityAttributes are raw-value / legacy
+> variants of the `Attributes` field.
+>
+> The prior "55" count arose because the §5.1 analysis table included
+> `extension_id` (an internal ID, not a `FieldId`) and counted
+> NameLength/PathLength without adding them to the 52-variant target enum:
+> 13+6+19+17 = 55 in the summary while the enum had 52.
 
 > Updated 2026-04-05: Hot-path and derived fields **fully wired** across
 > filter/sort/output. `TreeAllocated`/`TreeSize` filterable via
@@ -1233,7 +1270,7 @@ All changes below are in `uffs-core` only. No per-frontend wiring.
 
 | Step | Wave | Status | Notes |
 |------|------|--------|-------|
-| 1: FieldId enum | 3 | 🔲 | 52 variants + metadata in `uffs-core` |
+| 1: FieldId enum | 3 | 🟡 | 39 of 56 variants implemented; 17 cold-path fields deferred to Wave 5 |
 | 2: Replace 3 column enums | 3 | 🔲 | OutputColumn/SortColumn/TuiColumn → FieldId |
 | 3–5: Unify parsing | 3 | 🔲 | `FieldId::parse()` + extend `SearchParams` |
 | 6: Compute Bulkiness | 3 | 🔲 | `allocated / size` ratio |

@@ -385,10 +385,18 @@ step-by-step tracking.
 
 ### Wave 3 — Unified FieldId enum
 
-Create a single `FieldId` enum (52 variants) with compile-time metadata
-(type, access tier, aliases, default sort direction). Map existing
-`OutputColumn`, `SortColumn`, `TuiColumn` to `FieldId`. All frontends
-parse field names via one canonical `FieldId::parse()`.
+> **Status (2026-04-06):** `FieldId` exists with **39 of 56 variants**
+> implemented in `crates/uffs-core/src/search/field.rs`. The 17 cold-path
+> fields (forensic, $FN timestamps, MFT structure, journaling, security)
+> remain planned for Wave 5. Four fields (NameLength, PathLength,
+> AttributeValue, ParityAttributes) were added organically after the
+> original 52-variant target was designed.
+
+Create a single `FieldId` enum (56 variants total: 39 implemented + 17
+cold-path deferred) with compile-time metadata (type, access tier, aliases,
+default sort direction). Map existing `OutputColumn`, `SortColumn`,
+`TuiColumn` to `FieldId`. All frontends parse field names via one canonical
+`FieldId::parse()`.
 
 **Key types:**
 
@@ -439,6 +447,6 @@ See §5.3 of `FILTER_SORT_FEATURE_MATRIX.md`.
 |------|--------|-------|-----------|
 | ~~Wave 2~~ | Absorbed into D5 | 14 broken flags fixed when D5 deletes broken CLI pipeline | `DAEMON_IMPLEMENTATION_PLAN.md` §D5.2 |
 | **D5+D6** | 🔲 Not started | All frontends → daemon-only, shmem for bulk, fixes 14 flags | `DAEMON_IMPLEMENTATION_PLAN.md` §D5–D6 |
-| Wave 3: FieldId + derived fixes | 🔲 After D5+D6 | FieldId enum, FileCategory, Bulkiness, TreeAllocated | `FILTER_SORT_FEATURE_MATRIX.md` §4.3 |
+| Wave 3: FieldId + derived fixes | 🟡 Partial | 39/56 variants implemented; enum + FieldMeta exist; FileCategory, Bulkiness, TreeAllocated done | `FILTER_SORT_FEATURE_MATRIX.md` §4.3 |
 | Wave 4: Predicates + time sugar | 🔲 After D5+D6 | `--filter` flag, named time specs, `--group-by` | `FILTER_SORT_FEATURE_MATRIX.md` §4.6 |
-| Wave 5: Cold-path integration | 🔲 After D5+D6 | 17 fields → output/filter/sort | `FILTER_SORT_FEATURE_MATRIX.md` §5.3 |
+| Wave 5: Cold-path integration | 🔲 After D5+D6 | 17 cold-path fields (FnCreated…ForensicFlags) → add to FieldId + output/filter/sort | `FILTER_SORT_FEATURE_MATRIX.md` §5.3 |
