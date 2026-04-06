@@ -124,7 +124,9 @@ impl McpServer {
             { "name": "uffs_search", "description": "Search files across all indexed NTFS drives. Supports glob patterns (*.rs), regex (>pattern), path patterns (\\dir\\*.txt), and substring search.", "inputSchema": { "type": "object", "properties": { "pattern": { "type": "string", "description": "Search pattern" }, "case_sensitive": { "type": "boolean", "default": false }, "sort": { "type": "string", "default": "modified" }, "sort_desc": { "type": "boolean", "default": true }, "limit": { "type": "integer", "default": 100_i64 }, "filter": { "type": "string", "default": "all" } }, "required": ["pattern"] } },
             { "name": "uffs_drives", "description": "List all loaded drives with record counts and source information.", "inputSchema": { "type": "object", "properties": {} } },
             { "name": "uffs_status", "description": "Get daemon status: loading progress, uptime, connections, PID.", "inputSchema": { "type": "object", "properties": {} } },
-            { "name": "uffs_info", "description": "Get detailed information about a specific file or directory by its full path.", "inputSchema": { "type": "object", "properties": { "path": { "type": "string", "description": "Full file path" } }, "required": ["path"] } }
+            { "name": "uffs_info", "description": "Get detailed information about a specific file or directory by its full path.", "inputSchema": { "type": "object", "properties": { "path": { "type": "string", "description": "Full file path" } }, "required": ["path"] } },
+            { "name": "uffs_aggregate", "description": "Summarize filesystem results with server-side aggregations. Use this for counts, storage breakdowns, histograms, folder rollups, or duplicate summaries instead of raw file rows. Available presets: overview, by_type, by_extension, by_drive, by_size, by_age, storage, activity, top_folders, duplicates, media, cleanup.", "inputSchema": { "type": "object", "properties": { "pattern": { "type": "string", "default": "*", "description": "Search pattern to scope aggregation" }, "preset": { "type": "string", "description": "Named preset (overview, by_type, by_extension, by_drive, by_size, by_age, storage, activity, top_folders, duplicates, media, cleanup)" }, "aggregations": { "type": "array", "description": "Custom aggregate specs in power syntax (e.g. 'terms:extension,top=50')" }, "drives": { "type": "array", "items": { "type": "string" }, "description": "Limit to specific drive letters" } }, "required": [] } },
+            { "name": "uffs_facet_values", "description": "Search within facet values for a specific field. Returns top values with counts.", "inputSchema": { "type": "object", "properties": { "field": { "type": "string", "description": "Field to facet on (e.g. extension, type, drive)" }, "pattern": { "type": "string", "default": "*", "description": "Search pattern to scope facet" }, "prefix": { "type": "string", "description": "Filter facet values by prefix" }, "top": { "type": "integer", "default": 20_i64, "description": "Number of facet values to return" } }, "required": ["field"] } }
         ] })),
             "tools/call" => self.dispatch_tool_call(&req.params).await,
             "resources/list" => Ok(serde_json::json!({
@@ -178,6 +180,8 @@ impl McpServer {
             "uffs_drives" => self.tool_drives().await,
             "uffs_status" => self.tool_status().await,
             "uffs_info" => self.tool_info(&arguments).await,
+            "uffs_aggregate" => self.tool_aggregate(&arguments).await,
+            "uffs_facet_values" => self.tool_facet_values(&arguments).await,
             other => anyhow::bail!("Unknown tool: {other}"),
         };
 
@@ -399,6 +403,147 @@ impl McpServer {
         } else {
             Ok(format!("File not found: {path}"))
         }
+    }
+
+    /// Tool handler: `uffs_aggregate`.
+    async fn tool_aggregate(&mut self, arguments: &Value) -> anyhow::Result<String> {
+        use uffs_client::protocol::AggregateSpecWire;
+
+        let pattern = arguments
+            .get("pattern")
+            .and_then(Value::as_str)
+            .unwrap_or("*");
+
+        let mut agg_specs: Vec<AggregateSpecWire> = Vec::new();
+
+        // Handle preset parameter.
+        if let Some(preset) = arguments.get("preset").and_then(Value::as_str) {
+            agg_specs.push(AggregateSpecWire {
+                kind: "preset".to_owned(),
+                label: None,
+                field: None,
+                top: None,
+                interval: None,
+                calendar: None,
+                boundaries: vec![],
+                metrics: vec![],
+                preset: Some(preset.to_owned()),
+            });
+        }
+
+        // Handle custom aggregations array.
+        if let Some(aggs) = arguments.get("aggregations").and_then(Value::as_array) {
+            for agg_str in aggs {
+                if let Some(s) = agg_str.as_str() {
+                    agg_specs.push(AggregateSpecWire {
+                        kind: "raw".to_owned(),
+                        label: Some(s.to_owned()),
+                        field: None,
+                        top: None,
+                        interval: None,
+                        calendar: None,
+                        boundaries: vec![],
+                        metrics: vec![],
+                        preset: None,
+                    });
+                }
+            }
+        }
+
+        // Default to overview if no specs given.
+        if agg_specs.is_empty() {
+            agg_specs.push(AggregateSpecWire {
+                kind: "preset".to_owned(),
+                label: None,
+                field: None,
+                top: None,
+                interval: None,
+                calendar: None,
+                boundaries: vec![],
+                metrics: vec![],
+                preset: Some("overview".to_owned()),
+            });
+        }
+
+        let drives: Vec<char> = arguments
+            .get("drives")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(|s| s.chars().next())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let params = SearchParams {
+            pattern: pattern.to_owned(),
+            aggregations: agg_specs,
+            include_rows: false,
+            drives,
+            ..Default::default()
+        };
+
+        let response = self
+            .client
+            .search(&params)
+            .await
+            .map_err(|e| anyhow::anyhow!("Aggregate failed: {e}"))?;
+
+        // Return structured JSON of aggregate results.
+        Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "records_scanned": response.records_scanned,
+            "duration_ms": response.duration_ms,
+            "aggregations": response.aggregations
+        }))?)
+    }
+
+    /// Tool handler: `uffs_facet_values`.
+    async fn tool_facet_values(&mut self, arguments: &Value) -> anyhow::Result<String> {
+        use uffs_client::protocol::AggregateSpecWire;
+
+        let field = arguments
+            .get("field")
+            .and_then(Value::as_str)
+            .unwrap_or("extension");
+        let pattern = arguments
+            .get("pattern")
+            .and_then(Value::as_str)
+            .unwrap_or("*");
+        let top = arguments
+            .get("top")
+            .and_then(Value::as_u64)
+            .unwrap_or(20) as u16;
+
+        let agg_spec = AggregateSpecWire {
+            kind: "raw".to_owned(),
+            label: Some(format!("facet_{field}")),
+            field: Some(field.to_owned()),
+            top: Some(top),
+            interval: None,
+            calendar: None,
+            boundaries: vec![],
+            metrics: vec![],
+            preset: None,
+        };
+
+        let params = SearchParams {
+            pattern: pattern.to_owned(),
+            aggregations: vec![agg_spec],
+            include_rows: false,
+            ..Default::default()
+        };
+
+        let response = self
+            .client
+            .search(&params)
+            .await
+            .map_err(|e| anyhow::anyhow!("Facet values failed: {e}"))?;
+
+        Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "field": field,
+            "aggregations": response.aggregations
+        }))?)
     }
 }
 

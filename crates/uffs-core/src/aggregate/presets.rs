@@ -35,6 +35,8 @@ pub enum AggregatePreset {
     TopFolders,
     /// Duplicate candidates: group by size+name.
     Duplicates,
+    /// Media: pictures/audio/video summary.
+    Media,
     /// Cleanup: zero-byte files, temp files, old files.
     Cleanup,
 }
@@ -56,6 +58,7 @@ impl AggregatePreset {
             "activity" => Some(Self::Activity),
             "top_folders" | "topfolders" | "folders" => Some(Self::TopFolders),
             "duplicates" | "dups" => Some(Self::Duplicates),
+            "media" => Some(Self::Media),
             "cleanup" => Some(Self::Cleanup),
             _ => None,
         }
@@ -75,6 +78,7 @@ impl AggregatePreset {
             Self::Activity => expand_activity(),
             Self::TopFolders => expand_top_folders(),
             Self::Duplicates => expand_duplicates(),
+            Self::Media => expand_media(),
             Self::Cleanup => expand_cleanup(),
         }
     }
@@ -91,6 +95,7 @@ impl AggregatePreset {
         "activity",
         "top_folders",
         "duplicates",
+        "media",
         "cleanup",
     ];
 }
@@ -380,6 +385,52 @@ fn expand_duplicates() -> Vec<AggregateSpec> {
         },
         "duplicate_candidates",
     )]
+}
+
+/// Media: pictures/audio/video summary with type facet + size + age.
+fn expand_media() -> Vec<AggregateSpec> {
+    vec![
+        AggregateSpec::with_label(
+            AggregateKind::Terms {
+                field: FieldId::Type,
+                top: 12,
+                metrics: vec![
+                    BucketMetric::Count,
+                    BucketMetric::TotalBytes,
+                    BucketMetric::AvgSize,
+                    BucketMetric::ShareOfTotalBytes,
+                ],
+            },
+            "media_type_breakdown",
+        ),
+        AggregateSpec::with_label(
+            AggregateKind::Stats {
+                field: FieldId::Size,
+                metrics: vec![ScalarMetric::Sum, ScalarMetric::Avg, ScalarMetric::Max],
+            },
+            "media_size_stats",
+        ),
+        AggregateSpec::with_label(
+            AggregateKind::Terms {
+                field: FieldId::Extension,
+                top: 30,
+                metrics: vec![
+                    BucketMetric::Count,
+                    BucketMetric::TotalBytes,
+                    BucketMetric::ShareOfTotalBytes,
+                ],
+            },
+            "media_extensions",
+        ),
+        AggregateSpec::with_label(
+            AggregateKind::DateHistogram {
+                field: FieldId::Created,
+                calendar: CalendarInterval::Month,
+                metrics: vec![BucketMetric::Count, BucketMetric::TotalBytes],
+            },
+            "media_created_monthly",
+        ),
+    ]
 }
 
 /// Cleanup: missing extensions, zero-byte files, large temp files.
