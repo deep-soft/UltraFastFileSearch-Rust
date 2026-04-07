@@ -5,7 +5,7 @@
 //! `feed()` is called for every matching record. After scanning,
 //! `finalize()` produces the data needed for the response.
 
-use super::spec::{AggregateKind, BucketMetric, ScalarMetric};
+use super::spec::{AggregateKind, BucketMetric, ScalarMetric, TopHitsSpec};
 use crate::compact::{CompactRecord, DriveCompactIndex};
 use crate::search::field::FieldId;
 
@@ -150,6 +150,10 @@ pub enum AccumulatorKind {
         top: u16,
         /// Requested metrics.
         metrics: Vec<BucketMetric>,
+        /// Per-bucket sample heaps (present when `TopHitsSpec` is configured).
+        sample_heaps: Option<std::collections::HashMap<u64, super::sample_heap::SampleHeap>>,
+        /// Spec for creating new heaps (stored for lazy init).
+        sample_spec: Option<TopHitsSpec>,
     },
     /// Fixed-size histogram buckets.
     Histogram {
@@ -210,14 +214,24 @@ impl GroupAccumulator {
                 field,
                 top,
                 metrics,
-            } => (
-                AccumulatorKind::Terms {
-                    groups: std::collections::HashMap::new(),
-                    top: *top,
-                    metrics: metrics.clone(),
-                },
-                Some(*field),
-            ),
+                sample,
+            } => {
+                let (heaps, spec) = if let Some(s) = sample {
+                    (Some(std::collections::HashMap::new()), Some(s.clone()))
+                } else {
+                    (None, None)
+                };
+                (
+                    AccumulatorKind::Terms {
+                        groups: std::collections::HashMap::new(),
+                        top: *top,
+                        metrics: metrics.clone(),
+                        sample_heaps: heaps,
+                        sample_spec: spec,
+                    },
+                    Some(*field),
+                )
+            }
             AggregateKind::Histogram {
                 field,
                 interval: _,
@@ -270,7 +284,12 @@ impl GroupAccumulator {
                 },
                 Some(*field),
             ),
-            AggregateKind::Rollup { mode, top, metrics } => (
+            AggregateKind::Rollup {
+                mode,
+                top,
+                metrics,
+                sample: _,
+            } => (
                 AccumulatorKind::Rollup {
                     inner: super::rollup::RollupAccumulator::new(*mode, *top),
                     metrics: metrics.clone(),
@@ -283,17 +302,20 @@ impl GroupAccumulator {
                 top: _,
                 sample,
                 max_groups,
-            } => (
-                AccumulatorKind::Duplicates {
-                    inner: super::duplicates::DuplicateAccumulator::new(
-                        keys.clone(),
-                        *verify,
-                        *max_groups,
-                        *sample,
-                    ),
-                },
-                None,
-            ),
+            } => {
+                let sample_count = sample.as_ref().map_or(2, |s| s.count);
+                (
+                    AccumulatorKind::Duplicates {
+                        inner: super::duplicates::DuplicateAccumulator::new(
+                            keys.clone(),
+                            *verify,
+                            *max_groups,
+                            sample_count,
+                        ),
+                    },
+                    None,
+                )
+            }
         };
 
         Self {
@@ -305,10 +327,19 @@ impl GroupAccumulator {
 
     /// Feed a record into this accumulator.
     ///
-    /// The `idx` parameter is the record's index within the drive's
-    /// `records` array, used to look up names and other per-record data.
+    /// * `record` — the compact record being scanned.
+    /// * `drive`  — the drive index (used for group key extraction).
+    /// * `_idx`   — the record's index within the drive's `records` array.
+    /// * `drive_ordinal` — the ordinal position of this drive in the drives
+    ///   array, stored in sample heap entries for later materialization.
     #[inline]
-    pub fn feed(&mut self, record: &CompactRecord, drive: &DriveCompactIndex, _idx: usize) {
+    pub fn feed(
+        &mut self,
+        record: &CompactRecord,
+        drive: &DriveCompactIndex,
+        _idx: usize,
+        drive_ordinal: u8,
+    ) {
         let field = self.field;
         match &mut self.kind {
             AccumulatorKind::Count { count } => {
@@ -318,10 +349,22 @@ impl GroupAccumulator {
                 let value = extract_value(field, record);
                 stats.feed_value(value, record.allocated);
             }
-            AccumulatorKind::Terms { groups, .. } => {
+            AccumulatorKind::Terms {
+                groups,
+                sample_heaps,
+                sample_spec,
+                ..
+            } => {
                 let key = extract_group_key(field, record, drive);
                 let stats = groups.entry(key).or_insert_with(StatsAccumulator::new);
                 stats.feed_value(record.size, record.allocated);
+                // Push into per-bucket sample heap if configured.
+                if let (Some(heaps), Some(spec)) = (sample_heaps.as_mut(), sample_spec.as_ref()) {
+                    let heap = heaps
+                        .entry(key)
+                        .or_insert_with(|| super::sample_heap::SampleHeap::from_spec(spec));
+                    heap.push(record, _idx as u32, drive_ordinal);
+                }
             }
             AccumulatorKind::Histogram {
                 buckets,

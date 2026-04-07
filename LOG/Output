@@ -1,13 +1,11 @@
-   ~/Pr/GitHub/UltraFastFileSearch  on   main !13 ?1  rust-script scripts/windows/cli-flag-validation.rs T116                                                  1 ✘  took 3m 48s   at 11:50:14 
+   ~/Private/GitHub/UltraFastFileSearch  on   main  rust-script scripts/windows/cli-flag-validation.rs                                                           ✔  took 2m 37s   at 14:27:46 
 ╔══════════════════════════════════════════════════════════════════╗
 ║  Building fresh release binary...                                ║
 ╚══════════════════════════════════════════════════════════════════╝
   Workspace: /Users/rnio/Private/Github/UltraFastFileSearch
-   Compiling uffs-core v0.4.96 (/Users/rnio/Private/Github/UltraFastFileSearch/crates/uffs-core)
-   Compiling uffs-daemon v0.4.96 (/Users/rnio/Private/Github/UltraFastFileSearch/crates/uffs-daemon)
-   Compiling uffs-cli v0.4.96 (/Users/rnio/Private/Github/UltraFastFileSearch/crates/uffs-cli)
-    Finished `release` profile [optimized] target(s) in 1m 53s
-  ✅ Build completed in 113.2s
+   Compiling uffs-cli v0.4.97 (/Users/rnio/Private/Github/UltraFastFileSearch/crates/uffs-cli)
+    Finished `release` profile [optimized] target(s) in 1m 47s
+  ✅ Build completed in 107.6s
   Binary: /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs
 
 
@@ -22,198 +20,248 @@
 └───────────────────────────────────────────────────────────────┘
   Killing daemon...
   COLD (no daemon, no cache)...
-    COLD startup 5899ms + query 110ms = 6009ms (1 rows)
+    COLD startup 13918ms + query 165ms = 14083ms (1 rows)
   Killing daemon...
   WARM (cache present, no daemon)...
-    WARM startup 5859ms + query 110ms = 5969ms (1 rows)
+    WARM startup 5878ms + query 106ms = 5984ms (1 rows)
   HOT  (daemon running)...
-    HOT  startup 55ms + query 110ms = 165ms (1 rows)
+    HOT  startup 50ms + query 108ms = 158ms (1 rows)
 
   ┌──────────┬────────────┬────────────┬────────────┬───────────┐
   │  Phase   │    Startup │      Query │      Total │   Speedup │
   ├──────────┼────────────┼────────────┼────────────┼───────────┤
-  │   COLD   │    5899 ms │     110 ms │    6009 ms │         — │
-  │   WARM   │    5859 ms │     110 ms │    5969 ms │      1.0x │
-  │   HOT    │      55 ms │     110 ms │     165 ms │     36.4x │
+  │   COLD   │   13918 ms │     165 ms │   14083 ms │         — │
+  │   WARM   │    5878 ms │     106 ms │    5984 ms │      2.4x │
+  │   HOT    │      50 ms │     108 ms │     158 ms │     89.1x │
   └──────────┴────────────┴────────────┴────────────┴───────────┘
 
   Daemon: READY (socket responsive)
 ┌───────────────────────────────────────────────────────────────┐
-│  Parallel Validation (151 tests, HOT daemon)                 │
+│  Parallel Validation (171 tests, HOT daemon)                 │
 └───────────────────────────────────────────────────────────────┘
-  Launching 151 tests (parallelism: 16)...
+  Launching 171 tests (parallelism: 16)...
 
-  → 151 CLI tests (process spawn, parallelism: 16)
+  → 171 CLI tests (process spawn, parallelism: 16)
 
-  [PASS]   161ms  T00 warmup / daemon alive: daemon warm [cli]
-  [PASS]   108ms  T01 --files-only: 10 rows, all files [cli]
-  [PASS]   106ms  T02 --dirs-only: 10 rows, all directories [cli]
-  [PASS]   376ms  T03 --hide-system: 0 rows, no $-prefixed files [cli]
-  [PASS]   217ms  T04 --ext rs: 10 rows, all .rs [cli]
-  [PASS]   107ms  T05 --ext jpg,png,gif: 10 rows, all image extensions [cli]
-  [PASS]   106ms  T06 --min-size 100MB: 10 rows, all >= 100MB [cli]
-  [PASS]   271ms  T07 --max-size 1KB: 10 rows, all <= 1KB [cli]
-  [PASS]   108ms  T08 --min/max-size 1MB..10MB: 10 rows, all 1MB..10MB [cli]
-  [PASS]   105ms  T09 --sort size (asc): 10 rows, sorted asc [cli]
-  [PASS]   106ms  T10 --sort size --sort-desc: 10 rows, sorted desc [cli]
-  [PASS]   106ms  T11 --sort modified: 10 rows [cli]
-  [PASS]   107ms  T12 --sort size,name: 10 rows [cli]
-  [PASS]   211ms  T13 --attr hidden: 10 rows, all hidden [cli]
-  [PASS]   321ms  T14 --attr !hidden: 10 rows, none hidden [cli]
-  [PASS]   160ms  T15 --attr compressed: 10 rows, all compressed [cli]
-  [PASS]    54ms  T16 --exclude backup*: 10 rows, no backup* files [cli]
-  [PASS]    55ms  T17 --name-only: 10 rows, all contain 'readme' [cli]
-  [PASS]   108ms  T18 --case sensitive: 10 rows, case-sensitive match [cli]
-  [PASS]    51ms  T19 --word: 10 rows [cli]
-  [PASS]   107ms  T20 --format json: 5 NDJSON items [cli]
-  [PASS]   107ms  T21 --format table: 28 lines of table output [cli]
-  [PASS]   107ms  T22 --columns Name,Size,Path Only: 3 columns in output [cli]
-  [PASS]   107ms  T23 --min-descendants 100: 10 dirs with 100+ descendants [cli]
-  [PASS]   110ms  T24 --max-descendants 0: 10 empty directories [cli]
-  [PASS]   110ms  T25 --newer 7d: 0 rows [cli]
-  [PASS]   110ms  T26 --older 365d: 10 rows [cli]
-  [PASS]   162ms  T27 --newer-created 30d: 10 rows [cli]
-  [PASS]   107ms  T28 --drive C: 10 rows, all on C: [cli]
-  [PASS]   107ms  T29 --drives C,D: 10 rows, all on C: or D: [cli]
-  [PASS]   109ms  T30 --sep | --quotes ': pipe-separated output [cli]
-  [PASS]    55ms  T31 --out file: 101 lines written to file [cli]
-  [PASS]   215ms  T32 --benchmark: 0 bytes stdout (benchmark mode) [cli]
-  [PASS]   160ms  T33 regex >.*\.config$: 10 rows, all .config files [cli]
-  [PASS]    55ms  T34 combined stress: 0 rows, all constraints satisfied [cli]
-  [PASS]   444ms  T35 --limit 0 (unlimited): 163498 rows (unlimited) [cli]
-  [PASS]   334ms  T36 --older-created 365d: 10 rows [cli]
-  [PASS]   160ms  T37 --attr system: 10 rows, all system files [cli]
-  [PASS]   215ms  T38 --attr readonly: 10 rows, all readonly [cli]
-  [PASS]   224ms  T39 --attr system,!hidden: 10 rows, system but not hidden [cli]
-  [PASS]   169ms  T40 no results (graceful): 0 rows, graceful empty result [cli]
-  [PASS]    55ms  T41 --header false: 5 lines, no header [cli]
-  [PASS]   169ms  T42 --smart-case (lowercase = insensitive): 10 rows, mixed case=true [cli]
-  [PASS]   169ms  T43 --newer-accessed 7d: 10 rows [cli]
-  [PASS]   169ms  T44 --newer today: 10 rows [cli]
-  [PASS]   224ms  T45 --newer yesterday: 10 rows [cli]
-  [PASS]   212ms  T46 --newer this_week: 10 rows [cli]
-  [PASS]   212ms  T47 --newer last_7d: 10 rows [cli]
-  [PASS]   163ms  T48 --newer last_30d: 10 rows [cli]
-  [PASS]   108ms  T49 --newer this_month: 10 rows [cli]
-  [PASS]   163ms  T50 --newer this_year: 10 rows [cli]
-  [PASS]   273ms  T51 --older last_year: 10 rows [cli]
-  [PASS]   163ms  T52 --newer last_90d: 10 rows [cli]
-  [PASS]   165ms  T53 --newer last_365d: 10 rows [cli]
-  [PASS]   163ms  T54 --newer-created today: 10 rows [cli]
-  [PASS]   165ms  T55 --newer-accessed this_week: 10 rows [cli]
-  [PASS]   163ms  T56 bounded time range (last_week): 10 rows [cli]
-  [PASS]   163ms  T57 --newer 2025-01-01: 10 rows [cli]
-  [PASS]   108ms  T58 --sort name: 10 rows, sorted by name asc [cli]
-  [PASS]   111ms  T59 --sort path: 10 rows [cli]
-  [PASS]    55ms  T60 --sort created: 10 rows [cli]
+  [PASS]   217ms  T00 warmup / daemon alive: daemon warm [cli]
+  [PASS]    55ms  T01 --files-only: 10 rows, all files [cli]
+  [PASS]    55ms  T02 --dirs-only: 10 rows, all directories [cli]
+  [PASS]   438ms  T03 --hide-system: 0 rows, no $-prefixed files [cli]
+  [PASS]    50ms  T04 --ext rs: 10 rows, all .rs [cli]
+  [PASS]   156ms  T05 --ext jpg,png,gif: 10 rows, all image extensions [cli]
+  [PASS]   171ms  T06 --min-size 100MB: 10 rows, all >= 100MB [cli]
+  [PASS]   262ms  T07 --max-size 1KB: 10 rows, all <= 1KB [cli]
+  [PASS]   107ms  T08 --min/max-size 1MB..10MB: 10 rows, all 1MB..10MB [cli]
+  [PASS]   170ms  T09 --sort size (asc): 10 rows, sorted asc [cli]
+  [PASS]   107ms  T10 --sort size --sort-desc: 10 rows, sorted desc [cli]
+  [PASS]    55ms  T11 --sort modified: 10 rows [cli]
+  [PASS]    55ms  T12 --sort size,name: 10 rows [cli]
+  [PASS]   221ms  T13 --attr hidden: 10 rows, all hidden [cli]
+  [PASS]   324ms  T14 --attr !hidden: 10 rows, none hidden [cli]
+  [PASS]   224ms  T15 --attr compressed: 10 rows, all compressed [cli]
+  [PASS]   103ms  T16 --exclude backup*: 10 rows, no backup* files [cli]
+  [PASS]   152ms  T17 --name-only: 10 rows, all contain 'readme' [cli]
+  [PASS]   103ms  T18 --case sensitive: 10 rows, case-sensitive match [cli]
+  [PASS]   153ms  T19 --word: 10 rows [cli]
+  [PASS]    55ms  T20 --format json: 5 NDJSON items [cli]
+  [PASS]   103ms  T21 --format table: 28 lines of table output [cli]
+  [PASS]   155ms  T22 --columns Name,Size,Path Only: 3 columns in output [cli]
+  [PASS]   209ms  T23 --min-descendants 100: 10 dirs with 100+ descendants [cli]
+  [PASS]   207ms  T24 --max-descendants 0: 10 empty directories [cli]
+  [PASS]   106ms  T25 --newer 7d: 0 rows [cli]
+  [PASS]   153ms  T26 --older 365d: 10 rows [cli]
+  [PASS]   256ms  T27 --newer-created 30d: 10 rows [cli]
+  [PASS]   104ms  T28 --drive C: 10 rows, all on C: [cli]
+  [PASS]   104ms  T29 --drives C,D: 10 rows, all on C: or D: [cli]
+  [PASS]   102ms  T30 --sep | --quotes ': pipe-separated output [cli]
+  [PASS]   105ms  T31 --out file: 101 lines written to file [cli]
+  [PASS]   319ms  T32 --benchmark: 0 bytes stdout (benchmark mode) [cli]
+  [PASS]   108ms  T33 regex >.*\.config$: 10 rows, all .config files [cli]
+  [PASS]    50ms  T34 combined stress: 0 rows, all constraints satisfied [cli]
+  [PASS]   420ms  T35 --limit 0 (unlimited): 163498 rows (unlimited) [cli]
+  [PASS]   322ms  T36 --older-created 365d: 10 rows [cli]
+  [PASS]   158ms  T37 --attr system: 10 rows, all system files [cli]
+  [PASS]   162ms  T38 --attr readonly: 10 rows, all readonly [cli]
+  [PASS]   158ms  T39 --attr system,!hidden: 10 rows, system but not hidden [cli]
+  [PASS]    54ms  T40 no results (graceful): 0 rows, graceful empty result [cli]
+  [PASS]   108ms  T41 --header false: 5 lines, no header [cli]
+  [PASS]    51ms  T42 --smart-case (lowercase = insensitive): 10 rows, mixed case=true [cli]
+  [PASS]   210ms  T43 --newer-accessed 7d: 10 rows [cli]
+  [PASS]   159ms  T44 --newer today: 10 rows [cli]
+  [PASS]   162ms  T45 --newer yesterday: 10 rows [cli]
+  [PASS]   164ms  T46 --newer this_week: 10 rows [cli]
+  [PASS]   155ms  T47 --newer last_7d: 10 rows [cli]
+  [PASS]   165ms  T48 --newer last_30d: 10 rows [cli]
+  [PASS]   110ms  T49 --newer this_month: 10 rows [cli]
+  [PASS]   110ms  T50 --newer this_year: 10 rows [cli]
+  [PASS]   271ms  T51 --older last_year: 10 rows [cli]
+  [PASS]   164ms  T52 --newer last_90d: 10 rows [cli]
+  [PASS]   160ms  T53 --newer last_365d: 10 rows [cli]
+  [PASS]   165ms  T54 --newer-created today: 10 rows [cli]
+  [PASS]   238ms  T55 --newer-accessed this_week: 10 rows [cli]
+  [PASS]   160ms  T56 bounded time range (last_week): 10 rows [cli]
+  [PASS]   160ms  T57 --newer 2025-01-01: 10 rows [cli]
+  [PASS]   103ms  T58 --sort name: 10 rows, sorted by name asc [cli]
+  [PASS]    50ms  T59 --sort path: 10 rows [cli]
+  [PASS]   110ms  T60 --sort created: 10 rows [cli]
   [PASS]   108ms  T61 --sort accessed: 10 rows [cli]
   [PASS]    55ms  T62 --sort extension: 10 rows [cli]
   [PASS]   110ms  T63 --sort drive: 10 rows [cli]
   [PASS]    55ms  T64 --sort allocated: 10 rows [cli]
-  [PASS]   109ms  T65 --sort descendants --sort-desc: 10 rows, sorted desc by descendants [cli]
-  [PASS]    79ms  T66 multi-sort size,-name: 20 rows, multi-sort applied [cli]
-  [PASS]   107ms  T67 multi-sort -modified,name: 10 rows [cli]
-  [PASS]   162ms  T67a --sort treesize: 10 rows, sorted by treesize desc [cli]
-  [PASS]   162ms  T67b --sort treeallocated: 10 rows, sorted by treeallocated desc [cli]
-  [PASS]   326ms  T67c --sort bulkiness: 10 rows [cli]
-  [PASS]   652ms  T67d --sort namelength: 10 rows, sorted by name length desc [cli]
-  [PASS]   652ms  T67e --sort pathlength: 10 rows [cli]
-  [PASS]   142ms  T67f --sort path_only: 10 rows [cli]
-  [PASS]   327ms  T67g --sort type: 20 rows [cli]
-  [PASS]   162ms  T67h multi-sort treesize,name: 20 rows [cli]
-  [PASS]   622ms  T67i multi-sort type,-size: 20 rows [cli]
-  [PASS]   216ms  T67j multi-sort hidden,bulkiness: 20 rows [cli]
-  [PASS]   271ms  T68 --attr archive: 10 rows, all have archive attr [cli]
-  [PASS]   217ms  T69 --attr sparse: 10 rows with sparse attr [cli]
-  [PASS]   161ms  T70 --attr reparse: 10 rows with reparse attr [cli]
-  [PASS]   163ms  T71 --attr offline: 10 rows with offline attr [cli]
-  [PASS]   164ms  T72 --attr encrypted: 0 rows with encrypted attr [cli]
+  [PASS]   160ms  T65 --sort descendants --sort-desc: 10 rows, sorted desc by descendants [cli]
+  [PASS]    56ms  T66 multi-sort size,-name: 20 rows, multi-sort applied [cli]
+  [PASS]   110ms  T67 multi-sort -modified,name: 10 rows [cli]
+  [PASS]   161ms  T67a --sort treesize: 10 rows, sorted by treesize desc [cli]
+  [PASS]   164ms  T67b --sort treeallocated: 10 rows, sorted by treeallocated desc [cli]
+  [PASS]   325ms  T67c --sort bulkiness: 10 rows [cli]
+  [PASS]   599ms  T67d --sort namelength: 10 rows, sorted by name length desc [cli]
+  [PASS]   651ms  T67e --sort pathlength: 10 rows [cli]
+  [PASS]    56ms  T67f --sort path_only: 10 rows [cli]
+  [PASS]   325ms  T67g --sort type: 20 rows [cli]
+  [PASS]   161ms  T67h multi-sort treesize,name: 20 rows [cli]
+  [PASS]   325ms  T67i multi-sort type,-size: 20 rows [cli]
+  [PASS]   325ms  T67j multi-sort hidden,bulkiness: 20 rows [cli]
+  [PASS]   325ms  T68 --attr archive: 10 rows, all have archive attr [cli]
+  [PASS]   216ms  T69 --attr sparse: 10 rows with sparse attr [cli]
+  [PASS]   220ms  T70 --attr reparse: 10 rows with reparse attr [cli]
+  [PASS]   165ms  T71 --attr offline: 10 rows with offline attr [cli]
+  [PASS]   217ms  T72 --attr encrypted: 0 rows with encrypted attr [cli]
   [PASS]   271ms  T73 --attr !system: 10 rows, no system files [cli]
-  [PASS]   161ms  T74 --attr hidden,system: 10 rows, all hidden+system [cli]
-  [PASS]   165ms  T75 size+time+ext combined: 10 rows, all constraints met [cli]
-  [PASS]   110ms  T76 dirs + desc range + sort: 10 rows, desc 10..1000 sorted [cli]
+  [PASS]   217ms  T74 --attr hidden,system: 10 rows, all hidden+system [cli]
+  [PASS]   162ms  T75 size+time+ext combined: 10 rows, all constraints met [cli]
+  [PASS]   165ms  T76 dirs + desc range + sort: 10 rows, desc 10..1000 sorted [cli]
   [PASS]   110ms  T77 hidden + --newer last_30d: 10 hidden files from last 30 days [cli]
   [PASS]    55ms  T78 exclude + ext + size: 10 rows, all constraints met [cli]
-  [PASS]   110ms  T79 projection + json format: 5 projected JSON items [cli]
-  [PASS]   110ms  T80 --columns all (wide): 34 cols × 5 rows [cli]
-  [PASS]   164ms  T81 --newer-created this_year: 10 rows [cli]
-  [PASS]   161ms  T82 --newer-accessed last_week: 10 rows [cli]
-  [PASS]    55ms  T83 multi-sort drive,ext,-size: 20 rows [cli]
-  [PASS]   110ms  T84 mega combined: 3 rows, all constraints satisfied [cli]
-  [PASS]   110ms  T85 table format + projection: 28 table lines [cli]
-  [PASS]   219ms  T86 --older-accessed 365d: 10 rows [cli]
-  [PASS]    55ms  T87 ext + sort modified: 10 rows, ext filtered + sorted [cli]
-  [PASS]   107ms  T88 name-only + hide-system + newer: 10 rows [cli]
-  [PASS]   109ms  T88a path: prefix: 10 rows, all paths contain 'windows' [cli]
-  [PASS]    55ms  T88b dir: prefix: 10 rows, all directories [cli]
+  [PASS]    55ms  T79 projection + json format: 5 projected JSON items [cli]
+  [PASS]    52ms  T80 --columns all (wide): 34 cols × 5 rows [cli]
+  [PASS]   165ms  T81 --newer-created this_year: 10 rows [cli]
+  [PASS]   164ms  T82 --newer-accessed last_week: 10 rows [cli]
+  [PASS]   109ms  T83 multi-sort drive,ext,-size: 20 rows [cli]
+  [PASS]    55ms  T84 mega combined: 3 rows, all constraints satisfied [cli]
+  [PASS]    55ms  T85 table format + projection: 28 table lines [cli]
+  [PASS]   218ms  T86 --older-accessed 365d: 10 rows [cli]
+  [PASS]    52ms  T87 ext + sort modified: 10 rows, ext filtered + sorted [cli]
+  [PASS]   163ms  T88 name-only + hide-system + newer: 10 rows [cli]
+  [PASS]   110ms  T88a path: prefix: 10 rows, all paths contain 'windows' [cli]
+  [PASS]   108ms  T88b dir: prefix: 10 rows, all directories [cli]
   [PASS]   109ms  T88c file: prefix: 10 rows, all .dll files [cli]
-  [PASS]   109ms  T88d --begins-with: 10 rows, all begin with 'note' [cli]
-  [PASS]    54ms  T88e --ends-with: 10 rows, all end with '.log' [cli]
-  [PASS]    62ms  T88f --contains: 10 rows, all contain 'setup' [cli]
-  [PASS]   109ms  T88g --not-contains: 10 rows, no 'debug' in names [cli]
-  [PASS]   109ms  T88h --in-path + pattern: 10 rows, .exe files in *windows* [cli]
-  [PASS]   106ms  T88i path: vs --in-path: 10 rows, path: matched [cli]
-  [PASS]   106ms  T88j --contains + --not-contains: 10 rows, contains 'update' but not 'old' [cli]
+  [PASS]    55ms  T88d --begins-with: 10 rows, all begin with 'note' [cli]
+  [PASS]    55ms  T88e --ends-with: 10 rows, all end with '.log' [cli]
+  [PASS]    55ms  T88f --contains: 10 rows, all contain 'setup' [cli]
+  [PASS]   107ms  T88g --not-contains: 10 rows, no 'debug' in names [cli]
+  [PASS]   108ms  T88h --in-path + pattern: 10 rows, .exe files in *windows* [cli]
+  [PASS]   110ms  T88i path: vs --in-path: 10 rows, path: matched [cli]
+  [PASS]   109ms  T88j --contains + --not-contains: 10 rows, contains 'update' but not 'old' [cli]
   [PASS]   106ms  T88k dir: prefix + sort treesize desc: 10 dirs sorted by treesize desc [cli]
-  [PASS]    55ms  T88l --begins-with + --ext: 10 rows, begins-with + ext [cli]
+  [PASS]   108ms  T88l --begins-with + --ext: 10 rows, begins-with + ext [cli]
   [PASS]   106ms  T89 --type code: 10 rows, all code files [cli]
-  [PASS]   111ms  T90 --type document: 10 rows [cli]
-  [PASS]    53ms  T91 --type executable: 10 rows, all executables [cli]
-  [PASS]   107ms  T92 --type picture: 10 rows [cli]
-  [PASS]    56ms  T93 --type system: 10 rows, all system type [cli]
-  [PASS]   106ms  T94 --type code + sort size: 10 code files sorted by size desc [cli]
-  [PASS]   321ms  T95 --in-path *windows*: 10 rows, all in *windows* [cli]
-  [PASS]   217ms  T96 --in-path *system32*: 10 rows, all in *system32* [cli]
-  [PASS]   160ms  T97 --in-path + --exclude: 10 rows, in-path + exclude [cli]
-  [PASS]   321ms  T98 --min-bulkiness 200: 10 rows, all bulkiness >= 200% [cli]
-  [PASS]   272ms  T99 --max-bulkiness 100: 10 rows, all bulkiness <= 100% [cli]
-  [PASS]   165ms  T100 bulkiness + size combined: 1 rows, bulky large files [cli]
-  [PASS]   158ms  T101 --min-treesize 100MB: 10 dirs with treesize >= 100MB [cli]
-  [PASS]   163ms  T102 --max-treesize 1MB: 10 dirs with treesize <= 1MB [cli]
-  [PASS]   165ms  T103 --min-tree-allocated 100MB: 10 dirs with tree-allocated >= 100MB [cli]
-  [PASS]   541ms  T104 --min-name-length 50: 10 rows, all names >= 50 chars [cli]
-  [PASS]   545ms  T105 --max-name-length 8: 10 rows, all names <= 8 chars [cli]
-  [PASS]   271ms  T106 --min-path-length 200: 10 rows, all paths >= 200 chars [cli]
-  [PASS]   216ms  T107 --max-path-length 30: 10 rows [cli]
-  [PASS]   213ms  T108 --min-size-on-disk 100MB: 10 rows, all allocated >= 100MB [cli]
-  [PASS]   213ms  T109 --max-size-on-disk 4096: 10 rows, all allocated <= 4096 [cli]
-  [PASS]   375ms  T110 --month jan: 10 rows [cli]
-  [PASS]   381ms  T111 --month Q4: 10 rows [cli]
+  [PASS]    55ms  T90 --type document: 10 rows [cli]
+  [PASS]    55ms  T91 --type executable: 10 rows, all executables [cli]
+  [PASS]   109ms  T92 --type picture: 10 rows [cli]
+  [PASS]   105ms  T93 --type system: 10 rows, all system type [cli]
+  [PASS]   169ms  T94 --type code + sort size: 10 code files sorted by size desc [cli]
+  [PASS]   327ms  T95 --in-path *windows*: 10 rows, all in *windows* [cli]
+  [PASS]   263ms  T96 --in-path *system32*: 10 rows, all in *system32* [cli]
+  [PASS]   169ms  T97 --in-path + --exclude: 10 rows, in-path + exclude [cli]
+  [PASS]   376ms  T98 --min-bulkiness 200: 10 rows, all bulkiness >= 200% [cli]
+  [PASS]   274ms  T99 --max-bulkiness 100: 10 rows, all bulkiness <= 100% [cli]
+  [PASS]   214ms  T100 bulkiness + size combined: 1 rows, bulky large files [cli]
+  [PASS]   160ms  T101 --min-treesize 100MB: 10 dirs with treesize >= 100MB [cli]
+  [PASS]   159ms  T102 --max-treesize 1MB: 10 dirs with treesize <= 1MB [cli]
+  [PASS]   162ms  T103 --min-tree-allocated 100MB: 10 dirs with tree-allocated >= 100MB [cli]
+  [PASS]   543ms  T104 --min-name-length 50: 10 rows, all names >= 50 chars [cli]
+  [PASS]   598ms  T105 --max-name-length 8: 10 rows, all names <= 8 chars [cli]
+  [PASS]   218ms  T106 --min-path-length 200: 10 rows, all paths >= 200 chars [cli]
+  [PASS]   217ms  T107 --max-path-length 30: 10 rows [cli]
+  [PASS]   272ms  T108 --min-size-on-disk 100MB: 10 rows, all allocated >= 100MB [cli]
+  [PASS]   265ms  T109 --max-size-on-disk 4096: 10 rows, all allocated <= 4096 [cli]
+  [PASS]   376ms  T110 --month jan: 10 rows [cli]
+  [PASS]   375ms  T111 --month Q4: 10 rows [cli]
   [PASS]   375ms  T112 --month jan,feb,mar: 10 rows [cli]
-  [PASS]   161ms  T113 --month jan + --newer last_365d: 10 rows [cli]
-  [PASS]   107ms  T114 --sort hidden:desc: 20 rows, hidden sorted desc [cli]
-  [PASS]   355ms  T115 --sort compressed:desc: 20 rows, compressed sorted desc [cli]
-  [FAIL]   161ms  T116 --sort directory:desc: Row 19: Dir=1 after Dir=0 — not sorted desc
-  [PASS]   216ms  T117 type + in-path + size: 10 rows, all constraints met [cli]
-  [PASS]   161ms  T118 treesize + descendants: 10 dirs, treesize+desc constraints met [cli]
-  [PASS]   159ms  T119 agg count: count = 25846853 [cli]
-  [PASS]   868ms  T120 agg overview: overview: count + stats + buckets present [cli]
-  [PASS]   320ms  T121 agg by_extension: 50 extension buckets [cli]
-  [PASS]   270ms  T122 agg by_type: type categories present [cli]
-  [PASS]   275ms  T123 agg by_drive: drive buckets present [cli]
-  [PASS]   269ms  T124 agg by_size: size distribution buckets present [cli]
-  [PASS]   380ms  T125 agg by_age: age distribution present [cli]
-  [PASS]   165ms  T126 agg count --format json: JSON count = 25846853 [cli]
-  [PASS]   814ms  T127 agg overview --format json: 6 results: ["count", "buckets", "stats", "buckets", "buckets", "buckets"] [cli]
-  [PASS]   267ms  T128 agg by_extension --format csv: 50 CSV rows [cli]
+  [PASS]   361ms  T113 --month jan + --newer last_365d: 10 rows [cli]
+  [PASS]   108ms  T114 --sort hidden:desc: 20 rows, hidden sorted desc [cli]
+  [PASS]   265ms  T115 --sort compressed:desc: 20 rows, compressed sorted desc [cli]
+  [PASS]   271ms  T116 --sort directory:desc: 20 rows, directory sorted desc [cli]
+  [PASS]   217ms  T117 type + in-path + size: 10 rows, all constraints met [cli]
+  [PASS]   159ms  T118 treesize + descendants: 10 dirs, treesize+desc constraints met [cli]
+  [PASS]   213ms  T119 agg count: count = 25846853 [cli]
+  [PASS]   870ms  T120 agg overview: overview: count + stats + buckets present [cli]
+  [PASS]   327ms  T121 agg by_extension: 50 extension buckets [cli]
+  [PASS]   377ms  T122 agg by_type: type categories present [cli]
+  [PASS]   377ms  T123 agg by_drive: drive buckets present [cli]
+  [PASS]   326ms  T124 agg by_size: size distribution buckets present [cli]
+  [PASS]   488ms  T125 agg by_age: age distribution present [cli]
+  [PASS]   204ms  T126 agg count --format json: JSON count = 25846853 [cli]
+  [PASS]   967ms  T127 agg overview --format json: 6 results: ["count", "buckets", "stats", "buckets", "buckets", "buckets"] [cli]
+  [PASS]   325ms  T128 agg by_extension --format csv: 50 CSV rows [cli]
+  [PASS]   871ms  T130 agg top_folders preset: top_folders preset produced output [cli]
+  [PASS]   432ms  T131 agg cleanup preset: cleanup preset: 4 sections [cli]
+  [PASS]  1415ms  T132 agg duplicates preset: duplicates preset produced output [cli]
+  [FAIL]   603ms  T133 agg storage preset: Missing total in storage output
+  [PASS]  1386ms  T134 agg activity preset: activity preset produced output [cli]
+  [PASS]   755ms  T135 agg media preset: media preset produced output [cli]
+  [FAIL]   911ms  T136 agg top_folders --format json: Missing 'results' array in JSON
+  [FAIL]   376ms  T137 agg cleanup --format json: Missing 'results' array
+  [PASS]   438ms  T138 agg cleanup --format csv: 12 lines, 4 sections [cli]
+  [FAIL] 30101ms  T139 --agg terms:extension,sample=3: Empty output
+  [FAIL] 30095ms  T140 --agg duplicates:size+name,sample=2: Empty output
+  [PASS]   640ms  T141 --count shorthand: --count shorthand works [cli]
+  [PASS] 30162ms  T142 --facet extension: --facet extension shorthand works [cli]
+  [PASS] 30116ms  T143 --facet type:10: --facet type:10 shorthand works [cli]
+  [PASS]   695ms  T144 --stats size: --stats size shorthand works [cli]
+  [PASS]   111ms  T145 --agg count + --rows mixed: mixed mode: rows=true, total=false [cli]
+  [FAIL]   362ms  T146 agg by_extension --format json (buckets): Missing 'results' array
+  [FAIL]  1556ms  T147 agg duplicates --format json: Missing 'results' array
+  [PASS]   325ms  T148 agg by_drive --format csv: 7 drive rows in CSV [cli]
+  [FAIL]   321ms  T149 agg by_size --format json: Missing 'results' array
 
-  ❌ 1/151 FAILED — wall 4639ms / sum 28134ms
+  ❌ 8/171 FAILED — wall 35590ms / sum 161128ms
 
   ┌─ Failed Tests ──────────────────────────────────────────────────────┐
   │
-  │  ❌ T116 --sort directory:desc
-  │  Error: Row 19: Dir=1 after Dir=0 — not sorted desc
-  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs "*" --sort directory:desc --limit 20 --columns all --data-dir /Users/rnio/uffs_data
+  │  ❌ T133 agg storage preset
+  │  Error: Missing total in storage output
+  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg storage --data-dir /Users/rnio/uffs_data
+  │
+  │  ❌ T136 agg top_folders --format json
+  │  Error: Missing 'results' array in JSON
+  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg top_folders --format json --data-dir /Users/rnio/uffs_data
+  │
+  │  ❌ T137 agg cleanup --format json
+  │  Error: Missing 'results' array
+  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg cleanup --format json --data-dir /Users/rnio/uffs_data
+  │
+  │  ❌ T139 --agg terms:extension,sample=3
+  │  Error: Empty output
+  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs "*" --limit 0 --agg terms:extension,top=10,sample=3 --format json --data-dir /Users/rnio/uffs_data
+  │
+  │  ❌ T140 --agg duplicates:size+name,sample=2
+  │  Error: Empty output
+  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs "*" --limit 0 --agg duplicates:size+name,sample=2,top=50 --format json --data-dir /Users/rnio/uffs_data
+  │
+  │  ❌ T146 agg by_extension --format json (buckets)
+  │  Error: Missing 'results' array
+  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg by_extension --format json --data-dir /Users/rnio/uffs_data
+  │
+  │  ❌ T147 agg duplicates --format json
+  │  Error: Missing 'results' array
+  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg duplicates --format json --data-dir /Users/rnio/uffs_data
+  │
+  │  ❌ T149 agg by_size --format json
+  │  Error: Missing 'results' array
+  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg by_size --format json --data-dir /Users/rnio/uffs_data
   │
   └──────────────────────────────────────────────────────────────────────┘
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Total time: 21939ms
+  Total time: 61107ms
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ┌───────────────────────────────────────────────────────────────┐
 │  Cleanup: checking for orphan uffs processes                 │
 └───────────────────────────────────────────────────────────────┘
-  ✅ No orphan uffs processes found.
+  ⚠️  Found 1 orphan uffs process(es):
+    PID 24410: (uffs)
+  🔪 Killed 1/1 orphan process(es).
 
-    ~/Pr/GitHub/UltraFastFileSearch  on   main !15 ?1                                                                                                           1 ✘  took 2m 16s   at 11:56:21 
+    ~/Pr/GitHub/UltraFastFileSearch  on   main !10 ?1 

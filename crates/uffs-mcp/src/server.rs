@@ -363,6 +363,9 @@ impl McpServer {
                 boundaries: vec![],
                 metrics: vec![],
                 preset: Some(preset.to_owned()),
+                sample: None,
+                sample_sort: None,
+                sample_desc: None,
             });
         }
 
@@ -380,6 +383,9 @@ impl McpServer {
                         boundaries: vec![],
                         metrics: vec![],
                         preset: None,
+                        sample: None,
+                        sample_sort: None,
+                        sample_desc: None,
                     });
                 }
             }
@@ -397,6 +403,9 @@ impl McpServer {
                 boundaries: vec![],
                 metrics: vec![],
                 preset: Some("overview".to_owned()),
+                sample: None,
+                sample_sort: None,
+                sample_desc: None,
             });
         }
 
@@ -464,6 +473,9 @@ impl McpServer {
             boundaries: vec![],
             metrics: vec!["count".to_owned(), "total_bytes".to_owned()],
             preset: None,
+            sample: None,
+            sample_sort: None,
+            sample_desc: None,
         };
 
         let params = SearchParams {
@@ -537,6 +549,21 @@ pub fn format_aggregate_summary(results: &[uffs_client::protocol::AggregateResul
                         bucket.key, bucket.count, bucket.total_bytes
                     )
                     .ok();
+                    // Append sample rows (top-hits), max 3 per bucket.
+                    let max_samples = 3;
+                    for sr in bucket.sample_rows.iter().take(max_samples) {
+                        let name = sr.fields.get("name").map_or("?", |val| val.as_str());
+                        let size = sr
+                            .fields
+                            .get("size")
+                            .and_then(|val| val.parse::<u64>().ok())
+                            .map_or(String::new(), |n| format!(" ({n} B)"));
+                        writeln!(out, "      → {name}{size}").ok();
+                    }
+                    let remaining = bucket.sample_rows.len().saturating_sub(max_samples);
+                    if remaining > 0 {
+                        writeln!(out, "      ... and {remaining} more").ok();
+                    }
                 }
                 if result.buckets.len() > 10 {
                     writeln!(out, "    ... and {} more", result.buckets.len() - 10).ok();

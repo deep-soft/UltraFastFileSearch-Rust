@@ -27,11 +27,13 @@ use server::format_aggregate_summary;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // MCP uses stderr for logging (stdout is the protocol channel)
-    tracing_subscriber::fmt()
+    // Use `try_init` so we don't panic if a subscriber is already installed
+    // (e.g. when invoked in-process from a host that already has tracing).
+    let _ignore = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_target(false)
         .with_max_level(tracing::Level::INFO)
-        .init();
+        .try_init();
 
     tracing::info!("uffs-mcp starting");
 
@@ -147,6 +149,8 @@ mod tests {
                     avg_size: None,
                     share_count: None,
                     share_bytes: None,
+                    sample_rows: Vec::new(),
+                    drilldown: Vec::new(),
                 },
                 BucketWire {
                     key: "toml".to_owned(),
@@ -156,6 +160,8 @@ mod tests {
                     avg_size: None,
                     share_count: None,
                     share_bytes: None,
+                    sample_rows: Vec::new(),
+                    drilldown: Vec::new(),
                 },
             ],
             other_count: Some(300),
@@ -236,6 +242,8 @@ mod tests {
                     avg_size: None,
                     share_count: None,
                     share_bytes: None,
+                    sample_rows: Vec::new(),
+                    drilldown: Vec::new(),
                 }],
                 other_count: None,
                 total_groups: None,
@@ -258,6 +266,8 @@ mod tests {
                 avg_size: None,
                 share_count: None,
                 share_bytes: None,
+                sample_rows: Vec::new(),
+                drilldown: Vec::new(),
             })
             .collect();
         let results = vec![AggregateResultWire {

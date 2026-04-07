@@ -55,7 +55,7 @@ pub(crate) fn print_table_results(results: &[AggregateResultWire]) -> Result<()>
                     }
                 }
             }
-            "buckets" => {
+            "buckets" | "rollup" | "duplicates" => {
                 if result.buckets.is_empty() {
                     writeln!(stdout, "  (no data)")?;
                 } else {
@@ -82,6 +82,20 @@ pub(crate) fn print_table_results(results: &[AggregateResultWire]) -> Result<()>
                             share_c,
                             share_b
                         )?;
+                        // Print sample rows (top-hits) indented under the bucket.
+                        for sr in &row.sample_rows {
+                            let name = sr.fields.get("name").map_or("?", |s| s.as_str());
+                            let size = sr
+                                .fields
+                                .get("size")
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .map_or_else(String::new, |n| format!(" ({})", format_size(n)));
+                            let modified = sr
+                                .fields
+                                .get("modified")
+                                .map_or(String::new(), |s| format!(" mod:{s}"));
+                            writeln!(stdout, "    → {name}{size}{modified}")?;
+                        }
                     }
                     if let Some(other) = result.other_count {
                         if other > 0 {
@@ -149,14 +163,26 @@ pub(crate) fn print_csv_results(results: &[AggregateResultWire], tsv: bool) -> R
                     )?;
                 }
             }
-            "buckets" | "rollup" => {
+            "buckets" | "rollup" | "duplicates" => {
+                // Check if any bucket has sample rows or drilldown.
+                let has_samples = result.buckets.iter().any(|r| !r.sample_rows.is_empty());
+                let has_drill = result.buckets.iter().any(|r| !r.drilldown.is_empty());
+
                 writeln!(stdout, "# {label}")?;
-                writeln!(
+                write!(
                     stdout,
                     "key{sep}count{sep}total_bytes{sep}total_allocated{sep}avg_size{sep}share_count{sep}share_bytes"
                 )?;
+                if has_samples {
+                    write!(stdout, "{sep}samples")?;
+                }
+                if has_drill {
+                    write!(stdout, "{sep}drilldown")?;
+                }
+                writeln!(stdout)?;
+
                 for row in &result.buckets {
-                    writeln!(
+                    write!(
                         stdout,
                         "{}{sep}{}{sep}{}{sep}{}{sep}{:.2}{sep}{:.2}{sep}{:.2}",
                         row.key,
@@ -167,9 +193,20 @@ pub(crate) fn print_csv_results(results: &[AggregateResultWire], tsv: bool) -> R
                         row.share_count.unwrap_or(0.0),
                         row.share_bytes.unwrap_or(0.0),
                     )?;
+                    if has_samples {
+                        let json = serde_json::to_string(&row.sample_rows)
+                            .unwrap_or_else(|_| "[]".to_owned());
+                        write!(stdout, "{sep}{json}")?;
+                    }
+                    if has_drill {
+                        let json = serde_json::to_string(&row.drilldown)
+                            .unwrap_or_else(|_| "[]".to_owned());
+                        write!(stdout, "{sep}{json}")?;
+                    }
+                    writeln!(stdout)?;
                 }
             }
-            "missing" | "distinct" | "duplicates" => {
+            "missing" | "distinct" => {
                 writeln!(stdout, "# {label}")?;
                 writeln!(stdout, "value")?;
                 if let Some(v) = result.value {

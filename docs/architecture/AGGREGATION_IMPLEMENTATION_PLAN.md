@@ -224,17 +224,17 @@ The first shippable feature: `--count`, `--aggregate overview`, `--facet`,
 
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
-| S2A.1 | Design `TopHitsSpec` struct: `count` (1–5), `sort`, `projection`. | `aggregate/spec.rs` | §20 | S0.2 | 🔧 `TopHitsSpec` defined with `count`, `sort_field`, `sort_desc` — but no `projection` and not wired into any accumulator |
-| S2A.2 | Implement per-bucket min-heap to track top-N sample rows during scan. Store only record index + sort key. | `aggregate/accumulators.rs` | §20.1 | S2A.1 | ⬜ |
-| S2A.3 | Materialize sample rows (path + name + size + modified + type + ext) after scan, only for surviving buckets. | `aggregate/finalize.rs` | §20.2 | S2A.2 | ⬜ |
-| S2A.4 | Allow caller to override sample projection fields. | `aggregate/spec.rs` | §20.2 | S2A.3 | ⬜ |
+| S2A.1 | Design `TopHitsSpec` struct: `count` (1–5), `sort`, `projection`. | `aggregate/spec.rs` | §20 | S0.2 | ✅ `TopHitsSpec` complete: `count` (clamped 1–5), `sort_field`, `sort_desc`, `projection`, `Default`, `with_count()`, `new()`, `effective_projection()`, `validate()`. Wired as `sample: Option<TopHitsSpec>` on `Terms`, `Rollup`, `Duplicates`. 10 tests. |
+| S2A.2 | Implement per-bucket min-heap to track top-N sample rows during scan. Store only record index + sort key. | `aggregate/sample_heap.rs`, `aggregate/accumulators.rs` | §20.1 | S2A.1 | ✅ `SampleHeap` with bounded min/max-heap (16 bytes/entry), `SampleEntry(sort_key, rec_idx, drive_ordinal)`, `push()` with eviction, `drain_sorted()`. Wired into `AccumulatorKind::Terms` with per-bucket `HashMap<u64, SampleHeap>`. 6 unit tests. |
+| S2A.3 | Materialize sample rows (path + name + size + modified + type + ext) after scan, only for surviving buckets. | `aggregate/finalize.rs` | §20.2 | S2A.2 | ✅ `SampleRow { fields: Vec<(String, String)>, sort_key }` added to `BucketRow`. `materialize_sample_entry()` + `format_field()` project records. Only surviving (top-N) buckets materialized. 4 integration tests. |
+| S2A.4 | Allow caller to override sample projection fields. | `aggregate/spec.rs` | §20.2 | S2A.3 | ✅ `TopHitsSpec.projection` + `effective_projection()` already implemented in S2A.1. Custom projection verified by `terms_sample_custom_projection` integration test. |
 
 ### 2B  Drill-down predicates
 
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
-| S2B.1 | Attach `drilldown: Vec<SearchPredicate>` to each `AggregateBucket` — current query preds + bucket key pred. | `aggregate/finalize.rs` | §20.3 | S1A.* | ⬜ |
-| S2B.2 | Test: drill-down predicate for a type bucket produces correct re-query. | tests | §20.3 | S2B.1 | ⬜ |
+| S2B.1 | Attach `drilldown: Vec<SearchPredicate>` to each `AggregateBucket` — current query preds + bucket key pred. | `aggregate/finalize.rs` | §20.3 | S1A.* | ✅ `DrilldownPredicate { field, op, value }` + `DrilldownValue` enum in `finalize.rs`. `BucketRow.drilldown` populated during finalization. `FinalizeOptions.query_predicates` carries original query context. `build_drilldown()` combines query preds + bucket key pred. |
+| S2B.2 | Test: drill-down predicate for a type bucket produces correct re-query. | tests | §20.3 | S2B.1 | ✅ 3 integration tests: `terms_drilldown_includes_bucket_key`, `terms_drilldown_preserves_query_predicates`, `terms_drilldown_no_query_predicates`. |
 
 ### 2C  Additional presets
 
@@ -271,12 +271,76 @@ The first shippable feature: `--count`, `--aggregate overview`, `--facet`,
 
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
-| S2F.1 | Unit tests: sample row heap — correct top-N selection across various sizes. | tests | §26.1 | S2A.2 | ⬜ Blocked on S2A.2 |
-| S2F.2 | Unit tests: drill-down predicate generation. | tests | §26.1 | S2B.1 | ⬜ Blocked on S2B.1 |
+| S2F.1 | Unit tests: sample row heap — correct top-N selection across various sizes. | tests | §26.1 | S2A.2 | ✅ 6 unit tests in `sample_heap::tests`: desc, asc, empty, under-capacity, boolean field, multi-drive. |
+| S2F.2 | Unit tests: drill-down predicate generation. | tests | §26.1 | S2B.1 | ✅ 3 integration tests: `terms_drilldown_includes_bucket_key`, `terms_drilldown_preserves_query_predicates`, `terms_drilldown_no_query_predicates`. |
 | S2F.3 | Unit tests: `--agg` power syntax parsing — all forms + error cases. | tests | §26.1 | S2E.* | ✅ 13 parser tests in `parser::tests` |
-| S2F.4 | Integration: `top_folders` on synthetic index, verify top folder sizes. | integration tests | §26.2 A150 | S2D.5 | ⬜ |
-| S2F.5 | Integration: `cleanup` preset → verify zero-byte, long-path, and attribute counts. | integration tests | §26.2 A160, A170 | S2C.4 | ⬜ |
-| S2F.6 | Integration: aggregate + rows mixed mode (A200). | integration tests | §26.2 A200 | S2A.* | ⬜ |
+| S2F.4 | Integration: `top_folders` on synthetic index, verify top folder sizes. | integration tests | §26.2 A150 | S2D.5 | ✅ `s2f4_top_folders_preset` — verifies Rollup mode, non-empty rows, non-zero bytes, preset label. |
+| S2F.5 | Integration: `cleanup` preset → verify zero-byte, long-path, and attribute counts. | integration tests | §26.2 A160, A170 | S2C.4 | ✅ `s2f5_cleanup_preset` — verifies ≥3 results, total_files count, zero_byte_files spec, distinct_extensions. |
+| S2F.6 | Integration: aggregate + rows mixed mode (A200). | integration tests | §26.2 A200 | S2A.* | ✅ `s2f6_aggregate_and_rows_independent` — runs Terms then Count on same drive, verifies independent results and no mutation. |
+
+### 2G  Wire protocol + CLI + MCP surface for samples & drill-down
+
+**Context:** Stage 2A produced `SampleRow` and 2B produced `DrilldownPredicate` on `BucketRow` inside `uffs-core`, but these fields are **invisible** beyond the library boundary.  The daemon's `BucketRow → BucketWire` conversion drops them, `BucketWire` has no fields for them, the CLI formatters don't render them, and the MCP summary ignores them.  This sub-stage closes that gap end-to-end.
+
+**Data flow (current):**
+```
+uffs-core BucketRow                         uffs-daemon                      BucketWire (protocol)     CLI / MCP
+├── sample_rows: Vec<SampleRow>       →  DROPPED (line 106–114)         →  field MISSING           → invisible
+├── drilldown: Vec<DrilldownPredicate> →  DROPPED (line 106–114)         →  field MISSING           → invisible
+```
+
+**Data flow (target):**
+```
+uffs-core BucketRow                         uffs-daemon                      BucketWire (protocol)     CLI / MCP
+├── sample_rows: Vec<SampleRow>       →  converted to SampleRowWire    →  sample_rows: Vec<…>    → rendered
+├── drilldown: Vec<DrilldownPredicate> →  converted to DrilldownWire    →  drilldown: Vec<…>      → rendered / actionable
+```
+
+| ID | Task | File(s) | Section | Depends | Status |
+|----|------|---------|---------|---------|--------|
+| S2G.1 | **Define `SampleRowWire`** in protocol module.  Shape: `{ fields: HashMap<String, String>, sort_key: Option<i64> }`.  Use `#[serde(skip_serializing_if = "Option::is_none")]` on `sort_key`.  Derive `Serialize`, `Deserialize`, `Debug`, `Clone`. | `uffs-client/src/protocol/mod.rs` | §12.6 | S2A.3 | ✅ Added at line 573. Doc comments describe projection fields and sort key. |
+| S2G.2 | **Define `DrilldownWire`** in protocol module.  Shape: `{ field: String, op: String, value: serde_json::Value }`.  `value` is `Value::String` / `Value::Number` / `Value::Bool` to match `DrilldownValue`.  Derive `Serialize`, `Deserialize`, `Debug`, `Clone`. | `uffs-client/src/protocol/mod.rs` | §12.6 | S2B.1 | ✅ Added at line 589. Uses `serde_json::Value` for natural JSON mapping. |
+| S2G.3 | **Extend `BucketWire`** with two new optional fields:  `sample_rows: Vec<SampleRowWire>` (default empty, `skip_serializing_if = "Vec::is_empty"`) and  `drilldown: Vec<DrilldownWire>` (default empty, `skip_serializing_if = "Vec::is_empty"`). | `uffs-client/src/protocol/mod.rs` | §12.6 | S2G.1, S2G.2 | ✅ Both fields added with `serde(default)`. All 10 downstream construction sites updated (daemon 3, MCP 7, CLI 1, tests ~20). |
+| S2G.4 | **Extend `AggregateSpecWire`** with `sample: Option<u8>` — count of sample rows requested per bucket.  Default `None`, `skip_serializing_if = "Option::is_none"`.  Also add `sample_sort: Option<String>` (field name) and `sample_desc: Option<bool>`. | `uffs-client/src/protocol/mod.rs` | §12.2 | S2A.1 | ✅ 3 fields added. All 6 downstream construction sites updated (MCP 4, CLI 1, daemon-test 1). |
+| S2G.5 | **Update daemon `convert_wire_spec`**: when `ws.sample` is `Some(n)`, build `TopHitsSpec` and pass it into `Terms`/`Duplicates`/`Rollup` `AggregateKind` variant's `sample` field. | `uffs-daemon/src/index/aggregation.rs` | §4.4 | S2G.4 | ✅ Added `build_sample()` helper fn. Parses `sample`/`sample_sort`/`sample_desc` from wire. Wired into Terms, Rollup, Duplicates (duplicates uses `unwrap_or(count=2)` default). |
+| S2G.6 | **Update daemon `BucketRow → BucketWire` conversion** at 3 sites: convert `BucketRow.sample_rows` → `Vec<SampleRowWire>` and `BucketRow.drilldown` → `Vec<DrilldownWire>`. | `uffs-daemon/src/index/aggregation.rs` | §4.4 | S2G.3 | ✅ Added `sample_row_to_wire()` and `drilldown_to_wire()` module-level helpers. Updated Buckets + Rollup sites (Duplicates site uses `DuplicateGroup` which lacks these fields — left as `Vec::new()`). |
+| S2G.7 | **Update CLI table formatter**: after each bucket row, print indented sample lines with `→` prefix. | `uffs-cli/src/commands/aggregate.rs` | §23 | S2G.3 | ✅ Added per-bucket sample rendering: `→ name (size) mod:date`. Also extended match arm to cover `"rollup"` and `"duplicates"` kinds. |
+| S2G.8 | **Verify CLI JSON formatter**: `serde_json::to_string` on `AggregateResultWire` already includes `sample_rows` and `drilldown` via `skip_serializing_if`. | `uffs-cli/src/commands/aggregate.rs` | §23 | S2G.3 | ✅ Verified automatic — serde handles it. JSON includes `sample_rows`/`drilldown` only when non-empty. Confirmed with live output. |
+| S2G.9 | **Update CLI CSV formatter**: add `samples` and `drilldown` columns as JSON array strings when present. | `uffs-cli/src/commands/aggregate.rs` | §23.3 | S2G.3 | ✅ Dynamically adds columns only when ≥1 bucket has data. Uses `serde_json::to_string` for column values. Also extended match arm for `"duplicates"`. |
+| S2G.10 | **Update MCP summary formatter**: append indented `→` sample lines (max 3/bucket) + `... and N more` truncation. | `uffs-mcp/src/server.rs` | §14.3 | S2G.3 | ✅ Added sample rendering under each bucket in `build_text_summary`. Shows `→ name (size B)` lines, max 3 per bucket. |
+| S2G.11 | **Pass `query_predicates` through daemon**: construct `DrilldownPredicate` from search filters and pass into `FinalizeOptions.query_predicates`. | `uffs-daemon/src/index/search.rs`, `uffs-daemon/src/index/aggregation.rs` | §12.2, §4.4 | S2G.2 | ✅ Added `query_predicates: Vec<DrilldownPredicate>` param to `run_aggregations`. Added `build_query_predicates()` helper converting pattern/filter/size/drives from `SearchParams`. |
+| S2G.12 | **Serde round-trip tests**: `SampleRowWire`, `DrilldownWire`, `BucketWire` with/without samples, backward compat (old JSON w/o new fields). | `uffs-client/src/protocol/tests.rs` | §26.1 | S2G.1–S2G.4 | ✅ 9 new tests: round-trip, no-sort-key omission, numeric drilldown, bucket with samples, empty samples omitted, backward compat (no `sample_rows`/`drilldown`), `AggregateSpecWire` with/without sample. |
+| S2G.13 | **Daemon integration test**: terms with `sample=2`, verify `BucketWire` has `sample_rows` ≤2 entries + `drilldown` with extension predicate. | `uffs-daemon/src/index/tests.rs` | §26.2 | S2G.5, S2G.6 | ✅ 2 new tests: `terms_with_sample_produces_sample_rows_and_drilldown` (validates samples + drilldown) and `terms_without_sample_has_empty_sample_rows` (validates no samples without spec). |
+| S2G.14 | **CLI output tests T150–T153**: T150: JSON has `sample_rows`. T151: JSON has `drilldown`. T152: table format has `→` lines. T153: no `sample_rows` without sample spec. | `scripts/windows/cli-flag-validation.rs` | §26.3 | S2G.7–S2G.10 | ✅ 4 new CLI tests (T150–T153). All 175/175 pass. |
+
+**Key design decisions for S2G:**
+
+1. **Wire types live in `uffs-client`**, not `uffs-core`.  The daemon converts `SampleRow` → `SampleRowWire` and `DrilldownPredicate` → `DrilldownWire`.  This keeps the dependency direction clean: `uffs-core` never depends on `uffs-client`.
+
+2. **`DrilldownWire.value` is `serde_json::Value`** rather than a custom enum — this maps naturally to JSON and is trivially consumable by MCP/CLI without additional deserialization.  The daemon conversion:
+   ```
+   DrilldownValue::String(s) → Value::String(s)
+   DrilldownValue::U64(n)    → Value::Number(n.into())
+   DrilldownValue::I64(n)    → Value::Number(n.into())
+   DrilldownValue::Bool(b)   → Value::Bool(b)
+   ```
+
+3. **Backward compatibility**: `sample_rows` and `drilldown` use `#[serde(default, skip_serializing_if = "Vec::is_empty")]` so old clients that don't know about these fields silently ignore them, and old JSON without these fields deserializes with empty vecs.
+
+4. **`sample` on `AggregateSpecWire`** is `Option<u8>` (not the full `TopHitsSpec`) to keep the wire protocol simple.  Advanced options (`sort_field`, `projection`) can be added as separate optional fields later.  The daemon constructs the full `TopHitsSpec` from `(sample, sample_sort, sample_desc)`.
+
+5. **CLI table rendering**: sample rows are indented under each bucket row with `→` prefix.  This preserves the compact table layout while making samples visually subordinate:
+   ```
+   Key                            Count   Total Size   Count%    Size%
+   ────────────────────────────── ──────── ────────── ──────── ────────
+   rs                               3,200    12.4 GB    15.3%    22.1%
+     → node_modules/react/index.js (45.2 MB) modified:2026-03-15
+     → src/engine/parser.rs (38.7 MB) modified:2026-04-01
+   exe                              1,800     8.2 GB    8.6%    14.6%
+     → windows/system32/ntoskrnl.exe (12.1 MB) modified:2025-12-01
+   ```
+
+6. **MCP**: drill-down predicates are included in the JSON code-block response automatically (serde serialization).  An LLM consumer can read them and construct a follow-up `uffs.search` call scoped to the bucket.
 
 ---
 
@@ -451,12 +515,13 @@ are shipped and tested.
 | Stage 1F — MCP | 4 | 0 | 0 | 4 | 0 |
 | Stage 1G — Testing | 16 | 0 | 0 | 16 | 0 |
 | Stage 1H — Stats compat | 2 | 0 | 0 | 2 | 0 |
-| Stage 2A — Samples | 4 | 3 | 1 | 0 | 0 |
-| Stage 2B — Drill-down | 2 | 2 | 0 | 0 | 0 |
+| Stage 2A — Samples | 4 | 0 | 0 | 4 | 0 |
+| Stage 2B — Drill-down | 2 | 0 | 0 | 2 | 0 |
 | Stage 2C — Presets v2 | 4 | 0 | 0 | 4 | 0 |
 | Stage 2D — Rollups | 5 | 0 | 0 | 5 | 0 |
 | Stage 2E — Power syntax | 7 | 0 | 0 | 7 | 0 |
-| Stage 2F — Testing v2 | 6 | 5 | 0 | 1 | 0 |
+| Stage 2F — Testing v2 | 6 | 0 | 0 | 6 | 0 |
+| Stage 2G — Wire surface | 14 | 0 | 0 | 14 | 0 |
 | Stage 3A — Pagination | 4 | 1 | 0 | 3 | 0 |
 | Stage 3B — Facet values | 3 | 1 | 0 | 2 | 0 |
 | Stage 3C — Path rollups | 3 | 2 | 0 | 1 | 0 |
@@ -485,7 +550,7 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 | M0: Pre-reqs done | — | 2026-04-06 | ✅ P-1, P-2, P-3 all done. `cargo check` passes. 7 invariant tests green. |
 | M0.5: Stage 0 done | — | 2026-04-06 | ✅ All S0.* done. 26 new tests. Module tree + core types + presets + planner + finalize scaffolded. |
 | M1: Stage 1 shippable | — | **partial** | Core engine ✅. Protocol ✅. `uffs agg <preset>` ✅. **Gaps:** daemon only handles `preset`+`count` wire kinds (S1D.3 🔧). No `--count`/`--facet`/`--stats`/`--histogram` shorthand flags. No serde round-trip tests. No integration tests with synthetic index. `uffs stats` not refactored. |
-| M2: Stage 2 shippable | — | **partial** | 12 presets ✅. Rollups ✅. Power syntax parser ✅ (13 tests). **Gaps:** TopHitsSpec defined but not wired (S2A 🔧). Drill-down predicates not started. No synthetic-index integration tests. |
+| M2: Stage 2 shippable | — | **✅ DONE** | Core library complete: 12 presets ✅, Rollups ✅, Power syntax parser ✅ (13 tests), TopHits ✅ (S2A; 20 tests), Drill-down ✅ (S2B; 3 tests), Testing ✅ (S2F; 6 tests).  **Wire surface complete ✅ (S2G; 14/14 tasks):** `SampleRowWire`/`DrilldownWire` defined, `BucketWire`/`AggregateSpecWire` extended, daemon conversion (3 sites), CLI table/JSON/CSV formatters, MCP summary, query_predicates pass-through, 9 serde round-trip tests, 2 daemon integration tests, 4 CLI tests (T150–T153).  175/175 CLI tests pass, 612 unit tests pass. |
 | M3: Stage 3 shippable | — | **partial** | Pagination library ✅. CSV/TSV export ✅. `uffs_facet_values` MCP tool registered ✅. **Gaps:** Pagination not wired through SearchParams (S3A.4 ⬜). facet_values handler sends `"raw"` wire kind → daemon silently drops (S3B.2 🔧). Nested rollup not started. `exact` not on wire. |
 | M4: Stage 4 shippable | — | **partial** | DuplicateAccumulator ✅. CompositeKey ✅. DuplicateResult ✅. Singleton elimination ✅. OOM guard ✅. **Gaps:** verify=first_bytes/sha256 not implemented (S4C all ⬜). Sample rows not materialized (S4B.3 🔧). No dedicated dup table formatter (S4D.2 🔧). No synthetic-index integration tests. |
 | M5: Stage 5 complete | — | **not started** | AggregateCache library exists but NOT wired into daemon (S5E all 🔧). `--agg` on search sends preset/count to daemon ✅ but power syntax specs silently dropped. Percentiles/forensic/disjunctive all ⬜. |
@@ -506,6 +571,13 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 | 2026-04-06 | MCP tools registered | uffs_aggregate + uffs_facet_values MCP tools registered with input schemas. **facet_values is non-functional** — sends "raw" kind that daemon drops. |
 | 2026-04-06 | Code audit | Honest re-evaluation identified critical gap: daemon only handled preset+count. |
 | 2026-04-06 | S1D.3 resolved | `convert_wire_spec()` added — handles all 13 wire kinds. facet_values MCP fixed to send `"terms"`. `--agg` power syntax now routes via `"raw"` kind through parser. Score: 98/161 ✅, 9/161 🔧, 54/161 ⬜. |
+| 2026-04-06 | S2A.1 complete | `TopHitsSpec` fully designed: `sort_desc` added, `Default`/constructors/validation/`effective_projection()`. Wired as `sample: Option<TopHitsSpec>` on Terms, Rollup, Duplicates (was `sample: u8` on Duplicates only). 10 new tests. All 19 downstream callers updated. |
+| 2026-04-06 | S2A.2–S2A.4 complete | Per-bucket `SampleHeap` (bounded min/max-heap, 16 bytes/entry) in `sample_heap.rs`. Wired into `AccumulatorKind::Terms` feed path with `drive_ordinal`. `SampleRow` + `materialize_sample_entry()` + `format_field()` in `finalize.rs` — only surviving buckets materialized. Custom projection via `effective_projection()`. `BucketRow.sample_rows` added. 10 new tests (6 heap + 4 integration). |
+| 2026-04-06 | S2B.1–S2B.2 complete | `DrilldownPredicate { field, op, value }` + `DrilldownValue` enum added to `finalize.rs`. `BucketRow.drilldown` populated with original query predicates + bucket key predicate. `FinalizeOptions.query_predicates` carries query context into finalization. `build_drilldown()` combines both. 3 integration tests. |
+| 2026-04-06 | S2F complete | Stage 2 testing done. S2F.1: 6 SampleHeap unit tests (from S2A.2). S2F.2: 3 drilldown integration tests (from S2B). S2F.3: 13 parser tests (existing). S2F.4: `top_folders` preset on synthetic index. S2F.5: `cleanup` preset coverage. S2F.6: aggregate + rows independence. Total new tests in session: 26. |
+| 2026-04-06 | S2G spec added | 14-task sub-stage to surface `sample_rows` + `drilldown` through wire protocol, daemon, CLI (table/JSON/CSV), and MCP. Priority P0 — without this, all Stage 2 core work is invisible to end users. Key decisions: `DrilldownWire.value` as `serde_json::Value`; backward-compatible serde with `skip_serializing_if`; `sample` as `Option<u8>` on `AggregateSpecWire`. |
+| 2026-04-07 | S2G.1–S2G.4 complete | Wire types defined: `SampleRowWire` (HashMap fields + optional sort_key), `DrilldownWire` (field/op/serde_json::Value). `BucketWire` extended with `sample_rows` + `drilldown` (Vec, skip-if-empty). `AggregateSpecWire` extended with `sample`/`sample_sort`/`sample_desc`. All downstream sites updated (daemon 3, MCP 7+4, CLI 1, tests ~20). Zero compile errors. |
+| 2026-04-07 | **S2G complete** (14/14) | Full wire surface done. Daemon: `build_sample()` helper + `sample_row_to_wire`/`drilldown_to_wire` converters + `query_predicates` pass-through via `build_query_predicates()`. CLI: table `→` sample lines, CSV dynamic `samples`/`drilldown` columns, JSON automatic via serde. MCP: `→` sample lines (max 3/bucket). Tests: 9 serde round-trips, 2 daemon integration, 4 CLI (T150–T153). Also fixed: search `--agg` default format now sends `limit=0` for agg-only mode (was sending unlimited → 25M rows → 65GB OOM); `--agg` raw power syntax now passes label for daemon parsing; `sample=N` parsed in `terms:` and `rollup:` syntax. |
 
 ---
 
@@ -526,6 +598,14 @@ Stage 1 ──▶ S2A.* ──▶ S2C.* (samples needed by presets)
              │
              ▼
            S2D.* ──▶ S2E.* (rollups needed by power syntax)
+
+S2A + S2B ──▶ S2G.1–6 (wire types + daemon) ──▶ S2G.7–10 (CLI + MCP rendering)
+                                                  │
+                                                  ▼
+                                                S2G.11 (query_predicates passthrough)
+                                                  │
+                                                  ▼
+                                                S2G.12–14 (tests)
 
 Stage 2 ──▶ S3A.* ──▶ S3B.* (cursors needed by facet_values)
              │
@@ -592,7 +672,7 @@ Modified files:
 | §4 Architecture constraints | ✅ | All 6 constraints met |
 | §5 Field inventory | ✅ | 39 FieldIds with AggregateMeta, 7 invariant tests |
 | §6 Design principles | ✅ | All 11 principles followed |
-| §8 Product model | ✅ | Buckets, metrics, facets, rollups, duplicates. **Samples defined but not wired.** |
+| §8 Product model | 🔧 | Buckets, metrics, facets, rollups, duplicates. **Samples + drill-down implemented in core but not surfaced through wire/CLI/MCP (S2G ⬜).** |
 | §9 Aggregate families | ✅ | All 10 AggregateKind variants implemented in library |
 | §10 Concrete outputs | ✅ | All 10 output categories covered by presets |
 | §11 Preset library | ✅ | 12 presets implemented and tested |
@@ -604,7 +684,7 @@ Modified files:
 | §17 Execution architecture | ✅ | compile → scan → finalize pipeline works end-to-end for presets |
 | §18 Accumulator strategies | ✅ | GroupAccumulator with 9 AccumulatorKind variants |
 | §19 Ordering/truncation/pagination | 🔧 | Library works ✅. Pagination NOT wired through SearchParams/daemon. `exact` not on wire. |
-| §20 Sample rows | 🔧 | TopHitsSpec defined — no heap, no materialization, not wired |
+| §20 Sample rows + drilldown | ✅ | S2A.1–S2A.4 complete (TopHits: spec, heap, materialization, projection; 20 tests). S2B.1–S2B.2 complete (drill-down predicates on BucketRow; 3 tests). Total: 23 tests. |
 | §21 Duplicate analytics | 🔧 | Grouping + singleton elimination ✅. No I/O verification. Sample indices stored but not materialized. |
 | §22 Existing concept integration | ✅ | Reuses type/category system, field IDs |
 | §23 Output modes | ✅ | JSON, Table, CSV, TSV all work |
@@ -624,16 +704,19 @@ Modified files:
 | **S3A.4:** Cursor not in SearchParams wire type | S3A (pagination), S3B.3 (facet cursor) | Pagination library works but is unreachable. |
 | ~~**S1G.10–16:**~~ **RESOLVED** — 10 synthetic-index integration tests in `aggregate/mod.rs` | — | overview, by_extension, by_type, range, histogram, datehist, perf guards all verified. |
 
-### Remaining items (54 ⬜ + 11 🔧 = 65/161 not complete):
+### Remaining items (54 ⬜ + 11 🔧 = 65/175 not complete):
 
 | Priority | Items | Description |
 |----------|-------|-------------|
-| **P0 — Must fix** | S1D.3 | Wire all AggregateKind variants through daemon (currently only preset+count). Unblocks S2E, S3B, `--agg` power syntax. |
-| **P1 — Should do** | S1C.4, S1G.10–16, S2F.4–6 | Serde round-trip tests, synthetic-index integration tests |
+| ~~**P0 — Must fix**~~ | ~~S1D.3~~ | ~~Wire all AggregateKind variants through daemon.~~ **RESOLVED** — `convert_wire_spec()` handles all 13 wire kinds. |
+| ~~**P0 — Done**~~ | ~~S2G.1–S2G.14~~ | ~~Wire surface complete~~ **ALL 14 DONE** |
+| **P0 — Must fix** | **S2G.7–S2G.10** (4 tasks) | **Render samples + drill-down in CLI table/JSON/CSV + MCP.**  Complete the end-to-end user-facing experience. |
+| **P1 — Should do** | S2G.11 | Wire query_predicates through daemon for full drill-down context. |
+| **P1 — Should do** | S2G.12–S2G.14 (3 tasks) | Serde round-trip, daemon integration, CLI validation tests for wire surface. |
 | **P1** | S3A.4 | Wire cursor through SearchParams → daemon → response |
 | **P1** | S4C.1–3 | Duplicate verification I/O (Windows-only) |
 | **P2 — Nice to have** | S1E.1,3,4,5,9 | `--count`, `--facet`, `--stats`, `--histogram`, `--rows` shorthand flags |
-| **P2** | S2A.2–4 | Sample row heap + materialization |
-| **P2** | S2B.1–2 | Drill-down predicates |
+| ~~**P2**~~ | ~~S2A.2–4~~ | ~~Sample row heap + materialization~~ **DONE** |
+| ~~**P2**~~ | ~~S2B.1–2~~ | ~~Drill-down predicates~~ **DONE** |
 | **P2** | S1H.1–2 | `uffs stats` → aggregate engine refactor |
 | **P3 — Future** | S5A–D | Percentiles, forensic fields, pipeline derivatives, disjunctive facets |

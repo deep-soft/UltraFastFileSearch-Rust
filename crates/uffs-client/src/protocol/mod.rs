@@ -498,6 +498,16 @@ pub struct AggregateSpecWire {
     /// Preset name (when `kind` is `"preset"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
+    /// Number of sample rows (top-hits) to attach per bucket.
+    /// `None` or absent means no samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<u8>,
+    /// Sort field for sample rows (e.g. `"size"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_sort: Option<String>,
+    /// Sort direction for sample rows.  `true` = descending (largest first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_desc: Option<bool>,
 }
 
 /// Wire format for an aggregate result.
@@ -568,4 +578,44 @@ pub struct BucketWire {
     /// Share of total bytes (percentage).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub share_bytes: Option<f64>,
+    /// Sample rows (top-hits) — representative records from this bucket.
+    /// Empty when no `sample` was requested in the spec.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sample_rows: Vec<SampleRowWire>,
+    /// Drill-down predicates for re-querying this bucket's records.
+    /// Includes both the original query predicates and the bucket key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drilldown: Vec<DrilldownWire>,
+}
+
+/// Wire format for a sample row (top-hit) within a bucket.
+///
+/// Each entry represents one record from the bucket, projected onto a
+/// set of display fields (e.g. `name`, `size`, `modified`).  The daemon
+/// populates this from [`uffs_core::aggregate::SampleRow`] during
+/// `BucketRow → BucketWire` conversion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SampleRowWire {
+    /// Projected fields as key-value pairs (e.g. `"name" → "foo.rs"`).
+    pub fields: std::collections::HashMap<String, String>,
+    /// Sort key used for ordering (e.g. file size).  Absent when the
+    /// sample was collected without an explicit sort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_key: Option<i64>,
+}
+
+/// Wire format for a drill-down predicate.
+///
+/// A client can re-issue a row-level search using the predicates
+/// attached to a bucket to retrieve the records behind it.  The
+/// `value` is a [`serde_json::Value`] so it naturally maps to JSON
+/// without an extra enum on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DrilldownWire {
+    /// Canonical field name (e.g. `"extension"`, `"drive"`, `"type"`).
+    pub field: String,
+    /// Comparison operator (e.g. `"eq"`, `"gte"`, `"in"`).
+    pub op: String,
+    /// Predicate value — string, number, or boolean.
+    pub value: serde_json::Value,
 }

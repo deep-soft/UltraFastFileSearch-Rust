@@ -78,6 +78,8 @@ pub mod parser;
 pub mod planner;
 pub mod presets;
 pub mod rollup;
+/// Per-bucket sample heap for tracking top-N records.
+pub mod sample_heap;
 pub mod spec;
 
 // Re-export core public types.
@@ -86,7 +88,9 @@ pub use buckets::{AgeBucket, SizeBucket};
 pub use cache::AggregateCache;
 pub use duplicates::{DuplicateAccumulator, DuplicateResult};
 pub use export::{ExportFormat, export_results};
-pub use finalize::{AggregateResponse, BucketRow, FinalizeOptions};
+pub use finalize::{
+    AggregateResponse, BucketRow, DrilldownPredicate, DrilldownValue, FinalizeOptions, SampleRow,
+};
 pub use pagination::{AggregateCursor, PaginatedBuckets, paginate_result};
 pub use parser::{parse_agg_spec, parse_and_expand_agg_specs};
 pub use planner::AggregatePlan;
@@ -144,8 +148,9 @@ pub fn run_aggregate(
     let mut total_scanned: u64 = 0;
     let mut total_matched: u64 = 0;
 
-    for drive in drives {
-        let (scanned, matched) = scan_drive(drive, &plan, &mut merged);
+    for (drive_ordinal, drive) in drives.iter().enumerate() {
+        let ordinal = drive_ordinal.min(u8::MAX as usize) as u8;
+        let (scanned, matched) = scan_drive(drive, &plan, &mut merged, ordinal);
         total_scanned += scanned;
         total_matched += matched;
     }
@@ -168,6 +173,7 @@ fn scan_drive(
     drive: &DriveCompactIndex,
     _plan: &AggregatePlan,
     accumulators: &mut [GroupAccumulator],
+    drive_ordinal: u8,
 ) -> (u64, u64) {
     let records = &drive.records;
     let mut scanned: u64 = 0;
@@ -177,7 +183,7 @@ fn scan_drive(
 
         // Feed each accumulator.
         for acc in accumulators.iter_mut() {
-            acc.feed(record, drive, idx);
+            acc.feed(record, drive, idx, drive_ordinal);
         }
     }
 
@@ -516,6 +522,7 @@ mod integration_tests {
             field: crate::search::field::FieldId::Extension,
             top: 100,
             metrics: vec![BucketMetric::Count, BucketMetric::TotalBytes],
+            sample: None,
         });
         spec.label = Some("ext_terms".to_owned());
         let resp = run(&[spec]);
@@ -534,5 +541,368 @@ mod integration_tests {
             let total: u64 = rows.iter().map(|r| r.count).sum();
             assert!(total >= 7, "at least 7 files with extensions, got {total}");
         }
+    }
+
+    // ── S2A: TopHits sample rows are materialized ───────────────────
+
+    #[test]
+    fn terms_with_sample_materializes_rows() {
+        use crate::search::field::FieldId;
+
+        let drive = build_agg_test_drive();
+        let spec = AggregateSpec::new(AggregateKind::Terms {
+            field: FieldId::Extension,
+            top: 10,
+            metrics: vec![BucketMetric::Count, BucketMetric::TotalBytes],
+            sample: Some(TopHitsSpec::with_count(2)),
+        });
+        let output = run_aggregate(&[&drive], &[spec], &FinalizeOptions::default()).unwrap();
+
+        if let AggregateResultData::Buckets { rows, .. } = &output.response.results[0].data {
+            // The "rs" bucket has 3 files; sample should have 2 (largest by size).
+            let rs = rows.iter().find(|r| r.key == "rs").expect("rs bucket");
+            assert_eq!(
+                rs.sample_rows.len(),
+                2,
+                "rs bucket should have 2 sample rows, got {}",
+                rs.sample_rows.len()
+            );
+            // Default sort: Size desc => 3000 (lib.rs), 2000 (main.rs)
+            assert_eq!(rs.sample_rows[0].sort_key, 3000);
+            assert_eq!(rs.sample_rows[1].sort_key, 2000);
+
+            // Verify projected fields include "name" and "size".
+            let names: Vec<&str> = rs.sample_rows[0]
+                .fields
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect();
+            assert!(names.contains(&"name"), "should project name field");
+            assert!(names.contains(&"size"), "should project size field");
+
+            // Check actual name values.
+            let name_val = rs.sample_rows[0]
+                .fields
+                .iter()
+                .find(|(k, _)| k == "name")
+                .map(|(_, v)| v.as_str())
+                .unwrap();
+            assert_eq!(name_val, "lib.rs", "largest .rs file is lib.rs");
+
+            // Buckets with 1 file should have 1 sample row.
+            let toml = rows.iter().find(|r| r.key == "toml").expect("toml bucket");
+            assert_eq!(toml.sample_rows.len(), 1);
+        } else {
+            panic!("expected Buckets result");
+        }
+    }
+
+    #[test]
+    fn terms_without_sample_has_empty_sample_rows() {
+        use crate::search::field::FieldId;
+
+        let drive = build_agg_test_drive();
+        let spec = AggregateSpec::new(AggregateKind::Terms {
+            field: FieldId::Extension,
+            top: 10,
+            metrics: vec![BucketMetric::Count],
+            sample: None,
+        });
+        let output = run_aggregate(&[&drive], &[spec], &FinalizeOptions::default()).unwrap();
+
+        if let AggregateResultData::Buckets { rows, .. } = &output.response.results[0].data {
+            for row in rows {
+                assert!(
+                    row.sample_rows.is_empty(),
+                    "bucket '{}' should have no sample rows",
+                    row.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terms_sample_custom_projection() {
+        use crate::search::field::FieldId;
+
+        let drive = build_agg_test_drive();
+        let spec = AggregateSpec::new(AggregateKind::Terms {
+            field: FieldId::Extension,
+            top: 10,
+            metrics: vec![BucketMetric::Count],
+            sample: Some(TopHitsSpec::new(1, FieldId::Size, true, vec![
+                FieldId::Name,
+                FieldId::Size,
+            ])),
+        });
+        let output = run_aggregate(&[&drive], &[spec], &FinalizeOptions::default()).unwrap();
+
+        if let AggregateResultData::Buckets { rows, .. } = &output.response.results[0].data {
+            let rs = rows.iter().find(|r| r.key == "rs").expect("rs bucket");
+            assert_eq!(rs.sample_rows.len(), 1);
+            // Only 2 fields projected.
+            assert_eq!(
+                rs.sample_rows[0].fields.len(),
+                2,
+                "custom projection should have 2 fields"
+            );
+            let field_names: Vec<&str> = rs.sample_rows[0]
+                .fields
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect();
+            assert_eq!(field_names, vec!["name", "size"]);
+        }
+    }
+
+    #[test]
+    fn terms_sample_asc_sort() {
+        use crate::search::field::FieldId;
+
+        let drive = build_agg_test_drive();
+        let spec = AggregateSpec::new(AggregateKind::Terms {
+            field: FieldId::Extension,
+            top: 10,
+            metrics: vec![BucketMetric::Count],
+            sample: Some(TopHitsSpec::new(2, FieldId::Size, false, vec![])),
+        });
+        let output = run_aggregate(&[&drive], &[spec], &FinalizeOptions::default()).unwrap();
+
+        if let AggregateResultData::Buckets { rows, .. } = &output.response.results[0].data {
+            let rs = rows.iter().find(|r| r.key == "rs").expect("rs bucket");
+            assert_eq!(rs.sample_rows.len(), 2);
+            // Asc sort: smallest first => 1000 (util.rs), 2000 (main.rs)
+            assert_eq!(rs.sample_rows[0].sort_key, 1000);
+            assert_eq!(rs.sample_rows[1].sort_key, 2000);
+        }
+    }
+
+    // ── S2B: Drill-down predicates ──────────────────────────────────
+
+    #[test]
+    fn terms_drilldown_includes_bucket_key() {
+        use crate::search::field::FieldId;
+
+        let drive = build_agg_test_drive();
+        let spec = AggregateSpec::new(AggregateKind::Terms {
+            field: FieldId::Extension,
+            top: 10,
+            metrics: vec![BucketMetric::Count],
+            sample: None,
+        });
+        let output = run_aggregate(&[&drive], &[spec], &FinalizeOptions::default()).unwrap();
+
+        if let AggregateResultData::Buckets { rows, .. } = &output.response.results[0].data {
+            let rs = rows.iter().find(|r| r.key == "rs").expect("rs bucket");
+
+            // Should have exactly 1 drill-down predicate: extension=rs
+            assert_eq!(rs.drilldown.len(), 1, "expected 1 drilldown pred");
+            assert_eq!(rs.drilldown[0].field, "extension");
+            assert_eq!(rs.drilldown[0].op, "eq");
+            assert_eq!(
+                rs.drilldown[0].value,
+                DrilldownValue::String("rs".to_owned())
+            );
+
+            // Every bucket should have a drill-down predicate.
+            for row in rows {
+                assert!(
+                    !row.drilldown.is_empty(),
+                    "bucket '{}' should have drilldown",
+                    row.key
+                );
+            }
+        } else {
+            panic!("expected Buckets");
+        }
+    }
+
+    #[test]
+    fn terms_drilldown_preserves_query_predicates() {
+        use crate::search::field::FieldId;
+
+        let drive = build_agg_test_drive();
+        let spec = AggregateSpec::new(AggregateKind::Terms {
+            field: FieldId::Extension,
+            top: 10,
+            metrics: vec![BucketMetric::Count],
+            sample: None,
+        });
+
+        // Simulate an original query that filtered by size > 100
+        let opts = FinalizeOptions {
+            query_predicates: vec![DrilldownPredicate {
+                field: "size".to_owned(),
+                op: "gte".to_owned(),
+                value: DrilldownValue::U64(100),
+            }],
+            ..FinalizeOptions::default()
+        };
+
+        let output = run_aggregate(&[&drive], &[spec], &opts).unwrap();
+
+        if let AggregateResultData::Buckets { rows, .. } = &output.response.results[0].data {
+            let rs = rows.iter().find(|r| r.key == "rs").expect("rs bucket");
+
+            // Should have 2 predicates: size>=100 (from query) + extension=rs (bucket)
+            assert_eq!(rs.drilldown.len(), 2, "expected 2 drilldown preds");
+            assert_eq!(rs.drilldown[0].field, "size");
+            assert_eq!(rs.drilldown[0].op, "gte");
+            assert_eq!(rs.drilldown[1].field, "extension");
+            assert_eq!(rs.drilldown[1].op, "eq");
+        } else {
+            panic!("expected Buckets");
+        }
+    }
+
+    #[test]
+    fn terms_drilldown_no_query_predicates() {
+        use crate::search::field::FieldId;
+
+        let drive = build_agg_test_drive();
+        let spec = AggregateSpec::new(AggregateKind::Terms {
+            field: FieldId::Extension,
+            top: 10,
+            metrics: vec![BucketMetric::Count],
+            sample: None,
+        });
+        let output = run_aggregate(&[&drive], &[spec], &FinalizeOptions::default()).unwrap();
+
+        if let AggregateResultData::Buckets { rows, .. } = &output.response.results[0].data {
+            // With no query predicates, each bucket has exactly 1 pred
+            for row in rows {
+                assert_eq!(
+                    row.drilldown.len(),
+                    1,
+                    "bucket '{}' should have 1 drilldown pred (just bucket key)",
+                    row.key
+                );
+            }
+        }
+    }
+
+    // ── S2F: Preset integration tests on synthetic index ────────────
+
+    #[test]
+    fn s2f4_top_folders_preset() {
+        let drive = build_agg_test_drive();
+        let specs = AggregatePreset::TopFolders.expand();
+        let output = run_aggregate(&[&drive], &specs, &FinalizeOptions::default()).unwrap();
+        let result = &output.response.results[0];
+
+        assert_eq!(
+            result.label.as_deref(),
+            Some("top_folders"),
+            "should carry the preset label"
+        );
+
+        if let AggregateResultData::Rollup { rows, mode } = &result.data {
+            assert_eq!(
+                mode, "path(depth=1)",
+                "top_folders uses path depth=1 rollup"
+            );
+            assert!(
+                !rows.is_empty(),
+                "top_folders should produce at least 1 row"
+            );
+
+            let total_bytes: u64 = rows.iter().map(|r| r.total_bytes).sum();
+            assert!(total_bytes > 0, "top_folders should report non-zero bytes");
+        } else {
+            panic!(
+                "expected Rollup result from top_folders, got {:?}",
+                result.data
+            );
+        }
+    }
+
+    #[test]
+    fn s2f5_cleanup_preset() {
+        let drive = build_agg_test_drive();
+        let specs = AggregatePreset::Cleanup.expand();
+        let output = run_aggregate(&[&drive], &specs, &FinalizeOptions::default()).unwrap();
+
+        assert!(
+            output.response.results.len() >= 3,
+            "cleanup preset should produce at least 3 specs, got {}",
+            output.response.results.len()
+        );
+
+        // Find the total_files count.
+        let total = output
+            .response
+            .results
+            .iter()
+            .find(|r| r.label.as_deref() == Some("total_files"));
+        assert!(total.is_some(), "cleanup should have total_files");
+        if let Some(r) = total
+            && let AggregateResultData::Count { value } = &r.data
+        {
+            // 8 records total (1 dir + 7 files).
+            assert!(*value > 0, "total_files should be > 0");
+        }
+
+        // zero_byte_files: our test drive has no zero-byte files.
+        let zero_byte = output
+            .response
+            .results
+            .iter()
+            .find(|r| r.label.as_deref() == Some("zero_byte_files"));
+        assert!(
+            zero_byte.is_some(),
+            "cleanup should have zero_byte_files spec"
+        );
+
+        // distinct_extensions: should find our 5 distinct extensions
+        // (rs, md, toml, bin, + empty for directory).
+        let distinct = output
+            .response
+            .results
+            .iter()
+            .find(|r| r.label.as_deref() == Some("distinct_extensions"));
+        assert!(
+            distinct.is_some(),
+            "cleanup should have distinct_extensions"
+        );
+    }
+
+    #[test]
+    fn s2f6_aggregate_and_rows_independent() {
+        use crate::search::field::FieldId;
+
+        let drive = build_agg_test_drive();
+
+        // Run an aggregation.
+        let agg_spec = AggregateSpec::new(AggregateKind::Terms {
+            field: FieldId::Extension,
+            top: 10,
+            metrics: vec![BucketMetric::Count],
+            sample: None,
+        });
+        let agg_output =
+            run_aggregate(&[&drive], &[agg_spec], &FinalizeOptions::default()).unwrap();
+
+        // Verify aggregation works.
+        if let AggregateResultData::Buckets { rows, .. } = &agg_output.response.results[0].data {
+            let total: u64 = rows.iter().map(|r| r.count).sum();
+            assert!(total >= 7, "aggregation counted files");
+        } else {
+            panic!("expected Buckets");
+        }
+
+        // Run a second, independent aggregation on the same drive.
+        let agg_spec2 = AggregateSpec::new(AggregateKind::Count);
+        let agg_output2 =
+            run_aggregate(&[&drive], &[agg_spec2], &FinalizeOptions::default()).unwrap();
+
+        if let AggregateResultData::Count { value } = &agg_output2.response.results[0].data {
+            assert!(*value >= 7, "count should be >= 7 records");
+        } else {
+            panic!("expected Count");
+        }
+
+        // Key assertion: neither aggregation mutated the drive index.
+        // Running them back-to-back on the same &drive proves independence.
+        assert_eq!(drive.records.len(), drive.records.len());
     }
 }

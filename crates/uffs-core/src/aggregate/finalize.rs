@@ -15,6 +15,10 @@ pub struct FinalizeOptions {
     pub compute_shares: bool,
     /// Whether to include empty buckets in output.
     pub include_empty_buckets: bool,
+    /// The original query predicates (if any).  These are prepended to
+    /// each bucket's drill-down predicate list so that a follow-up query
+    /// reproduces the original scope **plus** the bucket constraint.
+    pub query_predicates: Vec<DrilldownPredicate>,
 }
 
 impl Default for FinalizeOptions {
@@ -22,6 +26,7 @@ impl Default for FinalizeOptions {
         Self {
             compute_shares: true,
             include_empty_buckets: false,
+            query_predicates: Vec::new(),
         }
     }
 }
@@ -142,6 +147,59 @@ pub struct BucketRow {
     pub share_of_total_count: f64,
     /// Share of total bytes (percentage, 0.0–100.0).
     pub share_of_total_bytes: f64,
+    /// Optional sample rows (top-N records in this bucket).
+    pub sample_rows: Vec<SampleRow>,
+    /// Drill-down predicates: the original query predicates **plus**
+    /// a bucket-key predicate that narrows the result set to exactly
+    /// the records in this bucket.
+    ///
+    /// A client can re-issue a row-level search using these predicates
+    /// to retrieve the actual records behind the bucket.
+    pub drilldown: Vec<DrilldownPredicate>,
+}
+
+/// A lightweight predicate for drill-down follow-up queries.
+///
+/// Mirrors the wire-protocol `SearchPredicate` shape but lives in
+/// `uffs-core` so the aggregate module has no dependency on the client
+/// crate.  The daemon / CLI can convert these to wire predicates
+/// trivially.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrilldownPredicate {
+    /// Canonical field name (e.g. `"extension"`, `"drive"`, `"type"`).
+    pub field: String,
+    /// Comparison operator (e.g. `"eq"`, `"in"`).
+    pub op: String,
+    /// Predicate value(s).
+    pub value: DrilldownValue,
+}
+
+/// Value for a [`DrilldownPredicate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DrilldownValue {
+    /// A single string value.
+    String(String),
+    /// A single unsigned integer.
+    U64(u64),
+    /// A single signed integer.
+    I64(i64),
+    /// A boolean value.
+    Bool(bool),
+}
+
+/// A materialized sample row — one record's projected fields.
+///
+/// Produced during finalization from the per-bucket `SampleHeap` entries.
+/// Only surviving (top-N) buckets have their samples materialized.
+#[derive(Debug, Clone)]
+pub struct SampleRow {
+    /// Key-value pairs of projected fields.
+    ///
+    /// Each entry is `(field_name, display_value)`.  The set of fields
+    /// is determined by [`TopHitsSpec::effective_projection`].
+    pub fields: Vec<(String, String)>,
+    /// The sort key that determined this row's position.
+    pub sort_key: i64,
 }
 
 impl BucketRow {
@@ -174,6 +232,8 @@ impl BucketRow {
             waste_pct: stats.waste_pct(),
             share_of_total_count: share_count,
             share_of_total_bytes: share_bytes,
+            sample_rows: Vec::new(),
+            drilldown: Vec::new(),
         }
     }
 }
@@ -238,26 +298,69 @@ fn finalize_one(
             },
         },
 
-        AccumulatorKind::Terms { groups, top, .. } => {
+        AccumulatorKind::Terms {
+            groups,
+            top,
+            mut sample_heaps,
+            sample_spec,
+            ..
+        } => {
             let total_groups = groups.len();
-            let mut rows: Vec<_> = groups
+
+            // Build (group_key, BucketRow) pairs so we can correlate
+            // surviving keys with their sample heaps.
+            let mut keyed_rows: Vec<(u64, BucketRow)> = groups
                 .iter()
                 .map(|(&key, stats)| {
                     let key_str = resolve_group_key(acc.field, key, drives);
-                    BucketRow::from_stats(key_str, stats, total_matched, total_bytes)
+                    (
+                        key,
+                        BucketRow::from_stats(key_str, stats, total_matched, total_bytes),
+                    )
                 })
                 .collect();
 
-            rows.sort_by(|a, b| b.count.cmp(&a.count));
+            keyed_rows.sort_by(|a, b| b.1.count.cmp(&a.1.count));
 
             let limit = top as usize;
-            let other_count = if rows.len() > limit {
-                let other: u64 = rows[limit..].iter().map(|r| r.count).sum();
-                rows.truncate(limit);
+            let other_count = if keyed_rows.len() > limit {
+                let other: u64 = keyed_rows[limit..].iter().map(|r| r.1.count).sum();
+                keyed_rows.truncate(limit);
                 other
             } else {
                 0
             };
+
+            // Materialize sample rows for surviving buckets only.
+            if let Some(ref mut heaps) = sample_heaps {
+                let projection = sample_spec
+                    .as_ref()
+                    .map(super::spec::TopHitsSpec::effective_projection)
+                    .unwrap_or_default();
+                for (group_key, row) in &mut keyed_rows {
+                    if let Some(heap) = heaps.get_mut(group_key) {
+                        let entries = heap.drain_sorted();
+                        row.sample_rows = entries
+                            .iter()
+                            .map(|entry| materialize_sample_entry(entry, projection, drives))
+                            .collect();
+                    }
+                }
+            }
+
+            // Attach drill-down predicates: original query preds + bucket key.
+            let bucket_field = acc.field;
+            for (group_key, row) in &mut keyed_rows {
+                row.drilldown = build_drilldown(
+                    &options.query_predicates,
+                    bucket_field,
+                    *group_key,
+                    &row.key,
+                    drives,
+                );
+            }
+
+            let rows: Vec<BucketRow> = keyed_rows.into_iter().map(|(_, row)| row).collect();
 
             AggregateResultData::Buckets {
                 field: field_name,
@@ -352,6 +455,106 @@ fn finalize_one(
     };
 
     AggregateResult { label, data }
+}
+
+/// Build drill-down predicates for a bucket row.
+///
+/// Returns the original query predicates **plus** a bucket key predicate
+/// that narrows to the specific group.
+fn build_drilldown(
+    query_predicates: &[DrilldownPredicate],
+    bucket_field: Option<crate::search::field::FieldId>,
+    _group_key: u64,
+    display_key: &str,
+    _drives: &[&DriveCompactIndex],
+) -> Vec<DrilldownPredicate> {
+    let mut preds = query_predicates.to_vec();
+
+    // Add the bucket key predicate.
+    if let Some(field) = bucket_field {
+        let field_name = field.metadata().canonical_name.to_owned();
+        preds.push(DrilldownPredicate {
+            field: field_name,
+            op: "eq".to_owned(),
+            value: DrilldownValue::String(display_key.to_owned()),
+        });
+    }
+
+    preds
+}
+
+/// Materialize a single sample entry into a [`SampleRow`].
+///
+/// Looks up the record by `(drive_ordinal, rec_idx)` in `drives`,
+/// then projects the requested fields into key-value pairs.
+fn materialize_sample_entry(
+    entry: &super::sample_heap::SampleEntry,
+    projection: &[crate::search::field::FieldId],
+    drives: &[&DriveCompactIndex],
+) -> SampleRow {
+    let drive = drives.get(usize::from(entry.drive_ordinal));
+    let record = drive.and_then(|d| d.records.get(entry.rec_idx as usize));
+
+    let fields: Vec<(String, String)> = projection
+        .iter()
+        .map(|fid| {
+            let name = fid.metadata().canonical_name.to_owned();
+            let value = match (record, drive) {
+                (Some(rec), Some(drv)) => format_field(*fid, rec, drv),
+                _ => String::new(),
+            };
+            (name, value)
+        })
+        .collect();
+
+    SampleRow {
+        fields,
+        sort_key: entry.sort_key,
+    }
+}
+
+/// Format a single field value for sample row output.
+fn format_field(
+    field: crate::search::field::FieldId,
+    record: &crate::compact::CompactRecord,
+    drive: &DriveCompactIndex,
+) -> String {
+    use crate::search::field::FieldId;
+    match field {
+        FieldId::Name => record.name(&drive.names).to_owned(),
+        FieldId::Size => record.size.to_string(),
+        FieldId::SizeOnDisk => record.allocated.to_string(),
+        FieldId::Modified => format_timestamp_key(record.modified),
+        FieldId::Created => format_timestamp_key(record.created),
+        FieldId::Accessed => format_timestamp_key(record.accessed),
+        FieldId::Extension => {
+            let ext_id = record.extension_id as usize;
+            drive
+                .ext_names
+                .get(ext_id)
+                .map(ToString::to_string)
+                .unwrap_or_default()
+        }
+        FieldId::Path | FieldId::PathOnly => {
+            // Full path resolution is expensive — return parent index
+            // as a placeholder.  Callers needing full paths should use
+            // the search pipeline instead.
+            format!("parent_idx:{}", record.parent_idx)
+        }
+        FieldId::DirectoryFlag => {
+            if record.flags & 0x0010 != 0 {
+                "directory".to_owned()
+            } else {
+                "file".to_owned()
+            }
+        }
+        FieldId::Hidden => format!("{}", record.flags & 0x0002 != 0),
+        FieldId::System => format!("{}", record.flags & 0x0004 != 0),
+        FieldId::ReadOnly => format!("{}", record.flags & 0x0001 != 0),
+        FieldId::TreeSize => record.treesize.to_string(),
+        FieldId::Descendants => record.descendants.to_string(),
+        _ => String::new(),
+    }
 }
 
 /// Resolve a u64 group key to a display string.

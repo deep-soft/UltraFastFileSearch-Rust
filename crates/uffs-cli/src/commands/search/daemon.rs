@@ -352,7 +352,15 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         .unwrap_or_default();
 
     // limit=0 in CLI means unlimited → None for daemon.
-    let limit = (config.limit > 0).then_some(config.limit);
+    // Exception: when running aggregate-only (--agg without --rows),
+    // we don't need rows at all, so set limit=0 to avoid the daemon
+    // building and transmitting millions of rows we'd discard anyway.
+    let agg_only = !config.agg_specs.is_empty() && !config.force_rows;
+    let limit = if agg_only {
+        Some(0)
+    } else {
+        (config.limit > 0).then_some(config.limit)
+    };
     let filter_mode = if config.files_only {
         Some(SearchFilterMode::Files)
     } else if config.dirs_only {
@@ -424,25 +432,34 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         aggregations: config
             .agg_specs
             .iter()
-            .map(|spec| uffs_client::protocol::AggregateSpecWire {
-                kind: if spec == "count" {
-                    "count".to_owned()
-                } else if uffs_core::aggregate::presets::AggregatePreset::parse(spec).is_some() {
-                    "preset".to_owned()
-                } else {
-                    // Raw power syntax → just pass through as "raw" kind
-                    "raw".to_owned()
-                },
-                label: None,
-                field: None,
-                top: None,
-                interval: None,
-                calendar: None,
-                boundaries: vec![],
-                metrics: vec![],
-                preset: uffs_core::aggregate::presets::AggregatePreset::parse(spec)
-                    .is_some()
-                    .then(|| spec.clone()),
+            .map(|spec| {
+                let is_preset =
+                    uffs_core::aggregate::presets::AggregatePreset::parse(spec).is_some();
+                uffs_client::protocol::AggregateSpecWire {
+                    kind: if spec == "count" {
+                        "count".to_owned()
+                    } else if is_preset {
+                        "preset".to_owned()
+                    } else {
+                        // Raw power syntax → pass as "raw" kind with the
+                        // syntax string in the `label` field so the daemon
+                        // can parse it via `parse_agg_spec`.
+                        "raw".to_owned()
+                    },
+                    // For "raw" kind, the daemon expects the power
+                    // syntax string in the label field.
+                    label: (!is_preset && spec != "count").then(|| spec.clone()),
+                    field: None,
+                    top: None,
+                    interval: None,
+                    calendar: None,
+                    boundaries: vec![],
+                    metrics: vec![],
+                    preset: is_preset.then(|| spec.clone()),
+                    sample: None,
+                    sample_sort: None,
+                    sample_desc: None,
+                }
             })
             .collect(),
         include_rows: config.agg_specs.is_empty() || config.force_rows,

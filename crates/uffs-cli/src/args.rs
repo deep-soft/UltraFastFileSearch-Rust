@@ -654,6 +654,19 @@ pub enum DaemonAction {
         /// Skip the file cache and always re-parse MFT files.
         #[arg(long)]
         no_cache: bool,
+
+        /// Log level for the daemon process (e.g. `info`, `debug`, `trace`).
+        ///
+        /// Forwarded to the spawned daemon as `--log-level`.
+        #[arg(long, default_value = "info")]
+        log_level: String,
+
+        /// Write daemon logs to a file instead of discarding them.
+        ///
+        /// The spawned daemon runs detached with stdout → `/dev/null`, so
+        /// `--log-file` is the only way to persist tracing output.
+        #[arg(long, value_name = "PATH")]
+        log_file: Option<PathBuf>,
     },
     /// Show daemon status (running, loading, drives loaded, PID).
     Status,

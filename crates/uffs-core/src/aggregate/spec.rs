@@ -54,6 +54,8 @@ pub enum AggregateKind {
         top: u16,
         /// Metrics to compute per group (default: count + `total_bytes`).
         metrics: Vec<BucketMetric>,
+        /// Optional sample rows per bucket.
+        sample: Option<TopHitsSpec>,
     },
 
     /// Group records into fixed-size numeric buckets.
@@ -106,6 +108,8 @@ pub enum AggregateKind {
         top: u16,
         /// Metrics per group.
         metrics: Vec<BucketMetric>,
+        /// Optional sample rows per group.
+        sample: Option<TopHitsSpec>,
     },
 
     /// Duplicate candidate detection.
@@ -116,8 +120,8 @@ pub enum AggregateKind {
         verify: DuplicateVerify,
         /// Maximum duplicate groups to return.
         top: u16,
-        /// Sample rows per group.
-        sample: u8,
+        /// Sample rows per duplicate group.
+        sample: Option<TopHitsSpec>,
         /// Maximum groups to track (OOM guard).
         max_groups: u32,
     },
@@ -149,15 +153,125 @@ pub enum DuplicateVerify {
     Sha256,
 }
 
+/// Maximum allowed sample rows per bucket.
+const MAX_SAMPLE_COUNT: u8 = 5;
+
+/// Default sample projection: the fields returned for each sample row
+/// when the caller doesn't specify a custom projection.
+const DEFAULT_PROJECTION: &[FieldId] = &[
+    FieldId::Name,
+    FieldId::Size,
+    FieldId::Modified,
+    FieldId::Path,
+    FieldId::Type,
+    FieldId::Extension,
+];
+
 /// Specification for sample rows within a bucket.
+///
+/// Each bucketed aggregation (Terms, Rollup, Duplicates) can optionally
+/// carry a `TopHitsSpec` that tells the accumulator to track the top-N
+/// most interesting records per bucket.  During finalization, only the
+/// surviving buckets have their sample rows materialized (path resolved,
+/// fields projected).
+///
+/// # Defaults
+///
+/// | Field | Default |
+/// |-------|---------|
+/// | `count` | 2 |
+/// | `sort_field` | `Size` |
+/// | `sort_desc` | `true` (largest first) |
+/// | `projection` | name, size, modified, path, type, ext |
 #[derive(Debug, Clone)]
 pub struct TopHitsSpec {
-    /// Number of sample rows per bucket (1–5).
+    /// Number of sample rows per bucket (1–[`MAX_SAMPLE_COUNT`]).
     pub count: u8,
-    /// Sort sample rows by this field (descending).
+    /// Sort sample rows by this field.
     pub sort_field: FieldId,
-    /// Fields to include in sample row output.
+    /// Sort direction: `true` = descending (largest/newest first).
+    pub sort_desc: bool,
+    /// Fields to include in each sample row.
+    ///
+    /// When empty, [`DEFAULT_PROJECTION`] is used during finalization.
     pub projection: Vec<FieldId>,
+}
+
+impl Default for TopHitsSpec {
+    fn default() -> Self {
+        Self {
+            count: 2,
+            sort_field: FieldId::Size,
+            sort_desc: true,
+            projection: Vec::new(), // empty = use DEFAULT_PROJECTION
+        }
+    }
+}
+
+impl TopHitsSpec {
+    /// Create a spec with just a sample count (all other fields default).
+    ///
+    /// `count` is clamped to 1–[`MAX_SAMPLE_COUNT`].
+    #[must_use]
+    pub fn with_count(count: u8) -> Self {
+        Self {
+            count: count.clamp(1, MAX_SAMPLE_COUNT),
+            ..Self::default()
+        }
+    }
+
+    /// Create a fully specified `TopHitsSpec`.
+    ///
+    /// `count` is clamped to 1–[`MAX_SAMPLE_COUNT`].
+    #[must_use]
+    pub fn new(count: u8, sort_field: FieldId, sort_desc: bool, projection: Vec<FieldId>) -> Self {
+        Self {
+            count: count.clamp(1, MAX_SAMPLE_COUNT),
+            sort_field,
+            sort_desc,
+            projection,
+        }
+    }
+
+    /// Return the effective projection — custom if non-empty, otherwise
+    /// the default compact set.
+    #[must_use]
+    pub fn effective_projection(&self) -> &[FieldId] {
+        if self.projection.is_empty() {
+            DEFAULT_PROJECTION
+        } else {
+            &self.projection
+        }
+    }
+
+    /// Validate the spec against field metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with a human-readable message if the sort field is
+    /// not numeric/timestamp (i.e. cannot be meaningfully ordered), or if
+    /// `count` is zero.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.count == 0 {
+            return Err("TopHitsSpec count must be ≥ 1".to_owned());
+        }
+        if self.count > MAX_SAMPLE_COUNT {
+            return Err(format!(
+                "TopHitsSpec count {} exceeds maximum {}",
+                self.count, MAX_SAMPLE_COUNT
+            ));
+        }
+        // sort_field should be something orderable — we accept any field
+        // that the sort pipeline accepts (numeric, timestamp, boolean).
+        let meta = self.sort_field.metadata();
+        if !meta.sortable {
+            return Err(format!(
+                "TopHitsSpec sort_field {:?} is not sortable",
+                self.sort_field
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// A scalar metric computed over a set of records.
@@ -273,6 +387,7 @@ mod tests {
             field: FieldId::Extension,
             top: 50,
             metrics: vec![BucketMetric::Count, BucketMetric::TotalBytes],
+            sample: None,
         });
         if let AggregateKind::Terms { field, top, .. } = &spec.kind {
             assert_eq!(*field, FieldId::Extension);
@@ -376,5 +491,128 @@ mod tests {
             field: FieldId::Type,
         });
         assert!(matches!(distinct.kind, AggregateKind::Distinct { .. }));
+    }
+
+    // ── TopHitsSpec tests ────────────────────────────────────────
+
+    #[test]
+    fn top_hits_default() {
+        let spec = TopHitsSpec::default();
+        assert_eq!(spec.count, 2);
+        assert_eq!(spec.sort_field, FieldId::Size);
+        assert!(spec.sort_desc);
+        assert!(spec.projection.is_empty());
+    }
+
+    #[test]
+    fn top_hits_with_count_clamps() {
+        let zero = TopHitsSpec::with_count(0);
+        assert_eq!(zero.count, 1, "count=0 clamped to 1");
+
+        let huge = TopHitsSpec::with_count(99);
+        assert_eq!(huge.count, MAX_SAMPLE_COUNT, "count=99 clamped to MAX");
+
+        let normal = TopHitsSpec::with_count(3);
+        assert_eq!(normal.count, 3);
+    }
+
+    #[test]
+    fn top_hits_new_full() {
+        let spec = TopHitsSpec::new(4, FieldId::Modified, false, vec![
+            FieldId::Name,
+            FieldId::Size,
+        ]);
+        assert_eq!(spec.count, 4);
+        assert_eq!(spec.sort_field, FieldId::Modified);
+        assert!(!spec.sort_desc);
+        assert_eq!(spec.projection.len(), 2);
+    }
+
+    #[test]
+    fn top_hits_effective_projection_default() {
+        let spec = TopHitsSpec::default();
+        let proj = spec.effective_projection();
+        assert_eq!(proj, DEFAULT_PROJECTION);
+        assert!(proj.contains(&FieldId::Name));
+        assert!(proj.contains(&FieldId::Size));
+        assert!(proj.contains(&FieldId::Path));
+    }
+
+    #[test]
+    fn top_hits_effective_projection_custom() {
+        let spec = TopHitsSpec::new(1, FieldId::Size, true, vec![
+            FieldId::Name,
+            FieldId::Extension,
+        ]);
+        let proj = spec.effective_projection();
+        assert_eq!(proj.len(), 2);
+        assert_eq!(proj[0], FieldId::Name);
+        assert_eq!(proj[1], FieldId::Extension);
+    }
+
+    #[test]
+    fn top_hits_validate_ok() {
+        let spec = TopHitsSpec::default();
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn top_hits_validate_unsortable_field() {
+        let spec = TopHitsSpec::new(2, FieldId::Attributes, true, vec![]);
+        let result = spec.validate();
+        assert!(result.is_err(), "Attributes is not sortable");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("not sortable"), "error: {msg}");
+    }
+
+    #[test]
+    fn terms_with_sample() {
+        let spec = AggregateSpec::new(AggregateKind::Terms {
+            field: FieldId::Type,
+            top: 10,
+            metrics: vec![BucketMetric::Count],
+            sample: Some(TopHitsSpec::with_count(3)),
+        });
+        if let AggregateKind::Terms { sample, .. } = &spec.kind {
+            let s = sample.as_ref().expect("sample should be Some");
+            assert_eq!(s.count, 3);
+            assert_eq!(s.sort_field, FieldId::Size);
+        } else {
+            panic!("expected Terms");
+        }
+    }
+
+    #[test]
+    fn duplicates_with_top_hits_sample() {
+        let spec = AggregateSpec::new(AggregateKind::Duplicates {
+            keys: vec![FieldId::Size, FieldId::Name],
+            verify: DuplicateVerify::None,
+            top: 50,
+            sample: Some(TopHitsSpec::new(2, FieldId::Modified, false, vec![])),
+            max_groups: 100_000,
+        });
+        if let AggregateKind::Duplicates { sample, .. } = &spec.kind {
+            let s = sample.as_ref().expect("sample should be Some");
+            assert_eq!(s.count, 2);
+            assert_eq!(s.sort_field, FieldId::Modified);
+            assert!(!s.sort_desc);
+        } else {
+            panic!("expected Duplicates");
+        }
+    }
+
+    #[test]
+    fn rollup_with_sample() {
+        let spec = AggregateSpec::new(AggregateKind::Rollup {
+            mode: RollupMode::Drive,
+            top: 5,
+            metrics: vec![BucketMetric::Count],
+            sample: Some(TopHitsSpec::default()),
+        });
+        if let AggregateKind::Rollup { sample, .. } = &spec.kind {
+            assert!(sample.is_some());
+        } else {
+            panic!("expected Rollup");
+        }
     }
 }

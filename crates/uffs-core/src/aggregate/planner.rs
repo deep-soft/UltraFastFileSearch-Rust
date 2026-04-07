@@ -157,6 +157,7 @@ mod tests {
             field: FieldId::Extension,
             top: 50,
             metrics: vec![BucketMetric::Count],
+            sample: None,
         })];
         let plan = AggregatePlan::compile(&specs).expect("ext terms should compile");
         assert_eq!(plan.len(), 1);

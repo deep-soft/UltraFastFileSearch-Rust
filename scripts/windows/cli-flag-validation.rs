@@ -375,7 +375,7 @@ fn cli_string(bin: &str, args: &[String]) -> String {
 
 /// Subcommands that do NOT accept `--data-dir` (they don't connect to the
 /// daemon at all).
-const SUBCOMMANDS_NO_DATA_DIR: &[&str] = &["info"];
+const SUBCOMMANDS_NO_DATA_DIR: &[&str] = &["info", "daemon", "index"];
 
 /// Flags whose presence means we should NOT inject `--columns all`.
 const OUTPUT_SHAPING_FLAGS: &[&str] = &[
@@ -2451,6 +2451,732 @@ fn define_tests() -> Vec<TestSpec> {
         Ok(format!("{data_rows} CSV rows"))
     }));
 
+    // ═══════════════════════════════════════════════════════════════════
+    // STAGE 2 AGGREGATION TESTS (T130–T149)
+    // Validates: TopHitsSpec, SampleHeap, DrilldownPredicate, presets,
+    //   power syntax parsing, Rollup, Duplicates, mixed mode.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T130: agg top_folders preset ────────────────────────────────
+    specs.push(spec("T130 agg top_folders preset",
+        &["agg", "top_folders"], |stdout, _| {
+        // top_folders is a Rollup(PathDepth=1) preset.
+        // Should produce at least one folder with a byte count.
+        if stdout.is_empty() { bail!("Empty output from top_folders preset"); }
+        let has_section = stdout.contains("===") || stdout.contains("top_folders");
+        if !has_section {
+            bail!("Missing section header for top_folders");
+        }
+        Ok("top_folders preset produced output".into())
+    }));
+
+    // ── T131: agg cleanup preset ───────────────────────────────────
+    specs.push(spec("T131 agg cleanup preset",
+        &["agg", "cleanup"], |stdout, _| {
+        // Cleanup expands to: total_files, zero_byte_files, temp_files,
+        // old_files, distinct_extensions, ...
+        if stdout.is_empty() { bail!("Empty output from cleanup preset"); }
+        let has_total = stdout.contains("total_files") || stdout.contains("Total:");
+        if !has_total {
+            bail!("Missing total_files section in cleanup output");
+        }
+        // Should have multiple result sections (at least 3).
+        let section_count = stdout.matches("===").count() / 2; // each section has === ... ===
+        if section_count < 2 {
+            bail!("Expected >= 2 sections in cleanup, got {section_count}");
+        }
+        Ok(format!("cleanup preset: {} sections", section_count))
+    }));
+
+    // ── T132: agg duplicates preset ────────────────────────────────
+    specs.push(spec("T132 agg duplicates preset",
+        &["agg", "duplicates"], |stdout, _| {
+        // Duplicates preset uses TopHitsSpec::with_count(2).
+        if stdout.is_empty() { bail!("Empty output from duplicates preset"); }
+        // Should mention duplicates or have a results section.
+        let has_section = stdout.contains("===") || stdout.contains("duplicates");
+        if !has_section {
+            bail!("Missing duplicates section header");
+        }
+        Ok("duplicates preset produced output".into())
+    }));
+
+    // ── T133: agg storage preset ───────────────────────────────────
+    specs.push(spec("T133 agg storage preset",
+        &["agg", "storage"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from storage preset"); }
+        // Storage preset has: logical_size (Stats), allocated_size (Stats),
+        // waste_by_drive (buckets), waste_by_extension (buckets).
+        // Stats sections show "Sum:" or "Count:".
+        let has_stats = stdout.contains("Sum:") || stdout.contains("Count:")
+            || stdout.contains("logical_size") || stdout.contains("allocated_size");
+        if !has_stats { bail!("Missing stats fields in storage output"); }
+        Ok("storage preset produced output".into())
+    }));
+
+    // ── T134: agg activity preset ──────────────────────────────────
+    specs.push(spec("T134 agg activity preset",
+        &["agg", "activity"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from activity preset"); }
+        let has_section = stdout.contains("===");
+        if !has_section { bail!("Missing section header in activity output"); }
+        Ok("activity preset produced output".into())
+    }));
+
+    // ── T135: agg media preset ─────────────────────────────────────
+    specs.push(spec("T135 agg media preset",
+        &["agg", "media"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from media preset"); }
+        let has_section = stdout.contains("===");
+        if !has_section { bail!("Missing section header in media output"); }
+        Ok("media preset produced output".into())
+    }));
+
+    // ── T136: agg top_folders --format json ─────────────────────────
+    specs.push(spec("T136 agg top_folders --format json",
+        &["agg", "top_folders", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        // JSON output is a top-level array of result objects.
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array, got {}", parsed))?;
+        if results.is_empty() { bail!("Empty results array"); }
+        // First result should be a rollup type.
+        let kind = results[0].get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        if kind != "rollup" && kind != "buckets" {
+            bail!("Expected rollup/buckets kind, got '{kind}'");
+        }
+        Ok(format!("{} result(s) in JSON", results.len()))
+    }));
+
+    // ── T137: agg cleanup --format json ─────────────────────────────
+    specs.push(spec("T137 agg cleanup --format json",
+        &["agg", "cleanup", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        // JSON output is a top-level array of result objects.
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        // Cleanup should expand to >= 3 results.
+        if results.len() < 3 {
+            bail!("Expected >= 3 results from cleanup, got {}", results.len());
+        }
+        // Check that at least one result has label "total_files".
+        let has_total = results.iter().any(|r|
+            r.get("label").and_then(|l| l.as_str()) == Some("total_files")
+        );
+        if !has_total { bail!("Missing total_files label in JSON results"); }
+        Ok(format!("{} results in cleanup JSON", results.len()))
+    }));
+
+    // ── T138: agg cleanup --format csv ──────────────────────────────
+    specs.push(spec("T138 agg cleanup --format csv",
+        &["agg", "cleanup", "--format", "csv"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines()
+            .filter(|l| !l.is_empty())
+            .collect();
+        if lines.is_empty() { bail!("Empty CSV output from cleanup"); }
+        // Should have comment lines (# label) and data.
+        let comment_count = lines.iter().filter(|l| l.starts_with('#')).count();
+        if comment_count < 2 { bail!("Expected >= 2 section comments, got {comment_count}"); }
+        Ok(format!("{} lines, {} sections", lines.len(), comment_count))
+    }));
+
+    // ── T139: --agg power syntax terms with sample ──────────────────
+    specs.push(spec("T139 --agg terms:extension,sample=3",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=10,sample=3", "--format", "json"],
+        |stdout, _| {
+        // The --agg flag should produce aggregate results.
+        // With --format json, the output has rows + aggregate sections.
+        // Check that stdout contains valid data.
+        if stdout.is_empty() { bail!("Empty output"); }
+        // At minimum, the output should parse as NDJSON or JSON.
+        let has_agg = stdout.contains("extension") || stdout.contains("buckets")
+            || stdout.contains("count");
+        if !has_agg { bail!("No aggregate data in output"); }
+        Ok("terms power syntax with sample accepted".into())
+    }));
+
+    // ── T140: --agg power syntax duplicates ─────────────────────────
+    specs.push(spec("T140 --agg duplicates:size+name,sample=2",
+        &["*", "--limit", "0", "--agg", "duplicates:size+name,sample=2,top=50", "--format", "json"],
+        |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output"); }
+        Ok("duplicates power syntax with sample accepted".into())
+    }));
+
+    // ── T141: --count shorthand ─────────────────────────────────────
+    specs.push(spec("T141 --count shorthand",
+        &["*.exe", "--count"], |stdout, _| {
+        // --count suppresses rows, shows just the count.
+        if stdout.is_empty() { bail!("Empty output from --count"); }
+        let has_total = stdout.contains("Total:") || stdout.contains("count");
+        if !has_total { bail!("Missing total in --count output"); }
+        Ok("--count shorthand works".into())
+    }));
+
+    // ── T142: --facet extension ─────────────────────────────────────
+    specs.push(spec("T142 --facet extension",
+        &["*", "--facet", "extension"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from --facet"); }
+        // Should produce a bucket table with extension keys.
+        let has_key = stdout.contains("Key") || stdout.contains("key") || stdout.contains("exe");
+        if !has_key { bail!("Missing bucket keys in --facet output"); }
+        Ok("--facet extension shorthand works".into())
+    }));
+
+    // ── T143: --facet type:10 ───────────────────────────────────────
+    specs.push(spec("T143 --facet type:10",
+        &["*", "--facet", "type:10"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from --facet type"); }
+        Ok("--facet type:10 shorthand works".into())
+    }));
+
+    // ── T144: --stats size ──────────────────────────────────────────
+    specs.push(spec("T144 --stats size",
+        &["*.exe", "--stats", "size"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from --stats"); }
+        let has_stats = stdout.contains("Count:") || stdout.contains("count")
+            || stdout.contains("Sum:") || stdout.contains("sum");
+        if !has_stats { bail!("Missing statistics fields in --stats output"); }
+        Ok("--stats size shorthand works".into())
+    }));
+
+    // ── T145: --agg + --rows mixed mode ─────────────────────────────
+    specs.push(spec("T145 --agg count + --rows mixed",
+        &["*.dll", "--limit", "5", "--agg", "count", "--rows", "--drive", "C"],
+        |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from mixed mode"); }
+        // In mixed mode, both rows (CSV) and aggregate results should appear.
+        // The aggregate appears after the CSV rows.
+        let has_total = stdout.contains("Total:");
+        let has_rows = csv_row_count(stdout) > 0 || stdout.lines().count() > 3;
+        if !has_total && !has_rows {
+            bail!("Mixed mode should have both rows and aggregate total");
+        }
+        Ok(format!("mixed mode: rows={has_rows}, total={has_total}"))
+    }));
+
+    // ── T146: agg by_extension --format json bucket structure ────────
+    specs.push(spec("T146 agg by_extension --format json (buckets)",
+        &["agg", "by_extension", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        // JSON output is a top-level array of result objects.
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        // Find the buckets result.
+        let buckets_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"));
+        let br = buckets_result.ok_or_else(|| anyhow::anyhow!("No 'buckets' result found"))?;
+        let buckets = br.get("buckets")
+            .and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'buckets' array"))?;
+        if buckets.is_empty() { bail!("Empty buckets array"); }
+        // Each bucket should have key, count, total_bytes.
+        let first = &buckets[0];
+        if first.get("key").is_none() { bail!("Bucket missing 'key'"); }
+        if first.get("count").is_none() { bail!("Bucket missing 'count'"); }
+        if first.get("total_bytes").is_none() { bail!("Bucket missing 'total_bytes'"); }
+        Ok(format!("{} buckets with proper structure", buckets.len()))
+    }));
+
+    // ── T147: agg duplicates --format json ──────────────────────────
+    specs.push(spec("T147 agg duplicates --format json",
+        &["agg", "duplicates", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        // JSON output is a top-level array of result objects.
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("No results from duplicates"); }
+        Ok(format!("{} result(s) from duplicates", results.len()))
+    }));
+
+    // ── T148: agg by_drive --format csv ─────────────────────────────
+    specs.push(spec("T148 agg by_drive --format csv",
+        &["agg", "by_drive", "--format", "csv"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        if lines.is_empty() { bail!("Empty CSV from by_drive"); }
+        // First line should be header with key,count,...
+        let header = lines[0].to_lowercase();
+        if !header.contains("key") { bail!("Missing key column: {}", lines[0]); }
+        // Should have at least one drive letter row.
+        let data_rows = lines.len() - 1;
+        if data_rows == 0 { bail!("No drive data rows"); }
+        // Verify at least one row contains a drive letter.
+        let has_drive = lines[1..].iter().any(|l|
+            ('A'..='Z').any(|c| l.contains(&format!("{c}:")))
+        );
+        if !has_drive { bail!("No drive letter found in data rows"); }
+        Ok(format!("{data_rows} drive rows in CSV"))
+    }));
+
+    // ── T149: agg by_size --format json ──────────────────────────────
+    specs.push(spec("T149 agg by_size --format json",
+        &["agg", "by_size", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        // JSON output is a top-level array of result objects.
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("No results from by_size"); }
+        // by_size should have buckets (size ranges).
+        let has_buckets = results.iter().any(|r|
+            r.get("buckets").and_then(|b| b.as_array()).map_or(false, |b| !b.is_empty())
+        );
+        if !has_buckets { bail!("No non-empty bucket results from by_size"); }
+        Ok(format!("{} result(s) from by_size", results.len()))
+    }));
+
+    // ── T150: --agg terms:extension,sample=2 JSON has sample_rows ──
+    specs.push(spec("T150 --agg terms:extension,sample=2 JSON sample_rows",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=5,sample=2", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        if buckets.is_empty() { bail!("Empty buckets"); }
+        // At least one bucket should have sample_rows.
+        let has_samples = buckets.iter().any(|b|
+            b.get("sample_rows").and_then(|s| s.as_array()).map_or(false, |s| !s.is_empty())
+        );
+        if !has_samples { bail!("No buckets have sample_rows with sample=2"); }
+        // Sample rows should have ≤2 entries.
+        for b in buckets {
+            if let Some(samples) = b.get("sample_rows").and_then(|s| s.as_array()) {
+                if samples.len() > 2 {
+                    bail!("Bucket has {} sample_rows, expected ≤2", samples.len());
+                }
+            }
+        }
+        Ok("sample_rows present and bounded".into())
+    }));
+
+    // ── T151: --agg terms:extension,sample=2 JSON has drilldown ──
+    specs.push(spec("T151 --agg terms:extension,sample=2 JSON drilldown",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=5,sample=2", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        // Every bucket should have drilldown predicates.
+        let has_drill = buckets.iter().any(|b|
+            b.get("drilldown").and_then(|d| d.as_array()).map_or(false, |d| !d.is_empty())
+        );
+        if !has_drill { bail!("No buckets have drilldown predicates"); }
+        // Drilldown should include extension field.
+        for b in buckets {
+            if let Some(drills) = b.get("drilldown").and_then(|d| d.as_array()) {
+                let has_ext = drills.iter().any(|d|
+                    d.get("field").and_then(|f| f.as_str()) == Some("extension")
+                );
+                if !drills.is_empty() && !has_ext {
+                    bail!("Drilldown missing extension predicate");
+                }
+            }
+        }
+        Ok("drilldown predicates present".into())
+    }));
+
+    // ── T152: agg by_extension table format shows sample lines ──
+    specs.push(spec("T152 agg by_extension table with samples",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "table"], |stdout, _| {
+        // Sample lines are prefixed with "→".
+        let has_arrow = stdout.contains('→');
+        if !has_arrow { bail!("Table output missing → sample lines"); }
+        Ok("table output has sample lines".into())
+    }));
+
+    // ── T153: --agg without sample has no sample_rows in JSON ──
+    specs.push(spec("T153 --agg terms:extension no sample",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=3", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        // No sample_rows key should be present (skip_serializing_if empty).
+        for b in buckets {
+            if b.get("sample_rows").is_some() {
+                bail!("sample_rows should be absent when sample not requested");
+            }
+        }
+        Ok("no sample_rows when sample not requested".into())
+    }));
+
+    // ── T154: rollup:drive power syntax ──
+    specs.push(spec("T154 rollup:drive power syntax",
+        &["*", "--limit", "0", "--agg", "rollup:drive,top=5", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let rollup = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("rollup"))
+            .ok_or_else(|| anyhow::anyhow!("No rollup result"))?;
+        let buckets = rollup.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        if buckets.is_empty() { bail!("Empty rollup buckets"); }
+        Ok(format!("{} drive rollup buckets", buckets.len()))
+    }));
+
+    // ── T155: rollup:path,depth=2 power syntax ──
+    specs.push(spec("T155 rollup:path,depth=2 power syntax",
+        &["*", "--limit", "0", "--agg", "rollup:path,depth=2,top=10", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let rollup = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("rollup"))
+            .ok_or_else(|| anyhow::anyhow!("No rollup result"))?;
+        let buckets = rollup.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        if buckets.is_empty() { bail!("Empty rollup:path buckets"); }
+        Ok(format!("{} path rollup buckets", buckets.len()))
+    }));
+
+    // ── T156: multiple --agg flags combined ──
+    specs.push(spec("T156 multiple --agg flags combined",
+        &["*", "--limit", "0", "--agg", "count", "--agg", "terms:extension,top=3", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.len() < 2 {
+            bail!("Expected ≥2 results from two --agg flags, got {}", results.len());
+        }
+        let has_count = results.iter().any(|r| r.get("kind").and_then(|k| k.as_str()) == Some("count"));
+        let has_buckets = results.iter().any(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"));
+        if !has_count { bail!("Missing count result"); }
+        if !has_buckets { bail!("Missing buckets result"); }
+        Ok(format!("{} results from combined --agg", results.len()))
+    }));
+
+    // ── T157: --agg + search filter ──
+    specs.push(spec("T157 --agg + search filter",
+        &["*.exe", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        if buckets.is_empty() { bail!("No buckets returned"); }
+        // Drilldown should include name glob predicate from search filter.
+        let has_name_pred = buckets.iter().any(|b| {
+            b.get("drilldown").and_then(|d| d.as_array()).map_or(false, |drills| {
+                drills.iter().any(|d| d.get("field").and_then(|f| f.as_str()) == Some("name"))
+            })
+        });
+        if !has_name_pred { bail!("Drilldown missing name predicate from search filter"); }
+        Ok(format!("{} buckets with name predicate in drilldown", buckets.len()))
+    }));
+
+    // ── T158: sample row fields content ──
+    specs.push(spec("T158 sample row fields content",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=2", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        // Find a bucket with sample_rows and verify field keys.
+        let bucket_with_samples = buckets.iter()
+            .find(|b| b.get("sample_rows").and_then(|s| s.as_array()).map_or(false, |s| !s.is_empty()))
+            .ok_or_else(|| anyhow::anyhow!("No bucket has sample_rows"))?;
+        let samples = bucket_with_samples.get("sample_rows").unwrap().as_array().unwrap();
+        let first = &samples[0];
+        let fields = first.get("fields").and_then(|f| f.as_object())
+            .ok_or_else(|| anyhow::anyhow!("sample_rows[0] missing 'fields' object"))?;
+        if !fields.contains_key("name") { bail!("sample row missing 'name' field"); }
+        if !fields.contains_key("size") { bail!("sample row missing 'size' field"); }
+        Ok(format!("sample row has {} fields: {:?}", fields.len(), fields.keys().collect::<Vec<_>>()))
+    }));
+
+    // ── T159: CSV with samples column ──
+    specs.push(spec("T159 CSV with samples column",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "csv"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines().collect();
+        // Find the header line for the buckets section.
+        let header = lines.iter()
+            .find(|l| l.starts_with("key") && l.contains("count"))
+            .ok_or_else(|| anyhow::anyhow!("No CSV header line found"))?;
+        if !header.contains("samples") { bail!("CSV header missing 'samples' column"); }
+        // Data lines after header should have JSON array in samples column.
+        Ok("CSV has samples column".into())
+    }));
+
+    // ── T160: hist:size power syntax ──
+    specs.push(spec("T160 hist:size power syntax",
+        &["*", "--limit", "0", "--agg", "hist:size,interval=1048576", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let hist = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No histogram result"))?;
+        let buckets = hist.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets"))?;
+        if buckets.is_empty() { bail!("Empty histogram buckets"); }
+        Ok(format!("{} histogram buckets", buckets.len()))
+    }));
+
+    // ── T161: stats:size power syntax ──
+    specs.push(spec("T161 stats:size power syntax",
+        &["*", "--limit", "0", "--agg", "stats:size", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let stats = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("stats"))
+            .ok_or_else(|| anyhow::anyhow!("No stats result"))?;
+        // Stats are nested under "stats" key.
+        let inner = stats.get("stats")
+            .ok_or_else(|| anyhow::anyhow!("Missing 'stats' object"))?;
+        if inner.get("min").is_none() { bail!("Stats missing 'min'"); }
+        if inner.get("max").is_none() { bail!("Stats missing 'max'"); }
+        if inner.get("sum").is_none() { bail!("Stats missing 'sum'"); }
+        if inner.get("count").is_none() { bail!("Stats missing 'count'"); }
+        Ok("stats:size produces stats with min/max/sum/count".into())
+    }));
+
+    // ── T162: datehist:modified,calendar=month power syntax ──
+    specs.push(spec("T162 datehist:modified,calendar=month",
+        &["*", "--limit", "0", "--agg", "datehist:modified,calendar=month", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let dh = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No datehist result"))?;
+        let buckets = dh.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets"))?;
+        if buckets.is_empty() { bail!("Empty datehist buckets"); }
+        Ok(format!("{} date histogram buckets", buckets.len()))
+    }));
+
+    // ── T163: range:size power syntax ──
+    specs.push(spec("T163 range:size power syntax",
+        &["*", "--limit", "0", "--agg", "range:size,boundaries=0+1024+1048576+1073741824", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let range = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No range result"))?;
+        let buckets = range.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets"))?;
+        if buckets.is_empty() { bail!("Empty range buckets"); }
+        Ok(format!("{} range buckets", buckets.len()))
+    }));
+
+    // ── T164: --histogram shorthand ──
+    specs.push(spec("T164 --histogram size:1048576 shorthand",
+        &["*", "--limit", "0", "--histogram", "size:1048576", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let hist = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No histogram result"))?;
+        let buckets = hist.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets"))?;
+        if buckets.is_empty() { bail!("Empty histogram buckets"); }
+        Ok(format!("--histogram shorthand: {} buckets", buckets.len()))
+    }));
+
+    // ── T165: missing:extension power syntax ──
+    specs.push(spec("T165 missing:extension power syntax",
+        &["*", "--limit", "0", "--agg", "missing:extension", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("No results from missing:extension"); }
+        Ok(format!("{} results from missing:extension", results.len()))
+    }));
+
+    // ── T166: distinct:extension power syntax ──
+    specs.push(spec("T166 distinct:extension power syntax",
+        &["*", "--limit", "0", "--agg", "distinct:extension", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("No results from distinct:extension"); }
+        Ok(format!("{} results from distinct:extension", results.len()))
+    }));
+
+    // ── T167: sample_sort via CLI ──
+    specs.push(spec("T167 sample_sort terms:extension,sample=2,sort=size",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=2,sort=size", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        // Find a bucket with samples and verify sort order (descending by size).
+        let bucket_with_samples = buckets.iter()
+            .find(|b| b.get("sample_rows").and_then(|s| s.as_array()).map_or(false, |s| s.len() >= 2));
+        if let Some(b) = bucket_with_samples {
+            let samples = b.get("sample_rows").unwrap().as_array().unwrap();
+            let s0 = samples[0].get("sort_key").and_then(|k| k.as_i64()).unwrap_or(0);
+            let s1 = samples[1].get("sort_key").and_then(|k| k.as_i64()).unwrap_or(0);
+            if s0 < s1 { bail!("Samples not sorted desc by size: {} < {}", s0, s1); }
+            Ok(format!("samples sorted desc: {} >= {}", s0, s1))
+        } else {
+            Ok("no bucket with 2+ samples to verify sort (ok for sparse data)".into())
+        }
+    }));
+
+    // ── T168: uffs stats daemon mode (no path) ──
+    specs.push(spec("T168 uffs stats daemon mode",
+        &["stats"], |stdout, _| {
+        // Daemon-mode stats outputs overview preset sections.
+        if stdout.trim().is_empty() { bail!("Empty stats output"); }
+        // Should contain key overview sections.
+        let has_count = stdout.contains("Total") || stdout.contains("total_count");
+        let has_type = stdout.contains("by_type") || stdout.contains("file") || stdout.contains("directory");
+        if !has_count { bail!("Stats missing total count section"); }
+        if !has_type { bail!("Stats missing type breakdown"); }
+        Ok("uffs stats daemon mode produces overview".into())
+    }));
+
+    // ── T169: uffs daemon stats (perf stats) ──
+    specs.push(spec("T169 uffs daemon stats (perf)",
+        &["daemon", "stats"], |stdout, _| {
+        if stdout.contains("not running") { bail!("Daemon not running"); }
+        let has_uptime = stdout.contains("Uptime") || stdout.contains("uptime");
+        let has_queries = stdout.contains("Queries") || stdout.contains("queries");
+        if !has_uptime { bail!("Daemon stats missing uptime"); }
+        if !has_queries { bail!("Daemon stats missing query count"); }
+        Ok("daemon stats shows uptime + queries".into())
+    }));
+
+    // ── T170: rollup:drive table format ──
+    specs.push(spec("T170 rollup:drive table format",
+        &["*", "--limit", "0", "--agg", "rollup:drive,top=5", "--format", "table"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines().collect();
+        if lines.len() < 3 { bail!("Too few lines in rollup table output"); }
+        // Should have header + data rows.
+        let has_header = stdout.contains("Key") || stdout.contains("Count") || stdout.contains("count");
+        if !has_header { bail!("Rollup table missing header"); }
+        Ok(format!("rollup:drive table: {} lines", lines.len()))
+    }));
+
+    // ── T171: rollup:path CSV format ──
+    specs.push(spec("T171 rollup:path CSV format",
+        &["*", "--limit", "0", "--agg", "rollup:path,depth=1,top=5", "--format", "csv"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines().collect();
+        // CSV should have header + data rows.
+        let header = lines.iter()
+            .find(|l| l.starts_with("key") && l.contains("count"))
+            .ok_or_else(|| anyhow::anyhow!("No CSV header in rollup output"))?;
+        if !header.contains("total_bytes") { bail!("CSV header missing total_bytes"); }
+        Ok(format!("rollup:path CSV: {} lines", lines.len()))
+    }));
+
+    // ── T172: agg overview CSV format ──
+    specs.push(spec("T172 agg overview --format csv",
+        &["agg", "overview", "--format", "csv"], |stdout, _| {
+        if stdout.trim().is_empty() { bail!("Empty overview CSV"); }
+        // CSV overview has multiple sections.
+        let sections: Vec<&str> = stdout.lines().filter(|l| l.starts_with("# ")).collect();
+        if sections.is_empty() { bail!("No CSV section headers (# prefix)"); }
+        Ok(format!("overview CSV: {} sections", sections.len()))
+    }));
+
+    // ── T173: agg by_age --format json ──
+    specs.push(spec("T173 agg by_age --format json",
+        &["agg", "by_age", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("Empty by_age JSON"); }
+        let has_buckets = results.iter().any(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"));
+        if !has_buckets { bail!("by_age JSON missing buckets"); }
+        Ok(format!("{} results from by_age JSON", results.len()))
+    }));
+
+    // ── T174: agg storage --format json ──
+    specs.push(spec("T174 agg storage --format json",
+        &["agg", "storage", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("Empty storage JSON"); }
+        Ok(format!("{} results from storage JSON", results.len()))
+    }));
+
+    // ── T175: agg activity --format json ──
+    specs.push(spec("T175 agg activity --format json",
+        &["agg", "activity", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("Empty activity JSON"); }
+        Ok(format!("{} results from activity JSON", results.len()))
+    }));
+
+    // ── T176: agg media --format json ──
+    specs.push(spec("T176 agg media --format json",
+        &["agg", "media", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("Empty media JSON"); }
+        Ok(format!("{} results from media JSON", results.len()))
+    }));
+
+    // ── T177: agg duplicates --format csv ──
+    specs.push(spec("T177 agg duplicates --format csv",
+        &["agg", "duplicates", "--format", "csv"], |stdout, _| {
+        if stdout.trim().is_empty() { bail!("Empty duplicates CSV"); }
+        let header = stdout.lines()
+            .find(|l| l.starts_with("key") && l.contains("count"))
+            .ok_or_else(|| anyhow::anyhow!("No CSV header in duplicates output"))?;
+        if !header.contains("total_bytes") { bail!("Duplicates CSV header missing total_bytes"); }
+        Ok("duplicates CSV has proper header".into())
+    }));
+
     specs
 }
 
@@ -2508,7 +3234,7 @@ fn main() {
 
     if specs.is_empty() {
         eprintln!("  {} No tests matched filter: {:?}", "⚠".yellow(), args.test_filter);
-        eprintln!("  Available test IDs: T00, T01, ..., T128");
+        eprintln!("  Available test IDs: T00, T01, ..., T128, T130-T149");
         std::process::exit(1);
     }
 

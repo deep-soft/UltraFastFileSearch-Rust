@@ -4,7 +4,9 @@
 //! Each preset expands into a `Vec<AggregateSpec>` that can be passed
 //! directly to the aggregation engine.
 
-use super::spec::{AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, ScalarMetric};
+use super::spec::{
+    AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, ScalarMetric, TopHitsSpec,
+};
 use crate::search::field::FieldId;
 
 /// Named aggregate presets.
@@ -116,6 +118,7 @@ fn expand_overview() -> Vec<AggregateSpec> {
                 field: FieldId::DirectoryFlag,
                 top: 2,
                 metrics: default_metrics.clone(),
+                sample: None,
             },
             "files_vs_dirs",
         ),
@@ -136,6 +139,7 @@ fn expand_overview() -> Vec<AggregateSpec> {
                 field: FieldId::Type,
                 top: 30,
                 metrics: default_metrics.clone(),
+                sample: None,
             },
             "by_type",
         ),
@@ -144,6 +148,7 @@ fn expand_overview() -> Vec<AggregateSpec> {
                 field: FieldId::Drive,
                 top: 26,
                 metrics: default_metrics,
+                sample: None,
             },
             "by_drive",
         ),
@@ -174,6 +179,7 @@ fn expand_by_type() -> Vec<AggregateSpec> {
                 BucketMetric::ShareOfTotalCount,
                 BucketMetric::ShareOfTotalBytes,
             ],
+            sample: None,
         },
         "by_type",
     )]
@@ -192,6 +198,7 @@ fn expand_by_extension() -> Vec<AggregateSpec> {
                 BucketMetric::ShareOfTotalCount,
                 BucketMetric::ShareOfTotalBytes,
             ],
+            sample: None,
         },
         "by_extension",
     )]
@@ -212,6 +219,7 @@ fn expand_by_drive() -> Vec<AggregateSpec> {
                 BucketMetric::ShareOfTotalCount,
                 BucketMetric::ShareOfTotalBytes,
             ],
+            sample: None,
         },
         "by_drive",
     )]
@@ -303,6 +311,7 @@ fn expand_storage() -> Vec<AggregateSpec> {
                     BucketMetric::WasteBytes,
                     BucketMetric::WastePct,
                 ],
+                sample: None,
             },
             "waste_by_drive",
         ),
@@ -316,6 +325,7 @@ fn expand_storage() -> Vec<AggregateSpec> {
                     BucketMetric::WasteBytes,
                     BucketMetric::WastePct,
                 ],
+                sample: None,
             },
             "waste_by_extension",
         ),
@@ -366,6 +376,7 @@ fn expand_top_folders() -> Vec<AggregateSpec> {
                 BucketMetric::WasteBytes,
                 BucketMetric::ShareOfTotalBytes,
             ],
+            sample: None,
         },
         "top_folders",
     )]
@@ -379,7 +390,7 @@ fn expand_duplicates() -> Vec<AggregateSpec> {
             keys: vec![FieldId::Size, FieldId::Name],
             verify: DuplicateVerify::None,
             top: 100,
-            sample: 2,
+            sample: Some(TopHitsSpec::with_count(2)),
             max_groups: 500_000,
         },
         "duplicate_candidates",
@@ -399,6 +410,7 @@ fn expand_media() -> Vec<AggregateSpec> {
                     BucketMetric::AvgSize,
                     BucketMetric::ShareOfTotalBytes,
                 ],
+                sample: None,
             },
             "media_type_breakdown",
         ),
@@ -418,6 +430,7 @@ fn expand_media() -> Vec<AggregateSpec> {
                     BucketMetric::TotalBytes,
                     BucketMetric::ShareOfTotalBytes,
                 ],
+                sample: None,
             },
             "media_extensions",
         ),

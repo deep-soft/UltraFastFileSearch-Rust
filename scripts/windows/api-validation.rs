@@ -9,7 +9,7 @@
 //! uds_windows = "1.1"
 //! ```
 // =============================================================================
-// scripts/windows/cli-flag-validation.rs — CLI Flag Validation Suite
+// scripts/windows/api-validation.rs — API Validation Suite
 // =============================================================================
 //
 // SPDX-License-Identifier: MPL-2.0
@@ -20,8 +20,9 @@
 //   WARM  — no daemon, cache files exist  (daemon auto-starts from cache)
 //   HOT   — daemon already running  (pure in-memory search)
 //
-// Phase 2 — Parallel validation:  runs ALL 153 tests concurrently against
-//   the HOT daemon from Phase 1.
+// Phase 2 — Parallel validation:  ALL tests are real CLI process spawns
+//   against the HOT daemon from Phase 1.  Every test exercises the full
+//   stack: clap arg parsing → config → daemon connect → query → output.
 //
 // Usage:
 //   rust-script scripts/windows/cli-flag-validation.rs [path-to-uffs-binary]
@@ -242,40 +243,7 @@ struct TestSpec {
     validate: Box<dyn Fn(&str, &str) -> Result<String> + Send + Sync>,
 }
 
-// ── CLI-only flag detection ─────────────────────────────────────────────
-
-/// Flags that require the CLI process (output formatting / modes not in SearchParams).
-const CLI_ONLY_FLAGS: &[&str] = &[
-    "--format", "--out", "--benchmark", "--sep", "--quotes",
-    "--header", "--name-only", "--smart-case", "--columns",
-];
-
-/// Returns true if this test's args require spawning a CLI process.
-fn requires_cli(args: &[String]) -> bool {
-    // Subcommands (agg, aggregate, stats, etc.) always need CLI.
-    if let Some(first) = args.first() {
-        let f = first.to_lowercase();
-        if matches!(f.as_str(), "agg" | "aggregate" | "stats" | "info" | "daemon" | "index") {
-            return true;
-        }
-    }
-    for (i, a) in args.iter().enumerate() {
-        // --columns all → direct is fine (we output all columns).
-        // --columns Name,Size,... → needs CLI for column projection.
-        if a == "--columns" {
-            if args.get(i + 1).map_or(false, |v| v.eq_ignore_ascii_case("all")) {
-                continue; // --columns all is fine for direct
-            }
-            return true; // specific columns need CLI
-        }
-        if CLI_ONLY_FLAGS.iter().any(|f| a == f) {
-            return true;
-        }
-    }
-    false
-}
-
-// ── Daemon socket communication ─────────────────────────────────────────
+// ── Daemon socket communication (used only for startup probe) ────────────
 
 fn daemon_socket_path() -> PathBuf {
     let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -331,267 +299,7 @@ fn send_jsonrpc(sock: &PathBuf, request: &serde_json::Value) -> Result<serde_jso
     }
 }
 
-/// Parse CLI args into a JSON-RPC search request.
-fn args_to_search_request(args: &[String], id: u64) -> serde_json::Value {
-    let mut pattern = String::new();
-    let mut params = json!({});
-    let obj = params.as_object_mut().unwrap();
 
-    let mut i = 0;
-    while i < args.len() {
-        let arg = args[i].as_str();
-        match arg {
-            // Positional: pattern
-            s if !s.starts_with('-') && pattern.is_empty() => { pattern = s.to_string(); }
-            // Core
-            "--limit" =>            { i += 1; if let Some(v) = args.get(i) {
-                let n = v.parse::<u32>().unwrap_or(100);
-                if n > 0 { obj.insert("limit".into(), json!(n)); }
-                // limit=0 means unlimited → omit from params
-            } }
-            "--case-sensitive" =>   { obj.insert("case_sensitive".into(), json!(true)); }
-            "--whole-word" | "--word" => { obj.insert("whole_word".into(), json!(true)); }
-            // Filter mode
-            "--files-only" =>       { obj.insert("filter".into(), json!("files")); }
-            "--dirs-only" =>        { obj.insert("filter".into(), json!("dirs")); }
-            // Size
-            "--min-size" =>         { i += 1; if let Some(v) = args.get(i) { obj.insert("min_size".into(), json!(parse_size(v))); } }
-            "--max-size" =>         { i += 1; if let Some(v) = args.get(i) { obj.insert("max_size".into(), json!(parse_size(v))); } }
-            // Descendants
-            "--min-descendants" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("min_descendants".into(), json!(v.parse::<u32>().unwrap_or(0))); } }
-            "--max-descendants" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("max_descendants".into(), json!(v.parse::<u32>().unwrap_or(0))); } }
-            // Time
-            "--newer" =>            { i += 1; if let Some(v) = args.get(i) { obj.insert("newer".into(), json!(v)); } }
-            "--older" =>            { i += 1; if let Some(v) = args.get(i) { obj.insert("older".into(), json!(v)); } }
-            "--newer-created" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("newer_created".into(), json!(v)); } }
-            "--older-created" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("older_created".into(), json!(v)); } }
-            "--newer-accessed" =>   { i += 1; if let Some(v) = args.get(i) { obj.insert("newer_accessed".into(), json!(v)); } }
-            "--older-accessed" =>   { i += 1; if let Some(v) = args.get(i) { obj.insert("older_accessed".into(), json!(v)); } }
-            // Attributes
-            "--attr" =>             { i += 1; if let Some(v) = args.get(i) { obj.insert("attr".into(), json!(v)); } }
-            "--hide-system" =>      { obj.insert("hide_system".into(), json!(true)); }
-            // Extension
-            "--ext" =>              { i += 1; if let Some(v) = args.get(i) { obj.insert("ext".into(), json!(v)); } }
-            // Exclude
-            "--exclude" =>          { i += 1; if let Some(v) = args.get(i) { obj.insert("exclude".into(), json!(v)); } }
-            // Path
-            "--in-path" =>          { i += 1; if let Some(v) = args.get(i) { obj.insert("path_contains".into(), json!(v)); } }
-            // Type
-            "--type" =>             { i += 1; if let Some(v) = args.get(i) { obj.insert("type_filter".into(), json!(v)); } }
-            // Bulkiness
-            "--min-bulkiness" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("min_bulkiness".into(), json!(v.parse::<u64>().unwrap_or(0))); } }
-            "--max-bulkiness" =>    { i += 1; if let Some(v) = args.get(i) { obj.insert("max_bulkiness".into(), json!(v.parse::<u64>().unwrap_or(0))); } }
-            // Name/path length
-            "--min-name-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("min_name_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
-            "--max-name-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("max_name_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
-            "--min-path-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("min_path_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
-            "--max-path-length" =>  { i += 1; if let Some(v) = args.get(i) { obj.insert("max_path_len".into(), json!(v.parse::<u16>().unwrap_or(0))); } }
-            // Size-on-disk
-            "--min-size-on-disk" => { i += 1; if let Some(v) = args.get(i) { obj.insert("min_allocated".into(), json!(parse_size(v))); } }
-            "--max-size-on-disk" => { i += 1; if let Some(v) = args.get(i) { obj.insert("max_allocated".into(), json!(parse_size(v))); } }
-            // Treesize
-            "--min-treesize" =>     { i += 1; if let Some(v) = args.get(i) { obj.insert("min_treesize".into(), json!(parse_size(v))); } }
-            "--max-treesize" =>     { i += 1; if let Some(v) = args.get(i) { obj.insert("max_treesize".into(), json!(parse_size(v))); } }
-            "--min-tree-allocated" => { i += 1; if let Some(v) = args.get(i) { obj.insert("min_tree_allocated".into(), json!(parse_size(v))); } }
-            // Month
-            "--month" =>            { i += 1; if let Some(v) = args.get(i) {
-                let months: Vec<u32> = v.split(',').filter_map(|m| m.trim().parse().ok()).collect();
-                obj.insert("allowed_months".into(), json!(months));
-            }}
-            // Drive
-            "--drive" | "--drives" => { i += 1; if let Some(v) = args.get(i) {
-                let drives: Vec<char> = v.chars().filter(|c| c.is_ascii_alphabetic()).collect();
-                obj.insert("drives".into(), json!(drives));
-            }}
-            // Sort (handle colon syntax: "size:desc", "-size")
-            "--sort" =>             { i += 1; if let Some(v) = args.get(i) { parse_sort(v, obj); } }
-            "--sort-desc" =>        { obj.insert("sort_desc".into(), json!(true)); }
-            // Begins-with, ends-with, contains, not-contains → predicates
-            "--begins-with" =>      { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "starts_with", v); } }
-            "--ends-with" =>        { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "ends_with", v); } }
-            "--contains" =>         { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "contains", v); } }
-            "--not-contains" =>     { i += 1; if let Some(v) = args.get(i) { add_predicate(obj, "name", "not_match", v); } }
-            // Output-only flags — ignore (handled by CLI process, shouldn't reach here)
-            "--columns" | "--data-dir" => { i += 1; /* skip value */ }
-            _ => {}
-        }
-        i += 1;
-    }
-
-    // Handle pattern prefixes: "path:", "dir:", "file:"
-    if pattern.starts_with("path:") {
-        obj.insert("match_path".into(), json!(true));
-        pattern = pattern[5..].to_string();
-    } else if pattern.starts_with("dir:") {
-        obj.insert("filter".into(), json!("dirs"));
-        pattern = pattern[4..].to_string();
-    } else if pattern.starts_with("file:") {
-        obj.insert("filter".into(), json!("files"));
-        pattern = pattern[5..].to_string();
-    }
-
-    obj.insert("pattern".into(), json!(pattern));
-
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": "search",
-        "params": params
-    })
-}
-
-/// Parse sort flag, handling colon syntax and dash prefix.
-fn parse_sort(val: &str, obj: &mut serde_json::Map<String, serde_json::Value>) {
-    // Multiple sort: "treesize,name" or "treesize:desc,name:asc"
-    let parts: Vec<&str> = val.split(',').collect();
-    if parts.len() > 1 || val.contains(':') {
-        let sorts: Vec<serde_json::Value> = parts.iter().map(|p| {
-            if let Some((col, dir)) = p.split_once(':') {
-                json!({"field": col, "descending": dir == "desc"})
-            } else if p.starts_with('-') {
-                json!({"field": &p[1..], "descending": true})
-            } else {
-                json!({"field": p, "descending": false})
-            }
-        }).collect();
-        obj.insert("sorts".into(), json!(sorts));
-    } else if val.starts_with('-') {
-        obj.insert("sort".into(), json!(&val[1..]));
-        obj.insert("sort_desc".into(), json!(true));
-    } else {
-        obj.insert("sort".into(), json!(val));
-    }
-}
-
-/// Add a predicate to the params.
-fn add_predicate(obj: &mut serde_json::Map<String, serde_json::Value>, field: &str, op: &str, value: &str) {
-    let pred = json!({"field": field, "op": op, "value": {"kind": "string", "value": value}});
-    let preds = obj.entry("predicates").or_insert_with(|| json!([]));
-    preds.as_array_mut().unwrap().push(pred);
-}
-
-/// Parse size strings like "100MB", "1048576", "10kb".
-fn parse_size(s: &str) -> u64 {
-    let s = s.trim().to_uppercase();
-    if let Ok(n) = s.parse::<u64>() { return n; }
-    let (num_str, multiplier) = if s.ends_with("GB") { (&s[..s.len()-2], 1024*1024*1024) }
-        else if s.ends_with("MB") { (&s[..s.len()-2], 1024*1024) }
-        else if s.ends_with("KB") { (&s[..s.len()-2], 1024) }
-        else if s.ends_with("TB") { (&s[..s.len()-2], 1024u64*1024*1024*1024) }
-        else { return s.parse().unwrap_or(0); };
-    num_str.trim().parse::<u64>().unwrap_or(0) * multiplier
-}
-
-/// Convert daemon JSON response rows to CSV format matching CLI output.
-/// Convert daemon JSON response rows to CSV matching `--columns all` output.
-///
-/// Header names match `OutputColumn::display_name()` so existing validators
-/// (which use `col_val(row, &h, "Directory Flag")` etc.) work unchanged.
-fn rows_to_csv(resp: &serde_json::Value) -> String {
-    let result = match resp.get("result") {
-        Some(r) => r,
-        None => return String::new(),
-    };
-
-    // D5.1: shmem — when daemon routes large result sets (>100K rows)
-    // through shared memory, inline rows are empty but shmem_count has
-    // the real count.  We trust the daemon: just report the count so
-    // validators that check csv_row_count() work.
-    let shmem_count = result.get("shmem_count").and_then(|v| v.as_u64()).unwrap_or(0);
-    let rows = result.get("rows").and_then(|r| r.as_array());
-    let rows = match rows {
-        Some(r) if !r.is_empty() => r,
-        _ if shmem_count > 0 => {
-            // Return a CSV with shmem_count stub rows — only name/path
-            // are meaningful; validators that inspect column VALUES will
-            // only see stubs, but row-count checks work.
-            let header = "Path,Name,Path Only,Size,Size on Disk,Created,Last Written,Last Accessed,Descendants,Read-only,Hidden,System,Directory Flag,Archive,Sparse,Reparse,Compressed,Offline,Not content indexed file,Encrypted,Integrity,No scrub file,Recall on open,Pinned,Unpinned,Recall on data access,Attributes,Tree Size,Tree Allocated";
-            let mut out = String::with_capacity(header.len() + 30 * shmem_count as usize);
-            out.push_str(header);
-            out.push('\n');
-            // One stub row per shmem result — lightweight, no real data.
-            for _ in 0..shmem_count {
-                out.push_str(",shmem,,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n");
-            }
-            return out;
-        }
-        _ => return String::new(),
-    };
-
-    // Matches CPP_COLUMN_ORDER display names from OutputColumn.
-    let header = "Path,Name,Path Only,Size,Size on Disk,Created,Last Written,Last Accessed,Descendants,Read-only,Hidden,System,Directory Flag,Archive,Sparse,Reparse,Compressed,Offline,Not content indexed file,Encrypted,Integrity,No scrub file,Recall on open,Pinned,Unpinned,Recall on data access,Attributes,Tree Size,Tree Allocated";
-    let mut out = String::from(header);
-    out.push('\n');
-
-    for row in rows {
-        let name = row.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let path = row.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        let path_only = row.get("path_only").and_then(|v| v.as_str())
-            .unwrap_or_else(|| {
-                // Derive from path: everything up to and including the last separator
-                path.rfind(|c| c == '\\' || c == '/').map_or("", |i| &path[..=i])
-            });
-        let size = row.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-        let allocated = row.get("allocated_size")
-            .or_else(|| row.get("allocated"))
-            .or_else(|| row.get("size_on_disk"))
-            .and_then(|v| v.as_u64()).unwrap_or(0);
-        let created = row.get("created").and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| row.get("created").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default());
-        let modified = row.get("modified").and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| row.get("modified").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default());
-        let accessed = row.get("accessed").and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| row.get("accessed").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default());
-        let descendants = row.get("descendants").and_then(|v| v.as_u64()).unwrap_or(0);
-        let treesize = row.get("treesize").or_else(|| row.get("tree_size"))
-            .and_then(|v| v.as_u64()).unwrap_or(0);
-        let tree_alloc = row.get("tree_allocated").and_then(|v| v.as_u64()).unwrap_or(0);
-        let flags = row.get("flags").and_then(|v| v.as_u64()).unwrap_or(0);
-
-        // Decompose NTFS flags into boolean 0/1 columns.
-        let b = |bit: u64| -> u8 { if flags & bit != 0 { 1 } else { 0 } };
-        let readonly    = b(0x0001);
-        let hidden      = b(0x0002);
-        let system      = b(0x0004);
-        let directory   = b(0x0010);
-        let archive     = b(0x0020);
-        let sparse      = b(0x0200);
-        let reparse     = b(0x0400);
-        let compressed  = b(0x0800);
-        let offline     = b(0x1000);
-        let not_indexed = b(0x2000);
-        let encrypted   = b(0x4000);
-        let integrity   = b(0x8000);
-        let no_scrub    = if flags & 0x20000 != 0 { 1u8 } else { 0 };
-        let recall_open = if flags & 0x40000 != 0 { 1u8 } else { 0 };
-        let pinned      = if flags & 0x80000 != 0 { 1u8 } else { 0 };
-        let unpinned    = if flags & 0x100000 != 0 { 1u8 } else { 0 };
-        let recall_data = if flags & 0x400000 != 0 { 1u8 } else { 0 };
-
-        // Escape commas in name/path
-        let esc = |s: &str| -> String {
-            if s.contains(',') || s.contains('"') { format!("\"{}\"", s.replace('"', "\"\"")) }
-            else { s.to_string() }
-        };
-
-        out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            esc(path), esc(name), esc(path_only),
-            size, allocated,
-            created, modified, accessed,
-            descendants,
-            readonly, hidden, system, directory, archive,
-            sparse, reparse, compressed, offline, not_indexed,
-            encrypted, integrity, no_scrub, recall_open,
-            pinned, unpinned, recall_data,
-            flags, treesize, tree_alloc,
-        ));
-    }
-    out
-}
 
 /// Run uffs with given args, return (exit_code, stdout, stderr).
 /// Maximum time (seconds) any single CLI test process may run before being killed.
@@ -665,54 +373,47 @@ fn cli_string(bin: &str, args: &[String]) -> String {
     parts.join(" ")
 }
 
-/// Run a single test via direct daemon JSON-RPC.
-fn run_one_test_direct(sock: &PathBuf, bin: &str, spec: &TestSpec, data_dir: &Option<String>, id: u64) -> TestResult {
-    // Build both the CLI command (for reproduction) and the API request.
-    let mut cli_args = spec.args.clone();
-    if let Some(ref dir) = data_dir {
-        cli_args.push("--data-dir".to_string());
-        cli_args.push(dir.clone());
-    }
-    let cli = cli_string(bin, &cli_args);
-    let request = args_to_search_request(&spec.args, id);
-    let api = serde_json::to_string_pretty(&request.get("params").unwrap_or(&json!({})))
-        .unwrap_or_default();
-    let start = Instant::now();
-
-    let (passed, detail) = match send_jsonrpc(sock, &request) {
-        Ok(resp) => {
-            if let Some(err) = resp.get("error") {
-                (false, format!("RPC error: {}", err))
-            } else {
-                let csv = rows_to_csv(&resp);
-                match (spec.validate)(&csv, "") {
-                    Ok(msg) => (true, format!("{msg} [direct]")),
-                    Err(e) => (false, format!("{e}")),
-                }
-            }
-        }
-        Err(e) => (false, format!("Socket error: {e}")),
-    };
-
-    let duration_ms = start.elapsed().as_millis();
-    TestResult { name: spec.name.clone(), cli, api, passed, duration_ms, detail }
-}
-
 /// Subcommands that do NOT accept `--data-dir` (they don't connect to the
 /// daemon at all).
-const SUBCOMMANDS_NO_DATA_DIR: &[&str] = &["info"];
+const SUBCOMMANDS_NO_DATA_DIR: &[&str] = &["info", "daemon", "index"];
+
+/// Flags whose presence means we should NOT inject `--columns all`.
+const OUTPUT_SHAPING_FLAGS: &[&str] = &[
+    "--columns", "--format", "--name-only", "--benchmark",
+];
 
 /// Run a single test via CLI process spawn.
 fn run_one_test_cli(bin: &str, spec: &TestSpec, data_dir: &Option<String>) -> TestResult {
     let mut args = spec.args.clone();
     let first = args.first().map(String::as_str).unwrap_or("");
-    let skip_data_dir = SUBCOMMANDS_NO_DATA_DIR.iter().any(|s| first.eq_ignore_ascii_case(s));
-    if !skip_data_dir {
+
+    // Subcommands (agg, stats, info, etc.) don't accept search flags.
+    let is_subcommand = SUBCOMMANDS_NO_DATA_DIR.iter().any(|s| first.eq_ignore_ascii_case(s))
+        || matches!(first.to_lowercase().as_str(), "agg" | "aggregate" | "stats" | "daemon" | "index");
+
+    if !is_subcommand {
+        if let Some(ref dir) = data_dir {
+            args.push("--data-dir".to_string());
+            args.push(dir.clone());
+        }
+
+        // Inject `--columns all` so validators see the full CSV output
+        // (matching the format that direct/socket tests previously used).
+        let has_output_flag = args.iter().any(|a|
+            OUTPUT_SHAPING_FLAGS.iter().any(|f| a == f)
+        );
+        if !has_output_flag {
+            args.push("--columns".to_string());
+            args.push("all".to_string());
+        }
+    } else if !SUBCOMMANDS_NO_DATA_DIR.iter().any(|s| first.eq_ignore_ascii_case(s)) {
+        // Subcommand that still needs --data-dir (agg, stats, etc.)
         if let Some(ref dir) = data_dir {
             args.push("--data-dir".to_string());
             args.push(dir.clone());
         }
     }
+
     let cli = cli_string(bin, &args);
     let start = Instant::now();
     let result = run_uffs(bin, &args);
@@ -746,76 +447,35 @@ fn max_parallelism() -> usize {
         .unwrap_or(8)
 }
 
-/// Run all test specs: direct daemon queries for most, CLI fallback for output-only tests.
-/// Direct tests run fully parallel (lightweight socket I/O).
-/// CLI-only tests run in bounded chunks (heavy process spawns).
+/// Run all test specs via CLI process spawn with bounded parallelism.
+///
+/// Every test spawns a real `uffs` process to validate the full stack:
+/// arg parsing → config → daemon connect → query → output formatting.
 fn run_tests_parallel(bin: &str, specs: &[TestSpec], data_dir: &Option<String>) -> (Vec<TestResult>, u128) {
     let max_par = max_parallelism();
-    let sock = daemon_socket_path();
     let wall_start = Instant::now();
 
-    // Split into direct vs CLI-only.
-    let mut direct_specs: Vec<&TestSpec> = Vec::new();
-    let mut cli_specs: Vec<&TestSpec> = Vec::new();
-    for spec in specs {
-        if requires_cli(&spec.args) {
-            cli_specs.push(spec);
-        } else {
-            direct_specs.push(spec);
-        }
-    }
-
-    eprintln!("  → {} direct (daemon socket) + {} CLI (process spawn)",
-        direct_specs.len(), cli_specs.len());
+    eprintln!("  → {} CLI tests (process spawn, parallelism: {max_par})", specs.len());
     eprintln!();
 
     let mut results: Vec<TestResult> = Vec::with_capacity(specs.len());
 
-    // 1. Run direct tests — bounded parallelism to avoid flooding the daemon.
-    //    The stress test shows peak throughput at c=16–32; beyond that, queries
-    //    queue up and individual latencies balloon.
-    if !direct_specs.is_empty() {
-        for chunk in direct_specs.chunks(max_par) {
-            let chunk_results: Vec<TestResult> = std::thread::scope(|s| {
-                let handles: Vec<_> = chunk.iter().enumerate().map(|(i, spec)| {
-                    let sock_ref = &sock;
-                    s.spawn(move || run_one_test_direct(sock_ref, bin, spec, data_dir, i as u64))
-                }).collect();
-                handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
-                    name: "???".into(), cli: "???".into(), api: String::new(), passed: false, duration_ms: 0,
-                    detail: "thread panicked".into(),
-                })).collect()
-            });
-            for r in &chunk_results {
-                let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
-                let timing = format!("{:>5}ms", r.duration_ms).dimmed();
-                eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
-            }
-            results.extend(chunk_results);
+    for chunk in specs.chunks(max_par) {
+        let chunk_results: Vec<TestResult> = std::thread::scope(|s| {
+            let handles: Vec<_> = chunk.iter().map(|spec| {
+                s.spawn(|| run_one_test_cli(bin, spec, data_dir))
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
+                name: "???".into(), cli: "???".into(), api: String::new(), passed: false, duration_ms: 0,
+                detail: "thread panicked".into(),
+            })).collect()
+        });
+        for r in &chunk_results {
+            let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
+            let timing = format!("{:>5}ms", r.duration_ms).dimmed();
+            eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
         }
-    }
-
-    // 2. Run CLI-only tests — bounded parallelism.
-    if !cli_specs.is_empty() {
-        eprintln!();
-        eprintln!("  ── CLI-only tests (process spawn, parallelism: {max_par}) ──");
-        for chunk in cli_specs.chunks(max_par) {
-            let chunk_results: Vec<TestResult> = std::thread::scope(|s| {
-                let handles: Vec<_> = chunk.iter().map(|spec| {
-                    s.spawn(|| run_one_test_cli(bin, spec, data_dir))
-                }).collect();
-                handles.into_iter().map(|h| h.join().unwrap_or_else(|_| TestResult {
-                    name: "???".into(), cli: "???".into(), api: String::new(), passed: false, duration_ms: 0,
-                    detail: "thread panicked".into(),
-                })).collect()
-            });
-            for r in &chunk_results {
-                let status = if r.passed { "PASS".green().bold() } else { "FAIL".red().bold() };
-                let timing = format!("{:>5}ms", r.duration_ms).dimmed();
-                eprintln!("  [{status}] {timing}  {}: {}", r.name, r.detail);
-            }
-            results.extend(chunk_results);
-        }
+        results.extend(chunk_results);
     }
 
     let wall_ms = wall_start.elapsed().as_millis();
@@ -2791,6 +2451,732 @@ fn define_tests() -> Vec<TestSpec> {
         Ok(format!("{data_rows} CSV rows"))
     }));
 
+    // ═══════════════════════════════════════════════════════════════════
+    // STAGE 2 AGGREGATION TESTS (T130–T149)
+    // Validates: TopHitsSpec, SampleHeap, DrilldownPredicate, presets,
+    //   power syntax parsing, Rollup, Duplicates, mixed mode.
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── T130: agg top_folders preset ────────────────────────────────
+    specs.push(spec("T130 agg top_folders preset",
+        &["agg", "top_folders"], |stdout, _| {
+        // top_folders is a Rollup(PathDepth=1) preset.
+        // Should produce at least one folder with a byte count.
+        if stdout.is_empty() { bail!("Empty output from top_folders preset"); }
+        let has_section = stdout.contains("===") || stdout.contains("top_folders");
+        if !has_section {
+            bail!("Missing section header for top_folders");
+        }
+        Ok("top_folders preset produced output".into())
+    }));
+
+    // ── T131: agg cleanup preset ───────────────────────────────────
+    specs.push(spec("T131 agg cleanup preset",
+        &["agg", "cleanup"], |stdout, _| {
+        // Cleanup expands to: total_files, zero_byte_files, temp_files,
+        // old_files, distinct_extensions, ...
+        if stdout.is_empty() { bail!("Empty output from cleanup preset"); }
+        let has_total = stdout.contains("total_files") || stdout.contains("Total:");
+        if !has_total {
+            bail!("Missing total_files section in cleanup output");
+        }
+        // Should have multiple result sections (at least 3).
+        let section_count = stdout.matches("===").count() / 2; // each section has === ... ===
+        if section_count < 2 {
+            bail!("Expected >= 2 sections in cleanup, got {section_count}");
+        }
+        Ok(format!("cleanup preset: {} sections", section_count))
+    }));
+
+    // ── T132: agg duplicates preset ────────────────────────────────
+    specs.push(spec("T132 agg duplicates preset",
+        &["agg", "duplicates"], |stdout, _| {
+        // Duplicates preset uses TopHitsSpec::with_count(2).
+        if stdout.is_empty() { bail!("Empty output from duplicates preset"); }
+        // Should mention duplicates or have a results section.
+        let has_section = stdout.contains("===") || stdout.contains("duplicates");
+        if !has_section {
+            bail!("Missing duplicates section header");
+        }
+        Ok("duplicates preset produced output".into())
+    }));
+
+    // ── T133: agg storage preset ───────────────────────────────────
+    specs.push(spec("T133 agg storage preset",
+        &["agg", "storage"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from storage preset"); }
+        // Storage preset has: logical_size (Stats), allocated_size (Stats),
+        // waste_by_drive (buckets), waste_by_extension (buckets).
+        // Stats sections show "Sum:" or "Count:".
+        let has_stats = stdout.contains("Sum:") || stdout.contains("Count:")
+            || stdout.contains("logical_size") || stdout.contains("allocated_size");
+        if !has_stats { bail!("Missing stats fields in storage output"); }
+        Ok("storage preset produced output".into())
+    }));
+
+    // ── T134: agg activity preset ──────────────────────────────────
+    specs.push(spec("T134 agg activity preset",
+        &["agg", "activity"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from activity preset"); }
+        let has_section = stdout.contains("===");
+        if !has_section { bail!("Missing section header in activity output"); }
+        Ok("activity preset produced output".into())
+    }));
+
+    // ── T135: agg media preset ─────────────────────────────────────
+    specs.push(spec("T135 agg media preset",
+        &["agg", "media"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from media preset"); }
+        let has_section = stdout.contains("===");
+        if !has_section { bail!("Missing section header in media output"); }
+        Ok("media preset produced output".into())
+    }));
+
+    // ── T136: agg top_folders --format json ─────────────────────────
+    specs.push(spec("T136 agg top_folders --format json",
+        &["agg", "top_folders", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        // JSON output is a top-level array of result objects.
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array, got {}", parsed))?;
+        if results.is_empty() { bail!("Empty results array"); }
+        // First result should be a rollup type.
+        let kind = results[0].get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        if kind != "rollup" && kind != "buckets" {
+            bail!("Expected rollup/buckets kind, got '{kind}'");
+        }
+        Ok(format!("{} result(s) in JSON", results.len()))
+    }));
+
+    // ── T137: agg cleanup --format json ─────────────────────────────
+    specs.push(spec("T137 agg cleanup --format json",
+        &["agg", "cleanup", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        // JSON output is a top-level array of result objects.
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        // Cleanup should expand to >= 3 results.
+        if results.len() < 3 {
+            bail!("Expected >= 3 results from cleanup, got {}", results.len());
+        }
+        // Check that at least one result has label "total_files".
+        let has_total = results.iter().any(|r|
+            r.get("label").and_then(|l| l.as_str()) == Some("total_files")
+        );
+        if !has_total { bail!("Missing total_files label in JSON results"); }
+        Ok(format!("{} results in cleanup JSON", results.len()))
+    }));
+
+    // ── T138: agg cleanup --format csv ──────────────────────────────
+    specs.push(spec("T138 agg cleanup --format csv",
+        &["agg", "cleanup", "--format", "csv"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines()
+            .filter(|l| !l.is_empty())
+            .collect();
+        if lines.is_empty() { bail!("Empty CSV output from cleanup"); }
+        // Should have comment lines (# label) and data.
+        let comment_count = lines.iter().filter(|l| l.starts_with('#')).count();
+        if comment_count < 2 { bail!("Expected >= 2 section comments, got {comment_count}"); }
+        Ok(format!("{} lines, {} sections", lines.len(), comment_count))
+    }));
+
+    // ── T139: --agg power syntax terms with sample ──────────────────
+    specs.push(spec("T139 --agg terms:extension,sample=3",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=10,sample=3", "--format", "json"],
+        |stdout, _| {
+        // The --agg flag should produce aggregate results.
+        // With --format json, the output has rows + aggregate sections.
+        // Check that stdout contains valid data.
+        if stdout.is_empty() { bail!("Empty output"); }
+        // At minimum, the output should parse as NDJSON or JSON.
+        let has_agg = stdout.contains("extension") || stdout.contains("buckets")
+            || stdout.contains("count");
+        if !has_agg { bail!("No aggregate data in output"); }
+        Ok("terms power syntax with sample accepted".into())
+    }));
+
+    // ── T140: --agg power syntax duplicates ─────────────────────────
+    specs.push(spec("T140 --agg duplicates:size+name,sample=2",
+        &["*", "--limit", "0", "--agg", "duplicates:size+name,sample=2,top=50", "--format", "json"],
+        |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output"); }
+        Ok("duplicates power syntax with sample accepted".into())
+    }));
+
+    // ── T141: --count shorthand ─────────────────────────────────────
+    specs.push(spec("T141 --count shorthand",
+        &["*.exe", "--count"], |stdout, _| {
+        // --count suppresses rows, shows just the count.
+        if stdout.is_empty() { bail!("Empty output from --count"); }
+        let has_total = stdout.contains("Total:") || stdout.contains("count");
+        if !has_total { bail!("Missing total in --count output"); }
+        Ok("--count shorthand works".into())
+    }));
+
+    // ── T142: --facet extension ─────────────────────────────────────
+    specs.push(spec("T142 --facet extension",
+        &["*", "--facet", "extension"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from --facet"); }
+        // Should produce a bucket table with extension keys.
+        let has_key = stdout.contains("Key") || stdout.contains("key") || stdout.contains("exe");
+        if !has_key { bail!("Missing bucket keys in --facet output"); }
+        Ok("--facet extension shorthand works".into())
+    }));
+
+    // ── T143: --facet type:10 ───────────────────────────────────────
+    specs.push(spec("T143 --facet type:10",
+        &["*", "--facet", "type:10"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from --facet type"); }
+        Ok("--facet type:10 shorthand works".into())
+    }));
+
+    // ── T144: --stats size ──────────────────────────────────────────
+    specs.push(spec("T144 --stats size",
+        &["*.exe", "--stats", "size"], |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from --stats"); }
+        let has_stats = stdout.contains("Count:") || stdout.contains("count")
+            || stdout.contains("Sum:") || stdout.contains("sum");
+        if !has_stats { bail!("Missing statistics fields in --stats output"); }
+        Ok("--stats size shorthand works".into())
+    }));
+
+    // ── T145: --agg + --rows mixed mode ─────────────────────────────
+    specs.push(spec("T145 --agg count + --rows mixed",
+        &["*.dll", "--limit", "5", "--agg", "count", "--rows", "--drive", "C"],
+        |stdout, _| {
+        if stdout.is_empty() { bail!("Empty output from mixed mode"); }
+        // In mixed mode, both rows (CSV) and aggregate results should appear.
+        // The aggregate appears after the CSV rows.
+        let has_total = stdout.contains("Total:");
+        let has_rows = csv_row_count(stdout) > 0 || stdout.lines().count() > 3;
+        if !has_total && !has_rows {
+            bail!("Mixed mode should have both rows and aggregate total");
+        }
+        Ok(format!("mixed mode: rows={has_rows}, total={has_total}"))
+    }));
+
+    // ── T146: agg by_extension --format json bucket structure ────────
+    specs.push(spec("T146 agg by_extension --format json (buckets)",
+        &["agg", "by_extension", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        // JSON output is a top-level array of result objects.
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        // Find the buckets result.
+        let buckets_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"));
+        let br = buckets_result.ok_or_else(|| anyhow::anyhow!("No 'buckets' result found"))?;
+        let buckets = br.get("buckets")
+            .and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'buckets' array"))?;
+        if buckets.is_empty() { bail!("Empty buckets array"); }
+        // Each bucket should have key, count, total_bytes.
+        let first = &buckets[0];
+        if first.get("key").is_none() { bail!("Bucket missing 'key'"); }
+        if first.get("count").is_none() { bail!("Bucket missing 'count'"); }
+        if first.get("total_bytes").is_none() { bail!("Bucket missing 'total_bytes'"); }
+        Ok(format!("{} buckets with proper structure", buckets.len()))
+    }));
+
+    // ── T147: agg duplicates --format json ──────────────────────────
+    specs.push(spec("T147 agg duplicates --format json",
+        &["agg", "duplicates", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        // JSON output is a top-level array of result objects.
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("No results from duplicates"); }
+        Ok(format!("{} result(s) from duplicates", results.len()))
+    }));
+
+    // ── T148: agg by_drive --format csv ─────────────────────────────
+    specs.push(spec("T148 agg by_drive --format csv",
+        &["agg", "by_drive", "--format", "csv"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        if lines.is_empty() { bail!("Empty CSV from by_drive"); }
+        // First line should be header with key,count,...
+        let header = lines[0].to_lowercase();
+        if !header.contains("key") { bail!("Missing key column: {}", lines[0]); }
+        // Should have at least one drive letter row.
+        let data_rows = lines.len() - 1;
+        if data_rows == 0 { bail!("No drive data rows"); }
+        // Verify at least one row contains a drive letter.
+        let has_drive = lines[1..].iter().any(|l|
+            ('A'..='Z').any(|c| l.contains(&format!("{c}:")))
+        );
+        if !has_drive { bail!("No drive letter found in data rows"); }
+        Ok(format!("{data_rows} drive rows in CSV"))
+    }));
+
+    // ── T149: agg by_size --format json ──────────────────────────────
+    specs.push(spec("T149 agg by_size --format json",
+        &["agg", "by_size", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        // JSON output is a top-level array of result objects.
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("No results from by_size"); }
+        // by_size should have buckets (size ranges).
+        let has_buckets = results.iter().any(|r|
+            r.get("buckets").and_then(|b| b.as_array()).map_or(false, |b| !b.is_empty())
+        );
+        if !has_buckets { bail!("No non-empty bucket results from by_size"); }
+        Ok(format!("{} result(s) from by_size", results.len()))
+    }));
+
+    // ── T150: --agg terms:extension,sample=2 JSON has sample_rows ──
+    specs.push(spec("T150 --agg terms:extension,sample=2 JSON sample_rows",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=5,sample=2", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        if buckets.is_empty() { bail!("Empty buckets"); }
+        // At least one bucket should have sample_rows.
+        let has_samples = buckets.iter().any(|b|
+            b.get("sample_rows").and_then(|s| s.as_array()).map_or(false, |s| !s.is_empty())
+        );
+        if !has_samples { bail!("No buckets have sample_rows with sample=2"); }
+        // Sample rows should have ≤2 entries.
+        for b in buckets {
+            if let Some(samples) = b.get("sample_rows").and_then(|s| s.as_array()) {
+                if samples.len() > 2 {
+                    bail!("Bucket has {} sample_rows, expected ≤2", samples.len());
+                }
+            }
+        }
+        Ok("sample_rows present and bounded".into())
+    }));
+
+    // ── T151: --agg terms:extension,sample=2 JSON has drilldown ──
+    specs.push(spec("T151 --agg terms:extension,sample=2 JSON drilldown",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=5,sample=2", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        // Every bucket should have drilldown predicates.
+        let has_drill = buckets.iter().any(|b|
+            b.get("drilldown").and_then(|d| d.as_array()).map_or(false, |d| !d.is_empty())
+        );
+        if !has_drill { bail!("No buckets have drilldown predicates"); }
+        // Drilldown should include extension field.
+        for b in buckets {
+            if let Some(drills) = b.get("drilldown").and_then(|d| d.as_array()) {
+                let has_ext = drills.iter().any(|d|
+                    d.get("field").and_then(|f| f.as_str()) == Some("extension")
+                );
+                if !drills.is_empty() && !has_ext {
+                    bail!("Drilldown missing extension predicate");
+                }
+            }
+        }
+        Ok("drilldown predicates present".into())
+    }));
+
+    // ── T152: agg by_extension table format shows sample lines ──
+    specs.push(spec("T152 agg by_extension table with samples",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "table"], |stdout, _| {
+        // Sample lines are prefixed with "→".
+        let has_arrow = stdout.contains('→');
+        if !has_arrow { bail!("Table output missing → sample lines"); }
+        Ok("table output has sample lines".into())
+    }));
+
+    // ── T153: --agg without sample has no sample_rows in JSON ──
+    specs.push(spec("T153 --agg terms:extension no sample",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=3", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        // No sample_rows key should be present (skip_serializing_if empty).
+        for b in buckets {
+            if b.get("sample_rows").is_some() {
+                bail!("sample_rows should be absent when sample not requested");
+            }
+        }
+        Ok("no sample_rows when sample not requested".into())
+    }));
+
+    // ── T154: rollup:drive power syntax ──
+    specs.push(spec("T154 rollup:drive power syntax",
+        &["*", "--limit", "0", "--agg", "rollup:drive,top=5", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let rollup = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("rollup"))
+            .ok_or_else(|| anyhow::anyhow!("No rollup result"))?;
+        let buckets = rollup.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        if buckets.is_empty() { bail!("Empty rollup buckets"); }
+        Ok(format!("{} drive rollup buckets", buckets.len()))
+    }));
+
+    // ── T155: rollup:path,depth=2 power syntax ──
+    specs.push(spec("T155 rollup:path,depth=2 power syntax",
+        &["*", "--limit", "0", "--agg", "rollup:path,depth=2,top=10", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let rollup = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("rollup"))
+            .ok_or_else(|| anyhow::anyhow!("No rollup result"))?;
+        let buckets = rollup.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        if buckets.is_empty() { bail!("Empty rollup:path buckets"); }
+        Ok(format!("{} path rollup buckets", buckets.len()))
+    }));
+
+    // ── T156: multiple --agg flags combined ──
+    specs.push(spec("T156 multiple --agg flags combined",
+        &["*", "--limit", "0", "--agg", "count", "--agg", "terms:extension,top=3", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.len() < 2 {
+            bail!("Expected ≥2 results from two --agg flags, got {}", results.len());
+        }
+        let has_count = results.iter().any(|r| r.get("kind").and_then(|k| k.as_str()) == Some("count"));
+        let has_buckets = results.iter().any(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"));
+        if !has_count { bail!("Missing count result"); }
+        if !has_buckets { bail!("Missing buckets result"); }
+        Ok(format!("{} results from combined --agg", results.len()))
+    }));
+
+    // ── T157: --agg + search filter ──
+    specs.push(spec("T157 --agg + search filter",
+        &["*.exe", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        if buckets.is_empty() { bail!("No buckets returned"); }
+        // Drilldown should include name glob predicate from search filter.
+        let has_name_pred = buckets.iter().any(|b| {
+            b.get("drilldown").and_then(|d| d.as_array()).map_or(false, |drills| {
+                drills.iter().any(|d| d.get("field").and_then(|f| f.as_str()) == Some("name"))
+            })
+        });
+        if !has_name_pred { bail!("Drilldown missing name predicate from search filter"); }
+        Ok(format!("{} buckets with name predicate in drilldown", buckets.len()))
+    }));
+
+    // ── T158: sample row fields content ──
+    specs.push(spec("T158 sample row fields content",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=2", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        // Find a bucket with sample_rows and verify field keys.
+        let bucket_with_samples = buckets.iter()
+            .find(|b| b.get("sample_rows").and_then(|s| s.as_array()).map_or(false, |s| !s.is_empty()))
+            .ok_or_else(|| anyhow::anyhow!("No bucket has sample_rows"))?;
+        let samples = bucket_with_samples.get("sample_rows").unwrap().as_array().unwrap();
+        let first = &samples[0];
+        let fields = first.get("fields").and_then(|f| f.as_object())
+            .ok_or_else(|| anyhow::anyhow!("sample_rows[0] missing 'fields' object"))?;
+        if !fields.contains_key("name") { bail!("sample row missing 'name' field"); }
+        if !fields.contains_key("size") { bail!("sample row missing 'size' field"); }
+        Ok(format!("sample row has {} fields: {:?}", fields.len(), fields.keys().collect::<Vec<_>>()))
+    }));
+
+    // ── T159: CSV with samples column ──
+    specs.push(spec("T159 CSV with samples column",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "csv"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines().collect();
+        // Find the header line for the buckets section.
+        let header = lines.iter()
+            .find(|l| l.starts_with("key") && l.contains("count"))
+            .ok_or_else(|| anyhow::anyhow!("No CSV header line found"))?;
+        if !header.contains("samples") { bail!("CSV header missing 'samples' column"); }
+        // Data lines after header should have JSON array in samples column.
+        Ok("CSV has samples column".into())
+    }));
+
+    // ── T160: hist:size power syntax ──
+    specs.push(spec("T160 hist:size power syntax",
+        &["*", "--limit", "0", "--agg", "hist:size,interval=1048576", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let hist = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No histogram result"))?;
+        let buckets = hist.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets"))?;
+        if buckets.is_empty() { bail!("Empty histogram buckets"); }
+        Ok(format!("{} histogram buckets", buckets.len()))
+    }));
+
+    // ── T161: stats:size power syntax ──
+    specs.push(spec("T161 stats:size power syntax",
+        &["*", "--limit", "0", "--agg", "stats:size", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let stats = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("stats"))
+            .ok_or_else(|| anyhow::anyhow!("No stats result"))?;
+        // Stats are nested under "stats" key.
+        let inner = stats.get("stats")
+            .ok_or_else(|| anyhow::anyhow!("Missing 'stats' object"))?;
+        if inner.get("min").is_none() { bail!("Stats missing 'min'"); }
+        if inner.get("max").is_none() { bail!("Stats missing 'max'"); }
+        if inner.get("sum").is_none() { bail!("Stats missing 'sum'"); }
+        if inner.get("count").is_none() { bail!("Stats missing 'count'"); }
+        Ok("stats:size produces stats with min/max/sum/count".into())
+    }));
+
+    // ── T162: datehist:modified,calendar=month power syntax ──
+    specs.push(spec("T162 datehist:modified,calendar=month",
+        &["*", "--limit", "0", "--agg", "datehist:modified,calendar=month", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let dh = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No datehist result"))?;
+        let buckets = dh.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets"))?;
+        if buckets.is_empty() { bail!("Empty datehist buckets"); }
+        Ok(format!("{} date histogram buckets", buckets.len()))
+    }));
+
+    // ── T163: range:size power syntax ──
+    specs.push(spec("T163 range:size power syntax",
+        &["*", "--limit", "0", "--agg", "range:size,boundaries=0+1024+1048576+1073741824", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let range = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No range result"))?;
+        let buckets = range.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets"))?;
+        if buckets.is_empty() { bail!("Empty range buckets"); }
+        Ok(format!("{} range buckets", buckets.len()))
+    }));
+
+    // ── T164: --histogram shorthand ──
+    specs.push(spec("T164 --histogram size:1048576 shorthand",
+        &["*", "--limit", "0", "--histogram", "size:1048576", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let hist = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No histogram result"))?;
+        let buckets = hist.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets"))?;
+        if buckets.is_empty() { bail!("Empty histogram buckets"); }
+        Ok(format!("--histogram shorthand: {} buckets", buckets.len()))
+    }));
+
+    // ── T165: missing:extension power syntax ──
+    specs.push(spec("T165 missing:extension power syntax",
+        &["*", "--limit", "0", "--agg", "missing:extension", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("No results from missing:extension"); }
+        Ok(format!("{} results from missing:extension", results.len()))
+    }));
+
+    // ── T166: distinct:extension power syntax ──
+    specs.push(spec("T166 distinct:extension power syntax",
+        &["*", "--limit", "0", "--agg", "distinct:extension", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("No results from distinct:extension"); }
+        Ok(format!("{} results from distinct:extension", results.len()))
+    }));
+
+    // ── T167: sample_sort via CLI ──
+    specs.push(spec("T167 sample_sort terms:extension,sample=2,sort=size",
+        &["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=2,sort=size", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        let bucket_result = results.iter()
+            .find(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"))
+            .ok_or_else(|| anyhow::anyhow!("No buckets result"))?;
+        let buckets = bucket_result.get("buckets").and_then(|b| b.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+        // Find a bucket with samples and verify sort order (descending by size).
+        let bucket_with_samples = buckets.iter()
+            .find(|b| b.get("sample_rows").and_then(|s| s.as_array()).map_or(false, |s| s.len() >= 2));
+        if let Some(b) = bucket_with_samples {
+            let samples = b.get("sample_rows").unwrap().as_array().unwrap();
+            let s0 = samples[0].get("sort_key").and_then(|k| k.as_i64()).unwrap_or(0);
+            let s1 = samples[1].get("sort_key").and_then(|k| k.as_i64()).unwrap_or(0);
+            if s0 < s1 { bail!("Samples not sorted desc by size: {} < {}", s0, s1); }
+            Ok(format!("samples sorted desc: {} >= {}", s0, s1))
+        } else {
+            Ok("no bucket with 2+ samples to verify sort (ok for sparse data)".into())
+        }
+    }));
+
+    // ── T168: uffs stats daemon mode (no path) ──
+    specs.push(spec("T168 uffs stats daemon mode",
+        &["stats"], |stdout, _| {
+        // Daemon-mode stats outputs overview preset sections.
+        if stdout.trim().is_empty() { bail!("Empty stats output"); }
+        // Should contain key overview sections.
+        let has_count = stdout.contains("Total") || stdout.contains("total_count");
+        let has_type = stdout.contains("by_type") || stdout.contains("file") || stdout.contains("directory");
+        if !has_count { bail!("Stats missing total count section"); }
+        if !has_type { bail!("Stats missing type breakdown"); }
+        Ok("uffs stats daemon mode produces overview".into())
+    }));
+
+    // ── T169: uffs daemon stats (perf stats) ──
+    specs.push(spec("T169 uffs daemon stats (perf)",
+        &["daemon", "stats"], |stdout, _| {
+        if stdout.contains("not running") { bail!("Daemon not running"); }
+        let has_uptime = stdout.contains("Uptime") || stdout.contains("uptime");
+        let has_queries = stdout.contains("Queries") || stdout.contains("queries");
+        if !has_uptime { bail!("Daemon stats missing uptime"); }
+        if !has_queries { bail!("Daemon stats missing query count"); }
+        Ok("daemon stats shows uptime + queries".into())
+    }));
+
+    // ── T170: rollup:drive table format ──
+    specs.push(spec("T170 rollup:drive table format",
+        &["*", "--limit", "0", "--agg", "rollup:drive,top=5", "--format", "table"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines().collect();
+        if lines.len() < 3 { bail!("Too few lines in rollup table output"); }
+        // Should have header + data rows.
+        let has_header = stdout.contains("Key") || stdout.contains("Count") || stdout.contains("count");
+        if !has_header { bail!("Rollup table missing header"); }
+        Ok(format!("rollup:drive table: {} lines", lines.len()))
+    }));
+
+    // ── T171: rollup:path CSV format ──
+    specs.push(spec("T171 rollup:path CSV format",
+        &["*", "--limit", "0", "--agg", "rollup:path,depth=1,top=5", "--format", "csv"], |stdout, _| {
+        let lines: Vec<&str> = stdout.lines().collect();
+        // CSV should have header + data rows.
+        let header = lines.iter()
+            .find(|l| l.starts_with("key") && l.contains("count"))
+            .ok_or_else(|| anyhow::anyhow!("No CSV header in rollup output"))?;
+        if !header.contains("total_bytes") { bail!("CSV header missing total_bytes"); }
+        Ok(format!("rollup:path CSV: {} lines", lines.len()))
+    }));
+
+    // ── T172: agg overview CSV format ──
+    specs.push(spec("T172 agg overview --format csv",
+        &["agg", "overview", "--format", "csv"], |stdout, _| {
+        if stdout.trim().is_empty() { bail!("Empty overview CSV"); }
+        // CSV overview has multiple sections.
+        let sections: Vec<&str> = stdout.lines().filter(|l| l.starts_with("# ")).collect();
+        if sections.is_empty() { bail!("No CSV section headers (# prefix)"); }
+        Ok(format!("overview CSV: {} sections", sections.len()))
+    }));
+
+    // ── T173: agg by_age --format json ──
+    specs.push(spec("T173 agg by_age --format json",
+        &["agg", "by_age", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("Empty by_age JSON"); }
+        let has_buckets = results.iter().any(|r| r.get("kind").and_then(|k| k.as_str()) == Some("buckets"));
+        if !has_buckets { bail!("by_age JSON missing buckets"); }
+        Ok(format!("{} results from by_age JSON", results.len()))
+    }));
+
+    // ── T174: agg storage --format json ──
+    specs.push(spec("T174 agg storage --format json",
+        &["agg", "storage", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("Empty storage JSON"); }
+        Ok(format!("{} results from storage JSON", results.len()))
+    }));
+
+    // ── T175: agg activity --format json ──
+    specs.push(spec("T175 agg activity --format json",
+        &["agg", "activity", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("Empty activity JSON"); }
+        Ok(format!("{} results from activity JSON", results.len()))
+    }));
+
+    // ── T176: agg media --format json ──
+    specs.push(spec("T176 agg media --format json",
+        &["agg", "media", "--format", "json"], |stdout, _| {
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+        let results = parsed.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+        if results.is_empty() { bail!("Empty media JSON"); }
+        Ok(format!("{} results from media JSON", results.len()))
+    }));
+
+    // ── T177: agg duplicates --format csv ──
+    specs.push(spec("T177 agg duplicates --format csv",
+        &["agg", "duplicates", "--format", "csv"], |stdout, _| {
+        if stdout.trim().is_empty() { bail!("Empty duplicates CSV"); }
+        let header = stdout.lines()
+            .find(|l| l.starts_with("key") && l.contains("count"))
+            .ok_or_else(|| anyhow::anyhow!("No CSV header in duplicates output"))?;
+        if !header.contains("total_bytes") { bail!("Duplicates CSV header missing total_bytes"); }
+        Ok("duplicates CSV has proper header".into())
+    }));
+
     specs
 }
 
@@ -2848,7 +3234,7 @@ fn main() {
 
     if specs.is_empty() {
         eprintln!("  {} No tests matched filter: {:?}", "⚠".yellow(), args.test_filter);
-        eprintln!("  Available test IDs: T00, T01, ..., T128");
+        eprintln!("  Available test IDs: T00, T01, ..., T128, T130-T149");
         std::process::exit(1);
     }
 

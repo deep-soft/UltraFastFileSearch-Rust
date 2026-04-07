@@ -18,15 +18,46 @@
 
 //! Aggregation execution: convert wire specs to core specs and run them.
 
+use uffs_client::protocol::{DrilldownWire, SampleRowWire};
+use uffs_core::aggregate::TopHitsSpec;
+use uffs_core::aggregate::finalize::{DrilldownPredicate, DrilldownValue, SampleRow};
 use uffs_core::search::backend::DriveIndex;
 
 use super::IndexManager;
 
+/// Convert a core [`SampleRow`] to a wire [`SampleRowWire`].
+fn sample_row_to_wire(sr: SampleRow) -> SampleRowWire {
+    SampleRowWire {
+        fields: sr.fields.into_iter().collect(),
+        sort_key: Some(sr.sort_key),
+    }
+}
+
+/// Convert a core [`DrilldownPredicate`] to a wire [`DrilldownWire`].
+fn drilldown_to_wire(dp: DrilldownPredicate) -> DrilldownWire {
+    let value = match dp.value {
+        DrilldownValue::String(s) => serde_json::Value::String(s),
+        DrilldownValue::U64(n) => serde_json::Value::Number(n.into()),
+        DrilldownValue::I64(n) => serde_json::Value::Number(n.into()),
+        DrilldownValue::Bool(b) => serde_json::Value::Bool(b),
+    };
+    DrilldownWire {
+        field: dp.field,
+        op: dp.op,
+        value,
+    }
+}
+
 impl IndexManager {
     /// Run aggregation specs from wire format against loaded drives.
+    ///
+    /// `query_predicates` are the original search-scope filters (if any),
+    /// forwarded into `FinalizeOptions` so drill-down predicates on each
+    /// bucket include the full query context.
     pub(crate) fn run_aggregations(
         snapshot: &DriveIndex,
         wire_specs: &[uffs_client::protocol::AggregateSpecWire],
+        query_predicates: Vec<DrilldownPredicate>,
     ) -> Vec<uffs_client::protocol::AggregateResultWire> {
         use uffs_client::protocol::{AggregateResultWire, BucketWire, StatsWire};
         use uffs_core::aggregate::finalize::{AggregateResultData, FinalizeOptions};
@@ -50,7 +81,10 @@ impl IndexManager {
         // Run aggregation.
         let drive_refs: Vec<&uffs_core::compact::DriveCompactIndex> =
             snapshot.drives.iter().map(|arc| arc.as_ref()).collect();
-        let options = FinalizeOptions::default();
+        let options = FinalizeOptions {
+            query_predicates,
+            ..FinalizeOptions::default()
+        };
         let output = match uffs_core::aggregate::run_aggregate(&drive_refs, &specs, &options) {
             Ok(output) => output,
             Err(_) => return vec![],
@@ -102,14 +136,22 @@ impl IndexManager {
                             None,
                             None,
                             rows.into_iter()
-                                .map(|r| BucketWire {
-                                    key: r.key,
-                                    count: r.count,
-                                    total_bytes: r.total_bytes,
-                                    total_allocated: Some(r.total_allocated),
-                                    avg_size: Some(r.avg_size),
-                                    share_count: Some(r.share_of_total_count),
-                                    share_bytes: Some(r.share_of_total_bytes),
+                                .map(|r| {
+                                    let samples =
+                                        r.sample_rows.into_iter().map(sample_row_to_wire).collect();
+                                    let drills =
+                                        r.drilldown.into_iter().map(drilldown_to_wire).collect();
+                                    BucketWire {
+                                        key: r.key,
+                                        count: r.count,
+                                        total_bytes: r.total_bytes,
+                                        total_allocated: Some(r.total_allocated),
+                                        avg_size: Some(r.avg_size),
+                                        share_count: Some(r.share_of_total_count),
+                                        share_bytes: Some(r.share_of_total_bytes),
+                                        sample_rows: samples,
+                                        drilldown: drills,
+                                    }
                                 })
                                 .collect(),
                             Some(other_count),
@@ -139,14 +181,22 @@ impl IndexManager {
                             None,
                             None,
                             rows.into_iter()
-                                .map(|r| BucketWire {
-                                    key: r.key,
-                                    count: r.count,
-                                    total_bytes: r.total_bytes,
-                                    total_allocated: Some(r.total_allocated),
-                                    avg_size: Some(r.avg_size),
-                                    share_count: Some(r.share_of_total_count),
-                                    share_bytes: Some(r.share_of_total_bytes),
+                                .map(|r| {
+                                    let samples =
+                                        r.sample_rows.into_iter().map(sample_row_to_wire).collect();
+                                    let drills =
+                                        r.drilldown.into_iter().map(drilldown_to_wire).collect();
+                                    BucketWire {
+                                        key: r.key,
+                                        count: r.count,
+                                        total_bytes: r.total_bytes,
+                                        total_allocated: Some(r.total_allocated),
+                                        avg_size: Some(r.avg_size),
+                                        share_count: Some(r.share_of_total_count),
+                                        share_bytes: Some(r.share_of_total_bytes),
+                                        sample_rows: samples,
+                                        drilldown: drills,
+                                    }
                                 })
                                 .collect(),
                             None,
@@ -169,6 +219,8 @@ impl IndexManager {
                                     avg_size: Some(g.file_size as f64),
                                     share_count: None,
                                     share_bytes: None,
+                                    sample_rows: Vec::new(),
+                                    drilldown: Vec::new(),
                                 })
                                 .collect(),
                             None,
@@ -263,6 +315,22 @@ impl IndexManager {
                 .collect()
         }
 
+        /// Build `Option<TopHitsSpec>` from the wire spec's sample fields.
+        fn build_sample(ws: &uffs_client::protocol::AggregateSpecWire) -> Option<TopHitsSpec> {
+            ws.sample.map(|n| {
+                let mut th = TopHitsSpec::with_count(n);
+                if let Some(field) = &ws.sample_sort
+                    && let Some(fid) = FieldId::parse(field)
+                {
+                    th.sort_field = fid;
+                }
+                if let Some(desc) = ws.sample_desc {
+                    th.sort_desc = desc;
+                }
+                th
+            })
+        }
+
         let make = |kind: AggregateKind| -> Vec<AggregateSpec> {
             let mut spec = AggregateSpec::new(kind);
             spec.label = ws.label.clone();
@@ -293,6 +361,7 @@ impl IndexManager {
                     field,
                     top,
                     metrics,
+                    sample: build_sample(ws),
                 }))
             }
             "histogram" | "hist" => {
@@ -345,7 +414,12 @@ impl IndexManager {
                 };
                 let top = ws.top.unwrap_or(30);
                 let metrics = parse_bucket_metrics(&ws.metrics);
-                Ok(make(AggregateKind::Rollup { mode, top, metrics }))
+                Ok(make(AggregateKind::Rollup {
+                    mode,
+                    top,
+                    metrics,
+                    sample: build_sample(ws),
+                }))
             }
             "duplicates" | "dups" => {
                 let keys: Vec<FieldId> = ws
@@ -363,7 +437,7 @@ impl IndexManager {
                     keys,
                     verify: DuplicateVerify::None,
                     top,
-                    sample: 2,
+                    sample: Some(build_sample(ws).unwrap_or_else(|| TopHitsSpec::with_count(2))),
                     max_groups: 500_000,
                 }))
             }

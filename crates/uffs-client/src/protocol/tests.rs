@@ -234,6 +234,9 @@ fn aggregate_spec_wire_preset_round_trip() {
         boundaries: vec![],
         metrics: vec![],
         preset: Some("overview".to_owned()),
+        sample: None,
+        sample_sort: None,
+        sample_desc: None,
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     let parsed: AggregateSpecWire = serde_json::from_str(&json).expect("deserialize");
@@ -257,6 +260,9 @@ fn aggregate_spec_wire_terms_round_trip() {
         boundaries: vec![],
         metrics: vec!["count".to_owned(), "total_bytes".to_owned()],
         preset: None,
+        sample: None,
+        sample_sort: None,
+        sample_desc: None,
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     let parsed: AggregateSpecWire = serde_json::from_str(&json).expect("deserialize");
@@ -281,6 +287,9 @@ fn aggregate_spec_wire_date_histogram_round_trip() {
         boundaries: vec![],
         metrics: vec!["count".to_owned()],
         preset: None,
+        sample: None,
+        sample_sort: None,
+        sample_desc: None,
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     let parsed: AggregateSpecWire = serde_json::from_str(&json).expect("deserialize");
@@ -301,6 +310,9 @@ fn aggregate_spec_wire_range_round_trip() {
         boundaries: vec![0, 1024, 1_048_576, 1_073_741_824],
         metrics: vec![],
         preset: None,
+        sample: None,
+        sample_sort: None,
+        sample_desc: None,
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     let parsed: AggregateSpecWire = serde_json::from_str(&json).expect("deserialize");
@@ -341,6 +353,8 @@ fn bucket_wire_full_round_trip() {
         avg_size: Some(4_000.0_f64),
         share_count: Some(5.0_f64),
         share_bytes: Some(3.2_f64),
+        sample_rows: Vec::new(),
+        drilldown: Vec::new(),
     };
     let json = serde_json::to_string(&bucket).expect("serialize");
     let parsed: BucketWire = serde_json::from_str(&json).expect("deserialize");
@@ -441,6 +455,8 @@ fn aggregate_result_wire_terms_round_trip() {
                 avg_size: Some(4_000.0_f64),
                 share_count: None,
                 share_bytes: None,
+                sample_rows: Vec::new(),
+                drilldown: Vec::new(),
             },
             BucketWire {
                 key: "toml".to_owned(),
@@ -450,6 +466,8 @@ fn aggregate_result_wire_terms_round_trip() {
                 avg_size: Some(250.0_f64),
                 share_count: None,
                 share_bytes: None,
+                sample_rows: Vec::new(),
+                drilldown: Vec::new(),
             },
         ],
         other_count: Some(300),
@@ -481,6 +499,9 @@ fn search_params_with_aggregations_round_trip() {
                 boundaries: vec![],
                 metrics: vec![],
                 preset: Some("overview".to_owned()),
+                sample: None,
+                sample_sort: None,
+                sample_desc: None,
             },
             AggregateSpecWire {
                 kind: "count".to_owned(),
@@ -492,6 +513,9 @@ fn search_params_with_aggregations_round_trip() {
                 boundaries: vec![],
                 metrics: vec![],
                 preset: None,
+                sample: None,
+                sample_sort: None,
+                sample_desc: None,
             },
         ],
         include_rows: false,
@@ -547,6 +571,8 @@ fn search_response_with_aggregations_round_trip() {
                     avg_size: Some(50_000.0_f64),
                     share_count: Some(2.0_f64),
                     share_bytes: Some(10.0_f64),
+                    sample_rows: Vec::new(),
+                    drilldown: Vec::new(),
                 }],
                 other_count: Some(490_000),
                 total_groups: Some(12),
@@ -589,4 +615,163 @@ fn aggregate_result_wire_minimal_json() {
     assert!(parsed.label.is_none());
     assert!(parsed.stats.is_none());
     assert!(parsed.buckets.is_empty());
+}
+
+// ── S2G.12: Serde round-trip tests for wire types ─────────────────
+
+#[test]
+fn sample_row_wire_round_trip() {
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("name".to_owned(), "foo.rs".to_owned());
+    fields.insert("size".to_owned(), "4096".to_owned());
+    let wire = SampleRowWire {
+        fields,
+        sort_key: Some(4096),
+    };
+    let json = serde_json::to_string(&wire).expect("serialize");
+    let parsed: SampleRowWire = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(&parsed.fields["name"], "foo.rs");
+    assert_eq!(&parsed.fields["size"], "4096");
+    assert_eq!(parsed.sort_key, Some(4096));
+}
+
+#[test]
+fn sample_row_wire_no_sort_key() {
+    let wire = SampleRowWire {
+        fields: std::collections::HashMap::new(),
+        sort_key: None,
+    };
+    let json = serde_json::to_string(&wire).expect("serialize");
+    assert!(!json.contains("sort_key"), "sort_key should be omitted");
+    let parsed: SampleRowWire = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed.sort_key, None);
+}
+
+#[test]
+fn drilldown_wire_round_trip() {
+    let wire = DrilldownWire {
+        field: "extension".to_owned(),
+        op: "eq".to_owned(),
+        value: serde_json::Value::String("rs".to_owned()),
+    };
+    let json = serde_json::to_string(&wire).expect("serialize");
+    let parsed: DrilldownWire = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed.field, "extension");
+    assert_eq!(parsed.op, "eq");
+    assert_eq!(parsed.value, serde_json::Value::String("rs".to_owned()));
+}
+
+#[test]
+fn drilldown_wire_numeric_value() {
+    let wire = DrilldownWire {
+        field: "size".to_owned(),
+        op: "gte".to_owned(),
+        value: serde_json::Value::Number(1_024_i64.into()),
+    };
+    let json = serde_json::to_string(&wire).expect("serialize");
+    let parsed: DrilldownWire = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed.value, serde_json::Value::Number(1_024_i64.into()));
+}
+
+#[test]
+fn bucket_wire_with_samples_round_trip() {
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("name".to_owned(), "bar.rs".to_owned());
+    let bucket = BucketWire {
+        key: "rs".to_owned(),
+        count: 100,
+        total_bytes: 50_000,
+        total_allocated: None,
+        avg_size: None,
+        share_count: None,
+        share_bytes: None,
+        sample_rows: vec![SampleRowWire {
+            fields,
+            sort_key: Some(999),
+        }],
+        drilldown: vec![DrilldownWire {
+            field: "extension".to_owned(),
+            op: "eq".to_owned(),
+            value: serde_json::Value::String("rs".to_owned()),
+        }],
+    };
+    let json = serde_json::to_string(&bucket).expect("serialize");
+    assert!(json.contains("sample_rows"));
+    assert!(json.contains("drilldown"));
+    let parsed: BucketWire = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed.sample_rows.len(), 1);
+    assert_eq!(parsed.drilldown.len(), 1);
+    assert_eq!(&parsed.sample_rows[0].fields["name"], "bar.rs");
+    assert_eq!(parsed.drilldown[0].field, "extension");
+}
+
+#[test]
+fn bucket_wire_empty_samples_omitted() {
+    let bucket = BucketWire {
+        key: "txt".to_owned(),
+        count: 10,
+        total_bytes: 1000,
+        total_allocated: None,
+        avg_size: None,
+        share_count: None,
+        share_bytes: None,
+        sample_rows: Vec::new(),
+        drilldown: Vec::new(),
+    };
+    let json = serde_json::to_string(&bucket).expect("serialize");
+    assert!(
+        !json.contains("sample_rows"),
+        "empty sample_rows should be omitted"
+    );
+    assert!(
+        !json.contains("drilldown"),
+        "empty drilldown should be omitted"
+    );
+}
+
+#[test]
+fn bucket_wire_backward_compat_no_sample_fields() {
+    // Old JSON without sample_rows/drilldown should deserialize fine.
+    let json_str = r#"{"key":"rs","count":50,"total_bytes":1000}"#;
+    let parsed: BucketWire = serde_json::from_str(json_str).expect("deserialize");
+    assert_eq!(parsed.key, "rs");
+    assert_eq!(parsed.count, 50);
+    assert!(parsed.sample_rows.is_empty());
+    assert!(parsed.drilldown.is_empty());
+}
+
+#[test]
+fn aggregate_spec_wire_with_sample() {
+    let spec = AggregateSpecWire {
+        kind: "terms".to_owned(),
+        label: None,
+        field: Some("extension".to_owned()),
+        top: Some(10),
+        interval: None,
+        calendar: None,
+        boundaries: vec![],
+        metrics: vec![],
+        preset: None,
+        sample: Some(3),
+        sample_sort: Some("size".to_owned()),
+        sample_desc: Some(true),
+    };
+    let json = serde_json::to_string(&spec).expect("serialize");
+    assert!(json.contains(r#""sample":3"#));
+    assert!(json.contains(r#""sample_sort":"size""#));
+    let parsed: AggregateSpecWire = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed.sample, Some(3));
+    assert_eq!(parsed.sample_sort.as_deref(), Some("size"));
+    assert_eq!(parsed.sample_desc, Some(true));
+}
+
+#[test]
+fn aggregate_spec_wire_no_sample_backward_compat() {
+    // Old JSON without sample fields should deserialize fine.
+    let json_str = r#"{"kind":"terms","field":"extension","top":10}"#;
+    let parsed: AggregateSpecWire = serde_json::from_str(json_str).expect("deserialize");
+    assert_eq!(parsed.kind, "terms");
+    assert!(parsed.sample.is_none());
+    assert!(parsed.sample_sort.is_none());
+    assert!(parsed.sample_desc.is_none());
 }

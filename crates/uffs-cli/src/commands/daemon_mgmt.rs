@@ -14,7 +14,18 @@ pub async fn daemon(action: &DaemonAction) -> Result<()> {
             mft_file,
             data_dir,
             no_cache,
-        } => daemon_start(mft_file, data_dir.as_deref(), *no_cache).await,
+            log_level,
+            log_file,
+        } => {
+            daemon_start(
+                mft_file,
+                data_dir.as_deref(),
+                *no_cache,
+                log_level,
+                log_file.as_deref(),
+            )
+            .await
+        }
         DaemonAction::Status => daemon_status().await,
         DaemonAction::Stats => daemon_stats().await,
         DaemonAction::Stop => daemon_stop().await,
@@ -103,6 +114,8 @@ async fn daemon_start(
     mft_files: &[std::path::PathBuf],
     data_dir: Option<&std::path::Path>,
     no_cache: bool,
+    log_level: &str,
+    log_file: Option<&std::path::Path>,
 ) -> Result<()> {
     // Already running?
     tracing::info!("[daemon_start] checking if daemon is already running");
@@ -125,6 +138,15 @@ async fn daemon_start(
     }
     if no_cache {
         spawn_args.push("--no-cache".to_owned());
+    }
+    // Forward logging configuration to the spawned daemon.
+    if log_level != "info" {
+        spawn_args.push("--log-level".to_owned());
+        spawn_args.push(log_level.to_owned());
+    }
+    if let Some(path) = log_file {
+        spawn_args.push("--log-file".to_owned());
+        spawn_args.push(path.to_string_lossy().into_owned());
     }
 
     if !cfg!(windows) && spawn_args.is_empty() {

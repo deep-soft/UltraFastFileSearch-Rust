@@ -42,10 +42,11 @@ pub fn run() -> anyhow::Result<()> {
 /// Run the broker in foreground mode.
 #[cfg(windows)]
 fn run_foreground() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
+    // Use `try_init` so we don't panic if a subscriber is already installed.
+    let _ignore = tracing_subscriber::fmt()
         .with_target(false)
         .with_max_level(tracing::Level::INFO)
-        .init();
+        .try_init();
 
     tracing::info!(
         pid = std::process::id(),

@@ -15,7 +15,7 @@
 
 use super::spec::{
     AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, DuplicateVerify, RollupMode,
-    ScalarMetric,
+    ScalarMetric, TopHitsSpec,
 };
 use crate::search::field::FieldId;
 
@@ -120,6 +120,7 @@ fn parse_terms(rest: &str) -> Result<AggregateSpec, String> {
     let opts = parse_options(opts_str);
     let mut top: u16 = 20;
     let mut metrics = Vec::new();
+    let mut sample_count: u8 = 0;
 
     for (k, v) in &opts {
         match *k {
@@ -131,6 +132,9 @@ fn parse_terms(rest: &str) -> Result<AggregateSpec, String> {
                     metrics.push(parse_bucket_metric(m)?);
                 }
             }
+            "sample" => {
+                sample_count = v.parse().map_err(|_| format!("Invalid sample: `{v}`"))?;
+            }
             _ => {}
         }
     }
@@ -139,10 +143,13 @@ fn parse_terms(rest: &str) -> Result<AggregateSpec, String> {
         metrics = vec![BucketMetric::Count, BucketMetric::TotalBytes];
     }
 
+    let sample = (sample_count > 0).then(|| TopHitsSpec::with_count(sample_count));
+
     Ok(AggregateSpec::new(AggregateKind::Terms {
         field,
         top,
         metrics,
+        sample,
     }))
 }
 
@@ -258,6 +265,7 @@ fn parse_rollup(rest: &str) -> Result<AggregateSpec, String> {
     let mut depth: u8 = 1;
     let mut top: u16 = 30;
     let mut metrics = vec![BucketMetric::Count, BucketMetric::TotalBytes];
+    let mut sample_count: u8 = 0;
 
     for (k, v) in &opts {
         match *k {
@@ -268,6 +276,9 @@ fn parse_rollup(rest: &str) -> Result<AggregateSpec, String> {
                 for m in v.split('+') {
                     metrics.push(parse_bucket_metric(m)?);
                 }
+            }
+            "sample" => {
+                sample_count = v.parse().map_err(|_| format!("Invalid sample: `{v}`"))?;
             }
             _ => {}
         }
@@ -283,10 +294,13 @@ fn parse_rollup(rest: &str) -> Result<AggregateSpec, String> {
         }
     };
 
+    let sample = (sample_count > 0).then(|| TopHitsSpec::with_count(sample_count));
+
     Ok(AggregateSpec::new(AggregateKind::Rollup {
         mode,
         top,
         metrics,
+        sample,
     }))
 }
 
@@ -305,7 +319,7 @@ fn parse_duplicates(rest: &str) -> Result<AggregateSpec, String> {
 
     let mut verify = DuplicateVerify::None;
     let mut top: u16 = 100;
-    let mut sample: u8 = 2;
+    let mut sample_count: u8 = 2;
     let mut max_groups: u32 = 500_000;
 
     for (k, v) in &opts {
@@ -319,7 +333,9 @@ fn parse_duplicates(rest: &str) -> Result<AggregateSpec, String> {
                 };
             }
             "top" => top = v.parse().map_err(|_| format!("Invalid top: `{v}`"))?,
-            "sample" => sample = v.parse().map_err(|_| format!("Invalid sample: `{v}`"))?,
+            "sample" => {
+                sample_count = v.parse().map_err(|_| format!("Invalid sample: `{v}`"))?;
+            }
             "max_groups" => {
                 max_groups = v
                     .parse()
@@ -328,6 +344,8 @@ fn parse_duplicates(rest: &str) -> Result<AggregateSpec, String> {
             _ => {}
         }
     }
+
+    let sample = (sample_count > 0).then(|| TopHitsSpec::with_count(sample_count));
 
     Ok(AggregateSpec::new(AggregateKind::Duplicates {
         keys,
@@ -554,6 +572,103 @@ mod tests {
             assert_eq!(*interval, 1024);
         } else {
             panic!("expected Histogram");
+        }
+    }
+
+    // ── Stage 2 gap-fill tests ────────────────────────────────────
+
+    #[test]
+    fn parse_terms_with_sample() {
+        let spec = parse_agg_spec("terms:extension,top=10,sample=3").unwrap();
+        if let AggregateKind::Terms {
+            field, top, sample, ..
+        } = &spec.kind
+        {
+            assert_eq!(*field, FieldId::Extension);
+            assert_eq!(*top, 10);
+            let s = sample.as_ref().expect("sample should be Some");
+            assert_eq!(s.count, 3);
+        } else {
+            panic!("expected Terms");
+        }
+    }
+
+    #[test]
+    fn parse_terms_without_sample() {
+        let spec = parse_agg_spec("terms:extension,top=5").unwrap();
+        if let AggregateKind::Terms { sample, .. } = &spec.kind {
+            assert!(sample.is_none(), "no sample= → None");
+        } else {
+            panic!("expected Terms");
+        }
+    }
+
+    #[test]
+    fn parse_rollup_drive() {
+        let spec = parse_agg_spec("rollup:drive,top=10").unwrap();
+        if let AggregateKind::Rollup { mode, top, .. } = &spec.kind {
+            assert_eq!(*mode, RollupMode::Drive);
+            assert_eq!(*top, 10);
+        } else {
+            panic!("expected Rollup");
+        }
+    }
+
+    #[test]
+    fn parse_rollup_with_sample() {
+        let spec = parse_agg_spec("rollup:path,depth=2,sample=2").unwrap();
+        if let AggregateKind::Rollup { mode, sample, .. } = &spec.kind {
+            assert_eq!(*mode, RollupMode::Path { depth: 2 });
+            let s = sample.as_ref().expect("sample should be Some");
+            assert_eq!(s.count, 2);
+        } else {
+            panic!("expected Rollup");
+        }
+    }
+
+    #[test]
+    fn parse_duplicates_with_sample() {
+        let spec = parse_agg_spec("duplicates:size+name,sample=5,top=50").unwrap();
+        if let AggregateKind::Duplicates {
+            keys, top, sample, ..
+        } = &spec.kind
+        {
+            assert_eq!(keys.len(), 2);
+            assert_eq!(*top, 50);
+            let s = sample.as_ref().expect("sample should be Some");
+            assert_eq!(s.count, 5);
+        } else {
+            panic!("expected Duplicates");
+        }
+    }
+
+    #[test]
+    fn parse_rollup_folder_alias() {
+        let spec = parse_agg_spec("rollup:folder,depth=3").unwrap();
+        if let AggregateKind::Rollup { mode, .. } = &spec.kind {
+            assert_eq!(*mode, RollupMode::Path { depth: 3 });
+        } else {
+            panic!("expected Rollup");
+        }
+    }
+
+    #[test]
+    fn parse_rollup_dir_alias() {
+        let spec = parse_agg_spec("rollup:dir").unwrap();
+        if let AggregateKind::Rollup { mode, .. } = &spec.kind {
+            assert_eq!(*mode, RollupMode::Path { depth: 1 });
+        } else {
+            panic!("expected Rollup");
+        }
+    }
+
+    #[test]
+    fn parse_terms_sample_zero_is_none() {
+        let spec = parse_agg_spec("terms:extension,sample=0").unwrap();
+        if let AggregateKind::Terms { sample, .. } = &spec.kind {
+            assert!(sample.is_none(), "sample=0 should produce None");
+        } else {
+            panic!("expected Terms");
         }
     }
 }

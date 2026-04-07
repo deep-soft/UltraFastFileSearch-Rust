@@ -282,7 +282,8 @@ impl IndexManager {
 
         // ── Aggregation (if requested) ─────────────────────────────
         let agg_results = if !effective_params.aggregations.is_empty() {
-            Self::run_aggregations(&agg_snapshot, &effective_params.aggregations)
+            let predicates = Self::build_query_predicates(&effective_params);
+            Self::run_aggregations(&agg_snapshot, &effective_params.aggregations, predicates)
         } else {
             vec![]
         };
@@ -381,5 +382,63 @@ impl IndexManager {
                 })
                 .collect(),
         }
+    }
+
+    /// Convert search-request filters into drill-down predicates.
+    ///
+    /// These are prepended to each bucket's drill-down list so that a
+    /// follow-up query reproduces the original scope plus the bucket key.
+    fn build_query_predicates(
+        params: &SearchParams,
+    ) -> Vec<uffs_core::aggregate::finalize::DrilldownPredicate> {
+        use uffs_core::aggregate::finalize::{DrilldownPredicate, DrilldownValue};
+        let mut preds = Vec::new();
+
+        // Pattern
+        if !params.pattern.is_empty() && params.pattern != "*" {
+            preds.push(DrilldownPredicate {
+                field: "name".to_owned(),
+                op: "glob".to_owned(),
+                value: DrilldownValue::String(params.pattern.clone()),
+            });
+        }
+
+        // Filter mode (files / dirs)
+        if let Some(filter) = &params.filter
+            && filter != "all"
+        {
+            preds.push(DrilldownPredicate {
+                field: "type".to_owned(),
+                op: "eq".to_owned(),
+                value: DrilldownValue::String(filter.clone()),
+            });
+        }
+
+        // Size range
+        if let Some(min) = params.min_size {
+            preds.push(DrilldownPredicate {
+                field: "size".to_owned(),
+                op: "gte".to_owned(),
+                value: DrilldownValue::U64(min),
+            });
+        }
+        if let Some(max) = params.max_size {
+            preds.push(DrilldownPredicate {
+                field: "size".to_owned(),
+                op: "lte".to_owned(),
+                value: DrilldownValue::U64(max),
+            });
+        }
+
+        // Drives
+        for &drive in &params.drives {
+            preds.push(DrilldownPredicate {
+                field: "drive".to_owned(),
+                op: "eq".to_owned(),
+                value: DrilldownValue::String(drive.to_string()),
+            });
+        }
+
+        preds
     }
 }
