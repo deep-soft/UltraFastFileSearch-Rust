@@ -33,7 +33,7 @@ group       = "combined"
 name        = "T84 mega combined"
 title       = "T84 mega combined"
 short_desc  = "T84 mega combined"
-cli_args    = ["*.exe", "--files-only", "--min-size", "10485760", "--max-size", "1073741824", "--attr", "!hidden,!system", "--newer", "last_365d", "--sort", "-size", "--drive", "C", "--limit", "10", "--columns", "Name,Size,Modified,Path Only"]
+cli_args    = ["*.exe", "--files-only", "--min-size", "10240", "--max-size", "1073741824", "--attr", "!hidden,!system", "--newer", "last_365d", "--sort", "-size", "--drive", "C", "--limit", "10", "--columns", "Name,Size,Modified,Path Only"]
 stdout_contains = ["\"Name\",\"Size\"", "\"Path Only\""]
 expect_min_rows = 1
 
