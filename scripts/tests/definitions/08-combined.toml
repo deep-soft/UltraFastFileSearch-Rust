@@ -46,7 +46,7 @@ group       = "combined"
 name        = "T100 bulkiness + size combined"
 title       = "T100 bulkiness + size combined"
 short_desc  = "T100 bulkiness + size combined"
-cli_args    = ["*", "--min-bulkiness", "500", "--min-size", "1048576", "--files-only", "--limit", "10"]
+cli_args    = ["*", "--min-bulkiness", "500", "--min-size", "1048576", "--limit", "10"]
 expect_min_rows = 1
 
 [[test.column_checks]]
