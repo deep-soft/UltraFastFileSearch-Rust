@@ -1207,7 +1207,296 @@ _______________________________________________________________
 _______________________________________________________________
 
 
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts/windows/api-validation.rs
+  🔓 Removing stale lock (PID 17428 is no longer running)
+╔═══════════════════════════════════════════════════════════════╗
+║  UFFS API Validation Suite (JSON-RPC)                        ║
+╚═══════════════════════════════════════════════════════════════╝
+  Binary:  C:\Users\rnio\bin\uffs.exe
+  Source:  (live NTFS drives)
+  Socket:  C:\Users\rnio\AppData\Local\uffs\daemon.sock
 
+  Checking daemon status...
+  Daemon is not running, starting...
+    ↳ C:\Users\rnio\bin\uffs.exe daemon start
+  Daemon: Started (67276ms)
+    Starting daemon...
+    Daemon started and ready.
+  T-1  RPC connectivity (keepalive)...
+  ✅  T-1 RPC connectivity — OK (102ms)
+  Response:
+    {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "ok": true
+      }
+    }
+
+  T-0.5  Data gate (drives loaded)...
+  ✅  T-0.5 Data gate — OK (0ms)
+    7 drive(s) loaded: G:(15090 records), F:(2221343 records), C:(3410339 records), M:(1908805 records), D:(7065539 records), E:(2929519 records), S:(8278102 records)
+
+  Loaded 231 test definitions from test-definitions.toml
+  (223 api tests, 8 cli-only skipped, 0 disabled)
+  Running 223 tests...
+
+  [PASS]     6ms  --dirs-only: 10 rows [api]
+  [PASS]     6ms  --files-only: 10 rows [api]
+  [PASS]    16ms  --ext rs: 10 rows [api]
+  [PASS]   109ms  --ext jpg,png,gif: 10 rows, 10 rows, all image extensions [api]
+  [PASS]   241ms  --min-size 100MB: 10 rows [api]
+  [PASS]   242ms  warmup / daemon alive: 10 rows [api]
+  [PASS]   332ms  --max-size 1KB: 10 rows [api]
+  [PASS]   566ms  --hide-system: 20 rows [api]
+  [PASS]     1ms  --sort size --sort-desc: 10 rows, sorted Size desc [api]
+  [PASS]     1ms  --sort size (asc): 10 rows, sorted Size asc [api]
+  [PASS]     2ms  --min/max-size 1MB..10MB: 10 rows [api]
+  [PASS]     2ms  T11 --sort modified: 10 rows [api]
+  [PASS]     2ms  T12 --sort size,name: 10 rows [api]
+  [PASS]   174ms  T13 --attr hidden: 10 rows [api]
+  [PASS]   273ms  T15 --attr compressed: 10 rows [api]
+  [PASS]   477ms  T14 --attr !hidden: 10 rows [api]
+  [PASS]     3ms  T17 --name-only: 10 rows [api]
+  [PASS]     3ms  T19 --word: 10 rows [api]
+  [PASS]     4ms  T25 --newer 7d: 2 rows [api]
+  [PASS]     4ms  T22 --columns Name,Size,Path Only: 10 rows [api]
+  [PASS]    34ms  T18 --case sensitive: 10 rows [api]
+  [PASS]    34ms  T16 --exclude backup*: 10 rows [api]
+  [PASS]   136ms  T23 --min-descendants 100: 10 rows [api]
+  [PASS]   136ms  T24 --max-descendants 0: 10 rows [api]
+  [PASS]     1ms  T26 --older 365d: 10 rows [api]
+  [PASS]     2ms  T34 combined stress: 10 rows, sorted Size desc, 10 rows, size desc ≥ 1MB [api]
+  [PASS]     2ms  T29 --drives C,D: 10 rows [api]
+  [PASS]     3ms  T35 --limit 0 (unlimited): 0 rows [api]
+  [PASS]     3ms  T28 --drive C: 10 rows [api]
+  [PASS]    47ms  T30 --sep | --quotes ': 5 rows [api]
+  [PASS]    47ms  T33 regex >.*\.config$: 10 rows [api]
+  [PASS]   148ms  T27 --newer-created 30d: 10 rows [api]
+  [PASS]     1ms  T41 --header false: 5 rows [api]
+  [PASS]     1ms  T40 no results (graceful): 0 rows [api]
+  [PASS]     4ms  T42 --smart-case (lowercase = insensitive): 10 rows [api]
+  [PASS]   191ms  T43 --newer-accessed 7d: 10 rows [api]
+  [PASS]   191ms  T37 --attr system: 10 rows [api]
+  [PASS]   191ms  T39 --attr system,!hidden: 10 rows [api]
+  [PASS]   215ms  T38 --attr readonly: 10 rows [api]
+  [PASS]   462ms  T36 --older-created 365d: 10 rows [api]
+  [PASS]   328ms  T47 --newer last_7d: 10 rows [api]
+  [PASS]   335ms  T48 --newer last_30d: 10 rows [api]
+  [PASS]   344ms  T44 --newer today: 10 rows [api]
+  [PASS]   359ms  T45 --newer yesterday: 10 rows [api]
+  [PASS]   367ms  T50 --newer this_year: 10 rows [api]
+  [PASS]   368ms  T49 --newer this_month: 10 rows [api]
+  [PASS]   371ms  T46 --newer this_week: 10 rows [api]
+  [PASS]   531ms  T51 --older last_year: 10 rows [api]
+  [PASS]     4ms  T58 --sort name: 10 rows, sorted Name asc [api]
+  [PASS]     3ms  T59 --sort path: 10 rows [api]
+  [PASS]   276ms  T54 --newer-created today: 10 rows [api]
+  [PASS]   279ms  T56 bounded time range (last_week): 10 rows [api]
+  [PASS]   287ms  T52 --newer last_90d: 10 rows [api]
+  [PASS]   286ms  T53 --newer last_365d: 10 rows [api]
+  [PASS]   299ms  T55 --newer-accessed this_week: 10 rows [api]
+  [PASS]   316ms  T57 --newer 2025-01-01: 10 rows [api]
+  [PASS]     1ms  T62 --sort extension: 10 rows [api]
+  [PASS]     2ms  T64 --sort allocated: 10 rows [api]
+  [PASS]     2ms  T61 --sort accessed: 10 rows [api]
+  [PASS]     3ms  T67 multi-sort -modified,name: 10 rows [api]
+  [PASS]     3ms  T63 --sort drive: 10 rows [api]
+  [PASS]     3ms  T60 --sort created: 10 rows [api]
+  [PASS]     3ms  T66 multi-sort size,-name: 20 rows [api]
+  [PASS]   154ms  T65 --sort descendants --sort-desc: 10 rows, sorted Descendants desc, 10 rows, sorted descendants desc [api]
+  [PASS]     2ms  T67f --sort path_only: 10 rows [api]
+  [PASS]   259ms  T67b --sort treeallocated: 10 rows, sorted Tree Allocated desc, 10 rows, sorted tree_allocated desc [api]
+  [PASS]   259ms  T67a --sort treesize: 10 rows, sorted Tree Size desc, 10 rows, sorted tree_size desc [api]
+  [PASS]   324ms  T67h multi-sort treesize,name: 20 rows [api]
+  [PASS]   544ms  T67g --sort type: 20 rows [api]
+  [PASS]   571ms  T67c --sort bulkiness: 10 rows [api]
+  [PASS]  1073ms  T67e --sort pathlength: 10 rows [api]
+  [PASS]  1080ms  T67d --sort namelength: 10 rows, 10 rows, sorted by name length desc [api]
+  [PASS]   301ms  T69 --attr sparse: 10 rows [api]
+  [PASS]   302ms  T72 --attr encrypted: 0 rows [api]
+  [PASS]   305ms  T71 --attr offline: 10 rows [api]
+  [PASS]   364ms  T70 --attr reparse: 10 rows [api]
+  [PASS]   465ms  T67j multi-sort hidden,bulkiness: 20 rows [api]
+  [PASS]   469ms  T68 --attr archive: 10 rows [api]
+  [PASS]   522ms  T73 --attr !system: 10 rows [api]
+  [PASS]   539ms  T67i multi-sort type,-size: 20 rows [api]
+  [PASS]     2ms  T78 exclude + ext + size: 10 rows, 10 rows [api]
+  [PASS]     2ms  T80 --columns all (wide): 5 rows [api]
+  [PASS]   204ms  T76 dirs + desc range + sort: 10 rows, sorted Descendants desc, 10 dirs, desc range 10..1000 [api]
+  [PASS]   204ms  T75 size+time+ext combined: 10 rows, 10 rows [api]
+  [PASS]   235ms  T74 --attr hidden,system: 10 rows [api]
+  [PASS]   234ms  T77 hidden + --newer last_30d: 10 rows [api]
+  [PASS]   246ms  T82 --newer-accessed last_week: 10 rows [api]
+  [PASS]   246ms  T81 --newer-created this_year: 10 rows [api]
+  [FAIL]     1ms  T84 mega combined: Expected >= 1 rows, got 0
+  [PASS]     1ms  T83 multi-sort drive,ext,-size: 20 rows [api]
+  [PASS]     1ms  T88c file: prefix: 10 rows [api]
+  [PASS]     3ms  T88 name-only + hide-system + newer: 8 rows, 8 rows [api]
+  [PASS]     3ms  T88b dir: prefix: 10 rows [api]
+  [PASS]     5ms  T88a path: prefix: 10 rows, 10 rows, all contain 'windows' [api]
+  [PASS]    15ms  T87 ext + sort modified: 10 rows, 10 rows, ext filtered [api]
+  [PASS]   374ms  T86 --older-accessed 365d: 10 rows [api]
+  [PASS]     1ms  T88d --begins-with: 10 rows [api]
+  [PASS]     1ms  T88g --not-contains: 10 rows [api]
+  [PASS]     1ms  T88e --ends-with: 10 rows [api]
+  [PASS]     2ms  T88f --contains: 10 rows [api]
+  [PASS]     2ms  T88k dir: prefix + sort treesize desc: 10 rows, sorted Tree Size desc, 10 dirs sorted [api]
+  [PASS]     3ms  T88j --contains + --not-contains: 10 rows, 10 rows [api]
+  [PASS]     3ms  T88i path: vs --in-path: 10 rows, 10 rows, all contain 'notepad' [api]
+  [PASS]    61ms  T88h --in-path + pattern: 10 rows [api]
+  [PASS]     1ms  T88l --begins-with + --ext: 10 rows, 10 rows [api]
+  [PASS]    10ms  T91 --type executable: 10 rows [api]
+  [PASS]    36ms  T93 --type system: 10 rows [api]
+  [PASS]    43ms  T90 --type document: 10 rows [api]
+  [PASS]    61ms  T92 --type picture: 10 rows [api]
+  [PASS]    91ms  T94 --type code + sort size: 10 rows, sorted Size desc, 10 rows, sorted size desc [api]
+  [PASS]    91ms  T89 --type code: 10 rows [api]
+  [PASS]   413ms  T95 --in-path *windows*: 10 rows [api]
+  [PASS]   145ms  T97 --in-path + --exclude: 10 rows [api]
+  [PASS]   274ms  T103 --min-tree-allocated 100MB: 10 rows [api]
+  [PASS]   274ms  T101 --min-treesize 100MB: 10 rows [api]
+  [PASS]   281ms  T100 bulkiness + size combined: 1 rows [api]
+  [PASS]   291ms  T102 --max-treesize 1MB: 10 rows [api]
+  [PASS]   415ms  T96 --in-path *system32*: 10 rows [api]
+  [PASS]   429ms  T99 --max-bulkiness 100: 10 rows [api]
+  [PASS]   516ms  T98 --min-bulkiness 200: 10 rows [api]
+  [PASS]   310ms  T108 --min-size-on-disk 100MB: 10 rows [api]
+  [PASS]   382ms  T107 --max-path-length 30: 10 rows [api]
+  [PASS]   382ms  T106 --min-path-length 200: 10 rows [api]
+  [PASS]   406ms  T109 --max-size-on-disk 4096: 10 rows [api]
+  [PASS]   523ms  T111 --month Q4: 10 rows [api]
+  [PASS]   559ms  T110 --month jan: 10 rows [api]
+  [PASS]   921ms  T104 --min-name-length 50: 10 rows [api]
+  [PASS]   956ms  T105 --max-name-length 8: 10 rows [api]
+  [PASS]   338ms  T118 treesize + descendants: 10 rows [api]
+  [PASS]   379ms  T113 --month jan + --newer last_365d: 10 rows [api]
+  [PASS]   414ms  T116 --sort directory:desc: 20 rows [api]
+  [PASS]   414ms  T114 --sort hidden:desc: 20 rows [api]
+  [PASS]   497ms  T115 --sort compressed:desc: 20 rows [api]
+  [PASS]   499ms  T117 type + in-path + size: 10 rows [api]
+  [PASS]   556ms  T119 agg count: 0 rows [api]
+  [PASS]   627ms  T112 --month jan,feb,mar: 10 rows [api]
+  [PASS]   609ms  T126 agg count --format json: 0 rows, 1 aggregation results [api]
+  [PASS]   732ms  T122 agg by_type: 0 rows, 1 agg results [api]
+  [PASS]   733ms  T123 agg by_drive: 0 rows, 1 agg results [api]
+  [PASS]   763ms  T124 agg by_size: 0 rows, 2 agg results [api]
+  [PASS]   791ms  T121 agg by_extension: 0 rows, 1 agg results [api]
+  [PASS]   816ms  T125 agg by_age: 0 rows, 1 agg results [api]
+  [PASS]  1914ms  T120 agg overview: 0 rows, 6 agg results [api]
+  [PASS]  1917ms  T127 agg overview --format json: 0 rows, 6 aggregation results [api]
+  [PASS]   149ms  T129 regex case insensitive: 10 rows [api]
+  [PASS]   751ms  T128 agg by_extension --format csv: 0 rows, 1 agg results [api]
+  [PASS]   852ms  T131 agg cleanup preset: 0 rows, 4 agg results [api]
+  [PASS]  1224ms  T133 agg storage preset: 0 rows, 4 agg results [api]
+  [PASS]  1479ms  T130 agg top_folders preset: 0 rows, 1 agg results [api]
+  [PASS]  1586ms  T135 agg media preset: 0 rows, 4 agg results [api]
+  [PASS]  1596ms  T134 agg activity preset: 0 rows, 3 agg results [api]
+  [PASS]  3028ms  T132 agg duplicates preset: 0 rows, 1 agg results [api]
+  [PASS]   532ms  T141 --count shorthand: 1 rows [api]
+  [PASS]   705ms  T143 --facet type:10: 1 rows [api]
+  [PASS]   793ms  T142 --facet extension: 1 rows [api]
+  [PASS]   885ms  T138 agg cleanup --format csv: 0 rows, 4 agg results [api]
+  [PASS]   893ms  T137 agg cleanup --format json: 0 rows, 4 aggregation results [api]
+  [PASS]  1135ms  T139 --agg terms:extension,sample=3: 0 rows, (custom validator 'T139' not yet ported to RPC) [api]
+  [PASS]  1488ms  T136 agg top_folders --format json: 0 rows, 1 aggregation results [api]
+  [PASS]  3167ms  T140 --agg duplicates:size+name,sample=2: 0 rows, (custom validator 'T140' not yet ported to RPC) [api]
+  [PASS]   528ms  T145 --agg count + --rows mixed: 5 rows [api]
+  [PASS]   550ms  T144 --stats size: 1 rows [api]
+  [PASS]   687ms  T148 agg by_drive --format csv: 0 rows, 1 agg results [api]
+  [PASS]   775ms  T146 agg by_extension --format json (buckets): 0 rows, 1 aggregation results [api]
+  [PASS]   789ms  T149 agg by_size --format json: 0 rows, 2 aggregation results [api]
+  [PASS]  1089ms  T151 --agg terms:extension,sample=2 JSON drilldown: 0 rows, 1 aggregation results [api]
+  [PASS]  1103ms  T150 --agg terms:extension,sample=2 JSON sample_rows: 0 rows, 1 aggregation results [api]
+  [PASS]  3040ms  T147 agg duplicates --format json: 0 rows, 1 aggregation results [api]
+  [PASS]   658ms  T154 rollup:drive power syntax: 0 rows, 1 aggregation results [api]
+  [PASS]   804ms  T153 --agg terms:extension no sample: 0 rows, 1 aggregation results [api]
+  [PASS]   846ms  T156 multiple --agg flags combined: 0 rows, 2 aggregation results [api]
+  [PASS]   907ms  T157 --agg + search filter: 0 rows, 1 aggregation results [api]
+  [PASS]  1094ms  T159 CSV with samples column: 0 rows, 1 agg results, 3 total buckets [api]
+  [PASS]  1113ms  T152 agg by_extension table with samples: 0 rows, 1 agg results, 3 total buckets [api]
+  [PASS]  1114ms  T158 sample row fields content: 0 rows, 1 aggregation results [api]
+  [PASS]  1512ms  T155 rollup:path,depth=2 power syntax: 0 rows, 1 aggregation results [api]
+  [PASS]   619ms  T165 missing:extension power syntax: 0 rows, 1 aggregation results [api]
+  [PASS]   768ms  T166 distinct:extension power syntax: 0 rows, 1 aggregation results [api]
+  [PASS]   779ms  T163 range:size power syntax: 0 rows, 1 aggregation results [api]
+  [PASS]   789ms  T164 --histogram size:1048576 shorthand: 0 rows, 1 aggregation results [api]
+  [PASS]   793ms  T160 hist:size power syntax: 0 rows, 1 aggregation results [api]
+  [PASS]   796ms  T161 stats:size power syntax: 0 rows, 1 aggregation results [api]
+  [PASS]   869ms  T162 datehist:modified,calendar=month: 0 rows, 1 aggregation results [api]
+  [PASS]  1168ms  T167 sample_sort terms:extension,sample=2,sort=size: 0 rows, 1 aggregation results [api]
+  [PASS]   610ms  T170 rollup:drive table format: 0 rows, 1 agg results [api]
+  [PASS]   802ms  T173 agg by_age --format json: 0 rows, 1 aggregation results [api]
+  [PASS]  1232ms  T174 agg storage --format json: 0 rows, 4 aggregation results [api]
+  [PASS]  1480ms  T171 rollup:path CSV format: 0 rows, 1 agg results [api]
+  [PASS]  1604ms  T176 agg media --format json: 0 rows, 4 aggregation results [api]
+  [PASS]  1605ms  T175 agg activity --format json: 0 rows, 3 aggregation results [api]
+  [PASS]  1894ms  T172 agg overview --format csv: 0 rows, 6 agg results [api]
+  [PASS]  3045ms  T177 agg duplicates --format csv: 0 rows, 1 agg results [api]
+  [PASS]   699ms  S3C.2 nested rollup table rendering: 0 rows, 1 agg results [api]
+  [PASS]   720ms  S3C.3 nested rollup CSV: 0 rows, 1 agg results [api]
+  [PASS]   735ms  S3C.1 nested rollup JSON sub_buckets: 0 rows, 1 aggregation results [api]
+  [PASS]   776ms  S3D.1 truncated hint in table: 0 rows, 1 agg results, 1 total buckets [api]
+  [PASS]   780ms  S3A.4 aggregate --agg-page-size: 0 rows, 1 aggregation results [api]
+  [PASS]   783ms  S3A.3 --agg-page-size limits buckets: 0 rows, 1 aggregation results [api]
+  [PASS]   786ms  S3A.1 next_cursor in JSON output: 0 rows, 1 aggregation results [api]
+  [PASS]   807ms  S3A.2 table cursor hint: 0 rows, 1 agg results, 2 total buckets [api]
+  [PASS]   518ms  S3G.3 --rows with --agg: 5 rows [api]
+  [PASS]   530ms  S3G.2 --count shorthand: 1 rows [api]
+  [PASS]   731ms  S3G.4 --facet type:5: 1 rows [api]
+  [PASS]   774ms  S3D.4 JSON exact flag: 0 rows, 1 aggregation results [api]
+  [PASS]   783ms  S3D.3 JSON truncation metadata: 0 rows, 1 aggregation results [api]
+  [PASS]   802ms  S3D.2 other_count in table: 0 rows, 1 agg results, 2 total buckets [api]
+  [PASS]   802ms  S3E.1 CSV metadata comments: 0 rows, 1 agg results, 1 total buckets [api]
+  [PASS]   960ms  S3G.1 sample_sort desc JSON: 0 rows, 1 aggregation results [api]
+  [PASS]   473ms  S3misc.2 count agg: 1 rows, count=25828737 [api]
+  [PASS]   488ms  S3G.6 --histogram size:1048576: 1 rows [api]
+  [PASS]   488ms  S3G.5 --stats size: 1 rows [api]
+  [PASS]   716ms  S3B.1 facet_values paged (top 3): 0 rows, 3 facet values (top 3) [api]
+  [PASS]   805ms  S3B.2 facet_values all ext (top 10000): 0 rows, 10000 facet values (all extensions) [api]
+  [PASS]   850ms  S3misc.1 raw power syntax: 1 rows, 5 buckets from raw power syntax [api]
+  [PASS]   879ms  S3G.8 multiple --agg mixed: 0 rows, 3 aggregation results [api]
+  [PASS]  1464ms  S3G.7 rollup path depth=3: 0 rows, 1 agg results [api]
+  [PASS]   501ms  S3misc.4 include_rows=true: 5 rows, 5 rows + 1 aggs [api]
+  [PASS]   964ms  S3misc.3 include_rows=false: 1 rows, 1 rows, 1 aggs (agg-only) [api]
+  [PASS]  3313ms  S4C.4 duplicates no verify (default): 0 rows, (custom validator 'S4C.4' not yet ported to RPC) [api]
+  [PASS]  3362ms  S4C.2 duplicates verify=sha256 JSON: 0 rows, (custom validator 'S4C.2' not yet ported to RPC) [api]
+  [PASS]  3389ms  S4C.3 duplicates verify=first_bytes,verify_bytes=8192: 0 rows, (custom validator 'S4C.3' not yet ported to RPC) [api]
+  [PASS]  3481ms  S4C.5 duplicates verify=hash alias: 0 rows, (custom validator 'S4C.5' not yet ported to RPC) [api]
+  [PASS]  3485ms  S4C.1 duplicates verify=first_bytes JSON: 0 rows, (custom validator 'S4C.1' not yet ported to RPC) [api]
+
+
+  ❌ 1/223 FAILED
+
+  ┌─ Failed Tests ──────────────────────────────────────────────────────┐
+  │
+  │  ❌ T84 mega combined
+  │  Error: Expected >= 1 rows, got 0
+  │  CLI:   C:\Users\rnio\bin\uffs.exe *.exe --files-only --min-size 10485760 --max-size 1073741824 --attr !hidden,!system --newer last_365d --sort -size --drive C --limit 10 --columns "Name,Size,Modified,Path Only"
+  │  RPC:   search({"attr":"!hidden,!system","drives":["C"],"filter":"files","limit":10,"max_size":1073741824,"min_size":10485760,"newer":"last_365d","pattern":"*.exe","sort":"size","sort_desc":true})
+  │
+  └──────────────────────────────────────────────────────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ⏱ Timing Breakdown
+  ─────────────────────────────────────────────────────
+  Daemon ready:           67482ms  (status check + start + drive load)
+  ─────────────────────────────────────────────────────
+  Tests wall time:        31258ms  (223 tests, parallelism: 8)
+  Tests sum time:        130644ms  (total CPU across all tests)
+  Tests avg time:           585ms  (per test)
+  Slowest test:            3485ms  S4C.1 duplicates verify=first_bytes JSON
+  Fastest test:               1ms  --sort size (asc)
+  ─────────────────────────────────────────────────────
+  Script total:           98864ms
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+┌───────────────────────────────────────────────────────────────┐
+│  Cleanup: verifying daemon & checking for orphan processes   │
+└───────────────────────────────────────────────────────────────┘
+  ✅ Daemon verified (PID 34964)
+  ✅ No orphan uffs processes found.
+(production) ~\GitHub\UltraFastFileSearch on main>
 
 
 

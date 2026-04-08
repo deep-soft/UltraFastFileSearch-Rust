@@ -18,7 +18,7 @@
 
 //! Aggregation execution: convert wire specs to core specs and run them.
 
-use uffs_client::protocol::{DrilldownWire, SampleRowWire, StatsWire};
+use uffs_client::protocol::{DrilldownWire, SampleRowWire};
 use uffs_core::aggregate::TopHitsSpec;
 use uffs_core::aggregate::finalize::{DrilldownPredicate, DrilldownValue, SampleRow};
 use uffs_core::aggregate::spec::DuplicateVerify;
@@ -37,10 +37,10 @@ use super::IndexManager;
 /// gracefully — verification is skipped and groups remain unverified.
 struct DaemonFileReader<'a> {
     /// Loaded drive indices for path resolution.
-    drives: &'a [std::sync::Arc<uffs_core::compact::DriveCompactIndex>],
+    drives: &'a [alloc::sync::Arc<uffs_core::compact::DriveCompactIndex>],
 }
 
-impl<'a> DaemonFileReader<'a> {
+impl DaemonFileReader<'_> {
     /// Resolve a record to its full file path.
     fn resolve_path(&self, record_idx: usize, drive_ordinal: u8) -> Option<String> {
         let drive = self.drives.get(drive_ordinal as usize)?;
@@ -60,27 +60,25 @@ impl FileReader for DaemonFileReader<'_> {
         drive_ordinal: u8,
         count: u32,
     ) -> std::io::Result<Vec<u8>> {
-        let path = self.resolve_path(record_idx, drive_ordinal).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "drive ordinal out of range",
-            )
-        })?;
         use std::io::Read;
+        let path = self
+            .resolve_path(record_idx, drive_ordinal)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "drive ordinal out of range")
+            })?;
         let mut file = std::fs::File::open(&path)?;
-        let mut buf = vec![0u8; count as usize];
+        let mut buf = vec![0_u8; count as usize];
         let n = file.read(&mut buf)?;
         buf.truncate(n);
         Ok(buf)
     }
 
     fn read_all(&self, record_idx: usize, drive_ordinal: u8) -> std::io::Result<Vec<u8>> {
-        let path = self.resolve_path(record_idx, drive_ordinal).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "drive ordinal out of range",
-            )
-        })?;
+        let path = self
+            .resolve_path(record_idx, drive_ordinal)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "drive ordinal out of range")
+            })?;
         std::fs::read(&path)
     }
 }
@@ -99,6 +97,10 @@ fn sample_row_to_wire(sr: SampleRow) -> SampleRowWire {
 }
 
 /// Format bytes as compact human-readable size (e.g. `1.3 MB`).
+#[expect(
+    clippy::float_arithmetic,
+    reason = "float division required for human-readable size formatting"
+)]
 fn format_size_compact(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
@@ -141,12 +143,11 @@ fn materialize_dup_members(
 
             Some(SampleRowWire {
                 fields,
-                sort_key: Some(record.size as i64),
+                sort_key: Some(record.size.cast_signed()),
             })
         })
         .collect()
 }
-
 
 /// Convert a core [`DrilldownPredicate`] to a wire [`DrilldownWire`].
 fn drilldown_to_wire(dp: DrilldownPredicate) -> DrilldownWire {
@@ -389,7 +390,7 @@ impl IndexManager {
                     AggregateResultData::Duplicates { result } => {
                         let total_groups = result.candidate_groups;
                         let total_reclaimable = result.total_reclaimable_bytes;
-                        let drive_refs: Vec<&uffs_core::compact::DriveCompactIndex> =
+                        let dup_drive_refs: Vec<&uffs_core::compact::DriveCompactIndex> =
                             snapshot.drives.iter().map(|d| d.as_ref()).collect();
                         let buckets: Vec<BucketWire> = result
                             .groups
@@ -397,7 +398,7 @@ impl IndexManager {
                             .map(|g| {
                                 // Materialize sample rows from member_indices.
                                 let samples: Vec<SampleRowWire> =
-                                    materialize_dup_members(&g.member_indices, &drive_refs);
+                                    materialize_dup_members(&g.member_indices, &dup_drive_refs);
                                 // Derive human-readable key from first sample
                                 // row's name field, falling back to file size.
                                 let display_name = samples
@@ -429,6 +430,10 @@ impl IndexManager {
 
                         // Build stats with summary: total reclaimable in
                         // waste_bytes, total candidate files in count.
+                        #[expect(
+                            clippy::float_arithmetic,
+                            reason = "percentage calculation for waste_pct"
+                        )]
                         let summary = StatsWire {
                             count: result.candidate_files,
                             sum: result.total_duplicate_bytes,
@@ -437,8 +442,7 @@ impl IndexManager {
                             avg: 0.0,
                             waste_bytes: total_reclaimable,
                             waste_pct: if result.total_duplicate_bytes > 0 {
-                                (total_reclaimable as f64
-                                    / result.total_duplicate_bytes as f64)
+                                (total_reclaimable as f64 / result.total_duplicate_bytes as f64)
                                     * 100.0
                             } else {
                                 0.0
@@ -498,7 +502,7 @@ impl IndexManager {
     fn run_duplicate_verification(
         specs: &[uffs_core::aggregate::spec::AggregateSpec],
         output: &mut uffs_core::aggregate::AggregateOutput,
-        drives: &[std::sync::Arc<uffs_core::compact::DriveCompactIndex>],
+        drives: &[alloc::sync::Arc<uffs_core::compact::DriveCompactIndex>],
     ) {
         use uffs_core::aggregate::finalize::AggregateResultData;
         use uffs_core::aggregate::spec::AggregateKind;
@@ -508,20 +512,29 @@ impl IndexManager {
             .iter()
             .map(|s| match &s.kind {
                 AggregateKind::Duplicates { verify, .. } => *verify,
-                _ => DuplicateVerify::None,
+                AggregateKind::Count
+                | AggregateKind::Stats { .. }
+                | AggregateKind::Terms { .. }
+                | AggregateKind::Histogram { .. }
+                | AggregateKind::DateHistogram { .. }
+                | AggregateKind::Range { .. }
+                | AggregateKind::Missing { .. }
+                | AggregateKind::Distinct { .. }
+                | AggregateKind::Rollup { .. } => DuplicateVerify::None,
             })
             .collect();
 
         // Short-circuit: no verification needed.
-        if verify_modes.iter().all(|m| matches!(m, DuplicateVerify::None)) {
+        if verify_modes
+            .iter()
+            .all(|m| matches!(m, DuplicateVerify::None))
+        {
             return;
         }
 
         let reader = DaemonFileReader { drives };
-        let budget = VerificationBudget::new(
-            DEFAULT_VERIFY_BUDGET_BYTES,
-            DEFAULT_VERIFY_BUDGET_FILES,
-        );
+        let budget =
+            VerificationBudget::new(DEFAULT_VERIFY_BUDGET_BYTES, DEFAULT_VERIFY_BUDGET_FILES);
 
         // Walk results in parallel with specs. Each result corresponds to a
         // spec at the same index.
@@ -541,8 +554,8 @@ impl IndexManager {
                     verification_mode: DuplicateVerify::None,
                 };
                 let current = core::mem::replace(dup_result, placeholder);
-                let (verified, summary) = verifier.verify(current, &reader);
-                *dup_result = verified;
+                let (vfy_result, summary) = verifier.verify(current, &reader);
+                *dup_result = vfy_result;
 
                 tracing::info!(
                     mode = ?mode,

@@ -299,7 +299,7 @@ fn print_duplicate_table(stdout: &mut impl Write, result: &AggregateResultWire) 
 /// Truncate a string to `max` chars, appending `…` if truncated.
 fn truncate_str(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
-        s.to_string()
+        s.to_owned()
     } else {
         let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{truncated}…")
@@ -414,12 +414,7 @@ fn print_csv_duplicates(
         write!(
             stdout,
             "{}{sep}{}{sep}{}{sep}{}{sep}{}{sep}{}",
-            row.key,
-            row.count,
-            file_size,
-            row.total_bytes,
-            reclaimable,
-            row.verified,
+            row.key, row.count, file_size, row.total_bytes, reclaimable, row.verified,
         )?;
         if has_samples {
             let json = serde_json::to_string(&row.sample_rows).unwrap_or_else(|_| "[]".to_owned());
@@ -438,4 +433,3 @@ fn print_csv_duplicates(
 
     Ok(())
 }
-

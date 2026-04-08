@@ -501,10 +501,7 @@ fn finalize_one(
             }
         }
 
-        AccumulatorKind::Duplicates {
-            inner,
-            sample_spec,
-        } => {
+        AccumulatorKind::Duplicates { inner, sample_spec } => {
             let dup_top = 100; // default
             let mut result = inner.finalize(dup_top);
             // Materialize member_indices → SampleRows for each group.

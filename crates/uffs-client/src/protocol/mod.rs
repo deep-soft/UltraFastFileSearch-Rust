@@ -525,7 +525,8 @@ pub struct AggregateSpecWire {
     /// Sort direction for sample rows.  `true` = descending (largest first).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample_desc: Option<bool>,
-    /// Duplicate verification mode: `"first_bytes"`, `"sha256"`, or absent/`"none"`.
+    /// Duplicate verification mode: `"first_bytes"`, `"sha256"`, or
+    /// absent/`"none"`.
     ///
     /// Only meaningful when `kind` is `"duplicates"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

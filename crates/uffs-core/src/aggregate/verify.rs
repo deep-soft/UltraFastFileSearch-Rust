@@ -24,12 +24,17 @@ use super::spec::DuplicateVerify;
 
 /// Abstraction over file I/O for duplicate verification.
 ///
-/// Each member in a [`DuplicateGroup`] is identified by `(record_idx, drive_ordinal)`.
-/// The implementor resolves this to a file path and reads the requested bytes.
+/// Each member in a [`DuplicateGroup`] is identified by `(record_idx,
+/// drive_ordinal)`. The implementor resolves this to a file path and reads the
+/// requested bytes.
 pub trait FileReader {
-    /// Read the first `count` bytes of the file identified by `(record_idx, drive_ordinal)`.
+    /// Read the first `count` bytes of the file identified by `(record_idx,
+    /// drive_ordinal)`.
     ///
     /// Returns fewer bytes if the file is shorter than `count`.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err` if the file cannot be read (permissions, moved, etc.).
     fn read_first_bytes(
         &self,
@@ -40,7 +45,9 @@ pub trait FileReader {
 
     /// Read the entire file identified by `(record_idx, drive_ordinal)`.
     ///
-    /// Returns `Err` if the file cannot be read.
+    /// # Errors
+    ///
+    /// Returns `Err` if the file cannot be read (permissions, moved, etc.).
     fn read_all(&self, record_idx: usize, drive_ordinal: u8) -> io::Result<Vec<u8>>;
 }
 
@@ -57,9 +64,9 @@ pub struct VerificationBudget {
     /// Maximum files to read (0 = unlimited).
     pub max_files: u32,
     /// Bytes read so far.
-    bytes_used: u64,
+    pub bytes_used: u64,
     /// Files read so far.
-    files_used: u32,
+    pub files_used: u32,
 }
 
 impl VerificationBudget {
@@ -83,7 +90,7 @@ impl VerificationBudget {
     }
 
     /// Check whether the budget allows reading `bytes` more bytes.
-    fn can_read(&self, bytes: u64) -> bool {
+    const fn can_read(&self, bytes: u64) -> bool {
         if self.max_bytes > 0 && self.bytes_used + bytes > self.max_bytes {
             return false;
         }
@@ -94,7 +101,7 @@ impl VerificationBudget {
     }
 
     /// Record that `bytes` were read from one file.
-    fn record_read(&mut self, bytes: u64) {
+    const fn record_read(&mut self, bytes: u64) {
         self.bytes_used += bytes;
         self.files_used += 1;
     }
@@ -205,9 +212,7 @@ impl DuplicateVerifier {
             // the budget can't accommodate them.
             let per_file_estimate = match self.mode {
                 DuplicateVerify::None => 0,
-                DuplicateVerify::FirstBytes { count } => {
-                    group.file_size.min(u64::from(count))
-                }
+                DuplicateVerify::FirstBytes { count } => group.file_size.min(u64::from(count)),
                 DuplicateVerify::Sha256 => group.file_size,
             };
             let group_estimate = per_file_estimate * group.member_indices.len() as u64;
@@ -269,16 +274,10 @@ impl DuplicateVerifier {
     }
 
     /// Verify a single group. Returns whether all members match.
-    fn verify_group(
-        &mut self,
-        group: &DuplicateGroup,
-        reader: &dyn FileReader,
-    ) -> VerifyOutcome {
+    fn verify_group(&mut self, group: &DuplicateGroup, reader: &dyn FileReader) -> VerifyOutcome {
         match self.mode {
             DuplicateVerify::None => VerifyOutcome::Match,
-            DuplicateVerify::FirstBytes { count } => {
-                self.verify_first_bytes(group, reader, count)
-            }
+            DuplicateVerify::FirstBytes { count } => self.verify_first_bytes(group, reader, count),
             DuplicateVerify::Sha256 => self.verify_sha256(group, reader),
         }
     }
@@ -322,11 +321,7 @@ impl DuplicateVerifier {
     ///
     /// Reads the entire file for each member, computes SHA-256, and
     /// compares all hashes. All members must hash identically.
-    fn verify_sha256(
-        &mut self,
-        group: &DuplicateGroup,
-        reader: &dyn FileReader,
-    ) -> VerifyOutcome {
+    fn verify_sha256(&mut self, group: &DuplicateGroup, reader: &dyn FileReader) -> VerifyOutcome {
         use sha2::{Digest, Sha256};
 
         let mut reference_hash: Option<[u8; 32]> = None;
@@ -358,7 +353,6 @@ impl DuplicateVerifier {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,7 +361,7 @@ mod tests {
 
     /// Mock file reader that returns controlled byte content.
     struct MockReader {
-        /// Map from (record_idx, drive_ordinal) → file bytes.
+        /// Map from (`record_idx`, `drive_ordinal`) → file bytes.
         files: std::collections::HashMap<(usize, u8), Vec<u8>>,
     }
 
@@ -393,9 +387,7 @@ mod tests {
             let bytes = self
                 .files
                 .get(&(record_idx, drive_ordinal))
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "file not found")
-                })?;
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "file not found"))?;
             let n = (count as usize).min(bytes.len());
             Ok(bytes[..n].to_vec())
         }
@@ -404,9 +396,7 @@ mod tests {
             self.files
                 .get(&(record_idx, drive_ordinal))
                 .cloned()
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "file not found")
-                })
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "file not found"))
         }
     }
 
@@ -450,10 +440,10 @@ mod tests {
             DuplicateVerify::FirstBytes { count: 4096 },
             VerificationBudget::unlimited(),
         );
-        let (verified, summary) = verifier.verify(result, &reader);
+        let (vfy_result, summary) = verifier.verify(result, &reader);
 
-        assert_eq!(verified.groups.len(), 1);
-        assert!(verified.groups[0].verified);
+        assert_eq!(vfy_result.groups.len(), 1);
+        assert!(vfy_result.groups[0].verified);
         assert_eq!(summary.groups_verified, 1);
         assert_eq!(summary.groups_rejected, 0);
     }
@@ -469,9 +459,9 @@ mod tests {
             DuplicateVerify::FirstBytes { count: 4096 },
             VerificationBudget::unlimited(),
         );
-        let (verified, summary) = verifier.verify(result, &reader);
+        let (vfy_result, summary) = verifier.verify(result, &reader);
 
-        assert_eq!(verified.groups.len(), 0); // rejected
+        assert_eq!(vfy_result.groups.len(), 0); // rejected
         assert_eq!(summary.groups_rejected, 1);
     }
 
@@ -485,14 +475,12 @@ mod tests {
         reader.add(1, 0, content);
 
         let result = make_result(vec![make_group(vec![(0, 0), (1, 0)], 28)]);
-        let mut verifier = DuplicateVerifier::new(
-            DuplicateVerify::Sha256,
-            VerificationBudget::unlimited(),
-        );
-        let (verified, summary) = verifier.verify(result, &reader);
+        let mut verifier =
+            DuplicateVerifier::new(DuplicateVerify::Sha256, VerificationBudget::unlimited());
+        let (vfy_result, summary) = verifier.verify(result, &reader);
 
-        assert_eq!(verified.groups.len(), 1);
-        assert!(verified.groups[0].verified);
+        assert_eq!(vfy_result.groups.len(), 1);
+        assert!(vfy_result.groups[0].verified);
         assert_eq!(summary.groups_verified, 1);
     }
 
@@ -503,13 +491,11 @@ mod tests {
         reader.add(1, 0, b"file B content".to_vec());
 
         let result = make_result(vec![make_group(vec![(0, 0), (1, 0)], 14)]);
-        let mut verifier = DuplicateVerifier::new(
-            DuplicateVerify::Sha256,
-            VerificationBudget::unlimited(),
-        );
-        let (verified, summary) = verifier.verify(result, &reader);
+        let mut verifier =
+            DuplicateVerifier::new(DuplicateVerify::Sha256, VerificationBudget::unlimited());
+        let (vfy_result, summary) = verifier.verify(result, &reader);
 
-        assert_eq!(verified.groups.len(), 0);
+        assert_eq!(vfy_result.groups.len(), 0);
         assert_eq!(summary.groups_rejected, 1);
     }
 
@@ -530,20 +516,21 @@ mod tests {
             make_group(vec![(2, 0), (3, 0)], 4),
         ]);
 
-        // Budget: 10 bytes max → group 1 reads 8 bytes (ok), group 2 needs 8 more (over budget)
+        // Budget: 10 bytes max → group 1 reads 8 bytes (ok), group 2 needs 8 more (over
+        // budget)
         let mut verifier = DuplicateVerifier::new(
             DuplicateVerify::FirstBytes { count: 4096 },
             VerificationBudget::new(10, 0),
         );
-        let (verified, summary) = verifier.verify(result, &reader);
+        let (vfy_result, summary) = verifier.verify(result, &reader);
 
         assert_eq!(summary.groups_verified, 1);
         assert_eq!(summary.groups_skipped, 1);
         assert!(summary.budget_exhausted);
         // Both groups kept: 1 verified, 1 unverified
-        assert_eq!(verified.groups.len(), 2);
-        assert!(verified.groups[0].verified);
-        assert!(!verified.groups[1].verified);
+        assert_eq!(vfy_result.groups.len(), 2);
+        assert!(vfy_result.groups[0].verified);
+        assert!(!vfy_result.groups[1].verified);
     }
 
     #[test]
@@ -564,12 +551,12 @@ mod tests {
             DuplicateVerify::FirstBytes { count: 4096 },
             VerificationBudget::new(0, 2),
         );
-        let (verified, summary) = verifier.verify(result, &reader);
+        let (vfy_result, summary) = verifier.verify(result, &reader);
 
         assert_eq!(summary.groups_verified, 1);
         assert_eq!(summary.groups_skipped, 1);
         assert!(summary.budget_exhausted);
-        assert_eq!(verified.groups.len(), 2);
+        assert_eq!(vfy_result.groups.len(), 2);
     }
 
     // ── Edge cases ───────────────────────────────────────────────
@@ -578,15 +565,13 @@ mod tests {
     fn none_mode_passes_through() {
         let reader = MockReader::new();
         let result = make_result(vec![make_group(vec![(0, 0), (1, 0)], 4)]);
-        let mut verifier = DuplicateVerifier::new(
-            DuplicateVerify::None,
-            VerificationBudget::unlimited(),
-        );
-        let (verified, summary) = verifier.verify(result, &reader);
+        let mut verifier =
+            DuplicateVerifier::new(DuplicateVerify::None, VerificationBudget::unlimited());
+        let (vfy_result, summary) = verifier.verify(result, &reader);
 
         // No verification — group kept as-is, not marked verified
-        assert_eq!(verified.groups.len(), 1);
-        assert!(!verified.groups[0].verified);
+        assert_eq!(vfy_result.groups.len(), 1);
+        assert!(!vfy_result.groups[0].verified);
         assert_eq!(summary.groups_verified, 0);
     }
 
@@ -599,11 +584,11 @@ mod tests {
             DuplicateVerify::FirstBytes { count: 4096 },
             VerificationBudget::unlimited(),
         );
-        let (verified, summary) = verifier.verify(result, &reader);
+        let (vfy_result, summary) = verifier.verify(result, &reader);
 
         // I/O error keeps group unverified but doesn't reject
-        assert_eq!(verified.groups.len(), 1);
-        assert!(!verified.groups[0].verified);
+        assert_eq!(vfy_result.groups.len(), 1);
+        assert!(!vfy_result.groups[0].verified);
         assert_eq!(summary.groups_errored, 1);
     }
 
@@ -617,10 +602,10 @@ mod tests {
             DuplicateVerify::FirstBytes { count: 4096 },
             VerificationBudget::unlimited(),
         );
-        let (verified, _) = verifier.verify(result, &reader);
+        let (vfy_result, _) = verifier.verify(result, &reader);
 
         // Single-member groups are removed
-        assert!(verified.groups.is_empty());
+        assert!(vfy_result.groups.is_empty());
     }
 
     #[test]
@@ -646,11 +631,11 @@ mod tests {
             DuplicateVerify::FirstBytes { count: 4096 },
             VerificationBudget::unlimited(),
         );
-        let (verified, summary) = verifier.verify(result, &reader);
+        let (vfy_result, summary) = verifier.verify(result, &reader);
 
-        assert_eq!(verified.groups.len(), 2); // group 2 rejected
+        assert_eq!(vfy_result.groups.len(), 2); // group 2 rejected
         assert_eq!(summary.groups_verified, 2);
         assert_eq!(summary.groups_rejected, 1);
-        assert!(verified.groups.iter().all(|g| g.verified));
+        assert!(vfy_result.groups.iter().all(|g| g.verified));
     }
 }
