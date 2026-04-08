@@ -1539,18 +1539,18 @@ fn run_uffs(bin: &str, args: &[String]) -> Result<(i32, String, String)> {
     let stderr_pipe = child.stderr.take();
 
     let stdout_handle = std::thread::spawn(move || {
-        let mut buf = String::new();
+        let mut bytes = Vec::new();
         if let Some(mut pipe) = stdout_pipe {
-            let _ = pipe.read_to_string(&mut buf);
+            let _ = pipe.read_to_end(&mut bytes);
         }
-        buf
+        String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
     });
     let stderr_handle = std::thread::spawn(move || {
-        let mut buf = String::new();
+        let mut bytes = Vec::new();
         if let Some(mut pipe) = stderr_pipe {
-            let _ = pipe.read_to_string(&mut buf);
+            let _ = pipe.read_to_end(&mut bytes);
         }
-        buf
+        String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
     });
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(CLI_TIMEOUT_SECS);

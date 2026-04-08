@@ -1,8 +1,8 @@
 # Aggregation Implementation Plan
 
 > **Source of truth:** `UFFS_AGGREGATION_ARCHITECTURE_CONSOLIDATED.md`
-> **Date:** 2026-04-08 (S4E complete, CompositeKey name-hash bug fixed)
-> **Status:** Active — Stages 0–4E complete, S4C.5 deferred (MCP task mode), Stage 5 next
+> **Date:** 2026-04-08 (progress tracking audit — summary table corrected)
+> **Status:** Active — Stages 0–4E complete (163/182 ✅), S3A.5 + S4C.5 deferred, Stage 5 next
 
 ---
 
@@ -546,24 +546,25 @@ are shipped and tested.
 | Stage 2E — Power syntax | 7 | 0 | 0 | 7 | 0 |
 | Stage 2F — Testing v2 | 6 | 0 | 0 | 6 | 0 |
 | Stage 2G — Wire surface | 14 | 0 | 0 | 14 | 0 |
-| Stage 3A — Pagination | 4 | 1 | 0 | 3 | 0 |
-| Stage 3B — Facet values | 3 | 1 | 0 | 2 | 0 |
-| Stage 3C — Path rollups | 3 | 2 | 0 | 1 | 0 |
-| Stage 3D — Exactness | 3 | 1 | 1 | 1 | 0 |
+| Stage 3A — Pagination | 5 | 1 | 0 | 4 | 0 |
+| Stage 3B — Facet values | 3 | 0 | 0 | 3 | 0 |
+| Stage 3C — Path rollups | 3 | 0 | 0 | 3 | 0 |
+| Stage 3D — Exactness | 3 | 0 | 0 | 3 | 0 |
 | Stage 3E — CSV | 1 | 0 | 0 | 1 | 0 |
-| Stage 3F — Testing v3 | 4 | 3 | 0 | 1 | 0 |
+| Stage 3F — Testing v3 | 4 | 0 | 0 | 4 | 0 |
+| Stage 3G — Display wiring | 5 | 0 | 0 | 5 | 0 |
 | Stage 4A — Dup grouping | 5 | 0 | 0 | 5 | 0 |
-| Stage 4B — Dup metrics | 4 | 0 | 1 | 3 | 0 |
-| Stage 4C — Dup verify | 4 | 4 | 0 | 0 | 0 |
-| Stage 4D — Dup CLI | 2 | 0 | 1 | 1 | 0 |
-| Stage 4E — Dup testing | 7 | 7 | 0 | 0 | 0 |
+| Stage 4B — Dup metrics | 4 | 0 | 0 | 4 | 0 |
+| Stage 4C — Dup verify | 5 | 1 | 0 | 4 | 0 |
+| Stage 4D — Dup CLI | 2 | 0 | 0 | 2 | 0 |
+| Stage 4E — Dup testing | 7 | 0 | 0 | 7 | 0 |
 | Stage 5A — Adv numeric | 3 | 3 | 0 | 0 | 0 |
 | Stage 5B — Forensic | 3 | 3 | 0 | 0 | 0 |
 | Stage 5C — Derivatives | 3 | 3 | 0 | 0 | 0 |
 | Stage 5D — Disjunctive | 2 | 2 | 0 | 0 | 0 |
 | Stage 5E — Cache | 3 | 0 | 3 | 0 | 0 |
 | Stage 5F — Testing v5 | 3 | 2 | 1 | 0 | 0 |
-| **TOTAL** | **161** | **37** | **8** | **116** | **0** |
+| **TOTAL** | **182** | **15** | **4** | **163** | **0** |
 
 Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cancelled
 
@@ -573,9 +574,9 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 |-----------|--------|--------|---------------|
 | M0: Pre-reqs done | — | 2026-04-06 | ✅ P-1, P-2, P-3 all done. `cargo check` passes. 7 invariant tests green. |
 | M0.5: Stage 0 done | — | 2026-04-06 | ✅ All S0.* done. 26 new tests. Module tree + core types + presets + planner + finalize scaffolded. |
-| M1: Stage 1 shippable | — | **partial** | Core engine ✅. Protocol ✅. `uffs agg <preset>` ✅. **Gaps:** daemon only handles `preset`+`count` wire kinds (S1D.3 🔧). No `--count`/`--facet`/`--stats`/`--histogram` shorthand flags. No serde round-trip tests. No integration tests with synthetic index. `uffs stats` not refactored. |
+| M1: Stage 1 shippable | — | **✅ DONE** | All 59 Stage 1 tasks complete (S1A–S1H). Core engine ✅. Protocol ✅. Daemon ✅ (`convert_wire_spec()` handles all 13 kinds). CLI ✅. MCP ✅. Testing ✅ (16 tests). Stats compat ✅. |
 | M2: Stage 2 shippable | — | **✅ DONE** | Core library complete: 12 presets ✅, Rollups ✅, Power syntax parser ✅ (13 tests), TopHits ✅ (S2A; 20 tests), Drill-down ✅ (S2B; 3 tests), Testing ✅ (S2F; 6 tests).  **Wire surface complete ✅ (S2G; 14/14 tasks):** `SampleRowWire`/`DrilldownWire` defined, `BucketWire`/`AggregateSpecWire` extended, daemon conversion (3 sites), CLI table/JSON/CSV formatters, MCP summary, query_predicates pass-through, 9 serde round-trip tests, 2 daemon integration tests, 4 CLI tests (T150–T153).  175/175 CLI tests pass, 612 unit tests pass. |
-| M3: Stage 3 shippable | — | **partial** | Pagination library ✅. CSV/TSV export ✅. `uffs_facet_values` MCP tool registered ✅. Pagination wired end-to-end ✅ (S3A.4). **Gaps:** facet_values handler sends `"raw"` wire kind → daemon silently drops (S3B.2 🔧). Nested rollup not started. `exact` not on wire. |
+| M3: Stage 3 shippable | — | **✅ DONE** | All 24 Stage 3 tasks complete (S3A–S3G) except S3A.5 (deferred — stateful cursor cache). Pagination ✅ (cursor-based, stateless). Facet values ✅ (MCP + cursor). Path/ancestor/nested rollups ✅. Exactness/truncation ✅. CSV/TSV ✅. Display wiring ✅ (CLI table/CSV + MCP summary). Testing ✅ (4 integration tests). |
 | M4: Stage 4 shippable | — | **✅ DONE** | DuplicateAccumulator ✅. CompositeKey ✅ (name-hash bug fixed). DuplicateResult ✅. Singleton elimination ✅. OOM guard ✅. Sample rows materialized ✅ (S4B.3). Verification: first_bytes ✅, SHA-256 ✅, budget ✅, daemon wired ✅ (S4C.1–4). Dedicated table formatter ✅ (S4D.2). Integration tests ✅ (S4E.2–4: synthetic duplicates, singleton elimination, Windows verified). **Deferred:** MCP task mode (S4C.5). |
 | M5: Stage 5 complete | — | **not started** | AggregateCache library exists but NOT wired into daemon (S5E all 🔧). `--agg` on search sends preset/count to daemon ✅ but power syntax specs silently dropped. Percentiles/forensic/disjunctive all ⬜. |
 
@@ -594,7 +595,7 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 | 2026-04-06 | 12 presets | overview, by_type, by_extension, by_drive, by_size, by_age, storage, activity, top_folders, duplicates, media, cleanup |
 | 2026-04-06 | MCP tools registered | uffs_aggregate + uffs_facet_values MCP tools registered with input schemas. **facet_values is non-functional** — sends "raw" kind that daemon drops. |
 | 2026-04-06 | Code audit | Honest re-evaluation identified critical gap: daemon only handled preset+count. |
-| 2026-04-06 | S1D.3 resolved | `convert_wire_spec()` added — handles all 13 wire kinds. facet_values MCP fixed to send `"terms"`. `--agg` power syntax now routes via `"raw"` kind through parser. Score: 98/161 ✅, 9/161 🔧, 54/161 ⬜. |
+| 2026-04-06 | S1D.3 resolved | `convert_wire_spec()` added — handles all 13 wire kinds. facet_values MCP fixed to send `"terms"`. `--agg` power syntax now routes via `"raw"` kind through parser. |
 | 2026-04-06 | S2A.1 complete | `TopHitsSpec` fully designed: `sort_desc` added, `Default`/constructors/validation/`effective_projection()`. Wired as `sample: Option<TopHitsSpec>` on Terms, Rollup, Duplicates (was `sample: u8` on Duplicates only). 10 new tests. All 19 downstream callers updated. |
 | 2026-04-06 | S2A.2–S2A.4 complete | Per-bucket `SampleHeap` (bounded min/max-heap, 16 bytes/entry) in `sample_heap.rs`. Wired into `AccumulatorKind::Terms` feed path with `drive_ordinal`. `SampleRow` + `materialize_sample_entry()` + `format_field()` in `finalize.rs` — only surviving buckets materialized. Custom projection via `effective_projection()`. `BucketRow.sample_rows` added. 10 new tests (6 heap + 4 integration). |
 | 2026-04-06 | S2B.1–S2B.2 complete | `DrilldownPredicate { field, op, value }` + `DrilldownValue` enum added to `finalize.rs`. `BucketRow.drilldown` populated with original query predicates + bucket key predicate. `FinalizeOptions.query_predicates` carries query context into finalization. `build_drilldown()` combines both. 3 integration tests. |
@@ -649,12 +650,12 @@ These should be resolved before or during Stage 1 implementation:
 
 | # | Question | Proposed answer | Decided? |
 |---|----------|-----------------|----------|
-| 1 | Should `aggregate` be a convenience alias over `SearchParams`, or only `search` with `aggregations`? | Convenience alias — keeps MCP simple | ⬜ |
-| 2 | Should `uffs stats` remain visible or become aliased? | Keep visible in v1, evaluate in v2 | ⬜ |
-| 3 | Approximate distinct-counts in v1? | No — stay exact-only | ⬜ |
-| 4 | Max rollup nesting in v1? | 2 levels (drive→folder or folder→type) | ⬜ |
-| 5 | `facet_values` prefix: fuzzy or exact? | Exact prefix first | ⬜ |
-| 6 | Disjunctive facets for MCP early? | Defer to Stage 5 | ⬜ |
+| 1 | Should `aggregate` be a convenience alias over `SearchParams`, or only `search` with `aggregations`? | Convenience alias — aggregation piggybacks on `SearchParams`/`SearchResponse` (S1D.2) | ✅ |
+| 2 | Should `uffs stats` remain visible or become aliased? | Keep visible — `uffs stats` dual-mode with aggregation engine (S1H) | ✅ |
+| 3 | Approximate distinct-counts in v1? | No — exact-only (S1A.11 implements exact cardinality) | ✅ |
+| 4 | Max rollup nesting in v1? | Arbitrary depth supported via `AggregateKind::Rollup { sub }` (S3C.3) | ✅ |
+| 5 | `facet_values` prefix: fuzzy or exact? | Exact prefix first — no prefix filtering yet, returns top-N by count (S3B.2) | ✅ |
+| 6 | Disjunctive facets for MCP early? | Defer to Stage 5 (S5D) | ✅ |
 
 ---
 
@@ -728,7 +729,7 @@ Modified files:
 | ~~**S3A.4:**~~ **RESOLVED** — `agg_cursor`/`agg_page_size` on `SearchParams`, `next_cursor` on `AggregateResultWire` | — | Daemon applies `paginate_result()` after finalization; CLI/MCP display cursor hint. **⚠️ Stateless re-query** — each page re-runs the full aggregation. See S3A.5 for future cached approach. |
 | ~~**S1G.10–16:**~~ **RESOLVED** — 10 synthetic-index integration tests in `aggregate/mod.rs` | — | overview, by_extension, by_type, range, histogram, datehist, perf guards all verified. |
 
-### Remaining items (2 ⬜ deferred):
+### Remaining items (15 ⬜ + 4 🔧 = 19 remaining):
 
 | Priority | Items | Description |
 |----------|-------|-------------|
@@ -742,4 +743,5 @@ Modified files:
 | ~~**P2**~~ | ~~S1H.1–2~~ | ~~`uffs stats` → aggregate engine refactor~~ **DONE** — dual-mode (daemon/parquet) ✅, output parity test ✅. |
 | **P2** | S3A.5 | Stateful cursor: cache aggregation result server-side, serve pages from cache (avoids re-query per page; needs memory budget) |
 | **P2** | S4C.5 | MCP task mode for long-running verification (deferred until real-world timing shows need) |
-| **P3 — Future** | S5A–D | Percentiles, forensic fields, pipeline derivatives, disjunctive facets |
+| **P3 — Future** | S5A–D | Percentiles, forensic fields, pipeline derivatives, disjunctive facets (11 ⬜) |
+| **P3 — Future** | S5E–F | AggregateCache wiring + Stage 5 testing (3 🔧 + 2 ⬜ + 1 🔧 = 4 🔧, 2 ⬜) |
