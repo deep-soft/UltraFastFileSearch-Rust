@@ -35,6 +35,7 @@ impl IndexManager {
             Err(_closed) => {
                 return SearchResponse {
                     rows: Vec::new(),
+                    total_count: 0,
                     records_scanned: 0,
                     duration_ms: 0,
                     truncated: false,
@@ -150,6 +151,8 @@ impl IndexManager {
         //
         // Note: --type is already promoted to extensions at scan level
         // (see `from_params`), so it does NOT contribute here.
+        let has_agg_with_filter = !effective_params.aggregations.is_empty()
+            && !matches!(effective_params.pattern.as_str(), "*" | "**" | "**/*" | "");
         let search_limit = if requires_post_filter || filters.needs_display_row_filter() {
             None
         } else {
@@ -194,6 +197,7 @@ impl IndexManager {
                 tracing::error!("search task panicked");
                 return SearchResponse {
                     rows: Vec::new(),
+                    total_count: 0,
                     records_scanned: 0,
                     duration_ms: 0,
                     truncated: false,
@@ -214,6 +218,7 @@ impl IndexManager {
                 );
                 return SearchResponse {
                     rows: Vec::new(),
+                    total_count: 0,
                     records_scanned: 0,
                     duration_ms: 30_000,
                     truncated: false,
@@ -240,6 +245,8 @@ impl IndexManager {
         if requires_post_filter {
             filtered_rows.retain(|row| Self::matches_predicates(row, &effective_params.predicates));
         }
+
+        let mut total_count = filtered_rows.len() as u64;
         if let Some(limit) = effective_params.limit {
             filtered_rows.truncate(limit as usize);
         }
@@ -281,18 +288,31 @@ impl IndexManager {
         });
 
         // ── Aggregation (if requested) ─────────────────────────────
-        let agg_results = if !effective_params.aggregations.is_empty() {
+        let (agg_results, agg_matched) = if !effective_params.aggregations.is_empty() {
             let predicates = Self::build_query_predicates(&effective_params);
+            // When the search has a non-trivial pattern, pass it to the
+            // aggregation engine so only matching records contribute to
+            // the aggregation.  Without this, `*.exe --agg terms:extension`
+            // would aggregate ALL files, not just `.exe` files.
+            let agg_pattern = has_agg_with_filter.then_some(effective_params.pattern.as_str());
             Self::run_aggregations(
                 &agg_snapshot,
                 &effective_params.aggregations,
                 predicates,
                 effective_params.agg_cursor.as_deref(),
                 effective_params.agg_page_size,
+                agg_pattern,
             )
         } else {
-            vec![]
+            (vec![], 0)
         };
+
+        // When aggregation ran a filtered scan, its `records_matched`
+        // gives the true total (before limit).  Otherwise use the
+        // pre-truncation row count.
+        if agg_matched > 0 {
+            total_count = agg_matched;
+        }
 
         SearchResponse {
             rows: if projected_rows.is_some() {
@@ -300,6 +320,7 @@ impl IndexManager {
             } else {
                 rows
             },
+            total_count,
             records_scanned: result.records_scanned,
             duration_ms,
             truncated,

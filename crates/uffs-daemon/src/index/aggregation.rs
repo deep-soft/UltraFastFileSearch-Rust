@@ -170,13 +170,18 @@ impl IndexManager {
     /// `query_predicates` are the original search-scope filters (if any),
     /// forwarded into `FinalizeOptions` so drill-down predicates on each
     /// bucket include the full query context.
+    ///
+    /// When `pattern` is `Some`, the aggregation scan applies the glob/regex
+    /// pattern inline — only matching records are fed to accumulators.
+    /// When `None`, all records are scanned (unfiltered aggregation).
     pub(crate) fn run_aggregations(
         snapshot: &DriveIndex,
         wire_specs: &[uffs_client::protocol::AggregateSpecWire],
         query_predicates: Vec<DrilldownPredicate>,
         agg_cursor: Option<&str>,
         agg_page_size: Option<u16>,
-    ) -> Vec<uffs_client::protocol::AggregateResultWire> {
+        pattern: Option<&str>,
+    ) -> (Vec<uffs_client::protocol::AggregateResultWire>, u64) {
         use uffs_client::protocol::{AggregateResultWire, BucketWire, StatsWire};
         use uffs_core::aggregate::finalize::{AggregateResultData, FinalizeOptions};
         use uffs_core::aggregate::pagination::{AggregateCursor, paginate_result};
@@ -194,23 +199,61 @@ impl IndexManager {
         }
 
         if specs.is_empty() {
-            return vec![];
+            return (vec![], 0);
         }
 
-        // Run aggregation.
+        // Run aggregation — filtered by pattern or unfiltered.
         let drive_refs: Vec<&uffs_core::compact::DriveCompactIndex> =
             snapshot.drives.iter().map(|arc| arc.as_ref()).collect();
         let options = FinalizeOptions {
             query_predicates,
             ..FinalizeOptions::default()
         };
-        let mut output = match uffs_core::aggregate::run_aggregate(&drive_refs, &specs, &options) {
-            Ok(output) => output,
-            Err(_) => return vec![],
+        let mut output = match pattern {
+            Some(pat) => {
+                tracing::info!(pattern = %pat, "running FILTERED aggregation");
+                match uffs_core::aggregate::run_aggregate_filtered(
+                    &drive_refs,
+                    &specs,
+                    &options,
+                    pat,
+                ) {
+                    Ok(output) => {
+                        tracing::info!(
+                            scanned = output.records_scanned,
+                            matched = output.records_matched,
+                            "filtered aggregation complete"
+                        );
+                        output
+                    }
+                    Err(e) => {
+                        tracing::warn!("filtered aggregation failed: {e}");
+                        return (vec![], 0);
+                    }
+                }
+            }
+            None => {
+                tracing::info!("running UNFILTERED aggregation");
+                match uffs_core::aggregate::run_aggregate(&drive_refs, &specs, &options) {
+                    Ok(output) => {
+                        tracing::info!(
+                            scanned = output.records_scanned,
+                            matched = output.records_matched,
+                            "unfiltered aggregation complete"
+                        );
+                        output
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "unfiltered aggregation failed");
+                        return (vec![], 0);
+                    }
+                }
+            }
         };
 
         // ── Duplicate verification (if any spec has verify != None) ──
         Self::run_duplicate_verification(&specs, &mut output, &snapshot.drives);
+        let records_matched = output.records_matched;
 
         // ── Apply cursor-based pagination (if requested) ────────────
         //
@@ -223,7 +266,7 @@ impl IndexManager {
             .or_else(|| agg_page_size.map(|ps| ps as usize));
 
         // Convert results to wire format.
-        output
+        let wire_results = output
             .response
             .results
             .into_iter()
@@ -488,7 +531,8 @@ impl IndexManager {
                     values_complete,
                 }
             })
-            .collect()
+            .collect();
+        (wire_results, records_matched)
     }
 
     /// Convert a single wire spec into one or more core `AggregateSpec`s.

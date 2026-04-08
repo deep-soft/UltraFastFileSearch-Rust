@@ -121,6 +121,74 @@ pub struct AggregateOutput {
     pub execution_us: u64,
 }
 
+/// Cross-drive canonical extension mapping.
+///
+/// Each drive interns extensions independently (`extension_id` is per-drive).
+/// This table maps every `(drive_ordinal, local_extension_id)` to a single
+/// canonical ID so that `"exe"` on drive C and `"exe"` on drive D share the
+/// same group key in aggregation.
+///
+/// The reverse mapping (`canonical_id → extension name`) is stored in
+/// `canonical_names`.
+#[derive(Debug, Clone)]
+pub(crate) struct ExtensionMap {
+    /// `per_drive[drive_ordinal][local_ext_id] → canonical_ext_id`
+    per_drive: Vec<Vec<u64>>,
+    /// `canonical_names[canonical_ext_id] → extension string`
+    canonical_names: Vec<String>,
+}
+
+impl ExtensionMap {
+    /// Build the cross-drive mapping from a set of drives.
+    fn build(drives: &[&DriveCompactIndex]) -> Self {
+        let mut name_to_id: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        let mut canonical_names: Vec<String> = Vec::new();
+        let mut per_drive: Vec<Vec<u64>> = Vec::with_capacity(drives.len());
+
+        for drive in drives {
+            let mut mapping = Vec::with_capacity(drive.ext_names.len());
+            for ext_name in &drive.ext_names {
+                let name_str: &str = ext_name;
+                let canonical_id = if let Some(&id) = name_to_id.get(name_str) {
+                    id
+                } else {
+                    let id = canonical_names.len() as u64;
+                    let owned = name_str.to_owned();
+                    canonical_names.push(owned.clone());
+                    name_to_id.insert(owned, id);
+                    id
+                };
+                mapping.push(canonical_id);
+            }
+            per_drive.push(mapping);
+        }
+
+        Self {
+            per_drive,
+            canonical_names,
+        }
+    }
+
+    /// Look up the canonical extension ID for a record.
+    #[inline]
+    fn canonical_id(&self, drive_ordinal: u8, local_ext_id: u16) -> u64 {
+        self.per_drive
+            .get(drive_ordinal as usize)
+            .and_then(|m| m.get(local_ext_id as usize))
+            .copied()
+            .unwrap_or(u64::MAX)
+    }
+
+    /// Resolve a canonical ID to its extension name.
+    fn resolve(&self, canonical_id: u64) -> String {
+        self.canonical_names
+            .get(canonical_id as usize)
+            .cloned()
+            .unwrap_or_else(|| format!("ext:{canonical_id}"))
+    }
+}
+
 /// Run aggregation specs against one or more drive indices (unfiltered).
 ///
 /// This is the main entry point for the aggregation engine. It:
@@ -146,6 +214,9 @@ pub fn run_aggregate(
     // 1. Compile
     let plan = AggregatePlan::compile(specs)?;
 
+    // Build cross-drive extension mapping for correct multi-drive grouping.
+    let ext_map = ExtensionMap::build(drives);
+
     // 2. Scan each drive and collect accumulators
     let mut merged = plan.create_accumulators();
     let mut total_scanned: u64 = 0;
@@ -153,13 +224,123 @@ pub fn run_aggregate(
 
     for (drive_ordinal, drive) in drives.iter().enumerate() {
         let ordinal = drive_ordinal.min(u8::MAX as usize) as u8;
-        let (scanned, matched) = scan_drive(drive, &plan, &mut merged, ordinal);
+        let t = std::time::Instant::now();
+        let (scanned, matched) = scan_drive(drive, &plan, &mut merged, ordinal, Some(&ext_map));
+        tracing::debug!(
+            drive = %drive.letter,
+            scanned,
+            matched,
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "run_aggregate: drive scan"
+        );
         total_scanned += scanned;
         total_matched += matched;
     }
 
     // 3. Finalize
-    let response = finalize::finalize(merged, &plan, drives, options, total_matched);
+    let t_fin = std::time::Instant::now();
+    let response = finalize::finalize_with_ext_map(
+        merged,
+        &plan,
+        drives,
+        options,
+        total_matched,
+        Some(&ext_map),
+    );
+    tracing::debug!(
+        elapsed_ms = t_fin.elapsed().as_millis() as u64,
+        "run_aggregate: finalize"
+    );
+
+    Ok(AggregateOutput {
+        response,
+        records_scanned: total_scanned,
+        records_matched: total_matched,
+        execution_us: start.elapsed().as_micros() as u64,
+    })
+}
+
+/// Run aggregation specs against records that match a search pattern.
+///
+/// This scans all records per drive but only feeds records whose name
+/// matches `pattern` (a glob like `*.exe`).  This is the correct entry
+/// point when combining search + aggregation: e.g. `*.exe --agg
+/// terms:extension` should aggregate only `.exe` files, not all files.
+///
+/// The pattern is compiled once using [`IndexPattern`] and matched
+/// inline during the scan — no `DisplayRow` construction or path
+/// resolution is needed.
+///
+/// # Errors
+///
+/// Returns an error if any spec references an invalid field or if
+/// accumulator construction fails.
+pub fn run_aggregate_filtered(
+    drives: &[&DriveCompactIndex],
+    specs: &[AggregateSpec],
+    options: &FinalizeOptions,
+    pattern: &str,
+) -> Result<AggregateOutput, AggregateError> {
+    use uffs_text::CaseFold;
+
+    use crate::index_search::compile_parsed_pattern;
+    use crate::pattern::ParsedPattern;
+
+    let start = std::time::Instant::now();
+
+    // Compile search pattern.
+    let fold = CaseFold::default_table();
+    let parsed = ParsedPattern::parse(pattern)
+        .map_err(|e| AggregateError::InvalidConfig(format!("bad pattern: {e}")))?;
+    let index_pat = compile_parsed_pattern(&parsed)
+        .map_err(|e| AggregateError::InvalidConfig(format!("bad pattern: {e}")))?;
+    tracing::info!(
+        pattern,
+        index_pattern = ?index_pat,
+        "run_aggregate_filtered: compiled pattern"
+    );
+
+    // 1. Compile aggregation plan.
+    let plan = AggregatePlan::compile(specs)?;
+
+    // Build cross-drive extension mapping.
+    let ext_map = ExtensionMap::build(drives);
+
+    // 2. Scan each drive, filtering by pattern.
+    let mut merged = plan.create_accumulators();
+    let mut total_scanned: u64 = 0;
+    let mut total_matched: u64 = 0;
+
+    for (drive_ordinal, drive) in drives.iter().enumerate() {
+        let ordinal = drive_ordinal.min(u8::MAX as usize) as u8;
+        for (idx, record) in drive.records.iter().enumerate() {
+            total_scanned += 1;
+            let name = record.name(&drive.names);
+            if name.is_empty() || !index_pat.matches(name, false, fold) {
+                continue;
+            }
+            total_matched += 1;
+            for acc in &mut merged {
+                acc.feed(record, drive, idx, ordinal, Some(&ext_map));
+            }
+        }
+    }
+
+    tracing::info!(
+        total_scanned,
+        total_matched,
+        "run_aggregate_filtered: scan complete"
+    );
+
+    // 3. Finalize.
+    let response = finalize::finalize_with_ext_map(
+        merged,
+        &plan,
+        drives,
+        options,
+        total_matched,
+        Some(&ext_map),
+    );
 
     Ok(AggregateOutput {
         response,
@@ -177,6 +358,7 @@ fn scan_drive(
     _plan: &AggregatePlan,
     accumulators: &mut [GroupAccumulator],
     drive_ordinal: u8,
+    ext_map: Option<&ExtensionMap>,
 ) -> (u64, u64) {
     let records = &drive.records;
     let mut scanned: u64 = 0;
@@ -186,7 +368,7 @@ fn scan_drive(
 
         // Feed each accumulator.
         for acc in accumulators.iter_mut() {
-            acc.feed(record, drive, idx, drive_ordinal);
+            acc.feed(record, drive, idx, drive_ordinal, ext_map);
         }
     }
 

@@ -127,7 +127,7 @@ pub struct DaemonConfig {
     pub data_dir: Option<PathBuf>,
     /// Explicit drive letters (Windows only).
     pub drives: Vec<char>,
-    /// Idle timeout in seconds (0 = use default 600s).
+    /// Idle timeout in seconds (0 = use default 7200s / 2 hours).
     pub idle_timeout: u64,
     /// Disable auto-retire.
     pub no_retire: bool,

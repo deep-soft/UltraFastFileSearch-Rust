@@ -53,8 +53,8 @@ struct Cli {
     #[arg(long = "drive", value_name = "LETTER")]
     drives: Vec<char>,
 
-    /// Idle timeout in seconds before auto-retire (default: 600 = 10 min).
-    #[arg(long, default_value = "600")]
+    /// Idle timeout in seconds before auto-retire (default: 7200 = 2 hours).
+    #[arg(long, default_value = "7200")]
     idle_timeout: u64,
 
     /// Disable auto-retire (stay running indefinitely).

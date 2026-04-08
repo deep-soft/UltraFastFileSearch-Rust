@@ -356,6 +356,7 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
 
     Ok(SearchResponse {
         rows,
+        total_count: header.row_count,
         records_scanned: header.records_scanned as usize,
         duration_ms: header.duration_ms,
         truncated: header.truncated != 0,

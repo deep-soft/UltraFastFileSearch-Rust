@@ -1,0 +1,209 @@
+# attributes tests
+# Auto-split from test-definitions.toml
+
+[[test]]
+id          = "T13"
+group       = "attributes"
+name        = "T13 --attr hidden"
+title       = "T13 --attr hidden"
+short_desc  = "T13 --attr hidden"
+cli_args    = ["*", "--attr", "hidden", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T14"
+group       = "attributes"
+name        = "T14 --attr !hidden"
+title       = "T14 --attr !hidden"
+short_desc  = "T14 --attr !hidden"
+cli_args    = ["*", "--attr", "!hidden", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "ne"
+value  = "1"
+
+[[test]]
+id          = "T15"
+group       = "attributes"
+name        = "T15 --attr compressed"
+title       = "T15 --attr compressed"
+short_desc  = "T15 --attr compressed"
+cli_args    = ["*", "--attr", "compressed", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Compressed"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T37"
+group       = "attributes"
+name        = "T37 --attr system"
+title       = "T37 --attr system"
+short_desc  = "T37 --attr system"
+cli_args    = ["*", "--attr", "system", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "System"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T38"
+group       = "attributes"
+name        = "T38 --attr readonly"
+title       = "T38 --attr readonly"
+short_desc  = "T38 --attr readonly"
+cli_args    = ["*", "--attr", "readonly", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Read-only"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T39"
+group       = "attributes"
+name        = "T39 --attr system,!hidden"
+title       = "T39 --attr system,!hidden"
+short_desc  = "T39 --attr system,!hidden"
+cli_args    = ["*", "--attr", "system,!hidden", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "System"
+op     = "eq"
+value  = "1"
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "ne"
+value  = "1"
+
+[[test]]
+id          = "T68"
+group       = "attributes"
+name        = "T68 --attr archive"
+title       = "T68 --attr archive"
+short_desc  = "T68 --attr archive"
+cli_args    = ["*", "--attr", "archive", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Archive"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T69"
+group       = "attributes"
+name        = "T69 --attr sparse"
+title       = "T69 --attr sparse"
+short_desc  = "T69 --attr sparse"
+cli_args    = ["*", "--attr", "sparse", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Sparse"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T70"
+group       = "attributes"
+name        = "T70 --attr reparse"
+title       = "T70 --attr reparse"
+short_desc  = "T70 --attr reparse"
+cli_args    = ["*", "--attr", "reparse", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Reparse"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T71"
+group       = "attributes"
+name        = "T71 --attr offline"
+title       = "T71 --attr offline"
+short_desc  = "T71 --attr offline"
+cli_args    = ["*", "--attr", "offline", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Offline"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T72"
+group       = "attributes"
+name        = "T72 --attr encrypted"
+title       = "T72 --attr encrypted"
+short_desc  = "T72 --attr encrypted"
+cli_args    = ["*", "--attr", "encrypted", "--files-only", "--limit", "10", "--columns", "all"]
+# Encrypted files are extremely rare — most datasets have zero.
+expect_min_rows = 0
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Encrypted"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T73"
+group       = "attributes"
+name        = "T73 --attr !system"
+title       = "T73 --attr !system"
+short_desc  = "T73 --attr !system"
+cli_args    = ["*", "--attr", "!system", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "System"
+op     = "ne"
+value  = "1"
+
+[[test]]
+id          = "T74"
+group       = "attributes"
+name        = "T74 --attr hidden,system"
+title       = "T74 --attr hidden,system"
+short_desc  = "T74 --attr hidden,system"
+cli_args    = ["*", "--attr", "hidden,system", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "eq"
+value  = "1"
+
+[[test.column_checks]]
+column = "System"
+op     = "eq"
+value  = "1"
+

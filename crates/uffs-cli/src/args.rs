@@ -723,8 +723,8 @@ pub enum DaemonAction {
         #[arg(long = "drive")]
         drives: Vec<char>,
 
-        /// Idle timeout in seconds (default 600).
-        #[arg(long, default_value = "600")]
+        /// Idle timeout in seconds (default 7200 = 2 hours).
+        #[arg(long, default_value = "7200")]
         idle_timeout: u64,
 
         /// Disable auto-retire.

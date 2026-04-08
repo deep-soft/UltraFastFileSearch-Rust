@@ -1,0 +1,122 @@
+# output tests
+# Auto-split from test-definitions.toml
+
+[[test]]
+id          = "T20"
+group       = "output"
+name        = "T20 --format json"
+title       = "T20 --format json"
+short_desc  = "T20 --format json"
+cli_args    = ["*.rs", "--format", "json", "--limit", "5"]
+validator   = "T20"
+targets     = ["cli"]
+
+[test.api_checks]
+result_has_key = ["results"]
+total_count_min = 1
+
+[[test]]
+id          = "T21"
+group       = "output"
+name        = "T21 --format table"
+title       = "T21 --format table"
+short_desc  = "T21 --format table"
+cli_args    = ["*.rs", "--format", "table", "--limit", "5"]
+targets     = ["cli"]
+stdout_contains = ["shape: (5,", "name", "size"]
+
+[test.api_checks]
+result_has_key = ["results"]
+total_count_min = 1
+
+[[test]]
+id          = "T22"
+group       = "output"
+name        = "T22 --columns Name,Size,Path Only"
+title       = "T22 --columns Name,Size,Path Only"
+short_desc  = "T22 --columns Name,Size,Path Only"
+cli_args    = ["*.txt", "--columns", "Name,Size,Path Only", "--limit", "10"]
+targets     = ["cli"]
+stdout_contains = ["\"Name\",\"Size\",\"Path Only\""]
+expect_min_rows = 1
+
+[[test]]
+id          = "T31"
+group       = "output"
+name        = "T31 --out file"
+title       = "Redirect output to file with --out"
+short_desc  = "Search results written to CSV file, verified by reading it back"
+cli_args    = ["*.rs", "--limit", "100", "--out", "test_cli_validation_out.csv"]
+validator   = "T31"
+targets     = ["cli"]
+
+[test.api_checks]
+result_has_key = ["results"]
+total_count_min = 1
+
+[[test]]
+id          = "T79"
+group       = "output"
+name        = "T79 projection + json format"
+title       = "T79 projection + json format"
+short_desc  = "T79 projection + json format"
+cli_args    = ["*.rs", "--columns", "Name,Size,Modified", "--format", "json", "--limit", "5"]
+validator   = "T79"
+targets     = ["cli"]
+
+[test.api_checks]
+result_has_key = ["results"]
+total_count_min = 1
+
+[[test]]
+id          = "T80"
+group       = "output"
+name        = "T80 --columns all (wide)"
+title       = "T80 --columns all (wide)"
+short_desc  = "T80 --columns all (wide)"
+cli_args    = ["*.exe", "--columns", "all", "--limit", "5", "--drive", "C"]
+targets     = ["cli"]
+expect_columns_all = true
+expect_min_rows = 1
+stdout_contains = ["\"Path\"", "\"Name\"", "\"Size\"", "\"Attributes\""]
+
+[[test]]
+id          = "T85"
+group       = "output"
+name        = "T85 table format + projection"
+title       = "T85 table format + projection"
+short_desc  = "T85 table format + projection"
+cli_args    = ["*.dll", "--format", "table", "--columns", "Name,Size", "--limit", "5", "--drive", "C"]
+targets     = ["cli"]
+stdout_contains = ["shape:", "name", "size"]
+
+[test.api_checks]
+result_has_key = ["results"]
+total_count_min = 1
+
+[[test]]
+id          = "T159"
+group       = "output"
+name        = "T159 CSV with samples column"
+title       = "T159 CSV with samples column"
+short_desc  = "T159 CSV with samples column"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "csv"]
+stdout_contains = ["# buckets", "key,count,total_bytes", "samples", "drilldown"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 1
+
+[[test]]
+id          = "T164"
+group       = "output"
+name        = "T164 --histogram size:1048576 shorthand"
+title       = "T164 --histogram size:1048576 shorthand"
+short_desc  = "T164 --histogram size:1048576 shorthand"
+cli_args    = ["*", "--limit", "0", "--histogram", "size:1048576", "--format", "json"]
+validator   = "T164"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+

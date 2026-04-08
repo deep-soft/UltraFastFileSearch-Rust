@@ -187,6 +187,7 @@ fn search_response_round_trip() {
             treesize: 0,
             tree_allocated: 0,
         }],
+        total_count: 1,
         records_scanned: 1_000_000,
         duration_ms: 8,
         truncated: false,
@@ -513,6 +514,7 @@ fn search_params_with_aggregations_round_trip() {
 fn search_response_with_aggregations_round_trip() {
     let resp = SearchResponse {
         rows: vec![],
+        total_count: 0,
         records_scanned: 500_000,
         duration_ms: 12,
         truncated: false,

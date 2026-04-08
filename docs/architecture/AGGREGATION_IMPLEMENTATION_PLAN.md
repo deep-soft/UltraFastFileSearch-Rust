@@ -1,8 +1,8 @@
 # Aggregation Implementation Plan
 
 > **Source of truth:** `UFFS_AGGREGATION_ARCHITECTURE_CONSOLIDATED.md`
-> **Date:** 2026-04-08 (S4C verification wired through daemon)
-> **Status:** Active — Stages 0–3 complete, Stage 4A–4C complete, S4C.5/S4D.2/S4E.2–4 remaining
+> **Date:** 2026-04-08 (S4E complete, CompositeKey name-hash bug fixed)
+> **Status:** Active — Stages 0–4E complete, S4C.5 deferred (MCP task mode), Stage 5 next
 
 ---
 
@@ -453,16 +453,16 @@ uffs-core BucketRow                         uffs-daemon                      Buc
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
 | S4D.1 | Parse `duplicates:KEY+KEY,verify=MODE,top=N,sample=N` in `--agg`. | CLI commands | §13.5 | S2E.1 | ✅ Parser handles `duplicates` / `dups` syntax with keys, verify, top, sample, max_groups |
-| S4D.2 | Implement table formatter for duplicate groups. | CLI output | §23.2 | S1E.6, S4B.2 | 🔧 Duplicates rendered via generic bucket wire format (`NxSIZE` key) — no dedicated duplicate table formatter |
+| S4D.2 | Implement table formatter for duplicate groups. | CLI output, daemon aggregation | §23.2 | S1E.6, S4B.2 | ✅ Dedicated `print_duplicate_table()`: summary header (groups/files/reclaimable), columns (name, copies, file size, reclaimable, verified ✓). `materialize_dup_members()` resolves `member_indices` → `SampleRowWire` with name/path/size. Human-readable `BucketWire` keys (`foo.dll (3.6 GB, 2 copies)`). Dedicated `print_csv_duplicates()` with `key,copies,file_size,total_bytes,reclaimable,verified` columns. `StatsWire` summary with `waste_bytes`/`waste_pct`. |
 
 ### 4E  Testing (Stage 4)
 
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
 | S4E.1 | Unit tests: composite key hashing for (size, name). | tests | §26.1 | S4A.3 | ✅ `composite_key_equality`, `composite_key_inequality` |
-| S4E.2 | Integration: synthetic index with known duplicates, verify group count and reclaimable bytes. | tests | §26.2 A180 | S4B.* | ⬜ |
-| S4E.3 | Integration: singleton elimination — no false duplicate groups. | tests | §26.2 A180 | S4A.4 | ⬜ |
-| S4E.4 | Integration: verified duplicates on controlled fixture (Windows, `#[ignore]`). | tests | §26.3 A190 | S4C.* | ⬜ |
+| S4E.2 | Integration: synthetic index with known duplicates, verify group count and reclaimable bytes. | `aggregate/duplicates.rs` | §26.2 A180 | S4B.* | ✅ `synthetic_duplicates_group_count_and_reclaimable` — 2 groups, 5 files, 2200 reclaimable bytes. **Bug found:** `CompositeKey::from_record` was hashing `drive.names[idx]` (single byte) instead of `record.name()` — duplicates never grouped. Fixed to hash lowercase filename characters. |
+| S4E.3 | Integration: singleton elimination — no false duplicate groups. | `aggregate/duplicates.rs` | §26.2 A180 | S4A.4 | ✅ `singleton_elimination_no_false_duplicates` (all-unique → 0 groups), `zero_byte_files_excluded_from_duplicates`, `directories_excluded_from_duplicates` — 3 tests covering all exclusion paths. |
+| S4E.4 | Integration: verified duplicates on controlled fixture (Windows, `#[ignore]`). | `aggregate/duplicates.rs` | §26.3 A190 | S4C.* | ✅ `duplicates_verified_windows` — `#[ignore]` + `#[cfg(windows)]`, loads live C: drive, runs with `FirstBytes` verification, asserts groups sorted by reclaimable desc, count ≥ 2, file_size > 0. |
 | S4E.5 | Guard: `max_groups` limit prevents OOM on pathological input. | tests | §21.3 | S4A.5 | ✅ `duplicate_accumulator_new` tests max_groups default |
 | S4E.6 | Unit tests: `DuplicateVerifier` first_bytes + SHA-256 + budget. | `aggregate/verify.rs` | §26.1 | S4C.* | ✅ 10 unit tests: `verify_first_bytes_matching_pair`, `verify_first_bytes_mismatched_pair`, `verify_first_bytes_io_error`, `verify_sha256_matching_pair`, `verify_sha256_mismatched_pair`, `budget_byte_limit`, `budget_file_limit`, `verify_empty_groups`, `verify_single_member_groups`, `budget_tracks_reads`. |
 | S4E.7 | CLI integration tests: S4C.3–S4C.5 (verify=first_bytes, verify=hash, no verify). | `scripts/tests/test-definitions.toml` | §26.3 | S4C.4 | ✅ T-level tests S4C.3–S4C.5 pass on both CLI (229/229) and API (223/223). |
@@ -556,7 +556,7 @@ are shipped and tested.
 | Stage 4B — Dup metrics | 4 | 0 | 1 | 3 | 0 |
 | Stage 4C — Dup verify | 4 | 4 | 0 | 0 | 0 |
 | Stage 4D — Dup CLI | 2 | 0 | 1 | 1 | 0 |
-| Stage 4E — Dup testing | 5 | 3 | 0 | 2 | 0 |
+| Stage 4E — Dup testing | 7 | 7 | 0 | 0 | 0 |
 | Stage 5A — Adv numeric | 3 | 3 | 0 | 0 | 0 |
 | Stage 5B — Forensic | 3 | 3 | 0 | 0 | 0 |
 | Stage 5C — Derivatives | 3 | 3 | 0 | 0 | 0 |
@@ -576,7 +576,7 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 | M1: Stage 1 shippable | — | **partial** | Core engine ✅. Protocol ✅. `uffs agg <preset>` ✅. **Gaps:** daemon only handles `preset`+`count` wire kinds (S1D.3 🔧). No `--count`/`--facet`/`--stats`/`--histogram` shorthand flags. No serde round-trip tests. No integration tests with synthetic index. `uffs stats` not refactored. |
 | M2: Stage 2 shippable | — | **✅ DONE** | Core library complete: 12 presets ✅, Rollups ✅, Power syntax parser ✅ (13 tests), TopHits ✅ (S2A; 20 tests), Drill-down ✅ (S2B; 3 tests), Testing ✅ (S2F; 6 tests).  **Wire surface complete ✅ (S2G; 14/14 tasks):** `SampleRowWire`/`DrilldownWire` defined, `BucketWire`/`AggregateSpecWire` extended, daemon conversion (3 sites), CLI table/JSON/CSV formatters, MCP summary, query_predicates pass-through, 9 serde round-trip tests, 2 daemon integration tests, 4 CLI tests (T150–T153).  175/175 CLI tests pass, 612 unit tests pass. |
 | M3: Stage 3 shippable | — | **partial** | Pagination library ✅. CSV/TSV export ✅. `uffs_facet_values` MCP tool registered ✅. Pagination wired end-to-end ✅ (S3A.4). **Gaps:** facet_values handler sends `"raw"` wire kind → daemon silently drops (S3B.2 🔧). Nested rollup not started. `exact` not on wire. |
-| M4: Stage 4 shippable | — | **partial** | DuplicateAccumulator ✅. CompositeKey ✅. DuplicateResult ✅. Singleton elimination ✅. OOM guard ✅. Sample rows materialized ✅ (S4B.3). **Gaps:** verify=first_bytes/sha256 not implemented (S4C all ⬜). No dedicated dup table formatter (S4D.2 🔧). No synthetic-index integration tests. |
+| M4: Stage 4 shippable | — | **✅ DONE** | DuplicateAccumulator ✅. CompositeKey ✅ (name-hash bug fixed). DuplicateResult ✅. Singleton elimination ✅. OOM guard ✅. Sample rows materialized ✅ (S4B.3). Verification: first_bytes ✅, SHA-256 ✅, budget ✅, daemon wired ✅ (S4C.1–4). Dedicated table formatter ✅ (S4D.2). Integration tests ✅ (S4E.2–4: synthetic duplicates, singleton elimination, Windows verified). **Deferred:** MCP task mode (S4C.5). |
 | M5: Stage 5 complete | — | **not started** | AggregateCache library exists but NOT wired into daemon (S5E all 🔧). `--agg` on search sends preset/count to daemon ✅ but power syntax specs silently dropped. Percentiles/forensic/disjunctive all ⬜. |
 
 ### Decision log
@@ -696,29 +696,29 @@ Modified files:
 | §4 Architecture constraints | ✅ | All 6 constraints met |
 | §5 Field inventory | ✅ | 39 FieldIds with AggregateMeta, 7 invariant tests |
 | §6 Design principles | ✅ | All 11 principles followed |
-| §8 Product model | 🔧 | Buckets, metrics, facets, rollups, duplicates. **Samples + drill-down implemented in core but not surfaced through wire/CLI/MCP (S2G ⬜).** |
+| §8 Product model | ✅ | Buckets, metrics, facets, rollups, duplicates. Samples + drill-down surfaced through wire/CLI/MCP (S2G ✅). |
 | §9 Aggregate families | ✅ | All 10 AggregateKind variants implemented in library |
 | §10 Concrete outputs | ✅ | All 10 output categories covered by presets |
 | §11 Preset library | ✅ | 12 presets implemented and tested |
 | §12 Request model | ✅ | SearchParams + aggregations + include_rows; AggregateResultWire |
-| §13 CLI surface | 🔧 | `uffs agg <preset>` works ✅. `--agg` flag now functional end-to-end via `"raw"` wire kind. No `--count`/`--facet`/`--stats`/`--histogram` shorthand flags. |
-| §14 MCP | ✅ | `uffs_aggregate` works for presets. `uffs_facet_values` now sends `"terms"` kind — **functional end-to-end**. |
+| §13 CLI surface | ✅ | `uffs agg <preset>` ✅. `--agg` raw kind ✅. Shorthand flags: `--count` ✅, `--facet` ✅, `--stats` ✅, `--histogram` ✅, `--rows` ✅ (S1E.1,3,4,5,9 all done). |
+| §14 MCP | ✅ | `uffs_aggregate` works for presets. `uffs_facet_values` sends `"terms"` kind — **functional end-to-end**. |
 | §15 Field capability model | ✅ | AggregateMeta drives planner validation |
-| §16 Facet modes | ✅ | Filtered facet mode only; disjunctive deferred |
+| §16 Facet modes | ✅ | Filtered facet mode only; disjunctive deferred (S5D) |
 | §17 Execution architecture | ✅ | compile → scan → finalize pipeline works end-to-end for presets |
 | §18 Accumulator strategies | ✅ | GroupAccumulator with 9 AccumulatorKind variants |
-| §19 Ordering/truncation/pagination | 🔧 | Library works ✅. Pagination NOT wired through SearchParams/daemon. `exact` not on wire. |
+| §19 Ordering/truncation/pagination | ✅ | Library ✅. Pagination wired through SearchParams/daemon (S3A.4 ✅). `agg_cursor`/`agg_page_size` on wire. Stateful cache deferred (S3A.5). |
 | §20 Sample rows + drilldown | ✅ | S2A.1–S2A.4 complete (TopHits: spec, heap, materialization, projection; 20 tests). S2B.1–S2B.2 complete (drill-down predicates on BucketRow; 3 tests). Total: 23 tests. |
-| §21 Duplicate analytics | 🔧 | Grouping + singleton elimination ✅. No I/O verification. Sample indices stored but not materialized. |
+| §21 Duplicate analytics | ✅ | Grouping ✅, singleton elimination ✅, I/O verification (first_bytes + SHA-256) ✅ (S4C.1–4), budget ✅, sample materialization ✅ (S4B.3), integration tests ✅ (S4E.2–4). |
 | §22 Existing concept integration | ✅ | Reuses type/category system, field IDs |
-| §23 Output modes | ✅ | JSON, Table, CSV, TSV all work |
+| §23 Output modes | ✅ | JSON, Table, CSV, TSV all work. Samples + drill-down rendered in all formats (S2G.7–10 ✅). |
 | §24 Module layout | ✅ | 12 modules: spec, planner, accumulators, buckets, rollup, duplicates, presets, finalize, parser, pagination, export, cache |
 | §25 Performance goals | ✅ | Aggregate-only avoids row materialization; extension_id during scan |
-| §26 Testing | 🔧 | 58 aggregate-specific unit tests ✅. **No synthetic-index integration tests.** No perf guard tests. |
-| §27 Rollout plan | 🔧 | All 5 stages have code, but none is fully shippable — S1D.3 blocks everything downstream. |
+| §26 Testing | ✅ | 80+ aggregate-specific unit tests ✅. 10 synthetic-index integration tests (S1G.10–16) ✅. Duplicate integration tests (S4E.2–4) ✅. 242 CLI/API validation tests ✅. |
+| §27 Rollout plan | ✅ | All 5 stages complete. Stages 0–4E shipped. S1D.3 resolved. |
 | §28 Decisions | ✅ | All 11 "adopt" decisions followed; all 6 "reject" decisions respected |
-| §29 Open questions | — | Resolved in principle |
-| §30 Bottom line | 🔧 | Aggregate response path exists for presets. Power syntax, facet_values, pagination, cache: library-only. |
+| §29 Open questions | ✅ | Resolved |
+| §30 Bottom line | ✅ | Aggregate engine fully operational: presets, power syntax (`raw` kind), facet_values, pagination, samples, drill-down, duplicates — all wired end-to-end. **Deferred:** stateful cursor cache (S3A.5), MCP task mode (S4C.5), disjunctive facets (S5D). |
 
 ### Critical blockers
 
@@ -728,20 +728,18 @@ Modified files:
 | ~~**S3A.4:**~~ **RESOLVED** — `agg_cursor`/`agg_page_size` on `SearchParams`, `next_cursor` on `AggregateResultWire` | — | Daemon applies `paginate_result()` after finalization; CLI/MCP display cursor hint. **⚠️ Stateless re-query** — each page re-runs the full aggregation. See S3A.5 for future cached approach. |
 | ~~**S1G.10–16:**~~ **RESOLVED** — 10 synthetic-index integration tests in `aggregate/mod.rs` | — | overview, by_extension, by_type, range, histogram, datehist, perf guards all verified. |
 
-### Remaining items (54 ⬜ + 11 🔧 = 65/175 not complete):
+### Remaining items (2 ⬜ deferred):
 
 | Priority | Items | Description |
 |----------|-------|-------------|
 | ~~**P0 — Must fix**~~ | ~~S1D.3~~ | ~~Wire all AggregateKind variants through daemon.~~ **RESOLVED** — `convert_wire_spec()` handles all 13 wire kinds. |
-| ~~**P0 — Done**~~ | ~~S2G.1–S2G.14~~ | ~~Wire surface complete~~ **ALL 14 DONE** |
-| **P0 — Must fix** | **S2G.7–S2G.10** (4 tasks) | **Render samples + drill-down in CLI table/JSON/CSV + MCP.**  Complete the end-to-end user-facing experience. |
-| **P1 — Should do** | S2G.11 | Wire query_predicates through daemon for full drill-down context. |
-| **P1 — Should do** | S2G.12–S2G.14 (3 tasks) | Serde round-trip, daemon integration, CLI validation tests for wire surface. |
+| ~~**P0 — Done**~~ | ~~S2G.1–S2G.14~~ | ~~Wire surface complete~~ **ALL 14 DONE** — CLI table/JSON/CSV rendering ✅, MCP summary ✅, query_predicates ✅, serde tests ✅, CLI tests T150–T153 ✅. |
 | ~~**P1**~~ | ~~S3A.4~~ | ~~Wire cursor through SearchParams → daemon → response~~ ✅ |
-| **P1** | S4C.1–3 | Duplicate verification I/O (Windows-only) |
-| **P2 — Nice to have** | S1E.1,3,4,5,9 | `--count`, `--facet`, `--stats`, `--histogram`, `--rows` shorthand flags |
+| ~~**P1**~~ | ~~S4C.1–3~~ | ~~Duplicate verification I/O~~ **DONE** — first_bytes ✅, SHA-256 ✅, budget ✅. |
+| ~~**P2**~~ | ~~S1E.1,3,4,5,9~~ | ~~`--count`, `--facet`, `--stats`, `--histogram`, `--rows` shorthand flags~~ **ALL DONE** |
 | ~~**P2**~~ | ~~S2A.2–4~~ | ~~Sample row heap + materialization~~ **DONE** |
 | ~~**P2**~~ | ~~S2B.1–2~~ | ~~Drill-down predicates~~ **DONE** |
-| **P2** | S1H.1–2 | `uffs stats` → aggregate engine refactor |
+| ~~**P2**~~ | ~~S1H.1–2~~ | ~~`uffs stats` → aggregate engine refactor~~ **DONE** — dual-mode (daemon/parquet) ✅, output parity test ✅. |
 | **P2** | S3A.5 | Stateful cursor: cache aggregation result server-side, serve pages from cache (avoids re-query per page; needs memory budget) |
+| **P2** | S4C.5 | MCP task mode for long-running verification (deferred until real-world timing shows need) |
 | **P3 — Future** | S5A–D | Percentiles, forensic fields, pipeline derivatives, disjunctive facets |

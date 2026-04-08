@@ -540,42 +540,13 @@ impl IndexManager {
     }
 
     /// Look up a file by path and return all available fields (D2.3.7).
+    ///
+    /// Walks the `children` index top-down in `O(path_depth)` instead of
+    /// scanning all records with full path resolution.
     pub async fn info(&self, file_path: &str) -> uffs_client::protocol::InfoResponse {
         let snap = self.snapshot().await;
-        let path_lower = file_path.to_ascii_lowercase();
 
-        let mut found_record = None;
-
-        // Search all drives for a matching path
-        'outer: for drive in &snap.drives {
-            let volume_prefix = format!("{}:\\", drive.letter);
-            for (idx, rec) in drive.records.iter().enumerate() {
-                if rec.name_len == 0 {
-                    continue;
-                }
-                let resolved = uffs_core::search::tree::resolve_path(drive, idx, &volume_prefix);
-                if resolved.to_ascii_lowercase() == path_lower {
-                    let name = rec.name(&drive.names);
-                    found_record = Some(serde_json::json!({
-                        "drive": drive.letter.to_string(),
-                        "path": resolved,
-                        "name": name,
-                        "size": rec.size,
-                        "allocated": rec.allocated,
-                        "treesize": rec.treesize,
-                        "created": rec.created,
-                        "modified": rec.modified,
-                        "accessed": rec.accessed,
-                        "flags": rec.flags,
-                        "is_directory": rec.is_directory(),
-                        "descendants": rec.descendants,
-                        "parent_idx": rec.parent_idx,
-                        "extension_id": rec.extension_id,
-                    }));
-                    break 'outer;
-                }
-            }
-        }
+        let found_record = Self::info_tree_lookup(&snap, file_path);
 
         drop(snap);
 
@@ -583,6 +554,145 @@ impl IndexManager {
             found: found_record.is_some(),
             record: found_record,
         }
+    }
+
+    /// Fast tree-walk lookup: parse path → drive letter + segments, then
+    /// walk `children` index matching each segment case-insensitively.
+    fn info_tree_lookup(snap: &DriveIndex, file_path: &str) -> Option<serde_json::Value> {
+        // Parse "C:\Windows\System32\notepad.exe" → ('C', ["Windows", "System32",
+        // "notepad.exe"])
+        let normalized = file_path.replace('/', "\\");
+        let (drive_letter, remainder) = Self::parse_drive_prefix(&normalized)?;
+
+        let segments: Vec<&str> = remainder
+            .split('\\')
+            .filter(|seg| !seg.is_empty())
+            .collect();
+        if segments.is_empty() {
+            return None;
+        }
+
+        // Find the matching drive.
+        let drive = snap
+            .drives
+            .iter()
+            .find(|dr| dr.letter.eq_ignore_ascii_case(&drive_letter))?;
+
+        // Find root entries (parent_idx == u32::MAX) as starting candidates.
+        let mut candidates: Vec<u32> = Vec::new();
+        for (idx, rec) in drive.records.iter().enumerate() {
+            if rec.parent_idx == u32::MAX && rec.name_len > 0 {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "record count bounded by NTFS limits, fits u32"
+                )]
+                {
+                    candidates.push(idx as u32);
+                }
+            }
+        }
+
+        // Walk segments top-down through the children index.
+        for (seg_idx, &segment) in segments.iter().enumerate() {
+            let seg_lower = segment.to_ascii_lowercase();
+            let is_last = seg_idx == segments.len() - 1;
+
+            let mut next_candidates: Vec<u32> = Vec::new();
+
+            if seg_idx == 0 {
+                // First segment: match against root entries.
+                for &root_idx in &candidates {
+                    if let Some(rec) = drive.records.get(root_idx as usize) {
+                        let name = rec.name(&drive.names);
+                        if name.to_ascii_lowercase() == seg_lower {
+                            if is_last {
+                                let volume_prefix = format!("{}:\\", drive.letter);
+                                let resolved = uffs_core::search::tree::resolve_path(
+                                    drive,
+                                    root_idx as usize,
+                                    &volume_prefix,
+                                );
+                                return Some(Self::build_info_json(drive, rec, &resolved));
+                            }
+                            // Collect children for next segment.
+                            next_candidates
+                                .extend_from_slice(drive.children.get(root_idx as usize));
+                        }
+                    }
+                }
+            } else {
+                // Subsequent segments: match against children of previous matches.
+                for &child_idx in &candidates {
+                    if let Some(rec) = drive.records.get(child_idx as usize) {
+                        let name = rec.name(&drive.names);
+                        if name.to_ascii_lowercase() == seg_lower {
+                            if is_last {
+                                let volume_prefix = format!("{}:\\", drive.letter);
+                                let resolved = uffs_core::search::tree::resolve_path(
+                                    drive,
+                                    child_idx as usize,
+                                    &volume_prefix,
+                                );
+                                return Some(Self::build_info_json(drive, rec, &resolved));
+                            }
+                            next_candidates
+                                .extend_from_slice(drive.children.get(child_idx as usize));
+                        }
+                    }
+                }
+            }
+
+            if next_candidates.is_empty() {
+                return None;
+            }
+            candidates = next_candidates;
+        }
+
+        None
+    }
+
+    /// Parse `C:\...` or `c:/...` into `(drive_letter, remainder)`.
+    fn parse_drive_prefix(path: &str) -> Option<(char, &str)> {
+        let mut chars = path.chars();
+        let letter = chars.next()?;
+        if !letter.is_ascii_alphabetic() {
+            return None;
+        }
+        if chars.next()? != ':' {
+            return None;
+        }
+        // Skip optional separator after ':'
+        let after_colon = path.get(2..)?;
+        let remainder = after_colon
+            .strip_prefix('\\')
+            .or_else(|| after_colon.strip_prefix('/'))
+            .unwrap_or(after_colon);
+        Some((letter, remainder))
+    }
+
+    /// Build the JSON value for an info response record.
+    fn build_info_json(
+        drive: &uffs_core::compact::DriveCompactIndex,
+        rec: &uffs_core::compact::CompactRecord,
+        resolved_path: &str,
+    ) -> serde_json::Value {
+        let name = rec.name(&drive.names);
+        serde_json::json!({
+            "drive": drive.letter.to_string(),
+            "path": resolved_path,
+            "name": name,
+            "size": rec.size,
+            "allocated": rec.allocated,
+            "treesize": rec.treesize,
+            "created": rec.created,
+            "modified": rec.modified,
+            "accessed": rec.accessed,
+            "flags": rec.flags,
+            "is_directory": rec.is_directory(),
+            "descendants": rec.descendants,
+            "parent_idx": rec.parent_idx,
+            "extension_id": rec.extension_id,
+        })
     }
 
     /// Get the configured data directory, if any.

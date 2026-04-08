@@ -1,0 +1,232 @@
+# search_mode tests
+# Auto-split from test-definitions.toml
+
+[[test]]
+id          = "T88a"
+group       = "search_mode"
+name        = "T88a path: prefix"
+title       = "T88a path: prefix"
+short_desc  = "T88a path: prefix"
+cli_args    = ["path:*windows*", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T88a"
+
+[[test]]
+id          = "T88b"
+group       = "search_mode"
+name        = "T88b dir: prefix"
+title       = "T88b dir: prefix"
+short_desc  = "T88b dir: prefix"
+cli_args    = ["dir:*system*", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Directory Flag"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T88c"
+group       = "search_mode"
+name        = "T88c file: prefix"
+title       = "T88c file: prefix"
+short_desc  = "T88c file: prefix"
+cli_args    = ["file:*.dll", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Directory Flag"
+op     = "ne"
+value  = "1"
+
+[[test.column_checks]]
+column = "Name"
+op     = "ends_with"
+value  = ".dll"
+case   = "lower"
+
+[[test]]
+id          = "T88d"
+group       = "search_mode"
+name        = "T88d --begins-with"
+title       = "T88d --begins-with"
+short_desc  = "T88d --begins-with"
+cli_args    = ["--begins-with", "note", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Name"
+op     = "starts_with"
+value  = "note"
+case   = "lower"
+
+[[test]]
+id          = "T88e"
+group       = "search_mode"
+name        = "T88e --ends-with"
+title       = "T88e --ends-with"
+short_desc  = "T88e --ends-with"
+cli_args    = ["--ends-with", ".log", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Name"
+op     = "ends_with"
+value  = ".log"
+case   = "lower"
+
+[[test]]
+id          = "T88f"
+group       = "search_mode"
+name        = "T88f --contains"
+title       = "T88f --contains"
+short_desc  = "T88f --contains"
+cli_args    = ["--contains", "setup", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Name"
+op     = "contains"
+value  = "setup"
+case   = "lower"
+
+[[test]]
+id          = "T88h"
+group       = "search_mode"
+name        = "T88h --in-path + pattern"
+title       = "T88h --in-path + pattern"
+short_desc  = "T88h --in-path + pattern"
+cli_args    = ["*.exe", "--in-path", "*windows*", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Path Only"
+op     = "contains"
+value  = "windows"
+case   = "lower"
+
+[[test.column_checks]]
+column = "Name"
+op     = "ends_with"
+value  = ".exe"
+case   = "lower"
+
+[[test]]
+id          = "T88i"
+group       = "search_mode"
+name        = "T88i path: vs --in-path"
+title       = "T88i path: vs --in-path"
+short_desc  = "T88i path: vs --in-path"
+cli_args    = ["path:*notepad*", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T88i"
+
+[[test]]
+id          = "T88j"
+group       = "search_mode"
+name        = "T88j --contains + --not-contains"
+title       = "T88j --contains + --not-contains"
+short_desc  = "T88j --contains + --not-contains"
+cli_args    = ["--contains", "update", "--not-contains", "old", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T88j"
+
+[[test]]
+id          = "T88k"
+group       = "search_mode"
+name        = "T88k dir: prefix + sort treesize desc"
+title       = "T88k dir: prefix + sort treesize desc"
+short_desc  = "T88k dir: prefix + sort treesize desc"
+cli_args    = ["dir:*program*", "--sort", "treesize", "--sort-desc", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T88k"
+
+[[test.column_checks]]
+column = "Directory Flag"
+op     = "eq"
+value  = "1"
+
+[[test.sort_checks]]
+column = "Tree Size"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T88l"
+group       = "search_mode"
+name        = "T88l --begins-with + --ext"
+title       = "T88l --begins-with + --ext"
+short_desc  = "T88l --begins-with + --ext"
+cli_args    = ["--begins-with", "win", "--ext", "exe,dll", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T88l"
+
+[[test]]
+id          = "T95"
+group       = "search_mode"
+name        = "T95 --in-path *windows*"
+title       = "T95 --in-path *windows*"
+short_desc  = "T95 --in-path *windows*"
+cli_args    = ["*.dll", "--in-path", "*windows*", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Path Only"
+op     = "contains"
+value  = "windows"
+case   = "lower"
+
+[[test]]
+id          = "T96"
+group       = "search_mode"
+name        = "T96 --in-path *system32*"
+title       = "T96 --in-path *system32*"
+short_desc  = "T96 --in-path *system32*"
+cli_args    = ["*.dll", "--in-path", "*system32*", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Path Only"
+op     = "contains"
+value  = "system32"
+case   = "lower"
+
+[[test]]
+id          = "T117"
+group       = "search_mode"
+name        = "T117 type + in-path + size"
+title       = "T117 type + in-path + size"
+short_desc  = "T117 type + in-path + size"
+cli_args    = ["*", "--type", "system", "--in-path", "*windows*", "--min-size", "1048576", "--files-only", "--sort", "-size", "--limit", "10"]
+expect_min_rows = 1
+stdout_contains = ["\"Name\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T129"
+group       = "search_mode"
+name        = "T129 regex case insensitive"
+title       = "Regex pattern matching (case insensitive)"
+short_desc  = "Regex search for system*.dll files"
+cli_args    = [">system.*\\.dll", "--files-only", "--limit", "10"]
+expect_min_rows = 1
+stdout_contains = [".dll"]
+
+[test.api_checks]
+total_count_min = 1
+

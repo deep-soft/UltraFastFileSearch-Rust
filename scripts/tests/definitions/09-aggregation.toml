@@ -1,0 +1,989 @@
+# aggregation tests
+# Auto-split from test-definitions.toml
+
+[[test]]
+id          = "T119"
+group       = "aggregation"
+name        = "T119 agg count"
+title       = "T119 agg count"
+short_desc  = "T119 agg count"
+cli_args    = ["agg", "count"]
+stdout_contains = ["=== count ===", "Total:"]
+api_checks.result_has_key  = ["records_scanned"]
+
+[[test]]
+id          = "T120"
+group       = "aggregation"
+name        = "T120 agg overview"
+title       = "T120 agg overview"
+short_desc  = "T120 agg overview"
+cli_args    = ["agg", "overview"]
+stdout_contains = ["=== total_count ===", "=== files_vs_dirs ===", "=== by_type ===", "Total:"]
+api_checks.expect_agg_results = 5
+api_checks.agg_label_contains = ["total_count", "files_vs_dirs", "by_type"]
+
+[[test]]
+id          = "T121"
+group       = "aggregation"
+name        = "T121 agg by_extension"
+title       = "T121 agg by_extension"
+short_desc  = "T121 agg by_extension"
+cli_args    = ["agg", "by_extension"]
+stdout_contains = ["=== by_extension ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_extension"]
+
+[[test]]
+id          = "T122"
+group       = "aggregation"
+name        = "T122 agg by_type"
+title       = "T122 agg by_type"
+short_desc  = "T122 agg by_type"
+cli_args    = ["agg", "by_type"]
+stdout_contains = ["=== by_type ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_type"]
+
+[[test]]
+id          = "T123"
+group       = "aggregation"
+name        = "T123 agg by_drive"
+title       = "T123 agg by_drive"
+short_desc  = "T123 agg by_drive"
+cli_args    = ["agg", "by_drive"]
+stdout_contains = ["=== by_drive ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_drive"]
+
+[[test]]
+id          = "T124"
+group       = "aggregation"
+name        = "T124 agg by_size"
+title       = "T124 agg by_size"
+short_desc  = "T124 agg by_size"
+cli_args    = ["agg", "by_size"]
+stdout_contains = ["=== by_size ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_size"]
+
+[[test]]
+id          = "T125"
+group       = "aggregation"
+name        = "T125 agg by_age"
+title       = "T125 agg by_age"
+short_desc  = "T125 agg by_age"
+cli_args    = ["agg", "by_age"]
+stdout_contains = ["=== by_age ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_age"]
+
+[[test]]
+id          = "T126"
+group       = "aggregation"
+name        = "T126 agg count --format json"
+title       = "T126 agg count --format json"
+short_desc  = "T126 agg count --format json"
+cli_args    = ["agg", "count", "--format", "json"]
+validator   = "T126"
+
+[test.api_checks]
+agg_kind_contains = ["count"]
+
+[[test]]
+id          = "T127"
+group       = "aggregation"
+name        = "T127 agg overview --format json"
+title       = "T127 agg overview --format json"
+short_desc  = "T127 agg overview --format json"
+cli_args    = ["agg", "overview", "--format", "json"]
+validator   = "T127"
+
+[test.api_checks]
+agg_label_contains = ["total_count", "by_type"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T128"
+group       = "aggregation"
+name        = "T128 agg by_extension --format csv"
+title       = "T128 agg by_extension --format csv"
+short_desc  = "T128 agg by_extension --format csv"
+cli_args    = ["agg", "by_extension", "--format", "csv"]
+stdout_contains = ["# by_extension", "key,count,total_bytes"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_extension"]
+
+[[test]]
+id          = "T130"
+group       = "aggregation"
+name        = "T130 agg top_folders preset"
+title       = "T130 agg top_folders preset"
+short_desc  = "T130 agg top_folders preset"
+cli_args    = ["agg", "top_folders"]
+stdout_contains = ["=== top_folders ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["top_folders"]
+
+[[test]]
+id          = "T131"
+group       = "aggregation"
+name        = "T131 agg cleanup preset"
+title       = "T131 agg cleanup preset"
+short_desc  = "T131 agg cleanup preset"
+cli_args    = ["agg", "cleanup"]
+stdout_contains = ["=== no_extension ===", "missing:"]
+api_checks.expect_agg_results = 3
+api_checks.agg_label_contains = ["no_extension", "zero_byte_files"]
+
+[[test]]
+id          = "T132"
+group       = "aggregation"
+name        = "T132 agg duplicates preset"
+title       = "T132 agg duplicates preset"
+short_desc  = "T132 agg duplicates preset"
+cli_args    = ["agg", "duplicates"]
+stdout_contains = ["=== duplicate_candidates ==="]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["duplicate_candidates"]
+
+[[test]]
+id          = "T133"
+group       = "aggregation"
+name        = "T133 agg storage preset"
+title       = "T133 agg storage preset"
+short_desc  = "T133 agg storage preset"
+cli_args    = ["agg", "storage"]
+stdout_contains = ["=== logical_size ===", "Count:", "Sum:"]
+api_checks.expect_agg_results = 3
+api_checks.agg_label_contains = ["logical_size", "allocated_size"]
+
+[[test]]
+id          = "T134"
+group       = "aggregation"
+name        = "T134 agg activity preset"
+title       = "T134 agg activity preset"
+short_desc  = "T134 agg activity preset"
+cli_args    = ["agg", "activity"]
+stdout_contains = ["=== modified_monthly ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 2
+api_checks.agg_label_contains = ["modified_monthly", "created_monthly"]
+
+[[test]]
+id          = "T135"
+group       = "aggregation"
+name        = "T135 agg media preset"
+title       = "T135 agg media preset"
+short_desc  = "T135 agg media preset"
+cli_args    = ["agg", "media"]
+stdout_contains = ["=== media_type_breakdown ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 3
+api_checks.agg_label_contains = ["media_type_breakdown", "media_size_stats"]
+
+[[test]]
+id          = "T136"
+group       = "aggregation"
+name        = "T136 agg top_folders --format json"
+title       = "T136 agg top_folders --format json"
+short_desc  = "T136 agg top_folders --format json"
+cli_args    = ["agg", "top_folders", "--format", "json"]
+validator   = "T136"
+
+[test.api_checks]
+agg_label_contains = ["top_folders"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T137"
+group       = "aggregation"
+name        = "T137 agg cleanup --format json"
+title       = "T137 agg cleanup --format json"
+short_desc  = "T137 agg cleanup --format json"
+cli_args    = ["agg", "cleanup", "--format", "json"]
+validator   = "T137"
+
+[test.api_checks]
+agg_label_contains = ["no_extension", "zero_byte_files"]
+
+[[test]]
+id          = "T138"
+group       = "aggregation"
+name        = "T138 agg cleanup --format csv"
+title       = "T138 agg cleanup --format csv"
+short_desc  = "T138 agg cleanup --format csv"
+cli_args    = ["agg", "cleanup", "--format", "csv"]
+stdout_contains = ["# no_extension", "value"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["no_extension"]
+
+[[test]]
+id          = "T139"
+group       = "aggregation"
+name        = "T139 --agg terms:extension,sample=3"
+title       = "T139 --agg terms:extension,sample=3"
+short_desc  = "T139 --agg terms:extension,sample=3"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=10,sample=3", "--format", "json"]
+validator   = "T139"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+bucket_has_samples = true
+
+[[test]]
+id          = "T140"
+group       = "aggregation"
+name        = "T140 --agg duplicates:size+name,sample=2"
+title       = "T140 --agg duplicates:size+name,sample=2"
+short_desc  = "T140 --agg duplicates:size+name,sample=2"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,sample=2,top=50", "--format", "json"]
+validator   = "T140"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["duplicates"]
+bucket_min_count = 1
+bucket_has_samples = true
+
+[[test]]
+id          = "T145"
+group       = "aggregation"
+name        = "T145 --agg count + --rows mixed"
+title       = "T145 --agg count + --rows mixed"
+short_desc  = "T145 --agg count + --rows mixed"
+cli_args    = ["*.dll", "--limit", "5", "--agg", "count", "--rows", "--drive", "C"]
+targets     = ["cli"]
+stdout_contains = ["# count"]
+expect_min_rows = 1
+
+[[test]]
+id          = "T146"
+group       = "aggregation"
+name        = "T146 agg by_extension --format json (buckets)"
+title       = "T146 agg by_extension --format json (buckets)"
+short_desc  = "T146 agg by_extension --format json (buckets)"
+cli_args    = ["agg", "by_extension", "--format", "json"]
+validator   = "T146"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_label_contains = ["by_extension"]
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T147"
+group       = "aggregation"
+name        = "T147 agg duplicates --format json"
+title       = "T147 agg duplicates --format json"
+short_desc  = "T147 agg duplicates --format json"
+cli_args    = ["agg", "duplicates", "--format", "json"]
+validator   = "T147"
+
+[test.api_checks]
+agg_kind_contains = ["duplicates"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T148"
+group       = "aggregation"
+name        = "T148 agg by_drive --format csv"
+title       = "T148 agg by_drive --format csv"
+short_desc  = "T148 agg by_drive --format csv"
+cli_args    = ["agg", "by_drive", "--format", "csv"]
+stdout_contains = ["# by_drive", "key,count,total_bytes"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_drive"]
+
+[[test]]
+id          = "T149"
+group       = "aggregation"
+name        = "T149 agg by_size --format json"
+title       = "T149 agg by_size --format json"
+short_desc  = "T149 agg by_size --format json"
+cli_args    = ["agg", "by_size", "--format", "json"]
+validator   = "T149"
+
+[test.api_checks]
+agg_label_contains = ["by_size"]
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T150"
+group       = "aggregation"
+name        = "T150 --agg terms:extension,sample=2 JSON sample_rows"
+title       = "T150 --agg terms:extension,sample=2 JSON sample_rows"
+short_desc  = "T150 --agg terms:extension,sample=2 JSON sample_rows"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=5,sample=2", "--format", "json"]
+validator   = "T150"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_has_samples = true
+
+[[test]]
+id          = "T151"
+group       = "aggregation"
+name        = "T151 --agg terms:extension,sample=2 JSON drilldown"
+title       = "T151 --agg terms:extension,sample=2 JSON drilldown"
+short_desc  = "T151 --agg terms:extension,sample=2 JSON drilldown"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=5,sample=2", "--format", "json"]
+validator   = "T151"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_has_samples = true
+
+[[test]]
+id          = "T152"
+group       = "aggregation"
+name        = "T152 agg by_extension table with samples"
+title       = "T152 agg by_extension table with samples"
+short_desc  = "T152 agg by_extension table with samples"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "table"]
+stdout_contains = ["=== buckets ===", "Count", "Total Size"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 1
+
+[[test]]
+id          = "T153"
+group       = "aggregation"
+name        = "T153 --agg terms:extension no sample"
+title       = "T153 --agg terms:extension no sample"
+short_desc  = "T153 --agg terms:extension no sample"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3", "--format", "json"]
+validator   = "T153"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T154"
+group       = "aggregation"
+name        = "T154 rollup:drive power syntax"
+title       = "T154 rollup:drive power syntax"
+short_desc  = "T154 rollup:drive power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,top=5", "--format", "json"]
+validator   = "T154"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["rollup"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T155"
+group       = "aggregation"
+name        = "T155 rollup:path,depth=2 power syntax"
+title       = "T155 rollup:path,depth=2 power syntax"
+short_desc  = "T155 rollup:path,depth=2 power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:path,depth=2,top=10", "--format", "json"]
+validator   = "T155"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["rollup"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T157"
+group       = "aggregation"
+name        = "T157 --agg + search filter"
+title       = "T157 --agg + search filter"
+short_desc  = "T157 --agg + search filter"
+cli_args    = ["*.exe", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "json"]
+validator   = "T157"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_key_contains = ["exe"]
+bucket_has_samples = true
+
+[[test]]
+id          = "T158"
+group       = "aggregation"
+name        = "T158 sample row fields content"
+title       = "T158 sample row fields content"
+short_desc  = "T158 sample row fields content"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=2", "--format", "json"]
+validator   = "T158"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_has_samples = true
+
+[[test]]
+id          = "T160"
+group       = "aggregation"
+name        = "T160 hist:size power syntax"
+title       = "T160 hist:size power syntax"
+short_desc  = "T160 hist:size power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "hist:size,interval=1048576", "--format", "json"]
+validator   = "T160"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T161"
+group       = "aggregation"
+name        = "T161 stats:size power syntax"
+title       = "T161 stats:size power syntax"
+short_desc  = "T161 stats:size power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "stats:size", "--format", "json"]
+validator   = "T161"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["stats"]
+agg_stats_has_keys = ["count", "sum", "min", "max", "avg"]
+
+[[test]]
+id          = "T162"
+group       = "aggregation"
+name        = "T162 datehist:modified,calendar=month"
+title       = "T162 datehist:modified,calendar=month"
+short_desc  = "T162 datehist:modified,calendar=month"
+cli_args    = ["*", "--limit", "0", "--agg", "datehist:modified,calendar=month", "--format", "json"]
+validator   = "T162"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T163"
+group       = "aggregation"
+name        = "T163 range:size power syntax"
+title       = "T163 range:size power syntax"
+short_desc  = "T163 range:size power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "range:size,boundaries=0+1024+1048576+1073741824", "--format", "json"]
+validator   = "T163"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T165"
+group       = "aggregation"
+name        = "T165 missing:extension power syntax"
+title       = "T165 missing:extension power syntax"
+short_desc  = "T165 missing:extension power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "missing:extension", "--format", "json"]
+validator   = "T165"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["missing"]
+
+[[test]]
+id          = "T166"
+group       = "aggregation"
+name        = "T166 distinct:extension power syntax"
+title       = "T166 distinct:extension power syntax"
+short_desc  = "T166 distinct:extension power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "distinct:extension", "--format", "json"]
+validator   = "T166"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["distinct"]
+
+[[test]]
+id          = "T167"
+group       = "aggregation"
+name        = "T167 sample_sort terms:extension,sample=2,sort=size"
+title       = "T167 sample_sort terms:extension,sample=2,sort=size"
+short_desc  = "T167 sample_sort terms:extension,sample=2,sort=size"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=2,sort=size", "--format", "json"]
+validator   = "T167"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_has_samples = true
+
+[[test]]
+id          = "T170"
+group       = "aggregation"
+name        = "T170 rollup:drive table format"
+title       = "T170 rollup:drive table format"
+short_desc  = "T170 rollup:drive table format"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,top=5", "--format", "table"]
+stdout_contains = ["=== rollup ===", "Count", "Total Size"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["rollup"]
+
+[[test]]
+id          = "T171"
+group       = "aggregation"
+name        = "T171 rollup:path CSV format"
+title       = "T171 rollup:path CSV format"
+short_desc  = "T171 rollup:path CSV format"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:path,depth=1,top=5", "--format", "csv"]
+stdout_contains = ["# rollup", "key,count,total_bytes"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["rollup"]
+
+[[test]]
+id          = "T172"
+group       = "aggregation"
+name        = "T172 agg overview --format csv"
+title       = "T172 agg overview --format csv"
+short_desc  = "T172 agg overview --format csv"
+cli_args    = ["agg", "overview", "--format", "csv"]
+stdout_contains = ["# total_count", "# files_vs_dirs", "# by_type"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 3
+
+[[test]]
+id          = "T173"
+group       = "aggregation"
+name        = "T173 agg by_age --format json"
+title       = "T173 agg by_age --format json"
+short_desc  = "T173 agg by_age --format json"
+cli_args    = ["agg", "by_age", "--format", "json"]
+validator   = "T173"
+
+[test.api_checks]
+agg_label_contains = ["by_age"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T174"
+group       = "aggregation"
+name        = "T174 agg storage --format json"
+title       = "T174 agg storage --format json"
+short_desc  = "T174 agg storage --format json"
+cli_args    = ["agg", "storage", "--format", "json"]
+validator   = "T174"
+
+[test.api_checks]
+agg_label_contains = ["logical_size", "waste_by_drive"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T175"
+group       = "aggregation"
+name        = "T175 agg activity --format json"
+title       = "T175 agg activity --format json"
+short_desc  = "T175 agg activity --format json"
+cli_args    = ["agg", "activity", "--format", "json"]
+validator   = "T175"
+
+[test.api_checks]
+agg_label_contains = ["modified_monthly", "created_monthly"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T176"
+group       = "aggregation"
+name        = "T176 agg media --format json"
+title       = "T176 agg media --format json"
+short_desc  = "T176 agg media --format json"
+cli_args    = ["agg", "media", "--format", "json"]
+validator   = "T176"
+
+[test.api_checks]
+agg_label_contains = ["media_type_breakdown", "media_size_stats"]
+bucket_min_count = 1
+
+[[test]]
+id          = "T177"
+group       = "aggregation"
+name        = "T177 agg duplicates --format csv"
+title       = "T177 agg duplicates --format csv"
+short_desc  = "T177 agg duplicates --format csv"
+cli_args    = ["agg", "duplicates", "--format", "csv"]
+stdout_contains = ["# duplicate_candidates", "key,copies,file_size,total_bytes,reclaimable,verified"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["duplicate_candidates"]
+
+[[test]]
+id          = "S3A.1"
+group       = "aggregation"
+name        = "S3A.1 next_cursor in JSON output"
+title       = "S3A.1 next_cursor in JSON output"
+short_desc  = "S3A.1 next_cursor in JSON output"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=50", "--agg-page-size", "2", "--format", "json"]
+validator   = "S3A.1"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+agg_has_cursor = true
+
+[[test]]
+id          = "S3A.2"
+group       = "aggregation"
+name        = "S3A.2 table cursor hint"
+title       = "S3A.2 table cursor hint"
+short_desc  = "S3A.2 table cursor hint"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=50", "--agg-page-size", "2", "--format", "table"]
+stdout_contains = ["=== buckets ===", "Count", "Total Size"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 1
+
+[[test]]
+id          = "S3A.3"
+group       = "aggregation"
+name        = "S3A.3 --agg-page-size limits buckets"
+title       = "S3A.3 --agg-page-size limits buckets"
+short_desc  = "S3A.3 --agg-page-size limits buckets"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=50", "--agg-page-size", "3", "--format", "json"]
+validator   = "S3A.3"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+[[test]]
+id          = "S3A.4"
+group       = "aggregation"
+name        = "S3A.4 aggregate --agg-page-size"
+title       = "S3A.4 aggregate --agg-page-size"
+short_desc  = "S3A.4 aggregate --agg-page-size"
+cli_args    = ["aggregate", "by_extension", "--format", "json", "--agg-page-size", "5"]
+validator   = "S3A.4"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+[[test]]
+id          = "S3C.1"
+group       = "aggregation"
+name        = "S3C.1 nested rollup JSON sub_buckets"
+title       = "S3C.1 nested rollup JSON sub_buckets"
+short_desc  = "S3C.1 nested rollup JSON sub_buckets"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,sub=terms:type,top=3", "--format", "json"]
+validator   = "S3C.1"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["rollup"]
+bucket_min_count = 1
+# Note: bucket_has_sub_buckets not checked here — the daemon's
+# rollup-to-wire converter doesn't yet populate sub_buckets in the
+# RPC response (CLI formatter handles sub-rows internally).
+
+[[test]]
+id          = "S3C.2"
+group       = "aggregation"
+name        = "S3C.2 nested rollup table rendering"
+title       = "S3C.2 nested rollup table rendering"
+short_desc  = "S3C.2 nested rollup table rendering"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,sub=terms:type,top=3", "--format", "table"]
+stdout_contains = ["=== rollup ===", "Count", "Total Size"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["rollup"]
+
+[[test]]
+id          = "S3C.3"
+group       = "aggregation"
+name        = "S3C.3 nested rollup CSV"
+title       = "S3C.3 nested rollup CSV"
+short_desc  = "S3C.3 nested rollup CSV"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,sub=terms:extension,top=3", "--format", "csv"]
+stdout_contains = ["# rollup", "key,count,total_bytes"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["rollup"]
+
+[[test]]
+id          = "S3D.1"
+group       = "aggregation"
+name        = "S3D.1 truncated hint in table"
+title       = "S3D.1 truncated hint in table"
+short_desc  = "S3D.1 truncated hint in table"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=1", "--format", "table"]
+stdout_contains = ["=== buckets ===", "more groups"]
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 1
+
+[[test]]
+id          = "S3D.2"
+group       = "aggregation"
+name        = "S3D.2 other_count in table"
+title       = "S3D.2 other_count in table"
+short_desc  = "S3D.2 other_count in table"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=2", "--format", "table"]
+stdout_contains = ["=== buckets ===", "more groups"]
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 2
+
+[[test]]
+id          = "S3D.3"
+group       = "aggregation"
+name        = "S3D.3 JSON truncation metadata"
+title       = "S3D.3 JSON truncation metadata"
+short_desc  = "S3D.3 JSON truncation metadata"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=1", "--format", "json"]
+validator   = "S3D.3"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+
+[[test]]
+id          = "S3D.4"
+group       = "aggregation"
+name        = "S3D.4 JSON exact flag"
+title       = "S3D.4 JSON exact flag"
+short_desc  = "S3D.4 JSON exact flag"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=5", "--format", "json"]
+validator   = "S3D.4"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+agg_exact = true
+
+[[test]]
+id          = "S3E.1"
+group       = "aggregation"
+name        = "S3E.1 CSV metadata comments"
+title       = "S3E.1 CSV metadata comments"
+short_desc  = "S3E.1 CSV metadata comments"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=1", "--format", "csv"]
+stdout_contains = ["# buckets", "key,count,total_bytes", "# other_count="]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 1
+
+[[test]]
+id          = "S3G.1"
+group       = "aggregation"
+name        = "S3G.1 sample_sort desc JSON"
+title       = "S3G.1 sample_sort desc JSON"
+short_desc  = "S3G.1 sample_sort desc JSON"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:drive,top=3,sample=3,sort=-size", "--format", "json"]
+validator   = "S3G.1"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_has_samples = true
+
+[[test]]
+id          = "S3G.3"
+group       = "aggregation"
+name        = "S3G.3 --rows with --agg"
+title       = "S3G.3 --rows with --agg"
+short_desc  = "S3G.3 --rows with --agg"
+cli_args    = ["*.exe", "--limit", "5", "--agg", "count", "--rows"]
+targets     = ["cli"]
+stdout_contains = ["# count"]
+expect_min_rows = 1
+
+[[test]]
+id          = "S3G.7"
+group       = "aggregation"
+name        = "S3G.7 rollup path depth=3"
+title       = "S3G.7 rollup path depth=3"
+short_desc  = "S3G.7 rollup path depth=3"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:path,depth=3,top=5", "--format", "table"]
+stdout_contains = ["=== rollup ===", "Count", "Total Size"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["rollup"]
+
+[[test]]
+id          = "S3G.8"
+group       = "aggregation"
+name        = "S3G.8 multiple --agg mixed"
+title       = "S3G.8 multiple --agg mixed"
+short_desc  = "S3G.8 multiple --agg mixed"
+cli_args    = ["*", "--limit", "0", "--agg", "count", "--agg", "terms:extension,top=3", "--agg", "stats:size", "--format", "json"]
+validator   = "S3G.8"
+
+[test.api_checks]
+expect_agg_results = 3
+agg_kind_contains = ["count", "buckets", "stats"]
+
+# ── S3B: Facet Values (API-only, method not yet implemented) ─────────────
+
+[[test]]
+id          = "S3B.1"
+group       = "aggregation"
+name        = "S3B.1 facet_values paged (top 3)"
+title       = "Facet values via terms aggregation with top=3"
+short_desc  = "terms:extension top=3 — simulates facet_values pagination"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3", "--format", "json"]
+validator   = "S3B.1"
+targets     = ["api"]
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+[[test]]
+id          = "S3B.2"
+group       = "aggregation"
+name        = "S3B.2 facet_values all ext (top 10000)"
+title       = "Facet values via terms aggregation with top=10000"
+short_desc  = "terms:extension top=10000 — returns all extension facet values"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=10000", "--format", "json"]
+validator   = "S3B.2"
+targets     = ["api"]
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+# ── S3misc: Miscellaneous aggregation tests ──────────────────────────────
+
+[[test]]
+id          = "S3misc.1"
+group       = "aggregation"
+name        = "S3misc.1 raw power syntax"
+title       = "Raw aggregation power syntax"
+short_desc  = "terms:extension,top=5,sample=2,sort=size via raw kind"
+cli_args    = ["*.exe", "--files-only", "--agg", "terms:extension,top=5,sample=2,sort=size", "--format", "json"]
+validator   = "S3misc.1"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_has_samples = true
+
+[[test]]
+id          = "S3misc.2"
+group       = "aggregation"
+name        = "S3misc.2 count agg"
+title       = "Count aggregation"
+short_desc  = "Simple count aggregation"
+cli_args    = ["*.exe", "--files-only", "--agg", "count", "--format", "json"]
+validator   = "S3misc.2"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["count"]
+
+[[test]]
+id          = "S3misc.3"
+group       = "aggregation"
+name        = "S3misc.3 include_rows=false"
+title       = "Aggregation-only query (no rows)"
+short_desc  = "include_rows=false returns only aggs, no rows"
+cli_args    = ["*", "--files-only", "--agg", "terms:extension,top=5", "--format", "json"]
+validator   = "S3misc.3"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+bucket_min_count = 1
+
+[[test]]
+id          = "S3misc.4"
+group       = "aggregation"
+name        = "S3misc.4 include_rows=true"
+title       = "Aggregation with rows"
+short_desc  = "include_rows=true returns both rows and aggs"
+cli_args    = ["*.exe", "--files-only", "--limit", "5", "--agg", "terms:extension,top=3", "--format", "json"]
+validator   = "S3misc.4"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["buckets"]
+
+# ─── Stage 4C: Duplicate verification ────────────────────────────────────
+
+[[test]]
+id          = "S4C.1"
+group       = "aggregation"
+name        = "S4C.1 duplicates verify=first_bytes JSON"
+title       = "Duplicates with first_bytes verification"
+short_desc  = "duplicates:size+name,verify=first_bytes produces JSON with verified field"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,verify=first_bytes", "--format", "json"]
+validator   = "S4C.1"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["duplicates"]
+bucket_min_count = 1
+
+[[test]]
+id          = "S4C.2"
+group       = "aggregation"
+name        = "S4C.2 duplicates verify=sha256 JSON"
+title       = "Duplicates with sha256 verification"
+short_desc  = "duplicates:size+name,verify=sha256 produces JSON with verified field"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,verify=sha256", "--format", "json"]
+validator   = "S4C.2"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["duplicates"]
+bucket_min_count = 1
+
+[[test]]
+id          = "S4C.3"
+group       = "aggregation"
+name        = "S4C.3 duplicates verify=first_bytes,verify_bytes=8192"
+title       = "Duplicates with custom verify_bytes"
+short_desc  = "verify_bytes=8192 is accepted without error"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,verify=first_bytes,verify_bytes=8192", "--format", "json"]
+validator   = "S4C.3"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["duplicates"]
+bucket_min_count = 1
+
+[[test]]
+id          = "S4C.4"
+group       = "aggregation"
+name        = "S4C.4 duplicates no verify (default)"
+title       = "Duplicates without verification"
+short_desc  = "Default duplicates mode produces no verified field"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name", "--format", "json"]
+validator   = "S4C.4"
+
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["duplicates"]
+bucket_min_count = 1
+
+[[test]]
+id          = "S4C.5"
+group       = "aggregation"
+name        = "S4C.5 duplicates verify=hash alias"
+title       = "verify=hash alias for sha256"
+short_desc  = "verify=hash is accepted as alias for sha256"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,verify=hash", "--format", "json"]
+validator   = "S4C.5"
+[test.api_checks]
+expect_agg_results = 1
+agg_kind_contains = ["duplicates"]
+bucket_min_count = 1
+
+# ═══════════════════════════════════════════════════════════════
+# Coverage-gap tests: untested CLI flags
+# ═══════════════════════════════════════════════════════════════
+

@@ -95,7 +95,8 @@ fn preset_overview_returns_multiple_results() {
         preset: Some("overview".to_owned()),
         ..spec("preset")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     // overview preset expands to count + stats + terms etc.
     assert!(
         results.len() >= 3,
@@ -113,7 +114,8 @@ fn preset_overview_returns_multiple_results() {
 #[test]
 fn count_returns_total_records() {
     let index = test_index();
-    let results = IndexManager::run_aggregations(&index, &[spec("count")], Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &[spec("count")], Vec::new(), None, None, None);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, "count");
     // root + Projects dir + 5 files = 7
@@ -129,7 +131,8 @@ fn stats_size_returns_metrics() {
         field: Some("size".to_owned()),
         ..spec("stats")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, "stats");
     let stats = results[0].stats.as_ref().unwrap();
@@ -149,7 +152,8 @@ fn terms_extension_returns_buckets() {
         top: Some(10),
         ..spec("terms")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, "buckets");
     // We have rs, md, toml, bin extensions
@@ -173,7 +177,8 @@ fn histogram_size_returns_buckets() {
         field: Some("size".to_owned()),
         ..spec("histogram")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, "buckets");
     // Should have at least 1 bucket covering the file sizes
@@ -190,7 +195,8 @@ fn date_histogram_returns_buckets() {
         calendar: Some("month".to_owned()),
         ..spec("datehist")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, "buckets");
 }
@@ -204,7 +210,8 @@ fn missing_extension_counts_records_without_ext() {
         field: Some("extension".to_owned()),
         ..spec("missing")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, "missing");
     // Root "." and dir "Projects" have no extension → ≥2 missing
@@ -220,7 +227,8 @@ fn distinct_extension_counts_unique_values() {
         field: Some("extension".to_owned()),
         ..spec("distinct")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, "distinct");
     // rs, md, toml, bin → 4 distinct extensions
@@ -237,7 +245,8 @@ fn rollup_drive_returns_buckets() {
         top: Some(10),
         ..spec("rollup")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert_eq!(results.len(), 1);
     // Rollup → buckets or rollup kind
     assert!(!results[0].buckets.is_empty() || results[0].value.is_some());
@@ -252,7 +261,8 @@ fn duplicates_returns_result() {
         top: Some(10),
         ..spec("duplicates")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     // Should return exactly 1 result (even if 0 duplicates)
     assert_eq!(results.len(), 1);
 }
@@ -266,7 +276,8 @@ fn raw_power_syntax_terms_works() {
         label: Some("terms:extension,top=5".to_owned()),
         ..spec("raw")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, "buckets");
     assert!(!results[0].buckets.is_empty());
@@ -278,7 +289,8 @@ fn raw_power_syntax_terms_works() {
 fn unknown_kind_skipped_gracefully() {
     let index = test_index();
     let specs = [spec("bogus_kind")];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert!(results.is_empty(), "unknown kind should produce no results");
 }
 
@@ -287,7 +299,8 @@ fn missing_field_skipped_gracefully() {
     let index = test_index();
     // stats requires a field but none provided
     let specs = [spec("stats")];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert!(
         results.is_empty(),
         "missing field should produce no results"
@@ -311,7 +324,8 @@ fn multiple_specs_return_multiple_results() {
             ..spec("terms")
         },
     ];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert_eq!(results.len(), 3, "should return one result per spec");
     assert_eq!(results[0].kind, "count");
     assert_eq!(results[1].kind, "stats");
@@ -330,7 +344,8 @@ fn stats_overview_preset_wire_roundtrip() {
         preset: Some("overview".to_owned()),
         ..AggregateSpecWire::default()
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
 
     // Overview preset expands to multiple results.
     assert!(
@@ -368,7 +383,8 @@ fn terms_with_sample_produces_sample_rows_and_drilldown() {
         sample_desc: None,
         ..spec("terms")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert!(!results.is_empty(), "should have results");
 
     let bucket_result = results
@@ -425,7 +441,8 @@ fn terms_without_sample_has_empty_sample_rows() {
         top: Some(5),
         ..spec("terms")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     let bucket_result = results
         .iter()
         .find(|r| r.kind == "buckets")
@@ -451,7 +468,8 @@ fn rollup_drive_via_wire() {
         top: Some(10),
         ..spec("rollup")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert!(!results.is_empty(), "rollup:drive should return results");
     let result = results
         .iter()
@@ -473,7 +491,8 @@ fn rollup_path_with_sample_via_wire() {
         sample: Some(2),
         ..spec("rollup")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert!(
         !results.is_empty(),
         "rollup:path with sample should return results"
@@ -534,7 +553,8 @@ fn query_predicates_forwarded_to_drilldown() {
         op: "glob".to_owned(),
         value: DrilldownValue::String("*.rs".to_owned()),
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, predicates, None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, predicates, None, None, None);
     let result = results
         .iter()
         .find(|r| r.kind == "buckets")
@@ -561,7 +581,8 @@ fn raw_power_syntax_rollup_drive() {
         label: Some("rollup:drive,top=5".to_owned()),
         ..spec("raw")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert!(
         !results.is_empty(),
         "raw rollup:drive should return results"
@@ -576,7 +597,8 @@ fn raw_power_syntax_hist_size() {
         label: Some("hist:size,interval=1048576".to_owned()),
         ..spec("raw")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert!(!results.is_empty(), "raw hist:size should return results");
 }
 
@@ -588,7 +610,8 @@ fn raw_power_syntax_stats_size() {
         label: Some("stats:size".to_owned()),
         ..spec("raw")
     }];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     assert!(!results.is_empty(), "raw stats:size should return results");
     let stats = results.iter().find(|r| r.kind == "stats");
     assert!(stats.is_some(), "should have a stats result");
@@ -605,7 +628,8 @@ fn page_size_paginates_terms_buckets() {
         ..spec("terms")
     }];
     // Request page_size=2 → first page should have ≤2 buckets.
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, Some(2));
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, Some(2), None);
     let terms = results.iter().find(|r| r.kind == "buckets").unwrap();
     assert!(
         terms.buckets.len() <= 2,
@@ -629,7 +653,8 @@ fn cursor_returns_next_page() {
     }];
 
     // First page.
-    let page1 = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, Some(2));
+    let (page1, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, Some(2), None);
     let terms1 = page1.iter().find(|r| r.kind == "buckets").unwrap();
     let cursor = terms1
         .next_cursor
@@ -637,7 +662,8 @@ fn cursor_returns_next_page() {
         .expect("first page should have next_cursor");
 
     // Second page using cursor from first.
-    let page2 = IndexManager::run_aggregations(&index, &specs, Vec::new(), Some(cursor), None);
+    let (page2, _matched_page2) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), Some(cursor), Some(2), None);
     let terms2 = page2.iter().find(|r| r.kind == "buckets").unwrap();
 
     // Second page should have different keys than first page.
@@ -659,7 +685,8 @@ fn cursor_returns_next_page() {
 fn page_size_does_not_affect_non_bucket_results() {
     let index = test_index();
     let specs = [spec("count")];
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, Some(2));
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, Some(2), None);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, "count");
     // Count results should not have next_cursor.
@@ -678,7 +705,8 @@ fn no_pagination_returns_all_buckets() {
         ..spec("terms")
     }];
     // Without pagination, all buckets returned.
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None, None);
     let terms = results.iter().find(|r| r.kind == "buckets").unwrap();
     assert!(
         terms.buckets.len() >= 4,
@@ -700,7 +728,8 @@ fn last_page_has_no_next_cursor() {
         ..spec("terms")
     }];
     // Page size of 100 is bigger than our 4 extensions → single page.
-    let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, Some(100));
+    let (results, _matched) =
+        IndexManager::run_aggregations(&index, &specs, Vec::new(), None, Some(100), None);
     let terms = results.iter().find(|r| r.kind == "buckets").unwrap();
     assert!(
         terms.next_cursor.is_none(),

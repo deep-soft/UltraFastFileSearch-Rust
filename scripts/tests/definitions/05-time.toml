@@ -1,0 +1,350 @@
+# time tests
+# Auto-split from test-definitions.toml
+
+[[test]]
+id          = "T25"
+group       = "time"
+name        = "T25 --newer 7d"
+title       = "T25 --newer 7d"
+short_desc  = "T25 --newer 7d"
+cli_args    = ["*.log", "--newer", "7d", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T26"
+group       = "time"
+name        = "T26 --older 365d"
+title       = "T26 --older 365d"
+short_desc  = "T26 --older 365d"
+cli_args    = ["*.doc", "--older", "365d", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T27"
+group       = "time"
+name        = "T27 --newer-created 30d"
+title       = "T27 --newer-created 30d"
+short_desc  = "T27 --newer-created 30d"
+cli_args    = ["*", "--newer-created", "30d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Created\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T36"
+group       = "time"
+name        = "T36 --older-created 365d"
+title       = "T36 --older-created 365d"
+short_desc  = "T36 --older-created 365d"
+cli_args    = ["*", "--older-created", "365d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Created\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T43"
+group       = "time"
+name        = "T43 --newer-accessed 7d"
+title       = "T43 --newer-accessed 7d"
+short_desc  = "T43 --newer-accessed 7d"
+cli_args    = ["*", "--newer-accessed", "7d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Accessed\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T44"
+group       = "time"
+name        = "T44 --newer today"
+title       = "T44 --newer today"
+short_desc  = "T44 --newer today"
+cli_args    = ["*", "--newer", "today", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T45"
+group       = "time"
+name        = "T45 --newer yesterday"
+title       = "T45 --newer yesterday"
+short_desc  = "T45 --newer yesterday"
+cli_args    = ["*", "--newer", "yesterday", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T46"
+group       = "time"
+name        = "T46 --newer this_week"
+title       = "T46 --newer this_week"
+short_desc  = "T46 --newer this_week"
+cli_args    = ["*", "--newer", "this_week", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T47"
+group       = "time"
+name        = "T47 --newer last_7d"
+title       = "T47 --newer last_7d"
+short_desc  = "T47 --newer last_7d"
+cli_args    = ["*", "--newer", "last_7d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T48"
+group       = "time"
+name        = "T48 --newer last_30d"
+title       = "T48 --newer last_30d"
+short_desc  = "T48 --newer last_30d"
+cli_args    = ["*", "--newer", "last_30d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T49"
+group       = "time"
+name        = "T49 --newer this_month"
+title       = "T49 --newer this_month"
+short_desc  = "T49 --newer this_month"
+cli_args    = ["*", "--newer", "this_month", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T50"
+group       = "time"
+name        = "T50 --newer this_year"
+title       = "T50 --newer this_year"
+short_desc  = "T50 --newer this_year"
+cli_args    = ["*", "--newer", "this_year", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T51"
+group       = "time"
+name        = "T51 --older last_year"
+title       = "T51 --older last_year"
+short_desc  = "T51 --older last_year"
+cli_args    = ["*", "--older", "last_year", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T52"
+group       = "time"
+name        = "T52 --newer last_90d"
+title       = "T52 --newer last_90d"
+short_desc  = "T52 --newer last_90d"
+cli_args    = ["*", "--newer", "last_90d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T53"
+group       = "time"
+name        = "T53 --newer last_365d"
+title       = "T53 --newer last_365d"
+short_desc  = "T53 --newer last_365d"
+cli_args    = ["*", "--newer", "last_365d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T54"
+group       = "time"
+name        = "T54 --newer-created today"
+title       = "T54 --newer-created today"
+short_desc  = "T54 --newer-created today"
+cli_args    = ["*", "--newer-created", "today", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Created\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T55"
+group       = "time"
+name        = "T55 --newer-accessed this_week"
+title       = "T55 --newer-accessed this_week"
+short_desc  = "T55 --newer-accessed this_week"
+cli_args    = ["*", "--newer-accessed", "this_week", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Accessed\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T56"
+group       = "time"
+name        = "T56 bounded time range (last_week)"
+title       = "T56 bounded time range (last_week)"
+short_desc  = "T56 bounded time range (last_week)"
+cli_args    = ["*", "--newer", "last_week", "--older", "this_week", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T57"
+group       = "time"
+name        = "T57 --newer 2025-01-01"
+title       = "T57 --newer 2025-01-01"
+short_desc  = "T57 --newer 2025-01-01"
+cli_args    = ["*", "--newer", "2025-01-01", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T77"
+group       = "time"
+name        = "T77 hidden + --newer last_30d"
+title       = "T77 hidden + --newer last_30d"
+short_desc  = "T77 hidden + --newer last_30d"
+cli_args    = ["*", "--attr", "hidden", "--newer", "last_30d", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T81"
+group       = "time"
+name        = "T81 --newer-created this_year"
+title       = "T81 --newer-created this_year"
+short_desc  = "T81 --newer-created this_year"
+cli_args    = ["*", "--newer-created", "this_year", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Created\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T82"
+group       = "time"
+name        = "T82 --newer-accessed last_week"
+title       = "T82 --newer-accessed last_week"
+short_desc  = "T82 --newer-accessed last_week"
+cli_args    = ["*", "--newer-accessed", "last_week", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Accessed\""]
+
+[test.api_checks]
+result_has_key = ["rows", "records_scanned"]
+
+[[test]]
+id          = "T86"
+group       = "time"
+name        = "T86 --older-accessed 365d"
+title       = "T86 --older-accessed 365d"
+short_desc  = "T86 --older-accessed 365d"
+cli_args    = ["*", "--older-accessed", "365d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Accessed\""]
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T88"
+group       = "time"
+name        = "T88 name-only + hide-system + newer"
+title       = "T88 name-only + hide-system + newer"
+short_desc  = "T88 name-only + hide-system + newer"
+cli_args    = ["config", "--name-only", "--hide-system", "--newer", "last_90d", "--files-only", "--limit", "10"]
+expect_min_rows = 1
+validator   = "T88"
+
+[[test]]
+id          = "T113"
+group       = "time"
+name        = "T113 --month jan + --newer last_365d"
+title       = "T113 --month jan + --newer last_365d"
+short_desc  = "T113 --month jan + --newer last_365d"
+cli_args    = ["*", "--month", "jan", "--newer", "last_365d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+stdout_contains = ["\"Name\"", "\"Last Written\""]
+
+[test.api_checks]
+total_count_min = 1
+

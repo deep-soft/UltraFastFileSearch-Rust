@@ -566,17 +566,42 @@ fn run_tests(sock: &str, specs: Vec<TestSpec>, args: &ScriptArgs) -> Vec<TestRes
                     None => spec.method.clone(),
                 };
                 // Build the full CLI command for debugging.
-                let mut cli_parts = cli_prefix.as_ref().clone();
-                // Insert CLI args after binary, before source flags.
-                // Format: binary <cli_args> <source_flag> <source_path>
-                let bin = cli_parts.remove(0);
-                let mut full = vec![bin];
-                full.extend(spec.cli_args.clone());
-                full.extend(cli_parts);
-                let cli_command = full.iter()
-                    .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() })
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                // For RPC-only methods (status, drives, etc.) map to
+                // their `uffs daemon <method>` CLI equivalent.
+                let cli_command = {
+                    let mut cli_parts = cli_prefix.as_ref().clone();
+                    let bin = cli_parts.remove(0);
+                    let mut full = vec![bin];
+                    // Daemon subcommands don't take --data-dir/--mft-file;
+                    // they connect to the already-running daemon.
+                    // Subcommands that connect to the running daemon and
+                    // don't accept --data-dir / --mft-file.
+                    let is_daemon_cmd = spec.cli_args.first().map(|a| a.as_str()) == Some("daemon")
+                        || spec.cli_args.first().map(|a| a.as_str()) == Some("info")
+                        || (spec.cli_args.is_empty()
+                            && matches!(spec.method.as_str(),
+                                "status" | "drives" | "stats" | "keepalive" | "info"));
+                    if spec.cli_args.is_empty() {
+                        // Pure RPC test — map method to CLI subcommand.
+                        match spec.method.as_str() {
+                            "status" => full.extend(["daemon".into(), "status".into()]),
+                            "drives" => full.extend(["daemon".into(), "status".into()]),
+                            "stats"  => full.extend(["daemon".into(), "stats".into()]),
+                            "keepalive" => full.extend(["daemon".into(), "status".into()]),
+                            "search" => full.push("\"*\"".into()),
+                            other => full.push(format!("# RPC method: {other} (no CLI equivalent)")),
+                        }
+                    } else {
+                        full.extend(spec.cli_args.clone());
+                    }
+                    if !is_daemon_cmd {
+                        full.extend(cli_parts);
+                    }
+                    full.iter()
+                        .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
                 let tr = TestResult {
                     name: spec.name.clone(),
                     passed,
@@ -622,6 +647,7 @@ struct TestDef {
     #[allow(dead_code)] title: String,
     #[allow(dead_code)] short_desc: String,
     #[allow(dead_code)] long_desc: Option<String>,
+    #[serde(default)]
     cli_args: Vec<String>,
     #[allow(dead_code)] cli_format: Option<String>,
     rpc_method: Option<String>,
@@ -677,8 +703,26 @@ struct ApiChecks {
     #[serde(default)] result_has_key: Vec<String>,
     /// Aggregation result labels that must appear.
     #[serde(default)] agg_label_contains: Vec<String>,
+    /// Aggregation `kind` values that must appear in at least one result.
+    #[serde(default)] agg_kind_contains: Vec<String>,
     /// Minimum total buckets across all agg results.
     #[serde(default)] bucket_min_count: Option<usize>,
+    /// Bucket key substrings that must appear in at least one bucket.
+    #[serde(default)] bucket_key_contains: Vec<String>,
+    /// At least one agg result must contain a `stats` object with these keys.
+    #[serde(default)] agg_stats_has_keys: Vec<String>,
+    /// At least one bucket must have `verified = true`.
+    #[serde(default)] bucket_has_verified_true: Option<bool>,
+    /// At least one bucket must have non-empty `sample_rows`.
+    #[serde(default)] bucket_has_samples: Option<bool>,
+    /// At least one bucket must have non-empty `sub_buckets`.
+    #[serde(default)] bucket_has_sub_buckets: Option<bool>,
+    /// At least one agg result must contain a `next_cursor` field.
+    #[serde(default)] agg_has_cursor: Option<bool>,
+    /// The `total_count` field must be >= this value.
+    #[serde(default)] total_count_min: Option<u64>,
+    /// Check that specific agg results have `exact` field with this value.
+    #[serde(default)] agg_exact: Option<bool>,
 }
 
 /// MCP-specific checks (future expansion).
@@ -707,9 +751,9 @@ fn csv_col_to_json(col: &str) -> &str {
         "Name"           => "name",
         "Size"           => "size",
         "Directory Flag" => "is_directory",
-        "Path Only"      => "path",
+        "Path Only"      => "_path_only",
         "Descendants"    => "descendants",
-        "Tree Size"      => "tree_size",
+        "Tree Size"      => "treesize",
         "Tree Allocated" => "tree_allocated",
         "Created"        => "created",
         "Modified"       => "written",
@@ -718,7 +762,51 @@ fn csv_col_to_json(col: &str) -> &str {
         "System"         => "system",
         "ReadOnly"       => "readonly",
         "Flags"          => "flags",
+        "Size on Disk"   => "allocated",
+        "Extension"      => "_ext",
+        // Computed columns — handled by rpc_field_computed.
+        "Bulkiness"      => "_bulkiness",
+        "Name Length"    => "_name_length",
+        "Path Length"    => "_path_length",
         other            => other,
+    }
+}
+
+/// Compute derived column values that don't exist directly in the
+/// JSON-RPC response but can be calculated from existing fields.
+fn rpc_field_computed(row: &Value, json_key: &str) -> Option<String> {
+    match json_key {
+        "_bulkiness" => {
+            let size = field_u64(row, "size");
+            let allocated = field_u64(row, "allocated");
+            if size == 0 { Some("0".to_owned()) }
+            else { Some(((allocated * 100) / size).to_string()) }
+        }
+        "_name_length" => {
+            let name = field_str(row, "name");
+            Some(name.len().to_string())
+        }
+        "_path_length" => {
+            // Full path already includes name.
+            let path = field_str(row, "path");
+            Some(path.len().to_string())
+        }
+        "_ext" => {
+            let name = field_str(row, "name");
+            let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+            Some(ext)
+        }
+        "_path_only" => {
+            // Directory path only (strip filename from full path).
+            let path = field_str(row, "path");
+            let name = field_str(row, "name");
+            let dir = path.strip_suffix(&name)
+                .unwrap_or(&path)
+                .trim_end_matches('\\')
+                .to_owned();
+            Some(dir)
+        }
+        _ => None,
     }
 }
 
@@ -906,6 +994,39 @@ fn cli_args_to_rpc_params(args: &[String]) -> Value {
             "--max-size-on-disk" => {
                 i += 1;
                 if let Some(v) = args.get(i) { if let Ok(n) = v.parse::<u64>() { params.insert("max_allocated".into(), json!(n)); } }
+            }
+            "--exact-size" => {
+                i += 1;
+                if let Some(v) = args.get(i) { if let Ok(n) = v.parse::<u64>() {
+                    params.insert("min_size".into(), json!(n));
+                    params.insert("max_size".into(), json!(n));
+                } }
+            }
+            "--exact-size-on-disk" => {
+                i += 1;
+                if let Some(v) = args.get(i) { if let Ok(n) = v.parse::<u64>() {
+                    params.insert("min_allocated".into(), json!(n));
+                    params.insert("max_allocated".into(), json!(n));
+                } }
+            }
+            "--exact-descendants" => {
+                i += 1;
+                if let Some(v) = args.get(i) { if let Ok(n) = v.parse::<u32>() {
+                    params.insert("min_descendants".into(), json!(n));
+                    params.insert("max_descendants".into(), json!(n));
+                } }
+            }
+            "--between" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    let mut parts = v.splitn(2, ',');
+                    if let Some(start) = parts.next() {
+                        params.insert("newer".into(), json!(start.trim()));
+                    }
+                    if let Some(end) = parts.next() {
+                        params.insert("older".into(), json!(end.trim()));
+                    }
+                }
             }
             "--month" => {
                 i += 1;
@@ -1195,7 +1316,8 @@ fn apply_rpc_column_check(row_idx: usize, row: &Value, check: &ColumnCheck) -> R
     }
 
     let json_key = csv_col_to_json(&check.column);
-    let raw = rpc_field_str(row, json_key);
+    let raw = rpc_field_computed(row, json_key)
+        .unwrap_or_else(|| rpc_field_str(row, json_key));
     let v = match check.case.as_deref() {
         Some("lower") => raw.to_lowercase(),
         _ => raw.clone(),
@@ -1420,7 +1542,152 @@ fn run_rpc_custom_validator(name: &str, result: &Value) -> Result<String> {
             Ok(format!("{} rows + {} aggs", rows.len(), aggs.len()))
         }
 
-        other => Ok(format!("(custom validator '{other}' not yet ported to RPC)"))
+        // ── S4C: Duplicate verification ───────────────────────────────
+        "S4C.1" | "S4C.2" | "S4C.3" | "S4C.4" | "S4C.5" => {
+            let aggs = get_aggs(result);
+            if aggs.is_empty() { bail!("Expected duplicate aggregation results"); }
+            let buckets = get_buckets(aggs[0]);
+            if buckets.is_empty() { bail!("Expected at least one duplicate bucket"); }
+            for (i, b) in buckets.iter().enumerate() {
+                let count = b.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                if count < 2 { bail!("Bucket {i}: count={count}, expected ≥2 for duplicates"); }
+            }
+            Ok(format!("{} duplicate buckets, all count≥2", buckets.len()))
+        }
+
+        // ── Aggregation sample validators ─────────────────────────────
+        "T139" => {
+            let aggs = get_aggs(result);
+            if aggs.is_empty() { bail!("Expected agg results"); }
+            let buckets = get_buckets(aggs[0]);
+            if buckets.is_empty() { bail!("No buckets"); }
+            for (i, b) in buckets.iter().enumerate() {
+                let samples = b.get("sample_rows").and_then(|v| v.as_array());
+                match samples {
+                    Some(s) if !s.is_empty() => {}
+                    _ => bail!("Bucket {i}: missing or empty sample_rows"),
+                }
+            }
+            Ok(format!("{} buckets, all have samples", buckets.len()))
+        }
+        "T140" => {
+            let aggs = get_aggs(result);
+            if aggs.is_empty() { bail!("Expected agg results"); }
+            let buckets = get_buckets(aggs[0]);
+            if buckets.is_empty() { bail!("No buckets"); }
+            for (i, b) in buckets.iter().enumerate() {
+                let count = b.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                if count < 2 { bail!("Bucket {i}: count={count}, expected ≥2 for duplicates"); }
+                let samples = b.get("sample_rows").and_then(|v| v.as_array());
+                match samples {
+                    Some(s) if !s.is_empty() => {}
+                    _ => bail!("Bucket {i}: missing or empty sample_rows"),
+                }
+            }
+            Ok(format!("{} dup buckets with samples", buckets.len()))
+        }
+
+        // ── T178: --case (case-sensitive) ─────────────────────────
+        "T178" => {
+            let rows = get_rows(result);
+            if rows.is_empty() { bail!("No rows"); }
+            for (i, row) in rows.iter().enumerate() {
+                let name = field_str(row, "name");
+                if !name.starts_with("README") {
+                    bail!("Row {i}: name '{name}' doesn't start with 'README' (case-sensitive)");
+                }
+            }
+            Ok(format!("{} rows, all case-sensitive match", rows.len()))
+        }
+
+        // ── T180: --exact-size 0 (zero-byte files) ─────────────────
+        "T180" => {
+            let rows = get_rows(result);
+            if rows.is_empty() { bail!("No rows"); }
+            for (i, row) in rows.iter().enumerate() {
+                let size = field_u64(row, "size");
+                if size != 0 {
+                    bail!("Row {i}: size={size}, expected 0 for --exact-size 0");
+                }
+            }
+            Ok(format!("{} rows, all size=0", rows.len()))
+        }
+
+        // ── T181: --exact-descendants 0 (empty dirs) ────────────────
+        "T181" => {
+            let rows = get_rows(result);
+            if rows.is_empty() { bail!("No rows"); }
+            Ok(format!("{} empty directory rows", rows.len()))
+        }
+
+        // ── T184: --case negative (lowercase 'readme*') ────────────
+        "T184" => {
+            let rows = get_rows(result);
+            for (i, row) in rows.iter().enumerate() {
+                let name = field_str(row, "name");
+                if name.starts_with("README") {
+                    bail!("Row {i}: '{name}' starts with uppercase README — case-sensitive should only match lowercase");
+                }
+            }
+            Ok(format!("{} rows, none uppercase README", rows.len()))
+        }
+
+        // ── RPC.1: status method ────────────────────────────────────
+        "RPC.1" => {
+            let pid = result.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+            if pid == 0 { bail!("Missing or zero 'pid' in status response"); }
+            let uptime = result.get("uptime_secs").and_then(|v| v.as_u64());
+            if uptime.is_none() { bail!("Missing 'uptime_secs' in status response"); }
+            let state = result.get("status")
+                .and_then(|v| v.get("state"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if state.is_empty() { bail!("Missing 'status.state' in status response"); }
+            Ok(format!("pid={pid}, uptime={uptime:?}s, state={state}"))
+        }
+
+        // ── RPC.2: drives method ────────────────────────────────────
+        "RPC.2" => {
+            let drives = result.get("drives").and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow::anyhow!("Missing 'drives' array"))?;
+            if drives.is_empty() { bail!("No drives loaded"); }
+            for (i, d) in drives.iter().enumerate() {
+                let letter = d.get("letter").and_then(|v| v.as_str()).unwrap_or("");
+                if letter.is_empty() { bail!("Drive {i}: missing 'letter'"); }
+                let records = d.get("records").and_then(|v| v.as_u64()).unwrap_or(0);
+                if records == 0 { bail!("Drive {i} ({letter}): 0 records"); }
+            }
+            Ok(format!("{} drives loaded", drives.len()))
+        }
+
+        // ── RPC.3: info method ──────────────────────────────────────
+        "RPC.3" => {
+            // Info may return a match or an error depending on whether the
+            // file exists in the index.  Just verify the response structure.
+            if result.is_null() { bail!("Null result from info method"); }
+            Ok(format!("info returned: {}", if result.is_object() { "object" } else { "value" }))
+        }
+
+        // ── RPC.4: stats method ─────────────────────────────────────
+        "RPC.4" => {
+            if result.is_null() { bail!("Null result from stats method"); }
+            let uptime = result.get("uptime_secs")
+                .or_else(|| result.get("uptime"))
+                .and_then(|v| v.as_f64().or_else(|| v.as_u64().map(|u| u as f64)));
+            let records = result.get("total_records")
+                .and_then(|v| v.as_u64());
+            let queries = result.get("queries_served")
+                .or_else(|| result.get("queries_total"))
+                .and_then(|v| v.as_u64());
+            if uptime.is_none() { bail!("stats missing uptime field"); }
+            if records.is_none() { bail!("stats missing total_records field"); }
+            Ok(format!("uptime={:.0}s, records={}, queries={}",
+                uptime.unwrap_or(0.0),
+                records.unwrap_or(0),
+                queries.unwrap_or(0)))
+        }
+
+        other => bail!("custom validator '{other}' not yet ported to RPC — implement it or add api_checks")
     }
 }
 
@@ -1441,16 +1708,18 @@ fn build_rpc_validator(def: &TestDef) -> CheckFn {
         }
 
         // ── Anti-vacuous guard ───────────────────────────────────────
-        // If a test has column_checks, sort_checks, or a custom validator
-        // but did NOT explicitly set expect_min_rows, require at least 1 row
-        // OR at least 1 aggregation result.  Aggregation-only tests
-        // legitimately have 0 rows but still have meaningful data to
-        // validate via the custom validator.
+        // Every non-error test must produce a non-empty response — either
+        // search rows > 0 or aggregation results > 0.  This prevents
+        // "free-pass" tests that happen to pass because they validate
+        // nothing.  Tests that legitimately expect empty results should
+        // set expect_min_rows = 0.
         let has_validation = !def.column_checks.is_empty()
             || !def.sort_checks.is_empty()
             || def.validator.is_some();
         let has_aggs = !get_aggs(result).is_empty();
-        if has_validation && def.expect_min_rows.is_none() && n == 0 && !has_aggs {
+
+        let is_search = def.rpc_method.as_deref().unwrap_or("search") == "search";
+        if is_search && has_validation && def.expect_min_rows.is_none() && n == 0 && !has_aggs {
             bail!(
                 "0 rows returned — test has {}{}{} but nothing to validate. \
                  Set expect_min_rows = 0 to explicitly allow empty results.",
@@ -1459,7 +1728,20 @@ fn build_rpc_validator(def: &TestDef) -> CheckFn {
                 if def.validator.is_some() { "validator" } else { "" },
             );
         }
-        details.push(format!("{n} rows"));
+
+        // Universal anti-vacuous: even if no explicit validators, the RPC
+        // must return SOMETHING (rows or aggregations) unless the test
+        // explicitly allows empty results or uses a non-search RPC method
+        // (where "rows" don't exist in the response).
+        let is_search_method = def.rpc_method.as_deref().unwrap_or("search") == "search";
+        if is_search_method && def.expect_min_rows.is_none() && n == 0 && !has_aggs {
+            bail!(
+                "0 rows and 0 aggregations — empty response. \
+                 Set expect_min_rows = 0 to explicitly allow empty results.",
+            );
+        }
+
+        details.push(format!("{n} rows{}", if has_aggs { format!(", {} aggs", get_aggs(result).len()) } else { String::new() }));
 
         // ── Column checks ────────────────────────────────────────────
         for (i, row) in rows.iter().enumerate() {
@@ -1471,8 +1753,7 @@ fn build_rpc_validator(def: &TestDef) -> CheckFn {
         // ── Sort checks ──────────────────────────────────────────────
         for sc in &def.sort_checks {
             let json_key = csv_col_to_json(&sc.column);
-            // Require at least 2 rows to verify sort order — with 0 or 1 rows
-            // the sort check is meaningless.
+            // Require at least 2 rows to verify sort order.
             if !def.sort_checks.is_empty() && def.expect_min_rows.is_none() && rows.len() < 2 {
                 bail!(
                     "Only {} row(s) — sort check on '{}' cannot verify ordering. \
@@ -1481,12 +1762,34 @@ fn build_rpc_validator(def: &TestDef) -> CheckFn {
                 );
             }
             if rows.len() >= 2 {
-                let vals: Vec<u64> = rows.iter().map(|r| field_u64(r, json_key)).collect();
-                for w in vals.windows(2) {
-                    match sc.order.as_str() {
-                        "asc"  => { if w[0] > w[1] { bail!("Not asc: {} > {}", w[0], w[1]); } }
-                        "desc" => { if w[0] < w[1] { bail!("Not desc: {} < {}", w[0], w[1]); } }
-                        _ => {}
+                match sc.sort_type.as_str() {
+                    "string" => {
+                        let vals: Vec<String> = rows.iter().map(|r| {
+                            rpc_field_computed(r, json_key)
+                                .unwrap_or_else(|| field_str(r, json_key))
+                                .to_lowercase()
+                        }).collect();
+                        for w in vals.windows(2) {
+                            match sc.order.as_str() {
+                                "asc"  => { if w[0] > w[1] { bail!("Not asc: {} > {}", w[0], w[1]); } }
+                                "desc" => { if w[0] < w[1] { bail!("Not desc: {} < {}", w[0], w[1]); } }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {
+                        let vals: Vec<u64> = rows.iter().map(|r| {
+                            rpc_field_computed(r, json_key)
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or_else(|| field_u64(r, json_key))
+                        }).collect();
+                        for w in vals.windows(2) {
+                            match sc.order.as_str() {
+                                "asc"  => { if w[0] > w[1] { bail!("Not asc: {} > {}", w[0], w[1]); } }
+                                "desc" => { if w[0] < w[1] { bail!("Not desc: {} < {}", w[0], w[1]); } }
+                                _ => {}
+                            }
+                        }
                     }
                 }
             }
@@ -1531,15 +1834,110 @@ fn build_rpc_validator(def: &TestDef) -> CheckFn {
             }
         }
 
-        // api_checks.bucket_min_count: validate total buckets.
-        if let Some(min_buckets) = def.api_checks.bucket_min_count {
-            let total: usize = aggs.iter()
-                .map(|a| get_buckets(a).len())
-                .sum();
-            if total < min_buckets {
-                bail!("Expected >= {min_buckets} total buckets, got {total}");
+        // api_checks.agg_kind_contains: verify specific kind values.
+        for kind in &def.api_checks.agg_kind_contains {
+            let found = aggs.iter().any(|a|
+                a.get("kind").and_then(|k| k.as_str()) == Some(kind.as_str())
+            );
+            if !found {
+                let actual: Vec<&str> = aggs.iter()
+                    .filter_map(|a| a.get("kind").and_then(|k| k.as_str()))
+                    .collect();
+                bail!("agg kind '{kind}' not found; actual: {actual:?}");
             }
-            details.push(format!("{total} total buckets"));
+        }
+
+        // api_checks.bucket_min_count: validate total buckets.
+        let all_buckets: Vec<&Value> = aggs.iter()
+            .flat_map(|a| get_buckets(a))
+            .collect();
+        if let Some(min_buckets) = def.api_checks.bucket_min_count {
+            if all_buckets.len() < min_buckets {
+                bail!("Expected >= {min_buckets} total buckets, got {}", all_buckets.len());
+            }
+            details.push(format!("{} total buckets", all_buckets.len()));
+        }
+
+        // api_checks.bucket_key_contains: verify specific bucket keys.
+        for key_sub in &def.api_checks.bucket_key_contains {
+            let found = all_buckets.iter().any(|b|
+                b.get("key").and_then(|k| k.as_str())
+                    .map_or(false, |k| k.contains(key_sub.as_str()))
+            );
+            if !found {
+                let actual: Vec<&str> = all_buckets.iter()
+                    .filter_map(|b| b.get("key").and_then(|k| k.as_str()))
+                    .take(10)
+                    .collect();
+                bail!("bucket key containing '{key_sub}' not found; first 10 keys: {actual:?}");
+            }
+        }
+
+        // api_checks.agg_stats_has_keys: verify stats object fields.
+        if !def.api_checks.agg_stats_has_keys.is_empty() {
+            let any_has_stats = aggs.iter().any(|a| a.get("stats").is_some());
+            if !any_has_stats {
+                bail!("No agg result has a 'stats' object");
+            }
+            for key in &def.api_checks.agg_stats_has_keys {
+                let found = aggs.iter().any(|a|
+                    a.get("stats").and_then(|s| s.get(key.as_str())).is_some()
+                );
+                if !found { bail!("stats missing key '{key}'"); }
+            }
+            details.push("stats verified".into());
+        }
+
+        // api_checks.bucket_has_verified_true
+        if def.api_checks.bucket_has_verified_true == Some(true) {
+            let found = all_buckets.iter().any(|b|
+                b.get("verified").and_then(|v| v.as_bool()) == Some(true)
+            );
+            if !found { bail!("No bucket has verified=true"); }
+            details.push("verified=true found".into());
+        }
+
+        // api_checks.bucket_has_samples
+        if def.api_checks.bucket_has_samples == Some(true) {
+            let found = all_buckets.iter().any(|b|
+                b.get("sample_rows").and_then(|s| s.as_array())
+                    .map_or(false, |a| !a.is_empty())
+            );
+            if !found { bail!("No bucket has non-empty sample_rows"); }
+            details.push("samples found".into());
+        }
+
+        // api_checks.bucket_has_sub_buckets
+        if def.api_checks.bucket_has_sub_buckets == Some(true) {
+            let found = all_buckets.iter().any(|b|
+                b.get("sub_buckets").and_then(|s| s.as_array())
+                    .map_or(false, |a| !a.is_empty())
+            );
+            if !found { bail!("No bucket has non-empty sub_buckets"); }
+            details.push("sub_buckets found".into());
+        }
+
+        // api_checks.agg_has_cursor
+        if def.api_checks.agg_has_cursor == Some(true) {
+            let found = aggs.iter().any(|a| a.get("next_cursor").is_some());
+            if !found { bail!("No agg result has next_cursor"); }
+            details.push("cursor found".into());
+        }
+
+        // api_checks.total_count_min
+        if let Some(min_tc) = def.api_checks.total_count_min {
+            let tc = result.get("total_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            if tc < min_tc { bail!("total_count {tc} < expected min {min_tc}"); }
+            details.push(format!("total_count={tc}"));
+        }
+
+        // api_checks.agg_exact
+        if let Some(expected) = def.api_checks.agg_exact {
+            let found = aggs.iter().any(|a|
+                a.get("exact").and_then(|v| v.as_bool()) == Some(expected)
+            );
+            if !found { bail!("No agg result has exact={expected}"); }
+            details.push(format!("exact={expected}"));
         }
 
         // ── Custom validator ─────────────────────────────────────────
@@ -1553,27 +1951,61 @@ fn build_rpc_validator(def: &TestDef) -> CheckFn {
 }
 
 /// Locate the TOML test definitions file.
-fn find_test_defs_path() -> PathBuf {
+/// Return the directory containing per-group test definition files.
+fn find_test_defs_dir() -> PathBuf {
     let ws = find_workspace_root();
-    ws.join("scripts").join("tests").join("test-definitions.toml")
+    ws.join("scripts").join("tests").join("definitions")
+}
+
+/// Load all `[[test]]` entries from `definitions/*.toml` files, sorted
+/// lexicographically (00-warmup first, 11-rpc last).
+fn load_all_test_defs() -> Vec<TestDef> {
+    let dir = find_test_defs_dir();
+    if !dir.is_dir() {
+        eprintln!("  ❌ Test definitions directory not found: {}", dir.display());
+        std::process::exit(1);
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| { eprintln!("  ❌ Cannot read {}: {e}", dir.display()); std::process::exit(1); })
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().map_or(false, |ext| ext == "toml"))
+        .collect();
+    files.sort();
+
+    let mut all_defs: Vec<TestDef> = Vec::new();
+    let mut file_count = 0;
+    for path in &files {
+        let content = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| { eprintln!("  ❌ Cannot read {}: {e}", path.display()); std::process::exit(1); });
+        let defs: TestDefsFile = toml::from_str(&content)
+            .unwrap_or_else(|e| { eprintln!("  ❌ Cannot parse {}: {e}", path.display()); std::process::exit(1); });
+        all_defs.extend(defs.test);
+        file_count += 1;
+    }
+    eprintln!("  Loaded {} test definitions from {} files in definitions/",
+        all_defs.len(), file_count);
+    all_defs
 }
 
 /// Load test definitions from TOML and convert to API `Vec<TestSpec>`.
-fn load_tests_from_toml() -> Vec<TestSpec> {
-    let path = find_test_defs_path();
-    let content = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| { eprintln!("  ❌ Cannot read {}: {e}", path.display()); std::process::exit(1); });
-    let defs: TestDefsFile = toml::from_str(&content)
-        .unwrap_or_else(|e| { eprintln!("  ❌ Cannot parse {}: {e}", path.display()); std::process::exit(1); });
-    eprintln!("  Loaded {} test definitions from {}", defs.test.len(),
-        path.file_name().unwrap_or_default().to_string_lossy());
+///
+/// Returns `(api_specs, cli_only_ids)` — the second vec contains test IDs
+/// that are cli-only, so the caller can inform the user when their filter
+/// matches one of these.
+fn load_tests_from_toml() -> (Vec<TestSpec>, Vec<String>) {
+    let all_defs = load_all_test_defs();
 
-    let mut specs = Vec::with_capacity(defs.test.len());
+    let mut specs = Vec::with_capacity(all_defs.len());
+    let mut cli_only_ids: Vec<String> = Vec::new();
     let mut skipped = 0;
     let mut filtered_out = 0;
-    for def in &defs.test {
+    for def in &all_defs {
         if def.skip.unwrap_or(false) { skipped += 1; continue; }
-        if !def.targets.iter().any(|t| t == "api") { filtered_out += 1; continue; }
+        if !def.targets.iter().any(|t| t == "api") {
+            filtered_out += 1;
+            cli_only_ids.push(def.id.clone());
+            continue;
+        }
 
         // Determine RPC params: explicit rpc_params > auto-derived from cli_args.
         let params: Value = if let Some(ref p) = def.rpc_params {
@@ -1599,7 +2031,7 @@ fn load_tests_from_toml() -> Vec<TestSpec> {
         eprintln!("  ({} api tests, {} cli-only skipped, {} disabled)",
             specs.len(), filtered_out, skipped);
     }
-    specs
+    (specs, cli_only_ids)
 }
 
 // ── Test Definitions ─────────────────────────────────────────────────────────
@@ -1818,13 +2250,32 @@ fn main() {
     eprintln!();
 
     // All tests are defined in test-definitions.toml.
-    let mut specs = load_tests_from_toml();
+    let (mut specs, cli_only_ids) = load_tests_from_toml();
 
-    // Apply filter if specified.
+    // Apply filter if specified.  Supports comma-separated IDs/prefixes.
     if let Some(ref filter) = args.filter {
-        let f = filter.to_lowercase();
-        specs.retain(|s| s.name.to_lowercase().contains(&f));
+        let filters: Vec<String> = filter
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        specs.retain(|s| {
+            let lower = s.name.to_lowercase();
+            filters.iter().any(|f| lower.contains(f))
+        });
         eprintln!("  Filter: '{}' → {} tests", filter, specs.len());
+
+        // Show which filtered tests are cli-only.
+        let matched_cli: Vec<&String> = cli_only_ids.iter().filter(|id| {
+            let upper = id.to_uppercase();
+            filters.iter().any(|f| upper.to_lowercase().contains(f) || id.to_lowercase().contains(f))
+        }).collect();
+        if !matched_cli.is_empty() {
+            for id in &matched_cli {
+                eprintln!("  {} {} — cli-only test, run with: rust-script scripts/windows/cli-flag-validation.rs --tests {}",
+                    "ℹ".cyan(), id, id);
+            }
+        }
     }
 
     eprintln!("  Running {} tests...\n", specs.len());
@@ -1866,6 +2317,24 @@ fn main() {
     } else {
         eprintln!("  {} {passed}/{total} passed",
             "✅".green());
+    }
+
+    // When running a small number of tests (e.g. --tests filter), show
+    // full CLI + RPC details for every test — same info that is shown on
+    // failure, so users can replay or inspect.
+    if total <= 10 && total > 0 {
+        eprintln!();
+        eprintln!("  ┌─ Test Details ───────────────────────────────────────────────────────┐");
+        for r in &results {
+            let icon = if r.passed { "✅" } else { "❌" };
+            eprintln!("  │");
+            eprintln!("  │  {icon} {} ({}ms)", r.name, r.elapsed_ms);
+            eprintln!("  │  {}: {}", "Result".bold(), r.message);
+            eprintln!("  │  {}:    {}", "CLI".yellow().bold(), r.cli_command);
+            eprintln!("  │  {}:    {}", "RPC".cyan().bold(), r.rpc_call);
+        }
+        eprintln!("  │");
+        eprintln!("  └──────────────────────────────────────────────────────────────────────┘");
     }
 
     let script_total_ms = script_start.elapsed().as_millis();

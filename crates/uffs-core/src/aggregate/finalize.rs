@@ -245,18 +245,30 @@ impl BucketRow {
 }
 
 /// Finalize accumulated results into a response.
-pub(crate) fn finalize(
+/// Finalize aggregate results, optionally using a cross-drive
+/// [`ExtensionMap`] for correct extension key resolution.
+pub(crate) fn finalize_with_ext_map(
     accumulators: Vec<GroupAccumulator>,
     _plan: &AggregatePlan,
     drives: &[&DriveCompactIndex],
     options: &FinalizeOptions,
     total_matched: u64,
+    ext_map: Option<&super::ExtensionMap>,
 ) -> AggregateResponse {
     let global_total_bytes = compute_global_bytes(&accumulators);
 
     let results = accumulators
         .into_iter()
-        .map(|acc| finalize_one(acc, total_matched, global_total_bytes, options, drives))
+        .map(|acc| {
+            finalize_one(
+                acc,
+                total_matched,
+                global_total_bytes,
+                options,
+                drives,
+                ext_map,
+            )
+        })
         .collect();
 
     AggregateResponse { results }
@@ -290,6 +302,7 @@ fn finalize_accumulator(
         total_bytes,
         &FinalizeOptions::default(),
         drives,
+        None,
     )
 }
 
@@ -313,6 +326,7 @@ fn finalize_one(
     total_bytes: u64,
     options: &FinalizeOptions,
     drives: &[&DriveCompactIndex],
+    ext_map: Option<&super::ExtensionMap>,
 ) -> AggregateResult {
     let label = acc.label.clone();
     let field_name = acc
@@ -350,7 +364,7 @@ fn finalize_one(
             let mut keyed_rows: Vec<(u64, BucketRow)> = groups
                 .iter()
                 .map(|(&key, stats)| {
-                    let key_str = resolve_group_key(acc.field, key, drives);
+                    let key_str = resolve_group_key(acc.field, key, drives, ext_map);
                     (
                         key,
                         BucketRow::from_stats(key_str, stats, total_matched, total_bytes),
@@ -629,14 +643,24 @@ fn format_field(
 }
 
 /// Resolve a u64 group key to a display string.
+///
+/// For `Extension`, the key encodes `(drive_ordinal << 16) | extension_id`.
+/// The extension is resolved using the specific drive's intern table.
 fn resolve_group_key(
     field: Option<crate::search::field::FieldId>,
     key: u64,
     drives: &[&DriveCompactIndex],
+    ext_map: Option<&super::ExtensionMap>,
 ) -> String {
     use crate::search::field::FieldId;
     match field {
         Some(FieldId::Extension) => {
+            // When an ExtensionMap is available, group keys are canonical
+            // IDs that can be resolved directly.
+            if let Some(map) = ext_map {
+                return map.resolve(key);
+            }
+            // Legacy fallback: raw extension_id, first-drive lookup.
             let ext_id = key as u16;
             for drive in drives {
                 if let Some(name) = drive.ext_names.get(usize::from(ext_id)) {

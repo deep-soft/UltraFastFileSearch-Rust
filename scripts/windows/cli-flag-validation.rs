@@ -370,6 +370,7 @@ struct TestDef {
     #[allow(dead_code)]
     long_desc: Option<String>,
 
+    #[serde(default)]
     cli_args: Vec<String>,
     #[allow(dead_code)]
     cli_format: Option<String>,
@@ -428,6 +429,7 @@ fn default_targets() -> Vec<String> { vec!["cli".into(), "api".into()] }
 
 /// CLI-specific output checks.
 #[derive(Clone, Default, serde::Deserialize)]
+#[allow(dead_code)]
 struct CliChecks {
     #[serde(default)]
     stdout_contains: Vec<String>,
@@ -444,8 +446,9 @@ struct CliChecks {
     expect_max_rows: Option<usize>,
 }
 
-/// API-specific JSON-RPC response checks.
+/// API-specific JSON-RPC response checks (parsed but not used by CLI validator).
 #[derive(Clone, Default, serde::Deserialize)]
+#[allow(dead_code)]
 struct ApiChecks {
     /// Minimum number of aggregation result blocks.
     #[serde(default)]
@@ -1040,13 +1043,73 @@ fn run_custom_validator(name: &str, stdout: &str, stderr: &str) -> Result<String
         "S3B.1" | "S3B.2" => Ok("(facet_values: API-only test, skipped in CLI)".into()),
 
         // ── S3misc: Aggregation variants ─────────────────────────────
-        "S3misc.1" | "S3misc.2" | "S3misc.3" | "S3misc.4" => {
-            // These tests output JSON aggs via --agg --format json.
-            let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-                .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
-            if parsed.is_null() { bail!("Null output from agg"); }
-            let items = parsed.as_array().map(|a| a.len()).unwrap_or(1);
-            Ok(format!("{items} agg results"))
+        "S3misc.1" => {
+            // terms:extension,top=5,sample=2,sort=size → buckets with samples
+            let r = parse_json_results(stdout)?;
+            let agg = r.first()
+                .ok_or_else(|| anyhow::anyhow!("Expected at least one agg result"))?;
+            let kind = agg.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if kind != "buckets" { bail!("Expected kind='buckets', got '{kind}'"); }
+            let buckets = agg.get("buckets").and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+            if buckets.is_empty() { bail!("No buckets returned"); }
+            for (i, b) in buckets.iter().enumerate() {
+                if b.get("key").is_none() { bail!("Bucket {i}: missing key field"); }
+                let count = b.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                if count == 0 { bail!("Bucket {i}: count=0"); }
+                let samples = b.get("sample_rows").and_then(|v| v.as_array());
+                match samples {
+                    Some(s) if !s.is_empty() => {}
+                    _ => bail!("Bucket {i}: missing or empty sample_rows"),
+                }
+            }
+            Ok(format!("{} buckets, all have key+count+samples", buckets.len()))
+        }
+        "S3misc.2" => {
+            // count agg → single count result
+            let r = parse_json_results(stdout)?;
+            let agg = r.first()
+                .ok_or_else(|| anyhow::anyhow!("Expected at least one agg result"))?;
+            let kind = agg.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if kind != "count" { bail!("Expected kind='count', got '{kind}'"); }
+            let count = agg.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+            if count == 0 { bail!("value=0, expected >0 for *.exe"); }
+            Ok(format!("count={count}"))
+        }
+        "S3misc.3" => {
+            // terms:extension,top=5 → buckets, no rows expected
+            let r = parse_json_results(stdout)?;
+            let agg = r.first()
+                .ok_or_else(|| anyhow::anyhow!("Expected at least one agg result"))?;
+            let kind = agg.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if kind != "buckets" { bail!("Expected kind='buckets', got '{kind}'"); }
+            let buckets = agg.get("buckets").and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+            if buckets.is_empty() { bail!("No buckets returned"); }
+            for (i, b) in buckets.iter().enumerate() {
+                // key can be "" for files with no extension — that's valid
+                if b.get("key").is_none() { bail!("Bucket {i}: missing key field"); }
+                let count = b.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                if count == 0 { bail!("Bucket {i}: count=0"); }
+            }
+            Ok(format!("{} buckets with key+count", buckets.len()))
+        }
+        "S3misc.4" => {
+            // *.exe --limit 5 --agg terms:extension,top=3 → rows + buckets
+            let r = parse_json_results(stdout)?;
+            let agg = r.first()
+                .ok_or_else(|| anyhow::anyhow!("Expected at least one agg result"))?;
+            let kind = agg.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if kind != "buckets" { bail!("Expected kind='buckets', got '{kind}'"); }
+            let buckets = agg.get("buckets").and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+            if buckets.is_empty() { bail!("No buckets returned"); }
+            for (i, b) in buckets.iter().enumerate() {
+                if b.get("key").is_none() { bail!("Bucket {i}: missing key field"); }
+                let count = b.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                if count == 0 { bail!("Bucket {i}: count=0"); }
+            }
+            Ok(format!("{} buckets with key+count", buckets.len()))
         }
 
         // ── T32: Benchmark (output goes to stderr) ─────────────────
@@ -1137,9 +1200,94 @@ fn run_custom_validator(name: &str, stdout: &str, stderr: &str) -> Result<String
             Ok("verify=hash alias accepted".to_owned())
         }
 
-        // ── Fallback ────────────────────────────────────────────────────
+        // ── T178: --case (case-sensitive) ─────────────────────────
+        "T178" => {
+            let (headers, rows) = parse_csv(stdout);
+            if rows.is_empty() { bail!("No output rows"); }
+            let name_idx = headers.iter().position(|h| h == "Name")
+                .ok_or_else(|| anyhow::anyhow!("No 'Name' column in headers: {headers:?}"))?;
+            for (i, row) in rows.iter().enumerate() {
+                let name = row.get(name_idx).map(|s| s.as_str()).unwrap_or("");
+                if !name.starts_with("README") {
+                    bail!("Row {i}: name '{name}' doesn't start with 'README' (case-sensitive)");
+                }
+            }
+            Ok(format!("{} rows, all case-sensitive match", rows.len()))
+        }
+
+        // ── T180: --exact-size 0 (zero-byte files) ─────────────────
+        "T180" => {
+            let (headers, rows) = parse_csv(stdout);
+            if rows.is_empty() { bail!("No output rows"); }
+            let size_idx = headers.iter().position(|h| h == "Size")
+                .ok_or_else(|| anyhow::anyhow!("No 'Size' column in headers: {headers:?}"))?;
+            for (i, row) in rows.iter().enumerate() {
+                let size = row.get(size_idx).and_then(|s| s.parse::<u64>().ok()).unwrap_or(u64::MAX);
+                if size != 0 {
+                    bail!("Row {i}: size={size}, expected 0 for --exact-size 0");
+                }
+            }
+            Ok(format!("{} rows, all size=0", rows.len()))
+        }
+
+        // ── T181: --exact-descendants 0 (empty dirs) ────────────────
+        "T181" => {
+            let (_, rows) = parse_csv(stdout);
+            if rows.is_empty() { bail!("No output rows"); }
+            Ok(format!("{} empty directory rows", rows.len()))
+        }
+
+        // ── T184: --case negative (lowercase 'readme*') ────────────
+        "T184" => {
+            let (headers, rows) = parse_csv(stdout);
+            let name_idx = headers.iter().position(|h| h == "Name")
+                .ok_or_else(|| anyhow::anyhow!("No 'Name' column"))?;
+            // All results should match 'readme*' exactly (lowercase),
+            // NOT 'README*' (case-sensitive means only lowercase matches).
+            for (i, row) in rows.iter().enumerate() {
+                let name = row.get(name_idx).map(|s| s.as_str()).unwrap_or("");
+                if name.starts_with("README") {
+                    bail!("Row {i}: name '{name}' starts with uppercase README — case-sensitive should only match lowercase 'readme*'");
+                }
+            }
+            Ok(format!("{} rows, none start with uppercase README", rows.len()))
+        }
+
+        // ── Daemon subcommand validators ─────────────────────────────────
+        "RPC.1" => {
+            // daemon status: must show PID and Ready
+            if !stdout.contains("Daemon PID:") { bail!("Missing 'Daemon PID:' in output"); }
+            if !stdout.contains("Ready") { bail!("Daemon not Ready"); }
+            // Extract PID
+            let pid = stdout.lines()
+                .find(|l| l.contains("Daemon PID:"))
+                .and_then(|l| l.split(':').nth(1))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            Ok(format!("pid={pid}, status=Ready"))
+        }
+        "RPC.2" => {
+            // daemon status shows drives with record counts
+            let drive_count = stdout.lines()
+                .filter(|l| l.contains("records"))
+                .count();
+            if drive_count == 0 { bail!("No drives shown in daemon status"); }
+            Ok(format!("{drive_count} drives loaded"))
+        }
+        "RPC.4" => {
+            // daemon stats: must show performance metrics
+            if !stdout.contains("Total records:") { bail!("Missing 'Total records:' in output"); }
+            let records = stdout.lines()
+                .find(|l| l.contains("Total records:"))
+                .and_then(|l| l.split(':').nth(1))
+                .map(|s| s.trim().replace(',', ""))
+                .unwrap_or_default();
+            Ok(format!("total_records={records}"))
+        }
+
+        // ── Fallback — fail loudly so unimplemented validators are noticed ──
         other => {
-            Ok(format!("(custom validator '{other}' not yet implemented)"))
+            bail!("custom validator '{other}' not yet implemented — implement it or remove validator field")
         }
     }
 }
@@ -1205,8 +1353,10 @@ fn build_declarative_validator(def: &TestDef) -> Box<dyn Fn(&str, &str) -> Resul
                     }
                 }
                 "string" => {
-                    let vals: Vec<&str> = rows.iter()
-                        .map(|r| col_val(r, &h, col))
+                    // Case-insensitive comparison — NTFS sorts are
+                    // case-insensitive (e.g. extension sort: avi < BIN).
+                    let vals: Vec<String> = rows.iter()
+                        .map(|r| col_val(r, &h, col).to_lowercase())
                         .collect();
                     for w in vals.windows(2) {
                         match sc.order.as_str() {
@@ -1252,33 +1402,61 @@ fn build_declarative_validator(def: &TestDef) -> Box<dyn Fn(&str, &str) -> Resul
 }
 
 /// Locate the TOML test definitions file relative to the workspace root.
-fn find_test_defs_path() -> PathBuf {
+/// Return the directory containing per-group test definition files.
+fn find_test_defs_dir() -> PathBuf {
     let ws = find_workspace_root();
-    ws.join("scripts").join("tests").join("test-definitions.toml")
+    ws.join("scripts").join("tests").join("definitions")
+}
+
+/// Load all `[[test]]` entries from `definitions/*.toml` files, sorted
+/// lexicographically (00-warmup first, 11-rpc last).
+fn load_all_test_defs() -> Vec<TestDef> {
+    let dir = find_test_defs_dir();
+    if !dir.is_dir() {
+        eprintln!("  ❌ Test definitions directory not found: {}", dir.display());
+        std::process::exit(1);
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| { eprintln!("  ❌ Cannot read {}: {e}", dir.display()); std::process::exit(1); })
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().map_or(false, |ext| ext == "toml"))
+        .collect();
+    files.sort();
+
+    let mut all_defs: Vec<TestDef> = Vec::new();
+    let mut file_count = 0;
+    for path in &files {
+        let content = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| { eprintln!("  ❌ Cannot read {}: {e}", path.display()); std::process::exit(1); });
+        let defs: TestDefsFile = toml::from_str(&content)
+            .unwrap_or_else(|e| { eprintln!("  ❌ Cannot parse {}: {e}", path.display()); std::process::exit(1); });
+        all_defs.extend(defs.test);
+        file_count += 1;
+    }
+    eprintln!("  Loaded {} test definitions from {} files in definitions/",
+        all_defs.len(), file_count);
+    all_defs
 }
 
 /// Load test definitions from TOML and convert to `Vec<TestSpec>`.
-fn load_tests_from_toml() -> Vec<TestSpec> {
-    let path = find_test_defs_path();
-    let content = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| {
-            eprintln!("  ❌ Cannot read {}: {e}", path.display());
-            std::process::exit(1);
-        });
-    let defs: TestDefsFile = toml::from_str(&content)
-        .unwrap_or_else(|e| {
-            eprintln!("  ❌ Cannot parse {}: {e}", path.display());
-            std::process::exit(1);
-        });
-    eprintln!("  Loaded {} test definitions from {}", defs.test.len(),
-        path.file_name().unwrap_or_default().to_string_lossy());
+///
+/// Returns `(cli_specs, api_only_ids)` — the second vec contains test IDs
+/// that are api-only, so the caller can inform the user when their filter
+/// matches one of these.
+fn load_tests_from_toml() -> (Vec<TestSpec>, Vec<String>) {
+    let all_defs = load_all_test_defs();
 
-    let mut specs = Vec::with_capacity(defs.test.len());
+    let mut specs = Vec::with_capacity(all_defs.len());
+    let mut api_only_ids: Vec<String> = Vec::new();
     let mut skipped = 0;
     let mut filtered_out = 0;
-    for def in &defs.test {
+    for def in &all_defs {
         if def.skip.unwrap_or(false) { skipped += 1; continue; }
-        if !def.targets.iter().any(|t| t == "cli") { filtered_out += 1; continue; }
+        if !def.targets.iter().any(|t| t == "cli") {
+            filtered_out += 1;
+            api_only_ids.push(def.id.clone());
+            continue;
+        }
         let display_name = def.name.clone();
         let mut args = def.cli_args.clone();
         // Inject --columns all if the test needs full CSV output.
@@ -1299,7 +1477,7 @@ fn load_tests_from_toml() -> Vec<TestSpec> {
         eprintln!("  ({} cli tests, {} api-only skipped, {} disabled)",
             specs.len(), filtered_out, skipped);
     }
-    specs
+    (specs, api_only_ids)
 }
 
 // ── Test Runner ──────────────────────────────────────────────────────────────
@@ -1552,6 +1730,23 @@ fn print_results(results: &[TestResult]) {
         eprintln!("  │");
         eprintln!("  └──────────────────────────────────────────────────────────────────────┘");
     }
+
+    // When running a small number of tests (e.g. --tests filter), show
+    // full CLI command for every test — same info shown on failure, so
+    // users can replay or inspect.
+    if total <= 10 && total > 0 {
+        eprintln!();
+        eprintln!("  ┌─ Test Details ───────────────────────────────────────────────────────┐");
+        for r in results {
+            let icon = if r.passed { "✅" } else { "❌" };
+            eprintln!("  │");
+            eprintln!("  │  {icon} {} ({}ms)", r.name, r.duration_ms);
+            eprintln!("  │  {}: {}", "Result".bold(), r.detail);
+            eprintln!("  │  {}:    {}", "CLI".yellow().bold(), r.cli);
+        }
+        eprintln!("  │");
+        eprintln!("  └──────────────────────────────────────────────────────────────────────┘");
+    }
 }
 
 /// Ensure daemon is running and ready before tests.
@@ -1727,12 +1922,27 @@ fn main() {
     let daemon_ms = ensure_daemon_ready(&args);
 
     // ═══ Load & filter test definitions ═════════════════════════════════
-    let all_specs = load_tests_from_toml();
+    let (all_specs, api_only_ids) = load_tests_from_toml();
     eprintln!();
     let specs = filter_tests(all_specs, &args.test_filter);
 
+    // Show which filtered tests are api-only (run via api-validation.rs).
+    if !args.test_filter.is_empty() {
+        let matched_api: Vec<&String> = api_only_ids.iter().filter(|id| {
+            let upper = id.to_uppercase();
+            args.test_filter.iter().any(|f| upper == *f || upper.starts_with(f))
+        }).collect();
+        if !matched_api.is_empty() {
+            for id in &matched_api {
+                eprintln!("  {} {} — api-only test, run with: rust-script scripts/windows/api-validation.rs --tests {}",
+                    "ℹ".cyan(), id, id);
+            }
+            eprintln!();
+        }
+    }
+
     if specs.is_empty() {
-        eprintln!("  {} No tests matched filter: {:?}", "⚠".yellow(), args.test_filter);
+        eprintln!("  {} No CLI tests matched filter: {:?}", "⚠".yellow(), args.test_filter);
         eprintln!("  Available test IDs: T00, T01, ..., T128, T130-T149");
         std::process::exit(1);
     }

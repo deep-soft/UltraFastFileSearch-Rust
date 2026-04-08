@@ -1,0 +1,22 @@
+# warmup tests
+# Auto-split from test-definitions.toml
+
+[[test]]
+id          = "T00"
+group       = "warmup"
+name        = "warmup / daemon alive"
+title       = "Warmup — verify daemon is alive and returning results"
+short_desc  = "Smoke test: search for anything, expect ≥10 rows"
+cli_args    = ["*", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 10
+expect_max_rows = 10
+
+# ═══════════════════════════════════════════════════════════════════════
+#  GROUP: general — core search flags
+# ═══════════════════════════════════════════════════════════════════════
+stdout_contains = ["\"Name\""]
+
+[test.api_checks]
+total_count_min = 1
+

@@ -1,0 +1,74 @@
+# combined tests
+# Auto-split from test-definitions.toml
+
+[[test]]
+id          = "T34"
+group       = "combined"
+name        = "T34 combined stress"
+title       = "T34 combined stress"
+short_desc  = "T34 combined stress"
+# Removed --newer 365d: time-dependent filter fails on older MFT snapshots.
+cli_args    = ["*.pdf", "--files-only", "--min-size", "1048576", "--sort", "size", "--sort-desc", "--attr", "!hidden", "--limit", "10", "--format", "csv", "--columns", "Name,Size,Path Only"]
+expect_min_rows = 1
+validator   = "T34"
+
+[[test.sort_checks]]
+column = "Size"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T75"
+group       = "combined"
+name        = "T75 size+time+ext combined"
+title       = "T75 size+time+ext combined"
+short_desc  = "T75 size+time+ext combined"
+cli_args    = ["*", "--ext", "exe,dll", "--min-size", "1048576", "--newer", "last_365d", "--files-only", "--sort", "size", "--sort-desc", "--limit", "10"]
+expect_min_rows = 1
+validator   = "T75"
+
+[[test]]
+id          = "T84"
+group       = "combined"
+name        = "T84 mega combined"
+title       = "T84 mega combined"
+short_desc  = "T84 mega combined"
+cli_args    = ["*.exe", "--files-only", "--min-size", "10485760", "--max-size", "1073741824", "--attr", "!hidden,!system", "--newer", "last_365d", "--sort", "-size", "--drive", "C", "--limit", "10", "--columns", "Name,Size,Modified,Path Only"]
+stdout_contains = ["\"Name\",\"Size\"", "\"Path Only\""]
+expect_min_rows = 1
+
+[test.api_checks]
+total_count_min = 1
+
+[[test]]
+id          = "T100"
+group       = "combined"
+name        = "T100 bulkiness + size combined"
+title       = "T100 bulkiness + size combined"
+short_desc  = "T100 bulkiness + size combined"
+cli_args    = ["*", "--min-bulkiness", "500", "--min-size", "1048576", "--files-only", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Bulkiness"
+op     = "gte"
+value  = "500"
+
+[[test.column_checks]]
+column = "Size"
+op     = "gte"
+value  = "1048576"
+
+[[test]]
+id          = "T156"
+group       = "combined"
+name        = "T156 multiple --agg flags combined"
+title       = "T156 multiple --agg flags combined"
+short_desc  = "T156 multiple --agg flags combined"
+cli_args    = ["*", "--limit", "0", "--agg", "count", "--agg", "terms:extension,top=3", "--format", "json"]
+validator   = "T156"
+
+[test.api_checks]
+expect_agg_results = 2
+agg_kind_contains = ["count", "buckets"]
+

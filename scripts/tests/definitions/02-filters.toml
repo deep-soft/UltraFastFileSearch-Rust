@@ -1,0 +1,277 @@
+# filters tests
+# Auto-split from test-definitions.toml
+
+[[test]]
+id          = "T06"
+group       = "filters"
+name        = "--min-size 100MB"
+title       = "Minimum file size filter (100 MB)"
+short_desc  = "All files must be ≥ 100 MB"
+cli_args    = ["*", "--min-size", "104857600", "--files-only", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.column_checks]]
+column = "Size"
+op     = "gte"
+value  = "104857600"
+
+[[test]]
+id          = "T07"
+group       = "filters"
+name        = "--max-size 1KB"
+title       = "Maximum file size filter (1 KB)"
+short_desc  = "All files must be ≤ 1 KB"
+cli_args    = ["*", "--max-size", "1024", "--files-only", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.column_checks]]
+column = "Size"
+op     = "lte"
+value  = "1024"
+
+[[test]]
+id          = "T08"
+group       = "filters"
+name        = "--min/max-size 1MB..10MB"
+title       = "Combined min + max size filter"
+short_desc  = "All files must be between 1 MB and 10 MB"
+cli_args    = ["*.pdf", "--min-size", "1048576", "--max-size", "10485760", "--limit", "10"]
+expect_min_rows = 1
+rpc_method  = "search"
+expect_max_rows = 10
+
+[[test.column_checks]]
+column = "Size"
+op     = "gte"
+value  = "1048576"
+
+[[test.column_checks]]
+column = "Size"
+op     = "lte"
+value  = "10485760"
+
+[[test]]
+id          = "T16"
+group       = "filters"
+name        = "T16 --exclude backup*"
+title       = "T16 --exclude backup*"
+short_desc  = "T16 --exclude backup*"
+cli_args    = ["*.txt", "--exclude", "backup*", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Name"
+op     = "not_starts_with"
+value  = "backup"
+case   = "lower"
+
+[[test]]
+id          = "T23"
+group       = "filters"
+name        = "T23 --min-descendants 100"
+title       = "T23 --min-descendants 100"
+short_desc  = "T23 --min-descendants 100"
+cli_args    = ["*", "--dirs-only", "--min-descendants", "100", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Descendants"
+op     = "gte"
+value  = "100"
+
+[[test]]
+id          = "T24"
+group       = "filters"
+name        = "T24 --max-descendants 0"
+title       = "T24 --max-descendants 0"
+short_desc  = "T24 --max-descendants 0"
+cli_args    = ["*", "--dirs-only", "--max-descendants", "0", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Descendants"
+op     = "lte"
+value  = "0"
+
+[[test]]
+id          = "T65"
+group       = "filters"
+name        = "T65 --sort descendants --sort-desc"
+title       = "T65 --sort descendants --sort-desc"
+short_desc  = "T65 --sort descendants --sort-desc"
+cli_args    = ["*", "--dirs-only", "--sort", "descendants", "--sort-desc", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T65"
+
+[[test.sort_checks]]
+column = "Descendants"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T67c"
+group       = "filters"
+name        = "T67c --sort bulkiness"
+title       = "T67c --sort bulkiness"
+short_desc  = "T67c --sort bulkiness"
+cli_args    = ["*", "--files-only", "--min-size", "1024", "--sort", "bulkiness", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Bulkiness"
+order  = "asc"
+type   = "u64"
+
+[[test]]
+id          = "T67j"
+group       = "filters"
+name        = "T67j multi-sort hidden,bulkiness"
+title       = "T67j multi-sort hidden,bulkiness"
+short_desc  = "T67j multi-sort hidden,bulkiness"
+cli_args    = ["*", "--files-only", "--min-size", "1024", "--sort", "hidden,bulkiness", "--limit", "20"]
+expect_min_rows = 1
+expect_max_rows = 20
+
+[[test.sort_checks]]
+column = "Hidden"
+order  = "asc"
+type   = "u64"
+
+[[test]]
+id          = "T78"
+group       = "filters"
+name        = "T78 exclude + ext + size"
+title       = "T78 exclude + ext + size"
+short_desc  = "T78 exclude + ext + size"
+cli_args    = ["*.log", "--exclude", "debug*", "--max-size", "1048576", "--files-only", "--limit", "10"]
+expect_min_rows = 1
+validator   = "T78"
+
+[[test]]
+id          = "T87"
+group       = "filters"
+name        = "T87 ext + sort modified"
+title       = "T87 ext + sort modified"
+short_desc  = "T87 ext + sort modified"
+cli_args    = ["*", "--ext", "txt,log,md", "--sort", "-modified", "--files-only", "--limit", "10"]
+expect_min_rows = 1
+validator   = "T87"
+
+[[test]]
+id          = "T97"
+group       = "filters"
+name        = "T97 --in-path + --exclude"
+title       = "T97 --in-path + --exclude"
+short_desc  = "T97 --in-path + --exclude"
+cli_args    = ["*.exe", "--in-path", "*windows*", "--exclude", "setup*", "--files-only", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Name"
+op     = "not_starts_with"
+value  = "setup"
+case   = "lower"
+
+[[test]]
+id          = "T99"
+group       = "filters"
+name        = "T99 --max-bulkiness 100"
+title       = "T99 --max-bulkiness 100"
+short_desc  = "T99 --max-bulkiness 100"
+cli_args    = ["*", "--max-bulkiness", "100", "--files-only", "--min-size", "1024", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Bulkiness"
+op     = "lte"
+value  = "100"
+
+[[test]]
+id          = "T101"
+group       = "filters"
+name        = "T101 --min-treesize 100MB"
+title       = "T101 --min-treesize 100MB"
+short_desc  = "T101 --min-treesize 100MB"
+cli_args    = ["*", "--dirs-only", "--min-treesize", "104857600", "--limit", "10", "--sort", "-size", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Tree Size"
+op     = "gte"
+value  = "104857600"
+
+[[test]]
+id          = "T102"
+group       = "filters"
+name        = "T102 --max-treesize 1MB"
+title       = "T102 --max-treesize 1MB"
+short_desc  = "T102 --max-treesize 1MB"
+cli_args    = ["*", "--dirs-only", "--max-treesize", "1048576", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Tree Size"
+op     = "lte"
+value  = "1048576"
+
+[[test]]
+id          = "T108"
+group       = "filters"
+name        = "T108 --min-size-on-disk 100MB"
+title       = "T108 --min-size-on-disk 100MB"
+short_desc  = "T108 --min-size-on-disk 100MB"
+cli_args    = ["*", "--min-size-on-disk", "104857600", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Size on Disk"
+op     = "gte"
+value  = "104857600"
+
+[[test]]
+id          = "T109"
+group       = "filters"
+name        = "T109 --max-size-on-disk 4096"
+title       = "T109 --max-size-on-disk 4096"
+short_desc  = "T109 --max-size-on-disk 4096"
+cli_args    = ["*", "--max-size-on-disk", "4096", "--files-only", "--min-size", "1", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Size on Disk"
+op     = "lte"
+value  = "4096"
+
+[[test]]
+id          = "T118"
+group       = "filters"
+name        = "T118 treesize + descendants"
+title       = "T118 treesize + descendants"
+short_desc  = "T118 treesize + descendants"
+cli_args    = ["*", "--dirs-only", "--min-treesize", "10485760", "--min-descendants", "10", "--sort", "-size", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Tree Size"
+op     = "gte"
+value  = "10485760"
+
+[[test.column_checks]]
+column = "Descendants"
+op     = "gte"
+value  = "10"
+

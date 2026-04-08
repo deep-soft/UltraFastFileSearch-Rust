@@ -1,0 +1,408 @@
+# sort tests
+# Auto-split from test-definitions.toml
+
+[[test]]
+id          = "T09"
+group       = "sort"
+name        = "--sort size (asc)"
+title       = "Sort by size ascending"
+short_desc  = "Results sorted by size in ascending order"
+cli_args    = ["*.exe", "--sort", "size", "--files-only", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 2
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Size"
+order  = "asc"
+type   = "u64"
+
+[[test]]
+id          = "T10"
+group       = "sort"
+name        = "--sort size --sort-desc"
+title       = "Sort by size descending"
+short_desc  = "Results sorted by size in descending order"
+cli_args    = ["*.exe", "--sort", "size", "--sort-desc", "--files-only", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 2
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Size"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T11"
+group       = "sort"
+name        = "T11 --sort modified"
+title       = "T11 --sort modified"
+short_desc  = "T11 --sort modified"
+cli_args    = ["*.log", "--sort", "modified", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Last Written"
+order  = "asc"
+type   = "string"
+
+[[test]]
+id          = "T12"
+group       = "sort"
+name        = "T12 --sort size,name"
+title       = "T12 --sort size,name"
+short_desc  = "T12 --sort size,name"
+cli_args    = ["*.dll", "--sort", "size,name", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Size"
+order  = "asc"
+type   = "u64"
+
+[[test]]
+id          = "T58"
+group       = "sort"
+name        = "T58 --sort name"
+title       = "T58 --sort name"
+short_desc  = "T58 --sort name"
+cli_args    = ["*.txt", "--sort", "name", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.sort_checks]]
+column = "Name"
+order  = "asc"
+type   = "u64"
+
+[[test]]
+id          = "T59"
+group       = "sort"
+name        = "T59 --sort path"
+title       = "T59 --sort path"
+short_desc  = "T59 --sort path"
+cli_args    = ["*.txt", "--sort", "path", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Path"
+order  = "asc"
+type   = "string"
+
+[[test]]
+id          = "T60"
+group       = "sort"
+name        = "T60 --sort created"
+title       = "T60 --sort created"
+short_desc  = "T60 --sort created"
+cli_args    = ["*.exe", "--sort", "created", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Created"
+order  = "asc"
+type   = "string"
+
+[[test]]
+id          = "T61"
+group       = "sort"
+name        = "T61 --sort accessed"
+title       = "T61 --sort accessed"
+short_desc  = "T61 --sort accessed"
+cli_args    = ["*.exe", "--sort", "accessed", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Last Accessed"
+order  = "asc"
+type   = "string"
+
+[[test]]
+id          = "T62"
+group       = "sort"
+name        = "T62 --sort extension"
+title       = "T62 --sort extension"
+short_desc  = "T62 --sort extension"
+cli_args    = ["*.*", "--sort", "extension", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Extension"
+order  = "asc"
+type   = "string"
+
+[[test]]
+id          = "T63"
+group       = "sort"
+name        = "T63 --sort drive"
+title       = "T63 --sort drive"
+short_desc  = "T63 --sort drive"
+cli_args    = ["*.exe", "--sort", "drive", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Drive"
+order  = "asc"
+type   = "string"
+
+[[test]]
+id          = "T64"
+group       = "sort"
+name        = "T64 --sort allocated"
+title       = "T64 --sort allocated"
+short_desc  = "T64 --sort allocated"
+cli_args    = ["*.exe", "--sort", "allocated", "--files-only", "--limit", "10", "--sort-desc"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Size on Disk"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T66"
+group       = "sort"
+name        = "T66 multi-sort size,-name"
+title       = "T66 multi-sort size,-name"
+short_desc  = "T66 multi-sort size,-name"
+cli_args    = ["*.dll", "--sort", "size,-name", "--files-only", "--limit", "20"]
+expect_min_rows = 1
+
+[[test.sort_checks]]
+column = "Size"
+order  = "asc"
+type   = "u64"
+
+[[test]]
+id          = "T67"
+group       = "sort"
+name        = "T67 multi-sort -modified,name"
+title       = "T67 multi-sort -modified,name"
+short_desc  = "T67 multi-sort -modified,name"
+cli_args    = ["*.log", "--sort", "-modified,name", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Last Written"
+order  = "desc"
+type   = "string"
+
+[[test]]
+id          = "T67a"
+group       = "sort"
+name        = "T67a --sort treesize"
+title       = "T67a --sort treesize"
+short_desc  = "T67a --sort treesize"
+cli_args    = ["*", "--dirs-only", "--sort", "treesize", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T67a"
+
+[[test.sort_checks]]
+column = "Tree Size"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T67b"
+group       = "sort"
+name        = "T67b --sort treeallocated"
+title       = "T67b --sort treeallocated"
+short_desc  = "T67b --sort treeallocated"
+cli_args    = ["*", "--dirs-only", "--sort", "treeallocated", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T67b"
+
+[[test.sort_checks]]
+column = "Tree Allocated"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T67d"
+group       = "sort"
+name        = "T67d --sort namelength"
+title       = "T67d --sort namelength"
+short_desc  = "T67d --sort namelength"
+cli_args    = ["*", "--files-only", "--sort", "namelength", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T67d"
+
+[[test]]
+id          = "T67e"
+group       = "sort"
+name        = "T67e --sort pathlength"
+title       = "T67e --sort pathlength"
+short_desc  = "T67e --sort pathlength"
+cli_args    = ["*", "--files-only", "--sort", "pathlength", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Path Length"
+order  = "asc"
+type   = "u64"
+
+[[test]]
+id          = "T67f"
+group       = "sort"
+name        = "T67f --sort path_only"
+title       = "T67f --sort path_only"
+short_desc  = "T67f --sort path_only"
+cli_args    = ["*.exe", "--sort", "path_only", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Path Only"
+order  = "asc"
+type   = "string"
+
+[[test]]
+id          = "T67g"
+group       = "sort"
+name        = "T67g --sort type"
+title       = "T67g --sort type"
+short_desc  = "T67g --sort type"
+cli_args    = ["*", "--files-only", "--sort", "type", "--limit", "20"]
+expect_min_rows = 1
+expect_max_rows = 20
+
+[[test.sort_checks]]
+column = "Type"
+order  = "asc"
+type   = "string"
+
+[[test]]
+id          = "T67h"
+group       = "sort"
+name        = "T67h multi-sort treesize,name"
+title       = "T67h multi-sort treesize,name"
+short_desc  = "T67h multi-sort treesize,name"
+cli_args    = ["*", "--dirs-only", "--sort", "treesize,name", "--limit", "20", "--columns", "all"]
+expect_min_rows = 1
+expect_max_rows = 20
+expect_columns_all = true
+
+[[test.sort_checks]]
+column = "Tree Size"
+order  = "asc"
+type   = "u64"
+
+[[test]]
+id          = "T67i"
+group       = "sort"
+name        = "T67i multi-sort type,-size"
+title       = "T67i multi-sort type,-size"
+short_desc  = "T67i multi-sort type,-size"
+cli_args    = ["*", "--files-only", "--sort", "type,-size", "--limit", "20"]
+expect_min_rows = 1
+expect_max_rows = 20
+
+[[test.sort_checks]]
+column = "Type"
+order  = "asc"
+type   = "string"
+
+[[test]]
+id          = "T76"
+group       = "sort"
+name        = "T76 dirs + desc range + sort"
+title       = "T76 dirs + desc range + sort"
+short_desc  = "T76 dirs + desc range + sort"
+cli_args    = ["*", "--dirs-only", "--min-descendants", "10", "--max-descendants", "1000", "--sort", "descendants", "--sort-desc", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T76"
+
+[[test.sort_checks]]
+column = "Descendants"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T83"
+group       = "sort"
+name        = "T83 multi-sort drive,ext,-size"
+title       = "T83 multi-sort drive,ext,-size"
+short_desc  = "T83 multi-sort drive,ext,-size"
+cli_args    = ["*.*", "--sort", "drive,extension,-size", "--files-only", "--limit", "20"]
+expect_min_rows = 1
+expect_max_rows = 20
+
+[[test.sort_checks]]
+column = "Drive"
+order  = "asc"
+type   = "string"
+
+[[test]]
+id          = "T94"
+group       = "sort"
+name        = "T94 --type code + sort size"
+title       = "T94 --type code + sort size"
+short_desc  = "T94 --type code + sort size"
+cli_args    = ["*", "--type", "code", "--files-only", "--sort", "-size", "--limit", "10"]
+expect_min_rows = 1
+validator   = "T94"
+
+[[test.sort_checks]]
+column = "Size"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T114"
+group       = "sort"
+name        = "T114 --sort hidden:desc"
+title       = "T114 --sort hidden:desc"
+short_desc  = "T114 --sort hidden:desc"
+cli_args    = ["*", "--sort", "hidden:desc", "--limit", "20", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.sort_checks]]
+column = "Hidden"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T115"
+group       = "sort"
+name        = "T115 --sort compressed:desc"
+title       = "T115 --sort compressed:desc"
+short_desc  = "T115 --sort compressed:desc"
+cli_args    = ["*", "--sort", "compressed:desc", "--limit", "20", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.sort_checks]]
+column = "Compressed"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T116"
+group       = "sort"
+name        = "T116 --sort directory:desc"
+title       = "T116 --sort directory:desc"
+short_desc  = "T116 --sort directory:desc"
+cli_args    = ["*", "--sort", "directory:desc", "--limit", "20", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+
+[[test.sort_checks]]
+column = "Directory Flag"
+order  = "desc"
+type   = "u64"
+

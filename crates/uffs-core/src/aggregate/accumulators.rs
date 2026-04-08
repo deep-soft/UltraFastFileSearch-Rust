@@ -350,12 +350,13 @@ impl GroupAccumulator {
     /// * `drive_ordinal` — the ordinal position of this drive in the drives
     ///   array, stored in sample heap entries for later materialization.
     #[inline]
-    pub fn feed(
+    pub(crate) fn feed(
         &mut self,
         record: &CompactRecord,
         drive: &DriveCompactIndex,
         _idx: usize,
         drive_ordinal: u8,
+        ext_map: Option<&super::ExtensionMap>,
     ) {
         let field = self.field;
         match &mut self.kind {
@@ -372,7 +373,7 @@ impl GroupAccumulator {
                 sample_spec,
                 ..
             } => {
-                let key = extract_group_key(field, record, drive);
+                let key = extract_group_key(field, record, drive, drive_ordinal, ext_map);
                 let stats = groups.entry(key).or_insert_with(StatsAccumulator::new);
                 stats.feed_value(record.size, record.allocated);
                 // Push into per-bucket sample heap if configured.
@@ -412,7 +413,7 @@ impl GroupAccumulator {
                 }
             }
             AccumulatorKind::Distinct { seen } => {
-                let key = extract_group_key(field, record, drive);
+                let key = extract_group_key(field, record, drive, drive_ordinal, ext_map);
                 seen.insert(key);
             }
             AccumulatorKind::Rollup {
@@ -433,10 +434,11 @@ impl GroupAccumulator {
                     let sub_acc = sub_map
                         .entry(key)
                         .or_insert_with(|| Self::from_kind(&sub_spec.kind, sub_spec.label.clone()));
-                    sub_acc.feed(record, drive, _idx, drive_ordinal);
+                    sub_acc.feed(record, drive, _idx, drive_ordinal, ext_map);
                 }
             }
             AccumulatorKind::Duplicates { inner, .. } => {
+                inner.set_drive_ordinal(drive_ordinal);
                 inner.feed(record, drive, _idx);
             }
         }
@@ -549,14 +551,26 @@ const fn extract_timestamp(field: Option<FieldId>, record: &CompactRecord) -> i6
 }
 
 /// Extract a group key (encoded as u64) from a record.
+///
+/// For `Extension`, uses the `ExtensionMap` (when provided) to return a
+/// canonical cross-drive extension ID.  This ensures that `"exe"` on
+/// drive C and `"exe"` on drive D share the same group key.
 #[inline]
 fn extract_group_key(
     field: Option<FieldId>,
     record: &CompactRecord,
     drive: &DriveCompactIndex,
+    drive_ordinal: u8,
+    ext_map: Option<&super::ExtensionMap>,
 ) -> u64 {
     match field {
-        Some(FieldId::Extension) => u64::from(record.extension_id),
+        Some(FieldId::Extension) => {
+            if let Some(map) = ext_map {
+                map.canonical_id(drive_ordinal, record.extension_id)
+            } else {
+                u64::from(record.extension_id)
+            }
+        }
         Some(FieldId::Drive) => u64::from(drive.letter as u32),
         Some(FieldId::DirectoryFlag) => u64::from(record.flags & 0x0010 != 0),
         Some(FieldId::Hidden) => u64::from(record.flags & 0x0002 != 0),

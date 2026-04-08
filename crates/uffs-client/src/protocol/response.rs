@@ -123,6 +123,12 @@ pub struct KeepaliveParams {
 pub struct SearchResponse {
     /// Matching result rows (inline delivery — empty when shmem is used).
     pub rows: Vec<SearchRow>,
+    /// Total number of matching records (before `limit` truncation).
+    ///
+    /// When the search uses a `limit`, only a subset of rows is returned
+    /// but `total_count` reflects the full match count.
+    #[serde(default)]
+    pub total_count: u64,
     /// Total records scanned.
     pub records_scanned: usize,
     /// Search duration in milliseconds.
