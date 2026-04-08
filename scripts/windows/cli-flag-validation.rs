@@ -378,9 +378,7 @@ struct TestDef {
     #[allow(dead_code)]
     rpc_params: Option<String>,
 
-    // Declarative assertions.
-    #[allow(dead_code)]
-    expect_exit_code: Option<i32>,
+    // ── Shared assertions (validated by ALL targets) ──────────────
     expect_min_rows: Option<usize>,
     expect_max_rows: Option<usize>,
     expect_columns_all: Option<bool>,
@@ -390,17 +388,6 @@ struct TestDef {
     #[serde(default)]
     sort_checks: Vec<SortCheck>,
 
-    #[serde(default)]
-    stdout_contains: Vec<String>,
-    #[serde(default)]
-    stdout_not_contains: Vec<String>,
-    #[serde(default)]
-    stderr_contains: Vec<String>,
-
-    #[serde(default)]
-    #[allow(dead_code)]
-    json_checks: Vec<JsonCheck>,
-
     validator: Option<String>,
     #[serde(default = "default_targets")]
     targets: Vec<String>,
@@ -408,9 +395,82 @@ struct TestDef {
     #[serde(default)]
     #[allow(dead_code)]
     tags: Vec<String>,
+
+    // ── Per-target checks ────────────────────────────────────────
+    /// CLI-specific output checks (stdout/stderr text matching).
+    #[serde(default)]
+    cli_checks: CliChecks,
+    /// API-specific response checks (JSON-RPC result validation).
+    #[serde(default)]
+    #[allow(dead_code)]
+    api_checks: ApiChecks,
+    /// MCP-specific checks (future).
+    #[serde(default)]
+    #[allow(dead_code)]
+    mcp_checks: McpChecks,
+
+    // ── Legacy flat fields (still read for backward compat) ──────
+    #[serde(default)]
+    stdout_contains: Vec<String>,
+    #[serde(default)]
+    stdout_not_contains: Vec<String>,
+    #[serde(default)]
+    stderr_contains: Vec<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    expect_exit_code: Option<i32>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    json_checks: Vec<JsonCheck>,
 }
 
 fn default_targets() -> Vec<String> { vec!["cli".into(), "api".into()] }
+
+/// CLI-specific output checks.
+#[derive(Clone, Default, serde::Deserialize)]
+struct CliChecks {
+    #[serde(default)]
+    stdout_contains: Vec<String>,
+    #[serde(default)]
+    stdout_not_contains: Vec<String>,
+    #[serde(default)]
+    stderr_contains: Vec<String>,
+    #[serde(default)]
+    expect_exit_code: Option<i32>,
+    /// CLI-only row count (for agg-only tests where API rows=0 but CLI CSV has rows).
+    #[serde(default)]
+    expect_min_rows: Option<usize>,
+    #[serde(default)]
+    expect_max_rows: Option<usize>,
+}
+
+/// API-specific JSON-RPC response checks.
+#[derive(Clone, Default, serde::Deserialize)]
+struct ApiChecks {
+    /// Minimum number of aggregation result blocks.
+    #[serde(default)]
+    expect_agg_results: Option<usize>,
+    /// Keys that must exist in the top-level JSON-RPC result.
+    #[serde(default)]
+    result_has_key: Vec<String>,
+    /// Aggregation result labels that must appear.
+    #[serde(default)]
+    agg_label_contains: Vec<String>,
+    /// Minimum total buckets across all agg results.
+    #[serde(default)]
+    bucket_min_count: Option<usize>,
+}
+
+/// MCP-specific checks (future expansion).
+#[derive(Clone, Default, serde::Deserialize)]
+struct McpChecks {
+    #[serde(default)]
+    #[allow(dead_code)]
+    tool_name: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    response_contains: Vec<String>,
+}
 
 /// Per-row column assertion.
 #[derive(Clone, serde::Deserialize)]
@@ -989,6 +1049,94 @@ fn run_custom_validator(name: &str, stdout: &str, stderr: &str) -> Result<String
             Ok(format!("{items} agg results"))
         }
 
+        // ── T32: Benchmark (output goes to stderr) ─────────────────
+        "T32" => {
+            if !stderr.contains("PROFILE") {
+                bail!("stderr missing PROFILE benchmark output");
+            }
+            if !stderr.contains("Search") {
+                bail!("stderr missing Search timing");
+            }
+            Ok("benchmark profile output present in stderr".to_owned())
+        }
+
+        // ── T139/T140: JSON agg with samples ────────────────────────
+        "T139" => {
+            // terms:extension with sample=3 → JSON with "buckets" kind + samples
+            let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+                .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+            let results = parsed.as_array()
+                .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+            if results.is_empty() { bail!("Empty agg results"); }
+            let bkt = results.iter().find(|r|
+                r.get("kind").and_then(|k| k.as_str()) == Some("buckets")
+            ).ok_or_else(|| anyhow::anyhow!("No 'buckets' result found"))?;
+            let buckets = bkt.get("buckets").and_then(|b| b.as_array())
+                .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+            if buckets.is_empty() { bail!("Empty buckets"); }
+            // Each bucket should have sample_rows from sample=3
+            let has_samples = buckets[0].get("sample_rows")
+                .and_then(|s| s.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+            if !has_samples { bail!("First bucket has no sample_rows"); }
+            Ok(format!("{} buckets with samples", buckets.len()))
+        }
+        "T140" => {
+            // duplicates with sample=2 → JSON with "duplicates" kind
+            let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+                .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+            let results = parsed.as_array()
+                .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+            if results.is_empty() { bail!("Empty agg results"); }
+            let dup = results.iter().find(|r|
+                r.get("kind").and_then(|k| k.as_str()) == Some("duplicates")
+            ).ok_or_else(|| anyhow::anyhow!("No 'duplicates' result found"))?;
+            let buckets = dup.get("buckets").and_then(|b| b.as_array())
+                .ok_or_else(|| anyhow::anyhow!("Missing buckets array"))?;
+            Ok(format!("{} duplicate groups", buckets.len()))
+        }
+
+        // ── S4C: Duplicate verification ─────────────────────────────
+        "S4C.1" | "S4C.2" | "S4C.3" => {
+            // verify=first_bytes / sha256 / first_bytes+verify_bytes
+            // Must produce valid JSON agg output without error.
+            let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+                .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+            if parsed.is_null() { bail!("Null output from verified duplicates"); }
+            let results = parsed.as_array()
+                .ok_or_else(|| anyhow::anyhow!("Expected JSON array"))?;
+            if results.is_empty() { bail!("Empty agg results"); }
+            // Check that we got a duplicates result.
+            let has_dup = results.iter().any(|r|
+                r.get("kind").and_then(|k| k.as_str()) == Some("duplicates")
+            );
+            if !has_dup { bail!("No duplicates-kind result in output"); }
+            Ok(format!("{} agg results from verified duplicates", results.len()))
+        }
+        "S4C.4" => {
+            // Default (no verify) — JSON should not have "verified":true
+            // on any bucket.
+            let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+                .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
+            if parsed.is_null() { bail!("Null output from duplicates"); }
+            let json_str = stdout.trim();
+            // "verified":true should NOT appear (unverified groups omit the field
+            // via skip_serializing_if).
+            if json_str.contains("\"verified\":true") {
+                bail!("verified:true present in non-verified duplicates output");
+            }
+            Ok("duplicates without verify: no verified:true in output".to_owned())
+        }
+        "S4C.5" => {
+            // verify=hash should be accepted (alias for sha256).
+            // Verify that the output is valid JSON and doesn't error out.
+            let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+                .map_err(|e| anyhow::anyhow!("verify=hash rejected or invalid JSON: {e}"))?;
+            if parsed.is_null() { bail!("Null output from verify=hash"); }
+            Ok("verify=hash alias accepted".to_owned())
+        }
+
         // ── Fallback ────────────────────────────────────────────────────
         other => {
             Ok(format!("(custom validator '{other}' not yet implemented)"))
@@ -1002,14 +1150,17 @@ fn build_declarative_validator(def: &TestDef) -> Box<dyn Fn(&str, &str) -> Resul
     Box::new(move |stdout: &str, stderr: &str| {
         let mut details: Vec<String> = Vec::new();
 
-        // ── Row count checks ─────────────────────────────────────────────
+        // ── Row count checks (shared + cli_checks merged) ────────────────
         let row_count = csv_row_count(stdout);
-        if let Some(min) = def.expect_min_rows {
+        // cli_checks.expect_min_rows overrides shared if present.
+        let eff_min = def.cli_checks.expect_min_rows.or(def.expect_min_rows);
+        let eff_max = def.cli_checks.expect_max_rows.or(def.expect_max_rows);
+        if let Some(min) = eff_min {
             if row_count < min {
                 bail!("Expected >= {min} rows, got {row_count}");
             }
         }
-        if let Some(max) = def.expect_max_rows {
+        if let Some(max) = eff_max {
             if row_count > max {
                 bail!("Expected <= {max} rows, got {row_count}");
             }
@@ -1019,7 +1170,7 @@ fn build_declarative_validator(def: &TestDef) -> Box<dyn Fn(&str, &str) -> Resul
         // ── Column checks ────────────────────────────────────────────────
         if !def.column_checks.is_empty() {
             let (h, rows) = parse_csv(stdout);
-            if rows.is_empty() && def.expect_min_rows.unwrap_or(0) > 0 {
+            if rows.is_empty() && eff_min.unwrap_or(0) > 0 {
                 bail!("No rows for column checks");
             }
             for (i, row) in rows.iter().enumerate() {
@@ -1071,19 +1222,20 @@ fn build_declarative_validator(def: &TestDef) -> Box<dyn Fn(&str, &str) -> Resul
         }
 
         // ── Stdout substring checks ──────────────────────────────────────
-        for s in &def.stdout_contains {
+        // Merge legacy flat fields + cli_checks.* (both are checked).
+        for s in def.stdout_contains.iter().chain(def.cli_checks.stdout_contains.iter()) {
             if !stdout.contains(s.as_str()) {
                 bail!("stdout missing expected substring: {s}");
             }
         }
-        for s in &def.stdout_not_contains {
+        for s in def.stdout_not_contains.iter().chain(def.cli_checks.stdout_not_contains.iter()) {
             if stdout.contains(s.as_str()) {
                 bail!("stdout contains forbidden substring: {s}");
             }
         }
 
         // ── Stderr substring checks ──────────────────────────────────────
-        for s in &def.stderr_contains {
+        for s in def.stderr_contains.iter().chain(def.cli_checks.stderr_contains.iter()) {
             if !stderr.contains(s.as_str()) {
                 bail!("stderr missing expected substring: {s}");
             }
@@ -1421,15 +1573,33 @@ fn ensure_daemon_ready(args: &ScriptArgs) -> u128 {
             let lower = combined.to_lowercase();
 
             if lower.contains("ready") {
-                let ms = t0.elapsed().as_millis();
-                eprintln!("  Daemon: {} ✓ ({ms}ms)", "Ready".green().bold());
+                // Check whether drives are actually loaded.
+                // Status output contains "Drives: (none loaded)" or "Drives: N".
+                let has_drives = !lower.contains("none loaded")
+                    && !lower.contains("drives:        0")
+                    && !lower.contains("drives: 0");
+
+                if has_drives {
+                    let ms = t0.elapsed().as_millis();
+                    eprintln!("  Daemon: {} ✓ ({ms}ms)", "Ready".green().bold());
+                    for line in combined.lines() {
+                        eprintln!("    {line}");
+                    }
+                    return ms;
+                }
+
+                // Daemon is Ready but has zero drives — stale/useless.
+                eprintln!("  Daemon is {} but has {} — restarting with data source...",
+                    "Ready".yellow(), "zero drives loaded".red().bold());
                 for line in combined.lines() {
                     eprintln!("    {line}");
                 }
-                return ms;
-            }
-
-            if lower.contains("not running") {
+                // Stop the stale daemon so we can restart with the data source.
+                eprintln!("  Stopping stale daemon...");
+                let _ = run_uffs(bin, &["daemon".to_string(), "stop".to_string()]);
+                // Brief pause to let the socket close.
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            } else if lower.contains("not running") {
                 eprintln!("  Daemon is not running, starting...");
             } else {
                 eprintln!("  Daemon status unclear, attempting start...");
@@ -1520,11 +1690,12 @@ fn test_id(name: &str) -> String {
 }
 
 /// Filter test specs by the --tests filter. Empty filter = run all.
+/// Filter supports both exact match and prefix match (e.g. "S4C" matches "S4C.1", "S4C.2").
 fn filter_tests(specs: Vec<TestSpec>, filter: &[String]) -> Vec<TestSpec> {
     if filter.is_empty() { return specs; }
     specs.into_iter().filter(|s| {
         let id = test_id(&s.name);
-        filter.iter().any(|f| id == *f)
+        filter.iter().any(|f| id == *f || id.starts_with(f))
     }).collect()
 }
 

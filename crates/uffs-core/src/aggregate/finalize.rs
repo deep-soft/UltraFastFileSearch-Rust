@@ -501,9 +501,29 @@ fn finalize_one(
             }
         }
 
-        AccumulatorKind::Duplicates { inner } => {
+        AccumulatorKind::Duplicates {
+            inner,
+            sample_spec,
+        } => {
             let dup_top = 100; // default
-            let result = inner.finalize(dup_top);
+            let mut result = inner.finalize(dup_top);
+            // Materialize member_indices → SampleRows for each group.
+            let spec = sample_spec.unwrap_or_default();
+            let projection = spec.effective_projection();
+            for group in &mut result.groups {
+                group.sample_rows = group
+                    .member_indices
+                    .iter()
+                    .map(|&(rec_idx, drive_ord)| {
+                        let entry = super::sample_heap::SampleEntry {
+                            sort_key: 0,
+                            rec_idx: rec_idx as u32,
+                            drive_ordinal: drive_ord,
+                        };
+                        materialize_sample_entry(&entry, projection, drives)
+                    })
+                    .collect();
+            }
             AggregateResultData::Duplicates { result }
         }
     };

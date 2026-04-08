@@ -71,6 +71,9 @@ pub struct DuplicateGroup {
     pub reclaimable_bytes: u64,
     /// Record indices of members (for sample row output).
     pub member_indices: Vec<(usize, u8)>, // (record_idx, drive_ordinal)
+    /// Materialized sample rows — populated during finalization when
+    /// `drives` are available.  Empty until then.
+    pub sample_rows: Vec<super::finalize::SampleRow>,
     /// Verification status.
     pub verified: bool,
 }
@@ -196,6 +199,7 @@ impl DuplicateAccumulator {
                     file_size,
                     reclaimable_bytes: reclaimable,
                     member_indices: g.members,
+                    sample_rows: Vec::new(), // populated by finalize_one
                     verified: matches!(self.verify, DuplicateVerify::None),
                 }
             })

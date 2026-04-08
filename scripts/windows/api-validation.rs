@@ -7,6 +7,9 @@
 //! anyhow = "1"
 //! colored = "2"
 //! dirs-next = "2"
+//!
+//! [target.'cfg(windows)'.dependencies]
+//! uds_windows = "1"
 //! ```
 //!
 //! api-validation.rs — Pure JSON-RPC API validation test suite for UFFS daemon.
@@ -355,12 +358,8 @@ fn rpc_call(sock_path: &str, method: &str, params: Option<Value>) -> Result<Valu
 
     #[cfg(windows)]
     let mut stream = {
-        use std::fs::OpenOptions;
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(sock_path)
-            .context("Cannot connect to daemon pipe")?
+        uds_windows::UnixStream::connect(sock_path)
+            .context("Cannot connect to daemon socket (AF_UNIX)")?
     };
 
     #[cfg(not(windows))]
@@ -627,22 +626,68 @@ struct TestDef {
     #[allow(dead_code)] cli_format: Option<String>,
     rpc_method: Option<String>,
     rpc_params: Option<String>,
+
+    // ── Shared assertions (validated by ALL targets) ──────────────
     expect_min_rows: Option<usize>,
     expect_max_rows: Option<usize>,
     #[allow(dead_code)] expect_columns_all: Option<bool>,
     #[serde(default)] column_checks: Vec<ColumnCheck>,
     #[serde(default)] sort_checks: Vec<SortCheck>,
-    #[serde(default)] #[allow(dead_code)] stdout_contains: Vec<String>,
-    #[serde(default)] #[allow(dead_code)] stdout_not_contains: Vec<String>,
-    #[serde(default)] #[allow(dead_code)] stderr_contains: Vec<String>,
-    #[serde(default)] #[allow(dead_code)] json_checks: Vec<JsonCheck>,
     validator: Option<String>,
     #[serde(default = "default_targets")] targets: Vec<String>,
     skip: Option<bool>,
     #[serde(default)] #[allow(dead_code)] tags: Vec<String>,
+
+    // ── Per-target checks ────────────────────────────────────────
+    /// CLI-specific (ignored by this script).
+    #[serde(default)] #[allow(dead_code)] cli_checks: CliChecks,
+    /// API-specific JSON-RPC response checks.
+    #[serde(default)] api_checks: ApiChecks,
+    /// MCP-specific checks (future).
+    #[serde(default)] #[allow(dead_code)] mcp_checks: McpChecks,
+
+    // ── Legacy flat fields (backward compat, ignored by API) ─────
+    #[serde(default)] #[allow(dead_code)] stdout_contains: Vec<String>,
+    #[serde(default)] #[allow(dead_code)] stdout_not_contains: Vec<String>,
+    #[serde(default)] #[allow(dead_code)] stderr_contains: Vec<String>,
+    #[serde(default)] #[allow(dead_code)] expect_exit_code: Option<i32>,
+    #[serde(default)] #[allow(dead_code)] json_checks: Vec<JsonCheck>,
 }
 
 fn default_targets() -> Vec<String> { vec!["cli".into(), "api".into()] }
+
+/// CLI-specific output checks (ignored by API validator).
+#[derive(Clone, Default, serde::Deserialize)]
+#[allow(dead_code)]
+struct CliChecks {
+    #[serde(default)] stdout_contains: Vec<String>,
+    #[serde(default)] stdout_not_contains: Vec<String>,
+    #[serde(default)] stderr_contains: Vec<String>,
+    #[serde(default)] expect_exit_code: Option<i32>,
+    #[serde(default)] expect_min_rows: Option<usize>,
+    #[serde(default)] expect_max_rows: Option<usize>,
+}
+
+/// API-specific JSON-RPC response checks.
+#[derive(Clone, Default, serde::Deserialize)]
+struct ApiChecks {
+    /// Minimum number of aggregation result blocks in response.
+    #[serde(default)] expect_agg_results: Option<usize>,
+    /// Keys that must exist in the top-level JSON-RPC result.
+    #[serde(default)] result_has_key: Vec<String>,
+    /// Aggregation result labels that must appear.
+    #[serde(default)] agg_label_contains: Vec<String>,
+    /// Minimum total buckets across all agg results.
+    #[serde(default)] bucket_min_count: Option<usize>,
+}
+
+/// MCP-specific checks (future expansion).
+#[derive(Clone, Default, serde::Deserialize)]
+#[allow(dead_code)]
+struct McpChecks {
+    #[serde(default)] tool_name: Option<String>,
+    #[serde(default)] response_contains: Vec<String>,
+}
 
 #[derive(Clone, serde::Deserialize)]
 struct ColumnCheck { column: String, op: String, value: String, case: Option<String> }
@@ -1448,6 +1493,55 @@ fn build_rpc_validator(def: &TestDef) -> CheckFn {
             details.push(format!("sorted {} {}", sc.column, sc.order));
         }
 
+        // ── API-specific checks (api_checks.*) ───────────────────────
+        let aggs = get_aggs(result);
+
+        // api_checks.expect_agg_results: validate agg result count.
+        if let Some(expected) = def.api_checks.expect_agg_results {
+            if aggs.len() < expected {
+                bail!("Expected >= {expected} agg results, got {}", aggs.len());
+            }
+            details.push(format!("{} agg results", aggs.len()));
+        }
+
+        // api_checks.result_has_key: validate top-level keys exist.
+        for key in &def.api_checks.result_has_key {
+            if result.get(key.as_str()).is_none() {
+                bail!("result missing expected key: {key}");
+            }
+        }
+
+        // api_checks.agg_label_contains: validate agg labels/kinds.
+        // Matches against either `label` or `kind` field (whichever exists).
+        for label in &def.api_checks.agg_label_contains {
+            let found = aggs.iter().any(|a| {
+                let lbl = a.get("label").and_then(|l| l.as_str());
+                let kind = a.get("kind").and_then(|k| k.as_str());
+                lbl == Some(label.as_str()) || kind == Some(label.as_str())
+            });
+            if !found {
+                let actual: Vec<String> = aggs.iter()
+                    .map(|a| {
+                        let lbl = a.get("label").and_then(|l| l.as_str()).unwrap_or("-");
+                        let kind = a.get("kind").and_then(|k| k.as_str()).unwrap_or("-");
+                        format!("label={lbl},kind={kind}")
+                    })
+                    .collect();
+                bail!("agg label/kind '{label}' not found; actual: {actual:?}");
+            }
+        }
+
+        // api_checks.bucket_min_count: validate total buckets.
+        if let Some(min_buckets) = def.api_checks.bucket_min_count {
+            let total: usize = aggs.iter()
+                .map(|a| get_buckets(a).len())
+                .sum();
+            if total < min_buckets {
+                bail!("Expected >= {min_buckets} total buckets, got {total}");
+            }
+            details.push(format!("{total} total buckets"));
+        }
+
         // ── Custom validator ─────────────────────────────────────────
         if let Some(ref name) = def.validator {
             let custom = run_rpc_custom_validator(name, result)?;
@@ -1526,14 +1620,34 @@ fn ensure_daemon_ready(args: &ScriptArgs) -> bool {
             let lower = combined.to_lowercase();
 
             if lower.contains("ready") {
-                eprintln!("  Daemon: {} ✓", "Ready".green().bold());
+                // Check whether drives are actually loaded.
+                // Status output contains "Drives: (none loaded)" or "Drives: N".
+                let has_drives = !lower.contains("none loaded")
+                    && !lower.contains("drives:        0")
+                    && !lower.contains("drives: 0");
+
+                if has_drives {
+                    eprintln!("  Daemon: {} ✓", "Ready".green().bold());
+                    for line in combined.lines() {
+                        eprintln!("    {line}");
+                    }
+                    return true;
+                }
+
+                // Daemon is Ready but has zero drives — stale/useless.
+                eprintln!("  Daemon is {} but has {} — restarting with data source...",
+                    "Ready".yellow(), "zero drives loaded".red().bold());
                 for line in combined.lines() {
                     eprintln!("    {line}");
                 }
-                return true;
-            }
-
-            if lower.contains("not running") {
+                // Stop the stale daemon so we can restart with the data source.
+                eprintln!("  Stopping stale daemon...");
+                let _ = Command::new(bin)
+                    .args(["daemon", "stop"])
+                    .output();
+                // Brief pause to let the socket close.
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            } else if lower.contains("not running") {
                 eprintln!("  Daemon is not running, starting...");
             } else {
                 eprintln!("  Daemon status unclear, attempting start...");

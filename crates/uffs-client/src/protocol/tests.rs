@@ -234,9 +234,7 @@ fn aggregate_spec_wire_preset_round_trip() {
         boundaries: vec![],
         metrics: vec![],
         preset: Some("overview".to_owned()),
-        sample: None,
-        sample_sort: None,
-        sample_desc: None,
+        ..AggregateSpecWire::default()
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     let parsed: AggregateSpecWire = serde_json::from_str(&json).expect("deserialize");
@@ -260,9 +258,7 @@ fn aggregate_spec_wire_terms_round_trip() {
         boundaries: vec![],
         metrics: vec!["count".to_owned(), "total_bytes".to_owned()],
         preset: None,
-        sample: None,
-        sample_sort: None,
-        sample_desc: None,
+        ..AggregateSpecWire::default()
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     let parsed: AggregateSpecWire = serde_json::from_str(&json).expect("deserialize");
@@ -287,9 +283,7 @@ fn aggregate_spec_wire_date_histogram_round_trip() {
         boundaries: vec![],
         metrics: vec!["count".to_owned()],
         preset: None,
-        sample: None,
-        sample_sort: None,
-        sample_desc: None,
+        ..AggregateSpecWire::default()
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     let parsed: AggregateSpecWire = serde_json::from_str(&json).expect("deserialize");
@@ -310,9 +304,7 @@ fn aggregate_spec_wire_range_round_trip() {
         boundaries: vec![0, 1024, 1_048_576, 1_073_741_824],
         metrics: vec![],
         preset: None,
-        sample: None,
-        sample_sort: None,
-        sample_desc: None,
+        ..AggregateSpecWire::default()
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     let parsed: AggregateSpecWire = serde_json::from_str(&json).expect("deserialize");
@@ -356,6 +348,7 @@ fn bucket_wire_full_round_trip() {
         sample_rows: Vec::new(),
         drilldown: Vec::new(),
         sub_buckets: Vec::new(),
+        verified: false,
     };
     let json = serde_json::to_string(&bucket).expect("serialize");
     let parsed: BucketWire = serde_json::from_str(&json).expect("deserialize");
@@ -458,25 +451,15 @@ fn aggregate_result_wire_terms_round_trip() {
                 key: "rs".to_owned(),
                 count: 500,
                 total_bytes: 2_000_000,
-                total_allocated: None,
                 avg_size: Some(4_000.0_f64),
-                share_count: None,
-                share_bytes: None,
-                sample_rows: Vec::new(),
-                drilldown: Vec::new(),
-                sub_buckets: Vec::new(),
+                ..BucketWire::default()
             },
             BucketWire {
                 key: "toml".to_owned(),
                 count: 200,
                 total_bytes: 50_000,
-                total_allocated: None,
                 avg_size: Some(250.0_f64),
-                share_count: None,
-                share_bytes: None,
-                sample_rows: Vec::new(),
-                drilldown: Vec::new(),
-                sub_buckets: Vec::new(),
+                ..BucketWire::default()
             },
         ],
         other_count: Some(300),
@@ -503,31 +486,13 @@ fn search_params_with_aggregations_round_trip() {
         aggregations: vec![
             AggregateSpecWire {
                 kind: "preset".to_owned(),
-                label: None,
-                field: None,
-                top: None,
-                interval: None,
-                calendar: None,
-                boundaries: vec![],
-                metrics: vec![],
                 preset: Some("overview".to_owned()),
-                sample: None,
-                sample_sort: None,
-                sample_desc: None,
+                ..AggregateSpecWire::default()
             },
             AggregateSpecWire {
                 kind: "count".to_owned(),
                 label: Some("total".to_owned()),
-                field: None,
-                top: None,
-                interval: None,
-                calendar: None,
-                boundaries: vec![],
-                metrics: vec![],
-                preset: None,
-                sample: None,
-                sample_sort: None,
-                sample_desc: None,
+                ..AggregateSpecWire::default()
             },
         ],
         include_rows: false,
@@ -582,13 +547,10 @@ fn search_response_with_aggregations_round_trip() {
                     key: "Document".to_owned(),
                     count: 10_000,
                     total_bytes: 500_000_000,
-                    total_allocated: None,
                     avg_size: Some(50_000.0_f64),
                     share_count: Some(2.0_f64),
                     share_bytes: Some(10.0_f64),
-                    sample_rows: Vec::new(),
-                    drilldown: Vec::new(),
-                    sub_buckets: Vec::new(),
+                    ..BucketWire::default()
                 }],
                 other_count: Some(490_000),
                 total_groups: Some(12),
@@ -714,6 +676,7 @@ fn bucket_wire_with_samples_round_trip() {
             value: serde_json::Value::String("rs".to_owned()),
         }],
         sub_buckets: Vec::new(),
+        verified: false,
     };
     let json = serde_json::to_string(&bucket).expect("serialize");
     assert!(json.contains("sample_rows"));
@@ -731,13 +694,7 @@ fn bucket_wire_empty_samples_omitted() {
         key: "txt".to_owned(),
         count: 10,
         total_bytes: 1000,
-        total_allocated: None,
-        avg_size: None,
-        share_count: None,
-        share_bytes: None,
-        sample_rows: Vec::new(),
-        drilldown: Vec::new(),
-        sub_buckets: Vec::new(),
+        ..BucketWire::default()
     };
     let json = serde_json::to_string(&bucket).expect("serialize");
     assert!(
@@ -765,17 +722,12 @@ fn bucket_wire_backward_compat_no_sample_fields() {
 fn aggregate_spec_wire_with_sample() {
     let spec = AggregateSpecWire {
         kind: "terms".to_owned(),
-        label: None,
         field: Some("extension".to_owned()),
         top: Some(10),
-        interval: None,
-        calendar: None,
-        boundaries: vec![],
-        metrics: vec![],
-        preset: None,
         sample: Some(3),
         sample_sort: Some("size".to_owned()),
         sample_desc: Some(true),
+        ..AggregateSpecWire::default()
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     assert!(json.contains(r#""sample":3"#));
@@ -843,13 +795,8 @@ fn aggregate_result_wire_next_cursor_round_trip() {
             key: "rs".to_owned(),
             count: 500,
             total_bytes: 2_000_000,
-            total_allocated: None,
             avg_size: Some(4_000.0_f64),
-            share_count: None,
-            share_bytes: None,
-            sample_rows: Vec::new(),
-            drilldown: Vec::new(),
-            sub_buckets: Vec::new(),
+            ..BucketWire::default()
         }],
         other_count: Some(300),
         total_groups: Some(150),

@@ -66,6 +66,7 @@ devicons.workspace = true
 anyhow.workspace = true
 itoa.workspace = true
 bytemuck.workspace = true
+sha2 = { workspace = true, features = ["default"] }
 
 [dev-dependencies]
 criterion.workspace = true

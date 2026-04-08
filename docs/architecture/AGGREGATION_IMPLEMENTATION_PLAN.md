@@ -1,8 +1,8 @@
 # Aggregation Implementation Plan
 
 > **Source of truth:** `UFFS_AGGREGATION_ARCHITECTURE_CONSOLIDATED.md`
-> **Date:** 2026-04-06
-> **Status:** Active
+> **Date:** 2026-04-08 (S4C verification wired through daemon)
+> **Status:** Active — Stages 0–3 complete, Stage 4A–4C complete, S4C.5/S4D.2/S4E.2–4 remaining
 
 ---
 
@@ -425,17 +425,28 @@ uffs-core BucketRow                         uffs-daemon                      Buc
 |----|------|---------|---------|---------|--------|
 | S4B.1 | Compute: candidate_group_count, candidate_file_count, total_duplicate_bytes, reclaimable_bytes. | `aggregate/duplicates.rs` | §9.6 | S4A.4 | ✅ `DuplicateResult` with all fields computed in `finalize()` |
 | S4B.2 | Top duplicate groups sorted by reclaimable bytes. | `aggregate/duplicates.rs` | §9.6 | S4B.1 | ✅ Groups sorted by reclaimable desc, truncated to `top` |
-| S4B.3 | Sample rows per duplicate group (2 default). | `aggregate/duplicates.rs` | §9.6 | S2A.2, S4A.3 | 🔧 `member_indices` stored per group but not materialized to displayable rows — blocked on S2A.2 |
+| S4B.3 | Sample rows per duplicate group (2 default). | `aggregate/duplicates.rs`, `aggregate/finalize.rs`, `uffs-daemon/src/index/aggregation.rs` | §9.6 | S2A.2, S4A.3 | ✅ `member_indices` materialized to `SampleRow` via `materialize_sample_entry()` during finalization. `TopHitsSpec` stored in `AccumulatorKind::Duplicates` (default: 2 rows, sorted by size desc, standard projection). Daemon wires `sample_rows` into `BucketWire`. |
 | S4B.4 | Implement `duplicates` preset: `keys=size+name, verify=none, top=100, sample=2`. | `aggregate/presets.rs` | §11.1, §21.2 | S4B.* | ✅ |
 
 ### 4C  Optional verification
 
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
-| S4C.1 | Implement Stage C: `verify=first_bytes` — read first 4KB per candidate, compare. | `aggregate/duplicates.rs` | §21.1 | S4A.4 | ⬜ |
-| S4C.2 | Implement Stage C: `verify=sha256` — full-file hash verification. | `aggregate/duplicates.rs` | §21.1 | S4A.4 | ⬜ |
-| S4C.3 | Implement `verification_budget` — max I/O bytes allowed. | `aggregate/duplicates.rs` | §21.3 | S4C.1 | ⬜ |
-| S4C.4 | Implement MCP task mode for long-running verification. | `uffs-mcp/src/main.rs` | §14.4 | S4C.2 | ⬜ |
+| S4C.1 | Implement Stage C: `verify=first_bytes` — read first N bytes per candidate, compare. | `aggregate/verify.rs` | §21.1 | S4A.4 | ✅ `DuplicateVerifier` with `DuplicateVerify::FirstBytes { count }`. `FileReader` trait with `read_first_bytes()`. `verify_first_bytes()` reads each member, compares byte-for-byte. 10 unit tests (match, mismatch, I/O error, budget, edge cases). |
+| S4C.2 | Implement Stage C: `verify=sha256` — full-file hash verification. | `aggregate/verify.rs` | §21.1 | S4A.4 | ✅ `DuplicateVerify::Sha256`. `verify_sha256()` reads full file via `read_all()`, SHA-256 hashes each member, compares digests. Groups where hashes differ are rejected. 2 unit tests (match, mismatch). |
+| S4C.3 | Implement `verification_budget` — max I/O bytes/files allowed. | `aggregate/verify.rs` | §21.3 | S4C.1 | ✅ `VerificationBudget { max_bytes, max_files }` with `can_read()` / `record_read()` / `exhausted()`. Pre-flight estimation per group. Groups beyond budget kept unverified. `VerificationSummary` tracks `groups_verified`, `groups_rejected`, `groups_skipped`, `groups_errored`, `budget_exhausted`, `bytes_read`, `files_read`. 2 budget unit tests (byte limit, file limit). |
+| S4C.4 | Wire verification through daemon — `DaemonFileReader` + `run_duplicate_verification()`. | `uffs-daemon/src/index/aggregation.rs` | §14.4, §21 | S4C.1–S4C.3 | ✅ `DaemonFileReader` implements `FileReader` trait: resolves `(record_idx, drive_ordinal)` → full path via `DriveCompactIndex` + `resolve_path()`, then reads via `std::fs`. `run_duplicate_verification()` extracts `DuplicateVerify` from specs, builds reader, calls `DuplicateVerifier::verify()` on each `Duplicates` result. Default budget: 256 MB / 10K files. Verification results traced with structured logging. On macOS/Linux (offline mode), reads fail gracefully — groups remain unverified. |
+| S4C.5 | MCP task mode for long-running verification. | `uffs-mcp/src/main.rs` | §14.4 | S4C.4 | ⬜ **Deferred** — current verification runs synchronously within the search RPC. For SHA-256 on large files, a task-based async model (start → poll → result) would allow progress reporting. Deferred until real-world timing data shows it's needed; the `verification_budget` (S4C.3) already caps worst-case I/O. |
+
+**Key design decisions for S4C:**
+
+1. **`FileReader` trait** lives in `uffs-core` (platform-agnostic). The `DaemonFileReader` impl lives in `uffs-daemon` (the only binary with access to actual files). This keeps `uffs-core` testable with `MockReader`.
+
+2. **Verification is a post-processing step** — it runs AFTER `run_aggregate()` returns, not during accumulation. This is because path resolution + file I/O require the daemon's snapshot (drive indices), which the core library shouldn't know about.
+
+3. **Graceful degradation** on non-Windows: `DaemonFileReader` resolves Windows paths (e.g. `C:\Users\...`) that don't exist on macOS/Linux. `std::fs::File::open()` returns `NotFound`, which maps to `VerifyOutcome::IoError`. Groups with I/O errors are kept unverified (not rejected) — the duplicate candidates are still useful, just not byte-verified.
+
+4. **Budget prevents runaway I/O**: 256 MB default cap. If a verification run would exceed the budget, remaining groups are kept but marked unverified. The `BucketWire.verified` field distinguishes verified vs unverified groups for the client.
 
 ### 4D  CLI duplicate syntax
 
@@ -453,6 +464,8 @@ uffs-core BucketRow                         uffs-daemon                      Buc
 | S4E.3 | Integration: singleton elimination — no false duplicate groups. | tests | §26.2 A180 | S4A.4 | ⬜ |
 | S4E.4 | Integration: verified duplicates on controlled fixture (Windows, `#[ignore]`). | tests | §26.3 A190 | S4C.* | ⬜ |
 | S4E.5 | Guard: `max_groups` limit prevents OOM on pathological input. | tests | §21.3 | S4A.5 | ✅ `duplicate_accumulator_new` tests max_groups default |
+| S4E.6 | Unit tests: `DuplicateVerifier` first_bytes + SHA-256 + budget. | `aggregate/verify.rs` | §26.1 | S4C.* | ✅ 10 unit tests: `verify_first_bytes_matching_pair`, `verify_first_bytes_mismatched_pair`, `verify_first_bytes_io_error`, `verify_sha256_matching_pair`, `verify_sha256_mismatched_pair`, `budget_byte_limit`, `budget_file_limit`, `verify_empty_groups`, `verify_single_member_groups`, `budget_tracks_reads`. |
+| S4E.7 | CLI integration tests: S4C.3–S4C.5 (verify=first_bytes, verify=hash, no verify). | `scripts/tests/test-definitions.toml` | §26.3 | S4C.4 | ✅ T-level tests S4C.3–S4C.5 pass on both CLI (229/229) and API (223/223). |
 
 ---
 
@@ -563,7 +576,7 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 | M1: Stage 1 shippable | — | **partial** | Core engine ✅. Protocol ✅. `uffs agg <preset>` ✅. **Gaps:** daemon only handles `preset`+`count` wire kinds (S1D.3 🔧). No `--count`/`--facet`/`--stats`/`--histogram` shorthand flags. No serde round-trip tests. No integration tests with synthetic index. `uffs stats` not refactored. |
 | M2: Stage 2 shippable | — | **✅ DONE** | Core library complete: 12 presets ✅, Rollups ✅, Power syntax parser ✅ (13 tests), TopHits ✅ (S2A; 20 tests), Drill-down ✅ (S2B; 3 tests), Testing ✅ (S2F; 6 tests).  **Wire surface complete ✅ (S2G; 14/14 tasks):** `SampleRowWire`/`DrilldownWire` defined, `BucketWire`/`AggregateSpecWire` extended, daemon conversion (3 sites), CLI table/JSON/CSV formatters, MCP summary, query_predicates pass-through, 9 serde round-trip tests, 2 daemon integration tests, 4 CLI tests (T150–T153).  175/175 CLI tests pass, 612 unit tests pass. |
 | M3: Stage 3 shippable | — | **partial** | Pagination library ✅. CSV/TSV export ✅. `uffs_facet_values` MCP tool registered ✅. Pagination wired end-to-end ✅ (S3A.4). **Gaps:** facet_values handler sends `"raw"` wire kind → daemon silently drops (S3B.2 🔧). Nested rollup not started. `exact` not on wire. |
-| M4: Stage 4 shippable | — | **partial** | DuplicateAccumulator ✅. CompositeKey ✅. DuplicateResult ✅. Singleton elimination ✅. OOM guard ✅. **Gaps:** verify=first_bytes/sha256 not implemented (S4C all ⬜). Sample rows not materialized (S4B.3 🔧). No dedicated dup table formatter (S4D.2 🔧). No synthetic-index integration tests. |
+| M4: Stage 4 shippable | — | **partial** | DuplicateAccumulator ✅. CompositeKey ✅. DuplicateResult ✅. Singleton elimination ✅. OOM guard ✅. Sample rows materialized ✅ (S4B.3). **Gaps:** verify=first_bytes/sha256 not implemented (S4C all ⬜). No dedicated dup table formatter (S4D.2 🔧). No synthetic-index integration tests. |
 | M5: Stage 5 complete | — | **not started** | AggregateCache library exists but NOT wired into daemon (S5E all 🔧). `--agg` on search sends preset/count to daemon ✅ but power syntax specs silently dropped. Percentiles/forensic/disjunctive all ⬜. |
 
 ### Decision log

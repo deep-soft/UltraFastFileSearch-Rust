@@ -82,17 +82,7 @@ fn test_index() -> DriveIndex {
 fn spec(kind: &str) -> AggregateSpecWire {
     AggregateSpecWire {
         kind: kind.to_owned(),
-        label: None,
-        field: None,
-        top: None,
-        interval: None,
-        calendar: None,
-        boundaries: vec![],
-        metrics: vec![],
-        preset: None,
-        sample: None,
-        sample_sort: None,
-        sample_desc: None,
+        ..AggregateSpecWire::default()
     }
 }
 
@@ -337,17 +327,8 @@ fn stats_overview_preset_wire_roundtrip() {
     let index = test_index();
     let specs = [AggregateSpecWire {
         kind: "preset".to_owned(),
-        label: None,
-        field: None,
-        top: None,
-        interval: None,
-        calendar: None,
-        boundaries: vec![],
-        metrics: vec![],
         preset: Some("overview".to_owned()),
-        sample: None,
-        sample_sort: None,
-        sample_desc: None,
+        ..AggregateSpecWire::default()
     }];
     let results = IndexManager::run_aggregations(&index, &specs, Vec::new(), None, None);
 

@@ -81,6 +81,8 @@ pub mod rollup;
 /// Per-bucket sample heap for tracking top-N records.
 pub mod sample_heap;
 pub mod spec;
+/// Duplicate verification (first-bytes / SHA-256).
+pub mod verify;
 
 // Re-export core public types.
 pub use accumulators::GroupAccumulator;
@@ -100,6 +102,7 @@ pub use spec::{
     AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, DuplicateVerify, RollupMode,
     ScalarMetric, TopHitsSpec,
 };
+pub use verify::{DuplicateVerifier, FileReader, VerificationBudget, VerificationSummary};
 
 use crate::compact::DriveCompactIndex;
 

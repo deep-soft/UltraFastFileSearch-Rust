@@ -410,6 +410,8 @@ name        = "T21 --format table"
 title       = "T21 --format table"
 short_desc  = "T21 --format table"
 cli_args    = ["*.rs", "--format", "table", "--limit", "5"]
+targets     = ["cli"]
+stdout_contains = ["shape: (5,", "name", "size"]
 
 [[test]]
 id          = "T22"
@@ -418,6 +420,8 @@ name        = "T22 --columns Name,Size,Path Only"
 title       = "T22 --columns Name,Size,Path Only"
 short_desc  = "T22 --columns Name,Size,Path Only"
 cli_args    = ["*.txt", "--columns", "Name,Size,Path Only", "--limit", "10"]
+stdout_contains = ["\"Name\",\"Size\",\"Path Only\""]
+expect_min_rows = 1
 
 [[test]]
 id          = "T23"
@@ -427,6 +431,7 @@ title       = "T23 --min-descendants 100"
 short_desc  = "T23 --min-descendants 100"
 cli_args    = ["*", "--dirs-only", "--min-descendants", "100", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T24"
@@ -436,6 +441,7 @@ title       = "T24 --max-descendants 0"
 short_desc  = "T24 --max-descendants 0"
 cli_args    = ["*", "--dirs-only", "--max-descendants", "0", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T25"
@@ -504,6 +510,8 @@ name        = "T30 --sep | --quotes '"
 title       = "T30 --sep | --quotes '"
 short_desc  = "T30 --sep | --quotes '"
 cli_args    = ["*.txt", "--sep", "|", "--quotes", "'", "--limit", "5"]
+stdout_contains = ["'Path'|'Name'|'Path Only'"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T31"
@@ -522,6 +530,8 @@ name        = "T32 --benchmark"
 title       = "T32 --benchmark"
 short_desc  = "T32 --benchmark"
 cli_args    = ["*.rs", "--benchmark"]
+targets     = ["cli"]
+validator   = "T32"
 
 [[test]]
 id          = "T33"
@@ -561,6 +571,8 @@ name        = "T35 --limit 0 (unlimited)"
 title       = "T35 --limit 0 (unlimited)"
 short_desc  = "T35 --limit 0 (unlimited)"
 cli_args    = ["*.dll", "--limit", "0", "--drive", "C", "--files-only"]
+cli_checks.expect_min_rows = 10
+api_checks.result_has_key  = ["rows"]
 
 [[test]]
 id          = "T36"
@@ -629,6 +641,8 @@ name        = "T40 no results (graceful)"
 title       = "T40 no results (graceful)"
 short_desc  = "T40 no results (graceful)"
 cli_args    = ["xyzzy_nonexistent_file_pattern_12345", "--limit", "10"]
+expect_max_rows = 0
+stdout_contains = ["\"Path\""]
 
 [[test]]
 id          = "T41"
@@ -637,6 +651,8 @@ name        = "T41 --header false"
 title       = "T41 --header false"
 short_desc  = "T41 --header false"
 cli_args    = ["*.exe", "--header", "false", "--limit", "5", "--drive", "C"]
+stdout_not_contains = ["\"Path\"", "\"Name\""]
+expect_min_rows = 1
 
 [[test]]
 id          = "T42"
@@ -645,6 +661,7 @@ name        = "T42 --smart-case (lowercase = insensitive)"
 title       = "T42 --smart-case (lowercase = insensitive)"
 short_desc  = "T42 --smart-case (lowercase = insensitive)"
 cli_args    = ["readme", "--smart-case", "--name-only", "--limit", "10"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T43"
@@ -893,6 +910,7 @@ name        = "T66 multi-sort size,-name"
 title       = "T66 multi-sort size,-name"
 short_desc  = "T66 multi-sort size,-name"
 cli_args    = ["*.dll", "--sort", "size,-name", "--files-only", "--limit", "20"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T67"
@@ -1198,6 +1216,8 @@ title       = "T80 --columns all (wide)"
 short_desc  = "T80 --columns all (wide)"
 cli_args    = ["*.exe", "--columns", "all", "--limit", "5", "--drive", "C"]
 expect_columns_all = true
+expect_min_rows = 1
+stdout_contains = ["\"Path\"", "\"Name\"", "\"Size\"", "\"Attributes\""]
 
 [[test]]
 id          = "T81"
@@ -1236,6 +1256,8 @@ name        = "T84 mega combined"
 title       = "T84 mega combined"
 short_desc  = "T84 mega combined"
 cli_args    = ["*.exe", "--files-only", "--min-size", "10485760", "--max-size", "1073741824", "--attr", "!hidden,!system", "--newer", "last_365d", "--sort", "-size", "--drive", "C", "--limit", "10", "--columns", "Name,Size,Modified,Path Only"]
+stdout_contains = ["\"Name\",\"Size\"", "\"Path Only\""]
+expect_min_rows = 1
 
 [[test]]
 id          = "T85"
@@ -1244,6 +1266,8 @@ name        = "T85 table format + projection"
 title       = "T85 table format + projection"
 short_desc  = "T85 table format + projection"
 cli_args    = ["*.dll", "--format", "table", "--columns", "Name,Size", "--limit", "5", "--drive", "C"]
+targets     = ["cli"]
+stdout_contains = ["shape:", "name", "size"]
 
 [[test]]
 id          = "T86"
@@ -1470,6 +1494,7 @@ title       = "T89 --type code"
 short_desc  = "T89 --type code"
 cli_args    = ["*", "--type", "code", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T90"
@@ -1489,6 +1514,7 @@ title       = "T91 --type executable"
 short_desc  = "T91 --type executable"
 cli_args    = ["*", "--type", "executable", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T92"
@@ -1508,6 +1534,7 @@ title       = "T93 --type system"
 short_desc  = "T93 --type system"
 cli_args    = ["*", "--type", "system", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T94"
@@ -1579,6 +1606,7 @@ title       = "T98 --min-bulkiness 200"
 short_desc  = "T98 --min-bulkiness 200"
 cli_args    = ["*", "--min-bulkiness", "200", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T99"
@@ -1588,6 +1616,7 @@ title       = "T99 --max-bulkiness 100"
 short_desc  = "T99 --max-bulkiness 100"
 cli_args    = ["*", "--max-bulkiness", "100", "--files-only", "--min-size", "1024", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T100"
@@ -1596,6 +1625,7 @@ name        = "T100 bulkiness + size combined"
 title       = "T100 bulkiness + size combined"
 short_desc  = "T100 bulkiness + size combined"
 cli_args    = ["*", "--min-bulkiness", "500", "--min-size", "1048576", "--files-only", "--limit", "10"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T101"
@@ -1605,6 +1635,7 @@ title       = "T101 --min-treesize 100MB"
 short_desc  = "T101 --min-treesize 100MB"
 cli_args    = ["*", "--dirs-only", "--min-treesize", "104857600", "--limit", "10", "--sort", "-size", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T102"
@@ -1614,6 +1645,7 @@ title       = "T102 --max-treesize 1MB"
 short_desc  = "T102 --max-treesize 1MB"
 cli_args    = ["*", "--dirs-only", "--max-treesize", "1048576", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T103"
@@ -1623,6 +1655,7 @@ title       = "T103 --min-tree-allocated 100MB"
 short_desc  = "T103 --min-tree-allocated 100MB"
 cli_args    = ["*", "--dirs-only", "--min-tree-allocated", "104857600", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T104"
@@ -1632,6 +1665,7 @@ title       = "T104 --min-name-length 50"
 short_desc  = "T104 --min-name-length 50"
 cli_args    = ["*", "--min-name-length", "50", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T105"
@@ -1641,6 +1675,7 @@ title       = "T105 --max-name-length 8"
 short_desc  = "T105 --max-name-length 8"
 cli_args    = ["*", "--max-name-length", "8", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T106"
@@ -1650,6 +1685,7 @@ title       = "T106 --min-path-length 200"
 short_desc  = "T106 --min-path-length 200"
 cli_args    = ["*", "--min-path-length", "200", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T107"
@@ -1669,6 +1705,7 @@ title       = "T108 --min-size-on-disk 100MB"
 short_desc  = "T108 --min-size-on-disk 100MB"
 cli_args    = ["*", "--min-size-on-disk", "104857600", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T109"
@@ -1678,6 +1715,7 @@ title       = "T109 --max-size-on-disk 4096"
 short_desc  = "T109 --max-size-on-disk 4096"
 cli_args    = ["*", "--max-size-on-disk", "4096", "--files-only", "--min-size", "1", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T110"
@@ -1727,6 +1765,7 @@ title       = "T114 --sort hidden:desc"
 short_desc  = "T114 --sort hidden:desc"
 cli_args    = ["*", "--sort", "hidden:desc", "--limit", "20", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T115"
@@ -1736,6 +1775,7 @@ title       = "T115 --sort compressed:desc"
 short_desc  = "T115 --sort compressed:desc"
 cli_args    = ["*", "--sort", "compressed:desc", "--limit", "20", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T116"
@@ -1745,6 +1785,7 @@ title       = "T116 --sort directory:desc"
 short_desc  = "T116 --sort directory:desc"
 cli_args    = ["*", "--sort", "directory:desc", "--limit", "20", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T117"
@@ -1753,6 +1794,7 @@ name        = "T117 type + in-path + size"
 title       = "T117 type + in-path + size"
 short_desc  = "T117 type + in-path + size"
 cli_args    = ["*", "--type", "system", "--in-path", "*windows*", "--min-size", "1048576", "--files-only", "--sort", "-size", "--limit", "10"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T118"
@@ -1762,6 +1804,7 @@ title       = "T118 treesize + descendants"
 short_desc  = "T118 treesize + descendants"
 cli_args    = ["*", "--dirs-only", "--min-treesize", "10485760", "--min-descendants", "10", "--sort", "-size", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
+expect_min_rows = 1
 
 [[test]]
 id          = "T119"
@@ -1770,6 +1813,8 @@ name        = "T119 agg count"
 title       = "T119 agg count"
 short_desc  = "T119 agg count"
 cli_args    = ["agg", "count"]
+stdout_contains = ["=== count ===", "Total:"]
+api_checks.result_has_key  = ["records_scanned"]
 
 [[test]]
 id          = "T120"
@@ -1778,6 +1823,9 @@ name        = "T120 agg overview"
 title       = "T120 agg overview"
 short_desc  = "T120 agg overview"
 cli_args    = ["agg", "overview"]
+stdout_contains = ["=== total_count ===", "=== files_vs_dirs ===", "=== by_type ===", "Total:"]
+api_checks.expect_agg_results = 5
+api_checks.agg_label_contains = ["total_count", "files_vs_dirs", "by_type"]
 
 [[test]]
 id          = "T121"
@@ -1786,6 +1834,9 @@ name        = "T121 agg by_extension"
 title       = "T121 agg by_extension"
 short_desc  = "T121 agg by_extension"
 cli_args    = ["agg", "by_extension"]
+stdout_contains = ["=== by_extension ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_extension"]
 
 [[test]]
 id          = "T122"
@@ -1794,6 +1845,9 @@ name        = "T122 agg by_type"
 title       = "T122 agg by_type"
 short_desc  = "T122 agg by_type"
 cli_args    = ["agg", "by_type"]
+stdout_contains = ["=== by_type ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_type"]
 
 [[test]]
 id          = "T123"
@@ -1802,6 +1856,9 @@ name        = "T123 agg by_drive"
 title       = "T123 agg by_drive"
 short_desc  = "T123 agg by_drive"
 cli_args    = ["agg", "by_drive"]
+stdout_contains = ["=== by_drive ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_drive"]
 
 [[test]]
 id          = "T124"
@@ -1810,6 +1867,9 @@ name        = "T124 agg by_size"
 title       = "T124 agg by_size"
 short_desc  = "T124 agg by_size"
 cli_args    = ["agg", "by_size"]
+stdout_contains = ["=== by_size ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_size"]
 
 [[test]]
 id          = "T125"
@@ -1818,6 +1878,9 @@ name        = "T125 agg by_age"
 title       = "T125 agg by_age"
 short_desc  = "T125 agg by_age"
 cli_args    = ["agg", "by_age"]
+stdout_contains = ["=== by_age ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_age"]
 
 [[test]]
 id          = "T126"
@@ -1844,6 +1907,10 @@ name        = "T128 agg by_extension --format csv"
 title       = "T128 agg by_extension --format csv"
 short_desc  = "T128 agg by_extension --format csv"
 cli_args    = ["agg", "by_extension", "--format", "csv"]
+stdout_contains = ["# by_extension", "key,count,total_bytes"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_extension"]
 
 [[test]]
 id          = "T129"
@@ -1852,6 +1919,7 @@ name        = "T129 regex case insensitive"
 title       = "Regex pattern matching (case insensitive)"
 short_desc  = "Regex search for system*.dll files"
 cli_args    = [">system.*\\.dll", "--files-only", "--limit", "10"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T130"
@@ -1860,6 +1928,9 @@ name        = "T130 agg top_folders preset"
 title       = "T130 agg top_folders preset"
 short_desc  = "T130 agg top_folders preset"
 cli_args    = ["agg", "top_folders"]
+stdout_contains = ["=== top_folders ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["top_folders"]
 
 [[test]]
 id          = "T131"
@@ -1868,6 +1939,9 @@ name        = "T131 agg cleanup preset"
 title       = "T131 agg cleanup preset"
 short_desc  = "T131 agg cleanup preset"
 cli_args    = ["agg", "cleanup"]
+stdout_contains = ["=== no_extension ===", "missing:"]
+api_checks.expect_agg_results = 3
+api_checks.agg_label_contains = ["no_extension", "zero_byte_files"]
 
 [[test]]
 id          = "T132"
@@ -1876,6 +1950,9 @@ name        = "T132 agg duplicates preset"
 title       = "T132 agg duplicates preset"
 short_desc  = "T132 agg duplicates preset"
 cli_args    = ["agg", "duplicates"]
+stdout_contains = ["=== duplicate_candidates ==="]
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["duplicate_candidates"]
 
 [[test]]
 id          = "T133"
@@ -1884,6 +1961,9 @@ name        = "T133 agg storage preset"
 title       = "T133 agg storage preset"
 short_desc  = "T133 agg storage preset"
 cli_args    = ["agg", "storage"]
+stdout_contains = ["=== logical_size ===", "Count:", "Sum:"]
+api_checks.expect_agg_results = 3
+api_checks.agg_label_contains = ["logical_size", "allocated_size"]
 
 [[test]]
 id          = "T134"
@@ -1892,6 +1972,9 @@ name        = "T134 agg activity preset"
 title       = "T134 agg activity preset"
 short_desc  = "T134 agg activity preset"
 cli_args    = ["agg", "activity"]
+stdout_contains = ["=== modified_monthly ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 2
+api_checks.agg_label_contains = ["modified_monthly", "created_monthly"]
 
 [[test]]
 id          = "T135"
@@ -1900,6 +1983,9 @@ name        = "T135 agg media preset"
 title       = "T135 agg media preset"
 short_desc  = "T135 agg media preset"
 cli_args    = ["agg", "media"]
+stdout_contains = ["=== media_type_breakdown ===", "Count", "Total Size"]
+api_checks.expect_agg_results = 3
+api_checks.agg_label_contains = ["media_type_breakdown", "media_size_stats"]
 
 [[test]]
 id          = "T136"
@@ -1926,6 +2012,10 @@ name        = "T138 agg cleanup --format csv"
 title       = "T138 agg cleanup --format csv"
 short_desc  = "T138 agg cleanup --format csv"
 cli_args    = ["agg", "cleanup", "--format", "csv"]
+stdout_contains = ["# no_extension", "value"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["no_extension"]
 
 [[test]]
 id          = "T139"
@@ -1934,6 +2024,7 @@ name        = "T139 --agg terms:extension,sample=3"
 title       = "T139 --agg terms:extension,sample=3"
 short_desc  = "T139 --agg terms:extension,sample=3"
 cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=10,sample=3", "--format", "json"]
+validator   = "T139"
 
 [[test]]
 id          = "T140"
@@ -1942,6 +2033,7 @@ name        = "T140 --agg duplicates:size+name,sample=2"
 title       = "T140 --agg duplicates:size+name,sample=2"
 short_desc  = "T140 --agg duplicates:size+name,sample=2"
 cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,sample=2,top=50", "--format", "json"]
+validator   = "T140"
 
 [[test]]
 id          = "T141"
@@ -1950,6 +2042,8 @@ name        = "T141 --count shorthand"
 title       = "T141 --count shorthand"
 short_desc  = "T141 --count shorthand"
 cli_args    = ["*.exe", "--count"]
+stdout_contains = ["# count", "count"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T142"
@@ -1958,6 +2052,8 @@ name        = "T142 --facet extension"
 title       = "T142 --facet extension"
 short_desc  = "T142 --facet extension"
 cli_args    = ["*", "--facet", "extension"]
+stdout_contains = ["# buckets", "key,count,total_bytes"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T143"
@@ -1966,6 +2062,8 @@ name        = "T143 --facet type:10"
 title       = "T143 --facet type:10"
 short_desc  = "T143 --facet type:10"
 cli_args    = ["*", "--facet", "type:10"]
+stdout_contains = ["# buckets", "key,count,total_bytes"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T144"
@@ -1974,6 +2072,8 @@ name        = "T144 --stats size"
 title       = "T144 --stats size"
 short_desc  = "T144 --stats size"
 cli_args    = ["*.exe", "--stats", "size"]
+stdout_contains = ["# stats", "count,sum,min,max,avg"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T145"
@@ -1982,6 +2082,8 @@ name        = "T145 --agg count + --rows mixed"
 title       = "T145 --agg count + --rows mixed"
 short_desc  = "T145 --agg count + --rows mixed"
 cli_args    = ["*.dll", "--limit", "5", "--agg", "count", "--rows", "--drive", "C"]
+stdout_contains = ["# count"]
+expect_min_rows = 1
 
 [[test]]
 id          = "T146"
@@ -2008,6 +2110,10 @@ name        = "T148 agg by_drive --format csv"
 title       = "T148 agg by_drive --format csv"
 short_desc  = "T148 agg by_drive --format csv"
 cli_args    = ["agg", "by_drive", "--format", "csv"]
+stdout_contains = ["# by_drive", "key,count,total_bytes"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["by_drive"]
 
 [[test]]
 id          = "T149"
@@ -2043,6 +2149,10 @@ name        = "T152 agg by_extension table with samples"
 title       = "T152 agg by_extension table with samples"
 short_desc  = "T152 agg by_extension table with samples"
 cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "table"]
+stdout_contains = ["=== buckets ===", "Count", "Total Size"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 1
 
 [[test]]
 id          = "T153"
@@ -2105,6 +2215,10 @@ name        = "T159 CSV with samples column"
 title       = "T159 CSV with samples column"
 short_desc  = "T159 CSV with samples column"
 cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "csv"]
+stdout_contains = ["# buckets", "key,count,total_bytes", "samples", "drilldown"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 1
 
 [[test]]
 id          = "T160"
@@ -2185,6 +2299,8 @@ name        = "T168 uffs stats daemon mode"
 title       = "T168 uffs stats daemon mode"
 short_desc  = "T168 uffs stats daemon mode"
 cli_args    = ["stats"]
+targets     = ["cli"]
+stdout_contains = ["=== total_count ===", "Total:"]
 
 [[test]]
 id          = "T169"
@@ -2193,6 +2309,8 @@ name        = "T169 uffs daemon stats (perf)"
 title       = "T169 uffs daemon stats (perf)"
 short_desc  = "T169 uffs daemon stats (perf)"
 cli_args    = ["daemon", "stats"]
+targets     = ["cli"]
+stdout_contains = ["Daemon Performance Stats", "Uptime:", "Total records:"]
 
 [[test]]
 id          = "T170"
@@ -2201,6 +2319,10 @@ name        = "T170 rollup:drive table format"
 title       = "T170 rollup:drive table format"
 short_desc  = "T170 rollup:drive table format"
 cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,top=5", "--format", "table"]
+stdout_contains = ["=== rollup ===", "Count", "Total Size"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["rollup"]
 
 [[test]]
 id          = "T171"
@@ -2209,6 +2331,10 @@ name        = "T171 rollup:path CSV format"
 title       = "T171 rollup:path CSV format"
 short_desc  = "T171 rollup:path CSV format"
 cli_args    = ["*", "--limit", "0", "--agg", "rollup:path,depth=1,top=5", "--format", "csv"]
+stdout_contains = ["# rollup", "key,count,total_bytes"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["rollup"]
 
 [[test]]
 id          = "T172"
@@ -2217,6 +2343,9 @@ name        = "T172 agg overview --format csv"
 title       = "T172 agg overview --format csv"
 short_desc  = "T172 agg overview --format csv"
 cli_args    = ["agg", "overview", "--format", "csv"]
+stdout_contains = ["# total_count", "# files_vs_dirs", "# by_type"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 3
 
 [[test]]
 id          = "T173"
@@ -2261,6 +2390,10 @@ name        = "T177 agg duplicates --format csv"
 title       = "T177 agg duplicates --format csv"
 short_desc  = "T177 agg duplicates --format csv"
 cli_args    = ["agg", "duplicates", "--format", "csv"]
+stdout_contains = ["# duplicate_candidates", "key,copies,file_size,total_bytes,reclaimable,verified"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["duplicate_candidates"]
 
 [[test]]
 id          = "S3A.1"
@@ -2278,6 +2411,10 @@ name        = "S3A.2 table cursor hint"
 title       = "S3A.2 table cursor hint"
 short_desc  = "S3A.2 table cursor hint"
 cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=50", "--agg-page-size", "2", "--format", "table"]
+stdout_contains = ["=== buckets ===", "Count", "Total Size"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 1
 
 [[test]]
 id          = "S3A.3"
@@ -2313,6 +2450,10 @@ name        = "S3C.2 nested rollup table rendering"
 title       = "S3C.2 nested rollup table rendering"
 short_desc  = "S3C.2 nested rollup table rendering"
 cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,sub=terms:type,top=3", "--format", "table"]
+stdout_contains = ["=== rollup ===", "Count", "Total Size"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["rollup"]
 
 [[test]]
 id          = "S3C.3"
@@ -2321,6 +2462,10 @@ name        = "S3C.3 nested rollup CSV"
 title       = "S3C.3 nested rollup CSV"
 short_desc  = "S3C.3 nested rollup CSV"
 cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,sub=terms:extension,top=3", "--format", "csv"]
+stdout_contains = ["# rollup", "key,count,total_bytes"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["rollup"]
 
 [[test]]
 id          = "S3D.1"
@@ -2329,6 +2474,9 @@ name        = "S3D.1 truncated hint in table"
 title       = "S3D.1 truncated hint in table"
 short_desc  = "S3D.1 truncated hint in table"
 cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=1", "--format", "table"]
+stdout_contains = ["=== buckets ===", "more groups"]
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 1
 
 [[test]]
 id          = "S3D.2"
@@ -2337,6 +2485,9 @@ name        = "S3D.2 other_count in table"
 title       = "S3D.2 other_count in table"
 short_desc  = "S3D.2 other_count in table"
 cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=2", "--format", "table"]
+stdout_contains = ["=== buckets ===", "more groups"]
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 2
 
 [[test]]
 id          = "S3D.3"
@@ -2363,6 +2514,10 @@ name        = "S3E.1 CSV metadata comments"
 title       = "S3E.1 CSV metadata comments"
 short_desc  = "S3E.1 CSV metadata comments"
 cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=1", "--format", "csv"]
+stdout_contains = ["# buckets", "key,count,total_bytes", "# other_count="]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.bucket_min_count = 1
 
 [[test]]
 id          = "S3G.1"
@@ -2380,6 +2535,8 @@ name        = "S3G.2 --count shorthand"
 title       = "S3G.2 --count shorthand"
 short_desc  = "S3G.2 --count shorthand"
 cli_args    = ["*.exe", "--count"]
+stdout_contains = ["# count", "count"]
+expect_min_rows = 1
 
 [[test]]
 id          = "S3G.3"
@@ -2388,6 +2545,8 @@ name        = "S3G.3 --rows with --agg"
 title       = "S3G.3 --rows with --agg"
 short_desc  = "S3G.3 --rows with --agg"
 cli_args    = ["*.exe", "--limit", "5", "--agg", "count", "--rows"]
+stdout_contains = ["# count"]
+expect_min_rows = 1
 
 [[test]]
 id          = "S3G.4"
@@ -2396,6 +2555,8 @@ name        = "S3G.4 --facet type:5"
 title       = "S3G.4 --facet type:5"
 short_desc  = "S3G.4 --facet type:5"
 cli_args    = ["*", "--facet", "type:5"]
+stdout_contains = ["# buckets", "key,count,total_bytes"]
+expect_min_rows = 1
 
 [[test]]
 id          = "S3G.5"
@@ -2404,6 +2565,8 @@ name        = "S3G.5 --stats size"
 title       = "S3G.5 --stats size"
 short_desc  = "S3G.5 --stats size"
 cli_args    = ["*.exe", "--stats", "size"]
+stdout_contains = ["# stats", "count,sum,min,max,avg"]
+expect_min_rows = 1
 
 [[test]]
 id          = "S3G.6"
@@ -2412,6 +2575,8 @@ name        = "S3G.6 --histogram size:1048576"
 title       = "S3G.6 --histogram size:1048576"
 short_desc  = "S3G.6 --histogram size:1048576"
 cli_args    = ["*.exe", "--histogram", "size:1048576"]
+stdout_contains = ["# buckets", "key,count,total_bytes"]
+expect_min_rows = 1
 
 [[test]]
 id          = "S3G.7"
@@ -2420,6 +2585,10 @@ name        = "S3G.7 rollup path depth=3"
 title       = "S3G.7 rollup path depth=3"
 short_desc  = "S3G.7 rollup path depth=3"
 cli_args    = ["*", "--limit", "0", "--agg", "rollup:path,depth=3,top=5", "--format", "table"]
+stdout_contains = ["=== rollup ===", "Count", "Total Size"]
+cli_checks.expect_min_rows  = 1
+api_checks.expect_agg_results = 1
+api_checks.agg_label_contains = ["rollup"]
 
 [[test]]
 id          = "S3G.8"
@@ -2489,3 +2658,50 @@ title       = "Aggregation with rows"
 short_desc  = "include_rows=true returns both rows and aggs"
 cli_args    = ["*.exe", "--files-only", "--limit", "5", "--agg", "terms:extension,top=3", "--format", "json"]
 validator   = "S3misc.4"
+
+# ─── Stage 4C: Duplicate verification ────────────────────────────────────
+
+[[test]]
+id          = "S4C.1"
+group       = "aggregation"
+name        = "S4C.1 duplicates verify=first_bytes JSON"
+title       = "Duplicates with first_bytes verification"
+short_desc  = "duplicates:size+name,verify=first_bytes produces JSON with verified field"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,verify=first_bytes", "--format", "json"]
+validator   = "S4C.1"
+
+[[test]]
+id          = "S4C.2"
+group       = "aggregation"
+name        = "S4C.2 duplicates verify=sha256 JSON"
+title       = "Duplicates with sha256 verification"
+short_desc  = "duplicates:size+name,verify=sha256 produces JSON with verified field"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,verify=sha256", "--format", "json"]
+validator   = "S4C.2"
+
+[[test]]
+id          = "S4C.3"
+group       = "aggregation"
+name        = "S4C.3 duplicates verify=first_bytes,verify_bytes=8192"
+title       = "Duplicates with custom verify_bytes"
+short_desc  = "verify_bytes=8192 is accepted without error"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,verify=first_bytes,verify_bytes=8192", "--format", "json"]
+validator   = "S4C.3"
+
+[[test]]
+id          = "S4C.4"
+group       = "aggregation"
+name        = "S4C.4 duplicates no verify (default)"
+title       = "Duplicates without verification"
+short_desc  = "Default duplicates mode produces no verified field"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name", "--format", "json"]
+validator   = "S4C.4"
+
+[[test]]
+id          = "S4C.5"
+group       = "aggregation"
+name        = "S4C.5 duplicates verify=hash alias"
+title       = "verify=hash alias for sha256"
+short_desc  = "verify=hash is accepted as alias for sha256"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,verify=hash", "--format", "json"]
+validator   = "S4C.5"

@@ -223,14 +223,8 @@ impl RequestHandler {
             label: Some(format!("facet_{}", fv_params.field)),
             field: Some(fv_params.field.clone()),
             top: Some(u16::MAX),
-            interval: None,
-            calendar: None,
-            boundaries: vec![],
             metrics: vec!["count".to_owned(), "total_bytes".to_owned()],
-            preset: None,
-            sample: None,
-            sample_sort: None,
-            sample_desc: None,
+            ..AggregateSpecWire::default()
         };
 
         let search_params = SearchParams {

@@ -1,267 +1,1232 @@
-   ~/Private/GitHub/UltraFastFileSearch  on   main  rust-script scripts/windows/cli-flag-validation.rs                                                           ✔  took 2m 37s   at 14:27:46 
-╔══════════════════════════════════════════════════════════════════╗
-║  Building fresh release binary...                                ║
-╚══════════════════════════════════════════════════════════════════╝
-  Workspace: /Users/rnio/Private/Github/UltraFastFileSearch
-   Compiling uffs-cli v0.4.97 (/Users/rnio/Private/Github/UltraFastFileSearch/crates/uffs-cli)
-    Finished `release` profile [optimized] target(s) in 1m 47s
-  ✅ Build completed in 107.6s
-  Binary: /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts/dev/daemon-readiness.rs
+═══ UFFS Daemon Readiness Verification ═══
+  binary:    C:\Users\rnio\bin\uffs.exe
+  source:    live NTFS drives (auto-discover)
+  pattern:   *.rs
 
+── Scenario A: Clean lifecycle ──
+  A1  Kill stale daemon
+    ↳ PASSED (1026ms)
+  A2  Verify not running
+    ↳ PASSED (935ms)
+  A3  Start daemon
+    ↳ PASSED (67834ms)
+  A4  Verify Ready + drives
+    ↳ PASSED (465ms) — [7 drives]
+  A5  Search returns results
+    ↳ PASSED (450ms) — [102 rows]
+  A6  Second search (warm)
+    ↳ PASSED (445ms) — [102 rows]
+  A7  Stats show queries
+    ↳ PASSED (437ms) — Startup duration:    1 m    5 s | Queries served:    2 | Avg query time:     59 ms  23 μs
+  A8  Graceful stop
+    ↳ PASSED (435ms)
+  A9  Verify stopped
+    ↳ PASSED (935ms)
 
-╔═══════════════════════════════════════════════════════════════╗
-║  UFFS CLI Flag Validation Suite                              ║
-╚═══════════════════════════════════════════════════════════════╝
-  Binary:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs
-  Data dir: /Users/rnio/uffs_data
+── Scenario B: Idempotent ops on stopped daemon ──
+  B0  Ensure stopped
+    ↳ PASSED (438ms)
+  B1  Status when not running
+    ↳ PASSED (920ms)
+  B2  Stop when not running
+    ↳ PASSED (422ms)
+  B3  Kill when not running
+    ↳ PASSED (422ms)
+  B4  Restart when not running
+    ↳ PASSED (425ms)
+  B5  Stats when not running
+    ↳ PASSED (423ms)
 
-┌───────────────────────────────────────────────────────────────┐
-│  Startup Timing: COLD → WARM → HOT                          │
-└───────────────────────────────────────────────────────────────┘
-  Killing daemon...
-  COLD (no daemon, no cache)...
-    COLD startup 13918ms + query 165ms = 14083ms (1 rows)
-  Killing daemon...
-  WARM (cache present, no daemon)...
-    WARM startup 5878ms + query 106ms = 5984ms (1 rows)
-  HOT  (daemon running)...
-    HOT  startup 50ms + query 108ms = 158ms (1 rows)
+── Scenario C: Double start ──
+  C0  Ensure stopped
+    ↳ PASSED (420ms)
+  C1  Start daemon
+    ↳ PASSED (5188ms)
+  C2  Start again (already running)
+    ↳ PASSED (429ms)
+  C3  Still Ready
+    ↳ PASSED (439ms) — [7 drives]
+  C4  Cleanup: stop
+    ↳ PASSED (445ms)
+
+── Scenario D: Hard kill recovery ──
+  D0  Ensure stopped
+    ↳ PASSED (441ms)
+  D1  Start daemon
+    ↳ PASSED (5189ms)
+  D2  Verify Ready
+    ↳ PASSED (423ms) — [7 drives]
+  D3  Kill -9
+    ↳ PASSED (425ms)
+  D4  Verify stopped
+    ↳ PASSED (930ms)
+  D5  Start after kill
+    ↳ PASSED (5298ms)
+  D6  Verify Ready after kill→start
+    ↳ PASSED (418ms) — [7 drives]
+  D7  Search works after kill→start
+    ↳ PASSED (436ms) — [1002 rows]
+  D8  Cleanup: stop
+    ↳ PASSED (425ms)
+
+── Scenario E: Graceful stop → restart cycle ──
+  E0  Ensure stopped
+    ↳ PASSED (433ms)
+  E1  Start
+    ↳ PASSED (5302ms)
+  E2  Search
+    ↳ PASSED (431ms) — [1002 rows]
+  E3  Stop
+    ↳ PASSED (422ms)
+  E4  Verify stopped
+    ↳ PASSED (919ms)
+  E5  Start again
+    ↳ PASSED (5188ms)
+  E6  Search after stop→start
+    ↳ PASSED (441ms) — [1002 rows]
+  E7  Cleanup: stop
+    ↳ PASSED (424ms)
+
+── Scenario F: Restart preserves data ──
+  F0  Ensure stopped
+    ↳ PASSED (431ms)
+  F1  Start
+    ↳ PASSED (5178ms)
+  F2  Verify Ready
+    ↳ PASSED (422ms) — [7 drives]
+  F3  Search pre-restart
+    ↳ PASSED (422ms) — [1002 rows]
+  F4  Restart
+    ↳ PASSED (6182ms)
+  F5  Verify Ready after restart
+    ↳ PASSED (428ms) — [7 drives]
+  F6  Search after restart
+    ↳ PASSED (421ms) — [1002 rows]
+  F7  Cleanup: stop
+    ↳ PASSED (422ms)
+
+── Scenario G: Double restart ──
+  G0  Ensure stopped
+    ↳ PASSED (552ms)
+  G1  Start
+    ↳ PASSED (5181ms)
+  G2  Restart #1
+    ↳ PASSED (6183ms)
+  G3  Verify Ready
+    ↳ PASSED (426ms) — [7 drives]
+  G4  Restart #2
+    ↳ PASSED (6192ms)
+  G5  Verify Ready
+    ↳ PASSED (425ms) — [7 drives]
+  G6  Search after 2 restarts
+    ↳ PASSED (423ms) — [1002 rows]
+  G7  Cleanup: stop
+    ↳ PASSED (421ms)
+
+── Scenario H: Stats accumulate across searches ──
+  H0  Ensure stopped
+    ↳ PASSED (450ms)
+  H1  Start
+    ↳ PASSED (5189ms)
+  H2  Three searches
+[q1] [q2] [q3]     ↳ PASSED (1272ms)
+  H3  Stats show ≥3 queries
+    ↳ PASSED (429ms) — [3 queries]
+  H4  Cleanup: stop
+    ↳ PASSED (422ms)
+
+── Scenario I: Kill running → immediate not-running ──
+  I0  Ensure stopped
+    ↳ PASSED (433ms)
+  I1  Start
+    ↳ PASSED (5193ms)
+  I2  Verify Ready
+    ↳ PASSED (422ms) — [7 drives]
+  I3  Kill
+    ↳ PASSED (678ms)
+  I4  Status → not running
+    ↳ PASSED (932ms)
+
+── Scenario J: Search auto-starts daemon ──
+  J0  Ensure stopped
+    ↳ PASSED (440ms)
+  J1  Verify not running
+    ↳ PASSED (920ms)
+  J2  Search (should auto-start)
+    ↳ PASSED (5189ms) — [1002 rows, daemon auto-started]
+  J3  Verify daemon now running
+    ↳ PASSED (426ms) — [7 drives]
+  J4  Cleanup: stop
+    ↳ PASSED (421ms)
+
+── Scenario K: Startup Timing (COLD → WARM → HOT) ──
+  K1  Kill stale daemon
+    ↳ PASSED (436ms)
+    Deleting caches for COLD start...
+    Deleting cache: C:\Users\rnio\AppData\Local\uffs\cache
+    COLD (no daemon, no cache)...
+    COLD startup 66321ms + query 467ms = 66788ms (2 rows)
+    WARM (cache present, no daemon)...
+    WARM startup 7182ms + query 499ms = 7681ms (2 rows)
+    HOT  (daemon running)...
+    HOT startup 436ms + query 429ms = 865ms (2 rows)
 
   ┌──────────┬────────────┬────────────┬────────────┬───────────┐
   │  Phase   │    Startup │      Query │      Total │   Speedup │
   ├──────────┼────────────┼────────────┼────────────┼───────────┤
-  │   COLD   │   13918 ms │     165 ms │   14083 ms │         — │
-  │   WARM   │    5878 ms │     106 ms │    5984 ms │      2.4x │
-  │   HOT    │      50 ms │     108 ms │     158 ms │     89.1x │
+  │   COLD   │   66321 ms │     467 ms │   66788 ms │         — │
+  │   WARM   │    7182 ms │     499 ms │    7681 ms │      8.7x │
+  │   HOT    │     436 ms │     429 ms │     865 ms │     77.2x │
   └──────────┴────────────┴────────────┴────────────┴───────────┘
 
-  Daemon: READY (socket responsive)
-┌───────────────────────────────────────────────────────────────┐
-│  Parallel Validation (171 tests, HOT daemon)                 │
-└───────────────────────────────────────────────────────────────┘
-  Launching 171 tests (parallelism: 16)...
 
-  → 171 CLI tests (process spawn, parallelism: 16)
+─── Timings ───────────────────────────────────────────
+  A1  Kill stale daemon                           1026ms
+  A2  Verify not running                           935ms
+  A3  Start daemon                               67834ms
+  A4  Verify Ready + drives                        465ms
+  A5  Search returns results                       450ms
+  A6  Second search (warm)                         445ms
+  A7  Stats show queries                           437ms
+  A8  Graceful stop                                435ms
+  A9  Verify stopped                               935ms
+  B0  Ensure stopped                               438ms
+  B1  Status when not running                      920ms
+  B2  Stop when not running                        422ms
+  B3  Kill when not running                        422ms
+  B4  Restart when not running                     425ms
+  B5  Stats when not running                       423ms
+  C0  Ensure stopped                               420ms
+  C1  Start daemon                                5188ms
+  C2  Start again (already running)                429ms
+  C3  Still Ready                                  439ms
+  C4  Cleanup: stop                                445ms
+  D0  Ensure stopped                               441ms
+  D1  Start daemon                                5189ms
+  D2  Verify Ready                                 423ms
+  D3  Kill -9                                      425ms
+  D4  Verify stopped                               930ms
+  D5  Start after kill                            5298ms
+  D6  Verify Ready after kill→start                418ms
+  D7  Search works after kill→start                436ms
+  D8  Cleanup: stop                                425ms
+  E0  Ensure stopped                               433ms
+  E1  Start                                       5302ms
+  E2  Search                                       431ms
+  E3  Stop                                         422ms
+  E4  Verify stopped                               919ms
+  E5  Start again                                 5188ms
+  E6  Search after stop→start                      441ms
+  E7  Cleanup: stop                                424ms
+  F0  Ensure stopped                               431ms
+  F1  Start                                       5178ms
+  F2  Verify Ready                                 422ms
+  F3  Search pre-restart                           422ms
+  F4  Restart                                     6182ms
+  F5  Verify Ready after restart                   428ms
+  F6  Search after restart                         421ms
+  F7  Cleanup: stop                                422ms
+  G0  Ensure stopped                               552ms
+  G1  Start                                       5181ms
+  G2  Restart #1                                  6183ms
+  G3  Verify Ready                                 426ms
+  G4  Restart #2                                  6192ms
+  G5  Verify Ready                                 425ms
+  G6  Search after 2 restarts                      423ms
+  G7  Cleanup: stop                                421ms
+  H0  Ensure stopped                               450ms
+  H1  Start                                       5189ms
+  H2  Three searches                              1272ms
+  H3  Stats show ≥3 queries                        429ms
+  H4  Cleanup: stop                                422ms
+  I0  Ensure stopped                               433ms
+  I1  Start                                       5193ms
+  I2  Verify Ready                                 422ms
+  I3  Kill                                         678ms
+  I4  Status → not running                         932ms
+  J0  Ensure stopped                               440ms
+  J1  Verify not running                           920ms
+  J2  Search (should auto-start)                  5189ms
+  J3  Verify daemon now running                    426ms
+  J4  Cleanup: stop                                421ms
+  K1  Kill stale daemon                            436ms
+  K2  COLD startup                               66788ms
+  K3  WARM startup                                7681ms
+  K4  HOT  startup                                 865ms
 
-  [PASS]   217ms  T00 warmup / daemon alive: daemon warm [cli]
-  [PASS]    55ms  T01 --files-only: 10 rows, all files [cli]
-  [PASS]    55ms  T02 --dirs-only: 10 rows, all directories [cli]
-  [PASS]   438ms  T03 --hide-system: 0 rows, no $-prefixed files [cli]
-  [PASS]    50ms  T04 --ext rs: 10 rows, all .rs [cli]
-  [PASS]   156ms  T05 --ext jpg,png,gif: 10 rows, all image extensions [cli]
-  [PASS]   171ms  T06 --min-size 100MB: 10 rows, all >= 100MB [cli]
-  [PASS]   262ms  T07 --max-size 1KB: 10 rows, all <= 1KB [cli]
-  [PASS]   107ms  T08 --min/max-size 1MB..10MB: 10 rows, all 1MB..10MB [cli]
-  [PASS]   170ms  T09 --sort size (asc): 10 rows, sorted asc [cli]
-  [PASS]   107ms  T10 --sort size --sort-desc: 10 rows, sorted desc [cli]
-  [PASS]    55ms  T11 --sort modified: 10 rows [cli]
-  [PASS]    55ms  T12 --sort size,name: 10 rows [cli]
-  [PASS]   221ms  T13 --attr hidden: 10 rows, all hidden [cli]
-  [PASS]   324ms  T14 --attr !hidden: 10 rows, none hidden [cli]
-  [PASS]   224ms  T15 --attr compressed: 10 rows, all compressed [cli]
-  [PASS]   103ms  T16 --exclude backup*: 10 rows, no backup* files [cli]
-  [PASS]   152ms  T17 --name-only: 10 rows, all contain 'readme' [cli]
-  [PASS]   103ms  T18 --case sensitive: 10 rows, case-sensitive match [cli]
-  [PASS]   153ms  T19 --word: 10 rows [cli]
-  [PASS]    55ms  T20 --format json: 5 NDJSON items [cli]
-  [PASS]   103ms  T21 --format table: 28 lines of table output [cli]
-  [PASS]   155ms  T22 --columns Name,Size,Path Only: 3 columns in output [cli]
-  [PASS]   209ms  T23 --min-descendants 100: 10 dirs with 100+ descendants [cli]
-  [PASS]   207ms  T24 --max-descendants 0: 10 empty directories [cli]
-  [PASS]   106ms  T25 --newer 7d: 0 rows [cli]
-  [PASS]   153ms  T26 --older 365d: 10 rows [cli]
-  [PASS]   256ms  T27 --newer-created 30d: 10 rows [cli]
-  [PASS]   104ms  T28 --drive C: 10 rows, all on C: [cli]
-  [PASS]   104ms  T29 --drives C,D: 10 rows, all on C: or D: [cli]
-  [PASS]   102ms  T30 --sep | --quotes ': pipe-separated output [cli]
-  [PASS]   105ms  T31 --out file: 101 lines written to file [cli]
-  [PASS]   319ms  T32 --benchmark: 0 bytes stdout (benchmark mode) [cli]
-  [PASS]   108ms  T33 regex >.*\.config$: 10 rows, all .config files [cli]
-  [PASS]    50ms  T34 combined stress: 0 rows, all constraints satisfied [cli]
-  [PASS]   420ms  T35 --limit 0 (unlimited): 163498 rows (unlimited) [cli]
-  [PASS]   322ms  T36 --older-created 365d: 10 rows [cli]
-  [PASS]   158ms  T37 --attr system: 10 rows, all system files [cli]
-  [PASS]   162ms  T38 --attr readonly: 10 rows, all readonly [cli]
-  [PASS]   158ms  T39 --attr system,!hidden: 10 rows, system but not hidden [cli]
-  [PASS]    54ms  T40 no results (graceful): 0 rows, graceful empty result [cli]
-  [PASS]   108ms  T41 --header false: 5 lines, no header [cli]
-  [PASS]    51ms  T42 --smart-case (lowercase = insensitive): 10 rows, mixed case=true [cli]
-  [PASS]   210ms  T43 --newer-accessed 7d: 10 rows [cli]
-  [PASS]   159ms  T44 --newer today: 10 rows [cli]
-  [PASS]   162ms  T45 --newer yesterday: 10 rows [cli]
-  [PASS]   164ms  T46 --newer this_week: 10 rows [cli]
-  [PASS]   155ms  T47 --newer last_7d: 10 rows [cli]
-  [PASS]   165ms  T48 --newer last_30d: 10 rows [cli]
-  [PASS]   110ms  T49 --newer this_month: 10 rows [cli]
-  [PASS]   110ms  T50 --newer this_year: 10 rows [cli]
-  [PASS]   271ms  T51 --older last_year: 10 rows [cli]
-  [PASS]   164ms  T52 --newer last_90d: 10 rows [cli]
-  [PASS]   160ms  T53 --newer last_365d: 10 rows [cli]
-  [PASS]   165ms  T54 --newer-created today: 10 rows [cli]
-  [PASS]   238ms  T55 --newer-accessed this_week: 10 rows [cli]
-  [PASS]   160ms  T56 bounded time range (last_week): 10 rows [cli]
-  [PASS]   160ms  T57 --newer 2025-01-01: 10 rows [cli]
-  [PASS]   103ms  T58 --sort name: 10 rows, sorted by name asc [cli]
-  [PASS]    50ms  T59 --sort path: 10 rows [cli]
-  [PASS]   110ms  T60 --sort created: 10 rows [cli]
-  [PASS]   108ms  T61 --sort accessed: 10 rows [cli]
-  [PASS]    55ms  T62 --sort extension: 10 rows [cli]
-  [PASS]   110ms  T63 --sort drive: 10 rows [cli]
-  [PASS]    55ms  T64 --sort allocated: 10 rows [cli]
-  [PASS]   160ms  T65 --sort descendants --sort-desc: 10 rows, sorted desc by descendants [cli]
-  [PASS]    56ms  T66 multi-sort size,-name: 20 rows, multi-sort applied [cli]
-  [PASS]   110ms  T67 multi-sort -modified,name: 10 rows [cli]
-  [PASS]   161ms  T67a --sort treesize: 10 rows, sorted by treesize desc [cli]
-  [PASS]   164ms  T67b --sort treeallocated: 10 rows, sorted by treeallocated desc [cli]
-  [PASS]   325ms  T67c --sort bulkiness: 10 rows [cli]
-  [PASS]   599ms  T67d --sort namelength: 10 rows, sorted by name length desc [cli]
-  [PASS]   651ms  T67e --sort pathlength: 10 rows [cli]
-  [PASS]    56ms  T67f --sort path_only: 10 rows [cli]
-  [PASS]   325ms  T67g --sort type: 20 rows [cli]
-  [PASS]   161ms  T67h multi-sort treesize,name: 20 rows [cli]
-  [PASS]   325ms  T67i multi-sort type,-size: 20 rows [cli]
-  [PASS]   325ms  T67j multi-sort hidden,bulkiness: 20 rows [cli]
-  [PASS]   325ms  T68 --attr archive: 10 rows, all have archive attr [cli]
-  [PASS]   216ms  T69 --attr sparse: 10 rows with sparse attr [cli]
-  [PASS]   220ms  T70 --attr reparse: 10 rows with reparse attr [cli]
-  [PASS]   165ms  T71 --attr offline: 10 rows with offline attr [cli]
-  [PASS]   217ms  T72 --attr encrypted: 0 rows with encrypted attr [cli]
-  [PASS]   271ms  T73 --attr !system: 10 rows, no system files [cli]
-  [PASS]   217ms  T74 --attr hidden,system: 10 rows, all hidden+system [cli]
-  [PASS]   162ms  T75 size+time+ext combined: 10 rows, all constraints met [cli]
-  [PASS]   165ms  T76 dirs + desc range + sort: 10 rows, desc 10..1000 sorted [cli]
-  [PASS]   110ms  T77 hidden + --newer last_30d: 10 hidden files from last 30 days [cli]
-  [PASS]    55ms  T78 exclude + ext + size: 10 rows, all constraints met [cli]
-  [PASS]    55ms  T79 projection + json format: 5 projected JSON items [cli]
-  [PASS]    52ms  T80 --columns all (wide): 34 cols × 5 rows [cli]
-  [PASS]   165ms  T81 --newer-created this_year: 10 rows [cli]
-  [PASS]   164ms  T82 --newer-accessed last_week: 10 rows [cli]
-  [PASS]   109ms  T83 multi-sort drive,ext,-size: 20 rows [cli]
-  [PASS]    55ms  T84 mega combined: 3 rows, all constraints satisfied [cli]
-  [PASS]    55ms  T85 table format + projection: 28 table lines [cli]
-  [PASS]   218ms  T86 --older-accessed 365d: 10 rows [cli]
-  [PASS]    52ms  T87 ext + sort modified: 10 rows, ext filtered + sorted [cli]
-  [PASS]   163ms  T88 name-only + hide-system + newer: 10 rows [cli]
-  [PASS]   110ms  T88a path: prefix: 10 rows, all paths contain 'windows' [cli]
-  [PASS]   108ms  T88b dir: prefix: 10 rows, all directories [cli]
-  [PASS]   109ms  T88c file: prefix: 10 rows, all .dll files [cli]
-  [PASS]    55ms  T88d --begins-with: 10 rows, all begin with 'note' [cli]
-  [PASS]    55ms  T88e --ends-with: 10 rows, all end with '.log' [cli]
-  [PASS]    55ms  T88f --contains: 10 rows, all contain 'setup' [cli]
-  [PASS]   107ms  T88g --not-contains: 10 rows, no 'debug' in names [cli]
-  [PASS]   108ms  T88h --in-path + pattern: 10 rows, .exe files in *windows* [cli]
-  [PASS]   110ms  T88i path: vs --in-path: 10 rows, path: matched [cli]
-  [PASS]   109ms  T88j --contains + --not-contains: 10 rows, contains 'update' but not 'old' [cli]
-  [PASS]   106ms  T88k dir: prefix + sort treesize desc: 10 dirs sorted by treesize desc [cli]
-  [PASS]   108ms  T88l --begins-with + --ext: 10 rows, begins-with + ext [cli]
-  [PASS]   106ms  T89 --type code: 10 rows, all code files [cli]
-  [PASS]    55ms  T90 --type document: 10 rows [cli]
-  [PASS]    55ms  T91 --type executable: 10 rows, all executables [cli]
-  [PASS]   109ms  T92 --type picture: 10 rows [cli]
-  [PASS]   105ms  T93 --type system: 10 rows, all system type [cli]
-  [PASS]   169ms  T94 --type code + sort size: 10 code files sorted by size desc [cli]
-  [PASS]   327ms  T95 --in-path *windows*: 10 rows, all in *windows* [cli]
-  [PASS]   263ms  T96 --in-path *system32*: 10 rows, all in *system32* [cli]
-  [PASS]   169ms  T97 --in-path + --exclude: 10 rows, in-path + exclude [cli]
-  [PASS]   376ms  T98 --min-bulkiness 200: 10 rows, all bulkiness >= 200% [cli]
-  [PASS]   274ms  T99 --max-bulkiness 100: 10 rows, all bulkiness <= 100% [cli]
-  [PASS]   214ms  T100 bulkiness + size combined: 1 rows, bulky large files [cli]
-  [PASS]   160ms  T101 --min-treesize 100MB: 10 dirs with treesize >= 100MB [cli]
-  [PASS]   159ms  T102 --max-treesize 1MB: 10 dirs with treesize <= 1MB [cli]
-  [PASS]   162ms  T103 --min-tree-allocated 100MB: 10 dirs with tree-allocated >= 100MB [cli]
-  [PASS]   543ms  T104 --min-name-length 50: 10 rows, all names >= 50 chars [cli]
-  [PASS]   598ms  T105 --max-name-length 8: 10 rows, all names <= 8 chars [cli]
-  [PASS]   218ms  T106 --min-path-length 200: 10 rows, all paths >= 200 chars [cli]
-  [PASS]   217ms  T107 --max-path-length 30: 10 rows [cli]
-  [PASS]   272ms  T108 --min-size-on-disk 100MB: 10 rows, all allocated >= 100MB [cli]
-  [PASS]   265ms  T109 --max-size-on-disk 4096: 10 rows, all allocated <= 4096 [cli]
-  [PASS]   376ms  T110 --month jan: 10 rows [cli]
-  [PASS]   375ms  T111 --month Q4: 10 rows [cli]
-  [PASS]   375ms  T112 --month jan,feb,mar: 10 rows [cli]
-  [PASS]   361ms  T113 --month jan + --newer last_365d: 10 rows [cli]
-  [PASS]   108ms  T114 --sort hidden:desc: 20 rows, hidden sorted desc [cli]
-  [PASS]   265ms  T115 --sort compressed:desc: 20 rows, compressed sorted desc [cli]
-  [PASS]   271ms  T116 --sort directory:desc: 20 rows, directory sorted desc [cli]
-  [PASS]   217ms  T117 type + in-path + size: 10 rows, all constraints met [cli]
-  [PASS]   159ms  T118 treesize + descendants: 10 dirs, treesize+desc constraints met [cli]
-  [PASS]   213ms  T119 agg count: count = 25846853 [cli]
-  [PASS]   870ms  T120 agg overview: overview: count + stats + buckets present [cli]
-  [PASS]   327ms  T121 agg by_extension: 50 extension buckets [cli]
-  [PASS]   377ms  T122 agg by_type: type categories present [cli]
-  [PASS]   377ms  T123 agg by_drive: drive buckets present [cli]
-  [PASS]   326ms  T124 agg by_size: size distribution buckets present [cli]
-  [PASS]   488ms  T125 agg by_age: age distribution present [cli]
-  [PASS]   204ms  T126 agg count --format json: JSON count = 25846853 [cli]
-  [PASS]   967ms  T127 agg overview --format json: 6 results: ["count", "buckets", "stats", "buckets", "buckets", "buckets"] [cli]
-  [PASS]   325ms  T128 agg by_extension --format csv: 50 CSV rows [cli]
-  [PASS]   871ms  T130 agg top_folders preset: top_folders preset produced output [cli]
-  [PASS]   432ms  T131 agg cleanup preset: cleanup preset: 4 sections [cli]
-  [PASS]  1415ms  T132 agg duplicates preset: duplicates preset produced output [cli]
-  [FAIL]   603ms  T133 agg storage preset: Missing total in storage output
-  [PASS]  1386ms  T134 agg activity preset: activity preset produced output [cli]
-  [PASS]   755ms  T135 agg media preset: media preset produced output [cli]
-  [FAIL]   911ms  T136 agg top_folders --format json: Missing 'results' array in JSON
-  [FAIL]   376ms  T137 agg cleanup --format json: Missing 'results' array
-  [PASS]   438ms  T138 agg cleanup --format csv: 12 lines, 4 sections [cli]
-  [FAIL] 30101ms  T139 --agg terms:extension,sample=3: Empty output
-  [FAIL] 30095ms  T140 --agg duplicates:size+name,sample=2: Empty output
-  [PASS]   640ms  T141 --count shorthand: --count shorthand works [cli]
-  [PASS] 30162ms  T142 --facet extension: --facet extension shorthand works [cli]
-  [PASS] 30116ms  T143 --facet type:10: --facet type:10 shorthand works [cli]
-  [PASS]   695ms  T144 --stats size: --stats size shorthand works [cli]
-  [PASS]   111ms  T145 --agg count + --rows mixed: mixed mode: rows=true, total=false [cli]
-  [FAIL]   362ms  T146 agg by_extension --format json (buckets): Missing 'results' array
-  [FAIL]  1556ms  T147 agg duplicates --format json: Missing 'results' array
-  [PASS]   325ms  T148 agg by_drive --format csv: 7 drive rows in CSV [cli]
-  [FAIL]   321ms  T149 agg by_size --format json: Missing 'results' array
+══ ALL GOOD ══  72/72 steps passed
+(production) ~\GitHub\UltraFastFileSearch on main>
 
-  ❌ 8/171 FAILED — wall 35590ms / sum 161128ms
 
-  ┌─ Failed Tests ──────────────────────────────────────────────────────┐
-  │
-  │  ❌ T133 agg storage preset
-  │  Error: Missing total in storage output
-  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg storage --data-dir /Users/rnio/uffs_data
-  │
-  │  ❌ T136 agg top_folders --format json
-  │  Error: Missing 'results' array in JSON
-  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg top_folders --format json --data-dir /Users/rnio/uffs_data
-  │
-  │  ❌ T137 agg cleanup --format json
-  │  Error: Missing 'results' array
-  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg cleanup --format json --data-dir /Users/rnio/uffs_data
-  │
-  │  ❌ T139 --agg terms:extension,sample=3
-  │  Error: Empty output
-  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs "*" --limit 0 --agg terms:extension,top=10,sample=3 --format json --data-dir /Users/rnio/uffs_data
-  │
-  │  ❌ T140 --agg duplicates:size+name,sample=2
-  │  Error: Empty output
-  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs "*" --limit 0 --agg duplicates:size+name,sample=2,top=50 --format json --data-dir /Users/rnio/uffs_data
-  │
-  │  ❌ T146 agg by_extension --format json (buckets)
-  │  Error: Missing 'results' array
-  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg by_extension --format json --data-dir /Users/rnio/uffs_data
-  │
-  │  ❌ T147 agg duplicates --format json
-  │  Error: Missing 'results' array
-  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg duplicates --format json --data-dir /Users/rnio/uffs_data
-  │
-  │  ❌ T149 agg by_size --format json
-  │  Error: Missing 'results' array
-  │  CLI:   /Users/rnio/Private/Github/UltraFastFileSearch/target/release/uffs agg by_size --format json --data-dir /Users/rnio/uffs_data
-  │
-  └──────────────────────────────────────────────────────────────────────┘
+_______________________________________________________________
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Total time: 61107ms
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts/windows/cli-flag-validation.rs
+
+╔═══════════════════════════════════════════════════════════════╗
+║  UFFS CLI Flag Validation Suite                              ║
+╚═══════════════════════════════════════════════════════════════╝
+  Binary:  C:\Users\rnio\bin\uffs.exe
+  Source:  (live NTFS drives)
+  Socket:  C:\Users\rnio\AppData\Local\uffs\daemon.sock
+
+  Checking daemon status...
+  Daemon is not running, starting...
+    ↳ C:\Users\rnio\bin\uffs.exe daemon start
+  Daemon: Spawned (5237ms)
+    Starting daemon...
+    Daemon started and ready.
+  Waiting for all drives to load...
+  Daemon: Ready ✓ — all drives loaded (5969ms)
+    Daemon PID:    42548
+    Uptime:          5 s    0 ms
+    Status:        Ready
+    Connections:   1
+      G: —     15,090 records (live)
+      M: —  1,908,805 records (live)
+      F: —  2,221,343 records (live)
+      C: —  3,409,807 records (live)
+      S: —  8,278,102 records (live)
+      D: —  7,065,539 records (live)
+      E: —  2,929,519 records (live)
+  Loaded 226 test definitions from test-definitions.toml
+  (224 cli tests, 2 api-only skipped, 0 disabled)
 
 ┌───────────────────────────────────────────────────────────────┐
-│  Cleanup: checking for orphan uffs processes                 │
+│  Parallel Validation (224 tests, HOT daemon)                 │
 └───────────────────────────────────────────────────────────────┘
-  ⚠️  Found 1 orphan uffs process(es):
-    PID 24410: (uffs)
-  🔪 Killed 1/1 orphan process(es).
+  Launching 224 tests (parallelism: 24)...
 
-    ~/Pr/GitHub/UltraFastFileSearch  on   main !10 ?1 
+  → 224 CLI tests (process spawn, parallelism: 24)
+
+  [PASS]   379ms  warmup / daemon alive: 10 rows [cli]
+  [PASS]   412ms  --files-only: 10 rows, checked Directory Flag [cli]
+  [PASS]   587ms  --dirs-only: 10 rows, checked Directory Flag [cli]
+  [PASS]  1319ms  --hide-system: 20 rows, checked Name [cli]
+  [PASS]  2541ms  --ext rs: 10 rows, checked Name [cli]
+  [PASS]  1179ms  --ext jpg,png,gif: 10 rows, 10 rows, all image extensions [cli]
+  [PASS]  1092ms  --min-size 100MB: 10 rows, checked Size [cli]
+  [PASS]  1731ms  --max-size 1KB: 10 rows, checked Size [cli]
+  [PASS]  1661ms  --min/max-size 1MB..10MB: 10 rows, checked Size,Size [cli]
+  [PASS]  1305ms  --sort size (asc): 10 rows, sorted Size asc [cli]
+  [PASS]  2018ms  --sort size --sort-desc: 10 rows, sorted Size desc [cli]
+  [PASS]  2194ms  T11 --sort modified: 10 rows [cli]
+  [PASS]  2367ms  T12 --sort size,name: 10 rows [cli]
+  [PASS]  1990ms  T13 --attr hidden: 10 rows, checked Hidden [cli]
+  [PASS]  4263ms  T14 --attr !hidden: 10 rows, checked Hidden [cli]
+  [PASS]  3199ms  T15 --attr compressed: 10 rows, checked Compressed [cli]
+  [PASS]  3080ms  T16 --exclude backup*: 10 rows, checked Name [cli]
+  [PASS]  3258ms  T17 --name-only: 10 rows, checked Name [cli]
+  [PASS]  3490ms  T18 --case sensitive: 10 rows, checked Name [cli]
+  [PASS]  3618ms  T19 --word: 10 rows [cli]
+  [PASS]  2719ms  T20 --format json: 4 rows, 5 NDJSON items [cli]
+  [PASS]  3989ms  T21 --format table: 61 rows [cli]
+  [PASS]  4166ms  T22 --columns Name,Size,Path Only: 10 rows [cli]
+  [PASS]  4443ms  T23 --min-descendants 100: 10 rows [cli]
+  [PASS]   324ms  T24 --max-descendants 0: 10 rows [cli]
+  [PASS]   409ms  T25 --newer 7d: 1 rows [cli]
+  [PASS]  4440ms  T26 --older 365d: 10 rows [cli]
+  [PASS]   917ms  T27 --newer-created 30d: 10 rows [cli]
+  [PASS]   589ms  T28 --drive C: 10 rows, checked Path Only [cli]
+  [PASS]  1125ms  T29 --drives C,D: 10 rows, checked Path Only [cli]
+  [PASS]  1299ms  T30 --sep | --quotes ': 5 rows [cli]
+  [PASS]   947ms  T31 --out file: 0 rows, 101 lines written to file [cli]
+  [PASS]  2055ms  T32 --benchmark: 0 rows [cli]
+  [PASS]  1890ms  T33 regex >.*\.config$: 10 rows, checked Name [cli]
+  [PASS]  2035ms  T34 combined stress: 10 rows, sorted Size desc, 10 rows, size desc ≥ 1MB [cli]
+  [PASS]  2131ms  T35 --limit 0 (unlimited): 163169 rows [cli]
+  [PASS]  2908ms  T36 --older-created 365d: 10 rows [cli]
+  [PASS]  2787ms  T37 --attr system: 10 rows, checked System [cli]
+  [PASS]  2972ms  T38 --attr readonly: 10 rows, checked Read-only [cli]
+  [PASS]  3116ms  T39 --attr system,!hidden: 10 rows, checked System,Hidden [cli]
+  [PASS]  2227ms  T40 no results (graceful): 0 rows [cli]
+  [PASS]  3332ms  T41 --header false: 4 rows [cli]
+  [PASS]  3516ms  T42 --smart-case (lowercase = insensitive): 10 rows [cli]
+  [PASS]  3849ms  T43 --newer-accessed 7d: 10 rows [cli]
+  [PASS]  4030ms  T44 --newer today: 10 rows [cli]
+  [PASS]  4215ms  T45 --newer yesterday: 10 rows [cli]
+  [PASS]  4408ms  T46 --newer this_week: 10 rows [cli]
+  [PASS]  3302ms  T47 --newer last_7d: 10 rows [cli]
+  [PASS]   378ms  T48 --newer last_30d: 10 rows [cli]
+  [PASS]   735ms  T49 --newer this_month: 10 rows [cli]
+  [PASS]   555ms  T50 --newer this_year: 10 rows [cli]
+  [PASS]  1275ms  T51 --older last_year: 10 rows [cli]
+  [PASS]  1155ms  T52 --newer last_90d: 10 rows [cli]
+  [PASS]  1339ms  T53 --newer last_365d: 10 rows [cli]
+  [PASS]  1480ms  T54 --newer-created today: 10 rows [cli]
+  [PASS]  1660ms  T55 --newer-accessed this_week: 10 rows [cli]
+  [PASS]  1842ms  T56 bounded time range (last_week): 10 rows [cli]
+  [PASS]  2085ms  T57 --newer 2025-01-01: 10 rows [cli]
+  [PASS]  3854ms  T58 --sort name: 10 rows, sorted Name asc [cli]
+  [PASS]  2245ms  T59 --sort path: 10 rows [cli]
+  [PASS]  2417ms  T60 --sort created: 10 rows [cli]
+  [PASS]  2590ms  T61 --sort accessed: 10 rows [cli]
+  [PASS]  2065ms  T62 --sort extension: 10 rows [cli]
+  [PASS]  2947ms  T63 --sort drive: 10 rows [cli]
+  [PASS]  4406ms  T64 --sort allocated: 10 rows [cli]
+  [PASS]  3448ms  T65 --sort descendants --sort-desc: 10 rows, sorted Descendants desc, 10 rows, sorted desc by descendants [cli]
+  [PASS]  3487ms  T66 multi-sort size,-name: 20 rows [cli]
+  [PASS]  3672ms  T67 multi-sort -modified,name: 10 rows [cli]
+  [PASS]  2916ms  T67a --sort treesize: 10 rows, sorted Tree Size desc, 10 rows, sorted by treesize desc [cli]
+  [PASS]  4238ms  T67b --sort treeallocated: 10 rows, sorted Tree Allocated desc, 10 rows, sorted by treeallocated desc [cli]
+  [PASS]  4727ms  T67c --sort bulkiness: 10 rows [cli]
+  [PASS]  4227ms  T67d --sort namelength: 10 rows, 10 rows, sorted by name length desc [cli]
+  [PASS]  1485ms  T67e --sort pathlength: 10 rows [cli]
+  [PASS]   420ms  T67f --sort path_only: 10 rows [cli]
+  [PASS]  1207ms  T67g --sort type: 20 rows [cli]
+  [PASS]  1749ms  T67h multi-sort treesize,name: 20 rows [cli]
+  [PASS]  1577ms  T67i multi-sort type,-size: 20 rows [cli]
+  [PASS]  1665ms  T67j multi-sort hidden,bulkiness: 20 rows [cli]
+  [PASS]  1855ms  T68 --attr archive: 10 rows, checked Archive [cli]
+  [PASS]   989ms  T69 --attr sparse: 10 rows, checked Sparse [cli]
+  [PASS]  1994ms  T70 --attr reparse: 10 rows, checked Reparse [cli]
+  [PASS]  3461ms  T71 --attr offline: 10 rows, checked Offline [cli]
+  [PASS]  3655ms  T72 --attr encrypted: 0 rows, checked Encrypted [cli]
+  [PASS]  4144ms  T73 --attr !system: 10 rows, checked System [cli]
+  [PASS]  2632ms  T74 --attr hidden,system: 10 rows, checked Hidden,System [cli]
+  [PASS]  4300ms  T75 size+time+ext combined: 10 rows, 10 rows, exe/dll ≥1MB sorted desc [cli]
+  [PASS]  3030ms  T76 dirs + desc range + sort: 10 rows, sorted Descendants desc, 10 dirs, desc range 10..1000 sorted desc [cli]
+  [PASS]  3221ms  T77 hidden + --newer last_30d: 10 rows, checked Hidden [cli]
+  [PASS]  1933ms  T78 exclude + ext + size: 10 rows, 10 rows, all constraints met [cli]
+  [PASS]  2124ms  T79 projection + json format: 4 rows, 5 projected JSON items [cli]
+  [PASS]  2298ms  T80 --columns all (wide): 5 rows [cli]
+  [PASS]  4022ms  T81 --newer-created this_year: 10 rows [cli]
+  [PASS]  4160ms  T82 --newer-accessed last_week: 10 rows [cli]
+  [PASS]  2673ms  T83 multi-sort drive,ext,-size: 20 rows [cli]
+  [PASS]  4380ms  T84 mega combined: 0 rows [cli]
+  [PASS]  4558ms  T85 table format + projection: 65 rows [cli]
+  [PASS]   634ms  T86 --older-accessed 365d: 10 rows [cli]
+  [PASS]   421ms  T87 ext + sort modified: 10 rows, 10 rows, ext filtered + sorted [cli]
+  [PASS]  1008ms  T88 name-only + hide-system + newer: 8 rows, 8 rows [cli]
+  [PASS]   813ms  T88a path: prefix: 10 rows, 10 rows, all paths contain 'windows' [cli]
+  [PASS]   613ms  T88b dir: prefix: 10 rows, checked Directory Flag [cli]
+  [PASS]  2965ms  T88c file: prefix: 10 rows, checked Directory Flag,Name [cli]
+  [PASS]  1375ms  T88d --begins-with: 10 rows, checked Name [cli]
+  [PASS]  1547ms  T88e --ends-with: 10 rows, checked Name [cli]
+  [PASS]  1720ms  T88f --contains: 10 rows, checked Name [cli]
+  [PASS]  1198ms  T88g --not-contains: 10 rows, checked Name [cli]
+  [PASS]  2128ms  T88h --in-path + pattern: 10 rows, checked Path Only,Name [cli]
+  [PASS]  2260ms  T88i path: vs --in-path: 10 rows, 10 rows, all contain 'notepad' [cli]
+  [PASS]  3688ms  T88j --contains + --not-contains: 10 rows, 10 rows, contains 'update' but not 'old' [cli]
+  [PASS]  2607ms  T88k dir: prefix + sort treesize desc: 10 rows, checked Directory Flag, sorted Tree Size desc, 10 dirs, sorted by treesize desc [cli]
+  [PASS]  4217ms  T88l --begins-with + --ext: 10 rows, 10 rows, begins-with + ext [cli]
+  [PASS]  1949ms  T89 --type code: 10 rows [cli]
+  [PASS]  3191ms  T90 --type document: 10 rows [cli]
+  [PASS]  3330ms  T91 --type executable: 10 rows [cli]
+  [PASS]  3561ms  T92 --type picture: 10 rows [cli]
+  [PASS]  2436ms  T93 --type system: 10 rows [cli]
+  [PASS]  3911ms  T94 --type code + sort size: 10 rows, sorted Size desc, 10 code files sorted by size desc [cli]
+  [PASS]  4486ms  T95 --in-path *windows*: 10 rows, checked Path Only [cli]
+  [PASS]  3034ms  T96 --in-path *system32*: 10 rows, checked Path Only [cli]
+  [PASS]  4501ms  T97 --in-path + --exclude: 10 rows, checked Name [cli]
+  [PASS]   725ms  T98 --min-bulkiness 200: 10 rows [cli]
+  [PASS]   960ms  T99 --max-bulkiness 100: 10 rows [cli]
+  [PASS]   613ms  T100 bulkiness + size combined: 1 rows [cli]
+  [PASS]  1512ms  T101 --min-treesize 100MB: 10 rows [cli]
+  [PASS]  1942ms  T102 --max-treesize 1MB: 10 rows [cli]
+  [PASS]  1316ms  T103 --min-tree-allocated 100MB: 10 rows [cli]
+  [PASS]  1796ms  T104 --min-name-length 50: 10 rows [cli]
+  [PASS]  2664ms  T105 --max-name-length 8: 10 rows [cli]
+  [PASS]  1380ms  T106 --min-path-length 200: 10 rows [cli]
+  [PASS]  2338ms  T107 --max-path-length 30: 10 rows [cli]
+  [PASS]  2424ms  T108 --min-size-on-disk 100MB: 10 rows [cli]
+  [PASS]  2712ms  T109 --max-size-on-disk 4096: 10 rows [cli]
+  [PASS]  4470ms  T110 --month jan: 10 rows [cli]
+  [PASS]  3292ms  T111 --month Q4: 10 rows [cli]
+  [PASS]  5065ms  T112 --month jan,feb,mar: 10 rows [cli]
+  [PASS]  3263ms  T113 --month jan + --newer last_365d: 10 rows [cli]
+  [PASS]  3449ms  T114 --sort hidden:desc: 20 rows [cli]
+  [PASS]  3746ms  T115 --sort compressed:desc: 20 rows [cli]
+  [PASS]  3932ms  T116 --sort directory:desc: 20 rows [cli]
+  [PASS]  2798ms  T117 type + in-path + size: 10 rows [cli]
+  [PASS]  4153ms  T118 treesize + descendants: 10 rows [cli]
+  [PASS]  4562ms  T119 agg count: 1 rows [cli]
+  [PASS]  5137ms  T120 agg overview: 546 rows [cli]
+  [PASS]  5309ms  T121 agg by_extension: 54 rows [cli]
+  [PASS]   826ms  T122 agg by_type: 3 rows [cli]
+  [PASS]  1245ms  T123 agg by_drive: 9 rows [cli]
+  [PASS]  1056ms  T124 agg by_size: 16 rows [cli]
+  [PASS]  1635ms  T125 agg by_age: 518 rows [cli]
+  [PASS]  1329ms  T126 agg count --format json: 5 rows, JSON count = 25828205 [cli]
+  [PASS]  3538ms  T127 agg overview --format json: 4868 rows, overview: 6 results, kinds=["count", "buckets", "stats", "buckets", "buckets", "buckets"] [cli]
+  [PASS]  2124ms  T128 agg by_extension --format csv: 53 rows [cli]
+  [PASS]  1763ms  T129 regex case insensitive: 10 rows [cli]
+  [PASS]  3410ms  T130 agg top_folders preset: 32 rows [cli]
+  [PASS]  2846ms  T131 agg cleanup preset: 7 rows [cli]
+  [PASS]  5797ms  T132 agg duplicates preset: 22 rows [cli]
+  [PASS]  3826ms  T133 agg storage preset: 47 rows [cli]
+  [PASS]  5494ms  T134 agg activity preset: 1371 rows [cli]
+  [PASS]  4687ms  T135 agg media preset: 413 rows [cli]
+  [PASS]  5760ms  T136 agg top_folders --format json: 279 rows, 1 results from top_folders [cli]
+  [PASS]  4074ms  T137 agg cleanup --format json: 24 rows, 4 results from cleanup [cli]
+  [PASS]  5650ms  T138 agg cleanup --format csv: 11 rows [cli]
+  [PASS]  3774ms  T139 --agg terms:extension,sample=3: 521 rows [cli]
+  [PASS]  6707ms  T140 --agg duplicates:size+name,sample=2: 148 rows [cli]
+  [PASS]  4147ms  T141 --count shorthand: 2 rows [cli]
+  [PASS]  3727ms  T142 --facet extension: 23 rows [cli]
+  [PASS]  4991ms  T143 --facet type:10: 2 rows [cli]
+  [PASS]  4741ms  T144 --stats size: 2 rows [cli]
+  [PASS]  3527ms  T145 --agg count + --rows mixed: 8 rows [cli]
+  [PASS]   900ms  T146 agg by_extension --format json (buckets): 812 rows, 50 buckets from by_extension [cli]
+  [PASS]  4612ms  T147 agg duplicates --format json: 149 rows, 1 result(s) from duplicates [cli]
+  [PASS]  1332ms  T148 agg by_drive --format csv: 8 rows [cli]
+  [PASS]  2299ms  T149 agg by_size --format json: 89 rows, 2 results from by_size [cli]
+  [PASS]  2957ms  T150 --agg terms:extension,sample=2 JSON sample_rows: 211 rows, 5 buckets with sample_rows [cli]
+  [PASS]  2461ms  T151 --agg terms:extension,sample=2 JSON drilldown: 211 rows, 5 buckets with drilldown [cli]
+  [PASS]  2651ms  T152 agg by_extension table with samples: 10 rows [cli]
+  [PASS]  1571ms  T153 --agg terms:extension no sample: 59 rows, 3 buckets, no sample_rows [cli]
+  [PASS]  1617ms  T154 rollup:drive power syntax: 53 rows, 5 rollup:drive buckets [cli]
+  [PASS]  3711ms  T155 rollup:path,depth=2 power syntax: 98 rows, 10 rollup:path,depth=2 buckets [cli]
+  [PASS]  3115ms  T156 multiple --agg flags combined: 63 rows, 2 results from multi-agg [cli]
+  [PASS]  3472ms  T157 --agg + search filter: 113 rows, 3 buckets from --agg + filter [cli]
+  [PASS]  3871ms  T158 sample row fields content: 131 rows, 3 buckets, sample row fields verified [cli]
+  [PASS]  4173ms  T159 CSV with samples column: 6 rows [cli]
+  [PASS]  3579ms  T160 hist:size power syntax: 20 rows, 1 hist:size buckets [cli]
+  [PASS]  3837ms  T161 stats:size power syntax: 14 rows, stats:size present [cli]
+  [PASS]  4350ms  T162 datehist:modified,calendar=month: 4655 rows, 516 datehist:modified buckets [cli]
+  [PASS]  4335ms  T163 range:size power syntax: 47 rows, 4 range:size buckets [cli]
+  [PASS]  4463ms  T164 --histogram size:1048576 shorthand: 20 rows, 1 histogram buckets [cli]
+  [PASS]  4575ms  T165 missing:extension power syntax: 6 rows, 1 results from missing:extension [cli]
+  [PASS]  5073ms  T166 distinct:extension power syntax: 6 rows, 1 results from distinct:extension [cli]
+  [PASS]  5744ms  T167 sample_sort terms:extension,sample=2,sort=size: 131 rows, 3 buckets with sample_sort [cli]
+  [PASS]  6799ms  T168 uffs stats daemon mode: 546 rows [cli]
+  [PASS]  4999ms  T169 uffs daemon stats (perf): 7 rows [cli]
+  [PASS]   790ms  T170 rollup:drive table format: 7 rows [cli]
+  [PASS]  2287ms  T171 rollup:path CSV format: 6 rows [cli]
+  [PASS]  2803ms  T172 agg overview --format csv: 539 rows [cli]
+  [PASS]  1685ms  T173 agg by_age --format json: 4656 rows, 1 results from by_age [cli]
+  [PASS]  2433ms  T174 agg storage --format json: 483 rows, 4 results from storage [cli]
+  [PASS]  3337ms  T175 agg activity --format json: 12301 rows, 3 results from activity [cli]
+  [PASS]  4091ms  T176 agg media --format json: 3829 rows, 4 results from media [cli]
+  [PASS]  5951ms  T177 agg duplicates --format csv: 21 rows [cli]
+  [PASS]  3329ms  S3A.1 next_cursor in JSON output: 44 rows, 2 buckets, next_cursor present [cli]
+  [PASS]  2220ms  S3A.2 table cursor hint: 7 rows [cli]
+  [PASS]  3985ms  S3A.3 --agg-page-size limits buckets: 60 rows, 3 buckets, page_size=3 [cli]
+  [PASS]  2717ms  S3A.4 aggregate --agg-page-size: 93 rows, aggregate subcommand with --agg-page-size OK [cli]
+  [PASS]  5280ms  S3C.1 nested rollup JSON sub_buckets: 68 rows, 3 rollup buckets with sub_buckets [cli]
+  [PASS]  4405ms  S3C.2 nested rollup table rendering: 8 rows [cli]
+  [PASS]  3862ms  S3C.3 nested rollup CSV: 64 rows [cli]
+  [PASS]  5549ms  S3D.1 truncated hint in table: 5 rows [cli]
+  [PASS]  4468ms  S3D.2 other_count in table: 6 rows [cli]
+  [PASS]  3671ms  S3D.3 JSON truncation metadata: 27 rows, values_complete = false [cli]
+  [PASS]  4884ms  S3D.4 JSON exact flag: 91 rows, exact = true [cli]
+  [PASS]  5187ms  S3E.1 CSV metadata comments: 4 rows [cli]
+  [PASS]  5632ms  S3G.1 sample_sort desc JSON: 164 rows, 3 buckets, sample_sort desc [cli]
+  [PASS]  3650ms  S3G.2 --count shorthand: 2 rows [cli]
+  [PASS]  5267ms  S3G.3 --rows with --agg: 8 rows [cli]
+  [PASS]  5877ms  S3G.4 --facet type:5: 2 rows [cli]
+  [PASS]   428ms  S3G.5 --stats size: 2 rows [cli]
+  [PASS]   581ms  S3G.6 --histogram size:1048576: 2 rows [cli]
+  [PASS]  2489ms  S3G.7 rollup path depth=3: 7 rows [cli]
+  [PASS]  1824ms  S3G.8 multiple --agg mixed: 76 rows, 3 results, kinds=["count", "buckets", "stats"] [cli]
+  [PASS]  1968ms  S3misc.1 raw power syntax: 261 rows, 1 agg results [cli]
+  [PASS]  1464ms  S3misc.2 count agg: 5 rows, 1 agg results [cli]
+  [PASS]  2491ms  S3misc.3 include_rows=false: 116 rows, 1 agg results [cli]
+  [PASS]  2155ms  S3misc.4 include_rows=true: 89 rows, 1 agg results [cli]
+
+  ✅ 224/224 passed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ⏱ Timing Breakdown
+  ─────────────────────────────────────────────────────
+  Build binary:               0ms
+  Daemon ready:            5969ms  (status check + start + drive load)
+  ─────────────────────────────────────────────────────
+  Tests wall time:        50153ms  (224 tests, parallelism: 24)
+  Tests sum time:        646179ms  (total CPU across all tests)
+  Tests avg time:          2884ms  (per test)
+  Slowest test:            6799ms  T168 uffs stats daemon mode
+  Fastest test:             324ms  T24 --max-descendants 0
+  ─────────────────────────────────────────────────────
+  Script total:           56136ms
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+┌───────────────────────────────────────────────────────────────┐
+│  Cleanup: verifying daemon & checking for orphan processes   │
+└───────────────────────────────────────────────────────────────┘
+  ✅ Daemon verified (PID 42548)
+  ✅ No orphan uffs processes found.
+(production) ~\GitHub\UltraFastFileSearch on main>
+
+
+_______________________________________________________________
+
+
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts/windows/profile.rs
+  Auto-discovering drives... found: C, D, E, F, G, M, S
+
+╔════════════════════════════════════════════════════════════╗
+║            UFFS Performance Profiler (3-Phase)             ║
+╠════════════════════════════════════════════════════════════╣
+║  Binary:   uffs 0.4.99                                    ║
+║  Drives:   C, D, E, F, G, M, S                            ║
+║  Pattern:  *                                              ║
+║  Limit:    100 rows                                       ║
+║  Phases:   COLD → WARM CACHE → HOT                        ║
+╚════════════════════════════════════════════════════════════╝
+
+━━━ Drive C: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [COLD] Killing daemon + deleting cache...
+  [COLD] Running: uffs "*" --profile --drive C --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:           1925 ms
+      Await ready:       5842 ms
+      Search (IPC):        21 ms  (daemon: 20 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            7393 ms
+      Startup:           6064 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              20 ms  (3,410,261 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     3,410,261                   0     4393      716      301
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 7791 ms ===
+  [COLD] Total: 7791ms  ✅
+
+  [WARM CACHE] Killing daemon (cache files remain)...
+  [WARM CACHE] Running: uffs "*" --profile --drive C --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            554 ms
+      Await ready:       1820 ms
+      Search (IPC):        23 ms  (daemon: 22 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            2028 ms
+      Startup:           1839 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              22 ms  (3,410,261 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     3,410,261                1839        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 2400 ms ===
+  [WARM CACHE] Total: 2400ms  ✅
+
+  [HOT] Daemon still running from WARM CACHE phase...
+  [HOT] Running: uffs "*" --profile --drive C --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:              4 ms
+      Await ready:          0 ms
+      Search (IPC):        25 ms  (daemon: 24 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            2257 ms
+      Startup:           1839 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              24 ms  (3,410,261 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     3,410,261                1839        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 31 ms ===
+  [HOT] Total: 31ms  ✅
+
+━━━ Drive D: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [COLD] Killing daemon + deleting cache...
+  [COLD] Running: uffs "*" --profile --drive D --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            552 ms
+      Await ready:      25894 ms
+      Search (IPC):        69 ms  (daemon: 67 ms, transfer: 2 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:           26146 ms
+      Startup:          25828 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              67 ms  (7,065,539 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     7,065,539                   0    23539     1112      443
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 26518 ms ===
+  [COLD] Total: 26518ms  ✅
+
+  [WARM CACHE] Killing daemon (cache files remain)...
+  [WARM CACHE] Running: uffs "*" --profile --drive D --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            549 ms
+      Await ready:       5806 ms
+      Search (IPC):        57 ms  (daemon: 56 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            6053 ms
+      Startup:           4243 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              56 ms  (7,065,539 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     7,065,539                   0     2027     1011      438
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 6415 ms ===
+  [WARM CACHE] Total: 6415ms  ✅
+
+  [HOT] Daemon still running from WARM CACHE phase...
+  [HOT] Running: uffs "*" --profile --drive D --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:              3 ms
+      Await ready:          0 ms
+      Search (IPC):        40 ms  (daemon: 39 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            6304 ms
+      Startup:           4243 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              39 ms  (7,065,539 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     7,065,539                   0     2027     1011      438
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 45 ms ===
+  [HOT] Total: 45ms  ✅
+
+━━━ Drive E: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [COLD] Killing daemon + deleting cache...
+  [COLD] Running: uffs "*" --profile --drive E --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            563 ms
+      Await ready:      41949 ms
+      Search (IPC):        50 ms  (daemon: 49 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:           42164 ms
+      Startup:          40370 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              49 ms  (2,929,519 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     2,929,519                   0    39437      344      170
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 42564 ms ===
+  [COLD] Total: 42564ms  ✅
+
+  [WARM CACHE] Killing daemon (cache files remain)...
+  [WARM CACHE] Running: uffs "*" --profile --drive E --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            543 ms
+      Await ready:       1803 ms
+      Search (IPC):        18 ms  (daemon: 17 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            1995 ms
+      Startup:            975 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              17 ms  (2,929,519 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     2,929,519                 975        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 2367 ms ===
+  [WARM CACHE] Total: 2367ms  ✅
+
+  [HOT] Daemon still running from WARM CACHE phase...
+  [HOT] Running: uffs "*" --profile --drive E --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:              3 ms
+      Await ready:          0 ms
+      Search (IPC):        17 ms  (daemon: 16 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            2212 ms
+      Startup:            975 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              16 ms  (2,929,519 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     2,929,519                 975        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 23 ms ===
+  [HOT] Total: 23ms  ✅
+
+━━━ Drive F: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [COLD] Killing daemon + deleting cache...
+  [COLD] Running: uffs "*" --profile --drive F --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            560 ms
+      Await ready:       3828 ms
+      Search (IPC):        14 ms  (daemon: 13 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            4035 ms
+      Startup:           3590 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              13 ms  (2,221,343 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     2,221,343                   0     2650      433      197
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 4405 ms ===
+  [COLD] Total: 4405ms  ✅
+
+  [WARM CACHE] Killing daemon (cache files remain)...
+  [WARM CACHE] Running: uffs "*" --profile --drive F --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            544 ms
+      Await ready:       1791 ms
+      Search (IPC):        13 ms  (daemon: 12 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            1987 ms
+      Startup:            972 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              12 ms  (2,221,343 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     2,221,343                 972        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 2351 ms ===
+  [WARM CACHE] Total: 2351ms  ✅
+
+  [HOT] Daemon still running from WARM CACHE phase...
+  [HOT] Running: uffs "*" --profile --drive F --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:              3 ms
+      Await ready:          0 ms
+      Search (IPC):        13 ms  (daemon: 12 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            2197 ms
+      Startup:            972 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              12 ms  (2,221,343 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     2,221,343                 972        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 19 ms ===
+  [HOT] Total: 19ms  ✅
+
+━━━ Drive G: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [COLD] Killing daemon + deleting cache...
+  [COLD] Running: uffs "*" --profile --drive G --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            552 ms
+      Await ready:        770 ms
+      Search (IPC):         1 ms  (daemon: 0 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:             959 ms
+      Startup:            508 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:               0 ms  (15,090 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM        15,090                   0      401        2        4
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 1325 ms ===
+  [COLD] Total: 1325ms  ✅
+
+  [WARM CACHE] Killing daemon (cache files remain)...
+  [WARM CACHE] Running: uffs "*" --profile --drive G --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            567 ms
+      Await ready:          0 ms
+      Search (IPC):         1 ms  (daemon: 0 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:             206 ms
+      Startup:              9 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:               0 ms  (15,090 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM        15,090                   9        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 570 ms ===
+  [WARM CACHE] Total: 570ms  ✅
+
+  [HOT] Daemon still running from WARM CACHE phase...
+  [HOT] Running: uffs "*" --profile --drive G --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:              3 ms
+      Await ready:          0 ms
+      Search (IPC):         1 ms  (daemon: 0 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:             423 ms
+      Startup:              9 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:               0 ms  (15,090 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM        15,090                   9        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 6 ms ===
+  [HOT] Total: 6ms  ✅
+
+━━━ Drive M: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [COLD] Killing daemon + deleting cache...
+  [COLD] Running: uffs "*" --profile --drive M --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            542 ms
+      Await ready:      25910 ms
+      Search (IPC):        17 ms  (daemon: 15 ms, transfer: 2 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:           26101 ms
+      Startup:          25728 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              15 ms  (1,908,805 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     1,908,805                   0    25105      233      125
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 26471 ms ===
+  [COLD] Total: 26471ms  ✅
+
+  [WARM CACHE] Killing daemon (cache files remain)...
+  [WARM CACHE] Running: uffs "*" --profile --drive M --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            549 ms
+      Await ready:        822 ms
+      Search (IPC):        13 ms  (daemon: 12 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            1027 ms
+      Startup:            674 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              12 ms  (1,908,805 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     1,908,805                 674        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 1386 ms ===
+  [WARM CACHE] Total: 1386ms  ✅
+
+  [HOT] Daemon still running from WARM CACHE phase...
+  [HOT] Running: uffs "*" --profile --drive M --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:              3 ms
+      Await ready:          1 ms
+      Search (IPC):        12 ms  (daemon: 11 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            1250 ms
+      Startup:            674 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              11 ms  (1,908,805 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     1,908,805                 674        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 18 ms ===
+  [HOT] Total: 18ms  ✅
+
+━━━ Drive S: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [COLD] Killing daemon + deleting cache...
+  [COLD] Running: uffs "*" --profile --drive S --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            557 ms
+      Await ready:      66114 ms
+      Search (IPC):       107 ms  (daemon: 106 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:           66421 ms
+      Startup:          64771 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:             106 ms  (8,278,102 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     8,278,102                   0    62752      927      380
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 66781 ms ===
+  [COLD] Total: 66781ms  ✅
+
+  [WARM CACHE] Killing daemon (cache files remain)...
+  [WARM CACHE] Running: uffs "*" --profile --drive S --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            943 ms
+      Await ready:       3800 ms
+      Search (IPC):        48 ms  (daemon: 47 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            4437 ms
+      Startup:           2893 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              47 ms  (8,278,102 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     8,278,102                2893        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 4793 ms ===
+  [WARM CACHE] Total: 4793ms  ✅
+
+  [HOT] Daemon still running from WARM CACHE phase...
+  [HOT] Running: uffs "*" --profile --drive S --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:              3 ms
+      Await ready:          0 ms
+      Search (IPC):        49 ms  (daemon: 47 ms, transfer: 2 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            4688 ms
+      Startup:           2893 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:              47 ms  (8,278,102 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM     8,278,102                2893        0        0        0
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 54 ms ===
+  [HOT] Total: 54ms  ✅
+
+━━━ ALL drives: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [COLD] Killing daemon + deleting cache...
+  [COLD] Running: uffs "*" --profile --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:           1918 ms
+      Await ready:      66034 ms
+      Search (IPC):       180 ms  (daemon: 179 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:           67740 ms
+      Startup:          65615 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:             179 ms  (25,828,638 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM    25,828,638                   0   161190     4035     1738
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 68136 ms ===
+  [COLD] Total: 68136ms  ✅
+
+  [WARM CACHE] Killing daemon (cache files remain)...
+  [WARM CACHE] Running: uffs "*" --profile --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:            965 ms
+      Await ready:       3800 ms
+      Search (IPC):       146 ms  (daemon: 145 ms, transfer: 1 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            4516 ms
+      Startup:           3825 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:             145 ms  (25,828,638 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM    25,828,638               14363     1309      645      268
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 4915 ms ===
+  [WARM CACHE] Total: 4915ms  ✅
+
+  [HOT] Daemon still running from WARM CACHE phase...
+  [HOT] Running: uffs "*" --profile --limit 100
+    === PROFILE: Client → Daemon ===
+      Connect:              3 ms
+      Await ready:          0 ms
+      Search (IPC):       149 ms  (daemon: 147 ms, transfer: 2 ms)
+      Convert rows:         0 ms  (100 rows)
+    === PROFILE: Daemon Internals ===
+      Uptime:            4867 ms
+      Startup:           3825 ms  (all drives loaded)
+      Lock acquire:         0 ms
+      Search:             147 ms  (25,828,638 records scanned)
+      Row build:            0 ms  (100 → SearchRow)
+    === PROFILE: Per-Drive ===
+      Drive       Records   Matches     Cache   MFT ms    Cmpct  Trigram
+        SUM    25,828,638               14363     1309      645      268
+    === PROFILE: Output ===
+      Output/write:         0 ms  (100 rows)
+    === TOTAL: 155 ms ===
+  [HOT] Total: 155ms  ✅
+
+╔═════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║                                         PERFORMANCE SUMMARY (--profile)                                         ║
+╠═════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ Drive Phase              Total      Connct       Ready     Startup      Search         IPC        Records    ║
+╠═════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ C:    COLD          7 s 791 ms  1 s 925 ms  5 s 842 ms  6 s  64 ms       20 ms       21 ms      3,410,261 ✅ ║
+║ C:    WARM CACHE    2 s 400 ms      554 ms  1 s 820 ms  1 s 839 ms       22 ms       23 ms      3,410,261 ✅ ║
+║ C:    HOT                31 ms        4 ms        0 ms  1 s 839 ms       24 ms       25 ms      3,410,261 ✅ ║
+╟─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╢
+║ D:    COLD         26 s 518 ms      552 ms 25 s 894 ms 25 s 828 ms       67 ms       69 ms      7,065,539 ✅ ║
+║ D:    WARM CACHE    6 s 415 ms      549 ms  5 s 806 ms  4 s 243 ms       56 ms       57 ms      7,065,539 ✅ ║
+║ D:    HOT                45 ms        3 ms        0 ms  4 s 243 ms       39 ms       40 ms      7,065,539 ✅ ║
+╟─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╢
+║ E:    COLD         42 s 564 ms      563 ms 41 s 949 ms 40 s 370 ms       49 ms       50 ms      2,929,519 ✅ ║
+║ E:    WARM CACHE    2 s 367 ms      543 ms  1 s 803 ms      975 ms       17 ms       18 ms      2,929,519 ✅ ║
+║ E:    HOT                23 ms        3 ms        0 ms      975 ms       16 ms       17 ms      2,929,519 ✅ ║
+╟─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╢
+║ F:    COLD          4 s 405 ms      560 ms  3 s 828 ms  3 s 590 ms       13 ms       14 ms      2,221,343 ✅ ║
+║ F:    WARM CACHE    2 s 351 ms      544 ms  1 s 791 ms      972 ms       12 ms       13 ms      2,221,343 ✅ ║
+║ F:    HOT                19 ms        3 ms        0 ms      972 ms       12 ms       13 ms      2,221,343 ✅ ║
+╟─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╢
+║ G:    COLD          1 s 325 ms      552 ms      770 ms      508 ms        0 ms        1 ms         15,090 ✅ ║
+║ G:    WARM CACHE        570 ms      567 ms        0 ms        9 ms        0 ms        1 ms         15,090 ✅ ║
+║ G:    HOT                 6 ms        3 ms        0 ms        9 ms        0 ms        1 ms         15,090 ✅ ║
+╟─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╢
+║ M:    COLD         26 s 471 ms      542 ms 25 s 910 ms 25 s 728 ms       15 ms       17 ms      1,908,805 ✅ ║
+║ M:    WARM CACHE    1 s 386 ms      549 ms      822 ms      674 ms       12 ms       13 ms      1,908,805 ✅ ║
+║ M:    HOT                18 ms        3 ms        1 ms      674 ms       11 ms       12 ms      1,908,805 ✅ ║
+╟─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╢
+║ S:    COLD          1 m  07 s       557 ms  1 m  06 s   1 m  05 s       106 ms      107 ms      8,278,102 ✅ ║
+║ S:    WARM CACHE    4 s 793 ms      943 ms  3 s 800 ms  2 s 893 ms       47 ms       48 ms      8,278,102 ✅ ║
+║ S:    HOT                54 ms        3 ms        0 ms  2 s 893 ms       47 ms       49 ms      8,278,102 ✅ ║
+╟─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╢
+║ ALL:  COLD          1 m  08 s   1 s 918 ms  1 m  06 s   1 m  06 s       179 ms      180 ms     25,828,638 ✅ ║
+║ ALL:  WARM CACHE    4 s 915 ms      965 ms  3 s 800 ms  3 s 825 ms      145 ms      146 ms     25,828,638 ✅ ║
+║ ALL:  HOT               155 ms        3 ms        0 ms  3 s 825 ms      147 ms      149 ms     25,828,638 ✅ ║
+╚═════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+╔════════════════════════════════════════════════════════════════════╗
+║                              SPEEDUP                               ║
+╠════════════════════════════════════════════════════════════════════╣
+║ Drive        Cold        Warm         Hot         C→H         C→W ║
+╠════════════════════════════════════════════════════════════════════╣
+║ C:     7 s 791 ms  2 s 400 ms       31 ms    251.3×        3.2×   ║
+╟────────────────────────────────────────────────────────────────────╢
+║ D:    26 s 518 ms  6 s 415 ms       45 ms    589.3×        4.1×   ║
+╟────────────────────────────────────────────────────────────────────╢
+║ E:    42 s 564 ms  2 s 367 ms       23 ms   1850.6×       18.0×   ║
+╟────────────────────────────────────────────────────────────────────╢
+║ F:     4 s 405 ms  2 s 351 ms       19 ms    231.8×        1.9×   ║
+╟────────────────────────────────────────────────────────────────────╢
+║ G:     1 s 325 ms      570 ms        6 ms    220.8×        2.3×   ║
+╟────────────────────────────────────────────────────────────────────╢
+║ M:    26 s 471 ms  1 s 386 ms       18 ms   1470.6×       19.1×   ║
+╟────────────────────────────────────────────────────────────────────╢
+║ S:     1 m  07 s   4 s 793 ms       54 ms   1236.7×       13.9×   ║
+╟────────────────────────────────────────────────────────────────────╢
+║ ALL:   1 m  08 s   4 s 915 ms      155 ms    439.6×       13.9×   ║
+╚════════════════════════════════════════════════════════════════════╝
+
+Total profiling time: 5m 13s
+(production) ~\GitHub\UltraFastFileSearch on main>
+
+
+
+_______________________________________________________________
+
+
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts/dev/stress-concurrent-queries.rs
+═══ UFFS Concurrent Query Stress Test ═══
+  socket:      C:\Users\rnio\AppData\Local\uffs\daemon.sock
+  patterns:    ["*.rs", "*.dll", "*.exe", "*.txt", "config"]
+  limit:       50
+  per level:   100 queries (10 warmup)
+  uffs binary:  C:\Users\rnio\bin\uffs.exe
+  starting:     C:\Users\rnio\bin\uffs.exe daemon start
+  daemon:       READY (67.6s)
+
+  probe:       OK (50 rows)
+
+─── Results ────────────────────────────────────────────────────────────────────────────────────────
+ conc      ok    fail       min       p50       p95       p99       max      mean       qps    wall
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+    1     100       0       1.3       2.2       3.7       5.0      59.3       2.9  328.9    0.3s
+    2     100       0       1.4       2.1       3.2       3.4       3.7       2.2  826.6    0.1s
+    4     100       0       1.5       2.7       4.1       4.4       4.4       2.8  1271.3    0.1s
+    8     100       0       1.6       3.9       6.9       9.6      11.2       4.2  1563.5    0.1s
+   16     100       0       1.6       6.6      11.5      11.7      12.2       7.0  1896.8    0.1s
+   32     100       0       2.6      13.7      20.2      24.7      26.0      13.5  1892.4    0.1s
+   64     100       0       6.5      17.5      32.5      32.9      34.1      20.0  1826.1    0.1s
+  128     100       0       4.0      27.4      50.9      51.1      51.2      29.6  1644.4    0.1s
+
+─── Analysis ────────────────────────────────────────────────────────────
+  Peak throughput:  1896.8 qps at concurrency 16
+  Saturation point:  concurrency 16 (mean 7.0ms, baseline 2.9ms)
+  Latency degradation (1→128):  10.2x — Poor
+  Reliability:  0 failures across all levels
+
+─── Throughput Curve ─────────────────────────────────────────────────────
+  c=1       328.9 qps │████████│
+  c=2       826.6 qps │█████████████████████│
+  c=4      1271.3 qps │█████████████████████████████████│
+  c=8      1563.5 qps │█████████████████████████████████████████│
+  c=16     1896.8 qps │██████████████████████████████████████████████████│
+  c=32     1892.4 qps │█████████████████████████████████████████████████│
+  c=64     1826.1 qps │████████████████████████████████████████████████│
+  c=128    1644.4 qps │███████████████████████████████████████████│
+
+─── Latency Curve (p50) ─────────────────────────────────────────────────
+  c=1         2.2 ms │████│
+  c=2         2.1 ms │███│
+  c=4         2.7 ms │████│
+  c=8         3.9 ms │███████│
+  c=16        6.6 ms │████████████│
+  c=32       13.7 ms │█████████████████████████│
+  c=64       17.5 ms │███████████████████████████████│
+  c=128      27.4 ms │██████████████████████████████████████████████████│
+
+═══ Done ═══
+(production) ~\GitHub\UltraFastFileSearch on main>
+
+
+
+
+
+_______________________________________________________________
+
+
+
+
+
+
+_______________________________________________________________
+
+
+
+
+
+
+_______________________________________________________________
+
+
+
+
+
+
+_______________________________________________________________
+
+
+
+

@@ -449,16 +449,8 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
                     // For "raw" kind, the daemon expects the power
                     // syntax string in the label field.
                     label: (!is_preset && spec != "count").then(|| spec.clone()),
-                    field: None,
-                    top: None,
-                    interval: None,
-                    calendar: None,
-                    boundaries: vec![],
-                    metrics: vec![],
                     preset: is_preset.then(|| spec.clone()),
-                    sample: None,
-                    sample_sort: None,
-                    sample_desc: None,
+                    ..uffs_client::protocol::AggregateSpecWire::default()
                 }
             })
             .collect(),

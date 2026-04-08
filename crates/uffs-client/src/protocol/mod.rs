@@ -487,7 +487,7 @@ impl Default for SearchParams {
 /// This is the JSON-serializable form of
 /// `uffs_core::aggregate::spec::AggregateSpec`. It uses tagged-enum style for
 /// `kind` to make JSON schemas self-describing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AggregateSpecWire {
     /// The aggregation kind (e.g. `"count"`, `"terms"`, `"stats"`).
     pub kind: String,
@@ -525,6 +525,14 @@ pub struct AggregateSpecWire {
     /// Sort direction for sample rows.  `true` = descending (largest first).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample_desc: Option<bool>,
+    /// Duplicate verification mode: `"first_bytes"`, `"sha256"`, or absent/`"none"`.
+    ///
+    /// Only meaningful when `kind` is `"duplicates"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<String>,
+    /// Byte count for `verify=first_bytes` mode (default: 4096).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_bytes: Option<u32>,
 }
 
 /// Wire format for an aggregate result.
@@ -594,7 +602,7 @@ pub struct StatsWire {
 }
 
 /// Wire format for a single bucket row.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BucketWire {
     /// Bucket key (display string).
     pub key: String,
@@ -628,6 +636,11 @@ pub struct BucketWire {
     /// contains the sub-aggregation's buckets here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_buckets: Vec<Self>,
+    /// Whether this duplicate group has been content-verified.
+    ///
+    /// Only present for `kind="duplicates"` results with `verify != "none"`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub verified: bool,
 }
 
 /// Wire format for a sample row (top-hit) within a bucket.

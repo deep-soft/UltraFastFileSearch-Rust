@@ -366,6 +366,8 @@ impl McpServer {
                 sample: None,
                 sample_sort: None,
                 sample_desc: None,
+                verify: None,
+                verify_bytes: None,
             });
         }
 
@@ -386,6 +388,8 @@ impl McpServer {
                         sample: None,
                         sample_sort: None,
                         sample_desc: None,
+                        verify: None,
+                        verify_bytes: None,
                     });
                 }
             }
@@ -406,6 +410,8 @@ impl McpServer {
                 sample: None,
                 sample_sort: None,
                 sample_desc: None,
+                verify: None,
+                verify_bytes: None,
             });
         }
 
@@ -484,6 +490,8 @@ impl McpServer {
             sample: None,
             sample_sort: None,
             sample_desc: None,
+            verify: None,
+            verify_bytes: None,
         };
 
         let params = SearchParams {

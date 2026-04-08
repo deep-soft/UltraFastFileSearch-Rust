@@ -199,6 +199,8 @@ pub enum AccumulatorKind {
     Duplicates {
         /// Inner duplicate accumulator.
         inner: super::duplicates::DuplicateAccumulator,
+        /// Sample row spec for materializing member indices post-scan.
+        sample_spec: Option<TopHitsSpec>,
     },
 }
 
@@ -326,6 +328,7 @@ impl GroupAccumulator {
                             *max_groups,
                             sample_count,
                         ),
+                        sample_spec: sample.clone().or_else(|| Some(TopHitsSpec::default())),
                     },
                     None,
                 )
@@ -433,7 +436,7 @@ impl GroupAccumulator {
                     sub_acc.feed(record, drive, _idx, drive_ordinal);
                 }
             }
-            AccumulatorKind::Duplicates { inner } => {
+            AccumulatorKind::Duplicates { inner, .. } => {
                 inner.feed(record, drive, _idx);
             }
         }

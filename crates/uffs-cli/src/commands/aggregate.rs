@@ -55,11 +55,18 @@ pub(crate) fn print_table_results(results: &[AggregateResultWire]) -> Result<()>
                     }
                 }
             }
-            "buckets" | "rollup" | "duplicates" => {
+            "buckets" | "rollup" => {
                 if result.buckets.is_empty() {
                     writeln!(stdout, "  (no data)")?;
                 } else {
                     print_table_buckets(&mut stdout, result)?;
+                }
+            }
+            "duplicates" => {
+                if result.buckets.is_empty() {
+                    writeln!(stdout, "  (no data)")?;
+                } else {
+                    print_duplicate_table(&mut stdout, result)?;
                 }
             }
             "missing" | "distinct" => {
@@ -113,9 +120,13 @@ pub(crate) fn print_csv_results(results: &[AggregateResultWire], tsv: bool) -> R
                     )?;
                 }
             }
-            "buckets" | "rollup" | "duplicates" => {
+            "buckets" | "rollup" => {
                 writeln!(stdout, "# {label}")?;
                 print_csv_buckets(&mut stdout, result, sep)?;
+            }
+            "duplicates" => {
+                writeln!(stdout, "# {label}")?;
+                print_csv_duplicates(&mut stdout, result, sep)?;
             }
             "missing" | "distinct" => {
                 writeln!(stdout, "# {label}")?;
@@ -207,6 +218,94 @@ fn print_table_buckets(stdout: &mut impl Write, result: &AggregateResultWire) ->
     Ok(())
 }
 
+/// Print dedicated duplicate-group table.
+///
+/// Shows a summary header with total groups/files/reclaimable, then a
+/// table with human-readable keys, copies, file size, reclaimable bytes,
+/// and verified status.  Sample rows are rendered as indented `→` lines
+/// showing member file paths.
+fn print_duplicate_table(stdout: &mut impl Write, result: &AggregateResultWire) -> Result<()> {
+    // ── Summary header ──────────────────────────────────────────────
+    if let Some(stats) = &result.stats {
+        let groups = result.total_groups.unwrap_or(result.buckets.len());
+        writeln!(
+            stdout,
+            "  Groups: {}  Files: {}  Reclaimable: {}",
+            format_number(groups as u64),
+            format_number(stats.count),
+            format_size(stats.waste_bytes),
+        )?;
+        writeln!(stdout)?;
+    }
+
+    // ── Column header ───────────────────────────────────────────────
+    writeln!(
+        stdout,
+        "  {:<40} {:>8} {:>12} {:>14} {:>5}",
+        "Name", "Copies", "File Size", "Reclaimable", "  ✓"
+    )?;
+    writeln!(
+        stdout,
+        "  {:-<40} {:-<8} {:-<12} {:-<14} {:-<5}",
+        "", "", "", "", ""
+    )?;
+
+    for row in &result.buckets {
+        let reclaimable = row.total_allocated.unwrap_or(0);
+        let file_size = row.avg_size.unwrap_or(0.0) as u64;
+        let verified_mark = if row.verified { " ✓" } else { "" };
+
+        writeln!(
+            stdout,
+            "  {:<40} {:>8} {:>12} {:>14} {:>5}",
+            truncate_str(&row.key, 40),
+            format_number(row.count),
+            format_size(file_size),
+            format_size(reclaimable),
+            verified_mark,
+        )?;
+
+        // Sample rows: show member file locations.
+        for sr in &row.sample_rows {
+            let name = sr.fields.get("name").map_or("?", |s| s.as_str());
+            let path = sr
+                .fields
+                .get("path")
+                .map_or(String::new(), |s| format!(" {s}"));
+            let size = sr
+                .fields
+                .get("size")
+                .and_then(|s| s.parse::<u64>().ok())
+                .map_or_else(String::new, |n| format!(" ({})", format_size(n)));
+            writeln!(stdout, "    → {name}{size}{path}")?;
+        }
+    }
+
+    // ── Overflow ────────────────────────────────────────────────────
+    if let Some(total) = result.total_groups {
+        let shown = result.buckets.len();
+        if total > shown {
+            writeln!(
+                stdout,
+                "  ... and {} more groups",
+                format_number((total - shown) as u64),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Truncate a string to `max` chars, appending `…` if truncated.
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{truncated}…")
+    }
+}
+
 /// Render bucket rows in CSV/TSV format.
 fn print_csv_buckets(
     stdout: &mut impl Write,
@@ -279,3 +378,64 @@ fn print_csv_buckets(
     }
     Ok(())
 }
+
+/// Render duplicate groups in CSV/TSV format with dedicated columns.
+fn print_csv_duplicates(
+    stdout: &mut impl Write,
+    result: &AggregateResultWire,
+    sep: char,
+) -> Result<()> {
+    let has_samples = result.buckets.iter().any(|r| !r.sample_rows.is_empty());
+
+    // Summary metadata.
+    if let Some(stats) = &result.stats {
+        writeln!(
+            stdout,
+            "# total_groups={} total_files={} total_reclaimable={}",
+            result.total_groups.unwrap_or(result.buckets.len()),
+            stats.count,
+            stats.waste_bytes,
+        )?;
+    }
+
+    // Header row.
+    write!(
+        stdout,
+        "key{sep}copies{sep}file_size{sep}total_bytes{sep}reclaimable{sep}verified"
+    )?;
+    if has_samples {
+        write!(stdout, "{sep}samples")?;
+    }
+    writeln!(stdout)?;
+
+    for row in &result.buckets {
+        let reclaimable = row.total_allocated.unwrap_or(0);
+        let file_size = row.avg_size.unwrap_or(0.0) as u64;
+        write!(
+            stdout,
+            "{}{sep}{}{sep}{}{sep}{}{sep}{}{sep}{}",
+            row.key,
+            row.count,
+            file_size,
+            row.total_bytes,
+            reclaimable,
+            row.verified,
+        )?;
+        if has_samples {
+            let json = serde_json::to_string(&row.sample_rows).unwrap_or_else(|_| "[]".to_owned());
+            write!(stdout, "{sep}{json}")?;
+        }
+        writeln!(stdout)?;
+    }
+
+    // Overflow metadata.
+    if let Some(total) = result.total_groups {
+        let shown = result.buckets.len();
+        if total > shown {
+            writeln!(stdout, "# remaining_groups={}", total - shown)?;
+        }
+    }
+
+    Ok(())
+}
+
