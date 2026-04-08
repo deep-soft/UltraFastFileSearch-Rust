@@ -1375,7 +1375,12 @@ fn build_declarative_validator(def: &TestDef) -> Box<dyn Fn(&str, &str) -> Resul
         // Merge legacy flat fields + cli_checks.* (both are checked).
         for s in def.stdout_contains.iter().chain(def.cli_checks.stdout_contains.iter()) {
             if !stdout.contains(s.as_str()) {
-                bail!("stdout missing expected substring: {s}");
+                let end = stdout.char_indices().map(|(i,_)| i).take_while(|&i| i <= 300).last().unwrap_or(0);
+                let preview = &stdout[..end];
+                bail!(
+                    "stdout missing expected substring: {s}\n  stdout len={}, first 300 bytes:\n{preview}",
+                    stdout.len()
+                );
             }
         }
         for s in def.stdout_not_contains.iter().chain(def.cli_checks.stdout_not_contains.iter()) {
