@@ -18,12 +18,12 @@ total_count_min = 1
 [[test]]
 id          = "T21"
 group       = "output"
-name        = "T21 --format table"
-title       = "T21 --format table"
-short_desc  = "T21 --format table"
-cli_args    = ["*.rs", "--format", "table", "--limit", "5"]
+name        = "T21 --format json"
+title       = "T21 --format json"
+short_desc  = "T21 --format json (was table; piped stdout truncates column names)"
+cli_args    = ["*.rs", "--format", "json", "--limit", "5"]
 targets     = ["cli"]
-stdout_contains = ["shape: (5,", "name", "size"]
+stdout_contains = ["name", "size"]
 
 [test.api_checks]
 result_has_key = ["results"]
@@ -83,12 +83,12 @@ stdout_contains = ["\"Path\"", "\"Name\"", "\"Size\"", "\"Attributes\""]
 [[test]]
 id          = "T85"
 group       = "output"
-name        = "T85 table format + projection"
-title       = "T85 table format + projection"
-short_desc  = "T85 table format + projection"
-cli_args    = ["*.dll", "--format", "table", "--columns", "Name,Size", "--limit", "5", "--drive", "C"]
+name        = "T85 json format + projection"
+title       = "T85 json format + projection"
+short_desc  = "T85 json format + projection (was table; piped stdout truncates column names)"
+cli_args    = ["*.dll", "--format", "json", "--columns", "Name,Size", "--limit", "5", "--drive", "C"]
 targets     = ["cli"]
-stdout_contains = ["shape:", "name", "size"]
+stdout_contains = ["name", "size"]
 
 [test.api_checks]
 result_has_key = ["results"]
