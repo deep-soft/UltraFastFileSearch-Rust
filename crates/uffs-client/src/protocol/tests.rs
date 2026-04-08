@@ -355,6 +355,7 @@ fn bucket_wire_full_round_trip() {
         share_bytes: Some(3.2_f64),
         sample_rows: Vec::new(),
         drilldown: Vec::new(),
+        sub_buckets: Vec::new(),
     };
     let json = serde_json::to_string(&bucket).expect("serialize");
     let parsed: BucketWire = serde_json::from_str(&json).expect("deserialize");
@@ -398,6 +399,9 @@ fn aggregate_result_wire_count_round_trip() {
         buckets: vec![],
         other_count: None,
         total_groups: None,
+        next_cursor: None,
+        exact: None,
+        values_complete: None,
     };
     let json = serde_json::to_string(&result).expect("serialize");
     let parsed: AggregateResultWire = serde_json::from_str(&json).expect("deserialize");
@@ -427,6 +431,9 @@ fn aggregate_result_wire_stats_round_trip() {
         buckets: vec![],
         other_count: None,
         total_groups: None,
+        next_cursor: None,
+        exact: None,
+        values_complete: None,
     };
     let json = serde_json::to_string(&result).expect("serialize");
     let parsed: AggregateResultWire = serde_json::from_str(&json).expect("deserialize");
@@ -457,6 +464,7 @@ fn aggregate_result_wire_terms_round_trip() {
                 share_bytes: None,
                 sample_rows: Vec::new(),
                 drilldown: Vec::new(),
+                sub_buckets: Vec::new(),
             },
             BucketWire {
                 key: "toml".to_owned(),
@@ -468,10 +476,14 @@ fn aggregate_result_wire_terms_round_trip() {
                 share_bytes: None,
                 sample_rows: Vec::new(),
                 drilldown: Vec::new(),
+                sub_buckets: Vec::new(),
             },
         ],
         other_count: Some(300),
         total_groups: Some(150),
+        next_cursor: None,
+        exact: None,
+        values_complete: None,
     };
     let json = serde_json::to_string(&result).expect("serialize");
     let parsed: AggregateResultWire = serde_json::from_str(&json).expect("deserialize");
@@ -556,6 +568,9 @@ fn search_response_with_aggregations_round_trip() {
                 buckets: vec![],
                 other_count: None,
                 total_groups: None,
+                next_cursor: None,
+                exact: None,
+                values_complete: None,
             },
             AggregateResultWire {
                 label: Some("type_breakdown".to_owned()),
@@ -573,9 +588,13 @@ fn search_response_with_aggregations_round_trip() {
                     share_bytes: Some(10.0_f64),
                     sample_rows: Vec::new(),
                     drilldown: Vec::new(),
+                    sub_buckets: Vec::new(),
                 }],
                 other_count: Some(490_000),
                 total_groups: Some(12),
+                next_cursor: None,
+                exact: None,
+                values_complete: None,
             },
         ],
     };
@@ -694,6 +713,7 @@ fn bucket_wire_with_samples_round_trip() {
             op: "eq".to_owned(),
             value: serde_json::Value::String("rs".to_owned()),
         }],
+        sub_buckets: Vec::new(),
     };
     let json = serde_json::to_string(&bucket).expect("serialize");
     assert!(json.contains("sample_rows"));
@@ -717,6 +737,7 @@ fn bucket_wire_empty_samples_omitted() {
         share_bytes: None,
         sample_rows: Vec::new(),
         drilldown: Vec::new(),
+        sub_buckets: Vec::new(),
     };
     let json = serde_json::to_string(&bucket).expect("serialize");
     assert!(
@@ -774,4 +795,158 @@ fn aggregate_spec_wire_no_sample_backward_compat() {
     assert!(parsed.sample.is_none());
     assert!(parsed.sample_sort.is_none());
     assert!(parsed.sample_desc.is_none());
+}
+
+// ── Cursor pagination serde ─────────────────────────────────────
+
+/// `SearchParams` with `agg_cursor` and `agg_page_size` round-trips
+/// correctly; fields are omitted from JSON when `None`.
+#[test]
+fn search_params_cursor_pagination_round_trip() {
+    let params = SearchParams {
+        pattern: "*".to_owned(),
+        agg_cursor: Some("0:100:50".to_owned()),
+        agg_page_size: Some(50),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&params).expect("serialize");
+    assert!(json.contains(r#""agg_cursor":"0:100:50""#));
+    assert!(json.contains(r#""agg_page_size":50"#));
+
+    let parsed: SearchParams = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed.agg_cursor.as_deref(), Some("0:100:50"));
+    assert_eq!(parsed.agg_page_size, Some(50));
+}
+
+/// `SearchParams` omits cursor fields from JSON when they are `None`.
+#[test]
+fn search_params_cursor_fields_omitted_when_none() {
+    let params = SearchParams {
+        pattern: "*.rs".to_owned(),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&params).expect("serialize");
+    assert!(!json.contains("agg_cursor"));
+    assert!(!json.contains("agg_page_size"));
+}
+
+/// `AggregateResultWire` with a `next_cursor` value round-trips correctly.
+#[test]
+fn aggregate_result_wire_next_cursor_round_trip() {
+    let result = AggregateResultWire {
+        label: Some("ext_terms".to_owned()),
+        kind: "buckets".to_owned(),
+        field: Some("extension".to_owned()),
+        value: None,
+        stats: None,
+        buckets: vec![BucketWire {
+            key: "rs".to_owned(),
+            count: 500,
+            total_bytes: 2_000_000,
+            total_allocated: None,
+            avg_size: Some(4_000.0_f64),
+            share_count: None,
+            share_bytes: None,
+            sample_rows: Vec::new(),
+            drilldown: Vec::new(),
+            sub_buckets: Vec::new(),
+        }],
+        other_count: Some(300),
+        total_groups: Some(150),
+        next_cursor: Some("0:50:50".to_owned()),
+        exact: None,
+        values_complete: None,
+    };
+    let json = serde_json::to_string(&result).expect("serialize");
+    assert!(json.contains(r#""next_cursor":"0:50:50""#));
+
+    let parsed: AggregateResultWire = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed.next_cursor.as_deref(), Some("0:50:50"));
+}
+
+/// `AggregateResultWire` omits `next_cursor` from JSON when `None`.
+#[test]
+fn aggregate_result_wire_next_cursor_omitted_when_none() {
+    let result = AggregateResultWire {
+        label: None,
+        kind: "count".to_owned(),
+        field: None,
+        value: Some(42),
+        stats: None,
+        buckets: vec![],
+        other_count: None,
+        total_groups: None,
+        next_cursor: None,
+        exact: None,
+        values_complete: None,
+    };
+    let json = serde_json::to_string(&result).expect("serialize");
+    assert!(!json.contains("next_cursor"));
+}
+
+/// `exact` and `values_complete` round-trip through JSON.
+#[test]
+fn aggregate_result_wire_exact_and_values_complete_round_trip() {
+    let result = AggregateResultWire {
+        label: None,
+        kind: "buckets".to_owned(),
+        field: Some("extension".to_owned()),
+        value: None,
+        stats: None,
+        buckets: vec![],
+        other_count: Some(0),
+        total_groups: Some(5),
+        next_cursor: None,
+        exact: Some(true),
+        values_complete: Some(true),
+    };
+    let json = serde_json::to_string(&result).expect("serialize");
+    assert!(json.contains(r#""exact":true"#), "json: {json}");
+    assert!(json.contains(r#""values_complete":true"#), "json: {json}");
+    let parsed: AggregateResultWire = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed.exact, Some(true));
+    assert_eq!(parsed.values_complete, Some(true));
+}
+
+/// `exact` and `values_complete` are omitted when `None`.
+#[test]
+fn aggregate_result_wire_exact_omitted_when_none() {
+    let result = AggregateResultWire {
+        label: None,
+        kind: "count".to_owned(),
+        field: None,
+        value: Some(42),
+        stats: None,
+        buckets: vec![],
+        other_count: None,
+        total_groups: None,
+        next_cursor: None,
+        exact: None,
+        values_complete: None,
+    };
+    let json = serde_json::to_string(&result).expect("serialize");
+    assert!(!json.contains("exact"), "json: {json}");
+    assert!(!json.contains("values_complete"), "json: {json}");
+}
+
+/// `values_complete` is false when `other_count > 0`.
+#[test]
+fn aggregate_result_wire_values_complete_false() {
+    let result = AggregateResultWire {
+        label: None,
+        kind: "buckets".to_owned(),
+        field: Some("type".to_owned()),
+        value: None,
+        stats: None,
+        buckets: vec![],
+        other_count: Some(500),
+        total_groups: Some(100),
+        next_cursor: None,
+        exact: Some(true),
+        values_complete: Some(false),
+    };
+    let json = serde_json::to_string(&result).expect("serialize");
+    let parsed: AggregateResultWire = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed.values_complete, Some(false));
+    assert_eq!(parsed.exact, Some(true));
 }

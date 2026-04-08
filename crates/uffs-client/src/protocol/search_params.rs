@@ -41,13 +41,12 @@ impl SearchParams {
         self.push_extension_and_exclude(&mut predicates);
         self.push_attr_predicates(&mut predicates);
 
-        if self.hide_system {
-            predicates.push(SearchPredicate {
-                field: "system_name".to_owned(),
-                op: SearchPredicateOp::Eq,
-                value: SearchPredicateValue::Bool(false),
-            });
-        }
+        // NOTE: `hide_system` is NOT emitted as a predicate.  It is already
+        // compiled into the hot-path `SearchFilters.hide_system` flag by
+        // `SearchFilters::from_params`.  Emitting a "system_name" predicate
+        // here would cause `requires_post_filter = true` (unknown field) →
+        // limit removal → full scan with DisplayRow construction for every
+        // record (~22 s on 25 M records instead of ~100 ms).
 
         predicates
     }

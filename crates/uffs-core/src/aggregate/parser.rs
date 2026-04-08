@@ -258,19 +258,30 @@ fn parse_range(rest: &str) -> Result<AggregateSpec, String> {
     }))
 }
 
-/// Parse "path,depth=N,top=N" or "drive,top=N" → Rollup spec.
+/// Parse "path,depth=N,top=N" or "drive,top=N" or "ancestor,record=N" → Rollup
+/// spec.
+///
+/// Nested sub-aggregation syntax: `rollup:drive,sub=terms:type`
 fn parse_rollup(rest: &str) -> Result<AggregateSpec, String> {
     let (mode_str, opts_str) = split_field_and_options(rest);
     let opts = parse_options(opts_str);
-    let mut depth: u8 = 1;
+    let mut depth: u32 = 1;
     let mut top: u16 = 30;
     let mut metrics = vec![BucketMetric::Count, BucketMetric::TotalBytes];
     let mut sample_count: u8 = 0;
+    let mut record_idx: Option<u32> = None;
+    let mut sub_spec: Option<Box<AggregateSpec>> = None;
 
     for (k, v) in &opts {
         match *k {
             "depth" => depth = v.parse().map_err(|_| format!("Invalid depth: `{v}`"))?,
             "top" => top = v.parse().map_err(|_| format!("Invalid top: `{v}`"))?,
+            "record" | "frs" | "ancestor" => {
+                record_idx = Some(
+                    v.parse()
+                        .map_err(|_| format!("Invalid record index: `{v}`"))?,
+                );
+            }
             "metrics" => {
                 metrics.clear();
                 for m in v.split('+') {
@@ -280,6 +291,11 @@ fn parse_rollup(rest: &str) -> Result<AggregateSpec, String> {
             "sample" => {
                 sample_count = v.parse().map_err(|_| format!("Invalid sample: `{v}`"))?;
             }
+            "sub" => {
+                // Parse nested sub-aggregation spec (e.g. "terms:type").
+                let inner = parse_agg_spec(v)?;
+                sub_spec = Some(Box::new(inner));
+            }
             _ => {}
         }
     }
@@ -287,9 +303,14 @@ fn parse_rollup(rest: &str) -> Result<AggregateSpec, String> {
     let mode = match mode_str {
         "drive" => RollupMode::Drive,
         "path" | "folder" | "dir" => RollupMode::Path { depth },
+        "ancestor" | "drilldown" => {
+            let idx = record_idx
+                .ok_or_else(|| "rollup:ancestor requires record=<idx> option".to_owned())?;
+            RollupMode::Ancestor { record_idx: idx }
+        }
         _ => {
             return Err(format!(
-                "Unknown rollup mode: `{mode_str}`. Use 'path' or 'drive'."
+                "Unknown rollup mode: `{mode_str}`. Use 'path', 'drive', or 'ancestor'."
             ));
         }
     };
@@ -301,6 +322,7 @@ fn parse_rollup(rest: &str) -> Result<AggregateSpec, String> {
         top,
         metrics,
         sample,
+        sub: sub_spec,
     }))
 }
 
@@ -662,6 +684,80 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parse_rollup_ancestor_mode() {
+        let spec = parse_agg_spec("rollup:ancestor,record=42,top=10").unwrap();
+        if let AggregateKind::Rollup { mode, top, .. } = &spec.kind {
+            assert_eq!(*mode, RollupMode::Ancestor { record_idx: 42 });
+            assert_eq!(*top, 10);
+        } else {
+            panic!("expected Rollup");
+        }
+    }
+
+    #[test]
+    fn parse_rollup_ancestor_frs_alias() {
+        let spec = parse_agg_spec("rollup:ancestor,frs=100").unwrap();
+        if let AggregateKind::Rollup { mode, .. } = &spec.kind {
+            assert_eq!(*mode, RollupMode::Ancestor { record_idx: 100 });
+        } else {
+            panic!("expected Rollup");
+        }
+    }
+
+    #[test]
+    fn parse_rollup_ancestor_missing_record_errors() {
+        let err = parse_agg_spec("rollup:ancestor,top=10");
+        assert!(err.is_err(), "ancestor without record= should fail");
+    }
+
+    #[test]
+    fn parse_rollup_drilldown_alias() {
+        let spec = parse_agg_spec("rollup:drilldown,record=5").unwrap();
+        if let AggregateKind::Rollup { mode, .. } = &spec.kind {
+            assert_eq!(*mode, RollupMode::Ancestor { record_idx: 5 });
+        } else {
+            panic!("expected Rollup");
+        }
+    }
+
+    #[test]
+    fn parse_rollup_with_nested_sub() {
+        let spec = parse_agg_spec("rollup:drive,sub=terms:extension").unwrap();
+        if let AggregateKind::Rollup { mode, sub, .. } = &spec.kind {
+            assert_eq!(*mode, RollupMode::Drive);
+            let sub_spec = sub.as_ref().expect("sub should be present");
+            assert!(
+                matches!(&sub_spec.kind, AggregateKind::Terms { .. }),
+                "sub should be a terms aggregation"
+            );
+        } else {
+            panic!("expected Rollup");
+        }
+    }
+
+    #[test]
+    fn parse_rollup_no_sub_by_default() {
+        let spec = parse_agg_spec("rollup:drive,top=5").unwrap();
+        if let AggregateKind::Rollup { sub, .. } = &spec.kind {
+            assert!(sub.is_none(), "sub should be None when not specified");
+        } else {
+            panic!("expected Rollup");
+        }
+    }
+
+    #[test]
+    fn parse_nested_rollup_path_with_terms_type() {
+        let spec = parse_agg_spec("rollup:path,depth=1,sub=terms:type,top=20").unwrap();
+        if let AggregateKind::Rollup { mode, sub, top, .. } = &spec.kind {
+            assert_eq!(*mode, RollupMode::Path { depth: 1 });
+            assert_eq!(*top, 20);
+            let sub_spec = sub.as_ref().expect("sub should be present");
+            assert!(matches!(&sub_spec.kind, AggregateKind::Terms { .. }));
+        } else {
+            panic!("expected Rollup");
+        }
+    }
     #[test]
     fn parse_terms_sample_zero_is_none() {
         let spec = parse_agg_spec("terms:extension,sample=0").unwrap();

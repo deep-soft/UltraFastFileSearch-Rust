@@ -486,6 +486,7 @@ impl SearchFilters {
     /// `CaseFold` folding (avoids per-record heap allocation for exclude
     /// matching).
     #[must_use]
+    #[inline]
     pub fn matches_record(
         &self,
         rec: &CompactRecord,
@@ -493,12 +494,14 @@ impl SearchFilters {
         fold_buf: &mut Vec<u8>,
         fold: uffs_text::CaseFold,
     ) -> bool {
-        if self.hide_system || self.hide_ads {
+        // `hide_system` uses the cached `name_first_byte` field — avoids
+        // random access into the names arena (25M records → cache misses).
+        if self.hide_system && rec.is_system_metafile() {
+            return false;
+        }
+        if self.hide_ads {
             let name = rec.name(names);
-            if self.hide_system && name.starts_with('$') {
-                return false;
-            }
-            if self.hide_ads && memchr::memchr(b':', name.as_bytes()).is_some() {
+            if memchr::memchr(b':', name.as_bytes()).is_some() {
                 return false;
             }
         }

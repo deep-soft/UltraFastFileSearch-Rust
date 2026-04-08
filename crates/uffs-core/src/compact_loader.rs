@@ -409,7 +409,8 @@ pub fn apply_usn_patch(
                     // `compute_path_lengths` call after the USN loop
                     // will populate the correct value for all records.
                     path_len: 0,
-                    _pad: [0; 2],
+                    name_first_byte: change.filename.as_bytes().first().copied().unwrap_or(0),
+                    _pad: [0; 1],
                 };
 
                 drive.records.push(new_rec);

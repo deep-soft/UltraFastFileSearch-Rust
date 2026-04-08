@@ -449,6 +449,8 @@ impl App {
             predicates: Vec::new(),
             aggregations: Vec::new(),
             include_rows: true,
+            agg_cursor: None,
+            agg_page_size: None,
         };
         params.populate_canonical_fields();
         params

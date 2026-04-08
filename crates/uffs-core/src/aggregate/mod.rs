@@ -905,4 +905,160 @@ mod integration_tests {
         // Running them back-to-back on the same &drive proves independence.
         assert_eq!(drive.records.len(), drive.records.len());
     }
+
+    // ── S3F.2: Paginate through extensions with cursor ──────────────
+
+    #[test]
+    fn s3f2_paginate_extensions_total_equals_unpaginated() {
+        use super::pagination::{AggregateCursor, paginate_result};
+
+        let drive = build_agg_test_drive();
+        // Full (unpaginated) terms:extension
+        let spec = AggregateSpec::new(AggregateKind::Terms {
+            field: crate::search::field::FieldId::Extension,
+            top: 100,
+            metrics: vec![BucketMetric::Count, BucketMetric::TotalBytes],
+            sample: None,
+        });
+        let output = run_aggregate(&[&drive], &[spec], &FinalizeOptions::default()).unwrap();
+        let full_result = &output.response.results[0];
+        let AggregateResultData::Buckets {
+            rows: full_rows, ..
+        } = &full_result.data
+        else {
+            panic!("expected Buckets");
+        };
+        let full_count: u64 = full_rows.iter().map(|r| r.count).sum();
+        let full_len = full_rows.len();
+
+        // Now paginate with page_size=2 and walk all pages.
+        let page_size = 2;
+        let mut collected_keys = Vec::new();
+        let mut collected_count: u64 = 0;
+        let mut cursor = AggregateCursor::new(0, page_size);
+        let mut pages = 0_u32;
+
+        loop {
+            let page = paginate_result(full_result, &cursor)
+                .expect("paginate should work on bucket result");
+            for row in &page.rows {
+                collected_keys.push(row.key.clone());
+                collected_count += row.count;
+            }
+            pages += 1;
+            if let Some(next_token) = &page.next_cursor {
+                cursor = AggregateCursor::decode(next_token).expect("next_cursor should decode");
+            } else {
+                break;
+            }
+        }
+
+        // Verify totals match.
+        assert_eq!(
+            collected_keys.len(),
+            full_len,
+            "paginated total keys should equal unpaginated"
+        );
+        assert_eq!(
+            collected_count, full_count,
+            "paginated total count should equal unpaginated"
+        );
+        // Pages should be ceil(full_len / page_size).
+        let expected_pages = full_len.div_ceil(page_size) as u32;
+        assert_eq!(
+            pages, expected_pages,
+            "{full_len} extensions / page_size={page_size} → {expected_pages} pages"
+        );
+    }
+
+    // ── S3F.3: facet_values prefix filtering ────────────────────────
+
+    #[test]
+    fn s3f3_terms_extension_prefix_filter() {
+        // Simulate prefix filtering by running terms:extension then
+        // client-side filtering. The synthetic drive has: rs, md, toml, bin.
+        // "Prefix" filter is handled by the search pattern in the daemon,
+        // but at the core level we verify that terms produces all values
+        // and a prefix filter can narrow them.
+        let drive = build_agg_test_drive();
+        let spec = AggregateSpec::new(AggregateKind::Terms {
+            field: crate::search::field::FieldId::Extension,
+            top: 100,
+            metrics: vec![BucketMetric::Count],
+            sample: None,
+        });
+        let output = run_aggregate(&[&drive], &[spec], &FinalizeOptions::default()).unwrap();
+        let AggregateResultData::Buckets { rows, .. } = &output.response.results[0].data else {
+            panic!("expected Buckets");
+        };
+
+        // All extensions should be present.
+        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+        assert!(keys.contains(&"rs"), "should have rs: {keys:?}");
+        assert!(keys.contains(&"md"), "should have md: {keys:?}");
+
+        // Prefix filter: only extensions starting with "r".
+        let filtered: Vec<_> = rows.iter().filter(|r| r.key.starts_with('r')).collect();
+        assert_eq!(filtered.len(), 1, "only 'rs' starts with 'r'");
+        assert_eq!(filtered[0].key, "rs");
+        assert!(filtered[0].count >= 3, "at least 3 .rs files");
+
+        // Prefix filter: "m" → only "md".
+        let m_filtered: Vec<_> = rows.iter().filter(|r| r.key.starts_with('m')).collect();
+        assert_eq!(m_filtered.len(), 1);
+        assert_eq!(m_filtered[0].key, "md");
+
+        // Prefix filter: "z" → nothing.
+        let z_count = rows.iter().filter(|r| r.key.starts_with('z')).count();
+        assert_eq!(z_count, 0, "no extensions start with 'z'");
+    }
+
+    // ── S3F.4: nested rollup on synthetic index ─────────────────────
+
+    #[test]
+    fn s3f4_nested_rollup_drive_with_terms_type() {
+        let drive = build_agg_test_drive();
+        // rollup:drive with sub=terms:type
+        let spec = AggregateSpec::new(AggregateKind::Rollup {
+            mode: RollupMode::Drive,
+            top: 10,
+            metrics: vec![BucketMetric::Count, BucketMetric::TotalBytes],
+            sample: None,
+            sub: Some(Box::new(AggregateSpec::new(AggregateKind::Terms {
+                field: crate::search::field::FieldId::Type,
+                top: 20,
+                metrics: vec![BucketMetric::Count, BucketMetric::TotalBytes],
+                sample: None,
+            }))),
+        });
+        let output = run_aggregate(&[&drive], &[spec], &FinalizeOptions::default()).unwrap();
+        let result = &output.response.results[0];
+
+        let rows = match &result.data {
+            AggregateResultData::Rollup { rows, .. } => rows,
+            other => panic!("expected Rollup, got: {other:?}"),
+        };
+
+        // Single drive C: → exactly 1 bucket.
+        assert_eq!(rows.len(), 1, "single drive should produce 1 bucket");
+        let drive_bucket = &rows[0];
+        assert!(
+            drive_bucket.key.starts_with('C'),
+            "drive bucket key should start with C, got: {}",
+            drive_bucket.key
+        );
+
+        // Nested sub_buckets should contain type breakdowns.
+        assert!(
+            !drive_bucket.sub_buckets.is_empty(),
+            "drive bucket should have nested type sub-buckets"
+        );
+
+        // Total count across sub_buckets should equal the drive total.
+        let sub_total: u64 = drive_bucket.sub_buckets.iter().map(|b| b.count).sum();
+        assert_eq!(
+            sub_total, drive_bucket.count,
+            "sub_buckets total count should equal drive bucket count"
+        );
+    }
 }

@@ -76,6 +76,8 @@ pub(super) fn build_search_config<'a>(
     tz_offset: Option<i32>,
     agg_specs: Vec<String>,
     force_rows: bool,
+    agg_cursor: Option<String>,
+    agg_page_size: Option<u16>,
     start_time: std::time::Instant,
 ) -> Result<SearchConfig<'a>> {
     // Smart case: if enabled and pattern has any uppercase letter,
@@ -165,6 +167,8 @@ pub(super) fn build_search_config<'a>(
         start_time,
         agg_specs,
         force_rows,
+        agg_cursor,
+        agg_page_size,
     })
 }
 

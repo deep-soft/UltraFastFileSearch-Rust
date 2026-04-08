@@ -400,6 +400,21 @@ pub struct SearchParams {
     /// (equivalent to `--count` or `--aggregate` without `--rows`).
     #[serde(default = "default_true")]
     pub include_rows: bool,
+
+    // ── Aggregation pagination ─────────────────────────────────────
+    /// Opaque cursor token from a previous response's `next_cursor`.
+    ///
+    /// When set, the daemon resumes pagination from the encoded position.
+    /// The cursor encodes `result_index:offset:page_size`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agg_cursor: Option<String>,
+    /// Maximum buckets per aggregation result page.
+    ///
+    /// When set (and `agg_cursor` is absent), the daemon returns at most
+    /// this many buckets per result, with a `next_cursor` on any result
+    /// that has more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agg_page_size: Option<u16>,
 }
 
 /// Default-true helper for serde.
@@ -457,6 +472,8 @@ impl Default for SearchParams {
             profile: false,
             aggregations: vec![],
             include_rows: true,
+            agg_cursor: None,
+            agg_page_size: None,
         }
     }
 }
@@ -536,6 +553,25 @@ pub struct AggregateResultWire {
     /// Total groups before truncation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_groups: Option<usize>,
+    /// Cursor token for the next page of buckets.
+    ///
+    /// Present only when the request included `page_size` and more
+    /// buckets remain beyond the current page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// Whether the bucket values are exact (not approximate).
+    ///
+    /// `true` for all current implementations — reserved for future
+    /// sampling-based approximation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact: Option<bool>,
+    /// Whether the result contains all distinct values.
+    ///
+    /// `true` when every group fits within `top` (i.e. `other_count == 0`).
+    /// `false` when the result was truncated and `other_count > 0`.
+    /// Absent for non-bucket results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values_complete: Option<bool>,
 }
 
 /// Wire format for scalar statistics.
@@ -586,6 +622,12 @@ pub struct BucketWire {
     /// Includes both the original query predicates and the bucket key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drilldown: Vec<DrilldownWire>,
+    /// Nested sub-aggregation bucket results (populated by nested rollups).
+    ///
+    /// When a rollup spec has a `sub` aggregation, each top-level bucket
+    /// contains the sub-aggregation's buckets here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub_buckets: Vec<Self>,
 }
 
 /// Wire format for a sample row (top-hit) within a bucket.

@@ -100,6 +100,9 @@ mod tests {
             buckets: vec![],
             other_count: None,
             total_groups: None,
+            next_cursor: None,
+            exact: None,
+            values_complete: None,
         }];
         let summary = format_aggregate_summary(&results);
         assert!(summary.contains("total_files: 42000"), "got: {summary}");
@@ -124,6 +127,9 @@ mod tests {
             buckets: vec![],
             other_count: None,
             total_groups: None,
+            next_cursor: None,
+            exact: None,
+            values_complete: None,
         }];
         let summary = format_aggregate_summary(&results);
         assert!(summary.contains("count=1000"), "got: {summary}");
@@ -151,6 +157,7 @@ mod tests {
                     share_bytes: None,
                     sample_rows: Vec::new(),
                     drilldown: Vec::new(),
+                    sub_buckets: Vec::new(),
                 },
                 BucketWire {
                     key: "toml".to_owned(),
@@ -162,10 +169,14 @@ mod tests {
                     share_bytes: None,
                     sample_rows: Vec::new(),
                     drilldown: Vec::new(),
+                    sub_buckets: Vec::new(),
                 },
             ],
             other_count: Some(300),
             total_groups: None,
+            next_cursor: None,
+            exact: None,
+            values_complete: None,
         }];
         let summary = format_aggregate_summary(&results);
         assert!(summary.contains("ext_terms (2 buckets)"), "got: {summary}");
@@ -185,6 +196,9 @@ mod tests {
             buckets: vec![],
             other_count: None,
             total_groups: None,
+            next_cursor: None,
+            exact: None,
+            values_complete: None,
         }];
         let summary = format_aggregate_summary(&results);
         assert!(
@@ -204,6 +218,9 @@ mod tests {
             buckets: vec![],
             other_count: None,
             total_groups: None,
+            next_cursor: None,
+            exact: None,
+            values_complete: None,
         }];
         let summary = format_aggregate_summary(&results);
         assert!(summary.contains("4500 distinct values"), "got: {summary}");
@@ -227,6 +244,9 @@ mod tests {
                 buckets: vec![],
                 other_count: None,
                 total_groups: None,
+                next_cursor: None,
+                exact: None,
+                values_complete: None,
             },
             AggregateResultWire {
                 label: Some("by_type".to_owned()),
@@ -244,9 +264,13 @@ mod tests {
                     share_bytes: None,
                     sample_rows: Vec::new(),
                     drilldown: Vec::new(),
+                    sub_buckets: Vec::new(),
                 }],
                 other_count: None,
                 total_groups: None,
+                next_cursor: None,
+                exact: None,
+                values_complete: None,
             },
         ];
         let summary = format_aggregate_summary(&results);
@@ -268,6 +292,7 @@ mod tests {
                 share_bytes: None,
                 sample_rows: Vec::new(),
                 drilldown: Vec::new(),
+                sub_buckets: Vec::new(),
             })
             .collect();
         let results = vec![AggregateResultWire {
@@ -279,6 +304,9 @@ mod tests {
             buckets,
             other_count: None,
             total_groups: None,
+            next_cursor: None,
+            exact: None,
+            values_complete: None,
         }];
         let summary = format_aggregate_summary(&results);
         assert!(summary.contains("ext_0"), "first bucket present");
@@ -307,7 +335,8 @@ mod tests {
         assert!(props.contains_key("drives"));
     }
 
-    /// Validate that the `facet_values` tool schema requires "field".
+    /// Validate that the `facet_values` tool schema requires "field" and
+    /// includes `cursor`/`page_size` for pagination.
     #[test]
     fn facet_values_tool_schema_valid() {
         let schema_json = serde_json::json!({
@@ -316,14 +345,189 @@ mod tests {
                 "field": { "type": "string" },
                 "pattern": { "type": "string", "default": "*" },
                 "prefix": { "type": "string" },
-                "top": { "type": "integer", "default": 20 }
+                "top": { "type": "integer", "default": 20 },
+                "cursor": { "type": "string" },
+                "page_size": { "type": "integer" }
             },
             "required": ["field"]
         });
         let props = schema_json["properties"].as_object().unwrap();
         assert!(props.contains_key("field"));
         assert!(props.contains_key("top"));
+        assert!(
+            props.contains_key("cursor"),
+            "cursor param missing from schema"
+        );
+        assert!(
+            props.contains_key("page_size"),
+            "page_size param missing from schema"
+        );
         let required = schema_json["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v.as_str() == Some("field")));
+        // cursor and page_size should NOT be required
+        assert!(!required.iter().any(|v| v.as_str() == Some("cursor")));
+        assert!(!required.iter().any(|v| v.as_str() == Some("page_size")));
+    }
+
+    /// `format_aggregate_summary` includes cursor hint when `next_cursor`
+    /// is present on a bucket result.
+    #[test]
+    fn summary_shows_next_cursor_when_present() {
+        let results = vec![AggregateResultWire {
+            label: Some("ext_terms".to_owned()),
+            kind: "buckets".to_owned(),
+            field: Some("extension".to_owned()),
+            value: None,
+            stats: None,
+            buckets: vec![BucketWire {
+                key: "rs".to_owned(),
+                count: 500,
+                total_bytes: 2_000_000,
+                total_allocated: None,
+                avg_size: None,
+                share_count: None,
+                share_bytes: None,
+                sample_rows: Vec::new(),
+                drilldown: Vec::new(),
+                sub_buckets: Vec::new(),
+            }],
+            other_count: None,
+            total_groups: None,
+            next_cursor: Some("0:1:1".to_owned()),
+            exact: None,
+            values_complete: None,
+        }];
+        let summary = format_aggregate_summary(&results);
+        assert!(
+            summary.contains("next_cursor: 0:1:1"),
+            "summary should contain cursor hint, got: {summary}"
+        );
+    }
+
+    /// `format_aggregate_summary` does NOT mention cursor when
+    /// `next_cursor` is `None`.
+    #[test]
+    fn summary_omits_cursor_when_none() {
+        let results = vec![AggregateResultWire {
+            label: Some("ext_terms".to_owned()),
+            kind: "buckets".to_owned(),
+            field: Some("extension".to_owned()),
+            value: None,
+            stats: None,
+            buckets: vec![BucketWire {
+                key: "rs".to_owned(),
+                count: 500,
+                total_bytes: 2_000_000,
+                total_allocated: None,
+                avg_size: None,
+                share_count: None,
+                share_bytes: None,
+                sample_rows: Vec::new(),
+                drilldown: Vec::new(),
+                sub_buckets: Vec::new(),
+            }],
+            other_count: None,
+            total_groups: None,
+            next_cursor: None,
+            exact: None,
+            values_complete: None,
+        }];
+        let summary = format_aggregate_summary(&results);
+        assert!(
+            !summary.contains("next_cursor"),
+            "summary should NOT mention cursor, got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summary_renders_sub_buckets() {
+        let results = vec![AggregateResultWire {
+            label: Some("drive_rollup".to_owned()),
+            kind: "rollup".to_owned(),
+            field: None,
+            value: None,
+            stats: None,
+            buckets: vec![BucketWire {
+                key: "C:".to_owned(),
+                count: 1000,
+                total_bytes: 5_000_000,
+                total_allocated: None,
+                avg_size: None,
+                share_count: None,
+                share_bytes: None,
+                sample_rows: Vec::new(),
+                drilldown: Vec::new(),
+                sub_buckets: vec![
+                    BucketWire {
+                        key: "document".to_owned(),
+                        count: 600,
+                        total_bytes: 3_000_000,
+                        total_allocated: None,
+                        avg_size: None,
+                        share_count: None,
+                        share_bytes: None,
+                        sample_rows: Vec::new(),
+                        drilldown: Vec::new(),
+                        sub_buckets: Vec::new(),
+                    },
+                    BucketWire {
+                        key: "image".to_owned(),
+                        count: 400,
+                        total_bytes: 2_000_000,
+                        total_allocated: None,
+                        avg_size: None,
+                        share_count: None,
+                        share_bytes: None,
+                        sample_rows: Vec::new(),
+                        drilldown: Vec::new(),
+                        sub_buckets: Vec::new(),
+                    },
+                ],
+            }],
+            other_count: None,
+            total_groups: None,
+            next_cursor: None,
+            exact: Some(true),
+            values_complete: Some(true),
+        }];
+        let summary = format_aggregate_summary(&results);
+        assert!(
+            summary.contains("document"),
+            "should show sub-bucket 'document': {summary}"
+        );
+        assert!(
+            summary.contains("image"),
+            "should show sub-bucket 'image': {summary}"
+        );
+        assert!(
+            summary.contains("├─"),
+            "sub-buckets should be indented with ├─: {summary}"
+        );
+    }
+
+    #[test]
+    fn summary_shows_values_complete_false() {
+        let results = vec![AggregateResultWire {
+            label: Some("ext_terms".to_owned()),
+            kind: "terms".to_owned(),
+            field: Some("extension".to_owned()),
+            value: None,
+            stats: None,
+            buckets: vec![],
+            other_count: Some(500),
+            total_groups: Some(100),
+            next_cursor: None,
+            exact: Some(true),
+            values_complete: Some(false),
+        }];
+        let summary = format_aggregate_summary(&results);
+        assert!(
+            summary.contains("truncated"),
+            "should show truncation hint: {summary}"
+        );
+        assert!(
+            summary.contains("500"),
+            "should show other_count: {summary}"
+        );
     }
 }

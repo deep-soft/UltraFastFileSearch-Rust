@@ -61,7 +61,7 @@ impl McpServer {
             { "name": "uffs_status", "description": "Get daemon status: loading progress, uptime, connections, PID.", "inputSchema": { "type": "object", "properties": {} } },
             { "name": "uffs_info", "description": "Get detailed information about a specific file or directory by its full path.", "inputSchema": { "type": "object", "properties": { "path": { "type": "string", "description": "Full file path" } }, "required": ["path"] } },
             { "name": "uffs_aggregate", "description": "Summarize filesystem results with server-side aggregations. Use this for counts, storage breakdowns, histograms, folder rollups, or duplicate summaries instead of raw file rows. Available presets: overview, by_type, by_extension, by_drive, by_size, by_age, storage, activity, top_folders, duplicates, media, cleanup.", "inputSchema": { "type": "object", "properties": { "pattern": { "type": "string", "default": "*", "description": "Search pattern to scope aggregation" }, "preset": { "type": "string", "description": "Named preset (overview, by_type, by_extension, by_drive, by_size, by_age, storage, activity, top_folders, duplicates, media, cleanup)" }, "aggregations": { "type": "array", "description": "Custom aggregate specs in power syntax (e.g. 'terms:extension,top=50')" }, "drives": { "type": "array", "items": { "type": "string" }, "description": "Limit to specific drive letters" } }, "required": [] } },
-            { "name": "uffs_facet_values", "description": "Search within facet values for a specific field. Returns top values with counts.", "inputSchema": { "type": "object", "properties": { "field": { "type": "string", "description": "Field to facet on (e.g. extension, type, drive)" }, "pattern": { "type": "string", "default": "*", "description": "Search pattern to scope facet" }, "prefix": { "type": "string", "description": "Filter facet values by prefix" }, "top": { "type": "integer", "default": 20_i64, "description": "Number of facet values to return" } }, "required": ["field"] } }
+            { "name": "uffs_facet_values", "description": "Search within facet values for a specific field. Returns top values with counts. Use cursor/page_size to paginate through large value spaces.", "inputSchema": { "type": "object", "properties": { "field": { "type": "string", "description": "Field to facet on (e.g. extension, type, drive)" }, "pattern": { "type": "string", "default": "*", "description": "Search pattern to scope facet" }, "prefix": { "type": "string", "description": "Filter facet values by prefix" }, "top": { "type": "integer", "default": 20_i64, "description": "Number of facet values to return" }, "cursor": { "type": "string", "description": "Opaque cursor from a previous response's next_cursor to fetch the next page" }, "page_size": { "type": "integer", "description": "Max buckets per page (enables pagination; response includes next_cursor when more pages exist)" } }, "required": ["field"] } }
         ] })),
             "tools/call" => self.dispatch_tool_call(&req.params).await,
             "resources/list" => Ok(serde_json::json!({
@@ -462,6 +462,14 @@ impl McpServer {
             .unwrap_or(20)
             .try_into()
             .unwrap_or(u16::MAX);
+        let cursor = arguments
+            .get("cursor")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let page_size: Option<u16> = arguments
+            .get("page_size")
+            .and_then(Value::as_u64)
+            .and_then(|val| val.try_into().ok());
 
         let agg_spec = AggregateSpecWire {
             kind: "terms".to_owned(),
@@ -482,6 +490,8 @@ impl McpServer {
             pattern: pattern.to_owned(),
             aggregations: vec![agg_spec],
             include_rows: false,
+            agg_cursor: cursor,
+            agg_page_size: page_size,
             ..Default::default()
         };
 
@@ -541,38 +551,7 @@ pub fn format_aggregate_summary(results: &[uffs_client::protocol::AggregateResul
                 }
             }
             "buckets" | "terms" | "rollup" | "duplicates" => {
-                writeln!(out, "• {label} ({} buckets):", result.buckets.len()).ok();
-                for bucket in result.buckets.iter().take(10) {
-                    writeln!(
-                        out,
-                        "    {:<30} count={:<8} bytes={}",
-                        bucket.key, bucket.count, bucket.total_bytes
-                    )
-                    .ok();
-                    // Append sample rows (top-hits), max 3 per bucket.
-                    let max_samples = 3;
-                    for sr in bucket.sample_rows.iter().take(max_samples) {
-                        let name = sr.fields.get("name").map_or("?", |val| val.as_str());
-                        let size = sr
-                            .fields
-                            .get("size")
-                            .and_then(|val| val.parse::<u64>().ok())
-                            .map_or(String::new(), |n| format!(" ({n} B)"));
-                        writeln!(out, "      → {name}{size}").ok();
-                    }
-                    let remaining = bucket.sample_rows.len().saturating_sub(max_samples);
-                    if remaining > 0 {
-                        writeln!(out, "      ... and {remaining} more").ok();
-                    }
-                }
-                if result.buckets.len() > 10 {
-                    writeln!(out, "    ... and {} more", result.buckets.len() - 10).ok();
-                }
-                if let Some(other) = result.other_count
-                    && other > 0
-                {
-                    writeln!(out, "    (+ {other} in other groups)").ok();
-                }
+                format_bucket_summary(&mut out, label, result);
             }
             _ => {
                 writeln!(
@@ -591,6 +570,70 @@ pub fn format_aggregate_summary(results: &[uffs_client::protocol::AggregateResul
     }
 
     out
+}
+
+/// Format bucket-style results (terms, rollup, duplicates) into `out`.
+fn format_bucket_summary(
+    out: &mut String,
+    label: &str,
+    result: &uffs_client::protocol::AggregateResultWire,
+) {
+    use core::fmt::Write;
+
+    writeln!(out, "• {label} ({} buckets):", result.buckets.len()).ok();
+    for bucket in result.buckets.iter().take(10) {
+        writeln!(
+            out,
+            "    {:<30} count={:<8} bytes={}",
+            bucket.key, bucket.count, bucket.total_bytes
+        )
+        .ok();
+        // Sample rows (top-hits), max 3 per bucket.
+        let max_samples = 3;
+        for sr in bucket.sample_rows.iter().take(max_samples) {
+            let name = sr.fields.get("name").map_or("?", |val| val.as_str());
+            let size = sr
+                .fields
+                .get("size")
+                .and_then(|val| val.parse::<u64>().ok())
+                .map_or(String::new(), |n| format!(" ({n} B)"));
+            writeln!(out, "      → {name}{size}").ok();
+        }
+        let remaining = bucket.sample_rows.len().saturating_sub(max_samples);
+        if remaining > 0 {
+            writeln!(out, "      ... and {remaining} more").ok();
+        }
+        // Nested sub-aggregation buckets.
+        for sub in bucket.sub_buckets.iter().take(5) {
+            writeln!(
+                out,
+                "      ├─ {:<26} count={:<8} bytes={}",
+                sub.key, sub.count, sub.total_bytes
+            )
+            .ok();
+        }
+        let sub_rest = bucket.sub_buckets.len().saturating_sub(5);
+        if sub_rest > 0 {
+            writeln!(out, "      ... and {sub_rest} more sub-buckets").ok();
+        }
+    }
+    if result.buckets.len() > 10 {
+        writeln!(out, "    ... and {} more", result.buckets.len() - 10).ok();
+    }
+    if let Some(other) = result.other_count
+        && other > 0
+    {
+        writeln!(out, "    (+ {other} in other groups)").ok();
+    }
+    if result.values_complete == Some(false) {
+        writeln!(out, "    [truncated — not all values shown]").ok();
+    }
+    if result.exact == Some(false) {
+        writeln!(out, "    [approximate — not all records scanned]").ok();
+    }
+    if let Some(cursor) = &result.next_cursor {
+        writeln!(out, "    [next_cursor: {cursor}]").ok();
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

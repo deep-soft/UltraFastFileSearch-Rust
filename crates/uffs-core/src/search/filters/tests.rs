@@ -27,7 +27,8 @@ fn test_record(name: &str, names: &mut Vec<u8>) -> CompactRecord {
         treesize: 5000,
         tree_allocated: 5120,
         path_len: 0,
-        _pad: [0; 2],
+        name_first_byte: name.as_bytes().first().copied().unwrap_or(0),
+        _pad: [0; 1],
     }
 }
 

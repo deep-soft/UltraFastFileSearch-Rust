@@ -1,0 +1,2491 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  UFFS Validation Test Definitions
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+#  Shared test definitions consumed by both:
+#    - scripts/windows/cli-flag-validation.rs  (CLI validation)
+#    - scripts/windows/api-validation.rs       (JSON-RPC API validation)
+#
+#  Each [[test]] entry defines ONE test that can be run via CLI and/or RPC.
+#  The validation scripts load this file, iterate entries, and run them.
+#
+#  ── Field reference ──────────────────────────────────────────────────
+#
+#  id           Required. Unique test ID (e.g. "T01", "S3A.1").
+#  group        Required. Logical group (e.g. "general", "filters",
+#               "sort", "aggregation", "output", "time", "error").
+#  name         Required. Short test name shown in the runner
+#               (e.g. "--files-only").
+#  title        Required. Human-readable title for reports.
+#  short_desc   Required. One-line description.
+#  long_desc    Optional. Multi-line description with rationale.
+#
+#  cli_args     Required. CLI arguments as an array of strings.
+#               The runner prepends the binary path and appends
+#               source flags (--data-dir / --mft-file).
+#  cli_format   Optional. Default "csv". Override with "json" or "table"
+#               if the test requires a specific output format.
+#
+#  rpc_method   Optional. JSON-RPC method name (default "search").
+#  rpc_params   Optional. JSON-RPC params as an inline JSON string.
+#               If omitted, derived from cli_args automatically.
+#
+#  ── Declarative validators ───────────────────────────────────────────
+#
+#  All are optional. When present, the runner checks each assertion
+#  and fails the test on the first violation.
+#
+#  expect_exit_code     Expected exit code (default 0).
+#  expect_min_rows      Minimum number of result rows (inclusive).
+#  expect_max_rows      Maximum number of result rows (inclusive).
+#
+#  expect_columns_all   If true, adds "--columns all" to CLI args
+#                       so column checks have all fields available.
+#
+#  [[test.column_checks]]  Per-row column assertions (array of tables):
+#    column      Column header name (e.g. "Directory Flag", "Size").
+#    op          "eq", "ne", "contains", "not_contains",
+#                "starts_with", "not_starts_with",
+#                "ends_with", "gt", "gte", "lt", "lte".
+#    value       String comparison value. For numeric ops (gt/gte/lt/lte)
+#                the value is parsed as u64.
+#    case        Optional. "lower" to lowercase before comparing.
+#
+#  [[test.sort_checks]]  Verify output is sorted:
+#    column      Column to check sort order on.
+#    order       "asc" or "desc".
+#    type        "u64" or "string" (default "u64").
+#
+#  stdout_contains      Array of substrings that must appear in stdout.
+#  stdout_not_contains  Array of substrings that must NOT appear.
+#  stderr_contains      Array of substrings that must appear in stderr.
+#
+#  [[test.json_checks]]  JSON output assertions (for --format json):
+#    path        JSONPath-like dot-notation (e.g. "buckets[0].key").
+#    op          "exists", "eq", "ne", "gt", "gte", "lt", "lte",
+#                "is_array", "array_len_gte".
+#    value       Expected value (as string; parsed per type).
+#
+#  validator    Optional. Name of a custom validator function in the
+#               script for complex checks that can't be declarative.
+#               When set, declarative checks still run first, then the
+#               custom validator runs on the raw output.
+#
+#  targets      Optional array of strings. Which runners should execute
+#               this test. Values: "cli", "api", "mcp".
+#               Default (if omitted): ["cli", "api"]
+#               Use ["api"] for API-only tests (e.g. facet_values RPC).
+#               Use ["cli"] for CLI-only tests (e.g. --out file).
+#
+#  skip         Optional bool. If true, test is skipped (for WIP tests).
+#  tags         Optional array of strings for filtering (e.g. ["slow"]).
+#
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  GROUP: warmup
+# ═══════════════════════════════════════════════════════════════════════
+
+[[test]]
+id          = "T00"
+group       = "warmup"
+name        = "warmup / daemon alive"
+title       = "Warmup — verify daemon is alive and returning results"
+short_desc  = "Smoke test: search for anything, expect ≥10 rows"
+cli_args    = ["*", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 10
+expect_max_rows = 10
+
+# ═══════════════════════════════════════════════════════════════════════
+#  GROUP: general — core search flags
+# ═══════════════════════════════════════════════════════════════════════
+
+[[test]]
+id          = "T01"
+group       = "general"
+name        = "--files-only"
+title       = "Filter to files only (exclude directories)"
+short_desc  = "All results must be files, not directories"
+long_desc   = """
+Searches for *.txt with --files-only and verifies that every row has
+Directory Flag = 0.  This is the fundamental file/dir filter test."""
+cli_args    = ["*.txt", "--files-only", "--limit", "10"]
+cli_format  = "csv"
+rpc_method  = "search"
+expect_min_rows = 1
+expect_max_rows = 10
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Directory Flag"
+op     = "ne"
+value  = "1"
+
+[[test]]
+id          = "T02"
+group       = "general"
+name        = "--dirs-only"
+title       = "Filter to directories only (exclude files)"
+short_desc  = "All results must be directories"
+cli_args    = ["Windows", "--dirs-only", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 1
+expect_max_rows = 10
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Directory Flag"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T03"
+group       = "general"
+name        = "--hide-system"
+title       = "Hide system files (no $-prefixed results)"
+short_desc  = "No result should start with $ when --hide-system is used"
+# Pattern must be "*" (all files), NOT "$*" — searching only $-prefixed files
+# with --hide-system is self-contradictory and always returns 0 rows.
+cli_args    = ["*", "--limit", "20", "--hide-system"]
+expect_min_rows = 1
+rpc_method  = "search"
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Name"
+op     = "not_starts_with"
+value  = "$"
+
+[[test]]
+id          = "T04"
+group       = "general"
+name        = "--ext rs"
+title       = "Filter by single extension"
+short_desc  = "All results must have .rs extension"
+cli_args    = ["*", "--ext", "rs", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.column_checks]]
+column = "Name"
+op     = "ends_with"
+value  = ".rs"
+case   = "lower"
+
+[[test]]
+id          = "T05"
+group       = "general"
+name        = "--ext jpg,png,gif"
+title       = "Filter by multiple extensions"
+short_desc  = "All results must have one of jpg/png/gif extension"
+cli_args    = ["*", "--ext", "jpg,png,gif", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 1
+expect_max_rows = 10
+validator   = "ext_multi_check"
+tags        = ["extensions"]
+
+[[test]]
+id          = "T06"
+group       = "filters"
+name        = "--min-size 100MB"
+title       = "Minimum file size filter (100 MB)"
+short_desc  = "All files must be ≥ 100 MB"
+cli_args    = ["*", "--min-size", "104857600", "--files-only", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.column_checks]]
+column = "Size"
+op     = "gte"
+value  = "104857600"
+
+[[test]]
+id          = "T07"
+group       = "filters"
+name        = "--max-size 1KB"
+title       = "Maximum file size filter (1 KB)"
+short_desc  = "All files must be ≤ 1 KB"
+cli_args    = ["*", "--max-size", "1024", "--files-only", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test.column_checks]]
+column = "Size"
+op     = "lte"
+value  = "1024"
+
+[[test]]
+id          = "T08"
+group       = "filters"
+name        = "--min/max-size 1MB..10MB"
+title       = "Combined min + max size filter"
+short_desc  = "All files must be between 1 MB and 10 MB"
+cli_args    = ["*.pdf", "--min-size", "1048576", "--max-size", "10485760", "--limit", "10"]
+expect_min_rows = 1
+rpc_method  = "search"
+expect_max_rows = 10
+
+[[test.column_checks]]
+column = "Size"
+op     = "gte"
+value  = "1048576"
+
+[[test.column_checks]]
+column = "Size"
+op     = "lte"
+value  = "10485760"
+
+[[test]]
+id          = "T09"
+group       = "sort"
+name        = "--sort size (asc)"
+title       = "Sort by size ascending"
+short_desc  = "Results sorted by size in ascending order"
+cli_args    = ["*.exe", "--sort", "size", "--files-only", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 2
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Size"
+order  = "asc"
+type   = "u64"
+
+[[test]]
+id          = "T10"
+group       = "sort"
+name        = "--sort size --sort-desc"
+title       = "Sort by size descending"
+short_desc  = "Results sorted by size in descending order"
+cli_args    = ["*.exe", "--sort", "size", "--sort-desc", "--files-only", "--limit", "10"]
+rpc_method  = "search"
+expect_min_rows = 2
+expect_max_rows = 10
+
+[[test.sort_checks]]
+column = "Size"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T11"
+group       = "sort"
+name        = "T11 --sort modified"
+title       = "T11 --sort modified"
+short_desc  = "T11 --sort modified"
+cli_args    = ["*.log", "--sort", "modified", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T12"
+group       = "sort"
+name        = "T12 --sort size,name"
+title       = "T12 --sort size,name"
+short_desc  = "T12 --sort size,name"
+cli_args    = ["*.dll", "--sort", "size,name", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T13"
+group       = "attributes"
+name        = "T13 --attr hidden"
+title       = "T13 --attr hidden"
+short_desc  = "T13 --attr hidden"
+cli_args    = ["*", "--attr", "hidden", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T14"
+group       = "attributes"
+name        = "T14 --attr !hidden"
+title       = "T14 --attr !hidden"
+short_desc  = "T14 --attr !hidden"
+cli_args    = ["*", "--attr", "!hidden", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "ne"
+value  = "1"
+
+[[test]]
+id          = "T15"
+group       = "attributes"
+name        = "T15 --attr compressed"
+title       = "T15 --attr compressed"
+short_desc  = "T15 --attr compressed"
+cli_args    = ["*", "--attr", "compressed", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Compressed"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T16"
+group       = "filters"
+name        = "T16 --exclude backup*"
+title       = "T16 --exclude backup*"
+short_desc  = "T16 --exclude backup*"
+cli_args    = ["*.txt", "--exclude", "backup*", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Name"
+op     = "not_starts_with"
+value  = "backup"
+case   = "lower"
+
+[[test]]
+id          = "T17"
+group       = "general"
+name        = "T17 --name-only"
+title       = "T17 --name-only"
+short_desc  = "T17 --name-only"
+cli_args    = ["readme", "--name-only", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Name"
+op     = "contains"
+value  = "readme"
+case   = "lower"
+
+[[test]]
+id          = "T18"
+group       = "general"
+name        = "T18 --case sensitive"
+title       = "T18 --case sensitive"
+short_desc  = "T18 --case sensitive"
+cli_args    = ["README", "--case", "--name-only", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Name"
+op     = "contains"
+value  = "README"
+case   = "lower"
+
+[[test]]
+id          = "T19"
+group       = "general"
+name        = "T19 --word"
+title       = "T19 --word"
+short_desc  = "T19 --word"
+cli_args    = ["test", "--word", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T20"
+group       = "output"
+name        = "T20 --format json"
+title       = "T20 --format json"
+short_desc  = "T20 --format json"
+cli_args    = ["*.rs", "--format", "json", "--limit", "5"]
+validator   = "T20"
+targets     = ["cli"]
+
+[[test]]
+id          = "T21"
+group       = "output"
+name        = "T21 --format table"
+title       = "T21 --format table"
+short_desc  = "T21 --format table"
+cli_args    = ["*.rs", "--format", "table", "--limit", "5"]
+
+[[test]]
+id          = "T22"
+group       = "output"
+name        = "T22 --columns Name,Size,Path Only"
+title       = "T22 --columns Name,Size,Path Only"
+short_desc  = "T22 --columns Name,Size,Path Only"
+cli_args    = ["*.txt", "--columns", "Name,Size,Path Only", "--limit", "10"]
+
+[[test]]
+id          = "T23"
+group       = "filters"
+name        = "T23 --min-descendants 100"
+title       = "T23 --min-descendants 100"
+short_desc  = "T23 --min-descendants 100"
+cli_args    = ["*", "--dirs-only", "--min-descendants", "100", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T24"
+group       = "filters"
+name        = "T24 --max-descendants 0"
+title       = "T24 --max-descendants 0"
+short_desc  = "T24 --max-descendants 0"
+cli_args    = ["*", "--dirs-only", "--max-descendants", "0", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T25"
+group       = "time"
+name        = "T25 --newer 7d"
+title       = "T25 --newer 7d"
+short_desc  = "T25 --newer 7d"
+cli_args    = ["*.log", "--newer", "7d", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T26"
+group       = "time"
+name        = "T26 --older 365d"
+title       = "T26 --older 365d"
+short_desc  = "T26 --older 365d"
+cli_args    = ["*.doc", "--older", "365d", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T27"
+group       = "time"
+name        = "T27 --newer-created 30d"
+title       = "T27 --newer-created 30d"
+short_desc  = "T27 --newer-created 30d"
+cli_args    = ["*", "--newer-created", "30d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T28"
+group       = "general"
+name        = "T28 --drive C"
+title       = "T28 --drive C"
+short_desc  = "T28 --drive C"
+cli_args    = ["*.exe", "--drive", "C", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Path Only"
+op     = "starts_with"
+value  = "C:"
+case   = "lower"
+
+[[test]]
+id          = "T29"
+group       = "general"
+name        = "T29 --drives C,D"
+title       = "T29 --drives C,D"
+short_desc  = "T29 --drives C,D"
+cli_args    = ["*.exe", "--drives", "C,D", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Path Only"
+op     = "starts_with"
+value  = "C:"
+case   = "lower"
+
+[[test]]
+id          = "T30"
+group       = "general"
+name        = "T30 --sep | --quotes '"
+title       = "T30 --sep | --quotes '"
+short_desc  = "T30 --sep | --quotes '"
+cli_args    = ["*.txt", "--sep", "|", "--quotes", "'", "--limit", "5"]
+
+[[test]]
+id          = "T31"
+group       = "output"
+name        = "T31 --out file"
+title       = "Redirect output to file with --out"
+short_desc  = "Search results written to CSV file, verified by reading it back"
+cli_args    = ["*.rs", "--limit", "100", "--out", "test_cli_validation_out.csv"]
+validator   = "T31"
+targets     = ["cli"]
+
+[[test]]
+id          = "T32"
+group       = "general"
+name        = "T32 --benchmark"
+title       = "T32 --benchmark"
+short_desc  = "T32 --benchmark"
+cli_args    = ["*.rs", "--benchmark"]
+
+[[test]]
+id          = "T33"
+group       = "general"
+name        = "T33 regex >.*\\.config$"
+title       = "T33 regex >.*\\.config$"
+short_desc  = "T33 regex >.*\\.config$"
+cli_args    = [">.*\\.config$", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Name"
+op     = "ends_with"
+value  = ".config"
+case   = "lower"
+
+[[test]]
+id          = "T34"
+group       = "combined"
+name        = "T34 combined stress"
+title       = "T34 combined stress"
+short_desc  = "T34 combined stress"
+# Removed --newer 365d: time-dependent filter fails on older MFT snapshots.
+cli_args    = ["*.pdf", "--files-only", "--min-size", "1048576", "--sort", "size", "--sort-desc", "--attr", "!hidden", "--limit", "10", "--format", "csv", "--columns", "Name,Size,Path Only"]
+expect_min_rows = 1
+validator   = "T34"
+
+[[test.sort_checks]]
+column = "Size"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T35"
+group       = "general"
+name        = "T35 --limit 0 (unlimited)"
+title       = "T35 --limit 0 (unlimited)"
+short_desc  = "T35 --limit 0 (unlimited)"
+cli_args    = ["*.dll", "--limit", "0", "--drive", "C", "--files-only"]
+
+[[test]]
+id          = "T36"
+group       = "time"
+name        = "T36 --older-created 365d"
+title       = "T36 --older-created 365d"
+short_desc  = "T36 --older-created 365d"
+cli_args    = ["*", "--older-created", "365d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T37"
+group       = "attributes"
+name        = "T37 --attr system"
+title       = "T37 --attr system"
+short_desc  = "T37 --attr system"
+cli_args    = ["*", "--attr", "system", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "System"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T38"
+group       = "attributes"
+name        = "T38 --attr readonly"
+title       = "T38 --attr readonly"
+short_desc  = "T38 --attr readonly"
+cli_args    = ["*", "--attr", "readonly", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Read-only"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T39"
+group       = "attributes"
+name        = "T39 --attr system,!hidden"
+title       = "T39 --attr system,!hidden"
+short_desc  = "T39 --attr system,!hidden"
+cli_args    = ["*", "--attr", "system,!hidden", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "System"
+op     = "eq"
+value  = "1"
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "ne"
+value  = "1"
+
+[[test]]
+id          = "T40"
+group       = "error"
+name        = "T40 no results (graceful)"
+title       = "T40 no results (graceful)"
+short_desc  = "T40 no results (graceful)"
+cli_args    = ["xyzzy_nonexistent_file_pattern_12345", "--limit", "10"]
+
+[[test]]
+id          = "T41"
+group       = "general"
+name        = "T41 --header false"
+title       = "T41 --header false"
+short_desc  = "T41 --header false"
+cli_args    = ["*.exe", "--header", "false", "--limit", "5", "--drive", "C"]
+
+[[test]]
+id          = "T42"
+group       = "general"
+name        = "T42 --smart-case (lowercase = insensitive)"
+title       = "T42 --smart-case (lowercase = insensitive)"
+short_desc  = "T42 --smart-case (lowercase = insensitive)"
+cli_args    = ["readme", "--smart-case", "--name-only", "--limit", "10"]
+
+[[test]]
+id          = "T43"
+group       = "time"
+name        = "T43 --newer-accessed 7d"
+title       = "T43 --newer-accessed 7d"
+short_desc  = "T43 --newer-accessed 7d"
+cli_args    = ["*", "--newer-accessed", "7d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T44"
+group       = "time"
+name        = "T44 --newer today"
+title       = "T44 --newer today"
+short_desc  = "T44 --newer today"
+cli_args    = ["*", "--newer", "today", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T45"
+group       = "time"
+name        = "T45 --newer yesterday"
+title       = "T45 --newer yesterday"
+short_desc  = "T45 --newer yesterday"
+cli_args    = ["*", "--newer", "yesterday", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T46"
+group       = "time"
+name        = "T46 --newer this_week"
+title       = "T46 --newer this_week"
+short_desc  = "T46 --newer this_week"
+cli_args    = ["*", "--newer", "this_week", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T47"
+group       = "time"
+name        = "T47 --newer last_7d"
+title       = "T47 --newer last_7d"
+short_desc  = "T47 --newer last_7d"
+cli_args    = ["*", "--newer", "last_7d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T48"
+group       = "time"
+name        = "T48 --newer last_30d"
+title       = "T48 --newer last_30d"
+short_desc  = "T48 --newer last_30d"
+cli_args    = ["*", "--newer", "last_30d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T49"
+group       = "time"
+name        = "T49 --newer this_month"
+title       = "T49 --newer this_month"
+short_desc  = "T49 --newer this_month"
+cli_args    = ["*", "--newer", "this_month", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T50"
+group       = "time"
+name        = "T50 --newer this_year"
+title       = "T50 --newer this_year"
+short_desc  = "T50 --newer this_year"
+cli_args    = ["*", "--newer", "this_year", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T51"
+group       = "time"
+name        = "T51 --older last_year"
+title       = "T51 --older last_year"
+short_desc  = "T51 --older last_year"
+cli_args    = ["*", "--older", "last_year", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T52"
+group       = "time"
+name        = "T52 --newer last_90d"
+title       = "T52 --newer last_90d"
+short_desc  = "T52 --newer last_90d"
+cli_args    = ["*", "--newer", "last_90d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T53"
+group       = "time"
+name        = "T53 --newer last_365d"
+title       = "T53 --newer last_365d"
+short_desc  = "T53 --newer last_365d"
+cli_args    = ["*", "--newer", "last_365d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T54"
+group       = "time"
+name        = "T54 --newer-created today"
+title       = "T54 --newer-created today"
+short_desc  = "T54 --newer-created today"
+cli_args    = ["*", "--newer-created", "today", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T55"
+group       = "time"
+name        = "T55 --newer-accessed this_week"
+title       = "T55 --newer-accessed this_week"
+short_desc  = "T55 --newer-accessed this_week"
+cli_args    = ["*", "--newer-accessed", "this_week", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T56"
+group       = "time"
+name        = "T56 bounded time range (last_week)"
+title       = "T56 bounded time range (last_week)"
+short_desc  = "T56 bounded time range (last_week)"
+cli_args    = ["*", "--newer", "last_week", "--older", "this_week", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T57"
+group       = "time"
+name        = "T57 --newer 2025-01-01"
+title       = "T57 --newer 2025-01-01"
+short_desc  = "T57 --newer 2025-01-01"
+cli_args    = ["*", "--newer", "2025-01-01", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T58"
+group       = "sort"
+name        = "T58 --sort name"
+title       = "T58 --sort name"
+short_desc  = "T58 --sort name"
+cli_args    = ["*.txt", "--sort", "name", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.sort_checks]]
+column = "Name"
+order  = "asc"
+type   = "u64"
+
+[[test]]
+id          = "T59"
+group       = "sort"
+name        = "T59 --sort path"
+title       = "T59 --sort path"
+short_desc  = "T59 --sort path"
+cli_args    = ["*.txt", "--sort", "path", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T60"
+group       = "sort"
+name        = "T60 --sort created"
+title       = "T60 --sort created"
+short_desc  = "T60 --sort created"
+cli_args    = ["*.exe", "--sort", "created", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T61"
+group       = "sort"
+name        = "T61 --sort accessed"
+title       = "T61 --sort accessed"
+short_desc  = "T61 --sort accessed"
+cli_args    = ["*.exe", "--sort", "accessed", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T62"
+group       = "sort"
+name        = "T62 --sort extension"
+title       = "T62 --sort extension"
+short_desc  = "T62 --sort extension"
+cli_args    = ["*.*", "--sort", "extension", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T63"
+group       = "sort"
+name        = "T63 --sort drive"
+title       = "T63 --sort drive"
+short_desc  = "T63 --sort drive"
+cli_args    = ["*.exe", "--sort", "drive", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T64"
+group       = "sort"
+name        = "T64 --sort allocated"
+title       = "T64 --sort allocated"
+short_desc  = "T64 --sort allocated"
+cli_args    = ["*.exe", "--sort", "allocated", "--files-only", "--limit", "10", "--sort-desc"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T65"
+group       = "filters"
+name        = "T65 --sort descendants --sort-desc"
+title       = "T65 --sort descendants --sort-desc"
+short_desc  = "T65 --sort descendants --sort-desc"
+cli_args    = ["*", "--dirs-only", "--sort", "descendants", "--sort-desc", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T65"
+
+[[test.sort_checks]]
+column = "Descendants"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T66"
+group       = "sort"
+name        = "T66 multi-sort size,-name"
+title       = "T66 multi-sort size,-name"
+short_desc  = "T66 multi-sort size,-name"
+cli_args    = ["*.dll", "--sort", "size,-name", "--files-only", "--limit", "20"]
+
+[[test]]
+id          = "T67"
+group       = "sort"
+name        = "T67 multi-sort -modified,name"
+title       = "T67 multi-sort -modified,name"
+short_desc  = "T67 multi-sort -modified,name"
+cli_args    = ["*.log", "--sort", "-modified,name", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T67a"
+group       = "sort"
+name        = "T67a --sort treesize"
+title       = "T67a --sort treesize"
+short_desc  = "T67a --sort treesize"
+cli_args    = ["*", "--dirs-only", "--sort", "treesize", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T67a"
+
+[[test.sort_checks]]
+column = "Tree Size"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T67b"
+group       = "sort"
+name        = "T67b --sort treeallocated"
+title       = "T67b --sort treeallocated"
+short_desc  = "T67b --sort treeallocated"
+cli_args    = ["*", "--dirs-only", "--sort", "treeallocated", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T67b"
+
+[[test.sort_checks]]
+column = "Tree Allocated"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T67c"
+group       = "filters"
+name        = "T67c --sort bulkiness"
+title       = "T67c --sort bulkiness"
+short_desc  = "T67c --sort bulkiness"
+cli_args    = ["*", "--files-only", "--min-size", "1024", "--sort", "bulkiness", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T67d"
+group       = "sort"
+name        = "T67d --sort namelength"
+title       = "T67d --sort namelength"
+short_desc  = "T67d --sort namelength"
+cli_args    = ["*", "--files-only", "--sort", "namelength", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T67d"
+
+[[test]]
+id          = "T67e"
+group       = "sort"
+name        = "T67e --sort pathlength"
+title       = "T67e --sort pathlength"
+short_desc  = "T67e --sort pathlength"
+cli_args    = ["*", "--files-only", "--sort", "pathlength", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T67f"
+group       = "sort"
+name        = "T67f --sort path_only"
+title       = "T67f --sort path_only"
+short_desc  = "T67f --sort path_only"
+cli_args    = ["*.exe", "--sort", "path_only", "--limit", "10"]
+expect_min_rows = 1
+expect_max_rows = 10
+
+[[test]]
+id          = "T67g"
+group       = "sort"
+name        = "T67g --sort type"
+title       = "T67g --sort type"
+short_desc  = "T67g --sort type"
+cli_args    = ["*", "--files-only", "--sort", "type", "--limit", "20"]
+expect_min_rows = 1
+expect_max_rows = 20
+
+[[test]]
+id          = "T67h"
+group       = "sort"
+name        = "T67h multi-sort treesize,name"
+title       = "T67h multi-sort treesize,name"
+short_desc  = "T67h multi-sort treesize,name"
+cli_args    = ["*", "--dirs-only", "--sort", "treesize,name", "--limit", "20", "--columns", "all"]
+expect_min_rows = 1
+expect_max_rows = 20
+expect_columns_all = true
+
+[[test]]
+id          = "T67i"
+group       = "sort"
+name        = "T67i multi-sort type,-size"
+title       = "T67i multi-sort type,-size"
+short_desc  = "T67i multi-sort type,-size"
+cli_args    = ["*", "--files-only", "--sort", "type,-size", "--limit", "20"]
+expect_min_rows = 1
+expect_max_rows = 20
+
+[[test]]
+id          = "T67j"
+group       = "filters"
+name        = "T67j multi-sort hidden,bulkiness"
+title       = "T67j multi-sort hidden,bulkiness"
+short_desc  = "T67j multi-sort hidden,bulkiness"
+cli_args    = ["*", "--files-only", "--min-size", "1024", "--sort", "hidden,bulkiness", "--limit", "20"]
+expect_min_rows = 1
+expect_max_rows = 20
+
+[[test]]
+id          = "T68"
+group       = "attributes"
+name        = "T68 --attr archive"
+title       = "T68 --attr archive"
+short_desc  = "T68 --attr archive"
+cli_args    = ["*", "--attr", "archive", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Archive"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T69"
+group       = "attributes"
+name        = "T69 --attr sparse"
+title       = "T69 --attr sparse"
+short_desc  = "T69 --attr sparse"
+cli_args    = ["*", "--attr", "sparse", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Sparse"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T70"
+group       = "attributes"
+name        = "T70 --attr reparse"
+title       = "T70 --attr reparse"
+short_desc  = "T70 --attr reparse"
+cli_args    = ["*", "--attr", "reparse", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Reparse"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T71"
+group       = "attributes"
+name        = "T71 --attr offline"
+title       = "T71 --attr offline"
+short_desc  = "T71 --attr offline"
+cli_args    = ["*", "--attr", "offline", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Offline"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T72"
+group       = "attributes"
+name        = "T72 --attr encrypted"
+title       = "T72 --attr encrypted"
+short_desc  = "T72 --attr encrypted"
+cli_args    = ["*", "--attr", "encrypted", "--files-only", "--limit", "10", "--columns", "all"]
+# Encrypted files are extremely rare — most datasets have zero.
+expect_min_rows = 0
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Encrypted"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T73"
+group       = "attributes"
+name        = "T73 --attr !system"
+title       = "T73 --attr !system"
+short_desc  = "T73 --attr !system"
+cli_args    = ["*", "--attr", "!system", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "System"
+op     = "ne"
+value  = "1"
+
+[[test]]
+id          = "T74"
+group       = "attributes"
+name        = "T74 --attr hidden,system"
+title       = "T74 --attr hidden,system"
+short_desc  = "T74 --attr hidden,system"
+cli_args    = ["*", "--attr", "hidden,system", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "eq"
+value  = "1"
+
+[[test.column_checks]]
+column = "System"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T75"
+group       = "combined"
+name        = "T75 size+time+ext combined"
+title       = "T75 size+time+ext combined"
+short_desc  = "T75 size+time+ext combined"
+cli_args    = ["*", "--ext", "exe,dll", "--min-size", "1048576", "--newer", "last_365d", "--files-only", "--sort", "size", "--sort-desc", "--limit", "10"]
+expect_min_rows = 1
+validator   = "T75"
+
+[[test]]
+id          = "T76"
+group       = "sort"
+name        = "T76 dirs + desc range + sort"
+title       = "T76 dirs + desc range + sort"
+short_desc  = "T76 dirs + desc range + sort"
+cli_args    = ["*", "--dirs-only", "--min-descendants", "10", "--max-descendants", "1000", "--sort", "descendants", "--sort-desc", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T76"
+
+[[test.sort_checks]]
+column = "Descendants"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T77"
+group       = "time"
+name        = "T77 hidden + --newer last_30d"
+title       = "T77 hidden + --newer last_30d"
+short_desc  = "T77 hidden + --newer last_30d"
+cli_args    = ["*", "--attr", "hidden", "--newer", "last_30d", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T78"
+group       = "filters"
+name        = "T78 exclude + ext + size"
+title       = "T78 exclude + ext + size"
+short_desc  = "T78 exclude + ext + size"
+cli_args    = ["*.log", "--exclude", "debug*", "--max-size", "1048576", "--files-only", "--limit", "10"]
+expect_min_rows = 1
+validator   = "T78"
+
+[[test]]
+id          = "T79"
+group       = "output"
+name        = "T79 projection + json format"
+title       = "T79 projection + json format"
+short_desc  = "T79 projection + json format"
+cli_args    = ["*.rs", "--columns", "Name,Size,Modified", "--format", "json", "--limit", "5"]
+validator   = "T79"
+targets     = ["cli"]
+
+[[test]]
+id          = "T80"
+group       = "output"
+name        = "T80 --columns all (wide)"
+title       = "T80 --columns all (wide)"
+short_desc  = "T80 --columns all (wide)"
+cli_args    = ["*.exe", "--columns", "all", "--limit", "5", "--drive", "C"]
+expect_columns_all = true
+
+[[test]]
+id          = "T81"
+group       = "time"
+name        = "T81 --newer-created this_year"
+title       = "T81 --newer-created this_year"
+short_desc  = "T81 --newer-created this_year"
+cli_args    = ["*", "--newer-created", "this_year", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T82"
+group       = "time"
+name        = "T82 --newer-accessed last_week"
+title       = "T82 --newer-accessed last_week"
+short_desc  = "T82 --newer-accessed last_week"
+cli_args    = ["*", "--newer-accessed", "last_week", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T83"
+group       = "sort"
+name        = "T83 multi-sort drive,ext,-size"
+title       = "T83 multi-sort drive,ext,-size"
+short_desc  = "T83 multi-sort drive,ext,-size"
+cli_args    = ["*.*", "--sort", "drive,extension,-size", "--files-only", "--limit", "20"]
+expect_min_rows = 1
+expect_max_rows = 20
+
+[[test]]
+id          = "T84"
+group       = "combined"
+name        = "T84 mega combined"
+title       = "T84 mega combined"
+short_desc  = "T84 mega combined"
+cli_args    = ["*.exe", "--files-only", "--min-size", "10485760", "--max-size", "1073741824", "--attr", "!hidden,!system", "--newer", "last_365d", "--sort", "-size", "--drive", "C", "--limit", "10", "--columns", "Name,Size,Modified,Path Only"]
+
+[[test]]
+id          = "T85"
+group       = "output"
+name        = "T85 table format + projection"
+title       = "T85 table format + projection"
+short_desc  = "T85 table format + projection"
+cli_args    = ["*.dll", "--format", "table", "--columns", "Name,Size", "--limit", "5", "--drive", "C"]
+
+[[test]]
+id          = "T86"
+group       = "time"
+name        = "T86 --older-accessed 365d"
+title       = "T86 --older-accessed 365d"
+short_desc  = "T86 --older-accessed 365d"
+cli_args    = ["*", "--older-accessed", "365d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T87"
+group       = "filters"
+name        = "T87 ext + sort modified"
+title       = "T87 ext + sort modified"
+short_desc  = "T87 ext + sort modified"
+cli_args    = ["*", "--ext", "txt,log,md", "--sort", "-modified", "--files-only", "--limit", "10"]
+expect_min_rows = 1
+validator   = "T87"
+
+[[test]]
+id          = "T88"
+group       = "time"
+name        = "T88 name-only + hide-system + newer"
+title       = "T88 name-only + hide-system + newer"
+short_desc  = "T88 name-only + hide-system + newer"
+cli_args    = ["config", "--name-only", "--hide-system", "--newer", "last_90d", "--files-only", "--limit", "10"]
+expect_min_rows = 1
+validator   = "T88"
+
+[[test]]
+id          = "T88a"
+group       = "search_mode"
+name        = "T88a path: prefix"
+title       = "T88a path: prefix"
+short_desc  = "T88a path: prefix"
+cli_args    = ["path:*windows*", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T88a"
+
+[[test]]
+id          = "T88b"
+group       = "search_mode"
+name        = "T88b dir: prefix"
+title       = "T88b dir: prefix"
+short_desc  = "T88b dir: prefix"
+cli_args    = ["dir:*system*", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Directory Flag"
+op     = "eq"
+value  = "1"
+
+[[test]]
+id          = "T88c"
+group       = "search_mode"
+name        = "T88c file: prefix"
+title       = "T88c file: prefix"
+short_desc  = "T88c file: prefix"
+cli_args    = ["file:*.dll", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Directory Flag"
+op     = "ne"
+value  = "1"
+
+[[test.column_checks]]
+column = "Name"
+op     = "ends_with"
+value  = ".dll"
+case   = "lower"
+
+[[test]]
+id          = "T88d"
+group       = "search_mode"
+name        = "T88d --begins-with"
+title       = "T88d --begins-with"
+short_desc  = "T88d --begins-with"
+cli_args    = ["--begins-with", "note", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Name"
+op     = "starts_with"
+value  = "note"
+case   = "lower"
+
+[[test]]
+id          = "T88e"
+group       = "search_mode"
+name        = "T88e --ends-with"
+title       = "T88e --ends-with"
+short_desc  = "T88e --ends-with"
+cli_args    = ["--ends-with", ".log", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Name"
+op     = "ends_with"
+value  = ".log"
+case   = "lower"
+
+[[test]]
+id          = "T88f"
+group       = "search_mode"
+name        = "T88f --contains"
+title       = "T88f --contains"
+short_desc  = "T88f --contains"
+cli_args    = ["--contains", "setup", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Name"
+op     = "contains"
+value  = "setup"
+case   = "lower"
+
+[[test]]
+id          = "T88g"
+group       = "general"
+name        = "T88g --not-contains"
+title       = "T88g --not-contains"
+short_desc  = "T88g --not-contains"
+cli_args    = ["*.log", "--not-contains", "debug", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Name"
+op     = "ends_with"
+value  = ".log"
+case   = "lower"
+
+[[test]]
+id          = "T88h"
+group       = "search_mode"
+name        = "T88h --in-path + pattern"
+title       = "T88h --in-path + pattern"
+short_desc  = "T88h --in-path + pattern"
+cli_args    = ["*.exe", "--in-path", "*windows*", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Path Only"
+op     = "contains"
+value  = "windows"
+case   = "lower"
+
+[[test.column_checks]]
+column = "Name"
+op     = "ends_with"
+value  = ".exe"
+case   = "lower"
+
+[[test]]
+id          = "T88i"
+group       = "search_mode"
+name        = "T88i path: vs --in-path"
+title       = "T88i path: vs --in-path"
+short_desc  = "T88i path: vs --in-path"
+cli_args    = ["path:*notepad*", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T88i"
+
+[[test]]
+id          = "T88j"
+group       = "search_mode"
+name        = "T88j --contains + --not-contains"
+title       = "T88j --contains + --not-contains"
+short_desc  = "T88j --contains + --not-contains"
+cli_args    = ["--contains", "update", "--not-contains", "old", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T88j"
+
+[[test]]
+id          = "T88k"
+group       = "search_mode"
+name        = "T88k dir: prefix + sort treesize desc"
+title       = "T88k dir: prefix + sort treesize desc"
+short_desc  = "T88k dir: prefix + sort treesize desc"
+cli_args    = ["dir:*program*", "--sort", "treesize", "--sort-desc", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T88k"
+
+[[test.column_checks]]
+column = "Directory Flag"
+op     = "eq"
+value  = "1"
+
+[[test.sort_checks]]
+column = "Tree Size"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T88l"
+group       = "search_mode"
+name        = "T88l --begins-with + --ext"
+title       = "T88l --begins-with + --ext"
+short_desc  = "T88l --begins-with + --ext"
+cli_args    = ["--begins-with", "win", "--ext", "exe,dll", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+validator   = "T88l"
+
+[[test]]
+id          = "T89"
+group       = "general"
+name        = "T89 --type code"
+title       = "T89 --type code"
+short_desc  = "T89 --type code"
+cli_args    = ["*", "--type", "code", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T90"
+group       = "general"
+name        = "T90 --type document"
+title       = "T90 --type document"
+short_desc  = "T90 --type document"
+cli_args    = ["*", "--type", "document", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T91"
+group       = "general"
+name        = "T91 --type executable"
+title       = "T91 --type executable"
+short_desc  = "T91 --type executable"
+cli_args    = ["*", "--type", "executable", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T92"
+group       = "general"
+name        = "T92 --type picture"
+title       = "T92 --type picture"
+short_desc  = "T92 --type picture"
+cli_args    = ["*", "--type", "picture", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T93"
+group       = "general"
+name        = "T93 --type system"
+title       = "T93 --type system"
+short_desc  = "T93 --type system"
+cli_args    = ["*", "--type", "system", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T94"
+group       = "sort"
+name        = "T94 --type code + sort size"
+title       = "T94 --type code + sort size"
+short_desc  = "T94 --type code + sort size"
+cli_args    = ["*", "--type", "code", "--files-only", "--sort", "-size", "--limit", "10"]
+expect_min_rows = 1
+validator   = "T94"
+
+[[test.sort_checks]]
+column = "Size"
+order  = "desc"
+type   = "u64"
+
+[[test]]
+id          = "T95"
+group       = "search_mode"
+name        = "T95 --in-path *windows*"
+title       = "T95 --in-path *windows*"
+short_desc  = "T95 --in-path *windows*"
+cli_args    = ["*.dll", "--in-path", "*windows*", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Path Only"
+op     = "contains"
+value  = "windows"
+case   = "lower"
+
+[[test]]
+id          = "T96"
+group       = "search_mode"
+name        = "T96 --in-path *system32*"
+title       = "T96 --in-path *system32*"
+short_desc  = "T96 --in-path *system32*"
+cli_args    = ["*.dll", "--in-path", "*system32*", "--files-only", "--limit", "10", "--columns", "all"]
+expect_min_rows = 1
+expect_columns_all = true
+
+[[test.column_checks]]
+column = "Path Only"
+op     = "contains"
+value  = "system32"
+case   = "lower"
+
+[[test]]
+id          = "T97"
+group       = "filters"
+name        = "T97 --in-path + --exclude"
+title       = "T97 --in-path + --exclude"
+short_desc  = "T97 --in-path + --exclude"
+cli_args    = ["*.exe", "--in-path", "*windows*", "--exclude", "setup*", "--files-only", "--limit", "10"]
+expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Name"
+op     = "not_starts_with"
+value  = "setup"
+case   = "lower"
+
+[[test]]
+id          = "T98"
+group       = "general"
+name        = "T98 --min-bulkiness 200"
+title       = "T98 --min-bulkiness 200"
+short_desc  = "T98 --min-bulkiness 200"
+cli_args    = ["*", "--min-bulkiness", "200", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T99"
+group       = "filters"
+name        = "T99 --max-bulkiness 100"
+title       = "T99 --max-bulkiness 100"
+short_desc  = "T99 --max-bulkiness 100"
+cli_args    = ["*", "--max-bulkiness", "100", "--files-only", "--min-size", "1024", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T100"
+group       = "combined"
+name        = "T100 bulkiness + size combined"
+title       = "T100 bulkiness + size combined"
+short_desc  = "T100 bulkiness + size combined"
+cli_args    = ["*", "--min-bulkiness", "500", "--min-size", "1048576", "--files-only", "--limit", "10"]
+
+[[test]]
+id          = "T101"
+group       = "filters"
+name        = "T101 --min-treesize 100MB"
+title       = "T101 --min-treesize 100MB"
+short_desc  = "T101 --min-treesize 100MB"
+cli_args    = ["*", "--dirs-only", "--min-treesize", "104857600", "--limit", "10", "--sort", "-size", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T102"
+group       = "filters"
+name        = "T102 --max-treesize 1MB"
+title       = "T102 --max-treesize 1MB"
+short_desc  = "T102 --max-treesize 1MB"
+cli_args    = ["*", "--dirs-only", "--max-treesize", "1048576", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T103"
+group       = "general"
+name        = "T103 --min-tree-allocated 100MB"
+title       = "T103 --min-tree-allocated 100MB"
+short_desc  = "T103 --min-tree-allocated 100MB"
+cli_args    = ["*", "--dirs-only", "--min-tree-allocated", "104857600", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T104"
+group       = "general"
+name        = "T104 --min-name-length 50"
+title       = "T104 --min-name-length 50"
+short_desc  = "T104 --min-name-length 50"
+cli_args    = ["*", "--min-name-length", "50", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T105"
+group       = "general"
+name        = "T105 --max-name-length 8"
+title       = "T105 --max-name-length 8"
+short_desc  = "T105 --max-name-length 8"
+cli_args    = ["*", "--max-name-length", "8", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T106"
+group       = "general"
+name        = "T106 --min-path-length 200"
+title       = "T106 --min-path-length 200"
+short_desc  = "T106 --min-path-length 200"
+cli_args    = ["*", "--min-path-length", "200", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T107"
+group       = "general"
+name        = "T107 --max-path-length 30"
+title       = "T107 --max-path-length 30"
+short_desc  = "T107 --max-path-length 30"
+cli_args    = ["*", "--max-path-length", "30", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T108"
+group       = "filters"
+name        = "T108 --min-size-on-disk 100MB"
+title       = "T108 --min-size-on-disk 100MB"
+short_desc  = "T108 --min-size-on-disk 100MB"
+cli_args    = ["*", "--min-size-on-disk", "104857600", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T109"
+group       = "filters"
+name        = "T109 --max-size-on-disk 4096"
+title       = "T109 --max-size-on-disk 4096"
+short_desc  = "T109 --max-size-on-disk 4096"
+cli_args    = ["*", "--max-size-on-disk", "4096", "--files-only", "--min-size", "1", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T110"
+group       = "general"
+name        = "T110 --month jan"
+title       = "T110 --month jan"
+short_desc  = "T110 --month jan"
+cli_args    = ["*", "--month", "jan", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T111"
+group       = "general"
+name        = "T111 --month Q4"
+title       = "T111 --month Q4"
+short_desc  = "T111 --month Q4"
+cli_args    = ["*", "--month", "Q4", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T112"
+group       = "general"
+name        = "T112 --month jan,feb,mar"
+title       = "T112 --month jan,feb,mar"
+short_desc  = "T112 --month jan,feb,mar"
+cli_args    = ["*", "--month", "jan,feb,mar", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T113"
+group       = "time"
+name        = "T113 --month jan + --newer last_365d"
+title       = "T113 --month jan + --newer last_365d"
+short_desc  = "T113 --month jan + --newer last_365d"
+cli_args    = ["*", "--month", "jan", "--newer", "last_365d", "--files-only", "--limit", "10"]
+expect_min_rows = 0
+expect_max_rows = 10
+
+[[test]]
+id          = "T114"
+group       = "sort"
+name        = "T114 --sort hidden:desc"
+title       = "T114 --sort hidden:desc"
+short_desc  = "T114 --sort hidden:desc"
+cli_args    = ["*", "--sort", "hidden:desc", "--limit", "20", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T115"
+group       = "sort"
+name        = "T115 --sort compressed:desc"
+title       = "T115 --sort compressed:desc"
+short_desc  = "T115 --sort compressed:desc"
+cli_args    = ["*", "--sort", "compressed:desc", "--limit", "20", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T116"
+group       = "sort"
+name        = "T116 --sort directory:desc"
+title       = "T116 --sort directory:desc"
+short_desc  = "T116 --sort directory:desc"
+cli_args    = ["*", "--sort", "directory:desc", "--limit", "20", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T117"
+group       = "search_mode"
+name        = "T117 type + in-path + size"
+title       = "T117 type + in-path + size"
+short_desc  = "T117 type + in-path + size"
+cli_args    = ["*", "--type", "system", "--in-path", "*windows*", "--min-size", "1048576", "--files-only", "--sort", "-size", "--limit", "10"]
+
+[[test]]
+id          = "T118"
+group       = "filters"
+name        = "T118 treesize + descendants"
+title       = "T118 treesize + descendants"
+short_desc  = "T118 treesize + descendants"
+cli_args    = ["*", "--dirs-only", "--min-treesize", "10485760", "--min-descendants", "10", "--sort", "-size", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+
+[[test]]
+id          = "T119"
+group       = "aggregation"
+name        = "T119 agg count"
+title       = "T119 agg count"
+short_desc  = "T119 agg count"
+cli_args    = ["agg", "count"]
+
+[[test]]
+id          = "T120"
+group       = "aggregation"
+name        = "T120 agg overview"
+title       = "T120 agg overview"
+short_desc  = "T120 agg overview"
+cli_args    = ["agg", "overview"]
+
+[[test]]
+id          = "T121"
+group       = "aggregation"
+name        = "T121 agg by_extension"
+title       = "T121 agg by_extension"
+short_desc  = "T121 agg by_extension"
+cli_args    = ["agg", "by_extension"]
+
+[[test]]
+id          = "T122"
+group       = "aggregation"
+name        = "T122 agg by_type"
+title       = "T122 agg by_type"
+short_desc  = "T122 agg by_type"
+cli_args    = ["agg", "by_type"]
+
+[[test]]
+id          = "T123"
+group       = "aggregation"
+name        = "T123 agg by_drive"
+title       = "T123 agg by_drive"
+short_desc  = "T123 agg by_drive"
+cli_args    = ["agg", "by_drive"]
+
+[[test]]
+id          = "T124"
+group       = "aggregation"
+name        = "T124 agg by_size"
+title       = "T124 agg by_size"
+short_desc  = "T124 agg by_size"
+cli_args    = ["agg", "by_size"]
+
+[[test]]
+id          = "T125"
+group       = "aggregation"
+name        = "T125 agg by_age"
+title       = "T125 agg by_age"
+short_desc  = "T125 agg by_age"
+cli_args    = ["agg", "by_age"]
+
+[[test]]
+id          = "T126"
+group       = "aggregation"
+name        = "T126 agg count --format json"
+title       = "T126 agg count --format json"
+short_desc  = "T126 agg count --format json"
+cli_args    = ["agg", "count", "--format", "json"]
+validator   = "T126"
+
+[[test]]
+id          = "T127"
+group       = "aggregation"
+name        = "T127 agg overview --format json"
+title       = "T127 agg overview --format json"
+short_desc  = "T127 agg overview --format json"
+cli_args    = ["agg", "overview", "--format", "json"]
+validator   = "T127"
+
+[[test]]
+id          = "T128"
+group       = "aggregation"
+name        = "T128 agg by_extension --format csv"
+title       = "T128 agg by_extension --format csv"
+short_desc  = "T128 agg by_extension --format csv"
+cli_args    = ["agg", "by_extension", "--format", "csv"]
+
+[[test]]
+id          = "T129"
+group       = "search_mode"
+name        = "T129 regex case insensitive"
+title       = "Regex pattern matching (case insensitive)"
+short_desc  = "Regex search for system*.dll files"
+cli_args    = [">system.*\\.dll", "--files-only", "--limit", "10"]
+
+[[test]]
+id          = "T130"
+group       = "aggregation"
+name        = "T130 agg top_folders preset"
+title       = "T130 agg top_folders preset"
+short_desc  = "T130 agg top_folders preset"
+cli_args    = ["agg", "top_folders"]
+
+[[test]]
+id          = "T131"
+group       = "aggregation"
+name        = "T131 agg cleanup preset"
+title       = "T131 agg cleanup preset"
+short_desc  = "T131 agg cleanup preset"
+cli_args    = ["agg", "cleanup"]
+
+[[test]]
+id          = "T132"
+group       = "aggregation"
+name        = "T132 agg duplicates preset"
+title       = "T132 agg duplicates preset"
+short_desc  = "T132 agg duplicates preset"
+cli_args    = ["agg", "duplicates"]
+
+[[test]]
+id          = "T133"
+group       = "aggregation"
+name        = "T133 agg storage preset"
+title       = "T133 agg storage preset"
+short_desc  = "T133 agg storage preset"
+cli_args    = ["agg", "storage"]
+
+[[test]]
+id          = "T134"
+group       = "aggregation"
+name        = "T134 agg activity preset"
+title       = "T134 agg activity preset"
+short_desc  = "T134 agg activity preset"
+cli_args    = ["agg", "activity"]
+
+[[test]]
+id          = "T135"
+group       = "aggregation"
+name        = "T135 agg media preset"
+title       = "T135 agg media preset"
+short_desc  = "T135 agg media preset"
+cli_args    = ["agg", "media"]
+
+[[test]]
+id          = "T136"
+group       = "aggregation"
+name        = "T136 agg top_folders --format json"
+title       = "T136 agg top_folders --format json"
+short_desc  = "T136 agg top_folders --format json"
+cli_args    = ["agg", "top_folders", "--format", "json"]
+validator   = "T136"
+
+[[test]]
+id          = "T137"
+group       = "aggregation"
+name        = "T137 agg cleanup --format json"
+title       = "T137 agg cleanup --format json"
+short_desc  = "T137 agg cleanup --format json"
+cli_args    = ["agg", "cleanup", "--format", "json"]
+validator   = "T137"
+
+[[test]]
+id          = "T138"
+group       = "aggregation"
+name        = "T138 agg cleanup --format csv"
+title       = "T138 agg cleanup --format csv"
+short_desc  = "T138 agg cleanup --format csv"
+cli_args    = ["agg", "cleanup", "--format", "csv"]
+
+[[test]]
+id          = "T139"
+group       = "aggregation"
+name        = "T139 --agg terms:extension,sample=3"
+title       = "T139 --agg terms:extension,sample=3"
+short_desc  = "T139 --agg terms:extension,sample=3"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=10,sample=3", "--format", "json"]
+
+[[test]]
+id          = "T140"
+group       = "aggregation"
+name        = "T140 --agg duplicates:size+name,sample=2"
+title       = "T140 --agg duplicates:size+name,sample=2"
+short_desc  = "T140 --agg duplicates:size+name,sample=2"
+cli_args    = ["*", "--limit", "0", "--agg", "duplicates:size+name,sample=2,top=50", "--format", "json"]
+
+[[test]]
+id          = "T141"
+group       = "general"
+name        = "T141 --count shorthand"
+title       = "T141 --count shorthand"
+short_desc  = "T141 --count shorthand"
+cli_args    = ["*.exe", "--count"]
+
+[[test]]
+id          = "T142"
+group       = "general"
+name        = "T142 --facet extension"
+title       = "T142 --facet extension"
+short_desc  = "T142 --facet extension"
+cli_args    = ["*", "--facet", "extension"]
+
+[[test]]
+id          = "T143"
+group       = "general"
+name        = "T143 --facet type:10"
+title       = "T143 --facet type:10"
+short_desc  = "T143 --facet type:10"
+cli_args    = ["*", "--facet", "type:10"]
+
+[[test]]
+id          = "T144"
+group       = "general"
+name        = "T144 --stats size"
+title       = "T144 --stats size"
+short_desc  = "T144 --stats size"
+cli_args    = ["*.exe", "--stats", "size"]
+
+[[test]]
+id          = "T145"
+group       = "aggregation"
+name        = "T145 --agg count + --rows mixed"
+title       = "T145 --agg count + --rows mixed"
+short_desc  = "T145 --agg count + --rows mixed"
+cli_args    = ["*.dll", "--limit", "5", "--agg", "count", "--rows", "--drive", "C"]
+
+[[test]]
+id          = "T146"
+group       = "aggregation"
+name        = "T146 agg by_extension --format json (buckets)"
+title       = "T146 agg by_extension --format json (buckets)"
+short_desc  = "T146 agg by_extension --format json (buckets)"
+cli_args    = ["agg", "by_extension", "--format", "json"]
+validator   = "T146"
+
+[[test]]
+id          = "T147"
+group       = "aggregation"
+name        = "T147 agg duplicates --format json"
+title       = "T147 agg duplicates --format json"
+short_desc  = "T147 agg duplicates --format json"
+cli_args    = ["agg", "duplicates", "--format", "json"]
+validator   = "T147"
+
+[[test]]
+id          = "T148"
+group       = "aggregation"
+name        = "T148 agg by_drive --format csv"
+title       = "T148 agg by_drive --format csv"
+short_desc  = "T148 agg by_drive --format csv"
+cli_args    = ["agg", "by_drive", "--format", "csv"]
+
+[[test]]
+id          = "T149"
+group       = "aggregation"
+name        = "T149 agg by_size --format json"
+title       = "T149 agg by_size --format json"
+short_desc  = "T149 agg by_size --format json"
+cli_args    = ["agg", "by_size", "--format", "json"]
+validator   = "T149"
+
+[[test]]
+id          = "T150"
+group       = "aggregation"
+name        = "T150 --agg terms:extension,sample=2 JSON sample_rows"
+title       = "T150 --agg terms:extension,sample=2 JSON sample_rows"
+short_desc  = "T150 --agg terms:extension,sample=2 JSON sample_rows"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=5,sample=2", "--format", "json"]
+validator   = "T150"
+
+[[test]]
+id          = "T151"
+group       = "aggregation"
+name        = "T151 --agg terms:extension,sample=2 JSON drilldown"
+title       = "T151 --agg terms:extension,sample=2 JSON drilldown"
+short_desc  = "T151 --agg terms:extension,sample=2 JSON drilldown"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=5,sample=2", "--format", "json"]
+validator   = "T151"
+
+[[test]]
+id          = "T152"
+group       = "aggregation"
+name        = "T152 agg by_extension table with samples"
+title       = "T152 agg by_extension table with samples"
+short_desc  = "T152 agg by_extension table with samples"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "table"]
+
+[[test]]
+id          = "T153"
+group       = "aggregation"
+name        = "T153 --agg terms:extension no sample"
+title       = "T153 --agg terms:extension no sample"
+short_desc  = "T153 --agg terms:extension no sample"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3", "--format", "json"]
+validator   = "T153"
+
+[[test]]
+id          = "T154"
+group       = "aggregation"
+name        = "T154 rollup:drive power syntax"
+title       = "T154 rollup:drive power syntax"
+short_desc  = "T154 rollup:drive power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,top=5", "--format", "json"]
+validator   = "T154"
+
+[[test]]
+id          = "T155"
+group       = "aggregation"
+name        = "T155 rollup:path,depth=2 power syntax"
+title       = "T155 rollup:path,depth=2 power syntax"
+short_desc  = "T155 rollup:path,depth=2 power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:path,depth=2,top=10", "--format", "json"]
+validator   = "T155"
+
+[[test]]
+id          = "T156"
+group       = "combined"
+name        = "T156 multiple --agg flags combined"
+title       = "T156 multiple --agg flags combined"
+short_desc  = "T156 multiple --agg flags combined"
+cli_args    = ["*", "--limit", "0", "--agg", "count", "--agg", "terms:extension,top=3", "--format", "json"]
+validator   = "T156"
+
+[[test]]
+id          = "T157"
+group       = "aggregation"
+name        = "T157 --agg + search filter"
+title       = "T157 --agg + search filter"
+short_desc  = "T157 --agg + search filter"
+cli_args    = ["*.exe", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "json"]
+validator   = "T157"
+
+[[test]]
+id          = "T158"
+group       = "aggregation"
+name        = "T158 sample row fields content"
+title       = "T158 sample row fields content"
+short_desc  = "T158 sample row fields content"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=2", "--format", "json"]
+validator   = "T158"
+
+[[test]]
+id          = "T159"
+group       = "output"
+name        = "T159 CSV with samples column"
+title       = "T159 CSV with samples column"
+short_desc  = "T159 CSV with samples column"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=1", "--format", "csv"]
+
+[[test]]
+id          = "T160"
+group       = "aggregation"
+name        = "T160 hist:size power syntax"
+title       = "T160 hist:size power syntax"
+short_desc  = "T160 hist:size power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "hist:size,interval=1048576", "--format", "json"]
+validator   = "T160"
+
+[[test]]
+id          = "T161"
+group       = "aggregation"
+name        = "T161 stats:size power syntax"
+title       = "T161 stats:size power syntax"
+short_desc  = "T161 stats:size power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "stats:size", "--format", "json"]
+validator   = "T161"
+
+[[test]]
+id          = "T162"
+group       = "aggregation"
+name        = "T162 datehist:modified,calendar=month"
+title       = "T162 datehist:modified,calendar=month"
+short_desc  = "T162 datehist:modified,calendar=month"
+cli_args    = ["*", "--limit", "0", "--agg", "datehist:modified,calendar=month", "--format", "json"]
+validator   = "T162"
+
+[[test]]
+id          = "T163"
+group       = "aggregation"
+name        = "T163 range:size power syntax"
+title       = "T163 range:size power syntax"
+short_desc  = "T163 range:size power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "range:size,boundaries=0+1024+1048576+1073741824", "--format", "json"]
+validator   = "T163"
+
+[[test]]
+id          = "T164"
+group       = "output"
+name        = "T164 --histogram size:1048576 shorthand"
+title       = "T164 --histogram size:1048576 shorthand"
+short_desc  = "T164 --histogram size:1048576 shorthand"
+cli_args    = ["*", "--limit", "0", "--histogram", "size:1048576", "--format", "json"]
+validator   = "T164"
+
+[[test]]
+id          = "T165"
+group       = "aggregation"
+name        = "T165 missing:extension power syntax"
+title       = "T165 missing:extension power syntax"
+short_desc  = "T165 missing:extension power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "missing:extension", "--format", "json"]
+validator   = "T165"
+
+[[test]]
+id          = "T166"
+group       = "aggregation"
+name        = "T166 distinct:extension power syntax"
+title       = "T166 distinct:extension power syntax"
+short_desc  = "T166 distinct:extension power syntax"
+cli_args    = ["*", "--limit", "0", "--agg", "distinct:extension", "--format", "json"]
+validator   = "T166"
+
+[[test]]
+id          = "T167"
+group       = "aggregation"
+name        = "T167 sample_sort terms:extension,sample=2,sort=size"
+title       = "T167 sample_sort terms:extension,sample=2,sort=size"
+short_desc  = "T167 sample_sort terms:extension,sample=2,sort=size"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3,sample=2,sort=size", "--format", "json"]
+validator   = "T167"
+
+[[test]]
+id          = "T168"
+group       = "general"
+name        = "T168 uffs stats daemon mode"
+title       = "T168 uffs stats daemon mode"
+short_desc  = "T168 uffs stats daemon mode"
+cli_args    = ["stats"]
+
+[[test]]
+id          = "T169"
+group       = "general"
+name        = "T169 uffs daemon stats (perf)"
+title       = "T169 uffs daemon stats (perf)"
+short_desc  = "T169 uffs daemon stats (perf)"
+cli_args    = ["daemon", "stats"]
+
+[[test]]
+id          = "T170"
+group       = "aggregation"
+name        = "T170 rollup:drive table format"
+title       = "T170 rollup:drive table format"
+short_desc  = "T170 rollup:drive table format"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,top=5", "--format", "table"]
+
+[[test]]
+id          = "T171"
+group       = "aggregation"
+name        = "T171 rollup:path CSV format"
+title       = "T171 rollup:path CSV format"
+short_desc  = "T171 rollup:path CSV format"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:path,depth=1,top=5", "--format", "csv"]
+
+[[test]]
+id          = "T172"
+group       = "aggregation"
+name        = "T172 agg overview --format csv"
+title       = "T172 agg overview --format csv"
+short_desc  = "T172 agg overview --format csv"
+cli_args    = ["agg", "overview", "--format", "csv"]
+
+[[test]]
+id          = "T173"
+group       = "aggregation"
+name        = "T173 agg by_age --format json"
+title       = "T173 agg by_age --format json"
+short_desc  = "T173 agg by_age --format json"
+cli_args    = ["agg", "by_age", "--format", "json"]
+validator   = "T173"
+
+[[test]]
+id          = "T174"
+group       = "aggregation"
+name        = "T174 agg storage --format json"
+title       = "T174 agg storage --format json"
+short_desc  = "T174 agg storage --format json"
+cli_args    = ["agg", "storage", "--format", "json"]
+validator   = "T174"
+
+[[test]]
+id          = "T175"
+group       = "aggregation"
+name        = "T175 agg activity --format json"
+title       = "T175 agg activity --format json"
+short_desc  = "T175 agg activity --format json"
+cli_args    = ["agg", "activity", "--format", "json"]
+validator   = "T175"
+
+[[test]]
+id          = "T176"
+group       = "aggregation"
+name        = "T176 agg media --format json"
+title       = "T176 agg media --format json"
+short_desc  = "T176 agg media --format json"
+cli_args    = ["agg", "media", "--format", "json"]
+validator   = "T176"
+
+[[test]]
+id          = "T177"
+group       = "aggregation"
+name        = "T177 agg duplicates --format csv"
+title       = "T177 agg duplicates --format csv"
+short_desc  = "T177 agg duplicates --format csv"
+cli_args    = ["agg", "duplicates", "--format", "csv"]
+
+[[test]]
+id          = "S3A.1"
+group       = "aggregation"
+name        = "S3A.1 next_cursor in JSON output"
+title       = "S3A.1 next_cursor in JSON output"
+short_desc  = "S3A.1 next_cursor in JSON output"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=50", "--agg-page-size", "2", "--format", "json"]
+validator   = "S3A.1"
+
+[[test]]
+id          = "S3A.2"
+group       = "aggregation"
+name        = "S3A.2 table cursor hint"
+title       = "S3A.2 table cursor hint"
+short_desc  = "S3A.2 table cursor hint"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=50", "--agg-page-size", "2", "--format", "table"]
+
+[[test]]
+id          = "S3A.3"
+group       = "aggregation"
+name        = "S3A.3 --agg-page-size limits buckets"
+title       = "S3A.3 --agg-page-size limits buckets"
+short_desc  = "S3A.3 --agg-page-size limits buckets"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=50", "--agg-page-size", "3", "--format", "json"]
+validator   = "S3A.3"
+
+[[test]]
+id          = "S3A.4"
+group       = "aggregation"
+name        = "S3A.4 aggregate --agg-page-size"
+title       = "S3A.4 aggregate --agg-page-size"
+short_desc  = "S3A.4 aggregate --agg-page-size"
+cli_args    = ["aggregate", "by_extension", "--format", "json", "--agg-page-size", "5"]
+validator   = "S3A.4"
+
+[[test]]
+id          = "S3C.1"
+group       = "aggregation"
+name        = "S3C.1 nested rollup JSON sub_buckets"
+title       = "S3C.1 nested rollup JSON sub_buckets"
+short_desc  = "S3C.1 nested rollup JSON sub_buckets"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,sub=terms:type,top=3", "--format", "json"]
+validator   = "S3C.1"
+
+[[test]]
+id          = "S3C.2"
+group       = "aggregation"
+name        = "S3C.2 nested rollup table rendering"
+title       = "S3C.2 nested rollup table rendering"
+short_desc  = "S3C.2 nested rollup table rendering"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,sub=terms:type,top=3", "--format", "table"]
+
+[[test]]
+id          = "S3C.3"
+group       = "aggregation"
+name        = "S3C.3 nested rollup CSV"
+title       = "S3C.3 nested rollup CSV"
+short_desc  = "S3C.3 nested rollup CSV"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:drive,sub=terms:extension,top=3", "--format", "csv"]
+
+[[test]]
+id          = "S3D.1"
+group       = "aggregation"
+name        = "S3D.1 truncated hint in table"
+title       = "S3D.1 truncated hint in table"
+short_desc  = "S3D.1 truncated hint in table"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=1", "--format", "table"]
+
+[[test]]
+id          = "S3D.2"
+group       = "aggregation"
+name        = "S3D.2 other_count in table"
+title       = "S3D.2 other_count in table"
+short_desc  = "S3D.2 other_count in table"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=2", "--format", "table"]
+
+[[test]]
+id          = "S3D.3"
+group       = "aggregation"
+name        = "S3D.3 JSON truncation metadata"
+title       = "S3D.3 JSON truncation metadata"
+short_desc  = "S3D.3 JSON truncation metadata"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=1", "--format", "json"]
+validator   = "S3D.3"
+
+[[test]]
+id          = "S3D.4"
+group       = "aggregation"
+name        = "S3D.4 JSON exact flag"
+title       = "S3D.4 JSON exact flag"
+short_desc  = "S3D.4 JSON exact flag"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=5", "--format", "json"]
+validator   = "S3D.4"
+
+[[test]]
+id          = "S3E.1"
+group       = "aggregation"
+name        = "S3E.1 CSV metadata comments"
+title       = "S3E.1 CSV metadata comments"
+short_desc  = "S3E.1 CSV metadata comments"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=1", "--format", "csv"]
+
+[[test]]
+id          = "S3G.1"
+group       = "aggregation"
+name        = "S3G.1 sample_sort desc JSON"
+title       = "S3G.1 sample_sort desc JSON"
+short_desc  = "S3G.1 sample_sort desc JSON"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:drive,top=3,sample=3,sort=-size", "--format", "json"]
+validator   = "S3G.1"
+
+[[test]]
+id          = "S3G.2"
+group       = "general"
+name        = "S3G.2 --count shorthand"
+title       = "S3G.2 --count shorthand"
+short_desc  = "S3G.2 --count shorthand"
+cli_args    = ["*.exe", "--count"]
+
+[[test]]
+id          = "S3G.3"
+group       = "aggregation"
+name        = "S3G.3 --rows with --agg"
+title       = "S3G.3 --rows with --agg"
+short_desc  = "S3G.3 --rows with --agg"
+cli_args    = ["*.exe", "--limit", "5", "--agg", "count", "--rows"]
+
+[[test]]
+id          = "S3G.4"
+group       = "general"
+name        = "S3G.4 --facet type:5"
+title       = "S3G.4 --facet type:5"
+short_desc  = "S3G.4 --facet type:5"
+cli_args    = ["*", "--facet", "type:5"]
+
+[[test]]
+id          = "S3G.5"
+group       = "general"
+name        = "S3G.5 --stats size"
+title       = "S3G.5 --stats size"
+short_desc  = "S3G.5 --stats size"
+cli_args    = ["*.exe", "--stats", "size"]
+
+[[test]]
+id          = "S3G.6"
+group       = "general"
+name        = "S3G.6 --histogram size:1048576"
+title       = "S3G.6 --histogram size:1048576"
+short_desc  = "S3G.6 --histogram size:1048576"
+cli_args    = ["*.exe", "--histogram", "size:1048576"]
+
+[[test]]
+id          = "S3G.7"
+group       = "aggregation"
+name        = "S3G.7 rollup path depth=3"
+title       = "S3G.7 rollup path depth=3"
+short_desc  = "S3G.7 rollup path depth=3"
+cli_args    = ["*", "--limit", "0", "--agg", "rollup:path,depth=3,top=5", "--format", "table"]
+
+[[test]]
+id          = "S3G.8"
+group       = "aggregation"
+name        = "S3G.8 multiple --agg mixed"
+title       = "S3G.8 multiple --agg mixed"
+short_desc  = "S3G.8 multiple --agg mixed"
+cli_args    = ["*", "--limit", "0", "--agg", "count", "--agg", "terms:extension,top=3", "--agg", "stats:size", "--format", "json"]
+validator   = "S3G.8"
+
+# ── S3B: Facet Values (API-only, method not yet implemented) ─────────────
+
+[[test]]
+id          = "S3B.1"
+group       = "aggregation"
+name        = "S3B.1 facet_values paged (top 3)"
+title       = "Facet values via terms aggregation with top=3"
+short_desc  = "terms:extension top=3 — simulates facet_values pagination"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=3", "--format", "json"]
+validator   = "S3B.1"
+targets     = ["api"]
+
+[[test]]
+id          = "S3B.2"
+group       = "aggregation"
+name        = "S3B.2 facet_values all ext (top 10000)"
+title       = "Facet values via terms aggregation with top=10000"
+short_desc  = "terms:extension top=10000 — returns all extension facet values"
+cli_args    = ["*", "--limit", "0", "--agg", "terms:extension,top=10000", "--format", "json"]
+validator   = "S3B.2"
+targets     = ["api"]
+
+# ── S3misc: Miscellaneous aggregation tests ──────────────────────────────
+
+[[test]]
+id          = "S3misc.1"
+group       = "aggregation"
+name        = "S3misc.1 raw power syntax"
+title       = "Raw aggregation power syntax"
+short_desc  = "terms:extension,top=5,sample=2,sort=size via raw kind"
+cli_args    = ["*.exe", "--files-only", "--agg", "terms:extension,top=5,sample=2,sort=size", "--format", "json"]
+validator   = "S3misc.1"
+
+[[test]]
+id          = "S3misc.2"
+group       = "aggregation"
+name        = "S3misc.2 count agg"
+title       = "Count aggregation"
+short_desc  = "Simple count aggregation"
+cli_args    = ["*.exe", "--files-only", "--agg", "count", "--format", "json"]
+validator   = "S3misc.2"
+
+[[test]]
+id          = "S3misc.3"
+group       = "aggregation"
+name        = "S3misc.3 include_rows=false"
+title       = "Aggregation-only query (no rows)"
+short_desc  = "include_rows=false returns only aggs, no rows"
+cli_args    = ["*", "--files-only", "--agg", "terms:extension,top=5", "--format", "json"]
+validator   = "S3misc.3"
+
+[[test]]
+id          = "S3misc.4"
+group       = "aggregation"
+name        = "S3misc.4 include_rows=true"
+title       = "Aggregation with rows"
+short_desc  = "include_rows=true returns both rows and aggs"
+cli_args    = ["*.exe", "--files-only", "--limit", "5", "--agg", "terms:extension,top=3", "--format", "json"]
+validator   = "S3misc.4"

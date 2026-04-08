@@ -602,10 +602,13 @@ pub fn search_index(
         sort_desc,
         limit,
         is_match_all,
+        hide_system = search_filters.hide_system,
+        filters_empty = search_filters.is_empty(),
         "[1] search_index entry"
     );
 
     if is_match_all {
+        let t_top_n = Instant::now();
         rows = super::query::collect_global_top_n(
             &active_drives,
             limit,
@@ -614,8 +617,16 @@ pub fn search_index(
             filter_mode,
             search_filters,
         );
+        let top_n_ms = t_top_n.elapsed().as_millis();
+        tracing::debug!(rows = rows.len(), top_n_ms, "[2] collect_global_top_n done");
         if search_filters.needs_display_row_filter() {
+            let t_post = Instant::now();
             super::filters::apply_search_filters(&mut rows, search_filters);
+            tracing::debug!(
+                rows_after = rows.len(),
+                post_filter_ms = t_post.elapsed().as_millis(),
+                "[3] post-filter done"
+            );
         }
     } else if is_regex {
         let regex_pattern = needle.strip_prefix('>').unwrap_or(&needle);

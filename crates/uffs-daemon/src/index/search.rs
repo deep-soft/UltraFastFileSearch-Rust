@@ -283,7 +283,13 @@ impl IndexManager {
         // ── Aggregation (if requested) ─────────────────────────────
         let agg_results = if !effective_params.aggregations.is_empty() {
             let predicates = Self::build_query_predicates(&effective_params);
-            Self::run_aggregations(&agg_snapshot, &effective_params.aggregations, predicates)
+            Self::run_aggregations(
+                &agg_snapshot,
+                &effective_params.aggregations,
+                predicates,
+                effective_params.agg_cursor.as_deref(),
+                effective_params.agg_page_size,
+            )
         } else {
             vec![]
         };

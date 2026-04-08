@@ -20,6 +20,9 @@ pub struct RollupAccumulator {
     pub mode: RollupMode,
     /// Max groups to track.
     pub top: u16,
+    /// Last computed group key (used by nested rollups to route
+    /// sub-accumulator feeding without recomputing the key).
+    pub last_key: u32,
 }
 
 impl RollupAccumulator {
@@ -30,6 +33,7 @@ impl RollupAccumulator {
             groups: HashMap::new(),
             mode,
             top,
+            last_key: 0,
         }
     }
 
@@ -39,10 +43,22 @@ impl RollupAccumulator {
         let key = match self.mode {
             RollupMode::Drive => u32::from(drive.letter as u8),
             RollupMode::Path { depth } => ancestor_at_depth(record, drive, idx, depth),
+            RollupMode::Ancestor { record_idx } => child_of_ancestor(drive, idx, record_idx),
         };
 
+        self.last_key = key;
         let stats = self.groups.entry(key).or_default();
         stats.feed_value(record.size, record.allocated);
+    }
+
+    /// The group key computed by the most recent `feed()` call.
+    ///
+    /// Used by nested rollup logic to route sub-accumulator feeding
+    /// without recomputing the key.
+    #[inline]
+    #[must_use]
+    pub const fn last_key(&self) -> u32 {
+        self.last_key
     }
 
     /// Merge another rollup accumulator.
@@ -75,7 +91,7 @@ fn ancestor_at_depth(
     _record: &CompactRecord,
     drive: &DriveCompactIndex,
     idx: usize,
-    target_depth: u8,
+    target_depth: u32,
 ) -> u32 {
     // Build the parent chain by walking up.
     let records = &drive.records;
@@ -112,10 +128,41 @@ fn ancestor_at_depth(
     }
 }
 
+/// Walk the parent chain to find which direct child of `ancestor_idx`
+/// the record at `idx` descends from.
+///
+/// If the record IS the ancestor, returns the ancestor itself.
+/// If the record is not a descendant of the ancestor, returns `idx`
+/// unchanged (so it falls into its own bucket).
+fn child_of_ancestor(drive: &DriveCompactIndex, idx: usize, ancestor_idx: u32) -> u32 {
+    let records = &drive.records;
+    let mut current = idx as u32;
+    let mut child = current; // tracks the child one step below
+
+    for _ in 0..256_u16 {
+        if current == ancestor_idx {
+            return child;
+        }
+        let ci = current as usize;
+        if ci >= records.len() {
+            break;
+        }
+        let parent = records[ci].parent_idx;
+        if parent == current {
+            break; // self-referencing root — ancestor not found
+        }
+        child = current;
+        current = parent;
+    }
+
+    // Not a descendant of ancestor — return own index.
+    idx as u32
+}
+
 /// Resolve a rollup key (record index) to a display name.
 ///
 /// For drive rollups, key is the drive letter ordinal.
-/// For path rollups, key is the record index → look up name.
+/// For path/ancestor rollups, key is the record index → look up name.
 #[must_use]
 pub fn resolve_rollup_key(key: u32, mode: &RollupMode, drive: &DriveCompactIndex) -> String {
     match mode {
@@ -123,11 +170,11 @@ pub fn resolve_rollup_key(key: u32, mode: &RollupMode, drive: &DriveCompactIndex
             let ch = char::from(key as u8);
             format!("{ch}:")
         }
-        RollupMode::Path { .. } => {
+        RollupMode::Path { .. } | RollupMode::Ancestor { .. } => {
             let idx = key as usize;
-            if idx < drive.names.len() {
-                let name = &drive.names[idx];
-                format!("{}:\\{}", drive.letter, name)
+            if idx < drive.records.len() {
+                let name = drive.records[idx].name(&drive.names);
+                format!("{}:\\{name}", drive.letter)
             } else {
                 format!("record_{key}")
             }
@@ -150,5 +197,174 @@ mod tests {
     fn rollup_accumulator_path_mode() {
         let acc = RollupAccumulator::new(RollupMode::Path { depth: 1 }, 30);
         assert_eq!(acc.mode, RollupMode::Path { depth: 1 });
+    }
+
+    #[test]
+    fn rollup_accumulator_ancestor_mode() {
+        let acc = RollupAccumulator::new(RollupMode::Ancestor { record_idx: 42 }, 20);
+        assert_eq!(acc.mode, RollupMode::Ancestor { record_idx: 42 });
+        assert_eq!(acc.top, 20);
+    }
+
+    /// Build a minimal drive index for ancestor tests.
+    ///
+    /// Tree structure (record indices):
+    /// ```text
+    ///   0 (root)
+    ///   ├── 1 (folder_a)
+    ///   │   ├── 3 (file_x)
+    ///   │   └── 4 (sub_folder)
+    ///   │       └── 5 (file_y)
+    ///   └── 2 (folder_b)
+    ///       └── 6 (file_z)
+    /// ```
+    fn build_ancestor_test_drive() -> DriveCompactIndex {
+        use std::path::PathBuf;
+
+        use crate::compact::{ChildrenIndex, CompactRecord, ExtensionIndex, IndexSource};
+        use crate::trigram::TrigramIndex;
+
+        // Build names blob: concatenated UTF-8 strings.
+        let name_strs = [
+            "root",
+            "folder_a",
+            "folder_b",
+            "file_x",
+            "sub_folder",
+            "file_y",
+            "file_z",
+        ];
+        let mut names_blob = Vec::new();
+        let mut offsets = Vec::new();
+        for name in &name_strs {
+            offsets.push(names_blob.len() as u32);
+            names_blob.extend_from_slice(name.as_bytes());
+        }
+
+        let dir = 0x0010_u32; // FILE_ATTRIBUTE_DIRECTORY
+        let records = vec![
+            CompactRecord {
+                parent_idx: 0,
+                size: 0,
+                allocated: 0,
+                flags: dir,
+                name_offset: offsets[0],
+                name_len: name_strs[0].len() as u16,
+                ..Default::default()
+            },
+            CompactRecord {
+                parent_idx: 0,
+                size: 0,
+                allocated: 0,
+                flags: dir,
+                name_offset: offsets[1],
+                name_len: name_strs[1].len() as u16,
+                ..Default::default()
+            },
+            CompactRecord {
+                parent_idx: 0,
+                size: 0,
+                allocated: 0,
+                flags: dir,
+                name_offset: offsets[2],
+                name_len: name_strs[2].len() as u16,
+                ..Default::default()
+            },
+            CompactRecord {
+                parent_idx: 1,
+                size: 1000,
+                allocated: 4096,
+                flags: 0,
+                name_offset: offsets[3],
+                name_len: name_strs[3].len() as u16,
+                ..Default::default()
+            },
+            CompactRecord {
+                parent_idx: 1,
+                size: 0,
+                allocated: 0,
+                flags: dir,
+                name_offset: offsets[4],
+                name_len: name_strs[4].len() as u16,
+                ..Default::default()
+            },
+            CompactRecord {
+                parent_idx: 4,
+                size: 2000,
+                allocated: 4096,
+                flags: 0,
+                name_offset: offsets[5],
+                name_len: name_strs[5].len() as u16,
+                ..Default::default()
+            },
+            CompactRecord {
+                parent_idx: 2,
+                size: 3000,
+                allocated: 4096,
+                flags: 0,
+                name_offset: offsets[6],
+                name_len: name_strs[6].len() as u16,
+                ..Default::default()
+            },
+        ];
+
+        let children = ChildrenIndex::build(&records);
+
+        DriveCompactIndex {
+            letter: 'C',
+            records,
+            names: names_blob,
+            trigram: TrigramIndex::empty(),
+            children,
+            ext_index: ExtensionIndex::build(&[]),
+            fold: uffs_text::CaseFold::default_table(),
+            ext_names: vec![],
+            source: IndexSource::MftFile(PathBuf::from("C:")),
+            source_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn child_of_ancestor_direct_child() {
+        let drive = build_ancestor_test_drive();
+        // file_x (idx=3) parent is folder_a (idx=1).
+        // ancestor=0 (root) → should return 1 (folder_a).
+        let key = child_of_ancestor(&drive, 3, 0);
+        assert_eq!(key, 1, "file_x's child-of-root should be folder_a");
+    }
+
+    #[test]
+    fn child_of_ancestor_deep_descendant() {
+        let drive = build_ancestor_test_drive();
+        // file_y (idx=5) → parent=4 → parent=1 → parent=0.
+        // ancestor=1 (folder_a) → should return 4 (sub_folder).
+        let key = child_of_ancestor(&drive, 5, 1);
+        assert_eq!(key, 4, "file_y's child-of-folder_a should be sub_folder");
+    }
+
+    #[test]
+    fn child_of_ancestor_is_self_when_direct() {
+        let drive = build_ancestor_test_drive();
+        // file_x (idx=3) parent is folder_a (idx=1).
+        // ancestor=1 → should return 3 (file_x itself is the direct child).
+        let key = child_of_ancestor(&drive, 3, 1);
+        assert_eq!(key, 3, "file_x is a direct child of folder_a");
+    }
+
+    #[test]
+    fn child_of_ancestor_not_descendant() {
+        let drive = build_ancestor_test_drive();
+        // file_z (idx=6) parent is folder_b (idx=2).
+        // ancestor=1 (folder_a) → not a descendant → returns own idx.
+        let key = child_of_ancestor(&drive, 6, 1);
+        assert_eq!(key, 6, "file_z is not a descendant of folder_a");
+    }
+
+    #[test]
+    fn resolve_rollup_key_ancestor_mode() {
+        let drive = build_ancestor_test_drive();
+        let mode = RollupMode::Ancestor { record_idx: 0 };
+        let name = resolve_rollup_key(1, &mode, &drive);
+        assert_eq!(name, "C:\\folder_a");
     }
 }

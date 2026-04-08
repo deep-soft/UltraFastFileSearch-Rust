@@ -21,6 +21,7 @@
 //   Scenario H: Stats accumulation across searches
 //   Scenario I: Kill running → status shows not running
 //   Scenario J: Search auto-starts daemon
+//   Scenario K: Startup timing (COLD → WARM → HOT)
 //
 // Usage:
 //   rust-script scripts/dev/daemon-readiness.rs ~/uffs_data          # macOS with offline data
@@ -450,6 +451,155 @@ fn scenario_j(r: &mut Runner) {
     r.step("J4  Cleanup: stop", |r| { r.run_ok(&["daemon", "stop"])?; Ok(String::new()) });
 }
 
+// ── Startup Timing (COLD → WARM → HOT) ──────────────────────────────────────
+
+/// Delete local MFT index caches so the next startup does a full rebuild.
+fn delete_cache() {
+    // Windows: %LOCALAPPDATA%\uffs\cache
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let p = std::path::PathBuf::from(&local).join("uffs").join("cache");
+        if p.exists() {
+            println!("    Deleting cache: {}", p.display());
+            let _ = std::fs::remove_dir_all(&p);
+        }
+    }
+    // Windows legacy: %TEMP%\uffs_index_cache
+    if let Ok(tmp) = std::env::var("TEMP") {
+        let p = std::path::PathBuf::from(&tmp).join("uffs_index_cache");
+        if p.exists() {
+            println!("    Deleting legacy cache: {}", p.display());
+            let _ = std::fs::remove_dir_all(&p);
+        }
+    }
+    // macOS/Linux: XDG cache or ~/Library/Caches
+    if let Ok(home) = std::env::var("HOME") {
+        for sub in &["Library/Caches/uffs", ".cache/uffs"] {
+            let p = std::path::PathBuf::from(&home).join(sub);
+            if p.exists() {
+                println!("    Deleting cache: {}", p.display());
+                let _ = std::fs::remove_dir_all(&p);
+            }
+        }
+    }
+}
+
+/// Measure daemon start + first-query timing at a given cache level.
+fn measure_startup(r: &Runner, label: &str) -> Result<(u128, u128, usize)> {
+    // 1. Start daemon (blocking).
+    let mut start_args: Vec<&str> = vec!["daemon", "start"];
+    let sa = r.source_args();
+    start_args.extend(&sa);
+    let t0 = Instant::now();
+    let _ = r.run_ok(&start_args);
+    let startup_ms = t0.elapsed().as_millis();
+
+    // 2. First query.
+    let lim = "1";
+    let mut query_args: Vec<&str> = vec![&r.pattern];
+    query_args.extend(&sa);
+    query_args.extend(["--limit", lim]);
+    let t1 = Instant::now();
+    let out = r.run_ok(&query_args)?;
+    let query_ms = t1.elapsed().as_millis();
+    let rows = out.lines().count().saturating_sub(1); // minus header
+
+    println!(
+        "    {} startup {}ms + query {}ms = {}ms ({} rows)",
+        label, startup_ms, query_ms, startup_ms + query_ms, rows
+    );
+    Ok((startup_ms, query_ms, rows))
+}
+
+fn scenario_k(r: &mut Runner) {
+    println!(
+        "\n{}",
+        "── Scenario K: Startup Timing (COLD → WARM → HOT) ──"
+            .cyan()
+            .bold()
+    );
+
+    // COLD: no daemon, no cache
+    r.step("K1  Kill stale daemon", |r| {
+        r.ensure_stopped();
+        Ok(String::new())
+    });
+    println!("    Deleting caches for COLD start...");
+    delete_cache();
+
+    println!("    COLD (no daemon, no cache)...");
+    let cold = match measure_startup(r, "COLD") {
+        Ok(v) => v,
+        Err(e) => {
+            println!("    ↳ {}: {e:#}", "FAILED".red().bold());
+            r.failed += 1;
+            return;
+        }
+    };
+    r.passed += 1;
+    r.timings
+        .push(("K2  COLD startup".to_owned(), cold.0 + cold.1));
+
+    // WARM: cache present, no daemon
+    r.ensure_stopped();
+    std::thread::sleep(Duration::from_secs(1));
+    println!("    WARM (cache present, no daemon)...");
+    let warm = match measure_startup(r, "WARM") {
+        Ok(v) => v,
+        Err(e) => {
+            println!("    ↳ {}: {e:#}", "FAILED".red().bold());
+            r.failed += 1;
+            return;
+        }
+    };
+    r.passed += 1;
+    r.timings
+        .push(("K3  WARM startup".to_owned(), warm.0 + warm.1));
+
+    // HOT: daemon still running from WARM phase
+    println!("    HOT  (daemon running)...");
+    let hot = match measure_startup(r, "HOT") {
+        Ok(v) => v,
+        Err(e) => {
+            println!("    ↳ {}: {e:#}", "FAILED".red().bold());
+            r.failed += 1;
+            return;
+        }
+    };
+    r.passed += 1;
+    r.timings
+        .push(("K4  HOT  startup".to_owned(), hot.0 + hot.1));
+
+    // Summary table
+    let cold_total = cold.0 + cold.1;
+    let warm_total = warm.0 + warm.1;
+    let hot_total = hot.0 + hot.1;
+    println!();
+    println!("  ┌──────────┬────────────┬────────────┬────────────┬───────────┐");
+    println!(
+        "  │ {:^8} │ {:>10} │ {:>10} │ {:>10} │ {:>9} │",
+        "Phase", "Startup", "Query", "Total", "Speedup"
+    );
+    println!("  ├──────────┼────────────┼────────────┼────────────┼───────────┤");
+    for (label, su, qu, tot) in [
+        ("COLD", cold.0, cold.1, cold_total),
+        ("WARM", warm.0, warm.1, warm_total),
+        ("HOT", hot.0, hot.1, hot_total),
+    ] {
+        let speedup = if label == "COLD" {
+            "—".to_string()
+        } else {
+            let s = cold_total as f64 / tot.max(1) as f64;
+            format!("{s:.1}x")
+        };
+        println!(
+            "  │ {:^8} │ {:>7} ms │ {:>7} ms │ {:>7} ms │ {:>9} │",
+            label, su, qu, tot, speedup
+        );
+    }
+    println!("  └──────────┴────────────┴────────────┴────────────┴───────────┘");
+    println!();
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn default_binary() -> String {
@@ -513,6 +663,7 @@ fn main() -> Result<()> {
     scenario_h(&mut r);
     scenario_i(&mut r);
     scenario_j(&mut r);
+    scenario_k(&mut r);
 
     // Final cleanup
     r.ensure_stopped();

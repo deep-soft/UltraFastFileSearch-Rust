@@ -156,6 +156,11 @@ pub struct BucketRow {
     /// A client can re-issue a row-level search using these predicates
     /// to retrieve the actual records behind the bucket.
     pub drilldown: Vec<DrilldownPredicate>,
+    /// Nested sub-aggregation bucket rows (populated by nested rollups).
+    ///
+    /// When a rollup spec has `sub`, each top-level bucket finalizes
+    /// its per-group sub-accumulator and stores the result here.
+    pub sub_buckets: Vec<Self>,
 }
 
 /// A lightweight predicate for drill-down follow-up queries.
@@ -234,6 +239,7 @@ impl BucketRow {
             share_of_total_bytes: share_bytes,
             sample_rows: Vec::new(),
             drilldown: Vec::new(),
+            sub_buckets: Vec::new(),
         }
     }
 }
@@ -266,6 +272,38 @@ fn compute_global_bytes(accumulators: &[GroupAccumulator]) -> u64 {
         }
     }
     0
+}
+
+/// Finalize a standalone accumulator (used by nested rollups).
+///
+/// Wraps `finalize_one` with default options.
+fn finalize_accumulator(
+    acc: GroupAccumulator,
+    total_matched: u64,
+    total_bytes: u64,
+    drives: &[&DriveCompactIndex],
+    _predicates: &[DrilldownPredicate],
+) -> AggregateResult {
+    finalize_one(
+        acc,
+        total_matched,
+        total_bytes,
+        &FinalizeOptions::default(),
+        drives,
+    )
+}
+
+/// Convert a sub-aggregation result into drilldown bucket rows.
+///
+/// Extracts `BucketRow`s from bucket-like result variants; non-bucket
+/// results (count, stats, missing, distinct) produce an empty vec.
+fn sub_result_to_bucket_rows(result: &AggregateResult) -> Vec<BucketRow> {
+    match &result.data {
+        AggregateResultData::Buckets { rows, .. } | AggregateResultData::Rollup { rows, .. } => {
+            rows.clone()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Finalize a single accumulator into an `AggregateResult`.
@@ -424,10 +462,17 @@ fn finalize_one(
             count: seen.len() as u64,
         },
 
-        AccumulatorKind::Rollup { inner, .. } => {
+        AccumulatorKind::Rollup {
+            inner,
+            mut sub_accumulators,
+            ..
+        } => {
             let mode_str = match inner.mode {
                 super::spec::RollupMode::Drive => "drive".to_owned(),
                 super::spec::RollupMode::Path { depth } => format!("path(depth={depth})"),
+                super::spec::RollupMode::Ancestor { record_idx } => {
+                    format!("ancestor(record={record_idx})")
+                }
             };
             let entries = inner.finalize();
             let rows: Vec<_> = entries
@@ -438,7 +483,16 @@ fn finalize_one(
                     } else {
                         super::rollup::resolve_rollup_key(key, &inner.mode, drives[0])
                     };
-                    BucketRow::from_stats(key_str, stats, total_matched, total_bytes)
+                    let mut row = BucketRow::from_stats(key_str, stats, total_matched, total_bytes);
+
+                    // Attach sub-aggregation from nested sub-accumulator.
+                    if let Some(sub_acc) = sub_accumulators.as_mut().and_then(|m| m.remove(&key)) {
+                        let sub_result =
+                            finalize_accumulator(sub_acc, total_matched, total_bytes, drives, &[]);
+                        row.sub_buckets = sub_result_to_bucket_rows(&sub_result);
+                    }
+
+                    row
                 })
                 .collect();
             AggregateResultData::Rollup {

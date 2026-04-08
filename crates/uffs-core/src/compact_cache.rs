@@ -632,6 +632,7 @@ mod tests {
             CompactRecord {
                 name_offset: 0,
                 name_len: 3,
+                name_first_byte: b'f',
                 parent_idx: u32::MAX,
                 flags: 0x0010, // directory
                 ..CompactRecord::default()
@@ -639,12 +640,14 @@ mod tests {
             CompactRecord {
                 name_offset: 3,
                 name_len: 3,
+                name_first_byte: b'b',
                 parent_idx: 0,
                 ..CompactRecord::default()
             },
             CompactRecord {
                 name_offset: 6,
                 name_len: 3,
+                name_first_byte: b'b',
                 parent_idx: 0,
                 ..CompactRecord::default()
             },

@@ -126,6 +126,10 @@ pub struct SearchConfig<'a> {
     agg_specs: Vec<String>,
     /// Force row output even when aggregates are present (--rows flag).
     force_rows: bool,
+    /// Aggregate cursor for pagination.
+    agg_cursor: Option<String>,
+    /// Aggregate page size.
+    agg_page_size: Option<u16>,
 }
 
 impl<'a> SearchConfig<'a> {
@@ -140,6 +144,8 @@ impl<'a> SearchConfig<'a> {
         format: &'a str,
         data_dir: Option<PathBuf>,
         mft_file: Vec<PathBuf>,
+        agg_cursor: Option<String>,
+        agg_page_size: Option<u16>,
     ) -> Self {
         Self {
             pattern,
@@ -198,6 +204,8 @@ impl<'a> SearchConfig<'a> {
             start_time: std::time::Instant::now(),
             agg_specs,
             force_rows: false,
+            agg_cursor,
+            agg_page_size,
         }
     }
 }
@@ -283,6 +291,8 @@ pub async fn search(
     tz_offset: Option<i32>,
     agg_specs: Vec<String>,
     force_rows: bool,
+    agg_cursor: Option<String>,
+    agg_page_size: Option<u16>,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
     debug!("[TIMING] search() entered at 0ms");
@@ -346,6 +356,8 @@ pub async fn search(
         tz_offset,
         agg_specs,
         force_rows,
+        agg_cursor,
+        agg_page_size,
         start_time,
     )?;
 

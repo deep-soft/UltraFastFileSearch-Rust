@@ -1,8 +1,9 @@
 //! JSON-RPC request handler: dispatches methods to [`IndexManager`].
 
 use uffs_client::protocol::{
-    ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, LoadDriveParams, LoadDriveResponse, RefreshParams,
-    RpcErrorResponse, RpcRequest, RpcResponse, SearchParams,
+    AggregateSpecWire, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, FacetValuesParams,
+    FacetValuesResponse, LoadDriveParams, LoadDriveResponse, RefreshParams, RpcErrorResponse,
+    RpcRequest, RpcResponse, SearchParams,
 };
 
 /// Maximum pattern length to prevent regex `DoS` (`S4.4.3`).
@@ -33,6 +34,7 @@ impl RequestHandler {
             "info" => self.handle_info(id, req).await,
             "load_drive" => self.handle_load_drive(id, req).await,
             "refresh" => self.handle_refresh(id, req),
+            "facet_values" => self.handle_facet_values(id, req).await,
             "keepalive" => self.handle_keepalive(id, req),
             "shutdown" => self.handle_shutdown(id, req),
             _ => serde_json::to_string(&RpcErrorResponse::error(
@@ -197,6 +199,72 @@ impl RequestHandler {
 
         let response = self.index.info(file_path).await;
         let result = serde_json::to_value(&response).unwrap_or_default();
+        serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
+    }
+
+    /// Handle `facet_values` method — convenience wrapper for distinct
+    /// field values with counts.
+    ///
+    /// Translates to a `search` call with a `terms` aggregation, then
+    /// reshapes the response to return just the values and pagination.
+    async fn handle_facet_values(&self, id: u64, req: &RpcRequest) -> String {
+        let fv_params: FacetValuesParams = req
+            .params
+            .as_ref()
+            .and_then(|val| serde_json::from_value(val.clone()).ok())
+            .unwrap_or_default();
+
+        // Build a terms aggregation spec for the requested field.
+        // `top` controls how many distinct values the engine computes.
+        // We always ask for all values (up to u16::MAX) and rely on
+        // `agg_page_size` to paginate the wire response.
+        let agg_spec = AggregateSpecWire {
+            kind: "terms".to_owned(),
+            label: Some(format!("facet_{}", fv_params.field)),
+            field: Some(fv_params.field.clone()),
+            top: Some(u16::MAX),
+            interval: None,
+            calendar: None,
+            boundaries: vec![],
+            metrics: vec!["count".to_owned(), "total_bytes".to_owned()],
+            preset: None,
+            sample: None,
+            sample_sort: None,
+            sample_desc: None,
+        };
+
+        let search_params = SearchParams {
+            pattern: fv_params.pattern,
+            aggregations: vec![agg_spec],
+            include_rows: false,
+            limit: Some(0),
+            agg_cursor: fv_params.cursor,
+            agg_page_size: fv_params.page_size,
+            ..Default::default()
+        };
+
+        let response = self.index.search(&search_params).await;
+
+        // Extract the first aggregation result.
+        let (values, next_cursor, total_distinct) = response.aggregations.first().map_or_else(
+            || (vec![], None, None),
+            |agg| {
+                (
+                    agg.buckets.clone(),
+                    agg.next_cursor.clone(),
+                    agg.total_groups,
+                )
+            },
+        );
+
+        let fv_response = FacetValuesResponse {
+            field: fv_params.field,
+            values,
+            total_distinct,
+            next_cursor,
+        };
+
+        let result = serde_json::to_value(&fv_response).unwrap_or_default();
         serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
     }
 

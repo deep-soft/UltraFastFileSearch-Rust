@@ -308,6 +308,8 @@ async fn run() -> Result<()> {
                     "table",
                     data_dir,
                     mft_file,
+                    None,
+                    None,
                 );
                 commands::search::run_with_config(&config).await?;
             }
@@ -317,6 +319,8 @@ async fn run() -> Result<()> {
             format,
             data_dir,
             mft_file,
+            agg_cursor,
+            agg_page_size,
         }) => {
             // Route through the standard search path — aggregate-only,
             // no rows returned.  The search daemon lifecycle (auto-start,
@@ -332,6 +336,8 @@ async fn run() -> Result<()> {
                 &format,
                 data_dir,
                 mft_file,
+                agg_cursor,
+                agg_page_size,
             );
             commands::search::run_with_config(&config).await?;
         }
@@ -542,6 +548,8 @@ async fn dispatch_search(
             agg
         },
         cli.rows,
+        cli.agg_cursor,
+        cli.agg_page_size,
     )
     .await
 }

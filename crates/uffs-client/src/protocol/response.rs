@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AggregateResultWire, RpcError, RpcErrorResponse, RpcRequest, RpcResponse, SearchResponseMode,
-    SearchSortSpec,
+    AggregateResultWire, BucketWire, RpcError, RpcErrorResponse, RpcRequest, RpcResponse,
+    SearchResponseMode, SearchSortSpec,
 };
 
 /// Parameters for the `refresh` method.
@@ -39,6 +39,60 @@ pub struct LoadDriveResponse {
     pub already_loaded: Vec<char>,
     /// Errors encountered (drive letter → message).
     pub errors: Vec<String>,
+}
+
+/// Parameters for the `facet_values` convenience method.
+///
+/// Retrieves the distinct values (with counts) for a given field.
+/// Internally translates to a `search` with a `terms` aggregation.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct FacetValuesParams {
+    /// Field to facet on (e.g. `"extension"`, `"type"`).
+    #[serde(default = "default_facet_field")]
+    pub field: String,
+
+    /// Optional glob pattern to restrict which records are included.
+    /// Defaults to `"*"` (all records).
+    #[serde(default = "default_pattern")]
+    pub pattern: String,
+
+    /// Maximum number of values to return per page.
+    /// Defaults to `50`.
+    #[serde(default)]
+    pub page_size: Option<u16>,
+
+    /// Cursor token from a previous response for pagination.
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// Default facet field.
+fn default_facet_field() -> String {
+    "extension".to_owned()
+}
+
+/// Default pattern.
+fn default_pattern() -> String {
+    "*".to_owned()
+}
+
+/// Response from the `facet_values` method.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FacetValuesResponse {
+    /// The field that was faceted.
+    pub field: String,
+
+    /// Facet values with counts, sorted by count descending.
+    pub values: Vec<BucketWire>,
+
+    /// Total number of distinct values (before pagination).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_distinct: Option<usize>,
+
+    /// Cursor for the next page.  `None` when all values fit in this
+    /// page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// Parameters for the `info` method.

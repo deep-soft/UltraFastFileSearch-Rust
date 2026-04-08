@@ -47,6 +47,17 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
     search_filters: &mut SearchFilters,
 ) -> Vec<DisplayRow> {
     let has_filters = !search_filters.is_empty() || !matches!(filter_mode, FilterMode::All);
+    tracing::debug!(
+        has_filters,
+        hide_system = search_filters.hide_system,
+        filters_empty = search_filters.is_empty(),
+        filter_mode = ?filter_mode,
+        limit,
+        sort_column = ?sort_column,
+        sort_desc,
+        num_drives = drives.len(),
+        "[TOP-N] entering collect_global_top_n_numeric"
+    );
 
     // For bounded queries use a BinaryHeap capped at `limit` — O(N log K)
     // instead of O(N log N).  For "unlimited" (limit >= 1M or usize::MAX)
@@ -233,8 +244,16 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
         );
     }
 
+    let t_scan_all = std::time::Instant::now();
+    let mut total_records_scanned: u64 = 0;
+    let mut total_filtered_out: u64 = 0;
+
     for (drive_idx, drive_ref) in drives.iter().enumerate() {
         let drive = drive_ref.as_ref();
+        let t_drive = std::time::Instant::now();
+        let drive_record_count = drive.records.len();
+        let mut drive_filtered = 0_u64;
+
         // Resolve extension filter IDs for this drive (once, not per record).
         search_filters.resolve_ext_ids_for_drive(drive);
 
@@ -308,13 +327,32 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
                     }
                     if !search_filters.matches_record(rec, &drive.names, &mut fold_buf, drive_fold)
                     {
+                        drive_filtered += 1;
                         continue;
                     }
                 }
                 push_record(drive_idx, rec_idx, rec, drive);
             }
         }
+        let drive_ms = t_drive.elapsed().as_millis();
+        total_records_scanned += drive_record_count as u64;
+        total_filtered_out += drive_filtered;
+        tracing::debug!(
+            drive = %drive.letter,
+            records = drive_record_count,
+            filtered_out = drive_filtered,
+            has_filters,
+            elapsed_ms = drive_ms,
+            "[SCAN] drive scan complete"
+        );
     }
+    let scan_ms = t_scan_all.elapsed().as_millis();
+    tracing::debug!(
+        total_records = total_records_scanned,
+        total_filtered = total_filtered_out,
+        scan_ms,
+        "[SCAN] all drives scanned"
+    );
 
     // Merge into sorted candidates Vec.
     let mut candidates: Vec<(u16, u32, i64)> = if use_heap {

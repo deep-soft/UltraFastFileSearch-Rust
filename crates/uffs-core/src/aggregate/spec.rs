@@ -110,6 +110,11 @@ pub enum AggregateKind {
         metrics: Vec<BucketMetric>,
         /// Optional sample rows per group.
         sample: Option<TopHitsSpec>,
+        /// Optional nested sub-aggregation per group (max 1 level deep in v1).
+        ///
+        /// When set, each top-level bucket runs a sub-aggregation on
+        /// its members and the result appears in `BucketWire.drilldown`.
+        sub: Option<Box<AggregateSpec>>,
     },
 
     /// Duplicate candidate detection.
@@ -129,13 +134,27 @@ pub enum AggregateKind {
 
 /// Rollup mode for path-based or drive-based rollups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(
+    variant_size_differences,
+    reason = "Ancestor carries a u32 record index; small enum overall"
+)]
 pub enum RollupMode {
     /// Group by drive letter.
     Drive,
     /// Group by path at a specific depth from drive root.
     Path {
         /// Depth from drive root (1 = top-level folder).
-        depth: u8,
+        depth: u32,
+    },
+    /// Group by the immediate children of a specific ancestor record.
+    ///
+    /// All files that are descendants of `record_idx` are grouped by
+    /// whichever direct child of that record they descend from.
+    /// Files *directly* inside the ancestor (i.e. whose parent IS
+    /// the ancestor) use themselves as the group key.
+    Ancestor {
+        /// Record index of the ancestor to drill into.
+        record_idx: u32,
     },
 }
 
@@ -608,6 +627,7 @@ mod tests {
             top: 5,
             metrics: vec![BucketMetric::Count],
             sample: Some(TopHitsSpec::default()),
+            sub: None,
         });
         if let AggregateKind::Rollup { sample, .. } = &spec.kind {
             assert!(sample.is_some());

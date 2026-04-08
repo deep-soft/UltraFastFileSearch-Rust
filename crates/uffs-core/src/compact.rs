@@ -67,13 +67,21 @@ pub struct CompactRecord {
     /// Saturates at `u16::MAX` (65 535) for extremely deep paths.
     pub path_len: u16,
 
+    /// First byte of the filename (e.g. `b'$'` for NTFS metafiles).
+    ///
+    /// Cached here so that hot-path filters like `--hide-system` (which only
+    /// need to check `name.starts_with('$')`) can avoid touching the names
+    /// arena entirely — turning a random cache-miss into a sequential field
+    /// read from the `CompactRecord` array.
+    pub name_first_byte: u8,
+
     /// Explicit tail padding for 8-byte struct alignment.
     /// Required by `bytemuck::Pod` — no implicit padding allowed.
     #[expect(
         clippy::pub_underscore_fields,
         reason = "bytemuck Pod requires all fields same visibility"
     )]
-    pub _pad: [u8; 2],
+    pub _pad: [u8; 1],
 }
 
 impl CompactRecord {
@@ -85,6 +93,16 @@ impl CompactRecord {
     #[must_use]
     pub const fn is_directory(self) -> bool {
         self.flags & Self::DIRECTORY_BIT != 0
+    }
+
+    /// Returns `true` if the filename starts with `$` (NTFS system metafile).
+    ///
+    /// Uses the cached [`name_first_byte`](Self::name_first_byte) field so the
+    /// check is a single byte comparison — no names-arena access required.
+    #[inline]
+    #[must_use]
+    pub const fn is_system_metafile(self) -> bool {
+        self.name_first_byte == b'$'
     }
 
     /// Get the name from a names blob.
@@ -364,14 +382,96 @@ impl DriveCompactIndex {
     }
 }
 
+/// Expand alternate data streams (ADS) for a single record, producing the
+/// name × stream cross product as extra `CompactRecord` entries.
+#[expect(
+    clippy::single_call_fn,
+    reason = "Extracted to keep expand_links_and_ads under the too_many_lines limit"
+)]
+fn expand_ads_streams(
+    index: &MftIndex,
+    record: &uffs_mft::index::FileRecord,
+    resolve_parent: &dyn Fn(u64, u64) -> u32,
+    names: &mut Vec<u8>,
+    extra: &mut Vec<CompactRecord>,
+) {
+    // Collect all names for this record (primary + hardlinks).
+    let mut all_names: Vec<(&str, u32)> = Vec::new();
+    let primary_name = index.get_name(&record.first_name.name);
+    if !primary_name.is_empty() {
+        let pid = resolve_parent(record.first_name.parent_frs, record.frs);
+        all_names.push((primary_name, pid));
+    }
+    if record.name_count > 1 {
+        let mut le = record.first_name.next_entry;
+        while le != uffs_mft::NO_ENTRY {
+            let Some(lnk) = index.links.get(le as usize) else {
+                break;
+            };
+            let ln = index.get_name(&lnk.name);
+            if !ln.is_empty() {
+                let lp = resolve_parent(lnk.parent_frs, record.frs);
+                all_names.push((ln, lp));
+            }
+            le = lnk.next_entry;
+        }
+    }
+
+    // Walk output streams (skip default $DATA at head of chain).
+    let mut se = record.first_stream.next_entry;
+    while se != uffs_mft::NO_ENTRY {
+        let Some(stream) = index.streams.get(se as usize) else {
+            break;
+        };
+        if stream.is_output_stream() {
+            let sn = index.stream_name(stream);
+            if !sn.is_empty() {
+                for &(base_name, parent_idx) in &all_names {
+                    let combined = format!("{base_name}:{sn}");
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "names buffer < 4GB for any real volume"
+                    )]
+                    let name_offset = names.len() as u32;
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "combined name length < 65535 chars"
+                    )]
+                    let name_len = combined.len() as u16;
+                    names.extend_from_slice(combined.as_bytes());
+
+                    extra.push(CompactRecord {
+                        name_offset,
+                        name_len,
+                        extension_id: 0,
+                        flags: record.stdinfo.flags,
+                        parent_idx,
+                        size: stream.size.length,
+                        allocated: stream.size.allocated,
+                        created: record.stdinfo.created,
+                        modified: record.stdinfo.modified,
+                        accessed: record.stdinfo.accessed,
+                        descendants: 0,
+                        treesize: 0,
+                        tree_allocated: 0,
+                        path_len: 0,
+                        name_first_byte: combined.as_bytes().first().copied().unwrap_or(0),
+                        _pad: [0; 1],
+                    });
+                }
+            }
+        }
+        se = stream.next_entry;
+    }
+}
+
 /// Expand hardlinks and ADS into additional `CompactRecord` entries.
 ///
 /// Phase 2 (hardlinks): for each valid record with `name_count > 1`, walks the
 /// link chain and creates additional records with alternate name/parent.
 ///
-/// Phase 3 (ADS): for each valid record with `stream_count > 1`, creates
-/// `CompactRecord`s for every `(name × stream)` combination. This includes
-/// both primary and hardlink names — matching C++ baseline behavior.
+/// Phase 3 (ADS): delegates to [`expand_ads_streams`] for each valid record
+/// with `stream_count > 1`.
 #[expect(
     clippy::single_call_fn,
     reason = "Extracted to keep build_compact_index under the too_many_lines limit"
@@ -412,83 +512,16 @@ fn expand_links_and_ads(
                     treesize: record.treesize,
                     tree_allocated: record.tree_allocated,
                     path_len: 0,
-                    _pad: [0; 2],
+                    name_first_byte: names.get(link.name.offset as usize).copied().unwrap_or(0),
+                    _pad: [0; 1],
                 });
                 link_entry = link.next_entry;
             }
         }
 
         // Phase 3: ADS expansion (name × stream cross product).
-        if record.stream_count <= 1 {
-            continue;
-        }
-
-        // Collect all names for this record (primary + hardlinks).
-        let mut all_names: Vec<(&str, u32)> = Vec::new();
-        let primary_name = index.get_name(&record.first_name.name);
-        if !primary_name.is_empty() {
-            let pid = resolve_parent(record.first_name.parent_frs, record.frs);
-            all_names.push((primary_name, pid));
-        }
-        if record.name_count > 1 {
-            let mut le = record.first_name.next_entry;
-            while le != uffs_mft::NO_ENTRY {
-                let Some(lnk) = index.links.get(le as usize) else {
-                    break;
-                };
-                let ln = index.get_name(&lnk.name);
-                if !ln.is_empty() {
-                    let lp = resolve_parent(lnk.parent_frs, record.frs);
-                    all_names.push((ln, lp));
-                }
-                le = lnk.next_entry;
-            }
-        }
-
-        // Walk output streams (skip default $DATA at head of chain).
-        let mut se = record.first_stream.next_entry;
-        while se != uffs_mft::NO_ENTRY {
-            let Some(stream) = index.streams.get(se as usize) else {
-                break;
-            };
-            if stream.is_output_stream() {
-                let sn = index.stream_name(stream);
-                if !sn.is_empty() {
-                    for &(base_name, parent_idx) in &all_names {
-                        let combined = format!("{base_name}:{sn}");
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "names buffer < 4GB for any real volume"
-                        )]
-                        let name_offset = names.len() as u32;
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "combined name length < 65535 chars"
-                        )]
-                        let name_len = combined.len() as u16;
-                        names.extend_from_slice(combined.as_bytes());
-
-                        extra.push(CompactRecord {
-                            name_offset,
-                            name_len,
-                            extension_id: 0,
-                            flags: record.stdinfo.flags,
-                            parent_idx,
-                            size: stream.size.length,
-                            allocated: stream.size.allocated,
-                            created: record.stdinfo.created,
-                            modified: record.stdinfo.modified,
-                            accessed: record.stdinfo.accessed,
-                            descendants: 0,
-                            treesize: 0,
-                            tree_allocated: 0,
-                            path_len: 0,
-                            _pad: [0; 2],
-                        });
-                    }
-                }
-            }
-            se = stream.next_entry;
+        if record.stream_count > 1 {
+            expand_ads_streams(index, record, resolve_parent, names, &mut extra);
         }
     }
     extra
@@ -663,7 +696,13 @@ pub fn build_compact_index(
                 treesize: record.treesize,
                 tree_allocated: record.tree_allocated,
                 path_len: 0,
-                _pad: [0; 2],
+                name_first_byte: index
+                    .names
+                    .as_bytes()
+                    .get(name_ref.offset as usize)
+                    .copied()
+                    .unwrap_or(0),
+                _pad: [0; 1],
             }
         })
         .collect();

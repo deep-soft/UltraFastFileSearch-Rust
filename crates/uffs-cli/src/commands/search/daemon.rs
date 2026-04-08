@@ -463,6 +463,8 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
             })
             .collect(),
         include_rows: config.agg_specs.is_empty() || config.force_rows,
+        agg_cursor: config.agg_cursor.clone(),
+        agg_page_size: config.agg_page_size,
     };
     params.populate_canonical_fields();
     params

@@ -377,6 +377,7 @@ fn expand_top_folders() -> Vec<AggregateSpec> {
                 BucketMetric::ShareOfTotalBytes,
             ],
             sample: None,
+            sub: None,
         },
         "top_folders",
     )]

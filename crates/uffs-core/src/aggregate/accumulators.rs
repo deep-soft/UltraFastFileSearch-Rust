@@ -189,6 +189,11 @@ pub enum AccumulatorKind {
         inner: super::rollup::RollupAccumulator,
         /// Requested metrics.
         metrics: Vec<BucketMetric>,
+        /// Per-group sub-accumulators for nested rollups.
+        /// `None` when no sub-aggregation is requested.
+        sub_accumulators: Option<std::collections::HashMap<u32, GroupAccumulator>>,
+        /// The sub-aggregation spec (cloned from `AggregateKind::Rollup.sub`).
+        sub_kind: Option<super::spec::AggregateSpec>,
     },
     /// Duplicate detection accumulator.
     Duplicates {
@@ -289,13 +294,22 @@ impl GroupAccumulator {
                 top,
                 metrics,
                 sample: _,
-            } => (
-                AccumulatorKind::Rollup {
-                    inner: super::rollup::RollupAccumulator::new(*mode, *top),
-                    metrics: metrics.clone(),
-                },
-                None,
-            ),
+                sub,
+            } => {
+                let sub_accumulators = sub
+                    .as_ref()
+                    .map(|_| std::collections::HashMap::<u32, Self>::new());
+                let sub_kind = sub.as_deref().cloned();
+                (
+                    AccumulatorKind::Rollup {
+                        inner: super::rollup::RollupAccumulator::new(*mode, *top),
+                        metrics: metrics.clone(),
+                        sub_accumulators,
+                        sub_kind,
+                    },
+                    None,
+                )
+            }
             AggregateKind::Duplicates {
                 keys,
                 verify,
@@ -398,8 +412,26 @@ impl GroupAccumulator {
                 let key = extract_group_key(field, record, drive);
                 seen.insert(key);
             }
-            AccumulatorKind::Rollup { inner, .. } => {
+            AccumulatorKind::Rollup {
+                inner,
+                sub_accumulators,
+                sub_kind,
+                ..
+            } => {
+                // Compute group key and feed the top-level stats.
                 inner.feed(record, drive, _idx);
+
+                // If nested sub-aggregation is configured, feed the
+                // per-group sub-accumulator.
+                if let (Some(sub_map), Some(sub_spec)) =
+                    (sub_accumulators.as_mut(), sub_kind.as_ref())
+                {
+                    let key = inner.last_key();
+                    let sub_acc = sub_map
+                        .entry(key)
+                        .or_insert_with(|| Self::from_kind(&sub_spec.kind, sub_spec.label.clone()));
+                    sub_acc.feed(record, drive, _idx, drive_ordinal);
+                }
             }
             AccumulatorKind::Duplicates { inner } => {
                 inner.feed(record, drive, _idx);
@@ -456,10 +488,27 @@ impl GroupAccumulator {
                 }
             }
             (
-                AccumulatorKind::Rollup { inner: a, .. },
-                AccumulatorKind::Rollup { inner: b, .. },
+                AccumulatorKind::Rollup {
+                    inner: a,
+                    sub_accumulators: sub_a,
+                    ..
+                },
+                AccumulatorKind::Rollup {
+                    inner: b,
+                    sub_accumulators: sub_b,
+                    ..
+                },
             ) => {
                 a.merge(b);
+                // Merge sub-accumulators if present.
+                if let (Some(map_a), Some(map_b)) = (sub_a.as_mut(), sub_b) {
+                    for (key, acc_b) in map_b {
+                        map_a
+                            .entry(*key)
+                            .and_modify(|acc_a| acc_a.merge(acc_b))
+                            .or_insert_with(|| acc_b.clone());
+                    }
+                }
             }
             // Duplicates don't merge across drives — they run per-drive then finalize.
             _ => {} // mismatched kinds — should not happen

@@ -58,9 +58,12 @@ impl IndexManager {
         snapshot: &DriveIndex,
         wire_specs: &[uffs_client::protocol::AggregateSpecWire],
         query_predicates: Vec<DrilldownPredicate>,
+        agg_cursor: Option<&str>,
+        agg_page_size: Option<u16>,
     ) -> Vec<uffs_client::protocol::AggregateResultWire> {
         use uffs_client::protocol::{AggregateResultWire, BucketWire, StatsWire};
         use uffs_core::aggregate::finalize::{AggregateResultData, FinalizeOptions};
+        use uffs_core::aggregate::pagination::{AggregateCursor, paginate_result};
         use uffs_core::aggregate::spec::AggregateSpec;
 
         // Convert wire specs to core specs.
@@ -90,143 +93,217 @@ impl IndexManager {
             Err(_) => return vec![],
         };
 
+        // ── Apply cursor-based pagination (if requested) ────────────
+        //
+        // When `agg_page_size` is set, paginate bucket/rollup results.
+        // When `agg_cursor` is set, it encodes `result_index:offset:page_size`.
+        let decoded_cursor = agg_cursor.and_then(AggregateCursor::decode);
+        let page_size = decoded_cursor
+            .as_ref()
+            .map(|c| c.page_size)
+            .or_else(|| agg_page_size.map(|ps| ps as usize));
+
         // Convert results to wire format.
         output
             .response
             .results
             .into_iter()
-            .map(|result| {
-                let (kind, field, value, stats, buckets, other_count, total_groups) =
-                    match result.data {
-                        AggregateResultData::Count { value } => (
-                            "count".to_owned(),
-                            None,
-                            Some(value),
-                            None,
-                            vec![],
-                            None,
-                            None,
-                        ),
-                        AggregateResultData::Stats { field, stats } => (
-                            "stats".to_owned(),
-                            Some(field),
-                            None,
-                            Some(StatsWire {
-                                count: stats.count,
-                                sum: stats.sum,
-                                min: stats.min,
-                                max: stats.max,
-                                avg: stats.avg,
-                                waste_bytes: stats.waste_bytes,
-                                waste_pct: stats.waste_pct,
-                            }),
-                            vec![],
-                            None,
-                            None,
-                        ),
-                        AggregateResultData::Buckets {
-                            field,
-                            rows,
-                            other_count,
-                            total_groups,
-                            ..
-                        } => (
-                            "buckets".to_owned(),
-                            Some(field),
-                            None,
-                            None,
-                            rows.into_iter()
-                                .map(|r| {
-                                    let samples =
-                                        r.sample_rows.into_iter().map(sample_row_to_wire).collect();
-                                    let drills =
-                                        r.drilldown.into_iter().map(drilldown_to_wire).collect();
-                                    BucketWire {
-                                        key: r.key,
-                                        count: r.count,
-                                        total_bytes: r.total_bytes,
-                                        total_allocated: Some(r.total_allocated),
-                                        avg_size: Some(r.avg_size),
-                                        share_count: Some(r.share_of_total_count),
-                                        share_bytes: Some(r.share_of_total_bytes),
-                                        sample_rows: samples,
-                                        drilldown: drills,
-                                    }
-                                })
-                                .collect(),
-                            Some(other_count),
-                            Some(total_groups),
-                        ),
-                        AggregateResultData::Missing { field, count } => (
-                            "missing".to_owned(),
-                            Some(field),
-                            Some(count),
-                            None,
-                            vec![],
-                            None,
-                            None,
-                        ),
-                        AggregateResultData::Distinct { field, count } => (
-                            "distinct".to_owned(),
-                            Some(field),
-                            Some(count),
-                            None,
-                            vec![],
-                            None,
-                            None,
-                        ),
-                        AggregateResultData::Rollup { mode, rows } => (
-                            "rollup".to_owned(),
-                            Some(mode),
-                            None,
-                            None,
-                            rows.into_iter()
-                                .map(|r| {
-                                    let samples =
-                                        r.sample_rows.into_iter().map(sample_row_to_wire).collect();
-                                    let drills =
-                                        r.drilldown.into_iter().map(drilldown_to_wire).collect();
-                                    BucketWire {
-                                        key: r.key,
-                                        count: r.count,
-                                        total_bytes: r.total_bytes,
-                                        total_allocated: Some(r.total_allocated),
-                                        avg_size: Some(r.avg_size),
-                                        share_count: Some(r.share_of_total_count),
-                                        share_bytes: Some(r.share_of_total_bytes),
-                                        sample_rows: samples,
-                                        drilldown: drills,
-                                    }
-                                })
-                                .collect(),
-                            None,
-                            None,
-                        ),
-                        AggregateResultData::Duplicates { result } => (
-                            "duplicates".to_owned(),
-                            None,
-                            Some(result.candidate_files),
-                            None,
-                            result
-                                .groups
-                                .into_iter()
-                                .take(20)
-                                .map(|g| BucketWire {
-                                    key: format!("{}x{}", g.count, g.file_size),
-                                    count: g.count,
-                                    total_bytes: g.total_bytes,
-                                    total_allocated: Some(g.reclaimable_bytes),
-                                    avg_size: Some(g.file_size as f64),
-                                    share_count: None,
-                                    share_bytes: None,
-                                    sample_rows: Vec::new(),
-                                    drilldown: Vec::new(),
-                                })
-                                .collect(),
-                            None,
-                            Some(result.candidate_groups),
-                        ),
-                    };
+            .enumerate()
+            .map(|(idx, result)| {
+                // If pagination is active, check if this result should be paginated.
+                let pagination = page_size.and_then(|ps| {
+                    let cursor = decoded_cursor
+                        .as_ref()
+                        .filter(|c| c.result_index == idx)
+                        .cloned()
+                        .unwrap_or_else(|| AggregateCursor::new(idx, ps));
+                    paginate_result(&result, &cursor)
+                });
+
+                let (
+                    kind,
+                    field,
+                    value,
+                    stats,
+                    buckets,
+                    other_count,
+                    total_groups,
+                    exact,
+                    values_complete,
+                ) = match result.data {
+                    AggregateResultData::Count { value } => (
+                        "count".to_owned(),
+                        None,
+                        Some(value),
+                        None,
+                        vec![],
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                    AggregateResultData::Stats { field, stats } => (
+                        "stats".to_owned(),
+                        Some(field),
+                        None,
+                        Some(StatsWire {
+                            count: stats.count,
+                            sum: stats.sum,
+                            min: stats.min,
+                            max: stats.max,
+                            avg: stats.avg,
+                            waste_bytes: stats.waste_bytes,
+                            waste_pct: stats.waste_pct,
+                        }),
+                        vec![],
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                    AggregateResultData::Buckets {
+                        field,
+                        rows,
+                        other_count,
+                        total_groups,
+                        exact,
+                    } => (
+                        "buckets".to_owned(),
+                        Some(field),
+                        None,
+                        None,
+                        rows.into_iter()
+                            .map(|r| {
+                                let samples =
+                                    r.sample_rows.into_iter().map(sample_row_to_wire).collect();
+                                let drills =
+                                    r.drilldown.into_iter().map(drilldown_to_wire).collect();
+                                BucketWire {
+                                    key: r.key,
+                                    count: r.count,
+                                    total_bytes: r.total_bytes,
+                                    total_allocated: Some(r.total_allocated),
+                                    avg_size: Some(r.avg_size),
+                                    share_count: Some(r.share_of_total_count),
+                                    share_bytes: Some(r.share_of_total_bytes),
+                                    sample_rows: samples,
+                                    drilldown: drills,
+                                    sub_buckets: Vec::new(),
+                                }
+                            })
+                            .collect(),
+                        Some(other_count),
+                        Some(total_groups),
+                        Some(exact),
+                        Some(other_count == 0),
+                    ),
+                    AggregateResultData::Missing { field, count } => (
+                        "missing".to_owned(),
+                        Some(field),
+                        Some(count),
+                        None,
+                        vec![],
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                    AggregateResultData::Distinct { field, count } => (
+                        "distinct".to_owned(),
+                        Some(field),
+                        Some(count),
+                        None,
+                        vec![],
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                    AggregateResultData::Rollup { mode, rows } => (
+                        "rollup".to_owned(),
+                        Some(mode),
+                        None,
+                        None,
+                        rows.into_iter()
+                            .map(|r| {
+                                let samples =
+                                    r.sample_rows.into_iter().map(sample_row_to_wire).collect();
+                                let drills =
+                                    r.drilldown.into_iter().map(drilldown_to_wire).collect();
+                                let subs = r
+                                    .sub_buckets
+                                    .into_iter()
+                                    .map(|sub| BucketWire {
+                                        key: sub.key,
+                                        count: sub.count,
+                                        total_bytes: sub.total_bytes,
+                                        total_allocated: Some(sub.total_allocated),
+                                        avg_size: Some(sub.avg_size),
+                                        share_count: Some(sub.share_of_total_count),
+                                        share_bytes: Some(sub.share_of_total_bytes),
+                                        sample_rows: Vec::new(),
+                                        drilldown: Vec::new(),
+                                        sub_buckets: Vec::new(),
+                                    })
+                                    .collect();
+                                BucketWire {
+                                    key: r.key,
+                                    count: r.count,
+                                    total_bytes: r.total_bytes,
+                                    total_allocated: Some(r.total_allocated),
+                                    avg_size: Some(r.avg_size),
+                                    share_count: Some(r.share_of_total_count),
+                                    share_bytes: Some(r.share_of_total_bytes),
+                                    sample_rows: samples,
+                                    drilldown: drills,
+                                    sub_buckets: subs,
+                                }
+                            })
+                            .collect(),
+                        None,
+                        None,
+                        Some(true),
+                        None,
+                    ),
+                    AggregateResultData::Duplicates { result } => (
+                        "duplicates".to_owned(),
+                        None,
+                        Some(result.candidate_files),
+                        None,
+                        result
+                            .groups
+                            .into_iter()
+                            .take(20)
+                            .map(|g| BucketWire {
+                                key: format!("{}x{}", g.count, g.file_size),
+                                count: g.count,
+                                total_bytes: g.total_bytes,
+                                total_allocated: Some(g.reclaimable_bytes),
+                                avg_size: Some(g.file_size as f64),
+                                share_count: None,
+                                share_bytes: None,
+                                sample_rows: Vec::new(),
+                                drilldown: Vec::new(),
+                                sub_buckets: Vec::new(),
+                            })
+                            .collect(),
+                        None,
+                        Some(result.candidate_groups),
+                        None,
+                        None,
+                    ),
+                };
+
+                // Apply pagination: replace full bucket list with the
+                // current page and attach `next_cursor` for the caller.
+                let (buckets, next_cursor) = if let Some(pg) = &pagination {
+                    let start = pg.offset.min(buckets.len());
+                    let end = (start + pg.rows.len()).min(buckets.len());
+                    let page = buckets.get(start..end).map_or_else(Vec::new, <[_]>::to_vec);
+                    (page, pg.next_cursor.clone())
+                } else {
+                    (buckets, None)
+                };
 
                 AggregateResultWire {
                     label: result.label,
@@ -237,6 +314,9 @@ impl IndexManager {
                     buckets,
                     other_count,
                     total_groups,
+                    next_cursor,
+                    exact,
+                    values_complete,
                 }
             })
             .collect()
@@ -407,8 +487,13 @@ impl IndexManager {
                 let mode_str = ws.field.as_deref().unwrap_or("path");
                 let mode = match mode_str {
                     "drive" => RollupMode::Drive,
+                    "ancestor" | "drilldown" => {
+                        // Use interval field as the record index.
+                        let record_idx = ws.interval.unwrap_or(0) as u32;
+                        RollupMode::Ancestor { record_idx }
+                    }
                     _ => {
-                        let depth = ws.interval.unwrap_or(1) as u8;
+                        let depth = ws.interval.unwrap_or(1) as u32;
                         RollupMode::Path { depth }
                     }
                 };
@@ -419,6 +504,7 @@ impl IndexManager {
                     top,
                     metrics,
                     sample: build_sample(ws),
+                    sub: None, // TODO: wire sub-agg from wire type
                 }))
             }
             "duplicates" | "dups" => {

@@ -353,7 +353,8 @@ uffs-core BucketRow                         uffs-daemon                      Buc
 | S3A.1 | Design `BucketCursor` type: opaque string encoding last-seen key + position. | `aggregate/finalize.rs` | §19.3 | S0.7 | ✅ `AggregateCursor` in `aggregate/pagination.rs` with encode/decode |
 | S3A.2 | Implement cursor-based pagination for `Terms:Extension` (high cardinality). Return `next_bucket_cursor` when truncated. | `aggregate/finalize.rs` | §19.3 | S3A.1, S1A.6 | ✅ `paginate_result()` works on any `Buckets` result |
 | S3A.3 | Implement cursor-based pagination for `Rollup:Path` (high cardinality). | `aggregate/finalize.rs` | §19.3 | S3A.1, S2D.3 | ✅ `paginate_result()` also works on `Rollup` results |
-| S3A.4 | Wire cursor param through `SearchParams` → engine → response. | `protocol.rs` | §19.3 | S3A.2 | ⬜ Library-only — cursor not in `SearchParams` wire type or daemon |
+| S3A.4 | Wire cursor param through `SearchParams` → engine → response. | `protocol.rs` | §19.3 | S3A.2 | ✅ `agg_cursor`/`agg_page_size` on `SearchParams`, `next_cursor` on `AggregateResultWire`, daemon applies `paginate_result()`, CLI/MCP display cursor. **⚠️ Stateless**: each page re-runs the full aggregation and slices; see S3A.5. |
+| S3A.5 | Stateful cursor: cache full aggregation result on first request, serve subsequent pages from cache. | `index/aggregation.rs`, `AggregateCache` | §19.3 | S3A.4 | ⬜ **Deferred** — current stateless approach re-queries every page (O(N) per page). For 100K buckets with page_size=100 this means 1000 full MFT scans. A server-side result cache would amortise this, but the daemon already uses 7–16 GB; adding cached aggregation results needs careful memory budgeting. |
 
 ### 3B  `uffs.facet_values` MCP tool
 
@@ -361,22 +362,22 @@ uffs-core BucketRow                         uffs-daemon                      Buc
 |----|------|---------|---------|---------|--------|
 | S3B.1 | Register `uffs.facet_values` tool in MCP `tools/list`. | `uffs-mcp/src/main.rs` | §14.2, App B | S1F.1 | ✅ `uffs_facet_values` registered with field/pattern/prefix/top params |
 | S3B.2 | Implement facet-value search: field + prefix → matching values with counts. | daemon + core | §14.2 | S3B.1, S1A.6 | ✅ MCP handler sends `"terms"` wire kind → daemon converts to `Terms` spec → functional end-to-end. No prefix filtering yet (returns top-N by count). |
-| S3B.3 | Support cursor for large value spaces. | daemon + core | §14.2 | S3A.1, S3B.2 | ⬜ |
+| S3B.3 | Support cursor for large value spaces. | daemon + core | §14.2 | S3A.1, S3B.2 | ✅ `uffs_facet_values` MCP tool accepts `cursor`/`page_size` params, wired through `SearchParams.agg_cursor`/`agg_page_size` → daemon pagination → `next_cursor` in response. ⚠️ Stateless re-query (see S3A.5). |
 
 ### 3C  Hierarchical/path rollups
 
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
 | S3C.1 | Implement `Rollup:Path` at arbitrary depth N. | `aggregate/rollup.rs` | §9.5 | S2D.4 | ✅ `ancestor_at_depth(depth)` handles any depth value |
-| S3C.2 | Implement `Rollup:Ancestor` — group by specific ancestor record. | `aggregate/rollup.rs` | §9.5 | S3C.1 | ⬜ |
-| S3C.3 | Implement nested rollup: `drive → top_folder → type`. | `aggregate/rollup.rs` | §9.5 | S3C.1, S1A.5 | ⬜ |
+| S3C.2 | Implement `Rollup:Ancestor` — group by specific ancestor record. | `aggregate/rollup.rs` | §9.5 | S3C.1 | ✅ `RollupMode::Ancestor { record_idx }` + `child_of_ancestor()`. Parser: `rollup:ancestor,record=N` / `rollup:drilldown,frs=N`. 6 unit tests. |
+| S3C.3 | Implement nested rollup: `drive → top_folder → type`. | `aggregate/rollup.rs` | §9.5 | S3C.1, S1A.5 | ✅ `AggregateKind::Rollup { sub }` + per-group sub-accumulators. Parser: `rollup:drive,sub=terms:type`. Wire: `BucketWire.sub_buckets`. 3 parser tests. |
 
 ### 3D  Exactness/truncation finalization
 
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
-| S3D.1 | Implement `exact` flag per `AggregateResult` — true for all current implementations. | `aggregate/finalize.rs` | §19.4 | S0.7 | 🔧 `exact: true` hardcoded on `AggregateResultData::Buckets` — but not carried through to `AggregateResultWire` |
-| S3D.2 | Implement `values_complete` flag. | `aggregate/finalize.rs` | §19.4 | S3D.1 | ⬜ |
+| S3D.1 | Implement `exact` flag per `AggregateResult` — true for all current implementations. | `aggregate/finalize.rs` | §19.4 | S0.7 | ✅ `exact: Option<bool>` on `AggregateResultWire`, carried from `AggregateResultData::Buckets.exact`. Bucket/rollup results emit `exact: true`; non-bucket results omit (None). 3 serde round-trip tests. |
+| S3D.2 | Implement `values_complete` flag. | `aggregate/finalize.rs` | §19.4 | S3D.1 | ✅ `values_complete: Option<bool>` on `AggregateResultWire`. `true` when `other_count == 0` (all values fit in top-N), `false` when truncated. Set for Buckets results; omitted for non-bucket kinds. |
 | S3D.3 | Implement `other_count` — sum of records in buckets beyond top-N. | `aggregate/finalize.rs` | §19.2 | S0.7 | ✅ Computed in terms finalization; passed through wire as `other_count` |
 
 ### 3E  CSV output
@@ -390,9 +391,19 @@ uffs-core BucketRow                         uffs-daemon                      Buc
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
 | S3F.1 | Unit tests: cursor encode/decode round-trip. | tests | §26.1 | S3A.1 | ✅ `cursor_roundtrip`, `cursor_advance`, `decode_invalid_cursor` |
-| S3F.2 | Integration: paginate through all extensions with cursor, verify total = unpaginated count. | tests | §26.2 | S3A.2 | ⬜ |
-| S3F.3 | Integration: facet_values for ext with prefix "rs" returns matching exts. | tests | §26.2 | S3B.2 | ⬜ Blocked on S3B.2 |
-| S3F.4 | Integration: nested rollup drive→folder→type on synthetic index. | tests | §26.2 | S3C.3 | ⬜ Blocked on S3C.3 |
+| S3F.2 | Integration: paginate through all extensions with cursor, verify total = unpaginated count. | tests | §26.2 | S3A.2 | ✅ `s3f2_paginate_extensions_total_equals_unpaginated` — walks all pages via cursor, verifies total keys & count match, page count = ceil(n/page_size). |
+| S3F.3 | Integration: facet_values for ext with prefix "rs" returns matching exts. | tests | §26.2 | S3B.2 | ✅ `s3f3_terms_extension_prefix_filter` — runs terms:extension, verifies all exts present, client-side prefix filter for 'r', 'm', 'z'. |
+| S3F.4 | Integration: nested rollup drive→folder→type on synthetic index. | tests | §26.2 | S3C.3 | ✅ `s3f4_nested_rollup_drive_with_terms_type` — rollup:drive + sub=terms:type, verifies sub_buckets populated, sub total == drive total. |
+
+### 3G  Display wiring — CLI, MCP, API
+
+| ID | Task | File(s) | Section | Depends | Status |
+|----|------|---------|---------|---------|--------|
+| S3G.1 | CLI table: render `sub_buckets` indented under parent buckets. | `uffs-cli/commands/aggregate.rs` | — | S3C.3 | ✅ Nested sub-buckets rendered with `├─` prefix under parent bucket rows. Extracted `print_table_buckets` helper. |
+| S3G.2 | CLI table+CSV: show `exact`, `values_complete`, `other_count` metadata. | `uffs-cli/commands/aggregate.rs` | — | S3D | ✅ Table: `[truncated]` hint when `values_complete=false`. CSV: `# other_count=`, `# values_complete=false` comment lines. |
+| S3G.3 | MCP summary: render `sub_buckets` in `format_aggregate_summary`. | `uffs-mcp/server.rs` | — | S3C.3 | ✅ Nested sub-buckets rendered with `├─` prefix (up to 5 per parent). Extracted `format_bucket_summary` helper. |
+| S3G.4 | MCP summary: show `exact`, `values_complete`, `next_cursor` hints. | `uffs-mcp/server.rs` | — | S3D | ✅ `[truncated]`, `[approximate]`, `[next_cursor]` hints added to bucket summary. 2 new tests (`summary_renders_sub_buckets`, `summary_shows_values_complete_false`). |
+| S3G.5 | CLI CSV: render `sub_buckets` as `parent/child` composite keys. | `uffs-cli/commands/aggregate.rs` | — | S3C.3 | ✅ Sub-bucket rows emitted with `{parent_key}/{sub_key}` composite key. Extracted `print_csv_buckets` helper. |
 
 ---
 
@@ -551,7 +562,7 @@ Legend: ⬜ Not started · 🔧 In progress · ✅ Complete · ❌ Blocked/Cance
 | M0.5: Stage 0 done | — | 2026-04-06 | ✅ All S0.* done. 26 new tests. Module tree + core types + presets + planner + finalize scaffolded. |
 | M1: Stage 1 shippable | — | **partial** | Core engine ✅. Protocol ✅. `uffs agg <preset>` ✅. **Gaps:** daemon only handles `preset`+`count` wire kinds (S1D.3 🔧). No `--count`/`--facet`/`--stats`/`--histogram` shorthand flags. No serde round-trip tests. No integration tests with synthetic index. `uffs stats` not refactored. |
 | M2: Stage 2 shippable | — | **✅ DONE** | Core library complete: 12 presets ✅, Rollups ✅, Power syntax parser ✅ (13 tests), TopHits ✅ (S2A; 20 tests), Drill-down ✅ (S2B; 3 tests), Testing ✅ (S2F; 6 tests).  **Wire surface complete ✅ (S2G; 14/14 tasks):** `SampleRowWire`/`DrilldownWire` defined, `BucketWire`/`AggregateSpecWire` extended, daemon conversion (3 sites), CLI table/JSON/CSV formatters, MCP summary, query_predicates pass-through, 9 serde round-trip tests, 2 daemon integration tests, 4 CLI tests (T150–T153).  175/175 CLI tests pass, 612 unit tests pass. |
-| M3: Stage 3 shippable | — | **partial** | Pagination library ✅. CSV/TSV export ✅. `uffs_facet_values` MCP tool registered ✅. **Gaps:** Pagination not wired through SearchParams (S3A.4 ⬜). facet_values handler sends `"raw"` wire kind → daemon silently drops (S3B.2 🔧). Nested rollup not started. `exact` not on wire. |
+| M3: Stage 3 shippable | — | **partial** | Pagination library ✅. CSV/TSV export ✅. `uffs_facet_values` MCP tool registered ✅. Pagination wired end-to-end ✅ (S3A.4). **Gaps:** facet_values handler sends `"raw"` wire kind → daemon silently drops (S3B.2 🔧). Nested rollup not started. `exact` not on wire. |
 | M4: Stage 4 shippable | — | **partial** | DuplicateAccumulator ✅. CompositeKey ✅. DuplicateResult ✅. Singleton elimination ✅. OOM guard ✅. **Gaps:** verify=first_bytes/sha256 not implemented (S4C all ⬜). Sample rows not materialized (S4B.3 🔧). No dedicated dup table formatter (S4D.2 🔧). No synthetic-index integration tests. |
 | M5: Stage 5 complete | — | **not started** | AggregateCache library exists but NOT wired into daemon (S5E all 🔧). `--agg` on search sends preset/count to daemon ✅ but power syntax specs silently dropped. Percentiles/forensic/disjunctive all ⬜. |
 
@@ -701,7 +712,7 @@ Modified files:
 | Blocker | Tasks affected | Impact |
 |---------|---------------|--------|
 | ~~**S1D.3:**~~ **RESOLVED** — `convert_wire_spec()` now handles all 13 wire kinds. | — | Power syntax, facet_values, and all aggregate kinds now route through the daemon correctly. |
-| **S3A.4:** Cursor not in SearchParams wire type | S3A (pagination), S3B.3 (facet cursor) | Pagination library works but is unreachable. |
+| ~~**S3A.4:**~~ **RESOLVED** — `agg_cursor`/`agg_page_size` on `SearchParams`, `next_cursor` on `AggregateResultWire` | — | Daemon applies `paginate_result()` after finalization; CLI/MCP display cursor hint. **⚠️ Stateless re-query** — each page re-runs the full aggregation. See S3A.5 for future cached approach. |
 | ~~**S1G.10–16:**~~ **RESOLVED** — 10 synthetic-index integration tests in `aggregate/mod.rs` | — | overview, by_extension, by_type, range, histogram, datehist, perf guards all verified. |
 
 ### Remaining items (54 ⬜ + 11 🔧 = 65/175 not complete):
@@ -713,10 +724,11 @@ Modified files:
 | **P0 — Must fix** | **S2G.7–S2G.10** (4 tasks) | **Render samples + drill-down in CLI table/JSON/CSV + MCP.**  Complete the end-to-end user-facing experience. |
 | **P1 — Should do** | S2G.11 | Wire query_predicates through daemon for full drill-down context. |
 | **P1 — Should do** | S2G.12–S2G.14 (3 tasks) | Serde round-trip, daemon integration, CLI validation tests for wire surface. |
-| **P1** | S3A.4 | Wire cursor through SearchParams → daemon → response |
+| ~~**P1**~~ | ~~S3A.4~~ | ~~Wire cursor through SearchParams → daemon → response~~ ✅ |
 | **P1** | S4C.1–3 | Duplicate verification I/O (Windows-only) |
 | **P2 — Nice to have** | S1E.1,3,4,5,9 | `--count`, `--facet`, `--stats`, `--histogram`, `--rows` shorthand flags |
 | ~~**P2**~~ | ~~S2A.2–4~~ | ~~Sample row heap + materialization~~ **DONE** |
 | ~~**P2**~~ | ~~S2B.1–2~~ | ~~Drill-down predicates~~ **DONE** |
 | **P2** | S1H.1–2 | `uffs stats` → aggregate engine refactor |
+| **P2** | S3A.5 | Stateful cursor: cache aggregation result server-side, serve pages from cache (avoids re-query per page; needs memory budget) |
 | **P3 — Future** | S5A–D | Percentiles, forensic fields, pipeline derivatives, disjunctive facets |

@@ -169,6 +169,20 @@ pub struct Cli {
     #[arg(long)]
     pub rows: bool,
 
+    /// Continue from a previous aggregate page.
+    ///
+    /// Pass the cursor value from a previous `next_cursor` response
+    /// to retrieve the next page of buckets.
+    #[arg(long, value_name = "CURSOR")]
+    pub agg_cursor: Option<String>,
+
+    /// Maximum number of aggregate buckets per page.
+    ///
+    /// Controls how many buckets are returned before pagination.
+    /// Use with `--agg-cursor` to paginate through large result sets.
+    #[arg(long, value_name = "N")]
+    pub agg_page_size: Option<u16>,
+
     /// Debug tree metrics computation (prints detailed hardlink handling info)
     #[arg(long, hide = true)]
     pub debug_tree: bool,
@@ -615,6 +629,17 @@ pub enum Commands {
         /// Raw MFT file(s) to load (comma-separated).
         #[arg(long, value_delimiter = ',')]
         mft_file: Vec<PathBuf>,
+
+        /// Continue from a previous aggregate page.
+        ///
+        /// Pass the cursor value from a previous `next_cursor` response
+        /// to retrieve the next page of buckets.
+        #[arg(long, value_name = "CURSOR")]
+        agg_cursor: Option<String>,
+
+        /// Maximum number of aggregate buckets per page.
+        #[arg(long, value_name = "N")]
+        agg_page_size: Option<u16>,
     },
 
     /// Manage the UFFS background daemon
