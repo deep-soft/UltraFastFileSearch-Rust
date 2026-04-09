@@ -777,10 +777,14 @@ fn csv_col_to_json(col: &str) -> &str {
 fn rpc_field_computed(row: &Value, json_key: &str) -> Option<String> {
     match json_key {
         "_bulkiness" => {
-            let size = field_u64(row, "size");
-            let allocated = field_u64(row, "allocated");
-            if size == 0 { Some("0".to_owned()) }
-            else { Some(((allocated * 100) / size).to_string()) }
+            let is_dir = row.get("is_directory").and_then(|v| v.as_bool()).unwrap_or(false);
+            let (logical, alloc) = if is_dir {
+                (field_u64(row, "treesize"), field_u64(row, "tree_allocated"))
+            } else {
+                (field_u64(row, "size"), field_u64(row, "allocated"))
+            };
+            if logical == 0 { Some("0".to_owned()) }
+            else { Some(((alloc * 100) / logical).to_string()) }
         }
         "_name_length" => {
             let name = field_str(row, "name");
