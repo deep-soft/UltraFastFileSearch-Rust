@@ -292,12 +292,8 @@ fn health_ok(host: &str, port: u16) -> bool {
 /// Poll /health until ready (up to `timeout`).
 fn wait_for_health(host: &str, port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
-    let mut attempts = 0u32;
     while Instant::now() < deadline {
-        attempts += 1;
         if health_ok(host, port) { return true; }
-
-
         std::thread::sleep(Duration::from_millis(250));
     }
     false
