@@ -165,9 +165,14 @@ fn http_get(host: &str, port: u16, path: &str) -> Result<String> {
     let mut buf = Vec::new();
     let _ = stream.read_to_end(&mut buf);
     let text = String::from_utf8_lossy(&buf);
-    text.split_once("\r\n\r\n")
-        .map(|(_, body)| body.trim().to_owned())
-        .context("no HTTP body in response")
+    let (headers, raw_body) = text.split_once("\r\n\r\n")
+        .context("no HTTP body in response")?;
+    // Decode chunked transfer encoding if present.
+    if headers.to_lowercase().contains("transfer-encoding: chunked") {
+        Ok(decode_chunked(raw_body))
+    } else {
+        Ok(raw_body.trim().to_owned())
+    }
 }
 
 /// Raw HTTP response including status, headers, and body.
