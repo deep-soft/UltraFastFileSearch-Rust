@@ -325,10 +325,24 @@ fn wait_for_health(host: &str, port: u16, timeout: Duration) -> bool {
 /// Poll until /health stops responding (up to `timeout`).
 fn wait_for_shutdown(host: &str, port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
+    let mut polls = 0u32;
     while Instant::now() < deadline {
-        if !health_ok(host, port) { return true; }
+        polls += 1;
+        match http_get(host, port, "/health") {
+            Ok(body) => {
+                if polls <= 3 || polls % 10 == 0 {
+                    eprintln!("[wait_for_shutdown] poll {polls}: still alive, body={body:?}");
+                }
+            }
+            Err(e) => {
+                eprintln!("[wait_for_shutdown] poll {polls}: down ({e})");
+                return true;
+            }
+        }
         std::thread::sleep(Duration::from_millis(250));
     }
+    eprintln!("[wait_for_shutdown] gave up after {polls} polls ({:.1}s)",
+        timeout.as_secs_f64());
     false
 }
 
@@ -538,7 +552,15 @@ impl Runner {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
-
+    /// Run a `uffs` CLI command, return (stdout, stderr).
+    fn run_full(&self, args: &[&str]) -> Result<(String, String)> {
+        let out = Command::new(&self.binary).args(args).output()
+            .with_context(|| format!("exec: {} {}", self.binary, args.join(" ")))?;
+        Ok((
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        ))
+    }
 
     fn ensure_daemon_stopped(&self) {
         let _ = self.run_ok(&["daemon", "kill"]);
@@ -556,10 +578,18 @@ impl Runner {
     }
 
     fn mcp_status(&self) -> Result<String> { self.run_ok(&["mcp", "status"]) }
-    fn mcp_stop(&self) -> Result<String> { self.run_ok(&["mcp", "stop"]) }
+    fn mcp_stop(&self) -> Result<String> {
+        let out = self.run_full(&["mcp", "stop"])?;
+        eprintln!("[mcp_stop] stdout: {:?}", out.0.trim());
+        if !out.1.is_empty() { eprintln!("[mcp_stop] stderr: {:?}", out.1.trim()); }
+        Ok(out.0)
+    }
     fn mcp_kill(&self) -> Result<String> {
         let port_str = self.port.to_string();
-        self.run_ok(&["mcp", "kill", "--port", &port_str, "--bind", &self.host])
+        let out = self.run_full(&["mcp", "kill", "--port", &port_str, "--bind", &self.host])?;
+        eprintln!("[mcp_kill] stdout: {:?}", out.0.trim());
+        if !out.1.is_empty() { eprintln!("[mcp_kill] stderr: {:?}", out.1.trim()); }
+        Ok(out.0)
     }
     fn daemon_kill(&self) -> Result<String> { self.run_ok(&["daemon", "kill"]) }
 
