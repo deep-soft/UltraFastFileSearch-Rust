@@ -212,16 +212,27 @@ impl Runner {
 
     fn ensure_stopped(&self) {
         let _ = self.run_ok(&["daemon", "kill"]);
+        // Poll until the daemon is actually gone (up to 10s).
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(250));
+            if let Ok(out) = self.run_ok(&["daemon", "status"]) {
+                if out.contains("not running") { return; }
+            }
+        }
     }
 
     fn assert_not_running(&self) -> Result<()> {
-        // Brief pause to let daemon fully exit after stop/kill.
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let out = self.run_ok(&["daemon", "status"])?;
-        if !out.contains("not running") {
-            bail!("Expected 'not running', got:\n{out}");
+        // Poll for up to 5s — on Windows, process teardown can be slow.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let out = self.run_ok(&["daemon", "status"])?;
+            if out.contains("not running") { return Ok(()); }
+            if Instant::now() >= deadline {
+                bail!("Expected 'not running', got:\n{out}");
+            }
+            std::thread::sleep(Duration::from_millis(250));
         }
-        Ok(())
     }
 
     fn assert_ready(&self) -> Result<String> {
