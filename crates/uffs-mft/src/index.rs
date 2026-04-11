@@ -50,8 +50,8 @@ pub use self::storage::IndexHeader;
 pub(crate) use self::types::cmp_ascii_case_insensitive;
 pub use self::types::{
     FileRecord, IndexNameRef, IndexStreamInfo, InternalStreamInfo, LinkInfo, NO_ENTRY, ROOT_FRS,
-    SizeInfo, bytes_to_mb_f64, frs_to_usize, len_to_u16, len_to_u32, micros_to_i64,
-    nonneg_to_u64, u32_as_usize, u32_to_f64, u64_to_f64, usize_to_f64,
+    SizeInfo, bytes_to_mb_f64, frs_to_usize, len_to_u16, len_to_u32, micros_to_i64, nonneg_to_u64,
+    u32_as_usize, u32_to_f64, u64_to_f64, usize_to_f64,
 };
 pub use self::usn::UsnApplyStats;
 

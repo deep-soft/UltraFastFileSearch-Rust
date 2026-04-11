@@ -728,7 +728,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
     record.stream_count = 1 + len_to_u16(additional_stream_count);
     // total_stream_count includes all streams (including internal ones like
     // $REPARSE)
-    record.total_stream_count = 1 + len_to_u16(additional_stream_count) + len_to_u16(internal_streams.len());
+    record.total_stream_count =
+        1 + len_to_u16(additional_stream_count) + len_to_u16(internal_streams.len());
     // Set reparse tag if this is a reparse point
     record.reparse_tag = reparse_tag;
 

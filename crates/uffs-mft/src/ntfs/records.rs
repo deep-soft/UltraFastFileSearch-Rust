@@ -206,7 +206,8 @@ pub enum AttributeType {
 
 impl AttributeType {
     /// The end-of-attributes marker as a raw `u32`, for direct comparison
-    /// against `AttributeRecordHeader::type_code` without a `cast_lossless` lint.
+    /// against `AttributeRecordHeader::type_code` without a `cast_lossless`
+    /// lint.
     pub const END_MARKER: u32 = 0xFFFF_FFFF;
 
     /// `$DATA` attribute type code for raw `u32` comparison.

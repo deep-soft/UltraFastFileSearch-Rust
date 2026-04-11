@@ -242,8 +242,9 @@ pub(super) fn parse_extension_to_index(
                 // Parse $REPARSE_POINT - add as stream
                 let (rp_size, rp_allocated) = if attr_header.is_non_resident == 0 {
                     let value_length_bytes = &data[offset + 16..offset + 20];
-                    let value_length =
-                        u64::from(u32::from_le_bytes(value_length_bytes.try_into().unwrap_or([0; 4])));
+                    let value_length = u64::from(u32::from_le_bytes(
+                        value_length_bytes.try_into().unwrap_or([0; 4]),
+                    ));
                     (value_length, 0_u64)
                 } else {
                     let nr_offset = offset + 16;

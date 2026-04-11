@@ -23,7 +23,6 @@
     clippy::indexing_slicing,
     reason = "NTFS parser hot path; bounds manually verified before all index access"
 )]
-
 #![expect(
     clippy::min_ident_chars,
     reason = "'s' for stream is idiomatic in closures"

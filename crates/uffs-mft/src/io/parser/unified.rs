@@ -342,8 +342,12 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             let sn_off = index.add_name(name_buf);
                             let is_ascii = name_buf.is_ascii();
                             let ext_id = index.intern_extension(name_buf);
-                            let nr =
-                                IndexNameRef::new(sn_off, len_to_u16(name_buf.len()), is_ascii, ext_id);
+                            let nr = IndexNameRef::new(
+                                sn_off,
+                                len_to_u16(name_buf.len()),
+                                is_ascii,
+                                ext_id,
+                            );
                             let si = len_to_u32(index.streams.len());
                             index.streams.push(IndexStreamInfo {
                                 size: SizeInfo {
@@ -390,7 +394,8 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         } else {
                             // Walk chain to find tail
                             let mut tail = head;
-                            while index.internal_streams[u32_as_usize(tail)].next_entry != NO_ENTRY {
+                            while index.internal_streams[u32_as_usize(tail)].next_entry != NO_ENTRY
+                            {
                                 tail = index.internal_streams[u32_as_usize(tail)].next_entry;
                             }
                             index.internal_streams[u32_as_usize(tail)].next_entry = ist_idx;

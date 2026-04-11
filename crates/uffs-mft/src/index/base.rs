@@ -10,9 +10,7 @@ use super::{
 fn current_epoch_micros() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| {
-            u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
-        })
+        .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
 }
 
 impl MftIndex {

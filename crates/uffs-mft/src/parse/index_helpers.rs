@@ -3,7 +3,6 @@
 //! These helpers reduce code duplication in the main parser while maintaining
 //! performance through inlining.
 
-
 #![expect(
     clippy::if_not_else,
     reason = "!= NO_ENTRY is clearer for sentinel value checks"
@@ -123,8 +122,12 @@ pub fn add_link_to_index(index: &mut MftIndex, link_name: &str, link_parent: u64
     let link_len = link_name.len();
     let link_is_ascii = link_name.is_ascii();
     let extension_id = index.intern_extension(link_name);
-    let link_name_ref =
-        IndexNameRef::new(link_offset, len_to_u16(link_len), link_is_ascii, extension_id);
+    let link_name_ref = IndexNameRef::new(
+        link_offset,
+        len_to_u16(link_len),
+        link_is_ascii,
+        extension_id,
+    );
 
     let link_idx = len_to_u32(index.links.len());
     index.links.push(LinkInfo {

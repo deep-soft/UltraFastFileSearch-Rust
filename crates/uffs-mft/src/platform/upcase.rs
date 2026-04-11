@@ -354,9 +354,8 @@ fn volume_read_at(
 ) -> Result<()> {
     use windows::Win32::Storage::FileSystem::{FILE_BEGIN, ReadFile, SetFilePointerEx};
 
-    let seek_pos = i64::try_from(offset).map_err(|_| {
-        MftError::InvalidData(format!("$UpCase: offset {offset} exceeds i64::MAX"))
-    })?;
+    let seek_pos = i64::try_from(offset)
+        .map_err(|_| MftError::InvalidData(format!("$UpCase: offset {offset} exceeds i64::MAX")))?;
 
     // SAFETY: SetFilePointerEx is a well-defined Win32 API.
     #[expect(unsafe_code, reason = "FFI: SetFilePointerEx")]

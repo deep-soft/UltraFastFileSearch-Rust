@@ -18,7 +18,6 @@
     clippy::manual_let_else,
     reason = "explicit match is clearer in NTFS attribute dispatch"
 )]
-
 #![expect(
     clippy::single_match_else,
     reason = "explicit match arms are clearer for attribute type dispatch"
@@ -790,7 +789,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
     };
     record.name_count = 1 + len_to_u16(additional_count);
     record.stream_count = 1 + len_to_u16(additional_stream_count);
-    record.total_stream_count = 1 + len_to_u16(additional_stream_count) + len_to_u16(internal_stream_count);
+    record.total_stream_count =
+        1 + len_to_u16(additional_stream_count) + len_to_u16(internal_stream_count);
     record.internal_streams_size = internal_size_total;
     record.internal_streams_allocated = internal_alloc_total;
     record.first_internal_stream = first_internal;

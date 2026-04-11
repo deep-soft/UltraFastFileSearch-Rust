@@ -2,10 +2,10 @@
 
 use core::time::Duration;
 
-use crate::index::u64_to_f64;
-
 #[cfg(windows)]
 use tracing::{debug, info};
+
+use crate::index::u64_to_f64;
 
 /// Statistics computed during MFT parsing and `DataFrame` building.
 ///

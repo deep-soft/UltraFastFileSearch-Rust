@@ -291,8 +291,12 @@ pub fn parse_record_to_fragment(
         let link_len = link_name.len();
         let link_is_ascii = link_name.is_ascii();
         let extension_id = fragment.intern_extension(&link_name);
-        let link_name_ref =
-            IndexNameRef::new(link_offset, len_to_u16(link_len), link_is_ascii, extension_id);
+        let link_name_ref = IndexNameRef::new(
+            link_offset,
+            len_to_u16(link_len),
+            link_is_ascii,
+            extension_id,
+        );
 
         let link_idx = len_to_u32(fragment.links.len());
         fragment.links.push(LinkInfo {
