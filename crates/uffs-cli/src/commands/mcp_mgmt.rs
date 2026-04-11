@@ -595,7 +595,8 @@ fn kill_process_on_port(port: u16, skip_pid: u32) {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let port_suffix = format!(":{port}");
         for line in stdout.lines() {
-            // Lines look like: "  TCP    127.0.0.1:18080    0.0.0.0:0    LISTENING    12345"
+            // Lines look like: "  TCP    127.0.0.1:18080    0.0.0.0:0    LISTENING
+            // 12345"
             let trimmed = line.trim();
             if !trimmed.contains("LISTENING") {
                 continue;
