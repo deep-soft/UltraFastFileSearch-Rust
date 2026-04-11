@@ -449,24 +449,57 @@ impl Runner {
     }
 
     /// Start the MCP HTTP server via `uffs mcp start`.
+    ///
+    /// `uffs mcp start` spawns a background `uffs mcp serve` process.
+    /// On Windows, `.output()` blocks forever because the grandchild
+    /// inherits the stdout/stderr pipe handles.  We use `.spawn()` with
+    /// piped stdout and read with a timeout instead.
     fn mcp_start(&self) -> Result<String> {
         let port_str = self.port.to_string();
         let mut args: Vec<&str> = vec!["mcp", "start", "--port", &port_str, "--bind", &self.host];
         args.extend(self.source_args());
-        eprintln!("[mcp_start] running: {} {}", self.binary, args.join(" "));
-        let out = self.run_ok(&args)?;
-        eprintln!("[mcp_start] `mcp start` stdout: {:?}", out.trim());
-        let stderr = self.run_stderr(&args);
-        if !stderr.is_empty() {
-            eprintln!("[mcp_start] `mcp start` stderr: {:?}", stderr.trim());
-        }
-        // `mcp start` eagerly waits for the daemon before binding the
-        // HTTP port — allow up to 3.5 min for cold starts with large indices.
-        eprintln!("[mcp_start] polling /health on {}:{} …", self.host, self.port);
+
+        let mut child = Command::new(&self.binary)
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("exec: {} {}", self.binary, args.join(" ")))?;
+
+        // `mcp start` itself polls /health and prints when ready, but it
+        // may take 2–3 min on cold starts.  We don't need to wait for the
+        // CLI to finish — just wait for /health to succeed.
+        // Give the child a moment to print its initial output.
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Allow up to 3.5 min for cold starts with large indices.
         if !wait_for_health(&self.host, self.port, Duration::from_secs(210)) {
-            bail!("MCP HTTP server didn't become healthy within 3.5 min");
+            // Try to capture whatever output the child produced.
+            let _ = child.kill();
+            let output = child.wait_with_output().ok();
+            let stdout = output.as_ref()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            let stderr = output.as_ref()
+                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+                .unwrap_or_default();
+            bail!(
+                "MCP HTTP server didn't become healthy within 3.5 min\n\
+                 stdout: {stdout}\n\
+                 stderr: {stderr}"
+            );
         }
-        Ok(out)
+
+        // Server is healthy — detach from the child process.  We don't
+        // need its output; its work (spawning the background server) is done.
+        // Don't wait — the child might still be blocked on its own health
+        // polling or on handle inheritance from the grandchild.
+        //
+        // Dropping the Child on Unix/Windows is fine: it won't kill the
+        // process, just detaches our handle.
+        drop(child);
+
+        Ok(format!("healthy on {}:{}", self.host, self.port))
     }
 
     fn step(&mut self, name: &str, f: impl FnOnce(&mut Self) -> Result<String>) {
@@ -495,12 +528,7 @@ impl Runner {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
-    /// Run a `uffs` CLI command, return stderr (for diagnostics).
-    fn run_stderr(&self, args: &[&str]) -> String {
-        Command::new(&self.binary).args(args).output()
-            .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
-            .unwrap_or_default()
-    }
+
 
     fn ensure_daemon_stopped(&self) {
         let _ = self.run_ok(&["daemon", "kill"]);
