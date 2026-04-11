@@ -77,10 +77,7 @@ pub const fn u32_as_usize(val: u32) -> usize {
 pub const fn nonneg_to_u64(val: i64) -> u64 {
     if val > 0 {
         // SAFETY: val is guaranteed positive by the branch, so no sign bit to lose.
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "val > 0 guard makes this lossless"
-        )]
+        #[expect(clippy::cast_sign_loss, reason = "val > 0 guard makes this lossless")]
         let result = val as u64;
         result
     } else {
@@ -119,7 +116,7 @@ pub fn bytes_to_mb_f64(bytes: u64) -> f64 {
     clippy::cast_precision_loss,
     reason = "display-only: sub-unit precision irrelevant for ratios"
 )]
-pub fn u64_to_f64(val: u64) -> f64 {
+pub const fn u64_to_f64(val: u64) -> f64 {
     val as f64
 }
 
@@ -132,7 +129,7 @@ pub fn u64_to_f64(val: u64) -> f64 {
     clippy::cast_precision_loss,
     reason = "display-only: sub-unit precision irrelevant for ratios"
 )]
-pub fn usize_to_f64(val: usize) -> f64 {
+pub const fn usize_to_f64(val: usize) -> f64 {
     val as f64
 }
 
