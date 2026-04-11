@@ -176,10 +176,8 @@ fn http_get(host: &str, port: u16, path: &str) -> Result<String> {
     } else {
         raw_body.trim().to_owned()
     };
-    if std::env::var("UFFS_MCP_DEBUG").is_ok() {
-        eprintln!("[http_get] GET {path} → {} bytes raw, headers:\n{headers}\n  body={body:?}",
-            buf.len());
-    }
+
+
     Ok(body)
 }
 
@@ -288,19 +286,7 @@ fn decode_chunked(raw: &str) -> String {
 
 /// Check if /health returns "ok".
 fn health_ok(host: &str, port: u16) -> bool {
-    match http_get(host, port, "/health") {
-        Ok(b) if b == "ok" => true,
-        Ok(b) => {
-            eprintln!("[health_ok] /health returned unexpected body: {b:?} (len={})", b.len());
-            false
-        }
-        Err(e) => {
-            if std::env::var("UFFS_MCP_DEBUG").is_ok() {
-                eprintln!("[health_ok] /health error: {e:#}");
-            }
-            false
-        }
-    }
+    http_get(host, port, "/health").is_ok_and(|b| b == "ok")
 }
 
 /// Poll /health until ready (up to `timeout`).
@@ -310,39 +296,20 @@ fn wait_for_health(host: &str, port: u16, timeout: Duration) -> bool {
     while Instant::now() < deadline {
         attempts += 1;
         if health_ok(host, port) { return true; }
-        // Print progress every ~10s (40 × 250ms).
-        if attempts % 40 == 0 {
-            let elapsed = Duration::from_millis(u64::from(attempts) * 250);
-            eprintln!("[wait_for_health] still waiting after {:.0}s ({attempts} attempts)…",
-                elapsed.as_secs_f64());
-        }
+
+
         std::thread::sleep(Duration::from_millis(250));
     }
-    eprintln!("[wait_for_health] gave up after {attempts} attempts");
     false
 }
 
 /// Poll until /health stops responding (up to `timeout`).
 fn wait_for_shutdown(host: &str, port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
-    let mut polls = 0u32;
     while Instant::now() < deadline {
-        polls += 1;
-        match http_get(host, port, "/health") {
-            Ok(body) => {
-                if polls <= 3 || polls % 10 == 0 {
-                    eprintln!("[wait_for_shutdown] poll {polls}: still alive, body={body:?}");
-                }
-            }
-            Err(e) => {
-                eprintln!("[wait_for_shutdown] poll {polls}: down ({e})");
-                return true;
-            }
-        }
+        if !health_ok(host, port) { return true; }
         std::thread::sleep(Duration::from_millis(250));
     }
-    eprintln!("[wait_for_shutdown] gave up after {polls} polls ({:.1}s)",
-        timeout.as_secs_f64());
     false
 }
 
@@ -552,16 +519,6 @@ impl Runner {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
-    /// Run a `uffs` CLI command, return (stdout, stderr).
-    fn run_full(&self, args: &[&str]) -> Result<(String, String)> {
-        let out = Command::new(&self.binary).args(args).output()
-            .with_context(|| format!("exec: {} {}", self.binary, args.join(" ")))?;
-        Ok((
-            String::from_utf8_lossy(&out.stdout).to_string(),
-            String::from_utf8_lossy(&out.stderr).to_string(),
-        ))
-    }
-
     fn ensure_daemon_stopped(&self) {
         let _ = self.run_ok(&["daemon", "kill"]);
         for _ in 0..20 {
@@ -578,18 +535,10 @@ impl Runner {
     }
 
     fn mcp_status(&self) -> Result<String> { self.run_ok(&["mcp", "status"]) }
-    fn mcp_stop(&self) -> Result<String> {
-        let out = self.run_full(&["mcp", "stop"])?;
-        eprintln!("[mcp_stop] stdout: {:?}", out.0.trim());
-        if !out.1.is_empty() { eprintln!("[mcp_stop] stderr: {:?}", out.1.trim()); }
-        Ok(out.0)
-    }
+    fn mcp_stop(&self) -> Result<String> { self.run_ok(&["mcp", "stop"]) }
     fn mcp_kill(&self) -> Result<String> {
         let port_str = self.port.to_string();
-        let out = self.run_full(&["mcp", "kill", "--port", &port_str, "--bind", &self.host])?;
-        eprintln!("[mcp_kill] stdout: {:?}", out.0.trim());
-        if !out.1.is_empty() { eprintln!("[mcp_kill] stderr: {:?}", out.1.trim()); }
-        Ok(out.0)
+        self.run_ok(&["mcp", "kill", "--port", &port_str, "--bind", &self.host])
     }
     fn daemon_kill(&self) -> Result<String> { self.run_ok(&["daemon", "kill"]) }
 
