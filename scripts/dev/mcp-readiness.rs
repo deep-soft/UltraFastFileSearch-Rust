@@ -322,6 +322,16 @@ fn wait_for_health(host: &str, port: u16, timeout: Duration) -> bool {
     false
 }
 
+/// Poll until /health stops responding (up to `timeout`).
+fn wait_for_shutdown(host: &str, port: u16, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !health_ok(host, port) { return true; }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
 /// MCP initialize handshake via HTTP POST /mcp.
 fn mcp_initialize_http(host: &str, port: u16) -> Result<Value> {
     let body = serde_json::to_string(&serde_json::json!({
@@ -616,8 +626,9 @@ fn scenario_a(r: &mut Runner) {
 
     r.step("A7  Stop MCP HTTP server", |r| {
         r.mcp_stop()?;
-        std::thread::sleep(Duration::from_millis(500));
-        if health_ok(&r.host, r.port) { bail!("server still responding after stop"); }
+        if !wait_for_shutdown(&r.host, r.port, Duration::from_secs(10)) {
+            bail!("server still responding after stop");
+        }
         Ok(String::new())
     });
 }
