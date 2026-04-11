@@ -49,12 +49,12 @@ value  = "1073741824"
 [[test.column_checks]]
 column = "Hidden"
 op     = "eq"
-value  = "false"
+value  = "0"
 
 [[test.column_checks]]
 column = "System"
 op     = "eq"
-value  = "false"
+value  = "0"
 
 [[test.sort_checks]]
 column = "Size"
