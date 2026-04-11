@@ -233,7 +233,7 @@ fn get_client_exe_path(pid: u32) -> Option<String> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = vec![0u16; 4096];
-        let mut size = buf.len() as u32;
+        let mut size = u32::try_from(buf.len()).unwrap_or(u32::MAX);
         let result = QueryFullProcessImageNameW(
             handle,
             PROCESS_NAME_FORMAT(0),
@@ -244,7 +244,7 @@ fn get_client_exe_path(pid: u32) -> Option<String> {
         if result.is_err() || size == 0 {
             return None;
         }
-        Some(String::from_utf16_lossy(&buf[..size as usize]))
+        Some(String::from_utf16_lossy(&buf[..size as usize])) // u32→usize lossless on 64-bit
     }
 }
 
@@ -359,7 +359,7 @@ fn wait_for_client(pipe: &windows::Win32::Foundation::HANDLE) -> anyhow::Result<
     if let Err(win_err) = result {
         // ERROR_PIPE_CONNECTED (535) means client connected before we called
         // ConnectNamedPipe — that's OK
-        if win_err.code().0 as u32 != 535 {
+        if win_err.code().0 != 535_i32 {
             anyhow::bail!("ConnectNamedPipe failed: {win_err}");
         }
     }
@@ -420,7 +420,7 @@ fn verify_client(pid: u32) -> bool {
         };
 
         let mut buf = vec![0u16; 4096];
-        let mut size = buf.len() as u32;
+        let mut size = u32::try_from(buf.len()).unwrap_or(u32::MAX);
         let result = QueryFullProcessImageNameW(
             handle,
             PROCESS_NAME_FORMAT(0),
@@ -432,7 +432,7 @@ fn verify_client(pid: u32) -> bool {
         if result.is_err() || size == 0 {
             return false;
         }
-        String::from_utf16_lossy(&buf[..size as usize])
+        String::from_utf16_lossy(&buf[..size as usize]) // u32→usize lossless on 64-bit
     };
 
     let name = std::path::Path::new(&exe_name)
@@ -522,7 +522,7 @@ fn handle_pipe_request_inner(
         }
 
         // 5. Send success (1 byte) + handle value (8 bytes LE)
-        let handle_value = client_handle.0 as u64;
+        let handle_value = client_handle.0 as u64; // isize→u64: handle serialization for IPC
         let mut response = [0u8; 9];
         response[0] = 0; // success
         response[1..9].copy_from_slice(&handle_value.to_le_bytes());
@@ -553,6 +553,7 @@ fn read_pipe(pipe: &windows::Win32::Foundation::HANDLE, buf: &mut [u8]) -> anyho
         anyhow::bail!("ReadFile failed: {win_err}");
     }
     if (bytes_read as usize) < buf.len() {
+        // u32→usize lossless on 64-bit
         anyhow::bail!("Short read: got {bytes_read}, expected {}", buf.len());
     }
     Ok(())
@@ -596,7 +597,8 @@ fn is_elevated() -> bool {
             token,
             TokenElevation,
             Some(&mut elevation as *mut TOKEN_ELEVATION as *mut _),
-            size_of::<TOKEN_ELEVATION>() as u32,
+            // size_of::<TOKEN_ELEVATION>() is 4 bytes — always fits u32.
+            u32::try_from(size_of::<TOKEN_ELEVATION>()).unwrap_or(u32::MAX),
             &mut size,
         );
         let _ = windows::Win32::Foundation::CloseHandle(token);

@@ -684,19 +684,11 @@ fn write_display_row_columns(
             }
             // Newly added columns that have no dedicated text formatter yet.
             OutputColumn::NameLength => {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "NTFS filenames ≤255 chars, fits u16"
-                )]
-                let len = row.name().chars().count() as u16;
+                let len = uffs_mft::len_to_u16(row.name().chars().count());
                 buf.push_str(itoa_buf.format(len));
             }
             OutputColumn::PathLength => {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "path lengths fit u16 for practical NTFS volumes"
-                )]
-                let len = row.path.chars().count() as u16;
+                let len = uffs_mft::len_to_u16(row.path.chars().count());
                 buf.push_str(itoa_buf.format(len));
             }
         }
@@ -715,23 +707,17 @@ fn push_flag(buf: &mut String, cfg: &OutputConfig, flags: u32, mask: u32) {
 /// Append `YYYY-MM-DD HH:MM:SS` from Unix microseconds with timezone offset.
 ///
 /// Same algorithm as `row_writer::append_datetime` — no `chrono` overhead.
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "rem_euclid always returns non-negative"
-)]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "day_secs/doe bounded within u32"
-)]
 fn append_datetime_native(buf: &mut String, timestamp_micros: i64, tz_offset_secs: i32) {
     use core::fmt::Write;
 
     let adjusted_secs = timestamp_micros.div_euclid(1_000_000) + i64::from(tz_offset_secs);
-    let day_secs = adjusted_secs.rem_euclid(86_400) as u32;
+    // rem_euclid is always non-negative → safe to narrow to u32 via try_from.
+    let day_secs = u32::try_from(adjusted_secs.rem_euclid(86_400)).unwrap_or(0);
     let days = adjusted_secs.div_euclid(86_400) + 719_468;
 
     let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
-    let doe = (days - era * 146_097) as u32;
+    // doe is in [0, 146_096] — always fits u32.
+    let doe = u32::try_from(days - era * 146_097).unwrap_or(0);
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let year_offset = i64::from(yoe) + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);

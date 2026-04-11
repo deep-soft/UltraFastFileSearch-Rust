@@ -4,7 +4,7 @@ use super::*;
 
 /// Append a filename to a fragment and return its packed reference.
 pub(super) fn push_fragment_name(fragment: &mut MftIndexFragment, name: &str) -> IndexNameRef {
-    let offset = fragment.names.len() as u32;
+    let offset = u32::try_from(fragment.names.len()).unwrap();
     fragment.names.push_str(name);
     IndexNameRef::new(
         offset,

@@ -26,25 +26,24 @@ pub struct FieldStats {
 impl FieldStats {
     /// Calculate the match rate as a percentage.
     #[must_use]
-    #[expect(clippy::cast_precision_loss, reason = "statistical percentage")]
     #[expect(clippy::float_arithmetic, reason = "statistics require float division")]
     pub fn match_rate(&self) -> f64 {
         if self.total_compared == 0 {
             0.0_f64
         } else {
-            100.0_f64 * self.exact_matches as f64 / self.total_compared as f64
+            100.0_f64 * uffs_mft::u64_to_f64(self.exact_matches)
+                / uffs_mft::u64_to_f64(self.total_compared)
         }
     }
 
     /// Calculate the mean difference for mismatched values.
     #[must_use]
-    #[expect(clippy::cast_precision_loss, reason = "statistical average")]
     #[expect(clippy::float_arithmetic, reason = "statistics require float division")]
     pub fn mean_diff(&self) -> f64 {
         if self.mismatches == 0 {
             0.0_f64
         } else {
-            self.sum_abs_diff / self.mismatches as f64
+            self.sum_abs_diff / uffs_mft::u64_to_f64(self.mismatches)
         }
     }
 

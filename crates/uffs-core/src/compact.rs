@@ -170,11 +170,7 @@ impl ChildrenIndex {
                 && let Some(pos) = write_pos.get_mut(parent as usize)
                 && let Some(slot) = values.get_mut(*pos as usize)
             {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "record count bounded by NTFS limits, fits u32"
-                )]
-                let child_idx = idx as u32;
+                let child_idx = uffs_mft::len_to_u32(idx);
                 *slot = child_idx;
                 *pos += 1;
             }
@@ -279,11 +275,7 @@ impl ExtensionIndex {
             if let Some(pos) = write_pos.get_mut(eid)
                 && let Some(slot) = values.get_mut(*pos as usize)
             {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "record index bounded by NTFS limits"
-                )]
-                let idx_u32 = idx as u32;
+                let idx_u32 = uffs_mft::len_to_u32(idx);
                 *slot = idx_u32;
                 *pos += 1;
             }
@@ -428,16 +420,8 @@ fn expand_ads_streams(
             if !sn.is_empty() {
                 for &(base_name, parent_idx) in &all_names {
                     let combined = format!("{base_name}:{sn}");
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "names buffer < 4GB for any real volume"
-                    )]
-                    let name_offset = names.len() as u32;
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "combined name length < 65535 chars"
-                    )]
-                    let name_len = combined.len() as u16;
+                    let name_offset = uffs_mft::len_to_u32(names.len());
+                    let name_len = uffs_mft::len_to_u16(combined.len());
                     names.extend_from_slice(combined.as_bytes());
 
                     extra.push(CompactRecord {
@@ -559,11 +543,9 @@ pub fn compute_path_lengths(records: &mut [CompactRecord], names: &[u8], drive_l
     for (idx, rec) in records.iter().enumerate() {
         let pi = rec.parent_idx;
         if pi == u32::MAX {
-            #[allow(clippy::cast_possible_truncation)] // idx < record_count ≤ u32::MAX by design
-            roots.push(idx as u32);
+            roots.push(uffs_mft::len_to_u32(idx));
         } else if let Some(siblings) = children_of.get_mut(pi as usize) {
-            #[allow(clippy::cast_possible_truncation)] // idx < record_count ≤ u32::MAX by design
-            siblings.push(idx as u32);
+            siblings.push(uffs_mft::len_to_u32(idx));
         }
     }
 
@@ -582,10 +564,7 @@ pub fn compute_path_lengths(records: &mut [CompactRecord], names: &[u8], drive_l
             drive_prefix_chars + 1 + name_chars
         };
         if let Some(slot) = records.get_mut(root as usize) {
-            #[allow(clippy::cast_possible_truncation)] // clamped to u16::MAX
-            {
-                slot.path_len = pl.min(u32::from(u16::MAX)) as u16;
-            }
+            slot.path_len = uffs_mft::len_to_u16(pl as usize);
         }
         queue.push_back(root);
     }
@@ -604,10 +583,7 @@ pub fn compute_path_lengths(records: &mut [CompactRecord], names: &[u8], drive_l
             // path = parent_path + "\" + name
             let pl = parent_pl.saturating_add(1).saturating_add(child_chars);
             if let Some(slot) = records.get_mut(child as usize) {
-                #[allow(clippy::cast_possible_truncation)] // clamped to u16::MAX
-                {
-                    slot.path_len = pl.min(u32::from(u16::MAX)) as u16;
-                }
+                slot.path_len = uffs_mft::len_to_u16(pl as usize);
             }
             queue.push_back(child);
         }
@@ -622,13 +598,12 @@ pub fn compute_path_lengths(records: &mut [CompactRecord], names: &[u8], drive_l
 fn name_char_count(rec: &CompactRecord, names: &[u8]) -> u32 {
     let start = rec.name_offset as usize;
     let end = start + rec.name_len as usize;
-    #[allow(clippy::cast_possible_truncation)] // filenames are always < u32::MAX chars
     names
         .get(start..end)
         .and_then(|slice| core::str::from_utf8(slice).ok())
         .map_or_else(
             || u32::from(rec.name_len),
-            |name| name.chars().count() as u32,
+            |name| uffs_mft::len_to_u32(name.chars().count()),
         )
 }
 

@@ -393,11 +393,7 @@ fn fixture_index_with_ads() -> MftIndex {
     // Add ADS: Zone.Identifier
     let ads_name_offset = idx.add_name("Zone.Identifier");
     let ads_name_ref = IndexNameRef::new(ads_name_offset, 15, true, 0); // "Zone.Identifier" = 15 chars
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "test fixture has < 2^32 streams"
-    )]
-    let ads_si = idx.streams.len() as u32;
+    let ads_si = uffs_mft::len_to_u32(idx.streams.len());
     idx.streams.push(IndexStreamInfo {
         size: SizeInfo {
             length: 228,
@@ -518,11 +514,7 @@ fn ads_on_directory_strips_directory_flag() {
     // Add ADS: Win32App_1
     let ads_name_offset = idx.add_name("Win32App_1");
     let ads_name_ref = IndexNameRef::new(ads_name_offset, 10, true, 0); // "Win32App_1" = 10 chars
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "test fixture has < 2^32 streams"
-    )]
-    let ads_si = idx.streams.len() as u32;
+    let ads_si = uffs_mft::len_to_u32(idx.streams.len());
     idx.streams.push(IndexStreamInfo {
         size: SizeInfo {
             length: 0,

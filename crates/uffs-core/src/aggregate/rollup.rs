@@ -41,7 +41,7 @@ impl RollupAccumulator {
     #[inline]
     pub fn feed(&mut self, record: &CompactRecord, drive: &DriveCompactIndex, idx: usize) {
         let key = match self.mode {
-            RollupMode::Drive => u32::from(drive.letter as u8),
+            RollupMode::Drive => u32::from(u8::try_from(u32::from(drive.letter)).unwrap_or(b'?')),
             RollupMode::Path { depth } => ancestor_at_depth(record, drive, idx, depth),
             RollupMode::Ancestor { record_idx } => child_of_ancestor(drive, idx, record_idx),
         };
@@ -77,7 +77,7 @@ impl RollupAccumulator {
     pub fn finalize(&self) -> Vec<(u32, &StatsAccumulator)> {
         let mut entries: Vec<_> = self.groups.iter().map(|(&k, v)| (k, v)).collect();
         entries.sort_by(|a, b| b.1.sum.cmp(&a.1.sum));
-        entries.truncate(self.top as usize);
+        entries.truncate(usize::from(self.top));
         entries
     }
 }
@@ -96,12 +96,12 @@ fn ancestor_at_depth(
     // Build the parent chain by walking up.
     let records = &drive.records;
     let mut chain: Vec<u32> = Vec::with_capacity(16);
-    let mut current = idx as u32;
+    let mut current = uffs_mft::len_to_u32(idx);
 
     // Walk up to root (parent_idx == 0 or self-referencing means root).
     loop {
         chain.push(current);
-        let ci = current as usize;
+        let ci = uffs_mft::u32_as_usize(current);
         if ci >= records.len() {
             break;
         }
@@ -119,12 +119,12 @@ fn ancestor_at_depth(
     chain.reverse();
 
     // depth=1 → index 1 in chain (first child of root).
-    let depth_idx = target_depth as usize;
+    let depth_idx = uffs_mft::u32_as_usize(target_depth);
     if depth_idx < chain.len() {
         chain[depth_idx]
     } else {
         // Record is shallower than requested depth — use itself.
-        idx as u32
+        uffs_mft::len_to_u32(idx)
     }
 }
 
@@ -136,14 +136,14 @@ fn ancestor_at_depth(
 /// unchanged (so it falls into its own bucket).
 fn child_of_ancestor(drive: &DriveCompactIndex, idx: usize, ancestor_idx: u32) -> u32 {
     let records = &drive.records;
-    let mut current = idx as u32;
+    let mut current = uffs_mft::len_to_u32(idx);
     let mut child = current; // tracks the child one step below
 
     for _ in 0..256_u16 {
         if current == ancestor_idx {
             return child;
         }
-        let ci = current as usize;
+        let ci = uffs_mft::u32_as_usize(current);
         if ci >= records.len() {
             break;
         }
@@ -156,7 +156,7 @@ fn child_of_ancestor(drive: &DriveCompactIndex, idx: usize, ancestor_idx: u32) -
     }
 
     // Not a descendant of ancestor — return own index.
-    idx as u32
+    uffs_mft::len_to_u32(idx)
 }
 
 /// Resolve a rollup key (record index) to a display name.
@@ -167,11 +167,11 @@ fn child_of_ancestor(drive: &DriveCompactIndex, idx: usize, ancestor_idx: u32) -
 pub fn resolve_rollup_key(key: u32, mode: &RollupMode, drive: &DriveCompactIndex) -> String {
     match mode {
         RollupMode::Drive => {
-            let ch = char::from(key as u8);
+            let ch = char::from(u8::try_from(key).unwrap_or(b'?'));
             format!("{ch}:")
         }
         RollupMode::Path { .. } | RollupMode::Ancestor { .. } => {
-            let idx = key as usize;
+            let idx = uffs_mft::u32_as_usize(key);
             if idx < drive.records.len() {
                 let name = drive.records[idx].name(&drive.names);
                 format!("{}:\\{name}", drive.letter)
@@ -237,7 +237,7 @@ mod tests {
         let mut names_blob = Vec::new();
         let mut offsets = Vec::new();
         for name in &name_strs {
-            offsets.push(names_blob.len() as u32);
+            offsets.push(uffs_mft::len_to_u32(names_blob.len()));
             names_blob.extend_from_slice(name.as_bytes());
         }
 
@@ -249,7 +249,7 @@ mod tests {
                 allocated: 0,
                 flags: dir,
                 name_offset: offsets[0],
-                name_len: name_strs[0].len() as u16,
+                name_len: uffs_mft::len_to_u16(name_strs[0].len()),
                 ..Default::default()
             },
             CompactRecord {
@@ -258,7 +258,7 @@ mod tests {
                 allocated: 0,
                 flags: dir,
                 name_offset: offsets[1],
-                name_len: name_strs[1].len() as u16,
+                name_len: uffs_mft::len_to_u16(name_strs[1].len()),
                 ..Default::default()
             },
             CompactRecord {
@@ -267,7 +267,7 @@ mod tests {
                 allocated: 0,
                 flags: dir,
                 name_offset: offsets[2],
-                name_len: name_strs[2].len() as u16,
+                name_len: uffs_mft::len_to_u16(name_strs[2].len()),
                 ..Default::default()
             },
             CompactRecord {
@@ -276,7 +276,7 @@ mod tests {
                 allocated: 4096,
                 flags: 0,
                 name_offset: offsets[3],
-                name_len: name_strs[3].len() as u16,
+                name_len: uffs_mft::len_to_u16(name_strs[3].len()),
                 ..Default::default()
             },
             CompactRecord {
@@ -285,7 +285,7 @@ mod tests {
                 allocated: 0,
                 flags: dir,
                 name_offset: offsets[4],
-                name_len: name_strs[4].len() as u16,
+                name_len: uffs_mft::len_to_u16(name_strs[4].len()),
                 ..Default::default()
             },
             CompactRecord {
@@ -294,7 +294,7 @@ mod tests {
                 allocated: 4096,
                 flags: 0,
                 name_offset: offsets[5],
-                name_len: name_strs[5].len() as u16,
+                name_len: uffs_mft::len_to_u16(name_strs[5].len()),
                 ..Default::default()
             },
             CompactRecord {
@@ -303,7 +303,7 @@ mod tests {
                 allocated: 4096,
                 flags: 0,
                 name_offset: offsets[6],
-                name_len: name_strs[6].len() as u16,
+                name_len: uffs_mft::len_to_u16(name_strs[6].len()),
                 ..Default::default()
             },
         ];

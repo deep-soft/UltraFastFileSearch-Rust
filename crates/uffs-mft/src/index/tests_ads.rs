@@ -24,8 +24,13 @@ fn create_index_with_ads() -> MftIndex {
 
     // Add ADS: Zone.Identifier
     let ads_name_offset = index.add_name("Zone.Identifier");
-    let ads_name_ref = IndexNameRef::new(ads_name_offset, "Zone.Identifier".len() as u16, true, 0);
-    let ads_si = index.streams.len() as u32;
+    let ads_name_ref = IndexNameRef::new(
+        ads_name_offset,
+        u16::try_from("Zone.Identifier".len()).unwrap(),
+        true,
+        0,
+    );
+    let ads_si = u32::try_from(index.streams.len()).unwrap();
     index.streams.push(IndexStreamInfo {
         size: SizeInfo {
             length: 228,

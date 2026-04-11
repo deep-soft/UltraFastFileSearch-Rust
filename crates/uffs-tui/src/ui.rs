@@ -79,7 +79,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
         }
         title_spans.push(Span::raw(format!(
             "] {} Files",
-            uffs_core::format::format_number_commas(app.backend.total_records() as u64),
+            uffs_core::format::format_number_commas(app.backend.total_records() as u64), // usize→u64 lossless on 64-bit
         )));
         // Search mode indicators: [Cc] [W] [NAME] [FILES] etc.
         let badge = |label: &str, hint: &str, active: bool| -> Span<'static> {
@@ -165,7 +165,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
 
     // Update page size from actual results area height (minus 3 for borders +
     // header)
-    app.page_size = chunks[2].height.saturating_sub(3) as usize;
+    app.page_size = usize::from(chunks[2].height.saturating_sub(3));
 
     // Sort indicator helper — appends ▲/▼ to the active column header
     let sort_arrow = if app.sort_desc() { " ▼" } else { " ▲" };
@@ -306,7 +306,9 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
         Focus::Results => "Results",
     };
     let page_labels = ["Nav", "Toggles", "Edit", "Patterns"];
-    let page_label = page_labels.get(app.help_page as usize).unwrap_or(&"Help");
+    let page_label = page_labels
+        .get(usize::from(app.help_page))
+        .unwrap_or(&"Help");
     let help =
         Paragraph::new(Line::from(help_spans)).block(Block::default().borders(Borders::ALL).title(
             format!(" Help ({page_label} · {focus_label}) — {help_key} to cycle · Esc to switch "),

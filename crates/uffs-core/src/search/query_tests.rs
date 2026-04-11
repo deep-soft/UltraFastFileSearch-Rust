@@ -390,8 +390,7 @@ fn build_ads_on_dir_drive() -> DriveCompactIndex {
         true,
         0,
     );
-    #[expect(clippy::cast_possible_truncation, reason = "test fixture")]
-    let si = idx.streams.len() as u32;
+    let si = uffs_mft::len_to_u32(idx.streams.len());
     idx.streams.push(IndexStreamInfo {
         size: SizeInfo {
             length: 42,

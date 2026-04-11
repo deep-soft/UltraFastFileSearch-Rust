@@ -123,12 +123,8 @@ async fn print_daemon_status() {
         println!("  Startup:     {}", fmt(startup));
         println!("  Queries:     {}", stats.total_queries);
         if stats.total_queries > 0 {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "avg query time in µs — always fits u64"
-            )]
-            let avg = core::time::Duration::from_micros(stats.avg_query_time_us as u64);
+            let avg =
+                core::time::Duration::from_micros(uffs_mft::f64_to_u64(stats.avg_query_time_us));
             println!("  Avg query:   {}", fmt(avg));
             println!("  Queries/s:   {:.2}", stats.queries_per_second);
         }

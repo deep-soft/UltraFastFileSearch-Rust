@@ -99,10 +99,6 @@ impl ChaosMftReader {
         clippy::too_many_lines,
         reason = "test harness orchestration requires sequential setup"
     )]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "test-only: MFT sizes are within usize range on 64-bit targets"
-    )]
     pub fn read_with_chaos(&self, mft_path: &Path, volume: char) -> anyhow::Result<MftIndex> {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -121,11 +117,11 @@ impl ChaosMftReader {
         let header = raw_data.header;
         let mft_bytes = raw_data.data;
 
-        let record_size = header.record_size as usize;
-        let total_records = header.record_count as usize;
+        let record_size = crate::u32_as_usize(header.record_size);
+        let total_records = crate::frs_to_usize(header.record_count);
         let extent_map = crate::io::extent_map::MftExtentMap::contiguous(
             0,
-            mft_bytes.len() as u64,
+            mft_bytes.len() as u64, // usize→u64 lossless on 64-bit
             header.record_size,
             1024,
         );
@@ -216,12 +212,12 @@ impl ChaosMftReader {
                 continue;
             }
 
-            let chunk_bytes = effective_records as usize * record_size;
+            let chunk_bytes = usize::try_from(effective_records)? * record_size;
             let start_frs = chunk.start_frs + chunk.skip_begin;
 
             // Calculate byte offset in the MFT file
             // For contiguous offline MFT, disk_offset is just FRS * record_size
-            let byte_offset = start_frs as usize * record_size;
+            let byte_offset = usize::try_from(start_frs)? * record_size;
             let end_offset = byte_offset + chunk_bytes;
 
             if end_offset > mft_bytes.len() {

@@ -152,11 +152,7 @@ impl TrigramIndex {
             keys.push(packed);
             offsets.push(running);
             running = running.saturating_add(count);
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "trigram count bounded by alphabet³ ≈ 50K"
-            )]
-            let ki = key_idx as u32;
+            let ki = uffs_mft::len_to_u32(key_idx);
             tri_lut.insert(packed, ki);
         }
         offsets.push(running);
@@ -376,11 +372,7 @@ fn scatter_postings_parallel(
                 if folded_buf.len() < 3 {
                     continue;
                 }
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "MFT record count bounded by NTFS limits"
-                )]
-                let rec_idx = (record_offset + local_idx) as u32;
+                let rec_idx = uffs_mft::len_to_u32(record_offset + local_idx);
 
                 seen.clear();
                 scatter_one_record(

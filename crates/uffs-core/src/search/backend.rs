@@ -78,8 +78,7 @@ impl DisplayRow {
         treesize: u64,
         tree_allocated: u64,
     ) -> Self {
-        #[expect(clippy::cast_possible_truncation, reason = "paths < 4GB")]
-        let name_start = path.rfind('\\').map_or(0, |pos| pos + 1) as u32;
+        let name_start = uffs_mft::len_to_u32(path.rfind('\\').map_or(0, |pos| pos + 1));
         Self {
             record_index,
             drive,

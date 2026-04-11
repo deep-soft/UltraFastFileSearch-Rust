@@ -382,11 +382,6 @@ pub fn display_rows_to_dataframe(
 ///
 /// Returns an error if `DataFrame` column extraction fails in an unexpected
 /// way.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "u32/u64 downcasts bounded by record counts; i64→u64 safe for MFT sizes"
-)]
 pub fn dataframe_to_display_rows(
     data_frame: &uffs_polars::DataFrame,
 ) -> Result<Vec<DisplayRow>, String> {
@@ -403,17 +398,18 @@ pub fn dataframe_to_display_rows(
             .unwrap_or('?');
         let size = col_u64(data_frame, "size", row_idx);
         let allocated = col_u64(data_frame, "allocated_size", row_idx);
-        let flags = col_u64(data_frame, "flags", row_idx) as u32;
+        let flags = u32::try_from(col_u64(data_frame, "flags", row_idx)).unwrap_or(u32::MAX);
         let is_directory = col_bool(data_frame, "is_directory", row_idx);
         let created = col_timestamp(data_frame, "created", row_idx);
         let modified = col_timestamp(data_frame, "modified", row_idx);
         let accessed = col_timestamp(data_frame, "accessed", row_idx);
-        let descendants = col_u64(data_frame, "descendants", row_idx) as u32;
+        let descendants =
+            u32::try_from(col_u64(data_frame, "descendants", row_idx)).unwrap_or(u32::MAX);
         let treesize = col_u64(data_frame, "treesize", row_idx);
         let tree_allocated = col_u64(data_frame, "tree_allocated", row_idx);
 
         rows.push(DisplayRow::new(
-            row_idx as u32,
+            uffs_mft::len_to_u32(row_idx),
             drive,
             path,
             size,
@@ -444,7 +440,6 @@ fn col_str(data_frame: &uffs_polars::DataFrame, col_name: &str, row_idx: usize) 
 
 /// Extract a `u64` value from a `DataFrame` column (handles `UInt64`,
 /// `Int64`, `UInt32` dtype).
-#[allow(clippy::cast_sign_loss)]
 fn col_u64(data_frame: &uffs_polars::DataFrame, col_name: &str, row_idx: usize) -> u64 {
     data_frame
         .column(col_name)
@@ -458,7 +453,7 @@ fn col_u64(data_frame: &uffs_polars::DataFrame, col_name: &str, row_idx: usize) 
                     column
                         .i64()
                         .ok()
-                        .and_then(|arr| arr.get(row_idx).map(|val| val as u64))
+                        .and_then(|arr| arr.get(row_idx).map(uffs_mft::nonneg_to_u64))
                 })
                 .or_else(|| {
                     column

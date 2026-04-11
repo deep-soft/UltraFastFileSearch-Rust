@@ -5,11 +5,8 @@
     clippy::print_stdout,
     clippy::redundant_pub_crate,
     clippy::default_numeric_fallback,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::collapsible_if,
-    reason = "CLI display code: terse loop vars, stdout output, display casts"
+    reason = "CLI display code: terse loop vars, stdout output"
 )]
 
 //! Aggregate command implementation.
@@ -44,7 +41,11 @@ pub(crate) fn print_table_results(results: &[AggregateResultWire]) -> Result<()>
                     writeln!(stdout, "  Sum:    {}", format_size(stats.sum))?;
                     writeln!(stdout, "  Min:    {}", format_size(stats.min))?;
                     writeln!(stdout, "  Max:    {}", format_size(stats.max))?;
-                    writeln!(stdout, "  Avg:    {}", format_size(stats.avg as u64))?;
+                    writeln!(
+                        stdout,
+                        "  Avg:    {}",
+                        format_size(uffs_mft::f64_to_u64(stats.avg))
+                    )?;
                     if stats.waste_bytes > 0 {
                         writeln!(
                             stdout,
@@ -231,7 +232,7 @@ fn print_duplicate_table(stdout: &mut impl Write, result: &AggregateResultWire) 
         writeln!(
             stdout,
             "  Groups: {}  Files: {}  Reclaimable: {}",
-            format_number(groups as u64),
+            format_number(groups as u64), // usize→u64 lossless on 64-bit
             format_number(stats.count),
             format_size(stats.waste_bytes),
         )?;
@@ -252,7 +253,7 @@ fn print_duplicate_table(stdout: &mut impl Write, result: &AggregateResultWire) 
 
     for row in &result.buckets {
         let reclaimable = row.total_allocated.unwrap_or(0);
-        let file_size = row.avg_size.unwrap_or(0.0) as u64;
+        let file_size = uffs_mft::f64_to_u64(row.avg_size.unwrap_or(0.0));
         let verified_mark = if row.verified { " ✓" } else { "" };
 
         writeln!(
@@ -288,7 +289,7 @@ fn print_duplicate_table(stdout: &mut impl Write, result: &AggregateResultWire) 
             writeln!(
                 stdout,
                 "  ... and {} more groups",
-                format_number((total - shown) as u64),
+                format_number((total - shown) as u64), // usize→u64 lossless on 64-bit
             )?;
         }
     }
@@ -410,7 +411,7 @@ fn print_csv_duplicates(
 
     for row in &result.buckets {
         let reclaimable = row.total_allocated.unwrap_or(0);
-        let file_size = row.avg_size.unwrap_or(0.0) as u64;
+        let file_size = uffs_mft::f64_to_u64(row.avg_size.unwrap_or(0.0));
         write!(
             stdout,
             "{}{sep}{}{sep}{}{sep}{}{sep}{}{sep}{}",

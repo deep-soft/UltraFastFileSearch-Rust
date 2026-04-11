@@ -236,10 +236,6 @@ fn main() -> Result<()> {
     reason = "diagnostic tool — Debug output is intentional for inspection"
 )]
 #[expect(
-    clippy::cast_possible_truncation,
-    reason = "record_count fits in usize on all supported platforms"
-)]
-#[expect(
     clippy::too_many_lines,
     reason = "sequential diagnostic dump — splitting would reduce clarity"
 )]
@@ -320,12 +316,13 @@ fn test_merge(raw_path: &str, base_frs: u64, ext_frs: u64) -> Result<()> {
 
     // Test the record_merger with all records
     println!("\n=== Testing MftRecordMerger ===");
-    let num_records = raw.header.record_count as usize;
+    let num_records = uffs_mft::frs_to_usize(raw.header.record_count);
     let mut record_merger = MftRecordMerger::with_capacity(num_records);
 
     for frs in 0..num_records {
         if let Some(data) = raw.get_record(frs as u64) {
-            let result = parse_record_full(data, frs as u64);
+            // usize→u64 lossless on 64-bit
+            let result = parse_record_full(data, frs as u64); // usize→u64 lossless on 64-bit
             record_merger.add_result(result);
         }
     }
@@ -392,7 +389,7 @@ fn test_merge(raw_path: &str, base_frs: u64, ext_frs: u64) -> Result<()> {
         let mut child_count = 0_u32;
         let mut child_entry_idx = record.first_child;
         while child_entry_idx != uffs_mft::index::NO_ENTRY {
-            if let Some(child_entry) = index.children.get(child_entry_idx as usize) {
+            if let Some(child_entry) = index.children.get(uffs_mft::u32_as_usize(child_entry_idx)) {
                 child_count += 1_u32;
                 if child_count <= 5_u32 {
                     println!(
@@ -413,7 +410,8 @@ fn test_merge(raw_path: &str, base_frs: u64, ext_frs: u64) -> Result<()> {
         let mut stream_count = 0_u32;
         let mut stream_entry_idx = record.first_stream.next_entry;
         while stream_entry_idx != uffs_mft::index::NO_ENTRY {
-            if let Some(stream_entry) = index.streams.get(stream_entry_idx as usize) {
+            if let Some(stream_entry) = index.streams.get(uffs_mft::u32_as_usize(stream_entry_idx))
+            {
                 stream_count += 1_u32;
                 println!(
                     "    stream[{}]: {:?} (size={})",

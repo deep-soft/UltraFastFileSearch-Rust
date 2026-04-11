@@ -143,6 +143,51 @@ pub fn u32_to_f64(val: u32) -> f64 {
     f64::from(val)
 }
 
+/// Convert a non-negative `f64` to `u64`, clamping negative values to 0
+/// and values exceeding `u64::MAX` to `u64::MAX`.
+///
+/// Used for memory budget calculations where floating-point arithmetic
+/// produces approximate results that need to be stored as integers.
+#[inline]
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "centralized f64→u64 conversion for budget/estimation math; precision loss in boundary check is acceptable since u64::MAX as f64 rounds up"
+)]
+pub fn f64_to_u64(val: f64) -> u64 {
+    if val <= 0.0 {
+        0
+    } else if val >= u64::MAX as f64 {
+        u64::MAX
+    } else {
+        val as u64
+    }
+}
+
+/// Convert a non-negative `f64` to `usize`, clamping negative values to 0.
+///
+/// Used for capacity estimation where floating-point arithmetic produces
+/// approximate results that need to be stored as `usize`.
+#[inline]
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "centralized f64→usize conversion for capacity estimation; precision loss in boundary check is acceptable since usize::MAX as f64 rounds up"
+)]
+pub fn f64_to_usize(val: f64) -> usize {
+    if val <= 0.0 {
+        0
+    } else if val >= usize::MAX as f64 {
+        usize::MAX
+    } else {
+        val as usize
+    }
+}
+
 // ============================================================================
 // IndexNameRef - Reference into names buffer
 // ============================================================================

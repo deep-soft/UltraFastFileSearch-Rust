@@ -116,11 +116,7 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
 fn apply_derived_filters(row: &DisplayRow, filters: &SearchFilters) -> bool {
     // ── Name-length filters ────────────────────────────────────
     if filters.min_name_len.is_some() || filters.max_name_len.is_some() {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "NTFS filenames ≤255 chars, fits u16"
-        )]
-        let name_len = row.name().chars().count() as u16;
+        let name_len = uffs_mft::len_to_u16(row.name().chars().count());
         if let Some(min) = filters.min_name_len
             && name_len < min
         {
@@ -136,11 +132,7 @@ fn apply_derived_filters(row: &DisplayRow, filters: &SearchFilters) -> bool {
     // Note: path_len is measured in Unicode characters, consistent with
     // the precomputed `CompactRecord::path_len` used at scan level.
     if filters.min_path_len.is_some() || filters.max_path_len.is_some() {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "path lengths fit u16 for practical NTFS volumes"
-        )]
-        let path_len = row.path.chars().count() as u16;
+        let path_len = uffs_mft::len_to_u16(row.path.chars().count());
         if let Some(min) = filters.min_path_len
             && path_len < min
         {

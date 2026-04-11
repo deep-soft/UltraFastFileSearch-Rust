@@ -652,7 +652,7 @@ const fn matches_bind(key: KeyEvent, bind: KeyBind) -> bool {
 const fn matches_code(actual: KeyCode, expected: KeyCode) -> bool {
     match (actual, expected) {
         (KeyCode::Char(actual_ch), KeyCode::Char(expected_ch)) => {
-            actual_ch as u32 == expected_ch as u32
+            actual_ch as u32 == expected_ch as u32 // char→u32 is lossless by definition
         }
         (KeyCode::F(actual_n), KeyCode::F(expected_n)) => actual_n == expected_n,
         (KeyCode::Down, KeyCode::Down)

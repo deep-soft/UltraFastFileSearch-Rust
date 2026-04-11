@@ -1,10 +1,6 @@
 //! Regression tests for the split NTFS module surface.
 
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::expect_used,
-    clippy::indexing_slicing
-)]
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
 
 use core::mem::size_of;
 
@@ -86,7 +82,7 @@ fn test_fixup_file_record_applies_usa_from_safe_header_decode() {
     let original_second = 0x5678;
 
     record[0..4].copy_from_slice(b"FILE");
-    write_u16_le(&mut record, 4, usa_offset as u16);
+    write_u16_le(&mut record, 4, crate::len_to_u16(usa_offset));
     write_u16_le(&mut record, 6, 3);
     write_u16_le(&mut record, usa_offset, check_value);
     write_u16_le(&mut record, usa_offset + 2, original_first);
@@ -108,24 +104,24 @@ fn test_fixup_file_record_applies_usa_from_safe_header_decode() {
 #[test]
 fn test_attribute_iterator_reads_resident_attribute_value() {
     let mut record = vec![0_u8; 96];
-    let record_len = record.len() as u32;
+    let record_len = crate::len_to_u32(record.len());
     let first_attribute_offset = size_of::<FileRecordSegmentHeader>();
     let attr_offset = first_attribute_offset;
     let attr_length = size_of::<AttributeRecordHeader>() + size_of::<ResidentAttributeData>() + 4;
     let end_marker_offset = attr_offset + attr_length;
 
     record[0..4].copy_from_slice(b"FILE");
-    write_u16_le(&mut record, 20, first_attribute_offset as u16);
-    write_u16_le(&mut record, 22, FileRecordFlags::InUse as u16);
+    write_u16_le(&mut record, 20, crate::len_to_u16(first_attribute_offset));
+    write_u16_le(&mut record, 22, FileRecordFlags::InUse as u16); // enum discriminant is 0x0001
     write_u32_le(
         &mut record,
         24,
-        (end_marker_offset + size_of::<AttributeRecordHeader>()) as u32,
+        crate::len_to_u32(end_marker_offset + size_of::<AttributeRecordHeader>()),
     );
     write_u32_le(&mut record, 28, record_len);
 
-    write_u32_le(&mut record, attr_offset, AttributeType::Data as u32);
-    write_u32_le(&mut record, attr_offset + 4, attr_length as u32);
+    write_u32_le(&mut record, attr_offset, AttributeType::DATA_TYPE);
+    write_u32_le(&mut record, attr_offset + 4, crate::len_to_u32(attr_length));
     record[attr_offset + 8] = 0;
     record[attr_offset + 9] = 0;
     write_u16_le(&mut record, attr_offset + 10, 0);
@@ -136,12 +132,12 @@ fn test_attribute_iterator_reads_resident_attribute_value() {
     write_u16_le(
         &mut record,
         attr_offset + 20,
-        (size_of::<AttributeRecordHeader>() + size_of::<ResidentAttributeData>()) as u16,
+        crate::len_to_u16(size_of::<AttributeRecordHeader>() + size_of::<ResidentAttributeData>()),
     );
     write_u16_le(&mut record, attr_offset + 22, 0);
     record[attr_offset + 24..attr_offset + 28].copy_from_slice(&[1, 2, 3, 4]);
 
-    write_u32_le(&mut record, end_marker_offset, AttributeType::End as u32);
+    write_u32_le(&mut record, end_marker_offset, AttributeType::END_MARKER);
 
     let mut iter = AttributeIterator::new(&record).expect("valid record header");
     let attribute = iter.next().expect("resident attribute");
@@ -155,9 +151,9 @@ fn test_attribute_iterator_reads_resident_attribute_value() {
 fn test_non_resident_attribute_helpers_decode_mapping_pairs() {
     let mut attr =
         vec![0_u8; size_of::<AttributeRecordHeader>() + size_of::<NonResidentAttributeData>() + 4];
-    let attr_len = attr.len() as u32;
+    let attr_len = crate::len_to_u32(attr.len());
 
-    write_u32_le(&mut attr, 0, AttributeType::Data as u32);
+    write_u32_le(&mut attr, 0, AttributeType::DATA_TYPE);
     write_u32_le(&mut attr, 4, attr_len);
     attr[8] = 1;
     write_u16_le(&mut attr, 12, 0x0001);
@@ -169,7 +165,7 @@ fn test_non_resident_attribute_helpers_decode_mapping_pairs() {
     write_u16_le(
         &mut attr,
         nr_offset + 16,
-        (nr_offset + size_of::<NonResidentAttributeData>()) as u16,
+        crate::len_to_u16(nr_offset + size_of::<NonResidentAttributeData>()),
     );
     attr[nr_offset + 18] = 0;
     write_i64_le(&mut attr, nr_offset + 24, 40);
@@ -180,8 +176,8 @@ fn test_non_resident_attribute_helpers_decode_mapping_pairs() {
     let attribute = AttributeRef {
         data: &attr,
         header: AttributeRecordHeader {
-            type_code: AttributeType::Data as u32,
-            length: attr.len() as u32,
+            type_code: AttributeType::DATA_TYPE,
+            length: crate::len_to_u32(attr.len()),
             is_non_resident: 1,
             name_length: 0,
             name_offset: 0,

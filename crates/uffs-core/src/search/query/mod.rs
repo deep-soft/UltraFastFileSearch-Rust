@@ -98,15 +98,7 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
                     .iter()
                     .enumerate()
                     .filter(|(_, rec)| rec.parent_idx == u32::MAX && rec.name_len > 0)
-                    .map(|(idx, _)| {
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "record index bounded by NTFS limits"
-                        )]
-                        {
-                            idx as u32
-                        }
-                    })
+                    .map(|(idx, _)| uffs_mft::len_to_u32(idx))
                     .collect();
 
                 sort_indices_by_name(&mut roots, drive, sort_desc);
@@ -210,7 +202,6 @@ pub fn search_compact_drive_regex(
     let profile = *CACHE_PROFILE;
 
     let t_match = std::time::Instant::now();
-    #[allow(clippy::cast_possible_truncation)]
     let match_indices: Vec<u32> = drive
         .records
         .iter()
@@ -220,7 +211,7 @@ pub fn search_compact_drive_regex(
             !name.is_empty() && compiled_re.is_match(name)
         })
         .take(limit)
-        .map(|(idx, _)| idx as u32)
+        .map(|(idx, _)| uffs_mft::len_to_u32(idx))
         .collect();
     let match_ms = t_match.elapsed().as_millis();
     let match_count = match_indices.len();
@@ -322,8 +313,7 @@ fn collect_match_indices(
                 }
                 let name = rec.name(&drive.names);
                 if matches(name, lower_buf) {
-                    #[allow(clippy::cast_possible_truncation)]
-                    out.push(idx as u32);
+                    out.push(uffs_mft::len_to_u32(idx));
                 }
             }
             out

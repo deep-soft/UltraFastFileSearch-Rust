@@ -75,7 +75,7 @@ impl StatsAccumulator {
         if self.count == 0 {
             0.0
         } else {
-            self.sum as f64 / self.count as f64
+            uffs_mft::u64_to_f64(self.sum) / uffs_mft::u64_to_f64(self.count)
         }
     }
 
@@ -91,7 +91,8 @@ impl StatsAccumulator {
         if self.sum_allocated == 0 {
             0.0
         } else {
-            self.waste_bytes() as f64 / self.sum_allocated as f64 * 100.0
+            uffs_mft::u64_to_f64(self.waste_bytes()) / uffs_mft::u64_to_f64(self.sum_allocated)
+                * 100.0
         }
     }
 }
@@ -381,7 +382,7 @@ impl GroupAccumulator {
                     let heap = heaps
                         .entry(key)
                         .or_insert_with(|| super::sample_heap::SampleHeap::from_spec(spec));
-                    heap.push(record, _idx as u32, drive_ordinal);
+                    heap.push(record, uffs_mft::len_to_u32(_idx), drive_ordinal);
                 }
             }
             AccumulatorKind::Histogram {
@@ -532,9 +533,9 @@ fn extract_value(field: Option<FieldId>, record: &CompactRecord) -> u64 {
         Some(FieldId::Descendants) => u64::from(record.descendants),
         Some(FieldId::NameLength) => u64::from(record.name_len),
         Some(FieldId::PathLength) => u64::from(record.path_len),
-        Some(FieldId::Created) => record.created as u64,
-        Some(FieldId::Modified) => record.modified as u64,
-        Some(FieldId::Accessed) => record.accessed as u64,
+        Some(FieldId::Created) => uffs_mft::nonneg_to_u64(record.created),
+        Some(FieldId::Modified) => uffs_mft::nonneg_to_u64(record.modified),
+        Some(FieldId::Accessed) => uffs_mft::nonneg_to_u64(record.accessed),
         _ => 0,
     }
 }
@@ -571,7 +572,7 @@ fn extract_group_key(
                 u64::from(record.extension_id)
             }
         }
-        Some(FieldId::Drive) => u64::from(drive.letter as u32),
+        Some(FieldId::Drive) => u64::from(u32::from(drive.letter)),
         Some(FieldId::Type) => {
             use crate::search::derived::{
                 SEMANTIC_TYPE_ID_DIRECTORY, SEMANTIC_TYPE_ID_FILE, semantic_type_id_from_extension,

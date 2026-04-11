@@ -388,7 +388,7 @@ mod tests {
                 .files
                 .get(&(record_idx, drive_ordinal))
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "file not found"))?;
-            let n = (count as usize).min(bytes.len());
+            let n = uffs_mft::u32_as_usize(count).min(bytes.len());
             Ok(bytes[..n].to_vec())
         }
 

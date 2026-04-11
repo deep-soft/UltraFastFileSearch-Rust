@@ -12,14 +12,14 @@ fn test_extension_before_base_in_same_fragment() {
     let name2_ref = push_fragment_name(&mut fragment, "name2.txt");
     let name3_ref = push_fragment_name(&mut fragment, "name3.txt");
 
-    let link0_idx = fragment.links.len() as u32;
+    let link0_idx = u32::try_from(fragment.links.len()).unwrap();
     fragment.links.push(LinkInfo {
         next_entry: link0_idx + 1,
         name: name2_ref,
         _pad0: [0; 4],
         parent_frs: 5,
     });
-    let link1_idx = fragment.links.len() as u32;
+    let link1_idx = u32::try_from(fragment.links.len()).unwrap();
     fragment.links.push(LinkInfo {
         next_entry: NO_ENTRY,
         name: name3_ref,
@@ -54,7 +54,7 @@ fn test_extension_before_base_in_same_fragment() {
     };
 
     let first_name_next_entry = if existing_name_valid {
-        let ext_link_idx = fragment.links.len() as u32;
+        let ext_link_idx = u32::try_from(fragment.links.len()).unwrap();
         fragment.links.push(existing_first_name);
         ext_link_idx
     } else {
@@ -130,7 +130,7 @@ fn test_cross_fragment_merge_multiple_extension_names() {
     let ext_hardlink_b = push_fragment_name(&mut fragment_a, "hardlink_b.txt");
     let ext_hardlink_c = push_fragment_name(&mut fragment_a, "hardlink_c.txt");
 
-    let link_c_idx = fragment_a.links.len() as u32;
+    let link_c_idx = u32::try_from(fragment_a.links.len()).unwrap();
     fragment_a.links.push(LinkInfo {
         next_entry: NO_ENTRY,
         name: ext_hardlink_c,
@@ -189,7 +189,7 @@ fn test_cross_fragment_merge_base_first() {
     let ext_hardlink_b = push_fragment_name(&mut fragment_b, "hardlink_b.txt");
     let ext_hardlink_c = push_fragment_name(&mut fragment_b, "hardlink_c.txt");
 
-    let link_c_idx = fragment_b.links.len() as u32;
+    let link_c_idx = u32::try_from(fragment_b.links.len()).unwrap();
     fragment_b.links.push(LinkInfo {
         next_entry: NO_ENTRY,
         name: ext_hardlink_c,
@@ -306,11 +306,7 @@ fn test_rebuild_children_from_names_hardlinks() {
         parent_frs: dir1_frs,
         next_entry: NO_ENTRY,
     });
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "FRS fits in usize on 64-bit"
-    )]
-    let link_idx = (index.links.len() - 1) as u32;
+    let link_idx = crate::len_to_u32(index.links.len() - 1);
 
     let file_rec = index.get_or_create(file_frs);
     file_rec.first_name.name = file_name;
@@ -403,10 +399,10 @@ fn test_tree_metrics_internal_streams_two_channel() {
         rec.first_name.name = dir_name;
         rec.first_name.parent_frs = root_frs;
         rec.total_stream_count = 2;
-        index.frs_to_idx[dir_frs as usize] as usize
+        usize::try_from(index.frs_to_idx[usize::try_from(dir_frs).unwrap()]).unwrap()
     };
 
-    let internal_idx = index.internal_streams.len() as u32;
+    let internal_idx = u32::try_from(index.internal_streams.len()).unwrap();
     index.internal_streams.push(InternalStreamInfo {
         next_entry: NO_ENTRY,
         size: SizeInfo {

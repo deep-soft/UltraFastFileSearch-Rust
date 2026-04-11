@@ -17,12 +17,13 @@ pub const fn pack_char_trigram(cp0: u16, cp1: u16, cp2: u16) -> u64 {
 /// Unpack a `u64` back to 3 folded `u16` codepoints.
 #[inline]
 #[must_use]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "right-shift guarantees each fragment fits u16"
-)]
 pub const fn unpack_char_trigram(packed: u64) -> [u16; 3] {
-    [(packed >> 32) as u16, (packed >> 16) as u16, packed as u16]
+    // Mask to 16 bits before narrowing — makes the losslessness explicit.
+    [
+        ((packed >> 32) & 0xFFFF) as u16,
+        ((packed >> 16) & 0xFFFF) as u16,
+        (packed & 0xFFFF) as u16,
+    ]
 }
 
 #[cfg(test)]

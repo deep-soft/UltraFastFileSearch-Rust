@@ -64,12 +64,8 @@ fn create_test_record(frs: u64, in_use: bool, is_dir: bool) -> Vec<u8> {
     // Next attribute ID
     data[40..42].copy_from_slice(&1_u16.to_le_bytes());
 
-    // FRS number (at offset 44 in modern NTFS) - truncate to u32 for test data
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "test FRS values are small constants"
-    )]
-    let frs_u32 = frs as u32;
+    // FRS number (at offset 44 in modern NTFS) — test values fit u32
+    let frs_u32 = u32::try_from(frs).expect("test FRS fits u32");
     data[44..48].copy_from_slice(&frs_u32.to_le_bytes());
 
     // USA: check value at offset 0x30
@@ -98,18 +94,8 @@ fn create_resident_attribute(attr_type: AttributeType, value: &[u8]) -> Vec<u8> 
     let mut attr = vec![0_u8; length];
 
     write_u32_le(&mut attr, 0, attr_type as u32);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "test attributes are far smaller than u32::MAX"
-    )]
-    let length_u32 = length as u32;
-    write_u32_le(&mut attr, 4, length_u32);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "resident test attribute values are far smaller than u32::MAX"
-    )]
-    let value_length = value.len() as u32;
-    write_u32_le(&mut attr, 16, value_length);
+    write_u32_le(&mut attr, 4, crate::len_to_u32(length));
+    write_u32_le(&mut attr, 16, crate::len_to_u32(value.len()));
     write_u16_le(&mut attr, 20, 24);
     attr[value_offset..value_offset + value.len()].copy_from_slice(value);
 
@@ -125,11 +111,7 @@ fn create_file_name_value(parent_directory: u64, name: &str, namespace: u8) -> V
     let mut value = vec![0_u8; 66 + name_utf16.len() * 2];
 
     write_u64_le(&mut value, 0, parent_directory);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "test names are short and fit into the NTFS filename length field"
-    )]
-    let name_length = name_utf16.len() as u8;
+    let name_length = u8::try_from(name_utf16.len()).expect("test name fits u8");
     value[64] = name_length;
     value[65] = namespace;
 
@@ -170,11 +152,7 @@ fn create_test_record_with_attributes(
     }
 
     write_u32_le(&mut data, offset, 0xFFFF_FFFF);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "synthetic test record stays well under u32::MAX"
-    )]
-    let bytes_in_use = (offset + 4) as u32;
+    let bytes_in_use = crate::len_to_u32(offset + 4);
     write_u32_le(&mut data, 24, bytes_in_use);
 
     data

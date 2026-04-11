@@ -28,26 +28,23 @@ pub fn format_number_commas(num: u64) -> String {
 /// - >= 1 TB: `123.45 TB`
 #[must_use]
 #[expect(
-    clippy::cast_precision_loss,
-    reason = "precision loss acceptable for display"
-)]
-#[expect(
     clippy::float_arithmetic,
     reason = "floating-point arithmetic required for human-readable byte formatting"
 )]
 pub fn format_bytes(bytes: u64) -> String {
+    let bytes_f64 = uffs_mft::u64_to_f64(bytes);
     if bytes < 1024 {
         format!("{bytes:>4} B")
     } else if bytes < 1024 * 1024 {
-        format!("{:>7.2} KB", bytes as f64 / 1024.0)
+        format!("{:>7.2} KB", bytes_f64 / 1024.0)
     } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:>7.2} MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:>7.2} MB", bytes_f64 / (1024.0 * 1024.0))
     } else if bytes < 1024 * 1024 * 1024 * 1024 {
-        format!("{:>7.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        format!("{:>7.2} GB", bytes_f64 / (1024.0 * 1024.0 * 1024.0))
     } else {
         format!(
             "{:>7.2} TB",
-            bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
+            bytes_f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
         )
     }
 }
@@ -59,14 +56,6 @@ pub fn format_bytes(bytes: u64) -> String {
 /// Uses Howard Hinnant's civil calendar algorithm (same as the CLI's
 /// `append_datetime`). No external crate dependency.
 #[must_use]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "rem_euclid always returns non-negative value"
-)]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "day_secs and doe are mathematically bounded within u32 range"
-)]
 pub fn format_timestamp(unix_micros: i64) -> String {
     if unix_micros == 0 {
         return "—".to_owned();
@@ -74,11 +63,13 @@ pub fn format_timestamp(unix_micros: i64) -> String {
     let adjusted_secs = unix_micros.div_euclid(1_000_000);
 
     // Civil time decomposition (no leap seconds — matches chrono behavior).
-    let day_secs = adjusted_secs.rem_euclid(86_400) as u32;
+    // rem_euclid is always non-negative → safe to narrow to u32 via try_from.
+    let day_secs = u32::try_from(adjusted_secs.rem_euclid(86_400)).unwrap_or(0);
     let days = adjusted_secs.div_euclid(86_400) + 719_468; // shift to 0000-03-01 epoch
 
     let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
-    let doe = (days - era * 146_097) as u32; // day of era [0, 146096]
+    // doe is in [0, 146_096] — always fits u32.
+    let doe = u32::try_from(days - era * 146_097).unwrap_or(0);
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let year_offset = i64::from(yoe) + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);

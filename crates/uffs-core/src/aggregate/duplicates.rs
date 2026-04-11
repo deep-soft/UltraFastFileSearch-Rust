@@ -37,8 +37,8 @@ impl CompositeKey {
                 FieldId::Size => components.push(record.size),
                 FieldId::SizeOnDisk => components.push(record.allocated),
                 FieldId::Extension => components.push(u64::from(record.extension_id)),
-                FieldId::Modified => components.push(record.modified as u64),
-                FieldId::Created => components.push(record.created as u64),
+                FieldId::Modified => components.push(uffs_mft::nonneg_to_u64(record.modified)),
+                FieldId::Created => components.push(uffs_mft::nonneg_to_u64(record.created)),
                 FieldId::Name => {
                     // Hash the lowercase name for the composite key
                     // (case-insensitive grouping — NTFS is case-preserving
@@ -114,7 +114,7 @@ impl DuplicateGroupBuilder {
     fn new(max_sample: u8) -> Self {
         Self {
             stats: StatsAccumulator::new(),
-            members: Vec::with_capacity(max_sample as usize),
+            members: Vec::with_capacity(usize::from(max_sample)),
             max_sample,
         }
     }
@@ -122,7 +122,7 @@ impl DuplicateGroupBuilder {
     /// Add a record to this group.
     fn add(&mut self, record: &CompactRecord, idx: usize, drive_ordinal: u8) {
         self.stats.feed_value(record.size, record.allocated);
-        if self.members.len() < self.max_sample as usize {
+        if self.members.len() < usize::from(self.max_sample) {
             self.members.push((idx, drive_ordinal));
         }
     }
@@ -166,7 +166,7 @@ impl DuplicateAccumulator {
         }
 
         // OOM guard.
-        if self.groups.len() as u32 >= self.max_groups {
+        if uffs_mft::len_to_u32(self.groups.len()) >= self.max_groups {
             // Only feed existing groups, don't create new ones.
             let key = CompositeKey::from_record(record, drive, &self.key_fields);
             if let Some(group) = self.groups.get_mut(&key) {
@@ -215,7 +215,7 @@ impl DuplicateAccumulator {
         let total_duplicate_files: u64 = groups.iter().map(|g| g.count).sum();
         let total_reclaimable: u64 = groups.iter().map(|g| g.reclaimable_bytes).sum();
 
-        groups.truncate(top as usize);
+        groups.truncate(usize::from(top));
 
         DuplicateResult {
             candidate_groups: total_groups,
@@ -313,7 +313,8 @@ mod tests {
             let off = idx.add_name(name);
             let ext = idx.intern_extension(name);
             let rec = idx.get_or_create(frs);
-            rec.first_name.name = IndexNameRef::new(off, name.len() as u16, true, ext);
+            rec.first_name.name =
+                IndexNameRef::new(off, uffs_mft::len_to_u16(name.len()), true, ext);
             rec.first_name.parent_frs = ROOT_FRS;
             rec.first_stream.size = SizeInfo {
                 length: size,
@@ -410,7 +411,8 @@ mod tests {
             let off = idx.add_name(&name);
             let ext = idx.intern_extension(&name);
             let rec = idx.get_or_create(100 + i);
-            rec.first_name.name = IndexNameRef::new(off, name.len() as u16, true, ext);
+            rec.first_name.name =
+                IndexNameRef::new(off, uffs_mft::len_to_u16(name.len()), true, ext);
             rec.first_name.parent_frs = ROOT_FRS;
             rec.first_stream.size = SizeInfo {
                 length: (i + 1) * 100,
@@ -456,7 +458,8 @@ mod tests {
             let off = idx.add_name(name);
             let ext = idx.intern_extension(name);
             let rec = idx.get_or_create(100 + i);
-            rec.first_name.name = IndexNameRef::new(off, name.len() as u16, true, ext);
+            rec.first_name.name =
+                IndexNameRef::new(off, uffs_mft::len_to_u16(name.len()), true, ext);
             rec.first_name.parent_frs = ROOT_FRS;
             rec.first_stream.size = SizeInfo {
                 length: 0,
@@ -499,7 +502,8 @@ mod tests {
             let rec = idx.get_or_create(100 + i);
             rec.stdinfo.set_directory(true);
             rec.stdinfo.flags = 0x10; // directory
-            rec.first_name.name = IndexNameRef::new(off, name.len() as u16, true, ext);
+            rec.first_name.name =
+                IndexNameRef::new(off, uffs_mft::len_to_u16(name.len()), true, ext);
             rec.first_name.parent_frs = ROOT_FRS;
             rec.first_stream.size = SizeInfo {
                 length: 4096,

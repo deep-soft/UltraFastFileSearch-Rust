@@ -24,13 +24,9 @@ impl NameArena {
     /// # Panics
     ///
     /// Panics if the buffer exceeds 4GB (`u32::MAX` bytes).
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "buffer <4GB in practice; name len clamped to u16::MAX"
-    )]
     pub fn add(&mut self, name: &str) -> (u32, u16) {
-        let offset = self.buffer.len() as u32;
-        let len = name.len().min(usize::from(u16::MAX)) as u16;
+        let offset = uffs_mft::len_to_u32(self.buffer.len());
+        let len = uffs_mft::len_to_u16(name.len());
         self.buffer.push_str(name);
         (offset, len)
     }

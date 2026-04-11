@@ -219,6 +219,7 @@ pub fn secure_remove(path: &Path) -> io::Result<()> {
 
     file.seek(SeekFrom::Start(0))?;
     while remaining > 0 {
+        // ZERO_BUF_SIZE is a small constant — usize→u64 is lossless on 64-bit.
         let chunk = if remaining >= ZERO_BUF_SIZE as u64 {
             ZERO_BUF_SIZE
         } else {
@@ -228,7 +229,7 @@ pub fn secure_remove(path: &Path) -> io::Result<()> {
             .get(..chunk)
             .ok_or_else(|| io::Error::other("zero buffer slice out of bounds"))?;
         file.write_all(buf)?;
-        remaining -= chunk as u64;
+        remaining -= chunk as u64; // chunk ≤ ZERO_BUF_SIZE (64 KiB) — fits u64
     }
 
     file.sync_all()?;

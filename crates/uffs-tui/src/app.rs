@@ -463,7 +463,7 @@ impl App {
         // `daemon_backend` is `Some` — checked by caller.
         let db = self.daemon_backend.as_mut();
 
-        let fc = |n: usize| uffs_core::format::format_number_commas(n as u64);
+        let fc = |n: usize| uffs_core::format::format_number_commas(n as u64); // usize→u64 lossless on 64-bit
 
         match db {
             Some(backend) => match backend.search(&params) {

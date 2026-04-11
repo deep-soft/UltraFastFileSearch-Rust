@@ -110,7 +110,7 @@ pub fn detect_format(data: &[u8]) -> CacheFormat {
 pub fn encrypt_cache(plaintext: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
     use rand::Rng;
 
-    let plaintext_len = plaintext.len() as u64;
+    let plaintext_len = plaintext.len() as u64; // usize→u64 lossless on 64-bit
 
     // Generate random 96-bit nonce
     let mut nonce_bytes = [0_u8; NONCE_SIZE];
@@ -220,7 +220,7 @@ pub fn decrypt_cache(data: &[u8], key: &[u8; 32]) -> io::Result<Vec<u8>> {
                 .ok_or_else(|| bad_data("missing v1 length"))?
                 .try_into()
                 .map_err(|_e| bad_data("invalid v1 length"))?;
-            (HEADER_SIZE_V1, u32::from_le_bytes(len_buf) as usize)
+            (HEADER_SIZE_V1, u32::from_le_bytes(len_buf) as usize) // u32→usize lossless on 64-bit
         }
         2 => {
             if data.len() < HEADER_SIZE_V2 + TAG_SIZE {

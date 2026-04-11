@@ -110,11 +110,7 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
                     reason = "scaled bulkiness metric is expected within i64 range"
                 )]
                 FieldId::Bulkiness => {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "record index bounded by NTFS limits (<4B records)"
-                    )]
-                    let ri = rec_idx as u32;
+                    let ri = uffs_mft::len_to_u32(rec_idx);
                     let row = DisplayRow::new(
                         ri,
                         drive.letter,
@@ -148,7 +144,7 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
                 FieldId::Drive => {
                     let name = rec.name(&drive.names);
                     let mut key = [0_u8; 8];
-                    key[0] = drive.letter as u8;
+                    key[0] = u8::try_from(u32::from(drive.letter)).unwrap_or(b'?');
                     for (dst, ch) in key[1..].iter_mut().zip(name.chars()) {
                         let folded = drive_fold.fold_char(ch);
                         #[expect(clippy::cast_possible_truncation, reason = "sort key prefix")]
@@ -195,25 +191,21 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
                 FieldId::Virtual => i64::from(rec.flags & 0x0001_0000 != 0),
                 // Modified is the default; Path/PathOnly handled by tree walk above.
                 FieldId::Path | FieldId::PathOnly | FieldId::Modified => rec.modified,
-                #[expect(clippy::cast_possible_wrap, reason = "filename lengths fit i64")]
-                FieldId::NameLength => rec.name(&drive.names).chars().count() as i64,
-                #[expect(clippy::cast_possible_wrap, reason = "path lengths fit i64")]
+                FieldId::NameLength => {
+                    i64::try_from(rec.name(&drive.names).chars().count()).unwrap_or(i64::MAX)
+                }
                 FieldId::PathLength => {
                     // Use name length as a proxy at the sort-key stage
                     // (full path unavailable here).
-                    rec.name(&drive.names).chars().count() as i64
+                    i64::try_from(rec.name(&drive.names).chars().count()).unwrap_or(i64::MAX)
                 }
             };
 
             if use_heap {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "drive index and record index bounded by practical limits"
-                )]
                 let entry = HeapEntry {
                     sort_key,
-                    drive_idx: drive_idx as u16,
-                    rec_idx: rec_idx as u32,
+                    drive_idx: uffs_mft::len_to_u16(drive_idx),
+                    rec_idx: uffs_mft::len_to_u32(rec_idx),
                 };
                 if sort_desc {
                     heap_push_capped(&mut heap_desc, core::cmp::Reverse(entry), limit);
@@ -221,13 +213,11 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
                     heap_push_capped(&mut heap_asc, entry, limit);
                 }
             } else {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "drive index bounded by practical limits"
-                )]
-                {
-                    fallback.push((drive_idx as u16, rec_idx as u32, sort_key));
-                }
+                fallback.push((
+                    uffs_mft::len_to_u16(drive_idx),
+                    uffs_mft::len_to_u32(rec_idx),
+                    sort_key,
+                ));
             }
         };
 

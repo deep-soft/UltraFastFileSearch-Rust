@@ -76,15 +76,11 @@ fn resolve_path_inner(
         }
 
         // Check cache before walking further.
-        if let Some(cache) = dir_cache.as_ref() {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "record index bounded by NTFS limits"
-            )]
-            if let Some(cached) = cache.get(&(current_idx as u32)) {
-                cache_hit_prefix = Some(cached.clone());
-                break;
-            }
+        if let Some(cache) = dir_cache.as_ref()
+            && let Some(cached) = cache.get(&uffs_mft::len_to_u32(current_idx))
+        {
+            cache_hit_prefix = Some(cached.clone());
+            break;
         }
 
         let Some(record) = drive.records.get(current_idx) else {
@@ -153,13 +149,9 @@ fn resolve_path_inner(
                 dir_path.push_str(name);
                 // Only cache directories — files won't be looked up as parents.
                 if rec.is_directory() {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "record index bounded by NTFS limits"
-                    )]
-                    {
-                        cache.entry(idx as u32).or_insert_with(|| dir_path.clone());
-                    }
+                    cache
+                        .entry(uffs_mft::len_to_u32(idx))
+                        .or_insert_with(|| dir_path.clone());
                 }
             }
         }
@@ -216,17 +208,13 @@ pub fn tree_search(drive: &DriveCompactIndex, pattern_lower: &str, limit: usize)
     let dir_segments = segments.get(..segments.len() - 1).unwrap_or(&[]);
 
     // Start: first segment determines initial candidate dirs
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "record count bounded by NTFS limits, fits u32"
-    )]
     let mut candidate_dirs: Vec<u32> = if *first_segment == "**" {
         drive
             .records
             .iter()
             .enumerate()
             .filter(|(_, rec)| rec.is_directory() && rec.name_len > 0)
-            .map(|(idx, _)| idx as u32)
+            .map(|(idx, _)| uffs_mft::len_to_u32(idx))
             .collect()
     } else {
         trigram_filtered_records(drive, first_segment, usize::MAX, |rec| {
@@ -366,14 +354,7 @@ fn trigram_filtered_records(
             .enumerate()
             .filter(|(_, rec)| predicate(rec))
             .take(limit)
-            .map(|(idx, _)| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "record count bounded by NTFS limits"
-                )]
-                let i = idx as u32;
-                i
-            })
+            .map(|(idx, _)| uffs_mft::len_to_u32(idx))
             .collect(),
         Some(candidate_indices) => {
             let mut out = Vec::with_capacity(candidate_indices.len().min(limit));

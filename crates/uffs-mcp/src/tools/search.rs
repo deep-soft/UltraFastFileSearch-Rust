@@ -361,8 +361,8 @@ pub(crate) async fn run(
     let page_rows: Vec<_> = response
         .rows
         .into_iter()
-        .skip(offset as usize)
-        .take(effective_limit as usize)
+        .skip(offset as usize) // u32→usize lossless on 64-bit
+        .take(effective_limit as usize) // u32→usize lossless on 64-bit
         .collect();
 
     let total_count = response.total_count;

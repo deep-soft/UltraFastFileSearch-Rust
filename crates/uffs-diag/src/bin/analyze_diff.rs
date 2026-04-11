@@ -30,7 +30,6 @@
 )]
 #![expect(
     clippy::float_arithmetic,
-    clippy::cast_precision_loss,
     clippy::default_numeric_fallback,
     reason = "percentage calculations and statistics use floating-point"
 )]
@@ -248,7 +247,8 @@ fn main() -> Result<()> {
     println!("Reference only: {:?}", reference_only.len());
     println!("Rust only: {:?}", rust_only.len());
 
-    let match_rate = 100.0 * common_paths.len() as f64 / reference_paths.len() as f64;
+    let match_rate = 100.0 * uffs_mft::usize_to_f64(common_paths.len())
+        / uffs_mft::usize_to_f64(reference_paths.len());
     println!("Match rate: {match_rate:.2}%");
 
     println!("\n{}", "=".repeat(70));
@@ -425,7 +425,8 @@ fn main() -> Result<()> {
     let match_rate_no_ads = if reference_no_ads.is_empty() {
         0.0
     } else {
-        100.0 * common_no_ads.len() as f64 / reference_no_ads.len() as f64
+        100.0 * uffs_mft::usize_to_f64(common_no_ads.len())
+            / uffs_mft::usize_to_f64(reference_no_ads.len())
     };
 
     println!("\nExcluding ADS entries:");
@@ -457,11 +458,13 @@ fn main() -> Result<()> {
     println!("SUMMARY & ROOT CAUSE HYPOTHESIS");
     println!("{}", "=".repeat(70));
 
-    let missing_pct = 100.0 * reference_only.len() as f64 / reference_paths.len() as f64;
+    let missing_pct = 100.0 * uffs_mft::usize_to_f64(reference_only.len())
+        / uffs_mft::usize_to_f64(reference_paths.len());
     let missing_no_ads_pct = if reference_no_ads.is_empty() {
         0.0
     } else {
-        100.0 * reference_only_no_ads.len() as f64 / reference_no_ads.len() as f64
+        100.0 * uffs_mft::usize_to_f64(reference_only_no_ads.len())
+            / uffs_mft::usize_to_f64(reference_no_ads.len())
     };
 
     println!("\nAnalysis Complete (ALL paths):");

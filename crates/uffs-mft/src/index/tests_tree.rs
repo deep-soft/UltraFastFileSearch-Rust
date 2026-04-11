@@ -233,7 +233,7 @@ fn test_compute_tree_metrics_performance() {
         rec.stdinfo.set_directory(true);
         rec.first_name.name = IndexNameRef::new(
             offset,
-            dir_name.len() as u16,
+            u16::try_from(dir_name.len()).unwrap(),
             true,
             IndexNameRef::NO_EXTENSION,
         );
@@ -252,7 +252,7 @@ fn test_compute_tree_metrics_performance() {
             let rec = index.get_or_create(file_frs);
             rec.first_name.name = IndexNameRef::new(
                 offset,
-                file_name.len() as u16,
+                u16::try_from(file_name.len()).unwrap(),
                 true,
                 IndexNameRef::NO_EXTENSION,
             );

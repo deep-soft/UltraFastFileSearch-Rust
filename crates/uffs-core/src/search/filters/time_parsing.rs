@@ -2,7 +2,7 @@
 
 /// Extracts the 1-based month number from a Unix-microsecond timestamp.
 #[must_use]
-pub const fn month_from_unix_micros(us: i64) -> u32 {
+pub fn month_from_unix_micros(us: i64) -> u32 {
     // Convert µs → days since Unix epoch.
     let total_secs = us / 1_000_000;
     // Integer floor-division that rounds towards −∞.
@@ -13,20 +13,16 @@ pub const fn month_from_unix_micros(us: i64) -> u32 {
     };
     // Civil date from day count (algorithm from Howard Hinnant).
     // <https://howardhinnant.github.io/date_algorithms.html#civil_from_days>
+    // All intermediates stay `i64`; only the final month [1,12] is narrowed.
     let z = day + 719_468;
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let doe = z - era * 146_097; // day-of-era  [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day-of-year [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
-    let civil_month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "month is always 1-12"
-    )]
-    let month = civil_month as u32;
-    month
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    // month is always in [1, 12] — try_from is infallible here.
+    u32::try_from(month).unwrap_or(0)
 }
 
 /// Parse a month/quarter spec into a vector of allowed months (1-12).
@@ -141,14 +137,7 @@ pub fn parse_size(spec: &str) -> Result<u64, String> {
 pub fn now_unix_micros() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |dur| {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "micros since epoch fits i64 until year ~292,277"
-            )]
-            let us = dur.as_micros() as i64;
-            us
-        })
+        .map_or(0, |dur| uffs_mft::micros_to_i64(dur.as_micros()))
 }
 
 /// Parse a time bound string into Unix microseconds.

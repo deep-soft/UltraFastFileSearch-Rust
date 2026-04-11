@@ -21,9 +21,6 @@
 //  • std_instead_of_core — HashMap/Mutex are std-only
 //  • map_err_ignore — intentional simplification of error types
 #![allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::float_arithmetic,
     clippy::min_ident_chars,
     clippy::too_many_lines,
@@ -234,8 +231,8 @@ impl ExtensionMap {
     #[inline]
     fn canonical_id(&self, drive_ordinal: u8, local_ext_id: u16) -> u64 {
         self.per_drive
-            .get(drive_ordinal as usize)
-            .and_then(|m| m.get(local_ext_id as usize))
+            .get(usize::from(drive_ordinal))
+            .and_then(|m| m.get(usize::from(local_ext_id)))
             .copied()
             .unwrap_or(u64::MAX)
     }
@@ -243,7 +240,7 @@ impl ExtensionMap {
     /// Resolve a canonical ID to its extension name.
     fn resolve(&self, canonical_id: u64) -> String {
         self.canonical_names
-            .get(canonical_id as usize)
+            .get(uffs_mft::frs_to_usize(canonical_id))
             .cloned()
             .unwrap_or_else(|| format!("ext:{canonical_id}"))
     }
@@ -283,14 +280,14 @@ pub fn run_aggregate(
     let mut total_matched: u64 = 0;
 
     for (drive_ordinal, drive) in drives.iter().enumerate() {
-        let ordinal = drive_ordinal.min(u8::MAX as usize) as u8;
+        let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
         let t = std::time::Instant::now();
         let (scanned, matched) = scan_drive(drive, &plan, &mut merged, ordinal, Some(&ext_map));
         tracing::debug!(
             drive = %drive.letter,
             scanned,
             matched,
-            elapsed_ms = t.elapsed().as_millis() as u64,
+            elapsed_ms = t.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
             "run_aggregate: drive scan"
         );
         total_scanned += scanned;
@@ -308,7 +305,7 @@ pub fn run_aggregate(
         Some(&ext_map),
     );
     tracing::debug!(
-        elapsed_ms = t_fin.elapsed().as_millis() as u64,
+        elapsed_ms = t_fin.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
         "run_aggregate: finalize"
     );
 
@@ -316,7 +313,7 @@ pub fn run_aggregate(
         response,
         records_scanned: total_scanned,
         records_matched: total_matched,
-        execution_us: start.elapsed().as_micros() as u64,
+        execution_us: start.elapsed().as_micros().try_into().unwrap_or(u64::MAX),
     })
 }
 
@@ -372,7 +369,7 @@ pub fn run_aggregate_filtered(
     let mut total_matched: u64 = 0;
 
     for (drive_ordinal, drive) in drives.iter().enumerate() {
-        let ordinal = drive_ordinal.min(u8::MAX as usize) as u8;
+        let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
         for (idx, record) in drive.records.iter().enumerate() {
             total_scanned += 1;
             let name = record.name(&drive.names);
@@ -406,7 +403,7 @@ pub fn run_aggregate_filtered(
         response,
         records_scanned: total_scanned,
         records_matched: total_matched,
-        execution_us: start.elapsed().as_micros() as u64,
+        execution_us: start.elapsed().as_micros().try_into().unwrap_or(u64::MAX),
     })
 }
 
@@ -475,7 +472,7 @@ pub fn run_aggregate_with_filters(
     let mut total_matched: u64 = 0;
 
     for (drive_ordinal, drive) in drives.iter().enumerate() {
-        let ordinal = drive_ordinal.min(u8::MAX as usize) as u8;
+        let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
         // Resolve extension names → per-drive u16 IDs (< 1µs).
         let resolved_ext_ids = drive.resolve_ext_ids(&filter.extensions);
 
@@ -525,7 +522,7 @@ pub fn run_aggregate_with_filters(
         response,
         records_scanned: total_scanned,
         records_matched: total_matched,
-        execution_us: start.elapsed().as_micros() as u64,
+        execution_us: start.elapsed().as_micros().try_into().unwrap_or(u64::MAX),
     })
 }
 
@@ -576,8 +573,6 @@ pub enum AggregateError {
     clippy::unwrap_used,
     clippy::indexing_slicing,
     clippy::float_arithmetic,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
     clippy::missing_docs_in_private_items,
     clippy::panic,
     clippy::min_ident_chars,
@@ -634,7 +629,8 @@ mod integration_tests {
         let dir = idx.get_or_create(100);
         dir.stdinfo.set_directory(true);
         dir.stdinfo.flags = 0x10;
-        dir.first_name.name = IndexNameRef::new(dir_off, dir_name.len() as u16, true, dir_ext);
+        dir.first_name.name =
+            IndexNameRef::new(dir_off, uffs_mft::len_to_u16(dir_name.len()), true, dir_ext);
         dir.first_name.parent_frs = ROOT_FRS;
 
         // Files: (name, frs, size, allocated, modified_timestamp)
@@ -652,7 +648,8 @@ mod integration_tests {
             let off = idx.add_name(name);
             let ext = idx.intern_extension(name);
             let rec = idx.get_or_create(frs);
-            rec.first_name.name = IndexNameRef::new(off, name.len() as u16, true, ext);
+            rec.first_name.name =
+                IndexNameRef::new(off, uffs_mft::len_to_u16(name.len()), true, ext);
             rec.first_name.parent_frs = 100;
             rec.first_stream.size = SizeInfo {
                 length: size,
@@ -1328,7 +1325,7 @@ mod integration_tests {
             "paginated total count should equal unpaginated"
         );
         // Pages should be ceil(full_len / page_size).
-        let expected_pages = full_len.div_ceil(page_size) as u32;
+        let expected_pages = uffs_mft::len_to_u32(full_len.div_ceil(page_size));
         assert_eq!(
             pages, expected_pages,
             "{full_len} extensions / page_size={page_size} → {expected_pages} pages"

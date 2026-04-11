@@ -197,7 +197,7 @@ mod tests {
         let mut heap = SampleHeap::from_spec(&spec);
         for i in 0..10_u64 {
             let rec = make_record(i * 100, 0);
-            heap.push(&rec, i as u32, 0);
+            heap.push(&rec, u32::try_from(i).unwrap_or(u32::MAX), 0);
         }
         assert_eq!(heap.len(), 3);
         let entries = heap.drain_sorted();
@@ -213,7 +213,7 @@ mod tests {
         let mut heap = SampleHeap::from_spec(&spec);
         for i in 0..10_u64 {
             let rec = make_record(i * 100, 0);
-            heap.push(&rec, i as u32, 0);
+            heap.push(&rec, u32::try_from(i).unwrap_or(u32::MAX), 0);
         }
         assert_eq!(heap.len(), 3);
         let entries = heap.drain_sorted();

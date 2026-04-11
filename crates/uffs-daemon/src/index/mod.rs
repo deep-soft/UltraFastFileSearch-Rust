@@ -398,10 +398,9 @@ impl IndexManager {
 
     /// Get daemon performance statistics.
     #[expect(
-        clippy::cast_precision_loss,
         clippy::float_arithmetic,
         clippy::default_numeric_fallback,
-        reason = "stats are approximate; f64 precision is fine for monitoring"
+        reason = "stats are approximate; f64 arithmetic needed for averages"
     )]
     pub async fn stats(&self) -> StatsResponse {
         let total_queries = self.queries_total.load(Ordering::Relaxed);
@@ -411,12 +410,12 @@ impl IndexManager {
         let total_records = self.total_records().await;
 
         let avg_query_us = if total_queries > 0 {
-            total_us as f64 / total_queries as f64
+            uffs_mft::u64_to_f64(total_us) / uffs_mft::u64_to_f64(total_queries)
         } else {
             0.0
         };
         let qps = if uptime_secs > 0 {
-            total_queries as f64 / uptime_secs as f64
+            uffs_mft::u64_to_f64(total_queries) / uffs_mft::u64_to_f64(uptime_secs)
         } else {
             0.0
         };
@@ -590,13 +589,7 @@ impl IndexManager {
         let mut candidates: Vec<u32> = Vec::new();
         for (idx, rec) in drive.records.iter().enumerate() {
             if rec.parent_idx == u32::MAX && rec.name_len > 0 {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "record count bounded by NTFS limits, fits u32"
-                )]
-                {
-                    candidates.push(idx as u32);
-                }
+                candidates.push(uffs_mft::len_to_u32(idx));
             }
         }
 
@@ -610,41 +603,43 @@ impl IndexManager {
             if seg_idx == 0 {
                 // First segment: match against root entries.
                 for &root_idx in &candidates {
-                    if let Some(rec) = drive.records.get(root_idx as usize) {
+                    if let Some(rec) = drive.records.get(uffs_mft::u32_as_usize(root_idx)) {
                         let name = rec.name(&drive.names);
                         if name.to_ascii_lowercase() == seg_lower {
                             if is_last {
                                 let volume_prefix = format!("{}:\\", drive.letter);
                                 let resolved = uffs_core::search::tree::resolve_path(
                                     drive,
-                                    root_idx as usize,
+                                    uffs_mft::u32_as_usize(root_idx),
                                     &volume_prefix,
                                 );
                                 return Some(Self::build_info_json(drive, rec, &resolved));
                             }
                             // Collect children for next segment.
-                            next_candidates
-                                .extend_from_slice(drive.children.get(root_idx as usize));
+                            next_candidates.extend_from_slice(
+                                drive.children.get(uffs_mft::u32_as_usize(root_idx)),
+                            );
                         }
                     }
                 }
             } else {
                 // Subsequent segments: match against children of previous matches.
                 for &child_idx in &candidates {
-                    if let Some(rec) = drive.records.get(child_idx as usize) {
+                    if let Some(rec) = drive.records.get(uffs_mft::u32_as_usize(child_idx)) {
                         let name = rec.name(&drive.names);
                         if name.to_ascii_lowercase() == seg_lower {
                             if is_last {
                                 let volume_prefix = format!("{}:\\", drive.letter);
                                 let resolved = uffs_core::search::tree::resolve_path(
                                     drive,
-                                    child_idx as usize,
+                                    uffs_mft::u32_as_usize(child_idx),
                                     &volume_prefix,
                                 );
                                 return Some(Self::build_info_json(drive, rec, &resolved));
                             }
-                            next_candidates
-                                .extend_from_slice(drive.children.get(child_idx as usize));
+                            next_candidates.extend_from_slice(
+                                drive.children.get(uffs_mft::u32_as_usize(child_idx)),
+                            );
                         }
                     }
                 }

@@ -2,8 +2,6 @@
 // Same statistical patterns as uffs-core::aggregate apply here.
 #![allow(
     clippy::min_ident_chars,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
     clippy::too_many_lines,
     clippy::shadow_reuse,
     clippy::redundant_closure_for_method_calls,
@@ -43,7 +41,7 @@ struct DaemonFileReader<'a> {
 impl DaemonFileReader<'_> {
     /// Resolve a record to its full file path.
     fn resolve_path(&self, record_idx: usize, drive_ordinal: u8) -> Option<String> {
-        let drive = self.drives.get(drive_ordinal as usize)?;
+        let drive = self.drives.get(usize::from(drive_ordinal))?;
         let volume_prefix = format!("{}:\\", drive.letter);
         Some(uffs_core::search::tree::resolve_path(
             drive,
@@ -67,7 +65,7 @@ impl FileReader for DaemonFileReader<'_> {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "drive ordinal out of range")
             })?;
         let mut file = std::fs::File::open(&path)?;
-        let mut buf = vec![0_u8; count as usize];
+        let mut buf = vec![0_u8; uffs_mft::u32_as_usize(count)];
         let n = file.read(&mut buf)?;
         buf.truncate(n);
         Ok(buf)
@@ -106,14 +104,15 @@ fn format_size_compact(bytes: u64) -> String {
     const MB: u64 = 1024 * KB;
     const GB: u64 = 1024 * MB;
     const TB: u64 = 1024 * GB;
+    let bytes_f64 = uffs_mft::u64_to_f64(bytes);
     if bytes >= TB {
-        format!("{:.2} TB", bytes as f64 / TB as f64)
+        format!("{:.2} TB", bytes_f64 / uffs_mft::u64_to_f64(TB))
     } else if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
+        format!("{:.2} GB", bytes_f64 / uffs_mft::u64_to_f64(GB))
     } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
+        format!("{:.1} MB", bytes_f64 / uffs_mft::u64_to_f64(MB))
     } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
+        format!("{:.1} KB", bytes_f64 / uffs_mft::u64_to_f64(KB))
     } else {
         format!("{bytes} B")
     }
@@ -130,7 +129,7 @@ fn materialize_dup_members(
     members
         .iter()
         .filter_map(|&(rec_idx, drive_ord)| {
-            let drive = drives.get(drive_ord as usize)?;
+            let drive = drives.get(usize::from(drive_ord))?;
             let record = drive.records.get(rec_idx)?;
             let name = record.name(&drive.names).to_owned();
             let volume_prefix = format!("{}:\\", drive.letter);
@@ -275,7 +274,7 @@ impl IndexManager {
         let page_size = decoded_cursor
             .as_ref()
             .map(|c| c.page_size)
-            .or_else(|| agg_page_size.map(|ps| ps as usize));
+            .or_else(|| agg_page_size.map(usize::from));
 
         // Convert results to wire format.
         let wire_results = output
@@ -472,7 +471,7 @@ impl IndexManager {
                                     count: g.count,
                                     total_bytes: g.total_bytes,
                                     total_allocated: Some(g.reclaimable_bytes),
-                                    avg_size: Some(g.file_size as f64),
+                                    avg_size: Some(uffs_mft::u64_to_f64(g.file_size)),
                                     share_count: None,
                                     share_bytes: None,
                                     sample_rows: samples,
@@ -497,7 +496,8 @@ impl IndexManager {
                             avg: 0.0,
                             waste_bytes: total_reclaimable,
                             waste_pct: if result.total_duplicate_bytes > 0 {
-                                (total_reclaimable as f64 / result.total_duplicate_bytes as f64)
+                                (uffs_mft::u64_to_f64(total_reclaimable)
+                                    / uffs_mft::u64_to_f64(result.total_duplicate_bytes))
                                     * 100.0
                             } else {
                                 0.0
@@ -792,11 +792,11 @@ impl IndexManager {
                     "drive" => RollupMode::Drive,
                     "ancestor" | "drilldown" => {
                         // Use interval field as the record index.
-                        let record_idx = ws.interval.unwrap_or(0) as u32;
+                        let record_idx = u32::try_from(ws.interval.unwrap_or(0)).unwrap_or(0);
                         RollupMode::Ancestor { record_idx }
                     }
                     _ => {
-                        let depth = ws.interval.unwrap_or(1) as u32;
+                        let depth = u32::try_from(ws.interval.unwrap_or(1)).unwrap_or(1);
                         RollupMode::Path { depth }
                     }
                 };

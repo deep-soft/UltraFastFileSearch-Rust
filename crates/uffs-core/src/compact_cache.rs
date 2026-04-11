@@ -623,13 +623,9 @@ fn log_disk_summary(drive_letter: char) {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-/// Writes a usize as u32 LE (callers ensure it fits).
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "callers ensure value fits u32"
-)]
+/// Writes a usize as u32 LE (saturates at `u32::MAX`).
 fn push_u32(buf: &mut Vec<u8>, value: usize) {
-    buf.extend_from_slice(&(value as u32).to_le_bytes());
+    buf.extend_from_slice(&uffs_mft::len_to_u32(value).to_le_bytes());
 }
 
 /// Read a little-endian u32 from `data` at `offset`.

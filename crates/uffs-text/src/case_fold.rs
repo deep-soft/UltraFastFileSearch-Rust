@@ -85,13 +85,10 @@ impl CaseFold {
     #[inline]
     #[must_use]
     pub fn fold_char(&self, ch: char) -> u16 {
-        let cp = ch as u32;
+        let cp = u32::from(ch);
         if cp < 0x10000 {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "cp < 0x10000 guarantees u16 fits"
-            )]
-            let fallback = cp as u16;
+            // cp < 0x10000 guarantees u16 fits — try_from is infallible here.
+            let fallback = u16::try_from(cp).unwrap_or(0);
             self.table.get(cp as usize).copied().unwrap_or(fallback)
         } else {
             // Non-BMP — no uppercase mapping; truncate to u16 is intentional:
@@ -244,12 +241,9 @@ impl CaseFold {
             .enumerate()
             .filter(|&(_, (lhs, rhs))| lhs != rhs)
             .map(|(idx, (&default_val, &live_val))| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "BMP codepoints are always < 65 536"
-                )]
+                // BMP codepoints: idx < 65 536 — try_from is infallible.
                 UpcaseDiff {
-                    codepoint: idx as u16,
+                    codepoint: u16::try_from(idx).unwrap_or(0),
                     default_maps_to: default_val,
                     live_maps_to: live_val,
                 }
@@ -262,28 +256,18 @@ impl CaseFold {
         buf.clear();
         let mut encode_buf = [0_u8; 4];
         for ch in name.chars() {
-            let cp = ch as u32;
+            let cp = u32::from(ch);
             if cp < 0x80 {
                 // ASCII fast path — folded value guaranteed ≤ 0x7F for
-                // ASCII inputs, so the u8 truncation is safe.
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "cp < 0x80 → folded value fits in u8 for ASCII inputs"
-                )]
-                let fallback = cp as u16;
+                // ASCII inputs, so try_from is infallible here.
+                let fallback = u16::try_from(cp).unwrap_or(0);
                 let folded = self.table.get(cp as usize).copied().unwrap_or(fallback);
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "ASCII uppercase ≤ 0x7F fits in u8"
-                )]
-                let byte = folded as u8;
+                // ASCII uppercase ≤ 0x7F — infallible.
+                let byte = u8::try_from(folded).unwrap_or(0);
                 buf.push(byte);
             } else if cp < 0x10000 {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "cp < 0x10000 → fits in u16"
-                )]
-                let fallback = cp as u16;
+                // cp < 0x10000 — infallible narrowing to u16.
+                let fallback = u16::try_from(cp).unwrap_or(0);
                 let folded_cp = u32::from(self.table.get(cp as usize).copied().unwrap_or(fallback));
                 if let Some(folded_ch) = char::from_u32(folded_cp) {
                     buf.extend_from_slice(folded_ch.encode_utf8(&mut encode_buf).as_bytes());

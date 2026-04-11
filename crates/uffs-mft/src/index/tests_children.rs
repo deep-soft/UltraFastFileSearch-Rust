@@ -22,7 +22,8 @@ fn test_sort_directory_children_basic() {
         let offset = index.add_name(name);
         let ext_id = index.intern_extension(name);
         let rec = index.get_or_create(child_frs);
-        rec.first_name.name = IndexNameRef::new(offset, name.len() as u16, true, ext_id);
+        rec.first_name.name =
+            IndexNameRef::new(offset, u16::try_from(name.len()).unwrap(), true, ext_id);
         rec.first_name.parent_frs = dir_frs;
 
         // Add child to directory's children list
@@ -33,7 +34,7 @@ fn test_sort_directory_children_basic() {
             name_index: 0,
             _pad1: [0; 6],
         };
-        let child_idx = index.children.len() as u32;
+        let child_idx = u32::try_from(index.children.len()).unwrap();
         index.children.push(child_info);
 
         // Link to previous child or set as first child
@@ -111,7 +112,7 @@ fn test_sort_directory_children_single_child() {
         name_index: 0,
         _pad1: [0; 6],
     };
-    let child_idx = index.children.len() as u32;
+    let child_idx = u32::try_from(index.children.len()).unwrap();
     index.children.push(child_info);
 
     let dir_rec = index.get_or_create(dir_frs);
@@ -123,7 +124,10 @@ fn test_sort_directory_children_single_child() {
     // Verify child is still there
     let dir_rec = index.get_or_create(dir_frs);
     assert_eq!(dir_rec.first_child, child_idx);
-    assert_eq!(index.children[child_idx as usize].next_entry, NO_ENTRY);
+    assert_eq!(
+        index.children[usize::try_from(child_idx).unwrap()].next_entry,
+        NO_ENTRY
+    );
 }
 
 #[test]
@@ -139,12 +143,13 @@ fn test_sort_directory_children_performance() {
 
     // Add 1000 children with random names
     for i in 0..1000 {
-        let child_frs = (200 + i) as u64;
+        let child_frs = u64::from(200_u32 + i);
         let name = format!("file_{:04}.txt", 1000 - i); // Reverse order
         let offset = index.add_name(&name);
         let ext_id = index.intern_extension(&name);
         let rec = index.get_or_create(child_frs);
-        rec.first_name.name = IndexNameRef::new(offset, name.len() as u16, true, ext_id);
+        rec.first_name.name =
+            IndexNameRef::new(offset, u16::try_from(name.len()).unwrap(), true, ext_id);
         rec.first_name.parent_frs = dir_frs;
 
         let child_info = ChildInfo {
@@ -154,7 +159,7 @@ fn test_sort_directory_children_performance() {
             name_index: 0,
             _pad1: [0; 6],
         };
-        let child_idx = index.children.len() as u32;
+        let child_idx = u32::try_from(index.children.len()).unwrap();
         index.children.push(child_info);
 
         if i == 0 {

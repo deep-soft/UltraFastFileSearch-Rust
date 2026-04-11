@@ -59,21 +59,19 @@ pub struct FullRecordReader {
     cache_capacity: usize,
 }
 
-/// `.uffs` header size: 12 fields, all little-endian.
-const HEADER_SIZE: u64 = 96;
+/// `.uffs` header size in bytes: 12 fields, all little-endian.
+const HEADER_SIZE_USIZE: usize = 96;
+/// `.uffs` header size as `u64` for file offset arithmetic.
+const HEADER_SIZE: u64 = HEADER_SIZE_USIZE as u64;
 
 impl FullRecordReader {
     /// Open a `.uffs` cache file and read its header.
     ///
     /// Returns `None` if the file doesn't exist or the header is invalid.
     #[must_use]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "HEADER_SIZE is 96, always fits usize"
-    )]
     pub fn open(path: &Path) -> Option<Self> {
         let mut file = std::fs::File::open(path).ok()?;
-        let mut header_buf = [0_u8; HEADER_SIZE as usize];
+        let mut header_buf = [0_u8; HEADER_SIZE_USIZE];
         file.read_exact(&mut header_buf).ok()?;
 
         let magic = &header_buf[0..8];
@@ -138,17 +136,13 @@ impl FullRecordReader {
     }
 
     /// Read a single record from the `.uffs` file and extract extra fields.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "record_idx bounded by NTFS limits, offset arithmetic safe"
-    )]
     fn read_record_from_disk(&self, record_idx: u32) -> Option<ExtraRecordFields> {
         let mut file = std::fs::File::open(&self.path).ok()?;
 
         let offset = self.records_offset + u64::from(record_idx) * self.record_byte_size;
         file.seek(SeekFrom::Start(offset)).ok()?;
 
-        let mut buf = vec![0_u8; self.record_byte_size as usize];
+        let mut buf = vec![0_u8; uffs_mft::frs_to_usize(self.record_byte_size)];
         file.read_exact(&mut buf).ok()?;
 
         self.parse_extra_fields(&buf)

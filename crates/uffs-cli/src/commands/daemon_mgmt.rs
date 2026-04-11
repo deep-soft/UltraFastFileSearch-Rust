@@ -254,12 +254,7 @@ fn print_not_running() {
 }
 
 /// `uffs daemon stats` — show performance metrics.
-#[expect(
-    clippy::print_stdout,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "CLI user-facing output; f64→u64 truncation acceptable for display"
-)]
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 async fn daemon_stats() -> Result<()> {
     if let Ok(mut client) = UffsClient::connect_raw().await {
         let stats = client
@@ -270,7 +265,8 @@ async fn daemon_stats() -> Result<()> {
         let fmt = uffs_core::format::format_duration;
         let uptime = core::time::Duration::from_secs(stats.uptime_secs);
         let startup = core::time::Duration::from_millis(stats.startup_duration_ms);
-        let avg_query = core::time::Duration::from_micros(stats.avg_query_time_us as u64);
+        let avg_query =
+            core::time::Duration::from_micros(uffs_mft::f64_to_u64(stats.avg_query_time_us));
         let total_query = core::time::Duration::from_micros(stats.total_query_time_us);
 
         println!("═══ Daemon Performance Stats ═══");

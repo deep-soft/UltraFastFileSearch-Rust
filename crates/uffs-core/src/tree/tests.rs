@@ -209,21 +209,21 @@ fn bench_tree_building() {
 
     // Create a large DataFrame simulating 100K files
     let count = 100_000_usize;
-    let frs_vec: Vec<u64> = (0..count as u64).collect();
+    let frs_vec: Vec<u64> = (0..count).map(|i| i as u64).collect(); // usize→u64 lossless
     // Create a tree structure: every 100 files share a parent directory
     let parent_vec: Vec<u64> = (0..count)
         .map(|idx| {
             if idx < 100 {
                 0 // Root level
             } else {
-                (idx / 100) as u64 // Parent is idx/100
+                (idx / 100) as u64 // usize→u64 lossless
             }
         })
         .collect();
     let is_dir_vec: Vec<bool> = (0..count).map(|idx| idx % 100 == 0).collect();
-    let size_vec: Vec<u64> = (0..count).map(|idx| (idx * 1000) as u64).collect();
+    let size_vec: Vec<u64> = (0..count).map(|idx| (idx * 1000) as u64).collect(); // usize→u64 lossless
     let alloc_vec: Vec<u64> = (0..count)
-        .map(|idx| ((idx * 1000).div_ceil(4096) * 4096) as u64)
+        .map(|idx| ((idx * 1000).div_ceil(4096) * 4096) as u64) // usize→u64 lossless
         .collect();
 
     let df = DataFrame::new_infer_height(vec![
@@ -243,6 +243,7 @@ fn bench_tree_building() {
     // Measure metrics computation for all directories
     let start = Instant::now();
     for frs in 0..count as u64 {
+        // usize→u64 lossless
         if frs % 100 == 0 {
             _ = tree.descendants(frs);
         }
@@ -253,5 +254,8 @@ fn bench_tree_building() {
     println!("Tree index build time: {build_time:?}");
     println!("Metrics computation time: {compute_time:?}");
     println!("Total time: {:?}", build_time + compute_time);
-    println!("Per-file build cost: {:?}", build_time / count as u32);
+    println!(
+        "Per-file build cost: {:?}",
+        build_time / uffs_mft::len_to_u32(count)
+    );
 }

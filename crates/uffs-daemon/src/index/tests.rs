@@ -5,7 +5,6 @@
     clippy::indexing_slicing,
     clippy::float_arithmetic,
     clippy::missing_docs_in_private_items,
-    clippy::cast_possible_truncation,
     clippy::min_ident_chars,
     clippy::too_many_lines,
     clippy::wildcard_imports,
@@ -44,7 +43,8 @@ fn build_test_drive() -> uffs_core::compact::DriveCompactIndex {
     let dir = idx.get_or_create(100);
     dir.stdinfo.set_directory(true);
     dir.stdinfo.flags = 0x10; // directory flag
-    dir.first_name.name = IndexNameRef::new(dir_off, dir_name.len() as u16, true, dir_ext);
+    dir.first_name.name =
+        IndexNameRef::new(dir_off, uffs_mft::len_to_u16(dir_name.len()), true, dir_ext);
     dir.first_name.parent_frs = ROOT_FRS;
 
     // Files with different extensions and sizes
@@ -60,7 +60,7 @@ fn build_test_drive() -> uffs_core::compact::DriveCompactIndex {
         let off = idx.add_name(name);
         let ext = idx.intern_extension(name);
         let rec = idx.get_or_create(frs);
-        rec.first_name.name = IndexNameRef::new(off, name.len() as u16, true, ext);
+        rec.first_name.name = IndexNameRef::new(off, uffs_mft::len_to_u16(name.len()), true, ext);
         rec.first_name.parent_frs = 100; // under Projects
         rec.first_stream.size = SizeInfo {
             length: size,

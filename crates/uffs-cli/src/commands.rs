@@ -86,10 +86,6 @@ fn format_number(num: u64) -> String {
 
 /// Format file size in human-readable format.
 #[expect(
-    clippy::cast_precision_loss,
-    reason = "u64 to f64 is acceptable for human-readable size display"
-)]
-#[expect(
     clippy::float_arithmetic,
     reason = "division for human-readable size formatting"
 )]
@@ -99,14 +95,15 @@ fn format_size(bytes: u64) -> String {
     const GB: u64 = MB * 1024;
     const TB: u64 = GB * 1024;
 
+    let bytes_f64 = uffs_mft::u64_to_f64(bytes);
     if bytes >= TB {
-        format!("{:.2} TB", bytes as f64 / TB as f64)
+        format!("{:.2} TB", bytes_f64 / uffs_mft::u64_to_f64(TB))
     } else if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
+        format!("{:.2} GB", bytes_f64 / uffs_mft::u64_to_f64(GB))
     } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
+        format!("{:.2} MB", bytes_f64 / uffs_mft::u64_to_f64(MB))
     } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
+        format!("{:.2} KB", bytes_f64 / uffs_mft::u64_to_f64(KB))
     } else {
         format!("{bytes} B")
     }

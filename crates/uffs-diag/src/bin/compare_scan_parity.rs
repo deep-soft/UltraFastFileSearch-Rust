@@ -34,10 +34,6 @@
 )]
 #![expect(
     clippy::float_arithmetic,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
     clippy::default_numeric_fallback,
     reason = "statistical comparison tool — arithmetic casts are pervasive and reviewed"
 )]
@@ -83,8 +79,6 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use uffs_diag::parity::{ComparisonResults, FieldStats};
-// Wire in crate dependencies for version-locking
-use uffs_mft as _;
 use uffs_polars::{CsvReadOptions, DataFrame, SerReader, StringChunked};
 
 // ============================================================================
@@ -220,7 +214,7 @@ fn get_u64_value(df: &DataFrame, col: &str, idx: usize) -> Option<u64> {
         if let Ok(u) = c.u64() {
             u.get(idx)
         } else if let Ok(i) = c.i64() {
-            i.get(idx).map(|v| v as u64)
+            i.get(idx).map(uffs_mft::nonneg_to_u64)
         } else if let Ok(s) = c.str() {
             s.get(idx).and_then(|v| v.parse().ok())
         } else {
@@ -262,7 +256,13 @@ fn compare_numeric_field(
                 stats.exact_matches += 1;
             } else {
                 stats.mismatches += 1;
-                let diff = (c as i64 - r as i64).unsigned_abs() as f64;
+                // u64→i64 wrapping_sub for signed difference; .unsigned_abs() recovers
+                // magnitude
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "u64→i64 for signed diff of file sizes"
+                )]
+                let diff = uffs_mft::u64_to_f64((c as i64).wrapping_sub(r as i64).unsigned_abs());
                 stats.sum_abs_diff += diff;
                 if diff > stats.max_abs_diff {
                     stats.max_abs_diff = diff;
@@ -353,7 +353,8 @@ fn compare_dataframes(
     results.path_match_rate = if reference_path_set.is_empty() {
         0.0
     } else {
-        100.0 * common.len() as f64 / reference_path_set.len() as f64
+        100.0 * uffs_mft::usize_to_f64(common.len())
+            / uffs_mft::usize_to_f64(reference_path_set.len())
     };
 
     // Sample missing paths
@@ -484,7 +485,7 @@ fn compare_dataframes(
                         "  Progress: {}/{} ({:.1}%)",
                         current,
                         total,
-                        100.0 * current as f64 / total as f64
+                        100.0 * uffs_mft::usize_to_f64(current) / uffs_mft::usize_to_f64(total)
                     );
                 }
 
@@ -646,7 +647,13 @@ fn print_results(results: &ComparisonResults) {
         format_num(results.reference_total_rows)
     );
     println!("  Rust rows:  {:>12}", format_num(results.rust_total_rows));
-    let diff = results.rust_total_rows as i64 - results.reference_total_rows as i64;
+    // usize→i64 wrapping_sub: row counts are well within i64 range for any
+    // practical MFT
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "usize→i64 for signed row count diff"
+    )]
+    let diff = (results.rust_total_rows as i64).wrapping_sub(results.reference_total_rows as i64);
     println!("  Difference: {:>+12}", diff);
 
     println!("\n🔗 PATH MATCHING");
@@ -690,8 +697,8 @@ fn print_results(results: &ComparisonResults) {
             println!(
                 "{:>20} {:>12} {:>12} {:>9.4}% {:>12}",
                 field,
-                format_num(stats.total_compared as usize),
-                format_num(stats.exact_matches as usize),
+                format_num(uffs_mft::frs_to_usize(stats.total_compared)),
+                format_num(uffs_mft::frs_to_usize(stats.exact_matches)),
                 stats.match_rate(),
                 if stats.max_abs_diff > 0.0 {
                     format!("{:.0}", stats.max_abs_diff)
@@ -792,7 +799,12 @@ fn write_markdown_report(results: &ComparisonResults, path: &Path) -> Result<()>
         format_num(results.reference_total_rows)
     )?;
     writeln!(f, "| Rust rows | {} |", format_num(results.rust_total_rows))?;
-    let diff = results.rust_total_rows as i64 - results.reference_total_rows as i64;
+    // usize→i64 wrapping_sub: row counts within i64 range
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "usize→i64 for signed row count diff"
+    )]
+    let diff = (results.rust_total_rows as i64).wrapping_sub(results.reference_total_rows as i64);
     writeln!(f, "| Difference | {:+} |", diff)?;
     writeln!(f)?;
 
@@ -841,8 +853,8 @@ fn write_markdown_report(results: &ComparisonResults, path: &Path) -> Result<()>
                 f,
                 "| {} | {} | {} | {:.4}% | {} |",
                 field,
-                format_num(stats.total_compared as usize),
-                format_num(stats.exact_matches as usize),
+                format_num(uffs_mft::frs_to_usize(stats.total_compared)),
+                format_num(uffs_mft::frs_to_usize(stats.exact_matches)),
                 stats.match_rate(),
                 if stats.max_abs_diff > 0.0 {
                     format!("{:.0}", stats.max_abs_diff)

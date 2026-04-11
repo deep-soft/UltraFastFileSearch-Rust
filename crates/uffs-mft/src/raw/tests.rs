@@ -97,11 +97,7 @@ fn test_save_load_compressed() -> TestResult {
         }
     }
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "test constant 1024 fits in u32"
-    )]
-    let record_size_u32 = record_size as u32;
+    let record_size_u32 = crate::len_to_u32(record_size);
     let options = SaveRawOptions::default();
     let header = save_raw_mft(&path, &data, record_size_u32, &options)?;
 
@@ -239,20 +235,16 @@ fn test_raw_compat_mode() -> TestResult {
     clippy::indexing_slicing,
     reason = "test code with known valid indices"
 )]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "test constants fit in target types"
-)]
 fn test_load_raw_ntfs_format() -> TestResult {
     let temp_dir = std::env::temp_dir();
     let path = temp_dir.join("test_mft_raw_ntfs.raw");
 
     let record_size = 1024_u32;
     let record_count = 4_u64;
-    let mut data = vec![0_u8; (record_count as usize) * (record_size as usize)];
+    let mut data = vec![0_u8; crate::frs_to_usize(record_count) * crate::u32_as_usize(record_size)];
 
     for i in 0..record_count {
-        let offset = (i as usize) * (record_size as usize);
+        let offset = crate::frs_to_usize(i) * crate::u32_as_usize(record_size);
         data[offset] = b'F';
         data[offset + 1] = b'I';
         data[offset + 2] = b'L';

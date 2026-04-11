@@ -380,14 +380,8 @@ pub fn apply_usn_patch(
                     if rec.name_len == 0 && !change.filename.is_empty() {
                         let name_start = drive.names.len();
                         drive.names.extend_from_slice(change.filename.as_bytes());
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "name offset bounded by names blob size"
-                        )]
-                        {
-                            rec.name_offset = name_start as u32;
-                        }
-                        rec.name_len = change.filename.len().min(u16::MAX as usize) as u16;
+                        rec.name_offset = uffs_mft::len_to_u32(name_start);
+                        rec.name_len = uffs_mft::len_to_u16(change.filename.len());
                     }
                 }
                 stats.skipped += 1;
@@ -401,13 +395,9 @@ pub fn apply_usn_patch(
                     .copied()
                     .unwrap_or(u32::MAX);
 
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "name offset and record count bounded by NTFS limits"
-                )]
                 let new_rec = CompactRecord {
-                    name_offset: name_start as u32,
-                    name_len: change.filename.len().min(u16::MAX as usize) as u16,
+                    name_offset: uffs_mft::len_to_u32(name_start),
+                    name_len: uffs_mft::len_to_u16(change.filename.len()),
                     extension_id: 0,
                     flags: 0,
                     parent_idx: parent_compact,
@@ -439,14 +429,8 @@ pub fn apply_usn_patch(
                 if !change.filename.is_empty() {
                     let name_start = drive.names.len();
                     drive.names.extend_from_slice(change.filename.as_bytes());
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "name offset bounded by names blob size"
-                    )]
-                    {
-                        rec.name_offset = name_start as u32;
-                    }
-                    rec.name_len = change.filename.len().min(u16::MAX as usize) as u16;
+                    rec.name_offset = uffs_mft::len_to_u32(name_start);
+                    rec.name_len = uffs_mft::len_to_u16(change.filename.len());
                 }
 
                 let new_parent_frs = uffs_mft::frs_to_usize(change.parent_frs);

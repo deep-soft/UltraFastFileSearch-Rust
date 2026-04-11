@@ -427,18 +427,21 @@ for consistency. Diagnostic tool blankets can stay.
 
 ---
 
-## Scorecard
+## Scorecard — FINAL (2026-04-11)
+
+> **This audit is complete.** The scope was expanded from 4 crates (105 suppressions)
+> to all 13 crates (170 suppressions). See `CASTING_TRUNCATION_TRACKING.md` for
+> full details.
 
 | Phase | Suppressions | Status |
 |-------|-------------|--------|
 | Helper infrastructure | — | ✅ Done |
 | Phase A: FRS + Vec::len | 42 removed | ✅ Done |
-| Category 1a: `cast_lossless` | ~2 blankets (80 casts) | ⏳ Next |
-| Category 1b: `cast_sign_loss` | ~2 blankets (15 casts) | ⏳ Next |
-| Category 1c: Parser `cast_possible_truncation` | 8 blankets | 📌 Keep (update reasons) |
-| Category 2: Easy stragglers | 3 | ⏳ Quick wins |
-| Category 3: Legitimate keeps | ~30 | 📌 Standardize reasons only |
-| Category 4: Test + diag | ~14 | ⏳ Low priority |
-| **Total removed so far** | **42 of 105** | **40%** |
-| **Expected final total** | **~60 removed** | **57%** |
-| **Remaining legitimate** | **~45 kept with reasons** | Standards-compliant |
+| Categories 1a–1c: Parser blankets | All removed | ✅ Done |
+| Category 2: Easy stragglers | All removed | ✅ Done |
+| Category 3: Legitimate keeps | 21 kept (all targeted `#[expect]`) | ✅ Done |
+| Category 4: Test + diag | All fixed | ✅ Done |
+| Extended scope (9 new crates) | 65 suppressions → 2 | ✅ Done |
+| **Total removed** | **149 of 170** | **88%** |
+| **Remaining** | **21 (all individually scoped with reasons)** | 📌 Legitimate |
+| **Blanket suppressions** | **0** | ✅ All eliminated |

@@ -209,11 +209,11 @@ fn dpapi_protect(data: &[u8]) -> io::Result<Vec<u8>> {
     };
 
     let mut input_blob = CRYPT_INTEGER_BLOB {
-        cbData: data.len() as u32,
+        cbData: u32::try_from(data.len()).unwrap_or(u32::MAX),
         pbData: data.as_ptr() as *mut u8,
     };
     let mut entropy_blob = CRYPT_INTEGER_BLOB {
-        cbData: DPAPI_ENTROPY.len() as u32,
+        cbData: u32::try_from(DPAPI_ENTROPY.len()).unwrap_or(u32::MAX),
         pbData: DPAPI_ENTROPY.as_ptr() as *mut u8,
     };
     let mut output_blob = CRYPT_INTEGER_BLOB {
@@ -250,7 +250,7 @@ fn dpapi_protect(data: &[u8]) -> io::Result<Vec<u8>> {
         reason = "reading Win32-allocated output and calling LocalFree"
     )]
     let result = unsafe {
-        let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize);
+        let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize); // u32→usize lossless on 64-bit
         let vec = slice.to_vec();
         windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(
             output_blob.pbData as _,
@@ -269,11 +269,11 @@ fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
     };
 
     let mut input_blob = CRYPT_INTEGER_BLOB {
-        cbData: blob.len() as u32,
+        cbData: u32::try_from(blob.len()).unwrap_or(u32::MAX),
         pbData: blob.as_ptr() as *mut u8,
     };
     let mut entropy_blob = CRYPT_INTEGER_BLOB {
-        cbData: DPAPI_ENTROPY.len() as u32,
+        cbData: u32::try_from(DPAPI_ENTROPY.len()).unwrap_or(u32::MAX),
         pbData: DPAPI_ENTROPY.as_ptr() as *mut u8,
     };
     let mut output_blob = CRYPT_INTEGER_BLOB {
@@ -309,7 +309,7 @@ fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
         reason = "reading Win32-allocated output and calling LocalFree"
     )]
     let result = unsafe {
-        let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize);
+        let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize); // u32→usize lossless on 64-bit
         let vec = slice.to_vec();
         windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(
             output_blob.pbData as _,

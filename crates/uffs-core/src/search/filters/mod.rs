@@ -604,11 +604,7 @@ impl SearchFilters {
     fn matches_derived(&self, rec: &CompactRecord, names: &[u8]) -> bool {
         // ── Name-length filters (chars, not bytes) ─────────────────
         if self.min_name_len.is_some() || self.max_name_len.is_some() {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "filenames on NTFS are ≤255 chars, fits u16"
-            )]
-            let name_len = rec.name(names).chars().count() as u16;
+            let name_len = uffs_mft::len_to_u16(rec.name(names).chars().count());
             if let Some(min) = self.min_name_len
                 && name_len < min
             {

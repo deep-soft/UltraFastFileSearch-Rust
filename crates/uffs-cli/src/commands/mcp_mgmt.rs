@@ -443,12 +443,7 @@ async fn mcp_status() -> Result<()> {
 /// Queries the daemon for metrics (since the MCP server routes all queries
 /// through it).  The MCP server itself is stateless — all query stats
 /// live in the daemon.
-#[expect(
-    clippy::print_stdout,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "CLI output; f64→u64 truncation acceptable for display"
-)]
+#[expect(clippy::print_stdout, reason = "CLI output")]
 async fn mcp_stats() -> Result<()> {
     // MCP server process info.
     match uffs_mcp::is_mcp_server_running() {
@@ -470,7 +465,8 @@ async fn mcp_stats() -> Result<()> {
     let fmt = uffs_core::format::format_duration;
     let uptime = core::time::Duration::from_secs(stats.uptime_secs);
     let startup = core::time::Duration::from_millis(stats.startup_duration_ms);
-    let avg_query = core::time::Duration::from_micros(stats.avg_query_time_us as u64);
+    let avg_query =
+        core::time::Duration::from_micros(uffs_mft::f64_to_u64(stats.avg_query_time_us));
     let total_query = core::time::Duration::from_micros(stats.total_query_time_us);
 
     println!();

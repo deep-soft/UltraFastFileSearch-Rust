@@ -183,13 +183,9 @@ pub fn estimate_drive_cost(drive_letter: char) -> DriveLoadEstimate {
     // Cache miss path — check MftIndex file size for cost estimate
     if let Ok(meta) = std::fs::metadata(&mft_path) {
         let decompressed = meta.len() * DECOMPRESS_RATIO;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::float_arithmetic,
-            clippy::cast_precision_loss
-        )]
-        let peak = (decompressed as f64 * CACHE_MISS_PEAK_MULTIPLIER) as u64;
+        #[expect(clippy::float_arithmetic, reason = "cost estimation arithmetic")]
+        let peak =
+            uffs_mft::f64_to_u64(uffs_mft::u64_to_f64(decompressed) * CACHE_MISS_PEAK_MULTIPLIER);
         return DriveLoadEstimate {
             letter: drive_letter,
             peak_bytes: peak,
@@ -225,9 +221,6 @@ pub fn estimate_drive_cost(drive_letter: char) -> DriveLoadEstimate {
 /// - Drives load one at a time
 #[must_use]
 #[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     clippy::float_arithmetic,
     reason = "Budget estimation uses approximate floating-point arithmetic by design"
 )]
@@ -237,7 +230,8 @@ pub fn compute_load_budget(drives: &[char]) -> SlotPool {
     }
 
     let mem = uffs_mft::query_system_memory();
-    let budget = (mem.available_bytes as f64 * RAM_BUDGET_FRACTION) as u64;
+    let budget =
+        uffs_mft::f64_to_u64(uffs_mft::u64_to_f64(mem.available_bytes) * RAM_BUDGET_FRACTION);
 
     let estimates: Vec<DriveLoadEstimate> = drives
         .iter()
@@ -252,7 +246,7 @@ pub fn compute_load_budget(drives: &[char]) -> SlotPool {
         .unwrap_or(DEFAULT_PEAK_PER_DRIVE)
         .max(1); // avoid division by zero
 
-    let computed = (budget / max_cost) as usize;
+    let computed = uffs_mft::frs_to_usize(budget / max_cost);
     let ceiling = drives.len().min(MAX_CONCURRENT_DRIVES);
     let slots = computed.clamp(1, ceiling);
 

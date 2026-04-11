@@ -141,31 +141,19 @@ pub fn verify_daemon_pid_file(pid_path: &std::path::Path) -> bool {
 ///
 /// Returns `None` if the process is not found or the API is unavailable.
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "proc_pidpath takes c_int pid and u32 bufsize, returns i32 len — all bounded"
-)]
 fn get_process_exe_path(pid: u32) -> Option<PathBuf> {
     // MAXPATHLEN on macOS is 1024; proc_pidpath needs at least this
     let mut buf = vec![0_u8; 4096];
+    let c_pid = i32::try_from(pid).ok()?;
+    let buf_size = u32::try_from(buf.len()).unwrap_or(u32::MAX);
 
     // SAFETY: proc_pidpath is a documented macOS API (libproc.h).
     #[expect(unsafe_code, reason = "proc_pidpath requires unsafe FFI")]
-    let len = unsafe {
-        libc::proc_pidpath(
-            pid as libc::c_int,
-            buf.as_mut_ptr().cast::<libc::c_void>(),
-            buf.len() as u32,
-        )
-    };
+    let len =
+        unsafe { libc::proc_pidpath(c_pid, buf.as_mut_ptr().cast::<libc::c_void>(), buf_size) };
 
-    if len <= 0_i32 {
-        return None;
-    }
-
-    let path_str = core::str::from_utf8(buf.get(..len as usize)?).ok()?;
+    let len_usize = usize::try_from(len).ok().filter(|&val| val > 0)?;
+    let path_str = core::str::from_utf8(buf.get(..len_usize)?).ok()?;
     Some(PathBuf::from(path_str))
 }
 

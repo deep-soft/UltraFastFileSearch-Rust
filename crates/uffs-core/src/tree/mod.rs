@@ -132,10 +132,6 @@ pub fn apply_directory_treesize(df: &DataFrame) -> Result<DataFrame> {
 #[expect(clippy::print_stdout, reason = "benchmark test outputs timing info")]
 #[expect(clippy::use_debug, reason = "benchmark test outputs debug info")]
 #[expect(
-    clippy::cast_possible_truncation,
-    reason = "test data fits in target types"
-)]
-#[expect(
     clippy::shadow_unrelated,
     reason = "test variables reused across sections"
 )]

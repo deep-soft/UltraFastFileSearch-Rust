@@ -218,12 +218,12 @@ impl BucketRow {
         let share_count = if total_matched == 0 {
             0.0
         } else {
-            stats.count as f64 / total_matched as f64 * 100.0
+            uffs_mft::u64_to_f64(stats.count) / uffs_mft::u64_to_f64(total_matched) * 100.0
         };
         let share_bytes = if total_bytes == 0 {
             0.0
         } else {
-            stats.sum as f64 / total_bytes as f64 * 100.0
+            uffs_mft::u64_to_f64(stats.sum) / uffs_mft::u64_to_f64(total_bytes) * 100.0
         };
         Self {
             key,
@@ -374,7 +374,7 @@ fn finalize_one(
 
             keyed_rows.sort_by(|a, b| b.1.count.cmp(&a.1.count));
 
-            let limit = top as usize;
+            let limit = usize::from(top);
             let other_count = if keyed_rows.len() > limit {
                 let other: u64 = keyed_rows[limit..].iter().map(|r| r.1.count).sum();
                 keyed_rows.truncate(limit);
@@ -528,7 +528,7 @@ fn finalize_one(
                     .map(|&(rec_idx, drive_ord)| {
                         let entry = super::sample_heap::SampleEntry {
                             sort_key: 0,
-                            rec_idx: rec_idx as u32,
+                            rec_idx: uffs_mft::len_to_u32(rec_idx),
                             drive_ordinal: drive_ord,
                         };
                         materialize_sample_entry(&entry, projection, drives)
@@ -578,7 +578,7 @@ fn materialize_sample_entry(
     drives: &[&DriveCompactIndex],
 ) -> SampleRow {
     let drive = drives.get(usize::from(entry.drive_ordinal));
-    let record = drive.and_then(|d| d.records.get(entry.rec_idx as usize));
+    let record = drive.and_then(|d| d.records.get(uffs_mft::u32_as_usize(entry.rec_idx)));
 
     let fields: Vec<(String, String)> = projection
         .iter()
@@ -613,7 +613,7 @@ fn format_field(
         FieldId::Created => format_timestamp_key(record.created),
         FieldId::Accessed => format_timestamp_key(record.accessed),
         FieldId::Extension => {
-            let ext_id = record.extension_id as usize;
+            let ext_id = usize::from(record.extension_id);
             drive
                 .ext_names
                 .get(ext_id)
@@ -661,7 +661,7 @@ fn resolve_group_key(
                 return map.resolve(key);
             }
             // Legacy fallback: raw extension_id, first-drive lookup.
-            let ext_id = key as u16;
+            let ext_id = u16::try_from(key).unwrap_or(u16::MAX);
             for drive in drives {
                 if let Some(name) = drive.ext_names.get(usize::from(ext_id)) {
                     return name.to_string();
@@ -670,7 +670,7 @@ fn resolve_group_key(
             format!("ext:{ext_id}")
         }
         Some(FieldId::Drive) => {
-            let ch = char::from(key as u8);
+            let ch = char::from(u8::try_from(key).unwrap_or(b'?'));
             format!("{ch}:")
         }
         Some(FieldId::Type) => crate::search::derived::semantic_type_name_from_id(key).to_owned(),

@@ -27,7 +27,6 @@
 )]
 #![expect(
     clippy::float_arithmetic,
-    clippy::cast_precision_loss,
     clippy::default_numeric_fallback,
     reason = "diagnostic tool — progress percentages and GB size displays are approximate"
 )]
@@ -39,10 +38,6 @@
 #![expect(
     clippy::indexing_slicing,
     reason = "diagnostic tool — args indexing is guarded by length check"
-)]
-#![expect(
-    clippy::cast_possible_truncation,
-    reason = "diagnostic tool — MFT sizes fit in usize on 64-bit platforms"
 )]
 
 use std::env;
@@ -88,7 +83,7 @@ fn main() -> Result<()> {
         "\n   ✓ Loaded in {:.2}s: {} records, {:.2} GB",
         iocp_start.elapsed().as_secs_f64(),
         iocp_data.record_count,
-        iocp_data.data_size as f64 / BYTES_TO_GIB
+        uffs_mft::usize_to_f64(iocp_data.data_size) / BYTES_TO_GIB
     );
     println!("   SHA256: {}", iocp_data.hash);
     println!();
@@ -101,7 +96,7 @@ fn main() -> Result<()> {
         "\n   ✓ Loaded in {:.2}s: {} records, {:.2} GB",
         ref_start.elapsed().as_secs_f64(),
         ref_data.record_count,
-        ref_data.data_size as f64 / BYTES_TO_GIB
+        uffs_mft::usize_to_f64(ref_data.data_size) / BYTES_TO_GIB
     );
     println!("   SHA256: {}", ref_data.hash);
     println!();
@@ -159,12 +154,12 @@ fn load_and_hash_iocp(path: &Path) -> Result<HashResult> {
 
     let record_size = capture.record_size();
     let total_records = capture.header.total_records;
-    let total_size = (total_records * u64::from(record_size)) as usize;
+    let total_size = uffs_mft::frs_to_usize(total_records * u64::from(record_size));
 
     println!(
         " {} chunks, {:.2} GB uncompressed",
         capture.chunks.len(),
-        total_size as f64 / BYTES_TO_GIB
+        uffs_mft::usize_to_f64(total_size) / BYTES_TO_GIB
     );
 
     // Allocate buffer and reassemble in FRS order
@@ -179,7 +174,7 @@ fn load_and_hash_iocp(path: &Path) -> Result<HashResult> {
 
     // Copy each chunk to correct position
     for (chunk, chunk_data) in chunks {
-        let start_offset = (chunk.start_frs * u64::from(record_size)) as usize;
+        let start_offset = uffs_mft::frs_to_usize(chunk.start_frs * u64::from(record_size));
         let end_offset = start_offset + chunk_data.len();
         data[start_offset..end_offset].copy_from_slice(chunk_data);
     }
@@ -207,7 +202,10 @@ fn load_and_hash_raw(path: &Path) -> Result<HashResult> {
     })
     .context("Failed to load raw MFT")?;
 
-    println!(" done ({:.2} GB)", raw.data.len() as f64 / BYTES_TO_GIB);
+    println!(
+        " done ({:.2} GB)",
+        uffs_mft::usize_to_f64(raw.data.len()) / BYTES_TO_GIB
+    );
 
     let hash = compute_sha256_with_progress(&raw.data, "RAW ");
 
@@ -230,7 +228,7 @@ fn compute_sha256_with_progress(data: &[u8], label: &str) -> String {
     for chunk in data.chunks(HASH_CHUNK_SIZE) {
         hasher.update(chunk);
         processed = processed.saturating_add(chunk.len());
-        let pct = (processed as f64 / total as f64) * 100.0;
+        let pct = (uffs_mft::usize_to_f64(processed) / uffs_mft::usize_to_f64(total)) * 100.0;
         print!("\r   Hashing {label}: {pct:.0}%");
         let _ = std::io::stdout().flush();
     }

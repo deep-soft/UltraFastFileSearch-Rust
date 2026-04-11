@@ -226,12 +226,10 @@ impl FastPathResolver {
 
     /// Get an entry by FRS (O(1) lookup).
     #[inline]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "u64 FRS fits in usize on 64-bit platforms"
-    )]
     fn get_entry(&self, frs: u64) -> Option<&FastEntry> {
-        self.entries.get(frs as usize).and_then(Option::as_ref)
+        self.entries
+            .get(uffs_mft::frs_to_usize(frs))
+            .and_then(Option::as_ref)
     }
 
     /// Add a "path" column to a `DataFrame` using this resolver (sequential).

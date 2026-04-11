@@ -42,7 +42,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.4.104"
+version = "0.4.105"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
@@ -116,7 +116,7 @@ thiserror = "2.0.18"
 anyhow = "1.0.102"
 
 # ───── MCP (Model Context Protocol) ─────
-rmcp = { version = "1.3.0", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "1.4.0", features = ["server", "transport-io", "macros"] }
 schemars = "1.2.1"
 
 # ───── HTTP / Tower (for MCP Streamable HTTP gateway) ─────
@@ -170,7 +170,7 @@ libc = "0.2"
 
 # ───── Security / Crypto ─────
 aes-gcm = "0.10"
-rand = "0.10.0"
+rand = "0.10.1"
 security-framework = "3.7.0"
 
 # ───── Compression ─────

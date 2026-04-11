@@ -254,8 +254,7 @@ pub fn write_search_results(
 #[allow(unsafe_code)]
 #[expect(
     clippy::indexing_slicing,
-    clippy::cast_possible_truncation,
-    reason = "validated: bounds-checked before indexing; 32-bit truncation is acceptable for shmem files"
+    reason = "validated: bounds-checked before indexing"
 )]
 pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
     let file = std::fs::File::open(path)?;
@@ -291,10 +290,12 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
         ));
     }
 
-    let row_count = header.row_count as usize;
+    let row_count = usize::try_from(header.row_count)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     let record_size = size_of::<ShmemRecord>();
     let records_end = header_size + row_count * record_size;
-    let strings_offset = header.strings_offset as usize;
+    let strings_offset = usize::try_from(header.strings_offset)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
 
     if mmap.len() < records_end || mmap.len() < strings_offset {
         return Err(io::Error::new(
@@ -313,10 +314,10 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
         // Safety: rec_ptr points to at least record_size valid bytes.
         let rec: ShmemRecord = unsafe { core::ptr::read_unaligned(rec_ptr.cast::<ShmemRecord>()) };
 
-        let path_start = rec.path_off as usize;
-        let path_end = path_start + rec.path_len as usize;
-        let name_start = rec.name_off as usize;
-        let name_end = name_start + rec.name_len as usize;
+        let path_start = rec.path_off as usize; // u32→usize lossless on 64-bit
+        let path_end = path_start + rec.path_len as usize; // u32→usize lossless on 64-bit
+        let name_start = rec.name_off as usize; // u32→usize lossless on 64-bit
+        let name_end = name_start + rec.name_len as usize; // u32→usize lossless on 64-bit
 
         if path_end > string_table.len() || name_end > string_table.len() {
             return Err(io::Error::new(
@@ -357,7 +358,8 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
     Ok(SearchResponse {
         rows,
         total_count: header.row_count,
-        records_scanned: header.records_scanned as usize,
+        records_scanned: usize::try_from(header.records_scanned)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?,
         duration_ms: header.duration_ms,
         truncated: header.truncated != 0,
         shmem_path: None,

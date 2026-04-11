@@ -116,7 +116,6 @@ fn read_header<P: AsRef<Path>>(path: P) -> Result<(RawMftHeader, BufReader<File>
 )]
 #[expect(
     clippy::float_arithmetic,
-    clippy::cast_precision_loss,
     reason = "progress reporting and GiB calculations use floating-point"
 )]
 fn main() -> Result<()> {
@@ -181,13 +180,13 @@ fn main() -> Result<()> {
         bail!("Compressed files not supported - decompress first");
     }
 
-    let record_size = header_a.record_size as usize;
+    let record_size = uffs_mft::u32_as_usize(header_a.record_size);
     let record_count = header_a.record_count;
-    let total_bytes = record_count * record_size as u64;
+    let total_bytes = record_count * u64::from(header_a.record_size);
 
     println!(
         "Comparing {record_count} records of {record_size} bytes each ({:.2} GiB)...",
-        total_bytes as f64 / 1_024.0_f64 / 1_024.0_f64 / 1_024.0_f64
+        uffs_mft::u64_to_f64(total_bytes) / 1_024.0_f64 / 1_024.0_f64 / 1_024.0_f64
     );
     println!();
 
@@ -207,11 +206,11 @@ fn main() -> Result<()> {
         // Progress reporting
         if frs > 0 && frs % progress_interval == 0 {
             let elapsed = start.elapsed().as_secs_f64();
-            let rate = frs as f64 / elapsed;
-            let eta = (record_count - frs) as f64 / rate;
+            let rate = uffs_mft::u64_to_f64(frs) / elapsed;
+            let eta = uffs_mft::u64_to_f64(record_count - frs) / rate;
             println!(
                 "  Progress: {frs} / {record_count} records ({:.1}%), {rate:.0} rec/s, ETA {eta:.0}s",
-                frs as f64 / record_count as f64 * 100.0_f64,
+                uffs_mft::u64_to_f64(frs) / uffs_mft::u64_to_f64(record_count) * 100.0_f64,
             );
         }
 
@@ -233,7 +232,7 @@ fn main() -> Result<()> {
                 .zip(buf_b.iter())
                 .filter(|(byte_a, byte_b)| byte_a != byte_b)
                 .count();
-            diff_bytes_total += diff_bytes as u64;
+            diff_bytes_total += diff_bytes as u64; // usize→u64 lossless on 64-bit
             if sample_diffs.len() < MAX_SAMPLES {
                 sample_diffs.push((frs, diff_bytes));
             }
@@ -249,13 +248,13 @@ fn main() -> Result<()> {
     println!("Same records:   {same_records}");
     println!(
         "Diff records:   {diff_records} ({:.6}%)",
-        diff_records as f64 / record_count as f64 * 100.0_f64
+        uffs_mft::u64_to_f64(diff_records) / uffs_mft::u64_to_f64(record_count) * 100.0_f64
     );
     println!("Total differing bytes: {diff_bytes_total}");
     if total_bytes > 0 {
         println!(
             "Fraction of differing bytes: {:.9}",
-            diff_bytes_total as f64 / total_bytes as f64
+            uffs_mft::u64_to_f64(diff_bytes_total) / uffs_mft::u64_to_f64(total_bytes)
         );
     }
     println!();

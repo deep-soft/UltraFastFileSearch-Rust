@@ -467,7 +467,8 @@ fn test_byte_tracking_accuracy() {
         let ext_id = index.intern_extension(name);
 
         let rec = index.get_or_create(frs);
-        rec.first_name.name = IndexNameRef::new(offset, name.len() as u16, true, ext_id);
+        rec.first_name.name =
+            IndexNameRef::new(offset, u16::try_from(name.len()).unwrap(), true, ext_id);
         rec.first_stream.size = SizeInfo {
             length: *size,
             allocated: *size,
@@ -541,7 +542,7 @@ fn test_extension_index_performance() {
     let ext_rs = index.extensions.intern("rs");
     let ext_py = index.extensions.intern("py");
 
-    for i in 0..10_000 {
+    for i in 0_u64..10_000 {
         let (name, ext_id) = if i < 100 {
             (format!("file{}.txt", i), ext_txt)
         } else if i < 200 {
@@ -551,8 +552,9 @@ fn test_extension_index_performance() {
         };
 
         let offset = index.add_name(&name);
-        let rec = index.get_or_create(i as u64);
-        rec.first_name.name = IndexNameRef::new(offset, name.len() as u16, true, ext_id);
+        let rec = index.get_or_create(i);
+        rec.first_name.name =
+            IndexNameRef::new(offset, u16::try_from(name.len()).unwrap(), true, ext_id);
     }
 
     // Build extension index

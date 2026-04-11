@@ -46,7 +46,6 @@ async fn main() -> anyhow::Result<()> {
     clippy::unwrap_used,
     clippy::missing_docs_in_private_items,
     clippy::default_numeric_fallback,
-    clippy::cast_sign_loss,
     clippy::indexing_slicing,
     clippy::min_ident_chars,
     reason = "test code"
@@ -247,11 +246,11 @@ mod tests {
 
     #[test]
     fn summary_buckets_truncated_at_10() {
-        let buckets: Vec<BucketWire> = (0..15)
+        let buckets: Vec<BucketWire> = (0_u64..15)
             .map(|i| BucketWire {
                 key: format!("ext_{i}"),
-                count: (15 - i) as u64,
-                total_bytes: (15 - i) as u64 * 1000,
+                count: 15 - i,
+                total_bytes: (15 - i) * 1000,
                 ..BucketWire::default()
             })
             .collect();

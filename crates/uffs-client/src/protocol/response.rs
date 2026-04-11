@@ -378,36 +378,25 @@ impl RpcErrorResponse {
 /// Format a byte count as human-readable size (e.g. "1.23 MB").
 #[must_use]
 #[expect(
-    clippy::cast_precision_loss,
-    reason = "precision loss acceptable for display"
-)]
-#[expect(
     clippy::float_arithmetic,
     reason = "floating-point division is intentional for human-readable size formatting"
 )]
 pub fn format_size(bytes: u64) -> String {
+    #[expect(clippy::cast_precision_loss, reason = "u64→f64 acceptable for display")]
+    let bytes_f64 = bytes as f64;
     if bytes < 1024 {
         format!("{bytes} B")
     } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
+        format!("{:.1} KB", bytes_f64 / 1024.0)
     } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:.1} MB", bytes_f64 / (1024.0 * 1024.0))
     } else {
-        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        format!("{:.1} GB", bytes_f64 / (1024.0 * 1024.0 * 1024.0))
     }
 }
 
 /// Format a Unix-microsecond timestamp as `YYYY-MM-DD HH:MM`.
 #[must_use]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "intermediate values are bounded by calendar math — truncation is safe"
-)]
-#[expect(
-    clippy::cast_lossless,
-    reason = "explicit casts are clearer than From for calendar arithmetic"
-)]
 pub fn format_time(unix_micros: i64) -> String {
     if unix_micros == 0 {
         return "—".to_owned();
@@ -415,7 +404,8 @@ pub fn format_time(unix_micros: i64) -> String {
     let secs = unix_micros / 1_000_000;
     // Simple UTC conversion (good enough for display)
     let days_since_epoch = secs / 86400;
-    let day_secs = (secs % 86400) as u32;
+    // rem_euclid is always non-negative → safe to narrow to u32.
+    let day_secs = u32::try_from(secs.rem_euclid(86400)).unwrap_or(0);
     let hour = day_secs / 3600;
     let minute = (day_secs % 3600) / 60;
 
@@ -426,9 +416,10 @@ pub fn format_time(unix_micros: i64) -> String {
     } else {
         civil_z - 146_096
     } / 146_097;
-    let doe = (civil_z - era * 146_097) as u32;
+    // doe is in [0, 146_096] — always fits u32.
+    let doe = u32::try_from(civil_z - era * 146_097).unwrap_or(0);
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let base_year = yoe as i64 + era * 400;
+    let base_year = i64::from(yoe) + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let month_proxy = (5 * doy + 2) / 153;
     let day = doy - (153 * month_proxy + 2) / 5 + 1;
