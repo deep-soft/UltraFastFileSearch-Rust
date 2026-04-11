@@ -581,9 +581,42 @@ fn kill_process_on_port(port: u16, skip_pid: u32) {
             }
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = (port, skip_pid);
+        // Use `netstat -ano` to find PIDs listening on the port.
+        let Ok(output) = std::process::Command::new("netstat")
+            .args(["-ano", "-p", "TCP"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+        else {
+            return;
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let port_suffix = format!(":{port}");
+        for line in stdout.lines() {
+            // Lines look like: "  TCP    127.0.0.1:18080    0.0.0.0:0    LISTENING    12345"
+            let trimmed = line.trim();
+            if !trimmed.contains("LISTENING") {
+                continue;
+            }
+            let fields: Vec<&str> = trimmed.split_whitespace().collect();
+            // fields: [TCP, local_addr, foreign_addr, LISTENING, PID]
+            if fields.len() < 5 {
+                continue;
+            }
+            let local_addr = fields[1];
+            if !local_addr.ends_with(&port_suffix) {
+                continue;
+            }
+            let Some(pid) = fields[4].parse::<u32>().ok() else {
+                continue;
+            };
+            if pid != skip_pid && pid != std::process::id() && pid != 0 {
+                println!("  Also killing stale process on port {port} (PID {pid})...");
+                signal_pid(pid, true);
+            }
+        }
     }
 }
 
