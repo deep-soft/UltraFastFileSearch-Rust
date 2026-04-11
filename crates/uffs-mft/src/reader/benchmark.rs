@@ -42,12 +42,10 @@ impl PhaseTimings {
 
     /// Returns the overhead (total - sum of phases).
     #[must_use]
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "overhead can be negative; u64 values are bounded by total runtime"
-    )]
-    pub const fn overhead_ms(&self) -> i64 {
-        self.total_ms as i64 - self.sum_phases() as i64
+    pub fn overhead_ms(&self) -> i64 {
+        let total = i64::try_from(self.total_ms).unwrap_or(i64::MAX);
+        let phases = i64::try_from(self.sum_phases()).unwrap_or(i64::MAX);
+        total.saturating_sub(phases)
     }
 }
 

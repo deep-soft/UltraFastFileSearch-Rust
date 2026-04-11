@@ -11,13 +11,7 @@ fn current_epoch_micros() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "u128 micros fits u64 until year ~584,942"
-            )]
-            {
-                d.as_micros() as u64
-            }
+            u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
         })
 }
 
@@ -491,10 +485,6 @@ impl MftIndex {
     /// index.display_stats();
     /// ```
     #[expect(
-        clippy::cast_precision_loss,
-        reason = "precision loss acceptable for display"
-    )]
-    #[expect(
         clippy::float_arithmetic,
         reason = "used for percentage and size formatting"
     )]
@@ -502,6 +492,8 @@ impl MftIndex {
     #[expect(clippy::too_many_lines, reason = "stats display has many fields")]
     pub fn display_stats(&self) {
         use std::io::Write;
+
+        use super::types::u64_to_f64;
 
         let mut out = std::io::stdout().lock();
         let sep = "═══════════════════════════════════════════════════════════════";
@@ -513,14 +505,15 @@ impl MftIndex {
             const GB: u64 = MB * 1024;
             const TB: u64 = GB * 1024;
 
+            let b = u64_to_f64(bytes);
             if bytes >= TB {
-                format!("{:.2} TB", bytes as f64 / TB as f64)
+                format!("{:.2} TB", b / u64_to_f64(TB))
             } else if bytes >= GB {
-                format!("{:.2} GB", bytes as f64 / GB as f64)
+                format!("{:.2} GB", b / u64_to_f64(GB))
             } else if bytes >= MB {
-                format!("{:.2} MB", bytes as f64 / MB as f64)
+                format!("{:.2} MB", b / u64_to_f64(MB))
             } else if bytes >= KB {
-                format!("{:.2} KB", bytes as f64 / KB as f64)
+                format!("{:.2} KB", b / u64_to_f64(KB))
             } else {
                 format!("{bytes} B")
             }

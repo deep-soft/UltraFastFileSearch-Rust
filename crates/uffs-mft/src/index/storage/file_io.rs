@@ -10,7 +10,7 @@
 //! transparently.
 
 use super::IndexHeader;
-use crate::index::MftIndex;
+use crate::index::{MftIndex, usize_to_f64};
 
 /// zstd frame magic bytes (little-endian `0xFD2FB528`).
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
@@ -68,10 +68,8 @@ impl MftIndex {
         let write_ms = t_write.elapsed().as_millis();
 
         if profile {
-            #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
-            let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
-            #[expect(clippy::cast_precision_loss, reason = "display-only ratio")]
-            let ratio = uncompressed_len as f64 / compressed_len as f64;
+            let mb = |b: usize| usize_to_f64(b) / (1024.0 * 1024.0);
+            let ratio = usize_to_f64(uncompressed_len) / usize_to_f64(compressed_len);
             let save_total_ms = t_save_total.elapsed().as_millis();
             tracing::debug!(
                 target: "cache_profile",
@@ -183,8 +181,7 @@ impl MftIndex {
         let total_ms = t_total.elapsed().as_millis();
 
         if profile {
-            #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
-            let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+            let mb = |b: usize| usize_to_f64(b) / (1024.0 * 1024.0);
             tracing::debug!(
                 target: "cache_profile",
                 read_ms = %read_ms,

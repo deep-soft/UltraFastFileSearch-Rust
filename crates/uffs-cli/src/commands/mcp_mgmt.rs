@@ -494,8 +494,13 @@ async fn mcp_stats() -> Result<()> {
 
 /// `uffs mcp stop` — gracefully stop the MCP server.
 ///
-/// Sends SIGTERM (Unix) or taskkill (Windows) to the MCP server process.
-/// The daemon continues running independently.
+/// Sends SIGTERM (Unix) or force-kills via `taskkill /F` (Windows) the
+/// MCP server process.  The daemon continues running independently.
+///
+/// On Windows, `taskkill` without `/F` sends `WM_CLOSE` which only works
+/// for GUI apps with a message loop.  The MCP HTTP server is a headless
+/// tokio process, so `WM_CLOSE` is silently ignored.  We use `/F` to
+/// ensure the process actually terminates.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn mcp_stop() {
     let Some(pid) = uffs_mcp::is_mcp_server_running() else {
@@ -504,8 +509,11 @@ fn mcp_stop() {
     };
 
     println!("Stopping MCP server (PID {pid})...");
-    signal_pid(pid, false);
-    println!("MCP server stop signal sent.");
+    // On Unix, SIGTERM triggers the graceful shutdown handler.
+    // On Windows, force-kill is the only reliable option for headless
+    // processes (no message loop → WM_CLOSE is ignored).
+    signal_pid(pid, cfg!(windows));
+    println!("MCP server stopped.");
     println!("  (The daemon continues running independently.)");
 }
 

@@ -13,6 +13,8 @@ use core::mem::size_of;
 use smallvec::SmallVec;
 use zerocopy::FromBytes;
 
+use crate::index::{frs_to_usize, len_to_u16, len_to_u32, u32_as_usize};
+
 /// Parses an extension record and adds its names/streams to the base record.
 ///
 /// Extension records contain additional `$FILE_NAME` attributes (hard links)
@@ -36,10 +38,6 @@ use zerocopy::FromBytes;
 /// # Returns
 ///
 /// `true` if any names/streams were added, `false` otherwise.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "NTFS field sizes are bounded by u16/u32 record layout"
-)]
 #[expect(
     clippy::cognitive_complexity,
     reason = "NTFS attribute dispatch is inherently complex"
@@ -67,8 +65,8 @@ pub(super) fn parse_extension_to_index(
     };
 
     // Parse attributes to find $FILE_NAME and $DATA
-    let mut offset = header.first_attribute_offset as usize;
-    let max_offset = core::cmp::min(header.bytes_in_use as usize, data.len());
+    let mut offset = usize::from(header.first_attribute_offset);
+    let max_offset = core::cmp::min(u32_as_usize(header.bytes_in_use), data.len());
 
     // Collect names and streams from extension record
     let mut names: SmallVec<[(String, u64); 4]> = SmallVec::new();
@@ -88,11 +86,11 @@ pub(super) fn parse_extension_to_index(
             break;
         };
 
-        if attr_header.type_code == AttributeType::End as u32 {
+        if attr_header.type_code == AttributeType::END_MARKER {
             break;
         }
 
-        if attr_header.length == 0 || offset + attr_header.length as usize > max_offset {
+        if attr_header.length == 0 || offset + u32_as_usize(attr_header.length) > max_offset {
             break;
         }
 
@@ -102,9 +100,9 @@ pub(super) fn parse_extension_to_index(
                 // Parse $FILE_NAME attribute
                 if attr_header.is_non_resident == 0 {
                     let value_offset_bytes = &data[offset + 20..offset + 22];
-                    let value_offset =
-                        u16::from_le_bytes(value_offset_bytes.try_into().unwrap_or([0, 0]))
-                            as usize;
+                    let value_offset = usize::from(u16::from_le_bytes(
+                        value_offset_bytes.try_into().unwrap_or([0, 0]),
+                    ));
                     let fn_offset = offset + value_offset;
                     if fn_offset + size_of::<FileNameAttribute>() <= data.len() {
                         let Ok((fn_attr, _)) =
@@ -115,7 +113,7 @@ pub(super) fn parse_extension_to_index(
 
                         // Skip DOS-only names (namespace 2)
                         if fn_attr.file_name_namespace != 2 {
-                            let name_len = fn_attr.file_name_length as usize;
+                            let name_len = usize::from(fn_attr.file_name_length);
                             let name_start = fn_offset + size_of::<FileNameAttribute>();
                             if name_start + name_len * 2 <= data.len() {
                                 let name_bytes = &data[name_start..name_start + name_len * 2];
@@ -151,12 +149,12 @@ pub(super) fn parse_extension_to_index(
 
                 if !is_primary {
                     // Skip continuation extents - they don't count as new streams
-                    offset += attr_header.length as usize;
+                    offset += u32_as_usize(attr_header.length);
                     continue;
                 }
 
                 // Parse $DATA attribute — default stream (unnamed) or ADS (named)
-                let name_len = attr_header.name_length as usize;
+                let name_len = usize::from(attr_header.name_length);
                 let (size, allocated) = if attr_header.is_non_resident != 0 {
                     let nr_offset = offset + 16;
                     if nr_offset + 48 <= data.len() {
@@ -225,11 +223,11 @@ pub(super) fn parse_extension_to_index(
                     // Mark that unnamed $DATA exists on the base record
                     // (C++ parity: distinguishes "empty $DATA" from "no $DATA")
                     {
-                        let bf = base_frs as usize;
+                        let bf = frs_to_usize(base_frs);
                         if bf < index.frs_to_idx.len() {
                             let base_idx = index.frs_to_idx[bf];
                             if base_idx != NO_ENTRY {
-                                index.records[base_idx as usize].set_has_default_data();
+                                index.records[u32_as_usize(base_idx)].set_has_default_data();
                             }
                         }
                     }
@@ -238,7 +236,7 @@ pub(super) fn parse_extension_to_index(
                     found_default_data = true;
                 } else {
                     // ADS (named stream)
-                    let name_offset = offset + attr_header.name_offset as usize;
+                    let name_offset = offset + usize::from(attr_header.name_offset);
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: SmallVec<[u16; 64]> = name_bytes
@@ -283,9 +281,9 @@ pub(super) fn parse_extension_to_index(
                 AttributeType::IndexRoot | AttributeType::IndexAllocation | AttributeType::Bitmap,
             ) => {
                 // Extract attribute name
-                let name_len = attr_header.name_length as usize;
+                let name_len = usize::from(attr_header.name_length);
                 let (is_i30, _attr_name) = if name_len > 0 {
-                    let name_offset = offset + attr_header.name_offset as usize;
+                    let name_offset = offset + usize::from(attr_header.name_offset);
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let is_i30 =
@@ -476,7 +474,7 @@ pub(super) fn parse_extension_to_index(
             }
         }
 
-        offset += attr_header.length as usize;
+        offset += u32_as_usize(attr_header.length);
     }
 
     // If no names, user-visible streams, internal streams, default data, or
@@ -499,9 +497,9 @@ pub(super) fn parse_extension_to_index(
         let name_len = name.len();
         let is_ascii = name.is_ascii();
         let extension_id = index.intern_extension(name);
-        let name_ref = IndexNameRef::new(name_offset, name_len as u16, is_ascii, extension_id);
+        let name_ref = IndexNameRef::new(name_offset, len_to_u16(name_len), is_ascii, extension_id);
 
-        let link_idx = index.links.len() as u32;
+        let link_idx = len_to_u32(index.links.len());
         index.links.push(LinkInfo {
             next_entry: NO_ENTRY,
             name: name_ref,
@@ -518,9 +516,9 @@ pub(super) fn parse_extension_to_index(
         let name_len = stream_name.len();
         let is_ascii = stream_name.is_ascii();
         let extension_id = index.intern_extension(stream_name);
-        let name_ref = IndexNameRef::new(name_offset, name_len as u16, is_ascii, extension_id);
+        let name_ref = IndexNameRef::new(name_offset, len_to_u16(name_len), is_ascii, extension_id);
 
-        let stream_idx = index.streams.len() as u32;
+        let stream_idx = len_to_u32(index.streams.len());
         index.streams.push(IndexStreamInfo {
             size: SizeInfo {
                 length: *size,
@@ -542,7 +540,7 @@ pub(super) fn parse_extension_to_index(
     }
 
     // Get the base record and add the names/streams to it
-    let base_frs_usize = base_frs as usize;
+    let base_frs_usize = frs_to_usize(base_frs);
     if base_frs_usize >= index.frs_to_idx.len() {
         // Base record doesn't exist yet - create a placeholder
         let _ = index.get_or_create(base_frs);
@@ -557,7 +555,7 @@ pub(super) fn parse_extension_to_index(
     // Now get the record and chain the new links/streams
     let record_idx = index.frs_to_idx[base_frs_usize];
     if record_idx != NO_ENTRY {
-        let record = &mut index.records[record_idx as usize];
+        let record = &mut index.records[u32_as_usize(record_idx)];
         // Snapshot name_count BEFORE link-chaining modifies it (for child entries)
         let pre_chain_name_count = record.name_count;
 
@@ -572,35 +570,35 @@ pub(super) fn parse_extension_to_index(
                     None
                 } else {
                     let mut idx = record.first_name.next_entry;
-                    while index.links[idx as usize].next_entry != NO_ENTRY {
-                        idx = index.links[idx as usize].next_entry;
+                    while index.links[u32_as_usize(idx)].next_entry != NO_ENTRY {
+                        idx = index.links[u32_as_usize(idx)].next_entry;
                     }
                     Some(idx)
                 };
 
                 // Chain the new links together
                 for i in 0..link_indices.len().saturating_sub(1) {
-                    let current_idx = link_indices[i] as usize;
+                    let current_idx = u32_as_usize(link_indices[i]);
                     let next_idx = link_indices[i + 1];
                     index.links[current_idx].next_entry = next_idx;
                 }
 
                 // Attach to the chain
                 if let Some(last_idx) = last_link_idx {
-                    index.links[last_idx as usize].next_entry = link_indices[0];
+                    index.links[u32_as_usize(last_idx)].next_entry = link_indices[0];
                 } else {
                     // first_name has no next_entry, attach directly
-                    let record = &mut index.records[record_idx as usize];
+                    let record = &mut index.records[u32_as_usize(record_idx)];
                     record.first_name.next_entry = link_indices[0];
                 }
 
                 // Update name count
-                let record = &mut index.records[record_idx as usize];
-                record.name_count += link_indices.len() as u16;
+                let record = &mut index.records[u32_as_usize(record_idx)];
+                record.name_count += len_to_u16(link_indices.len());
             } else {
                 // Copy the first extension name directly into first_name
                 // This matches established behavior (ntfs_index.hpp lines 559-567)
-                let first_link = &index.links[link_indices[0] as usize];
+                let first_link = &index.links[u32_as_usize(link_indices[0])];
                 record.first_name.name = first_link.name;
                 record.first_name.parent_frs = first_link.parent_frs;
                 // Don't increment name_count for the first name (it's already counted as 1)
@@ -609,67 +607,67 @@ pub(super) fn parse_extension_to_index(
                 if link_indices.len() > 1 {
                     // Chain the remaining links together
                     for i in 1..link_indices.len().saturating_sub(1) {
-                        let current_idx = link_indices[i] as usize;
+                        let current_idx = u32_as_usize(link_indices[i]);
                         let next_idx = link_indices[i + 1];
                         index.links[current_idx].next_entry = next_idx;
                     }
                     // Attach remaining links to first_name
-                    let record = &mut index.records[record_idx as usize];
+                    let record = &mut index.records[u32_as_usize(record_idx)];
                     record.first_name.next_entry = link_indices[1];
                     // Update name count for additional links only
-                    record.name_count += (link_indices.len() - 1) as u16;
+                    record.name_count += len_to_u16(link_indices.len().saturating_sub(1));
                 }
             }
         }
 
         // Chain new streams to the end of the existing stream chain
         if !stream_indices.is_empty() {
-            let record = &mut index.records[record_idx as usize];
+            let record = &mut index.records[u32_as_usize(record_idx)];
 
             // Find the end of the current stream chain
             let last_stream_idx = if record.first_stream.next_entry == NO_ENTRY {
                 None
             } else {
                 let mut idx = record.first_stream.next_entry;
-                while index.streams[idx as usize].next_entry != NO_ENTRY {
-                    idx = index.streams[idx as usize].next_entry;
+                while index.streams[u32_as_usize(idx)].next_entry != NO_ENTRY {
+                    idx = index.streams[u32_as_usize(idx)].next_entry;
                 }
                 Some(idx)
             };
 
             // Chain the new streams together
             for i in 0..stream_indices.len().saturating_sub(1) {
-                let current_idx = stream_indices[i] as usize;
+                let current_idx = u32_as_usize(stream_indices[i]);
                 let next_idx = stream_indices[i + 1];
                 index.streams[current_idx].next_entry = next_idx;
             }
 
             // Attach to the chain
             if let Some(last_idx) = last_stream_idx {
-                index.streams[last_idx as usize].next_entry = stream_indices[0];
+                index.streams[u32_as_usize(last_idx)].next_entry = stream_indices[0];
             } else {
                 // first_stream has no next_entry, attach directly
-                let record = &mut index.records[record_idx as usize];
+                let record = &mut index.records[u32_as_usize(record_idx)];
                 record.first_stream.next_entry = stream_indices[0];
             }
 
             // Update stream count (user-visible only)
-            let record = &mut index.records[record_idx as usize];
-            record.stream_count += stream_indices.len() as u16;
-            record.total_stream_count += stream_indices.len() as u16;
+            let record = &mut index.records[u32_as_usize(record_idx)];
+            record.stream_count += len_to_u16(stream_indices.len());
+            record.total_stream_count += len_to_u16(stream_indices.len());
         }
 
         // Build internal stream chain for extension record attributes
         if !ext_internal_streams.is_empty() {
-            let record = &mut index.records[record_idx as usize];
+            let record = &mut index.records[u32_as_usize(record_idx)];
 
             // Find end of existing internal stream chain
             let last_internal_idx = if record.first_internal_stream == NO_ENTRY {
                 None
             } else {
                 let mut idx = record.first_internal_stream;
-                while index.internal_streams[idx as usize].next_entry != NO_ENTRY {
-                    idx = index.internal_streams[idx as usize].next_entry;
+                while index.internal_streams[u32_as_usize(idx)].next_entry != NO_ENTRY {
+                    idx = index.internal_streams[u32_as_usize(idx)].next_entry;
                 }
                 Some(idx)
             };
@@ -683,7 +681,7 @@ pub(super) fn parse_extension_to_index(
                     .internal_streams_allocated
                     .saturating_add(*ist_allocated);
 
-                let new_idx = index.internal_streams.len() as u32;
+                let new_idx = len_to_u32(index.internal_streams.len());
                 index
                     .internal_streams
                     .push(crate::index::InternalStreamInfo {
@@ -699,29 +697,29 @@ pub(super) fn parse_extension_to_index(
                     first_new_internal = new_idx;
                 }
                 if prev_internal != NO_ENTRY {
-                    index.internal_streams[prev_internal as usize].next_entry = new_idx;
+                    index.internal_streams[u32_as_usize(prev_internal)].next_entry = new_idx;
                 }
                 prev_internal = new_idx;
             }
 
             // Attach to existing chain or set as head
             if let Some(last_idx) = last_internal_idx {
-                index.internal_streams[last_idx as usize].next_entry = first_new_internal;
+                index.internal_streams[u32_as_usize(last_idx)].next_entry = first_new_internal;
             } else {
-                let record = &mut index.records[record_idx as usize];
+                let record = &mut index.records[u32_as_usize(record_idx)];
                 record.first_internal_stream = first_new_internal;
             }
 
             // Update total_stream_count to include new internal streams
-            let record = &mut index.records[record_idx as usize];
-            record.total_stream_count += ext_internal_streams.len() as u16;
+            let record = &mut index.records[u32_as_usize(record_idx)];
+            record.total_stream_count += len_to_u16(ext_internal_streams.len());
         }
 
         // Merge default $DATA stream from extension record into base record.
         // This handles files whose $DATA attribute doesn't fit in the base MFT
         // record (e.g., large files with extensive run lists).
         if found_default_data {
-            let record = &mut index.records[record_idx as usize];
+            let record = &mut index.records[u32_as_usize(record_idx)];
             // Ensure has_default_data bit is set (may not have been set
             // earlier if the base record didn't exist at attribute-parse time)
             record.set_has_default_data();
@@ -749,7 +747,7 @@ pub(super) fn parse_extension_to_index(
 
         // Merge directory index sizes from extension records
         if dir_index_size > 0 || dir_index_allocated > 0 {
-            let record = &mut index.records[record_idx as usize];
+            let record = &mut index.records[u32_as_usize(record_idx)];
             // Add to the first_stream size (which represents the default stream for
             // directories)
             record.first_stream.size.length += dir_index_size;
@@ -769,13 +767,13 @@ pub(super) fn parse_extension_to_index(
 
             // Ensure parent exists
             let parent_idx = {
-                let p_frs_usize = p_frs as usize;
+                let p_frs_usize = frs_to_usize(p_frs);
                 if p_frs_usize >= index.frs_to_idx.len() {
                     index.frs_to_idx.resize(p_frs_usize + 1, NO_ENTRY);
                 }
                 if index.frs_to_idx[p_frs_usize] == NO_ENTRY {
                     // Create placeholder parent
-                    let new_idx = index.records.len() as u32;
+                    let new_idx = len_to_u32(index.records.len());
                     index.frs_to_idx[p_frs_usize] = new_idx;
                     index.records.push(crate::index::FileRecord::new(p_frs));
                 }
@@ -797,14 +795,14 @@ pub(super) fn parse_extension_to_index(
             //   - effective_name_idx should be 1 (the second name overall)
             let effective_name_idx = if existing_name_count == 0 {
                 // First extension name became first_name, so name_index starts at 0
-                name_idx as u16
+                len_to_u16(name_idx)
             } else {
                 // Extension names are appended after existing names
-                existing_name_count + name_idx as u16
+                existing_name_count + len_to_u16(name_idx)
             };
 
-            let child_idx = index.children.len() as u32;
-            let parent = &mut index.records[parent_idx as usize];
+            let child_idx = len_to_u32(index.children.len());
+            let parent = &mut index.records[u32_as_usize(parent_idx)];
             let old_first_child = parent.first_child;
             parent.first_child = child_idx;
 

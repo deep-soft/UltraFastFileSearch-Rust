@@ -205,6 +205,16 @@ pub enum AttributeType {
 }
 
 impl AttributeType {
+    /// The end-of-attributes marker as a raw `u32`, for direct comparison
+    /// against `AttributeRecordHeader::type_code` without a `cast_lossless` lint.
+    pub const END_MARKER: u32 = 0xFFFF_FFFF;
+
+    /// `$DATA` attribute type code for raw `u32` comparison.
+    pub const DATA_TYPE: u32 = 0x80;
+
+    /// `$REPARSE_POINT` attribute type code for raw `u32` comparison.
+    pub const REPARSE_POINT_TYPE: u32 = 0xC0;
+
     /// Creates an `AttributeType` from a raw u32 value.
     #[must_use]
     pub const fn from_u32(value: u32) -> Option<Self> {

@@ -12,6 +12,7 @@ use zerocopy::FromBytes;
 
 use crate::index::{
     ChildInfo, IndexNameRef, IndexStreamInfo, InternalStreamInfo, MftIndex, NO_ENTRY, SizeInfo,
+    len_to_u16, len_to_u32, u32_as_usize,
 };
 use crate::ntfs::{
     AttributeRecordHeader, AttributeType, FileNameAttribute, FileRecordSegmentHeader,
@@ -87,10 +88,6 @@ fn decode_utf16le_into(bytes: &[u8], out: &mut String) {
     reason = "direct C++ port — complexity matches reference"
 )]
 #[expect(
-    clippy::cast_possible_truncation,
-    reason = "NTFS field sizes bounded by record layout"
-)]
-#[expect(
     clippy::indexing_slicing,
     reason = "base_ri validated by ensure_record; bounds checked inline"
 )]
@@ -121,21 +118,21 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
     // C++ line 234: get or create the base record (zero-based counts).
     // Cache the record index so we don't repeat the frs→idx lookup for
     // every attribute in this record.
-    let base_ri = index.ensure_record(frs_base) as usize;
+    let base_ri = u32_as_usize(index.ensure_record(frs_base));
 
     // ── Attribute loop (C++ lines 240-461) ──────────────────────────────
-    let mut offset = header.first_attribute_offset as usize;
-    let max_offset = core::cmp::min(header.bytes_in_use as usize, data.len());
+    let mut offset = usize::from(header.first_attribute_offset);
+    let max_offset = core::cmp::min(u32_as_usize(header.bytes_in_use), data.len());
 
     while offset + size_of::<AttributeRecordHeader>() <= max_offset {
         let Ok((attr_header, _)) = AttributeRecordHeader::read_from_prefix(&data[offset..]) else {
             break;
         };
 
-        if attr_header.type_code == AttributeType::End as u32 {
+        if attr_header.type_code == AttributeType::END_MARKER {
             break;
         }
-        if attr_header.length == 0 || offset + attr_header.length as usize > data.len() {
+        if attr_header.length == 0 || offset + u32_as_usize(attr_header.length) > data.len() {
             break;
         }
 
@@ -143,7 +140,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
             // ── $STANDARD_INFORMATION (0x10) — C++ lines 249-259 ────
             Some(AttributeType::StandardInformation) => {
                 if attr_header.is_non_resident == 0 {
-                    let vo = rd_u16(data, offset + 20) as usize;
+                    let vo = usize::from(rd_u16(data, offset + 20));
                     let si_off = offset + vo;
                     if si_off + size_of::<StandardInformation>() <= data.len()
                         && let Ok((si, _)) = StandardInformation::read_from_prefix(&data[si_off..])
@@ -169,7 +166,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
             // Push-to-front: each new $FILE_NAME overwrites first_name.
             Some(AttributeType::FileName) => {
                 if attr_header.is_non_resident == 0 {
-                    let vo = rd_u16(data, offset + 20) as usize;
+                    let vo = usize::from(rd_u16(data, offset + 20));
                     let fn_off = offset + vo;
                     if fn_off + size_of::<FileNameAttribute>() <= data.len()
                         && let Ok((fn_attr, _)) =
@@ -178,7 +175,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                     {
                         // C++ line 271: skip DOS-only names
                         let parent_frs = file_reference_to_frs(fn_attr.parent_directory);
-                        let name_len = fn_attr.file_name_length as usize;
+                        let name_len = usize::from(fn_attr.file_name_length);
                         let ns = fn_off + size_of::<FileNameAttribute>();
 
                         if ns + name_len * 2 <= data.len() {
@@ -190,7 +187,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             let old_valid = index.records[base_ri].first_name.name.is_valid();
                             let old_first = index.records[base_ri].first_name; // Copy
                             if old_valid {
-                                let link_idx = index.links.len() as u32;
+                                let link_idx = len_to_u32(index.links.len());
                                 index.links.push(old_first);
                                 index.records[base_ri].first_name.next_entry = link_idx;
                             }
@@ -201,7 +198,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             let ext_id = index.intern_extension(name_buf);
                             let name_ref = IndexNameRef::new(
                                 name_off,
-                                name_buf.len() as u16,
+                                len_to_u16(name_buf.len()),
                                 is_ascii,
                                 ext_id,
                             );
@@ -215,8 +212,8 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             let name_index = index.records[base_ri].name_count;
 
                             if parent_frs != frs_base && parent_frs != u64::from(NO_ENTRY) {
-                                let parent_ri = index.ensure_record(parent_frs) as usize;
-                                let child_idx = index.children.len() as u32;
+                                let parent_ri = u32_as_usize(index.ensure_record(parent_frs));
+                                let child_idx = len_to_u32(index.children.len());
                                 let old_fc = index.records[parent_ri].first_child;
                                 index.records[parent_ri].first_child = child_idx;
 
@@ -251,7 +248,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
 
                 if is_primary {
                     let attr_type = attr_header.type_code;
-                    let aname_len = attr_header.name_length as usize;
+                    let aname_len = usize::from(attr_header.name_length);
 
                     // C++ lines 361-366: $I30 check
                     let is_i30 = matches!(
@@ -263,14 +260,14 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         )
                     ) && aname_len == 4
                         && {
-                            let no = offset + attr_header.name_offset as usize;
+                            let no = offset + usize::from(attr_header.name_offset);
                             no + 8 <= data.len() && &data[no..no + 8] == b"$\x00I\x003\x000\x00"
                         };
 
                     // Read stream name (non-$I30, named attributes)
                     let has_stream_name = !is_i30 && aname_len > 0;
                     if has_stream_name {
-                        let no = offset + attr_header.name_offset as usize;
+                        let no = offset + usize::from(attr_header.name_offset);
                         if no + aname_len * 2 <= data.len() {
                             let nb = &data[no..no + aname_len * 2];
                             decode_utf16le_into(nb, name_buf);
@@ -324,7 +321,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             rec.stream_count += 1;
                             rec.total_stream_count += 1;
                         }
-                    } else if attr_type == AttributeType::Data as u32 && aname_len == 0 {
+                    } else if attr_type == AttributeType::DATA_TYPE && aname_len == 0 {
                         // Unnamed $DATA: default stream
                         let rec = &mut index.records[base_ri];
                         // Increment counts once for the first unnamed $DATA;
@@ -338,7 +335,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         rec.first_stream.size.length += size;
                         rec.first_stream.size.allocated += alloc;
                         rec.first_stream.flags = 8 << 2; // type_name_id=8 for $DATA
-                    } else if attr_type == AttributeType::Data as u32 && aname_len > 0 {
+                    } else if attr_type == AttributeType::DATA_TYPE && aname_len > 0 {
                         // Named $DATA: ADS (user-visible stream)
                         // C++ creates a stream entry; output layer filters internals
                         if has_stream_name && !name_buf.is_empty() {
@@ -346,8 +343,8 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             let is_ascii = name_buf.is_ascii();
                             let ext_id = index.intern_extension(name_buf);
                             let nr =
-                                IndexNameRef::new(sn_off, name_buf.len() as u16, is_ascii, ext_id);
-                            let si = index.streams.len() as u32;
+                                IndexNameRef::new(sn_off, len_to_u16(name_buf.len()), is_ascii, ext_id);
+                            let si = len_to_u32(index.streams.len());
                             index.streams.push(IndexStreamInfo {
                                 size: SizeInfo {
                                     length: size,
@@ -366,17 +363,17 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                                 index.records[base_ri].first_stream.next_entry = si;
                             } else {
                                 let mut tail = old_next;
-                                while index.streams[tail as usize].next_entry != NO_ENTRY {
-                                    tail = index.streams[tail as usize].next_entry;
+                                while index.streams[u32_as_usize(tail)].next_entry != NO_ENTRY {
+                                    tail = index.streams[u32_as_usize(tail)].next_entry;
                                 }
-                                index.streams[tail as usize].next_entry = si;
+                                index.streams[u32_as_usize(tail)].next_entry = si;
                             }
                             index.records[base_ri].stream_count += 1;
                             index.records[base_ri].total_stream_count += 1;
                         }
                     } else {
                         // All other attribute types: internal stream
-                        let ist_idx = index.internal_streams.len() as u32;
+                        let ist_idx = len_to_u32(index.internal_streams.len());
                         index.internal_streams.push(InternalStreamInfo {
                             size: SizeInfo {
                                 length: size,
@@ -393,10 +390,10 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         } else {
                             // Walk chain to find tail
                             let mut tail = head;
-                            while index.internal_streams[tail as usize].next_entry != NO_ENTRY {
-                                tail = index.internal_streams[tail as usize].next_entry;
+                            while index.internal_streams[u32_as_usize(tail)].next_entry != NO_ENTRY {
+                                tail = index.internal_streams[u32_as_usize(tail)].next_entry;
                             }
-                            index.internal_streams[tail as usize].next_entry = ist_idx;
+                            index.internal_streams[u32_as_usize(tail)].next_entry = ist_idx;
                         }
                         let rec = &mut index.records[base_ri];
                         rec.internal_streams_size += size;
@@ -405,10 +402,10 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                     }
 
                     // Extract reparse tag from $REPARSE_POINT
-                    if attr_type == AttributeType::ReparsePoint as u32
+                    if attr_type == AttributeType::REPARSE_POINT_TYPE
                         && attr_header.is_non_resident == 0
                     {
-                        let vo = rd_u16(data, offset + 20) as usize;
+                        let vo = usize::from(rd_u16(data, offset + 20));
                         let rp = offset + vo;
                         if rp + 4 <= data.len() {
                             let tag =
@@ -420,7 +417,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
             }
         }
 
-        offset += attr_header.length as usize;
+        offset += u32_as_usize(attr_header.length);
     }
 
     // Set directory flag from header if not already set

@@ -57,6 +57,95 @@ pub fn len_to_u16(len: usize) -> u16 {
     u16::try_from(len).unwrap_or(u16::MAX)
 }
 
+/// Widen a `u32` NTFS header field to `usize` for array indexing.
+///
+/// On any platform where `usize >= 32 bits` (all supported targets) this
+/// is a lossless widening.  On hypothetical 16-bit targets it saturates.
+#[inline]
+#[must_use]
+pub const fn u32_as_usize(val: u32) -> usize {
+    val as usize
+}
+
+/// Clamp a signed NTFS field to non-negative and convert to `u64`.
+///
+/// NTFS data sizes and allocated sizes are stored as `i64` on disk but
+/// represent non-negative byte counts.  Negative values indicate
+/// corruption or uninitialised data and are clamped to `0`.
+#[inline]
+#[must_use]
+pub const fn nonneg_to_u64(val: i64) -> u64 {
+    if val > 0 {
+        // SAFETY: val is guaranteed positive by the branch, so no sign bit to lose.
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "val > 0 guard makes this lossless"
+        )]
+        let result = val as u64;
+        result
+    } else {
+        0
+    }
+}
+
+/// Convert a `u128` duration (e.g. from `Duration::as_micros()`) to `i64`.
+///
+/// Saturates at `i64::MAX` (year ~292,277) instead of truncating.
+#[inline]
+#[must_use]
+pub fn micros_to_i64(us: u128) -> i64 {
+    i64::try_from(us).unwrap_or(i64::MAX)
+}
+
+/// Convert bytes (`u64`) to megabytes as `f64` for display purposes.
+///
+/// Precision loss beyond 2^53 bytes (~8 PB) is acceptable for human display.
+#[inline]
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "display-only: sub-byte precision irrelevant for MB/GB formatting"
+)]
+pub fn bytes_to_mb_f64(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+/// Convert a `u64` to `f64` for display ratios and percentages.
+///
+/// Precision loss beyond 2^53 is acceptable for display.
+#[inline]
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "display-only: sub-unit precision irrelevant for ratios"
+)]
+pub fn u64_to_f64(val: u64) -> f64 {
+    val as f64
+}
+
+/// Convert a `usize` to `f64` for display ratios and percentages.
+///
+/// Precision loss beyond 2^53 is acceptable for display.
+#[inline]
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "display-only: sub-unit precision irrelevant for ratios"
+)]
+pub fn usize_to_f64(val: usize) -> f64 {
+    val as f64
+}
+
+/// Convert a `u32` to `f64` for display.
+///
+/// This is actually lossless (u32 fits exactly in f64) but provided
+/// for API consistency.
+#[inline]
+#[must_use]
+pub fn u32_to_f64(val: u32) -> f64 {
+    f64::from(val)
+}
+
 // ============================================================================
 // IndexNameRef - Reference into names buffer
 // ============================================================================

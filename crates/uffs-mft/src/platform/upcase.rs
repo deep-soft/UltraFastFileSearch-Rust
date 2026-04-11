@@ -354,11 +354,9 @@ fn volume_read_at(
 ) -> Result<()> {
     use windows::Win32::Storage::FileSystem::{FILE_BEGIN, ReadFile, SetFilePointerEx};
 
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "volume offsets fit in i64 for volumes < 8 EB"
-    )]
-    let seek_pos = offset as i64;
+    let seek_pos = i64::try_from(offset).map_err(|_| {
+        MftError::InvalidData(format!("$UpCase: offset {offset} exceeds i64::MAX"))
+    })?;
 
     // SAFETY: SetFilePointerEx is a well-defined Win32 API.
     #[expect(unsafe_code, reason = "FFI: SetFilePointerEx")]
@@ -408,8 +406,7 @@ fn read_clusters(
         let run_bytes = (run.cluster_count * bpc) as usize;
         let read_len = run_bytes.min(UPCASE_SIZE_BYTES - offset);
 
-        #[expect(clippy::cast_sign_loss, reason = "LCN is positive for non-sparse runs")]
-        let disk_offset = disk_byte as u64;
+        let disk_offset = crate::index::nonneg_to_u64(disk_byte);
         volume_read_at(handle, disk_offset, &mut buf[offset..offset + read_len])?;
         offset += read_len;
     }

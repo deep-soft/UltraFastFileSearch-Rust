@@ -9,6 +9,7 @@ use uffs_polars::{DataFrame, ParquetReader, ParquetWriter, SerReader};
 
 use super::MftReader;
 use crate::error::{MftError, Result};
+use crate::index::bytes_to_mb_f64;
 
 impl MftReader {
     /// Save a `DataFrame` to Parquet format.
@@ -248,8 +249,7 @@ impl MftReader {
         let total_records_in_file = capacity;
 
         if profile {
-            #[expect(clippy::cast_precision_loss, reason = "display-only MB value")]
-            let mft_mb = raw.header.original_size as f64 / (1024.0 * 1024.0);
+            let mft_mb = bytes_to_mb_f64(raw.header.original_size);
             tracing::debug!(
                 target: "cache_profile",
                 read_ms = %read_ms,

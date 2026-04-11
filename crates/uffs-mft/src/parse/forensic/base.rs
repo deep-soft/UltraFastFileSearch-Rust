@@ -6,6 +6,7 @@ use super::super::{
     ParseResult, ParsedRecord, PrimaryNameTracker, parse_data_attribute_full, parse_file_name_full,
     parse_standard_info_full,
 };
+use crate::index::nonneg_to_u64;
 use crate::ntfs::{
     AttributeRecordHeader, AttributeType, ExtendedStandardInfo, FileRecordSegmentHeader, NameInfo,
     ReparsePointHeader, StreamInfo,
@@ -94,11 +95,11 @@ pub(super) fn parse_base_record(
                 // This affects the descendants count in tree metrics.
                 let (rp_size, rp_allocated, is_resident) = if attr_header.is_non_resident == 0 {
                     // Resident reparse point (common case)
-                    let value_length = u32::from_le_bytes(
+                    let value_length = u64::from(u32::from_le_bytes(
                         data.get(offset + 16..offset + 20)
                             .and_then(|b| b.try_into().ok())
                             .unwrap_or([0, 0, 0, 0]),
-                    ) as u64;
+                    ));
                     reparse_size = value_length;
 
                     let value_offset = u16::from_le_bytes(
@@ -129,7 +130,7 @@ pub(super) fn parse_base_record(
                                 .try_into()
                                 .unwrap_or([0; 8]),
                         );
-                        (ds.max(0) as u64, alloc.max(0) as u64)
+                        (nonneg_to_u64(ds), nonneg_to_u64(alloc))
                     } else {
                         (0_u64, 0_u64)
                     };
@@ -160,8 +161,8 @@ pub(super) fn parse_base_record(
 
                 // Extract attribute name
                 let (is_i30, attr_name) = if attr_header.name_length > 0 {
-                    let name_offset = offset + attr_header.name_offset as usize;
-                    let name_len = attr_header.name_length as usize;
+                    let name_offset = offset + usize::from(attr_header.name_offset);
+                    let name_len = usize::from(attr_header.name_length);
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         // Check for "$I30" in UTF-16LE
@@ -193,11 +194,11 @@ pub(super) fn parse_base_record(
                     {
                         if attr_header.is_non_resident == 0 {
                             // Resident: get size from resident header
-                            let value_length = u32::from_le_bytes(
+                            let value_length = u64::from(u32::from_le_bytes(
                                 data.get(offset + 16..offset + 20)
                                     .and_then(|b| b.try_into().ok())
                                     .unwrap_or([0; 4]),
-                            ) as u64;
+                            ));
                             dir_index_size += value_length;
                             // Resident attributes have no allocated size
                         } else {
@@ -214,8 +215,8 @@ pub(super) fn parse_base_record(
                                         .try_into()
                                         .unwrap_or([0; 8]),
                                 );
-                                dir_index_size += data_size.max(0) as u64;
-                                dir_index_allocated += allocated.max(0) as u64;
+                                dir_index_size += nonneg_to_u64(data_size);
+                                dir_index_allocated += nonneg_to_u64(allocated);
                             }
                         }
                     }
@@ -248,11 +249,11 @@ pub(super) fn parse_base_record(
                     }
 
                     let (size, allocated_size, is_resident) = if attr_header.is_non_resident == 0 {
-                        let value_length = u32::from_le_bytes(
+                        let value_length = u64::from(u32::from_le_bytes(
                             data.get(offset + 16..offset + 20)
                                 .and_then(|b| b.try_into().ok())
                                 .unwrap_or([0; 4]),
-                        ) as u64;
+                        ));
                         (value_length, 0_u64, true)
                     } else {
                         let nr_offset = offset + 16;
@@ -267,7 +268,7 @@ pub(super) fn parse_base_record(
                                     .try_into()
                                     .unwrap_or([0; 8]),
                             );
-                            (data_size.max(0) as u64, allocated.max(0) as u64, false)
+                            (nonneg_to_u64(data_size), nonneg_to_u64(allocated), false)
                         } else {
                             (0_u64, 0_u64, false)
                         }
@@ -320,8 +321,8 @@ pub(super) fn parse_base_record(
             ) => {
                 // Extract attribute name (if any)
                 let attr_name = if attr_header.name_length > 0 {
-                    let name_offset = offset + attr_header.name_offset as usize;
-                    let name_len = attr_header.name_length as usize;
+                    let name_offset = offset + usize::from(attr_header.name_offset);
+                    let name_len = usize::from(attr_header.name_length);
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: smallvec::SmallVec<[u16; 64]> = name_bytes
@@ -363,11 +364,11 @@ pub(super) fn parse_base_record(
 
                 // Get size information
                 let (size, allocated_size, is_resident) = if attr_header.is_non_resident == 0 {
-                    let value_length = u32::from_le_bytes(
+                    let value_length = u64::from(u32::from_le_bytes(
                         data.get(offset + 16..offset + 20)
                             .and_then(|b| b.try_into().ok())
                             .unwrap_or([0; 4]),
-                    ) as u64;
+                    ));
                     (value_length, 0_u64, true)
                 } else {
                     let nr_offset = offset + 16;
@@ -382,7 +383,7 @@ pub(super) fn parse_base_record(
                                 .try_into()
                                 .unwrap_or([0; 8]),
                         );
-                        (data_size.max(0) as u64, allocated.max(0) as u64, false)
+                        (nonneg_to_u64(data_size), nonneg_to_u64(allocated), false)
                     } else {
                         (0_u64, 0_u64, false)
                     }
@@ -428,8 +429,8 @@ pub(super) fn parse_base_record(
                 // C++ counts ALL attribute types as streams via default: case
                 let type_code = attr_header.type_code;
                 let attr_name = if attr_header.name_length > 0 {
-                    let name_offset = offset + attr_header.name_offset as usize;
-                    let name_len = attr_header.name_length as usize;
+                    let name_offset = offset + usize::from(attr_header.name_offset);
+                    let name_len = usize::from(attr_header.name_length);
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: smallvec::SmallVec<[u16; 64]> = name_bytes
@@ -446,11 +447,11 @@ pub(super) fn parse_base_record(
                     String::new()
                 };
                 let (size, allocated_size, is_resident) = if attr_header.is_non_resident == 0 {
-                    let value_length = u32::from_le_bytes(
+                    let value_length = u64::from(u32::from_le_bytes(
                         data.get(offset + 16..offset + 20)
                             .and_then(|b| b.try_into().ok())
                             .unwrap_or([0; 4]),
-                    ) as u64;
+                    ));
                     (value_length, 0_u64, true)
                 } else {
                     let nr_offset = offset + 16;
@@ -465,7 +466,7 @@ pub(super) fn parse_base_record(
                                 .try_into()
                                 .unwrap_or([0; 8]),
                         );
-                        (data_size.max(0) as u64, allocated.max(0) as u64, false)
+                        (nonneg_to_u64(data_size), nonneg_to_u64(allocated), false)
                     } else {
                         (0_u64, 0_u64, false)
                     }

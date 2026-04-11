@@ -2,6 +2,7 @@
 
 use zerocopy::FromBytes;
 
+use crate::index::nonneg_to_u64;
 use crate::ntfs::{ExtendedStandardInfo, NameInfo, StreamInfo};
 
 /// Parses `$STANDARD_INFORMATION` into `ExtendedStandardInfo`.
@@ -89,7 +90,7 @@ pub(super) fn parse_file_name_full(
         return None;
     };
 
-    let name_len = fn_attr.file_name_length as usize;
+    let name_len = usize::from(fn_attr.file_name_length);
     let name_offset = fn_offset + size_of::<FileNameAttribute>();
 
     if name_offset + name_len * 2 > data.len() {
@@ -135,8 +136,8 @@ pub(super) fn parse_data_attribute_full(
     use smallvec::SmallVec;
 
     let stream_name = if header.name_length > 0 {
-        let name_offset = attr_offset + header.name_offset as usize;
-        let name_len = header.name_length as usize;
+        let name_offset = attr_offset + usize::from(header.name_offset);
+        let name_len = usize::from(header.name_length);
         if name_offset + name_len * 2 > data.len() {
             return None;
         }
@@ -170,7 +171,7 @@ pub(super) fn parse_data_attribute_full(
     let (size, allocated_size, is_sparse, is_compressed) = if is_resident {
         let value_length_bytes = &data[attr_offset + 16..attr_offset + 20];
         let value_length = u32::from_le_bytes(value_length_bytes.try_into().ok()?);
-        (value_length as u64, 0, false, false)
+        (u64::from(value_length), 0, false, false)
     } else {
         let nr_offset = attr_offset + 16;
         if nr_offset + 48 > data.len() {
@@ -199,14 +200,14 @@ pub(super) fn parse_data_attribute_full(
 
         let is_badclus_bad = frs == 8 && stream_name == "$Bad";
         let effective_size = if is_badclus_bad {
-            initialized_size.max(0) as u64
+            nonneg_to_u64(initialized_size)
         } else {
-            data_size.max(0) as u64
+            nonneg_to_u64(data_size)
         };
         let effective_allocated = if is_badclus_bad {
-            initialized_size.max(0) as u64
+            nonneg_to_u64(initialized_size)
         } else {
-            effective_allocated_raw.max(0) as u64
+            nonneg_to_u64(effective_allocated_raw)
         };
 
         (

@@ -2,6 +2,8 @@
 
 use core::time::Duration;
 
+use crate::index::u64_to_f64;
+
 #[cfg(windows)]
 use tracing::{debug, info};
 
@@ -48,16 +50,12 @@ impl MftStats {
     /// Returns the slack percentage (0.0 to 100.0).
     #[must_use]
     #[expect(
-        clippy::cast_precision_loss,
-        reason = "precision loss acceptable for progress display"
-    )]
-    #[expect(
         clippy::float_arithmetic,
         reason = "float arithmetic required for percentage calculation"
     )]
     pub fn slack_percentage(&self) -> f64 {
         if self.total_allocated_size > 0 {
-            (self.slack_space() as f64 / self.total_allocated_size as f64) * 100.0
+            (u64_to_f64(self.slack_space()) / u64_to_f64(self.total_allocated_size)) * 100.0
         } else {
             0.0
         }
@@ -123,24 +121,16 @@ impl MftProgress {
     /// Returns the percentage complete (0.0 to 100.0), if total is known.
     #[must_use]
     #[expect(
-        clippy::cast_precision_loss,
-        reason = "precision loss acceptable for progress display"
-    )]
-    #[expect(
         clippy::float_arithmetic,
         reason = "float arithmetic required for percentage calculation"
     )]
     pub fn percentage(&self) -> Option<f64> {
         self.total_records
-            .map(|total| (self.records_read as f64 / total as f64) * 100.0_f64)
+            .map(|total| (u64_to_f64(self.records_read) / u64_to_f64(total)) * 100.0_f64)
     }
 
     /// Returns the read speed in MB/s.
     #[must_use]
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "precision loss acceptable for progress display"
-    )]
     #[expect(
         clippy::float_arithmetic,
         reason = "float arithmetic required for speed calculation"
@@ -148,7 +138,7 @@ impl MftProgress {
     pub fn speed_mbps(&self) -> f64 {
         let secs = self.elapsed.as_secs_f64();
         if secs > 0.0 {
-            (self.bytes_read as f64 / 1_048_576.0) / secs
+            (u64_to_f64(self.bytes_read) / 1_048_576.0) / secs
         } else {
             0.0
         }

@@ -80,12 +80,12 @@ impl NtfsBootSector {
     #[must_use]
     pub fn file_record_size(&self) -> u32 {
         if self.clusters_per_file_record >= 0 {
-            #[expect(clippy::cast_sign_loss, reason = "checked positive above")]
-            let clusters = self.clusters_per_file_record as u32;
+            // Positive: cluster count × cluster size.
+            let clusters = u32::try_from(self.clusters_per_file_record).unwrap_or(1);
             clusters * self.cluster_size()
         } else {
-            #[expect(clippy::cast_sign_loss, reason = "negated negative value is positive")]
-            let shift = (-self.clusters_per_file_record) as u32;
+            // Negative: size = 2^(-value).
+            let shift = u32::try_from(self.clusters_per_file_record.wrapping_neg()).unwrap_or(12);
             1_u32 << shift
         }
     }
@@ -93,12 +93,7 @@ impl NtfsBootSector {
     /// Returns the byte offset of the MFT on the volume.
     #[must_use]
     pub fn mft_byte_offset(&self) -> u64 {
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "MFT start LCN is always non-negative"
-        )]
-        let lcn = self.mft_start_lcn as u64;
-        lcn * u64::from(self.cluster_size())
+        crate::index::nonneg_to_u64(self.mft_start_lcn) * u64::from(self.cluster_size())
     }
 }
 

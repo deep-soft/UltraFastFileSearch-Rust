@@ -13,6 +13,7 @@ use zerocopy::FromBytes;
 use super::fragment_extension::parse_extension_to_fragment;
 use crate::index::{
     ChildInfo, IndexNameRef, IndexStreamInfo, LinkInfo, NO_ENTRY, SizeInfo, StandardInfo,
+    frs_to_usize, len_to_u16, len_to_u32, u32_as_usize,
 };
 use crate::ntfs::{
     AttributeRecordHeader, AttributeType, FileNameAttribute, FileRecordSegmentHeader,
@@ -31,10 +32,6 @@ use crate::ntfs::{
 #[expect(
     clippy::too_many_lines,
     reason = "monolithic parser kept for performance-critical hot path"
-)]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "NTFS field sizes are bounded by u16/u32 record layout"
 )]
 #[expect(deprecated, reason = "deprecated function calling deprecated helper")]
 pub fn parse_record_to_fragment(
@@ -70,8 +67,8 @@ pub fn parse_record_to_fragment(
     let is_directory = header.is_directory();
 
     // Parse attributes
-    let mut offset = header.first_attribute_offset as usize;
-    let max_offset = core::cmp::min(header.bytes_in_use as usize, data.len());
+    let mut offset = usize::from(header.first_attribute_offset);
+    let max_offset = core::cmp::min(u32_as_usize(header.bytes_in_use), data.len());
 
     // Temporary storage for parsed data
     let mut std_info = StandardInfo::default();
@@ -88,11 +85,11 @@ pub fn parse_record_to_fragment(
             break;
         };
 
-        if attr_header.type_code == AttributeType::End as u32 {
+        if attr_header.type_code == AttributeType::END_MARKER {
             break;
         }
 
-        if attr_header.length == 0 || offset + attr_header.length as usize > max_offset {
+        if attr_header.length == 0 || offset + u32_as_usize(attr_header.length) > max_offset {
             break;
         }
 
@@ -127,7 +124,7 @@ pub fn parse_record_to_fragment(
                     else {
                         break;
                     };
-                    let name_len = fn_attr.file_name_length as usize;
+                    let name_len = usize::from(fn_attr.file_name_length);
                     let name_bytes_offset = fn_offset + size_of::<FileNameAttribute>();
                     if name_bytes_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_bytes_offset..name_bytes_offset + name_len * 2];
@@ -181,12 +178,12 @@ pub fn parse_record_to_fragment(
 
                 if !is_primary {
                     // Skip continuation extents - they don't count as new streams
-                    offset += attr_header.length as usize;
+                    offset += u32_as_usize(attr_header.length);
                     continue;
                 }
 
                 // Parse $DATA - track both default stream and ADS
-                let name_len = attr_header.name_length as usize;
+                let name_len = usize::from(attr_header.name_length);
                 let (size, allocated) = if attr_header.is_non_resident != 0 {
                     let alloc_offset = offset + 40;
                     let size_offset = offset + 48;
@@ -228,7 +225,7 @@ pub fn parse_record_to_fragment(
                     default_allocated = allocated;
                 } else {
                     // Alternate Data Stream (ADS)
-                    let name_offset = offset + attr_header.name_offset as usize;
+                    let name_offset = offset + usize::from(attr_header.name_offset);
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: SmallVec<[u16; 64]> = name_bytes
@@ -246,7 +243,7 @@ pub fn parse_record_to_fragment(
             _ => {}
         }
 
-        offset += attr_header.length as usize;
+        offset += u32_as_usize(attr_header.length);
     }
 
     // Set directory flag in std_info BEFORE checking for filename
@@ -280,7 +277,7 @@ pub fn parse_record_to_fragment(
     let name_len = name.len();
     let is_ascii = name.is_ascii();
     let extension_id = fragment.intern_extension(&name);
-    let name_ref = IndexNameRef::new(name_offset, name_len as u16, is_ascii, extension_id);
+    let name_ref = IndexNameRef::new(name_offset, len_to_u16(name_len), is_ascii, extension_id);
 
     // Pre-process additional names
     let additional_count = additional_names.len();
@@ -295,9 +292,9 @@ pub fn parse_record_to_fragment(
         let link_is_ascii = link_name.is_ascii();
         let extension_id = fragment.intern_extension(&link_name);
         let link_name_ref =
-            IndexNameRef::new(link_offset, link_len as u16, link_is_ascii, extension_id);
+            IndexNameRef::new(link_offset, len_to_u16(link_len), link_is_ascii, extension_id);
 
-        let link_idx = fragment.links.len() as u32;
+        let link_idx = len_to_u32(fragment.links.len());
         fragment.links.push(LinkInfo {
             next_entry: NO_ENTRY,
             name: link_name_ref,
@@ -317,12 +314,12 @@ pub fn parse_record_to_fragment(
         let extension_id = fragment.intern_extension(&stream_name);
         let stream_name_ref = IndexNameRef::new(
             stream_name_offset,
-            stream_name_len as u16,
+            len_to_u16(stream_name_len),
             stream_is_ascii,
             extension_id,
         );
 
-        let stream_idx = fragment.streams.len() as u32;
+        let stream_idx = len_to_u32(fragment.streams.len());
         fragment.streams.push(IndexStreamInfo {
             size: SizeInfo {
                 length: stream_size,
@@ -383,14 +380,14 @@ pub fn parse_record_to_fragment(
 
     // Chain the base record's additional links together
     for i in 0..link_indices.len().saturating_sub(1) {
-        let current_idx = link_indices[i] as usize;
+        let current_idx = u32_as_usize(link_indices[i]);
         let next_idx = link_indices[i + 1];
         fragment.links[current_idx].next_entry = next_idx;
     }
 
     // Chain the base record's additional streams together
     for i in 0..stream_indices.len().saturating_sub(1) {
-        let current_idx = stream_indices[i] as usize;
+        let current_idx = u32_as_usize(stream_indices[i]);
         let next_idx = stream_indices[i + 1];
         fragment.streams[current_idx].next_entry = next_idx;
     }
@@ -405,7 +402,7 @@ pub fn parse_record_to_fragment(
 
     if existing_name_valid {
         // Extension had first_name set - add it as a new link in the links array
-        let ext_link_idx = fragment.links.len() as u32;
+        let ext_link_idx = len_to_u32(fragment.links.len());
         fragment.links.push(existing_first_name);
 
         // Chain: base first_name -> base additional links -> ext first_name -> ext
@@ -414,7 +411,7 @@ pub fn parse_record_to_fragment(
             first_name_next_entry = ext_link_idx;
         } else {
             first_name_next_entry = link_indices[0];
-            let last_base_link = link_indices[link_indices.len() - 1] as usize;
+            let last_base_link = u32_as_usize(link_indices[link_indices.len() - 1]);
             fragment.links[last_base_link].next_entry = ext_link_idx;
         }
     } else if existing_first_name.next_entry != NO_ENTRY {
@@ -423,7 +420,7 @@ pub fn parse_record_to_fragment(
             first_name_next_entry = existing_first_name.next_entry;
         } else {
             first_name_next_entry = link_indices[0];
-            let last_base_link = link_indices[link_indices.len() - 1] as usize;
+            let last_base_link = u32_as_usize(link_indices[link_indices.len() - 1]);
             fragment.links[last_base_link].next_entry = existing_first_name.next_entry;
         }
     } else {
@@ -444,7 +441,7 @@ pub fn parse_record_to_fragment(
     // Chain streams: base ADS -> extension ADS (must be done before borrowing
     // record) If base has ADS and extension has ADS, chain them together
     if !stream_indices.is_empty() && existing_stream_next != NO_ENTRY {
-        let last_base_stream = stream_indices[stream_indices.len() - 1] as usize;
+        let last_base_stream = u32_as_usize(stream_indices[stream_indices.len() - 1]);
         fragment.streams[last_base_stream].next_entry = existing_stream_next;
     }
 
@@ -454,7 +451,7 @@ pub fn parse_record_to_fragment(
     // Calculate total name count
     // Base: 1 (first_name) + additional_count
     // Extension: existing_name_count (includes extension's names)
-    record.name_count = 1 + additional_count as u16 + existing_name_count;
+    record.name_count = 1 + len_to_u16(additional_count) + existing_name_count;
 
     // Set first_stream.next_entry to chain to base ADS or extension ADS
     if !stream_indices.is_empty() {
@@ -467,7 +464,7 @@ pub fn parse_record_to_fragment(
     // Calculate total stream count
     // Base: 1 (default $DATA) + additional_stream_count
     // Extension: existing_stream_count (ADS from extension records)
-    record.stream_count = 1 + additional_stream_count as u16 + existing_stream_count;
+    record.stream_count = 1 + len_to_u16(additional_stream_count) + existing_stream_count;
 
     // Build parent-child relationship for tree metrics computation
     // This is critical for compute_tree_metrics() to work correctly.
@@ -482,13 +479,13 @@ pub fn parse_record_to_fragment(
             }
             // Ensure parent exists in fragment
             let parent_idx = {
-                let p_frs_usize = p_frs as usize;
+                let p_frs_usize = frs_to_usize(p_frs);
                 if p_frs_usize >= fragment.frs_to_idx.len() {
                     fragment.frs_to_idx.resize(p_frs_usize + 1, NO_ENTRY);
                 }
                 if fragment.frs_to_idx[p_frs_usize] == NO_ENTRY {
                     // Create placeholder parent
-                    let new_idx = fragment.records.len() as u32;
+                    let new_idx = len_to_u32(fragment.records.len());
                     fragment.frs_to_idx[p_frs_usize] = new_idx;
                     fragment.records.push(crate::index::FileRecord::new(p_frs));
                 }
@@ -496,8 +493,8 @@ pub fn parse_record_to_fragment(
             };
 
             // Add child entry
-            let child_idx = fragment.children.len() as u32;
-            let parent = &mut fragment.records[parent_idx as usize];
+            let child_idx = len_to_u32(fragment.children.len());
+            let parent = &mut fragment.records[u32_as_usize(parent_idx)];
             let old_first_child = parent.first_child;
             parent.first_child = child_idx;
 
@@ -523,10 +520,6 @@ pub fn parse_record_to_fragment(
 
 /// Handle a base record that has no `$FILE_NAME` attribute (name comes from
 /// an extension record). Stores stdinfo and ADS streams so they are not lost.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "NTFS field sizes are bounded by u16/u32 record layout"
-)]
 fn store_nameless_record(
     fragment: &mut crate::index::MftIndexFragment,
     frs: u64,
@@ -545,12 +538,12 @@ fn store_nameless_record(
         let extension_id = fragment.intern_extension(&stream_name);
         let stream_name_ref = IndexNameRef::new(
             stream_name_offset,
-            stream_name_len as u16,
+            len_to_u16(stream_name_len),
             stream_is_ascii,
             extension_id,
         );
 
-        let stream_idx = fragment.streams.len() as u32;
+        let stream_idx = len_to_u32(fragment.streams.len());
         fragment.streams.push(IndexStreamInfo {
             size: SizeInfo {
                 length: stream_size,
@@ -575,12 +568,12 @@ fn store_nameless_record(
     // Chain ADS streams to first_stream
     if !stream_indices.is_empty() {
         for i in 0..stream_indices.len().saturating_sub(1) {
-            let current_idx = stream_indices[i] as usize;
+            let current_idx = u32_as_usize(stream_indices[i]);
             let next_idx = stream_indices[i + 1];
             fragment.streams[current_idx].next_entry = next_idx;
         }
         let record = fragment.get_or_create(frs);
         record.first_stream.next_entry = stream_indices[0];
-        record.stream_count = 1 + additional_stream_count as u16;
+        record.stream_count = 1 + len_to_u16(additional_stream_count);
     }
 }

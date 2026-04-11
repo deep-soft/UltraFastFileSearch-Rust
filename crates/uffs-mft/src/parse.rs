@@ -23,14 +23,7 @@
     clippy::indexing_slicing,
     reason = "NTFS parser hot path; bounds manually verified before all index access"
 )]
-#![expect(
-    clippy::cast_sign_loss,
-    reason = "NTFS uses signed fields; we validate non-negative before cast"
-)]
-#![expect(
-    clippy::cast_lossless,
-    reason = "explicit casts for clarity in NTFS struct parsing"
-)]
+
 #![expect(
     clippy::min_ident_chars,
     reason = "'s' for stream is idiomatic in closures"

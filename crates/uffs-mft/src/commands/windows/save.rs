@@ -142,19 +142,13 @@ pub async fn cmd_save(
             format_bytes(header.compressed_size)
         );
         #[expect(
-            clippy::cast_precision_loss,
-            reason = "precision loss acceptable for display percentages"
-        )]
-        #[expect(
             clippy::float_arithmetic,
             reason = "floating-point needed for compression ratio calculation"
         )]
-        let ratio = header.compressed_size as f64 / header.original_size as f64 * 100.0_f64;
+        let ratio = uffs_mft::u64_to_f64(header.compressed_size)
+            / uffs_mft::u64_to_f64(header.original_size)
+            * 100.0_f64;
         println!("  Compression ratio:    {ratio:.1}%");
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "precision loss acceptable for display percentages"
-        )]
         #[expect(
             clippy::float_arithmetic,
             reason = "floating-point needed for savings calculation"

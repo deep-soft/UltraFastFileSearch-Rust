@@ -5,6 +5,7 @@ use zerocopy::FromBytes;
 use super::super::{
     ExtensionAttributes, ParseResult, parse_data_attribute_full, parse_file_name_full,
 };
+use crate::index::nonneg_to_u64;
 use crate::ntfs::{
     AttributeRecordHeader, AttributeType, FileRecordSegmentHeader, NameInfo, StreamInfo,
 };
@@ -71,11 +72,11 @@ pub(super) fn parse_extension_record(
             Some(AttributeType::ReparsePoint) => {
                 // Parse $REPARSE_POINT - same logic as base record parsing
                 let (rp_size, rp_allocated, is_resident) = if attr_header.is_non_resident == 0 {
-                    let value_length = u32::from_le_bytes(
+                    let value_length = u64::from(u32::from_le_bytes(
                         data.get(offset + 16..offset + 20)
                             .and_then(|b| b.try_into().ok())
                             .unwrap_or([0, 0, 0, 0]),
-                    ) as u64;
+                    ));
                     (value_length, 0_u64, true)
                 } else {
                     let nr_offset = offset + 16;
@@ -90,7 +91,7 @@ pub(super) fn parse_extension_record(
                                 .try_into()
                                 .unwrap_or([0; 8]),
                         );
-                        (ds.max(0) as u64, alloc.max(0) as u64)
+                        (nonneg_to_u64(ds), nonneg_to_u64(alloc))
                     } else {
                         (0_u64, 0_u64)
                     };
@@ -110,8 +111,8 @@ pub(super) fn parse_extension_record(
             ) => {
                 // Handle $I30 directory index attributes
                 let (is_i30, attr_name) = if attr_header.name_length > 0 {
-                    let name_offset = offset + attr_header.name_offset as usize;
-                    let name_len = attr_header.name_length as usize;
+                    let name_offset = offset + usize::from(attr_header.name_offset);
+                    let name_len = usize::from(attr_header.name_length);
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let is_i30 =
@@ -148,11 +149,11 @@ pub(super) fn parse_extension_record(
                         // Accumulate $I30 sizes for directory
                         // Only $INDEX_ROOT and $INDEX_ALLOCATION contribute to directory size
                         if attr_header.is_non_resident == 0 {
-                            let value_length = u32::from_le_bytes(
+                            let value_length = u64::from(u32::from_le_bytes(
                                 data.get(offset + 16..offset + 20)
                                     .and_then(|b| b.try_into().ok())
                                     .unwrap_or([0; 4]),
-                            ) as u64;
+                            ));
                             dir_index_size += value_length;
                         } else {
                             let nr_offset = offset + 16;
@@ -167,19 +168,19 @@ pub(super) fn parse_extension_record(
                                         .try_into()
                                         .unwrap_or([0; 8]),
                                 );
-                                dir_index_size += data_size.max(0) as u64;
-                                dir_index_allocated += allocated.max(0) as u64;
+                                dir_index_size += nonneg_to_u64(data_size);
+                                dir_index_allocated += nonneg_to_u64(allocated);
                             }
                         }
                     }
                 } else {
                     // Non-$I30 index - add as stream
                     let (size, allocated_size, is_resident) = if attr_header.is_non_resident == 0 {
-                        let value_length = u32::from_le_bytes(
+                        let value_length = u64::from(u32::from_le_bytes(
                             data.get(offset + 16..offset + 20)
                                 .and_then(|b| b.try_into().ok())
                                 .unwrap_or([0; 4]),
-                        ) as u64;
+                        ));
                         (value_length, 0_u64, true)
                     } else {
                         let nr_offset = offset + 16;
@@ -194,7 +195,7 @@ pub(super) fn parse_extension_record(
                                     .try_into()
                                     .unwrap_or([0; 8]),
                             );
-                            (data_size.max(0) as u64, allocated.max(0) as u64, false)
+                            (nonneg_to_u64(data_size), nonneg_to_u64(allocated), false)
                         } else {
                             (0_u64, 0_u64, false)
                         }
@@ -236,8 +237,8 @@ pub(super) fn parse_extension_record(
                 // Note: AttributeList (0x20) IS counted as a stream in C++ via the default:
                 // case
                 let attr_name = if attr_header.name_length > 0 {
-                    let name_offset = offset + attr_header.name_offset as usize;
-                    let name_len = attr_header.name_length as usize;
+                    let name_offset = offset + usize::from(attr_header.name_offset);
+                    let name_len = usize::from(attr_header.name_length);
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: smallvec::SmallVec<[u16; 64]> = name_bytes
@@ -255,11 +256,11 @@ pub(super) fn parse_extension_record(
                 };
 
                 let (size, allocated_size, is_resident) = if attr_header.is_non_resident == 0 {
-                    let value_length = u32::from_le_bytes(
+                    let value_length = u64::from(u32::from_le_bytes(
                         data.get(offset + 16..offset + 20)
                             .and_then(|b| b.try_into().ok())
                             .unwrap_or([0; 4]),
-                    ) as u64;
+                    ));
                     (value_length, 0_u64, true)
                 } else {
                     let nr_offset = offset + 16;
@@ -274,7 +275,7 @@ pub(super) fn parse_extension_record(
                                 .try_into()
                                 .unwrap_or([0; 8]),
                         );
-                        (data_size.max(0) as u64, allocated.max(0) as u64, false)
+                        (nonneg_to_u64(data_size), nonneg_to_u64(allocated), false)
                     } else {
                         (0_u64, 0_u64, false)
                     }
@@ -316,8 +317,8 @@ pub(super) fn parse_extension_record(
                 // C++ counts ALL attribute types as streams via default: case
                 let type_code = attr_header.type_code;
                 let attr_name = if attr_header.name_length > 0 {
-                    let name_offset = offset + attr_header.name_offset as usize;
-                    let name_len = attr_header.name_length as usize;
+                    let name_offset = offset + usize::from(attr_header.name_offset);
+                    let name_len = usize::from(attr_header.name_length);
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: smallvec::SmallVec<[u16; 64]> = name_bytes
@@ -334,11 +335,11 @@ pub(super) fn parse_extension_record(
                     String::new()
                 };
                 let (size, allocated_size, is_resident) = if attr_header.is_non_resident == 0 {
-                    let value_length = u32::from_le_bytes(
+                    let value_length = u64::from(u32::from_le_bytes(
                         data.get(offset + 16..offset + 20)
                             .and_then(|b| b.try_into().ok())
                             .unwrap_or([0; 4]),
-                    ) as u64;
+                    ));
                     (value_length, 0_u64, true)
                 } else {
                     let nr_offset = offset + 16;
@@ -353,7 +354,7 @@ pub(super) fn parse_extension_record(
                                 .try_into()
                                 .unwrap_or([0; 8]),
                         );
-                        (data_size.max(0) as u64, allocated.max(0) as u64, false)
+                        (nonneg_to_u64(data_size), nonneg_to_u64(allocated), false)
                     } else {
                         (0_u64, 0_u64, false)
                     }

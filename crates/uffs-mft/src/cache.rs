@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::time::SystemTime;
 
-use crate::index::{IndexHeader, MftIndex};
+use crate::index::{IndexHeader, MftIndex, usize_to_f64};
 
 /// Cached `DataFrame` load/build (Windows-only). Split out for file-size
 /// policy.
@@ -365,8 +365,7 @@ pub fn save_to_cache_background(
     let serialized = index.serialize(volume_serial, usn_journal_id, next_usn);
     let ser_ms = t_ser.elapsed().as_millis();
     if profile {
-        #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
-        let mb = serialized.len() as f64 / (1024.0 * 1024.0);
+        let mb = usize_to_f64(serialized.len()) / (1024.0 * 1024.0);
         tracing::debug!(
             target: "cache_profile",
             ser_ms = %ser_ms,
@@ -564,11 +563,8 @@ pub fn compress_zstd_mt(data: &[u8], level: i32) -> std::io::Result<Vec<u8>> {
     let mut encoder = zstd::Encoder::new(Vec::new(), level)?;
     // Use available parallelism, capped at 8 to avoid overhead on high-core
     // machines.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "capped at 8, always fits in u32"
-    )]
-    let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8)) as u32;
+    let workers_usize = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let workers = u32::try_from(workers_usize).unwrap_or(8);
     // Best-effort: if multithread fails, we still compress single-threaded.
     let _ = encoder.multithread(workers);
     std::io::Write::write_all(&mut encoder, data)?;
@@ -615,10 +611,8 @@ pub fn compress_encrypt_write(
     let write_ms = t_write.elapsed().as_millis();
 
     if profile {
-        #[expect(clippy::cast_precision_loss, reason = "display-only MB values")]
-        let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
-        #[expect(clippy::cast_precision_loss, reason = "display-only ratio")]
-        let ratio = uncompressed_len as f64 / compressed_len as f64;
+        let mb = |b: usize| usize_to_f64(b) / (1024.0 * 1024.0);
+        let ratio = usize_to_f64(uncompressed_len) / usize_to_f64(compressed_len);
         let total_ms = t_total.elapsed().as_millis();
         tracing::debug!(
             target: "cache_profile",

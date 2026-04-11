@@ -500,12 +500,11 @@ fn merge_adjacent_chunks(
 ///
 /// Returns `0.0` when `total == 0`. Precision loss from `u64→f64` is
 /// irrelevant for human-readable percentage display.
-#[allow(clippy::cast_precision_loss)] // Display-only: sub-ulp precision is irrelevant for %.
 fn percentage_f64(part: u64, total: u64) -> f64 {
     if total == 0 {
         0.0
     } else {
-        (part as f64 / total as f64) * 100.0
+        (crate::index::u64_to_f64(part) / crate::index::u64_to_f64(total)) * 100.0
     }
 }
 

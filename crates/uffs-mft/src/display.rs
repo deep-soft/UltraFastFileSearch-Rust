@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use uffs_mft::u64_to_f64;
+
 /// Formats a duration intelligently based on magnitude.
 ///
 /// Output format varies by duration:
@@ -49,27 +51,21 @@ pub fn format_duration(duration: core::time::Duration) -> String {
 /// - < 1 TB: `123.45 GB`
 /// - >= 1 TB: `123.45 TB`
 #[expect(
-    clippy::cast_precision_loss,
-    reason = "precision loss acceptable for display"
-)]
-#[expect(
     clippy::float_arithmetic,
     reason = "floating-point arithmetic required for human-readable byte formatting"
 )]
 pub fn format_bytes(bytes: u64) -> String {
+    let b = u64_to_f64(bytes);
     if bytes < 1024 {
         format!("{bytes:>4} B")
     } else if bytes < 1024 * 1024 {
-        format!("{:>7.2} KB", bytes as f64 / 1024.0)
+        format!("{:>7.2} KB", b / 1024.0)
     } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:>7.2} MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:>7.2} MB", b / (1024.0 * 1024.0))
     } else if bytes < 1024 * 1024 * 1024 * 1024 {
-        format!("{:>7.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        format!("{:>7.2} GB", b / (1024.0 * 1024.0 * 1024.0))
     } else {
-        format!(
-            "{:>7.2} TB",
-            bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
-        )
+        format!("{:>7.2} TB", b / (1024.0 * 1024.0 * 1024.0 * 1024.0))
     }
 }
 

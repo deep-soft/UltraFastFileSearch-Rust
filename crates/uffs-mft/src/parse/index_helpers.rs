@@ -3,11 +3,7 @@
 //! These helpers reduce code duplication in the main parser while maintaining
 //! performance through inlining.
 
-// These are NTFS index helpers - casts are intentional and bounds-checked.
-#![expect(
-    clippy::cast_possible_truncation,
-    reason = "NTFS index sizes fit in u32; bounds verified before use"
-)]
+
 #![expect(
     clippy::if_not_else,
     reason = "!= NO_ENTRY is clearer for sentinel value checks"
@@ -15,7 +11,7 @@
 
 use crate::index::{
     ChildInfo, IndexNameRef, IndexStreamInfo, InternalStreamInfo, LinkInfo, MftIndex, NO_ENTRY,
-    SizeInfo,
+    SizeInfo, frs_to_usize, len_to_u16, len_to_u32, u32_as_usize,
 };
 
 /// Adds a stream to the index and returns its index.
@@ -32,12 +28,12 @@ pub fn add_stream_to_index(
     let extension_id = index.intern_extension(stream_name);
     let stream_name_ref = IndexNameRef::new(
         stream_name_offset,
-        stream_name_len as u16,
+        len_to_u16(stream_name_len),
         stream_is_ascii,
         extension_id,
     );
 
-    let stream_idx = index.streams.len() as u32;
+    let stream_idx = len_to_u32(index.streams.len());
     index.streams.push(IndexStreamInfo {
         size: SizeInfo {
             length: stream_size,
@@ -76,7 +72,7 @@ where
     for (ist_size, ist_allocated) in streams {
         size_total = size_total.saturating_add(ist_size);
         alloc_total = alloc_total.saturating_add(ist_allocated);
-        let new_idx = index.internal_streams.len() as u32;
+        let new_idx = len_to_u32(index.internal_streams.len());
         index.internal_streams.push(InternalStreamInfo {
             size: SizeInfo {
                 length: ist_size,
@@ -88,7 +84,7 @@ where
         if last == NO_ENTRY {
             first = new_idx;
         } else {
-            index.internal_streams[last as usize].next_entry = new_idx;
+            index.internal_streams[u32_as_usize(last)].next_entry = new_idx;
         }
         last = new_idx;
     }
@@ -104,7 +100,7 @@ where
 #[inline]
 pub fn chain_streams(index: &mut MftIndex, stream_indices: &[u32]) {
     for i in 0..stream_indices.len().saturating_sub(1) {
-        let current_idx = stream_indices[i] as usize;
+        let current_idx = u32_as_usize(stream_indices[i]);
         let next_idx = stream_indices[i + 1];
         index.streams[current_idx].next_entry = next_idx;
     }
@@ -114,7 +110,7 @@ pub fn chain_streams(index: &mut MftIndex, stream_indices: &[u32]) {
 #[inline]
 pub fn chain_links(index: &mut MftIndex, link_indices: &[u32]) {
     for i in 0..link_indices.len().saturating_sub(1) {
-        let current_idx = link_indices[i] as usize;
+        let current_idx = u32_as_usize(link_indices[i]);
         let next_idx = link_indices[i + 1];
         index.links[current_idx].next_entry = next_idx;
     }
@@ -128,9 +124,9 @@ pub fn add_link_to_index(index: &mut MftIndex, link_name: &str, link_parent: u64
     let link_is_ascii = link_name.is_ascii();
     let extension_id = index.intern_extension(link_name);
     let link_name_ref =
-        IndexNameRef::new(link_offset, link_len as u16, link_is_ascii, extension_id);
+        IndexNameRef::new(link_offset, len_to_u16(link_len), link_is_ascii, extension_id);
 
-    let link_idx = index.links.len() as u32;
+    let link_idx = len_to_u32(index.links.len());
     index.links.push(LinkInfo {
         next_entry: NO_ENTRY,
         name: link_name_ref,
@@ -149,12 +145,12 @@ pub fn add_child_entry(index: &mut MftIndex, parent_frs: u64, child_frs: u64, na
 
     // Ensure parent exists
     let parent_idx = {
-        let p_frs_usize = parent_frs as usize;
+        let p_frs_usize = frs_to_usize(parent_frs);
         if p_frs_usize >= index.frs_to_idx.len() {
             index.frs_to_idx.resize(p_frs_usize + 1, NO_ENTRY);
         }
         if index.frs_to_idx[p_frs_usize] == NO_ENTRY {
-            let new_idx = index.records.len() as u32;
+            let new_idx = len_to_u32(index.records.len());
             index.frs_to_idx[p_frs_usize] = new_idx;
             index
                 .records
@@ -164,8 +160,8 @@ pub fn add_child_entry(index: &mut MftIndex, parent_frs: u64, child_frs: u64, na
     };
 
     // Add child entry
-    let child_idx = index.children.len() as u32;
-    let parent = &mut index.records[parent_idx as usize];
+    let child_idx = len_to_u32(index.children.len());
+    let parent = &mut index.records[u32_as_usize(parent_idx)];
     let old_first_child = parent.first_child;
     parent.first_child = child_idx;
 
@@ -216,7 +212,7 @@ pub fn merge_extension_streams(
     if ext.stream_count > 0 {
         let tail = base_stream_tail.unwrap_or(NO_ENTRY);
         if tail != NO_ENTRY {
-            index.streams[tail as usize].next_entry = ext.stream_head;
+            index.streams[u32_as_usize(tail)].next_entry = ext.stream_head;
         } else {
             let record = index.get_or_create(frs);
             record.first_stream.next_entry = ext.stream_head;
@@ -230,10 +226,10 @@ pub fn merge_extension_streams(
     if ext.internal_head != NO_ENTRY {
         if first_internal != NO_ENTRY {
             let mut tail = first_internal;
-            while index.internal_streams[tail as usize].next_entry != NO_ENTRY {
-                tail = index.internal_streams[tail as usize].next_entry;
+            while index.internal_streams[u32_as_usize(tail)].next_entry != NO_ENTRY {
+                tail = index.internal_streams[u32_as_usize(tail)].next_entry;
             }
-            index.internal_streams[tail as usize].next_entry = ext.internal_head;
+            index.internal_streams[u32_as_usize(tail)].next_entry = ext.internal_head;
         } else {
             let record = index.get_or_create(frs);
             record.first_internal_stream = ext.internal_head;
@@ -256,7 +252,7 @@ pub fn merge_extension_names(
     if ext.name_count > 0 {
         let tail = base_name_tail.unwrap_or(NO_ENTRY);
         if tail != NO_ENTRY {
-            index.links[tail as usize].next_entry = ext.name_next;
+            index.links[u32_as_usize(tail)].next_entry = ext.name_next;
         } else {
             let record = index.get_or_create(frs);
             record.first_name.next_entry = ext.name_next;

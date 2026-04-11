@@ -31,13 +31,8 @@ impl DataRun {
 
     /// Returns the byte offset of this run on the volume.
     #[must_use]
-    #[expect(clippy::cast_sign_loss, reason = "lcn is checked positive before cast")]
     pub fn byte_offset(&self, bytes_per_cluster: u32) -> u64 {
-        if self.lcn <= 0 {
-            0
-        } else {
-            self.lcn as u64 * u64::from(bytes_per_cluster)
-        }
+        crate::index::nonneg_to_u64(self.lcn) * u64::from(bytes_per_cluster)
     }
 
     /// Returns the size of this run in bytes.
@@ -88,12 +83,8 @@ pub fn parse_data_runs(data: &[u8], lowest_vcn: i64) -> Vec<DataRun> {
             lcn: if offset_size > 0 { current_lcn } else { 0 },
         });
 
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "cluster counts are small enough to fit in i64"
-        )]
-        {
-            current_vcn += run_length as i64;
+        if let Ok(len_i64) = i64::try_from(run_length) {
+            current_vcn += len_i64;
         }
     }
 

@@ -530,7 +530,6 @@ impl ParallelMftReader {
 ///
 /// Precision loss from `u64→f64` is irrelevant for nanosecond counters
 /// (sub-nanosecond precision is meaningless for wall-clock measurements).
-#[allow(clippy::cast_precision_loss)] // Timing ratio — sub-ns precision is irrelevant.
 fn ratio_f64(numerator: u64, denominator: u64) -> f64 {
-    numerator as f64 / denominator as f64
+    crate::index::u64_to_f64(numerator) / crate::index::u64_to_f64(denominator)
 }

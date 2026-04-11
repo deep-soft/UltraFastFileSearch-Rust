@@ -6,7 +6,10 @@ use core::mem::size_of;
 use smallvec::SmallVec;
 use zerocopy::FromBytes;
 
-use crate::index::{ChildInfo, IndexNameRef, IndexStreamInfo, LinkInfo, NO_ENTRY, SizeInfo};
+use crate::index::{
+    ChildInfo, IndexNameRef, IndexStreamInfo, LinkInfo, NO_ENTRY, SizeInfo, frs_to_usize,
+    len_to_u16, len_to_u32, u32_as_usize,
+};
 use crate::ntfs::{
     AttributeRecordHeader, AttributeType, FileNameAttribute, FileRecordSegmentHeader,
 };
@@ -44,8 +47,8 @@ pub(super) fn parse_extension_to_fragment(
     };
 
     // Parse attributes to find $FILE_NAME and $DATA
-    let mut offset = header.first_attribute_offset as usize;
-    let max_offset = core::cmp::min(header.bytes_in_use as usize, data.len());
+    let mut offset = usize::from(header.first_attribute_offset);
+    let max_offset = core::cmp::min(u32_as_usize(header.bytes_in_use), data.len());
 
     // Collect names and streams from extension record
     let mut names: SmallVec<[(String, u64); 4]> = SmallVec::new();
@@ -56,11 +59,11 @@ pub(super) fn parse_extension_to_fragment(
             break;
         };
 
-        if attr_header.type_code == AttributeType::End as u32 {
+        if attr_header.type_code == AttributeType::END_MARKER {
             break;
         }
 
-        if attr_header.length == 0 || offset + attr_header.length as usize > max_offset {
+        if attr_header.length == 0 || offset + u32_as_usize(attr_header.length) > max_offset {
             break;
         }
 
@@ -77,7 +80,7 @@ pub(super) fn parse_extension_to_fragment(
                     };
 
                     if fn_attr.file_name_namespace != 2 {
-                        let name_len = fn_attr.file_name_length as usize;
+                        let name_len = usize::from(fn_attr.file_name_length);
                         let name_start = fn_offset + size_of::<FileNameAttribute>();
                         if name_start + name_len * 2 <= data.len() {
                             let name_bytes = &data[name_start..name_start + name_len * 2];
@@ -112,11 +115,11 @@ pub(super) fn parse_extension_to_fragment(
 
                 if !is_primary {
                     // Skip continuation extents - they don't count as new streams
-                    offset += attr_header.length as usize;
+                    offset += u32_as_usize(attr_header.length);
                     continue;
                 }
 
-                let name_len = attr_header.name_length as usize;
+                let name_len = usize::from(attr_header.name_length);
                 if name_len > 0 {
                     let (size, allocated) = if attr_header.is_non_resident != 0 {
                         let nr_offset = offset + 16;
@@ -152,7 +155,7 @@ pub(super) fn parse_extension_to_fragment(
                         }
                     };
 
-                    let name_offset = offset + attr_header.name_offset as usize;
+                    let name_offset = offset + usize::from(attr_header.name_offset);
                     if name_offset + name_len * 2 <= data.len() {
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: SmallVec<[u16; 64]> = name_bytes
@@ -170,7 +173,7 @@ pub(super) fn parse_extension_to_fragment(
             _ => {}
         }
 
-        offset += attr_header.length as usize;
+        offset += u32_as_usize(attr_header.length);
     }
 
     if names.is_empty() && streams.is_empty() {
@@ -186,10 +189,6 @@ pub(super) fn parse_extension_to_fragment(
 /// the extension record.  Handles link/stream interning, chain threading,
 /// parent-child relationships, and the edge case where the primary
 /// `$FILE_NAME` lives only in an extension record.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "NTFS field sizes are bounded by u16/u32 record layout"
-)]
 fn merge_extension_into_fragment(
     fragment: &mut crate::index::MftIndexFragment,
     base_frs: u64,
@@ -199,14 +198,14 @@ fn merge_extension_into_fragment(
     // Add names to the fragment
     let mut link_indices: Vec<u32> = Vec::with_capacity(names.len());
     for (name, parent_frs) in names {
-        let name_offset = fragment.names.len() as u32;
+        let name_offset = len_to_u32(fragment.names.len());
         fragment.names.push_str(name);
         let name_len = name.len();
         let is_ascii = name.is_ascii();
         let extension_id = fragment.intern_extension(name);
-        let name_ref = IndexNameRef::new(name_offset, name_len as u16, is_ascii, extension_id);
+        let name_ref = IndexNameRef::new(name_offset, len_to_u16(name_len), is_ascii, extension_id);
 
-        let link_idx = fragment.links.len() as u32;
+        let link_idx = len_to_u32(fragment.links.len());
         fragment.links.push(LinkInfo {
             next_entry: NO_ENTRY,
             name: name_ref,
@@ -219,14 +218,14 @@ fn merge_extension_into_fragment(
     // Add streams to the fragment
     let mut stream_indices: Vec<u32> = Vec::with_capacity(streams.len());
     for (stream_name, size, allocated) in streams {
-        let name_offset = fragment.names.len() as u32;
+        let name_offset = len_to_u32(fragment.names.len());
         fragment.names.push_str(stream_name);
         let name_len = stream_name.len();
         let is_ascii = stream_name.is_ascii();
         let extension_id = fragment.intern_extension(stream_name);
-        let name_ref = IndexNameRef::new(name_offset, name_len as u16, is_ascii, extension_id);
+        let name_ref = IndexNameRef::new(name_offset, len_to_u16(name_len), is_ascii, extension_id);
 
-        let stream_idx = fragment.streams.len() as u32;
+        let stream_idx = len_to_u32(fragment.streams.len());
         fragment.streams.push(IndexStreamInfo {
             size: SizeInfo {
                 length: *size,
@@ -249,10 +248,10 @@ fn merge_extension_into_fragment(
 
     // Chain new links together first (before getting record reference)
     for i in 0..link_indices.len().saturating_sub(1) {
-        fragment.links[link_indices[i] as usize].next_entry = link_indices[i + 1];
+        fragment.links[u32_as_usize(link_indices[i])].next_entry = link_indices[i + 1];
     }
     for i in 0..stream_indices.len().saturating_sub(1) {
-        fragment.streams[stream_indices[i] as usize].next_entry = stream_indices[i + 1];
+        fragment.streams[u32_as_usize(stream_indices[i])].next_entry = stream_indices[i + 1];
     }
 
     // Get the first_name.next_entry, first_stream.next_entry, and first_name
@@ -278,14 +277,14 @@ fn merge_extension_into_fragment(
     // Attach new streams
     if !stream_indices.is_empty() {
         if let Some(end_idx) = stream_chain_end {
-            fragment.streams[end_idx as usize].next_entry = stream_indices[0];
+            fragment.streams[u32_as_usize(end_idx)].next_entry = stream_indices[0];
         } else {
             let record = fragment.get_or_create(base_frs);
             record.first_stream.next_entry = stream_indices[0];
         }
         let record = fragment.get_or_create(base_frs);
-        record.stream_count += stream_indices.len() as u16;
-        record.total_stream_count += stream_indices.len() as u16;
+        record.stream_count += len_to_u16(stream_indices.len());
+        record.total_stream_count += len_to_u16(stream_indices.len());
     }
 
     // Build parent-child relationships
@@ -300,17 +299,13 @@ fn find_chain_end(start: u32, get_next: impl Fn(usize) -> u32) -> Option<u32> {
         return None;
     }
     let mut idx = start;
-    while get_next(idx as usize) != NO_ENTRY {
-        idx = get_next(idx as usize);
+    while get_next(u32_as_usize(idx)) != NO_ENTRY {
+        idx = get_next(u32_as_usize(idx));
     }
     Some(idx)
 }
 
 /// Attach extension-record link indices to the base record.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "NTFS field sizes are bounded by u16/u32 record layout"
-)]
 fn attach_links(
     fragment: &mut crate::index::MftIndexFragment,
     base_frs: u64,
@@ -326,18 +321,18 @@ fn attach_links(
         // Base record already has a name — chain extension names as additional hard
         // links
         if let Some(end_idx) = link_chain_end {
-            fragment.links[end_idx as usize].next_entry = link_indices[0];
+            fragment.links[u32_as_usize(end_idx)].next_entry = link_indices[0];
         } else {
             let record = fragment.get_or_create(base_frs);
             record.first_name.next_entry = link_indices[0];
         }
         let record = fragment.get_or_create(base_frs);
-        record.name_count += link_indices.len() as u16;
+        record.name_count += len_to_u16(link_indices.len());
     } else {
         // Copy the first extension name directly into first_name
         // This matches established behavior (ntfs_index.hpp lines 559-567)
-        let first_link_name = fragment.links[link_indices[0] as usize].name;
-        let first_link_parent = fragment.links[link_indices[0] as usize].parent_frs;
+        let first_link_name = fragment.links[u32_as_usize(link_indices[0])].name;
+        let first_link_parent = fragment.links[u32_as_usize(link_indices[0])].parent_frs;
         let record = fragment.get_or_create(base_frs);
         record.first_name.name = first_link_name;
         record.first_name.parent_frs = first_link_parent;
@@ -346,16 +341,12 @@ fn attach_links(
         if link_indices.len() > 1 {
             let record = fragment.get_or_create(base_frs);
             record.first_name.next_entry = link_indices[1];
-            record.name_count += (link_indices.len() - 1) as u16;
+            record.name_count += len_to_u16(link_indices.len().saturating_sub(1));
         }
     }
 }
 
 /// Build parent→child entries for names added from extension records.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "NTFS field sizes are bounded by u16/u32 record layout"
-)]
 fn build_parent_child_entries(
     fragment: &mut crate::index::MftIndexFragment,
     base_frs: u64,
@@ -372,12 +363,12 @@ fn build_parent_child_entries(
 
         // Ensure parent exists in fragment
         let parent_idx = {
-            let p_frs_usize = p_frs as usize;
+            let p_frs_usize = frs_to_usize(p_frs);
             if p_frs_usize >= fragment.frs_to_idx.len() {
                 fragment.frs_to_idx.resize(p_frs_usize + 1, NO_ENTRY);
             }
             if fragment.frs_to_idx[p_frs_usize] == NO_ENTRY {
-                let new_idx = fragment.records.len() as u32;
+                let new_idx = len_to_u32(fragment.records.len());
                 fragment.frs_to_idx[p_frs_usize] = new_idx;
                 fragment.records.push(crate::index::FileRecord::new(p_frs));
             }
@@ -385,13 +376,13 @@ fn build_parent_child_entries(
         };
 
         let effective_name_idx = if existing_name_count == 0 {
-            name_idx as u16
+            len_to_u16(name_idx)
         } else {
-            existing_name_count - 1 + name_idx as u16
+            existing_name_count - 1 + len_to_u16(name_idx)
         };
 
-        let child_idx = fragment.children.len() as u32;
-        let parent = &mut fragment.records[parent_idx as usize];
+        let child_idx = len_to_u32(fragment.children.len());
+        let parent = &mut fragment.records[u32_as_usize(parent_idx)];
         let old_first_child = parent.first_child;
         parent.first_child = child_idx;
 

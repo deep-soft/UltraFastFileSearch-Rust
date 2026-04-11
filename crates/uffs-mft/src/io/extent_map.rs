@@ -209,11 +209,8 @@ impl MftExtentMap {
 }
 
 /// Convert bytes to megabytes as `f64` for human-readable display.
-///
-/// Precision loss from `u64→f64` is irrelevant for display (sub-byte).
-#[allow(clippy::cast_precision_loss)] // Display-only: sub-ulp precision is irrelevant for MB.
 fn bytes_to_mb(bytes: u64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0)
+    crate::index::bytes_to_mb_f64(bytes)
 }
 
 #[cfg(test)]

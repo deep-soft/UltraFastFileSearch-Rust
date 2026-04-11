@@ -586,17 +586,14 @@ pub struct SystemMemory {
 impl SystemMemory {
     /// Fraction of RAM currently available (0.0 – 1.0).
     #[must_use]
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "acceptable for percentage display"
-    )]
     pub fn available_fraction(&self) -> f64 {
         if self.total_bytes == 0 {
             return 0.0;
         }
         #[expect(clippy::float_arithmetic, reason = "division for ratio")]
         {
-            self.available_bytes as f64 / self.total_bytes as f64
+            crate::index::u64_to_f64(self.available_bytes)
+                / crate::index::u64_to_f64(self.total_bytes)
         }
     }
 }
