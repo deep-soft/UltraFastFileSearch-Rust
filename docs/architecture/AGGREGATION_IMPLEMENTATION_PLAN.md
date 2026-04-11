@@ -183,8 +183,8 @@ The first shippable feature: `--count`, `--aggregate overview`, `--facet`,
 
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
-| S1F.1 | Register `uffs.aggregate` tool in MCP `tools/list` with schemas. | `uffs-mcp/src/main.rs` | §14.2, App B | S1C.* | ✅ `uffs_aggregate` registered with inputSchema (preset, aggregations, pattern, drives) |
-| S1F.2 | Implement `uffs.aggregate` dispatch: MCP params → `SearchParams` → daemon → format. | `uffs-mcp/src/main.rs` | §14.2 | S1F.1, S1D.* | ✅ `tool_aggregate()` builds SearchParams, sets include_rows=false |
+| S1F.1 | Register `uffs_aggregate` tool in MCP `tools/list` with schemas. | `uffs-mcp/src/main.rs` | §14.2, App B | S1C.* | ✅ `uffs_aggregate` registered with inputSchema (preset, aggregations, pattern, drives) |
+| S1F.2 | Implement `uffs_aggregate` dispatch: MCP params → `SearchParams` → daemon → format. | `uffs-mcp/src/main.rs` | §14.2 | S1F.1, S1D.* | ✅ `tool_aggregate()` builds SearchParams, sets include_rows=false |
 | S1F.3 | Return `structuredContent` + compact human-readable text. | `uffs-mcp/src/main.rs` | §14.3 | S1F.2 | ✅ Returns human-readable summary (bullet list) + JSON code block for both `tool_aggregate` and `tool_facet_values` |
 | S1F.4 | MCP schema validation test. | tests | §26.3 A210 | S1F.3 | ✅ 10 tests: summary formatting (count/stats/buckets/missing/distinct/empty/mixed/truncation) + schema validation (aggregate + facet_values) |
 
@@ -340,7 +340,7 @@ uffs-core BucketRow                         uffs-daemon                      Buc
      → windows/system32/ntoskrnl.exe (12.1 MB) modified:2025-12-01
    ```
 
-6. **MCP**: drill-down predicates are included in the JSON code-block response automatically (serde serialization).  An LLM consumer can read them and construct a follow-up `uffs.search` call scoped to the bucket.
+6. **MCP**: drill-down predicates are included in the JSON code-block response automatically (serde serialization).  An LLM consumer can read them and construct a follow-up `uffs_search` call scoped to the bucket.
 
 ---
 
@@ -356,11 +356,11 @@ uffs-core BucketRow                         uffs-daemon                      Buc
 | S3A.4 | Wire cursor param through `SearchParams` → engine → response. | `protocol.rs` | §19.3 | S3A.2 | ✅ `agg_cursor`/`agg_page_size` on `SearchParams`, `next_cursor` on `AggregateResultWire`, daemon applies `paginate_result()`, CLI/MCP display cursor. **⚠️ Stateless**: each page re-runs the full aggregation and slices; see S3A.5. |
 | S3A.5 | Stateful cursor: cache full aggregation result on first request, serve subsequent pages from cache. | `index/aggregation.rs`, `AggregateCache` | §19.3 | S3A.4 | ⬜ **Deferred** — current stateless approach re-queries every page (O(N) per page). For 100K buckets with page_size=100 this means 1000 full MFT scans. A server-side result cache would amortise this, but the daemon already uses 7–16 GB; adding cached aggregation results needs careful memory budgeting. |
 
-### 3B  `uffs.facet_values` MCP tool
+### 3B  `uffs_facet_values` MCP tool
 
 | ID | Task | File(s) | Section | Depends | Status |
 |----|------|---------|---------|---------|--------|
-| S3B.1 | Register `uffs.facet_values` tool in MCP `tools/list`. | `uffs-mcp/src/main.rs` | §14.2, App B | S1F.1 | ✅ `uffs_facet_values` registered with field/pattern/prefix/top params |
+| S3B.1 | Register `uffs_facet_values` tool in MCP `tools/list`. | `uffs-mcp/src/main.rs` | §14.2, App B | S1F.1 | ✅ `uffs_facet_values` registered with field/pattern/prefix/top params |
 | S3B.2 | Implement facet-value search: field + prefix → matching values with counts. | daemon + core | §14.2 | S3B.1, S1A.6 | ✅ MCP handler sends `"terms"` wire kind → daemon converts to `Terms` spec → functional end-to-end. No prefix filtering yet (returns top-N by count). |
 | S3B.3 | Support cursor for large value spaces. | daemon + core | §14.2 | S3A.1, S3B.2 | ✅ `uffs_facet_values` MCP tool accepts `cursor`/`page_size` params, wired through `SearchParams.agg_cursor`/`agg_page_size` → daemon pagination → `next_cursor` in response. ⚠️ Stateless re-query (see S3A.5). |
 
@@ -685,7 +685,7 @@ Modified files:
 | `crates/uffs-daemon/src/index.rs` | Add `aggregate()` method | S1D |
 | `crates/uffs-daemon/src/handler.rs` | Add `"aggregate"` dispatch, extend `"search"` | S1D |
 | `crates/uffs-cli/src/commands/` | Aggregate flags, formatters | S1E, S2E, S4D |
-| `crates/uffs-mcp/src/main.rs` | `uffs.aggregate`, `uffs.facet_values` tools | S1F, S3B |
+| `crates/uffs-mcp/src/main.rs` | `uffs_aggregate`, `uffs_facet_values` tools | S1F, S3B |
 
 ---
 

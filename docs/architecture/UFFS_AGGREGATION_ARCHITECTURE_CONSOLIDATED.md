@@ -1154,7 +1154,7 @@ That means UFFS should expose dedicated aggregate tools.
 
 ## 14.2 Recommended MCP tools
 
-### Tool 1: `uffs.aggregate`
+### Tool 1: `uffs_aggregate`
 
 Primary summary tool.
 
@@ -1178,7 +1178,7 @@ Primary summary tool.
 - next cursor
 - drill-down handles
 
-### Tool 2: `uffs.facet_values`
+### Tool 2: `uffs_facet_values`
 
 Facet-value search / autocomplete.
 
@@ -1198,7 +1198,7 @@ Facet-value search / autocomplete.
 
 This is especially useful when a field has many possible values and the agent wants to refine interactively.
 
-### Optional Tool 3 later: `uffs.duplicate_verify`
+### Optional Tool 3 later: `uffs_duplicate_verify`
 
 Longer-running verification step for duplicate groups.
 
@@ -1722,7 +1722,7 @@ crates/
 │       └── search/          # aggregate flags -> SearchParams
 │
 └── uffs-mcp/src/
-    └── main.rs              # uffs.aggregate, uffs.facet_values, tasks
+    └── main.rs              # uffs_aggregate, uffs_facet_values, tasks
 ```
 
 ---
@@ -1828,7 +1828,7 @@ Ship:
 - `--facet type|ext|drive|bool`
 - `--stats size|sizeondisk|modified`
 - `--histogram size`
-- MCP `uffs.aggregate` basic mode
+- MCP `uffs_aggregate` basic mode
 
 ## Stage 2 — bucket metrics + samples + presets
 Ship:
@@ -1840,7 +1840,7 @@ Ship:
 ## Stage 3 — rollups + pagination + facet values
 Ship:
 - cursor-based bucket pagination
-- `uffs.facet_values`
+- `uffs_facet_values`
 - hierarchical/path rollups
 - exactness/truncation metadata finalized
 
@@ -1964,11 +1964,11 @@ duplicates:size+name,verify=none,top=100,sample=2
 
 ## Appendix B — Example MCP tools
 
-### `uffs.aggregate` tool descriptor sketch
+### `uffs_aggregate` tool descriptor sketch
 
 ```json
 {
-  "name": "uffs.aggregate",
+  "name": "uffs_aggregate",
   "title": "Summarize filesystem results",
   "description": "Run server-side aggregations over UFFS search results. Use this when you need counts, storage breakdowns, histograms, folder rollups, or duplicate summaries instead of raw file rows.",
   "inputSchema": {
@@ -1996,11 +1996,11 @@ duplicates:size+name,verify=none,top=100,sample=2
 }
 ```
 
-### `uffs.facet_values` tool descriptor sketch
+### `uffs_facet_values` tool descriptor sketch
 
 ```json
 {
-  "name": "uffs.facet_values",
+  "name": "uffs_facet_values",
   "title": "Search within facet values",
   "description": "Search for candidate facet values and counts inside the current UFFS query scope. Useful for large extension, path, or owner-like value spaces.",
   "inputSchema": {

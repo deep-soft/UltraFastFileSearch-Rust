@@ -110,6 +110,10 @@ async fn daemon_run(params: &DaemonRunParams<'_>) -> Result<()> {
 /// `uffs daemon start` — start the daemon, forwarding data-source flags
 /// as-is so the daemon resolves them internally (DRY).
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "daemon lifecycle management with spawn, health-check, and retry logic"
+)]
 async fn daemon_start(
     mft_files: &[std::path::PathBuf],
     data_dir: Option<&std::path::Path>,

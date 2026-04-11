@@ -673,9 +673,7 @@ fn resolve_group_key(
             let ch = char::from(key as u8);
             format!("{ch}:")
         }
-        Some(FieldId::Type) => {
-            format!("type:{key}")
-        }
+        Some(FieldId::Type) => crate::search::derived::semantic_type_name_from_id(key).to_owned(),
         Some(FieldId::DirectoryFlag) => {
             if key == 1 {
                 "directory".to_owned()

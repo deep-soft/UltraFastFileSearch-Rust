@@ -122,14 +122,16 @@ id          = "T19"
 group       = "general"
 name        = "T19 --word"
 title       = "T19 --word"
-short_desc  = "T19 --word"
+short_desc  = "Whole-word match: names must contain 'test' as a word boundary"
 cli_args    = ["test", "--word", "--limit", "10"]
-expect_min_rows = 0
+expect_min_rows = 1
 expect_max_rows = 10
-stdout_contains = ["\"Name\""]
 
-[test.api_checks]
-total_count_min = 1
+[[test.column_checks]]
+column = "Name"
+op     = "contains"
+value  = "test"
+case   = "lower"
 
 [[test]]
 id          = "T28"
@@ -151,15 +153,10 @@ id          = "T29"
 group       = "general"
 name        = "T29 --drives C,D"
 title       = "T29 --drives C,D"
-short_desc  = "T29 --drives C,D"
+short_desc  = "All results must come from drive C or D"
 cli_args    = ["*.exe", "--drives", "C,D", "--limit", "10"]
 expect_min_rows = 1
-
-[[test.column_checks]]
-column = "Path Only"
-op     = "starts_with"
-value  = "C:"
-case   = "lower"
+validator   = "drives_cd"
 
 [[test]]
 id          = "T30"
@@ -206,11 +203,15 @@ id          = "T35"
 group       = "general"
 name        = "T35 --limit 0 (unlimited)"
 title       = "T35 --limit 0 (unlimited)"
-short_desc  = "T35 --limit 0 (unlimited)"
+short_desc  = "CLI --limit 0 = unlimited — CLI translates to no-limit; API limit=0 = 0 rows"
 cli_args    = ["*.dll", "--limit", "0", "--drive", "C", "--files-only"]
+targets     = ["cli", "api"]
 expect_min_rows = 0
 cli_checks.expect_min_rows = 10
+rpc_method  = "search"
+rpc_params  = '{"pattern":"*.dll","drives":["C"],"filter":"files"}'
 api_checks.result_has_key  = ["rows"]
+api_checks.total_count_min = 10
 
 [[test]]
 id          = "T41"
@@ -228,13 +229,15 @@ id          = "T42"
 group       = "general"
 name        = "T42 --smart-case (lowercase = insensitive)"
 title       = "T42 --smart-case (lowercase = insensitive)"
-short_desc  = "T42 --smart-case (lowercase = insensitive)"
+short_desc  = "Lowercase pattern + smart-case = case-insensitive: names contain 'readme'"
 cli_args    = ["readme", "--smart-case", "--name-only", "--limit", "10"]
 expect_min_rows = 1
-stdout_contains = ["\"Name\""]
 
-[test.api_checks]
-total_count_min = 1
+[[test.column_checks]]
+column = "Name"
+op     = "contains"
+value  = "readme"
+case   = "lower"
 
 [[test]]
 id          = "T88g"
@@ -257,70 +260,55 @@ id          = "T89"
 group       = "general"
 name        = "T89 --type code"
 title       = "T89 --type code"
-short_desc  = "T89 --type code"
+short_desc  = "All results must have code extensions (rs,py,js,ts,c,cpp,go,java,…)"
 cli_args    = ["*", "--type", "code", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
 expect_min_rows = 1
-stdout_contains = ["\"Type\""]
-
-[test.api_checks]
-total_count_min = 1
+validator   = "type_code"
 
 [[test]]
 id          = "T90"
 group       = "general"
 name        = "T90 --type document"
 title       = "T90 --type document"
-short_desc  = "T90 --type document"
-cli_args    = ["*", "--type", "document", "--files-only", "--limit", "10"]
-expect_min_rows = 0
-expect_max_rows = 10
-stdout_contains = ["\"Name\""]
-
-[test.api_checks]
-total_count_min = 1
+short_desc  = "All results must have document extensions (pdf,doc,docx,xls,…)"
+cli_args    = ["*", "--type", "document", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+validator   = "type_document"
 
 [[test]]
 id          = "T91"
 group       = "general"
 name        = "T91 --type executable"
 title       = "T91 --type executable"
-short_desc  = "T91 --type executable"
+short_desc  = "All results must have executable extensions (exe,msi,bat,cmd,…)"
 cli_args    = ["*", "--type", "executable", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
 expect_min_rows = 1
-stdout_contains = ["\"Type\""]
-
-[test.api_checks]
-total_count_min = 1
+validator   = "type_executable"
 
 [[test]]
 id          = "T92"
 group       = "general"
 name        = "T92 --type picture"
 title       = "T92 --type picture"
-short_desc  = "T92 --type picture"
-cli_args    = ["*", "--type", "picture", "--files-only", "--limit", "10"]
-expect_min_rows = 0
-expect_max_rows = 10
-stdout_contains = ["\"Name\""]
-
-[test.api_checks]
-total_count_min = 1
+short_desc  = "All results must have picture extensions (jpg,png,gif,bmp,…)"
+cli_args    = ["*", "--type", "picture", "--files-only", "--limit", "10", "--columns", "all"]
+expect_columns_all = true
+expect_min_rows = 1
+validator   = "type_picture"
 
 [[test]]
 id          = "T93"
 group       = "general"
 name        = "T93 --type system"
 title       = "T93 --type system"
-short_desc  = "T93 --type system"
+short_desc  = "All results must have system marker ($-prefix names)"
 cli_args    = ["*", "--type", "system", "--files-only", "--limit", "10", "--columns", "all"]
 expect_columns_all = true
 expect_min_rows = 1
-stdout_contains = ["\"Type\""]
-
-[test.api_checks]
-total_count_min = 1
+validator   = "type_system"
 
 [[test]]
 id          = "T98"
@@ -417,42 +405,39 @@ id          = "T110"
 group       = "general"
 name        = "T110 --month jan"
 title       = "T110 --month jan"
-short_desc  = "T110 --month jan"
+short_desc  = "January-modified files — large dataset guarantees matches"
 cli_args    = ["*", "--month", "jan", "--files-only", "--limit", "10"]
-expect_min_rows = 0
+expect_min_rows = 1
 expect_max_rows = 10
-stdout_contains = ["\"Name\"", "\"Last Written\""]
 
 [test.api_checks]
-total_count_min = 1
+total_count_min = 10
 
 [[test]]
 id          = "T111"
 group       = "general"
 name        = "T111 --month Q4"
 title       = "T111 --month Q4"
-short_desc  = "T111 --month Q4"
+short_desc  = "Q4-modified files (Oct–Dec) — broader range, more results"
 cli_args    = ["*", "--month", "Q4", "--files-only", "--limit", "10"]
-expect_min_rows = 0
+expect_min_rows = 1
 expect_max_rows = 10
-stdout_contains = ["\"Name\"", "\"Last Written\""]
 
 [test.api_checks]
-total_count_min = 1
+total_count_min = 10
 
 [[test]]
 id          = "T112"
 group       = "general"
 name        = "T112 --month jan,feb,mar"
 title       = "T112 --month jan,feb,mar"
-short_desc  = "T112 --month jan,feb,mar"
+short_desc  = "Q1-modified files — must return more than single-month"
 cli_args    = ["*", "--month", "jan,feb,mar", "--files-only", "--limit", "10"]
-expect_min_rows = 0
+expect_min_rows = 1
 expect_max_rows = 10
-stdout_contains = ["\"Name\"", "\"Last Written\""]
 
 [test.api_checks]
-total_count_min = 1
+total_count_min = 10
 
 [[test]]
 id          = "T141"
@@ -587,13 +572,13 @@ id          = "T179"
 group       = "general"
 name        = "T179 --between time range"
 title       = "T179 --between time range"
-short_desc  = "Time range shorthand filters modified time"
+short_desc  = "Full-year 2025 range — system has many files from that period"
 cli_args    = ["*", "--between", "2025-01-01,2025-12-31", "--limit", "10"]
 targets     = ["cli", "api"]
 expect_min_rows = 1
 
 [test.api_checks]
-total_count_min = 1
+total_count_min = 10
 
 [[test]]
 id          = "T180"
@@ -628,26 +613,32 @@ id          = "T182"
 group       = "general"
 name        = "T182 --exact-size-on-disk filter"
 title       = "T182 --exact-size-on-disk filter"
-short_desc  = "Exact on-disk size filter"
-cli_args    = ["*", "--exact-size-on-disk", "0", "--files-only", "--limit", "20"]
+short_desc  = "All files must have exactly 0 bytes on disk"
+cli_args    = ["*", "--exact-size-on-disk", "0", "--files-only", "--limit", "20", "--columns", "all"]
 targets     = ["cli", "api"]
+expect_columns_all = true
 expect_min_rows = 1
 
-[test.api_checks]
-total_count_min = 1
+[[test.column_checks]]
+column = "Size on Disk"
+op     = "eq"
+value  = "0"
 
 [[test]]
 id          = "T183"
 group       = "general"
 name        = "T183 --max-tree-allocated filter"
 title       = "T183 --max-tree-allocated filter"
-short_desc  = "Max tree allocated size filter on directories"
-cli_args    = ["*", "--max-tree-allocated", "1048576", "--dirs-only", "--limit", "20"]
+short_desc  = "All directories must have tree allocated ≤ 1MB"
+cli_args    = ["*", "--max-tree-allocated", "1048576", "--dirs-only", "--limit", "20", "--columns", "all"]
 targets     = ["cli", "api"]
+expect_columns_all = true
 expect_min_rows = 1
 
-[test.api_checks]
-total_count_min = 1
+[[test.column_checks]]
+column = "Tree Allocated"
+op     = "lte"
+value  = "1048576"
 
 [[test]]
 id          = "T184"

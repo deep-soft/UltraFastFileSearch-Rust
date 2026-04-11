@@ -1,8 +1,9 @@
 //! UFFS MCP Adapter — bridges AI agents to the UFFS daemon via the
 //! Model Context Protocol (MCP).
 //!
-//! Reads JSON-RPC from stdin, translates to uffs-client API calls,
-//! writes responses to stdout.
+//! This is a thin binary wrapper. All logic lives in the `uffs_mcp` library
+//! crate so it can be invoked both as a standalone binary and via
+//! `uffs mcp run` in the CLI.
 //!
 //! # MCP Configuration
 //!
@@ -11,22 +12,24 @@
 //! { "uffs": { "command": "uffs-mcp" } }
 //! ```
 
-use std::io::BufRead;
-
-use uffs_client::connect::UffsClient;
-
-// ────────────────────────────────────────────────────────────────────────────
-
-mod server;
-mod types;
-
-use server::McpServer;
-#[cfg(test)]
-use server::format_aggregate_summary;
+// Crates used by the library but not directly by this thin binary.
+#[cfg(feature = "streamable-http")]
+use axum as _;
+use dirs_next as _;
+use rmcp as _;
+use schemars as _;
+use serde as _;
+use serde_json as _;
+use thiserror as _;
+#[cfg(feature = "streamable-http")]
+use tower_service as _;
+use tracing_appender as _;
+use uffs_client as _;
+use uffs_core as _;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // MCP uses stderr for logging (stdout is the protocol channel)
+    // MCP uses stderr for logging (stdout is the protocol channel).
     // Use `try_init` so we don't panic if a subscriber is already installed
     // (e.g. when invoked in-process from a host that already has tracing).
     let _ignore = tracing_subscriber::fmt()
@@ -35,43 +38,7 @@ async fn main() -> anyhow::Result<()> {
         .with_max_level(tracing::Level::INFO)
         .try_init();
 
-    tracing::info!("uffs-mcp starting");
-
-    let client = match UffsClient::connect().await {
-        Ok(connected) => connected,
-        Err(conn_err) => {
-            tracing::error!(error = %conn_err, "Failed to connect to daemon");
-            anyhow::bail!("Cannot connect to uffs-daemon: {conn_err}");
-        }
-    };
-
-    tracing::info!("Connected to uffs-daemon");
-
-    let mut server = McpServer { client };
-
-    let stdin = std::io::stdin();
-    for raw_line in stdin.lock().lines() {
-        let text = match raw_line {
-            Ok(ok_line) => ok_line,
-            Err(read_err) => {
-                tracing::error!(error = %read_err, "stdin read error");
-                break;
-            }
-        };
-
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if let Err(io_err) = server.process_request(trimmed).await {
-            tracing::error!(error = %io_err, "Fatal I/O error");
-            break;
-        }
-    }
-
-    tracing::info!("uffs-mcp shutting down");
-    Ok(())
+    uffs_mcp::run_mcp_server().await
 }
 
 #[cfg(test)]
@@ -86,8 +53,7 @@ async fn main() -> anyhow::Result<()> {
 )]
 mod tests {
     use uffs_client::protocol::{AggregateResultWire, BucketWire, StatsWire};
-
-    use super::format_aggregate_summary;
+    use uffs_mcp::text::format_aggregate_summary;
 
     #[test]
     fn summary_count_result() {

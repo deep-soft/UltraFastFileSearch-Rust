@@ -1,9 +1,5 @@
 //! Windows privilege, path, and drive-classification helpers.
 
-// Platform-specific code has many cfg-gated sections
-#![allow(clippy::all, clippy::nursery, clippy::pedantic)]
-#![warn(clippy::unwrap_used, clippy::expect_used)]
-
 #[cfg(windows)]
 use std::mem::size_of;
 #[cfg(windows)]
@@ -245,7 +241,8 @@ pub const fn is_volume_read_only(_drive_letter: char) -> bool {
 /// Represents the type of storage device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriveType {
-    /// NVMe Solid State Drive (PCIe, extremely high IOPS, 64K+ queue depth).
+    /// `NVMe` Solid State Drive (`PCIe`, extremely high IOPS, 64K+ queue
+    /// depth).
     Nvme,
     /// SATA Solid State Drive (no seek time, high IOPS, 32 queue depth).
     Ssd,
@@ -262,8 +259,7 @@ impl DriveType {
         match self {
             Self::Nvme => 4 * 1024 * 1024,
             Self::Ssd => 2 * 1024 * 1024,
-            Self::Hdd => 1024 * 1024,
-            Self::Unknown => 1024 * 1024,
+            Self::Hdd | Self::Unknown => 1024 * 1024,
         }
     }
 
@@ -273,8 +269,7 @@ impl DriveType {
         match self {
             Self::Nvme => 8,
             Self::Ssd => 4,
-            Self::Hdd => 2,
-            Self::Unknown => 2,
+            Self::Hdd | Self::Unknown => 2,
         }
     }
 
@@ -284,8 +279,7 @@ impl DriveType {
         match self {
             Self::Nvme => 32,
             Self::Ssd => 8,
-            Self::Hdd => 4,
-            Self::Unknown => 4,
+            Self::Hdd | Self::Unknown => 4,
         }
     }
 
@@ -307,7 +301,7 @@ impl DriveType {
         self.optimal_chunk_size()
     }
 
-    /// Returns true if this is a high-performance drive (SSD or NVMe).
+    /// Returns true if this is a high-performance drive (SSD or `NVMe`).
     #[must_use]
     pub const fn is_high_performance(&self) -> bool {
         matches!(self, Self::Nvme | Self::Ssd)

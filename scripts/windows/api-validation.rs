@@ -634,7 +634,7 @@ fn run_tests(sock: &str, specs: Vec<TestSpec>, args: &ScriptArgs) -> Vec<TestRes
 // ── TOML Test Definitions ──────────────────────────────────────────────────
 //
 // Shared definitions loaded from `scripts/tests/test-definitions.toml`.
-// Same schema as cli-flag-validation.rs — one TOML, two consumers.
+// Same schema as cli-validation — one TOML, two consumers.
 
 #[derive(serde::Deserialize)]
 struct TestDefsFile { test: Vec<TestDef> }
@@ -723,6 +723,8 @@ struct ApiChecks {
     #[serde(default)] total_count_min: Option<u64>,
     /// Check that specific agg results have `exact` field with this value.
     #[serde(default)] agg_exact: Option<bool>,
+    /// The `shmem_count` field must be >= this value (verifies shmem transfer).
+    #[serde(default)] shmem_count_min: Option<u64>,
 }
 
 /// MCP-specific checks (future expansion).
@@ -1691,6 +1693,70 @@ fn run_rpc_custom_validator(name: &str, result: &Value) -> Result<String> {
                 queries.unwrap_or(0)))
         }
 
+        "no_shmem" => {
+            if result.get("shmem_path").is_some() {
+                bail!("Expected inline rows (no shmem) but response has shmem_path");
+            }
+            let rows = get_rows(result);
+            Ok(format!("{} inline rows, no shmem", rows.len()))
+        }
+
+        // Type validators: check that all row names have an extension
+        // belonging to the expected semantic category.
+        v @ ("type_code" | "type_document" | "type_executable" | "type_picture" | "type_system") => {
+            let rows = get_rows(result);
+            if rows.is_empty() { bail!("{v}: 0 rows returned"); }
+
+            let allowed: &[&str] = match v {
+                "type_code"       => &["rs","py","js","ts","c","cpp","h","hpp","cs","java","go",
+                                       "rb","php","swift","kt","scala","r","lua","pl","sh","bash",
+                                       "zsh","fish","ps1","psm1","psd1","vue","svelte","jsx","tsx",
+                                       "mjs","cjs","coffee","dart","zig","nim","v","hs","ml","ex",
+                                       "exs","erl","clj","lisp","scm","asm","s","f90","f","for",
+                                       "vb","vbs","m","mm","d","ada","adb","ads","cob","cbl"],
+                "type_document"   => &["pdf","doc","docx","xls","xlsx","ppt","pptx","odt","ods",
+                                       "odp","rtf","txt","csv","tsv","md","rst","epub","mobi",
+                                       "tex","latex","pages","numbers","key"],
+                "type_executable" => &["exe","msi","bat","cmd","ps1","com","scr"],
+                "type_picture"    => &["jpg","jpeg","png","gif","bmp","tif","tiff","ico","svg",
+                                       "webp","heic","heif","raw","cr2","nef","dng","psd","ai",
+                                       "eps","pcx","tga"],
+                "type_system"     => &["sys","drv","dll","ocx","cpl","inf","cat","mum","man",
+                                       "evt","evtx","etl","reg"],
+                _ => unreachable!(),
+            };
+
+            let mut bad = Vec::new();
+            for (i, row) in rows.iter().enumerate() {
+                let name = row.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if v == "type_system" {
+                    // System files are $-prefixed OR have system extensions
+                    if name.starts_with('$') { continue; }
+                }
+                let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+                if !allowed.contains(&ext.as_str()) {
+                    bad.push(format!("row {i}: {name} (ext={ext})"));
+                    if bad.len() >= 3 { break; }
+                }
+            }
+            if !bad.is_empty() {
+                bail!("{v}: unexpected extensions: {}", bad.join(", "));
+            }
+            Ok(format!("{v}: {}/{} rows have valid extensions", rows.len(), rows.len()))
+        }
+
+        "drives_cd" => {
+            let rows = get_rows(result);
+            if rows.is_empty() { bail!("drives_cd: 0 rows returned"); }
+            for (i, row) in rows.iter().enumerate() {
+                let path = row.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                if !path.starts_with("C:") && !path.starts_with("D:") {
+                    bail!("drives_cd: row {i} path does not start with C: or D:: {path}");
+                }
+            }
+            Ok(format!("drives_cd: all {} rows on C: or D:", rows.len()))
+        }
+
         other => bail!("custom validator '{other}' not yet ported to RPC — implement it or add api_checks")
     }
 }
@@ -1933,6 +1999,54 @@ fn build_rpc_validator(def: &TestDef) -> CheckFn {
             let tc = result.get("total_count").and_then(|v| v.as_u64()).unwrap_or(0);
             if tc < min_tc { bail!("total_count {tc} < expected min {min_tc}"); }
             details.push(format!("total_count={tc}"));
+        }
+
+        // api_checks.shmem_count_min — verify shmem transfer was used and
+        // cross-check the on-disk row count against the JSON `shmem_count`.
+        if let Some(min_sc) = def.api_checks.shmem_count_min {
+            let shmem_path = result.get("shmem_path").and_then(|v| v.as_str());
+            let shmem_count = result.get("shmem_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            if shmem_path.is_none() {
+                bail!("Expected shmem_path in response (shmem_count_min={min_sc}) but not present — \
+                       daemon returned inline rows instead of shmem");
+            }
+            if shmem_count < min_sc {
+                bail!("shmem_count {shmem_count} < expected min {min_sc}");
+            }
+            // Read the shmem binary header to verify on-disk row count.
+            let path = shmem_path.unwrap_or("");
+            match std::fs::read(path) {
+                Ok(data) if data.len() >= 48 => {
+                    let magic  = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                    let ver    = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                    let on_disk_rows = u64::from_le_bytes([
+                        data[8], data[9], data[10], data[11],
+                        data[12], data[13], data[14], data[15],
+                    ]);
+                    if magic != 0x5346_4655 {
+                        bail!("shmem file bad magic: {magic:#x} (expected 0x53464655 = \"UFFS\")");
+                    }
+                    if ver == 0 || ver > 10 {
+                        bail!("shmem file unlikely version: {ver} (expected 1–10)");
+                    }
+                    if on_disk_rows != shmem_count {
+                        bail!("shmem header row_count={on_disk_rows} != JSON shmem_count={shmem_count}");
+                    }
+                    details.push(format!(
+                        "shmem OK: {on_disk_rows} rows on disk, file={}, {}bytes",
+                        path.rsplit('/').next().unwrap_or(path),
+                        data.len(),
+                    ));
+                    // Clean up the shmem file so it doesn't leak.
+                    let _ = std::fs::remove_file(path);
+                }
+                Ok(data) => {
+                    bail!("shmem file too small: {} bytes (need >= 48)", data.len());
+                }
+                Err(e) => {
+                    bail!("shmem file read failed: {e} (path={path})");
+                }
+            }
         }
 
         // api_checks.agg_exact
@@ -2276,7 +2390,7 @@ fn main() {
         }).collect();
         if !matched_cli.is_empty() {
             for id in &matched_cli {
-                eprintln!("  {} {} — cli-only test, run with: rust-script scripts/windows/cli-flag-validation.rs --tests {}",
+                eprintln!("  {} {} — cli-only test, run with: rust-script scripts/windows/cli-validation --tests {}",
                     "ℹ".cyan(), id, id);
             }
         }

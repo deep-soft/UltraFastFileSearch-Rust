@@ -209,10 +209,27 @@ id          = "T117"
 group       = "search_mode"
 name        = "T117 type + in-path + size"
 title       = "T117 type + in-path + size"
-short_desc  = "T117 type + in-path + size"
-cli_args    = ["*", "--type", "system", "--in-path", "*windows*", "--min-size", "1048576", "--files-only", "--sort", "-size", "--limit", "10"]
+short_desc  = "System type, path contains 'windows', size > 1MB, sorted by size desc"
+cli_args    = ["*", "--type", "system", "--in-path", "*windows*", "--min-size", "1048576", "--files-only", "--sort", "-size", "--limit", "10", "--columns", "all"]
 expect_min_rows = 1
-stdout_contains = ["\"Name\""]
+expect_columns_all = true
+validator   = "type_system"
+
+[[test.column_checks]]
+column = "Size"
+op     = "gte"
+value  = "1048576"
+
+[[test.column_checks]]
+column = "Path Only"
+op     = "contains"
+value  = "windows"
+case   = "lower"
+
+[[test.sort_checks]]
+column = "Size"
+order  = "desc"
+type   = "u64"
 
 [test.api_checks]
 total_count_min = 1

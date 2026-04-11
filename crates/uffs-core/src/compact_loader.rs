@@ -86,31 +86,8 @@ pub fn load_drive(
     };
 
     // ── Fast path: compact cache hit ───────────────────────────────
-    // TTL-only: we haven't loaded the MftIndex yet, so mtime is our
-    // only signal. Skipping the mtime check avoids a stat() on the
-    // `.uffs` file — safe because we'll USN-patch after cache load.
-    if !no_cache {
-        let cache_start = Instant::now();
-        if let Some(mut compact) =
-            crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS, 0, true)
-        {
-            let cache_ms = cache_start.elapsed().as_millis();
-            if let Some(path) = source.file_path() {
-                compact.source = IndexSource::MftFile(path.to_path_buf());
-            }
-            tracing::info!(
-                drive = %drive_letter,
-                records = compact.records.len(),
-                cache_ms,
-                "📦 Cache hit — loaded compact cache"
-            );
-            return Ok((compact, LoadTiming {
-                cache: cache_ms,
-                mft: 0,
-                compact: 0,
-                trigram: 0,
-            }));
-        }
+    if !no_cache && let Some(result) = try_compact_cache_hit(drive_letter, source) {
+        return Ok(result);
     }
 
     // ── Load MftIndex (cache or cold) ──────────────────────────────
@@ -153,10 +130,47 @@ pub fn load_drive(
     }))
 }
 
+/// Attempt to load a compact index from cache (TTL-only, no mtime validation).
+///
+/// Returns `Some((index, timing))` on cache hit, `None` on miss.
+#[expect(
+    clippy::single_call_fn,
+    reason = "extracted for readability from load_drive"
+)]
+fn try_compact_cache_hit(
+    drive_letter: char,
+    source: &MftSource,
+) -> Option<(DriveCompactIndex, LoadTiming)> {
+    let cache_start = Instant::now();
+    let mut compact =
+        crate::compact_cache::load_compact_cache(drive_letter, INDEX_TTL_SECONDS, 0, true)?;
+    let cache_ms = cache_start.elapsed().as_millis();
+
+    if let Some(path) = source.file_path() {
+        compact.source = IndexSource::MftFile(path.to_path_buf());
+    }
+    tracing::info!(
+        drive = %drive_letter,
+        records = compact.records.len(),
+        cache_ms,
+        "📦 Cache hit — loaded compact cache"
+    );
+    Some((compact, LoadTiming {
+        cache: cache_ms,
+        mft: 0,
+        compact: 0,
+        trigram: 0,
+    }))
+}
+
 /// Load `MftIndex` from an offline file (cache → cold parse).
 #[expect(
     clippy::single_call_fn,
     reason = "extracted for readability from load_drive"
+)]
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "multi-stage loader with cache/live/fallback branches"
 )]
 fn load_mft_index_from_file(
     mft_path: &std::path::Path,

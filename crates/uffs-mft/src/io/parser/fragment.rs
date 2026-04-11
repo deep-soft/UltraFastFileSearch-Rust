@@ -1,10 +1,6 @@
 //! Legacy direct-to-fragment parser bridge.
 //! Preserves the parallel parser surface used before fragment merge.
 
-// Performance-critical hot-path parser — lint suppressions match index.rs.
-#![allow(clippy::all, clippy::nursery, clippy::pedantic)]
-#![warn(clippy::unwrap_used, clippy::expect_used)]
-
 use core::mem::size_of;
 
 use smallvec::SmallVec;
@@ -15,6 +11,13 @@ use zerocopy::FromBytes;
     reason = "internal use in deprecated parse_record_to_fragment"
 )]
 use super::fragment_extension::parse_extension_to_fragment;
+use crate::index::{
+    ChildInfo, IndexNameRef, IndexStreamInfo, LinkInfo, NO_ENTRY, SizeInfo, StandardInfo,
+};
+use crate::ntfs::{
+    AttributeRecordHeader, AttributeType, FileNameAttribute, FileRecordSegmentHeader,
+    StandardInformation, file_reference_to_frs, filetime_to_unix_micros,
+};
 
 /// Parses a record directly into an `MftIndexFragment` (for parallel parsing).
 ///
@@ -39,21 +42,12 @@ pub fn parse_record_to_fragment(
     frs: u64,
     fragment: &mut crate::index::MftIndexFragment,
 ) -> bool {
-    use crate::index::{
-        ChildInfo, IndexNameRef, IndexStreamInfo, LinkInfo, NO_ENTRY, SizeInfo, StandardInfo,
-    };
-    use crate::ntfs::{
-        AttributeRecordHeader, AttributeType, FileNameAttribute, FileRecordSegmentHeader,
-        StandardInformation, file_reference_to_frs, filetime_to_unix_micros,
-    };
-
     if data.len() < size_of::<FileRecordSegmentHeader>() {
         return false;
     }
 
-    let header = match FileRecordSegmentHeader::read_from_prefix(data) {
-        Ok((header, _)) => header,
-        Err(_) => return false,
+    let Ok((header, _)) = FileRecordSegmentHeader::read_from_prefix(data) else {
+        return false;
     };
 
     // Check if record is in use
@@ -90,9 +84,8 @@ pub fn parse_record_to_fragment(
     let mut additional_streams: SmallVec<[(String, u64, u64); 4]> = SmallVec::new();
 
     while offset + size_of::<AttributeRecordHeader>() <= max_offset {
-        let attr_header = match AttributeRecordHeader::read_from_prefix(&data[offset..]) {
-            Ok((attr_header, _)) => attr_header,
-            Err(_) => break,
+        let Ok((attr_header, _)) = AttributeRecordHeader::read_from_prefix(&data[offset..]) else {
+            break;
         };
 
         if attr_header.type_code == AttributeType::End as u32 {
@@ -104,80 +97,65 @@ pub fn parse_record_to_fragment(
         }
 
         match AttributeType::from_u32(attr_header.type_code) {
-            Some(AttributeType::StandardInformation) => {
-                if attr_header.is_non_resident == 0 {
-                    let value_offset_bytes = &data[offset + 20..offset + 22];
-                    let value_offset =
-                        u16::from_le_bytes(value_offset_bytes.try_into().unwrap_or([0, 0]))
-                            as usize;
-                    let si_offset = offset + value_offset;
-                    if si_offset + size_of::<StandardInformation>() <= data.len() {
-                        let si = match StandardInformation::read_from_prefix(&data[si_offset..]) {
-                            Ok((si, _)) => si,
-                            Err(_) => break,
-                        };
-                        // Two-step canonical approach:
-                        // 1. Parse raw attrs to ExtendedStandardInfo (complete parsing)
-                        // 2. Convert to compact StandardInfo (single source of truth)
-                        let ext =
-                            crate::ntfs::ExtendedStandardInfo::from_attributes(si.file_attributes);
-                        let mut info = StandardInfo::from_extended(&ext);
-                        info.created = filetime_to_unix_micros(si.creation_time);
-                        info.modified = filetime_to_unix_micros(si.modification_time);
-                        info.accessed = filetime_to_unix_micros(si.access_time);
-                        info.mft_changed = filetime_to_unix_micros(si.mft_change_time);
-                        std_info = info;
-                    }
+            Some(AttributeType::StandardInformation) if attr_header.is_non_resident == 0 => {
+                let value_offset_bytes = &data[offset + 20..offset + 22];
+                let value_offset =
+                    u16::from_le_bytes(value_offset_bytes.try_into().unwrap_or([0, 0])) as usize;
+                let si_offset = offset + value_offset;
+                if si_offset + size_of::<StandardInformation>() <= data.len() {
+                    let Ok((si, _)) = StandardInformation::read_from_prefix(&data[si_offset..])
+                    else {
+                        break;
+                    };
+                    let ext =
+                        crate::ntfs::ExtendedStandardInfo::from_attributes(si.file_attributes);
+                    let mut info = StandardInfo::from_extended(&ext);
+                    info.created = filetime_to_unix_micros(si.creation_time);
+                    info.modified = filetime_to_unix_micros(si.modification_time);
+                    info.accessed = filetime_to_unix_micros(si.access_time);
+                    info.mft_changed = filetime_to_unix_micros(si.mft_change_time);
+                    std_info = info;
                 }
             }
-            Some(AttributeType::FileName) => {
-                if attr_header.is_non_resident == 0 {
-                    let value_offset_bytes = &data[offset + 20..offset + 22];
-                    let value_offset =
-                        u16::from_le_bytes(value_offset_bytes.try_into().unwrap_or([0, 0]))
-                            as usize;
-                    let fn_offset = offset + value_offset;
-                    if fn_offset + size_of::<FileNameAttribute>() <= data.len() {
-                        let fn_attr = match FileNameAttribute::read_from_prefix(&data[fn_offset..])
-                        {
-                            Ok((fn_attr, _)) => fn_attr,
-                            Err(_) => break,
-                        };
-                        let name_len = fn_attr.file_name_length as usize;
-                        let name_bytes_offset = fn_offset + size_of::<FileNameAttribute>();
-                        if name_bytes_offset + name_len * 2 <= data.len() {
-                            let name_bytes =
-                                &data[name_bytes_offset..name_bytes_offset + name_len * 2];
-                            let name_u16: Vec<u16> = name_bytes
-                                .chunks_exact(2)
-                                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                                .collect();
-                            let name = String::from_utf16_lossy(&name_u16);
-                            let parent_frs = file_reference_to_frs(fn_attr.parent_directory);
-                            let namespace = fn_attr.file_name_namespace;
+            Some(AttributeType::FileName) if attr_header.is_non_resident == 0 => {
+                let value_offset_bytes = &data[offset + 20..offset + 22];
+                let value_offset =
+                    u16::from_le_bytes(value_offset_bytes.try_into().unwrap_or([0, 0])) as usize;
+                let fn_offset = offset + value_offset;
+                if fn_offset + size_of::<FileNameAttribute>() <= data.len() {
+                    let Ok((fn_attr, _)) = FileNameAttribute::read_from_prefix(&data[fn_offset..])
+                    else {
+                        break;
+                    };
+                    let name_len = fn_attr.file_name_length as usize;
+                    let name_bytes_offset = fn_offset + size_of::<FileNameAttribute>();
+                    if name_bytes_offset + name_len * 2 <= data.len() {
+                        let name_bytes = &data[name_bytes_offset..name_bytes_offset + name_len * 2];
+                        let name_u16: Vec<u16> = name_bytes
+                            .chunks_exact(2)
+                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                            .collect();
+                        let name = String::from_utf16_lossy(&name_u16);
+                        let parent_frs = file_reference_to_frs(fn_attr.parent_directory);
+                        let namespace = fn_attr.file_name_namespace;
 
-                            if namespace != 2 {
-                                let parse_idx = name_parse_counter;
-                                name_parse_counter += 1;
-                                let is_better = match namespace {
-                                    1 | 3 => true,
-                                    0 => primary_name.is_none(),
-                                    _ => false,
-                                };
-                                if is_better || primary_name.is_none() {
-                                    if let Some((old_name, old_parent, _, old_parse_idx)) =
-                                        primary_name.take()
-                                    {
-                                        additional_names.push((
-                                            old_name,
-                                            old_parent,
-                                            old_parse_idx,
-                                        ));
-                                    }
-                                    primary_name = Some((name, parent_frs, namespace, parse_idx));
-                                } else {
-                                    additional_names.push((name, parent_frs, parse_idx));
+                        if namespace != 2 {
+                            let parse_idx = name_parse_counter;
+                            name_parse_counter += 1;
+                            let is_better = match namespace {
+                                1 | 3 => true,
+                                0 => primary_name.is_none(),
+                                _ => false,
+                            };
+                            if is_better || primary_name.is_none() {
+                                if let Some((old_name, old_parent, _, old_parse_idx)) =
+                                    primary_name.take()
+                                {
+                                    additional_names.push((old_name, old_parent, old_parse_idx));
                                 }
+                                primary_name = Some((name, parent_frs, namespace, parse_idx));
+                            } else {
+                                additional_names.push((name, parent_frs, parse_idx));
                             }
                         }
                     }
@@ -233,11 +211,11 @@ pub fn parse_record_to_fragment(
                     // C++ correctly shows allocated_size=0 for resident files
                     let len_offset = offset + 16;
                     if len_offset + 4 <= data.len() {
-                        let len = u32::from_le_bytes(
+                        let len = u64::from(u32::from_le_bytes(
                             data[len_offset..len_offset + 4]
                                 .try_into()
                                 .unwrap_or([0; 4]),
-                        ) as u64;
+                        ));
                         (len, 0) // allocated_size = 0 for resident files
                     } else {
                         (0, 0)
@@ -279,70 +257,22 @@ pub fn parse_record_to_fragment(
 
     // Handle records without a filename in the base record
     // The $FILE_NAME may be in an extension record - we still need to store stdinfo
-    let (name, parent_frs, _namespace, primary_parse_index) = match primary_name {
-        Some(n) => n,
-        None => {
-            // No $FILE_NAME in base record - store stdinfo anyway
-            // The extension record will add the name later
-            //
-            // IMPORTANT: We must still add ADS streams from the base record!
-            // The $FILE_NAME may be in an extension record, but the ADS are here.
-            // Without this, ADS on files/directories with extension records are lost.
-
-            // Pre-process ADS streams BEFORE creating the record
-            let additional_stream_count = additional_streams.len();
-            let mut stream_indices: Vec<u32> = Vec::with_capacity(additional_stream_count);
-            for (stream_name, stream_size, stream_allocated) in additional_streams {
-                let stream_name_offset = fragment.add_name(&stream_name);
-                let stream_name_len = stream_name.len();
-                let stream_is_ascii = stream_name.is_ascii();
-                let extension_id = fragment.intern_extension(&stream_name);
-                let stream_name_ref = IndexNameRef::new(
-                    stream_name_offset,
-                    stream_name_len as u16,
-                    stream_is_ascii,
-                    extension_id,
-                );
-
-                let stream_idx = fragment.streams.len() as u32;
-                fragment.streams.push(IndexStreamInfo {
-                    size: SizeInfo {
-                        length: stream_size,
-                        allocated: stream_allocated,
-                    },
-                    next_entry: NO_ENTRY,
-                    name: stream_name_ref,
-                    flags: 8 << 2,
-                    _pad0: [0; 3],
-                });
-                stream_indices.push(stream_idx);
-            }
-
-            // Now create the record and set up streams
-            let record = fragment.get_or_create(frs);
-            record.stdinfo = std_info;
-            record.first_stream.size = SizeInfo {
-                length: default_size,
-                allocated: default_allocated,
-            };
-
-            // Chain ADS streams to first_stream
-            if !stream_indices.is_empty() {
-                // Chain the streams together
-                for i in 0..stream_indices.len().saturating_sub(1) {
-                    let current_idx = stream_indices[i] as usize;
-                    let next_idx = stream_indices[i + 1];
-                    fragment.streams[current_idx].next_entry = next_idx;
-                }
-                // Attach to first_stream
-                let record = fragment.get_or_create(frs);
-                record.first_stream.next_entry = stream_indices[0];
-                record.stream_count = 1 + additional_stream_count as u16;
-            }
-
-            // Leave first_name empty - extension record will fill it
-            return false;
-        }
+    let Some((name, parent_frs, _namespace, primary_parse_index)) = primary_name else {
+        // No $FILE_NAME in base record — store stdinfo anyway.
+        // The extension record will add the name later.
+        //
+        // IMPORTANT: We must still add ADS streams from the base record!
+        // The $FILE_NAME may be in an extension record, but the ADS are here.
+        // Without this, ADS on files/directories with extension records are lost.
+        store_nameless_record(
+            fragment,
+            frs,
+            std_info,
+            default_size,
+            default_allocated,
+            additional_streams,
+        );
+        return false;
     };
 
     // Add primary name to names buffer and get reference
@@ -431,11 +361,11 @@ pub fn parse_record_to_fragment(
         0
     };
     let existing_stream_next = record.first_stream.next_entry;
-    let existing_stream_count = if existing_stream_next != NO_ENTRY {
+    let existing_stream_count = if existing_stream_next == NO_ENTRY {
+        0
+    } else {
         // Extension records added ADS - count is stream_count - 1 (exclude default)
         record.stream_count.saturating_sub(1)
-    } else {
-        0
     };
 
     // Now set the base record data
@@ -480,28 +410,28 @@ pub fn parse_record_to_fragment(
 
         // Chain: base first_name -> base additional links -> ext first_name -> ext
         // overflow
-        if !link_indices.is_empty() {
+        if link_indices.is_empty() {
+            first_name_next_entry = ext_link_idx;
+        } else {
             first_name_next_entry = link_indices[0];
             let last_base_link = link_indices[link_indices.len() - 1] as usize;
             fragment.links[last_base_link].next_entry = ext_link_idx;
-        } else {
-            first_name_next_entry = ext_link_idx;
         }
     } else if existing_first_name.next_entry != NO_ENTRY {
         // Extension only had overflow links (no first_name) - chain them
-        if !link_indices.is_empty() {
+        if link_indices.is_empty() {
+            first_name_next_entry = existing_first_name.next_entry;
+        } else {
             first_name_next_entry = link_indices[0];
             let last_base_link = link_indices[link_indices.len() - 1] as usize;
             fragment.links[last_base_link].next_entry = existing_first_name.next_entry;
-        } else {
-            first_name_next_entry = existing_first_name.next_entry;
         }
     } else {
         // No extension names - just chain base's additional links
-        if !link_indices.is_empty() {
-            first_name_next_entry = link_indices[0];
-        } else {
+        if link_indices.is_empty() {
             first_name_next_entry = NO_ENTRY;
+        } else {
+            first_name_next_entry = link_indices[0];
         }
     }
 
@@ -584,9 +514,73 @@ pub fn parse_record_to_fragment(
     add_child_entry(fragment, parent_frs, primary_parse_index);
 
     // Add child entries for additional names (hardlinks)
-    for &(link_parent_frs, link_parse_idx) in additional_parent_frs.iter() {
+    for &(link_parent_frs, link_parse_idx) in &additional_parent_frs {
         add_child_entry(fragment, link_parent_frs, link_parse_idx);
     }
 
     true
+}
+
+/// Handle a base record that has no `$FILE_NAME` attribute (name comes from
+/// an extension record). Stores stdinfo and ADS streams so they are not lost.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "NTFS field sizes are bounded by u16/u32 record layout"
+)]
+fn store_nameless_record(
+    fragment: &mut crate::index::MftIndexFragment,
+    frs: u64,
+    std_info: StandardInfo,
+    default_size: u64,
+    default_allocated: u64,
+    additional_streams: SmallVec<[(String, u64, u64); 4]>,
+) {
+    // Pre-process ADS streams BEFORE creating the record
+    let additional_stream_count = additional_streams.len();
+    let mut stream_indices: Vec<u32> = Vec::with_capacity(additional_stream_count);
+    for (stream_name, stream_size, stream_allocated) in additional_streams {
+        let stream_name_offset = fragment.add_name(&stream_name);
+        let stream_name_len = stream_name.len();
+        let stream_is_ascii = stream_name.is_ascii();
+        let extension_id = fragment.intern_extension(&stream_name);
+        let stream_name_ref = IndexNameRef::new(
+            stream_name_offset,
+            stream_name_len as u16,
+            stream_is_ascii,
+            extension_id,
+        );
+
+        let stream_idx = fragment.streams.len() as u32;
+        fragment.streams.push(IndexStreamInfo {
+            size: SizeInfo {
+                length: stream_size,
+                allocated: stream_allocated,
+            },
+            next_entry: NO_ENTRY,
+            name: stream_name_ref,
+            flags: 8 << 2,
+            _pad0: [0; 3],
+        });
+        stream_indices.push(stream_idx);
+    }
+
+    // Now create the record and set up streams
+    let record = fragment.get_or_create(frs);
+    record.stdinfo = std_info;
+    record.first_stream.size = SizeInfo {
+        length: default_size,
+        allocated: default_allocated,
+    };
+
+    // Chain ADS streams to first_stream
+    if !stream_indices.is_empty() {
+        for i in 0..stream_indices.len().saturating_sub(1) {
+            let current_idx = stream_indices[i] as usize;
+            let next_idx = stream_indices[i + 1];
+            fragment.streams[current_idx].next_entry = next_idx;
+        }
+        let record = fragment.get_or_create(frs);
+        record.first_stream.next_entry = stream_indices[0];
+        record.stream_count = 1 + additional_stream_count as u16;
+    }
 }

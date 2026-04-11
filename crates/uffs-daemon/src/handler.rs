@@ -23,6 +23,13 @@ pub struct RequestHandler {
 impl RequestHandler {
     /// Handle a single JSON-RPC request and return a JSON response string.
     pub async fn handle(&self, req: &RpcRequest) -> String {
+        // Every incoming request — search, drives, status, keepalive, etc. —
+        // extends the daemon's sliding-window idle deadline.  This is the
+        // single authoritative call site; individual handlers do not need to
+        // repeat it (keepalive still calls it for documentation clarity, but
+        // that is idempotent: `notify_one` stores at most one permit).
+        self.lifecycle.reset_idle_timer();
+
         let id = req.id.unwrap_or(0_u64);
         let connections = self.lifecycle.active_connections();
 
@@ -47,6 +54,10 @@ impl RequestHandler {
     }
 
     /// Handle `search` method.
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "search handler with param extraction, validation, and response formatting"
+    )]
     async fn handle_search(&self, id: u64, req: &RpcRequest) -> String {
         let search_params: SearchParams = match req
             .params

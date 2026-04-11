@@ -32,10 +32,34 @@ id          = "T84"
 group       = "combined"
 name        = "T84 mega combined"
 title       = "T84 mega combined"
-short_desc  = "T84 mega combined"
-cli_args    = ["*.exe", "--files-only", "--min-size", "10240", "--max-size", "1073741824", "--attr", "!hidden,!system", "--newer", "last_365d", "--sort", "-size", "--drive", "C", "--limit", "10", "--columns", "Name,Size,Modified,Path Only"]
-stdout_contains = ["\"Name\",\"Size\"", "\"Path Only\""]
+short_desc  = "exe files, 10KB–1GB, not hidden/system, last year, sorted by size desc, drive C"
+cli_args    = ["*.exe", "--files-only", "--min-size", "10240", "--max-size", "1073741824", "--attr", "!hidden,!system", "--newer", "last_365d", "--sort", "-size", "--drive", "C", "--limit", "10", "--columns", "Name,Size,Modified,Path Only,Hidden,System"]
 expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Size"
+op     = "gte"
+value  = "10240"
+
+[[test.column_checks]]
+column = "Size"
+op     = "lte"
+value  = "1073741824"
+
+[[test.column_checks]]
+column = "Hidden"
+op     = "eq"
+value  = "false"
+
+[[test.column_checks]]
+column = "System"
+op     = "eq"
+value  = "false"
+
+[[test.sort_checks]]
+column = "Size"
+order  = "desc"
+type   = "u64"
 
 [test.api_checks]
 total_count_min = 1

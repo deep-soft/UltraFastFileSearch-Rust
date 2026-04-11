@@ -273,7 +273,13 @@ async fn run() -> Result<()> {
             action: args::DaemonAction::Run { .. }
         })
     );
-    let _guard = if is_daemon_run {
+    let is_mcp_run = matches!(
+        &cli.command,
+        Some(Commands::Mcp {
+            action: args::McpAction::Run { .. } | args::McpAction::Serve { .. }
+        })
+    );
+    let _guard = if is_daemon_run || is_mcp_run {
         None
     } else {
         let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
@@ -343,6 +349,12 @@ async fn run() -> Result<()> {
         }
         Some(Commands::Daemon { action }) => {
             commands::daemon(&action).await?;
+        }
+        Some(Commands::Mcp { action }) => {
+            commands::mcp(&action).await?;
+        }
+        Some(Commands::SystemStatus) => {
+            commands::system_status().await?;
         }
         None => {
             run_search(cli).await?;

@@ -5,16 +5,12 @@
 //! - NTFS volume data retrieval
 //! - Privilege checking
 //!
-//! Some types (MftExtent, MftBitmap, DriveType) are available on all platforms
-//! for testing and offline MFT processing.
+//! Some types (`MftExtent`, `MftBitmap`, `DriveType`) are available on all
+//! platforms for testing and offline MFT processing.
 //!
 //! # Safety
 //!
 //! This module uses Windows FFI and requires careful handling of raw handles.
-
-// Platform module is mostly Windows-specific with cross-platform stubs
-#![allow(clippy::all, clippy::nursery, clippy::pedantic)]
-#![warn(clippy::unwrap_used, clippy::expect_used)]
 
 mod bitmap;
 mod extents;

@@ -602,21 +602,79 @@ fn scenario_k(r: &mut Runner) {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-fn default_binary() -> String {
-    // Check ~/bin/ first (deployed), then target/release/ (dev build)
-    let (home_var, bin_name) = if cfg!(windows) {
-        ("USERPROFILE", "uffs.exe")
-    } else {
-        ("HOME", "uffs")
-    };
-    if let Ok(home) = std::env::var(home_var) {
-        let deployed = std::path::PathBuf::from(&home).join("bin").join(bin_name);
-        if deployed.exists() {
-            return deployed.to_string_lossy().into_owned();
+/// Find the workspace root by walking up from cwd looking for Cargo.toml + .cargo.
+fn find_workspace_root() -> std::path::PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut dir = cwd.as_path();
+    loop {
+        if dir.join("Cargo.toml").exists() && dir.join(".cargo").exists() {
+            return dir.to_path_buf();
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => break,
         }
     }
-    let target = std::path::Path::new("target").join("release").join(bin_name);
-    target.to_string_lossy().into_owned()
+    cwd
+}
+
+/// Build a fresh release binary and return the path to it (macOS/Linux).
+fn ensure_fresh_release_build() -> String {
+    let workspace = find_workspace_root();
+    let binary_path = workspace.join("target").join("release").join("uffs");
+
+    eprintln!("╔══════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Building fresh release binary...                                ║");
+    eprintln!("╚══════════════════════════════════════════════════════════════════╝");
+    eprintln!("  Workspace: {}", workspace.display());
+
+    let start = Instant::now();
+    let status = Command::new("cargo")
+        .args(["build", "--release", "-p", "uffs-cli"])
+        .current_dir(&workspace)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            eprintln!("  ✅ Build completed in {:.1}s", start.elapsed().as_secs_f64());
+            eprintln!("  Binary: {}", binary_path.display());
+            eprintln!();
+        }
+        Ok(s) => {
+            eprintln!("  ❌ cargo build --release failed (exit {s})");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("  ❌ Failed to run cargo: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    binary_path.to_string_lossy().into_owned()
+}
+
+/// On non-Windows, default to ~/uffs_data when no path is given.
+fn default_data_dir() -> Option<String> {
+    if cfg!(windows) { return None; }
+    let home = std::env::var("HOME").ok()?;
+    let dir = std::path::PathBuf::from(home).join("uffs_data");
+    if dir.is_dir() { Some(dir.to_string_lossy().into_owned()) } else { None }
+}
+
+fn default_binary() -> String {
+    if cfg!(windows) {
+        // Windows: check ~/bin/ first, then target/release/.
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let deployed = std::path::PathBuf::from(&home).join("bin").join("uffs.exe");
+            if deployed.exists() {
+                return deployed.to_string_lossy().into_owned();
+            }
+        }
+        "target\\release\\uffs.exe".to_string()
+    } else {
+        // Non-Windows: always do a fresh release build so we test the latest code.
+        ensure_fresh_release_build()
+    }
 }
 
 fn main() -> Result<()> {
@@ -628,18 +686,24 @@ fn main() -> Result<()> {
             let (flag, val) = detect_data_source(path)?;
             (Some(flag), val)
         }
-        None => {
-            // No path given — Windows live drive mode.
-            if !cfg!(windows) {
-                bail!(
-                    "PATH is required on non-Windows platforms.\n\n\
-                     On macOS/Linux, provide a data directory or MFT file:\n  \
-                     rust-script scripts/dev/daemon-readiness.rs ~/uffs_data\n  \
-                     rust-script scripts/dev/daemon-readiness.rs /path/to/C_mft.iocp\n\n\
-                     On Windows, omit PATH to auto-discover live NTFS drives."
-                );
-            }
+        None if cfg!(windows) => {
+            // Windows: auto-discover live NTFS drives.
             (None, String::new())
+        }
+        None => {
+            // Non-Windows: default to ~/uffs_data if it exists.
+            match default_data_dir() {
+                Some(dir) => (Some("--data-dir"), dir),
+                None => {
+                    bail!(
+                        "PATH is required on non-Windows platforms.\n\n\
+                         On macOS/Linux, provide a data directory or MFT file:\n  \
+                         rust-script scripts/dev/daemon-readiness.rs ~/uffs_data\n  \
+                         rust-script scripts/dev/daemon-readiness.rs /path/to/C_mft.iocp\n\n\
+                         On Windows, omit PATH to auto-discover live NTFS drives."
+                    );
+                }
+            }
         }
     };
 

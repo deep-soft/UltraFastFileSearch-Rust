@@ -170,9 +170,15 @@ id          = "T97"
 group       = "filters"
 name        = "T97 --in-path + --exclude"
 title       = "T97 --in-path + --exclude"
-short_desc  = "T97 --in-path + --exclude"
+short_desc  = "Path contains 'windows', name does not start with 'setup'"
 cli_args    = ["*.exe", "--in-path", "*windows*", "--exclude", "setup*", "--files-only", "--limit", "10"]
 expect_min_rows = 1
+
+[[test.column_checks]]
+column = "Path Only"
+op     = "contains"
+value  = "windows"
+case   = "lower"
 
 [[test.column_checks]]
 column = "Name"
@@ -209,6 +215,11 @@ expect_min_rows = 1
 column = "Tree Size"
 op     = "gte"
 value  = "104857600"
+
+[[test.sort_checks]]
+column = "Size"
+order  = "desc"
+type   = "u64"
 
 [[test]]
 id          = "T102"
@@ -255,6 +266,11 @@ column = "Size on Disk"
 op     = "lte"
 value  = "4096"
 
+[[test.column_checks]]
+column = "Size"
+op     = "gte"
+value  = "1"
+
 [[test]]
 id          = "T118"
 group       = "filters"
@@ -274,4 +290,9 @@ value  = "10485760"
 column = "Descendants"
 op     = "gte"
 value  = "10"
+
+[[test.sort_checks]]
+column = "Size"
+order  = "desc"
+type   = "u64"
 

@@ -857,6 +857,64 @@ fn from_params_converts_bulkiness_percentage_to_per_million() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// path_contains separator normalization
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn normalize_path_separators_collapses_double_backslash() {
+    assert_eq!(normalize_path_separators("users\\\\rnio"), "users\\rnio");
+}
+
+#[test]
+fn normalize_path_separators_replaces_forward_slash() {
+    assert_eq!(normalize_path_separators("users/rnio"), "users\\rnio");
+}
+
+#[test]
+fn normalize_path_separators_mixed_separators() {
+    assert_eq!(
+        normalize_path_separators("github//ultra\\\\fast/search"),
+        "github\\ultra\\fast\\search"
+    );
+}
+
+#[test]
+fn normalize_path_separators_single_backslash_unchanged() {
+    assert_eq!(normalize_path_separators("users\\rnio"), "users\\rnio");
+}
+
+#[test]
+fn normalize_path_separators_no_separators() {
+    assert_eq!(normalize_path_separators("rnio"), "rnio");
+}
+
+#[test]
+fn from_params_path_contains_normalizes_separators() {
+    let filters = SearchFilters::from_params(&SearchFilterParams {
+        path_contains: Some("Users\\\\rnio\\\\GitHub"),
+        ..Default::default()
+    });
+    assert_eq!(
+        filters.path_contains_lower.as_deref(),
+        Some("users\\rnio\\github"),
+        "double backslashes should be collapsed to single"
+    );
+}
+
+#[test]
+fn from_params_path_contains_normalizes_forward_slashes() {
+    let filters = SearchFilters::from_params(&SearchFilterParams {
+        path_contains: Some("Users/rnio/GitHub"),
+        ..Default::default()
+    });
+    assert_eq!(
+        filters.path_contains_lower.as_deref(),
+        Some("users\\rnio\\github"),
+        "forward slashes should be converted to backslashes"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Attribute presets
 // ═══════════════════════════════════════════════════════════════════════════
 

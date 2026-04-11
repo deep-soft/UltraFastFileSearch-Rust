@@ -24,28 +24,31 @@ pub fn verify_daemon_identity(pid: u32) -> bool {
         return true; // graceful degradation
     };
 
-    let daemon_name = daemon_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-
-    // Check that the process is actually uffs-daemon (not something else)
-    let is_valid = daemon_name == "uffs-daemon"
-        || daemon_name == "uffs-daemon.exe"
-        || daemon_name.starts_with("uffs-daemon") // covers uffs-daemon-v0.4.14 etc.
-        || daemon_name.starts_with("uffs_daemon"); // covers cargo build output
-
-    if !is_valid {
-        tracing::warn!(
-            pid,
-            exe = %daemon_path.display(),
-            "Daemon identity verification FAILED — process is not uffs-daemon"
-        );
+    if !is_uffs_daemon_binary(&daemon_path) {
+        log_identity_failed(pid, &daemon_path);
         return false;
     }
 
     // S4.3.8: Also verify code signature (graceful — warn but don't block)
     let sig_ok = verify_code_signature(&daemon_path);
+    log_identity_result(pid, &daemon_path, sig_ok);
+
+    // Return true even if signature fails — graceful degradation
+    // (unsigned dev builds should still work)
+    true
+}
+
+/// Log a failed identity check.
+fn log_identity_failed(pid: u32, daemon_path: &std::path::Path) {
+    tracing::warn!(
+        pid,
+        exe = %daemon_path.display(),
+        "Daemon identity verification FAILED — process is not uffs-daemon"
+    );
+}
+
+/// Log the final identity verification result.
+fn log_identity_result(pid: u32, daemon_path: &std::path::Path, sig_ok: bool) {
     if !sig_ok {
         tracing::warn!(
             pid,
@@ -53,17 +56,21 @@ pub fn verify_daemon_identity(pid: u32) -> bool {
             "Daemon code signature verification failed"
         );
     }
-
     tracing::debug!(
         pid,
         exe = %daemon_path.display(),
         signed = sig_ok,
         "Daemon identity verified"
     );
+}
 
-    // Return true even if signature fails — graceful degradation
-    // (unsigned dev builds should still work)
-    is_valid
+/// Check whether `path` looks like a valid `uffs-daemon` binary name.
+fn is_uffs_daemon_binary(path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    name == "uffs-daemon"
+        || name == "uffs-daemon.exe"
+        || name.starts_with("uffs-daemon")
+        || name.starts_with("uffs_daemon")
 }
 
 /// Verify daemon identity using the PID file at the given path.
@@ -240,27 +247,34 @@ pub fn verify_code_signature(exe_path: &std::path::Path) -> bool {
         .stderr(std::process::Stdio::piped())
         .output();
 
-    match output {
-        Ok(out) => {
-            if out.status.success() {
-                tracing::debug!(exe = %exe_path.display(), "Code signature valid");
-                true
-            } else {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                if stderr.contains("not signed") || stderr.contains("code object is not signed") {
-                    tracing::debug!(exe = %exe_path.display(), "Binary is not code-signed (acceptable for dev builds)");
-                    true
-                } else {
-                    tracing::warn!(exe = %exe_path.display(), "Code signature INVALID — binary may have been tampered with");
-                    false
-                }
-            }
-        }
+    let out = match output {
+        Ok(out) => out,
         Err(_codesign_err) => {
             tracing::debug!("Code signature verification not available on this platform");
-            true
+            return true;
         }
+    };
+
+    classify_codesign_output(exe_path, &out)
+}
+
+/// Classify the output of `codesign --verify` into pass/fail.
+#[cfg(target_os = "macos")]
+fn classify_codesign_output(exe_path: &std::path::Path, out: &std::process::Output) -> bool {
+    if out.status.success() {
+        tracing::debug!(exe = %exe_path.display(), "Code signature valid");
+        return true;
     }
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let unsigned = stderr.contains("not signed") || stderr.contains("code object is not signed");
+    if unsigned {
+        tracing::debug!(exe = %exe_path.display(), "Binary is not code-signed (acceptable for dev builds)");
+        return true;
+    }
+
+    tracing::warn!(exe = %exe_path.display(), "Code signature INVALID — binary may have been tampered with");
+    false
 }
 
 /// Windows: verify Authenticode signature via PowerShell.
@@ -278,26 +292,32 @@ pub fn verify_code_signature(exe_path: &std::path::Path) -> bool {
         .stderr(std::process::Stdio::null())
         .output();
 
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-            match stdout.as_str() {
-                "Valid" => {
-                    tracing::debug!(exe = %exe_path.display(), "Code signature valid");
-                    true
-                }
-                "HashMismatch" | "UnknownError" => {
-                    tracing::warn!(exe = %exe_path.display(), "Code signature INVALID — binary may have been tampered with");
-                    false
-                }
-                _ => {
-                    tracing::debug!(exe = %exe_path.display(), "Binary is not code-signed (acceptable for dev builds)");
-                    true
-                }
-            }
-        }
+    let out = match output {
+        Ok(out) => out,
         Err(_ps_err) => {
             tracing::debug!("Code signature verification not available on this platform");
+            return true;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    classify_authenticode_status(exe_path, &stdout)
+}
+
+/// Classify an Authenticode status string from PowerShell.
+#[cfg(target_os = "windows")]
+fn classify_authenticode_status(exe_path: &std::path::Path, status: &str) -> bool {
+    match status {
+        "Valid" => {
+            tracing::debug!(exe = %exe_path.display(), "Code signature valid");
+            true
+        }
+        "HashMismatch" | "UnknownError" => {
+            tracing::warn!(exe = %exe_path.display(), "Code signature INVALID — binary may have been tampered with");
+            false
+        }
+        _ => {
+            tracing::debug!(exe = %exe_path.display(), "Binary is not code-signed (acceptable for dev builds)");
             true
         }
     }

@@ -1,14 +1,14 @@
 # ============================================================================
-# uffs-mcp: MCP Stdio Adapter for UFFS
+# uffs-mcp: MCP Server for UFFS (stdio + Streamable HTTP)
 # ============================================================================
 # Bridges AI agents (Claude, Cursor, Windsurf) to the UFFS daemon via the
-# Model Context Protocol (MCP). Reads JSON-RPC from stdin, translates to
-# uffs-client calls, writes responses to stdout.
+# Model Context Protocol (MCP). Default: JSON-RPC over stdio.
+# With `streamable-http` feature: also serves MCP over Streamable HTTP.
 # ============================================================================
 
 [package]
 name = "uffs-mcp"
-description = "MCP stdio adapter for UFFS — bridges AI agents to the daemon"
+description = "MCP server for UFFS — bridges AI agents to the daemon (stdio + HTTP)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,9 +19,26 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+name = "uffs_mcp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "uffs-mcp"
 path = "src/main.rs"
+
+[[bin]]
+name = "uffs-mcp-http"
+path = "src/bin/http_gateway.rs"
+required-features = ["streamable-http"]
+
+[features]
+default = []
+streamable-http = [
+    "rmcp/transport-streamable-http-server",
+    "dep:axum",
+    "dep:tower-service",
+]
 
 [dependencies]
 # Internal
@@ -30,16 +47,32 @@ uffs-client.workspace = true
 # Async
 tokio.workspace = true
 
+# MCP SDK
+rmcp.workspace = true
+schemars.workspace = true
+
 # Serialization (MCP JSON-RPC)
 serde.workspace = true
 serde_json.workspace = true
 
 # Error handling
 anyhow.workspace = true
+thiserror.workspace = true
 
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uffs-core = { version = "0.4.101", path = "../uffs-core" }
+dirs-next.workspace = true
+tracing-appender.workspace = true
+
+# HTTP gateway (feature-gated)
+axum = { workspace = true, optional = true }
+tower-service = { workspace = true, optional = true }
+
+[dev-dependencies]
+rmcp = { version = "1.3", default-features = false, features = ["client", "transport-io"] }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

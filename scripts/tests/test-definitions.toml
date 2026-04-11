@@ -3,7 +3,7 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #
 #  Shared test definitions consumed by both:
-#    - scripts/windows/cli-flag-validation.rs  (CLI validation)
+#    - scripts/windows/cli-validation  (CLI validation)
 #    - scripts/windows/api-validation.rs       (JSON-RPC API validation)
 #
 #  Tests are split into per-group files under definitions/:

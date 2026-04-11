@@ -140,6 +140,7 @@ impl UpcaseHeader {
 ///
 /// Public so callers can build an [`UpcaseHeader`] with the correct
 /// checksum before calling [`save_upcase_to_file`].
+#[must_use]
 pub fn crc32_table(data: &[u8]) -> u32 {
     crc32(data)
 }
@@ -209,7 +210,10 @@ pub fn load_upcase_from_file(path: &std::path::Path) -> Result<(UpcaseHeader, Bo
     // Extract raw table bytes (starts at offset 64).
     let table_bytes = &data[HEADER_SIZE..HEADER_SIZE + UPCASE_SIZE_BYTES];
     let u16_slice: &[u16] = bytemuck::cast_slice(table_bytes);
-    let mut table = Box::new([0u16; 65_536]);
+    let mut table: Box<[u16; 65_536]> = vec![0u16; 65_536]
+        .into_boxed_slice()
+        .try_into()
+        .map_err(|_| MftError::InvalidData("upcase table size mismatch".to_owned()))?;
     table.copy_from_slice(u16_slice);
 
     // Verify CRC-32.
@@ -288,7 +292,7 @@ fn parse_data_runs(record_bytes: &[u8]) -> Result<UpcaseDataRuns> {
 ///
 /// Returns [`MftError::PlatformNotSupported`] on non-Windows.
 #[cfg(not(windows))]
-pub fn read_upcase_table(_drive: char) -> Result<Box<[u16; 65_536]>> {
+pub const fn read_upcase_table(_drive: char) -> Result<Box<[u16; 65_536]>> {
     Err(MftError::PlatformNotSupported)
 }
 
@@ -427,6 +431,10 @@ mod tests {
     fn save_and_load_roundtrip() -> Result<()> {
         let fold = uffs_text::CaseFold::default_table();
         let raw_table = fold.table();
+        #[expect(
+            clippy::large_stack_arrays,
+            reason = "immediately boxed — no stack allocation"
+        )]
         let mut table = Box::new([0_u16; 65_536]);
         table.copy_from_slice(raw_table);
 

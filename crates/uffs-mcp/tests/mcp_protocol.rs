@@ -1,233 +1,277 @@
-//! MCP protocol end-to-end tests (D4.3).
+//! MCP protocol tests (D4.3).
 //!
-//! Spawns the `uffs-mcp` binary, pipes JSON-RPC to stdin, reads stdout,
-//! and verifies the MCP protocol flow.
-//!
-//! NOTE: These tests require a running daemon OR will test the MCP
-//! protocol error handling when the daemon is unavailable.
+//! Uses `tokio::io::duplex` to create in-process transport pairs,
+//! connects an rmcp client to our `UffsMcpServer` handler, and verifies
+//! tools/list, resources/list, and prompts/list responses.
+
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests are inherently outside cfg(test)"
 )]
-#![expect(
-    clippy::print_stderr,
-    reason = "eprintln is appropriate in integration tests for skip notices"
+#![allow(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::min_ident_chars,
+    clippy::let_underscore_must_use,
+    clippy::let_underscore_untyped,
+    clippy::match_wildcard_for_single_variants,
+    clippy::panic
 )]
 
-// These crates are used by the uffs-mcp binary but not by this test target.
-// Acknowledge them so `unused-crate-dependencies` doesn't fire.
-use core::time::Duration;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
-
+// Acknowledge crates used by the lib/bin but not this test target.
 use anyhow as _;
+use axum as _;
+use dirs_next as _;
+use rmcp::{ClientHandler, ServiceExt};
+use schemars as _;
 use serde as _;
-use tokio as _;
+use thiserror as _;
+use tower_service as _;
 use tracing as _;
+use tracing_appender as _;
 use tracing_subscriber as _;
 use uffs_client as _;
+use uffs_core as _;
+use uffs_mcp::handler::UffsMcpServer;
 
-/// Spawn uffs-mcp with piped stdin/stdout.
-fn spawn_mcp() -> Option<(
-    Child,
-    std::process::ChildStdin,
-    BufReader<std::process::ChildStdout>,
-)> {
-    let mut exe = std::env::current_exe().expect("current_exe");
-    exe.pop(); // remove test binary name
-    exe.pop(); // remove deps/
-    exe.push("uffs-mcp");
-    if !exe.exists() {
-        eprintln!("uffs-mcp binary not found at {}, skipping", exe.display());
-        eprintln!("Run `cargo build -p uffs-mcp` first.");
-        return None;
+/// Spin up an in-process MCP server + client pair over a duplex channel.
+///
+/// Returns the client peer which can call `list_tools`, `list_resources`,
+/// `list_prompts`, `get_prompt`, etc.
+async fn setup_client() -> rmcp::service::RunningService<rmcp::RoleClient, impl ClientHandler> {
+    let (server_io, client_io) = tokio::io::duplex(8192);
+
+    // Server side — spawn in background and keep alive until client disconnects.
+    let server = UffsMcpServer::new_unconnected();
+    tokio::spawn(async move {
+        let server_handle = server.serve(server_io).await.unwrap();
+        // Keep the server alive until the transport closes.
+        let _ = server_handle.waiting().await;
+    });
+
+    // Client side — connect.
+    ().serve(client_io).await.unwrap()
+}
+
+// ── tools/list ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_mcp_tools_list() {
+    let client = setup_client().await;
+    let tools = client.list_tools(None).await.unwrap();
+
+    assert_eq!(tools.tools.len(), 6, "expected 6 tools");
+
+    let names: Vec<_> = tools.tools.iter().map(|t| t.name.as_ref()).collect();
+    assert!(names.contains(&"uffs_search"));
+    assert!(names.contains(&"uffs_info"));
+    assert!(names.contains(&"uffs_drives"));
+    assert!(names.contains(&"uffs_status"));
+    assert!(names.contains(&"uffs_aggregate"));
+    assert!(names.contains(&"uffs_facet_values"));
+
+    client.cancel().await.unwrap();
+}
+
+// ── resources/list ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_mcp_resources_list() {
+    let client = setup_client().await;
+    let resources = client.list_resources(None).await.unwrap();
+
+    assert_eq!(resources.resources.len(), 7, "expected 7 resources");
+
+    let uris: Vec<_> = resources
+        .resources
+        .iter()
+        .map(|r| r.raw.uri.as_str())
+        .collect();
+    // Live metadata resources
+    assert!(uris.contains(&"uffs://drives"));
+    assert!(uris.contains(&"uffs://status"));
+    // Static schema resources
+    assert!(uris.contains(&"uffs://schema/fields"));
+    assert!(uris.contains(&"uffs://schema/search"));
+    assert!(uris.contains(&"uffs://schema/aggregate"));
+    assert!(uris.contains(&"uffs://presets/aggregate"));
+    // Agent cookbook
+    assert!(uris.contains(&"uffs://cookbook"));
+
+    client.cancel().await.unwrap();
+}
+
+// ── resources/read (static schemas) ──────────────────────────────────
+
+/// Extract text content from a `ResourceContents` enum variant.
+fn extract_text(rc: &rmcp::model::ResourceContents) -> &str {
+    match rc {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.as_str(),
+        _ => panic!("expected TextResourceContents"),
     }
-
-    let mut child = Command::new(&exe)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-
-    let stdin = child.stdin.take()?;
-    let stdout = BufReader::new(child.stdout.take()?);
-
-    Some((child, stdin, stdout))
 }
 
-/// Send a JSON-RPC request and read the response.
-fn send_and_read(
-    stdin: &mut std::process::ChildStdin,
-    stdout: &mut BufReader<std::process::ChildStdout>,
-    req: &str,
-) -> Option<String> {
-    stdin.write_all(req.as_bytes()).ok()?;
-    stdin.write_all(b"\n").ok()?;
-    stdin.flush().ok()?;
+#[tokio::test]
+async fn test_mcp_read_schema_fields() {
+    let client = setup_client().await;
+    let result = client
+        .read_resource(rmcp::model::ReadResourceRequestParams::new(
+            "uffs://schema/fields",
+        ))
+        .await
+        .unwrap();
 
-    let mut line = String::new();
-    // Give it a moment to process
-    std::thread::sleep(Duration::from_millis(200));
-    stdout.read_line(&mut line).ok()?;
-    Some(line)
+    let text = extract_text(result.contents.first().unwrap());
+    let json: serde_json::Value = serde_json::from_str(text).unwrap();
+    let arr = json.as_array().unwrap();
+    // At least 30 fields in the catalog
+    assert!(arr.len() >= 30, "expected ≥30 fields, got {}", arr.len());
+    // Check first entry has expected structure
+    let first = &arr[0];
+    assert!(first.get("name").is_some());
+    assert!(first.get("field_type").is_some());
+    assert!(first.get("sortable").is_some());
+
+    client.cancel().await.unwrap();
 }
 
-/// D4.3.1: Test MCP initialize handshake.
-#[test]
-fn test_mcp_initialize() {
-    let Some((mut child, mut stdin, mut stdout)) = spawn_mcp() else {
-        eprintln!("Skipping: uffs-mcp not available");
-        return;
-    };
+#[tokio::test]
+async fn test_mcp_read_schema_search() {
+    let client = setup_client().await;
+    let result = client
+        .read_resource(rmcp::model::ReadResourceRequestParams::new(
+            "uffs://schema/search",
+        ))
+        .await
+        .unwrap();
 
-    let resp = send_and_read(
-        &mut stdin,
-        &mut stdout,
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#,
+    let text = extract_text(result.contents.first().unwrap());
+    let json: serde_json::Value = serde_json::from_str(text).unwrap();
+    // Should be a JSON Schema with "properties"
+    assert!(
+        json.get("properties").is_some() || json.get("$defs").is_some(),
+        "search schema should have properties or $defs"
     );
 
-    if let Some(body) = &resp {
-        assert!(
-            body.contains("\"protocolVersion\""),
-            "should have protocolVersion: {body}"
-        );
-        assert!(body.contains("\"tools\""), "should advertise tools: {body}");
-        assert!(
-            body.contains("\"resources\""),
-            "should advertise resources: {body}"
-        );
-        assert!(
-            body.contains("\"prompts\""),
-            "should advertise prompts: {body}"
-        );
-        assert!(
-            body.contains("\"uffs\""),
-            "server name should be uffs: {body}"
-        );
-    }
-
-    // Send initialized notification
-    drop(send_and_read(
-        &mut stdin,
-        &mut stdout,
-        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
-    ));
-
-    drop(child.kill());
+    client.cancel().await.unwrap();
 }
 
-/// D4.3.1: Test tools/list returns our 4 tools.
-#[test]
-fn test_mcp_tools_list() {
-    let Some((mut child, mut stdin, mut stdout)) = spawn_mcp() else {
-        return;
-    };
+#[tokio::test]
+async fn test_mcp_read_aggregate_presets() {
+    let client = setup_client().await;
+    let result = client
+        .read_resource(rmcp::model::ReadResourceRequestParams::new(
+            "uffs://presets/aggregate",
+        ))
+        .await
+        .unwrap();
 
-    // Initialize first
-    drop(send_and_read(
-        &mut stdin,
-        &mut stdout,
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#,
-    ));
+    let text = extract_text(result.contents.first().unwrap());
+    let json: serde_json::Value = serde_json::from_str(text).unwrap();
+    let arr = json.as_array().unwrap();
+    assert!(arr.len() >= 10, "expected ≥10 presets, got {}", arr.len());
+    let names: Vec<&str> = arr.iter().filter_map(|p| p["name"].as_str()).collect();
+    assert!(names.contains(&"overview"));
+    assert!(names.contains(&"by_extension"));
+    assert!(names.contains(&"duplicates"));
 
-    let resp = send_and_read(
-        &mut stdin,
-        &mut stdout,
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
-    );
-
-    if let Some(body) = &resp {
-        assert!(
-            body.contains("uffs_search"),
-            "should have uffs_search: {body}"
-        );
-        assert!(
-            body.contains("uffs_drives"),
-            "should have uffs_drives: {body}"
-        );
-        assert!(
-            body.contains("uffs_status"),
-            "should have uffs_status: {body}"
-        );
-        assert!(body.contains("uffs_info"), "should have uffs_info: {body}");
-    }
-
-    drop(child.kill());
+    client.cancel().await.unwrap();
 }
 
-/// D4.3.1: Test resources/list returns our 2 resources.
-#[test]
-fn test_mcp_resources_list() {
-    let Some((mut child, mut stdin, mut stdout)) = spawn_mcp() else {
-        return;
-    };
+// ── resources/templates ──────────────────────────────────────────────
 
-    drop(send_and_read(
-        &mut stdin,
-        &mut stdout,
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#,
-    ));
+#[tokio::test]
+async fn test_mcp_resource_templates_list() {
+    let client = setup_client().await;
+    let templates = client.list_resource_templates(None).await.unwrap();
 
-    let resp = send_and_read(
-        &mut stdin,
-        &mut stdout,
-        r#"{"jsonrpc":"2.0","id":3,"method":"resources/list","params":{}}"#,
+    assert!(
+        !templates.resource_templates.is_empty(),
+        "expected at least 1 resource template"
     );
 
-    if let Some(body) = &resp {
-        assert!(
-            body.contains("uffs://drives"),
-            "should have drives resource: {body}"
-        );
-        assert!(
-            body.contains("uffs://status"),
-            "should have status resource: {body}"
-        );
-    }
+    let uris: Vec<&str> = templates
+        .resource_templates
+        .iter()
+        .map(|t| t.raw.uri_template.as_str())
+        .collect();
+    assert!(
+        uris.contains(&"uffs://info/{path}"),
+        "expected uffs://info/{{path}} template, got: {uris:?}"
+    );
 
-    drop(child.kill());
+    client.cancel().await.unwrap();
 }
 
-/// D4.3.1: Test prompts/list returns our 4 prompts.
-#[test]
-fn test_mcp_prompts_list() {
-    let Some((mut child, mut stdin, mut stdout)) = spawn_mcp() else {
-        return;
-    };
+// ── prompts/list ────────────────────────────────────────────────────
 
-    drop(send_and_read(
-        &mut stdin,
-        &mut stdout,
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#,
-    ));
+#[tokio::test]
+async fn test_mcp_prompts_list() {
+    let client = setup_client().await;
+    let prompts = client.list_prompts(None).await.unwrap();
 
-    let resp = send_and_read(
-        &mut stdin,
-        &mut stdout,
-        r#"{"jsonrpc":"2.0","id":4,"method":"prompts/list","params":{}}"#,
-    );
+    assert_eq!(prompts.prompts.len(), 7, "expected 7 prompts");
 
-    if let Some(body) = &resp {
-        assert!(
-            body.contains("find_large_files"),
-            "should have find_large_files: {body}"
-        );
-        assert!(
-            body.contains("recent_changes"),
-            "should have recent_changes: {body}"
-        );
-        assert!(
-            body.contains("find_by_extension"),
-            "should have find_by_extension: {body}"
-        );
-        assert!(
-            body.contains("find_duplicates_by_name"),
-            "should have find_duplicates: {body}"
-        );
-    }
+    let names: Vec<_> = prompts.prompts.iter().map(|p| p.name.as_ref()).collect();
+    assert!(names.contains(&"find_large_files"));
+    assert!(names.contains(&"recent_changes"));
+    assert!(names.contains(&"find_by_extension"));
+    assert!(names.contains(&"find_duplicates_by_name"));
+    assert!(names.contains(&"disk_usage_report"));
+    assert!(names.contains(&"cleanup_report"));
+    assert!(names.contains(&"duplicate_investigation"));
 
-    drop(child.kill());
+    client.cancel().await.unwrap();
+}
+
+// ── get_prompt ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_mcp_get_prompt_find_large_files() {
+    let client = setup_client().await;
+
+    let result = client
+        .get_prompt(
+            rmcp::model::GetPromptRequestParams::new("find_large_files").with_arguments(
+                serde_json::Map::from_iter([("limit".to_owned(), serde_json::json!("10"))]),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.messages.len(), 1);
+    let msg_text = format!("{:?}", result.messages[0]);
+    assert!(msg_text.contains("10"), "limit 10: {msg_text}");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_mcp_get_prompt_unknown_returns_error() {
+    let client = setup_client().await;
+
+    let result = client
+        .get_prompt(rmcp::model::GetPromptRequestParams::new("does_not_exist"))
+        .await;
+
+    assert!(result.is_err(), "unknown prompt should error");
+
+    client.cancel().await.unwrap();
+}
+
+// ── call_tool with unknown name ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_mcp_call_unknown_tool_returns_error() {
+    let client = setup_client().await;
+
+    let result = client
+        .call_tool(rmcp::model::CallToolRequestParams::new("uffs.nonexistent"))
+        .await;
+
+    assert!(result.is_err(), "unknown tool should error");
+
+    client.cancel().await.unwrap();
 }
 
 /// D4.3.2: Claude Desktop MCP configuration example.

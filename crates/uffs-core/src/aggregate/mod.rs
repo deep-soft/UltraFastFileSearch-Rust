@@ -104,7 +104,7 @@ pub use spec::{
 };
 pub use verify::{DuplicateVerifier, FileReader, VerificationBudget, VerificationSummary};
 
-use crate::compact::DriveCompactIndex;
+use crate::compact::{CompactRecord, DriveCompactIndex};
 
 /// Result of running one or more aggregate specs against a set of drives.
 ///
@@ -119,6 +119,66 @@ pub struct AggregateOutput {
     pub records_matched: u64,
     /// Wall-clock execution time in microseconds.
     pub execution_us: u64,
+}
+
+/// Lightweight filter for pre-scan record selection in aggregate queries.
+///
+/// Unlike the full `SearchFilters` (which lives in the search path and
+/// supports pattern matching, path predicates, etc.), this struct carries
+/// only the fast, O(1)-per-record checks that can be applied during the
+/// aggregation scan without path resolution.
+///
+/// Extension IDs are **per-drive** — call
+/// [`DriveCompactIndex::resolve_ext_ids`] once per drive before scanning.
+#[derive(Debug, Clone, Default)]
+pub struct AggregateFilter {
+    /// Extension name strings (lowercase, no dot).  Resolved to per-drive
+    /// `u16` IDs before scanning via [`DriveCompactIndex::resolve_ext_ids`].
+    pub extensions: Vec<String>,
+    /// If `Some(true)` only directories; `Some(false)` only files.
+    pub directory_only: Option<bool>,
+    /// Minimum file size (inclusive).
+    pub min_size: Option<u64>,
+    /// Maximum file size (inclusive).
+    pub max_size: Option<u64>,
+}
+
+impl AggregateFilter {
+    /// Returns `true` if no filter constraints are set.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.extensions.is_empty()
+            && self.directory_only.is_none()
+            && self.min_size.is_none()
+            && self.max_size.is_none()
+    }
+
+    /// O(1) per-record check using pre-resolved extension IDs.
+    #[inline]
+    fn matches(&self, record: &CompactRecord, resolved_ext_ids: &[u16]) -> bool {
+        // Directory / file filter.
+        if let Some(dirs_only) = self.directory_only
+            && record.is_directory() != dirs_only
+        {
+            return false;
+        }
+        // Extension filter (fast path via pre-resolved IDs).
+        if !resolved_ext_ids.is_empty() && !resolved_ext_ids.contains(&record.extension_id) {
+            return false;
+        }
+        // Size bounds.
+        if let Some(min) = self.min_size
+            && record.size < min
+        {
+            return false;
+        }
+        if let Some(max) = self.max_size
+            && record.size > max
+        {
+            return false;
+        }
+        true
+    }
 }
 
 /// Cross-drive canonical extension mapping.
@@ -330,6 +390,125 @@ pub fn run_aggregate_filtered(
         total_scanned,
         total_matched,
         "run_aggregate_filtered: scan complete"
+    );
+
+    // 3. Finalize.
+    let response = finalize::finalize_with_ext_map(
+        merged,
+        &plan,
+        drives,
+        options,
+        total_matched,
+        Some(&ext_map),
+    );
+
+    Ok(AggregateOutput {
+        response,
+        records_scanned: total_scanned,
+        records_matched: total_matched,
+        execution_us: start.elapsed().as_micros() as u64,
+    })
+}
+
+/// Run aggregation with both pattern and record-level filters.
+///
+/// Combines the glob/regex pattern matching of [`run_aggregate_filtered`]
+/// with the O(1) per-record checks from [`AggregateFilter`] (extension IDs,
+/// directory flag, size bounds).  This is the entry point for MCP/daemon
+/// aggregate queries that combine `pattern` + `type_filter` + `filter`.
+///
+/// When `filter.is_empty()` and pattern is `"*"`, this behaves identically
+/// to [`run_aggregate`] (unfiltered).
+///
+/// # Errors
+///
+/// Returns an error if any spec references an invalid field or if
+/// accumulator construction fails.
+pub fn run_aggregate_with_filters(
+    drives: &[&DriveCompactIndex],
+    specs: &[AggregateSpec],
+    options: &FinalizeOptions,
+    pattern: Option<&str>,
+    filter: &AggregateFilter,
+) -> Result<AggregateOutput, AggregateError> {
+    // Fast path: no filters and trivial pattern → unfiltered scan.
+    use uffs_text::CaseFold;
+
+    use crate::index_search::compile_parsed_pattern;
+    use crate::pattern::ParsedPattern;
+
+    let trivial_pattern = pattern.is_none_or(|p| matches!(p, "*" | "**" | "**/*" | ""));
+    if filter.is_empty() && trivial_pattern {
+        return run_aggregate(drives, specs, options);
+    }
+    // Pattern-only → delegate to existing filtered path.
+    if filter.is_empty() {
+        if let Some(pat) = pattern {
+            return run_aggregate_filtered(drives, specs, options, pat);
+        }
+        return run_aggregate(drives, specs, options);
+    }
+
+    let start = std::time::Instant::now();
+
+    // Compile pattern (if non-trivial).
+    let fold = CaseFold::default_table();
+    let compiled_pattern = if trivial_pattern {
+        None
+    } else {
+        let pat = pattern.unwrap_or("*");
+        let parsed = ParsedPattern::parse(pat)
+            .map_err(|e| AggregateError::InvalidConfig(format!("bad pattern: {e}")))?;
+        Some(
+            compile_parsed_pattern(&parsed)
+                .map_err(|e| AggregateError::InvalidConfig(format!("bad pattern: {e}")))?,
+        )
+    };
+
+    // 1. Compile aggregation plan.
+    let plan = AggregatePlan::compile(specs)?;
+    let ext_map = ExtensionMap::build(drives);
+
+    // 2. Scan each drive with combined filter.
+    let mut merged = plan.create_accumulators();
+    let mut total_scanned: u64 = 0;
+    let mut total_matched: u64 = 0;
+
+    for (drive_ordinal, drive) in drives.iter().enumerate() {
+        let ordinal = drive_ordinal.min(u8::MAX as usize) as u8;
+        // Resolve extension names → per-drive u16 IDs (< 1µs).
+        let resolved_ext_ids = drive.resolve_ext_ids(&filter.extensions);
+
+        for (idx, record) in drive.records.iter().enumerate() {
+            total_scanned += 1;
+
+            // Record-level filter (O(1) — extension ID + directory flag + size).
+            if !filter.matches(record, &resolved_ext_ids) {
+                continue;
+            }
+
+            // Pattern filter (if non-trivial).
+            if let Some(pat) = &compiled_pattern {
+                let name = record.name(&drive.names);
+                if name.is_empty() || !pat.matches(name, false, fold) {
+                    continue;
+                }
+            }
+
+            total_matched += 1;
+            for acc in &mut merged {
+                acc.feed(record, drive, idx, ordinal, Some(&ext_map));
+            }
+        }
+    }
+
+    tracing::info!(
+        total_scanned,
+        total_matched,
+        has_pattern = compiled_pattern.is_some(),
+        ext_count = filter.extensions.len(),
+        dir_only = ?filter.directory_only,
+        "run_aggregate_with_filters: scan complete"
     );
 
     // 3. Finalize.

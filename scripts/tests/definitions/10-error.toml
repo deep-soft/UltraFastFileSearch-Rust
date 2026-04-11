@@ -6,12 +6,14 @@ id          = "T40"
 group       = "error"
 name        = "T40 no results (graceful)"
 title       = "T40 no results (graceful)"
-short_desc  = "T40 no results (graceful)"
+short_desc  = "Nonsense pattern returns 0 rows without error"
 cli_args    = ["xyzzy_nonexistent_file_pattern_12345", "--limit", "10"]
 expect_min_rows = 0
 expect_max_rows = 0
+expect_exit_code = 0
 stdout_contains = ["\"Path\""]
 
 [test.api_checks]
-result_has_key = ["rows"]
+result_has_key = ["rows", "records_scanned"]
+total_count_min = 0
 

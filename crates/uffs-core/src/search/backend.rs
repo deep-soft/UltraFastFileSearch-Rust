@@ -537,6 +537,10 @@ impl MultiDriveBackend {
     clippy::too_many_lines,
     reason = "search dispatch with three modes and a drive filter — mirrors MultiDriveBackend::search"
 )]
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "search dispatch with pattern/regex/glob modes, sort, and drive filter"
+)]
 pub fn search_index(
     index: &DriveIndex,
     req: SearchRequest<'_>,

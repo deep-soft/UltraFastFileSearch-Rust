@@ -572,6 +572,30 @@ fn extract_group_key(
             }
         }
         Some(FieldId::Drive) => u64::from(drive.letter as u32),
+        Some(FieldId::Type) => {
+            use crate::search::derived::{
+                SEMANTIC_TYPE_ID_DIRECTORY, SEMANTIC_TYPE_ID_FILE, semantic_type_id_from_extension,
+            };
+            if record.flags & 0x0010 != 0 {
+                return SEMANTIC_TYPE_ID_DIRECTORY;
+            }
+            let name = record.name(&drive.names);
+            let ext = name.rsplit('.').next().unwrap_or("");
+            if ext.len() == name.len() {
+                return SEMANTIC_TYPE_ID_FILE;
+            }
+            // Stack-based lowercase for short extensions (covers 99%+).
+            let mut buf = [0_u8; 16];
+            let ext_lower = if ext.len() <= buf.len() {
+                for (i, b) in ext.bytes().enumerate() {
+                    buf[i] = b.to_ascii_lowercase();
+                }
+                core::str::from_utf8(&buf[..ext.len()]).unwrap_or(ext)
+            } else {
+                ext
+            };
+            semantic_type_id_from_extension(ext_lower)
+        }
         Some(FieldId::DirectoryFlag) => u64::from(record.flags & 0x0010 != 0),
         Some(FieldId::Hidden) => u64::from(record.flags & 0x0002 != 0),
         Some(FieldId::System) => u64::from(record.flags & 0x0004 != 0),

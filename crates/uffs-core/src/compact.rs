@@ -776,46 +776,50 @@ pub(crate) const INDEX_TTL_SECONDS: u64 = 14400;
 /// from the compiled-in default at `WARN`. On failure, log at `WARN`
 /// and fall back to [`CaseFold::default_table()`].
 pub(crate) fn resolve_case_fold(drive_letter: char) -> uffs_text::CaseFold {
-    match uffs_mft::platform::upcase::read_upcase_table(drive_letter) {
-        Ok(live_table) => {
-            let default = uffs_text::CaseFold::default_table();
-
-            // Compare live vs default.
-            // Leak the box to get a `&'static [u16]` for CaseFold::from_ntfs.
-            let live_fold = uffs_text::CaseFold::from_ntfs(Box::leak(live_table));
-            let diffs = default.diff(&live_fold);
-
-            if diffs.is_empty() {
-                tracing::info!(
-                    drive = %drive_letter,
-                    "$UpCase loaded from live volume — identical to compiled-in default"
-                );
-            } else {
-                tracing::info!(
-                    drive = %drive_letter,
-                    diff_count = diffs.len(),
-                    "$UpCase loaded from live volume — differs from compiled-in default"
-                );
-                for diff in &diffs {
-                    tracing::warn!(
-                        drive = %drive_letter,
-                        codepoint = format_args!("U+{:04X}", diff.codepoint),
-                        default = format_args!("U+{:04X}", diff.default_maps_to),
-                        live = format_args!("U+{:04X}", diff.live_maps_to),
-                        "$UpCase diff"
-                    );
-                }
-            }
-            live_fold
-        }
+    let live_table = match uffs_mft::platform::upcase::read_upcase_table(drive_letter) {
+        Ok(table) => table,
         Err(err) => {
             tracing::warn!(
                 drive = %drive_letter,
                 error = %err,
                 "$UpCase live read failed — falling back to compiled-in default table"
             );
-            uffs_text::CaseFold::default_table()
+            return uffs_text::CaseFold::default_table();
         }
+    };
+
+    // Leak the box to get a `&'static [u16]` for CaseFold::from_ntfs.
+    let live_fold = uffs_text::CaseFold::from_ntfs(Box::leak(live_table));
+    log_upcase_comparison(drive_letter, &live_fold);
+    live_fold
+}
+
+/// Log the comparison between live and compiled-in `$UpCase` tables.
+fn log_upcase_comparison(drive_letter: char, live_fold: &uffs_text::CaseFold) {
+    let default = uffs_text::CaseFold::default_table();
+    let diffs = default.diff(live_fold);
+
+    if diffs.is_empty() {
+        tracing::info!(
+            drive = %drive_letter,
+            "$UpCase loaded from live volume — identical to compiled-in default"
+        );
+        return;
+    }
+
+    tracing::info!(
+        drive = %drive_letter,
+        diff_count = diffs.len(),
+        "$UpCase loaded from live volume — differs from compiled-in default"
+    );
+    for diff in &diffs {
+        tracing::warn!(
+            drive = %drive_letter,
+            codepoint = format_args!("U+{:04X}", diff.codepoint),
+            default = format_args!("U+{:04X}", diff.default_maps_to),
+            live = format_args!("U+{:04X}", diff.live_maps_to),
+            "$UpCase diff"
+        );
     }
 }
 

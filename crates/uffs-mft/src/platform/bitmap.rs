@@ -1,9 +1,5 @@
 //! Bitmap helpers for interpreting the `$MFT::$BITMAP` allocation stream.
 
-// Low-level bitmap operations
-#![allow(clippy::all, clippy::nursery, clippy::pedantic)]
-#![warn(clippy::unwrap_used, clippy::expect_used)]
-
 /// Bitmap indicating which MFT records are in use.
 ///
 /// The `$MFT::$BITMAP` stream contains one bit per MFT record.
@@ -19,7 +15,7 @@ pub struct MftBitmap {
 impl MftBitmap {
     /// Creates a new bitmap from raw bytes.
     #[must_use]
-    pub fn from_bytes(data: Vec<u8>) -> Self {
+    pub const fn from_bytes(data: Vec<u8>) -> Self {
         let record_count = data.len() * 8;
         Self { data, record_count }
     }
@@ -39,7 +35,9 @@ impl MftBitmap {
     /// Checks if a specific record is in use.
     #[must_use]
     pub fn is_record_in_use(&self, frs: u64) -> bool {
-        let frs = frs as usize;
+        let Ok(frs) = usize::try_from(frs) else {
+            return false;
+        };
         if frs >= self.record_count {
             return false;
         }
@@ -106,9 +104,12 @@ impl MftBitmap {
     }
 
     /// Finds the first N records that are in use, starting from a given FRS.
+    #[must_use]
     pub fn find_in_use_range(&self, start_frs: u64, count: usize) -> Vec<u64> {
         let mut result = Vec::with_capacity(count);
-        let start = start_frs as usize;
+        let Ok(start) = usize::try_from(start_frs) else {
+            return result;
+        };
 
         for frs in start..self.record_count {
             if result.len() >= count {
@@ -129,8 +130,8 @@ impl MftBitmap {
     /// Calculates skip ranges for a cluster-aligned read.
     #[must_use]
     pub fn calculate_skip_range(&self, start_frs: u64, end_frs: u64) -> (u64, u64) {
-        let start = start_frs as usize;
-        let end = (end_frs as usize).min(self.record_count);
+        let start = frs_to_index(start_frs);
+        let end = frs_to_index(end_frs).min(self.record_count);
 
         if start >= end {
             return (0, 0);
@@ -162,7 +163,7 @@ impl MftBitmap {
     /// Checks if an entire cluster range has any in-use records.
     #[must_use]
     pub fn cluster_has_in_use(&self, start_frs: u64, records_per_cluster: u32) -> bool {
-        let start = start_frs as usize;
+        let start = frs_to_index(start_frs);
         let end = (start + records_per_cluster as usize).min(self.record_count);
 
         let start_byte = start / 8;
@@ -171,9 +172,9 @@ impl MftBitmap {
         for byte_idx in start_byte..end_byte.min(self.data.len()) {
             let byte = self.data[byte_idx];
 
-            let mask = if byte_idx == start_byte && start % 8 != 0 {
+            let mask = if byte_idx == start_byte && !start.is_multiple_of(8) {
                 0xFF_u8 << (start % 8)
-            } else if byte_idx == end_byte - 1 && end % 8 != 0 {
+            } else if byte_idx == end_byte - 1 && !end.is_multiple_of(8) {
                 (1_u8 << (end % 8)) - 1
             } else {
                 0xFF
@@ -248,4 +249,12 @@ impl Iterator for InUseClusterRangeIterator<'_> {
 
         Some((range_start, self.current_cluster - range_start))
     }
+}
+
+/// Convert a `u64` FRS to a `usize` index, saturating on 32-bit targets.
+///
+/// On 64-bit (the actual Windows target) this is lossless. On 32-bit targets
+/// saturation to `usize::MAX` ensures subsequent bounds checks return safely.
+fn frs_to_index(frs: u64) -> usize {
+    usize::try_from(frs).unwrap_or(usize::MAX)
 }

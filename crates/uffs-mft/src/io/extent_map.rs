@@ -1,9 +1,5 @@
 //! Extent mapping helpers for fragmented MFT layouts.
 
-// Extent map involves low-level byte/cluster arithmetic.
-#![allow(clippy::all, clippy::nursery, clippy::pedantic)]
-#![warn(clippy::unwrap_used, clippy::expect_used)]
-
 use tracing::{debug, info};
 
 use crate::platform::MftExtent;
@@ -35,8 +31,7 @@ impl MftExtentMap {
     pub fn new(extents: Vec<MftExtent>, bytes_per_cluster: u32, bytes_per_record: u32) -> Self {
         let num_extents = extents.len();
         let total_clusters: u64 = extents.iter().map(|e| e.cluster_count).sum();
-        let total_size_mb =
-            (total_clusters * u64::from(bytes_per_cluster)) as f64 / (1024.0 * 1024.0);
+        let total_size_mb = bytes_to_mb(total_clusters * u64::from(bytes_per_cluster));
         let records_per_cluster = bytes_per_cluster / bytes_per_record;
         let total_records = total_clusters * u64::from(records_per_cluster);
 
@@ -96,10 +91,9 @@ impl MftExtentMap {
         bytes_per_cluster: u32,
         bytes_per_record: u32,
     ) -> Self {
-        let cluster_count =
-            (mft_size_bytes + u64::from(bytes_per_cluster) - 1) / u64::from(bytes_per_cluster);
+        let cluster_count = mft_size_bytes.div_ceil(u64::from(bytes_per_cluster));
         let total_records = mft_size_bytes / u64::from(bytes_per_record);
-        let mft_size_mb = mft_size_bytes as f64 / (1024.0 * 1024.0);
+        let mft_size_mb = bytes_to_mb(mft_size_bytes);
 
         info!(
             mft_start_lcn,
@@ -113,7 +107,7 @@ impl MftExtentMap {
             extents: vec![MftExtent {
                 vcn: 0,
                 cluster_count,
-                lcn: mft_start_lcn as i64,
+                lcn: mft_start_lcn.cast_signed(),
             }],
             bytes_per_cluster,
             bytes_per_record,
@@ -155,7 +149,7 @@ impl MftExtentMap {
 
         // Physical offset = LCN * bytes_per_cluster + offset within extent + offset in
         // cluster
-        let physical = (extent.lcn as u64) * u64::from(self.bytes_per_cluster)
+        let physical = extent.lcn.cast_unsigned() * u64::from(self.bytes_per_cluster)
             + cluster_byte_offset
             + offset_in_cluster;
 
@@ -183,13 +177,13 @@ impl MftExtentMap {
 
     /// Returns the number of extents in the map.
     #[must_use]
-    pub fn extent_count(&self) -> usize {
+    pub const fn extent_count(&self) -> usize {
         self.extents.len()
     }
 
     /// Returns true if the MFT is fragmented (more than one extent).
     #[must_use]
-    pub fn is_fragmented(&self) -> bool {
+    pub const fn is_fragmented(&self) -> bool {
         self.extents.len() > 1
     }
 
@@ -214,6 +208,14 @@ impl MftExtentMap {
     }
 }
 
+/// Convert bytes to megabytes as `f64` for human-readable display.
+///
+/// Precision loss from `u64→f64` is irrelevant for display (sub-byte).
+#[allow(clippy::cast_precision_loss)] // Display-only: sub-ulp precision is irrelevant for MB.
+fn bytes_to_mb(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,9 +224,9 @@ mod tests {
     fn test_extent_map_contiguous() {
         let map = MftExtentMap::contiguous(100, 1024 * 1024, 4096, 1024);
 
-        assert_eq!(map.physical_offset(0), Some(409600));
-        assert_eq!(map.physical_offset(1), Some(410624));
-        assert_eq!(map.physical_offset(4), Some(413696));
+        assert_eq!(map.physical_offset(0), Some(409_600));
+        assert_eq!(map.physical_offset(1), Some(410_624));
+        assert_eq!(map.physical_offset(4), Some(413_696));
     }
 
     #[test]

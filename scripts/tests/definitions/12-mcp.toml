@@ -1,0 +1,246 @@
+# MCP-only tests — protocol-level validation that has no CLI/API equivalent.
+# Tests that exercise uffs.search, uffs.aggregate, etc. belong in the
+# existing TOML files (01-general, 09-aggregation, ...) with "mcp" added
+# to their `targets` list.
+
+# ── Session bootstrap ────────────────────────────────────────────────────
+
+[[test]]
+id          = "M100"
+group       = "mcp-session"
+name        = "M100 protocol version"
+title       = "Agent session: protocol = 2024-11-05"
+short_desc  = "MCP initialize returns protocolVersion 2024-11-05"
+targets     = ["mcp"]
+mcp_method  = "initialize"
+mcp_checks  = { path_equals = { "/protocolVersion" = "2024-11-05" } }
+
+[[test]]
+id          = "M101"
+group       = "mcp-session"
+name        = "M101 server name"
+title       = "Agent session: server identifies as uffs"
+short_desc  = "MCP initialize returns serverInfo.name = uffs"
+targets     = ["mcp"]
+mcp_method  = "initialize"
+mcp_checks  = { path_equals = { "/serverInfo/name" = "uffs" } }
+
+[[test]]
+id          = "M102"
+group       = "mcp-session"
+name        = "M102 tools capability"
+title       = "Agent session: server declares tools capability"
+short_desc  = "Initialize result has capabilities.tools"
+targets     = ["mcp"]
+mcp_method  = "initialize"
+mcp_checks  = { path_exists = ["/capabilities/tools"] }
+
+[[test]]
+id          = "M103"
+group       = "mcp-session"
+name        = "M103 resources capability"
+title       = "Agent session: server declares resources capability"
+short_desc  = "Initialize result has capabilities.resources"
+targets     = ["mcp"]
+mcp_method  = "initialize"
+mcp_checks  = { path_exists = ["/capabilities/resources"] }
+
+[[test]]
+id          = "M104"
+group       = "mcp-session"
+name        = "M104 prompts capability"
+title       = "Agent session: server declares prompts capability"
+short_desc  = "Initialize result has capabilities.prompts"
+targets     = ["mcp"]
+mcp_method  = "initialize"
+mcp_checks  = { path_exists = ["/capabilities/prompts"] }
+
+# ── Tool discovery ───────────────────────────────────────────────────────
+
+[[test]]
+id          = "M110"
+group       = "mcp-discovery"
+name        = "M110 tools/list"
+title       = "Agent discovers tools"
+short_desc  = "tools/list returns a non-empty tool array"
+targets     = ["mcp"]
+mcp_method  = "tools/list"
+mcp_checks  = { path_exists = ["/tools"] }
+
+[[test]]
+id          = "M111"
+group       = "mcp-discovery"
+name        = "M111 tool inputSchema"
+title       = "Every tool has inputSchema for the agent"
+short_desc  = "First tool in tools/list has an inputSchema"
+targets     = ["mcp"]
+mcp_method  = "tools/list"
+mcp_checks  = { path_exists = ["/tools/0/inputSchema"] }
+
+[[test]]
+id          = "M112"
+group       = "mcp-discovery"
+name        = "M112 tool annotations"
+title       = "Every tool declares readOnlyHint annotation"
+short_desc  = "First tool has annotations object"
+targets     = ["mcp"]
+mcp_method  = "tools/list"
+mcp_checks  = { path_exists = ["/tools/0/annotations"] }
+
+# ── Resource discovery & reads ───────────────────────────────────────────
+
+[[test]]
+id          = "M200"
+group       = "mcp-resources"
+name        = "M200 resources/list"
+title       = "Agent discovers resources"
+short_desc  = "resources/list returns non-empty resource array"
+targets     = ["mcp"]
+mcp_method  = "resources/list"
+mcp_checks  = { path_exists = ["/resources"] }
+
+[[test]]
+id          = "M201"
+group       = "mcp-resources"
+name        = "M201 schema/fields"
+title       = "Agent reads field catalog"
+short_desc  = "resources/read uffs://schema/fields returns contents"
+targets     = ["mcp"]
+mcp_method  = "resources/read"
+mcp_params  = { uri = "uffs://schema/fields" }
+mcp_checks  = { path_exists = ["/contents"] }
+
+[[test]]
+id          = "M202"
+group       = "mcp-resources"
+name        = "M202 schema/search"
+title       = "Agent reads search schema"
+short_desc  = "resources/read uffs://schema/search returns contents"
+targets     = ["mcp"]
+mcp_method  = "resources/read"
+mcp_params  = { uri = "uffs://schema/search" }
+mcp_checks  = { path_exists = ["/contents"] }
+
+
+[[test]]
+id          = "M204"
+group       = "mcp-resources"
+name        = "M204 presets/aggregate"
+title       = "Agent reads aggregate presets"
+short_desc  = "resources/read uffs://presets/aggregate returns contents"
+targets     = ["mcp"]
+mcp_method  = "resources/read"
+mcp_params  = { uri = "uffs://presets/aggregate" }
+mcp_checks  = { path_exists = ["/contents"] }
+
+[[test]]
+id          = "M205"
+group       = "mcp-resources"
+name        = "M205 drives resource"
+title       = "Agent reads drives resource"
+short_desc  = "resources/read uffs://drives returns contents"
+targets     = ["mcp"]
+mcp_method  = "resources/read"
+mcp_params  = { uri = "uffs://drives" }
+mcp_checks  = { path_exists = ["/contents"] }
+
+[[test]]
+id          = "M206"
+group       = "mcp-resources"
+name        = "M206 status resource"
+title       = "Agent reads status resource"
+short_desc  = "resources/read uffs://status returns contents"
+targets     = ["mcp"]
+mcp_method  = "resources/read"
+mcp_params  = { uri = "uffs://status" }
+mcp_checks  = { path_exists = ["/contents"] }
+
+# ── Prompt discovery & usage ─────────────────────────────────────────────
+
+[[test]]
+id          = "M500"
+group       = "mcp-prompts"
+name        = "M500 prompts/list"
+title       = "Agent discovers prompts"
+short_desc  = "prompts/list returns non-empty prompt array"
+targets     = ["mcp"]
+mcp_method  = "prompts/list"
+mcp_checks  = { path_exists = ["/prompts"] }
+
+[[test]]
+id          = "M501"
+group       = "mcp-prompts"
+name        = "M501 find_large_files"
+title       = "Agent uses prompt: find_large_files"
+short_desc  = "prompts/get find_large_files returns messages"
+targets     = ["mcp"]
+mcp_method  = "prompts/get"
+mcp_params  = { name = "find_large_files" }
+mcp_checks  = { path_exists = ["/messages"] }
+
+[[test]]
+id          = "M502"
+group       = "mcp-prompts"
+name        = "M502 find_by_extension"
+title       = "Agent uses prompt: find_by_extension(pdf)"
+short_desc  = "prompts/get with extension argument returns messages"
+targets     = ["mcp"]
+mcp_method  = "prompts/get"
+mcp_params  = { name = "find_by_extension", arguments = { extension = "pdf" } }
+mcp_checks  = { path_exists = ["/messages"] }
+
+[[test]]
+id          = "M503"
+group       = "mcp-prompts"
+name        = "M503 disk_usage_report"
+title       = "Agent uses prompt: disk_usage_report"
+short_desc  = "prompts/get disk_usage_report returns messages"
+targets     = ["mcp"]
+mcp_method  = "prompts/get"
+mcp_params  = { name = "disk_usage_report" }
+mcp_checks  = { path_exists = ["/messages"] }
+
+[[test]]
+id          = "M504"
+group       = "mcp-prompts"
+name        = "M504 cleanup_report"
+title       = "Agent uses prompt: cleanup_report"
+short_desc  = "prompts/get cleanup_report returns messages"
+targets     = ["mcp"]
+mcp_method  = "prompts/get"
+mcp_params  = { name = "cleanup_report" }
+mcp_checks  = { path_exists = ["/messages"] }
+
+[[test]]
+id          = "M505"
+group       = "mcp-prompts"
+name        = "M505 recent_changes"
+title       = "Agent uses prompt: recent_changes"
+short_desc  = "prompts/get recent_changes returns messages"
+targets     = ["mcp"]
+mcp_method  = "prompts/get"
+mcp_params  = { name = "recent_changes" }
+mcp_checks  = { path_exists = ["/messages"] }
+
+[[test]]
+id          = "M506"
+group       = "mcp-prompts"
+name        = "M506 duplicate_investigation"
+title       = "Agent uses prompt: duplicate_investigation"
+short_desc  = "prompts/get duplicate_investigation returns messages"
+targets     = ["mcp"]
+mcp_method  = "prompts/get"
+mcp_params  = { name = "duplicate_investigation" }
+mcp_checks  = { path_exists = ["/messages"] }
+
+# ── Protocol hygiene ─────────────────────────────────────────────────────
+
+[[test]]
+id          = "M700"
+group       = "mcp-hygiene"
+name        = "M700 unknown method"
+title       = "Unknown method returns error (not crash)"
+short_desc  = "Calling a nonexistent method returns JSON-RPC error"
+targets     = ["mcp"]
+mcp_method  = "this_method_does_not_exist"
+mcp_checks  = { expect_rpc_error = true }

@@ -37,6 +37,10 @@ fn fmt_number(num: usize) -> String {
 /// - **Mac/Linux:** the caller must supply `--data-dir` or `--mft-file` via the
 ///   CLI.  These paths are forwarded to the daemon when auto-starting. If
 ///   neither is provided, returns a descriptive error immediately.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "search param building + response formatting with column projection"
+)]
 pub(super) async fn search_via_daemon(
     config: &SearchConfig<'_>,
 ) -> Result<(

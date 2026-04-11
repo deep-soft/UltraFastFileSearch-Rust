@@ -1,9 +1,5 @@
 //! Retrieval-pointer helpers for locating MFT extents on disk.
 
-// Low-level extent manipulation
-#![allow(clippy::all, clippy::nursery, clippy::pedantic)]
-#![warn(clippy::unwrap_used, clippy::expect_used)]
-
 #[cfg(windows)]
 use std::mem::size_of;
 
@@ -34,7 +30,7 @@ impl MftExtent {
         if self.lcn < 0 {
             0
         } else {
-            self.lcn as u64 * u64::from(bytes_per_cluster)
+            self.lcn.cast_unsigned() * u64::from(bytes_per_cluster)
         }
     }
 

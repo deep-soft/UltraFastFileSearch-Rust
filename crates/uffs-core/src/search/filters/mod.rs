@@ -252,7 +252,13 @@ impl SearchFilters {
             // path_dir() is lowered via `to_ascii_lowercase()`, so the
             // pattern must also be plain ASCII-lowered — NOT $UpCase folded
             // (which produces uppercase and would mismatch).
-            pat.to_ascii_lowercase()
+            //
+            // Normalize path separators:
+            // 1. Replace `/` with `\` (users may use forward slashes).
+            // 2. Collapse runs of `\` into a single `\` (transport layers may double-encode
+            //    backslashes, turning `\` into `\\`).
+            let lowered = pat.to_ascii_lowercase();
+            normalize_path_separators(&lowered)
         });
 
         // ── Promote type_filter → extensions for early filtering ─────
@@ -724,6 +730,31 @@ impl SearchFilters {
             && self.max_tree_allocated.is_none()
             && self.allowed_months.is_empty()
     }
+}
+
+/// Normalize path separators for `path_contains` matching.
+///
+/// 1. Replaces `/` with `\` so users can use either separator.
+/// 2. Collapses runs of consecutive `\` into a single `\` — this handles
+///    transport layers that double-encode backslashes (JSON `\\` → `\\\\`),
+///    producing literal `\\` in the pattern that wouldn't match the single `\`
+///    in stored NTFS paths.
+fn normalize_path_separators(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut prev_was_sep = false;
+    for ch in input.chars() {
+        let is_sep = ch == '\\' || ch == '/';
+        if is_sep {
+            if !prev_was_sep {
+                result.push('\\');
+            }
+            prev_was_sep = true;
+        } else {
+            result.push(ch);
+            prev_was_sep = false;
+        }
+    }
+    result
 }
 
 #[cfg(test)]

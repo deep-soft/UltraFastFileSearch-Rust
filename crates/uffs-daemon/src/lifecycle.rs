@@ -1,11 +1,11 @@
 //! Daemon lifecycle: PID file, idle timeout, auto-retire, shutdown.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::path::PathBuf;
 
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 
 use crate::events::{DaemonEvent, EventSender};
 
@@ -19,8 +19,12 @@ const LOAD_STALL_TIMEOUT_SECS: u64 = 300; // 5 minutes
 pub struct LifecycleHandle {
     /// Send `true` to trigger shutdown.
     shutdown_tx: watch::Sender<bool>,
-    /// Reset idle timer flag (checked by the timer task).
-    idle_reset: Arc<AtomicBool>,
+    /// Notified on every incoming RPC request to extend the idle deadline.
+    ///
+    /// Uses [`tokio::sync::Notify`] (one stored permit) so that any number
+    /// of rapid-fire requests between two `select!` iterations collapse into
+    /// a single wakeup — exactly what a sliding-window timer needs.
+    activity_notify: Arc<Notify>,
     /// Shutdown nonce — must be provided in the `shutdown` RPC call (S4.4.9).
     shutdown_nonce: Arc<std::sync::Mutex<Option<String>>>,
     /// Active connection count (D2.6.7: don't retire if > 0).
@@ -45,9 +49,14 @@ impl LifecycleHandle {
         let _ignore = self.shutdown_tx.send(true);
     }
 
-    /// Reset the idle timer (called on every query/keepalive).
+    /// Reset the idle timer (called on every incoming RPC request).
+    ///
+    /// Stores one wakeup permit in the [`Notify`].  If the idle-timer task
+    /// is currently sleeping it wakes immediately; if it is not yet awaiting
+    /// `notified()` the permit is stored and consumed on the next poll.
+    /// Either way there is **no race window** — activity can never be lost.
     pub fn reset_idle_timer(&self) {
-        self.idle_reset.store(true, Ordering::Relaxed);
+        self.activity_notify.notify_one();
     }
 
     /// Increment active connection count and emit event.
@@ -124,14 +133,13 @@ impl LifecycleManager {
     /// Create a new lifecycle manager.
     ///
     /// `idle_timeout`: `None` for `--no-retire`, `Some(duration)` otherwise.
-    #[expect(clippy::single_call_fn, reason = "constructor — structural separation")]
     pub fn new(
         data_dir: &std::path::Path,
         idle_timeout: Option<Duration>,
         events: EventSender,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let idle_reset = Arc::new(AtomicBool::new(false));
+        let activity_notify = Arc::new(Notify::new());
         let shutdown_nonce_shared = Arc::new(std::sync::Mutex::new(None));
         let active_connections = Arc::new(core::sync::atomic::AtomicUsize::new(0));
         let max_session_tier = Arc::new(core::sync::atomic::AtomicU8::new(0));
@@ -148,7 +156,7 @@ impl LifecycleManager {
             shutdown_rx,
             handle: LifecycleHandle {
                 shutdown_tx,
-                idle_reset,
+                activity_notify,
                 shutdown_nonce: shutdown_nonce_shared,
                 active_connections,
                 max_session_tier,
@@ -274,113 +282,166 @@ impl LifecycleManager {
         true
     }
 
-    /// Run the idle timer. Returns when shutdown is requested, idle
-    /// timeout fires, **or a stalled load is detected**.
+    /// Run the idle timer.  Returns when shutdown is requested, the idle
+    /// deadline expires, or a stalled load is detected.
     ///
-    /// ## Dual-purpose heartbeat
+    /// ## Sliding-window design (`sleep_until` + `reset()`)
     ///
-    /// During the `Loading` phase, the CLI's `await_ready` polls status
-    /// every 2 s, continuously resetting the idle timer.  Without a
-    /// separate check, a stuck NTFS volume read would keep the daemon
-    /// alive forever.  The **load heartbeat** (`record_load_progress`)
-    /// is updated whenever a drive finishes loading.  If no progress is
-    /// made for [`LOAD_STALL_TIMEOUT_SECS`], the daemon force-retires
-    /// even though IPC activity is still present.
+    /// Every incoming RPC request calls [`LifecycleHandle::reset_idle_timer`],
+    /// which stores a wakeup permit via [`tokio::sync::Notify::notify_one`].
+    /// The `notified()` arm in the `select!` loop below consumes that permit
+    /// and calls `sleep.as_mut().reset(now + effective_timeout)` — extending
+    /// the deadline by one full window from the moment of the last request.
     ///
-    /// D2.6.6: Uses differentiated timeouts based on session type:
-    /// - CLI sessions (tier 0): use the configured timeout (default 5 min)
-    /// - TUI/GUI/MCP sessions (tier 1): use 3× the configured timeout
+    /// Because `Notify` collapses any number of concurrent permits into one,
+    /// even thousands of requests per second only produce a single wakeup, and
+    /// `reset()` on a pinned [`tokio::time::Sleep`] is O(1) (one wheel update).
+    /// There is **no race window**: a permit stored before `notified()` is
+    /// polled is consumed immediately on the first poll.
     ///
-    /// D2.6.7: Does NOT retire if active connections exist (Ready state).
+    /// ## Load-stall guard
+    ///
+    /// During the `Loading` phase, `await_ready` status polls keep sending
+    /// activity resets, which would hide a hung NTFS volume read indefinitely.
+    /// The **load heartbeat** (`record_load_progress`) is updated whenever a
+    /// drive finishes loading.  If no heartbeat arrives within
+    /// [`LOAD_STALL_TIMEOUT_SECS`] of the last one, the daemon force-retires
+    /// even though IPC activity is still present.  This check runs when the
+    /// idle deadline fires — the same moment as before — so existing behaviour
+    /// is preserved.
+    ///
+    /// ## Session-tier timeout differentiation (D2.6.6)
+    ///
+    /// - Tier 0 (CLI): `base_timeout` (default 10 min)
+    /// - Tier 1 (TUI / GUI / MCP): `base_timeout × 3` (default 30 min)
+    ///
+    /// The tier is re-read each time the deadline is extended, so a session
+    /// upgrade takes effect on the very next activity reset.
+    ///
+    /// ## Active-connection guard (D2.6.7)
+    ///
+    /// If connections are open when the deadline fires, the deadline is pushed
+    /// one full window into the future and the loop continues.
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "idle timer with sliding window, connection tracking, and shutdown coordination"
+    )]
     pub async fn run_idle_timer(&mut self) {
         let Some(base_timeout) = self.idle_timeout else {
-            // --no-retire: just wait for shutdown signal
+            // --no-retire: wait for an explicit shutdown signal only.
             let _shutdown = self.shutdown_rx.wait_for(|&done| done).await;
             return;
         };
 
+        // Clone the handle so we can borrow `self.shutdown_rx` mutably in
+        // `select!` while also accessing the handle fields from a separate
+        // binding — the borrow checker cannot see through field projections.
+        let handle = self.handle.clone();
+
+        // Seed the sliding window at a full timeout from now.
+        let initial_eff = Self::effective_timeout_from_tier(
+            base_timeout,
+            handle.max_session_tier.load(Ordering::Relaxed),
+        );
+        let idle_sleep = tokio::time::sleep(initial_eff);
+        tokio::pin!(idle_sleep);
+
         loop {
-            // D2.6.6: Compute effective timeout based on highest session tier
-            let tier = self.handle.max_session_tier.load(Ordering::Relaxed);
-            let effective_timeout = if tier >= 1 {
-                base_timeout.saturating_mul(3)
-            } else {
-                base_timeout
-            };
-
-            self.handle.idle_reset.store(false, Ordering::Relaxed);
-
-            // Snapshot the handle's atomics before entering select!,
-            // avoiding a borrow conflict with shutdown_rx.
-            let handle = self.handle.clone();
-
-            let timed_out = tokio::select! {
-                () = tokio::time::sleep(effective_timeout) => true,
+            tokio::select! {
+                // ── Shutdown wins above all else ─────────────────────────
                 _ = self.shutdown_rx.wait_for(|&done| done) => {
                     tracing::info!("Shutdown requested");
                     return;
                 }
-            };
 
-            if !timed_out {
-                continue;
+                // ── Activity: extend the sliding-window deadline ─────────
+                //
+                // Re-reads the session tier so an MCP / TUI upgrade takes
+                // effect immediately on the next request.
+                () = handle.activity_notify.notified() => {
+                    let tier = handle.max_session_tier.load(Ordering::Relaxed);
+                    let eff = Self::effective_timeout_from_tier(base_timeout, tier);
+                    idle_sleep.as_mut().reset(tokio::time::Instant::now() + eff);
+                    tracing::trace!(
+                        effective_secs = eff.as_secs(),
+                        session_tier = tier,
+                        "Idle deadline extended by activity"
+                    );
+                }
+
+                // ── Idle deadline fired ──────────────────────────────────
+                () = &mut idle_sleep => {
+                    // ── Load-stall guard ─────────────────────────────────
+                    // Must be checked BEFORE the active-connection guard so
+                    // that a stuck NTFS read is caught even when clients are
+                    // polling `status` (those polls extend the idle deadline
+                    // but don't update the heartbeat).
+                    let last_hb = handle.load_heartbeat.load(Ordering::Relaxed);
+                    let now_epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |dur| dur.as_secs());
+                    let hb_age = now_epoch.saturating_sub(last_hb);
+                    tracing::debug!(
+                        heartbeat_age_secs = hb_age,
+                        stall_threshold = LOAD_STALL_TIMEOUT_SECS,
+                        "Idle deadline fired — checking load heartbeat"
+                    );
+                    if last_hb > 0 && hb_age >= LOAD_STALL_TIMEOUT_SECS {
+                        tracing::error!(
+                            stall_secs = LOAD_STALL_TIMEOUT_SECS,
+                            heartbeat_age_secs = hb_age,
+                            "Load stalled — no drive progress, force-retiring"
+                        );
+                        handle.events.emit(DaemonEvent::ShuttingDown {
+                            reason: format!(
+                                "load stalled (no progress for {LOAD_STALL_TIMEOUT_SECS}s)"
+                            ),
+                        });
+                        return;
+                    }
+
+                    // ── Active-connection guard (D2.6.7) ─────────────────
+                    let conns = handle.active_connections();
+                    if conns > 0 {
+                        tracing::debug!(
+                            connections = conns,
+                            "Idle deadline fired but active connections open — deferring"
+                        );
+                        let tier = handle.max_session_tier.load(Ordering::Relaxed);
+                        let eff = Self::effective_timeout_from_tier(base_timeout, tier);
+                        idle_sleep.as_mut().reset(tokio::time::Instant::now() + eff);
+                        continue;
+                    }
+
+                    // ── Retire ───────────────────────────────────────────
+                    let tier = handle.max_session_tier.load(Ordering::Relaxed);
+                    let eff = Self::effective_timeout_from_tier(base_timeout, tier);
+                    tracing::info!(
+                        timeout_secs = eff.as_secs(),
+                        session_tier = tier,
+                        "Idle timeout reached — auto-retiring"
+                    );
+                    handle.events.emit(DaemonEvent::ShuttingDown {
+                        reason: format!(
+                            "idle timeout ({}s, tier {tier})",
+                            eff.as_secs()
+                        ),
+                    });
+                    return;
+                }
             }
+        }
+    }
 
-            // ── Load-stall check (dual-purpose heartbeat) ────────
-            // Checked BEFORE the idle_reset gate so it fires even when
-            // the CLI's `await_ready` polls keep resetting the timer.
-            let stall_secs = LOAD_STALL_TIMEOUT_SECS;
-            let last_hb = handle.load_heartbeat.load(Ordering::Relaxed);
-            let now_epoch = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |dur| dur.as_secs());
-            let hb_age = now_epoch.saturating_sub(last_hb);
-            tracing::debug!(
-                heartbeat_age_secs = hb_age,
-                stall_threshold = stall_secs,
-                idle_reset = handle.idle_reset.load(Ordering::Relaxed),
-                "Idle timer tick — checking load heartbeat"
-            );
-            if last_hb > 0 && hb_age >= stall_secs {
-                tracing::error!(
-                    stall_secs,
-                    heartbeat_age_secs = hb_age,
-                    "Load stalled — no drive progress, force-retiring"
-                );
-                handle.events.emit(DaemonEvent::ShuttingDown {
-                    reason: format!("load stalled (no progress for {stall_secs}s)"),
-                });
-                return;
-            }
-
-            // Normal idle path — check if IPC activity reset us.
-            if handle.idle_reset.load(Ordering::Relaxed) {
-                continue;
-            }
-
-            // D2.6.7: Don't retire if active connections exist
-            let conns = handle.active_connections();
-            if conns > 0 {
-                tracing::debug!(
-                    connections = conns,
-                    "Idle timeout but active connections — deferring"
-                );
-                continue;
-            }
-
-            tracing::info!(
-                timeout_secs = effective_timeout.as_secs(),
-                session_tier = tier,
-                "Idle timeout reached — auto-retiring"
-            );
-            handle.events.emit(DaemonEvent::ShuttingDown {
-                reason: format!(
-                    "idle timeout ({}s, tier {})",
-                    effective_timeout.as_secs(),
-                    tier,
-                ),
-            });
-            return;
+    /// Compute the effective idle timeout from the base and the session tier.
+    ///
+    /// - Tier 0 (CLI / unknown): `base_timeout`
+    /// - Tier 1+ (TUI / GUI / MCP): `base_timeout × 3`
+    const fn effective_timeout_from_tier(base: Duration, tier: u8) -> Duration {
+        if tier >= 1 {
+            base.saturating_mul(3)
+        } else {
+            base
         }
     }
 
@@ -519,5 +580,192 @@ impl Drop for LifecycleManager {
     fn drop(&mut self) {
         self.remove_pid_file();
         self.remove_socket_file();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use super::*;
+    use crate::events;
+
+    /// Helper: construct a `LifecycleManager` wired to a temp directory.
+    fn test_lifecycle(timeout: Option<Duration>) -> LifecycleManager {
+        let dir = std::env::temp_dir().join(format!("uffs-test-{}", std::process::id()));
+        drop(std::fs::create_dir_all(&dir));
+        let (events_tx, _rx) = events::event_channel();
+        LifecycleManager::new(&dir, timeout, events_tx)
+    }
+
+    // ── effective_timeout_from_tier ──────────────────────────────────────
+
+    #[test]
+    fn tier_0_returns_base_timeout() {
+        let base = Duration::from_mins(10);
+        assert_eq!(LifecycleManager::effective_timeout_from_tier(base, 0), base);
+    }
+
+    #[test]
+    fn tier_1_returns_3x_base_timeout() {
+        let base = Duration::from_mins(10);
+        assert_eq!(
+            LifecycleManager::effective_timeout_from_tier(base, 1),
+            Duration::from_mins(30)
+        );
+    }
+
+    #[test]
+    fn tier_255_returns_3x_base_timeout() {
+        let base = Duration::from_secs(100);
+        assert_eq!(
+            LifecycleManager::effective_timeout_from_tier(base, 255),
+            Duration::from_mins(5)
+        );
+    }
+
+    // ── Sliding-window: activity extends deadline ───────────────────────
+
+    #[tokio::test]
+    async fn idle_timer_extends_deadline_on_activity() {
+        // 200 ms idle timeout — should NOT fire because we reset at 100 ms.
+        let mut mgr = test_lifecycle(Some(Duration::from_millis(200)));
+        let handle = mgr.handle();
+
+        // Spawn the idle timer.
+        let timer = tokio::spawn(async move { mgr.run_idle_timer().await });
+
+        // After 100 ms, send activity.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        handle.reset_idle_timer();
+
+        // After another 150 ms (total 250 ms from start, but only 150 ms
+        // from the activity reset), the timer should still be running because
+        // the 200 ms window was extended at t=100 ms.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            !timer.is_finished(),
+            "timer should still be alive after activity reset"
+        );
+
+        // Now wait for the remaining ~50 ms + margin so the timer actually fires.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(timer.is_finished(), "timer should have fired by now");
+    }
+
+    // ── Sliding-window: genuine idle causes retirement ──────────────────
+
+    #[tokio::test]
+    async fn idle_timer_retires_after_full_window_without_activity() {
+        let mut mgr = test_lifecycle(Some(Duration::from_millis(100)));
+
+        let timer = tokio::spawn(async move { mgr.run_idle_timer().await });
+
+        // No activity — timer should fire after ~100 ms.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            timer.is_finished(),
+            "timer should have retired after idle window"
+        );
+    }
+
+    // ── Shutdown signal wins immediately ─────────────────────────────────
+
+    #[tokio::test]
+    async fn shutdown_signal_preempts_idle_timer() {
+        let mut mgr = test_lifecycle(Some(Duration::from_hours(1)));
+        let handle = mgr.handle();
+
+        let timer = tokio::spawn(async move { mgr.run_idle_timer().await });
+
+        // Request shutdown immediately.
+        handle.request_shutdown();
+
+        // Timer should exit promptly.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(timer.is_finished(), "shutdown should preempt idle timer");
+    }
+
+    // ── Active connections defer retirement (D2.6.7) ─────────────────────
+
+    #[tokio::test]
+    async fn active_connections_defer_retirement() {
+        let mut mgr = test_lifecycle(Some(Duration::from_millis(100)));
+        let handle = mgr.handle();
+
+        // Open a connection before the timer starts.
+        handle.connection_opened();
+
+        let h2 = handle.clone();
+        let timer = tokio::spawn(async move { mgr.run_idle_timer().await });
+
+        // Wait for the idle deadline to fire — it should be deferred.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !timer.is_finished(),
+            "should not retire with active connections"
+        );
+
+        // Close the connection; the next deadline firing should retire.
+        h2.connection_closed();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(timer.is_finished(), "should retire after connections close");
+    }
+
+    // ── No-retire mode waits for explicit shutdown ───────────────────────
+
+    #[tokio::test]
+    async fn no_retire_waits_for_shutdown() {
+        let mut mgr = test_lifecycle(None);
+        let handle = mgr.handle();
+
+        let timer = tokio::spawn(async move { mgr.run_idle_timer().await });
+
+        // Should not exit on its own.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !timer.is_finished(),
+            "no-retire should not exit spontaneously"
+        );
+
+        handle.request_shutdown();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            timer.is_finished(),
+            "no-retire should exit after shutdown signal"
+        );
+    }
+
+    // ── Session tier upgrades take effect on next activity ───────────────
+
+    #[tokio::test]
+    async fn session_tier_upgrade_extends_timeout() {
+        // 100 ms base timeout at tier 0. After upgrade to tier 1, effective
+        // timeout becomes 300 ms.
+        let mut mgr = test_lifecycle(Some(Duration::from_millis(100)));
+        let handle = mgr.handle();
+
+        let timer = tokio::spawn(async move { mgr.run_idle_timer().await });
+
+        // At 80 ms, upgrade session tier and send activity.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        handle.set_session_type("mcp"); // tier 1 → 300 ms effective
+        handle.reset_idle_timer();
+
+        // At 350 ms from activity (430 ms from start), timer should still be alive
+        // because the new effective timeout is 300 ms from the activity at t=80 ms,
+        // meaning deadline is at t=380 ms.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(
+            !timer.is_finished(),
+            "tier 1 timeout should extend deadline"
+        );
+
+        // Wait for the deadline to fire.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            timer.is_finished(),
+            "should retire after tier-1 window expires"
+        );
     }
 }

@@ -103,6 +103,10 @@ impl IndexManager {
     ///
     /// Each MFT file is loaded on its own blocking thread via `JoinSet`.
     /// Results are collected as they complete (fastest first).
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "parallel drive loader with status tracking, error handling, and sorting"
+    )]
     pub async fn load_from_data_dir(&self, mft_files: &[PathBuf], no_cache: bool) {
         let total = mft_files.len();
         *self.status.write().await = DaemonStatus::Loading {
@@ -449,6 +453,10 @@ impl IndexManager {
     }
 
     /// Refresh specific drives (or all if empty).
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "refresh orchestration with per-drive reload and status updates"
+    )]
     pub async fn refresh(&self, drives: &[char]) {
         let drives_to_refresh: Vec<char> = if drives.is_empty() {
             let snap = self.snapshot().await;
@@ -684,6 +692,7 @@ impl IndexManager {
             "size": rec.size,
             "allocated": rec.allocated,
             "treesize": rec.treesize,
+            "tree_allocated": rec.tree_allocated,
             "created": rec.created,
             "modified": rec.modified,
             "accessed": rec.accessed,
@@ -722,6 +731,10 @@ impl IndexManager {
     /// Hot-load a single MFT file if its drive letter is not already loaded.
     ///
     /// Returns `Ok(Some(letter))` if loaded, `Ok(None)` if already present.
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "single-file loader with format detection, index build, and cache write"
+    )]
     pub async fn load_single_mft_file(
         &self,
         mft_path: &std::path::Path,
@@ -844,6 +857,10 @@ impl IndexManager {
     ///
     /// Returns a list of drive letters that could NOT be loaded (no data
     /// source found).
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "drive discovery with live/cached/file fallback and parallel loading"
+    )]
     pub async fn ensure_drives_loaded(&self, drives: &[char], no_cache: bool) -> Vec<char> {
         if drives.is_empty() {
             return Vec::new();

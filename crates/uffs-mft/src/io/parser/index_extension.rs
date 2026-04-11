@@ -8,10 +8,6 @@
 //! names, streams, and all attribute types from extension records and merging
 //! them into base records in the index.
 
-// Performance-critical hot-path parser — lint suppressions match index.rs.
-#![allow(clippy::all, clippy::nursery, clippy::pedantic)]
-#![warn(clippy::unwrap_used, clippy::expect_used)]
-
 use core::mem::size_of;
 
 use smallvec::SmallVec;
@@ -66,9 +62,8 @@ pub(super) fn parse_extension_to_index(
         return false;
     }
 
-    let header = match FileRecordSegmentHeader::read_from_prefix(data) {
-        Ok((header, _)) => header,
-        Err(_) => return false,
+    let Ok((header, _)) = FileRecordSegmentHeader::read_from_prefix(data) else {
+        return false;
     };
 
     // Parse attributes to find $FILE_NAME and $DATA
@@ -89,9 +84,8 @@ pub(super) fn parse_extension_to_index(
     let mut found_default_data = false;
 
     while offset + size_of::<AttributeRecordHeader>() <= max_offset {
-        let attr_header = match AttributeRecordHeader::read_from_prefix(&data[offset..]) {
-            Ok((attr_header, _)) => attr_header,
-            Err(_) => break,
+        let Ok((attr_header, _)) = AttributeRecordHeader::read_from_prefix(&data[offset..]) else {
+            break;
         };
 
         if attr_header.type_code == AttributeType::End as u32 {
@@ -113,10 +107,10 @@ pub(super) fn parse_extension_to_index(
                             as usize;
                     let fn_offset = offset + value_offset;
                     if fn_offset + size_of::<FileNameAttribute>() <= data.len() {
-                        let fn_attr = match FileNameAttribute::read_from_prefix(&data[fn_offset..])
-                        {
-                            Ok((fn_attr, _)) => fn_attr,
-                            Err(_) => break,
+                        let Ok((fn_attr, _)) =
+                            FileNameAttribute::read_from_prefix(&data[fn_offset..])
+                        else {
+                            break;
                         };
 
                         // Skip DOS-only names (namespace 2)
@@ -205,18 +199,21 @@ pub(super) fn parse_extension_to_index(
                                 .try_into()
                                 .unwrap_or([0; 8]),
                         );
-                        (size.max(0) as u64, allocated.max(0) as u64)
+                        (
+                            size.max(0).cast_unsigned(),
+                            allocated.max(0).cast_unsigned(),
+                        )
                     } else {
                         (0, 0)
                     }
                 } else {
                     let len_offset = offset + 16;
                     if len_offset + 4 <= data.len() {
-                        let len = u32::from_le_bytes(
+                        let len = u64::from(u32::from_le_bytes(
                             data[len_offset..len_offset + 4]
                                 .try_into()
                                 .unwrap_or([0; 4]),
-                        ) as u64;
+                        ));
                         (len, 0)
                     } else {
                         (0, 0)
@@ -260,8 +257,9 @@ pub(super) fn parse_extension_to_index(
                 // Parse $REPARSE_POINT - add as stream
                 let (rp_size, rp_allocated) = if attr_header.is_non_resident == 0 {
                     let value_length_bytes = &data[offset + 16..offset + 20];
-                    let value_length =
-                        u32::from_le_bytes(value_length_bytes.try_into().unwrap_or([0; 4])) as u64;
+                    let value_length = u64::from(u32::from_le_bytes(
+                        value_length_bytes.try_into().unwrap_or([0; 4]),
+                    ));
                     (value_length, 0_u64)
                 } else {
                     let nr_offset = offset + 16;
@@ -271,7 +269,10 @@ pub(super) fn parse_extension_to_index(
                             i64::from_le_bytes(alloc_bytes.try_into().unwrap_or([0; 8]));
                         let size_bytes = &data[nr_offset + 32..nr_offset + 40];
                         let data_size = i64::from_le_bytes(size_bytes.try_into().unwrap_or([0; 8]));
-                        (data_size.max(0) as u64, allocated.max(0) as u64)
+                        (
+                            data_size.max(0).cast_unsigned(),
+                            allocated.max(0).cast_unsigned(),
+                        )
                     } else {
                         (0_u64, 0_u64)
                     }
@@ -310,9 +311,9 @@ pub(super) fn parse_extension_to_index(
                     // Accumulate $I30 sizes
                     if attr_header.is_non_resident == 0 {
                         let value_length_bytes = &data[offset + 16..offset + 20];
-                        let value_length =
-                            u32::from_le_bytes(value_length_bytes.try_into().unwrap_or([0; 4]))
-                                as u64;
+                        let value_length = u64::from(u32::from_le_bytes(
+                            value_length_bytes.try_into().unwrap_or([0; 4]),
+                        ));
                         dir_index_size += value_length;
                     } else {
                         let nr_offset = offset + 16;
@@ -323,8 +324,8 @@ pub(super) fn parse_extension_to_index(
                             let size_bytes = &data[nr_offset + 32..nr_offset + 40];
                             let data_size =
                                 i64::from_le_bytes(size_bytes.try_into().unwrap_or([0; 8]));
-                            dir_index_size += data_size.max(0) as u64;
-                            dir_index_allocated += allocated.max(0) as u64;
+                            dir_index_size += data_size.max(0).cast_unsigned();
+                            dir_index_allocated += allocated.max(0).cast_unsigned();
                         }
                     }
                 } else {
@@ -346,9 +347,9 @@ pub(super) fn parse_extension_to_index(
                     if is_primary {
                         let (size, allocated) = if attr_header.is_non_resident == 0 {
                             let value_length_bytes = &data[offset + 16..offset + 20];
-                            let value_length =
-                                u32::from_le_bytes(value_length_bytes.try_into().unwrap_or([0; 4]))
-                                    as u64;
+                            let value_length = u64::from(u32::from_le_bytes(
+                                value_length_bytes.try_into().unwrap_or([0; 4]),
+                            ));
                             (value_length, 0_u64)
                         } else {
                             let nr_offset = offset + 16;
@@ -359,7 +360,10 @@ pub(super) fn parse_extension_to_index(
                                 let size_bytes = &data[nr_offset + 32..nr_offset + 40];
                                 let data_size =
                                     i64::from_le_bytes(size_bytes.try_into().unwrap_or([0; 8]));
-                                (data_size.max(0) as u64, allocated.max(0) as u64)
+                                (
+                                    data_size.max(0).cast_unsigned(),
+                                    allocated.max(0).cast_unsigned(),
+                                )
                             } else {
                                 (0_u64, 0_u64)
                             }
@@ -398,9 +402,9 @@ pub(super) fn parse_extension_to_index(
                 if is_primary {
                     let (size, allocated) = if attr_header.is_non_resident == 0 {
                         let value_length_bytes = &data[offset + 16..offset + 20];
-                        let value_length =
-                            u32::from_le_bytes(value_length_bytes.try_into().unwrap_or([0; 4]))
-                                as u64;
+                        let value_length = u64::from(u32::from_le_bytes(
+                            value_length_bytes.try_into().unwrap_or([0; 4]),
+                        ));
                         (value_length, 0_u64)
                     } else {
                         let nr_offset = offset + 16;
@@ -411,7 +415,10 @@ pub(super) fn parse_extension_to_index(
                             let size_bytes = &data[nr_offset + 32..nr_offset + 40];
                             let data_size =
                                 i64::from_le_bytes(size_bytes.try_into().unwrap_or([0; 8]));
-                            (data_size.max(0) as u64, allocated.max(0) as u64)
+                            (
+                                data_size.max(0).cast_unsigned(),
+                                allocated.max(0).cast_unsigned(),
+                            )
                         } else {
                             (0_u64, 0_u64)
                         }
@@ -424,9 +431,7 @@ pub(super) fn parse_extension_to_index(
                 // Skip - not expected in extension records
             }
             _ => {
-                // Unknown attribute types - count as streams (C++ default: case)
-                let _type_code = attr_header.type_code;
-
+                // Unknown attribute types — count as streams (C++ default: case)
                 let is_primary = if attr_header.is_non_resident == 0 {
                     true
                 } else {
@@ -444,9 +449,9 @@ pub(super) fn parse_extension_to_index(
                 if is_primary {
                     let (size, allocated) = if attr_header.is_non_resident == 0 {
                         let value_length_bytes = &data[offset + 16..offset + 20];
-                        let value_length =
-                            u32::from_le_bytes(value_length_bytes.try_into().unwrap_or([0; 4]))
-                                as u64;
+                        let value_length = u64::from(u32::from_le_bytes(
+                            value_length_bytes.try_into().unwrap_or([0; 4]),
+                        ));
                         (value_length, 0_u64)
                     } else {
                         let nr_offset = offset + 16;
@@ -457,7 +462,10 @@ pub(super) fn parse_extension_to_index(
                             let size_bytes = &data[nr_offset + 32..nr_offset + 40];
                             let data_size =
                                 i64::from_le_bytes(size_bytes.try_into().unwrap_or([0; 8]));
-                            (data_size.max(0) as u64, allocated.max(0) as u64)
+                            (
+                                data_size.max(0).cast_unsigned(),
+                                allocated.max(0).cast_unsigned(),
+                            )
                         } else {
                             (0_u64, 0_u64)
                         }
@@ -557,39 +565,17 @@ pub(super) fn parse_extension_to_index(
         if !link_indices.is_empty() {
             // Check if base record has no name (first_name is empty)
             // This happens when the $FILE_NAME attribute is ONLY in extension records
-            if !record.first_name.name.is_valid() {
-                // Copy the first extension name directly into first_name
-                // This matches established behavior (ntfs_index.hpp lines 559-567)
-                let first_link = &index.links[link_indices[0] as usize];
-                record.first_name.name = first_link.name;
-                record.first_name.parent_frs = first_link.parent_frs;
-                // Don't increment name_count for the first name (it's already counted as 1)
-
-                // Chain remaining links (if any) to first_name.next_entry
-                if link_indices.len() > 1 {
-                    // Chain the remaining links together
-                    for i in 1..link_indices.len().saturating_sub(1) {
-                        let current_idx = link_indices[i] as usize;
-                        let next_idx = link_indices[i + 1];
-                        index.links[current_idx].next_entry = next_idx;
-                    }
-                    // Attach remaining links to first_name
-                    let record = &mut index.records[record_idx as usize];
-                    record.first_name.next_entry = link_indices[1];
-                    // Update name count for additional links only
-                    record.name_count += (link_indices.len() - 1) as u16;
-                }
-            } else {
+            if record.first_name.name.is_valid() {
                 // Base record already has a name - chain extension names as additional hard
                 // links Find the end of the current link chain
-                let last_link_idx = if record.first_name.next_entry != NO_ENTRY {
+                let last_link_idx = if record.first_name.next_entry == NO_ENTRY {
+                    None
+                } else {
                     let mut idx = record.first_name.next_entry;
                     while index.links[idx as usize].next_entry != NO_ENTRY {
                         idx = index.links[idx as usize].next_entry;
                     }
                     Some(idx)
-                } else {
-                    None
                 };
 
                 // Chain the new links together
@@ -611,6 +597,28 @@ pub(super) fn parse_extension_to_index(
                 // Update name count
                 let record = &mut index.records[record_idx as usize];
                 record.name_count += link_indices.len() as u16;
+            } else {
+                // Copy the first extension name directly into first_name
+                // This matches established behavior (ntfs_index.hpp lines 559-567)
+                let first_link = &index.links[link_indices[0] as usize];
+                record.first_name.name = first_link.name;
+                record.first_name.parent_frs = first_link.parent_frs;
+                // Don't increment name_count for the first name (it's already counted as 1)
+
+                // Chain remaining links (if any) to first_name.next_entry
+                if link_indices.len() > 1 {
+                    // Chain the remaining links together
+                    for i in 1..link_indices.len().saturating_sub(1) {
+                        let current_idx = link_indices[i] as usize;
+                        let next_idx = link_indices[i + 1];
+                        index.links[current_idx].next_entry = next_idx;
+                    }
+                    // Attach remaining links to first_name
+                    let record = &mut index.records[record_idx as usize];
+                    record.first_name.next_entry = link_indices[1];
+                    // Update name count for additional links only
+                    record.name_count += (link_indices.len() - 1) as u16;
+                }
             }
         }
 
@@ -619,14 +627,14 @@ pub(super) fn parse_extension_to_index(
             let record = &mut index.records[record_idx as usize];
 
             // Find the end of the current stream chain
-            let last_stream_idx = if record.first_stream.next_entry != NO_ENTRY {
+            let last_stream_idx = if record.first_stream.next_entry == NO_ENTRY {
+                None
+            } else {
                 let mut idx = record.first_stream.next_entry;
                 while index.streams[idx as usize].next_entry != NO_ENTRY {
                     idx = index.streams[idx as usize].next_entry;
                 }
                 Some(idx)
-            } else {
-                None
             };
 
             // Chain the new streams together
@@ -656,14 +664,14 @@ pub(super) fn parse_extension_to_index(
             let record = &mut index.records[record_idx as usize];
 
             // Find end of existing internal stream chain
-            let last_internal_idx = if record.first_internal_stream != NO_ENTRY {
+            let last_internal_idx = if record.first_internal_stream == NO_ENTRY {
+                None
+            } else {
                 let mut idx = record.first_internal_stream;
                 while index.internal_streams[idx as usize].next_entry != NO_ENTRY {
                     idx = index.internal_streams[idx as usize].next_entry;
                 }
                 Some(idx)
-            } else {
-                None
             };
 
             let mut first_new_internal = NO_ENTRY;

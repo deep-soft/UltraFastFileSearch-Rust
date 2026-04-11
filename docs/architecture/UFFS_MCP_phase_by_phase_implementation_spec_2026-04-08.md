@@ -16,7 +16,7 @@ The recommendation is:
 1. **Keep the MCP frontend daemon-native.** `uffs-mcp` should talk to `uffs-client`, which talks to `uffs-daemon`. It should not shell out to `uffs` for normal tool execution.
 2. **Use the official Rust MCP SDK as the protocol boundary, not as the semantic boundary.** The current official Rust SDK (`rmcp`) is listed as an official Tier 2 SDK and supports server/client functionality, tools/resources/prompts, schema generation, stdio transport, and Streamable HTTP transport. That makes it a good outer protocol layer, but UFFS should still keep its own internal abstractions so the daemon/query model does not depend on SDK churn.
 3. **Keep one canonical UFFS query model.** Search, aggregate, facet values, info, and duplicate verification should remain daemon-owned semantics expressed through `uffs-client::protocol`, not redefined inside MCP.
-4. **Ship MCP in layers.** First make `uffs.search`, `uffs.info`, `uffs.drives`, and `uffs.status` production-grade over stdio. Then add daemon-native aggregation/facets. Then add resources/prompts/roots awareness. Then add tasks for long-running work. Then add a Streamable HTTP gateway.
+4. **Ship MCP in layers.** First make `uffs_search`, `uffs_info`, `uffs_drives`, and `uffs_status` production-grade over stdio. Then add daemon-native aggregation/facets. Then add resources/prompts/roots awareness. Then add tasks for long-running work. Then add a Streamable HTTP gateway.
 5. **Do not leak CLI or shmem internals into MCP.** MCP should expose bounded rows, structured aggregates, resource links, cursors, and tasks. It should not hand an LLM a raw shared-memory path or a human-oriented CLI dump.
 
 This direction fits the current UFFS architecture well. Internal docs already describe UFFS as a unified daemon system with `uffs-daemon` as the execution backend, `uffs-client` as the thin transport library, and `uffs-mcp` as a stdio adapter over the daemon. Warm queries are already in the right range for a serious MCP service: the daemon architecture docs report about **9 ms median warm latency**, about **12.4 s cold start** from `.uffs` cache for 7 drives, and about **7.3 GiB steady-state memory** with **0 GiB** when the daemon retires. Internal docs also already position shared-memory handoff as the correct bulk-result path for non-MCP surfaces. Internal sources: `DAEMON_SERVICE_ARCHITECTURE.md`, `daemon.md`, `FILTER_SORT_FEATURE_MATRIX.md`.
@@ -165,11 +165,11 @@ The daemon should continue converging on a single typed request surface.
 
 For MCP that means:
 
-- `uffs.search` maps to canonical `SearchParams`
-- `uffs.aggregate` maps to canonical aggregation embedded in `SearchParams` or to a thin `aggregate` alias that compiles to that same shape
-- `uffs.facet_values` maps to canonical facet value search over the same field catalog
-- `uffs.info` maps to a daemon info/read path
-- `uffs.duplicate_verify` maps to daemon job/task infrastructure
+- `uffs_search` maps to canonical `SearchParams`
+- `uffs_aggregate` maps to canonical aggregation embedded in `SearchParams` or to a thin `aggregate` alias that compiles to that same shape
+- `uffs_facet_values` maps to canonical facet value search over the same field catalog
+- `uffs_info` maps to a daemon info/read path
+- `uffs_duplicate_verify` maps to daemon job/task infrastructure
 
 ### Strong recommendation on internal aliasing
 
@@ -225,20 +225,20 @@ The default advertised tool set should be read-only and analysis-oriented.
 
 ### Default public tools
 
-- `uffs.search`
-- `uffs.aggregate`
-- `uffs.facet_values`
-- `uffs.info`
-- `uffs.drives`
-- `uffs.status`
+- `uffs_search`
+- `uffs_aggregate`
+- `uffs_facet_values`
+- `uffs_info`
+- `uffs_drives`
+- `uffs_status`
 
 ### Admin or maintenance tools
 
 These should be hidden by default, gated by config, or exposed only in explicit admin mode:
 
-- `uffs.refresh_index`
-- `uffs.warmup`
-- `uffs.shutdown_daemon`
+- `uffs_refresh_index`
+- `uffs_warmup`
+- `uffs_shutdown_daemon`
 
 Even though they do not modify the filesystem, they do modify process state and can degrade user experience if a model calls them casually.
 
@@ -378,13 +378,13 @@ That keeps the first server simple and predictable.
 
 Use lowercase dotted names:
 
-- `uffs.search`
-- `uffs.aggregate`
-- `uffs.facet_values`
-- `uffs.info`
-- `uffs.drives`
-- `uffs.status`
-- `uffs.duplicate_verify`
+- `uffs_search`
+- `uffs_aggregate`
+- `uffs_facet_values`
+- `uffs_info`
+- `uffs_drives`
+- `uffs_status`
+- `uffs_duplicate_verify`
 
 Why dotted names:
 
@@ -397,15 +397,15 @@ Why dotted names:
 
 | Tool | Phase | readOnly | destructive | idempotent | openWorld | taskSupport |
 |---|---:|---:|---:|---:|---:|---|
-| `uffs.search` | P1 | true | false | true | false | forbidden |
-| `uffs.info` | P1 | true | false | true | false | forbidden |
-| `uffs.drives` | P1 | true | false | true | false | forbidden |
-| `uffs.status` | P1 | true | false | true | false | forbidden |
-| `uffs.aggregate` | P3 | true | false | true | false | optional |
-| `uffs.facet_values` | P4 | true | false | true | false | forbidden |
-| `uffs.duplicate_verify` | P5 | true | false | true | false | required |
-| `uffs.refresh_index` | gated | false | false | false | false | optional |
-| `uffs.warmup` | gated | false | false | true | false | forbidden |
+| `uffs_search` | P1 | true | false | true | false | forbidden |
+| `uffs_info` | P1 | true | false | true | false | forbidden |
+| `uffs_drives` | P1 | true | false | true | false | forbidden |
+| `uffs_status` | P1 | true | false | true | false | forbidden |
+| `uffs_aggregate` | P3 | true | false | true | false | optional |
+| `uffs_facet_values` | P4 | true | false | true | false | forbidden |
+| `uffs_duplicate_verify` | P5 | true | false | true | false | required |
+| `uffs_refresh_index` | gated | false | false | false | false | optional |
+| `uffs_warmup` | gated | false | false | true | false | forbidden |
 
 ### Why `openWorldHint = false`
 
@@ -430,8 +430,8 @@ User question:
 
 Agent path:
 
-1. call `uffs.search`
-2. optionally call `uffs.info` for one selected row
+1. call `uffs_search`
+2. optionally call `uffs_info` for one selected row
 
 ### 8.2 Summary questions
 
@@ -443,7 +443,7 @@ User question:
 
 Agent path:
 
-1. call `uffs.aggregate`
+1. call `uffs_aggregate`
 2. use returned drill-down predicates for any follow-up detail query
 
 ### 8.3 Refinement questions
@@ -455,8 +455,8 @@ User question:
 
 Agent path:
 
-1. call `uffs.facet_values`
-2. or call `uffs.aggregate` with `terms` buckets
+1. call `uffs_facet_values`
+2. or call `uffs_aggregate` with `terms` buckets
 3. refine with returned drill-down patch
 
 ### 8.4 Duplicate investigations
@@ -468,8 +468,8 @@ User question:
 
 Agent path:
 
-1. call `uffs.aggregate` with `duplicates` or preset `duplicate_candidates`
-2. if user wants stronger proof, call `uffs.duplicate_verify`
+1. call `uffs_aggregate` with `duplicates` or preset `duplicate_candidates`
+2. if user wants stronger proof, call `uffs_duplicate_verify`
 3. inspect sample rows and reclaimable bytes
 
 ### 8.5 Workspace-bounded questions
@@ -483,7 +483,7 @@ Agent path:
 
 1. read client roots if available
 2. server intersects those roots with UFFS scope
-3. call `uffs.aggregate` or `uffs.search`
+3. call `uffs_aggregate` or `uffs_search`
 
 ### 8.6 What agents should not do
 
@@ -501,7 +501,7 @@ Agent path:
 ### Default inline row rules
 
 - default row count: **50**
-- recommended hard cap for inline MCP rows: **500**
+- recommended hard cap for inline MCP rows: **100**
 - default projection: `name,size,modified,path,type,ext`
 - explicit projection override allowed
 
@@ -589,10 +589,10 @@ Turn the current rudimentary `uffs-mcp` into a robust, typed, read-only MCP serv
 
 Ship these tools only:
 
-- `uffs.search`
-- `uffs.info`
-- `uffs.drives`
-- `uffs.status`
+- `uffs_search`
+- `uffs_info`
+- `uffs_drives`
+- `uffs_status`
 
 ### Crate changes
 
@@ -648,7 +648,7 @@ No new daemon methods yet. Reuse existing:
 ### Acceptance gate
 
 - MCP Inspector and at least one host can initialize and call all four tools
-- `uffs.search` returns bounded rows with stable field names
+- `uffs_search` returns bounded rows with stable field names
 - all tool outputs validate against declared schemas
 - server survives daemon-not-ready and daemon-restart scenarios gracefully
 
@@ -729,7 +729,7 @@ Roots are straightforward on Windows live volumes (`file:///C:/...`). They are l
 
 ---
 
-## Phase 3 — daemon-native aggregation core and `uffs.aggregate`
+## Phase 3 — daemon-native aggregation core and `uffs_aggregate`
 
 ### Goal
 
@@ -741,7 +741,7 @@ Add:
 
 - daemon-side aggregate engine
 - client protocol additions
-- `uffs.aggregate`
+- `uffs_aggregate`
 
 ### Cross-crate changes
 
@@ -804,14 +804,14 @@ Aggregate-only calls should not materialize `DisplayRow`s unless sample rows wer
 
 ### Acceptance gate
 
-- `uffs.aggregate` answers storage and category questions in one call
+- `uffs_aggregate` answers storage and category questions in one call
 - aggregate-only execution avoids row materialization for hot-field cases
 - exactness/truncation metadata is explicit
 - bucket drill-down predicate patches are present
 
 ---
 
-## Phase 4 — `uffs.facet_values`, prompts, and richer drill-down
+## Phase 4 — `uffs_facet_values`, prompts, and richer drill-down
 
 ### Goal
 
@@ -821,7 +821,7 @@ Make MCP navigation and refinement excellent, not merely functional.
 
 Add:
 
-- `uffs.facet_values`
+- `uffs_facet_values`
 - prompts
 - bucket pagination and richer drill-down behavior
 
@@ -847,11 +847,11 @@ crates/uffs-mcp/src/
 
 | Prompt | Purpose |
 |---|---|
-| `uffs.disk_usage_report` | summarize type/drive/age/storage hotspots |
-| `uffs.cleanup_report` | summarize cleanup candidates |
-| `uffs.duplicate_investigation` | walk from candidates to verified duplicates |
+| `uffs_disk_usage_report` | summarize type/drive/age/storage hotspots |
+| `uffs_cleanup_report` | summarize cleanup candidates |
+| `uffs_duplicate_investigation` | walk from candidates to verified duplicates |
 
-### `uffs.facet_values`
+### `uffs_facet_values`
 
 This tool should support:
 
@@ -884,7 +884,7 @@ Add:
 
 - daemon job registry
 - MCP task integration
-- `uffs.duplicate_verify`
+- `uffs_duplicate_verify`
 
 ### Cross-crate changes
 
@@ -989,67 +989,245 @@ Or keep one crate with feature-gated binaries if you prefer fewer crates.
 ### Goal
 
 Make the MCP layer testable with the same seriousness as CLI and daemon RPC.
+Every MCP surface — tools, resources, prompts, lifecycle — must have automated
+validation that runs on every commit, using the same shared test-definition
+infrastructure as the CLI and API validation suites.
+
+### Scope
+
+Three new artifacts:
+
+| Artifact | Purpose |
+|---|---|
+| `scripts/windows/mcp-validation.rs` | Capability & conformance validation (parallel to `cli-flag-validation.rs` and `api-validation.rs`) |
+| `scripts/tests/definitions/12-mcp.toml` | MCP-specific test definitions (M-series suites) |
+| `scripts/dev/mcp-readiness.rs` | Lifecycle verification (already implemented — parallel to `daemon-readiness.rs`) |
+
+The lifecycle script (`mcp-readiness.rs`) exercises spawn / initialize / shutdown /
+daemon-auto-start / PID management / concurrent sessions / startup timing.
+It does **not** test capability correctness — that belongs in `mcp-validation.rs`.
 
 ### Test classes
 
-#### Unit
+#### Unit (in-crate `#[cfg(test)]`)
 
-- schema generation tests
-- tool annotation tests
-- roots mapping tests
-- cursor encoding/decoding tests
-- error mapping tests
+- schema generation: every tool's `inputSchema` and `outputSchema` round-trip through `schemars` → JSON → parse
+- tool annotation correctness: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`
+- roots mapping: `RootsState` correctly maps `file://` URIs → drive-letter restrictions
+- cursor encoding/decoding: `CursorCodec::encode` / `decode` round-trip, offset bounds, corruption detection
+- error mapping: every `UffsError` variant maps to the correct MCP error code
 
-#### Integration
+#### Integration (stdio end-to-end via `mcp-validation.rs`)
 
-- stdio initialize / tools/list / tools/call
-- resources/list / resources/read
-- prompts/list / prompts/get
-- tasks end-to-end
-- daemon restart and reconnect scenarios
+- initialize + capability negotiation (protocol version, server info, declared capabilities)
+- `tools/list` shape — all tools present with correct annotations and schemas
+- `tools/call` for each tool — validate response structure against `outputSchema`
+- `resources/list` + `resources/read` for all static and dynamic resources
+- `prompts/list` + `prompts/get` for all prompts with argument validation
+- cross-tool consistency: field names in search results match `schema/fields` resource
+
+#### Lifecycle (via `mcp-readiness.rs`)
+
+- clean spawn → initialize → shutdown (stdin close → exit 0)
+- daemon already running → instant MCP connect
+- daemon NOT running → MCP triggers auto-start → smoke query succeeds
+- MCP status / stop / kill CLI commands
+- hard kill → PID file cleanup → fresh start
+- daemon restart while MCP session alive
+- multiple concurrent MCP sessions sharing one daemon
+- cold → warm → hot startup timing
 
 #### Performance
 
-- no extra daemon warm-query regression from MCP layer
-- bounded memory when returning large aggregate results
-- aggregate-only no-row-materialization regression guard
+- no extra daemon warm-query regression: MCP `uffs_search` latency ≤ 5% over raw daemon RPC for same query
+- bounded memory: returning 10 000+ aggregate buckets does not allocate proportional row data
+- aggregate-only path: `uffs_aggregate` never materializes per-file rows (regression guard)
 
 #### Host/interoperability
 
-- MCP Inspector
-- at least one IDE host
-- one Streamable HTTP test client when P6 lands
+- MCP Inspector: initialize + call all tools + read all resources
+- at least one IDE host (Cursor, VS Code Copilot, or Claude Desktop): end-to-end tool call
+- one Streamable HTTP test client when Phase 6 lands
 
-### Recommended new harness
-
-Add a dedicated validation harness parallel to your existing suites:
+### Validation harness architecture
 
 ```text
 scripts/
+├── dev/
+│   ├── daemon-readiness.rs       # Daemon lifecycle verification
+│   └── mcp-readiness.rs          # MCP lifecycle verification
 ├── windows/
-│   ├── cli-flag-validation.rs
-│   ├── api-validation.rs
-│   └── mcp-validation.rs
+│   ├── cli-flag-validation.rs    # CLI conformance (targets: "cli")
+│   ├── api-validation.rs         # Daemon RPC conformance (targets: "api")
+│   └── mcp-validation.rs         # MCP conformance (targets: "mcp")
 └── tests/
-    └── test-definitions.toml
+    ├── test-definitions.toml     # Manifest + field reference
+    └── definitions/
+        ├── 00-warmup.toml        # … through 11-rpc.toml (existing)
+        └── 12-mcp.toml           # MCP-specific suites (M100–M700)
 ```
 
-### Suggested MCP suites
+#### `mcp-validation.rs` — transport layer
 
-- `M100` initialize + capability negotiation
-- `M110` tools/list shape
-- `M120` `uffs.search` schema and row bounds
-- `M130` `uffs.info`
-- `M140` `uffs.drives`
-- `M150` `uffs.status`
-- `M200` resources/list/read
-- `M300` aggregate schema correctness
-- `M310` bucket cursor pagination
-- `M320` drill-down patch correctness
-- `M400` roots boundary enforcement
-- `M500` duplicate verify task flow
-- `M600` no-shmem-path leak
-- `M700` stderr-only logging under stdio
+The MCP validation script communicates with the MCP server via stdio JSON-RPC
+(spawning `uffs mcp run` as a child process).  Unlike the API validator (which
+opens a Unix socket per request), the MCP validator maintains a **persistent
+session** for the duration of the test run:
+
+1. Spawn `uffs mcp run` with data-source args
+2. Complete the `initialize` handshake
+3. For each test definition with `targets` containing `"mcp"`:
+   - Map `rpc_method` → MCP tool name (`search` → `uffs_search`, `drives` → `uffs_drives`, etc.)
+   - Send `tools/call` with the mapped tool name and `rpc_params` as `arguments`
+   - Parse the structured content from the MCP response
+   - Run shared validators (`expect_min_rows`, `column_checks`, `sort_checks`)
+   - Run MCP-specific checks (`mcp_checks.response_contains`, `mcp_checks.tool_name`)
+4. Close stdin → verify clean exit
+
+#### Tool name mapping
+
+| `rpc_method` | MCP tool name |
+|---|---|
+| `search` | `uffs_search` |
+| `info` | `uffs_info` |
+| `drives` | `uffs_drives` |
+| `status` | `uffs_status` |
+| `aggregate` | `uffs_aggregate` |
+| `facet_values` | `uffs_facet_values` |
+
+#### `mcp_checks` definition format
+
+Extend the existing `McpChecks` struct in the test definitions:
+
+```toml
+[test.mcp_checks]
+tool_name = "uffs_search"           # Override auto-mapped tool name
+response_contains = ["matches"]     # Substrings that must appear in text content
+response_not_contains = ["error"]   # Substrings that must NOT appear
+content_type = "text"               # Expected content type: "text" or "resource"
+min_content_items = 1               # Minimum content array length
+```
+
+### MCP-specific test suites (`12-mcp.toml`)
+
+#### M100 — initialize + capability negotiation
+
+| ID | Test |
+|---|---|
+| M100 | `initialize` returns `protocolVersion = "2024-11-05"` |
+| M101 | `serverInfo.name` = `"uffs"` |
+| M102 | `capabilities` declares `tools`, `resources`, `prompts` |
+| M103 | `notifications/initialized` accepted without error |
+
+#### M110 — tools/list shape
+
+| ID | Test |
+|---|---|
+| M110 | `tools/list` returns exactly 6 tools |
+| M111 | Every tool has `inputSchema` with `type: "object"` |
+| M112 | Every tool has `annotations` with `readOnlyHint: true` |
+| M113 | `uffs_search` input schema includes `pattern`, `limit`, `offset` |
+| M114 | `uffs_aggregate` input schema includes `agg_type`, `field` |
+
+#### M120 — `uffs_search` conformance
+
+| ID | Test |
+|---|---|
+| M120 | Basic wildcard search returns rows |
+| M121 | `limit` is respected (request 5 → get ≤ 5) |
+| M122 | `offset` / `cursor` pagination returns disjoint pages |
+| M123 | `columns` projection limits returned fields |
+| M124 | Filter flags (`files_only`, `min_size`) work through MCP |
+| M125 | Sort order (`sort_by`, `sort_dir`) is honored |
+| M126 | Empty-result query returns `isError: false` with "0 matches" text |
+
+#### M130 — `uffs_info`
+
+| ID | Test |
+|---|---|
+| M130 | Valid path returns file metadata |
+| M131 | Non-existent path returns error content (not protocol error) |
+
+#### M140 — `uffs_drives`
+
+| ID | Test |
+|---|---|
+| M140 | Returns at least one drive |
+| M141 | Each drive has `letter`, `total_records`, `label` fields |
+
+#### M150 — `uffs_status`
+
+| ID | Test |
+|---|---|
+| M150 | Returns daemon status with `state`, `pid` |
+| M151 | Uptime is a non-negative number |
+
+#### M200 — resources
+
+| ID | Test |
+|---|---|
+| M200 | `resources/list` returns 6 resources |
+| M201 | `resources/read` `uffs://schema/fields` returns JSON with field metadata |
+| M202 | `resources/read` `uffs://schema/search` returns tool input schema |
+| M203 | `resources/read` `uffs://schema/aggregate` returns aggregate schema |
+| M204 | `resources/read` `uffs://presets/aggregate` returns preset list |
+| M205 | `resources/read` `uffs://drives` returns drive data |
+| M206 | `resources/read` `uffs://status` returns daemon status |
+| M210 | Field names in `schema/fields` match column names in `uffs_search` results |
+
+#### M300 — aggregate conformance
+
+| ID | Test |
+|---|---|
+| M300 | `uffs_aggregate` `terms` on `ext` returns buckets with `key` + `doc_count` |
+| M310 | Bucket cursor pagination: `cursor` from page 1 fetches page 2 |
+| M320 | Drill-down: aggregate with `filters` narrows results |
+| M330 | `stats` aggregation returns `min`, `max`, `avg`, `sum`, `count` |
+| M340 | `histogram` aggregation returns ordered bucket boundaries |
+
+#### M400 — roots boundary enforcement
+
+| ID | Test |
+|---|---|
+| M400 | With roots set, search is restricted to allowed paths |
+| M401 | Search outside roots returns zero matches (not an error) |
+| M402 | `roots/list` returns the configured roots |
+
+#### M500 — prompts
+
+| ID | Test |
+|---|---|
+| M500 | `prompts/list` returns 7 prompts |
+| M501 | `prompts/get` `find_large_files` returns valid messages with `role` |
+| M502 | `prompts/get` with `arguments` substitutes values into the prompt |
+
+#### M600 — security
+
+| ID | Test |
+|---|---|
+| M600 | No shared-memory paths leak into tool output |
+| M601 | No daemon socket paths leak into tool output |
+| M602 | Error messages do not expose internal stack traces |
+
+#### M700 — stdio hygiene
+
+| ID | Test |
+|---|---|
+| M700 | MCP server writes zero non-JSON-RPC bytes to stdout |
+| M701 | All logging goes to stderr only |
+| M702 | Malformed JSON-RPC request returns proper error response (not crash) |
+| M703 | Unknown method returns `MethodNotFound` error code |
+
+### Acceptance gate
+
+- [ ] `mcp-validation.rs` runs all M100–M700 suites and reports ≥ 95% pass rate
+- [ ] `mcp-readiness.rs` passes all 9 lifecycle scenarios (A–I)
+- [ ] All existing CLI and API validation suites still pass (no regressions)
+- [ ] MCP Inspector can initialize, enumerate, and call every tool/resource/prompt
+- [ ] At least one IDE host (Cursor or Claude Desktop) completes an end-to-end tool call
+- [ ] No stdout pollution: `uffs mcp run` produces only valid JSON-RPC on stdout
+- [ ] Daemon restart during active MCP session is handled gracefully (reconnect or clean error)
+- [ ] Performance: MCP `uffs_search` adds ≤ 5% latency over equivalent daemon RPC
 
 ---
 
@@ -1215,7 +1393,7 @@ impl McpApp {
                 roots: Arc::new(RwLock::new(RootsState::default())),
                 limits: Limits {
                     default_row_limit: 50,
-                    max_inline_rows: 500,
+                    max_inline_rows: 100,
                     default_bucket_limit: 25,
                     max_inline_buckets: 200,
                 },
@@ -1282,7 +1460,7 @@ pub struct ToolDescriptor {
 pub fn builtin_tools() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
-            name: "uffs.search",
+            name: "uffs_search",
             title: "Search indexed NTFS files",
             description: "Find files and directories using UFFS search semantics.",
             input_schema: schemas::search::input_schema(),
@@ -1294,7 +1472,7 @@ pub fn builtin_tools() -> Vec<ToolDescriptor> {
             task_support: "forbidden",
         },
         ToolDescriptor {
-            name: "uffs.aggregate",
+            name: "uffs_aggregate",
             title: "Summarize indexed NTFS data",
             description: "Run server-side aggregations and return compact structured summaries.",
             input_schema: schemas::aggregate::input_schema(),
@@ -1827,7 +2005,7 @@ impl JobRegistry {
 
 The schemas below are intentionally concrete and close to the intended wire shape.
 
-## 12.1 `uffs.search` input schema
+## 12.1 `uffs_search` input schema
 
 ```json
 {
@@ -1888,7 +2066,7 @@ The schemas below are intentionally concrete and close to the intended wire shap
 }
 ```
 
-## 12.2 `uffs.search` output schema
+## 12.2 `uffs_search` output schema
 
 ```json
 {
@@ -1935,7 +2113,7 @@ The schemas below are intentionally concrete and close to the intended wire shap
 }
 ```
 
-## 12.3 `uffs.aggregate` input schema
+## 12.3 `uffs_aggregate` input schema
 
 ```json
 {
@@ -1996,7 +2174,7 @@ The schemas below are intentionally concrete and close to the intended wire shap
 }
 ```
 
-## 12.4 `uffs.aggregate` output schema
+## 12.4 `uffs_aggregate` output schema
 
 ```json
 {
@@ -2069,7 +2247,7 @@ The schemas below are intentionally concrete and close to the intended wire shap
 }
 ```
 
-## 12.5 `uffs.info` input schema
+## 12.5 `uffs_info` input schema
 
 ```json
 {
@@ -2085,7 +2263,7 @@ The schemas below are intentionally concrete and close to the intended wire shap
 }
 ```
 
-## 12.6 `uffs.facet_values` input schema
+## 12.6 `uffs_facet_values` input schema
 
 ```json
 {
@@ -2114,7 +2292,7 @@ The schemas below are intentionally concrete and close to the intended wire shap
 }
 ```
 
-## 12.7 `uffs.duplicate_verify` input schema
+## 12.7 `uffs_duplicate_verify` input schema
 
 ```json
 {
@@ -2156,22 +2334,22 @@ The schemas below are intentionally concrete and close to the intended wire shap
 
 ## 13.1 Prompts
 
-### `uffs.disk_usage_report`
+### `uffs_disk_usage_report`
 
 Purpose:
 
 - answer “what is taking space?”
-- call `uffs.aggregate` with `overview`, `by_type`, and `by_drive`
+- call `uffs_aggregate` with `overview`, `by_type`, and `by_drive`
 - optionally drill down into `top_folders`
 
-### `uffs.cleanup_report`
+### `uffs_cleanup_report`
 
 Purpose:
 
 - answer “what can I delete or investigate?”
 - use `cleanup` preset plus a small search sample for each major bucket
 
-### `uffs.duplicate_investigation`
+### `uffs_duplicate_investigation`
 
 Purpose:
 
@@ -2274,7 +2452,7 @@ That design fits both the UFFS architecture you already have and the modern MCP 
 
 - [ ] adopt `rmcp` shell
 - [ ] stdio initialize works
-- [ ] `uffs.search` / `uffs.info` / `uffs.drives` / `uffs.status`
+- [ ] `uffs_search` / `uffs_info` / `uffs_drives` / `uffs_status`
 - [ ] output schemas emitted
 - [ ] stderr-only logging
 - [ ] row bounding + compact projection
@@ -2290,20 +2468,20 @@ That design fits both the UFFS architecture you already have and the modern MCP 
 
 - [ ] `uffs-core::aggregate`
 - [ ] daemon aggregation method
-- [ ] `uffs.aggregate`
+- [ ] `uffs_aggregate`
 - [ ] sample rows + drilldown
 - [ ] exact/truncated metadata
 
 ### P4 checklist
 
-- [ ] `uffs.facet_values`
+- [ ] `uffs_facet_values`
 - [ ] prompts/list + prompts/get
 - [ ] bucket cursor pagination
 
 ### P5 checklist
 
 - [ ] daemon jobs registry
-- [ ] `uffs.duplicate_verify`
+- [ ] `uffs_duplicate_verify`
 - [ ] MCP tasks mapping
 
 ### P6 checklist

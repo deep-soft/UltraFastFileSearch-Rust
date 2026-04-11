@@ -240,7 +240,7 @@ I would separate tools into three layers.
 
 These are the tools an agent should almost always use.
 
-#### 1. `uffs.search`
+#### 1. `uffs_search`
 
 Purpose:
 - known-item lookup,
@@ -270,7 +270,7 @@ Annotations:
 - `idempotentHint = true`,
 - `openWorldHint = false`.
 
-#### 2. `uffs.aggregate`
+#### 2. `uffs_aggregate`
 
 Purpose:
 - counts,
@@ -309,14 +309,14 @@ Annotations:
 
 This aligns directly with your own consolidated aggregation design. [Internal: `UFFS_AGGREGATION_ARCHITECTURE_CONSOLIDATED.md`]
 
-#### 3. `uffs.facet_values`
+#### 3. `uffs_facet_values`
 
 Purpose:
 - search inside high-cardinality group keys,
 - narrow candidate values for extension/path/type-like refinements,
 - support iterative agent refinement without huge scans.
 
-This is especially useful because official MCP completion is currently focused on prompt/resource argument completion, not guaranteed arbitrary tool-argument completion. `uffs.facet_values` therefore gives you a portable, host-independent refinement primitive.
+This is especially useful because official MCP completion is currently focused on prompt/resource argument completion, not guaranteed arbitrary tool-argument completion. `uffs_facet_values` therefore gives you a portable, host-independent refinement primitive.
 
 Input shape:
 - field,
@@ -333,7 +333,7 @@ Output shape:
 - exactness metadata,
 - optional drill-down patches.
 
-#### 4. `uffs.info`
+#### 4. `uffs_info`
 
 Purpose:
 - rich metadata for one selected path or record,
@@ -354,7 +354,7 @@ Output shape:
 
 These help agents know whether the server is ready, healthy, and scoped correctly.
 
-#### 5. `uffs.status`
+#### 5. `uffs_status`
 
 Purpose:
 - tell the host whether daemon is cold/warm/loading,
@@ -364,7 +364,7 @@ Purpose:
 
 This is especially useful because cold-start cost is UFFS's main weakness in one-shot scenarios.
 
-#### 6. `uffs.capabilities`
+#### 6. `uffs_capabilities`
 
 Purpose:
 - tell the agent which fields, aggregates, presets, duplicate modes, and cold-path capabilities are currently supported.
@@ -374,7 +374,7 @@ This can also be a resource rather than a tool, but I like exposing it both ways
 - resource for persistent schema browsing,
 - tool for explicit agent checks.
 
-#### 7. `uffs.explain_query`
+#### 7. `uffs_explain_query`
 
 Purpose:
 - agent debugging and self-correction,
@@ -390,23 +390,23 @@ A good `explain_query` tool helps an LLM repair its own tool calls instead of ha
 
 These should exist, but often hidden by default or guarded by policy.
 
-#### 8. `uffs.duplicate_verify`
+#### 8. `uffs_duplicate_verify`
 
 Purpose:
 - expensive second-stage verification of duplicate candidate groups.
 
 This should support tasks. It is a perfect use of MCP task support because the work may be materially slower than normal hot-path queries. [3][7]
 
-#### 9. `uffs.export`
+#### 9. `uffs_export`
 
 Purpose:
 - produce durable result resources,
 - export large search or aggregate outputs without bloating normal tool responses,
 - optionally write temp artifacts or named resources.
 
-I would avoid making normal `uffs.search` write host files directly. Instead, `uffs.export` should materialize a resource or task result that the client can read as a resource.
+I would avoid making normal `uffs_search` write host files directly. Instead, `uffs_export` should materialize a resource or task result that the client can read as a resource.
 
-#### 10. `uffs.refresh` and `uffs.warmup`
+#### 10. `uffs_refresh` and `uffs_warmup`
 
 Purpose:
 - maintenance,
@@ -477,18 +477,18 @@ Each prompt should explicitly tell the model which tool sequence to use. For exa
 ### `storage_hotspots`
 
 Suggested tool sequence:
-1. `uffs.aggregate` profile `overview`
-2. `uffs.aggregate` profile `by_type`
-3. `uffs.aggregate` rollup by path depth 2
-4. optionally `uffs.search` on the hottest bucket
+1. `uffs_aggregate` profile `overview`
+2. `uffs_aggregate` profile `by_type`
+3. `uffs_aggregate` rollup by path depth 2
+4. optionally `uffs_search` on the hottest bucket
 
 ### `duplicate_investigation`
 
 Suggested tool sequence:
 1. narrow scope with `roots` or predicates,
-2. `uffs.aggregate` duplicates candidate profile,
-3. if needed `uffs.duplicate_verify` as a task,
-4. `uffs.search` on selected duplicate group.
+2. `uffs_aggregate` duplicates candidate profile,
+3. if needed `uffs_duplicate_verify` as a task,
+4. `uffs_search` on selected duplicate group.
 
 Official MCP prompts support structured argument definitions and prompt retrieval; they are a good fit here. [5]
 
@@ -521,7 +521,7 @@ Instead of making the model guess the path every time, the host can provide work
 ### Practical recommendation
 
 - If roots exist, default search and aggregate scope to those roots unless the model explicitly broadens scope.
-- Expose effective scope in `uffs.status` and `uffs.explain_query`.
+- Expose effective scope in `uffs_status` and `uffs_explain_query`.
 - Return scope in every aggregate/search response.
 
 ## Output design: how to make agents succeed
@@ -603,10 +603,10 @@ Question:
 - "What takes up space on this machine?"
 
 Plan:
-1. `uffs.aggregate` with `overview`
-2. `uffs.aggregate` with `by_type`
-3. `uffs.aggregate` rollup by path depth 2
-4. `uffs.search` only for the dominant bucket
+1. `uffs_aggregate` with `overview`
+2. `uffs_aggregate` with `by_type`
+3. `uffs_aggregate` rollup by path depth 2
+4. `uffs_search` only for the dominant bucket
 
 Why:
 - much lower token cost,
@@ -619,9 +619,9 @@ Question:
 - "What extensions under this directory look suspicious?"
 
 Plan:
-1. `uffs.facet_values` on `extension`
+1. `uffs_facet_values` on `extension`
 2. pick values or prefixes worth exploring,
-3. `uffs.aggregate` or `uffs.search` on narrowed set.
+3. `uffs_aggregate` or `uffs_search` on narrowed set.
 
 ### Pattern 3: Use roots for workspace-scoped search
 
@@ -631,8 +631,8 @@ Question:
 Plan:
 1. read current roots,
 2. default UFFS scope to those roots,
-3. `uffs.search` with `newer=7d` and relevant sort,
-4. optionally `uffs.aggregate` by type or folder.
+3. `uffs_search` with `newer=7d` and relevant sort,
+4. optionally `uffs_aggregate` by type or folder.
 
 ### Pattern 4: Use duplicate verification only after narrowing
 
@@ -806,9 +806,9 @@ This is the policy I would actually implement.
 
 ### Inline result defaults
 
-- `uffs.search`: default inline row limit 50
+- `uffs_search`: default inline row limit 50
 - hard inline max maybe 200 or 500 rows depending on host
-- `uffs.aggregate`: default inline top 20 buckets per agg
+- `uffs_aggregate`: default inline top 20 buckets per agg
 - sample rows default 1-3 only when requested or profile implies it
 
 ### When to switch to resource/task
@@ -859,7 +859,7 @@ A local MCP file-search server has real security implications even if it is read
 
 ### 1. Treat read-only as powerful
 
-`uffs.search` may be read-only, but it is still highly sensitive because it can enumerate a host's filesystem.
+`uffs_search` may be read-only, but it is still highly sensitive because it can enumerate a host's filesystem.
 
 ### 2. Scope by default
 
@@ -925,7 +925,7 @@ Use MCP completion where supported for:
 - resource URIs,
 - prompt arguments.
 
-But do not rely on host support for arbitrary tool-argument completion. For high-cardinality runtime value spaces, `uffs.facet_values` is the portable answer.
+But do not rely on host support for arbitrary tool-argument completion. For high-cardinality runtime value spaces, `uffs_facet_values` is the portable answer.
 
 ## Aggregation strategy: the real differentiator
 
@@ -1002,7 +1002,7 @@ If those numbers hold in the production daemon path, UFFS becomes a genuinely el
 
 ## Design alternatives and trade-offs
 
-## Alternative A: one monolithic `uffs.query` tool
+## Alternative A: one monolithic `uffs_query` tool
 
 ### Pros
 
@@ -1043,20 +1043,20 @@ Best for MCP host usability if kept disciplined.
 
 Expose a small, semantically clean set:
 
-- `uffs.search`
-- `uffs.aggregate`
-- `uffs.facet_values`
-- `uffs.info`
-- `uffs.status`
-- `uffs.capabilities`
-- optional: `uffs.export`, `uffs.duplicate_verify`, `uffs.refresh`
+- `uffs_search`
+- `uffs_aggregate`
+- `uffs_facet_values`
+- `uffs_info`
+- `uffs_status`
+- `uffs_capabilities`
+- optional: `uffs_export`, `uffs_duplicate_verify`, `uffs_refresh`
 
 This is what I recommend.
 
 ## Alternative D: natural-language query tool inside the server
 
 Example:
-- `uffs.ask("find the biggest hidden videos from last month")`
+- `uffs_ask("find the biggest hidden videos from last month")`
 
 ### Pros
 
@@ -1104,7 +1104,7 @@ Do now:
 - keep `uffs-client` backend integration,
 - add `outputSchema` for all stable tools,
 - return `structuredContent` plus concise text,
-- add `uffs.status` and `uffs.capabilities`,
+- add `uffs_status` and `uffs_capabilities`,
 - add resources for `schema/fields`, `schema/presets`, `drives`, `status`,
 - add prompts for overview/hotspots/cleanup,
 - add roots-aware scoping policy,
@@ -1117,7 +1117,7 @@ Goal: make the server truly agent-native.
 
 Do next:
 
-- `uffs.aggregate`
+- `uffs_aggregate`
 - aggregate profiles
 - sample rows
 - drill-down patches
@@ -1130,7 +1130,7 @@ Goal: let agents refine without prompting blindly.
 
 Do next:
 
-- `uffs.facet_values`
+- `uffs_facet_values`
 - bucket pagination
 - capability resource for groupable/aggregatable fields
 - more saved aggregate presets.
@@ -1212,48 +1212,48 @@ That is the design that best fits the current UFFS architecture, your timing evi
 
 | Tool | Default mode | Notes |
 |---|---|---|
-| `uffs.search` | rows, limit 50 | Known-item lookup and concrete enumeration |
-| `uffs.aggregate` | aggregate-only | Summary/distribution/rollup/default for analysis questions |
-| `uffs.facet_values` | top 20 | High-cardinality refinement |
-| `uffs.info` | one record | Rich detail for selected path/record |
-| `uffs.status` | singleton | Warm/cold/loading/drive/memory info |
-| `uffs.capabilities` | singleton | Field/preset/tool/cold-path truth |
-| `uffs.export` | task/resource | Large durable outputs |
-| `uffs.duplicate_verify` | task | Expensive second-stage verification |
-| `uffs.refresh` | hidden/policy-gated | Maintenance |
-| `uffs.warmup` | hidden/policy-gated | Explicit preheating |
+| `uffs_search` | rows, limit 50 | Known-item lookup and concrete enumeration |
+| `uffs_aggregate` | aggregate-only | Summary/distribution/rollup/default for analysis questions |
+| `uffs_facet_values` | top 20 | High-cardinality refinement |
+| `uffs_info` | one record | Rich detail for selected path/record |
+| `uffs_status` | singleton | Warm/cold/loading/drive/memory info |
+| `uffs_capabilities` | singleton | Field/preset/tool/cold-path truth |
+| `uffs_export` | task/resource | Large durable outputs |
+| `uffs_duplicate_verify` | task | Expensive second-stage verification |
+| `uffs_refresh` | hidden/policy-gated | Maintenance |
+| `uffs_warmup` | hidden/policy-gated | Explicit preheating |
 
 ## Appendix C: examples of agent questions and best tool sequences
 
 ### "What kinds of files dominate this drive?"
 
-1. `uffs.aggregate(profile="overview", predicates=[drive=D])`
-2. `uffs.aggregate(profile="by_type", predicates=[drive=D])`
-3. optional `uffs.search` on chosen type bucket
+1. `uffs_aggregate(profile="overview", predicates=[drive=D])`
+2. `uffs_aggregate(profile="by_type", predicates=[drive=D])`
+3. optional `uffs_search` on chosen type bucket
 
 ### "Show me the biggest folders under this workspace"
 
 1. get roots
-2. `uffs.aggregate(agg=rollup:path, depth=2, roots=current workspace)`
-3. `uffs.search` on selected bucket
+2. `uffs_aggregate(agg=rollup:path, depth=2, roots=current workspace)`
+3. `uffs_search` on selected bucket
 
 ### "Did anything suspicious change recently?"
 
-1. `uffs.aggregate(profile="recent_activity", newer=7d)`
-2. `uffs.search(sort=modified:desc, newer=7d, filters for hidden/system/compressed/reparse as needed)`
+1. `uffs_aggregate(profile="recent_activity", newer=7d)`
+2. `uffs_search(sort=modified:desc, newer=7d, filters for hidden/system/compressed/reparse as needed)`
 
 ### "Are there duplicate installers older than a year?"
 
-1. `uffs.aggregate(duplicates:size+name, predicates=[older=365d, type=executable])`
-2. `uffs.duplicate_verify` task for top groups if needed
-3. `uffs.search` to enumerate members
+1. `uffs_aggregate(duplicates:size+name, predicates=[older=365d, type=executable])`
+2. `uffs_duplicate_verify` task for top groups if needed
+3. `uffs_search` to enumerate members
 
 ### "Why is this subtree bloated?"
 
-1. `uffs.aggregate(profile="storage", scope=subtree)`
-2. `uffs.aggregate(histogram=bulkiness, scope=subtree)`
-3. `uffs.aggregate(by_extension, scope=subtree)`
-4. `uffs.search(sort=sizeondisk:desc, scope=subtree)`
+1. `uffs_aggregate(profile="storage", scope=subtree)`
+2. `uffs_aggregate(histogram=bulkiness, scope=subtree)`
+3. `uffs_aggregate(by_extension, scope=subtree)`
+4. `uffs_search(sort=sizeondisk:desc, scope=subtree)`
 
 ## Appendix D: source notes used for this proposal
 

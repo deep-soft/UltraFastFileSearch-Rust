@@ -171,9 +171,18 @@ impl IndexManager {
     /// forwarded into `FinalizeOptions` so drill-down predicates on each
     /// bucket include the full query context.
     ///
-    /// When `pattern` is `Some`, the aggregation scan applies the glob/regex
-    /// pattern inline — only matching records are fed to accumulators.
-    /// When `None`, all records are scanned (unfiltered aggregation).
+    /// `pattern` applies glob/regex name matching; `record_filter` applies
+    /// O(1)-per-record constraints (extension IDs, directory flag, size
+    /// bounds).  Both are optional and compose: a record must pass *both*
+    /// to be fed to accumulators.
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "multi-spec aggregation engine with predicate filtering and accumulation"
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "aggregation engine needs snapshot, specs, predicates, pagination, pattern, drives, and filter"
+    )]
     pub(crate) fn run_aggregations(
         snapshot: &DriveIndex,
         wire_specs: &[uffs_client::protocol::AggregateSpecWire],
@@ -181,6 +190,8 @@ impl IndexManager {
         agg_cursor: Option<&str>,
         agg_page_size: Option<u16>,
         pattern: Option<&str>,
+        drives_filter: &[char],
+        record_filter: &uffs_core::aggregate::AggregateFilter,
     ) -> (Vec<uffs_client::protocol::AggregateResultWire>, u64) {
         use uffs_client::protocol::{AggregateResultWire, BucketWire, StatsWire};
         use uffs_core::aggregate::finalize::{AggregateResultData, FinalizeOptions};
@@ -202,52 +213,53 @@ impl IndexManager {
             return (vec![], 0);
         }
 
-        // Run aggregation — filtered by pattern or unfiltered.
-        let drive_refs: Vec<&uffs_core::compact::DriveCompactIndex> =
-            snapshot.drives.iter().map(|arc| arc.as_ref()).collect();
+        // Apply drive filter: if non-empty, only include matching drives.
+        let drive_refs: Vec<&uffs_core::compact::DriveCompactIndex> = snapshot
+            .drives
+            .iter()
+            .filter(|arc| {
+                drives_filter.is_empty()
+                    || drives_filter
+                        .iter()
+                        .any(|f| f.eq_ignore_ascii_case(&arc.letter))
+            })
+            .map(|arc| arc.as_ref())
+            .collect();
         let options = FinalizeOptions {
             query_predicates,
             ..FinalizeOptions::default()
         };
-        let mut output = match pattern {
-            Some(pat) => {
-                tracing::info!(pattern = %pat, "running FILTERED aggregation");
-                match uffs_core::aggregate::run_aggregate_filtered(
-                    &drive_refs,
-                    &specs,
-                    &options,
-                    pat,
-                ) {
-                    Ok(output) => {
-                        tracing::info!(
-                            scanned = output.records_scanned,
-                            matched = output.records_matched,
-                            "filtered aggregation complete"
-                        );
-                        output
-                    }
-                    Err(e) => {
-                        tracing::warn!("filtered aggregation failed: {e}");
-                        return (vec![], 0);
-                    }
-                }
+
+        // Dispatch to the appropriate core aggregate function.
+        //
+        // `run_aggregate_with_filters` handles all three cases internally:
+        //   - pattern + record_filter → combined filtered scan
+        //   - pattern only → delegates to `run_aggregate_filtered`
+        //   - no filters → delegates to `run_aggregate` (unfiltered)
+        tracing::info!(
+            pattern = ?pattern,
+            ext_count = record_filter.extensions.len(),
+            dir_only = ?record_filter.directory_only,
+            "running aggregation"
+        );
+        let mut output = match uffs_core::aggregate::run_aggregate_with_filters(
+            &drive_refs,
+            &specs,
+            &options,
+            pattern,
+            record_filter,
+        ) {
+            Ok(output) => {
+                tracing::info!(
+                    scanned = output.records_scanned,
+                    matched = output.records_matched,
+                    "aggregation complete"
+                );
+                output
             }
-            None => {
-                tracing::info!("running UNFILTERED aggregation");
-                match uffs_core::aggregate::run_aggregate(&drive_refs, &specs, &options) {
-                    Ok(output) => {
-                        tracing::info!(
-                            scanned = output.records_scanned,
-                            matched = output.records_matched,
-                            "unfiltered aggregation complete"
-                        );
-                        output
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "unfiltered aggregation failed");
-                        return (vec![], 0);
-                    }
-                }
+            Err(e) => {
+                tracing::error!(error = %e, "aggregation failed");
+                return (vec![], 0);
             }
         };
 
@@ -616,7 +628,7 @@ impl IndexManager {
     }
 
     /// Presets expand to multiple specs; all other kinds produce exactly one.
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
         reason = "straightforward match arms — one per wire kind"
     )]

@@ -12,6 +12,16 @@
 //! The user never sees, configures, or manages keys. If the key is lost
 //! (keychain corruption, password reset), a new key is generated and old
 //! cache files trigger a rebuild from MFT.
+//!
+//! ## Development mode (`UFFS_DEV=1`)
+//!
+//! On **non-Windows** platforms, setting `UFFS_DEV=1` bypasses Keychain and
+//! uses file-based key storage (`~/.local/share/uffs/key.bin` with `0600`
+//! permissions). This avoids the macOS login-password prompt that occurs
+//! after every `cargo build` (each rebuild produces a binary with a different
+//! ad-hoc code signature, which Keychain treats as a new application).
+//!
+//! On **Windows**, `UFFS_DEV` is ignored — DPAPI never prompts.
 
 use std::io;
 
@@ -40,6 +50,18 @@ const KEY_SIZE: usize = 32;
 /// Returns an error if Keychain access or key storage fails.
 #[cfg(target_os = "macos")]
 pub fn get_cache_key() -> io::Result<[u8; KEY_SIZE]> {
+    // Dev mode: bypass Keychain to avoid login-password prompts after
+    // every rebuild (each cargo build changes the ad-hoc code signature).
+    if is_dev_mode() {
+        tracing::debug!("UFFS_DEV set — using file-based key (Keychain bypassed)");
+        return file_based_key();
+    }
+    keychain_key()
+}
+
+/// Retrieve or create the encryption key via macOS Keychain Services.
+#[cfg(target_os = "macos")]
+fn keychain_key() -> io::Result<[u8; KEY_SIZE]> {
     use rand::Rng;
     use security_framework::passwords::{
         delete_generic_password, get_generic_password, set_generic_password,
@@ -304,15 +326,36 @@ fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
 
 /// Linux file-based key retrieval or generation.
 ///
-/// The key is a raw 32-byte file stored at `~/.local/share/uffs/key.bin`
-/// with owner-only permissions (`0600`).
+/// Delegates to [`file_based_key`] — the key is a raw 32-byte file stored at
+/// `~/.local/share/uffs/key.bin` with owner-only permissions (`0600`).
 ///
 /// # Errors
 ///
 /// Returns an error if filesystem access or key generation fails.
 #[cfg(target_os = "linux")]
 pub fn get_cache_key() -> io::Result<[u8; KEY_SIZE]> {
+    file_based_key()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Shared: file-based key (used by Linux always, macOS in dev mode)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// File-based key retrieval or generation.
+///
+/// Stores a raw 32-byte key at `<data_local_dir>/uffs/key.bin` with
+/// owner-only permissions (`0600` on Unix, read-only on Windows).
+///
+/// Used directly by Linux, and as the dev-mode bypass on macOS
+/// (`UFFS_DEV=1`) to avoid Keychain password prompts after rebuilds.
+///
+/// # Errors
+///
+/// Returns an error if filesystem access or key generation fails.
+#[cfg(not(target_os = "windows"))]
+fn file_based_key() -> io::Result<[u8; KEY_SIZE]> {
     use rand::Rng;
+
     let base = dirs_next::data_local_dir().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "cannot determine local data dir")
     })?;
@@ -343,8 +386,19 @@ pub fn get_cache_key() -> io::Result<[u8; KEY_SIZE]> {
     std::fs::write(&key_path, key)?;
     crate::fs::set_file_permissions_owner_only(&key_path)?;
 
-    tracing::info!(path = %key_path.display(), "Generated and stored new encryption key");
+    tracing::info!(path = %key_path.display(), "Generated and stored new encryption key (file-based)");
     Ok(key)
+}
+
+/// Returns `true` when `UFFS_DEV` is set to a truthy value.
+///
+/// Only effective on non-Windows platforms. On Windows, DPAPI never
+/// prompts, so there's no reason to bypass it.
+#[cfg(not(target_os = "windows"))]
+fn is_dev_mode() -> bool {
+    std::env::var("UFFS_DEV")
+        .ok()
+        .is_some_and(|val| matches!(val.as_str(), "1" | "true" | "yes"))
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -376,5 +430,16 @@ mod tests {
     fn key_is_nonzero() {
         let key = get_cache_key().expect("get_cache_key");
         assert_ne!(key, [0_u8; KEY_SIZE], "key should not be all zeros");
+    }
+
+    /// Dev-mode file-based key round-trip (no Keychain prompt).
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn dev_mode_file_key_round_trip() {
+        // Use file-based key directly (same path UFFS_DEV=1 uses).
+        let key1 = file_based_key().expect("first file_based_key");
+        let key2 = file_based_key().expect("second file_based_key");
+        assert_eq!(key1, key2, "file-based key should be stable across calls");
+        assert_ne!(key1, [0_u8; KEY_SIZE], "key should not be all zeros");
     }
 }

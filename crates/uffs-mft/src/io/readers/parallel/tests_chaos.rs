@@ -25,11 +25,6 @@
 //! For synthetic chaos testing without a real capture file, the harness can
 //! split an offline MFT into chunks and reorder them with seeded randomization.
 
-// Test harness code has different lint needs than production code
-#![allow(clippy::all, clippy::nursery, clippy::pedantic)]
-// Test code is allowed to use expect/unwrap
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use std::path::Path;
 
 use rand::prelude::*;
@@ -77,6 +72,7 @@ pub struct ChaosMftReader {
 
 impl ChaosMftReader {
     /// Creates a new chaos reader with the given strategy.
+    #[must_use]
     pub const fn new(strategy: ChaosStrategy, chunk_size: usize) -> Self {
         Self {
             strategy,
@@ -103,11 +99,16 @@ impl ChaosMftReader {
         clippy::too_many_lines,
         reason = "test harness orchestration requires sequential setup"
     )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "test-only: MFT sizes are within usize range on 64-bit targets"
+    )]
     pub fn read_with_chaos(&self, mft_path: &Path, volume: char) -> anyhow::Result<MftIndex> {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         use crossbeam_channel::{Sender, bounded};
+        type ChunkMsg = Option<(Vec<u8>, u64, usize)>;
 
         // Load raw MFT data
         let load_options = LoadRawOptions {
@@ -122,11 +123,12 @@ impl ChaosMftReader {
 
         let record_size = header.record_size as usize;
         let total_records = header.record_count as usize;
-
-        // Create extent map (treat as contiguous for offline file)
-        use crate::io::extent_map::MftExtentMap;
-        let extent_map =
-            MftExtentMap::contiguous(0, mft_bytes.len() as u64, record_size as u32, 1024);
+        let extent_map = crate::io::extent_map::MftExtentMap::contiguous(
+            0,
+            mft_bytes.len() as u64,
+            header.record_size,
+            1024,
+        );
 
         // Generate chunks (no bitmap - read everything)
         let mut chunks: Vec<ReadChunk> = generate_read_chunks(&extent_map, None, self.chunk_size);
@@ -137,7 +139,7 @@ impl ChaosMftReader {
 
         // Calculate total records to parse
         let estimated_records = total_records;
-        let num_workers = std::thread::available_parallelism().map_or(4, |p| p.get());
+        let num_workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
 
         tracing::info!(
             total_records,
@@ -150,10 +152,8 @@ impl ChaosMftReader {
 
         // Create channel for buffer handoff
         let channel_capacity = num_workers * 2;
-        let (tx, rx): (
-            Sender<Option<(Vec<u8>, u64, usize)>>,
-            crossbeam_channel::Receiver<Option<(Vec<u8>, u64, usize)>>,
-        ) = bounded(channel_capacity);
+        let (tx, rx): (Sender<ChunkMsg>, crossbeam_channel::Receiver<ChunkMsg>) =
+            bounded(channel_capacity);
 
         // Shared counter for parsed records
         let records_parsed = Arc::new(AtomicUsize::new(0));
@@ -368,10 +368,16 @@ fn sha256_for_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
 /// --ignored`
 #[test]
 #[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "integration test with multi-step setup"
+)]
 fn test_chaos_order_d_drive() {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
     use std::path::PathBuf;
+    const EXPECTED_SORTED_SHA: &str =
+        "028356d4c9298ca8ef790229f4d4270ea29827ad155051e01181181fa34a531e";
 
     // Initialize logging for diagnostics
     let _ = tracing_subscriber::fmt()
@@ -401,8 +407,7 @@ fn test_chaos_order_d_drive() {
         .expect("Failed to build uffs CLI");
     assert!(
         build_status.success(),
-        "uffs CLI build failed with status: {}",
-        build_status
+        "uffs CLI build failed with status: {build_status}",
     );
 
     // Get path to built binary
@@ -436,8 +441,7 @@ fn test_chaos_order_d_drive() {
 
     assert!(
         status.success(),
-        "uffs CLI (chaos) failed with status: {}",
-        status
+        "uffs CLI (chaos) failed with status: {status}",
     );
     println!("   ✓ Chaos export complete");
     println!();
@@ -460,8 +464,7 @@ fn test_chaos_order_d_drive() {
 
     assert!(
         status.success(),
-        "uffs CLI (sequential) failed with status: {}",
-        status
+        "uffs CLI (sequential) failed with status: {status}",
     );
     println!("   ✓ Sequential export complete");
     println!();
@@ -476,7 +479,7 @@ fn test_chaos_order_d_drive() {
         .collect::<Result<_, _>>()
         .expect("read chaos lines");
     let chaos_sha = sorted_sha256(&chaos_lines);
-    println!("   Chaos SHA256:      {}", chaos_sha);
+    println!("   Chaos SHA256:      {chaos_sha}");
 
     let sequential_lines: Vec<String> =
         BufReader::new(File::open(&sequential_output).expect("sequential file"))
@@ -484,18 +487,16 @@ fn test_chaos_order_d_drive() {
             .collect::<Result<_, _>>()
             .expect("read sequential lines");
     let sequential_sha = sorted_sha256(&sequential_lines);
-    println!("   Sequential SHA256: {}", sequential_sha);
+    println!("   Sequential SHA256: {sequential_sha}");
     println!();
 
     // ──────────────────────────────────────────────────────────────
     // Phase 5: Validate against C++ ground truth
     // ──────────────────────────────────────────────────────────────
     println!("✅ Phase 5: Validating against C++ ground truth");
-    const EXPECTED_SORTED_SHA: &str =
-        "028356d4c9298ca8ef790229f4d4270ea29827ad155051e01181181fa34a531e";
-    println!("   Expected:   {}", EXPECTED_SORTED_SHA);
-    println!("   Sequential: {}", sequential_sha);
-    println!("   Chaos:      {}", chaos_sha);
+    println!("   Expected:   {EXPECTED_SORTED_SHA}");
+    println!("   Sequential: {sequential_sha}");
+    println!("   Chaos:      {chaos_sha}");
     println!();
 
     // Verify sequential matches ground truth
@@ -513,8 +514,8 @@ fn test_chaos_order_d_drive() {
         println!("   Chaos:      {} lines", chaos_lines.len());
 
         // Show first differences
-        let mut seq_sorted = sequential_lines.clone();
-        let mut chaos_sorted = chaos_lines.clone();
+        let mut seq_sorted = sequential_lines;
+        let mut chaos_sorted = chaos_lines;
         seq_sorted.sort_unstable();
         chaos_sorted.sort_unstable();
 
@@ -573,7 +574,10 @@ fn test_reverse_order_d_drive() {
             println!("   Total records: {}", index.records.len());
         }
         Err(e) => {
-            assert!(false, "REVERSE-ORDER parsing FAILED: {e:?}");
+            #[allow(clippy::assertions_on_constants)]
+            {
+                assert!(false, "REVERSE-ORDER parsing FAILED: {e:?}");
+            }
         }
     }
 }
@@ -608,7 +612,10 @@ fn test_interleaved_order_d_drive() {
             println!("   Total records: {}", index.records.len());
         }
         Err(e) => {
-            assert!(false, "INTERLEAVED-ORDER parsing FAILED: {e:?}");
+            #[allow(clippy::assertions_on_constants)]
+            {
+                assert!(false, "INTERLEAVED-ORDER parsing FAILED: {e:?}");
+            }
         }
     }
 }

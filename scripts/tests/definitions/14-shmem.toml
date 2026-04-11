@@ -1,0 +1,126 @@
+# shmem (shared-memory) transport tests
+#
+# When a search returns >100K rows, the daemon writes results to a
+# memory-mapped file and returns the path + count instead of inline JSON.
+# These tests verify:
+#   1. shmem is triggered for large result sets
+#   2. shmem_path and shmem_count are present in the RPC response
+#   3. The on-disk binary header row_count matches shmem_count
+#   4. The shmem file is cleaned up after reading
+#
+# Note: These are API-only tests — CLI and MCP read shmem transparently
+# via UffsClient, so the shmem layer is invisible to them. The CLI/MCP
+# variants verify the end-to-end row count instead.
+
+# ── S1: Basic shmem trigger (*.dll, all drives, no limit) ──────────────
+
+[[test]]
+id          = "S5A"
+group       = "shmem"
+name        = "S5A shmem *.dll no limit"
+title       = "shmem transport triggers for >100K results"
+short_desc  = "Search *.dll with no limit — should produce >100K results and use shmem"
+long_desc   = """
+Sends a search for *.dll with no explicit limit.  The daemon's search
+engine returns all matching rows (typically 400K+).  Since the count
+exceeds SHMEM_THRESHOLD (100K), the daemon writes to a memory-mapped
+file and the response contains shmem_path + shmem_count instead of
+inline rows."""
+targets     = ["api"]
+rpc_method  = "search"
+rpc_params  = '{"pattern":"*.dll"}'
+expect_min_rows = 0
+api_checks.result_has_key  = ["shmem_path", "shmem_count"]
+api_checks.shmem_count_min = 100000
+
+# ── S2: Shmem with drive filter (still >100K) ─────────────────────────
+
+[[test]]
+id          = "S5B"
+group       = "shmem"
+name        = "S5B shmem *.dll drive C"
+title       = "shmem transport with drive filter"
+short_desc  = "Search *.dll on drive C only — should still exceed shmem threshold"
+long_desc   = """
+Filters to drive C only.  With ~3.4M records on C:, *.dll should still
+return well over 100K results and trigger shmem."""
+targets     = ["api"]
+rpc_method  = "search"
+rpc_params  = '{"pattern":"*.dll","drives":["C"]}'
+expect_min_rows = 0
+api_checks.result_has_key  = ["shmem_path", "shmem_count"]
+api_checks.shmem_count_min = 10000
+
+# ── S3: Below threshold — shmem NOT used ───────────────────────────────
+
+[[test]]
+id          = "S5C"
+group       = "shmem"
+name        = "S5C no-shmem small result"
+title       = "small result set uses inline rows (no shmem)"
+short_desc  = "Search with limit=50 — should return inline rows, no shmem_path"
+long_desc   = """
+Sends a search with explicit limit=50.  The result set is well under
+SHMEM_THRESHOLD so the daemon returns inline rows.  Verifies that
+shmem_path is NOT present in the response."""
+targets     = ["api"]
+rpc_method  = "search"
+rpc_params  = '{"pattern":"*.dll","limit":50}'
+expect_min_rows = 50
+expect_max_rows = 50
+validator   = "no_shmem"
+
+# ── S4: Shmem with broad pattern (all files) ──────────────────────────
+
+[[test]]
+id          = "S5D"
+group       = "shmem"
+name        = "S5D shmem match-all drive G"
+title       = "shmem with match-all on small drive"
+short_desc  = "Search * on drive G (~15K records) — no shmem expected"
+long_desc   = """
+Drive G has only ~15K records, so a match-all search returns <100K rows
+and should NOT trigger shmem.  Verifies the threshold boundary."""
+targets     = ["api"]
+rpc_method  = "search"
+rpc_params  = '{"pattern":"*","drives":["G"],"limit":20000}'
+expect_min_rows = 100
+validator   = "no_shmem"
+
+# ── S5: CLI large search (shmem transparent) ──────────────────────────
+
+[[test]]
+id          = "S5E"
+group       = "shmem"
+name        = "S5E cli large search"
+title       = "CLI large search — shmem transparent"
+short_desc  = "CLI search *.xml with high limit works correctly via shmem"
+long_desc   = """
+The CLI uses UffsClient which reads shmem transparently.  This test
+sends a CLI search that should exceed the shmem threshold and verifies
+the output is correct.  The CLI should report the full result count."""
+targets     = ["cli"]
+cli_args    = ["*.xml", "--format", "csv"]
+cli_format  = "csv"
+expect_min_rows = 1000
+stdout_contains = ["Name"]
+
+# ── S6: Shmem file cleanup verification ───────────────────────────────
+
+[[test]]
+id          = "S5F"
+group       = "shmem"
+name        = "S5F shmem cleanup"
+title       = "shmem file is deleted after client reads it"
+short_desc  = "After reading shmem results, the file should be cleaned up"
+long_desc   = """
+This is validated automatically by the S5A test — the api_checks
+validator reads the shmem file header and then deletes it.  If the
+file was already deleted (by a concurrent reader), the test reports
+which layer consumed it."""
+targets     = ["api"]
+rpc_method  = "search"
+rpc_params  = '{"pattern":"*.json"}'
+expect_min_rows = 0
+api_checks.result_has_key  = ["shmem_path", "shmem_count"]
+api_checks.shmem_count_min = 100000

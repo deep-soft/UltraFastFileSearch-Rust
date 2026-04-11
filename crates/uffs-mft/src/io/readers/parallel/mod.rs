@@ -1,9 +1,5 @@
 //! Parallel reader implementations and strategy entrypoints.
 
-// Parallel reader module with complex timing and coordination
-#![allow(clippy::all, clippy::nursery, clippy::pedantic)]
-#![warn(clippy::unwrap_used, clippy::expect_used)]
-
 #[cfg(windows)]
 pub(super) use super::iocp::IoCompletionPort;
 #[cfg(windows)]
@@ -81,7 +77,7 @@ impl ReadParseTiming {
             return 1.0;
         }
         let sum = self.io_ns + self.parse_ns + self.merge_ns;
-        sum as f64 / self.wall_ns as f64
+        ratio_f64(sum, self.wall_ns)
     }
 }
 
@@ -528,4 +524,13 @@ impl ParallelMftReader {
             Ok(combined.records)
         }
     }
+}
+
+/// Compute `numerator / denominator` as `f64` for timing ratios.
+///
+/// Precision loss from `u64→f64` is irrelevant for nanosecond counters
+/// (sub-nanosecond precision is meaningless for wall-clock measurements).
+#[allow(clippy::cast_precision_loss)] // Timing ratio — sub-ns precision is irrelevant.
+fn ratio_f64(numerator: u64, denominator: u64) -> f64 {
+    numerator as f64 / denominator as f64
 }

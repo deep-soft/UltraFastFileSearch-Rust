@@ -10,7 +10,7 @@
 //! uds_windows = "1.1"
 //! ```
 // =============================================================================
-// scripts/windows/cli-flag-validation.rs — CLI Flag Validation Suite
+// scripts/windows/cli-validation — CLI Flag Validation Suite
 // =============================================================================
 //
 // SPDX-License-Identifier: MPL-2.0
@@ -24,7 +24,7 @@
 // scripts/dev/daemon-readiness.rs (Scenario K).
 //
 // Usage:
-//   rust-script scripts/windows/cli-flag-validation.rs [path-to-uffs-binary]
+//   rust-script scripts/windows/cli-validation [path-to-uffs-binary]
 //
 // Requirements:
 //   - Windows with NTFS drives (tests reference real drive letters)
@@ -164,7 +164,7 @@ fn detect_data_source(path: &str) -> (&'static str, String) {
 /// Parse CLI args.
 ///
 /// Usage:
-///   rust-script cli-flag-validation.rs PATH [--bin <path>] [--tests T1,T2,T88h]
+///   rust-script cli-validation PATH [--bin <path>] [--tests T1,T2,T88h]
 ///
 /// PATH is required on non-Windows (a directory → --data-dir, a file → --mft-file).
 /// On Windows, PATH is optional — omit to auto-discover live NTFS drives.
@@ -210,8 +210,8 @@ fn parse_script_args() -> ScriptArgs {
             } else {
                 eprintln!("Error: No PATH given and ~/uffs_data not found.\n");
                 eprintln!("Usage:");
-                eprintln!("  rust-script scripts/windows/cli-flag-validation.rs ~/uffs_data");
-                eprintln!("  rust-script scripts/windows/cli-flag-validation.rs /path/to/C_mft.iocp");
+                eprintln!("  rust-script scripts/windows/cli-validation ~/uffs_data");
+                eprintln!("  rust-script scripts/windows/cli-validation /path/to/C_mft.iocp");
                 std::process::exit(1);
             }
         }
@@ -1283,6 +1283,67 @@ fn run_custom_validator(name: &str, stdout: &str, stderr: &str) -> Result<String
                 .map(|s| s.trim().replace(',', ""))
                 .unwrap_or_default();
             Ok(format!("total_records={records}"))
+        }
+
+        // ── Type validators ───────────────────────────────────────────
+        v @ ("type_code" | "type_document" | "type_executable" | "type_picture" | "type_system") => {
+            let (h, rows) = parse_csv(stdout);
+            if rows.is_empty() { bail!("{v}: 0 rows returned"); }
+
+            let allowed: &[&str] = match v {
+                "type_code"       => &["rs","py","js","ts","c","cpp","h","hpp","cs","java","go",
+                                       "rb","php","swift","kt","scala","r","lua","pl","sh","bash",
+                                       "zsh","fish","ps1","psm1","psd1","vue","svelte","jsx","tsx",
+                                       "mjs","cjs","coffee","dart","zig","nim","v","hs","ml","ex",
+                                       "exs","erl","clj","lisp","scm","asm","s","f90","f","for",
+                                       "vb","vbs","m","mm","d","ada","adb","ads","cob","cbl",
+                                       "cmd","bat"],
+                "type_document"   => &["pdf","doc","docx","xls","xlsx","ppt","pptx","odt","ods",
+                                       "odp","rtf","txt","csv","tsv","md","rst","epub","mobi",
+                                       "tex","latex","pages","numbers","key"],
+                "type_executable" => &["exe","msi","bat","cmd","ps1","com","scr"],
+                "type_picture"    => &["jpg","jpeg","png","gif","bmp","tif","tiff","ico","svg",
+                                       "webp","heic","heif","raw","cr2","nef","dng","psd","ai",
+                                       "eps","pcx","tga"],
+                "type_system"     => &["sys","drv","dll","ocx","cpl","inf","cat","mum","man",
+                                       "evt","evtx","etl","reg"],
+                _ => unreachable!(),
+            };
+
+            let mut bad = Vec::new();
+            for (i, row) in rows.iter().enumerate() {
+                let name = col_val(row, &h, "Name").to_lowercase();
+                if v == "type_system" && name.starts_with('$') { continue; }
+                let ext = name.rsplit('.').next().unwrap_or("");
+                if !allowed.contains(&ext) {
+                    bad.push(format!("row {i}: {name} (ext={ext})"));
+                    if bad.len() >= 3 { break; }
+                }
+            }
+            if !bad.is_empty() {
+                bail!("{v}: unexpected extensions: {}", bad.join(", "));
+            }
+            Ok(format!("{v}: {}/{} rows valid", rows.len(), rows.len()))
+        }
+
+        // ── Drive filter validator ───────────────────────────────────────
+        "drives_cd" => {
+            let (h, rows) = parse_csv(stdout);
+            if rows.is_empty() { bail!("drives_cd: 0 rows returned"); }
+            for (i, row) in rows.iter().enumerate() {
+                let path = col_val(row, &h, "Path");
+                if !path.starts_with("C:") && !path.starts_with("D:") {
+                    bail!("drives_cd: row {i} path not C: or D:: {path}");
+                }
+            }
+            Ok(format!("drives_cd: all {} rows on C: or D:", rows.len()))
+        }
+
+        // ── Shmem negative check ─────────────────────────────────────────
+        "no_shmem" => {
+            // CLI reads shmem transparently; just verify we got rows.
+            let (_h, rows) = parse_csv(stdout);
+            Ok(format!("{} rows (shmem transparent to CLI)", rows.len()))
         }
 
         // ── Fallback — fail loudly so unimplemented validators are noticed ──

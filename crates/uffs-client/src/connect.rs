@@ -96,73 +96,72 @@ impl UffsClient {
         );
 
         // Try connecting directly first — daemon may already be running.
-        match Self::platform_connect().await {
-            Ok(client) => {
-                tracing::debug!("connect_with_args: already connected to existing daemon");
-                // S4.3.4: Verify daemon identity via PID file
-                verify_daemon_after_connect();
-                return Ok(client);
-            }
-            Err(conn_err) => {
-                tracing::debug!(%conn_err, "connect_with_args: initial connect failed");
-                drop(conn_err);
-            }
+        if let Ok(client) = Self::try_connect_existing().await {
+            return Ok(client);
         }
 
         // Auto-start the daemon using the same binary (`uffs daemon run`)
+        Self::auto_start_daemon(spawn_args)?;
+
+        // Retry with exponential backoff until connected.
+        Self::retry_connect(&sock, &pid_path).await
+    }
+
+    /// Attempt to connect to an already-running daemon.
+    async fn try_connect_existing() -> Result<Self, crate::error::ClientError> {
+        match Self::platform_connect().await {
+            Ok(client) => {
+                tracing::debug!("connect_with_args: already connected to existing daemon");
+                verify_daemon_after_connect();
+                Ok(client)
+            }
+            Err(conn_err) => {
+                tracing::debug!(%conn_err, "connect_with_args: initial connect failed");
+                Err(conn_err)
+            }
+        }
+    }
+
+    /// Spawn the daemon process with the given extra args.
+    fn auto_start_daemon(spawn_args: &[String]) -> Result<(), crate::error::ClientError> {
         tracing::info!("Daemon not running, auto-starting via `uffs daemon run`...");
 
         let uffs_exe = find_uffs_exe();
-        tracing::debug!(
-            uffs_exe = %uffs_exe.display(),
-            uffs_exe_exists = uffs_exe.exists(),
-            "connect_with_args: resolved exe"
-        );
-
-        // Build args: ["daemon", "run", ...spawn_args]
         let mut cmd_args: Vec<&str> = vec!["daemon", "run"];
         for arg in spawn_args {
             cmd_args.push(arg.as_str());
         }
-        tracing::debug!(?cmd_args, "connect_with_args: spawning daemon");
+        log_spawn_details(&uffs_exe, &cmd_args);
 
-        // Spawn the daemon process.
-        //
         // On Windows, MFT reading requires Administrator privileges. If the
         // current process is not elevated, we use `ShellExecuteW` with the
         // "runas" verb to trigger a UAC consent dialog. If already elevated
         // (or the broker service is available), we spawn normally.
         spawn_daemon(&uffs_exe, &cmd_args)?;
-        tracing::debug!("connect_with_args: spawn_daemon returned OK");
+        tracing::debug!("auto_start_daemon: spawn returned OK");
+        Ok(())
+    }
 
-        // Retry with backoff
+    /// Retry connecting to the daemon with exponential backoff.
+    async fn retry_connect(
+        sock: &std::path::Path,
+        pid_path: &std::path::Path,
+    ) -> Result<Self, crate::error::ClientError> {
         let mut delay_ms = 50_u64;
         let max_attempts = 20_usize;
         for attempt in 1_usize..=max_attempts {
             tokio::time::sleep(core::time::Duration::from_millis(delay_ms)).await;
-
-            let sock_exists = sock.exists();
-            let pid_exists = pid_path.exists();
-            tracing::debug!(
-                attempt,
-                max_attempts,
-                delay_ms,
-                sock_exists,
-                pid_exists,
-                "connect attempt"
-            );
+            log_connect_attempt(attempt, max_attempts, delay_ms, sock, pid_path);
 
             match Self::platform_connect().await {
                 Ok(client) => {
                     tracing::info!(attempt, "Connected to daemon");
-                    // S4.3.4: Verify daemon identity via PID file
                     verify_daemon_after_connect();
                     return Ok(client);
                 }
-                Err(conn_err) if attempt <= 3 || attempt == max_attempts => {
-                    tracing::debug!(attempt, %conn_err, "connect attempt failed");
+                Err(conn_err) => {
+                    log_connect_error(attempt, max_attempts, &conn_err);
                 }
-                Err(_) => {}
             }
 
             delay_ms = (delay_ms * 2).min(2000);
@@ -383,53 +382,19 @@ impl UffsClient {
         loop {
             poll_count += 1;
             tracing::info!(poll_count, delay_ms, "await_ready: sending status poll");
-            match self.status().await {
-                Ok(resp) => {
-                    consecutive_io_errors = 0;
-                    tracing::info!(poll_count, status = ?resp.status, "await_ready: got status");
-                    if resp.status == crate::protocol::DaemonStatus::Ready {
-                        return Ok(());
-                    }
-                }
-                Err(
-                    err @ (crate::error::ClientError::Io(_)
-                    | crate::error::ClientError::ConnectionClosed),
-                ) => {
-                    consecutive_io_errors += 1;
-                    tracing::info!(
-                        poll_count,
-                        consecutive_io_errors,
-                        error = %err,
-                        "await_ready: status poll I/O error"
-                    );
 
+            match self.poll_status_once(poll_count).await {
+                PollOutcome::Ready => return Ok(()),
+                PollOutcome::NotReady => {
+                    consecutive_io_errors = 0;
+                }
+                PollOutcome::IoError => {
+                    consecutive_io_errors += 1;
                     if consecutive_io_errors >= RECONNECT_THRESHOLD {
-                        tracing::info!(
-                            consecutive_io_errors,
-                            "await_ready: reconnecting to daemon"
-                        );
-                        match Self::platform_connect().await {
-                            Ok(new_client) => {
-                                self.reader = new_client.reader;
-                                self.writer = new_client.writer;
-                                self.next_id = new_client.next_id;
-                                self.notification_tx = new_client.notification_tx;
-                                self.notification_rx = new_client.notification_rx;
-                                consecutive_io_errors = 0;
-                                tracing::info!("await_ready: reconnected successfully");
-                            }
-                            Err(reconn_err) => {
-                                tracing::info!(
-                                    error = %reconn_err,
-                                    "await_ready: reconnect failed, will retry"
-                                );
-                            }
-                        }
+                        self.attempt_reconnect(&mut consecutive_io_errors).await;
                     }
                 }
-                Err(status_err) => {
-                    tracing::info!(poll_count, error = %status_err, "await_ready: status poll failed");
-                }
+                PollOutcome::OtherError => {}
             }
 
             if tokio::time::Instant::now() >= deadline {
@@ -440,6 +405,26 @@ impl UffsClient {
 
             tokio::time::sleep(core::time::Duration::from_millis(delay_ms)).await;
             delay_ms = (delay_ms * 2).min(2000);
+        }
+    }
+
+    /// Attempt a reconnect to the daemon, replacing internal reader/writer.
+    async fn attempt_reconnect(&mut self, consecutive_io_errors: &mut u32) {
+        let error_count = *consecutive_io_errors;
+        tracing::info!(error_count, "await_ready: reconnecting to daemon");
+        match Self::platform_connect().await {
+            Ok(new_client) => {
+                self.reader = new_client.reader;
+                self.writer = new_client.writer;
+                self.next_id = new_client.next_id;
+                self.notification_tx = new_client.notification_tx;
+                self.notification_rx = new_client.notification_rx;
+                *consecutive_io_errors = 0;
+                tracing::info!("await_ready: reconnected successfully");
+            }
+            Err(reconn_err) => {
+                tracing::info!(error = %reconn_err, "await_ready: reconnect failed, will retry");
+            }
         }
     }
 
@@ -578,6 +563,51 @@ impl UffsClient {
         });
 
         KeepaliveGuard { _cancel: cancel_tx }
+    }
+}
+
+// ── Readiness polling helpers ────────────────────────────────────────
+
+/// Outcome of a single status poll in [`UffsClient::await_ready`].
+enum PollOutcome {
+    /// Daemon reports `Ready`.
+    Ready,
+    /// Daemon responded but is still loading.
+    NotReady,
+    /// I/O or connection-closed error (may need reconnect).
+    IoError,
+    /// Non-I/O protocol error.
+    OtherError,
+}
+
+impl UffsClient {
+    /// Poll the daemon status once, returning a classified outcome.
+    async fn poll_status_once(&mut self, poll_count: u32) -> PollOutcome {
+        match self.status().await {
+            Ok(resp) => {
+                tracing::info!(poll_count, status = ?resp.status, "await_ready: got status");
+                if resp.status == crate::protocol::DaemonStatus::Ready {
+                    PollOutcome::Ready
+                } else {
+                    PollOutcome::NotReady
+                }
+            }
+            Err(
+                err @ (crate::error::ClientError::Io(_)
+                | crate::error::ClientError::ConnectionClosed),
+            ) => {
+                tracing::info!(poll_count, error = %err, "await_ready: status poll I/O error");
+                PollOutcome::IoError
+            }
+            Err(status_err) => {
+                tracing::info!(
+                    poll_count,
+                    error = %status_err,
+                    "await_ready: status poll failed"
+                );
+                PollOutcome::OtherError
+            }
+        }
     }
 }
 
@@ -777,3 +807,42 @@ pub use crate::daemon_ctl::{
 pub(crate) use crate::daemon_ctl::{
     keepalive_send_blocking, spawn_daemon, verify_daemon_after_connect,
 };
+
+// ── Logging helpers ─────────────────────────────────────────────────
+// Extracted to keep calling functions under the cognitive-complexity limit.
+
+/// Log daemon spawn details (exe path, existence, command args).
+fn log_spawn_details(uffs_exe: &std::path::Path, cmd_args: &[&str]) {
+    tracing::debug!(
+        uffs_exe = %uffs_exe.display(),
+        uffs_exe_exists = uffs_exe.exists(),
+        ?cmd_args,
+        "auto_start_daemon: resolved exe, spawning"
+    );
+}
+
+/// Log a connect retry attempt with socket/PID file status.
+fn log_connect_attempt(
+    attempt: usize,
+    max_attempts: usize,
+    delay_ms: u64,
+    sock: &std::path::Path,
+    pid_path: &std::path::Path,
+) {
+    tracing::debug!(
+        attempt,
+        max_attempts,
+        delay_ms,
+        sock_exists = sock.exists(),
+        pid_exists = pid_path.exists(),
+        "connect attempt"
+    );
+}
+
+/// Log a failed connect attempt (only for first 3 and final attempts to avoid
+/// spam).
+fn log_connect_error(attempt: usize, max_attempts: usize, err: &crate::error::ClientError) {
+    if attempt <= 3 || attempt == max_attempts {
+        tracing::debug!(attempt, %err, "connect attempt failed");
+    }
+}

@@ -26,7 +26,14 @@ impl IndexManager {
     ///
     /// When `params.profile` is `true`, populates `SearchResponse::profile`
     /// with a per-phase timing breakdown so the CLI can print it.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "search orchestration with multi-drive merge, sorting, and response formatting"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "search orchestration with multi-drive merge, sorting, and response formatting"
+    )]
     pub async fn search(&self, params: &SearchParams) -> SearchResponse {
         // Acquire a concurrency permit — blocks if too many searches
         // are already in flight (prevents CPU/memory exhaustion).
@@ -149,10 +156,20 @@ impl IndexManager {
         //   limit is applied after filtering (see `filtered_rows.truncate`
         //   below).
         //
-        // Note: --type is already promoted to extensions at scan level
-        // (see `from_params`), so it does NOT contribute here.
-        let has_agg_with_filter = !effective_params.aggregations.is_empty()
-            && !matches!(effective_params.pattern.as_str(), "*" | "**" | "**/*" | "");
+        // Build the aggregate record filter BEFORE `filters` is moved into
+        // the search closure.  `type_filter` is promoted to extensions by
+        // `from_params`; those same extensions must scope the aggregation.
+        let agg_record_filter = uffs_core::aggregate::AggregateFilter {
+            extensions: filters.extensions.clone(),
+            directory_only: match filter_mode {
+                FilterMode::FilesOnly => Some(false),
+                FilterMode::DirsOnly => Some(true),
+                FilterMode::All => None,
+            },
+            min_size: filters.min_size,
+            max_size: filters.max_size,
+        };
+
         let search_limit = if requires_post_filter || filters.needs_display_row_filter() {
             None
         } else {
@@ -290,11 +307,15 @@ impl IndexManager {
         // ── Aggregation (if requested) ─────────────────────────────
         let (agg_results, agg_matched) = if !effective_params.aggregations.is_empty() {
             let predicates = Self::build_query_predicates(&effective_params);
-            // When the search has a non-trivial pattern, pass it to the
-            // aggregation engine so only matching records contribute to
-            // the aggregation.  Without this, `*.exe --agg terms:extension`
-            // would aggregate ALL files, not just `.exe` files.
-            let agg_pattern = has_agg_with_filter.then_some(effective_params.pattern.as_str());
+
+            // Pass the pattern if it's non-trivial (not just `*`).
+            let agg_pattern =
+                if matches!(effective_params.pattern.as_str(), "*" | "**" | "**/*" | "") {
+                    None
+                } else {
+                    Some(effective_params.pattern.as_str())
+                };
+
             Self::run_aggregations(
                 &agg_snapshot,
                 &effective_params.aggregations,
@@ -302,6 +323,8 @@ impl IndexManager {
                 effective_params.agg_cursor.as_deref(),
                 effective_params.agg_page_size,
                 agg_pattern,
+                &effective_params.drives,
+                &agg_record_filter,
             )
         } else {
             (vec![], 0)

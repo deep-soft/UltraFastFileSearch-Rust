@@ -71,7 +71,7 @@ fn find_uffs_bin(explicit: &Option<PathBuf>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         if p.exists() { return Some(p.clone()); }
     }
-    // Well-known locations (matches cli-flag-validation.rs pattern).
+    // Well-known locations (matches cli-validation pattern).
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());

@@ -658,6 +658,81 @@ pub enum Commands {
         #[command(subcommand)]
         action: DaemonAction,
     },
+
+    /// Manage the UFFS MCP server (AI agent integration)
+    #[command(after_help = "\
+QUICK START
+  Windows (auto-discovers NTFS drives):
+    uffs mcp start                               # Start HTTP server on :8080
+    uffs mcp start --port 9090                   # Custom port
+
+  macOS / Linux (requires data source):
+    uffs mcp start --data-dir ~/uffs_data        # Start with exported MFT data
+    uffs mcp start --mft-file /path/to/C.mft     # Start with raw MFT file
+
+  Management:
+    uffs mcp status                              # Health + stats
+    uffs mcp stop                                # Graceful shutdown
+
+SETUP — HTTP MODE (recommended)
+  Start the server once, point your AI host at the HTTP endpoint.
+
+  Claude Desktop / Claude Code — settings.json:
+    { \"mcpServers\": { \"uffs\": {
+        \"url\": \"http://127.0.0.1:8080/mcp\"
+    }}}
+
+  Cursor — .cursor/mcp.json:
+    { \"mcpServers\": { \"uffs\": {
+        \"url\": \"http://127.0.0.1:8080/mcp\"
+    }}}
+
+  Windsurf — mcp_config.json:
+    { \"mcpServers\": { \"uffs\": {
+        \"serverUrl\": \"http://127.0.0.1:8080/mcp\"
+    }}}
+
+  Any HTTP client:
+    curl -X POST http://127.0.0.1:8080/mcp \\
+      -H 'Content-Type: application/json' \\
+      -H 'Accept: application/json, text/event-stream' \\
+      -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",...}'
+
+SETUP — STDIO MODE (single-session, AI host manages lifecycle)
+  Windows:
+    { \"mcpServers\": { \"uffs\": {
+        \"command\": \"uffs\",
+        \"args\": [\"mcp\", \"run\"]
+    }}}
+
+  macOS / Linux:
+    { \"mcpServers\": { \"uffs\": {
+        \"command\": \"uffs\",
+        \"args\": [\"mcp\", \"run\", \"--data-dir\", \"/path/to/uffs_data\"]
+    }}}
+
+  Works with: Claude Desktop, Cursor, Windsurf, and any MCP-compatible host.
+  Place the config in the host's MCP settings file (see host docs for path).
+
+HTTP vs STDIO
+  HTTP:   Multi-session, persistent, manageable (start/stop/status/stats).
+  STDIO:  Single-session, AI host manages lifecycle, no server to maintain.
+  Windows: no --data-dir needed — NTFS drives are auto-discovered.")]
+    Mcp {
+        /// MCP management action.
+        #[command(subcommand)]
+        action: McpAction,
+    },
+
+    /// Show combined system status (daemon + MCP HTTP server)
+    ///
+    /// Displays the health of all UFFS background services in one view:
+    /// daemon PID, uptime, loaded drives, MCP server state, HTTP health.
+    ///
+    /// Examples:
+    ///   uffs status
+    #[command(name = "status")]
+    SystemStatus,
 }
 
 /// Actions for `uffs daemon` subcommand.
@@ -746,5 +821,130 @@ pub enum DaemonAction {
         /// tracing output.  Pass `"-"` for the default `./uffs_daemon.log`.
         #[arg(long, value_name = "PATH")]
         log_file: Option<PathBuf>,
+    },
+}
+
+/// Actions for `uffs mcp` subcommand.
+#[derive(Subcommand)]
+pub enum McpAction {
+    /// Start the MCP HTTP server as a background service.
+    ///
+    /// Spawns the MCP HTTP gateway and returns immediately.  The server
+    /// listens on `--port` (default 8080) and bridges MCP clients to the
+    /// UFFS daemon.  On non-Windows, provide `--data-dir` or `--mft-file`.
+    ///
+    /// Examples:
+    ///   `uffs mcp start --data-dir ~/uffs_data`
+    ///   `uffs mcp start --port 9090 --mft-file /path/to/C.mft`
+    Start {
+        /// Raw MFT file(s) to load (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        mft_file: Vec<PathBuf>,
+
+        /// Data directory containing `drive_*` subdirectories with MFT files.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+
+        /// Skip the file cache and always re-parse MFT files.
+        #[arg(long)]
+        no_cache: bool,
+
+        /// TCP port for the HTTP gateway (default: 8080).
+        #[arg(long, default_value = "8080")]
+        port: u16,
+
+        /// TCP bind address (default: 127.0.0.1).
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+    },
+
+    /// Show MCP HTTP server status (PID, uptime, health).
+    Status,
+
+    /// Show MCP server performance statistics.
+    Stats,
+
+    /// Gracefully stop the MCP HTTP server (the backend daemon is not
+    /// affected).
+    Stop,
+
+    /// Force kill the MCP HTTP server + remove PID file.
+    ///
+    /// When the PID file is missing (stale process), uses `--port` to
+    /// find and kill the orphaned gateway via `lsof`.
+    ///
+    /// Examples:
+    ///   `uffs mcp kill`
+    ///   `uffs mcp kill --port 9090`
+    Kill {
+        /// TCP port to scan for orphaned gateway processes (default: 8080).
+        #[arg(long, default_value = "8080")]
+        port: u16,
+
+        /// TCP bind address (used with `--port` for orphan scanning).
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+    },
+
+    /// Stop then restart the MCP HTTP server.
+    Restart,
+
+    /// Reload all MCP servers to pick up the current binary.
+    ///
+    /// Sends SIGHUP to all `uffs mcp run` stdio sessions so their AI
+    /// hosts (Augment, Cursor, Codeium, etc.) respawn them with the
+    /// updated binary.  Restarts the HTTP gateway (re-using the same
+    /// `--data-dir`, `--port`, `--bind` from the running instance) and
+    /// ensures the daemon is running.
+    ///
+    /// No arguments needed — config is inferred from the running gateway.
+    Reload,
+
+    /// Run the MCP HTTP server in-process (used internally by `mcp start`).
+    ///
+    /// Not intended for direct user invocation — use `uffs mcp start`
+    /// to manage the server lifecycle.
+    #[command(hide = true)]
+    Serve {
+        /// TCP port for the HTTP gateway.
+        #[arg(long, default_value = "8080")]
+        port: u16,
+
+        /// TCP bind address.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+
+        /// Data directory to pass through to the daemon on auto-start.
+        #[arg(long = "data-dir")]
+        data_dir: Option<PathBuf>,
+
+        /// Raw MFT file(s) to pass through to the daemon on auto-start.
+        #[arg(long = "mft-file", value_delimiter = ',')]
+        mft_files: Vec<PathBuf>,
+    },
+
+    /// Run the MCP server in-process on stdin/stdout (used by AI hosts).
+    ///
+    /// This is the entry point that AI hosts invoke.  Configure your MCP
+    /// client (Claude Desktop, Cursor, Windsurf, etc.) with:
+    ///
+    /// ```json
+    /// { "uffs": { "command": "uffs", "args": ["mcp", "run"] } }
+    /// ```
+    #[command(hide = true)]
+    Run {
+        /// Raw MFT file(s) to pass through to the daemon on auto-start.
+        #[arg(long = "mft-file", value_delimiter = ',')]
+        mft_files: Vec<PathBuf>,
+
+        /// Data directory to pass through to the daemon on auto-start.
+        #[arg(long = "data-dir")]
+        data_dir: Option<PathBuf>,
+
+        /// Idle timeout in seconds — auto-exit if no MCP messages are
+        /// received within this period (default: 7200 = 2 hours).
+        /// Set to 0 to disable.
+        #[arg(long, default_value = "7200")]
+        idle_timeout: u64,
     },
 }

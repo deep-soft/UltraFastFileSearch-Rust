@@ -401,6 +401,10 @@ pub fn save_compact_cache_background(index: &DriveCompactIndex) -> std::io::Resu
 /// This is useful for hot-path searches where the caller knows the compact
 /// cache was just built or the `MftIndex` hasn't changed.
 #[must_use]
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "cache load has many validation branches (TTL, epoch, freshness, trigram)"
+)]
 pub fn load_compact_cache(
     drive_letter: char,
     ttl_seconds: u64,
@@ -482,31 +486,68 @@ pub fn load_compact_cache(
     let deser_ms = t_deser.elapsed().as_millis();
 
     if profile {
-        let raw_mb = raw_len / (1024 * 1024);
-        let plain_mb = plaintext_len / (1024 * 1024);
-        let tri_label = if tri_ms > 100 {
-            "tri_rebuild"
-        } else {
-            "tri_load"
-        };
-        tracing::debug!(
-            target: "cache_profile",
-            read_ms = %read_ms,
-            raw_mb,
-            decrypt_ms = %decrypt_ms,
+        log_compact_load_profile(&index, &CompactLoadProfile {
+            raw_len,
+            plaintext_len,
+            read_ms,
+            decrypt_ms,
             is_compressed,
-            decompress_ms = %decompress_ms,
-            plain_mb,
-            deser_ms = %deser_ms,
-            records = index.records.len(),
-            tri_label,
-            tri_ms = %tri_ms,
-            total_ms = %t_total.elapsed().as_millis(),
-            source_epoch = index.source_epoch,
-            "compact_load"
-        );
+            decompress_ms,
+            deser_ms,
+            tri_ms,
+            total_ms: t_total.elapsed().as_millis(),
+        });
     }
     Some(index)
+}
+
+/// Timing profile for compact-cache loading stages.
+struct CompactLoadProfile {
+    /// Size of raw (encrypted/compressed) data in bytes.
+    raw_len: usize,
+    /// Size after decryption in bytes.
+    plaintext_len: usize,
+    /// Time to read from disk.
+    read_ms: u128,
+    /// Time to decrypt.
+    decrypt_ms: u128,
+    /// Whether the data was compressed.
+    is_compressed: bool,
+    /// Time to decompress (0 if not compressed).
+    decompress_ms: u128,
+    /// Time to deserialize.
+    deser_ms: u128,
+    /// Time to build/load trigram index.
+    tri_ms: u128,
+    /// Total wall-clock time.
+    total_ms: u128,
+}
+
+/// Emit a `cache_profile` tracing event with compact-load timings.
+fn log_compact_load_profile(index: &DriveCompactIndex, profile: &CompactLoadProfile) {
+    let raw_mb = profile.raw_len / (1024 * 1024);
+    let plain_mb = profile.plaintext_len / (1024 * 1024);
+    let tri_label = if profile.tri_ms > 100 {
+        "tri_rebuild"
+    } else {
+        "tri_load"
+    };
+    tracing::debug!(
+        target: "cache_profile",
+        read_ms = %profile.read_ms,
+        raw_mb,
+        decrypt_ms = %profile.decrypt_ms,
+        is_compressed = profile.is_compressed,
+        decompress_ms = %profile.decompress_ms,
+        plain_mb,
+        deser_ms = %profile.deser_ms,
+        records = index.records.len(),
+        tri_label,
+        tri_ms = %profile.tri_ms,
+        total_ms = %profile.total_ms,
+        source_epoch = index.source_epoch,
+        "compact_load"
+    );
 }
 
 // ─── Build-or-load + save ────────────────────────────────────────────────────
@@ -556,24 +597,28 @@ pub fn ensure_compact_cached(
     if let Err(err) = save_compact_cache(&compact) {
         tracing::warn!(drive = %drive_letter, error = %err, "Failed to save compact cache");
     } else {
-        // Report on-disk size of both caches
-        let compact_path = compact_cache_path(drive_letter);
-        let mft_path = uffs_mft::cache::cache_file_path(drive_letter);
-        let compact_disk = std::fs::metadata(&compact_path).map_or(0, |meta| meta.len());
-        let mft_disk = std::fs::metadata(mft_path).map_or(0, |meta| meta.len());
-        let compact_disk_mb = compact_disk / (1024 * 1024);
-        let mft_disk_mb = mft_disk / (1024 * 1024);
-        let total_disk_mb = compact_disk_mb + mft_disk_mb;
-        tracing::debug!(
-            target: "cache_profile",
-            mft_disk_mb,
-            compact_disk_mb,
-            total_disk_mb,
-            "disk_summary"
-        );
+        log_disk_summary(drive_letter);
     }
 
     compact
+}
+
+/// Log on-disk sizes of both MFT and compact caches for a drive.
+fn log_disk_summary(drive_letter: char) {
+    let compact_path = compact_cache_path(drive_letter);
+    let mft_path = uffs_mft::cache::cache_file_path(drive_letter);
+    let compact_disk = std::fs::metadata(&compact_path).map_or(0, |meta| meta.len());
+    let mft_disk = std::fs::metadata(mft_path).map_or(0, |meta| meta.len());
+    let compact_disk_mb = compact_disk / (1024 * 1024);
+    let mft_disk_mb = mft_disk / (1024 * 1024);
+    let total_disk_mb = compact_disk_mb + mft_disk_mb;
+    tracing::debug!(
+        target: "cache_profile",
+        mft_disk_mb,
+        compact_disk_mb,
+        total_disk_mb,
+        "disk_summary"
+    );
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

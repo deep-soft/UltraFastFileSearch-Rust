@@ -316,6 +316,10 @@ impl IpcServer {
     clippy::single_call_fn,
     reason = "server entry point — structural separation"
 )]
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "IPC server loop with connection handling, error recovery, and shutdown"
+)]
 pub async fn run_ipc_server(
     index: Arc<IndexManager>,
     lifecycle: LifecycleHandle,

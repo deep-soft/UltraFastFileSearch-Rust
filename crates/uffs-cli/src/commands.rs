@@ -16,18 +16,24 @@ mod daemon_mgmt;
 mod index;
 /// Info subcommand implementation.
 mod info;
+/// MCP server management subcommands.
+mod mcp_mgmt;
 /// Output helpers for search results.
 mod output;
 /// Search command implementation.
 pub mod search;
 /// Stats subcommand implementation.
 mod stats;
+/// Combined `uffs status` command.
+mod system_status;
 
 pub use self::daemon_mgmt::daemon;
 pub use self::index::index;
 pub use self::info::info;
+pub use self::mcp_mgmt::mcp;
 pub use self::search::search;
 pub use self::stats::stats;
+pub use self::system_status::system_status;
 
 /// Check if progress bars are disabled via `UFFS_NO_PROGRESS=1` environment
 /// variable.

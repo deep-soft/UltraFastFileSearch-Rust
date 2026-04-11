@@ -123,6 +123,105 @@ pub const ALL_TYPE_CATEGORIES: &[&str] = &[
     "web",
 ];
 
+/// Numeric type IDs for aggregation bucketing (round-trips with
+/// [`semantic_type_name_from_id`]).
+///
+/// The order matches [`SEMANTIC_TYPE_NAMES`].
+#[must_use]
+pub fn semantic_type_id_from_extension(ext: &str) -> u64 {
+    // Must stay in sync with SEMANTIC_TYPE_NAMES.
+    if collections::DOCUMENTS.contains(&ext) {
+        1
+    } else if collections::PICTURES.contains(&ext) {
+        2
+    } else if collections::VIDEOS.contains(&ext) {
+        3
+    } else if collections::MUSIC.contains(&ext) {
+        4
+    } else if collections::ARCHIVES.contains(&ext) {
+        5
+    } else if collections::CODE.contains(&ext) {
+        6
+    } else if EXECUTABLES.contains(&ext) {
+        7
+    } else if SCRIPTS.contains(&ext) {
+        8
+    } else if WEB.contains(&ext) {
+        9
+    } else if FONTS.contains(&ext) {
+        10
+    } else if DATABASES.contains(&ext) {
+        11
+    } else if CONFIGS.contains(&ext) {
+        12
+    } else if LOGS.contains(&ext) {
+        13
+    } else if BACKUPS.contains(&ext) {
+        14
+    } else if DISK_IMAGES.contains(&ext) {
+        15
+    } else if DATA.contains(&ext) {
+        16
+    } else if CAD.contains(&ext) {
+        17
+    } else if SHORTCUTS.contains(&ext) {
+        18
+    } else if SYSTEM.contains(&ext) {
+        19
+    } else if CERTS.contains(&ext) {
+        20
+    } else if EBOOKS.contains(&ext) {
+        21
+    } else {
+        0 // "other" / no extension
+    }
+}
+
+/// Ordered names matching the IDs from [`semantic_type_id_from_extension`].
+///
+/// Index 0 = "other", index 22 = "directory", index 23 = "file".
+const SEMANTIC_TYPE_NAMES: &[&str] = &[
+    "other",      // 0
+    "document",   // 1
+    "picture",    // 2
+    "video",      // 3
+    "audio",      // 4
+    "archive",    // 5
+    "code",       // 6
+    "executable", // 7
+    "script",     // 8
+    "web",        // 9
+    "font",       // 10
+    "database",   // 11
+    "config",     // 12
+    "log",        // 13
+    "backup",     // 14
+    "disk",       // 15
+    "data",       // 16
+    "cad",        // 17
+    "shortcut",   // 18
+    "system",     // 19
+    "cert",       // 20
+    "ebook",      // 21
+    "directory",  // 22
+    "file",       // 23
+];
+
+/// ID for directory entries (not extension-based).
+pub const SEMANTIC_TYPE_ID_DIRECTORY: u64 = 22;
+
+/// ID for files with no extension.
+pub const SEMANTIC_TYPE_ID_FILE: u64 = 23;
+
+/// Resolve a numeric type ID back to a category name.
+#[must_use]
+pub fn semantic_type_name_from_id(id: u64) -> &'static str {
+    SEMANTIC_TYPE_NAMES
+        .get(usize::try_from(id).unwrap_or(usize::MAX))
+        .copied()
+        .unwrap_or("other")
+}
+
 /// Semantic type/category name for an extension.
 #[must_use]
 pub fn semantic_type_from_extension(ext: &str) -> &'static str {
