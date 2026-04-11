@@ -165,14 +165,22 @@ fn http_get(host: &str, port: u16, path: &str) -> Result<String> {
     let mut buf = Vec::new();
     let _ = stream.read_to_end(&mut buf);
     let text = String::from_utf8_lossy(&buf);
+    if text.is_empty() {
+        bail!("empty response from GET {path} at {addr}");
+    }
     let (headers, raw_body) = text.split_once("\r\n\r\n")
         .context("no HTTP body in response")?;
     // Decode chunked transfer encoding if present.
-    if headers.to_lowercase().contains("transfer-encoding: chunked") {
-        Ok(decode_chunked(raw_body))
+    let body = if headers.to_lowercase().contains("transfer-encoding: chunked") {
+        decode_chunked(raw_body)
     } else {
-        Ok(raw_body.trim().to_owned())
+        raw_body.trim().to_owned()
+    };
+    if std::env::var("UFFS_MCP_DEBUG").is_ok() {
+        eprintln!("[http_get] GET {path} → {} bytes raw, headers:\n{headers}\n  body={body:?}",
+            buf.len());
     }
+    Ok(body)
 }
 
 /// Raw HTTP response including status, headers, and body.
@@ -280,16 +288,37 @@ fn decode_chunked(raw: &str) -> String {
 
 /// Check if /health returns "ok".
 fn health_ok(host: &str, port: u16) -> bool {
-    http_get(host, port, "/health").is_ok_and(|b| b == "ok")
+    match http_get(host, port, "/health") {
+        Ok(b) if b == "ok" => true,
+        Ok(b) => {
+            eprintln!("[health_ok] /health returned unexpected body: {b:?} (len={})", b.len());
+            false
+        }
+        Err(e) => {
+            if std::env::var("UFFS_MCP_DEBUG").is_ok() {
+                eprintln!("[health_ok] /health error: {e:#}");
+            }
+            false
+        }
+    }
 }
 
 /// Poll /health until ready (up to `timeout`).
 fn wait_for_health(host: &str, port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
+    let mut attempts = 0u32;
     while Instant::now() < deadline {
+        attempts += 1;
         if health_ok(host, port) { return true; }
+        // Print progress every ~10s (40 × 250ms).
+        if attempts % 40 == 0 {
+            let elapsed = Duration::from_millis(u64::from(attempts) * 250);
+            eprintln!("[wait_for_health] still waiting after {:.0}s ({attempts} attempts)…",
+                elapsed.as_secs_f64());
+        }
         std::thread::sleep(Duration::from_millis(250));
     }
+    eprintln!("[wait_for_health] gave up after {attempts} attempts");
     false
 }
 
@@ -424,9 +453,16 @@ impl Runner {
         let port_str = self.port.to_string();
         let mut args: Vec<&str> = vec!["mcp", "start", "--port", &port_str, "--bind", &self.host];
         args.extend(self.source_args());
+        eprintln!("[mcp_start] running: {} {}", self.binary, args.join(" "));
         let out = self.run_ok(&args)?;
+        eprintln!("[mcp_start] `mcp start` stdout: {:?}", out.trim());
+        let stderr = self.run_stderr(&args);
+        if !stderr.is_empty() {
+            eprintln!("[mcp_start] `mcp start` stderr: {:?}", stderr.trim());
+        }
         // `mcp start` eagerly waits for the daemon before binding the
         // HTTP port — allow up to 3.5 min for cold starts with large indices.
+        eprintln!("[mcp_start] polling /health on {}:{} …", self.host, self.port);
         if !wait_for_health(&self.host, self.port, Duration::from_secs(210)) {
             bail!("MCP HTTP server didn't become healthy within 3.5 min");
         }
@@ -457,6 +493,13 @@ impl Runner {
         let out = Command::new(&self.binary).args(args).output()
             .with_context(|| format!("exec: {} {}", self.binary, args.join(" ")))?;
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    /// Run a `uffs` CLI command, return stderr (for diagnostics).
+    fn run_stderr(&self, args: &[&str]) -> String {
+        Command::new(&self.binary).args(args).output()
+            .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+            .unwrap_or_default()
     }
 
     fn ensure_daemon_stopped(&self) {
