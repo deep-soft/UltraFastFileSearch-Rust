@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Pure utility helpers for the search command.
 
 /// Compute the list of output targets (drive letters) for results.

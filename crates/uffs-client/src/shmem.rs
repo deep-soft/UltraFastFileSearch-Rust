@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Shared-memory transport for bulk search results (D5.0).
 //!
 //! When a search returns more rows than [`SHMEM_THRESHOLD`], the daemon

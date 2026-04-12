@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Aggregate result cache.
 //!
 //! Caches aggregate results keyed by a hash of the spec + drive snapshot

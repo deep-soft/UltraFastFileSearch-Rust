@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Directory child-link maintenance and stable child ordering helpers.
 
 use super::{ChildInfo, FileRecord, MftIndex, NO_ENTRY, frs_to_usize, len_to_u16, len_to_u32};

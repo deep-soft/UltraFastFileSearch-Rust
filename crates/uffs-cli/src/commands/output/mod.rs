@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Output helpers for CLI search commands.
 //!
 //! Delegates to submodules for types, filter logic, and row writing.

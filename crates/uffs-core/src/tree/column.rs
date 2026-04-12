@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Tree column selection and parsing.
 
 /// Tree-derived columns that can be computed on-demand.

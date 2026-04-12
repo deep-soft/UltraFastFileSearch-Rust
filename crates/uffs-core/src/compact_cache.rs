@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Compact index cache: serialize/deserialize + encrypted disk I/O.
 //!
 //! Stores `DriveCompactIndex` as zstd-compressed, AES-256-GCM encrypted

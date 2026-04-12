@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Regression tests for `direct_index_extension.rs`
 //!
 //! These tests verify the snapshot/restore pattern for handling out-of-order

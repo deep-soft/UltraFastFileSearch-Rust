@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! # uffs-mft: NTFS Master File Table Reading Library
 //!
 //! This crate provides high-performance direct MFT reading capabilities,

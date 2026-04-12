@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Pattern compilation and matching for direct `MftIndex` search.
 //!
 //! Uses `uffs_text::CaseFold` for NTFS-compatible case-insensitive matching.

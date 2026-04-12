@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Single-pass direct-to-index parser (C++-style inline approach).
 //!
 //! Exception: Core MFT record parser with unified parse_record_to_index and

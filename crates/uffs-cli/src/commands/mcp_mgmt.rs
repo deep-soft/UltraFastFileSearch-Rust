@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! `uffs mcp {start|status|stats|stop|kill|restart|run}` subcommand handlers.
 //!
 //! Every lifecycle command targets the **MCP server** process.  The daemon

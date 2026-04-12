@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Daemon lifecycle helpers: socket path, PID file, exe discovery, spawning.
 //!
 //! Extracted from `connect.rs` for file-size policy compliance.

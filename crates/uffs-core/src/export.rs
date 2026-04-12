@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Export functions for query results.
 //!
 //! Provides multiple output formats: table, JSON, CSV.

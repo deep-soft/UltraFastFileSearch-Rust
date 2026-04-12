@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Helpers for parsing core NTFS attributes from MFT record bytes.
 
 use zerocopy::FromBytes;

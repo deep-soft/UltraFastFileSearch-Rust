@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Deep comparison of UFFS reference-output vs Rust outputs using Polars.
 //!
 //! This is a development/debugging tool for comparing the reference output and

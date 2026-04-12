@@ -1,6 +1,6 @@
 # UFFS Tier 1 Nightly CI
-# Copyright 2025-2026 Robert Nio
-# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+# SPDX-License-Identifier: MPL-2.0
 
 name: 🧪 UFFS Tier 1 Nightly CI
 

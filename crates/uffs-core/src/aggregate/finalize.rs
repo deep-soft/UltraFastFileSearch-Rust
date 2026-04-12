@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Finalization of aggregate results.
 //!
 //! After accumulators have been fed all matching records, this module

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! MFT Query builder using Polars lazy API.
 //!
 //! This module provides a fluent API for querying MFT data.

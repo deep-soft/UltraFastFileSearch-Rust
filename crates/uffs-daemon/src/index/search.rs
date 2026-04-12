@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 // Search handler: Arc clones are intentional for task-spawning; bool negation
 // is clearer than `!` for readability in complex conditionals.
 #![allow(

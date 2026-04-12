@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Bitmap helpers for interpreting the `$MFT::$BITMAP` allocation stream.
 
 /// Bitmap indicating which MFT records are in use.

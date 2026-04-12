@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Legacy extension-record helper for direct-to-fragment parsing.
 //! Extracts names and streams from extension records into a fragment.
 

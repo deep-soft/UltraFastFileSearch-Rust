@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Reader implementations and async I/O orchestration for MFT ingestion.
 
 #[cfg(windows)]

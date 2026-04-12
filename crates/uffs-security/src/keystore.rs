@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Platform-native secure key storage.
 //!
 //! Provides [`get_cache_key`] which returns a 256-bit AES key, generating and

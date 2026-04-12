@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Index caching with TTL (Time-To-Live) support.
 //!
 //! This module provides automatic caching of MFT indices in a secure,

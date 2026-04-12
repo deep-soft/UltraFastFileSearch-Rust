@@ -9,6 +9,8 @@
 
 📖 **[Full User Manual](docs/user-manual/index.md)** — installation, tutorials, filters, daemon, TUI, MCP integration, and more.
 
+> **Open source, forever.** The UFFS platform — engine, daemon, CLI, and MCP server — is licensed under the [Mozilla Public License 2.0](LICENSE). Code released as part of UFFS Core will never be made less open. Commercial products and enterprise offerings are built on top of the open platform, not by restricting it.
+
 ---
 
 ## Why UFFS?
@@ -24,7 +26,7 @@ UFFS **reads the NTFS Master File Table directly** — once — and holds it in 
 
 ---
 
-## Benchmark (v0.4.106)
+## Benchmark (v0.4.107)
 
 Measured on AMD Ryzen 9 3900XT, 64 GB RAM, 7 NTFS volumes (NVMe + SATA SSD + SATA HDD), 25.9M total records:
 
@@ -161,7 +163,11 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the pinned toolchain, `just`/`
 
 ## License
 
-[Mozilla Public License 2.0 (MPL-2.0)](LICENSE)
+UFFS is licensed under the [Mozilla Public License 2.0 (MPL-2.0)](LICENSE).
+
+You can use, modify, and distribute UFFS freely. If you modify MPL-covered source files and distribute the result, those file-level changes must remain under MPL-2.0. Building proprietary applications on top of UFFS does not require opening your application.
+
+See [LICENSES/MPL-2.0.txt](LICENSES/MPL-2.0.txt) for the full license text and [Mozilla's MPL FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/) for plain-language guidance.
 
 ---
 

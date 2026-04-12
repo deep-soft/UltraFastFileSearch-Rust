@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Windows-specific parsing bridges plus direct-to-index helpers.
 //! Split into focused submodules while preserving the legacy `io` parser
 //! surface.

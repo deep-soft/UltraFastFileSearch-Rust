@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Dump raw MFT records from a `.raw` snapshot for specific FRS values.
 //!
 //! Offline, cross-platform tool operating on `uffs_mft`'s raw MFT format

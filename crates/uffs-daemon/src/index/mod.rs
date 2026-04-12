@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Index management: load drives, hold compact indices, refresh.
 //!
 //! The [`IndexManager`] is the daemon's core data structure. It holds

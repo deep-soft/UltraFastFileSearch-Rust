@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! IPC server: Unix domain socket (macOS/Linux) / named pipe (Windows).
 //!
 //! Listens for newline-delimited JSON-RPC messages, dispatches to the

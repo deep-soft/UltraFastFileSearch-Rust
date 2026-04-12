@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! NTFS-compatible case folding via the `$UpCase` table.
 //!
 //! The `$UpCase` table is a 128 KB flat array mapping every BMP Unicode

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Search backend types: display rows, sort columns, filter modes, and
 //! multi-drive search orchestration.
 

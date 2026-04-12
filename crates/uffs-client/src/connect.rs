@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Daemon connection management: auto-start, connect, reconnect.
 //!
 //! [`UffsClient`] is the single entry point for all surfaces (CLI, TUI,

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Comprehensive reference-output vs Rust scan parity comparison tool.
 //!
 //! Exception: Standalone diagnostic CLI binary with complex parity output

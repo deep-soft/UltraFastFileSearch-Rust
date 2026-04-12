@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Compact in-memory index for search backends.
 //!
 //! Replaces the full `MftIndex` (224 bytes/record) with a lean 72-byte

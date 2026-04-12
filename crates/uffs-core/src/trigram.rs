@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Character-level trigram inverted index — CSR (Compressed Sparse Row) layout.
 //!
 //! Maps 3-codepoint trigrams (folded via NTFS `$UpCase`) to sorted lists

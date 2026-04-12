@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! MFT file discovery utilities.
 //!
 //! Scan a data directory for `drive_*` subdirectories and locate MFT files

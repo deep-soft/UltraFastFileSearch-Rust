@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Persistent on-disk serialization for `MftIndex` snapshots.
 
 /// Binary index deserialization implementation.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Merge, self-healing, and tree-metrics regression tests.
 
 use super::tests_helpers::{child_count, push_fragment_name, push_index_name, record_idx};

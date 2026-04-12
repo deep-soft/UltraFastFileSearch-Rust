@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Duplicate verification — Stage C of the duplicate analytics pipeline.
 //!
 //! After candidate groups are identified (Stage A+B), this module optionally

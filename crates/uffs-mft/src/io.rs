@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Low-level I/O operations for MFT reading.
 //!
 //! This module provides efficient disk I/O for reading MFT records:

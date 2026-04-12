@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Extension filtering, collection aliases, and extension indexing.
 //!
 //! Provides extension-based file filtering with support for:

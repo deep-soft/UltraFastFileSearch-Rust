@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Time-bound parsing: durations, ISO dates, named ranges, and months.
 
 /// Extracts the 1-based month number from a Unix-microsecond timestamp.

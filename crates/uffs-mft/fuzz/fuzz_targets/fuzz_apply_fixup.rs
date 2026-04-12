@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Fuzz target for MFT fixup (Update Sequence Array) application.
 //!
 //! Tests that `apply_fixup` handles arbitrary input without panicking.

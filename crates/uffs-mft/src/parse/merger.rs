@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Extension-record merge helpers for base parsed records and columns.
 
 use super::{ExtensionAttributes, ParseResult, ParsedColumns, ParsedRecord};

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! MCP server runtime statistics.
 //!
 //! Lightweight, lock-free counters shared across MCP sessions (HTTP gateway)

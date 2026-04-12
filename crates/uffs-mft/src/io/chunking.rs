@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Chunk planning helpers for extent-aware MFT reads.
 
 use tracing::{debug, info, trace, warn};

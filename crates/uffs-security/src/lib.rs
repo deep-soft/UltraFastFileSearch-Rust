@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Security primitives for UFFS.
 //!
 //! This crate provides encryption, key management, and secure filesystem

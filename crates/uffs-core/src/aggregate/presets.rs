@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Aggregate presets — named recipes that expand into multiple specs.
 //!
 //! Presets provide a convenient shorthand for common aggregation patterns.

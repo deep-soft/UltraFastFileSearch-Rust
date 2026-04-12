@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Drive refresh and loading helpers.
 //!
 //! Background refresh spawns threads that reload each drive from its

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Extension-record forensic parsing for merge-oriented handling.
 
 use zerocopy::FromBytes;

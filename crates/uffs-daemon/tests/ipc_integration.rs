@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Integration tests for the daemon IPC layer.
 //!
 //! Runs a SINGLE daemon process and tests all JSON-RPC methods through

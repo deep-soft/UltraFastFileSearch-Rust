@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Build timing and aggregate statistics for `MftIndex` construction.
 
 use super::frs_to_usize;

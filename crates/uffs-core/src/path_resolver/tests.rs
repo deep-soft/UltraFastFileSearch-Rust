@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Unit tests for `path_resolver` module behavior.
 //!
 //! Covers legacy and fast resolver path reconstruction, caching, and helper

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Trigram key helpers for character-level trigram indices.
 //!
 //! Provides pack/unpack between 3 folded `u16` codepoints and a `u64`

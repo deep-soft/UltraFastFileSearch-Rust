@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Pattern, name, and extension matching for `MftQuery`.
 
 use uffs_polars::{Expr, NamedFrom, PlSmallStr, Series, col, lit};

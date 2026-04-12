@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! UFFS MCP Adapter — bridges AI agents to the UFFS daemon via the
 //! Model Context Protocol (MCP).
 //!

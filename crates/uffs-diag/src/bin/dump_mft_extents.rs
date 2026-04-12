@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Dump $MFT extents (VCN, `cluster_count`, LCN) for a given NTFS volume.
 //!
 //! Windows-only diagnostic helper that uses the same

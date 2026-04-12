@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Scan magic values across all records in a raw MFT snapshot.
 //!
 //! Offline, cross-platform tool operating on `uffs_mft`'s raw MFT format

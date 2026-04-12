@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Sorting, limiting, projection, and execution for `MftQuery`.
 
 use uffs_polars::{DataFrame, Expr, LazyFrame, SortMultipleOptions, col};

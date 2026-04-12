@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! UFFS MCP Server Library
 //!
 //! Provides the MCP (Model Context Protocol) server implementation for UFFS.

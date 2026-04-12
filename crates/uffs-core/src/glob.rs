@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Glob pattern to regex conversion.
 //!
 //! Converts glob patterns like "*.rs" to regex patterns for Polars filtering.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Helpers for selecting the preferred primary file name during parsing.
 
 use crate::ntfs::NameInfo;

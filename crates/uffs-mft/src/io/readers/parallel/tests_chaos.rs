@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Deterministic chaos-order test harness for reproducing LIVE parser bugs.
 //!
 //! This module provides reproducible testing of out-of-order record processing

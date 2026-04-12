@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Retrieval-pointer helpers for locating MFT extents on disk.
 
 #[cfg(windows)]

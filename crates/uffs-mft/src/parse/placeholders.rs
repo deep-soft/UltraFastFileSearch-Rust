@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Placeholder record creation for missing parent-directory references.
 
 use tracing::{debug, info, warn};

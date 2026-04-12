@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! IOCP-based reader helpers and implementations.
 
 pub(super) use super::zero_copy::parse_buffer_zero_copy_inner;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Daemon-side broker client (D7.7).
 //!
 //! When running on Windows, the daemon can optionally use the Access Broker

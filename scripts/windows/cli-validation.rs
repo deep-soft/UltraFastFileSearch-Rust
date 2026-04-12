@@ -14,7 +14,7 @@
 // =============================================================================
 //
 // SPDX-License-Identifier: MPL-2.0
-// Copyright (c) 2025-2026 Robert Nio
+// Copyright (c) 2025-2026 SKY, LLC.
 //
 // ALL tests are real CLI process spawns against a running daemon.
 // Every test exercises the full stack:

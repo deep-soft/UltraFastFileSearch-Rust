@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Read the NTFS `$UpCase` table from a live Windows volume and
 //! persist it as a plain binary file.
 //!

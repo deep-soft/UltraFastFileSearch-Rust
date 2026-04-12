@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Extension record parser for direct-to-index path.
 //!
 //! Exception: This file is intentionally large (720+ LOC) to match the

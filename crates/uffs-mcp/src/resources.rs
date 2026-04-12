@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Static and live MCP resource implementations.
 //!
 //! Schema resources are compile-time metadata — they do not require a daemon

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! CLI argument definitions: `Cli` struct and `Commands` enum.
 
 use std::path::PathBuf;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Additional query benchmarks for UFFS (Windows only).
 //!
 //! These benchmarks complement `search_benchmarks.rs` with:

@@ -10,7 +10,7 @@
 // =============================================================================
 //
 // SPDX-License-Identifier: MPL-2.0
-// Copyright (c) 2025-2026 Robert Nio
+// Copyright (c) 2025-2026 SKY, LLC.
 //
 // UFFS - UltraFastFileSearch: High-Performance File Search Tool
 //

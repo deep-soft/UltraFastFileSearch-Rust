@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Tests for `SearchFilters`, `matches_record`, and `apply_search_filters`.
 //!
 //! Exception: integration test suite for filter pipeline; splitting further

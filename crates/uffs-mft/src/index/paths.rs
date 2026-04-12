@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Name iteration and Windows path materialization for index records.
 //!
 //! Exception: `PathResolver` is a self-contained ~490 LOC struct. Scheduled for

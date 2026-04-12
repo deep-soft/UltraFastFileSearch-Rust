@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Daemon-based search: routes CLI search through the UFFS daemon via IPC.
 //!
 //! This module builds [`SearchParams`] from CLI arguments and sends the query

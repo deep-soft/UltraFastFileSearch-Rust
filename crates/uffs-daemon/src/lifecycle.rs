@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Daemon lifecycle: PID file, idle timeout, auto-retire, shutdown.
 
 use alloc::sync::Arc;

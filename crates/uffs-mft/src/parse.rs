@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Cross-platform NTFS MFT record parsing.
 //!
 //! This module provides parsing functions for NTFS MFT records that work on

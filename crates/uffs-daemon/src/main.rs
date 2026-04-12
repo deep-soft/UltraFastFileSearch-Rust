@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! UFFS Daemon binary — thin wrapper around [`uffs_daemon::run_daemon`].
 //!
 //! The actual daemon logic lives in the `uffs-daemon` library crate so it

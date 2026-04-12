@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! `uffs_status` tool — daemon health and loading progress.
 
 use rmcp::model::{CallToolResult, Content};

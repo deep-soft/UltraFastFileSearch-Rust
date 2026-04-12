@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! # `uffs_mft`: MFT Command-Line Tool
 //!
 //! Low-level tool for reading and exporting NTFS Master File Table data.

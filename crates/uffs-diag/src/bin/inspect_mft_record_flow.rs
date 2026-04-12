@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Inspect the full Rust raw->fixup->parse pipeline for specific FRS.
 //!
 //! Offline, cross-platform tool that loads a `.raw` MFT snapshot produced by

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Bounded concurrency via a counting-semaphore "slot pool".
 //!
 //! [`SlotPool`] hands out a fixed number of *run-tickets*.  A thread calls

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! MFT reader configuration and top-level entrypoints.
 //!
 //! The heavy read pipelines and multi-drive orchestration live in dedicated

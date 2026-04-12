@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Output schemas for MCP tool `outputSchema` and `structuredContent`.
 //!
 //! Each struct derives [`serde::Serialize`] and [`schemars::JsonSchema`] so

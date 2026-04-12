@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Core per-record index types and packed name or stream metadata.
 //!
 //! `StandardInfo` lives in sibling module `standard_info.rs`.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! File-based persistence wrappers for `MftIndex` snapshots.
 //!
 //! Cache files are encrypted with AES-256-GCM when a platform key is

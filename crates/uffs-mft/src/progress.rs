@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Progress helpers for Windows-only `uffs_mft` commands.
 
 #[cfg(windows)]

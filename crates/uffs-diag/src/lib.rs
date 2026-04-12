@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! UFFS Diagnostic Tools Library
 //!
 //! This crate provides diagnostic tools for MFT analysis. The library portion

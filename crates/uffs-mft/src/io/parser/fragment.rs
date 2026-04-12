@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Legacy direct-to-fragment parser bridge.
 //! Preserves the parallel parser surface used before fragment merge.
 

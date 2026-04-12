@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Centralized keybinding definitions for the TUI.
 //!
 //! Keybindings are loaded from a TOML config file at startup. If no config

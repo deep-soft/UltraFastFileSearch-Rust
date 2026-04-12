@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Streamable HTTP gateway for the UFFS MCP server.
 //!
 //! Wraps the same [`UffsMcpServer`] handler used by the stdio transport

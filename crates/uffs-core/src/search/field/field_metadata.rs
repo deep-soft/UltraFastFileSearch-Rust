@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! The metadata table for `FieldId` — one `FieldMeta` per variant.
 //!
 //! Exception: single const fn match table; one arm per variant, cannot be

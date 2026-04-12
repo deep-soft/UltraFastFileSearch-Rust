@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Windows-only MFT capture implementations: streaming save and IOCP capture.
 //!
 //! Extracted from `persistence.rs` to keep it under the 800 LOC threshold.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Search engine: backend, sort, filters, query routing, tree walk.
 //!
 //! This module contains the compact-index search infrastructure extracted

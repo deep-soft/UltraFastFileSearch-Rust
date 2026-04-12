@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! NTFS-specific structures and parsing.
 //!
 //! This module provides low-level NTFS structure definitions for parsing

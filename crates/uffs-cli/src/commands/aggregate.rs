@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 // CLI aggregate formatter: tabular output with terse loop vars, println for
 // user-facing output, and controlled precision casts for display.
 #![allow(

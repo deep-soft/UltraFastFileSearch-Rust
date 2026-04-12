@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Compare two raw MFT files record-by-record.
 //!
 //! This tool streams through two UFFS-MFT format files and compares them

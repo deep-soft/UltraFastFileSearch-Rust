@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Bucket classification functions for histogram and range aggregations.
 //!
 //! Each classifier maps a raw value to a bucket index and provides

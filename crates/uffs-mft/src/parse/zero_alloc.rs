@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Zero-allocation parsing entry points backed by a thread-local buffer.
 
 use core::cell::RefCell;

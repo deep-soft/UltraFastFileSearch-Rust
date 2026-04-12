@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! # USN Journal Integration (M5 Optimization)
 //!
 //! This module provides USN (Update Sequence Number) Journal integration for

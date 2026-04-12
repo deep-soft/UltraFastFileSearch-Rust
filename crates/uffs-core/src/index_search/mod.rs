@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Direct search on `MftIndex` without `DataFrame` conversion.
 //!
 //! This module keeps the optimized search execution pipeline together while

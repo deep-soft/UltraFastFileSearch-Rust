@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Persistence helpers for parquet and raw MFT save/load paths.
 //!
 //! Windows-specific capture implementations (streaming save and IOCP capture)

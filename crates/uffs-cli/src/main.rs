@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! UFFS (Ultra Fast File Search) CLI
 //!
 //! Fast file search from the command line.

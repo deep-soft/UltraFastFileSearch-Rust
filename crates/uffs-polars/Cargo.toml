@@ -3,7 +3,7 @@
 # ============================================================================
 #
 # SPDX-License-Identifier: MPL-2.0
-# Copyright (c) 2025-2026 Robert Nio
+# Copyright (c) 2025-2026 SKY, LLC.
 #
 # This crate exists for compilation time isolation. Polars is a heavy
 # dependency that takes ~4 minutes to compile. By isolating it here,

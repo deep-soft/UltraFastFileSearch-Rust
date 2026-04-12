@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Helper functions for the direct-to-index parser.
 //!
 //! These helpers reduce code duplication in the main parser while maintaining

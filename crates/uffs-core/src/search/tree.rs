@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Tree-based path search, glob matching, and path resolution.
 //!
 //! For patterns containing `\` or `/`, decomposes the pattern into path

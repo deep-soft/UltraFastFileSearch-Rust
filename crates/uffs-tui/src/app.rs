@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! TUI Application state — daemon-backed search via IPC.
 
 use std::path::PathBuf;

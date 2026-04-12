@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! On-demand full record lookup from `.uffs` cache files.
 //!
 //! The compact index holds 72 bytes per record covering all common columns.

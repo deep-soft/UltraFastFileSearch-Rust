@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Query routing helpers for hybrid search execution.
 
 use super::pattern::IndexPattern;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! UFFS Daemon library — reusable daemon entry point.
 //!
 //! This crate exposes [`run_daemon`] so the daemon logic can be invoked

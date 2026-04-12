@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Daemon identity verification (S4.3.4-7).
 //!
 //! After connecting to the daemon socket, the client reads the PID file

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Compact in-memory index — re-exported from `uffs-core`.
 //!
 //! All types and functions now live in `uffs_core::compact`. This module

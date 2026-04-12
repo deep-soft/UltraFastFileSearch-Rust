@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! MCP bridge error types.
 //!
 //! Translates between `uffs-client` errors and MCP protocol errors.

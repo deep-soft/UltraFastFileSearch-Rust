@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Tests for output helpers.
 //!
 //! All tests exercise the unified `write_native_results` path using

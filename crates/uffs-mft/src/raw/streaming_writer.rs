@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Streaming Raw MFT Writer for high-performance saves.
 //!
 //! Extracted from `raw.rs` to keep it under the 800 LOC threshold.

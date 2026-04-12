@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! NTFS attribute bit-flag parsing and expansion.
 
 /// Maps an attribute name to its NTFS bit-flag value.

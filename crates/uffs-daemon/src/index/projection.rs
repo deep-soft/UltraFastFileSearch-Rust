@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Row conversion, sorting, and field projection for search responses.
 
 use uffs_client::protocol::{SearchParams, SearchRow, SearchSortDirection, SearchSortSpec};

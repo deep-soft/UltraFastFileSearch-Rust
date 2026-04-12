@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Human-readable text formatting for MCP tool responses.
 //!
 //! These formatters produce compact summaries alongside structured JSON,

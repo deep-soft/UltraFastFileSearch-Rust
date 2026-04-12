@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! # uffs-polars: Polars Facade for UFFS (Ultra Fast File Search)
 //!
 //! This crate provides a pre-compiled Polars wrapper for the UFFS project.

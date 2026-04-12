@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Tree metrics computation.
 //!
 //! This module implements the tree-metrics algorithm used for parity with the

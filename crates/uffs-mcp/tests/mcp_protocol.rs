@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! MCP protocol tests (D4.3).
 //!
 //! Uses `tokio::io::duplex` to create in-process transport pairs,

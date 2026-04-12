@@ -1,6 +1,6 @@
 # UFFS Tier 2 Nightly CI
-# Copyright 2025-2026 Robert Nio
-# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+# SPDX-License-Identifier: MPL-2.0
 #
 # Tier 2 keeps the slower nightly checks out of the PR path while still
 # exercising the important scheduled/on-demand validation gates.

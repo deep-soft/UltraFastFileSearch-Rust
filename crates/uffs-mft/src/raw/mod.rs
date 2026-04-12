@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! RAW MFT Persistence.
 //!
 //! Exception: Unified MFT persistence handling UFFS-MFT, UFFS-IOCP, and raw

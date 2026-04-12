@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Unified MFT record processor — mirrors C++ `load()` exactly.
 //!
 //! ONE function processes ALL records (base AND extension) through the SAME

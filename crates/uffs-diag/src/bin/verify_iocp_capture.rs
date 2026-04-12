@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Verify IOCP capture contains identical data to raw MFT.
 //!
 //! Compares an IOCP capture file against a reference raw MFT file by:

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Benchmark command handlers for live read benchmarking.
 
 use std::path::PathBuf;

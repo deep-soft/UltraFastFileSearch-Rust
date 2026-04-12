@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Shared types and parse results used across the MFT parsing pipeline.
 
 use crate::ntfs::{ExtendedStandardInfo, NameInfo, StreamInfo};

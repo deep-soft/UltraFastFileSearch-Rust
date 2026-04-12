@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Cross-check `f_mft.parquet` vs reference `f_mft_reference.csv`.
 //!
 //! This implements the offline comparison described in

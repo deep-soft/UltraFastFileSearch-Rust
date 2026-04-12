@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Formatting and display helpers for the `uffs_mft` binary.
 
 use std::path::{Path, PathBuf};

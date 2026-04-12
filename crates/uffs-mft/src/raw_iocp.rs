@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! IOCP MFT Capture Format.
 //!
 //! This module provides functionality to save and load MFT data captured in

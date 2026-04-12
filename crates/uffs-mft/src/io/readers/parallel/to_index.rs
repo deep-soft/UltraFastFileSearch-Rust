@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Sliding-window direct-to-index reader path.
 //!
 //! Windows-only: requires IOCP and HANDLE.

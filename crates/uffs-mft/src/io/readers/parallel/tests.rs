@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Tests for parallel reader configuration helpers.
 //!
 //! Windows-only: ParallelMftReader requires Windows types and methods.

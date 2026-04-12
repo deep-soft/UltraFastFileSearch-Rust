@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! # uffs-text: Unicode Text Processing for UFFS
 //!
 //! Layer 0 foundation crate providing NTFS-compatible case folding

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Multi-drive reader orchestration and cache/update helpers.
 
 use uffs_polars::DataFrame;

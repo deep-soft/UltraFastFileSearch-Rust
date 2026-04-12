@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Daemon event broadcasting — push notifications to connected clients.
 //!
 //! The daemon emits [`DaemonEvent`]s at lifecycle milestones (drive loaded,

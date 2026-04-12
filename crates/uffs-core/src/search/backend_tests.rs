@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Tests for `MultiDriveBackend`, sort spec parsing, sort correctness,
 //! `display_rows_to_dataframe`, and `format_sort_spec`.
 

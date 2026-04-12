@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Compiled pattern IR for optimized Polars expression lowering.
 //!
 //! This module provides a Pattern Intermediate Representation (IR) that enables

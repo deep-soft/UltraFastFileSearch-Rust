@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Windows-only helpers for inspecting the full uffs-mft raw->fixup->parse
 //! pipeline for a single FRS.
 //!

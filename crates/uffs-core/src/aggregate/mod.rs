@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 // The aggregate module performs statistical analytics over millions of NTFS
 // records.  The code is inherently numeric-heavy: u64→f64 casts for averages,
 // float arithmetic for percentages, single-char iterator vars (k, v, n) in

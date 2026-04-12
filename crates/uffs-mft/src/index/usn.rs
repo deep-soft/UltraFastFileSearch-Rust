@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Incremental USN-driven updates for persisted indexes.
 
 use super::{MftIndex, NO_ENTRY, frs_to_usize};

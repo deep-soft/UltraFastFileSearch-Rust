@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Single-pass direct-to-index parser (C++-style inline approach).
 //!
 //! This module implements the high-performance single-pass parser that matches

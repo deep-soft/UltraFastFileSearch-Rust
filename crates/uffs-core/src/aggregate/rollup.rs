@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Rollup aggregations — hierarchical grouping by path or drive.
 //!
 //! A rollup groups records by a parent/ancestor directory at a given

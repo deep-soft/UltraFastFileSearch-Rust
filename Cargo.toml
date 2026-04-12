@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # SPDX-License-Identifier: MPL-2.0
-# Copyright (c) 2025-2026 Robert Nio
+# Copyright (c) 2025-2026 SKY, LLC.
 #
 # UFFS - Ultra Fast File Search
 # Ultra-high-performance file search using direct MFT reading and Polars
@@ -42,13 +42,13 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.4.106"
+version = "0.4.107"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
 # a nightly toolchain. See rust-toolchain.toml for the pinned nightly channel.
 rust-version = "1.91"
-license = "MPL-2.0 OR LicenseRef-UFFS-Commercial"
+license = "MPL-2.0"
 repository = "https://github.com/githubrobbi/UltraFastFileSearch"
 authors = ["Robert Nio <50460704+githubrobbi@users.noreply.github.com>"]
 description = "UFFS - Ultra Fast File Search using direct NTFS MFT reading and Polars DataFrames"

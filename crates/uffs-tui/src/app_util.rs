@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Small utility helpers for the TUI `App`.
 //!
 //! Extracted from `app.rs` for file-size policy compliance.

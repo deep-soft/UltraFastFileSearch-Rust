@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Search result modeling for direct `MftIndex` search.
 
 use uffs_mft::index::{FileRecord, MftIndex};

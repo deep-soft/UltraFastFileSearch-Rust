@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! DataFrame-oriented read entrypoints and the primary MFT read pipeline.
 
 #[cfg(windows)]

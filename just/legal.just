@@ -19,9 +19,9 @@ legal-check:
 legal-fix:
     @printf "\033[0;34m🔧 Fixing REUSE compliance...\033[0m\n"
     @if command -v reuse >/dev/null 2>&1; then \
-        reuse annotate --license "MPL-2.0" --copyright "Robert Nio" --template rust src/**/*.rs crates/**/*.rs; \
+        reuse annotate --license "MPL-2.0" --copyright "SKY, LLC." --template rust src/**/*.rs crates/**/*.rs; \
     elif [ -f "/Users/rnio/Library/Python/3.12/bin/reuse" ]; then \
-        /Users/rnio/Library/Python/3.12/bin/reuse annotate --license "MPL-2.0" --copyright "Robert Nio" --template rust src/**/*.rs crates/**/*.rs; \
+        /Users/rnio/Library/Python/3.12/bin/reuse annotate --license "MPL-2.0" --copyright "SKY, LLC." --template rust src/**/*.rs crates/**/*.rs; \
     else \
         printf "\033[0;31m❌ reuse tool not installed. Install with: just install-legal-tools\033[0m\n"; \
     fi
@@ -51,7 +51,7 @@ legal-setup: install-legal-tools legal-headers legal-check
     @printf "\033[0;32m✅ REUSE compliance verified\033[0m\n"
     @echo ""
     @printf "\033[0;34mLegal Information:\033[0m\n"
-    @echo "  Copyright: Robert Nio"
+    @echo "  Copyright: SKY, LLC."
     @echo "  Contact: 50460704+githubrobbi@users.noreply.github.com"
     @echo "  License: MPL-2.0"
 

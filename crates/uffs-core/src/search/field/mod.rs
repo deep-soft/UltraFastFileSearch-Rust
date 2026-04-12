@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Canonical field identifiers and metadata for unified search semantics.
 
 mod field_metadata;

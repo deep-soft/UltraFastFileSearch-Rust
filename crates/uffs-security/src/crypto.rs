@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! AES-256-GCM authenticated encryption for cache files.
 //!
 //! # UFFSENC File Format

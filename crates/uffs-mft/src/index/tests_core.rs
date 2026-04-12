@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Core type, basic index, and name-buffer tests for the split `index` module.
 
 use core::mem::size_of;

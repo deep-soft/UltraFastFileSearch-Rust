@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
 //! Per-bucket min-heap for tracking top-N sample records.
 //!
 //! During the scan phase, each bucket can optionally maintain a bounded
