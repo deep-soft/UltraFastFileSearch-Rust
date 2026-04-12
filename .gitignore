@@ -24,12 +24,16 @@ Cargo.lock
 build/
 
 # =============================================================================
-# Root-boundary leftovers (dist/ stays tracked for distributable binaries)
+# Distributable binaries
+# Only the latest 2 versions are tracked in git.
+# Older versions are purged from history. Use GitHub Releases for archival.
 # =============================================================================
 /Shell/
 /LOG/
 /vendor/
 /missing_paths.txt
+/_trash/
+/reference/
 
 # =============================================================================
 # IDE / Editor
