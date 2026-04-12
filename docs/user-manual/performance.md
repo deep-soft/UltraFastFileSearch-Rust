@@ -15,12 +15,14 @@ benchmark and profiling scripts.
 
 | Component | Specification |
 |-----------|--------------|
-| OS | Windows 11 24H2 (Build 26100) |
-| CPU | AMD Ryzen (multi-core, exact model in profile output) |
-| RAM | 32 GB DDR4 |
-| Primary SSD | NVMe (C:, F:, G:) |
-| Secondary SSD | SATA SSD (D:, E:) |
-| USB HDD | External USB 3.0 spinning disk (M:, S:) |
+| OS | Windows 11 Pro 64-bit (24H2 / Build 26100) |
+| CPU | AMD Ryzen 9 3900XT — 12 cores / 24 threads (Matisse, 7 nm) |
+| RAM | 64 GB Dual-Channel DDR4 @ 1312 MHz |
+| Motherboard | ASUS ProArt B550-CREATOR (AM4) |
+| NVMe SSD | Samsung SSD 990 PRO 2 TB (C:, F:) |
+| SATA SSD | Samsung SSD 980 PRO 1 TB (D:, E:) |
+| USB storage | WD 8 TB HDD (M:, S:), SanDisk 58 GB USB stick (G:) |
+| Power profile | AMD Ryzen High Performance |
 | UFFS version | 0.4.106 |
 
 ### Drives Under Test
@@ -31,9 +33,9 @@ benchmark and profiling scripts.
 | D: | SATA SSD | 7,066,019 | Data drive (Dropbox, projects) |
 | E: | SATA SSD | 2,929,519 | Media / archive |
 | F: | NVMe SSD | 2,221,343 | Secondary Windows install |
-| G: | NVMe SSD | 15,090 | Small USB stick |
-| M: | USB HDD | 1,908,805 | External spinning disk |
-| S: | USB HDD | 8,278,102 | Large external spinning disk |
+| G: | USB stick | 15,090 | SanDisk Extreme 58 GB |
+| M: | USB HDD | 1,908,805 | WD 8 TB external spinning disk |
+| S: | USB HDD | 8,278,102 | WD 8 TB external spinning disk |
 | **ALL** | **Mixed** | **25,929,744** | **All 7 drives in parallel** |
 
 ---
