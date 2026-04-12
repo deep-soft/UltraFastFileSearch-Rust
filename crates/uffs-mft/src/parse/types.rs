@@ -194,7 +194,7 @@ impl ParseOptions {
     /// Returns true if any forensic options are enabled.
     #[inline]
     #[must_use]
-    pub const fn is_forensic(&self) -> bool {
+    pub const fn is_forensic(self) -> bool {
         self.include_deleted || self.include_corrupt || self.include_extensions
     }
 }

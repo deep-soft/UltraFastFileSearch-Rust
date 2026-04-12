@@ -16,7 +16,7 @@ const LOAD_STALL_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 /// Handle given to request handlers to control the lifecycle.
 #[derive(Clone)]
-pub struct LifecycleHandle {
+pub(crate) struct LifecycleHandle {
     /// Send `true` to trigger shutdown.
     shutdown_tx: watch::Sender<bool>,
     /// Notified on every incoming RPC request to extend the idle deadline.
@@ -42,7 +42,7 @@ pub struct LifecycleHandle {
 
 impl LifecycleHandle {
     /// Signal the daemon to shut down gracefully.
-    pub fn request_shutdown(&self) {
+    pub(crate) fn request_shutdown(&self) {
         self.events.emit(DaemonEvent::ShuttingDown {
             reason: "shutdown requested via RPC".to_owned(),
         });
@@ -55,18 +55,18 @@ impl LifecycleHandle {
     /// is currently sleeping it wakes immediately; if it is not yet awaiting
     /// `notified()` the permit is stored and consumed on the next poll.
     /// Either way there is **no race window** — activity can never be lost.
-    pub fn reset_idle_timer(&self) {
+    pub(crate) fn reset_idle_timer(&self) {
         self.activity_notify.notify_one();
     }
 
     /// Increment active connection count and emit event.
-    pub fn connection_opened(&self) {
+    pub(crate) fn connection_opened(&self) {
         let active = self.active_connections.fetch_add(1, Ordering::Relaxed) + 1;
         self.events.emit(DaemonEvent::ConnectionChanged { active });
     }
 
     /// Decrement active connection count and emit event.
-    pub fn connection_closed(&self) {
+    pub(crate) fn connection_closed(&self) {
         let active = self
             .active_connections
             .fetch_sub(1, Ordering::Relaxed)
@@ -75,13 +75,13 @@ impl LifecycleHandle {
     }
 
     /// Get active connection count.
-    pub fn active_connections(&self) -> usize {
+    pub(crate) fn active_connections(&self) -> usize {
         self.active_connections.load(Ordering::Relaxed)
     }
 
     /// Update session type (D2.6.6). Higher tier = longer timeout.
     /// 0 = CLI (5 min), 1 = TUI/GUI/MCP (15 min).
-    pub fn set_session_type(&self, session_type: &str) {
+    pub(crate) fn set_session_type(&self, session_type: &str) {
         let tier = match session_type {
             "tui" | "gui" | "mcp" => 1,
             _ => 0, // cli or unknown
@@ -93,7 +93,7 @@ impl LifecycleHandle {
     /// Verify a shutdown nonce matches the one in the PID file (S4.4.9).
     ///
     /// If no nonce is set (shouldn't happen), allows shutdown anyway.
-    pub fn verify_shutdown_nonce(&self, provided: &str) -> bool {
+    pub(crate) fn verify_shutdown_nonce(&self, provided: &str) -> bool {
         let guard = self
             .shutdown_nonce
             .lock()
@@ -116,7 +116,7 @@ impl LifecycleHandle {
 }
 
 /// Lifecycle manager: PID file, idle timer, shutdown coordination.
-pub struct LifecycleManager {
+pub(crate) struct LifecycleManager {
     /// Shutdown receiver — await this to know when to exit.
     shutdown_rx: watch::Receiver<bool>,
     /// The handle that handlers use to control lifecycle.
@@ -133,7 +133,7 @@ impl LifecycleManager {
     /// Create a new lifecycle manager.
     ///
     /// `idle_timeout`: `None` for `--no-retire`, `Some(duration)` otherwise.
-    pub fn new(
+    pub(crate) fn new(
         data_dir: &std::path::Path,
         idle_timeout: Option<Duration>,
         events: EventSender,
@@ -170,7 +170,7 @@ impl LifecycleManager {
     }
 
     /// Get a handle for request handlers.
-    pub fn handle(&self) -> LifecycleHandle {
+    pub(crate) fn handle(&self) -> LifecycleHandle {
         self.handle.clone()
     }
 
@@ -181,7 +181,7 @@ impl LifecycleManager {
     ///   identity verification)
     /// - `shutdown_nonce`: random token required for the `shutdown` RPC method
     ///   (S4.4.9)
-    pub fn write_pid_file(&mut self) -> std::io::Result<()> {
+    pub(crate) fn write_pid_file(&mut self) -> std::io::Result<()> {
         if let Some(parent) = self.pid_path.parent() {
             uffs_security::fs::create_secure_dir(parent)?;
         }
@@ -211,7 +211,7 @@ impl LifecycleManager {
     }
 
     /// Remove the PID file (called on shutdown).
-    pub fn remove_pid_file(&self) {
+    pub(crate) fn remove_pid_file(&self) {
         if self.pid_path.exists() {
             let _ignore = std::fs::remove_file(&self.pid_path);
             tracing::info!(path = %self.pid_path.display(), "PID file removed");
@@ -227,7 +227,7 @@ impl LifecycleManager {
         clippy::unused_self,
         reason = "method signature matches remove_pid_file(&self); both called in Drop"
     )]
-    pub fn remove_socket_file(&self) {
+    pub(crate) fn remove_socket_file(&self) {
         let sock_path = crate::ipc::IpcServer::socket_path();
         if sock_path.exists() {
             let _ignore = std::fs::remove_file(&sock_path);
@@ -240,7 +240,7 @@ impl LifecycleManager {
     /// Uses [`parse_pid_file`] for structured parsing and validates the exe
     /// hash via [`expected_daemon_exe_hash`] to detect stale files from
     /// different binaries.
-    pub fn check_stale_pid(&self) -> bool {
+    pub(crate) fn check_stale_pid(&self) -> bool {
         if !self.pid_path.exists() {
             return true;
         }
@@ -322,11 +322,11 @@ impl LifecycleManager {
     ///
     /// If connections are open when the deadline fires, the deadline is pushed
     /// one full window into the future and the loop continues.
-    #[allow(
+    #[expect(
         clippy::cognitive_complexity,
         reason = "idle timer with sliding window, connection tracking, and shutdown coordination"
     )]
-    pub async fn run_idle_timer(&mut self) {
+    pub(crate) async fn run_idle_timer(&mut self) {
         let Some(base_timeout) = self.idle_timeout else {
             // --no-retire: wait for an explicit shutdown signal only.
             let _shutdown = self.shutdown_rx.wait_for(|&done| done).await;
@@ -446,7 +446,7 @@ impl LifecycleManager {
     }
 
     /// Get the data directory path (parent of PID file).
-    pub fn data_dir(&self) -> &std::path::Path {
+    pub(crate) fn data_dir(&self) -> &std::path::Path {
         self.pid_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
@@ -541,7 +541,7 @@ impl LifecycleManager {
         clippy::single_call_fn,
         reason = "PID file parser — public API for clients"
     )]
-    pub fn parse_pid_file(path: &std::path::Path) -> Option<(u32, u64, u64, String)> {
+    pub(crate) fn parse_pid_file(path: &std::path::Path) -> Option<(u32, u64, u64, String)> {
         let file_content = std::fs::read_to_string(path).ok()?;
         let mut lines_iter = file_content.lines();
         let pid: u32 = lines_iter.next()?.parse().ok()?;
@@ -559,7 +559,7 @@ impl LifecycleManager {
         clippy::single_call_fn,
         reason = "exe hash verifier — public API for clients"
     )]
-    pub fn expected_daemon_exe_hash() -> u64 {
+    pub(crate) fn expected_daemon_exe_hash() -> u64 {
         if let Ok(current) = std::env::current_exe()
             && let Some(dir) = current.parent()
         {

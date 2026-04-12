@@ -115,6 +115,10 @@ const SHMEM_DIR: &str = "shmem";
 static SHMEM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Return the shmem directory path, creating it if necessary.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] if the directory cannot be created.
 fn shmem_dir() -> io::Result<PathBuf> {
     let base = dirs_next::data_local_dir()
         .unwrap_or_else(|| PathBuf::from(if cfg!(windows) { r"C:\temp" } else { "/tmp" }));
@@ -124,7 +128,10 @@ fn shmem_dir() -> io::Result<PathBuf> {
 }
 
 /// Generate a unique shmem file path.
-#[expect(clippy::single_call_fn, reason = "helper extracted for clarity")]
+///
+/// # Errors
+///
+/// Returns [`io::Error`] if the shmem directory cannot be created.
 fn unique_shmem_path() -> io::Result<PathBuf> {
     let dir = shmem_dir()?;
     let pid = std::process::id();
@@ -140,7 +147,10 @@ fn unique_shmem_path() -> io::Result<PathBuf> {
 /// # Errors
 ///
 /// Returns `io::Error` on file creation, mmap, or write failure.
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "memmap2::MmapMut requires unsafe — mmap is a kernel-level operation"
+)]
 #[expect(
     clippy::indexing_slicing,
     reason = "mmap is sized to total_size; all slices are within bounds by construction"
@@ -251,7 +261,10 @@ pub fn write_search_results(
 /// # Errors
 ///
 /// Returns `io::Error` on mmap failure, format mismatch, or invalid UTF-8.
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "memmap2::Mmap::map requires unsafe — mmap is a kernel-level operation"
+)]
 #[expect(
     clippy::indexing_slicing,
     reason = "validated: bounds-checked before indexing"

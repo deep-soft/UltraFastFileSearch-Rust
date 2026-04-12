@@ -27,6 +27,10 @@ impl MftIndex {
     /// - Deduplication of records (same FRS from different fragments)
     /// - Name buffer concatenation with offset adjustment
     /// - Link/stream/child list merging
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "O(n) merge of parallel fragments: dedup records, rebase name/link/stream/child offsets"
+    )]
     pub fn merge_fragments(&mut self, fragments: Vec<MftIndexFragment>) {
         use tracing::debug;
 
@@ -121,7 +125,6 @@ impl MftIndex {
 
     /// Merge records from a fragment into this index, returning records that
     /// need deferred merging.
-    #[expect(clippy::indexing_slicing, reason = "indices bounded by valid FRS")]
     fn merge_fragment_records_with_deferred_merge(
         &mut self,
         records: Vec<FileRecord>,
@@ -162,37 +165,51 @@ impl MftIndex {
                 self.frs_to_idx.resize(frs_usize + 1, NO_ENTRY);
             }
 
-            let existing_idx = self.frs_to_idx[frs_usize];
+            let Some(frs_slot) = self.frs_to_idx.get_mut(frs_usize) else {
+                continue;
+            };
+            let existing_idx = *frs_slot;
             if existing_idx == NO_ENTRY {
                 let new_idx = len_to_u32(self.records.len());
-                self.frs_to_idx[frs_usize] = new_idx;
+                *frs_slot = new_idx;
                 self.records.push(record);
             } else {
-                let existing = &self.records[existing_idx as usize];
-                let existing_is_placeholder = !existing.has_base_data();
-                let record_has_base = record.has_base_data();
-
-                let should_replace_existing = (existing_is_placeholder && record_has_base)
-                    || (!existing.has_name() && record.has_name());
-
-                if should_replace_existing {
-                    let placeholder =
-                        core::mem::replace(&mut self.records[existing_idx as usize], record);
-                    if has_merge_payload(&placeholder) {
-                        deferred_merges.push((existing_idx, placeholder));
-                    }
-                } else if has_merge_payload(&record) {
-                    deferred_merges.push((existing_idx, record));
-                }
+                self.merge_or_defer_record(existing_idx, record, &mut deferred_merges);
             }
         }
 
         deferred_merges
     }
 
+    /// Decide whether to replace an existing record or defer its merge.
+    fn merge_or_defer_record(
+        &mut self,
+        existing_idx: u32,
+        record: FileRecord,
+        deferred_merges: &mut Vec<(u32, FileRecord)>,
+    ) {
+        let Some(existing) = self.records.get(existing_idx as usize) else {
+            return;
+        };
+        let existing_is_placeholder = !existing.has_base_data();
+        let record_has_base = record.has_base_data();
+        let should_replace = (existing_is_placeholder && record_has_base)
+            || (!existing.has_name() && record.has_name());
+
+        if should_replace {
+            let Some(slot) = self.records.get_mut(existing_idx as usize) else {
+                return;
+            };
+            let placeholder = core::mem::replace(slot, record);
+            if has_merge_payload(&placeholder) {
+                deferred_merges.push((existing_idx, placeholder));
+            }
+        } else if has_merge_payload(&record) {
+            deferred_merges.push((existing_idx, record));
+        }
+    }
+
     /// Apply deferred name and stream merges from discarded records.
-    #[expect(clippy::indexing_slicing, reason = "indices validated before access")]
-    #[expect(clippy::too_many_lines, reason = "name/stream merge has many steps")]
     fn apply_deferred_name_merges(
         &mut self,
         deferred_merges: Vec<(u32, FileRecord)>,
@@ -200,7 +217,9 @@ impl MftIndex {
         _stream_offset_adjustment: u32,
     ) {
         for (existing_idx, discarded) in deferred_merges {
-            let existing = &mut self.records[existing_idx as usize];
+            let Some(existing) = self.records.get_mut(existing_idx as usize) else {
+                continue;
+            };
 
             if discarded.first_name.name.is_valid() || discarded.first_name.next_entry != NO_ENTRY {
                 let last_link_idx = (existing.first_name.next_entry != NO_ENTRY).then(|| {
@@ -210,7 +229,11 @@ impl MftIndex {
                         .get(idx as usize)
                         .is_some_and(|link| link.next_entry != NO_ENTRY)
                     {
-                        idx = self.links[idx as usize].next_entry;
+                        if let Some(link) = self.links.get(idx as usize) {
+                            idx = link.next_entry;
+                        } else {
+                            break;
+                        }
                     }
                     idx
                 });
@@ -231,7 +254,9 @@ impl MftIndex {
 
                 if let Some(start) = chain_start {
                     if let Some(last_idx) = last_link_idx {
-                        self.links[last_idx as usize].next_entry = start;
+                        if let Some(link) = self.links.get_mut(last_idx as usize) {
+                            link.next_entry = start;
+                        }
                     } else if existing.first_name.name.is_valid() {
                         existing.first_name.next_entry = start;
                     } else {
@@ -241,17 +266,26 @@ impl MftIndex {
                 }
             }
 
+            // Re-borrow after the links section (prior mutable borrow was consumed).
+            let Some(rec) = self.records.get_mut(existing_idx as usize) else {
+                continue;
+            };
+
             if discarded.first_stream.name.is_valid()
                 || discarded.first_stream.next_entry != NO_ENTRY
             {
-                let last_stream_idx = (existing.first_stream.next_entry != NO_ENTRY).then(|| {
-                    let mut idx = existing.first_stream.next_entry;
+                let last_stream_idx = (rec.first_stream.next_entry != NO_ENTRY).then(|| {
+                    let mut idx = rec.first_stream.next_entry;
                     while self
                         .streams
                         .get(idx as usize)
                         .is_some_and(|stream| stream.next_entry != NO_ENTRY)
                     {
-                        idx = self.streams[idx as usize].next_entry;
+                        if let Some(stream) = self.streams.get(idx as usize) {
+                            idx = stream.next_entry;
+                        } else {
+                            break;
+                        }
                     }
                     idx
                 });
@@ -259,9 +293,9 @@ impl MftIndex {
                 let chain_start = if discarded.first_stream.name.is_valid() {
                     let new_stream_idx = len_to_u32(self.streams.len());
                     self.streams.push(IndexStreamInfo {
+                        size: discarded.first_stream.size,
                         next_entry: discarded.first_stream.next_entry,
                         name: discarded.first_stream.name,
-                        size: discarded.first_stream.size,
                         flags: discarded.first_stream.flags,
                         _pad0: [0; 3],
                     });
@@ -273,26 +307,32 @@ impl MftIndex {
 
                 if let Some(start) = chain_start {
                     if let Some(last_idx) = last_stream_idx {
-                        self.streams[last_idx as usize].next_entry = start;
-                    } else if existing.first_stream.name.is_valid() {
-                        existing.first_stream.next_entry = start;
+                        if let Some(stream) = self.streams.get_mut(last_idx as usize) {
+                            stream.next_entry = start;
+                        }
+                    } else if rec.first_stream.name.is_valid() {
+                        rec.first_stream.next_entry = start;
                     } else {
-                        existing.first_stream = discarded.first_stream;
+                        rec.first_stream = discarded.first_stream;
                     }
-                    existing.stream_count += discarded.stream_count;
-                    existing.total_stream_count += discarded.total_stream_count;
+                    rec.stream_count += discarded.stream_count;
+                    rec.total_stream_count += discarded.total_stream_count;
                 }
             }
 
             if discarded.first_internal_stream != NO_ENTRY {
-                let last_internal_idx = (existing.first_internal_stream != NO_ENTRY).then(|| {
-                    let mut idx = existing.first_internal_stream;
+                let last_internal_idx = (rec.first_internal_stream != NO_ENTRY).then(|| {
+                    let mut idx = rec.first_internal_stream;
                     while self
                         .internal_streams
                         .get(idx as usize)
                         .is_some_and(|st| st.next_entry != NO_ENTRY)
                     {
-                        idx = self.internal_streams[idx as usize].next_entry;
+                        if let Some(st) = self.internal_streams.get(idx as usize) {
+                            idx = st.next_entry;
+                        } else {
+                            break;
+                        }
                     }
                     idx
                 });
@@ -300,15 +340,17 @@ impl MftIndex {
                 let chain_start = discarded.first_internal_stream;
 
                 if let Some(last_idx) = last_internal_idx {
-                    self.internal_streams[last_idx as usize].next_entry = chain_start;
+                    if let Some(st) = self.internal_streams.get_mut(last_idx as usize) {
+                        st.next_entry = chain_start;
+                    }
                 } else {
-                    existing.first_internal_stream = chain_start;
+                    rec.first_internal_stream = chain_start;
                 }
 
-                existing.internal_streams_size = existing
+                rec.internal_streams_size = rec
                     .internal_streams_size
                     .saturating_add(discarded.internal_streams_size);
-                existing.internal_streams_allocated = existing
+                rec.internal_streams_allocated = rec
                     .internal_streams_allocated
                     .saturating_add(discarded.internal_streams_allocated);
 
@@ -317,11 +359,11 @@ impl MftIndex {
                 if !discarded_has_streams {
                     let mut count: u16 = 0;
                     let mut idx = chain_start;
-                    while idx != NO_ENTRY {
+                    while let Some(st) = self.internal_streams.get(idx as usize) {
                         count = count.saturating_add(1);
-                        idx = self.internal_streams[idx as usize].next_entry;
+                        idx = st.next_entry;
                     }
-                    existing.total_stream_count = existing.total_stream_count.saturating_add(count);
+                    rec.total_stream_count = rec.total_stream_count.saturating_add(count);
                 }
             }
         }

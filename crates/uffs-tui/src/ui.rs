@@ -23,7 +23,7 @@ use crate::keys::Action;
     clippy::too_many_lines,
     reason = "UI rendering is a single cohesive function; splitting would fragment layout logic"
 )]
-pub fn ui(frame: &mut Frame, app: &mut App) {
+pub(crate) fn ui(frame: &mut Frame<'_>, app: &mut App) {
     // Focus-aware border styles: bright cyan for focused, dim gray for unfocused.
     let focused_border = Style::default().fg(Color::Cyan);
     let unfocused_border = Style::default().fg(Color::DarkGray);
@@ -65,7 +65,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
     let filter_indicator = app.filter_label();
     if app.has_data() {
         // Build colored drive letters for the title
-        let mut title_spans: Vec<Span> = vec![Span::raw(" Search NTFS Drives [")];
+        let mut title_spans: Vec<Span<'_>> = vec![Span::raw(" Search NTFS Drives [")];
         for (idx, &letter) in drive_letters.iter().enumerate() {
             if idx > 0 {
                 title_spans.push(Span::raw(" "));
@@ -191,7 +191,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
 
     // Build table header row from visible columns
     let vis = &app.visible_columns;
-    let header_cells: Vec<Cell> = vis
+    let header_cells: Vec<Cell<'_>> = vis
         .iter()
         .map(|col| Cell::from(col_header(col.nearest_sort_field(), col.tui_label())))
         .collect();
@@ -226,13 +226,13 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
 
     // Build table rows from results, respecting visible column selection
     let num_cols = vis.len();
-    let rows: Vec<Row> = app
+    let rows: Vec<Row<'_>> = app
         .results
         .iter()
         .map(|row| {
             // Loading progress messages (path empty = loading msg)
             if row.path.is_empty() {
-                let mut cells: Vec<Cell> = vec![Cell::from(""); num_cols];
+                let mut cells: Vec<Cell<'_>> = vec![Cell::from(""); num_cols];
                 // Put the message in the second column (or first if only one)
                 let msg_idx = usize::from(num_cols > 1);
                 cells[msg_idx] = Cell::from(Line::from(Span::styled(
@@ -244,7 +244,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
                 return Row::new(cells);
             }
 
-            let cells: Vec<Cell> = vis
+            let cells: Vec<Cell<'_>> = vis
                 .iter()
                 .map(|col| build_cell(*col, row, &highlight_terms, &drive_colors))
                 .collect();
@@ -516,7 +516,7 @@ fn devicon_color(hex: &str) -> Color {
 }
 
 /// Format milliseconds compactly: `23 ms`, `535 ms`, `1.1  s`, `19.6  s`.
-pub fn format_ms_compact(ms: u128) -> String {
+pub(crate) fn format_ms_compact(ms: u128) -> String {
     if ms < 1000 {
         format!("{ms} ms")
     } else {
@@ -539,11 +539,6 @@ fn truncate_path(path: &str, max_len: usize) -> String {
 }
 
 /// Build a single table cell for the given column and row.
-#[expect(
-    clippy::single_call_fn,
-    clippy::too_many_lines,
-    reason = "large cell-rendering logic; separation keeps table-drawing code readable"
-)]
 fn build_cell<'a>(
     col: backend::FieldId,
     row: &backend::DisplayRow,

@@ -162,9 +162,9 @@ fn test_cross_fragment_merge_multiple_extension_names() {
     assert!(record.has_base_data());
     assert_eq!(record.name_count, 3);
 
-    let name_0 = index.get_name(&index.get_name_at(record, 0).unwrap().name);
-    let name_1 = index.get_name(&index.get_name_at(record, 1).unwrap().name);
-    let name_2 = index.get_name(&index.get_name_at(record, 2).unwrap().name);
+    let name_0 = index.get_name(index.get_name_at(record, 0).unwrap().name);
+    let name_1 = index.get_name(index.get_name_at(record, 1).unwrap().name);
+    let name_2 = index.get_name(index.get_name_at(record, 2).unwrap().name);
 
     assert_eq!(name_0, "original_a.txt");
     assert_eq!(name_1, "hardlink_b.txt");
@@ -210,9 +210,9 @@ fn test_cross_fragment_merge_base_first() {
     assert!(record.has_base_data());
     assert_eq!(record.name_count, 3);
 
-    let name_0 = index.get_name(&index.get_name_at(record, 0).unwrap().name);
-    let name_1 = index.get_name(&index.get_name_at(record, 1).unwrap().name);
-    let name_2 = index.get_name(&index.get_name_at(record, 2).unwrap().name);
+    let name_0 = index.get_name(index.get_name_at(record, 0).unwrap().name);
+    let name_1 = index.get_name(index.get_name_at(record, 1).unwrap().name);
+    let name_2 = index.get_name(index.get_name_at(record, 2).unwrap().name);
 
     assert_eq!(name_0, "original_a.txt");
     assert_eq!(name_1, "hardlink_b.txt");
@@ -301,12 +301,12 @@ fn test_rebuild_children_from_names_hardlinks() {
     let file_name = push_index_name(&mut index, "file.txt");
     let link_name = push_index_name(&mut index, "file.txt");
     index.links.push(LinkInfo {
+        next_entry: NO_ENTRY,
         name: link_name,
         _pad0: [0; 4],
         parent_frs: dir1_frs,
-        next_entry: NO_ENTRY,
     });
-    let link_idx = crate::len_to_u32(index.links.len() - 1);
+    let link_idx = len_to_u32(index.links.len() - 1);
 
     let file_rec = index.get_or_create(file_frs);
     file_rec.first_name.name = file_name;
@@ -404,11 +404,11 @@ fn test_tree_metrics_internal_streams_two_channel() {
 
     let internal_idx = u32::try_from(index.internal_streams.len()).unwrap();
     index.internal_streams.push(InternalStreamInfo {
-        next_entry: NO_ENTRY,
         size: SizeInfo {
             length: 256,
             allocated: 512,
         },
+        next_entry: NO_ENTRY,
         flags: 0,
     });
     index.records[dir_idx_for_internal].first_internal_stream = internal_idx;

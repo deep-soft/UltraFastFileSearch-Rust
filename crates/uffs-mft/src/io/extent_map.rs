@@ -10,6 +10,10 @@ use crate::platform::MftExtent;
 /// This struct provides efficient lookup to find the physical location of any
 /// MFT record.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::partial_pub_fields,
+    reason = "extents is private for invariant protection; cluster/record sizes are read by I/O readers"
+)]
 pub struct MftExtentMap {
     /// Sorted list of extents (by VCN).
     extents: Vec<MftExtent>,
@@ -29,50 +33,12 @@ impl MftExtentMap {
     /// * `bytes_per_record` - File record size in bytes
     #[must_use]
     pub fn new(extents: Vec<MftExtent>, bytes_per_cluster: u32, bytes_per_record: u32) -> Self {
-        let num_extents = extents.len();
-        let total_clusters: u64 = extents.iter().map(|e| e.cluster_count).sum();
-        let total_size_mb = bytes_to_mb(total_clusters * u64::from(bytes_per_cluster));
+        let total_clusters: u64 = extents.iter().map(|ext| ext.cluster_count).sum();
         let records_per_cluster = bytes_per_cluster / bytes_per_record;
         let total_records = total_clusters * u64::from(records_per_cluster);
+        let total_size_mb = bytes_to_mb(total_clusters * u64::from(bytes_per_cluster));
 
-        // Analyze fragmentation
-        let sparse_extents = extents.iter().filter(|e| e.lcn < 0).count();
-        let is_fragmented = num_extents > 1;
-
-        if is_fragmented {
-            info!(
-                extents = num_extents,
-                sparse_extents,
-                total_clusters,
-                total_records,
-                mft_size_mb = format!("{:.2}", total_size_mb),
-                "⚠️  MFT is fragmented"
-            );
-
-            // Log extent details at debug level
-            for (i, ext) in extents.iter().enumerate() {
-                debug!(
-                    extent = i,
-                    vcn = ext.vcn,
-                    lcn = ext.lcn,
-                    clusters = ext.cluster_count,
-                    is_sparse = ext.lcn < 0,
-                    "  Extent {}: VCN {} → LCN {}, {} clusters{}",
-                    i,
-                    ext.vcn,
-                    ext.lcn,
-                    ext.cluster_count,
-                    if ext.lcn < 0 { " (SPARSE)" } else { "" }
-                );
-            }
-        } else {
-            info!(
-                total_clusters,
-                total_records,
-                mft_size_mb = format!("{:.2}", total_size_mb),
-                "✅ MFT is contiguous (single extent)"
-            );
-        }
+        log_extent_layout(&extents, total_clusters, total_records, total_size_mb);
 
         Self {
             extents,
@@ -163,16 +129,16 @@ impl MftExtentMap {
             .extents
             .binary_search_by(|extent| {
                 if vcn < extent.vcn {
-                    std::cmp::Ordering::Greater
+                    core::cmp::Ordering::Greater
                 } else if vcn >= extent.vcn + extent.cluster_count {
-                    std::cmp::Ordering::Less
+                    core::cmp::Ordering::Less
                 } else {
-                    std::cmp::Ordering::Equal
+                    core::cmp::Ordering::Equal
                 }
             })
             .ok()?;
 
-        Some(&self.extents[idx])
+        self.extents.get(idx)
     }
 
     /// Returns the number of extents in the map.
@@ -197,7 +163,7 @@ impl MftExtentMap {
     pub fn total_size(&self) -> u64 {
         self.extents
             .iter()
-            .map(|e| e.cluster_count * u64::from(self.bytes_per_cluster))
+            .map(|ext| ext.cluster_count * u64::from(self.bytes_per_cluster))
             .sum()
     }
 
@@ -205,6 +171,54 @@ impl MftExtentMap {
     #[must_use]
     pub fn total_records(&self) -> u64 {
         self.total_size() / u64::from(self.bytes_per_record)
+    }
+}
+
+/// Log MFT extent layout — fragmentation analysis for diagnostics.
+fn log_extent_layout(
+    extents: &[MftExtent],
+    total_clusters: u64,
+    total_records: u64,
+    total_size_mb: f64,
+) {
+    let num_extents = extents.len();
+
+    if num_extents > 1 {
+        let sparse_extents = extents.iter().filter(|ext| ext.lcn < 0).count();
+        info!(
+            extents = num_extents,
+            sparse_extents,
+            total_clusters,
+            total_records,
+            mft_size_mb = format!("{:.2}", total_size_mb),
+            "⚠️  MFT is fragmented"
+        );
+        log_extent_details(extents);
+    } else {
+        info!(
+            total_clusters,
+            total_records,
+            mft_size_mb = format!("{:.2}", total_size_mb),
+            "✅ MFT is contiguous (single extent)"
+        );
+    }
+}
+
+/// Log per-extent details at debug level.
+fn log_extent_details(extents: &[MftExtent]) {
+    for (idx, ext) in extents.iter().enumerate() {
+        let sparse_label = if ext.lcn < 0 { " (SPARSE)" } else { "" };
+        debug!(
+            extent = idx,
+            vcn = ext.vcn,
+            lcn = ext.lcn,
+            clusters = ext.cluster_count,
+            is_sparse = ext.lcn < 0,
+            "  Extent {idx}: VCN {} → LCN {}, {} clusters{sparse_label}",
+            ext.vcn,
+            ext.lcn,
+            ext.cluster_count,
+        );
     }
 }
 

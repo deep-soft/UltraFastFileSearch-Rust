@@ -218,7 +218,7 @@ impl StandardInfo {
     /// Since `StandardInfo.flags` now stores raw NTFS bits directly,
     /// this is an identity operation.
     #[must_use]
-    pub const fn to_attributes(&self) -> u32 {
+    pub const fn to_attributes(self) -> u32 {
         self.flags
     }
 

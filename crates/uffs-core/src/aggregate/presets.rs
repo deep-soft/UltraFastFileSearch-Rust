@@ -472,10 +472,6 @@ fn expand_cleanup() -> Vec<AggregateSpec> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::panic,
-    reason = "test assertions use panic! for non-matching enum arms"
-)]
 mod tests {
     use super::*;
 

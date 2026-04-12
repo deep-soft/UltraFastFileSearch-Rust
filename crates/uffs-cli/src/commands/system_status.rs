@@ -15,7 +15,7 @@ use uffs_client::protocol::DaemonStatus;
 /// state (PID, transport, health endpoint), and active MCP stdio
 /// sessions in a single unified output.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-pub async fn system_status() -> Result<()> {
+pub(crate) async fn system_status() -> Result<()> {
     println!("═══ UFFS System Status ═══");
     println!();
 

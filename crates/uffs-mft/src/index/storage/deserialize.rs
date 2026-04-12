@@ -1,4 +1,6 @@
 //! Binary deserialization for `MftIndex` snapshots.
+use core::mem::size_of;
+
 use super::IndexHeader;
 use crate::index::{
     ChildInfo, ExtensionTable, FileRecord, IndexNameRef, IndexStreamInfo, LinkInfo, MftIndex,
@@ -37,6 +39,10 @@ impl MftIndex {
         const EXTENSION_ENTRY_BYTES: usize = 16;
         const EXTENSION_ENTRY_TRAILER_BYTES: usize = 12;
 
+        /// # Errors
+        ///
+        /// Returns the provided error string if the count overflows `usize`
+        /// or the multiplication overflows.
         fn checked_section_bytes(
             count: u64,
             entry_size: usize,
@@ -46,6 +52,10 @@ impl MftIndex {
             count_usize.checked_mul(entry_size).ok_or(too_large_error)
         }
 
+        /// # Errors
+        ///
+        /// Returns the provided error string if `required` bytes exceed the
+        /// remaining data.
         const fn ensure_remaining(
             data_len: usize,
             pos: usize,
@@ -360,7 +370,7 @@ impl MftIndex {
             // v10: Pod layout — 24 bytes per LinkInfo (with padding)
             let link_pod_bytes = checked_section_bytes(
                 links_count,
-                core::mem::size_of::<LinkInfo>(),
+                size_of::<LinkInfo>(),
                 "Links section too large",
             )?;
             ensure_remaining(
@@ -410,7 +420,7 @@ impl MftIndex {
             // v10: Pod layout — 32 bytes per IndexStreamInfo (with padding)
             let stream_pod_bytes = checked_section_bytes(
                 streams_count,
-                core::mem::size_of::<IndexStreamInfo>(),
+                size_of::<IndexStreamInfo>(),
                 "Streams section too large",
             )?;
             ensure_remaining(
@@ -601,7 +611,8 @@ impl MftIndex {
                     .get(pos..pos + postings_bytes)
                     .ok_or("ExtensionIndex postings truncated")?;
                 let ext_postings: Vec<u32> = super::aligned_vec_from_bytes(post_slice);
-                let _ = postings_bytes; // pos not advanced — last section
+                // postings_bytes intentionally not consumed — this is the last section.
+                // The variable exists for clarity in the sequential decode pattern.
 
                 Some(super::super::ExtensionIndex {
                     offsets: ext_offsets,
@@ -622,8 +633,8 @@ impl MftIndex {
             names,
             links,
             streams,
-            children,
             internal_streams: Vec::new(),
+            children,
             stats: MftStats::new(),
             extensions,
             extension_index,
@@ -694,55 +705,55 @@ impl MftIndex {
 const fn v8_flags_to_raw_ntfs(old: u32) -> u32 {
     let mut ntfs = 0_u32;
     // v8 bit position → raw NTFS constant
-    if old & (1 << 0) != 0 {
+    if old & (1_u32 << 0_u32) != 0 {
         ntfs |= StandardInfo::IS_READONLY;
     }
-    if old & (1 << 1) != 0 {
+    if old & (1_u32 << 1_u32) != 0 {
         ntfs |= StandardInfo::IS_ARCHIVE;
     }
-    if old & (1 << 2) != 0 {
+    if old & (1_u32 << 2_u32) != 0 {
         ntfs |= StandardInfo::IS_SYSTEM;
     }
-    if old & (1 << 3) != 0 {
+    if old & (1_u32 << 3_u32) != 0 {
         ntfs |= StandardInfo::IS_HIDDEN;
     }
-    if old & (1 << 4) != 0 {
+    if old & (1_u32 << 4_u32) != 0 {
         ntfs |= StandardInfo::IS_OFFLINE;
     }
-    if old & (1 << 5) != 0 {
+    if old & (1_u32 << 5_u32) != 0 {
         ntfs |= StandardInfo::IS_NOT_INDEXED;
     }
-    if old & (1 << 6) != 0 {
+    if old & (1_u32 << 6_u32) != 0 {
         ntfs |= StandardInfo::IS_NO_SCRUB_DATA;
     }
-    if old & (1 << 7) != 0 {
+    if old & (1_u32 << 7_u32) != 0 {
         ntfs |= StandardInfo::IS_INTEGRITY_STREAM;
     }
-    if old & (1 << 8) != 0 {
+    if old & (1_u32 << 8_u32) != 0 {
         ntfs |= StandardInfo::IS_PINNED;
     }
-    if old & (1 << 9) != 0 {
+    if old & (1_u32 << 9_u32) != 0 {
         ntfs |= StandardInfo::IS_UNPINNED;
     }
-    if old & (1 << 10) != 0 {
+    if old & (1_u32 << 10_u32) != 0 {
         ntfs |= StandardInfo::IS_DIRECTORY;
     }
-    if old & (1 << 11) != 0 {
+    if old & (1_u32 << 11_u32) != 0 {
         ntfs |= StandardInfo::IS_COMPRESSED;
     }
-    if old & (1 << 12) != 0 {
+    if old & (1_u32 << 12_u32) != 0 {
         ntfs |= StandardInfo::IS_ENCRYPTED;
     }
-    if old & (1 << 13) != 0 {
+    if old & (1_u32 << 13_u32) != 0 {
         ntfs |= StandardInfo::IS_SPARSE;
     }
-    if old & (1 << 14) != 0 {
+    if old & (1_u32 << 14_u32) != 0 {
         ntfs |= StandardInfo::IS_REPARSE;
     }
-    if old & (1 << 15) != 0 {
+    if old & (1_u32 << 15_u32) != 0 {
         ntfs |= StandardInfo::IS_TEMPORARY;
     }
-    if old & (1 << 16) != 0 {
+    if old & (1_u32 << 16_u32) != 0 {
         ntfs |= StandardInfo::IS_VIRTUAL;
     }
     // Preserve DELETED_FLAG (bit 31) — internal USN marker, not an NTFS attribute

@@ -99,11 +99,11 @@ impl SearchResult {
             String::new()
         } else if has_ads {
             // ADS entry (file or directory): "filename:streamname"
-            let base_name = index.get_name(&name_info.name).to_owned();
+            let base_name = index.get_name(name_info.name).to_owned();
             format!("{base_name}:{stream_name}")
         } else {
             // Default file stream: just the filename
-            index.get_name(&name_info.name).to_owned()
+            index.get_name(name_info.name).to_owned()
         };
 
         // legacy-output parity: Only the default stream (stream_idx == 0) gets tree

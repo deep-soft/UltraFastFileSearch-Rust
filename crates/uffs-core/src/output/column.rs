@@ -11,7 +11,7 @@ pub type OutputColumn = FieldId;
 /// Column order matching C++ output exactly (25 columns).
 ///
 /// Used by `--parity-compat` to produce output that matches the C++ baseline.
-pub const PARITY_COLUMN_ORDER: &[FieldId] = &[
+pub(crate) const PARITY_COLUMN_ORDER: &[FieldId] = &[
     FieldId::Path,
     FieldId::Name,
     FieldId::PathOnly,

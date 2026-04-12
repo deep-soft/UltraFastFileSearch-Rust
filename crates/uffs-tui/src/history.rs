@@ -21,7 +21,7 @@ use crate::backend::FilterMode;
 
 /// A single search history entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HistoryEntry {
+pub(crate) struct HistoryEntry {
     /// Optional human-readable description (from `#` comment lines).
     pub comment: Option<String>,
     /// The search pattern (what goes in the search box).
@@ -40,7 +40,7 @@ pub struct HistoryEntry {
     clippy::struct_excessive_bools,
     reason = "mirrors CLI flags; each bool is an independent toggle"
 )]
-pub struct SearchState {
+pub(crate) struct SearchState {
     // ── toggles ────────────────────────────────────────────────────────
     /// Case-sensitive matching (`--case`).
     pub case_sensitive: bool,
@@ -139,7 +139,7 @@ pub struct SearchState {
 /// Example output: `uffs.exe "*.rs" --case --files-only --sort name:asc
 /// --limit 500`
 #[must_use]
-pub fn search_state_to_cli(pattern: &str, state: &SearchState) -> String {
+pub(crate) fn search_state_to_cli(pattern: &str, state: &SearchState) -> String {
     let mut parts = vec!["uffs.exe".to_owned()];
 
     // Quote the pattern if it contains spaces or special chars
@@ -281,12 +281,7 @@ fn push_opt(parts: &mut Vec<String>, flag: &str, value: Option<&String>) {
 ///
 /// Returns `None` if the line doesn't look like a uffs command.
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "CLI parser with many flags; splitting would scatter related parsing logic"
-)]
-#[allow(clippy::single_call_fn)] // called once in production, multiple times in tests
-pub fn cli_to_search_state(cli: &str) -> Option<(String, SearchState)> {
+pub(crate) fn cli_to_search_state(cli: &str) -> Option<(String, SearchState)> {
     let trimmed = cli.trim();
 
     // Must start with "uffs" or "uffs.exe" (skip it)
@@ -447,7 +442,7 @@ pub fn cli_to_search_state(cli: &str) -> Option<(String, SearchState)> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Result of parsing a history file: valid entries + whether healing occurred.
-pub struct ParseResult {
+pub(crate) struct ParseResult {
     /// Successfully parsed history entries.
     pub entries: Vec<HistoryEntry>,
     /// `true` if any lines were invalid and commented out (file needs rewrite).
@@ -465,7 +460,7 @@ pub struct ParseResult {
 /// Invalid lines are prefixed with `# INVALID: ` in the healed output so the
 /// user can inspect and fix them.
 #[must_use]
-pub fn parse_history_file(content: &str) -> ParseResult {
+pub(crate) fn parse_history_file(content: &str) -> ParseResult {
     let mut entries = Vec::new();
     let mut comment_lines: Vec<String> = Vec::new();
     let mut healed_lines: Vec<String> = Vec::new();
@@ -513,8 +508,7 @@ pub fn parse_history_file(content: &str) -> ParseResult {
 
 /// Serialize a list of history entries to the file format.
 #[must_use]
-#[allow(dead_code, clippy::single_call_fn)] // used by future history editor overlay
-pub fn serialize_history_file(entries: &[HistoryEntry]) -> String {
+pub(crate) fn serialize_history_file(entries: &[HistoryEntry]) -> String {
     let mut output = String::new();
     for (i, entry) in entries.iter().enumerate() {
         if i > 0 {
@@ -544,7 +538,7 @@ pub fn serialize_history_file(entries: &[HistoryEntry]) -> String {
 /// Every preset uses only MFT-available metadata (name, size, timestamps,
 /// flags). Content search, duplicate detection, and non-NTFS sources are
 /// out of scope.
-pub const DEFAULT_HISTORY: &str = "\
+pub(crate) const DEFAULT_HISTORY: &str = "\
 # ── Quick Find ──────────────────────────────────────────
 # Report §6 items 1-5: name/path lookup is the #1 workflow
 #
@@ -648,7 +642,7 @@ uffs.exe \"*\" --sort name:asc --columns name,hidden,system,archive,readonly,com
 /// - Windows: `%APPDATA%\uffs\search_history.txt`
 /// - Linux: `~/.config/uffs/search_history.txt`
 #[must_use]
-pub fn history_file_path() -> Option<std::path::PathBuf> {
+pub(crate) fn history_file_path() -> Option<std::path::PathBuf> {
     dirs_next::config_dir().map(|config| config.join("uffs").join("search_history.txt"))
 }
 
@@ -658,8 +652,7 @@ pub fn history_file_path() -> Option<std::path::PathBuf> {
 /// commented out with `# INVALID: ` and the file is rewritten so the user
 /// can review and fix them.
 #[must_use]
-#[allow(clippy::single_call_fn)] // public API, called from App::load_history
-pub fn load_history() -> Vec<HistoryEntry> {
+pub(crate) fn load_history() -> Vec<HistoryEntry> {
     let Some(path) = history_file_path() else {
         return Vec::new();
     };
@@ -686,8 +679,8 @@ pub fn load_history() -> Vec<HistoryEntry> {
 }
 
 /// Save the full history to disk (overwrites the file).
-#[allow(dead_code)] // used by future history editor overlay
-pub fn save_history(entries: &[HistoryEntry]) {
+#[expect(dead_code, reason = "reserved for future history editor overlay")]
+pub(crate) fn save_history(entries: &[HistoryEntry]) {
     if let Some(path) = history_file_path() {
         if let Some(parent) = path.parent() {
             drop(std::fs::create_dir_all(parent));
@@ -698,8 +691,7 @@ pub fn save_history(entries: &[HistoryEntry]) {
 }
 
 /// Append a single entry to the history file on disk.
-#[allow(clippy::single_call_fn)] // public API, called from App::save_history_entry
-pub fn append_history_entry(entry: &HistoryEntry) {
+pub(crate) fn append_history_entry(entry: &HistoryEntry) {
     use std::io::Write;
     if let Some(path) = history_file_path() {
         if let Some(parent) = path.parent() {
@@ -725,8 +717,7 @@ pub fn append_history_entry(entry: &HistoryEntry) {
 }
 
 /// Reset the history file to the default content.
-#[allow(clippy::single_call_fn)] // public API, called from main --reset-history
-pub fn reset_history() {
+pub(crate) fn reset_history() {
     if let Some(path) = history_file_path() {
         if let Some(parent) = path.parent() {
             drop(std::fs::create_dir_all(parent));
@@ -736,6 +727,9 @@ pub fn reset_history() {
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing)] // test assertions verify length before indexing
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test assertions verify length before indexing"
+)]
 #[path = "history_tests.rs"]
 mod tests;

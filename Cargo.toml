@@ -42,7 +42,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.4.105"
+version = "0.4.106"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
@@ -208,204 +208,216 @@ multiple_unsafe_ops_per_block = "deny"  # Limit unsafe operations
 unnecessary_safety_doc = "deny"         # Accurate safety docs
 unnecessary_safety_comment = "deny"     # Accurate safety comments
 
-# ───── WARN level lints (very strict but not blocking) ─────
-missing_errors_doc = "warn"             # Document error conditions
-missing_panics_doc = "warn"             # Document panic conditions
-missing_safety_doc = "warn"             # Document safety requirements
-cognitive_complexity = "warn"           # Keep functions simple
-too_many_lines = "warn"                 # Keep functions short
-type_complexity = "warn"                # Keep types simple
-large_enum_variant = "warn"             # Optimize enum memory usage
-large_stack_arrays = "warn"             # Avoid large stack allocations
-large_types_passed_by_value = "warn"    # Pass large types by reference
-trivially_copy_pass_by_ref = "warn"     # Pass small types by value
-clone_on_ref_ptr = "warn"               # Avoid unnecessary clones
-redundant_clone = "warn"                # Remove redundant clones
-unnecessary_wraps = "warn"              # Remove unnecessary Result/Option wraps
-option_option = "warn"                  # Avoid Option<Option<T>>
-result_unit_err = "warn"                # Use better error types
-bool_to_int_with_if = "warn"            # Use more idiomatic conversions
-cast_lossless = "warn"                  # Use lossless casts
-cast_possible_truncation = "warn"       # Warn about truncating casts
-cast_possible_wrap = "warn"             # Warn about wrapping casts
-cast_precision_loss = "warn"            # Warn about precision loss
-cast_sign_loss = "warn"                 # Warn about sign loss
-float_cmp = "warn"                      # Proper float comparisons
-float_cmp_const = "warn"                # Proper float constant comparisons
-lossy_float_literal = "warn"            # Avoid lossy float literals
-imprecise_flops = "warn"                # Precise floating point operations
-suboptimal_flops = "warn"               # Optimal floating point operations
-fn_params_excessive_bools = "warn"      # Avoid too many boolean parameters
-struct_excessive_bools = "warn"         # Avoid too many boolean fields
-verbose_bit_mask = "warn"               # Use cleaner bit operations
-inefficient_to_string = "warn"          # Use efficient string conversions
-string_add = "warn"                     # Use format! instead of string addition
-string_add_assign = "warn"              # Use format! instead of +=
-string_slice = "warn"                   # Use proper string slicing
-str_to_string = "warn"                  # Use to_owned() instead of to_string()
-implicit_clone = "warn"                 # Make clones explicit
-cloned_instead_of_copied = "warn"       # Use copy when possible
-map_clone = "warn"                      # Use copied() instead of map(clone)
-filter_map_next = "warn"                # Use find_map instead
-flat_map_option = "warn"                # Use filter_map instead
-manual_filter_map = "warn"              # Use filter_map
-manual_find_map = "warn"                # Use find_map
-map_unwrap_or = "warn"                  # Use map_or instead
-unnecessary_unwrap = "warn"             # Remove unnecessary unwraps
-or_fun_call = "warn"                    # Use or_else for expensive operations
-single_match_else = "warn"              # Use if let instead of match
-match_bool = "warn"                     # Use if instead of match on bool
-indexing_slicing = "warn"               # Avoid indexing and slicing on Vec
-match_same_arms = "warn"                # Combine identical match arms
-redundant_pattern_matching = "warn"     # Simplify pattern matching
-single_match = "warn"                   # Use if let instead of single match
-wildcard_enum_match_arm = "warn"        # Handle all enum variants explicitly
-enum_glob_use = "warn"                  # Avoid glob imports of enums
-use_self = "warn"                       # Use Self instead of type name
-needless_pass_by_value = "warn"         # Pass by reference when appropriate
-trivial_regex = "warn"                  # Use string methods instead of regex
-naive_bytecount = "warn"               # Use bytecount crate for counting
-manual_memcpy = "warn"                  # Use copy_from_slice
-manual_swap = "warn"                    # Use mem::swap
-ptr_as_ptr = "warn"                     # Use cast() instead of as
-ptr_cast_constness = "warn"             # Proper const pointer casts
-ref_as_ptr = "warn"                     # Proper reference to pointer conversion
-borrow_as_ptr = "warn"                  # Proper borrow to pointer conversion
-case_sensitive_file_extension_comparisons = "warn"  # Case-insensitive file extensions
-path_buf_push_overwrite = "warn"        # Avoid PathBuf overwrite bugs
-same_name_method = "warn"               # Avoid method name conflicts
-shadow_reuse = "warn"                   # Avoid variable shadowing
-shadow_same = "warn"                    # Avoid identical variable shadowing
-shadow_unrelated = "warn"               # Avoid unrelated variable shadowing
-similar_names = "warn"                  # Avoid confusingly similar names
-suspicious_else_formatting = "warn"     # Proper else formatting
-suspicious_unary_op_formatting = "warn" # Proper unary operator formatting
-tabs_in_doc_comments = "warn"           # Use spaces in doc comments
-trailing_empty_array = "warn"           # Remove trailing empty arrays
-unicode_not_nfc = "warn"                # Use NFC Unicode normalization
-unseparated_literal_suffix = "warn"     # Separate literal suffixes
-unused_self = "warn"                    # Remove unused self parameters
-used_underscore_binding = "warn"        # Don't use underscore bindings
-useless_let_if_seq = "warn"             # Simplify let-if sequences
-zero_sized_map_values = "warn"          # Avoid zero-sized map values
+# ───── DENY level lints — safety, correctness, discipline ─────
+# These MUST be clean in production code. clippy.toml relaxes test code
+# automatically via allow-*-in-tests settings.
+missing_errors_doc = "deny"             # Document error conditions
+missing_panics_doc = "deny"             # Document panic conditions
+missing_safety_doc = "deny"             # Document safety requirements
+cognitive_complexity = "deny"           # Keep functions simple (threshold=30 in clippy.toml)
+too_many_lines = "deny"                 # Keep functions short (threshold=150 in clippy.toml)
+type_complexity = "deny"                # Keep types simple (threshold=300 in clippy.toml)
+large_enum_variant = "deny"             # Optimize enum memory usage
+large_stack_arrays = "deny"             # Avoid large stack allocations
+large_types_passed_by_value = "deny"    # Pass large types by reference
+trivially_copy_pass_by_ref = "deny"     # Pass small types by value
+clone_on_ref_ptr = "deny"               # Avoid unnecessary clones
+redundant_clone = "deny"                # Remove redundant clones
+unnecessary_wraps = "deny"              # Remove unnecessary Result/Option wraps
+option_option = "deny"                  # Avoid Option<Option<T>>
+result_unit_err = "deny"                # Use better error types
+bool_to_int_with_if = "deny"            # Use more idiomatic conversions
+cast_lossless = "deny"                  # Use lossless casts
+cast_possible_truncation = "deny"       # Warn about truncating casts
+cast_possible_wrap = "deny"             # Warn about wrapping casts
+cast_precision_loss = "deny"            # Warn about precision loss
+cast_sign_loss = "deny"                 # Warn about sign loss
+float_cmp = "deny"                      # Proper float comparisons
+float_cmp_const = "deny"                # Proper float constant comparisons
+lossy_float_literal = "deny"            # Avoid lossy float literals
+imprecise_flops = "deny"                # Precise floating point operations
+suboptimal_flops = "deny"               # Optimal floating point operations
+fn_params_excessive_bools = "deny"      # Avoid too many boolean parameters
+struct_excessive_bools = "deny"         # Avoid too many boolean fields
+verbose_bit_mask = "deny"               # Use cleaner bit operations
+inefficient_to_string = "deny"          # Use efficient string conversions
+string_add = "deny"                     # Use format! instead of string addition
+string_add_assign = "deny"              # Use format! instead of +=
+string_slice = "deny"                   # Use proper string slicing
+str_to_string = "deny"                  # Use to_owned() instead of to_string()
+implicit_clone = "deny"                 # Make clones explicit
+cloned_instead_of_copied = "deny"       # Use copy when possible
+map_clone = "deny"                      # Use copied() instead of map(clone)
+filter_map_next = "deny"                # Use find_map instead
+flat_map_option = "deny"                # Use filter_map instead
+manual_filter_map = "deny"              # Use filter_map
+manual_find_map = "deny"                # Use find_map
+map_unwrap_or = "deny"                  # Use map_or instead
+unnecessary_unwrap = "deny"             # Remove unnecessary unwraps
+or_fun_call = "deny"                    # Use or_else for expensive operations
+single_match_else = "deny"              # Use if let instead of match
+match_bool = "deny"                     # Use if instead of match on bool
+indexing_slicing = "deny"               # Avoid indexing and slicing — use .get()
+match_same_arms = "deny"                # Combine identical match arms
+redundant_pattern_matching = "deny"     # Simplify pattern matching
+single_match = "deny"                   # Use if let instead of single match
+wildcard_enum_match_arm = "deny"        # Handle all enum variants explicitly
+enum_glob_use = "deny"                  # Avoid glob imports of enums
+use_self = "deny"                       # Use Self instead of type name
+needless_pass_by_value = "deny"         # Pass by reference when appropriate
+trivial_regex = "deny"                  # Use string methods instead of regex
+naive_bytecount = "deny"               # Use bytecount crate for counting
+manual_memcpy = "deny"                  # Use copy_from_slice
+manual_swap = "deny"                    # Use mem::swap
+ptr_as_ptr = "deny"                     # Use cast() instead of as
+ptr_cast_constness = "deny"             # Proper const pointer casts
+ref_as_ptr = "deny"                     # Proper reference to pointer conversion
+borrow_as_ptr = "deny"                  # Proper borrow to pointer conversion
+case_sensitive_file_extension_comparisons = "deny"  # Case-insensitive file extensions
+path_buf_push_overwrite = "deny"        # Avoid PathBuf overwrite bugs
+same_name_method = "deny"               # Avoid method name conflicts
+shadow_reuse = "deny"                   # Avoid variable shadowing
+shadow_same = "deny"                    # Avoid identical variable shadowing
+shadow_unrelated = "deny"               # Avoid unrelated variable shadowing
+similar_names = "deny"                  # Avoid confusingly similar names
+suspicious_else_formatting = "deny"     # Proper else formatting
+suspicious_unary_op_formatting = "deny" # Proper unary operator formatting
+tabs_in_doc_comments = "deny"           # Use spaces in doc comments
+trailing_empty_array = "deny"           # Remove trailing empty arrays
+unicode_not_nfc = "deny"                # Use NFC Unicode normalization
+unseparated_literal_suffix = "deny"     # Separate literal suffixes
+unused_self = "deny"                    # Remove unused self parameters
+used_underscore_binding = "deny"        # Don't use underscore bindings
+useless_let_if_seq = "deny"             # Simplify let-if sequences
+zero_sized_map_values = "deny"          # Avoid zero-sized map values
 
 # ───── Restriction lints (hand-picked — we do NOT enable the whole group) ─────
-as_pointer_underscore = "deny"          # Dangerous pointer casts with inferred type (1.85+)
-cfg_not_test = "warn"                   # Catch cfg(not(test)) misuse
-deref_by_slicing = "warn"              # Use &* instead of &v[..]
-empty_line_after_doc_comments = "warn" # Clean doc comment style
-empty_line_after_outer_attr = "warn"   # Clean attribute style
-four_forward_slashes = "warn"          # Catch //// (typo for ///)
-iter_filter_is_ok = "warn"             # Use flatten() instead of filter + is_ok
-iter_filter_is_some = "warn"           # Use flatten() instead of filter + is_some
-manual_is_power_of_two = "warn"        # Use is_power_of_two()
-pathbuf_init_then_push = "warn"        # Use PathBuf::from directly
-pub_underscore_fields = "warn"         # Don't expose _prefixed fields
-renamed_function_params = "warn"       # Trait impls must match param names
-set_contains_or_insert = "warn"        # Use entry API for sets
-unnecessary_map_or = "warn"            # Simplify map_or calls (1.92+)
-unnecessary_result_map_or_else = "warn" # Simplify Result::map_or_else
+# Best practice from rolldown, cargo, config-rs: cherry-pick high-value
+# restriction lints individually.
+allow_attributes = "deny"               # Force #[expect] over #[allow] — expect warns when suppression becomes stale
+allow_attributes_without_reason = "deny" # Force reason strings on all #[expect]/#[allow] attributes
+as_pointer_underscore = "deny"          # Dangerous pointer casts with inferred type
+as_underscore = "deny"                  # Catch `as _` with inferred type — lossy/dangerous casts
+cfg_not_test = "deny"                   # Catch cfg(not(test)) misuse
+dbg_macro = "deny"                      # No dbg! in production (clippy.toml allows in tests)
+deref_by_slicing = "deny"              # Use &* instead of &v[..]
+empty_line_after_doc_comments = "deny" # Clean doc comment style
+empty_line_after_outer_attr = "deny"   # Clean attribute style
+four_forward_slashes = "deny"          # Catch //// (typo for ///)
+iter_filter_is_ok = "deny"             # Use flatten() instead of filter + is_ok
+iter_filter_is_some = "deny"           # Use flatten() instead of filter + is_some
+manual_is_power_of_two = "deny"        # Use is_power_of_two()
+pathbuf_init_then_push = "deny"        # Use PathBuf::from directly
+pub_underscore_fields = "deny"         # Don't expose _prefixed fields
+renamed_function_params = "deny"       # Trait impls must match param names
+set_contains_or_insert = "deny"        # Use entry API for sets
+unnecessary_map_or = "deny"            # Simplify map_or calls
+unnecessary_result_map_or_else = "deny" # Simplify Result::map_or_else
 
 # ───── Error handling & safety ─────
-error_impl_error = "warn"               # Proper Error trait implementations
+assertions_on_result_states = "deny"    # Use unwrap() over assert!(r.is_ok()) for clearer failures
+error_impl_error = "deny"               # Proper Error trait implementations
 exit = "deny"                           # No std::process::exit
 get_unwrap = "deny"                     # Use get().ok_or() instead
-let_underscore_must_use = "warn"        # Don't ignore must_use values
-map_err_ignore = "warn"                 # Don't ignore map_err values
+let_underscore_must_use = "deny"        # Don't ignore must_use values
+map_err_ignore = "deny"                 # Don't ignore map_err values
 mem_forget = "deny"                     # Avoid mem::forget
-missing_assert_message = "warn"         # Add messages to assertions
-missing_asserts_for_indexing = "warn"   # Assert before indexing
-try_err = "warn"                        # Use ? instead of try!
+missing_assert_message = "deny"         # Add messages to assertions
+missing_asserts_for_indexing = "deny"   # Assert before indexing
+try_err = "deny"                        # Use ? instead of try!
+unwrap_in_result = "deny"              # No unwrap/expect inside Result-returning fns
 
 # ───── Memory & allocation ─────
-assigning_clones = "warn"               # Use clone_from instead of clone + assign
-rc_buffer = "warn"                      # Avoid Rc<String> or Rc<Vec>
-rc_mutex = "warn"                       # Avoid Rc<Mutex<T>>
-read_zero_byte_vec = "warn"             # Avoid reading into zero-capacity vec
-significant_drop_in_scrutinee = "warn"  # Avoid drops in match scrutinee
-significant_drop_tightening = "warn"    # Tighten significant drop scope
+assigning_clones = "deny"               # Use clone_from instead of clone + assign
+rc_buffer = "deny"                      # Avoid Rc<String> or Rc<Vec>
+rc_mutex = "deny"                       # Avoid Rc<Mutex<T>>
+read_zero_byte_vec = "deny"             # Avoid reading into zero-capacity vec
+significant_drop_in_scrutinee = "deny"  # Avoid drops in match scrutinee
+significant_drop_tightening = "deny"    # Tighten significant drop scope
 
 # ───── Concurrency & performance ─────
-mutex_atomic = "warn"                   # Use atomics instead of mutex for simple types
-stable_sort_primitive = "warn"          # Use unstable_sort for primitives
-infinite_loop = "warn"                  # Detect infinite loops
+mutex_atomic = "deny"                   # Use atomics instead of mutex for simple types
+stable_sort_primitive = "deny"          # Use unstable_sort for primitives
+infinite_loop = "deny"                  # Detect infinite loops
 
 # ───── Iterator patterns ─────
-collection_is_never_read = "warn"       # Detect unused collections
-iter_on_empty_collections = "warn"      # Avoid iterating empty collections
-iter_on_single_items = "warn"           # Use std::iter::once instead
-iter_over_hash_type = "warn"            # Non-deterministic iteration order
-needless_collect = "warn"               # Avoid unnecessary collect()
-needless_for_each = "warn"              # Use for loop instead of for_each
+collection_is_never_read = "deny"       # Detect unused collections
+iter_on_empty_collections = "deny"      # Avoid iterating empty collections
+iter_on_single_items = "deny"           # Use std::iter::once instead
+iter_over_hash_type = "deny"            # Non-deterministic iteration order
+needless_collect = "deny"               # Avoid unnecessary collect()
+needless_for_each = "deny"              # Use for loop instead of for_each
 
 # ───── String & formatting ─────
-format_push_string = "warn"             # Use write! instead of format! + push
-manual_string_new = "warn"              # Use String::new()
-needless_raw_string_hashes = "warn"     # Minimize raw string hashes
-needless_raw_strings = "warn"           # Avoid unnecessary raw strings
-string_lit_chars_any = "warn"           # Use contains instead of chars().any()
+format_push_string = "deny"             # Use write! instead of format! + push
+manual_string_new = "deny"              # Use String::new()
+needless_raw_string_hashes = "deny"     # Minimize raw string hashes
+needless_raw_strings = "deny"           # Avoid unnecessary raw strings
+string_lit_chars_any = "deny"           # Use contains instead of chars().any()
 
 # ───── Numeric & type precision ─────
-default_numeric_fallback = "warn"       # Explicit numeric types
-float_arithmetic = "warn"               # Be careful with float arithmetic
-suspicious_xor_used_as_pow = "warn"     # Detect ^ used as power
-unreadable_literal = "warn"             # Use underscores in large literals
+default_numeric_fallback = "deny"       # Explicit numeric types
+float_arithmetic = "deny"               # Be careful with float arithmetic (scoped #[expect] where needed)
+suspicious_xor_used_as_pow = "deny"     # Detect ^ used as power
+unreadable_literal = "deny"             # Use underscores in large literals
 
 # ───── Idiomatic patterns ─────
-equatable_if_let = "warn"               # Use == instead of if let for equality
-if_then_some_else_none = "warn"         # Use bool::then instead
-manual_assert = "warn"                  # Use assert! macro
-manual_instant_elapsed = "warn"         # Use Instant::elapsed()
-manual_is_ascii_check = "warn"          # Use is_ascii methods
-manual_let_else = "warn"                # Use let-else syntax
-manual_ok_or = "warn"                   # Use ok_or instead of match
-option_if_let_else = "warn"             # Use map_or_else instead
-verbose_file_reads = "warn"             # Use fs::read_to_string
+equatable_if_let = "deny"               # Use == instead of if let for equality
+if_then_some_else_none = "deny"         # Use bool::then instead
+manual_assert = "deny"                  # Use assert! macro
+manual_instant_elapsed = "deny"         # Use Instant::elapsed()
+manual_is_ascii_check = "deny"          # Use is_ascii methods
+manual_let_else = "deny"                # Use let-else syntax
+manual_ok_or = "deny"                   # Use ok_or instead of match
+option_if_let_else = "deny"             # Use map_or_else instead
+verbose_file_reads = "deny"             # Use fs::read_to_string
 
 # ───── Control flow & logic ─────
-debug_assert_with_mut_call = "warn"     # Avoid side effects in debug_assert
-mixed_read_write_in_expression = "warn" # Avoid read+write in same expression
-same_functions_in_if_condition = "warn" # Avoid duplicate function calls
+debug_assert_with_mut_call = "deny"     # Avoid side effects in debug_assert
+mixed_read_write_in_expression = "deny" # Avoid read+write in same expression
+same_functions_in_if_condition = "deny" # Avoid duplicate function calls
 
 # ───── Code style & structure ─────
-empty_drop = "warn"                     # Remove empty Drop implementations
-empty_structs_with_brackets = "warn"    # Use unit struct syntax
-impl_trait_in_params = "warn"           # Prefer generics over impl Trait in params
-let_underscore_untyped = "warn"         # Type underscore bindings
-min_ident_chars = "warn"                # Minimum identifier length
-no_effect_underscore_binding = "warn"   # Remove no-effect underscore bindings
-nonstandard_macro_braces = "warn"       # Consistent macro brace style
-partial_pub_fields = "warn"             # Consistent field visibility
-pub_without_shorthand = "warn"          # Use pub(crate) shorthand
-redundant_type_annotations = "warn"     # Remove redundant type annotations
-ref_patterns = "warn"                   # Avoid ref patterns
-rest_pat_in_fully_bound_structs = "warn" # Avoid .. in fully bound structs
-semicolon_inside_block = "warn"         # Consistent semicolon placement
-semicolon_outside_block = "warn"        # Consistent semicolon placement
+empty_drop = "deny"                     # Remove empty Drop implementations
+empty_structs_with_brackets = "deny"    # Use unit struct syntax
+impl_trait_in_params = "deny"           # Prefer generics over impl Trait in params
+let_underscore_untyped = "deny"         # Type underscore bindings
+min_ident_chars = "deny"                # Minimum identifier length
+no_effect_underscore_binding = "deny"   # Remove no-effect underscore bindings
+nonstandard_macro_braces = "deny"       # Consistent macro brace style
+partial_pub_fields = "deny"             # Consistent field visibility
+pub_without_shorthand = "deny"          # Use pub(crate) shorthand
+redundant_type_annotations = "deny"     # Remove redundant type annotations
+ref_patterns = "deny"                   # Avoid ref patterns
+rest_pat_in_fully_bound_structs = "deny" # Avoid .. in fully bound structs
+semicolon_inside_block = "deny"         # Consistent semicolon placement
+semicolon_outside_block = "deny"        # Consistent semicolon placement
+redundant_pub_crate = "allow"           # Conflicts with rustc::unreachable_pub — we prefer unreachable_pub
 single_call_fn = "allow"                # Intentional: helper functions improve readability even if called once
-unnecessary_self_imports = "warn"       # Remove unnecessary self imports
-unnecessary_struct_initialization = "warn" # Simplify struct initialization
-unneeded_field_pattern = "warn"         # Remove unneeded field patterns
+unnecessary_self_imports = "deny"       # Remove unnecessary self imports
+unnecessary_struct_initialization = "deny" # Simplify struct initialization
+unneeded_field_pattern = "deny"         # Remove unneeded field patterns
 
 # ───── Filesystem ─────
-filetype_is_file = "warn"               # Use is_file() properly
+doc_include_without_cfg = "deny"        # Wrap doc includes in #[cfg(doc)] to avoid wasting compile time
+filetype_is_file = "deny"               # Detect is_file() misuse — returns false for symlinks
 
 # ───── Output discipline ─────
-print_stderr = "warn"                   # Use proper logging instead
-print_stdout = "warn"                   # Use proper logging instead
-use_debug = "warn"                      # Avoid Debug in production
+print_stderr = "deny"                   # Use proper logging instead (clippy.toml allows in tests)
+print_stdout = "deny"                   # Use proper logging instead (clippy.toml allows in tests)
+use_debug = "deny"                      # Avoid Debug in production
 
 # ───── Portability ─────
-std_instead_of_alloc = "warn"           # Use alloc when std not needed
-std_instead_of_core = "warn"            # Use core when std not needed
+std_instead_of_alloc = "deny"           # Use alloc when std not needed
+std_instead_of_core = "deny"            # Use core when std not needed
 
 # ───── Testing hygiene ─────
-tests_outside_test_module = "warn"      # Keep tests in test modules
+tests_outside_test_module = "deny"      # Keep tests in test modules
 
 # ───── Unused / dead code ─────
-unused_async = "warn"                   # Remove unused async
-unused_peekable = "warn"                # Remove unused peekable
-unused_rounding = "warn"                # Remove unused rounding
+unused_async = "deny"                   # Remove unused async
+unused_peekable = "deny"                # Remove unused peekable
+unused_rounding = "deny"                # Remove unused rounding
 
 # ───── Exceptions ─────
 # External deps (polars, tokio ecosystem) pull transitive version conflicts
@@ -415,7 +427,7 @@ multiple_crate_versions = "allow"
 [workspace.lints.rust]
 # ───── Rust compiler lints (strictest possible) ─────
 unsafe_code = "deny"                    # No unsafe code without explicit allow
-missing_docs = "warn"                   # Warn on missing public docs
+missing_docs = "deny"                   # Document all public items
 rust_2024_compatibility = { level = "warn", priority = -1 }  # Ensure 2024 edition compatibility
 # ───── Future-proofing lints ─────
 future_incompatible = { level = "deny", priority = -1 }  # Catch future breaking changes
@@ -424,10 +436,14 @@ unexpected_cfgs = "warn"                # Catch typos / stale cfg attributes
 # ───── Additional safety lints ─────
 unsafe_op_in_unsafe_fn = "deny"         # Require unsafe blocks inside unsafe fn
 unused_crate_dependencies = "warn"      # Detect unused dependencies
-unused_import_braces = "warn"           # Clean import style
-unused_lifetimes = "warn"               # Remove unnecessary lifetimes
-unused_macro_rules = "warn"             # Remove unused macro rules
-unused_qualifications = "warn"          # Remove unnecessary path qualifications
+unused_import_braces = "deny"           # Clean import style — no tolerance
+unused_lifetimes = "deny"               # Remove unnecessary lifetimes — no tolerance
+unused_macro_rules = "deny"             # Remove unused macro rules — no tolerance
+unused_qualifications = "deny"          # Remove unnecessary path qualifications — no tolerance
+# ───── Code hygiene ─────
+elided_lifetimes_in_paths = "warn"      # Make lifetime annotations explicit in type paths
+explicit_outlives_requirements = "warn" # Remove redundant where T: 'a bounds
+unreachable_pub = "warn"                # Catch pub items not reachable from crate root
 variant_size_differences = "warn"       # Warn about enum variant size differences
 
 [workspace.lints.rustdoc]

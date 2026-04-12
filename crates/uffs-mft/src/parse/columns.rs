@@ -414,12 +414,8 @@ impl ParsedColumns {
     ///
     /// The number of placeholder records added.
     pub fn add_missing_parent_placeholders(&mut self) -> usize {
-        use rustc_hash::FxHashSet;
-
-        // Iterate until no new placeholders are needed (handles recursive missing
-        // parents)
-        let mut total_added = 0;
-        let mut iterations = 0;
+        let mut total_added = 0_usize;
+        let mut iterations = 0_usize;
 
         loop {
             iterations += 1;
@@ -431,35 +427,11 @@ impl ParsedColumns {
                 break;
             }
 
-            // Collect all FRS values we have (FxHashSet for faster hashing)
-            let known_frs: FxHashSet<u64> = self.frs.iter().copied().collect();
-
-            // Collect all parent_frs values that are referenced
-            let referenced_parents: FxHashSet<u64> = self.parent_frs.iter().copied().collect();
-
-            // Find missing parents (exclude 0 and 5 which are special root markers)
-            let missing_parents: Vec<u64> = referenced_parents
-                .difference(&known_frs)
-                .filter(|&&frs| frs != 0 && frs != 5)
-                .copied()
-                .collect();
-
-            if missing_parents.is_empty() {
-                break; // No more missing parents
+            let added = self.insert_missing_parent_round();
+            if added == 0 {
+                break;
             }
-
-            debug!(
-                iteration = iterations,
-                missing_count = missing_parents.len(),
-                "Creating placeholder records for missing parent directories"
-            );
-
-            // Create placeholder records
-            for frs in missing_parents {
-                let placeholder = create_placeholder_record(frs);
-                self.push_record(&placeholder);
-                total_added += 1;
-            }
+            total_added += added;
         }
 
         if total_added > 0 {
@@ -470,5 +442,36 @@ impl ParsedColumns {
         }
 
         total_added
+    }
+
+    /// Single pass: finds parents referenced by records but not yet present,
+    /// inserts placeholder records for them, and returns how many were added.
+    fn insert_missing_parent_round(&mut self) -> usize {
+        use rustc_hash::FxHashSet;
+
+        let known_frs: FxHashSet<u64> = self.frs.iter().copied().collect();
+        let referenced: FxHashSet<u64> = self.parent_frs.iter().copied().collect();
+
+        let missing: Vec<u64> = referenced
+            .difference(&known_frs)
+            .filter(|&&frs| frs != 0 && frs != 5)
+            .copied()
+            .collect();
+
+        if missing.is_empty() {
+            return 0;
+        }
+
+        debug!(
+            missing_count = missing.len(),
+            "Creating placeholder records for missing parent directories"
+        );
+
+        let count = missing.len();
+        for frs in missing {
+            let placeholder = create_placeholder_record(frs);
+            self.push_record(&placeholder);
+        }
+        count
     }
 }

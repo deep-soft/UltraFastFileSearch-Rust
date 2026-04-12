@@ -108,6 +108,11 @@ impl UffsClient {
     }
 
     /// Attempt to connect to an already-running daemon.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`](crate::error::ClientError) if no daemon is
+    /// running or the connection handshake fails.
     async fn try_connect_existing() -> Result<Self, crate::error::ClientError> {
         match Self::platform_connect().await {
             Ok(client) => {
@@ -123,6 +128,11 @@ impl UffsClient {
     }
 
     /// Spawn the daemon process with the given extra args.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`](crate::error::ClientError) if the daemon
+    /// executable cannot be found or the spawn fails.
     fn auto_start_daemon(spawn_args: &[String]) -> Result<(), crate::error::ClientError> {
         tracing::info!("Daemon not running, auto-starting via `uffs daemon run`...");
 
@@ -143,6 +153,11 @@ impl UffsClient {
     }
 
     /// Retry connecting to the daemon with exponential backoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`](crate::error::ClientError) if all connection
+    /// attempts are exhausted.
     async fn retry_connect(
         sock: &std::path::Path,
         pid_path: &std::path::Path,
@@ -186,6 +201,11 @@ impl UffsClient {
     ///
     /// D3.4.5: While waiting for the response, any incoming notifications
     /// (messages without an `id` field) are routed to the notification channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`](crate::error::ClientError) if serialisation,
+    /// I/O, or response parsing fails.
     async fn send_request(
         &mut self,
         method: &str,
@@ -534,6 +554,7 @@ impl UffsClient {
     /// let _keepalive = client.start_keepalive(Duration::from_secs(60));
     /// ```
     pub fn start_keepalive(&self, interval: core::time::Duration) -> KeepaliveGuard {
+        let _: &Self = self; // keepalive uses a separate connection, not &self
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
         // We can't move &mut self into the task, so we open a separate
@@ -623,6 +644,11 @@ pub struct KeepaliveGuard {
 #[cfg(unix)]
 impl UffsClient {
     /// Platform-specific connection over Unix domain socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`](crate::error::ClientError) if the Unix socket
+    /// connection fails.
     async fn platform_connect() -> Result<Self, crate::error::ClientError> {
         let sock_path = socket_path();
         let stream = tokio::net::UnixStream::connect(&sock_path)

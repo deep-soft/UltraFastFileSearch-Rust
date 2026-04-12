@@ -22,7 +22,7 @@ pub use self::header::IndexHeader;
 /// # Panics
 ///
 /// Panics if `bytes.len()` is not an exact multiple of `size_of::<T>()`.
-pub fn aligned_vec_from_bytes<T: bytemuck::Pod>(bytes: &[u8]) -> Vec<T> {
+pub(crate) fn aligned_vec_from_bytes<T: bytemuck::Pod>(bytes: &[u8]) -> Vec<T> {
     let elem_size = size_of::<T>();
     assert!(
         elem_size > 0 && bytes.len().is_multiple_of(elem_size),

@@ -82,8 +82,8 @@ fn test_names_buffer() {
     let info1 = IndexNameRef::new(offset1, 8, true, IndexNameRef::NO_EXTENSION);
     let info2 = IndexNameRef::new(offset2, 8, true, IndexNameRef::NO_EXTENSION);
 
-    assert_eq!(index.get_name(&info1), "test.txt");
-    assert_eq!(index.get_name(&info2), "hello.rs");
+    assert_eq!(index.get_name(info1), "test.txt");
+    assert_eq!(index.get_name(info2), "hello.rs");
 }
 
 #[test]

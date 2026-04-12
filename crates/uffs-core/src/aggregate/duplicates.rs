@@ -309,10 +309,10 @@ mod tests {
         root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
         root.first_name.parent_frs = ROOT_FRS;
 
-        let add_file = |idx: &mut MftIndex, frs: u64, name: &str, size: u64| {
-            let off = idx.add_name(name);
-            let ext = idx.intern_extension(name);
-            let rec = idx.get_or_create(frs);
+        let add_file = |index: &mut MftIndex, frs: u64, name: &str, size: u64| {
+            let off = index.add_name(name);
+            let ext = index.intern_extension(name);
+            let rec = index.get_or_create(frs);
             rec.first_name.name =
                 IndexNameRef::new(off, uffs_mft::len_to_u16(name.len()), true, ext);
             rec.first_name.parent_frs = ROOT_FRS;

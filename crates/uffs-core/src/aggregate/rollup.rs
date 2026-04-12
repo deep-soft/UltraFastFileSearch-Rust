@@ -164,7 +164,7 @@ fn child_of_ancestor(drive: &DriveCompactIndex, idx: usize, ancestor_idx: u32) -
 /// For drive rollups, key is the drive letter ordinal.
 /// For path/ancestor rollups, key is the record index → look up name.
 #[must_use]
-pub fn resolve_rollup_key(key: u32, mode: &RollupMode, drive: &DriveCompactIndex) -> String {
+pub fn resolve_rollup_key(key: u32, mode: RollupMode, drive: &DriveCompactIndex) -> String {
     match mode {
         RollupMode::Drive => {
             let ch = char::from(u8::try_from(key).unwrap_or(b'?'));
@@ -244,65 +244,65 @@ mod tests {
         let dir = 0x0010_u32; // FILE_ATTRIBUTE_DIRECTORY
         let records = vec![
             CompactRecord {
-                parent_idx: 0,
                 size: 0,
                 allocated: 0,
-                flags: dir,
                 name_offset: offsets[0],
+                flags: dir,
+                parent_idx: 0,
                 name_len: uffs_mft::len_to_u16(name_strs[0].len()),
                 ..Default::default()
             },
             CompactRecord {
-                parent_idx: 0,
                 size: 0,
                 allocated: 0,
-                flags: dir,
                 name_offset: offsets[1],
+                flags: dir,
+                parent_idx: 0,
                 name_len: uffs_mft::len_to_u16(name_strs[1].len()),
                 ..Default::default()
             },
             CompactRecord {
-                parent_idx: 0,
                 size: 0,
                 allocated: 0,
-                flags: dir,
                 name_offset: offsets[2],
+                flags: dir,
+                parent_idx: 0,
                 name_len: uffs_mft::len_to_u16(name_strs[2].len()),
                 ..Default::default()
             },
             CompactRecord {
-                parent_idx: 1,
                 size: 1000,
                 allocated: 4096,
-                flags: 0,
                 name_offset: offsets[3],
+                flags: 0,
+                parent_idx: 1,
                 name_len: uffs_mft::len_to_u16(name_strs[3].len()),
                 ..Default::default()
             },
             CompactRecord {
-                parent_idx: 1,
                 size: 0,
                 allocated: 0,
-                flags: dir,
                 name_offset: offsets[4],
+                flags: dir,
+                parent_idx: 1,
                 name_len: uffs_mft::len_to_u16(name_strs[4].len()),
                 ..Default::default()
             },
             CompactRecord {
-                parent_idx: 4,
                 size: 2000,
                 allocated: 4096,
-                flags: 0,
                 name_offset: offsets[5],
+                flags: 0,
+                parent_idx: 4,
                 name_len: uffs_mft::len_to_u16(name_strs[5].len()),
                 ..Default::default()
             },
             CompactRecord {
-                parent_idx: 2,
                 size: 3000,
                 allocated: 4096,
-                flags: 0,
                 name_offset: offsets[6],
+                flags: 0,
+                parent_idx: 2,
                 name_len: uffs_mft::len_to_u16(name_strs[6].len()),
                 ..Default::default()
             },
@@ -364,7 +364,7 @@ mod tests {
     fn resolve_rollup_key_ancestor_mode() {
         let drive = build_ancestor_test_drive();
         let mode = RollupMode::Ancestor { record_idx: 0 };
-        let name = resolve_rollup_key(1, &mode, &drive);
+        let name = resolve_rollup_key(1, mode, &drive);
         assert_eq!(name, "C:\\folder_a");
     }
 }

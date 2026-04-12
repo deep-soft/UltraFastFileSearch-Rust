@@ -3,7 +3,7 @@
 //!
 //! Extracted from `paths.rs` to keep it under the 800 LOC threshold.
 
-use super::{MftIndex, NO_ENTRY, ROOT_FRS};
+use super::{FileRecord, MftIndex, NO_ENTRY, ROOT_FRS};
 
 // ============================================================================
 // PathResolver - Ultra-fast path validity and on-demand materialization
@@ -16,13 +16,13 @@ const SYSTEM_METAFILE_MAX_FRS: u64 = 15;
 /// State values for path resolution.
 mod path_state {
     /// Record has not been visited yet.
-    pub const UNSEEN: u8 = 0;
+    pub(super) const UNSEEN: u8 = 0;
     /// Record is currently being visited (cycle detection).
-    pub const VISITING: u8 = 1;
+    pub(super) const VISITING: u8 = 1;
     /// Record has a valid path to root.
-    pub const VALID: u8 = 2;
+    pub(super) const VALID: u8 = 2;
     /// Record is invalid (system metafile, cycle, or descendant of invalid).
-    pub const INVALID: u8 = 3;
+    pub(super) const INVALID: u8 = 3;
 }
 
 /// Ultra-fast path resolver using dense arrays instead of `HashMap`.
@@ -106,7 +106,9 @@ impl PathResolver {
         let n = index.records.len();
         let mut cache: Vec<String> = vec![String::new(); n];
         for (idx, slot) in cache.iter_mut().enumerate().take(n) {
-            if self.is_valid_idx(idx) && index.records[idx].is_directory() {
+            if self.is_valid_idx(idx)
+                && index.records.get(idx).is_some_and(FileRecord::is_directory)
+            {
                 *slot = self.materialize_path(index, idx);
             }
         }

@@ -26,8 +26,6 @@
     clippy::use_debug,
     reason = "diagnostic tool — stdout/stderr/debug output is intentional"
 )]
-// allow (not expect) because tests don't trigger doc lints
-#![allow(clippy::missing_docs_in_private_items)]
 #![expect(
     clippy::too_many_lines,
     reason = "diagnostic analysis functions are inherently long sequential pipelines"

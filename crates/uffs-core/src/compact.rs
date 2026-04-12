@@ -389,7 +389,7 @@ fn expand_ads_streams(
 ) {
     // Collect all names for this record (primary + hardlinks).
     let mut all_names: Vec<(&str, u32)> = Vec::new();
-    let primary_name = index.get_name(&record.first_name.name);
+    let primary_name = index.get_name(record.first_name.name);
     if !primary_name.is_empty() {
         let pid = resolve_parent(record.first_name.parent_frs, record.frs);
         all_names.push((primary_name, pid));
@@ -400,7 +400,7 @@ fn expand_ads_streams(
             let Some(lnk) = index.links.get(le as usize) else {
                 break;
             };
-            let ln = index.get_name(&lnk.name);
+            let ln = index.get_name(lnk.name);
             if !ln.is_empty() {
                 let lp = resolve_parent(lnk.parent_frs, record.frs);
                 all_names.push((ln, lp));
@@ -425,19 +425,19 @@ fn expand_ads_streams(
                     names.extend_from_slice(combined.as_bytes());
 
                     extra.push(CompactRecord {
-                        name_offset,
-                        name_len,
-                        extension_id: 0,
-                        flags: record.stdinfo.flags,
-                        parent_idx,
                         size: stream.size.length,
                         allocated: stream.size.allocated,
+                        treesize: 0,
+                        tree_allocated: 0,
                         created: record.stdinfo.created,
                         modified: record.stdinfo.modified,
                         accessed: record.stdinfo.accessed,
+                        name_offset,
+                        flags: record.stdinfo.flags,
+                        parent_idx,
                         descendants: 0,
-                        treesize: 0,
-                        tree_allocated: 0,
+                        name_len,
+                        extension_id: 0,
                         path_len: 0,
                         name_first_byte: combined.as_bytes().first().copied().unwrap_or(0),
                         _pad: [0; 1],
@@ -482,19 +482,19 @@ fn expand_links_and_ads(
                 };
                 let link_parent = resolve_parent(link.parent_frs, record.frs);
                 extra.push(CompactRecord {
-                    name_offset: link.name.offset,
-                    name_len: link.name.length(),
-                    extension_id: link.name.extension_id(),
-                    flags: record.stdinfo.flags,
-                    parent_idx: link_parent,
                     size: record.first_stream.size.length,
                     allocated: record.first_stream.size.allocated,
+                    treesize: record.treesize,
+                    tree_allocated: record.tree_allocated,
                     created: record.stdinfo.created,
                     modified: record.stdinfo.modified,
                     accessed: record.stdinfo.accessed,
+                    name_offset: link.name.offset,
+                    flags: record.stdinfo.flags,
+                    parent_idx: link_parent,
                     descendants: record.descendants,
-                    treesize: record.treesize,
-                    tree_allocated: record.tree_allocated,
+                    name_len: link.name.length(),
+                    extension_id: link.name.extension_id(),
                     path_len: 0,
                     name_first_byte: names.get(link.name.offset as usize).copied().unwrap_or(0),
                     _pad: [0; 1],
@@ -657,19 +657,19 @@ pub fn build_compact_index(
             let parent_idx = resolve_parent(record.first_name.parent_frs, record.frs);
 
             CompactRecord {
-                name_offset: name_ref.offset,
-                name_len: name_ref.length(),
-                extension_id: name_ref.extension_id(),
-                flags: record.stdinfo.flags,
-                parent_idx,
                 size: record.first_stream.size.length,
                 allocated: record.first_stream.size.allocated,
+                treesize: record.treesize,
+                tree_allocated: record.tree_allocated,
                 created: record.stdinfo.created,
                 modified: record.stdinfo.modified,
                 accessed: record.stdinfo.accessed,
+                name_offset: name_ref.offset,
+                flags: record.stdinfo.flags,
+                parent_idx,
                 descendants: record.descendants,
-                treesize: record.treesize,
-                tree_allocated: record.tree_allocated,
+                name_len: name_ref.length(),
+                extension_id: name_ref.extension_id(),
                 path_len: 0,
                 name_first_byte: index
                     .names

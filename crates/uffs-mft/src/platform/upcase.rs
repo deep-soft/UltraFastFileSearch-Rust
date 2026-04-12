@@ -81,8 +81,16 @@ pub struct UpcaseHeader {
 
 impl UpcaseHeader {
     /// Serializes header + raw table into a byte vector (plaintext).
+    ///
+    /// All indexing is safe: `buf` is allocated as `HEADER_SIZE +
+    /// UPCASE_SIZE_BYTES` (64 + 131072 bytes), and all slices fall within
+    /// that range.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "buf allocated as HEADER_SIZE + UPCASE_SIZE_BYTES; all indices < HEADER_SIZE (64)"
+    )]
     fn serialize(&self, table: &[u16; 65_536]) -> Vec<u8> {
-        let mut buf = vec![0u8; HEADER_SIZE + UPCASE_SIZE_BYTES];
+        let mut buf = vec![0_u8; HEADER_SIZE + UPCASE_SIZE_BYTES];
 
         buf[0..8].copy_from_slice(UPCASE_MAGIC);
         buf[8..12].copy_from_slice(&UPCASE_FORMAT_VERSION.to_le_bytes());
@@ -100,6 +108,19 @@ impl UpcaseHeader {
     }
 
     /// Deserializes header from the first 64 bytes of plaintext.
+    ///
+    /// All indexing is bounds-safe: the length check at the top guarantees
+    /// `data.len() >= HEADER_SIZE + UPCASE_SIZE_BYTES` (> 37 bytes).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError`] if the data is too small, has the wrong magic
+    /// bytes, or contains an invalid drive letter.
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::missing_asserts_for_indexing,
+        reason = "length validated at top of function; all indices < HEADER_SIZE (64)"
+    )]
     fn deserialize(data: &[u8]) -> Result<Self> {
         if data.len() < HEADER_SIZE + UPCASE_SIZE_BYTES {
             return Err(MftError::InvalidData(format!(
@@ -150,11 +171,11 @@ fn crc32(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &byte in data {
         crc ^= u32::from(byte);
-        for _ in 0..8 {
+        for _ in 0_i32..8_i32 {
             crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xEDB8_8320
+                (crc >> 1_i32) ^ 0xEDB8_8320
             } else {
-                crc >> 1
+                crc >> 1_i32
             };
         }
     }
@@ -182,7 +203,7 @@ pub fn save_upcase_to_file(
     let data = header.serialize(table);
 
     crate::cache::atomic_write(path, &data)
-        .map_err(|e| MftError::InvalidData(format!("Failed to write $UpCase file: {e}")))?;
+        .map_err(|err| MftError::InvalidData(format!("Failed to write $UpCase file: {err}")))?;
 
     tracing::info!(
         path = %path.display(),
@@ -202,18 +223,21 @@ pub fn save_upcase_to_file(
 /// Returns an error if the file is too small, has wrong magic bytes,
 /// unsupported version, or CRC-32 mismatch.
 pub fn load_upcase_from_file(path: &std::path::Path) -> Result<(UpcaseHeader, Box<[u16; 65_536]>)> {
-    let data = std::fs::read(path)
-        .map_err(|e| MftError::InvalidData(format!("Failed to read {}: {e}", path.display())))?;
+    let data = std::fs::read(path).map_err(|err| {
+        MftError::InvalidData(format!("Failed to read {}: {err}", path.display()))
+    })?;
 
     let header = UpcaseHeader::deserialize(&data)?;
 
     // Extract raw table bytes (starts at offset 64).
-    let table_bytes = &data[HEADER_SIZE..HEADER_SIZE + UPCASE_SIZE_BYTES];
+    let table_bytes = data
+        .get(HEADER_SIZE..HEADER_SIZE + UPCASE_SIZE_BYTES)
+        .ok_or_else(|| MftError::InvalidData("upcase data too short for table".to_owned()))?;
     let u16_slice: &[u16] = bytemuck::cast_slice(table_bytes);
-    let mut table: Box<[u16; 65_536]> = vec![0u16; 65_536]
+    let mut table: Box<[u16; 65_536]> = vec![0_u16; 65_536]
         .into_boxed_slice()
         .try_into()
-        .map_err(|_| MftError::InvalidData("upcase table size mismatch".to_owned()))?;
+        .map_err(|_size_err| MftError::InvalidData("upcase table size mismatch".to_owned()))?;
     table.copy_from_slice(u16_slice);
 
     // Verify CRC-32.
@@ -419,6 +443,19 @@ fn read_clusters(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code with known-valid indices"
+)]
+#[expect(
+    clippy::let_underscore_untyped,
+    reason = "test code — type annotation not needed"
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "test cleanup — ignoring Result from fs operations"
+)]
+#[expect(clippy::min_ident_chars, reason = "test code — short variable names")]
 mod tests {
     use super::*;
 

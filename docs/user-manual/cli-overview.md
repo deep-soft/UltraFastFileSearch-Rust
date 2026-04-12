@@ -7,41 +7,16 @@ milliseconds.
 **Search is the default action** — just type `uffs <pattern>`.  No
 subcommand required.
 
-> **Detailed guides:**
-> [Concepts](concepts.md) ·
+> **See also:**
+> [Getting Started](getting-started.md) ·
 > [Search Modes](search-modes.md) ·
 > [Filters](filters.md) ·
-> [Sorting](sorting.md)
+> [Sorting](sorting.md) ·
+> [Output Formats](output-formats.md)
 
 ---
 
-## 1  Quick Start
-
-```bash
-# ── Known-item lookup (the #1 reason people use file search) ──
-uffs invoice                                    # Paths containing "invoice"
-uffs '*.pdf'                                    # All PDFs across every drive
-uffs 'dir:node_modules'                         # Directories named node_modules
-
-# ── Narrow by type / date / size (the next-most-common workflow) ──
-uffs '*.pdf' --newer 7d --sort size --limit 20  # Recent large PDFs
-uffs '*' --ext pictures --min-size 1MB          # Images over 1 MB
-uffs '*' --files-only --min-size 1GB --sort size # Giant files (storage triage)
-
-# ── Cleanup & audit (the hidden killer feature) ──────────────
-uffs '*' --dirs-only --max-descendants 0        # Empty directories
-uffs '*' --files-only --sort pathlength --limit 20 # Longest paths (MAX_PATH risk)
-uffs '*' --files-only --min-bulkiness 500 --sort bulkiness # Wasteful allocations
-
-# ── Developer / admin ─────────────────────────────────────────
-uffs '>.*\.log$' --newer 24h                    # Logs from last 24h (regex)
-uffs '*.toml' --in-path '*projects*'            # Config files in project trees
-uffs --contains setup --ext executables         # Installers by name fragment
-```
-
----
-
-## 2  Search (Default Action)
+## 1  Search (Default Action)
 
 When no subcommand is specified, `uffs` performs a search.  The first
 positional argument is the pattern.
@@ -116,21 +91,24 @@ All filters are detailed in the [Filters guide](filters.md).  Summary:
 | `--hide-ads` | Scope | Hide Alternate Data Stream entries |
 | `--min-size <SIZE>` | Size | Minimum logical size (e.g. `100MB`, `1GB`) |
 | `--max-size <SIZE>` | Size | Maximum logical size |
-| `--exact-size <SIZE>` | Size | Exactly this size |
+| `--exact-size <SIZE>` | Size | Exactly this size (shorthand for min=max) |
 | `--min-size-on-disk <SIZE>` | Size | Minimum allocated size ([concept](concepts.md#1--size-vs-size-on-disk)) |
 | `--max-size-on-disk <SIZE>` | Size | Maximum allocated size |
+| `--exact-size-on-disk <SIZE>` | Size | Exactly this allocated size |
 | `--newer <SPEC>` | Date | Modified within / after |
 | `--older <SPEC>` | Date | Modified before |
 | `--newer-created <SPEC>` | Date | Created within / after |
 | `--older-created <SPEC>` | Date | Created before |
 | `--newer-accessed <SPEC>` | Date | Accessed within / after |
 | `--older-accessed <SPEC>` | Date | Accessed before |
+| `--between <START,END>` | Date | Time range shorthand (e.g. `2026-01-01,2026-03-31`) |
 | `--month <SPEC>` | Date | Month-of-year filter (jan, Q1, etc.) |
 | `--attr <LIST>` | Attribute | Require/exclude NTFS attributes |
 | `--type <CATEGORY>` | Type | Semantic type: code, picture, video, … |
 | `--ext <LIST>` | Extension | Filter by extension or collection |
 | `--min-descendants <N>` | Tree | Min child count (dirs) |
 | `--max-descendants <N>` | Tree | Max child count (dirs) |
+| `--exact-descendants <N>` | Tree | Exactly N children |
 | `--min-treesize <SIZE>` | Tree | Min subtree logical size ([concept](concepts.md#2--tree-size--tree-allocated)) |
 | `--max-treesize <SIZE>` | Tree | Max subtree logical size |
 | `--min-tree-allocated <SIZE>` | Tree | Min subtree allocated size |
@@ -167,6 +145,9 @@ See [Sorting §2](sorting.md) for the full list.
 
 ## 5  Output Control
 
+All output options are detailed in the [Output Formats guide](output-formats.md).
+Summary:
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--format <FMT>` | `csv` | Output format: `csv`, `json`, `table`, `custom` |
@@ -178,16 +159,29 @@ See [Sorting §2](sorting.md) for the full list.
 | `--pos <STR>` | `1` | Representation for true/active boolean attributes |
 | `--neg <STR>` | `0` | Representation for false/inactive boolean attributes |
 
-### Available Output Columns
+---
 
-`drive`, `name`, `path`, `pathonly`, `size`, `sizeondisk`, `created`,
-`modified`, `accessed`, `ext`, `type`, `descendants`, `treesize`,
-`treeallocated`, `bulkiness`, `namelength`, `pathlength`, and all 19
-NTFS boolean attribute flags.  Use `--columns all` for everything.
+## 6  Inline Aggregation Flags
+
+These flags run server-side analytics alongside (or instead of) search
+results.  For the `uffs aggregate` subcommand, see §7 below.
+
+| Flag | Effect |
+|------|--------|
+| `--count` | Show total matching count (suppresses rows) |
+| `--facet <FIELD[:TOP]>` | Top-N breakdown by field (e.g. `--facet extension`) |
+| `--stats <FIELD>` | Scalar statistics for a numeric field |
+| `--histogram <FIELD[:INTERVAL]>` | Histogram buckets |
+| `--agg <SPEC>` | Raw aggregation spec (power syntax) |
+| `--rows` | Include matching rows alongside aggregates |
+| `--agg-cursor <CURSOR>` | Continue from a previous page |
+| `--agg-page-size <N>` | Max buckets per page |
+
+> **Full aggregation guide:** [Aggregation](aggregation.md)
 
 ---
 
-## 6  Subcommands
+## 7  Subcommands
 
 ### `uffs index`
 
@@ -209,11 +203,31 @@ uffs info index.parquet
 
 ### `uffs stats`
 
-Show file statistics from an index (e.g. top N largest files).
+Show file statistics.  Without a path, connects to the daemon and
+runs the `overview` aggregate preset.  With a path, loads a parquet
+index file.
 
 ```bash
-uffs stats index.parquet --top 20
+uffs stats                    # Daemon mode (live overview)
+uffs stats index.parquet      # Parquet mode (--top 20 for largest files)
 ```
+
+### `uffs aggregate` (alias: `uffs agg`)
+
+Run server-side analytics on the filesystem index.  Returns aggregate
+results only — no file rows.
+
+```bash
+uffs aggregate overview         # Full filesystem overview
+uffs aggregate by_extension     # Top 50 extensions
+uffs aggregate by_type          # Breakdown by file type
+uffs aggregate by_drive         # Per-drive totals
+uffs aggregate by_size          # Size distribution
+uffs aggregate by_age           # Age distribution
+uffs aggregate count            # Simple total count
+```
+
+> **Full guide:** [Aggregation](aggregation.md)
 
 ### `uffs daemon`
 
@@ -229,9 +243,34 @@ uffs daemon kill                            # Force kill + cleanup
 uffs daemon restart                         # Stop then restart
 ```
 
+> **Full guide:** [Daemon](daemon.md)
+
+### `uffs mcp`
+
+Manage the MCP server for AI agent integration.
+
+```bash
+uffs mcp start                    # Start HTTP server on :8080
+uffs mcp start --port 9090        # Custom port
+uffs mcp status                   # Health + stats
+uffs mcp stop                     # Graceful shutdown
+uffs mcp reload                   # Reload all MCP sessions after binary update
+```
+
+> **Full guide:** [MCP Server](mcp.md)
+
+### `uffs status`
+
+Show combined system status — daemon + MCP HTTP server health in one
+view.
+
+```bash
+uffs status
+```
+
 ---
 
-## 7  Advanced / Diagnostic Flags
+## 8  Advanced / Diagnostic Flags
 
 These flags are for power users, profiling, and parity testing:
 
@@ -241,106 +280,25 @@ These flags are for power users, profiling, and parity testing:
 | `--profile` | Show detailed timing breakdown |
 | `--benchmark` | Skip output; measure only MFT reading + filtering |
 | `--no-bitmap` | Disable MFT bitmap optimisation (read ALL records) |
+| `--no-cache` | Bypass cache; re-read MFT fresh |
 | `--query-mode <MODE>` | Force query path: `auto`, `index`, `dataframe` |
 | `--tz-offset <HOURS>` | Override timezone offset for timestamps |
 | `--parity-compat` | C++ parity-compatible output (25 baseline columns) |
 
+> **Full diagnostics guide:** [Advanced Diagnostics](advanced-diagnostics.md)
+
 ---
 
-## 8  Examples Gallery
+## 9  Examples
 
-These recipes are organized by the workflows people use file search
-tools for most often (see [research report](../mft_search_defaults_report.md)
-§5-6).
+For a comprehensive recipe gallery organized by workflow (quick find,
+cleanup, developer/admin, attribute search, output piping), see
+**[Getting Started §5 — Recipes](getting-started.md#5--recipes)**.
 
-### Quick Find — known-item retrieval
-
-The #1 reason people use file search: "I know roughly what it's called."
+Quick taste:
 
 ```bash
-uffs invoice                                    # Paths containing "invoice"
-uffs '*.pdf'                                    # All PDFs
-uffs 'dir:node_modules'                         # Directories named node_modules
-uffs --contains report                          # Names containing "report"
-uffs 'c:/Users/*.docx'                          # Word docs on C: under Users
-uffs --begins-with IMG --ext pictures           # Photos starting with IMG
-```
-
-### Filter by Type / Date / Size
-
-The next-most-common workflow: "I know what kind of file it is."
-
-```bash
-uffs '*' --ext pictures --min-size 1MB          # Images over 1 MB
-uffs '*' --ext executables --sort size          # Executables ranked by size
-uffs '*' --type code --newer 7d                 # Source code modified this week
-uffs '*' --type video --min-size 100MB          # Large videos
-uffs '*.pdf' --newer 7d --files-only            # Recent PDFs
-uffs '*' --newer-accessed 24h --files-only      # Files opened today
-uffs '*' --month jan,feb --ext documents        # Docs from January & February
-uffs '*' --ext config --in-path '*projects*'    # Config files in project trees
-```
-
-### Triage & Cleanup
-
-Users repeatedly use search tools for storage management.
-
-```bash
-# ── Storage hogs ──────────────────────────────────────────
-uffs '*' --files-only --sort size --limit 20    # Top 20 largest files
-uffs '*' --files-only --min-size 1GB            # Files over 1 GB
-uffs '*' --dirs-only --sort treesize --limit 20 # Biggest directory subtrees
-uffs '*' --files-only --min-bulkiness 500 --sort bulkiness # Wasteful allocations
-
-# ── Stale content ─────────────────────────────────────────
-uffs '*' --ext archives --older 730d            # Archives over 2 years old
-uffs '*' --files-only --older 365d --min-size 100MB # Old large files
-uffs '*.tmp' --older 30d --sort size            # Old temp files
-
-# ── Empty / broken structures ─────────────────────────────
-uffs '*' --dirs-only --max-descendants 0        # Empty directories
-uffs '*' --files-only --max-size 0              # Zero-byte files
-
-# ── Path & name problems ─────────────────────────────────
-uffs '*' --files-only --min-path-length 250 --sort pathlength # MAX_PATH risk
-uffs '*' --files-only --min-name-length 100 --sort namelength # Absurdly long names
-```
-
-### Power Search — hidden / system / attribute files
-
-Finding what the built-in index misses.
-
-```bash
-uffs '*' --attr hidden --files-only             # Hidden files
-uffs '*' --attr hidden,encrypted --files-only   # Hidden + encrypted
-uffs '*' --attr compressed --sort size          # NTFS-compressed files by size
-uffs '*' --attr system --sort sizeondisk        # System files by disk usage
-uffs '*' --sort hidden:desc,name                # Group hidden files first
-uffs '*' --sort compressed:desc,size            # Compressed first, then by size
-```
-
-### Developer / Admin Workflows
-
-```bash
-# ── Regex power ───────────────────────────────────────────
-uffs '>.*\.log$' --newer 24h                    # Logs from last 24h
-uffs '>[0-9]{4}-[0-9]{2}-[0-9]{2}' --ext csv   # Date-stamped CSVs
-uffs '>^[A-Z]{2,4}_[0-9]+' --files-only        # Coded file naming patterns
-
-# ── Project / folder scoping ─────────────────────────────
-uffs '*.rs' --in-path '*projects*'              # Rust files in project dirs
-uffs 'path:*node_modules*package.json'          # package.json in node_modules
-uffs '*.toml' --in-path '*github*'              # Config files in repos
-
-# ── Executables & manifests ───────────────────────────────
-uffs --ext executables --sort size --limit 20   # Largest executables
-uffs '*.json' --contains package --files-only   # Package manifests
-uffs --ext config --newer 7d                    # Recently changed configs
-uffs '*.dll' --attr system --sort sizeondisk    # System DLLs by disk usage
-
-# ── Multi-drive & output ─────────────────────────────────
-uffs '*.exe' --drives C,D,E --sort size --limit 10
-uffs '*.rs' --format json --limit 5             # NDJSON output
-uffs '*.dll' --columns Name,Size,Path Only      # Selective columns
-uffs '*.txt' --out results.csv                  # Write to file
+uffs '*.pdf' --newer 7d --sort size --limit 20
+uffs '*' --dirs-only --max-descendants 0
+uffs '>.*\.log$' --newer 24h
 ```

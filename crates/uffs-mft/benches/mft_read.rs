@@ -11,12 +11,15 @@
 //! uffs_mft bench-all
 //! ```
 
-// Suppress unused crate warnings for dependencies used by the main crate.
+// Suppress unused crate warnings for dependencies used by the main crate
+// but not directly by the benchmark binary.
 use anyhow as _;
 use bitflags as _;
+use bytemuck as _;
 use chrono as _;
 use clap as _;
 use criterion as _;
+use crossbeam_channel as _;
 use dirs_next as _;
 use hostname as _;
 use indicatif as _;
@@ -25,7 +28,9 @@ use rand as _;
 use rand_chacha as _;
 use rayon as _;
 use rustc_hash as _;
+use sha2 as _;
 use smallvec as _;
+use tempfile as _;
 use thiserror as _;
 use tokio as _;
 use tracing as _;
@@ -33,6 +38,8 @@ use tracing_appender as _;
 use tracing_subscriber as _;
 use uffs_mft as _;
 use uffs_polars as _;
+use uffs_security as _;
+use uffs_text as _;
 use zerocopy as _;
 
 #[cfg(feature = "zstd")]

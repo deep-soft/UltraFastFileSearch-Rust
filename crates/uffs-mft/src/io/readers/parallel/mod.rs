@@ -30,6 +30,10 @@ mod tests_chaos;
 pub use tests_chaos::{ChaosMftReader, ChaosStrategy};
 
 /// Timing breakdown for read and parse operations.
+#[expect(
+    clippy::struct_field_names,
+    reason = "_ns suffix documents the unit — removing it loses critical information"
+)]
 pub struct ReadParseTiming {
     /// Time spent in I/O operations (reading chunks from disk).
     /// This is the cumulative time spent in `ReadFile` calls.
@@ -530,6 +534,7 @@ impl ParallelMftReader {
 ///
 /// Precision loss from `u64→f64` is irrelevant for nanosecond counters
 /// (sub-nanosecond precision is meaningless for wall-clock measurements).
+#[expect(clippy::float_arithmetic, reason = "display-only ratio for profiling")]
 fn ratio_f64(numerator: u64, denominator: u64) -> f64 {
     crate::index::u64_to_f64(numerator) / crate::index::u64_to_f64(denominator)
 }

@@ -240,6 +240,38 @@ impl RawMftData {
     }
 }
 
+/// Prepare MFT data for writing — compress if requested and the `zstd`
+/// feature is enabled, otherwise return the original bytes.
+///
+/// Returns `(flags, compressed_size, write_data)`.
+///
+/// # Errors
+///
+/// Returns [`MftError`] if zstd compression fails.
+fn prepare_write_data<'a>(
+    data: &'a [u8],
+    options: &SaveRawOptions,
+) -> Result<(u32, u64, alloc::borrow::Cow<'a, [u8]>)> {
+    use alloc::borrow::Cow;
+
+    #[cfg(feature = "zstd")]
+    if options.compress {
+        let compressed = zstd::encode_all(data, options.compression_level)
+            .map_err(|err| MftError::Io(std::io::Error::other(err)))?;
+        let compressed_size = compressed.len() as u64;
+        return Ok((FLAG_COMPRESSED, compressed_size, Cow::Owned(compressed)));
+    }
+
+    #[cfg(not(feature = "zstd"))]
+    if options.compress {
+        return Err(MftError::InvalidData(
+            "zstd feature not enabled for compression".into(),
+        ));
+    }
+
+    Ok((0_u32, 0_u64, Cow::Borrowed(data)))
+}
+
 /// Saves raw MFT bytes to a file.
 ///
 /// This function writes the complete MFT data to a file that can be
@@ -270,28 +302,7 @@ pub fn save_raw_mft<P: AsRef<Path>>(
     let record_count = original_size / u64::from(record_size);
 
     // Prepare data (compress if requested)
-    #[allow(unused_mut)] // mutated only when zstd feature is enabled
-    let mut flags = 0_u32;
-    #[allow(unused_mut)] // mutated only when zstd feature is enabled
-    let mut compressed_size = 0_u64;
-
-    #[cfg(feature = "zstd")]
-    let write_data: Vec<u8> = if options.compress {
-        let compressed = zstd::encode_all(data, options.compression_level)
-            .map_err(|err| MftError::Io(std::io::Error::other(err)))?;
-        flags |= FLAG_COMPRESSED;
-        compressed_size = compressed.len() as u64;
-        compressed
-    } else {
-        data.to_vec()
-    };
-
-    #[cfg(not(feature = "zstd"))]
-    if options.compress {
-        return Err(MftError::InvalidData(
-            "zstd feature not enabled for compression".into(),
-        ));
-    }
+    let (flags, compressed_size, write_data) = prepare_write_data(data, options)?;
 
     // Create header
     let header = RawMftHeader {
@@ -309,10 +320,7 @@ pub fn save_raw_mft<P: AsRef<Path>>(
     let mut writer = BufWriter::new(file);
 
     writer.write_all(&header.to_bytes())?;
-    #[cfg(feature = "zstd")]
     writer.write_all(&write_data)?;
-    #[cfg(not(feature = "zstd"))]
-    writer.write_all(data)?;
     writer.flush()?;
 
     Ok(header)
@@ -395,7 +403,7 @@ pub fn load_raw_mft<P: AsRef<Path>>(path: P, options: &LoadRawOptions) -> Result
         let data = if header.is_compressed() {
             #[cfg(feature = "zstd")]
             {
-                zstd::decode_all(&compressed_data[..])
+                zstd::decode_all(&*compressed_data)
                     .map_err(|err| MftError::Io(std::io::Error::other(err)))?
             }
             #[cfg(not(feature = "zstd"))]
@@ -481,6 +489,10 @@ pub fn load_raw_mft<P: AsRef<Path>>(path: P, options: &LoadRawOptions) -> Result
 /// IOCP captures store chunks in completion order (non-deterministic).
 /// This function reassembles them in FRS order for compatibility with
 /// standard MFT processing pipelines.
+///
+/// # Errors
+///
+/// Returns [`MftError`] if the capture file cannot be loaded or reassembled.
 fn load_iocp_as_raw_mft<P: AsRef<Path>>(path: P, options: &LoadRawOptions) -> Result<RawMftData> {
     use crate::raw_iocp::load_iocp_capture;
 
@@ -545,7 +557,9 @@ fn load_iocp_as_raw_mft<P: AsRef<Path>>(path: P, options: &LoadRawOptions) -> Re
         }
 
         // Copy chunk data to correct position
-        data[start_offset..end_offset].copy_from_slice(chunk_data);
+        if let Some(dest) = data.get_mut(start_offset..end_offset) {
+            dest.copy_from_slice(chunk_data);
+        }
     }
 
     Ok(RawMftData { header, data })

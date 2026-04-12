@@ -126,12 +126,6 @@ pub fn apply_directory_treesize(df: &DataFrame) -> Result<DataFrame> {
 
 #[cfg(test)]
 #[expect(
-    clippy::unwrap_used,
-    reason = "test code uses unwrap on controlled data"
-)]
-#[expect(clippy::print_stdout, reason = "benchmark test outputs timing info")]
-#[expect(clippy::use_debug, reason = "benchmark test outputs debug info")]
-#[expect(
     clippy::shadow_unrelated,
     reason = "test variables reused across sections"
 )]

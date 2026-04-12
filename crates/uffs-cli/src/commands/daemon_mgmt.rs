@@ -8,7 +8,7 @@ use uffs_client::protocol::DaemonStatus;
 use crate::args::DaemonAction;
 
 /// Execute a daemon management action.
-pub async fn daemon(action: &DaemonAction) -> Result<()> {
+pub(crate) async fn daemon(action: &DaemonAction) -> Result<()> {
     match action {
         DaemonAction::Start {
             mft_file,

@@ -21,7 +21,7 @@ use super::format_size;
 /// # Errors
 ///
 /// Returns an error if the index cannot be loaded or I/O fails.
-pub async fn stats(path: Option<&Path>, top: u32) -> Result<()> {
+pub(crate) async fn stats(path: Option<&Path>, top: u32) -> Result<()> {
     match path {
         None => {
             anyhow::bail!("stats without a path should be routed through search path in main.rs")

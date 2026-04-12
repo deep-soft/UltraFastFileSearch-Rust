@@ -9,7 +9,10 @@ use super::{
 
 impl FieldId {
     /// Returns the metadata descriptor for this field variant.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustive field metadata match — one arm per FieldId variant"
+    )]
     #[must_use]
     pub const fn metadata(self) -> FieldMeta {
         match self {

@@ -149,10 +149,6 @@ impl FullRecordReader {
     }
 
     /// Parse the extra fields from a raw record buffer.
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "version-conditional field reads mirror deserialize.rs"
-    )]
     fn parse_extra_fields(&self, buf: &[u8]) -> Option<ExtraRecordFields> {
         let mut pos = 0;
 

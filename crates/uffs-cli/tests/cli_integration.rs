@@ -1,9 +1,8 @@
 //! Integration tests for the `uffs` CLI binary.
 
-#![allow(
-    clippy::expect_used,
-    clippy::missing_docs_in_private_items,
-    unused_crate_dependencies
+#![expect(
+    unused_crate_dependencies,
+    reason = "integration test — relaxed linting for test clarity"
 )]
 
 #[cfg(test)]

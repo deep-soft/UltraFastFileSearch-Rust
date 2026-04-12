@@ -251,13 +251,13 @@ mod tests {
     #[test]
     fn test_empty_pattern_error() {
         let result = ParsedPattern::parse("");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
     fn test_whitespace_only_error() {
         let result = ParsedPattern::parse("   ");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]

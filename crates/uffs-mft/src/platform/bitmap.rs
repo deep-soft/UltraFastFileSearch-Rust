@@ -35,21 +35,23 @@ impl MftBitmap {
     /// Checks if a specific record is in use.
     #[must_use]
     pub fn is_record_in_use(&self, frs: u64) -> bool {
-        let Ok(frs) = usize::try_from(frs) else {
+        let Ok(frs_idx) = usize::try_from(frs) else {
             return false;
         };
-        if frs >= self.record_count {
+        if frs_idx >= self.record_count {
             return false;
         }
 
-        let byte_index = frs / 8;
-        let bit_index = frs % 8;
+        let byte_index = frs_idx / 8;
+        let bit_index = frs_idx % 8;
 
         if byte_index >= self.data.len() {
             return false;
         }
 
-        (self.data[byte_index] & (1 << bit_index)) != 0
+        self.data
+            .get(byte_index)
+            .is_some_and(|&byte| (byte & (1 << bit_index)) != 0)
     }
 
     /// Returns the number of records marked as in use.
@@ -93,13 +95,9 @@ impl MftBitmap {
     /// Returns an iterator over the FRS numbers of records that are in use.
     pub fn in_use_records(&self) -> impl Iterator<Item = u64> + '_ {
         self.data.iter().enumerate().flat_map(|(byte_idx, &byte)| {
-            (0..8).filter_map(move |bit_idx| {
-                if (byte & (1 << bit_idx)) != 0 {
-                    Some((byte_idx * 8 + bit_idx) as u64)
-                } else {
-                    None
-                }
-            })
+            (0..8)
+                .filter(move |&bit_idx| (byte & (1 << bit_idx)) != 0)
+                .map(move |bit_idx| (byte_idx * 8 + bit_idx) as u64)
         })
     }
 
@@ -119,7 +117,11 @@ impl MftBitmap {
             let byte_index = frs / 8;
             let bit_index = frs % 8;
 
-            if byte_index < self.data.len() && (self.data[byte_index] & (1 << bit_index)) != 0 {
+            if self
+                .data
+                .get(byte_index)
+                .is_some_and(|&byte| (byte & (1 << bit_index)) != 0)
+            {
                 result.push(frs as u64);
             }
         }
@@ -170,7 +172,10 @@ impl MftBitmap {
         let end_byte = end.div_ceil(8);
 
         for byte_idx in start_byte..end_byte.min(self.data.len()) {
-            let byte = self.data[byte_idx];
+            // byte_idx bounded by `end_byte.min(self.data.len())` above
+            let Some(&byte) = self.data.get(byte_idx) else {
+                continue;
+            };
 
             let mask = if byte_idx == start_byte && !start.is_multiple_of(8) {
                 0xFF_u8 << (start % 8)

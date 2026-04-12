@@ -344,10 +344,6 @@ fn init_daemon_backend(app: &mut App, spawn_args: Vec<String>, no_local_data: bo
     }
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "TUI main loop with input handling, rendering, and state machine"
-)]
 fn main() -> Result<()> {
     // Check for -v/--verbose flag early
     let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");

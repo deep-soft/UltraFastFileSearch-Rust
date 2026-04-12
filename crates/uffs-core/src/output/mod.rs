@@ -50,12 +50,4 @@ pub fn add_descendants_column(df: &DataFrame) -> Result<DataFrame> {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    reason = "test code uses unwrap on controlled data"
-)]
-#[expect(
-    clippy::expect_used,
-    reason = "test code uses expect on controlled data"
-)]
 mod tests;

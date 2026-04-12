@@ -427,8 +427,4 @@ pub struct ExtensionIndexStats {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    reason = "test code uses unwrap on controlled data"
-)]
 mod tests;

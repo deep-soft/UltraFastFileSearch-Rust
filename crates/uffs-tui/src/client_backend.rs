@@ -14,7 +14,7 @@ use uffs_core::search::backend::DisplayRow;
 /// Synchronous wrapper around [`UffsClient`] for TUI use.
 ///
 /// Owns a private tokio `Runtime` that powers the async IPC calls.
-pub struct DaemonBackend {
+pub(crate) struct DaemonBackend {
     /// Tokio runtime dedicated to IPC calls.
     rt: tokio::runtime::Runtime,
     /// Connected client (lazily established on first call).
@@ -37,8 +37,7 @@ impl DaemonBackend {
     /// Panics if the tokio runtime cannot be created (system resource
     /// exhaustion).
     #[must_use]
-    #[expect(clippy::single_call_fn, reason = "constructor called once from main")]
-    pub fn new(spawn_args: Vec<String>) -> Self {
+    pub(crate) fn new(spawn_args: Vec<String>) -> Self {
         #[expect(
             clippy::expect_used,
             reason = "tokio runtime creation at TUI startup; failure is unrecoverable"
@@ -60,7 +59,7 @@ impl DaemonBackend {
     /// Blocks until the daemon is connected **and** has finished loading
     /// its indices (up to 2 minutes).  Safe to call multiple times —
     /// reconnects if the previous connection was lost.
-    pub fn connect(&mut self) -> Result<(), String> {
+    pub(crate) fn connect(&mut self) -> Result<(), String> {
         let result = self
             .rt
             .block_on(UffsClient::connect_with_args(&self.spawn_args));
@@ -82,7 +81,7 @@ impl DaemonBackend {
 
     /// Query the daemon's current status.
     #[expect(dead_code, reason = "will be wired into TUI status bar in a follow-up")]
-    pub fn status(&mut self) -> Result<StatusResponse, String> {
+    pub(crate) fn status(&mut self) -> Result<StatusResponse, String> {
         self.ensure_connected()?;
         let client = self
             .client
@@ -94,7 +93,7 @@ impl DaemonBackend {
     }
 
     /// Send a search to the daemon and return `DisplayRow`s.
-    pub fn search(&mut self, params: &SearchParams) -> Result<DaemonSearchResult, String> {
+    pub(crate) fn search(&mut self, params: &SearchParams) -> Result<DaemonSearchResult, String> {
         self.ensure_connected()?;
         let client = self
             .client
@@ -136,7 +135,7 @@ impl DaemonBackend {
     }
 
     /// Set session type to TUI (gives longer idle timeout).
-    pub fn set_session_tui(&mut self) {
+    pub(crate) fn set_session_tui(&mut self) {
         if self.ensure_connected().is_ok()
             && let Some(client) = self.client.as_mut()
         {
@@ -155,7 +154,7 @@ impl DaemonBackend {
 
 /// Result from a daemon search — mirrors the information in
 /// `SearchResponse` but carries `DisplayRow` instead of `SearchRow`.
-pub struct DaemonSearchResult {
+pub(crate) struct DaemonSearchResult {
     /// Matched rows.
     pub rows: Vec<DisplayRow>,
     /// Search duration on the daemon side (milliseconds).

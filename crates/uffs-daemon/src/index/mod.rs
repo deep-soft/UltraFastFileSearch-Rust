@@ -44,7 +44,7 @@ struct StoredDriveTiming {
 /// (load, refresh, remove) swap the `Arc` pointer under a write lock
 /// (< 1 μs).  In-flight queries keep the old snapshot alive until they
 /// finish.
-pub struct IndexManager {
+pub(crate) struct IndexManager {
     /// Shared index snapshot: read lock to clone Arc (< 1 μs), write lock
     /// only during load/refresh/remove (pointer swap, < 1 μs).
     index: RwLock<Arc<DriveIndex>>,
@@ -74,8 +74,7 @@ pub struct IndexManager {
 impl IndexManager {
     /// Create a new empty index manager.
     #[must_use]
-    #[expect(clippy::single_call_fn, reason = "constructor — structural separation")]
-    pub fn new(data_dir: Option<PathBuf>, events: EventSender) -> Self {
+    pub(crate) fn new(data_dir: Option<PathBuf>, events: EventSender) -> Self {
         let cpus = std::thread::available_parallelism().map_or(4, core::num::NonZeroUsize::get);
         Self {
             index: RwLock::new(Arc::new(DriveIndex::new())),
@@ -95,7 +94,7 @@ impl IndexManager {
     }
 
     /// Get a reference to the event sender (for IPC and lifecycle integration).
-    pub const fn event_sender(&self) -> &EventSender {
+    pub(crate) const fn event_sender(&self) -> &EventSender {
         &self.events
     }
 
@@ -103,11 +102,11 @@ impl IndexManager {
     ///
     /// Each MFT file is loaded on its own blocking thread via `JoinSet`.
     /// Results are collected as they complete (fastest first).
-    #[allow(
+    #[expect(
         clippy::cognitive_complexity,
         reason = "parallel drive loader with status tracking, error handling, and sorting"
     )]
-    pub async fn load_from_data_dir(&self, mft_files: &[PathBuf], no_cache: bool) {
+    pub(crate) async fn load_from_data_dir(&self, mft_files: &[PathBuf], no_cache: bool) {
         let total = mft_files.len();
         *self.status.write().await = DaemonStatus::Loading {
             drives_loaded: 0,
@@ -402,7 +401,7 @@ impl IndexManager {
         clippy::default_numeric_fallback,
         reason = "stats are approximate; f64 arithmetic needed for averages"
     )]
-    pub async fn stats(&self) -> StatsResponse {
+    pub(crate) async fn stats(&self) -> StatsResponse {
         let total_queries = self.queries_total.load(Ordering::Relaxed);
         let total_us = self.queries_total_us.load(Ordering::Relaxed);
         let startup_us = self.startup_duration_us.load(Ordering::Relaxed);
@@ -434,7 +433,7 @@ impl IndexManager {
     /// Get current daemon status.
     ///
     /// Includes `has_drives` and `total_records` for completeness.
-    pub async fn status(&self, connections: usize) -> StatusResponse {
+    pub(crate) async fn status(&self, connections: usize) -> StatusResponse {
         let status = self.status.read().await;
         let loaded = self.has_drives().await;
         let records = self.total_records().await;
@@ -452,11 +451,11 @@ impl IndexManager {
     }
 
     /// Refresh specific drives (or all if empty).
-    #[allow(
+    #[expect(
         clippy::cognitive_complexity,
         reason = "refresh orchestration with per-drive reload and status updates"
     )]
-    pub async fn refresh(&self, drives: &[char]) {
+    pub(crate) async fn refresh(&self, drives: &[char]) {
         let drives_to_refresh: Vec<char> = if drives.is_empty() {
             let snap = self.snapshot().await;
             snap.drives.iter().map(|dr| dr.letter).collect()
@@ -550,7 +549,7 @@ impl IndexManager {
     ///
     /// Walks the `children` index top-down in `O(path_depth)` instead of
     /// scanning all records with full path resolution.
-    pub async fn info(&self, file_path: &str) -> uffs_client::protocol::InfoResponse {
+    pub(crate) async fn info(&self, file_path: &str) -> uffs_client::protocol::InfoResponse {
         let snap = self.snapshot().await;
 
         let found_record = Self::info_tree_lookup(&snap, file_path);
@@ -701,24 +700,24 @@ impl IndexManager {
 
     /// Get the configured data directory, if any.
     #[must_use]
-    pub fn data_dir(&self) -> Option<&std::path::Path> {
+    pub(crate) fn data_dir(&self) -> Option<&std::path::Path> {
         self.data_dir.as_deref()
     }
 
     /// Check if the daemon has any loaded drives.
-    pub async fn has_drives(&self) -> bool {
+    pub(crate) async fn has_drives(&self) -> bool {
         let guard = self.index.read().await;
         !guard.drives.is_empty()
     }
 
     /// Total records across all drives.
-    pub async fn total_records(&self) -> usize {
+    pub(crate) async fn total_records(&self) -> usize {
         let guard = self.index.read().await;
         guard.total_records()
     }
 
     /// Return the set of currently loaded drive letters.
-    pub async fn loaded_drive_letters(&self) -> Vec<char> {
+    pub(crate) async fn loaded_drive_letters(&self) -> Vec<char> {
         let snap = self.snapshot().await;
         snap.drives.iter().map(|dr| dr.letter).collect()
     }
@@ -726,11 +725,11 @@ impl IndexManager {
     /// Hot-load a single MFT file if its drive letter is not already loaded.
     ///
     /// Returns `Ok(Some(letter))` if loaded, `Ok(None)` if already present.
-    #[allow(
+    #[expect(
         clippy::cognitive_complexity,
         reason = "single-file loader with format detection, index build, and cache write"
     )]
-    pub async fn load_single_mft_file(
+    pub(crate) async fn load_single_mft_file(
         &self,
         mft_path: &std::path::Path,
         no_cache: bool,
@@ -811,7 +810,7 @@ impl IndexManager {
     ///
     /// Returns `Ok(true)` if the drive was discovered and loaded,
     /// `Ok(false)` if no MFT file was found for it, or an error.
-    pub async fn discover_and_load_drive(
+    pub(crate) async fn discover_and_load_drive(
         &self,
         drive_letter: char,
         no_cache: bool,
@@ -852,11 +851,7 @@ impl IndexManager {
     ///
     /// Returns a list of drive letters that could NOT be loaded (no data
     /// source found).
-    #[allow(
-        clippy::cognitive_complexity,
-        reason = "drive discovery with live/cached/file fallback and parallel loading"
-    )]
-    pub async fn ensure_drives_loaded(&self, drives: &[char], no_cache: bool) -> Vec<char> {
+    pub(crate) async fn ensure_drives_loaded(&self, drives: &[char], no_cache: bool) -> Vec<char> {
         if drives.is_empty() {
             return Vec::new();
         }

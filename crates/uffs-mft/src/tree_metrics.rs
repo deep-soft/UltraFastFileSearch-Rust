@@ -169,6 +169,31 @@ struct Agg {
     treesize: u32,
 }
 
+/// Immutable snapshot of a record's fields needed by `preprocess`.
+/// Avoids holding a `&self.index.records` borrow across recursive calls.
+struct PreprocessSnapshot {
+    /// Whether this record is a directory.
+    is_directory: bool,
+    /// First child entry index (or `NO_ENTRY`).
+    first_child: u32,
+    /// Next entry in the user-visible stream chain.
+    first_stream_next: u32,
+    /// First internal stream entry.
+    first_internal_stream: u32,
+    /// Total stream count (user + internal).
+    total_stream_count: u16,
+    /// Default stream logical size.
+    first_len: u64,
+    /// Default stream allocated size.
+    first_alloc: u64,
+    /// Reparse tag (for `WoF` detection).
+    reparse_tag: u32,
+    /// Aggregate internal streams logical size (cache-loaded fallback).
+    internal_streams_size: u64,
+    /// Aggregate internal streams allocated size (cache-loaded fallback).
+    internal_streams_allocated: u64,
+}
+
 /// Traversal state for computing tree metrics.
 struct TreeTraversal<'a> {
     /// Mutable reference to the `MftIndex` being processed.
@@ -196,31 +221,10 @@ struct TreeTraversal<'a> {
 impl TreeTraversal<'_> {
     /// Runs the tree traversal starting from ROOT, then sweeps orphans.
     fn run(&mut self) {
-        // Canonical NTFS root directory record number.
-        const ROOT_FRS: u64 = 5;
-
         tracing::debug!("[TRIP] TreeTraversal::run ENTER");
 
-        // Primary traversal from ROOT (if present).
-        if let Some(root_idx) = self.index.frs_to_idx_opt(ROOT_FRS) {
-            tracing::debug!(
-                root_idx,
-                "[TRIP] TreeTraversal::run -> starting from ROOT (FRS=5)"
-            );
-            // Root has a single visible path entry in output context.
-            let _: Agg = self.preprocess(root_idx, 0, 1);
-            tracing::debug!("[TRIP] TreeTraversal::run -> ROOT traversal done");
-        } else if self.debug {
-            tracing::warn!(
-                "[tree_metrics] WARNING: ROOT_FRS=5 not present in frs_to_idx; running orphan sweep only"
-            );
-        }
+        self.traverse_from_root();
 
-        // Fix 5: Orphan sweep is skipped in parity mode (skip_orphans=true).
-        // For parity with Win32 enumeration, only records reachable from ROOT
-        // via Win32-visible FILE_NAME edges should be included in tree aggregation.
-        // Orphans without Win32 paths would inflate root Size/Descendants without
-        // producing printable rows.
         if self.skip_orphans {
             let orphan_count = self.seen.iter().filter(|&&seen| !seen).count();
             tracing::debug!(
@@ -230,10 +234,27 @@ impl TreeTraversal<'_> {
             return;
         }
 
-        // Orphan sweep: ensure every record has its printed tree metrics initialized.
-        // This prevents LIVE scans from leaving some directories with Size/Desc = 0
-        // due to transient linkage gaps.
-        tracing::debug!("[TRIP] TreeTraversal::run -> starting orphan sweep");
+        self.sweep_orphans();
+    }
+
+    /// Start DFS from the NTFS root directory (FRS 5).
+    fn traverse_from_root(&mut self) {
+        const ROOT_FRS: u64 = 5;
+
+        if let Some(root_idx) = self.index.frs_to_idx_opt(ROOT_FRS) {
+            tracing::debug!(root_idx, "[TRIP] starting from ROOT (FRS=5)");
+            let _: Agg = self.preprocess(root_idx, 0, 1);
+            tracing::debug!("[TRIP] ROOT traversal done");
+        } else if self.debug {
+            tracing::warn!(
+                "[tree_metrics] ROOT_FRS=5 not present in frs_to_idx; running orphan sweep only"
+            );
+        }
+    }
+
+    /// Visit every unseen record to initialize its printed tree metrics.
+    fn sweep_orphans(&mut self) {
+        tracing::debug!("[TRIP] starting orphan sweep");
         let mut orphan_count = 0_usize;
         for idx in 0..self.index.records.len() {
             if !self.seen[idx] {
@@ -241,10 +262,7 @@ impl TreeTraversal<'_> {
                 let _: Agg = self.preprocess(idx, 0, 1);
             }
         }
-        tracing::debug!(
-            orphan_count,
-            "[TRIP] TreeTraversal::run EXIT (orphan sweep done)"
-        );
+        tracing::debug!(orphan_count, "[TRIP] orphan sweep done");
     }
 
     /// Finds the `WofCompressedData` stream in the named-stream chain.
@@ -256,7 +274,7 @@ impl TreeTraversal<'_> {
         let mut idx = first_stream_next;
         while idx != NO_ENTRY {
             let stream = &self.index.streams[idx as usize];
-            if self.index.get_name(&stream.name) == WOF_NAME {
+            if self.index.get_name(stream.name) == WOF_NAME {
                 return idx;
             }
             idx = stream.next_entry;
@@ -368,141 +386,139 @@ impl TreeTraversal<'_> {
         let total_names = total_names_raw.max(1);
 
         // Snapshot only the fields we need (avoid cloning the whole `FileRecord`).
-        let (
-            is_directory,
-            first_child,
-            first_stream_next,
-            first_internal_stream,
-            total_stream_count,
-            first_len,
-            mut first_alloc,
-            reparse_tag,
-            internal_streams_size,
-            internal_streams_allocated,
-        ) = {
-            let rec = &self.index.records[record_idx];
-            (
-                rec.stdinfo.is_directory(),
-                rec.first_child,
-                rec.first_stream.next_entry,
-                rec.first_internal_stream,
-                rec.total_stream_count,
-                rec.first_stream.size.length,
-                rec.first_stream.size.allocated,
-                rec.reparse_tag,
-                rec.internal_streams_size,
-                rec.internal_streams_allocated,
-            )
-        };
+        let snap = self.snapshot_record(record_idx);
 
         // WoF (Windows Overlay Filter) compression merging.
-        // C++ merges WofCompressedData's allocated into the default stream
-        // (ntfs_index_load.hpp L686-695), then excludes it from propagation.
+        let mut first_alloc = snap.first_alloc;
         let wof_stream_idx;
-        (wof_stream_idx, first_alloc) =
-            self.merge_wof_alloc(record_idx, reparse_tag, first_stream_next, first_alloc);
+        (wof_stream_idx, first_alloc) = self.merge_wof_alloc(
+            record_idx,
+            snap.reparse_tag,
+            snap.first_stream_next,
+            first_alloc,
+        );
 
-        // 1) Aggregate children (Channel A outputs from children).
-        let mut children = Agg::default();
-        if is_directory {
-            self.depth = self.depth.saturating_add(1);
+        // 1) Aggregate children (Channel A).
+        let children = if snap.is_directory {
+            self.aggregate_children(snap.first_child)
+        } else {
+            Agg::default()
+        };
 
-            let mut child_entry_idx = first_child;
-            while child_entry_idx != NO_ENTRY {
-                // Extract fields from child_entry before calling preprocess (borrow checker).
-                let (child_frs, child_name_idx, next_child_entry) = {
-                    let ce = &self.index.children[child_entry_idx as usize];
-                    (ce.child_frs, ce.name_index, ce.next_entry)
-                };
-
-                // Resolve child record index from child FRS.
-                if let Some(child_idx) = self.index.frs_to_idx_opt(child_frs) {
-                    // Determine which hardlink name of the child this directory entry refers to.
-                    // Use the checked helper function to compute name_info from name_index.
-                    // This logs when clamping occurs (parity risk indicator).
-                    let child_total_names = u32::from(self.index.records[child_idx].name_count);
-                    let child_name_info = compute_name_info_checked(
-                        u32::from(child_name_idx),
-                        child_total_names,
-                        child_frs,
-                        self.debug,
-                    );
-
-                    let child_agg =
-                        self.preprocess(child_idx, child_name_info, child_total_names.max(1));
-
-                    children.length = children.length.saturating_add(child_agg.length);
-                    children.allocated = children.allocated.saturating_add(child_agg.allocated);
-                    children.treesize = children.treesize.saturating_add(child_agg.treesize);
-                }
-
-                child_entry_idx = next_child_entry;
-            }
-
-            self.depth = self.depth.saturating_sub(1);
-
-            // C++ parity (ntfs_index_load.hpp L592-596): at depth 0 (root
-            // directory) add reserved NTFS clusters to the children's allocated
-            // total.  This accounts for MFT-zone and TotalReserved space that is
-            // allocated but not attributed to any individual file.
-            if self.depth == 0 && self.reserved_allocated_bytes > 0 {
-                children.allocated = children
-                    .allocated
-                    .saturating_add(self.reserved_allocated_bytes);
-            }
-        }
-
-        // 2) Own streams (Channel A): default stream + ADS + internal streams,
-        //    delta-distributed.
-        let snap = RecordSnapshot {
-            first_len,
+        // 2) Own streams (Channel A): default + ADS + internal, delta-distributed.
+        let own_snap = RecordSnapshot {
+            first_len: snap.first_len,
             first_alloc,
             name_info,
             total_names,
-            first_internal_stream,
-            internal_streams_size,
-            internal_streams_allocated,
-            first_stream_next,
+            first_internal_stream: snap.first_internal_stream,
+            internal_streams_size: snap.internal_streams_size,
+            internal_streams_allocated: snap.internal_streams_allocated,
+            first_stream_next: snap.first_stream_next,
             wof_stream_idx,
         };
-        let (own_len, own_alloc) = self.accumulate_own_streams(&snap);
+        let (own_len, own_alloc) = self.accumulate_own_streams(&own_snap);
 
-        // Stream count contribution (Channel A): counts ALL streams on the record (incl
-        // internal).
-        let own_stream_count: u32 = u32::from(total_stream_count.max(1));
+        let own_stream_count: u32 = u32::from(snap.total_stream_count.max(1));
 
-        // Channel-A aggregate returned to parent.
         let result = Agg {
             length: children.length.saturating_add(own_len),
             allocated: children.allocated.saturating_add(own_alloc),
             treesize: children.treesize.saturating_add(own_stream_count),
         };
 
-        // 3) Store printed metrics (Channel B) into the record fields.
-        // These values are what show up in the scan output / parity checks.
-        {
-            let rec = &mut self.index.records[record_idx];
-
-            if is_directory {
-                // Printed descendants:
-                //   - Use children Channel-A stream-count + 1 (directory itself).
-                rec.descendants = children.treesize.saturating_add(1);
-
-                // Reference parity: The printed treesize for a directory is:
-                //   default_stream.length + children.length
-                // Only the default stream gets children sizes added.
-                // Non-default streams (ADS) keep their original length.
-                rec.treesize = children.length.saturating_add(first_len);
-                rec.tree_allocated = children.allocated.saturating_add(first_alloc);
-            } else {
-                // Files print 0 descendants, and size == default stream only.
-                rec.descendants = 0;
-                rec.treesize = first_len;
-                rec.tree_allocated = first_alloc;
-            }
-        }
+        // 3) Store printed metrics (Channel B).
+        self.store_printed_metrics(
+            record_idx,
+            snap.is_directory,
+            &children,
+            snap.first_len,
+            first_alloc,
+        );
 
         result
+    }
+
+    /// Snapshot immutable fields from a record to avoid holding a borrow across
+    /// recursive calls.
+    fn snapshot_record(&self, idx: usize) -> PreprocessSnapshot {
+        let rec = &self.index.records[idx];
+        PreprocessSnapshot {
+            is_directory: rec.stdinfo.is_directory(),
+            first_child: rec.first_child,
+            first_stream_next: rec.first_stream.next_entry,
+            first_internal_stream: rec.first_internal_stream,
+            total_stream_count: rec.total_stream_count,
+            first_len: rec.first_stream.size.length,
+            first_alloc: rec.first_stream.size.allocated,
+            reparse_tag: rec.reparse_tag,
+            internal_streams_size: rec.internal_streams_size,
+            internal_streams_allocated: rec.internal_streams_allocated,
+        }
+    }
+
+    /// Walk the child chain and recursively preprocess each child, returning
+    /// the aggregated Channel-A metrics.
+    fn aggregate_children(&mut self, first_child: u32) -> Agg {
+        self.depth = self.depth.saturating_add(1);
+
+        let mut agg = Agg::default();
+        let mut child_entry_idx = first_child;
+
+        while child_entry_idx != NO_ENTRY {
+            let (child_frs, child_name_idx, next_entry) = {
+                let ce = &self.index.children[child_entry_idx as usize];
+                (ce.child_frs, ce.name_index, ce.next_entry)
+            };
+
+            if let Some(child_idx) = self.index.frs_to_idx_opt(child_frs) {
+                let child_total_names = u32::from(self.index.records[child_idx].name_count);
+                let child_name_info = compute_name_info_checked(
+                    u32::from(child_name_idx),
+                    child_total_names,
+                    child_frs,
+                    self.debug,
+                );
+
+                let child_agg =
+                    self.preprocess(child_idx, child_name_info, child_total_names.max(1));
+                agg.length = agg.length.saturating_add(child_agg.length);
+                agg.allocated = agg.allocated.saturating_add(child_agg.allocated);
+                agg.treesize = agg.treesize.saturating_add(child_agg.treesize);
+            }
+
+            child_entry_idx = next_entry;
+        }
+
+        self.depth = self.depth.saturating_sub(1);
+
+        // C++ parity: at depth 0 (root) add reserved NTFS cluster allocation.
+        if self.depth == 0 && self.reserved_allocated_bytes > 0 {
+            agg.allocated = agg.allocated.saturating_add(self.reserved_allocated_bytes);
+        }
+
+        agg
+    }
+
+    /// Store the final "printed" metrics into the record (Channel B output).
+    fn store_printed_metrics(
+        &mut self,
+        record_idx: usize,
+        is_directory: bool,
+        children: &Agg,
+        first_len: u64,
+        first_alloc: u64,
+    ) {
+        let rec = &mut self.index.records[record_idx];
+        if is_directory {
+            rec.descendants = children.treesize.saturating_add(1);
+            rec.treesize = children.length.saturating_add(first_len);
+            rec.tree_allocated = children.allocated.saturating_add(first_alloc);
+        } else {
+            rec.descendants = 0;
+            rec.treesize = first_len;
+            rec.tree_allocated = first_alloc;
+        }
     }
 }
 
@@ -536,10 +552,14 @@ pub fn compute_tree_metrics(index: &mut MftIndex, debug: bool, skip_orphans: boo
     traversal.run();
     tracing::debug!("[TRIP] tree_metrics::compute_tree_metrics -> traversal.run() done");
 
-    // Diagnostic: every directory should have descendants >= 1 after tree
-    // metrics computation. If we find a directory with descendants == 0, it
-    // means the record was never stamped (traversal bug).
-    // NOTE: This runs in RELEASE mode too for diagnosing LIVE scan issues.
+    warn_unstamped_directories(index);
+    tracing::debug!("[TRIP] tree_metrics::compute_tree_metrics EXIT");
+}
+
+/// Diagnostic: every directory should have `descendants >= 1` after tree
+/// metrics. A zero value means traversal never stamped it.
+/// Runs in release mode to aid live-scan diagnosis.
+fn warn_unstamped_directories(index: &MftIndex) {
     for (idx, rec) in index.records.iter().enumerate() {
         if rec.stdinfo.is_directory() && rec.descendants == 0 {
             tracing::warn!(
@@ -553,7 +573,6 @@ pub fn compute_tree_metrics(index: &mut MftIndex, debug: bool, skip_orphans: boo
             );
         }
     }
-    tracing::debug!("[TRIP] tree_metrics::compute_tree_metrics EXIT");
 }
 
 #[cfg(test)]

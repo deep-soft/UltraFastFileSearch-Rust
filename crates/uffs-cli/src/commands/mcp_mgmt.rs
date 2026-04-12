@@ -13,7 +13,7 @@ use uffs_client::connect::UffsClient;
 use crate::args::McpAction;
 
 /// Execute an MCP management action.
-pub async fn mcp(action: &McpAction) -> Result<()> {
+pub(crate) async fn mcp(action: &McpAction) -> Result<()> {
     match action {
         McpAction::Start {
             mft_file,
@@ -733,10 +733,6 @@ fn parse_ps_etime(etime: &str) -> core::time::Duration {
 ///
 /// No arguments needed — config is inferred from running processes.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "multi-component reload with daemon + gateway branches"
-)]
 async fn mcp_reload() -> Result<()> {
     use uffs_client::connect::{UffsClient, pid_file_path, socket_path};
 

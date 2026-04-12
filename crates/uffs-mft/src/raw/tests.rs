@@ -37,7 +37,7 @@ fn test_header_invalid_magic() {
     bytes[0..8].copy_from_slice(b"INVALID!");
 
     let result = RawMftHeader::from_bytes(&bytes);
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[test]

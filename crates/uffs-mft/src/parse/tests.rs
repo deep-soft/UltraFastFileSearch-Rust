@@ -309,7 +309,7 @@ fn test_parse_record_forensic_reads_unaligned_record_slice() {
     let mut storage = vec![0_u8; record.len() + 1];
     storage[1..].copy_from_slice(&record);
 
-    let result = parse_record_forensic(&storage[1..], 5, &ParseOptions::FORENSIC, false);
+    let result = parse_record_forensic(&storage[1..], 5, ParseOptions::FORENSIC, false);
     assert!(matches!(&result, ParseResult::Base(_)));
 
     if let ParseResult::Base(parsed_record) = result {
@@ -336,7 +336,7 @@ fn test_parse_record_forensic_reads_unaligned_extension_record_slice() {
     storage[1..].copy_from_slice(&record);
 
     let merge_result =
-        parse_record_forensic(&storage[1..], extension_frs, &ParseOptions::DEFAULT, false);
+        parse_record_forensic(&storage[1..], extension_frs, ParseOptions::DEFAULT, false);
     assert!(matches!(&merge_result, ParseResult::Extension(_)));
 
     if let ParseResult::Extension(extension) = merge_result {
@@ -348,7 +348,7 @@ fn test_parse_record_forensic_reads_unaligned_extension_record_slice() {
     }
 
     let forensic_result =
-        parse_record_forensic(&storage[1..], extension_frs, &ParseOptions::FORENSIC, false);
+        parse_record_forensic(&storage[1..], extension_frs, ParseOptions::FORENSIC, false);
     assert!(matches!(&forensic_result, ParseResult::Base(_)));
 
     if let ParseResult::Base(parsed_record) = forensic_result {
@@ -369,7 +369,7 @@ fn test_parse_record_forensic_reads_unaligned_resident_reparse_tag() {
     let mut storage = vec![0_u8; record.len() + 1];
     storage[1..].copy_from_slice(&record);
 
-    let result = parse_record_forensic(&storage[1..], frs, &ParseOptions::FORENSIC, false);
+    let result = parse_record_forensic(&storage[1..], frs, ParseOptions::FORENSIC, false);
     assert!(matches!(&result, ParseResult::Base(_)));
 
     if let ParseResult::Base(parsed_record) = result {

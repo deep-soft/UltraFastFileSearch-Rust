@@ -59,6 +59,7 @@ impl MftReader {
         &self,
         _skip_df_build: bool,
     ) -> Result<(Option<DataFrame>, BenchmarkResult)> {
+        let _: &Self = self; // API parity with Windows impl which uses self
         Err(MftError::PlatformNotSupported)
     }
 

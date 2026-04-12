@@ -1,6 +1,9 @@
 //! Regression tests for the split NTFS module surface.
 
-#![allow(clippy::expect_used, clippy::indexing_slicing)]
+#![expect(
+    clippy::indexing_slicing,
+    reason = "test code — relaxed linting for test clarity"
+)]
 
 use core::mem::size_of;
 

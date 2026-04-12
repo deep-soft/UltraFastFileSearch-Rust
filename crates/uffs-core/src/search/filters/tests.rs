@@ -15,17 +15,17 @@ fn test_record(name: &str, names: &mut Vec<u8>) -> CompactRecord {
     CompactRecord {
         size: 1000,
         allocated: 1024,
+        treesize: 5000,
+        tree_allocated: 5120,
         created: 100_000_000,
         modified: 200_000_000,
         accessed: 300_000_000,
+        name_offset: offset,
         flags: 0x20, // ARCHIVE
         parent_idx: u32::MAX,
-        name_offset: offset,
+        descendants: 5,
         name_len: u16::try_from(name.len()).expect("name too long"),
         extension_id: 0,
-        descendants: 5,
-        treesize: 5000,
-        tree_allocated: 5120,
         path_len: 0,
         name_first_byte: name.as_bytes().first().copied().unwrap_or(0),
         _pad: [0; 1],
@@ -754,10 +754,10 @@ fn parse_size_whitespace() {
 
 #[test]
 fn parse_size_invalid() {
-    assert!(parse_size("").is_err());
-    assert!(parse_size("abc").is_err());
-    assert!(parse_size("MB").is_err());
-    assert!(parse_size("-1KB").is_err());
+    parse_size("").unwrap_err();
+    parse_size("abc").unwrap_err();
+    parse_size("MB").unwrap_err();
+    parse_size("-1KB").unwrap_err();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

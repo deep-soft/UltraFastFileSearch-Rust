@@ -111,10 +111,6 @@ fn read_header<P: AsRef<Path>>(path: P) -> Result<(RawMftHeader, BufReader<File>
 }
 
 #[expect(
-    clippy::too_many_lines,
-    reason = "sequential comparison pipeline — splitting would reduce clarity"
-)]
-#[expect(
     clippy::float_arithmetic,
     reason = "progress reporting and GiB calculations use floating-point"
 )]

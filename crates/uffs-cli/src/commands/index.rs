@@ -23,7 +23,7 @@ use super::{add_drive_progress, create_multi_progress};
     clippy::single_call_fn,
     reason = "public CLI command handler called from main dispatch"
 )]
-pub async fn index(
+pub(crate) async fn index(
     output_path: PathBuf,
     single_drive: Option<char>,
     multi_drives: Option<Vec<char>>,

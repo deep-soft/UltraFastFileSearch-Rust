@@ -20,7 +20,7 @@ use tracing_subscriber::{EnvFilter, Layer};
     clippy::single_call_fn,
     reason = "logical separation of logging initialization"
 )]
-pub fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
+pub(crate) fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
     use std::fs;
 
     // Get log directory (default: ~/bin/uffs/logs)

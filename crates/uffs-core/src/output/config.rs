@@ -479,43 +479,43 @@ impl OutputConfig {
 /// NTFS attribute flag constants for bit-testing `DisplayRow::flags`.
 mod attr {
     /// Read-only.
-    pub const READONLY: u32 = 0x0001;
+    pub(super) const READONLY: u32 = 0x0001;
     /// Hidden.
-    pub const HIDDEN: u32 = 0x0002;
+    pub(super) const HIDDEN: u32 = 0x0002;
     /// System.
-    pub const SYSTEM: u32 = 0x0004;
+    pub(super) const SYSTEM: u32 = 0x0004;
     /// Directory.
-    pub const DIRECTORY: u32 = 0x0010;
+    pub(super) const DIRECTORY: u32 = 0x0010;
     /// Archive.
-    pub const ARCHIVE: u32 = 0x0020;
+    pub(super) const ARCHIVE: u32 = 0x0020;
     /// Temporary.
-    pub const TEMPORARY: u32 = 0x0100;
+    pub(super) const TEMPORARY: u32 = 0x0100;
     /// Sparse.
-    pub const SPARSE: u32 = 0x0200;
+    pub(super) const SPARSE: u32 = 0x0200;
     /// Reparse point.
-    pub const REPARSE: u32 = 0x0400;
+    pub(super) const REPARSE: u32 = 0x0400;
     /// Compressed.
-    pub const COMPRESSED: u32 = 0x0800;
+    pub(super) const COMPRESSED: u32 = 0x0800;
     /// Offline.
-    pub const OFFLINE: u32 = 0x1000;
+    pub(super) const OFFLINE: u32 = 0x1000;
     /// Not content indexed.
-    pub const NOT_INDEXED: u32 = 0x2000;
+    pub(super) const NOT_INDEXED: u32 = 0x2000;
     /// Encrypted.
-    pub const ENCRYPTED: u32 = 0x4000;
+    pub(super) const ENCRYPTED: u32 = 0x4000;
     /// Integrity stream.
-    pub const INTEGRITY: u32 = 0x8000;
+    pub(super) const INTEGRITY: u32 = 0x8000;
     /// Virtual.
-    pub const VIRTUAL: u32 = 0x0001_0000;
+    pub(super) const VIRTUAL: u32 = 0x0001_0000;
     /// No scrub data.
-    pub const NO_SCRUB: u32 = 0x0002_0000;
+    pub(super) const NO_SCRUB: u32 = 0x0002_0000;
     /// Recall on open.
-    pub const RECALL_ON_OPEN: u32 = 0x0004_0000;
+    pub(super) const RECALL_ON_OPEN: u32 = 0x0004_0000;
     /// Pinned.
-    pub const PINNED: u32 = 0x0008_0000;
+    pub(super) const PINNED: u32 = 0x0008_0000;
     /// Unpinned.
-    pub const UNPINNED: u32 = 0x0010_0000;
+    pub(super) const UNPINNED: u32 = 0x0010_0000;
     /// Recall on data access.
-    pub const RECALL_ON_DATA: u32 = 0x0040_0000;
+    pub(super) const RECALL_ON_DATA: u32 = 0x0040_0000;
     /// Parity-compat mask — must match `StandardInfo::parity_attributes()`.
     ///
     /// Includes the 15 attribute bits the C++ baseline tracks:
@@ -525,7 +525,7 @@ mod attr {
     ///
     /// Note: excludes `TEMPORARY` (0x100) and `VIRTUAL` (0x10000) which are
     /// NOT part of the parity contract.
-    pub const PARITY_MASK: u32 = READONLY
+    pub(super) const PARITY_MASK: u32 = READONLY
         | HIDDEN
         | SYSTEM
         | DIRECTORY
@@ -546,14 +546,6 @@ mod attr {
 ///
 /// Extracted as a standalone function for readability — the column match has
 /// ~30 arms mirroring all `OutputColumn` variants.
-#[expect(
-    clippy::single_call_fn,
-    reason = "separated for readability of 30-arm match"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "column dispatch — flat match arms, splitting hurts readability"
-)]
 fn write_display_row_columns(
     buf: &mut String,
     itoa_buf: &mut itoa::Buffer,

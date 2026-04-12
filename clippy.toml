@@ -1,0 +1,68 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# UFFS — Clippy Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# This file configures Clippy behavior that cannot be set via [workspace.lints]
+# in Cargo.toml.  It is picked up automatically by all crates in the workspace.
+#
+# Philosophy:
+#   - Production code: strictest possible — no panics, no unwraps, no dbg!
+#   - Test code: fail fast and loud — unwrap, expect, panic, dbg!, print are
+#     all welcome because a test that doesn't crash on failure is useless.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Test code relaxations ────────────────────────────────────────────────────
+# These allow restriction lints to fire only in production code while letting
+# test code use idiomatic Rust test patterns (unwrap, expect, panic, dbg!).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+# ── API evolution ────────────────────────────────────────────────────────────
+# We are NOT a published library — internal refactoring should not be blocked
+# by "this would break downstream crates" false positives.
+avoid-breaking-exported-api = false
+
+# ── Cognitive complexity ─────────────────────────────────────────────────────
+# Default is 25.  Our parser/dispatcher functions legitimately exceed this due
+# to NTFS attribute type dispatch (10+ match arms).  We use per-function
+# #[expect] for those, but slightly raising the threshold avoids noise on
+# borderline functions that are perfectly readable.
+cognitive-complexity-threshold = 30
+
+# ── Identifier length ────────────────────────────────────────────────────────
+# min_ident_chars default is 1 (flags single-char names).  We allow common
+# loop/lambda vars but the lint still catches truly opaque names.
+min-ident-chars-threshold = 1
+
+# ── Too many lines ───────────────────────────────────────────────────────────
+# Default is 100.  Our pipeline functions are long but linear.  200 avoids
+# false positives on well-structured sequential code.
+too-many-lines-threshold = 150
+
+# ── Type complexity ──────────────────────────────────────────────────────────
+# Default is 250.  Polars lazy expressions produce deeply nested generic types.
+type-complexity-threshold = 300
+
+# ── Large enum variant ───────────────────────────────────────────────────────
+# Default is 200 bytes.  Some of our protocol/event enums carry payloads that
+# slightly exceed this.
+enum-variant-size-threshold = 256
+
+# ── Documentation strictness ──────────────────────────────────────────────────
+# check-private-items = true would run missing_errors_doc / missing_panics_doc /
+# missing_safety_doc on private items.  Disabled because it triggers 70+ false
+# positives on private helpers where the error condition is self-evident from
+# the return type and context.  Public API is already fully documented.
+check-private-items = false
+
+# ── Const context relaxation ──────────────────────────────────────────────────
+# Suppress restriction lints like `indexing_slicing` in const contexts.  Panics
+# in const evaluation are compile-time errors, not runtime risks.
+suppress-restriction-lint-in-const = true
+
+# ── Struct field initializer order ────────────────────────────────────────────
+# Catches struct initializers where fields are in a different order than the
+# struct definition.  Clippy's own repo enables this.
+check-inconsistent-struct-field-initializers = true

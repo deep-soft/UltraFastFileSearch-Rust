@@ -17,7 +17,7 @@ pub enum TreeColumn {
 impl TreeColumn {
     /// Get the `DataFrame` column name for this tree column.
     #[must_use]
-    pub const fn column_name(&self) -> &'static str {
+    pub const fn column_name(self) -> &'static str {
         match self {
             Self::Descendants => "descendants",
             Self::TreeSize => "treesize",

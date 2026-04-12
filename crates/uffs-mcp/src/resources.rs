@@ -16,7 +16,10 @@ use uffs_core::search::field::{FieldAccess, FieldId, FieldType};
 /// machine or correlated options), so the `excessive_bools` lint does not
 /// apply here.
 #[derive(Debug, Serialize)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "schema description struct — bool fields are independent metadata flags"
+)]
 struct FieldEntry {
     /// Canonical field name.
     name: &'static str,

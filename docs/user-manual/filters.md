@@ -20,6 +20,7 @@ results.
 | `--files-only` | Show only files (exclude directories) |
 | `--dirs-only` | Show only directories (exclude files) |
 | `--hide-system` | Hide NTFS system files (names starting with `$`) |
+| `--hide-ads` | Hide NTFS Alternate Data Stream entries |
 
 ```bash
 # All PDF files — no directory entries
@@ -46,6 +47,7 @@ human-readable suffixes or plain byte counts.
 |------|---------|
 | `--min-size <SIZE>` | Only files ≥ this size |
 | `--max-size <SIZE>` | Only files ≤ this size |
+| `--exact-size <SIZE>` | Exactly this size (shorthand for `--min-size N --max-size N`) |
 
 ### Size Suffixes
 
@@ -102,6 +104,7 @@ bound.
 | `--older-created <SPEC>` | Created | Files created **before** |
 | `--newer-accessed <SPEC>` | Accessed | Files accessed **within** / **after** |
 | `--older-accessed <SPEC>` | Accessed | Files accessed **before** |
+| `--between <START,END>` | Modified | Time range shorthand (equivalent to `--newer START --older END`) |
 
 ### Time Spec Formats
 
@@ -125,6 +128,31 @@ Use `YYYY-MM-DD` format for absolute dates:
 ```bash
 --newer 2026-01-15       # Modified on or after 15 January 2026
 --older 2025-06-01       # Modified before 1 June 2025
+```
+
+#### Named Time Specs
+
+| Name | Meaning |
+|------|---------|
+| `today` | Since midnight today |
+| `yesterday` | Since midnight yesterday |
+| `this_week` | Since start of current week |
+| `this_month` | Since start of current month |
+| `this_year` | Since 1 January of current year |
+| `ytd` | Year-to-date (same as `this_year`) |
+| `last_7d` | Last 7 days |
+| `last_30d` | Last 30 days |
+| `last_90d` | Last 90 days |
+| `last_year` | Last 365 days |
+
+#### `--between` Shorthand
+
+```bash
+# Equivalent to --newer 2026-01-01 --older 2026-03-31
+uffs '*.pdf' --between 2026-01-01,2026-03-31
+
+# Equivalent to --newer 30d --older 7d
+uffs '*.log' --between 30d,7d
 ```
 
 ### Examples
@@ -237,6 +265,7 @@ direct children (files and subdirectories) they contain.
 |------|---------|
 | `--min-descendants <N>` | Directories with at least N children |
 | `--max-descendants <N>` | Directories with at most N children |
+| `--exact-descendants <N>` | Exactly N children (shorthand for `--min-descendants N --max-descendants N`) |
 
 ### Examples
 
@@ -623,10 +652,12 @@ SCOPE
   --files-only               Files only (no directories)
   --dirs-only                Directories only (no files)
   --hide-system              Hide $-prefixed NTFS system files
+  --hide-ads                 Hide Alternate Data Stream entries
 
 SIZE
   --min-size <SIZE>          Minimum logical file size (e.g. 100MB)
   --max-size <SIZE>          Maximum logical file size
+  --exact-size <SIZE>        Exact logical size (min = max)
   --min-size-on-disk <SIZE>  Minimum allocated (on-disk) size
   --max-size-on-disk <SIZE>  Maximum allocated (on-disk) size
   --exact-size-on-disk <SIZE> Exact allocated size (min = max)
@@ -638,6 +669,7 @@ DATE / TIME
   --older-created <SPEC>     Created before
   --newer-accessed <SPEC>    Accessed within / after
   --older-accessed <SPEC>    Accessed before
+  --between <START,END>      Time range shorthand (--newer START --older END)
   --month <SPEC>             Month-of-year filter (jan, Q4, jun,jul,aug)
 
 ATTRIBUTES
@@ -646,6 +678,7 @@ ATTRIBUTES
 DESCENDANTS
   --min-descendants <N>      Minimum child count (dirs)
   --max-descendants <N>      Maximum child count (dirs)
+  --exact-descendants <N>    Exact child count (min = max)
 
 EXTENSIONS & TYPE
   --ext <LIST>               Filter by extension or collection alias

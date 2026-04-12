@@ -483,8 +483,8 @@ fn filter_combined_name_len_plus_size() {
     let mut names = Vec::new();
     let rec = test_record("a.txt", &mut names); // name len=5, size=1000
     let filters = SearchFilters {
-        min_name_len: Some(10), // 5 < 10 → reject
         min_size: Some(500),
+        min_name_len: Some(10), // 5 < 10 → reject
         ..Default::default()
     };
     assert!(
@@ -503,8 +503,8 @@ fn filter_combined_treesize_plus_descendants() {
     let mut names = Vec::new();
     let rec = test_record("project", &mut names); // treesize=5000, descendants=5
     let filters = SearchFilters {
-        min_treesize: Some(1000),
         min_descendants: Some(5),
+        min_treesize: Some(1000),
         ..Default::default()
     };
     assert!(

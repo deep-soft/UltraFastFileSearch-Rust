@@ -68,7 +68,6 @@ pub use self::usn::UsnApplyStats;
     clippy::indexing_slicing,
     reason = "test code with known valid indices"
 )]
-#[expect(clippy::print_stdout, reason = "test diagnostics output")]
 #[expect(
     clippy::shadow_unrelated,
     reason = "test code — variable reuse for setup"
@@ -79,13 +78,4 @@ pub use self::usn::UsnApplyStats;
     reason = "test code — String conversion is fine"
 )]
 #[expect(clippy::uninlined_format_args, reason = "test code readability")]
-#[expect(clippy::use_debug, reason = "test code uses Debug for assertions")]
-#[expect(
-    clippy::unwrap_used,
-    reason = "test code — panicking on failure is acceptable"
-)]
-#[expect(
-    clippy::expect_used,
-    reason = "test code — panicking on failure is acceptable"
-)]
 mod tests;

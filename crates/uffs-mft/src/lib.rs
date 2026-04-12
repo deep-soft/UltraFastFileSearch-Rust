@@ -52,6 +52,11 @@
 
 extern crate alloc;
 
+// Dev-dependencies used in tests but not by the library itself.
+// Binary dependencies (used by src/main.rs only, or by #[cfg(windows)]
+// modules). Listed here to prevent unused_crate_dependencies false positives on
+// non-Windows.
+use anyhow as _;
 // ============================================================================
 // Suppress unused crate warnings
 // ============================================================================
@@ -61,9 +66,14 @@ extern crate alloc;
 // Platform-specific dependencies (used on Windows only)
 #[cfg(not(windows))]
 use bitflags as _;
+use chrono as _;
+use clap as _;
 // Dev-dependencies (used in benchmarks and tests only)
 #[cfg(test)]
 use criterion as _;
+use dirs_next as _;
+use hostname as _;
+use indicatif as _;
 #[cfg(test)]
 use proptest as _;
 #[cfg(test)]
@@ -76,17 +86,22 @@ use rayon as _;
 // FxHash for fast hashing (used in io.rs on Windows)
 #[cfg(not(windows))]
 use rustc_hash as _;
+#[cfg(test)]
+use sha2 as _;
+use smallvec as _;
+#[cfg(test)]
+use tempfile as _;
 #[cfg(not(windows))]
 use thiserror as _;
+use tokio as _;
+use tracing as _;
+use tracing_appender as _;
+use tracing_subscriber as _;
 #[cfg(not(windows))]
 use uffs_polars as _;
+use uffs_text as _;
 #[cfg(windows)]
 use windows as _;
-// Binary dependencies (used by src/main.rs)
-use {
-    anyhow as _, chrono as _, clap as _, dirs_next as _, hostname as _, indicatif as _,
-    smallvec as _, tokio as _, tracing as _, tracing_appender as _, tracing_subscriber as _,
-};
 
 // ============================================================================
 // Module declarations

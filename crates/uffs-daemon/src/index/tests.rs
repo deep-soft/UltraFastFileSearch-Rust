@@ -1,15 +1,10 @@
 //! Integration tests for aggregation and predicate conversion.
 
-#![allow(
-    clippy::unwrap_used,
+#![expect(
     clippy::indexing_slicing,
-    clippy::float_arithmetic,
-    clippy::missing_docs_in_private_items,
     clippy::min_ident_chars,
-    clippy::too_many_lines,
-    clippy::wildcard_imports,
-    clippy::default_numeric_fallback,
-    clippy::std_instead_of_alloc
+    clippy::std_instead_of_alloc,
+    reason = "test code — relaxed linting for test clarity"
 )]
 
 use std::sync::Arc;

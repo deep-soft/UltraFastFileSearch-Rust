@@ -76,7 +76,6 @@ pub fn generate_read_chunks(
         record_size, cluster_size, records_per_cluster, chunk_size, "📐 Generating read chunks"
     );
 
-    // Process each extent
     for (extent_idx, extent) in extent_map.extents().enumerate() {
         if extent.lcn < 0 {
             sparse_extents += 1;
@@ -84,88 +83,102 @@ pub fn generate_read_chunks(
             continue;
         }
 
-        let extent_start_frs = extent.vcn * u64::from(records_per_cluster);
-        let extent_records = extent.cluster_count * u64::from(records_per_cluster);
-        let extent_disk_offset = extent.lcn.cast_unsigned() * u64::from(cluster_size);
-
-        trace!(
-            extent_idx,
-            vcn = extent.vcn,
-            lcn = extent.lcn,
-            clusters = extent.cluster_count,
-            records = extent_records,
-            disk_offset = extent_disk_offset,
-            "Processing extent"
+        split_extent_into_chunks(
+            extent,
+            records_per_cluster,
+            record_size,
+            cluster_size,
+            chunk_size,
+            bitmap,
+            &mut chunks,
+            &mut total_records_to_read,
+            &mut total_records_skipped,
         );
-
-        // Split extent into chunks
-        let records_per_chunk = (chunk_size / record_size as usize) as u64;
-        let mut chunk_start = 0_u64;
-
-        while chunk_start < extent_records {
-            let chunk_records = (extent_records - chunk_start).min(records_per_chunk);
-            let chunk_frs_start = extent_start_frs + chunk_start;
-            let chunk_frs_end = chunk_frs_start + chunk_records;
-
-            // Bitmap edge-trimming disabled: skip_begin/skip_end caused 98 valid
-            // records to be missed on Drive D (33 ADS streams + 65 files/dirs).
-            // The bitmap is stale for records at chunk boundaries — the IN_USE flag
-            // in each record header is the authoritative filter.
-            //
-            // Previously, bitmap.calculate_skip_range() was used to skip records at
-            // the beginning/end of chunks where the bitmap said "not in use". However,
-            // 98 of these skipped records actually had IN_USE flags set in their headers.
-            // This is a timing issue: the filesystem is modified between bitmap read
-            // and MFT read, making the bitmap advisory at best.
-            //
-            // The I/O cost increase is minimal (~100MB extra reads on a 4.5GB MFT).
-            // Full chunks are always read; the IN_USE flag is checked during parsing.
-            let (skip_begin, skip_end) = (0_u64, 0_u64);
-            if let Some(bm) = bitmap {
-                let skip_range = bm.calculate_skip_range(chunk_frs_start, chunk_frs_end);
-                if skip_range.0 > 0 || skip_range.1 > 0 {
-                    trace!(
-                        chunk_frs_start,
-                        chunk_frs_end,
-                        bitmap_skip_begin = skip_range.0,
-                        bitmap_skip_end = skip_range.1,
-                        "Bitmap suggests skipping (ignored — reading full chunk for correctness)"
-                    );
-                }
-            }
-
-            // ALWAYS add chunk - bitmap is for I/O optimization, not filtering
-            // The IN_USE flag in each record header is the authoritative source
-            let effective_records = chunk_records - skip_begin - skip_end;
-            total_records_to_read += effective_records;
-            total_records_skipped += skip_begin + skip_end;
-
-            chunks.push(ReadChunk {
-                disk_offset: extent_disk_offset + chunk_start * u64::from(record_size),
-                start_frs: chunk_frs_start,
-                record_count: chunk_records,
-                skip_begin,
-                skip_end,
-            });
-
-            chunk_start += chunk_records;
-        }
     }
 
     if sparse_extents > 0 {
         debug!(sparse_extents, "Skipped sparse extents");
     }
 
-    let chunks = maybe_merge_chunks(chunks, record_size, bitmap.is_some());
+    let merged_chunks = maybe_merge_chunks(chunks, record_size, bitmap.is_some());
 
     log_chunk_summary(
-        &chunks,
+        &merged_chunks,
         total_records_to_read,
         total_records_skipped,
         bitmap.is_some(),
     );
 
-    chunks
+    merged_chunks
+}
+
+/// Split a single non-sparse extent into `chunk_size`-bounded read chunks.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pass-through of parent context; struct would add indirection"
+)]
+fn split_extent_into_chunks(
+    extent: &crate::platform::MftExtent,
+    records_per_cluster: u32,
+    record_size: u32,
+    cluster_size: u32,
+    chunk_size: usize,
+    bitmap: Option<&crate::platform::MftBitmap>,
+    chunks: &mut Vec<ReadChunk>,
+    total_to_read: &mut u64,
+    total_skipped: &mut u64,
+) {
+    let extent_start_frs = extent.vcn * u64::from(records_per_cluster);
+    let extent_records = extent.cluster_count * u64::from(records_per_cluster);
+    let extent_disk_offset = extent.lcn.cast_unsigned() * u64::from(cluster_size);
+    let records_per_chunk = (chunk_size / record_size as usize) as u64;
+
+    let mut chunk_start = 0_u64;
+    while chunk_start < extent_records {
+        let chunk_records = (extent_records - chunk_start).min(records_per_chunk);
+        let chunk_frs_start = extent_start_frs + chunk_start;
+        let chunk_frs_end = chunk_frs_start + chunk_records;
+
+        // Bitmap edge-trimming disabled: the bitmap is stale for records at
+        // chunk boundaries — the IN_USE flag in each record header is the
+        // authoritative filter. Full chunks are always read.
+        let (skip_begin, skip_end) = (0_u64, 0_u64);
+        log_bitmap_diagnostic(bitmap, chunk_frs_start, chunk_frs_end);
+
+        let effective = chunk_records - skip_begin - skip_end;
+        *total_to_read += effective;
+        *total_skipped += skip_begin + skip_end;
+
+        chunks.push(ReadChunk {
+            disk_offset: extent_disk_offset + chunk_start * u64::from(record_size),
+            start_frs: chunk_frs_start,
+            record_count: chunk_records,
+            skip_begin,
+            skip_end,
+        });
+
+        chunk_start += chunk_records;
+    }
+}
+
+/// Log bitmap skip diagnostics at trace level (informational only).
+fn log_bitmap_diagnostic(
+    bitmap: Option<&crate::platform::MftBitmap>,
+    frs_start: u64,
+    frs_end: u64,
+) {
+    if let Some(bm) = bitmap {
+        let diag = bm.calculate_skip_range(frs_start, frs_end);
+        if diag.0 > 0 || diag.1 > 0 {
+            trace!(
+                frs_start,
+                frs_end,
+                bitmap_skip_begin = diag.0,
+                bitmap_skip_end = diag.1,
+                "Bitmap suggests skipping (ignored — reading full chunk for correctness)"
+            );
+        }
+    }
 }
 
 /// Log a summary of the generated read plan.
@@ -226,7 +239,6 @@ pub fn generate_precise_read_chunks(
     let cluster_size = extent_map.bytes_per_cluster;
     let records_per_cluster = cluster_size / record_size;
 
-    // Use the bitmap's cluster range iterator to find contiguous in-use regions
     let cluster_ranges: Vec<(u64, u64)> =
         bitmap.in_use_cluster_ranges(records_per_cluster).collect();
 
@@ -239,94 +251,33 @@ pub fn generate_precise_read_chunks(
     let mut total_records_to_read = 0_u64;
     let mut total_records_skipped = 0_u64;
 
-    // Process each extent and match with in-use cluster ranges
     for extent in extent_map.extents() {
         if extent.lcn < 0 {
-            continue; // Skip sparse extents
+            continue;
         }
 
-        let rpc = u64::from(records_per_cluster);
-        let extent_start_frs = extent.vcn * rpc;
-        let extent_end_frs = extent_start_frs + extent.cluster_count * rpc;
-        let extent_disk_offset = extent.lcn.cast_unsigned() * u64::from(cluster_size);
-
-        // Find cluster ranges that overlap with this extent
-        for &(range_start_cluster, range_cluster_count) in &cluster_ranges {
-            let range_start_frs = range_start_cluster * rpc;
-            let range_end_frs = range_start_frs + range_cluster_count * rpc;
-
-            // Check if this range overlaps with the extent
-            if range_end_frs <= extent_start_frs || range_start_frs >= extent_end_frs {
-                continue; // No overlap
-            }
-
-            // Clip range to extent boundaries
-            let clipped_start_frs = range_start_frs.max(extent_start_frs);
-            let clipped_end_frs = range_end_frs.min(extent_end_frs);
-            let clipped_records = clipped_end_frs - clipped_start_frs;
-
-            if clipped_records == 0 {
-                continue;
-            }
-
-            // Calculate disk offset for this range within the extent
-            let offset_within_extent =
-                (clipped_start_frs - extent_start_frs) * u64::from(record_size);
-            let disk_offset = extent_disk_offset + offset_within_extent;
-
-            // Split into max_io_size chunks
-            let records_per_io = max_io_size / record_size as usize;
-            let mut chunk_start = 0_u64;
-
-            while chunk_start < clipped_records {
-                let chunk_records = (clipped_records - chunk_start).min(records_per_io as u64);
-                let chunk_frs_start = clipped_start_frs + chunk_start;
-                let chunk_frs_end = chunk_frs_start + chunk_records;
-
-                // Bitmap edge-trimming disabled: same rationale as generate_read_chunks().
-                // The bitmap is stale at chunk boundaries, causing valid IN_USE records
-                // to be skipped. Always read full chunks; IN_USE flag is authoritative.
-                let (skip_begin, skip_end) = (0_u64, 0_u64);
-                let diagnostic_skip = bitmap.calculate_skip_range(chunk_frs_start, chunk_frs_end);
-                if diagnostic_skip.0 > 0 || diagnostic_skip.1 > 0 {
-                    trace!(
-                        chunk_frs_start,
-                        chunk_frs_end,
-                        bitmap_skip_begin = diagnostic_skip.0,
-                        bitmap_skip_end = diagnostic_skip.1,
-                        "Bitmap suggests skipping (ignored — reading full chunk for correctness)"
-                    );
-                }
-
-                let effective_records = chunk_records - skip_begin - skip_end;
-                if effective_records > 0 {
-                    total_records_to_read += effective_records;
-                    total_records_skipped += skip_begin + skip_end;
-
-                    chunks.push(ReadChunk {
-                        disk_offset: disk_offset + chunk_start * u64::from(record_size),
-                        start_frs: chunk_frs_start,
-                        record_count: chunk_records,
-                        skip_begin,
-                        skip_end,
-                    });
-                } else {
-                    total_records_skipped += chunk_records;
-                }
-
-                chunk_start += chunk_records;
-            }
-        }
+        split_extent_into_precise_chunks(
+            extent,
+            &cluster_ranges,
+            records_per_cluster,
+            record_size,
+            cluster_size,
+            max_io_size,
+            bitmap,
+            &mut chunks,
+            &mut total_records_to_read,
+            &mut total_records_skipped,
+        );
     }
 
     // Merge adjacent chunks with small gaps (for NVMe, small gaps are cheaper to
     // read through)
     let min_gap_bytes = min_gap_records as u64 * u64::from(record_size);
-    let chunks = merge_precise_chunks(chunks, record_size, min_gap_bytes, max_io_size);
+    let merged_chunks = merge_precise_chunks(chunks, record_size, min_gap_bytes, max_io_size);
 
     let total_records = total_records_to_read + total_records_skipped;
     info!(
-        chunks = chunks.len(),
+        chunks = merged_chunks.len(),
         records_to_read = total_records_to_read,
         records_skipped = total_records_skipped,
         skip_percentage = format!(
@@ -336,7 +287,122 @@ pub fn generate_precise_read_chunks(
         "📊 Precise read plan generated (NVMe/SSD optimized)"
     );
 
-    chunks
+    merged_chunks
+}
+
+/// Split a single extent's overlap with in-use cluster ranges into
+/// `max_io_size`-bounded read chunks and accumulate into `chunks`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pass-through of parent context; struct would add indirection for no clarity"
+)]
+fn split_extent_into_precise_chunks(
+    extent: &crate::platform::MftExtent,
+    cluster_ranges: &[(u64, u64)],
+    records_per_cluster: u32,
+    record_size: u32,
+    cluster_size: u32,
+    max_io_size: usize,
+    bitmap: &crate::platform::MftBitmap,
+    chunks: &mut Vec<ReadChunk>,
+    total_to_read: &mut u64,
+    total_skipped: &mut u64,
+) {
+    let rpc = u64::from(records_per_cluster);
+    let extent_start_frs = extent.vcn * rpc;
+    let extent_end_frs = extent_start_frs + extent.cluster_count * rpc;
+    let extent_disk_offset = extent.lcn.cast_unsigned() * u64::from(cluster_size);
+    let records_per_io = max_io_size / record_size as usize;
+
+    for &(range_start_cluster, range_cluster_count) in cluster_ranges {
+        let range_start_frs = range_start_cluster * rpc;
+        let range_end_frs = range_start_frs + range_cluster_count * rpc;
+
+        // No overlap with this extent
+        if range_end_frs <= extent_start_frs || range_start_frs >= extent_end_frs {
+            continue;
+        }
+
+        // Clip range to extent boundaries
+        let clipped_start = range_start_frs.max(extent_start_frs);
+        let clipped_end = range_end_frs.min(extent_end_frs);
+        let clipped_records = clipped_end - clipped_start;
+        if clipped_records == 0 {
+            continue;
+        }
+
+        let offset_in_extent = (clipped_start - extent_start_frs) * u64::from(record_size);
+        let disk_offset = extent_disk_offset + offset_in_extent;
+
+        emit_io_chunks(
+            clipped_start,
+            clipped_records,
+            disk_offset,
+            records_per_io as u64,
+            record_size,
+            bitmap,
+            chunks,
+            total_to_read,
+            total_skipped,
+        );
+    }
+}
+
+/// Subdivide a contiguous record range into `records_per_io`-sized read
+/// chunks, appending each to `chunks`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "accumulator pattern — struct would add indirection for a single call site"
+)]
+fn emit_io_chunks(
+    start_frs: u64,
+    total_records: u64,
+    base_disk_offset: u64,
+    records_per_io: u64,
+    record_size: u32,
+    bitmap: &crate::platform::MftBitmap,
+    chunks: &mut Vec<ReadChunk>,
+    total_to_read: &mut u64,
+    total_skipped: &mut u64,
+) {
+    let mut pos = 0_u64;
+    while pos < total_records {
+        let chunk_records = (total_records - pos).min(records_per_io);
+        let chunk_frs_start = start_frs + pos;
+        let chunk_frs_end = chunk_frs_start + chunk_records;
+
+        // Bitmap edge-trimming disabled: same rationale as generate_read_chunks().
+        // The bitmap is stale at chunk boundaries, causing valid IN_USE records
+        // to be skipped. Always read full chunks; IN_USE flag is authoritative.
+        let (skip_begin, skip_end) = (0_u64, 0_u64);
+        let diag = bitmap.calculate_skip_range(chunk_frs_start, chunk_frs_end);
+        if diag.0 > 0 || diag.1 > 0 {
+            trace!(
+                chunk_frs_start,
+                chunk_frs_end,
+                bitmap_skip_begin = diag.0,
+                bitmap_skip_end = diag.1,
+                "Bitmap suggests skipping (ignored — reading full chunk for correctness)"
+            );
+        }
+
+        let effective = chunk_records - skip_begin - skip_end;
+        if effective > 0 {
+            *total_to_read += effective;
+            *total_skipped += skip_begin + skip_end;
+            chunks.push(ReadChunk {
+                disk_offset: base_disk_offset + pos * u64::from(record_size),
+                start_frs: chunk_frs_start,
+                record_count: chunk_records,
+                skip_begin,
+                skip_end,
+            });
+        } else {
+            *total_skipped += chunk_records;
+        }
+
+        pos += chunk_records;
+    }
 }
 
 /// Merge adjacent chunks when no bitmap is available.
@@ -358,19 +424,19 @@ fn maybe_merge_chunks(
 
     let merge_threshold = 64_u64; // Records — about 64KB at 1024 bytes/record
     let before = chunks.len();
-    let chunks = merge_adjacent_chunks(chunks, record_size, merge_threshold);
-    let after = chunks.len();
+    let merged = merge_adjacent_chunks(chunks, record_size, merge_threshold);
+    let after = merged.len();
 
     if before != after {
         debug!(
             before,
             after,
-            merged = before - after,
+            merged_count = before - after,
             "🔗 Merged adjacent chunks"
         );
     }
 
-    chunks
+    merged
 }
 
 /// Merge adjacent precise chunks with small gaps.
@@ -388,7 +454,7 @@ fn merge_precise_chunks(
     }
 
     // Sort by disk offset for merging
-    chunks.sort_by_key(|c| c.disk_offset);
+    chunks.sort_by_key(|ch| ch.disk_offset);
 
     let mut merged = Vec::with_capacity(chunks.len());
     let mut current = chunks.remove(0);
@@ -502,13 +568,22 @@ fn merge_adjacent_chunks(
 /// irrelevant for human-readable percentage display.
 fn percentage_f64(part: u64, total: u64) -> f64 {
     if total == 0 {
-        0.0
+        0.0_f64
     } else {
-        (crate::index::u64_to_f64(part) / crate::index::u64_to_f64(total)) * 100.0
+        #[expect(
+            clippy::float_arithmetic,
+            reason = "display-only percentage calculation"
+        )]
+        let pct = (crate::index::u64_to_f64(part) / crate::index::u64_to_f64(total)) * 100.0_f64;
+        pct
     }
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code with known-valid indices"
+)]
 mod tests {
     use super::*;
 

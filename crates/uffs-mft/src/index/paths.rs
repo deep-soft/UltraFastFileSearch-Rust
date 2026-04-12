@@ -133,7 +133,7 @@ impl MftIndex {
     /// Get the stream name (empty for default `$DATA` stream).
     #[must_use]
     pub fn stream_name(&self, stream: &IndexStreamInfo) -> &str {
-        self.get_name(&stream.name)
+        self.get_name(stream.name)
     }
 
     /// Get the Nth name (hard link) for a record.
@@ -207,7 +207,7 @@ impl MftIndex {
         let mut components = Vec::new();
 
         // Add the file's own name
-        let name = self.get_name(&name_info.name);
+        let name = self.get_name(name_info.name);
         if !name.is_empty() && name != "." {
             components.push(name.to_owned());
         }

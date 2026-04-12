@@ -40,7 +40,7 @@ pub struct AppState {
     /// Server boot time (for uptime reporting).
     boot: Instant,
     /// Daemon spawn args forwarded to lazy `UffsClient` connections.
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "reserved for lazy UffsClient connection init")]
     spawn_args: Arc<[String]>,
     /// Shared MCP stats across all sessions.
     stats: Arc<McpStats>,

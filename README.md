@@ -7,6 +7,8 @@
 
 > 🦀 UFFS is a Windows-first search engine built for fast NTFS indexing, instant repeated queries, and practical file-system analysis.
 
+📖 **[Full User Manual](docs/user-manual/index.md)** — installation, tutorials, 40+ filters, daemon management, AI agent integration.
+
 ---
 
 ## ⚡ Why UFFS is Lightning Fast
@@ -47,13 +49,15 @@ Traditional file search tools (including `os.walk`, `FindFirstFile`, etc.) work 
 ### Installation
 
 ```bash
-# Build from source (requires Rust 1.85+)
+# Build from source (requires Rust nightly — see rust-toolchain.toml)
 cargo build --release
 
 # The binary will be at:
 #   Windows: target/release/uffs.exe
 #   Linux/macOS: target/release/uffs
 ```
+
+> **Full install guide:** [docs/user-manual/installation.md](docs/user-manual/installation.md)
 
 ### Basic Usage
 
@@ -64,16 +68,18 @@ uffs "*.rs" --drive C
 # Search across multiple drives
 uffs "*.txt" --drives C,D,E
 
-# Search all drives (default)
+# Search all drives (default — daemon starts automatically)
 uffs "project*"
 
-# Use a pre-built index for instant searches
-uffs index -d C c_drive.parquet
-uffs "*.rs" --index c_drive.parquet
+# macOS/Linux: search offline MFT captures
+uffs "*.txt" --data-dir ~/uffs_data
 
-# Search a saved raw MFT file (cross-platform debugging)
-uffs "*" --mft-file c_mft.raw --drive C
+# Daemon management
+uffs daemon status
+uffs daemon restart
 ```
+
+> **5-minute tutorial:** [docs/user-manual/getting-started.md](docs/user-manual/getting-started.md)
 
 ## 🤝 Contributing
 
@@ -207,9 +213,12 @@ UFFS is built as a modular Rust workspace:
 | `uffs-polars` | Polars facade (compilation isolation) | - |
 | `uffs-mft` | Direct MFT reading → Polars DataFrame | [📖 README](crates/uffs-mft/README.md) |
 | `uffs-core` | Query engine using Polars lazy API | - |
-| `uffs-cli` | Command-line interface (`uffs`) | - |
-| `uffs-tui` | Terminal UI (`uffs_tui`) | - |
-| `uffs-gui` | Graphical UI (`uffs_gui`) | - |
+| `uffs-daemon` | Background daemon (in-memory index server) | [📖 Daemon](docs/user-manual/daemon.md) |
+| `uffs-client` | IPC client library (CLI → daemon) | - |
+| `uffs-cli` | Command-line interface (`uffs`) | [📖 CLI](docs/user-manual/cli-overview.md) |
+| `uffs-tui` | Terminal UI (`uffs_tui`) | [📖 TUI](docs/user-manual/tui-search-box.md) |
+| `uffs-mcp` | MCP server for AI agents | [📖 MCP](docs/user-manual/mcp.md) |
+| `uffs-gui` | Graphical UI (planned) | - |
 
 ### Key Features
 

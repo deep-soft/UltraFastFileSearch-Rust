@@ -53,7 +53,7 @@ pub enum MftReadMode {
 impl MftReadMode {
     /// Returns the mode name as a string.
     #[must_use]
-    pub const fn as_str(&self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::Parallel => "parallel",

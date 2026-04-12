@@ -77,7 +77,7 @@ pub fn request_volume_handle(drive_letter: char) -> anyhow::Result<u64> {
 
 /// Non-Windows: broker is never available.
 #[cfg(not(windows))]
-pub const fn broker_available() -> bool {
+pub(crate) const fn broker_available() -> bool {
     false
 }
 
@@ -87,6 +87,6 @@ pub const fn broker_available() -> bool {
     clippy::single_call_fn,
     reason = "platform stub — mirrors Windows variant"
 )]
-pub fn request_volume_handle(_drive_letter: char) -> anyhow::Result<u64> {
+pub(crate) fn request_volume_handle(_drive_letter: char) -> anyhow::Result<u64> {
     anyhow::bail!("Access Broker is a Windows-only feature")
 }

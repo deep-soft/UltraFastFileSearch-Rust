@@ -132,6 +132,6 @@ mod tests {
     #[test]
     fn test_unclosed_bracket() {
         let result = glob_to_regex("[abc");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 }

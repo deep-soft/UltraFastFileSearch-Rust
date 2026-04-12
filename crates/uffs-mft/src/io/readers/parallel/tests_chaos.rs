@@ -96,12 +96,12 @@ impl ChaosMftReader {
     ///
     /// Returns an error if the MFT file cannot be read or is invalid.
     #[expect(
-        clippy::too_many_lines,
-        reason = "test harness orchestration requires sequential setup"
+        clippy::cognitive_complexity,
+        reason = "chaos reader: load, chunk, shuffle, spawn parser threads, merge — single orchestration pipeline"
     )]
     pub fn read_with_chaos(&self, mft_path: &Path, volume: char) -> anyhow::Result<MftIndex> {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use alloc::sync::Arc;
+        use core::sync::atomic::{AtomicUsize, Ordering};
 
         use crossbeam_channel::{Sender, bounded};
         type ChunkMsg = Option<(Vec<u8>, u64, usize)>;
@@ -128,14 +128,14 @@ impl ChaosMftReader {
 
         // Generate chunks (no bitmap - read everything)
         let mut chunks: Vec<ReadChunk> = generate_read_chunks(&extent_map, None, self.chunk_size);
-        chunks.sort_by_key(|c| c.start_frs);
+        chunks.sort_by_key(|ch| ch.start_frs);
 
         // Apply chaos strategy
         self.apply_chaos(&mut chunks);
 
         // Calculate total records to parse
         let estimated_records = total_records;
-        let num_workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+        let num_workers = std::thread::available_parallelism().map_or(4, core::num::NonZero::get);
 
         tracing::info!(
             total_records,
@@ -147,7 +147,7 @@ impl ChaosMftReader {
         );
 
         // Create channel for buffer handoff
-        let channel_capacity = num_workers * 2;
+        let channel_capacity = num_workers * 2_usize;
         let (tx, rx): (Sender<ChunkMsg>, crossbeam_channel::Receiver<ChunkMsg>) =
             bounded(channel_capacity);
 
@@ -158,16 +158,16 @@ impl ChaosMftReader {
         let mut worker_handles = Vec::with_capacity(num_workers);
         let records_per_worker = (estimated_records / num_workers) + 1;
 
-        for worker_id in 0..num_workers {
-            let rx = rx.clone();
-            let records_parsed = Arc::clone(&records_parsed);
+        for worker_id in 0_usize..num_workers {
+            let rx_worker = rx.clone();
+            let records_parsed_worker = Arc::clone(&records_parsed);
 
             let handle = std::thread::spawn(move || {
                 let mut results: Vec<ParseResult> = Vec::with_capacity(records_per_worker);
                 let mut local_parsed = 0_usize;
 
                 // Process buffers until channel closes
-                while let Ok(Some((mut buffer, start_frs, record_count))) = rx.recv() {
+                while let Ok(Some((mut buffer, start_frs, record_count))) = rx_worker.recv() {
                     for i in 0..record_count {
                         let frs = start_frs + i as u64;
                         let offset = i * record_size;
@@ -177,7 +177,9 @@ impl ChaosMftReader {
                         }
 
                         // Apply fixup in-place
-                        let record_slice = &mut buffer[offset..end];
+                        let Some(record_slice) = buffer.get_mut(offset..end) else {
+                            break;
+                        };
                         if !apply_fixup(record_slice) {
                             continue;
                         }
@@ -191,7 +193,7 @@ impl ChaosMftReader {
                     }
                 }
 
-                records_parsed.fetch_add(local_parsed, Ordering::Relaxed);
+                records_parsed_worker.fetch_add(local_parsed, Ordering::Relaxed);
                 tracing::debug!(worker_id, local_parsed, "Worker complete");
                 results
             });
@@ -232,7 +234,11 @@ impl ChaosMftReader {
             }
 
             // Extract chunk data
-            let buffer_data = mft_bytes[byte_offset..end_offset].to_vec();
+            let Some(chunk_slice) = mft_bytes.get(byte_offset..end_offset) else {
+                tracing::warn!("Chunk slice out of bounds — skipping");
+                continue;
+            };
+            let buffer_data = chunk_slice.to_vec();
             let record_count = chunk_bytes / record_size;
 
             if tx
@@ -254,8 +260,8 @@ impl ChaosMftReader {
         );
 
         // Signal workers to stop
-        for _ in 0..num_workers {
-            let _ = tx.send(None);
+        for _ in 0_usize..num_workers {
+            let _send_result: Result<(), crossbeam_channel::SendError<ChunkMsg>> = tx.send(None);
         }
         drop(tx);
 
@@ -270,8 +276,8 @@ impl ChaosMftReader {
                         merger.add_result(result);
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("Worker thread panicked: {:?}", e);
+                Err(panic_err) => {
+                    tracing::warn!("Worker thread panicked: {:?}", panic_err);
                 }
             }
         }
@@ -337,13 +343,12 @@ impl ChaosMftReader {
 fn sorted_sha256(lines: &[String]) -> String {
     let mut indexed: Vec<(usize, &str)> = lines.iter().map(String::as_str).enumerate().collect();
     // Stable sort with byte-level comparison for cross-platform consistency
-    indexed.sort_by(
-        |(idx_a, a), (idx_b, b)| match a.as_bytes().cmp(b.as_bytes()) {
-            std::cmp::Ordering::Equal => idx_a.cmp(idx_b),
-            other => other,
-        },
-    );
-    sha256_for_lines(indexed.into_iter().map(|(_, s)| s))
+    indexed.sort_by(|(idx_left, left), (idx_right, right)| {
+        left.as_bytes()
+            .cmp(right.as_bytes())
+            .then_with(|| idx_left.cmp(idx_right))
+    });
+    sha256_for_lines(indexed.into_iter().map(|(_, line)| line))
 }
 
 /// Computes SHA256 hash of lines (helper for sorted and unsorted hashing).
@@ -360,261 +365,279 @@ fn sha256_for_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Run with: `cargo test -p uffs-mft --lib -- chaos_order --nocapture
-/// --ignored`
-#[test]
-#[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
+#[cfg(test)]
 #[expect(
-    clippy::too_many_lines,
-    reason = "integration test with multi-step setup"
+    clippy::default_numeric_fallback,
+    clippy::indexing_slicing,
+    clippy::let_underscore_must_use,
+    clippy::let_underscore_untyped,
+    clippy::min_ident_chars,
+    clippy::shadow_unrelated,
+    clippy::string_slice,
+    reason = "test code — relaxed for readability and fail-fast assertions"
 )]
-fn test_chaos_order_d_drive() {
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
-    use std::path::PathBuf;
-    const EXPECTED_SORTED_SHA: &str =
-        "028356d4c9298ca8ef790229f4d4270ea29827ad155051e01181181fa34a531e";
+mod chaos_integration_tests {
+    use super::*;
 
-    // Initialize logging for diagnostics
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_test_writer()
-        .try_init();
+    /// Run with: `cargo test -p uffs-mft --lib -- chaos_order --nocapture
+    /// --ignored`
+    #[test]
+    #[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
+    fn test_chaos_order_d_drive() {
+        use std::fs::File;
+        use std::io::{BufRead, BufReader};
+        use std::path::PathBuf;
+        const EXPECTED_SORTED_SHA: &str =
+            "028356d4c9298ca8ef790229f4d4270ea29827ad155051e01181181fa34a531e";
 
-    let mft_path = PathBuf::from("/Users/rnio/uffs_data/drive_d/D_mft.bin");
-    if !mft_path.exists() {
-        eprintln!("⚠️  Offline MFT not found at: {}", mft_path.display());
-        eprintln!("   This test requires the offline D: drive MFT. Skipping.");
-        return;
-    }
+        // Initialize logging for diagnostics
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .try_init();
 
-    println!("\n═══════════════════════════════════════════════════════");
-    println!("     CHAOS-ORDER SHA256 VALIDATION TEST");
-    println!("     (Full-field parity with C++ ground truth)");
-    println!("═══════════════════════════════════════════════════════\n");
-
-    // ──────────────────────────────────────────────────────────────
-    // Phase 1: Build binary upfront (single compilation)
-    // ──────────────────────────────────────────────────────────────
-    println!("🔨 Phase 1: Building uffs CLI (release mode)");
-    let build_status = std::process::Command::new("cargo")
-        .args(["build", "--release", "-p", "uffs-cli", "--bin", "uffs"])
-        .status()
-        .expect("Failed to build uffs CLI");
-    assert!(
-        build_status.success(),
-        "uffs CLI build failed with status: {build_status}",
-    );
-
-    // Get path to built binary
-    let uffs_bin = std::env::current_dir()
-        .expect("current dir")
-        .join("target/release/uffs");
-    assert!(
-        uffs_bin.exists(),
-        "uffs binary not found at: {}",
-        uffs_bin.display()
-    );
-    println!("   ✓ Build complete: {}", uffs_bin.display());
-    println!();
-
-    // ──────────────────────────────────────────────────────────────
-    // Phase 2: Run chaos-order export
-    // ──────────────────────────────────────────────────────────────
-    println!("📤 Phase 2: Exporting chaos-order results (--chaos-seed 42)");
-    let temp_output = std::env::temp_dir().join("chaos_d.txt");
-
-    let status = std::process::Command::new(&uffs_bin)
-        .args(["*"])
-        .args(["--mft-file", mft_path.to_str().expect("valid path")])
-        .args(["--drive", "D"])
-        .args(["--chaos-seed", "42"])
-        .args(["--tz-offset", "-8"])
-        .args(["--format", "custom"])
-        .args(["--out", temp_output.to_str().expect("valid path")])
-        .status()
-        .expect("Failed to run uffs CLI");
-
-    assert!(
-        status.success(),
-        "uffs CLI (chaos) failed with status: {status}",
-    );
-    println!("   ✓ Chaos export complete");
-    println!();
-
-    // ──────────────────────────────────────────────────────────────
-    // Phase 3: Run sequential-order export
-    // ──────────────────────────────────────────────────────────────
-    println!("📤 Phase 3: Exporting sequential-order results (baseline)");
-    let sequential_output = std::env::temp_dir().join("sequential_d.txt");
-
-    let status = std::process::Command::new(&uffs_bin)
-        .args(["*"])
-        .args(["--mft-file", mft_path.to_str().expect("valid path")])
-        .args(["--drive", "D"])
-        .args(["--tz-offset", "-8"])
-        .args(["--format", "custom"])
-        .args(["--out", sequential_output.to_str().expect("valid path")])
-        .status()
-        .expect("Failed to run uffs CLI");
-
-    assert!(
-        status.success(),
-        "uffs CLI (sequential) failed with status: {status}",
-    );
-    println!("   ✓ Sequential export complete");
-    println!();
-
-    // ──────────────────────────────────────────────────────────────
-    // Phase 4: Read and compute SHA256 hashes
-    // ──────────────────────────────────────────────────────────────
-    println!("🔐 Phase 4: Computing sorted SHA256 hashes");
-
-    let chaos_lines: Vec<String> = BufReader::new(File::open(&temp_output).expect("chaos file"))
-        .lines()
-        .collect::<Result<_, _>>()
-        .expect("read chaos lines");
-    let chaos_sha = sorted_sha256(&chaos_lines);
-    println!("   Chaos SHA256:      {chaos_sha}");
-
-    let sequential_lines: Vec<String> =
-        BufReader::new(File::open(&sequential_output).expect("sequential file"))
-            .lines()
-            .collect::<Result<_, _>>()
-            .expect("read sequential lines");
-    let sequential_sha = sorted_sha256(&sequential_lines);
-    println!("   Sequential SHA256: {sequential_sha}");
-    println!();
-
-    // ──────────────────────────────────────────────────────────────
-    // Phase 5: Validate against C++ ground truth
-    // ──────────────────────────────────────────────────────────────
-    println!("✅ Phase 5: Validating against C++ ground truth");
-    println!("   Expected:   {EXPECTED_SORTED_SHA}");
-    println!("   Sequential: {sequential_sha}");
-    println!("   Chaos:      {chaos_sha}");
-    println!();
-
-    // Verify sequential matches ground truth
-    assert_eq!(
-        sequential_sha,
-        EXPECTED_SORTED_SHA,
-        "Sequential SHA256 mismatch! Expected lines: 7,065,330, Actual: {}",
-        sequential_lines.len()
-    );
-
-    // Verify chaos matches sequential
-    if chaos_sha != sequential_sha {
-        println!("❌ CHAOS-ORDER SHA256 MISMATCH!");
-        println!("   Sequential: {} lines", sequential_lines.len());
-        println!("   Chaos:      {} lines", chaos_lines.len());
-
-        // Show first differences
-        let mut seq_sorted = sequential_lines;
-        let mut chaos_sorted = chaos_lines;
-        seq_sorted.sort_unstable();
-        chaos_sorted.sort_unstable();
-
-        println!("\n   First 10 differences:");
-        let mut diff_count = 0;
-        for i in 0..seq_sorted.len().min(chaos_sorted.len()) {
-            if seq_sorted[i] != chaos_sorted[i] && diff_count < 10 {
-                println!(
-                    "     Line {}: SEQ={}",
-                    i + 1,
-                    &seq_sorted[i][..seq_sorted[i].len().min(80)]
-                );
-                println!(
-                    "             CHS={}",
-                    &chaos_sorted[i][..chaos_sorted[i].len().min(80)]
-                );
-                diff_count += 1;
-            }
+        let mft_path = PathBuf::from("/Users/rnio/uffs_data/drive_d/D_mft.bin");
+        if !mft_path.exists() {
+            eprintln!("⚠️  Offline MFT not found at: {}", mft_path.display());
+            eprintln!("   This test requires the offline D: drive MFT. Skipping.");
+            return;
         }
-        assert_eq!(chaos_sha, sequential_sha, "Chaos SHA256 mismatch!");
-    }
 
-    println!("═══════════════════════════════════════════════════════");
-    println!("✅ VALIDATION PASSED!");
-    println!("   Chaos-order matches C++ ground truth exactly.");
-    println!("═══════════════════════════════════════════════════════");
-}
+        println!("\n═══════════════════════════════════════════════════════");
+        println!("     CHAOS-ORDER SHA256 VALIDATION TEST");
+        println!("     (Full-field parity with C++ ground truth)");
+        println!("═══════════════════════════════════════════════════════\n");
 
-/// Tests reverse-order parsing (simpler chaos strategy).
-#[test]
-#[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
-fn test_reverse_order_d_drive() {
-    use std::path::PathBuf;
-
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_test_writer()
-        .try_init();
-
-    let mft_path = PathBuf::from("/Users/rnio/uffs_data/drive_d/D_mft.bin");
-    if !mft_path.exists() {
-        eprintln!(
-            "⚠️  Test skipped: offline MFT not found at {}",
-            mft_path.display()
+        // ──────────────────────────────────────────────────────────────
+        // Phase 1: Build binary upfront (single compilation)
+        // ──────────────────────────────────────────────────────────────
+        println!("🔨 Phase 1: Building uffs CLI (release mode)");
+        let build_status = std::process::Command::new("cargo")
+            .args(["build", "--release", "-p", "uffs-cli", "--bin", "uffs"])
+            .status()
+            .expect("Failed to build uffs CLI");
+        assert!(
+            build_status.success(),
+            "uffs CLI build failed with status: {build_status}",
         );
-        return;
-    }
 
-    let chaos_reader = ChaosMftReader::new(ChaosStrategy::Reverse, 2 * 1024 * 1024);
-
-    let result = chaos_reader.read_with_chaos(&mft_path, 'D');
-
-    match result {
-        Ok(index) => {
-            println!("\n✅ REVERSE-ORDER parsing completed");
-            println!("   Total records: {}", index.records.len());
-        }
-        Err(e) => {
-            #[allow(clippy::assertions_on_constants)]
-            {
-                assert!(false, "REVERSE-ORDER parsing FAILED: {e:?}");
-            }
-        }
-    }
-}
-
-/// Tests interleaved chunk order (controlled chaos).
-#[test]
-#[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
-fn test_interleaved_order_d_drive() {
-    use std::path::PathBuf;
-
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_test_writer()
-        .try_init();
-
-    let mft_path = PathBuf::from("/Users/rnio/uffs_data/drive_d/D_mft.bin");
-    if !mft_path.exists() {
-        eprintln!(
-            "⚠️  Test skipped: offline MFT not found at {}",
-            mft_path.display()
+        // Get path to built binary
+        let uffs_bin = std::env::current_dir()
+            .expect("current dir")
+            .join("target/release/uffs");
+        assert!(
+            uffs_bin.exists(),
+            "uffs binary not found at: {}",
+            uffs_bin.display()
         );
-        return;
+        println!("   ✓ Build complete: {}", uffs_bin.display());
+        println!();
+
+        // ──────────────────────────────────────────────────────────────
+        // Phase 2: Run chaos-order export
+        // ──────────────────────────────────────────────────────────────
+        println!("📤 Phase 2: Exporting chaos-order results (--chaos-seed 42)");
+        let temp_output = std::env::temp_dir().join("chaos_d.txt");
+
+        let status = std::process::Command::new(&uffs_bin)
+            .args(["*"])
+            .args(["--mft-file", mft_path.to_str().expect("valid path")])
+            .args(["--drive", "D"])
+            .args(["--chaos-seed", "42"])
+            .args(["--tz-offset", "-8"])
+            .args(["--format", "custom"])
+            .args(["--out", temp_output.to_str().expect("valid path")])
+            .status()
+            .expect("Failed to run uffs CLI");
+
+        assert!(
+            status.success(),
+            "uffs CLI (chaos) failed with status: {status}",
+        );
+        println!("   ✓ Chaos export complete");
+        println!();
+
+        // ──────────────────────────────────────────────────────────────
+        // Phase 3: Run sequential-order export
+        // ──────────────────────────────────────────────────────────────
+        println!("📤 Phase 3: Exporting sequential-order results (baseline)");
+        let sequential_output = std::env::temp_dir().join("sequential_d.txt");
+
+        let status = std::process::Command::new(&uffs_bin)
+            .args(["*"])
+            .args(["--mft-file", mft_path.to_str().expect("valid path")])
+            .args(["--drive", "D"])
+            .args(["--tz-offset", "-8"])
+            .args(["--format", "custom"])
+            .args(["--out", sequential_output.to_str().expect("valid path")])
+            .status()
+            .expect("Failed to run uffs CLI");
+
+        assert!(
+            status.success(),
+            "uffs CLI (sequential) failed with status: {status}",
+        );
+        println!("   ✓ Sequential export complete");
+        println!();
+
+        // ──────────────────────────────────────────────────────────────
+        // Phase 4: Read and compute SHA256 hashes
+        // ──────────────────────────────────────────────────────────────
+        println!("🔐 Phase 4: Computing sorted SHA256 hashes");
+
+        let chaos_lines: Vec<String> =
+            BufReader::new(File::open(&temp_output).expect("chaos file"))
+                .lines()
+                .collect::<Result<_, _>>()
+                .expect("read chaos lines");
+        let chaos_sha = sorted_sha256(&chaos_lines);
+        println!("   Chaos SHA256:      {chaos_sha}");
+
+        let sequential_lines: Vec<String> =
+            BufReader::new(File::open(&sequential_output).expect("sequential file"))
+                .lines()
+                .collect::<Result<_, _>>()
+                .expect("read sequential lines");
+        let sequential_sha = sorted_sha256(&sequential_lines);
+        println!("   Sequential SHA256: {sequential_sha}");
+        println!();
+
+        // ──────────────────────────────────────────────────────────────
+        // Phase 5: Validate against C++ ground truth
+        // ──────────────────────────────────────────────────────────────
+        println!("✅ Phase 5: Validating against C++ ground truth");
+        println!("   Expected:   {EXPECTED_SORTED_SHA}");
+        println!("   Sequential: {sequential_sha}");
+        println!("   Chaos:      {chaos_sha}");
+        println!();
+
+        // Verify sequential matches ground truth
+        assert_eq!(
+            sequential_sha,
+            EXPECTED_SORTED_SHA,
+            "Sequential SHA256 mismatch! Expected lines: 7,065,330, Actual: {}",
+            sequential_lines.len()
+        );
+
+        // Verify chaos matches sequential
+        if chaos_sha != sequential_sha {
+            println!("❌ CHAOS-ORDER SHA256 MISMATCH!");
+            println!("   Sequential: {} lines", sequential_lines.len());
+            println!("   Chaos:      {} lines", chaos_lines.len());
+
+            // Show first differences
+            let mut seq_sorted = sequential_lines;
+            let mut chaos_sorted = chaos_lines;
+            seq_sorted.sort_unstable();
+            chaos_sorted.sort_unstable();
+
+            println!("\n   First 10 differences:");
+            let mut diff_count = 0;
+            for i in 0..seq_sorted.len().min(chaos_sorted.len()) {
+                if seq_sorted[i] != chaos_sorted[i] && diff_count < 10 {
+                    println!(
+                        "     Line {}: SEQ={}",
+                        i + 1,
+                        &seq_sorted[i][..seq_sorted[i].len().min(80)]
+                    );
+                    println!(
+                        "             CHS={}",
+                        &chaos_sorted[i][..chaos_sorted[i].len().min(80)]
+                    );
+                    diff_count += 1;
+                }
+            }
+            assert_eq!(chaos_sha, sequential_sha, "Chaos SHA256 mismatch!");
+        }
+
+        println!("═══════════════════════════════════════════════════════");
+        println!("✅ VALIDATION PASSED!");
+        println!("   Chaos-order matches C++ ground truth exactly.");
+        println!("═══════════════════════════════════════════════════════");
     }
 
-    let chaos_reader = ChaosMftReader::new(ChaosStrategy::Interleaved, 2 * 1024 * 1024);
+    /// Tests reverse-order parsing (simpler chaos strategy).
+    #[test]
+    #[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
+    fn test_reverse_order_d_drive() {
+        use std::path::PathBuf;
 
-    let result = chaos_reader.read_with_chaos(&mft_path, 'D');
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .try_init();
 
-    match result {
-        Ok(index) => {
-            println!("\n✅ INTERLEAVED-ORDER parsing completed");
-            println!("   Total records: {}", index.records.len());
+        let mft_path = PathBuf::from("/Users/rnio/uffs_data/drive_d/D_mft.bin");
+        if !mft_path.exists() {
+            eprintln!(
+                "⚠️  Test skipped: offline MFT not found at {}",
+                mft_path.display()
+            );
+            return;
         }
-        Err(e) => {
-            #[allow(clippy::assertions_on_constants)]
-            {
-                assert!(false, "INTERLEAVED-ORDER parsing FAILED: {e:?}");
+
+        let chaos_reader = ChaosMftReader::new(ChaosStrategy::Reverse, 2 * 1024 * 1024);
+
+        let result = chaos_reader.read_with_chaos(&mft_path, 'D');
+
+        match result {
+            Ok(index) => {
+                println!("\n✅ REVERSE-ORDER parsing completed");
+                println!("   Total records: {}", index.records.len());
+            }
+            Err(e) => {
+                #[expect(
+                    clippy::assertions_on_constants,
+                    reason = "intentional panic on unexpected parsing failure"
+                )]
+                {
+                    assert!(false, "REVERSE-ORDER parsing FAILED: {e:?}");
+                }
             }
         }
     }
-}
+
+    /// Tests interleaved chunk order (controlled chaos).
+    #[test]
+    #[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
+    fn test_interleaved_order_d_drive() {
+        use std::path::PathBuf;
+
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .try_init();
+
+        let mft_path = PathBuf::from("/Users/rnio/uffs_data/drive_d/D_mft.bin");
+        if !mft_path.exists() {
+            eprintln!(
+                "⚠️  Test skipped: offline MFT not found at {}",
+                mft_path.display()
+            );
+            return;
+        }
+
+        let chaos_reader = ChaosMftReader::new(ChaosStrategy::Interleaved, 2 * 1024 * 1024);
+
+        let result = chaos_reader.read_with_chaos(&mft_path, 'D');
+
+        match result {
+            Ok(index) => {
+                println!("\n✅ INTERLEAVED-ORDER parsing completed");
+                println!("   Total records: {}", index.records.len());
+            }
+            Err(e) => {
+                #[expect(
+                    clippy::assertions_on_constants,
+                    reason = "intentional panic on unexpected parsing failure"
+                )]
+                {
+                    assert!(false, "INTERLEAVED-ORDER parsing FAILED: {e:?}");
+                }
+            }
+        }
+    }
+} // mod chaos_integration_tests
 
 // ============================================================================
 // IOCP REPLAY

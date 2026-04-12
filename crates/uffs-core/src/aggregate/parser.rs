@@ -466,10 +466,6 @@ pub fn parse_and_expand_agg_specs(inputs: &[&str]) -> Result<Vec<AggregateSpec>,
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::panic,
-    reason = "test assertions use panic! for non-matching enum arms"
-)]
 mod tests {
     use super::*;
 
@@ -580,7 +576,7 @@ mod tests {
     #[test]
     fn parse_unknown_kind() {
         let result = parse_agg_spec("foobar:thing");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]

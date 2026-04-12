@@ -30,11 +30,11 @@ const IDLE_CONNECTION_SECS: u64 = 300; // 5 minutes
 const MAX_QUERIES_PER_SEC: u32 = 100;
 
 /// IPC server for daemon-client communication.
-pub struct IpcServer;
+pub(crate) struct IpcServer;
 
 impl IpcServer {
     /// Returns the platform-specific socket path.
-    pub fn socket_path() -> PathBuf {
+    pub(crate) fn socket_path() -> PathBuf {
         let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
 
         #[cfg(target_os = "macos")]
@@ -312,15 +312,7 @@ impl IpcServer {
 ///
 /// Returns when the lifecycle manager signals shutdown.
 #[cfg(unix)]
-#[expect(
-    clippy::single_call_fn,
-    reason = "server entry point — structural separation"
-)]
-#[allow(
-    clippy::cognitive_complexity,
-    reason = "IPC server loop with connection handling, error recovery, and shutdown"
-)]
-pub async fn run_ipc_server(
+pub(crate) async fn run_ipc_server(
     index: Arc<IndexManager>,
     lifecycle: LifecycleHandle,
 ) -> anyhow::Result<()> {

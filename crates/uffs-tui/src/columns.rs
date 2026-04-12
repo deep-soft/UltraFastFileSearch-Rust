@@ -2,7 +2,7 @@
 //! TUI-specific width constraints (ratatui dependency).
 
 // Re-export column helpers from uffs-core.
-pub use uffs_core::search::columns::{DEFAULT_COLUMNS, parse_columns};
+pub(crate) use uffs_core::search::columns::{DEFAULT_COLUMNS, parse_columns};
 use uffs_core::search::field::FieldId;
 
 /// Default width constraint for a column (TUI-specific, depends on ratatui).
@@ -11,7 +11,7 @@ use uffs_core::search::field::FieldId;
     clippy::single_call_fn,
     reason = "layout helper — clarity over inlining into render loop"
 )]
-pub const fn default_constraint(col: FieldId) -> ratatui::layout::Constraint {
+pub(crate) const fn default_constraint(col: FieldId) -> ratatui::layout::Constraint {
     use ratatui::layout::Constraint;
     match col {
         FieldId::Drive => Constraint::Length(3),

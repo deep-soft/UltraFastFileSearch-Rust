@@ -161,7 +161,6 @@ pub fn hash_specs(specs_key: &str) -> u64 {
 }
 
 #[cfg(test)]
-#[allow(clippy::min_ident_chars, reason = "test code")]
 mod tests {
     use super::*;
 

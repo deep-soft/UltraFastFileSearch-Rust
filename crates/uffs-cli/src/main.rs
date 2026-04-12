@@ -37,7 +37,6 @@
     clippy::single_call_fn,
     reason = "CLI entry point functions are called once from main"
 )]
-#![allow(clippy::items_after_test_module)]
 
 use std::io;
 use std::path::PathBuf;
@@ -429,7 +428,6 @@ fn validate_name_only(cli: &Cli, pattern: &str) -> Result<()> {
 }
 
 /// Expand filter aliases and dispatch to the actual search command.
-#[allow(clippy::too_many_lines, reason = "CLI dispatch maps many flags")]
 async fn dispatch_search(
     cli: Cli,
     pattern: &str,
@@ -594,13 +592,32 @@ async fn run_until_shutdown() -> Result<()> {
     }
 }
 
+#[tokio::main]
+#[expect(
+    clippy::print_stderr,
+    reason = "intentional user-facing error output to stderr"
+)]
+async fn main() {
+    if let Err(err) = run_until_shutdown().await {
+        // Print error without backtrace for clean user-facing output
+        // Use anyhow's chain() to iterate through the error chain
+        for (idx, cause) in err.chain().enumerate() {
+            if idx == 0 {
+                eprintln!("Error: {cause}");
+            } else {
+                eprintln!("  Caused by: {cause}");
+            }
+        }
+
+        std::process::exit(1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    #![allow(
+    #![expect(
         clippy::default_numeric_fallback,
-        clippy::expect_used,
-        clippy::manual_let_else,
-        clippy::panic
+        reason = "test module — relaxed linting"
     )]
 
     use std::path::PathBuf;
@@ -647,10 +664,10 @@ mod tests {
 
     #[test]
     fn test_parse_drive_letter_rejects_invalid_values() {
-        assert!(parse_drive_letter("").is_err());
-        assert!(parse_drive_letter("12").is_err());
-        assert!(parse_drive_letter("1:").is_err());
-        assert!(parse_drive_letter("CD").is_err());
+        parse_drive_letter("").unwrap_err();
+        parse_drive_letter("12").unwrap_err();
+        parse_drive_letter("1:").unwrap_err();
+        parse_drive_letter("CD").unwrap_err();
     }
 
     #[test]
@@ -752,26 +769,5 @@ mod tests {
             operation: "uffs",
             ..
         }));
-    }
-}
-
-#[tokio::main]
-#[expect(
-    clippy::print_stderr,
-    reason = "intentional user-facing error output to stderr"
-)]
-async fn main() {
-    if let Err(err) = run_until_shutdown().await {
-        // Print error without backtrace for clean user-facing output
-        // Use anyhow's chain() to iterate through the error chain
-        for (idx, cause) in err.chain().enumerate() {
-            if idx == 0 {
-                eprintln!("Error: {cause}");
-            } else {
-                eprintln!("  Caused by: {cause}");
-            }
-        }
-
-        std::process::exit(1);
     }
 }

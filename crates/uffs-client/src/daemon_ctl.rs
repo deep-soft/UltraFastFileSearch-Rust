@@ -43,7 +43,6 @@ pub(crate) fn verify_daemon_after_connect() {
 }
 
 /// Send a keepalive message using blocking std I/O (works on all platforms).
-#[allow(clippy::single_call_fn)]
 pub(crate) fn keepalive_send_blocking(sock_path: &std::path::Path) {
     #[cfg(unix)]
     {
@@ -156,6 +155,10 @@ pub(crate) fn spawn_daemon(
 }
 
 /// Unix daemon spawn: simple detached process.
+/// # Errors
+///
+/// Returns [`ClientError`](crate::error::ClientError) if the daemon process
+/// cannot be spawned.
 #[cfg(unix)]
 #[expect(
     clippy::single_call_fn,

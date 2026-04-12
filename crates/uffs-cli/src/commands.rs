@@ -9,7 +9,7 @@ use indicatif::MultiProgress;
 use indicatif::{ProgressBar, ProgressStyle};
 
 /// Aggregate analytics subcommand.
-pub mod aggregate;
+pub(crate) mod aggregate;
 /// Daemon management subcommands.
 mod daemon_mgmt;
 /// Index subcommand implementation.
@@ -21,19 +21,19 @@ mod mcp_mgmt;
 /// Output helpers for search results.
 mod output;
 /// Search command implementation.
-pub mod search;
+pub(crate) mod search;
 /// Stats subcommand implementation.
 mod stats;
 /// Combined `uffs status` command.
 mod system_status;
 
-pub use self::daemon_mgmt::daemon;
-pub use self::index::index;
-pub use self::info::info;
-pub use self::mcp_mgmt::mcp;
-pub use self::search::search;
-pub use self::stats::stats;
-pub use self::system_status::system_status;
+pub(crate) use self::daemon_mgmt::daemon;
+pub(crate) use self::index::index;
+pub(crate) use self::info::info;
+pub(crate) use self::mcp_mgmt::mcp;
+pub(crate) use self::search::search;
+pub(crate) use self::stats::stats;
+pub(crate) use self::system_status::system_status;
 
 /// Check if progress bars are disabled via `UFFS_NO_PROGRESS=1` environment
 /// variable.

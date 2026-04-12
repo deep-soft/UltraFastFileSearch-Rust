@@ -265,7 +265,10 @@ impl MftReader {
     /// # Platform
     ///
     /// Cross-platform - works on all platforms.
-    #[expect(clippy::single_call_fn, reason = "extracted for clarity")]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError`] if Polars `DataFrame` construction fails.
     pub(super) fn build_dataframe_from_columns(
         columns: crate::parse::ParsedColumns,
     ) -> Result<DataFrame> {
@@ -534,6 +537,10 @@ impl MftReader {
     }
 
     /// Create an empty `DataFrame` with the MFT schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError`] if Polars `DataFrame` construction fails.
     #[expect(dead_code, reason = "utility for tests and potential future use")]
     fn create_empty_dataframe() -> Result<DataFrame> {
         use uffs_polars::{Column, DataType, TimeUnit};

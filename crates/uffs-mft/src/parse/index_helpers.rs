@@ -15,7 +15,7 @@ use crate::index::{
 
 /// Adds a stream to the index and returns its index.
 #[inline]
-pub fn add_stream_to_index(
+pub(crate) fn add_stream_to_index(
     index: &mut MftIndex,
     stream_name: &str,
     stream_size: u64,
@@ -48,7 +48,7 @@ pub fn add_stream_to_index(
 }
 
 /// Result of building an internal stream chain.
-pub struct InternalStreamChain {
+pub(crate) struct InternalStreamChain {
     /// First index in the chain, or `NO_ENTRY` if empty.
     pub first: u32,
     /// Total size of all internal streams.
@@ -59,7 +59,10 @@ pub struct InternalStreamChain {
 
 /// Builds an internal stream chain from size/allocated pairs.
 #[inline]
-pub fn build_internal_stream_chain<I>(index: &mut MftIndex, streams: I) -> InternalStreamChain
+pub(crate) fn build_internal_stream_chain<I>(
+    index: &mut MftIndex,
+    streams: I,
+) -> InternalStreamChain
 where
     I: IntoIterator<Item = (u64, u64)>,
 {
@@ -97,7 +100,7 @@ where
 
 /// Chains stream indices together and returns the first index.
 #[inline]
-pub fn chain_streams(index: &mut MftIndex, stream_indices: &[u32]) {
+pub(crate) fn chain_streams(index: &mut MftIndex, stream_indices: &[u32]) {
     for i in 0..stream_indices.len().saturating_sub(1) {
         let current_idx = u32_as_usize(stream_indices[i]);
         let next_idx = stream_indices[i + 1];
@@ -107,7 +110,7 @@ pub fn chain_streams(index: &mut MftIndex, stream_indices: &[u32]) {
 
 /// Chains link indices together.
 #[inline]
-pub fn chain_links(index: &mut MftIndex, link_indices: &[u32]) {
+pub(crate) fn chain_links(index: &mut MftIndex, link_indices: &[u32]) {
     for i in 0..link_indices.len().saturating_sub(1) {
         let current_idx = u32_as_usize(link_indices[i]);
         let next_idx = link_indices[i + 1];
@@ -117,7 +120,7 @@ pub fn chain_links(index: &mut MftIndex, link_indices: &[u32]) {
 
 /// Adds a link to the index and returns its index.
 #[inline]
-pub fn add_link_to_index(index: &mut MftIndex, link_name: &str, link_parent: u64) -> u32 {
+pub(crate) fn add_link_to_index(index: &mut MftIndex, link_name: &str, link_parent: u64) -> u32 {
     let link_offset = index.add_name(link_name);
     let link_len = link_name.len();
     let link_is_ascii = link_name.is_ascii();
@@ -141,7 +144,12 @@ pub fn add_link_to_index(index: &mut MftIndex, link_name: &str, link_parent: u64
 
 /// Adds a child entry to a parent record for tree metrics computation.
 #[inline]
-pub fn add_child_entry(index: &mut MftIndex, parent_frs: u64, child_frs: u64, name_idx: u16) {
+pub(crate) fn add_child_entry(
+    index: &mut MftIndex,
+    parent_frs: u64,
+    child_frs: u64,
+    name_idx: u16,
+) {
     if parent_frs == child_frs || parent_frs == u64::from(NO_ENTRY) {
         return;
     }
@@ -179,7 +187,7 @@ pub fn add_child_entry(index: &mut MftIndex, parent_frs: u64, child_frs: u64, na
 
 /// Data snapshot from an extension record that needs to be merged into the
 /// base.
-pub struct ExtensionSnapshot {
+pub(crate) struct ExtensionSnapshot {
     /// Head of the extension's stream chain.
     pub stream_head: u32,
     /// Number of additional streams from extension (excluding default).
@@ -204,7 +212,7 @@ pub struct ExtensionSnapshot {
 
 /// Merges extension streams into the base record's stream chain.
 #[inline]
-pub fn merge_extension_streams(
+pub(crate) fn merge_extension_streams(
     index: &mut MftIndex,
     frs: u64,
     base_stream_tail: Option<u32>,
@@ -246,7 +254,7 @@ pub fn merge_extension_streams(
 
 /// Merges extension names into the base record's name chain.
 #[inline]
-pub fn merge_extension_names(
+pub(crate) fn merge_extension_names(
     index: &mut MftIndex,
     frs: u64,
     base_name_tail: Option<u32>,

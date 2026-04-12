@@ -495,7 +495,7 @@ fn finalize_one(
                     let key_str = if drives.is_empty() {
                         format!("{key}")
                     } else {
-                        super::rollup::resolve_rollup_key(key, &inner.mode, drives[0])
+                        super::rollup::resolve_rollup_key(key, inner.mode, drives[0])
                     };
                     let mut row = BucketRow::from_stats(key_str, stats, total_matched, total_bytes);
 

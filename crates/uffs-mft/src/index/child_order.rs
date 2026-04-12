@@ -17,7 +17,6 @@ impl MftIndex {
     /// If the parent record does not exist yet, this creates a placeholder
     /// record so child entries are preserved even when chunks are processed
     /// out of order.
-    #[expect(clippy::indexing_slicing, reason = "bounds checked via get_or_create")]
     pub fn add_child_entry(&mut self, parent_frs: u64, child_frs: u64, name_index: u16) {
         // Create a parent placeholder if it does not exist yet so
         // child edges are not dropped during out-of-order processing.
@@ -29,22 +28,25 @@ impl MftIndex {
         }
 
         // Get or create parent record index
-        let parent_idx = if self.frs_to_idx[parent_frs_usize] == NO_ENTRY {
-            // Create placeholder parent record
+        let Some(frs_slot) = self.frs_to_idx.get_mut(parent_frs_usize) else {
+            return;
+        };
+        let parent_idx = if *frs_slot == NO_ENTRY {
             let new_idx = len_to_u32(self.records.len());
-            self.frs_to_idx[parent_frs_usize] = new_idx;
+            *frs_slot = new_idx;
             self.records.push(FileRecord::new(parent_frs));
             new_idx as usize
         } else {
-            self.frs_to_idx[parent_frs_usize] as usize
+            *frs_slot as usize
         };
 
         // Create child entry
         let child_idx = len_to_u32(self.children.len());
-        let old_first_child = self.records[parent_idx].first_child;
-
-        // Update parent's first_child before pushing to children
-        self.records[parent_idx].first_child = child_idx;
+        let Some(parent_rec) = self.records.get_mut(parent_idx) else {
+            return;
+        };
+        let old_first_child = parent_rec.first_child;
+        parent_rec.first_child = child_idx;
 
         self.children.push(ChildInfo {
             next_entry: old_first_child,
@@ -71,49 +73,14 @@ impl MftIndex {
     ///
     /// Call this as a fallback if tree metrics computation leaves directories
     /// with `descendants == 0`, which indicates the child graph was incomplete.
-    #[expect(clippy::indexing_slicing, reason = "indices bounded by records.len()")]
     pub fn rebuild_children_from_names(&mut self) {
         tracing::debug!(
             records = self.records.len(),
             "[TRIP] MftIndex::rebuild_children_from_names ENTER"
         );
-        let no_entry_frs: u64 = u64::from(NO_ENTRY);
 
         // Phase 1: collect (parent_frs, child_frs, name_index) edges.
-        // Indexing is safe: child_idx is bounded by 0..self.records.len()
-        let mut edges: Vec<(u64, u64, u16)> =
-            Vec::with_capacity(self.records.len().saturating_mul(2));
-
-        for child_idx in 0..self.records.len() {
-            let child_frs = self.records[child_idx].frs;
-            let name_count = usize::from(self.records[child_idx].name_count);
-
-            // Walk the child's link chain in stored order.
-            let mut current_link = self.records[child_idx].first_name;
-            for name_index in 0..name_count {
-                let parent_frs = current_link.parent_frs;
-
-                // Skip missing/placeholder parents and self-references (root has parent==self).
-                if parent_frs != no_entry_frs && parent_frs != child_frs {
-                    // NOTE: ChildInfo.name_index must match the original FILE_NAME
-                    // attribute encounter order. The stored link chain order
-                    // is the reverse of encounter order because each new name becomes `first_name`.
-                    // Therefore, list_index (0..name_count-1) must be remapped back to parse_index.
-                    let parse_index = len_to_u16(name_count - 1 - name_index);
-                    edges.push((parent_frs, child_frs, parse_index));
-                }
-
-                if current_link.next_entry == NO_ENTRY {
-                    break;
-                }
-                // Bounds checked via .get() - breaks if out of range
-                if let Some(next_link) = self.links.get(current_link.next_entry as usize) {
-                    current_link = *next_link;
-                } else {
-                    break;
-                }
-            }
-        }
+        let edges = self.collect_parent_child_edges();
 
         tracing::debug!(
             edges_collected = edges.len(),
@@ -133,6 +100,43 @@ impl MftIndex {
             children = self.children.len(),
             "[TRIP] MftIndex::rebuild_children_from_names EXIT"
         );
+    }
+
+    /// Walk every record's link chain and collect `(parent_frs, child_frs,
+    /// name_index)` edges for child-list reconstruction.
+    fn collect_parent_child_edges(&self) -> Vec<(u64, u64, u16)> {
+        let no_entry_frs: u64 = u64::from(NO_ENTRY);
+        let mut edges: Vec<(u64, u64, u16)> =
+            Vec::with_capacity(self.records.len().saturating_mul(2));
+
+        for rec in &self.records {
+            let child_frs = rec.frs;
+            let name_count = usize::from(rec.name_count);
+
+            let mut current_link = rec.first_name;
+            for name_index in 0..name_count {
+                let parent_frs = current_link.parent_frs;
+
+                // Skip missing/placeholder parents and self-references
+                // (root has parent == self).
+                if parent_frs != no_entry_frs && parent_frs != child_frs {
+                    // Remap list index → parse index (link chain is stored
+                    // in reverse encounter order).
+                    let parse_index = len_to_u16(name_count - 1 - name_index);
+                    edges.push((parent_frs, child_frs, parse_index));
+                }
+
+                if current_link.next_entry == NO_ENTRY {
+                    break;
+                }
+                if let Some(next_link) = self.links.get(current_link.next_entry as usize) {
+                    current_link = *next_link;
+                } else {
+                    break;
+                }
+            }
+        }
+        edges
     }
     /// Sort children within each directory by filename (case-insensitive).
     ///
@@ -217,10 +221,10 @@ impl MftIndex {
                 // Get filenames (use appropriate name index for hard links)
                 let name_a = rec_a
                     .and_then(|rec| self.get_link_at(rec, child_a.name_index))
-                    .map_or("", |link| self.get_name(&link.name));
+                    .map_or("", |link| self.get_name(link.name));
                 let name_b = rec_b
                     .and_then(|rec| self.get_link_at(rec, child_b.name_index))
-                    .map_or("", |link| self.get_name(&link.name));
+                    .map_or("", |link| self.get_name(link.name));
 
                 // Compare case-insensitively (zero allocations for ASCII)
                 // Inlined from cmp_ascii_case_insensitive to satisfy clippy::single_call_fn

@@ -60,6 +60,12 @@ pub fn get_cache_key() -> io::Result<[u8; KEY_SIZE]> {
 }
 
 /// Retrieve or create the encryption key via macOS Keychain Services.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] if Keychain access fails (e.g. user denies
+/// permission, Keychain is locked, or the stored key has an invalid size
+/// after multiple regeneration attempts).
 #[cfg(target_os = "macos")]
 fn keychain_key() -> io::Result<[u8; KEY_SIZE]> {
     use rand::Rng;

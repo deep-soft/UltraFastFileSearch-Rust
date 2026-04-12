@@ -30,8 +30,9 @@ use crate::ntfs::{
 /// `true` if any names/streams were added, `false` otherwise.
 #[deprecated(note = "Use parse_record_full() + MftRecordMerger instead")]
 #[expect(
-    clippy::too_many_lines,
-    reason = "deprecated parser — not worth further splitting"
+    clippy::indexing_slicing,
+    clippy::missing_asserts_for_indexing,
+    reason = "all slice access is bounds-guarded by while-loop condition and per-access length checks"
 )]
 pub(super) fn parse_extension_to_fragment(
     data: &[u8],
@@ -86,7 +87,7 @@ pub(super) fn parse_extension_to_fragment(
                             let name_bytes = &data[name_start..name_start + name_len * 2];
                             let name_u16: SmallVec<[u16; 64]> = name_bytes
                                 .chunks_exact(2)
-                                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                                 .collect();
                             let name = String::from_utf16_lossy(&name_u16);
                             let parent_frs = fn_attr.parent_directory & 0x0000_FFFF_FFFF_FFFF;
@@ -160,7 +161,7 @@ pub(super) fn parse_extension_to_fragment(
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: SmallVec<[u16; 64]> = name_bytes
                             .chunks_exact(2)
-                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                             .collect();
                         let stream_name = String::from_utf16_lossy(&name_u16);
                         // C++ parity: ALL named $DATA streams create regular
@@ -189,6 +190,11 @@ pub(super) fn parse_extension_to_fragment(
 /// the extension record.  Handles link/stream interning, chain threading,
 /// parent-child relationships, and the edge case where the primary
 /// `$FILE_NAME` lives only in an extension record.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "link_indices/stream_indices are valid indices into fragment vectors (just pushed); \
+              chain loops iterate 0..len-1 with i+1 < len"
+)]
 fn merge_extension_into_fragment(
     fragment: &mut crate::index::MftIndexFragment,
     base_frs: u64,
@@ -202,8 +208,8 @@ fn merge_extension_into_fragment(
         fragment.names.push_str(name);
         let name_len = name.len();
         let is_ascii = name.is_ascii();
-        let extension_id = fragment.intern_extension(name);
-        let name_ref = IndexNameRef::new(name_offset, len_to_u16(name_len), is_ascii, extension_id);
+        let link_ext_id = fragment.intern_extension(name);
+        let name_ref = IndexNameRef::new(name_offset, len_to_u16(name_len), is_ascii, link_ext_id);
 
         let link_idx = len_to_u32(fragment.links.len());
         fragment.links.push(LinkInfo {
@@ -222,8 +228,9 @@ fn merge_extension_into_fragment(
         fragment.names.push_str(stream_name);
         let name_len = stream_name.len();
         let is_ascii = stream_name.is_ascii();
-        let extension_id = fragment.intern_extension(stream_name);
-        let name_ref = IndexNameRef::new(name_offset, len_to_u16(name_len), is_ascii, extension_id);
+        let stream_ext_id = fragment.intern_extension(stream_name);
+        let name_ref =
+            IndexNameRef::new(name_offset, len_to_u16(name_len), is_ascii, stream_ext_id);
 
         let stream_idx = len_to_u32(fragment.streams.len());
         fragment.streams.push(IndexStreamInfo {
@@ -233,7 +240,7 @@ fn merge_extension_into_fragment(
             },
             next_entry: NO_ENTRY,
             name: name_ref,
-            flags: 8 << 2,
+            flags: 8_u8 << 2_u8,
             _pad0: [0; 3],
         });
         stream_indices.push(stream_idx);
@@ -242,7 +249,8 @@ fn merge_extension_into_fragment(
     // Ensure parent directories exist
     for (_, parent_frs) in names {
         if *parent_frs != base_frs && *parent_frs != 0 {
-            let _ = fragment.get_or_create(*parent_frs);
+            fragment.get_or_create(*parent_frs);
+            // ^ side effect: ensures parent placeholder exists
         }
     }
 
@@ -279,12 +287,12 @@ fn merge_extension_into_fragment(
         if let Some(end_idx) = stream_chain_end {
             fragment.streams[u32_as_usize(end_idx)].next_entry = stream_indices[0];
         } else {
-            let record = fragment.get_or_create(base_frs);
-            record.first_stream.next_entry = stream_indices[0];
+            let rec_for_stream = fragment.get_or_create(base_frs);
+            rec_for_stream.first_stream.next_entry = stream_indices[0];
         }
-        let record = fragment.get_or_create(base_frs);
-        record.stream_count += len_to_u16(stream_indices.len());
-        record.total_stream_count += len_to_u16(stream_indices.len());
+        let rec_for_count = fragment.get_or_create(base_frs);
+        rec_for_count.stream_count += len_to_u16(stream_indices.len());
+        rec_for_count.total_stream_count += len_to_u16(stream_indices.len());
     }
 
     // Build parent-child relationships
@@ -306,6 +314,12 @@ fn find_chain_end(start: u32, get_next: impl Fn(usize) -> u32) -> Option<u32> {
 }
 
 /// Attach extension-record link indices to the base record.
+#[expect(
+    clippy::indexing_slicing,
+    clippy::missing_asserts_for_indexing,
+    reason = "link_indices are valid indices into fragment.links (just pushed by caller); \
+              early return guards link_indices.is_empty()"
+)]
 fn attach_links(
     fragment: &mut crate::index::MftIndexFragment,
     base_frs: u64,
@@ -323,30 +337,34 @@ fn attach_links(
         if let Some(end_idx) = link_chain_end {
             fragment.links[u32_as_usize(end_idx)].next_entry = link_indices[0];
         } else {
-            let record = fragment.get_or_create(base_frs);
-            record.first_name.next_entry = link_indices[0];
+            let rec_for_link_chain = fragment.get_or_create(base_frs);
+            rec_for_link_chain.first_name.next_entry = link_indices[0];
         }
-        let record = fragment.get_or_create(base_frs);
-        record.name_count += len_to_u16(link_indices.len());
+        let rec_for_link_count = fragment.get_or_create(base_frs);
+        rec_for_link_count.name_count += len_to_u16(link_indices.len());
     } else {
         // Copy the first extension name directly into first_name
         // This matches established behavior (ntfs_index.hpp lines 559-567)
         let first_link_name = fragment.links[u32_as_usize(link_indices[0])].name;
         let first_link_parent = fragment.links[u32_as_usize(link_indices[0])].parent_frs;
-        let record = fragment.get_or_create(base_frs);
-        record.first_name.name = first_link_name;
-        record.first_name.parent_frs = first_link_parent;
+        let rec_for_first_name = fragment.get_or_create(base_frs);
+        rec_for_first_name.first_name.name = first_link_name;
+        rec_for_first_name.first_name.parent_frs = first_link_parent;
 
         // Chain remaining links (if any) to first_name.next_entry
         if link_indices.len() > 1 {
-            let record = fragment.get_or_create(base_frs);
-            record.first_name.next_entry = link_indices[1];
-            record.name_count += len_to_u16(link_indices.len().saturating_sub(1));
+            let rec_for_extra_links = fragment.get_or_create(base_frs);
+            rec_for_extra_links.first_name.next_entry = link_indices[1];
+            rec_for_extra_links.name_count += len_to_u16(link_indices.len().saturating_sub(1));
         }
     }
 }
 
 /// Build parent→child entries for names added from extension records.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "frs_to_idx indices are bounds-checked by resize; parent_idx validated by get_or_create"
+)]
 fn build_parent_child_entries(
     fragment: &mut crate::index::MftIndexFragment,
     base_frs: u64,

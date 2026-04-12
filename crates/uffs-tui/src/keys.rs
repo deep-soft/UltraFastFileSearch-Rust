@@ -29,7 +29,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
 /// A keybinding definition: (key code, required modifiers).
-pub type KeyBind = (KeyCode, KeyModifiers);
+pub(crate) type KeyBind = (KeyCode, KeyModifiers);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Embedded presets — carried inside the binary
@@ -123,7 +123,7 @@ sort_direction = ["ctrl+shift+d"]
 
 /// Every bindable action in the TUI.
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
-pub enum Action {
+pub(crate) enum Action {
     // ═══ App ════════════════════════════════════════════════════════════
     /// Quit the TUI.
     Quit,
@@ -216,7 +216,7 @@ fn action_from_name(group: &str, name: &str) -> Option<Action> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Runtime keymap — maps actions to one or more key bindings.
-pub struct Keymap {
+pub(crate) struct Keymap {
     /// Map from action to its configured key bindings.
     bindings: HashMap<Action, Vec<KeyBind>>,
 }
@@ -224,7 +224,7 @@ pub struct Keymap {
 impl Keymap {
     /// Check if a key event matches any binding for the given action.
     #[must_use]
-    pub fn matches(&self, key: KeyEvent, action: Action) -> bool {
+    pub(crate) fn matches(&self, key: KeyEvent, action: Action) -> bool {
         self.bindings
             .get(&action)
             .is_some_and(|binds| binds.iter().any(|bind| matches_bind(key, *bind)))
@@ -237,7 +237,7 @@ impl Keymap {
     /// special characters in most terminals) and the next available binding
     /// is returned instead.
     #[must_use]
-    pub fn label(&self, action: Action) -> String {
+    pub(crate) fn label(&self, action: Action) -> String {
         let Some(binds) = self.bindings.get(&action) else {
             return "?".to_owned();
         };
@@ -263,7 +263,7 @@ impl Default for Keymap {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Available preset names.
-pub const PRESET_NAMES: &[&str] = &["windows", "emacs"];
+pub(crate) const PRESET_NAMES: &[&str] = &["windows", "emacs"];
 
 /// Path to the keybinding config file.
 fn config_file_path() -> Option<std::path::PathBuf> {
@@ -288,7 +288,7 @@ fn preset_toml(name: &str) -> Option<&'static str> {
     clippy::single_call_fn,
     reason = "public API entry point; called from main"
 )]
-pub fn load_or_create_keymap(preset_override: Option<&str>) -> (Keymap, String) {
+pub(crate) fn load_or_create_keymap(preset_override: Option<&str>) -> (Keymap, String) {
     // If --keys <preset> was given, write that preset to disk
     if let Some(name) = preset_override {
         if let Some(toml_content) = preset_toml(name) {
@@ -484,8 +484,8 @@ fn backfill_from_preset(bindings: &mut HashMap<Action, Vec<KeyBind>>, preset_nam
 /// - `"f1"` .. `"f12"`
 /// - `"enter"`, `"tab"`, `"shift+tab"`, `"up"`, `"down"`, `"pageup"`, etc.
 /// - `"ctrl+/"` (single-char keys)
-// allow: single-call in bin target, multi-call in test target (called from unit tests)
-#[allow(clippy::single_call_fn)]
+// allow: single-call in bin target, multi-call in test target (called from unit
+// tests)
 fn parse_key_string(input: &str) -> Option<KeyBind> {
     let normalized = input.trim().to_lowercase();
     let parts: Vec<&str> = normalized.split('+').collect();

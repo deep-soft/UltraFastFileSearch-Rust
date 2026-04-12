@@ -24,7 +24,6 @@ impl IndexManager {
     /// already covers its operator.  Everything else needs post-filtering
     /// against the materialised `DisplayRow`.
     #[must_use]
-    #[allow(clippy::single_call_fn)]
     pub(super) fn predicates_require_post_filter(predicates: &[SearchPredicate]) -> bool {
         predicates.iter().any(|predicate| {
             let Some(field) = FieldId::parse(&predicate.field) else {
@@ -115,10 +114,11 @@ impl IndexManager {
     /// the slower post-filter pass.  Predicates that cannot be compiled
     /// into the hot path are silently skipped — they will be handled by
     /// `matches_predicate` during post-filtering.
-    #[allow(
+    #[expect(
         clippy::single_call_fn,
         clippy::wildcard_enum_match_arm,
-        clippy::too_many_lines
+        clippy::too_many_lines,
+        reason = "predicate compiler — single dispatcher with exhaustive match"
     )]
     pub(super) fn compile_predicates_into_filters(
         filters: &mut SearchFilters,
@@ -396,7 +396,6 @@ impl IndexManager {
 
     /// Apply canonical predicates against a materialized display row.
     #[must_use]
-    #[allow(clippy::single_call_fn)]
     pub(super) fn matches_predicates(row: &DisplayRow, predicates: &[SearchPredicate]) -> bool {
         predicates
             .iter()
@@ -405,7 +404,6 @@ impl IndexManager {
 
     /// Apply a single canonical predicate.
     #[must_use]
-    #[allow(clippy::single_call_fn)]
     fn matches_predicate(row: &DisplayRow, predicate: &SearchPredicate) -> bool {
         let Some(field) = FieldId::parse(&predicate.field) else {
             return true;
@@ -467,14 +465,12 @@ impl IndexManager {
 
     /// Return the extension shown to direct daemon callers.
     #[must_use]
-    #[allow(clippy::single_call_fn)]
     pub(super) fn search_row_extension(row: &SearchRow) -> &str {
         row.name.rsplit_once('.').map_or("", |(_, ext)| ext)
     }
 
     /// Return the semantic type shown to direct daemon callers.
     #[must_use]
-    #[allow(clippy::single_call_fn)]
     pub(super) fn search_row_type(row: &SearchRow) -> &'static str {
         if row.is_directory {
             "directory"
@@ -510,7 +506,6 @@ impl IndexManager {
 
     /// Return the fixed-point bulkiness metric shown to direct daemon callers.
     #[must_use]
-    #[allow(clippy::single_call_fn)]
     pub(super) fn search_row_bulkiness(row: &SearchRow) -> u64 {
         let logical = if row.is_directory {
             row.treesize
@@ -581,7 +576,10 @@ impl IndexManager {
 
     /// Case-insensitive wildcard match supporting `*` and `?`.
     #[must_use]
-    #[allow(clippy::indexing_slicing)]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "DP table indices are bounded by string length"
+    )]
     fn wildcard_match(actual_str: &str, pattern_str: &str) -> bool {
         let actual_bytes = actual_str.to_ascii_lowercase().into_bytes();
         let pattern_bytes = pattern_str.to_ascii_lowercase().into_bytes();
@@ -653,7 +651,6 @@ impl IndexManager {
 
     /// Match an attribute-list predicate against raw NTFS flags.
     #[must_use]
-    #[allow(clippy::single_call_fn)]
     fn match_attributes(flags: u32, predicate: &SearchPredicate) -> bool {
         let SearchPredicateValue::StringList(values) = &predicate.value else {
             return true;

@@ -208,7 +208,7 @@ fn compare_by_column(
 ///
 /// Kept as a separate function (rather than inlined into `compare_by_column`)
 /// because inlining 42 match arms into a nested closure harms readability.
-pub const fn field_to_attr_bit(field: FieldId) -> u32 {
+pub(crate) const fn field_to_attr_bit(field: FieldId) -> u32 {
     match field {
         FieldId::Hidden => 0x0002,
         FieldId::System => 0x0004,
@@ -377,17 +377,12 @@ pub fn display_rows_to_dataframe(
 ///
 /// Columns that don't exist get sensible defaults (0 for numbers, empty
 /// strings, `'?'` for drive).
-///
-/// # Errors
-///
-/// Returns an error if `DataFrame` column extraction fails in an unexpected
-/// way.
-pub fn dataframe_to_display_rows(
-    data_frame: &uffs_polars::DataFrame,
-) -> Result<Vec<DisplayRow>, String> {
+/// Converts a `DataFrame` into a `Vec<DisplayRow>` for rendering.
+#[must_use]
+pub fn dataframe_to_display_rows(data_frame: &uffs_polars::DataFrame) -> Vec<DisplayRow> {
     let height = data_frame.height();
     if height == 0 {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
     let mut rows = Vec::with_capacity(height);
@@ -424,7 +419,7 @@ pub fn dataframe_to_display_rows(
             tree_allocated,
         ));
     }
-    Ok(rows)
+    rows
 }
 
 // ── DataFrame column helpers (private) ────────────────────────────────
@@ -466,7 +461,6 @@ fn col_u64(data_frame: &uffs_polars::DataFrame, col_name: &str, row_idx: usize) 
 }
 
 /// Extract a boolean value from a `DataFrame` column.
-#[allow(clippy::single_call_fn)]
 fn col_bool(data_frame: &uffs_polars::DataFrame, col_name: &str, row_idx: usize) -> bool {
     data_frame
         .column(col_name)

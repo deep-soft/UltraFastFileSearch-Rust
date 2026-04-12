@@ -164,7 +164,7 @@ pub async fn dispatch_command(command: Commands) -> Result<()> {
     clippy::single_call_fn,
     reason = "logical separation of command dispatch"
 )]
-pub async fn dispatch_command(command: Commands) -> Result<()> {
+pub(crate) async fn dispatch_command(command: Commands) -> Result<()> {
     match command {
         Commands::Load {
             input,

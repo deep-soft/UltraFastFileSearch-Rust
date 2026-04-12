@@ -13,7 +13,7 @@ use crate::index::IndexManager;
 use crate::lifecycle::LifecycleHandle;
 
 /// Request handler holding shared daemon state.
-pub struct RequestHandler {
+pub(crate) struct RequestHandler {
     /// Shared index manager.
     pub index: alloc::sync::Arc<IndexManager>,
     /// Lifecycle handle for idle timer, shutdown, connections.
@@ -22,7 +22,7 @@ pub struct RequestHandler {
 
 impl RequestHandler {
     /// Handle a single JSON-RPC request and return a JSON response string.
-    pub async fn handle(&self, req: &RpcRequest) -> String {
+    pub(crate) async fn handle(&self, req: &RpcRequest) -> String {
         // Every incoming request — search, drives, status, keepalive, etc. —
         // extends the daemon's sliding-window idle deadline.  This is the
         // single authoritative call site; individual handlers do not need to
@@ -54,7 +54,7 @@ impl RequestHandler {
     }
 
     /// Handle `search` method.
-    #[allow(
+    #[expect(
         clippy::cognitive_complexity,
         reason = "search handler with param extraction, validation, and response formatting"
     )]

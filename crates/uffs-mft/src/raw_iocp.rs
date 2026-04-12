@@ -318,8 +318,8 @@ impl IocpCaptureWriter {
     /// # Errors
     ///
     /// Returns an error if writing fails.
-    pub fn write_to_file<P: AsRef<Path>>(mut self, path: P) -> Result<IocpCaptureHeader> {
-        let path = path.as_ref();
+    pub fn write_to_file<P: AsRef<Path>>(mut self, file_path: P) -> Result<IocpCaptureHeader> {
+        let path: &Path = file_path.as_ref();
 
         // Calculate data offsets
         let mut data_offset: u64 = 0;
@@ -332,7 +332,7 @@ impl IocpCaptureWriter {
         let total_records: u64 = self
             .chunks
             .iter()
-            .map(|(c, _)| u64::from(c.record_count))
+            .map(|(chunk, _)| u64::from(chunk.record_count))
             .sum();
         let header = IocpCaptureHeader {
             version: VERSION,
@@ -425,8 +425,8 @@ impl IocpCaptureData {
 /// # Errors
 ///
 /// Returns an error if reading or parsing fails.
-pub fn load_iocp_capture<P: AsRef<Path>>(path: P) -> Result<IocpCaptureData> {
-    let path = path.as_ref();
+pub fn load_iocp_capture<P: AsRef<Path>>(file_path: P) -> Result<IocpCaptureData> {
+    let path: &Path = file_path.as_ref();
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
 
@@ -519,6 +519,10 @@ pub fn is_iocp_capture<P: AsRef<Path>>(path: P) -> Result<bool> {
 ///
 /// The unified parser processes base and extension records through
 /// the same attribute loop, matching C++ `load()` behavior.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "IOCP replay: header parsing, chunk iteration, fixup, parsing, and tree metrics in one pipeline"
+)]
 pub fn load_iocp_to_index<P: AsRef<Path>>(path: P) -> Result<crate::index::MftIndex> {
     use tracing::{debug, info};
 
@@ -568,12 +572,11 @@ pub fn load_iocp_to_index<P: AsRef<Path>>(path: P) -> Result<crate::index::MftIn
 
     // Zero-copy path: iterate by chunk index, slicing directly into the
     // owned capture data for in-place fixup (no per-record copy).
-    let num_chunks = capture.chunks.len();
-    for ci in 0..num_chunks {
-        let start_frs = capture.chunks[ci].start_frs;
-        let records_in_chunk = capture.chunks[ci].record_count as usize;
-        let data_off = crate::index::frs_to_usize(capture.chunks[ci].data_offset);
-        let data_sz = capture.chunks[ci].data_size as usize;
+    for chunk_info in &capture.chunks {
+        let start_frs = chunk_info.start_frs;
+        let records_in_chunk = chunk_info.record_count as usize;
+        let data_off = crate::index::frs_to_usize(chunk_info.data_offset);
+        let data_sz = chunk_info.data_size as usize;
 
         for i in 0..records_in_chunk {
             let rec_off = data_off + i * record_size;
@@ -583,19 +586,21 @@ pub fn load_iocp_to_index<P: AsRef<Path>>(path: P) -> Result<crate::index::MftIn
             }
 
             // In-place fixup directly on owned capture data (zero copy)
-            if !apply_fixup(&mut capture.data[rec_off..rec_end]) {
+            // Bounds validated: rec_end <= data_off + data_sz, checked above
+            let Some(record_slice) = capture.data.get_mut(rec_off..rec_end) else {
+                break;
+            };
+            if !apply_fixup(record_slice) {
                 fixup_failed += 1;
                 continue;
             }
 
-            let frs = start_frs + i as u64;
+            let rec_frs = start_frs + i as u64;
 
-            if process_record(
-                &capture.data[rec_off..rec_end],
-                frs,
-                &mut index,
-                &mut name_buf,
-            ) {
+            let Some(record_ref) = capture.data.get(rec_off..rec_end) else {
+                break;
+            };
+            if process_record(record_ref, rec_frs, &mut index, &mut name_buf) {
                 records_parsed += 1;
             }
         }

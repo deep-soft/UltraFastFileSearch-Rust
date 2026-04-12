@@ -76,7 +76,6 @@ pub const fn u32_as_usize(val: u32) -> usize {
 #[must_use]
 pub const fn nonneg_to_u64(val: i64) -> u64 {
     if val > 0 {
-        // SAFETY: val is guaranteed positive by the branch, so no sign bit to lose.
         #[expect(clippy::cast_sign_loss, reason = "val > 0 guard makes this lossless")]
         let result = val as u64;
         result
@@ -103,8 +102,9 @@ pub fn micros_to_i64(us: u128) -> i64 {
     clippy::cast_precision_loss,
     reason = "display-only: sub-byte precision irrelevant for MB/GB formatting"
 )]
+#[expect(clippy::float_arithmetic, reason = "display-only MB conversion")]
 pub fn bytes_to_mb_f64(bytes: u64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0)
+    bytes as f64 / (1_024.0_f64 * 1_024.0_f64)
 }
 
 /// Convert a `u64` to `f64` for display ratios and percentages.
@@ -253,28 +253,28 @@ impl IndexNameRef {
     /// Returns the UTF-8 length in bytes.
     #[inline]
     #[must_use]
-    pub const fn length(&self) -> u16 {
+    pub const fn length(self) -> u16 {
         ((self.meta >> Self::LENGTH_SHIFT) & Self::LENGTH_MASK) as u16
     }
 
     /// Returns the raw flags field (6 bits).
     #[inline]
     #[must_use]
-    pub const fn flags(&self) -> u8 {
+    pub const fn flags(self) -> u8 {
         ((self.meta >> Self::FLAGS_SHIFT) & (Self::FLAGS_MASK >> Self::FLAGS_SHIFT)) as u8
     }
 
     /// Returns the extension ID (0 = no extension).
     #[inline]
     #[must_use]
-    pub const fn extension_id(&self) -> u16 {
+    pub const fn extension_id(self) -> u16 {
         ((self.meta >> Self::EXT_ID_SHIFT) & (Self::EXT_ID_MASK >> Self::EXT_ID_SHIFT)) as u16
     }
 
     /// Returns true if the name is pure ASCII.
     #[inline]
     #[must_use]
-    pub const fn is_ascii(&self) -> bool {
+    pub const fn is_ascii(self) -> bool {
         (self.meta & (Self::IS_ASCII << Self::FLAGS_SHIFT)) != 0
     }
 
@@ -292,7 +292,7 @@ impl IndexNameRef {
     /// Returns true if this name reference is valid (not `NO_ENTRY`).
     #[inline]
     #[must_use]
-    pub const fn is_valid(&self) -> bool {
+    pub const fn is_valid(self) -> bool {
         self.offset != NO_ENTRY
     }
 }
@@ -568,10 +568,10 @@ impl FileRecord {
     pub fn new_unified(frs: u64) -> Self {
         Self {
             frs,
+            forensic_flags: 0b10_0000, // bit 5: is_unified
             name_count: 0,
             stream_count: 0,
             total_stream_count: 0,
-            forensic_flags: 0b10_0000, // bit 5: is_unified
             first_internal_stream: NO_ENTRY,
             first_child: NO_ENTRY,
             first_name: LinkInfo {
@@ -584,6 +584,7 @@ impl FileRecord {
                 parent_frs: u64::from(NO_ENTRY),
             },
             first_stream: IndexStreamInfo {
+                size: SizeInfo::default(),
                 next_entry: NO_ENTRY,
                 name: IndexNameRef {
                     offset: NO_ENTRY,
@@ -744,7 +745,7 @@ impl FileRecord {
 /// bytes after converting to lowercase. For non-ASCII strings, it falls back
 /// to allocating lowercase versions.
 #[cfg(test)]
-pub fn cmp_ascii_case_insensitive(str_a: &str, str_b: &str) -> core::cmp::Ordering {
+pub(crate) fn cmp_ascii_case_insensitive(str_a: &str, str_b: &str) -> core::cmp::Ordering {
     if str_a.is_ascii() && str_b.is_ascii() {
         // Fast path: both strings are ASCII
         str_a

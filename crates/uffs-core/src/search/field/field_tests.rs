@@ -1,11 +1,9 @@
 //! Tests for canonical field identifiers.
 
-#![allow(
-    clippy::unwrap_used,
+#![expect(
     clippy::indexing_slicing,
-    clippy::print_stdout,
-    clippy::use_debug,
-    clippy::min_ident_chars
+    clippy::min_ident_chars,
+    reason = "test code — relaxed linting for test clarity"
 )]
 
 use super::*;

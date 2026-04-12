@@ -32,7 +32,7 @@ use super::{ParseOptions, ParseResult, ParsedRecord};
 pub fn parse_record_forensic(
     data: &[u8],
     frs: u64,
-    options: &ParseOptions,
+    options: ParseOptions,
     is_corrupt: bool,
 ) -> ParseResult {
     use core::mem::size_of;

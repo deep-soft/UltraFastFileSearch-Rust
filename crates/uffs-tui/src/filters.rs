@@ -2,7 +2,7 @@
 //! TUI-specific `SearchState` builder.
 
 // Re-export everything from uffs-core
-pub use uffs_core::search::filters::{
+pub(crate) use uffs_core::search::filters::{
     SearchFilters, now_unix_micros, parse_attr_exclude, parse_attr_require, parse_month_spec,
     parse_time_bound,
 };
@@ -18,7 +18,7 @@ use crate::history::SearchState;
     clippy::single_call_fn,
     reason = "bridge function — structural separation from TUI logic"
 )]
-pub fn build_search_filters(state: &SearchState) -> SearchFilters {
+pub(crate) fn build_search_filters(state: &SearchState) -> SearchFilters {
     let now_us = now_unix_micros();
     SearchFilters {
         hide_system: state.hide_system,

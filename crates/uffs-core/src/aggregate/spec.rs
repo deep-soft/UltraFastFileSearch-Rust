@@ -134,10 +134,6 @@ pub enum AggregateKind {
 
 /// Rollup mode for path-based or drive-based rollups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(
-    variant_size_differences,
-    reason = "Ancestor carries a u32 record index; small enum overall"
-)]
 pub enum RollupMode {
     /// Group by drive letter.
     Drive,
@@ -374,10 +370,6 @@ impl CalendarInterval {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::panic,
-    reason = "test assertions use panic! for non-matching enum arms"
-)]
 mod tests {
     use super::*;
 
@@ -572,7 +564,7 @@ mod tests {
     #[test]
     fn top_hits_validate_ok() {
         let spec = TopHitsSpec::default();
-        assert!(spec.validate().is_ok());
+        spec.validate().unwrap();
     }
 
     #[test]

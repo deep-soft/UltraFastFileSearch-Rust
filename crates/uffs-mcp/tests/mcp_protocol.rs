@@ -8,14 +8,15 @@
     clippy::tests_outside_test_module,
     reason = "integration tests are inherently outside cfg(test)"
 )]
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::indexing_slicing,
     clippy::min_ident_chars,
     clippy::let_underscore_must_use,
     clippy::let_underscore_untyped,
     clippy::match_wildcard_for_single_variants,
-    clippy::panic
+    clippy::panic,
+    reason = "integration test — relaxed linting for test clarity"
 )]
 
 // Acknowledge crates used by the lib/bin but not this test target.

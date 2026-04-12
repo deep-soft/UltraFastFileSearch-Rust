@@ -59,7 +59,7 @@ fn test_sort_directory_children_basic() {
     while current_idx != NO_ENTRY {
         let child = &index.children[current_idx as usize];
         let child_idx = index.frs_to_idx_opt(child.child_frs).unwrap();
-        let name = index.get_name(&index.records[child_idx].first_name.name);
+        let name = index.get_name(index.records[child_idx].first_name.name);
         sorted_names.push(name.to_string());
         current_idx = child.next_entry;
     }
@@ -189,7 +189,7 @@ fn test_sort_directory_children_performance() {
         }
         let child = &index.children[current_idx as usize];
         let child_idx = index.frs_to_idx_opt(child.child_frs).unwrap();
-        let name = index.get_name(&index.records[child_idx].first_name.name);
+        let name = index.get_name(index.records[child_idx].first_name.name);
         sorted_names.push(name.to_string());
         current_idx = child.next_entry;
     }

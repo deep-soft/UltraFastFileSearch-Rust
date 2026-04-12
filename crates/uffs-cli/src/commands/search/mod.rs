@@ -20,7 +20,7 @@ mod util;
 
 /// Full search configuration — all parameters needed for daemon search.
 #[expect(clippy::struct_excessive_bools, reason = "mirrors CLI parameters")]
-pub struct SearchConfig<'a> {
+pub(crate) struct SearchConfig<'a> {
     /// Search pattern.
     pattern: &'a str,
     /// Single drive letter override.
@@ -232,7 +232,7 @@ impl<'a> SearchConfig<'a> {
     clippy::single_call_fn,
     reason = "public CLI entry point called from main dispatch"
 )]
-pub async fn search(
+pub(crate) async fn search(
     pattern: &str,
     single_drive: Option<char>,
     multi_drives: Option<Vec<char>>,
@@ -368,7 +368,7 @@ pub async fn search(
 ///
 /// This is the shared core used by both the search command and the
 /// aggregate subcommand.
-pub async fn run_with_config(config: &SearchConfig<'_>) -> Result<()> {
+pub(crate) async fn run_with_config(config: &SearchConfig<'_>) -> Result<()> {
     let (rows, aggregations) = daemon::search_via_daemon(config).await?;
     dispatch::finalize_output(&rows, &aggregations, config)
 }

@@ -484,13 +484,11 @@ pub async fn run_mcp_server() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::missing_docs_in_private_items,
+#[expect(
     clippy::default_numeric_fallback,
     clippy::min_ident_chars,
     clippy::indexing_slicing,
-    reason = "test code"
+    reason = "test code — relaxed for readability"
 )]
 mod tests {
     // ── error.rs tests ──────────────────────────────────────────────
@@ -715,7 +713,7 @@ mod tests {
         fn unknown_prompt_returns_error() {
             let args = serde_json::Map::new();
             let result = build_prompt_messages("nonexistent_prompt", &args);
-            assert!(result.is_err());
+            result.unwrap_err();
         }
 
         #[test]
@@ -923,7 +921,6 @@ mod tests {
 
     // ── idle timeout (sliding-window) tests ─────────────────────────────
 
-    #[allow(clippy::indexing_slicing)]
     mod idle_timeout_tests {
         use crate::wait_for_genuine_idle;
         extern crate alloc;

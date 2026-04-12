@@ -183,10 +183,10 @@ mod tests {
         CompactRecord {
             size,
             allocated: size,
-            flags,
-            modified: size.cast_signed(),
             created: size.cast_signed(),
+            modified: size.cast_signed(),
             accessed: size.cast_signed(),
+            flags,
             ..CompactRecord::default()
         }
     }

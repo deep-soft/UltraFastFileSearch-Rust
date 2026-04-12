@@ -19,7 +19,7 @@ use super::{format_number, format_size};
     clippy::single_call_fn,
     reason = "public CLI command handler called from main dispatch"
 )]
-pub fn info(path: &Path) -> Result<()> {
+pub(crate) fn info(path: &Path) -> Result<()> {
     let df = MftReader::load_parquet(path)
         .with_context(|| format!("Failed to load index: {}", path.display()))?;
 
@@ -134,7 +134,6 @@ fn extract_index_stats(df: &uffs_polars::DataFrame, path: &Path) -> IndexStats {
 }
 
 /// Print index information to stdout.
-#[expect(clippy::single_call_fn, reason = "extracted for clarity")]
 fn print_index_info(stats: &IndexStats, df: &uffs_polars::DataFrame) -> Result<()> {
     let mut out = std::io::stdout().lock();
     let sep = "═══════════════════════════════════════════════════════════════";

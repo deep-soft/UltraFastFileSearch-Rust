@@ -102,8 +102,8 @@ pub fn detect_boot_drive() -> char {
     std::env::var("SystemDrive")
         .ok()
         .and_then(|s| s.chars().next())
-        .map(|c| c.to_ascii_uppercase())
-        .filter(|c| c.is_ascii_uppercase())
+        .map(|ch| ch.to_ascii_uppercase())
+        .filter(|ch| ch.is_ascii_uppercase())
         .unwrap_or('C')
 }
 
@@ -185,8 +185,8 @@ fn is_ntfs_volume(drive_letter: char) -> bool {
         return false;
     }
 
-    let fs_name = String::from_utf16_lossy(&fs_name_buffer);
-    let fs_name = fs_name.trim_end_matches('\0');
+    let fs_name_raw = String::from_utf16_lossy(&fs_name_buffer);
+    let fs_name = fs_name_raw.trim_end_matches('\0');
 
     fs_name == "NTFS"
 }
@@ -255,7 +255,7 @@ pub enum DriveType {
 impl DriveType {
     /// Returns the optimal chunk size for this drive type.
     #[must_use]
-    pub const fn optimal_chunk_size(&self) -> usize {
+    pub const fn optimal_chunk_size(self) -> usize {
         match self {
             Self::Nvme => 4 * 1024 * 1024,
             Self::Ssd => 2 * 1024 * 1024,
@@ -265,7 +265,7 @@ impl DriveType {
 
     /// Returns the optimal number of prefetch buffers.
     #[must_use]
-    pub const fn prefetch_buffers(&self) -> usize {
+    pub const fn prefetch_buffers(self) -> usize {
         match self {
             Self::Nvme => 8,
             Self::Ssd => 4,
@@ -275,7 +275,7 @@ impl DriveType {
 
     /// Returns the optimal I/O concurrency (queue depth) for this drive type.
     #[must_use]
-    pub const fn optimal_concurrency(&self) -> usize {
+    pub const fn optimal_concurrency(self) -> usize {
         match self {
             Self::Nvme => 32,
             Self::Ssd => 8,
@@ -297,19 +297,19 @@ impl DriveType {
 
     /// Returns the optimal I/O chunk size for this drive type.
     #[must_use]
-    pub const fn optimal_io_size(&self) -> usize {
+    pub const fn optimal_io_size(self) -> usize {
         self.optimal_chunk_size()
     }
 
     /// Returns true if this is a high-performance drive (SSD or `NVMe`).
     #[must_use]
-    pub const fn is_high_performance(&self) -> bool {
+    pub const fn is_high_performance(self) -> bool {
         matches!(self, Self::Nvme | Self::Ssd)
     }
 
     /// Returns true if this drive benefits from parallel parsing.
     #[must_use]
-    pub const fn benefits_from_parallel_parsing(&self) -> bool {
+    pub const fn benefits_from_parallel_parsing(self) -> bool {
         matches!(self, Self::Nvme)
     }
 }
@@ -682,8 +682,9 @@ fn query_memory_macos() -> Option<SystemMemory> {
         .next()
         .and_then(|line| {
             let start = line.find("page size of ")? + "page size of ".len();
-            let end = line[start..].find(' ')? + start;
-            line[start..end].parse::<u64>().ok()
+            let tail = line.get(start..)?;
+            let end = tail.find(' ')? + start;
+            line.get(start..end)?.parse::<u64>().ok()
         })
         .unwrap_or(16384);
 

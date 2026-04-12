@@ -38,7 +38,7 @@ fn required_output_path(output_path: Option<&Path>) -> Result<&Path> {
     clippy::fn_params_excessive_bools,
     reason = "bool params map directly to cli flags"
 )]
-pub fn cmd_load(
+pub(crate) fn cmd_load(
     input: &Path,
     output_path: Option<&Path>,
     info_only: bool,
@@ -343,7 +343,7 @@ pub fn cmd_load(
             let fixup_ok = apply_fixup(&mut record_buf);
 
             if forensic {
-                let result = parse_record_forensic(&record_buf, frs, &parse_options, !fixup_ok);
+                let result = parse_record_forensic(&record_buf, frs, parse_options, !fixup_ok);
                 if let ParseResult::Base(parsed) = result {
                     if parsed.names.len() > 1 {
                         hardlink_count += 1;
@@ -541,8 +541,8 @@ fn cmd_load_iocp(
     let header = &capture.header;
 
     // Get file info for display
-    let abs_path = std::fs::canonicalize(input).unwrap_or_else(|_| input.to_path_buf());
-    let abs_path = clean_path_for_display(&abs_path);
+    let canonical_path = std::fs::canonicalize(input).unwrap_or_else(|_| input.to_path_buf());
+    let abs_path = clean_path_for_display(&canonical_path);
     let file_size = std::fs::metadata(input).map_or(0, |meta| meta.len());
 
     println!("═══════════════════════════════════════════════════════════════");
@@ -678,7 +678,7 @@ fn cmd_load_iocp(
 
             let ext = output
                 .extension()
-                .and_then(|e| e.to_str())
+                .and_then(|ext| ext.to_str())
                 .unwrap_or("")
                 .to_lowercase();
 
@@ -694,7 +694,7 @@ fn cmd_load_iocp(
                     let file = std::fs::File::create(output)?;
                     CsvWriter::new(file)
                         .finish(&mut df)
-                        .map_err(|e| anyhow::anyhow!("Failed to write CSV: {e}"))?;
+                        .map_err(|err| anyhow::anyhow!("Failed to write CSV: {err}"))?;
                 }
                 _ => {
                     anyhow::bail!("Unsupported output format: .{ext} (use .parquet or .csv)");
@@ -703,9 +703,10 @@ fn cmd_load_iocp(
             let export_time = export_start.elapsed();
             println!("  ✅ Export completed in {}", format_duration(export_time));
 
-            let output_abs = std::fs::canonicalize(output).unwrap_or_else(|_| output.to_path_buf());
-            let output_abs = clean_path_for_display(&output_abs);
-            let output_size = std::fs::metadata(output).map_or(0, |m| m.len());
+            let output_canonical =
+                std::fs::canonicalize(output).unwrap_or_else(|_| output.to_path_buf());
+            let output_abs = clean_path_for_display(&output_canonical);
+            let output_size = std::fs::metadata(output).map_or(0, |meta| meta.len());
 
             println!();
             println!("📤 EXPORT COMPLETE");

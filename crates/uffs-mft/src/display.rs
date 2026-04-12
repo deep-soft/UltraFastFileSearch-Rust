@@ -14,7 +14,7 @@ use uffs_mft::u64_to_f64;
 /// - Milliseconds+: `500 ms 250 μs`
 /// - Microseconds+: `250 μs 100 ns`
 /// - Nanoseconds only: `100 ns`
-pub fn format_duration(duration: core::time::Duration) -> String {
+pub(crate) fn format_duration(duration: core::time::Duration) -> String {
     let total_seconds = duration.as_secs();
     let seconds = total_seconds % 60;
     let minutes = (total_seconds / 60) % 60;
@@ -54,25 +54,28 @@ pub fn format_duration(duration: core::time::Duration) -> String {
     clippy::float_arithmetic,
     reason = "floating-point arithmetic required for human-readable byte formatting"
 )]
-pub fn format_bytes(bytes: u64) -> String {
-    let b = u64_to_f64(bytes);
+pub(crate) fn format_bytes(bytes: u64) -> String {
+    let bytes_f64 = u64_to_f64(bytes);
     if bytes < 1024 {
         format!("{bytes:>4} B")
     } else if bytes < 1024 * 1024 {
-        format!("{:>7.2} KB", b / 1024.0)
+        format!("{:>7.2} KB", bytes_f64 / 1024.0)
     } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:>7.2} MB", b / (1024.0 * 1024.0))
+        format!("{:>7.2} MB", bytes_f64 / (1024.0 * 1024.0))
     } else if bytes < 1024 * 1024 * 1024 * 1024 {
-        format!("{:>7.2} GB", b / (1024.0 * 1024.0 * 1024.0))
+        format!("{:>7.2} GB", bytes_f64 / (1024.0 * 1024.0 * 1024.0))
     } else {
-        format!("{:>7.2} TB", b / (1024.0 * 1024.0 * 1024.0 * 1024.0))
+        format!(
+            "{:>7.2} TB",
+            bytes_f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
+        )
     }
 }
 
 /// Formats a number with comma separators for readability.
 ///
 /// Examples: 1234567 → "1,234,567", 1000 → "1,000"
-pub fn format_number_commas(num: u64) -> String {
+pub(crate) fn format_number_commas(num: u64) -> String {
     let num_str = num.to_string();
     let mut result = String::with_capacity(num_str.len() + num_str.len() / 3);
     for (idx, char) in num_str.chars().rev().enumerate() {
@@ -88,7 +91,7 @@ pub fn format_number_commas(num: u64) -> String {
 ///
 /// On Windows, `std::fs::canonicalize` returns extended-length paths with
 /// the `\\?\` prefix. This function strips that prefix for cleaner output.
-pub fn clean_path_for_display(path: &Path) -> PathBuf {
+pub(crate) fn clean_path_for_display(path: &Path) -> PathBuf {
     let path_str = path.to_string_lossy();
     path_str
         .strip_prefix(r"\\?\")

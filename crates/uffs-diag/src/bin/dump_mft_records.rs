@@ -109,10 +109,6 @@ fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
 }
 
 /// Reads a little-endian `u64` from `data` at `offset`.
-#[expect(
-    clippy::single_call_fn,
-    reason = "packed header decoding needs a dedicated 64-bit helper"
-)]
 fn read_u64_le(data: &[u8], offset: usize) -> Option<u64> {
     Some(u64::from_le_bytes(
         data.get(offset..offset + 8)?.try_into().ok()?,
@@ -120,10 +116,6 @@ fn read_u64_le(data: &[u8], offset: usize) -> Option<u64> {
 }
 
 /// Reads a little-endian `i64` from `data` at `offset`.
-#[expect(
-    clippy::single_call_fn,
-    reason = "packed header decoding needs a dedicated signed 64-bit helper"
-)]
 fn read_i64_le(data: &[u8], offset: usize) -> Option<i64> {
     Some(i64::from_le_bytes(
         data.get(offset..offset + 8)?.try_into().ok()?,
@@ -132,10 +124,6 @@ fn read_i64_le(data: &[u8], offset: usize) -> Option<i64> {
 
 /// Parses the leading bytes of a record into a local file record segment
 /// header copy.
-#[expect(
-    clippy::single_call_fn,
-    reason = "record header parsing is centralized in one dedicated helper"
-)]
 fn parse_file_record_segment_header(data: &[u8]) -> Option<FileRecordSegmentHeader> {
     Some(FileRecordSegmentHeader {
         multi_sector_header: MultiSectorHeader {
@@ -227,10 +215,6 @@ fn main() -> Result<()> {
 }
 
 /// Test the merge functionality for a specific base/extension record pair.
-#[expect(
-    clippy::single_call_fn,
-    reason = "encapsulates merge-test mode, called once from main"
-)]
 #[expect(
     clippy::use_debug,
     reason = "diagnostic tool — Debug output is intentional for inspection"
@@ -370,7 +354,7 @@ fn test_merge(raw_path: &str, base_frs: u64, ext_frs: u64) -> Result<()> {
     if let Some(record) = index.find(base_frs) {
         println!("\n=== FRS {base_frs} in MftIndex ===");
         println!("  frs: {}", record.frs);
-        println!("  name: {:?}", index.get_name(&record.first_name.name));
+        println!("  name: {:?}", index.get_name(record.first_name.name));
         println!("  parent_frs: {}", record.first_name.parent_frs);
         println!("  is_directory: {}", record.is_directory());
         println!("  name_count: {}", record.name_count);
@@ -416,7 +400,7 @@ fn test_merge(raw_path: &str, base_frs: u64, ext_frs: u64) -> Result<()> {
                 println!(
                     "    stream[{}]: {:?} (size={})",
                     stream_count,
-                    index.get_name(&stream_entry.name),
+                    index.get_name(stream_entry.name),
                     stream_entry.size.length
                 );
                 stream_entry_idx = stream_entry.next_entry;
@@ -437,10 +421,6 @@ fn test_merge(raw_path: &str, base_frs: u64, ext_frs: u64) -> Result<()> {
 const DUMP_BYTES: usize = 256;
 
 /// Dump a single raw MFT record's header and a small hex preview.
-#[expect(
-    clippy::single_call_fn,
-    reason = "encapsulates header decoding and dump routine, kept separate for clarity"
-)]
 fn dump_record(frs: u64, data: &[u8]) {
     use core::mem::size_of;
 

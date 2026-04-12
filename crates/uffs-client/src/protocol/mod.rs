@@ -211,9 +211,9 @@ pub const ERR_BAD_PATTERN: i32 = -2;
 /// [`uffs_core::search::filters::SearchFilters`] for semantics.
 /// Every field is optional — omitted fields impose no constraint.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
-    reason = "JSON wire type — bools are the natural encoding"
+    reason = "JSON-RPC wire type — boolean fields are the natural JSON encoding for on/off flags"
 )]
 pub struct SearchParams {
     // ── Core ────────────────────────────────────────────────────────

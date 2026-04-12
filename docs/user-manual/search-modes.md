@@ -4,8 +4,8 @@ UFFS supports several search modes that determine how your pattern is
 interpreted and matched against the NTFS Master File Table.  Choosing the
 right mode can dramatically improve both precision and performance.
 
-> **See also:** [Concepts](concepts.md) · [CLI Overview](cli-overview.md) ·
-> [Filters](filters.md) · [Sorting](sorting.md)
+> **See also:** [CLI Overview](cli-overview.md) · [Filters](filters.md) ·
+> [Sorting](sorting.md) · [Output Formats](output-formats.md)
 
 ---
 

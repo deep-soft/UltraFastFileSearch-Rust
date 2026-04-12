@@ -33,13 +33,31 @@ impl AlignedBuffer {
     }
 
     /// Returns a mutable slice to the aligned buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal offset+size exceeds the allocation (cannot happen
+    /// when constructed via `new`).
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "offset+size always within allocation: new() allocates size+SECTOR_SIZE and offset < SECTOR_SIZE"
+    )]
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.data[self.offset..self.offset + self.size]
     }
 
     /// Returns an immutable slice to the aligned buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal offset+size exceeds the allocation (cannot happen
+    /// when constructed via `new`).
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "offset+size always within allocation: new() allocates size+SECTOR_SIZE and offset < SECTOR_SIZE"
+    )]
     pub fn as_slice(&self) -> &[u8] {
         &self.data[self.offset..self.offset + self.size]
     }
@@ -58,6 +76,10 @@ impl AlignedBuffer {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code with known-valid indices"
+)]
 mod tests {
     use super::*;
 

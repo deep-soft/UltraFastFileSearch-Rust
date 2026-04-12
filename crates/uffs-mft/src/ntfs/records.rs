@@ -33,13 +33,13 @@ pub struct MultiSectorHeader {
 impl MultiSectorHeader {
     /// Checks if this is a valid FILE record.
     #[must_use]
-    pub const fn is_file_record(&self) -> bool {
+    pub const fn is_file_record(self) -> bool {
         self.magic == FILE_RECORD_MAGIC
     }
 
     /// Checks if this is a valid INDX record.
     #[must_use]
-    pub const fn is_index_record(&self) -> bool {
+    pub const fn is_index_record(self) -> bool {
         self.magic == INDX_RECORD_MAGIC
     }
 }
@@ -277,7 +277,7 @@ pub struct ResidentAttributeData {
 /// Decodes an `AttributeRecordHeader` from on-disk bytes without unaligned
 /// reads.
 #[inline]
-pub fn parse_attribute_record_header(data: &[u8]) -> Option<AttributeRecordHeader> {
+pub(crate) fn parse_attribute_record_header(data: &[u8]) -> Option<AttributeRecordHeader> {
     Some(AttributeRecordHeader {
         type_code: read_u32_le(data, 0)?,
         length: read_u32_le(data, 4)?,
@@ -328,7 +328,7 @@ pub struct NonResidentAttributeData {
 /// Decodes `NonResidentAttributeData` from on-disk bytes without unaligned
 /// reads.
 #[inline]
-pub fn parse_non_resident_attribute_data(data: &[u8]) -> Option<NonResidentAttributeData> {
+pub(crate) fn parse_non_resident_attribute_data(data: &[u8]) -> Option<NonResidentAttributeData> {
     Some(NonResidentAttributeData {
         lowest_vcn: read_i64_le(data, 0)?,
         highest_vcn: read_i64_le(data, 8)?,

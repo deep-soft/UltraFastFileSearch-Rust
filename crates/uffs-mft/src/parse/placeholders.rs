@@ -26,7 +26,6 @@ pub fn create_placeholder_record(frs: u64) -> ParsedRecord {
         frs,
         sequence_number: 0,
         lsn: 0,
-        reparse_tag: 0,
         parent_frs: 5, // Assume root as parent (FRS 5 is root directory)
         name: format!("<dir:{frs}>"),
         namespace: 1, // Win32 namespace
@@ -35,12 +34,13 @@ pub fn create_placeholder_record(frs: u64) -> ParsedRecord {
         size: 0,
         allocated_size: 0,
         std_info: ExtendedStandardInfo::default(),
+        in_use: true,
+        is_directory: true,
         fn_created: 0,
         fn_modified: 0,
         fn_accessed: 0,
         fn_mft_changed: 0,
-        in_use: true,
-        is_directory: true,
+        reparse_tag: 0,
         is_deleted: false,
         is_corrupt: false,
         is_extension: false,
@@ -67,13 +67,11 @@ pub fn create_placeholder_record(frs: u64) -> ParsedRecord {
 ///
 /// The number of placeholder records added.
 pub fn add_missing_parent_placeholders_to_vec(records: &mut Vec<ParsedRecord>) -> usize {
-    use rustc_hash::FxHashSet;
-
     /// Maximum iterations for placeholder creation to prevent infinite loops.
     const MAX_ITERATIONS: usize = 10;
 
-    let mut total_added = 0;
-    let mut iterations = 0;
+    let mut total_added = 0_usize;
+    let mut iterations = 0_usize;
 
     loop {
         iterations += 1;
@@ -85,30 +83,11 @@ pub fn add_missing_parent_placeholders_to_vec(records: &mut Vec<ParsedRecord>) -
             break;
         }
 
-        let known_frs: FxHashSet<u64> = records.iter().map(|r| r.frs).collect();
-        let referenced_parents: FxHashSet<u64> = records.iter().map(|r| r.parent_frs).collect();
-
-        let missing_parents: Vec<u64> = referenced_parents
-            .difference(&known_frs)
-            .filter(|&&frs| frs != 0 && frs != 5)
-            .copied()
-            .collect();
-
-        if missing_parents.is_empty() {
+        let added_this_round = insert_missing_parents(records);
+        if added_this_round == 0 {
             break;
         }
-
-        debug!(
-            iteration = iterations,
-            missing_count = missing_parents.len(),
-            "Creating placeholder records for missing parent directories (Vec path)"
-        );
-
-        for frs in missing_parents {
-            let placeholder = create_placeholder_record(frs);
-            records.push(placeholder);
-            total_added += 1;
-        }
+        total_added += added_this_round;
     }
 
     if total_added > 0 {
@@ -119,4 +98,34 @@ pub fn add_missing_parent_placeholders_to_vec(records: &mut Vec<ParsedRecord>) -
     }
 
     total_added
+}
+
+/// Finds parents referenced by `records` that are not yet present, inserts
+/// placeholders for them, and returns how many were added (0 = converged).
+fn insert_missing_parents(records: &mut Vec<ParsedRecord>) -> usize {
+    use rustc_hash::FxHashSet;
+
+    let known_frs: FxHashSet<u64> = records.iter().map(|rec| rec.frs).collect();
+    let referenced: FxHashSet<u64> = records.iter().map(|rec| rec.parent_frs).collect();
+
+    let missing: Vec<u64> = referenced
+        .difference(&known_frs)
+        .filter(|&&frs| frs != 0 && frs != 5)
+        .copied()
+        .collect();
+
+    if missing.is_empty() {
+        return 0;
+    }
+
+    debug!(
+        missing_count = missing.len(),
+        "Creating placeholder records for missing parent directories (Vec path)"
+    );
+
+    let count = missing.len();
+    for frs in missing {
+        records.push(create_placeholder_record(frs));
+    }
+    count
 }

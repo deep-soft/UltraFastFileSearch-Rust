@@ -2,15 +2,15 @@
 //! (drive color palettes).
 
 // ── Re-exports from uffs-core (all search types, sort, filters) ─────────
-pub use uffs_core::search::backend::{
+pub(crate) use uffs_core::search::backend::{
     DisplayRow, FilterMode, MultiDriveBackend, format_sort_spec, parse_sort_spec,
 };
-pub use uffs_core::search::field::FieldId;
-pub use uffs_core::search::filters::{SearchFilters, apply_filter, apply_search_filters};
-pub use uffs_core::trigram::TrigramIndex;
+pub(crate) use uffs_core::search::field::FieldId;
+pub(crate) use uffs_core::search::filters::{SearchFilters, apply_filter, apply_search_filters};
+pub(crate) use uffs_core::trigram::TrigramIndex;
 
 // Re-exported from `crate::columns`.
-pub use crate::columns::{DEFAULT_COLUMNS, parse_columns};
+pub(crate) use crate::columns::{DEFAULT_COLUMNS, parse_columns};
 use crate::compact::DriveCompactIndex;
 
 // ── TUI-specific: drive color palettes ──────────────────────────────────
@@ -107,7 +107,7 @@ const PALETTES: &[&[(u8, u8, u8)]] = &[
     clippy::single_call_fn,
     reason = "public API: intentionally a standalone function for reuse and clarity"
 )]
-pub fn build_drive_colors(
+pub(crate) fn build_drive_colors(
     drives: &[DriveCompactIndex],
 ) -> std::collections::HashMap<char, ratatui::style::Color> {
     use ratatui::style::Color;

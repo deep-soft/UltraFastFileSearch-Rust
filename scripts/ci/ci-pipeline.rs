@@ -740,20 +740,20 @@ async fn phase1_optimized(ctx: &PipelineContext) -> Result<()> {
 
     // Step 5: Parallel linting and dependency security
     let linting_commands = vec![
+        // pedantic/nursery/cargo/multiple_crate_versions levels are set in
+        // workspace Cargo.toml — only per-target overrides needed here.
         ("Production linting", "cargo", vec![
             "clippy", "--workspace",
             "--all-targets", "--all-features", "--no-deps", "--",
-            "-D", "clippy::pedantic", "-D", "clippy::nursery", "-D", "clippy::cargo",
-            "-A", "clippy::multiple_crate_versions", "-W", "clippy::panic",
-            "-W", "clippy::todo", "-W", "clippy::unimplemented", "-D", "warnings",
+            "-D", "warnings",
+            "-W", "clippy::panic", "-W", "clippy::todo", "-W", "clippy::unimplemented",
             "-W", "clippy::unwrap_used", "-W", "clippy::expect_used",
         ]),
         ("Test linting", "cargo", vec![
             "clippy", "--workspace",
             "--all-targets", "--all-features", "--tests", "--no-deps", "--",
-            "-D", "clippy::pedantic", "-D", "clippy::nursery", "-D", "clippy::cargo",
-            "-A", "clippy::multiple_crate_versions", "-W", "clippy::panic",
-            "-W", "clippy::todo", "-W", "clippy::unimplemented", "-D", "warnings",
+            "-D", "warnings",
+            "-W", "clippy::panic", "-W", "clippy::todo", "-W", "clippy::unimplemented",
             "-A", "clippy::unwrap_used", "-A", "clippy::expect_used",
         ]),
         ("Dependency security", "cargo", vec!["deny", "check"]),
@@ -1167,18 +1167,20 @@ async fn run_enhanced_phase1(state: &mut WorkflowState, ctx: &PipelineContext) -
     execute_step_with_tracking(state, STEP_PARALLEL_VALIDATION, || async {
         let parallel_commands = vec![
             ("Documentation tests", "cargo", vec!["test", "--doc", "--workspace", "--all-features"]),
+            // pedantic/nursery/cargo/multiple_crate_versions levels are set in
+            // workspace Cargo.toml — only per-target overrides needed here.
             ("Production linting", "cargo", vec![
                 "clippy", "--workspace",
                 "--lib", "--bins", "--all-features", "--no-deps", "--",
-                "-D", "warnings", "-D", "clippy::pedantic", "-D", "clippy::nursery", "-D", "clippy::cargo",
-                "-A", "clippy::multiple_crate_versions", "-W", "clippy::panic", "-W", "clippy::todo", "-W", "clippy::unimplemented",
+                "-D", "warnings",
+                "-W", "clippy::panic", "-W", "clippy::todo", "-W", "clippy::unimplemented",
             ]),
             ("Test linting", "cargo", vec![
                 "clippy", "--workspace",
                 "--all-targets", "--all-features", "--tests", "--no-deps", "--",
-                "-D", "clippy::pedantic", "-D", "clippy::nursery", "-D", "clippy::cargo",
-                "-A", "clippy::multiple_crate_versions", "-W", "clippy::panic", "-W", "clippy::todo", "-W", "clippy::unimplemented",
-                "-D", "warnings", "-A", "clippy::unwrap_used", "-A", "clippy::expect_used", "-A", "unused-crate-dependencies",
+                "-D", "warnings",
+                "-W", "clippy::panic", "-W", "clippy::todo", "-W", "clippy::unimplemented",
+                "-A", "clippy::unwrap_used", "-A", "clippy::expect_used", "-A", "unused-crate-dependencies",
             ]),
             ("Dependency security", "cargo", vec!["deny", "check"]),
         ];

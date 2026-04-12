@@ -27,20 +27,26 @@ use crate::ntfs::{
 #[inline]
 fn decode_utf16le_into(bytes: &[u8], out: &mut String) {
     out.clear();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        let code = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+    let mut i = 0_usize;
+    while let Some(pair) = bytes
+        .get(i..i + 2)
+        .and_then(|sl| <[u8; 2]>::try_from(sl).ok())
+    {
+        let code = u16::from_le_bytes(pair);
         i += 2;
         match code {
             // High surrogate
             0xD800..=0xDBFF => {
-                if i + 1 < bytes.len() {
-                    let low = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+                if let Some(low_pair) = bytes
+                    .get(i..i + 2)
+                    .and_then(|sl| <[u8; 2]>::try_from(sl).ok())
+                {
+                    let low = u16::from_le_bytes(low_pair);
                     if (0xDC00..=0xDFFF).contains(&low) {
                         i += 2;
-                        let cp = 0x1_0000
-                            + ((u32::from(code) - 0xD800) << 10)
-                            + (u32::from(low) - 0xDC00);
+                        let cp = 0x1_0000_u32
+                            + ((u32::from(code) - 0xD800_u32) << 10_u32)
+                            + (u32::from(low) - 0xDC00_u32);
                         if let Some(ch) = char::from_u32(cp) {
                             out.push(ch);
                         } else {
@@ -284,19 +290,19 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         let nr = offset + 16;
                         if nr + 48 <= data.len() {
                             let cu = rd_u16(data, nr + 18); // CompressionUnit
-                            let a = if cu > 0 {
+                            let alloc_size = if cu > 0 {
                                 rd_u64(data, nr + 48) // CompressedSize
                             } else if is_badclus_bad {
                                 rd_u64(data, nr + 40) // InitializedSize
                             } else {
                                 rd_u64(data, nr + 24) // AllocatedSize
                             };
-                            let l = if is_badclus_bad {
+                            let logical_size = if is_badclus_bad {
                                 rd_u64(data, nr + 40) // InitializedSize
                             } else {
                                 rd_u64(data, nr + 32) // DataSize
                             };
-                            (l, a)
+                            (logical_size, alloc_size)
                         } else {
                             (0, 0)
                         }
@@ -334,7 +340,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         rec.set_has_default_data();
                         rec.first_stream.size.length += size;
                         rec.first_stream.size.allocated += alloc;
-                        rec.first_stream.flags = 8 << 2; // type_name_id=8 for $DATA
+                        rec.first_stream.flags = 8_u8 << 2_u8; // type_name_id=8 for $DATA
                     } else if attr_type == AttributeType::DATA_TYPE && aname_len > 0 {
                         // Named $DATA: ADS (user-visible stream)
                         // C++ creates a stream entry; output layer filters internals
@@ -356,7 +362,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                                 },
                                 next_entry: NO_ENTRY,
                                 name: nr,
-                                flags: 8 << 2,
+                                flags: 8_u8 << 2_u8,
                                 _pad0: [0; 3],
                             });
 
@@ -438,41 +444,26 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
 /// Read a little-endian u16 from the given offset, returning 0 if out of
 /// bounds.
 #[inline]
-fn rd_u16(d: &[u8], o: usize) -> u16 {
-    if o + 2 <= d.len() {
-        u16::from_le_bytes([d[o], d[o + 1]])
-    } else {
-        0
-    }
+fn rd_u16(buf: &[u8], off: usize) -> u16 {
+    buf.get(off..off + 2)
+        .and_then(|sl| <[u8; 2]>::try_from(sl).ok())
+        .map_or(0, u16::from_le_bytes)
 }
 
 /// Read a little-endian u32 from the given offset, returning 0 if out of
 /// bounds.
 #[inline]
-fn rd_u32(d: &[u8], o: usize) -> u32 {
-    if o + 4 <= d.len() {
-        u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
-    } else {
-        0
-    }
+fn rd_u32(buf: &[u8], off: usize) -> u32 {
+    buf.get(off..off + 4)
+        .and_then(|sl| <[u8; 4]>::try_from(sl).ok())
+        .map_or(0, u32::from_le_bytes)
 }
 
 /// Read a little-endian u64 from the given offset, returning 0 if out of
 /// bounds.
 #[inline]
-fn rd_u64(d: &[u8], o: usize) -> u64 {
-    if o + 8 <= d.len() {
-        u64::from_le_bytes([
-            d[o],
-            d[o + 1],
-            d[o + 2],
-            d[o + 3],
-            d[o + 4],
-            d[o + 5],
-            d[o + 6],
-            d[o + 7],
-        ])
-    } else {
-        0
-    }
+fn rd_u64(buf: &[u8], off: usize) -> u64 {
+    buf.get(off..off + 8)
+        .and_then(|sl| <[u8; 8]>::try_from(sl).ok())
+        .map_or(0, u64::from_le_bytes)
 }

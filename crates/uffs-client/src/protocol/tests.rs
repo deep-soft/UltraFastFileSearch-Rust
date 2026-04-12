@@ -1,6 +1,9 @@
 //! Protocol round-trip and serde tests.
 
-#![allow(clippy::indexing_slicing)]
+#![expect(
+    clippy::indexing_slicing,
+    reason = "test code — indices are verified by test assertions"
+)]
 
 use super::*;
 
@@ -41,11 +44,11 @@ fn search_params_round_trip() {
     let params = SearchParams {
         pattern: "*.rs".to_owned(),
         case_sensitive: true,
-        limit: Some(100),
         sorts: vec![SearchSortSpec {
             field: "size".to_owned(),
             direction: Some(SearchSortDirection::Desc),
         }],
+        limit: Some(100),
         filter_mode: Some(SearchFilterMode::Files),
         projection: vec!["path".to_owned(), "size".to_owned()],
         response_mode: Some(SearchResponseMode::Json),

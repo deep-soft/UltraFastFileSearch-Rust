@@ -54,7 +54,6 @@ impl PartialOrd for HeapEntry {
 /// `sort_column`. The exhaustive match contributes most of the line count; no
 /// logic to extract.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
     drives: &[D],
     limit: usize,

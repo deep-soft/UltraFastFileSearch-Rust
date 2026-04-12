@@ -50,6 +50,7 @@ impl MftReader {
     /// platforms.
     #[cfg(not(windows))]
     pub const fn read_all(&self) -> Result<DataFrame> {
+        let _: &Self = self; // API parity with Windows impl which uses self
         Err(MftError::PlatformNotSupported)
     }
 
@@ -94,6 +95,7 @@ impl MftReader {
     where
         F: Fn(MftProgress) + Send + 'static,
     {
+        let _: &Self = self; // API parity with Windows impl which uses self
         Err(MftError::PlatformNotSupported)
     }
 

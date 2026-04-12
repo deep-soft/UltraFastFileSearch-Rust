@@ -326,7 +326,7 @@ mod tests {
         if let Some(byte) = encrypted.get_mut(HEADER_SIZE_V2) {
             *byte ^= 0xFF;
         }
-        assert!(decrypt_cache(&encrypted, &key).is_err());
+        decrypt_cache(&encrypted, &key).unwrap_err();
     }
 
     /// S2.3.7: tampered header → decrypt fails (AAD mismatch).
@@ -339,7 +339,7 @@ mod tests {
         if let Some(byte) = encrypted.get_mut(14) {
             *byte ^= 0xFF;
         }
-        assert!(decrypt_cache(&encrypted, &key).is_err());
+        decrypt_cache(&encrypted, &key).unwrap_err();
     }
 
     #[test]
@@ -351,7 +351,7 @@ mod tests {
         if let Some(byte) = encrypted.get_mut(10) {
             *byte = 0xFF;
         }
-        assert!(decrypt_cache(&encrypted, &key).is_err());
+        decrypt_cache(&encrypted, &key).unwrap_err();
     }
 
     /// S2.3.8: truncated file → decrypt fails.
@@ -362,10 +362,10 @@ mod tests {
         let encrypted = encrypt_cache(plaintext, &key).expect("encrypt");
         // Truncate to just the header (v2 = 32 bytes)
         let header_only = encrypted.get(..HEADER_SIZE_V2).expect("header slice");
-        assert!(decrypt_cache(header_only, &key).is_err());
+        decrypt_cache(header_only, &key).unwrap_err();
         // Truncate mid-ciphertext
         let partial = encrypted.get(..HEADER_SIZE_V2 + 5).expect("partial slice");
-        assert!(decrypt_cache(partial, &key).is_err());
+        decrypt_cache(partial, &key).unwrap_err();
     }
 
     /// v2 format round-trip with large payload (validates u64 length field).
@@ -460,7 +460,7 @@ mod tests {
         let key2 = [0x22_u8; 32];
         let plaintext = b"secret data";
         let encrypted = encrypt_cache(plaintext, &key1).expect("encrypt");
-        assert!(decrypt_cache(&encrypted, &key2).is_err());
+        decrypt_cache(&encrypted, &key2).unwrap_err();
     }
 
     // ────────────────────────────────────────────────────────────────────────

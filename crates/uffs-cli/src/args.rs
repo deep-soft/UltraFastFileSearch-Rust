@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 /// - With colon: `C:`, `c:`
 ///
 /// Returns uppercase drive letter.
-pub fn parse_drive_letter(input: &str) -> Result<char, String> {
+pub(crate) fn parse_drive_letter(input: &str) -> Result<char, String> {
     let trimmed = input.trim();
     // Strip trailing colon if present (`C:` -> `C`).
     let letter_str = trimmed.strip_suffix(':').unwrap_or(trimmed);
@@ -58,7 +58,7 @@ fn parse_size_arg(input: &str) -> Result<u64, String> {
     clippy::struct_excessive_bools,
     reason = "CLI args struct mirrors many boolean flags from clap"
 )]
-pub struct Cli {
+pub(crate) struct Cli {
     /// Enable verbose output
     #[arg(short, long, global = true)]
     pub verbose: bool,
@@ -535,7 +535,7 @@ pub struct Cli {
 /// This matches ripgrep/fd/Everything patterns where the tool name IS the
 /// search.
 #[derive(Subcommand)]
-pub enum Commands {
+pub(crate) enum Commands {
     /// Build an index from drive MFT(s)
     ///
     /// By default, indexes ALL available NTFS drives. Use --drive or --drives
@@ -737,7 +737,7 @@ HTTP vs STDIO
 
 /// Actions for `uffs daemon` subcommand.
 #[derive(Subcommand)]
-pub enum DaemonAction {
+pub(crate) enum DaemonAction {
     /// Start the daemon with specified data sources.
     ///
     /// On Windows, live NTFS drives are auto-discovered if no MFT files
@@ -826,7 +826,7 @@ pub enum DaemonAction {
 
 /// Actions for `uffs mcp` subcommand.
 #[derive(Subcommand)]
-pub enum McpAction {
+pub(crate) enum McpAction {
     /// Start the MCP HTTP server as a background service.
     ///
     /// Spawns the MCP HTTP gateway and returns immediately.  The server

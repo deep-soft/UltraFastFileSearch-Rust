@@ -53,15 +53,17 @@ impl MftReader {
         match &self.source {
             #[cfg(windows)]
             super::MftSource::LiveVolume(_) => self.read_all_index_live().await,
-            super::MftSource::File(path) => {
-                let path = path.clone();
+            super::MftSource::File(file_path) => {
+                let file_path_owned: std::path::PathBuf = file_path.clone();
                 let volume = self.volume;
-                tokio::task::spawn_blocking(move || Self::read_index_from_file(&path, volume))
-                    .await
-                    .map_err(|_| MftError::Cancelled {
-                        operation: "read_all_index(file)",
-                        reason: "spawn_blocking task failed".into(),
-                    })?
+                tokio::task::spawn_blocking(move || {
+                    Self::read_index_from_file(&file_path_owned, volume)
+                })
+                .await
+                .map_err(|_join_err| MftError::Cancelled {
+                    operation: "read_all_index(file)",
+                    reason: "spawn_blocking task failed".into(),
+                })?
             }
         }
     }
@@ -124,6 +126,10 @@ impl MftReader {
     }
 
     /// Load an `MftIndex` from a pre-captured `.mft` file (cross-platform).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError`] if the file cannot be read or parsed.
     fn read_index_from_file(
         path: &std::path::Path,
         volume: char,
@@ -183,6 +189,7 @@ impl MftReader {
     where
         F: Fn(MftProgress) + Send + 'static,
     {
+        let _: &Self = self; // API parity with Windows impl which uses self
         Err(MftError::PlatformNotSupported)
     }
 

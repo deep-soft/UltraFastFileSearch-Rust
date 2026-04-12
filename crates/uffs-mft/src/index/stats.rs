@@ -4,6 +4,10 @@ use super::frs_to_usize;
 
 /// Timing breakdown for `MftIndex` building phases.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "_ms suffix documents the unit — removing it loses critical information"
+)]
 pub struct IndexBuildTiming {
     /// Time spent inserting records into the index (ms).
     pub record_insert_ms: u64,
@@ -23,11 +27,12 @@ impl IndexBuildTiming {
     pub const fn index_only_ms(&self) -> u64 {
         self.record_insert_ms + self.extension_index_ms + self.sort_children_ms
     }
+}
 
-    /// Formats the timing as a human-readable string.
-    #[must_use]
-    pub fn to_string_pretty(&self) -> String {
-        format!(
+impl core::fmt::Display for IndexBuildTiming {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
             "Record insert: {} ms, Ext index: {} ms, Sort: {} ms, Tree metrics: {} ms, Total: {} ms",
             self.record_insert_ms,
             self.extension_index_ms,

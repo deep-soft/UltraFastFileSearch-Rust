@@ -62,7 +62,7 @@ pub fn parse_record_zero_alloc(data: &[u8], frs: u64) -> ParseResult {
 pub fn parse_record_zero_alloc_forensic(
     data: &[u8],
     frs: u64,
-    options: &ParseOptions,
+    options: ParseOptions,
 ) -> ParseResult {
     RECORD_BUFFER.with(|buf| {
         let mut buffer = buf.borrow_mut();

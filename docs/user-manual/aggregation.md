@@ -7,10 +7,13 @@ returns compact summaries instead of individual file listings.  One aggregation
 call can answer questions that would otherwise require scanning millions of
 rows.
 
+> **See also:** [CLI Overview](cli-overview.md) · [Filters](filters.md) ·
+> [Output Formats](output-formats.md)
+
 | Without aggregation | With aggregation |
 |---------------------|------------------|
-| `uffs search "*" --ext pdf` → 48 000 rows, count them yourself | `uffs agg overview --ext pdf` → `total_count: 48 000` |
-| `uffs search "*" --sort -size --limit 50` → top 50, but what % is that? | `uffs agg by_type` → full breakdown with percentages |
+| `uffs '*' --ext pdf` → 48 000 rows, count them yourself | `uffs agg overview --ext pdf` → `total_count: 48 000` |
+| `uffs '*' --sort -size --limit 50` → top 50, but what % is that? | `uffs agg by_type` → full breakdown with percentages |
 | Three separate queries for C:, D:, E: | `uffs agg by_drive` → all drives in one call |
 
 ---
@@ -39,6 +42,34 @@ uffs agg by_age
 
 All `uffs agg` commands accept every filter from the [filters](filters.md) page.
 Aggregation reuses the same search pipeline — it just changes the output.
+
+### Inline aggregation (search + aggregate in one command)
+
+You can run aggregation alongside a search using inline flags instead
+of the `uffs agg` subcommand:
+
+```bash
+# Count matching files (suppresses rows)
+uffs '*.pdf' --count
+
+# Top 20 extensions for this search
+uffs '*.pdf' --facet extension
+
+# Size statistics for matching files
+uffs '*.pdf' --stats size
+
+# Size histogram
+uffs '*.pdf' --histogram size
+
+# Include rows alongside aggregation
+uffs '*.pdf' --count --rows
+
+# Raw aggregation spec (power syntax)
+uffs '*.pdf' --agg "terms:extension,top=30"
+```
+
+By default, `--count`, `--facet`, `--stats`, and `--histogram` suppress
+row output.  Add `--rows` to get both.
 
 ---
 

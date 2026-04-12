@@ -4,6 +4,6 @@
 //! re-exports everything so existing TUI code compiles unchanged.
 
 // Re-export all public types and functions from uffs-core
-pub use uffs_core::compact::{
+pub(crate) use uffs_core::compact::{
     ChildrenIndex, DriveCompactIndex, IndexSource, LoadTiming, refresh_drive,
 };

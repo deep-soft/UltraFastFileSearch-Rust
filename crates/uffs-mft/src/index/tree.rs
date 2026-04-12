@@ -61,6 +61,10 @@ impl MftIndex {
     /// ordering/timing issues. If the first tree pass leaves any directories
     /// with `descendants == 0`, this method rebuilds the child lists from
     /// `FILE_NAME` parent references and reruns tree metrics.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "two-pass tree metrics: rebuild children + traverse; splitting would obscure the retry logic"
+    )]
     fn compute_tree_metrics_impl(&mut self, debug: bool) {
         tracing::debug!("[TRIP] MftIndex::compute_tree_metrics_impl ENTER (first pass)");
 

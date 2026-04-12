@@ -7,6 +7,10 @@ use crate::platform::DriveType;
 ///
 /// Each phase is measured independently to identify bottlenecks.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "_ms suffix documents the unit — removing it loses critical information"
+)]
 pub struct PhaseTimings {
     /// Time to open volume and retrieve MFT metadata.
     pub open_ms: u64,

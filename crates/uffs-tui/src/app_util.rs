@@ -13,7 +13,7 @@ use ratatui_textarea::TextArea;
     clippy::single_call_fn,
     reason = "30-line clipboard helper kept as named function for readability"
 )]
-pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
+pub(crate) fn copy_to_clipboard(text: &str) -> Result<(), String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -47,7 +47,7 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
 }
 
 /// Create a configured single-line `TextArea` for the search box.
-pub fn make_search_textarea<'a>() -> TextArea<'a> {
+pub(crate) fn make_search_textarea<'a>() -> TextArea<'a> {
     use ratatui::style::{Color, Style};
 
     let mut textarea = TextArea::default();
@@ -69,7 +69,7 @@ impl App {
     /// On macOS/Linux: `cargo run --release --bin uffs -- "pattern" --data-dir
     /// ... --flags...`
     #[must_use]
-    pub fn build_cli_command(&self) -> String {
+    pub(crate) fn build_cli_command(&self) -> String {
         let input = self.input_text();
         let pattern = if input.is_empty() { "*" } else { &input };
 
@@ -117,7 +117,7 @@ impl App {
     }
 
     /// Copy the CLI command to the system clipboard and update the status bar.
-    pub fn copy_cli_to_clipboard(&mut self) {
+    pub(crate) fn copy_cli_to_clipboard(&mut self) {
         let command = self.build_cli_command();
         match copy_to_clipboard(&command) {
             Ok(()) => {

@@ -271,12 +271,12 @@ pub fn compute_load_budget(drives: &[char]) -> SlotPool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::min_ident_chars,
+#[expect(
     clippy::std_instead_of_core,
     clippy::std_instead_of_alloc,
     clippy::default_numeric_fallback,
-    clippy::shadow_reuse
+    clippy::shadow_reuse,
+    reason = "test module — relaxed linting"
 )]
 mod tests {
     use std::sync::Arc;

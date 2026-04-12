@@ -122,7 +122,6 @@ pub fn migrate_legacy_cache() {
             return;
         }
 
-        // Read legacy dir entries
         let Ok(entries) = std::fs::read_dir(&legacy) else {
             return;
         };
@@ -130,52 +129,24 @@ pub fn migrate_legacy_cache() {
         let mut moved = 0_u32;
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".uffs") {
+            if !name.to_string_lossy().ends_with(".uffs") {
                 continue;
             }
 
             // Ensure secure dir exists before first move
             if moved == 0
-                && let Err(e) = create_secure_dir(&secure)
+                && let Err(err) = create_secure_dir(&secure)
             {
                 tracing::warn!(
                     path = %secure.display(),
-                    error = %e,
+                    error = %err,
                     "Failed to create secure cache dir during migration"
                 );
                 return;
             }
 
-            let src = entry.path();
-            let dst = secure.join(&name);
-            if dst.exists() {
-                // Secure dir already has this file — skip
-                continue;
-            }
-            match std::fs::rename(&src, &dst) {
-                Ok(()) => {
-                    moved += 1;
-                    // Best-effort permission tightening on migrated file
-                    let _ignore = set_file_permissions_owner_only(&dst);
-                }
-                Err(e) => {
-                    // Cross-device? Try copy + remove.
-                    if let Ok(data) = std::fs::read(&src) {
-                        if std::fs::write(&dst, &data).is_ok() {
-                            let _ignore = set_file_permissions_owner_only(&dst);
-                            let _ignore = std::fs::remove_file(&src);
-                            moved += 1;
-                        }
-                    } else {
-                        tracing::debug!(
-                            src = %src.display(),
-                            dst = %dst.display(),
-                            error = %e,
-                            "Failed to migrate cache file"
-                        );
-                    }
-                }
+            if migrate_single_file(&entry.path(), &secure.join(&name)) {
+                moved += 1;
             }
         }
 
@@ -191,6 +162,36 @@ pub fn migrate_legacy_cache() {
         // Remove legacy dir if now empty
         let _ignore = std::fs::remove_dir(&legacy);
     });
+}
+
+/// Move a single `.uffs` file from `src` to `dst`, falling back to
+/// copy-then-remove for cross-device moves. Returns `true` on success.
+fn migrate_single_file(src: &Path, dst: &Path) -> bool {
+    if dst.exists() {
+        return false;
+    }
+    match std::fs::rename(src, dst) {
+        Ok(()) => {
+            let _ignore = set_file_permissions_owner_only(dst);
+            true
+        }
+        Err(rename_err) => {
+            if let Ok(data) = std::fs::read(src)
+                && std::fs::write(dst, &data).is_ok()
+            {
+                let _perm = set_file_permissions_owner_only(dst);
+                let _rm = std::fs::remove_file(src);
+                return true;
+            }
+            tracing::debug!(
+                src = %src.display(),
+                dst = %dst.display(),
+                error = %rename_err,
+                "Failed to migrate cache file"
+            );
+            false
+        }
+    }
 }
 
 /// Cleans up stale `.uffs.tmp` files left behind by crashed atomic writes.
@@ -365,7 +366,11 @@ pub fn save_to_cache_background(
     let serialized = index.serialize(volume_serial, usn_journal_id, next_usn);
     let ser_ms = t_ser.elapsed().as_millis();
     if profile {
-        let mb = usize_to_f64(serialized.len()) / (1024.0 * 1024.0);
+        #[expect(
+            clippy::float_arithmetic,
+            reason = "display-only MB conversion for profiling"
+        )]
+        let mb = usize_to_f64(serialized.len()) / (1_024.0_f64 * 1_024.0_f64);
         tracing::debug!(
             target: "cache_profile",
             ser_ms = %ser_ms,
@@ -382,18 +387,18 @@ pub fn save_to_cache_background(
     std::thread::Builder::new()
         .name(format!("mft-save-{drive}"))
         .spawn(move || {
-            if let Err(e) = compress_encrypt_write(
+            if let Err(err) = compress_encrypt_write(
                 serialized, &path, 3, // ZSTD_LEVEL
                 profile, "mft",
             ) {
                 tracing::warn!(
                     drive = %drive,
-                    error = %e,
+                    error = %err,
                     "Background MFT cache save failed"
                 );
             }
         })
-        .map_err(|e| std::io::Error::other(format!("spawn failed: {e}")))?;
+        .map_err(|err| std::io::Error::other(format!("spawn failed: {err}")))?;
 
     Ok(())
 }
@@ -426,10 +431,10 @@ fn invalidate_compact_cache(drive: char) {
 /// file doesn't exist.
 pub fn remove_cached_index(drive: char) {
     let path = cache_file_path(drive);
-    let _ignore = secure_remove(&path);
+    let _rm_cache = secure_remove(&path);
     // Also clean up the lock file
     let lock = cache_lock_path(drive);
-    let _ignore = std::fs::remove_file(lock);
+    let _rm_lock = std::fs::remove_file(lock);
 }
 
 /// Securely removes all cached index files and the cache directory.
@@ -566,7 +571,7 @@ pub fn compress_zstd_mt(data: &[u8], level: i32) -> std::io::Result<Vec<u8>> {
     let workers_usize = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     let workers = u32::try_from(workers_usize).unwrap_or(8);
     // Best-effort: if multithread fails, we still compress single-threaded.
-    let _ = encoder.multithread(workers);
+    let _mt_result: Result<(), std::io::Error> = encoder.multithread(workers);
     std::io::Write::write_all(&mut encoder, data)?;
     encoder.finish()
 }
@@ -583,7 +588,7 @@ pub fn compress_zstd_mt(data: &[u8], level: i32) -> std::io::Result<Vec<u8>> {
 #[cfg(feature = "zstd")]
 pub fn compress_encrypt_write(
     serialized: Vec<u8>,
-    path: &std::path::Path,
+    path: &Path,
     zstd_level: i32,
     profile: bool,
     label: &str,
@@ -599,7 +604,7 @@ pub fn compress_encrypt_write(
     drop(serialized);
 
     let key = uffs_security::keystore::get_cache_key()
-        .map_err(|e| std::io::Error::other(format!("key unavailable: {e}")))?;
+        .map_err(|err| std::io::Error::other(format!("key unavailable: {err}")))?;
     let t_encrypt = std::time::Instant::now();
     let encrypted = uffs_security::crypto::encrypt_cache(&compressed, &key)?;
     let encrypt_ms = t_encrypt.elapsed().as_millis();
@@ -611,7 +616,12 @@ pub fn compress_encrypt_write(
     let write_ms = t_write.elapsed().as_millis();
 
     if profile {
-        let mb = |b: usize| usize_to_f64(b) / (1024.0 * 1024.0);
+        #[expect(
+            clippy::float_arithmetic,
+            reason = "display-only MB conversion for profiling"
+        )]
+        let mb = |bytes: usize| usize_to_f64(bytes) / (1_024.0_f64 * 1_024.0_f64);
+        #[expect(clippy::float_arithmetic, reason = "display-only ratio for profiling")]
         let ratio = usize_to_f64(uncompressed_len) / usize_to_f64(compressed_len);
         let total_ms = t_total.elapsed().as_millis();
         tracing::debug!(
@@ -633,7 +643,7 @@ pub fn compress_encrypt_write(
 }
 
 /// Default lock timeout for cache operations (5 seconds).
-const CACHE_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const CACHE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Returns the lock file path for a drive's cache file.
 ///

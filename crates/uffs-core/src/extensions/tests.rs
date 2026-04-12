@@ -58,8 +58,8 @@ fn test_mixed_collection_and_extensions() {
 
 #[test]
 fn test_empty_error() {
-    assert!(ExtensionFilter::parse("").is_err());
-    assert!(ExtensionFilter::parse("   ").is_err());
+    ExtensionFilter::parse("").unwrap_err();
+    ExtensionFilter::parse("   ").unwrap_err();
 }
 
 #[test]

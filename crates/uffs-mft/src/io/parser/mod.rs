@@ -6,7 +6,7 @@ mod fragment;
 mod fragment_extension;
 mod index;
 mod index_extension;
-pub mod unified;
+pub(crate) mod unified;
 
 #[expect(
     deprecated,

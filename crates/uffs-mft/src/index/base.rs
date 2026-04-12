@@ -10,7 +10,7 @@ use super::{
 fn current_epoch_micros() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
+        .map_or(0, |dur| u64::try_from(dur.as_micros()).unwrap_or(u64::MAX))
 }
 
 impl MftIndex {
@@ -19,8 +19,8 @@ impl MftIndex {
     pub fn new(volume: char) -> Self {
         Self {
             volume,
-            build_epoch: current_epoch_micros(),
             extensions: ExtensionTable::new(),
+            build_epoch: current_epoch_micros(),
             ..Default::default()
         }
     }
@@ -371,7 +371,7 @@ impl MftIndex {
 
     /// Get a filename from the names buffer
     #[must_use]
-    pub fn get_name(&self, info: &IndexNameRef) -> &str {
+    pub fn get_name(&self, info: IndexNameRef) -> &str {
         if !info.is_valid() {
             return "";
         }
@@ -383,7 +383,7 @@ impl MftIndex {
     /// Get the primary name of a record
     #[must_use]
     pub fn record_name(&self, record: &FileRecord) -> &str {
-        self.get_name(&record.first_name.name)
+        self.get_name(record.first_name.name)
     }
 
     /// Get all records as a slice.
@@ -678,6 +678,6 @@ impl MftIndex {
     /// Get the name string for a link.
     #[must_use]
     pub fn link_name(&self, link: &LinkInfo) -> &str {
-        self.get_name(&link.name)
+        self.get_name(link.name)
     }
 }

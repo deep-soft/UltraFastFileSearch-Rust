@@ -372,7 +372,7 @@ impl ExtendedStandardInfo {
         clippy::missing_const_for_fn,
         reason = "can't be const due to if statements"
     )]
-    pub fn to_raw_flags(&self) -> u32 {
+    pub fn to_raw_flags(self) -> u32 {
         let mut flags = 0_u32;
         if self.is_readonly {
             flags |= 0x0001;

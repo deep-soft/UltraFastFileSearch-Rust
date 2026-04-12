@@ -162,7 +162,6 @@ fn test_fast_add_path_column_parallel() -> TestResult {
 
     let result = resolver.add_path_column_parallel(&df)?;
 
-    assert!(result.column("path").is_ok());
     let path_col = result.column("path")?.str()?;
 
     // Check that paths are resolved correctly
@@ -183,7 +182,7 @@ fn test_fast_add_path_column_auto() -> TestResult {
     // Small DataFrame should use sequential
     let result = resolver.add_path_column_auto(&df)?;
 
-    assert!(result.column("path").is_ok());
+    result.column("path")?;
     Ok(())
 }
 
@@ -204,7 +203,6 @@ fn test_add_path_only_column() -> TestResult {
 
     let result = add_path_only_column(&df)?;
 
-    assert!(result.column("path_only").is_ok());
     let path_only_col = result.column("path_only")?.str()?;
 
     // Check values

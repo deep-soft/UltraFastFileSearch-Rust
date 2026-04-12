@@ -331,7 +331,6 @@ pub const fn bulkiness_for_row(row: &DisplayRow) -> u64 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::search::backend::DisplayRow;

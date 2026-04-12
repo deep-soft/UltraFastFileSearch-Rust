@@ -36,7 +36,7 @@ pub use self::stats::{MftProgress, MftStats};
 /// `MftReader` dispatch to the correct pipeline without `#[cfg]` gates on
 /// every public method.
 #[derive(Debug)]
-pub enum MftSource {
+pub(crate) enum MftSource {
     /// Live NTFS volume accessed via Windows IOCP.
     #[cfg(windows)]
     LiveVolume(VolumeHandle),
@@ -248,6 +248,10 @@ impl MftReader {
         }
         #[cfg(not(windows))]
         {
+            // self IS used — matches!(self.source, ...) on non-Windows has no
+            // LiveVolume variant, so always false.  Reference self to satisfy
+            // unused_self lint (API parity).
+            let _: &MftSource = &self.source;
             false
         }
     }

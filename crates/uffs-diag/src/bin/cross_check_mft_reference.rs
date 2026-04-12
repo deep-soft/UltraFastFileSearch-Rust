@@ -193,7 +193,6 @@ fn join_on_frs(df_ref: &DataFrame, df_parquet: &DataFrame) -> Result<DataFrame> 
 
 /// Print summary statistics about directory/base-record agreement between
 /// the reference CSV and the Parquet `DataFrame`.
-#[expect(clippy::single_call_fn, reason = "factored for readability")]
 fn summarize_directory_agreement(df: &DataFrame) -> Result<()> {
     println!("\nDirectory/base-record agreement summary:");
 

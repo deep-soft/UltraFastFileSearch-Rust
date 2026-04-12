@@ -75,6 +75,7 @@ impl MftReader {
     /// platforms.
     #[cfg(not(windows))]
     pub const fn read_raw(&self) -> Result<(Vec<u8>, u32)> {
+        let _: &Self = self; // API parity with Windows impl which uses self
         Err(MftError::PlatformNotSupported)
     }
 
@@ -150,6 +151,7 @@ impl MftReader {
         _path: P,
         _options: &crate::raw::SaveRawOptions,
     ) -> Result<crate::raw::RawMftHeader> {
+        let _: &Self = self; // API parity with Windows impl which uses self
         Err(MftError::PlatformNotSupported)
     }
 
@@ -214,6 +216,7 @@ impl MftReader {
     /// or index construction fails.
     #[expect(
         clippy::too_many_lines,
+        clippy::cognitive_complexity,
         reason = "parsing logic with forensic/sequential/parallel branches is inherently complex"
     )]
     pub fn load_raw_to_index_with_options<P: AsRef<Path>>(
@@ -279,7 +282,7 @@ impl MftReader {
                 } else {
                     fixup_failed += 1;
                 }
-                let result = parse_record_forensic(&record_buf, frs, &parse_options, !fixup_ok);
+                let result = parse_record_forensic(&record_buf, frs, parse_options, !fixup_ok);
                 if let ParseResult::Base(parsed) = result {
                     base_records += 1;
                     parsed_records.push(parsed);

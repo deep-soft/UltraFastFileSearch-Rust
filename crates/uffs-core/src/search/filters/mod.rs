@@ -275,7 +275,10 @@ impl SearchFilters {
         //
         // Un-mappable types ("directory", "file", "other") stay as
         // `type_filter` for post-filter via `apply_search_filters`.
-        #[allow(clippy::shadow_reuse)] // intentional: refine extensions with type_filter
+        #[expect(
+            clippy::shadow_reuse,
+            reason = "intentional: refine extensions with type_filter"
+        )]
         let (extensions, type_filter) = if let Some(type_name) = params.type_filter {
             let lower = type_name.to_ascii_lowercase();
             if let Some(type_exts) = crate::search::derived::extensions_for_type(&lower) {

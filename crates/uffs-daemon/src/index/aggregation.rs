@@ -174,11 +174,11 @@ impl IndexManager {
     /// O(1)-per-record constraints (extension IDs, directory flag, size
     /// bounds).  Both are optional and compose: a record must pass *both*
     /// to be fed to accumulators.
-    #[allow(
+    #[expect(
         clippy::cognitive_complexity,
         reason = "multi-spec aggregation engine with predicate filtering and accumulation"
     )]
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "aggregation engine needs snapshot, specs, predicates, pagination, pattern, drives, and filter"
     )]
@@ -628,7 +628,7 @@ impl IndexManager {
     }
 
     /// Presets expand to multiple specs; all other kinds produce exactly one.
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "straightforward match arms — one per wire kind"
     )]

@@ -42,9 +42,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::missing_docs_in_private_items,
+#[expect(
     clippy::default_numeric_fallback,
     clippy::indexing_slicing,
     clippy::min_ident_chars,

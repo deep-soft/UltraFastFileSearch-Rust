@@ -37,7 +37,6 @@ pub(super) fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactInde
 ///
 /// Extracted from `collect_global_top_n` because inlining 300 lines of sort-key
 /// extraction + heap management would make the dispatch function unreadable.
-#[allow(clippy::single_call_fn)]
 pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
     drives: &[D],
     limit: usize,

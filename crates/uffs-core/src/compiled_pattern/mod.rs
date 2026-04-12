@@ -132,10 +132,6 @@ impl CompiledPattern {
     /// let expr = pattern.to_expr("name", true);
     /// // expr is: col("name").str().ends_with(lit(".txt"))
     /// ```
-    #[expect(
-        clippy::too_many_lines,
-        reason = "match arms for each pattern variant are inherently verbose"
-    )]
     pub fn to_expr(&self, column: &str, case_sensitive: bool) -> Expr {
         // For case-sensitive matching, use optimized string operations directly.
         // For case-insensitive matching, we use regex with (?i) flag which is

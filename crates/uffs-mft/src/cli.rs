@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "uffs_mft")]
 #[command(author, version, about, long_about = None)]
-pub struct Cli {
+pub(crate) struct Cli {
     /// Enable verbose output.
     #[arg(short, long, global = true)]
     pub verbose: bool,
@@ -20,7 +20,7 @@ pub struct Cli {
 
 /// Available subcommands for the `uffs_mft` CLI.
 #[derive(Subcommand)]
-pub enum Commands {
+pub(crate) enum Commands {
     /// Read MFT from a drive and export to Parquet
     Read {
         /// Drive letter (e.g., C, D, E)

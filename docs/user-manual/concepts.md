@@ -5,7 +5,7 @@ size" you see in Windows Explorer.  This page explains what each metric
 means, why it exists, and when to use it.
 
 > **See also:** [Filters](filters.md) · [Sorting](sorting.md) ·
-> [CLI Overview](cli-overview.md)
+> [CLI Overview](cli-overview.md) · [Glossary](glossary.md)
 
 ---
 
@@ -300,6 +300,63 @@ uffs '*' --month Q4
 
 ---
 
+## 10  Alternate Data Streams (ADS)
+
+NTFS allows files to have multiple named data streams.  The default
+(unnamed) stream is what you see as the file's content.  Named streams
+are hidden from Explorer and most tools.
+
+Common uses:
+
+- **Zone.Identifier** — attached by browsers to mark downloaded files
+  ("This file came from the internet")
+- **Thumbnails** — some applications store preview data in ADS
+- **Custom metadata** — applications may store arbitrary data in named
+  streams
+
+### In UFFS
+
+By default, UFFS indexes only the primary (unnamed) stream.  Use
+`--full` mode to include extension records that contain ADS entries.
+Use `--hide-ads` to exclude ADS entries from results.
+
+```bash
+# Show all ADS entries
+uffs '*' --full
+
+# Hide ADS entries
+uffs '*' --full --hide-ads
+```
+
+---
+
+## 11  The MFT — How UFFS Reads Your Files
+
+The Master File Table is a flat database at the start of every NTFS
+volume.  Each 1 KB record contains a file's metadata — name, parent
+directory, size, timestamps, and attributes.
+
+```
+Traditional file search              UFFS
+──────────────────────────           ──────────────────────────
+Walk directory tree (FindFirstFile)   Read MFT sequentially
+  → 1 API call per file               → 1 sequential I/O
+  → millions of calls                  → thousands of records/ms
+  → random I/O to disk                → linear scan
+  → 30-60 seconds                     → 3-10 seconds
+```
+
+The MFT contains everything UFFS needs except two things:
+
+1. **Full paths** — the MFT stores only `name` + `parent record number`.
+   UFFS reconstructs paths by walking the parent chain.
+2. **File contents** — the MFT records metadata, not data bytes.
+   UFFS cannot search inside files.
+
+> **Deep dive:** [Cache & Data Sources](cache-and-data.md)
+
+---
+
 ## Quick Comparison Table
 
 | Metric | Applies to | What it answers |
@@ -314,3 +371,5 @@ uffs '*' --month Q4
 | Attributes | Both | "What flags does NTFS set on this?" |
 | Name Length | Both | "How long is the filename?" |
 | Path Length | Both | "How long is the full path?" |
+
+> **Full terminology reference:** [Glossary](glossary.md)

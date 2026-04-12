@@ -20,14 +20,13 @@
 //  • manual_checked_div — explicit division-by-zero guards are clearer
 //  • std_instead_of_core — HashMap/Mutex are std-only
 //  • map_err_ignore — intentional simplification of error types
-#![allow(
+#![expect(
     clippy::float_arithmetic,
     clippy::min_ident_chars,
     clippy::too_many_lines,
     clippy::indexing_slicing,
     clippy::string_slice,
     clippy::shadow_reuse,
-    clippy::shadow_unrelated,
     clippy::iter_over_hash_type,
     clippy::option_if_let_else,
     clippy::wildcard_enum_match_arm,
@@ -42,7 +41,8 @@
     clippy::unneeded_field_pattern,
     clippy::manual_checked_ops,
     clippy::unnecessary_sort_by,
-    clippy::default_numeric_fallback
+    clippy::default_numeric_fallback,
+    reason = "aggregation module uses dynamic dispatch, float math, hash iteration, and complex pattern matching throughout"
 )]
 
 //! Aggregation engine for UFFS.
@@ -569,17 +569,10 @@ pub enum AggregateError {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
+#[expect(
     clippy::indexing_slicing,
-    clippy::float_arithmetic,
-    clippy::missing_docs_in_private_items,
-    clippy::panic,
     clippy::min_ident_chars,
-    clippy::default_numeric_fallback,
-    clippy::wildcard_imports,
-    clippy::too_many_lines,
-    reason = "test code"
+    reason = "test code — relaxed for readability and fail-fast assertions"
 )]
 mod integration_tests {
     use finalize::AggregateResultData;

@@ -318,13 +318,9 @@ impl UffsMcpServer {
 /// `Option<UffsClient>` has been populated by [`UffsMcpServer::client()`],
 /// so the `expect` is structurally unreachable (the `Option` is always
 /// populated by `client()` before the guard is returned).
-#[allow(
-    clippy::expect_used,
-    reason = "client() always populates the Option before returning this guard"
-)]
 pub(crate) struct ClientGuard<'a>(tokio::sync::MutexGuard<'a, Option<UffsClient>>);
 
-#[allow(
+#[expect(
     clippy::expect_used,
     reason = "client() always populates the Option before returning this guard"
 )]
@@ -337,7 +333,7 @@ impl core::ops::Deref for ClientGuard<'_> {
     }
 }
 
-#[allow(
+#[expect(
     clippy::expect_used,
     reason = "client() always populates the Option before returning this guard"
 )]
@@ -458,10 +454,6 @@ impl ServerHandler for UffsMcpServer {
         .with_instructions(AGENT_INSTRUCTIONS.to_owned())
     }
 
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "root-change handler with drive discovery and state reconciliation"
-    )]
     async fn on_roots_list_changed(&self, context: rmcp::service::NotificationContext<RoleServer>) {
         // Ask the client for the current list of roots.
         match context.peer.list_roots().await {

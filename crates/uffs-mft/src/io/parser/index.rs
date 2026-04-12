@@ -22,7 +22,6 @@
     clippy::single_match_else,
     reason = "explicit match arms are clearer for attribute type dispatch"
 )]
-
 use core::mem::size_of;
 
 use smallvec::SmallVec;
@@ -61,6 +60,12 @@ use crate::parse::index_helpers::{
 #[expect(
     clippy::cognitive_complexity,
     reason = "NTFS attribute dispatch is inherently complex"
+)]
+#[expect(
+    clippy::indexing_slicing,
+    clippy::missing_asserts_for_indexing,
+    reason = "all slice access is bounds-guarded: while-loop checks offset + HEADER_SIZE <= max_offset, \
+              and each attribute access validates offset + field_len <= data.len() before indexing"
 )]
 pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::MftIndex) -> bool {
     use crate::index::{IndexNameRef, LinkInfo, NO_ENTRY, SizeInfo, StandardInfo};
@@ -107,8 +112,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
     let mut primary_name: Option<(String, u64, u8, u16)> = None; // (name, parent_frs, namespace, parse_index)
     let mut additional_names: SmallVec<[(String, u64, u16); 4]> = SmallVec::new();
     let mut name_parse_counter: u16 = 0;
-    let mut default_size = 0u64;
-    let mut default_allocated = 0u64;
+    let mut default_size = 0_u64;
+    let mut default_allocated = 0_u64;
     // User-visible ADS: (stream_name, size, allocated)
     let mut additional_streams: SmallVec<[(String, u64, u64); 4]> = SmallVec::new();
     // Internal NTFS streams (e.g. $REPARSE, $EA, $OBJECT_ID) — not emitted as
@@ -191,7 +196,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                             // SmallVec avoids heap allocation for typical filenames (<= 64 chars)
                             let name_u16: SmallVec<[u16; 64]> = name_bytes
                                 .chunks_exact(2)
-                                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                                 .collect();
                             let name = String::from_utf16_lossy(&name_u16);
                             let parent_frs = file_reference_to_frs(fn_attr.parent_directory);
@@ -339,14 +344,14 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: SmallVec<[u16; 64]> = name_bytes
                             .chunks_exact(2)
-                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                             .collect();
                         let stream_name = String::from_utf16_lossy(&name_u16);
 
                         // C++ parity: $BadClus:$Bad (FRS 8) uses InitializedSize
                         // instead of DataSize/AllocatedSize to avoid counting the
                         // entire volume size (ntfs_index_load.hpp lines 431-452).
-                        let (size, allocated) = if frs == 8
+                        let (stream_size, stream_alloc) = if frs == 8
                             && attr_header.name_length == 4
                             && stream_name == "$Bad"
                             && attr_header.is_non_resident != 0
@@ -372,7 +377,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                         // *output* by is_internal_windows_stream checks in the
                         // output layer, but must be counted here to match C++
                         // stream_count semantics for descendants.
-                        additional_streams.push((stream_name, size, allocated));
+                        additional_streams.push((stream_name, stream_size, stream_alloc));
                     }
                 }
             }
@@ -439,7 +444,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                         } else {
                             let name_u16: SmallVec<[u16; 64]> = name_bytes
                                 .chunks_exact(2)
-                                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                                 .collect();
                             String::from_utf16_lossy(&name_u16)
                         };
@@ -653,7 +658,6 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                 first: first_internal,
                 size_total: internal_size_total,
                 alloc_total: internal_alloc_total,
-                ..
             } = build_internal_stream_chain(index, internal_streams);
 
             // Snapshot and setup record using helper
@@ -679,7 +683,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
             record.first_stream.flags = if record.stdinfo.is_directory() {
                 0
             } else {
-                8 << 2
+                8_u8 << 2_u8
             };
             record.internal_streams_size = internal_size_total;
             record.internal_streams_allocated = internal_alloc_total;
@@ -688,12 +692,12 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
             // Chain ADS streams and set counts
             if !stream_indices.is_empty() {
                 chain_streams(index, &stream_indices);
-                let record = index.get_or_create(frs);
-                record.first_stream.next_entry = stream_indices[0];
+                let rec_chain = index.get_or_create(frs);
+                rec_chain.first_stream.next_entry = stream_indices[0];
             }
-            let record = index.get_or_create(frs);
-            record.stream_count = 1 + len_to_u16(additional_stream_count);
-            record.total_stream_count =
+            let rec_counts = index.get_or_create(frs);
+            rec_counts.stream_count = 1 + len_to_u16(additional_stream_count);
+            rec_counts.total_stream_count =
                 1 + len_to_u16(additional_stream_count) + len_to_u16(internal_stream_count);
 
             // Merge extension data
@@ -734,7 +738,9 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
     let additional_stream_count = additional_streams.len();
     let stream_indices: Vec<u32> = additional_streams
         .into_iter()
-        .map(|(name, size, alloc)| add_stream_to_index(index, &name, size, alloc))
+        .map(|(stream_name, stream_size, stream_alloc)| {
+            add_stream_to_index(index, &stream_name, stream_size, stream_alloc)
+        })
         .collect();
 
     // Build internal stream chain for tree-metrics accounting
@@ -743,13 +749,13 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
         first: first_internal,
         size_total: internal_size_total,
         alloc_total: internal_alloc_total,
-        ..
     } = build_internal_stream_chain(index, internal_streams);
 
     // Ensure parent exists (create placeholder if needed) - do this before getting
     // our record
     if parent_frs != frs && parent_frs != 0 {
-        let _ = index.get_or_create(parent_frs);
+        index.get_or_create(parent_frs);
+        // ^ side effect: ensures parent placeholder exists
     }
 
     // Snapshot and setup record
@@ -779,7 +785,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
     record.first_stream.flags = if record.stdinfo.is_directory() {
         0
     } else {
-        8 << 2
+        8_u8 << 2_u8
     };
     record.first_name = LinkInfo {
         next_entry: NO_ENTRY,

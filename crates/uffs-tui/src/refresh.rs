@@ -12,7 +12,7 @@ use crate::{backend, compact, ui};
 ///
 /// Spawns threads that reload each drive from its original source.
 /// Results are received via `app.refresh_rx` channel during the event loop.
-pub fn start_refresh(app: &mut App) {
+pub(crate) fn start_refresh(app: &mut App) {
     if app.refreshing || app.backend.drives.is_empty() {
         return;
     }
@@ -78,7 +78,7 @@ pub fn start_refresh(app: &mut App) {
     clippy::single_call_fn,
     reason = "separated from event loop for readability; refresh polling is a distinct concern"
 )]
-pub fn poll_refresh(app: &mut App) {
+pub(crate) fn poll_refresh(app: &mut App) {
     let Some(receiver) = &app.refresh_rx else {
         return;
     };

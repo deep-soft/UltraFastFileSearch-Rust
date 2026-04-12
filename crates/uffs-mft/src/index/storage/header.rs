@@ -6,25 +6,18 @@ use crate::index::MftIndex;
 const INDEX_MAGIC: &[u8; 8] = b"UFFSIDX\0";
 
 /// Current index file format version.
-/// Version 2: Changed `IndexNameRef` to use bit-packed `meta` field instead of
-/// separate length/flags
-/// Version 3: Added tree metrics (descendants, treesize, `tree_allocated`) to
-/// `FileRecord` serialization
-/// Version 4: Added `sequence_number`, `namespace`, and `$FILE_NAME` timestamps
-/// (`fn_created`, `fn_modified`, `fn_accessed`, `fn_mft_changed`)
-/// Version 5: Added NTFS 3.0+ forensic fields: `lsn`, `usn`, `security_id`,
-/// `owner_id` Version 6: Added P2 forensic fields: `reparse_tag`, `is_resident`
-/// (in stream flags) Version 7: Added P3 forensic fields: `forensic_flags`
-/// (renamed from reserved), `base_frs` for extension records
-/// Version 8: Added `total_stream_count` for full tree-metrics accounting
-/// Version 9: `StandardInfo.flags` now stores raw NTFS `FILE_ATTRIBUTE_*` bits
-///            (was remapped internal layout in v3-v8)
-/// Version 10: `ExtensionIndex` CSR appended after extension table — zero
-///             rebuild on load
-/// v11: `ChildInfo` is now Pod (24 bytes with explicit padding, was 14 bytes
-/// packed).  Serialized via `bytemuck::cast_slice` bulk copy.
-/// v12: Added `build_epoch` (Unix microseconds) to header — downstream caches
-///      compare against this to detect staleness.
+///
+/// - v2: `IndexNameRef` bit-packed `meta` field
+/// - v3: tree metrics (`descendants`, `treesize`, `tree_allocated`)
+/// - v4: `sequence_number`, `namespace`, `$FILE_NAME` timestamps
+/// - v5: NTFS 3.0+ forensic fields (`lsn`, `usn`, `security_id`, `owner_id`)
+/// - v6: P2 forensic fields (`reparse_tag`, `is_resident` in stream flags)
+/// - v7: P3 forensic fields (`forensic_flags`, `base_frs` for extensions)
+/// - v8: `total_stream_count` for full tree-metrics accounting
+/// - v9: `StandardInfo.flags` stores raw NTFS `FILE_ATTRIBUTE_*` bits
+/// - v10: `ExtensionIndex` CSR appended — zero rebuild on load
+/// - v11: `ChildInfo` is Pod (24 bytes with explicit padding)
+/// - v12: `build_epoch` (Unix µs) in header for cache staleness detection
 const INDEX_VERSION: u32 = 12;
 
 /// Persistent index header stored at the beginning of the index file.

@@ -46,6 +46,12 @@ use crate::index::{frs_to_usize, len_to_u16, len_to_u32, u32_as_usize};
     clippy::too_many_lines,
     reason = "monolithic extension parser for performance"
 )]
+#[expect(
+    clippy::indexing_slicing,
+    clippy::missing_asserts_for_indexing,
+    reason = "all slice access is bounds-guarded: while-loop checks offset + HEADER_SIZE <= max_offset, \
+              and each attribute access validates offset + field_len <= data.len() before indexing"
+)]
 pub(super) fn parse_extension_to_index(
     data: &[u8],
     base_frs: u64,
@@ -119,7 +125,7 @@ pub(super) fn parse_extension_to_index(
                                 let name_bytes = &data[name_start..name_start + name_len * 2];
                                 let name_u16: SmallVec<[u16; 64]> = name_bytes
                                     .chunks_exact(2)
-                                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                    .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                                     .collect();
                                 let name = String::from_utf16_lossy(&name_u16);
                                 let parent_frs = fn_attr.parent_directory & 0x0000_FFFF_FFFF_FFFF;
@@ -241,7 +247,7 @@ pub(super) fn parse_extension_to_index(
                         let name_bytes = &data[name_offset..name_offset + name_len * 2];
                         let name_u16: SmallVec<[u16; 64]> = name_bytes
                             .chunks_exact(2)
-                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                             .collect();
                         let stream_name = String::from_utf16_lossy(&name_u16);
                         // C++ parity: ALL named $DATA streams create regular
@@ -293,7 +299,7 @@ pub(super) fn parse_extension_to_index(
                         } else {
                             let name_u16: SmallVec<[u16; 64]> = name_bytes
                                 .chunks_exact(2)
-                                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                                 .collect();
                             String::from_utf16_lossy(&name_u16)
                         };
@@ -526,7 +532,7 @@ pub(super) fn parse_extension_to_index(
             },
             next_entry: NO_ENTRY,
             name: name_ref,
-            flags: 8 << 2,
+            flags: 8_u8 << 2_u8,
             _pad0: [0; 3],
         });
         stream_indices.push(stream_idx);
@@ -535,41 +541,49 @@ pub(super) fn parse_extension_to_index(
     // Ensure parent directories exist for the new names
     for (_, parent_frs) in &names {
         if *parent_frs != base_frs && *parent_frs != 0 {
-            let _ = index.get_or_create(*parent_frs);
+            index.get_or_create(*parent_frs);
+            // ^ side effect: ensures parent placeholder exists
         }
     }
 
     // Get the base record and add the names/streams to it
     let base_frs_usize = frs_to_usize(base_frs);
     if base_frs_usize >= index.frs_to_idx.len() {
-        // Base record doesn't exist yet - create a placeholder
-        let _ = index.get_or_create(base_frs);
+        // Base record doesn't exist yet — create a placeholder
+        index.get_or_create(base_frs);
     }
 
     let record_idx = index.frs_to_idx[base_frs_usize];
     if record_idx == NO_ENTRY {
-        // Base record doesn't exist - create it
-        let _ = index.get_or_create(base_frs);
+        // Base record doesn't exist — create it
+        index.get_or_create(base_frs);
     }
 
     // Now get the record and chain the new links/streams
-    let record_idx = index.frs_to_idx[base_frs_usize];
-    if record_idx != NO_ENTRY {
-        let record = &mut index.records[u32_as_usize(record_idx)];
-        // Snapshot name_count BEFORE link-chaining modifies it (for child entries)
-        let pre_chain_name_count = record.name_count;
+    let base_idx = index.frs_to_idx[base_frs_usize];
+    if base_idx != NO_ENTRY {
+        // Snapshot fields from the record before any re-borrowing
+        let (pre_chain_name_count, has_valid_name, first_name_next, first_stream_next) = {
+            let rec = &index.records[u32_as_usize(base_idx)];
+            (
+                rec.name_count,
+                rec.first_name.name.is_valid(),
+                rec.first_name.next_entry,
+                rec.first_stream.next_entry,
+            )
+        };
 
         // Add new links to the record
         if !link_indices.is_empty() {
             // Check if base record has no name (first_name is empty)
             // This happens when the $FILE_NAME attribute is ONLY in extension records
-            if record.first_name.name.is_valid() {
-                // Base record already has a name - chain extension names as additional hard
-                // links Find the end of the current link chain
-                let last_link_idx = if record.first_name.next_entry == NO_ENTRY {
+            if has_valid_name {
+                // Base record already has a name — chain extension names as additional hard
+                // links. Find the end of the current link chain.
+                let last_link_idx = if first_name_next == NO_ENTRY {
                     None
                 } else {
-                    let mut idx = record.first_name.next_entry;
+                    let mut idx = first_name_next;
                     while index.links[u32_as_usize(idx)].next_entry != NO_ENTRY {
                         idx = index.links[u32_as_usize(idx)].next_entry;
                     }
@@ -588,19 +602,21 @@ pub(super) fn parse_extension_to_index(
                     index.links[u32_as_usize(last_idx)].next_entry = link_indices[0];
                 } else {
                     // first_name has no next_entry, attach directly
-                    let record = &mut index.records[u32_as_usize(record_idx)];
-                    record.first_name.next_entry = link_indices[0];
+                    let rec_link = &mut index.records[u32_as_usize(base_idx)];
+                    rec_link.first_name.next_entry = link_indices[0];
                 }
 
                 // Update name count
-                let record = &mut index.records[u32_as_usize(record_idx)];
-                record.name_count += len_to_u16(link_indices.len());
+                let rec_name_count = &mut index.records[u32_as_usize(base_idx)];
+                rec_name_count.name_count += len_to_u16(link_indices.len());
             } else {
                 // Copy the first extension name directly into first_name
                 // This matches established behavior (ntfs_index.hpp lines 559-567)
-                let first_link = &index.links[u32_as_usize(link_indices[0])];
-                record.first_name.name = first_link.name;
-                record.first_name.parent_frs = first_link.parent_frs;
+                let first_link_name = index.links[u32_as_usize(link_indices[0])].name;
+                let first_link_parent = index.links[u32_as_usize(link_indices[0])].parent_frs;
+                let rec_first = &mut index.records[u32_as_usize(base_idx)];
+                rec_first.first_name.name = first_link_name;
+                rec_first.first_name.parent_frs = first_link_parent;
                 // Don't increment name_count for the first name (it's already counted as 1)
 
                 // Chain remaining links (if any) to first_name.next_entry
@@ -612,23 +628,21 @@ pub(super) fn parse_extension_to_index(
                         index.links[current_idx].next_entry = next_idx;
                     }
                     // Attach remaining links to first_name
-                    let record = &mut index.records[u32_as_usize(record_idx)];
-                    record.first_name.next_entry = link_indices[1];
+                    let rec_extra = &mut index.records[u32_as_usize(base_idx)];
+                    rec_extra.first_name.next_entry = link_indices[1];
                     // Update name count for additional links only
-                    record.name_count += len_to_u16(link_indices.len().saturating_sub(1));
+                    rec_extra.name_count += len_to_u16(link_indices.len().saturating_sub(1));
                 }
             }
         }
 
         // Chain new streams to the end of the existing stream chain
         if !stream_indices.is_empty() {
-            let record = &mut index.records[u32_as_usize(record_idx)];
-
-            // Find the end of the current stream chain
-            let last_stream_idx = if record.first_stream.next_entry == NO_ENTRY {
+            // Find the end of the current stream chain (using snapshot)
+            let last_stream_idx = if first_stream_next == NO_ENTRY {
                 None
             } else {
-                let mut idx = record.first_stream.next_entry;
+                let mut idx = first_stream_next;
                 while index.streams[u32_as_usize(idx)].next_entry != NO_ENTRY {
                     idx = index.streams[u32_as_usize(idx)].next_entry;
                 }
@@ -647,25 +661,25 @@ pub(super) fn parse_extension_to_index(
                 index.streams[u32_as_usize(last_idx)].next_entry = stream_indices[0];
             } else {
                 // first_stream has no next_entry, attach directly
-                let record = &mut index.records[u32_as_usize(record_idx)];
-                record.first_stream.next_entry = stream_indices[0];
+                let rec_stream_attach = &mut index.records[u32_as_usize(base_idx)];
+                rec_stream_attach.first_stream.next_entry = stream_indices[0];
             }
 
             // Update stream count (user-visible only)
-            let record = &mut index.records[u32_as_usize(record_idx)];
-            record.stream_count += len_to_u16(stream_indices.len());
-            record.total_stream_count += len_to_u16(stream_indices.len());
+            let rec_stream_count = &mut index.records[u32_as_usize(base_idx)];
+            rec_stream_count.stream_count += len_to_u16(stream_indices.len());
+            rec_stream_count.total_stream_count += len_to_u16(stream_indices.len());
         }
 
         // Build internal stream chain for extension record attributes
         if !ext_internal_streams.is_empty() {
-            let record = &mut index.records[u32_as_usize(record_idx)];
+            let rec_internal = &mut index.records[u32_as_usize(base_idx)];
 
             // Find end of existing internal stream chain
-            let last_internal_idx = if record.first_internal_stream == NO_ENTRY {
+            let last_internal_idx = if rec_internal.first_internal_stream == NO_ENTRY {
                 None
             } else {
-                let mut idx = record.first_internal_stream;
+                let mut idx = rec_internal.first_internal_stream;
                 while index.internal_streams[u32_as_usize(idx)].next_entry != NO_ENTRY {
                     idx = index.internal_streams[u32_as_usize(idx)].next_entry;
                 }
@@ -675,9 +689,9 @@ pub(super) fn parse_extension_to_index(
             let mut first_new_internal = NO_ENTRY;
             let mut prev_internal = NO_ENTRY;
             for (ist_size, ist_allocated) in &ext_internal_streams {
-                record.internal_streams_size =
-                    record.internal_streams_size.saturating_add(*ist_size);
-                record.internal_streams_allocated = record
+                rec_internal.internal_streams_size =
+                    rec_internal.internal_streams_size.saturating_add(*ist_size);
+                rec_internal.internal_streams_allocated = rec_internal
                     .internal_streams_allocated
                     .saturating_add(*ist_allocated);
 
@@ -706,38 +720,38 @@ pub(super) fn parse_extension_to_index(
             if let Some(last_idx) = last_internal_idx {
                 index.internal_streams[u32_as_usize(last_idx)].next_entry = first_new_internal;
             } else {
-                let record = &mut index.records[u32_as_usize(record_idx)];
-                record.first_internal_stream = first_new_internal;
+                let rec_head = &mut index.records[u32_as_usize(base_idx)];
+                rec_head.first_internal_stream = first_new_internal;
             }
 
             // Update total_stream_count to include new internal streams
-            let record = &mut index.records[u32_as_usize(record_idx)];
-            record.total_stream_count += len_to_u16(ext_internal_streams.len());
+            let rec_total = &mut index.records[u32_as_usize(base_idx)];
+            rec_total.total_stream_count += len_to_u16(ext_internal_streams.len());
         }
 
         // Merge default $DATA stream from extension record into base record.
         // This handles files whose $DATA attribute doesn't fit in the base MFT
         // record (e.g., large files with extensive run lists).
         if found_default_data {
-            let record = &mut index.records[u32_as_usize(record_idx)];
+            let rec_data = &mut index.records[u32_as_usize(base_idx)];
             // Ensure has_default_data bit is set (may not have been set
             // earlier if the base record didn't exist at attribute-parse time)
-            record.set_has_default_data();
+            rec_data.set_has_default_data();
 
             // If base record has no $DATA (both fields are 0), use extension's $DATA.
             // Otherwise, accumulate extension $DATA to base $DATA.
-            if record.first_stream.size.length == 0 && record.first_stream.size.allocated == 0 {
+            if rec_data.first_stream.size.length == 0 && rec_data.first_stream.size.allocated == 0 {
                 // Base has no $DATA — use extension's values
-                record.first_stream.size.length = default_data_size;
-                record.first_stream.size.allocated = default_data_allocated;
+                rec_data.first_stream.size.length = default_data_size;
+                rec_data.first_stream.size.allocated = default_data_allocated;
             } else {
                 // Base has partial $DATA — accumulate extension values
-                record.first_stream.size.length = record
+                rec_data.first_stream.size.length = rec_data
                     .first_stream
                     .size
                     .length
                     .saturating_add(default_data_size);
-                record.first_stream.size.allocated = record
+                rec_data.first_stream.size.allocated = rec_data
                     .first_stream
                     .size
                     .allocated
@@ -747,11 +761,11 @@ pub(super) fn parse_extension_to_index(
 
         // Merge directory index sizes from extension records
         if dir_index_size > 0 || dir_index_allocated > 0 {
-            let record = &mut index.records[u32_as_usize(record_idx)];
+            let rec_dir = &mut index.records[u32_as_usize(base_idx)];
             // Add to the first_stream size (which represents the default stream for
             // directories)
-            record.first_stream.size.length += dir_index_size;
-            record.first_stream.size.allocated += dir_index_allocated;
+            rec_dir.first_stream.size.length += dir_index_size;
+            rec_dir.first_stream.size.allocated += dir_index_allocated;
         }
 
         // Build parent-child relationship for names added from extension records

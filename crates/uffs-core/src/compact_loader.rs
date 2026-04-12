@@ -48,6 +48,13 @@ pub enum MftSource {
 impl MftSource {
     /// Returns the file path if this is a `File` source.
     #[must_use]
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "returns None for MftSource::Live on Windows"
+        )
+    )]
     pub fn file_path(&self) -> Option<&std::path::Path> {
         match self {
             Self::File(path, _) => Some(path),
@@ -165,10 +172,6 @@ fn try_compact_cache_hit(
 
 /// Load `MftIndex` from an offline file (cache → cold parse).
 #[expect(
-    clippy::single_call_fn,
-    reason = "extracted for readability from load_drive"
-)]
-#[allow(
     clippy::cognitive_complexity,
     reason = "multi-stage loader with cache/live/fallback branches"
 )]

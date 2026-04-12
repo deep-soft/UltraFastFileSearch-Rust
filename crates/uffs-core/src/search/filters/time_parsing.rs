@@ -182,7 +182,6 @@ pub fn parse_time_bound(spec: &str, now_us: i64, is_newer: bool) -> Option<i64> 
 ///
 /// Extracted for readability — `parse_time_bound` dispatches to named ranges,
 /// duration suffixes, and this ISO parser.
-#[allow(clippy::single_call_fn)]
 fn parse_iso_date(trimmed: &str) -> Option<i64> {
     if trimmed.len() == 10 && trimmed.as_bytes().get(4) == Some(&b'-') {
         let parts: Vec<&str> = trimmed.split('-').collect();
@@ -210,7 +209,6 @@ const US_PER_DAY: i64 = 86_400 * 1_000_000;
 ///
 /// Extracted for readability — the 15 named range cases would make
 /// `parse_time_bound` exceed the `too_many_lines` threshold.
-#[allow(clippy::single_call_fn, clippy::too_many_lines)]
 fn parse_named_time_range(name: &str, now_us: i64, is_newer: bool) -> Option<i64> {
     let today_start = now_us - (now_us % US_PER_DAY);
 
@@ -367,7 +365,6 @@ fn days_to_ymd(total_days: i64) -> (i64, i64, i64) {
 ///
 /// Only used by `parse_named_time_range` for `last_month` calculation;
 /// extracted for clarity.
-#[allow(clippy::single_call_fn)]
 const fn days_in_month(year: i64, month: i64) -> i64 {
     let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
     match month {

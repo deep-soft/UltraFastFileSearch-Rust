@@ -20,7 +20,7 @@ const ZSTD_LEVEL: i32 = 3;
 
 /// Returns `true` if `data` starts with the zstd frame magic.
 fn is_zstd_compressed(data: &[u8]) -> bool {
-    data.get(..4).is_some_and(|m| m == ZSTD_MAGIC)
+    data.get(..4).is_some_and(|magic| magic == ZSTD_MAGIC)
 }
 
 impl MftIndex {
@@ -55,8 +55,8 @@ impl MftIndex {
         let compress_ms = t_compress.elapsed().as_millis();
         let compressed_len = compressed.len();
 
-        let key = uffs_security::keystore::get_cache_key().map_err(|e| {
-            std::io::Error::other(format!("cannot save cache without encryption key: {e}"))
+        let key = uffs_security::keystore::get_cache_key().map_err(|err| {
+            std::io::Error::other(format!("cannot save cache without encryption key: {err}"))
         })?;
 
         let t_encrypt = std::time::Instant::now();
@@ -68,7 +68,12 @@ impl MftIndex {
         let write_ms = t_write.elapsed().as_millis();
 
         if profile {
-            let mb = |b: usize| usize_to_f64(b) / (1024.0 * 1024.0);
+            #[expect(
+                clippy::float_arithmetic,
+                reason = "display-only MB conversion for profiling"
+            )]
+            let mb = |bytes: usize| usize_to_f64(bytes) / (1_024.0_f64 * 1_024.0_f64);
+            #[expect(clippy::float_arithmetic, reason = "display-only ratio for profiling")]
             let ratio = usize_to_f64(uncompressed_len) / usize_to_f64(compressed_len);
             let save_total_ms = t_save_total.elapsed().as_millis();
             tracing::debug!(
@@ -128,17 +133,17 @@ impl MftIndex {
         let decrypted = match format {
             CacheFormat::Encrypted => {
                 let key = uffs_security::keystore::get_cache_key()
-                    .map_err(|e| Box::new(e) as Box<dyn core::error::Error>)?;
+                    .map_err(|err| Box::new(err) as Box<dyn core::error::Error>)?;
                 match decrypt_cache(&raw, &key) {
                     Ok(pt) => pt,
-                    Err(e) => {
+                    Err(decrypt_err) => {
                         tracing::warn!(
                             path = %path.display(),
-                            error = %e,
+                            error = %decrypt_err,
                             "Cache decryption failed — deleting corrupted file"
                         );
-                        let _ignore = std::fs::remove_file(path);
-                        return Err(Box::new(e));
+                        let _rm_result = std::fs::remove_file(path);
+                        return Err(Box::new(decrypt_err));
                     }
                 }
             }
@@ -162,10 +167,10 @@ impl MftIndex {
         let t_decompress = std::time::Instant::now();
         let compressed = is_zstd_compressed(&decrypted);
         let plaintext = if compressed {
-            zstd::decode_all(decrypted.as_slice()).map_err(|e| {
+            zstd::decode_all(decrypted.as_slice()).map_err(|err| {
                 Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("zstd decompression failed: {e}"),
+                    format!("zstd decompression failed: {err}"),
                 )) as Box<dyn core::error::Error>
             })?
         } else {
@@ -181,7 +186,11 @@ impl MftIndex {
         let total_ms = t_total.elapsed().as_millis();
 
         if profile {
-            let mb = |b: usize| usize_to_f64(b) / (1024.0 * 1024.0);
+            #[expect(
+                clippy::float_arithmetic,
+                reason = "display-only MB conversion for profiling"
+            )]
+            let mb = |bytes: usize| usize_to_f64(bytes) / (1_024.0_f64 * 1_024.0_f64);
             tracing::debug!(
                 target: "cache_profile",
                 read_ms = %read_ms,

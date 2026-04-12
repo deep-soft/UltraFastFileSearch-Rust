@@ -4,8 +4,8 @@ UFFS supports single- and multi-tier sorting of search results.  Sort
 specifications are applied after all filters, so you are always sorting
 the final result set.
 
-> **See also:** [Concepts](concepts.md) · [CLI Overview](cli-overview.md) ·
-> [Search Modes](search-modes.md) · [Filters](filters.md)
+> **See also:** [CLI Overview](cli-overview.md) · [Filters](filters.md) ·
+> [Search Modes](search-modes.md) · [Output Formats](output-formats.md)
 
 ---
 

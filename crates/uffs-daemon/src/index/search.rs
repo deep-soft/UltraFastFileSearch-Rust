@@ -26,15 +26,15 @@ impl IndexManager {
     ///
     /// When `params.profile` is `true`, populates `SearchResponse::profile`
     /// with a per-phase timing breakdown so the CLI can print it.
-    #[allow(
+    #[expect(
         clippy::cognitive_complexity,
         reason = "search orchestration with multi-drive merge, sorting, and response formatting"
     )]
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         reason = "search orchestration with multi-drive merge, sorting, and response formatting"
     )]
-    pub async fn search(&self, params: &SearchParams) -> SearchResponse {
+    pub(crate) async fn search(&self, params: &SearchParams) -> SearchResponse {
         // Acquire a concurrency permit — blocks if too many searches
         // are already in flight (prevents CPU/memory exhaustion).
         let _permit = match self.search_semaphore.acquire().await {
@@ -411,7 +411,7 @@ impl IndexManager {
     }
 
     /// Get loaded drives info.
-    pub async fn drives(&self) -> DrivesResponse {
+    pub(crate) async fn drives(&self) -> DrivesResponse {
         let snap = self.snapshot().await;
         DrivesResponse {
             drives: snap

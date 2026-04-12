@@ -34,7 +34,6 @@ impl IndexManager {
 
     /// Normalize the effective canonical sort clauses supported by the daemon.
     #[must_use]
-    #[allow(clippy::single_call_fn)]
     pub(crate) fn resolve_applied_sorts(params: &SearchParams) -> Vec<SearchSortSpec> {
         params
             .resolved_sorts()
@@ -93,7 +92,6 @@ impl IndexManager {
 
     /// Normalize the effective projection fields supported by the daemon.
     #[must_use]
-    #[allow(clippy::single_call_fn)]
     pub(crate) fn resolve_projection_fields(projection: &[String]) -> Vec<FieldId> {
         let mut resolved = Vec::new();
         for raw in projection {
@@ -108,7 +106,6 @@ impl IndexManager {
 
     /// Build one projected JSON object from a `SearchRow`.
     #[must_use]
-    #[allow(clippy::single_call_fn)]
     pub(crate) fn project_search_row(
         row: &SearchRow,
         projection: &[FieldId],

@@ -112,7 +112,6 @@ fn build_index_query_fixture() -> Result<MftIndex, TestError> {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_any() {
     let pattern = compile_index_pattern("*").unwrap();
     assert!(pattern.matches("anything", true, fold()));
@@ -120,7 +119,6 @@ fn test_pattern_any() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_exact() {
     let pattern = compile_index_pattern("foo.txt").unwrap();
     assert!(pattern.matches("foo.txt", true, fold()));
@@ -130,7 +128,6 @@ fn test_pattern_exact() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_prefix() {
     let pattern = compile_index_pattern("foo*").unwrap();
     assert!(pattern.matches("foo", true, fold()));
@@ -140,7 +137,6 @@ fn test_pattern_prefix() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_suffix() {
     let pattern = compile_index_pattern("*.txt").unwrap();
     assert!(pattern.matches("foo.txt", true, fold()));
@@ -150,7 +146,6 @@ fn test_pattern_suffix() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_contains() {
     let pattern = compile_index_pattern("*needle*").unwrap();
     assert!(pattern.matches("needle", true, fold()));
@@ -160,7 +155,6 @@ fn test_pattern_contains() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_pattern_prefix_suffix() {
     let pattern = compile_index_pattern("foo*bar").unwrap();
     assert!(pattern.matches("foobar", true, fold()));
@@ -179,7 +173,6 @@ fn test_extensions() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_extension_index_integration() {
     let mut index = MftIndex::new('C');
     let root_name_offset = index.add_name(".");
@@ -422,7 +415,6 @@ fn test_query_features_requires_dataframe() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code — unwrap on controlled data")]
 fn test_analyze_pattern_complexity() {
     let any = compile_index_pattern("*").unwrap();
     assert_eq!(analyze_pattern_complexity(&any), QueryComplexity::Simple);
@@ -442,7 +434,6 @@ fn test_analyze_pattern_complexity() {
 // =========================================================================
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_or_first_match() {
     let parsed = crate::pattern::ParsedPattern::parse("*.txt|*.log").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
@@ -453,7 +444,6 @@ fn test_or_first_match() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_or_second_match() {
     let parsed = crate::pattern::ParsedPattern::parse("*.txt|*.log").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
@@ -464,7 +454,6 @@ fn test_or_second_match() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_or_no_match() {
     let parsed = crate::pattern::ParsedPattern::parse("*.txt|*.log").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
@@ -475,7 +464,6 @@ fn test_or_no_match() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_or_both_match() {
     let parsed = crate::pattern::ParsedPattern::parse("foo*|*bar").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
@@ -486,7 +474,6 @@ fn test_or_both_match() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_or_multi_alternatives() {
     let parsed = crate::pattern::ParsedPattern::parse("nice|cool|awesome").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
@@ -501,7 +488,6 @@ fn test_or_multi_alternatives() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_or_pattern_is_simple_complexity() {
     let parsed = crate::pattern::ParsedPattern::parse("*.txt|*.log").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
@@ -516,7 +502,6 @@ fn test_or_pattern_is_simple_complexity() {
 // =========================================================================
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_case_insensitive_default() {
     let pattern = compile_index_pattern("nice").unwrap();
     assert!(
@@ -526,7 +511,6 @@ fn test_case_insensitive_default() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_case_insensitive_upper() {
     let pattern = compile_index_pattern("nice").unwrap();
     assert!(
@@ -536,7 +520,6 @@ fn test_case_insensitive_upper() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_case_sensitive_mismatch() {
     let pattern = compile_index_pattern("nice").unwrap();
     assert!(
@@ -546,7 +529,6 @@ fn test_case_sensitive_mismatch() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_case_sensitive_exact() {
     let pattern = compile_index_pattern("nice").unwrap();
     assert!(
@@ -556,7 +538,6 @@ fn test_case_sensitive_exact() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_case_insensitive_glob_suffix() {
     let pattern = compile_index_pattern("*.TXT").unwrap();
     assert!(
@@ -566,7 +547,6 @@ fn test_case_insensitive_glob_suffix() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_case_sensitive_glob_suffix() {
     let pattern = compile_index_pattern("*.TXT").unwrap();
     assert!(
@@ -580,7 +560,6 @@ fn test_case_sensitive_glob_suffix() {
 // =========================================================================
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_literal_substring_match() {
     // Literal patterns go through compile_parsed_pattern which converts to Contains
     let parsed = crate::pattern::ParsedPattern::parse("nice").unwrap();
@@ -600,7 +579,6 @@ fn test_literal_substring_match() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_literal_no_substring_match() {
     let parsed = crate::pattern::ParsedPattern::parse("nice").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
@@ -615,7 +593,6 @@ fn test_literal_no_substring_match() {
 // =========================================================================
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_any_matches_everything() {
     let pattern = compile_index_pattern("*").unwrap();
     assert!(pattern.matches("anything.txt", false, fold()));
@@ -624,7 +601,6 @@ fn test_any_matches_everything() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_prefix_match() {
     let pattern = compile_index_pattern("foo*").unwrap();
     assert!(pattern.matches("foobar", false, fold()));
@@ -633,7 +609,6 @@ fn test_prefix_match() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_suffix_match() {
     let pattern = compile_index_pattern("*.rs").unwrap();
     assert!(pattern.matches("main.rs", false, fold()));
@@ -642,7 +617,6 @@ fn test_suffix_match() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_contains_match() {
     let pattern = compile_index_pattern("*needle*").unwrap();
     assert!(pattern.matches("hayneedlehay", false, fold()));
@@ -651,7 +625,6 @@ fn test_contains_match() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_regex_match() {
     let parsed = crate::pattern::ParsedPattern::parse(r">file\d+\.txt").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
@@ -668,7 +641,6 @@ fn test_regex_match() {
 // =========================================================================
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_regex_rejects_extension_appearing_mid_filename() {
     // "icon.png.vir" should NOT match — the file ends with .vir, not .png
     let parsed = crate::pattern::ParsedPattern::parse(r">.*\.(jpg|png|heic)").unwrap();
@@ -680,7 +652,6 @@ fn test_regex_rejects_extension_appearing_mid_filename() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_regex_rejects_ads_entries() {
     // ADS entries like "photo.png:com.dropbox.attrs" should NOT match
     let parsed = crate::pattern::ParsedPattern::parse(r">.*\.(jpg|png|heic)").unwrap();
@@ -692,7 +663,6 @@ fn test_regex_rejects_ads_entries() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_regex_matches_correct_extensions() {
     let parsed = crate::pattern::ParsedPattern::parse(r">.*\.(jpg|png|heic)").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
@@ -708,7 +678,6 @@ fn test_regex_matches_correct_extensions() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_regex_with_explicit_dollar_anchor_not_doubled() {
     // If the user already wrote $, we should not double it
     let parsed = crate::pattern::ParsedPattern::parse(r">.*\.txt$").unwrap();
@@ -719,7 +688,6 @@ fn test_regex_with_explicit_dollar_anchor_not_doubled() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_regex_single_extension() {
     let parsed = crate::pattern::ParsedPattern::parse(r">.*\.txt").unwrap();
     let pattern = compile_parsed_pattern(&parsed).unwrap();
@@ -731,7 +699,6 @@ fn test_regex_single_extension() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_regex_path_prefix_with_extension() {
     // Regex with path prefix: only match .jpg files under C:\Users
     let parsed = crate::pattern::ParsedPattern::parse(r">C:\\Users\\.*\.(jpg|png|heic)").unwrap();
@@ -750,7 +717,6 @@ fn test_regex_path_prefix_with_extension() {
 }
 
 #[test]
-#[expect(clippy::unwrap_used, reason = "test code")]
 fn test_regex_digit_pattern_still_anchored() {
     // Non-extension regex should also be end-anchored
     let parsed = crate::pattern::ParsedPattern::parse(r">file\d+\.txt").unwrap();

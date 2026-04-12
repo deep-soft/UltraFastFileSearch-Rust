@@ -143,7 +143,6 @@ pub struct DaemonConfig {
 }
 
 /// Bail if the daemon has nothing to serve.
-#[expect(clippy::single_call_fn, reason = "extracted for clarity")]
 fn validate_data_sources(
     mft_files: &[PathBuf],
     _drives: &[char],
@@ -185,11 +184,11 @@ fn validate_data_sources(
 ///
 /// Returns an error if another daemon is already running, data sources
 /// are missing, or the IPC server fails to bind.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "temporary: extra tracing for daemon debugging"
 )]
-#[allow(
+#[expect(
     clippy::cognitive_complexity,
     reason = "daemon main loop with IPC, lifecycle, index loading, and shutdown coordination"
 )]
@@ -315,7 +314,13 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     // Load heartbeat handle — the load task calls `record_load_progress`
     // after each drive so the idle timer can detect stalls.
     // Used only on Windows (inside cfg(windows) block below).
-    #[cfg_attr(not(windows), expect(unused_variables))]
+    #[cfg_attr(
+        not(windows),
+        expect(
+            unused_variables,
+            reason = "load_lifecycle used only inside cfg(windows) block below"
+        )
+    )]
     let load_lifecycle = lifecycle_mgr.handle();
     let broker_is_available = broker_client::broker_available();
     let load_task = tokio::spawn(async move {

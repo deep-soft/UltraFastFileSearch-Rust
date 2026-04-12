@@ -14,7 +14,7 @@ use crate::keys::Keymap;
 
 /// How the TUI was told to find MFT data (for CLI command generation).
 #[derive(Debug, Clone, Default)]
-pub enum DataSource {
+pub(crate) enum DataSource {
     /// No explicit source — Windows live MFT or nothing loaded.
     #[default]
     None,
@@ -29,7 +29,7 @@ type RefreshResult = (String, anyhow::Result<(DriveCompactIndex, LoadTiming)>);
 
 /// Which pane currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Focus {
+pub(crate) enum Focus {
     /// Search box — typing edits the query, ↑/↓ browse history.
     SearchBox,
     /// Results panel — ↑/↓ navigate rows, Enter shows path.
@@ -41,7 +41,7 @@ pub enum Focus {
     clippy::struct_excessive_bools,
     reason = "App state struct — independent toggle flags are clearest as bools"
 )]
-pub struct App {
+pub(crate) struct App {
     /// Which pane currently has keyboard focus.
     pub focus: Focus,
     /// Runtime keymap (action → key bindings).
@@ -114,7 +114,7 @@ pub struct App {
 
 impl App {
     /// Toggle focus between `SearchBox` and `Results`.
-    pub const fn toggle_focus(&mut self) {
+    pub(crate) const fn toggle_focus(&mut self) {
         self.focus = match self.focus {
             Focus::SearchBox => Focus::Results,
             Focus::Results => Focus::SearchBox,
@@ -122,7 +122,7 @@ impl App {
     }
 
     /// Get the current search text from the textarea.
-    pub fn input_text(&self) -> String {
+    pub(crate) fn input_text(&self) -> String {
         self.textarea
             .lines()
             .first()
@@ -134,7 +134,7 @@ impl App {
         dead_code,
         reason = "public API for synchronous loading; async loading builds incrementally"
     )]
-    pub fn with_backend(backend: MultiDriveBackend) -> Self {
+    pub(crate) fn with_backend(backend: MultiDriveBackend) -> Self {
         let drive_info = backend
             .drive_summary()
             .iter()
@@ -179,8 +179,7 @@ impl App {
     }
 
     /// Create an empty application with a pre-loaded keymap.
-    #[expect(clippy::single_call_fn, reason = "public constructor called from main")]
-    pub fn with_keymap(keymap: Keymap) -> Self {
+    pub(crate) fn with_keymap(keymap: Keymap) -> Self {
         Self {
             focus: Focus::SearchBox,
             keymap,
@@ -216,9 +215,9 @@ impl App {
     }
 
     /// Create an empty application (no drives loaded, default keymap).
-    // allow: single-call in bin target, multi-call in test target (called from unit tests)
-    #[allow(clippy::single_call_fn)]
-    pub fn new() -> Self {
+    // allow: single-call in bin target, multi-call in test target (called from unit
+    // tests)
+    pub(crate) fn new() -> Self {
         Self {
             focus: Focus::SearchBox,
             keymap: Keymap::default(),
@@ -255,12 +254,12 @@ impl App {
 
     /// Check if daemon is connected.
     #[must_use]
-    pub const fn has_data(&self) -> bool {
+    pub(crate) const fn has_data(&self) -> bool {
         self.daemon_backend.is_some()
     }
 
     /// Move selection to next item.
-    pub const fn next(&mut self) {
+    pub(crate) const fn next(&mut self) {
         let len = self.results.len();
         if len == 0 {
             return;
@@ -279,7 +278,7 @@ impl App {
     }
 
     /// Move selection to previous item.
-    pub const fn previous(&mut self) {
+    pub(crate) const fn previous(&mut self) {
         let len = self.results.len();
         if len == 0 {
             return;
@@ -298,7 +297,7 @@ impl App {
     }
 
     /// Move selection down by one visible page.
-    pub fn page_down(&mut self) {
+    pub(crate) fn page_down(&mut self) {
         let len = self.results.len();
         if len == 0 {
             return;
@@ -309,7 +308,7 @@ impl App {
     }
 
     /// Move selection up by one visible page.
-    pub fn page_up(&mut self) {
+    pub(crate) fn page_up(&mut self) {
         if self.results.is_empty() {
             return;
         }
@@ -320,7 +319,7 @@ impl App {
 
     /// Get the full path of the currently selected result.
     #[must_use]
-    pub fn selected_path(&self) -> Option<&str> {
+    pub(crate) fn selected_path(&self) -> Option<&str> {
         let idx = self.table_state.selected()?;
         self.results.get(idx).map(|row| row.path.as_str())
     }
@@ -329,7 +328,7 @@ impl App {
     ///
     /// When the search box is empty, searches for `*` (all files) to show
     /// the first 1,000 entries — the TUI always has something visible.
-    pub fn search(&mut self) {
+    pub(crate) fn search(&mut self) {
         self.error = None;
         let input = self.input_text();
 
@@ -523,7 +522,7 @@ impl App {
     /// global scan so the top-N is correct for the new sort column
     /// (e.g., Tab from Modified to Size → show 1000 biggest, not 1000
     /// newest re-sorted by size).
-    pub fn cycle_sort(&mut self) {
+    pub(crate) fn cycle_sort(&mut self) {
         self.backend.cycle_sort();
         if self.input_text().is_empty() {
             self.search(); // re-scan all 25M for new sort column (status set inside)
@@ -538,7 +537,7 @@ impl App {
     ///
     /// When the search box is empty (match-all), this re-runs the full
     /// global scan for the reversed direction.
-    pub fn toggle_sort_direction(&mut self) {
+    pub(crate) fn toggle_sort_direction(&mut self) {
         self.backend.toggle_sort_direction();
         if self.input_text().is_empty() {
             self.search(); // re-scan all 25M for reversed direction (status set inside)
@@ -551,20 +550,20 @@ impl App {
 
     /// Get the current sort column.
     #[must_use]
-    pub const fn sort_column(&self) -> FieldId {
+    pub(crate) const fn sort_column(&self) -> FieldId {
         self.backend.sort_column
     }
 
     /// Get whether sort is descending.
     #[must_use]
-    pub const fn sort_desc(&self) -> bool {
+    pub(crate) const fn sort_desc(&self) -> bool {
         self.backend.sort_desc
     }
 
     /// Navigate to the previous search in history (Up arrow).
     ///
     /// First call saves the current input, then walks backward through history.
-    pub fn history_back(&mut self) {
+    pub(crate) fn history_back(&mut self) {
         if self.search_history.is_empty() {
             return;
         }
@@ -590,7 +589,7 @@ impl App {
     ///
     /// When not browsing, starts from the oldest entry (ring behaviour).
     /// At the end of history, restores the saved input from before browsing.
-    pub fn history_forward(&mut self) {
+    pub(crate) fn history_forward(&mut self) {
         if self.search_history.is_empty() {
             return;
         }
@@ -616,7 +615,7 @@ impl App {
 
     /// Get the comment for the currently browsed history entry, if any.
     #[must_use]
-    pub fn current_history_comment(&self) -> Option<&str> {
+    pub(crate) fn current_history_comment(&self) -> Option<&str> {
         let idx = self.history_idx?;
         self.search_history.get(idx)?.comment.as_deref()
     }
@@ -672,7 +671,7 @@ impl App {
 
     /// Reset extended filters, limit, and column selection to defaults
     /// (called when user clears history browsing or types a new pattern).
-    pub fn reset_search_overrides(&mut self) {
+    pub(crate) fn reset_search_overrides(&mut self) {
         self.result_limit = None;
         self.search_filters = crate::backend::SearchFilters::default();
         self.backend.extra_sort_tiers.clear();
@@ -688,7 +687,7 @@ impl App {
     }
 
     /// Load search history from disk (new CLI-command format).
-    pub fn load_history(&mut self) {
+    pub(crate) fn load_history(&mut self) {
         self.search_history = crate::history::load_history();
     }
 
@@ -698,7 +697,6 @@ impl App {
     /// base so that extended filters the TUI cannot yet edit interactively
     /// (`--attr`, `--min-size`, `--newer`, `--columns`, etc.) survive
     /// when the user only changes the pattern or toggles.
-    #[allow(clippy::single_call_fn)] // persistence concern separated for readability
     fn save_history_entry(&mut self, pattern: &str) {
         // Start from the full state of the active history entry (if any).
         // Override only the fields the TUI can currently change.
@@ -737,22 +735,22 @@ impl App {
     }
 
     /// Toggle name-only matching mode.
-    pub const fn toggle_name_only(&mut self) {
+    pub(crate) const fn toggle_name_only(&mut self) {
         self.name_only = !self.name_only;
     }
 
     /// Toggle case-sensitive search mode.
-    pub const fn toggle_case_sensitive(&mut self) {
+    pub(crate) const fn toggle_case_sensitive(&mut self) {
         self.case_sensitive = !self.case_sensitive;
     }
 
     /// Toggle whole-word search mode.
-    pub const fn toggle_whole_word(&mut self) {
+    pub(crate) const fn toggle_whole_word(&mut self) {
         self.whole_word = !self.whole_word;
     }
 
     /// Cycle filter mode: `All` → `FilesOnly` → `DirsOnly` → `All`.
-    pub const fn cycle_filter(&mut self) {
+    pub(crate) const fn cycle_filter(&mut self) {
         self.filter_mode = match self.filter_mode {
             FilterMode::All => FilterMode::FilesOnly,
             FilterMode::FilesOnly => FilterMode::DirsOnly,
@@ -762,7 +760,7 @@ impl App {
 
     /// Get a display label for the current filter mode.
     #[must_use]
-    pub const fn filter_label(&self) -> &str {
+    pub(crate) const fn filter_label(&self) -> &str {
         match self.filter_mode {
             FilterMode::All => "",
             FilterMode::FilesOnly => " [FILES]",

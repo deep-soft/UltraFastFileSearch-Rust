@@ -401,7 +401,7 @@ pub fn save_compact_cache_background(index: &DriveCompactIndex) -> std::io::Resu
 /// This is useful for hot-path searches where the caller knows the compact
 /// cache was just built or the `MftIndex` hasn't changed.
 #[must_use]
-#[allow(
+#[expect(
     clippy::cognitive_complexity,
     reason = "cache load has many validation branches (TTL, epoch, freshness, trigram)"
 )]
@@ -672,24 +672,24 @@ mod tests {
         let records = vec![
             CompactRecord {
                 name_offset: 0,
+                flags: 0x0010, // directory
+                parent_idx: u32::MAX,
                 name_len: 3,
                 name_first_byte: b'f',
-                parent_idx: u32::MAX,
-                flags: 0x0010, // directory
                 ..CompactRecord::default()
             },
             CompactRecord {
                 name_offset: 3,
+                parent_idx: 0,
                 name_len: 3,
                 name_first_byte: b'b',
-                parent_idx: 0,
                 ..CompactRecord::default()
             },
             CompactRecord {
                 name_offset: 6,
+                parent_idx: 0,
                 name_len: 3,
                 name_first_byte: b'b',
-                parent_idx: 0,
                 ..CompactRecord::default()
             },
         ];
