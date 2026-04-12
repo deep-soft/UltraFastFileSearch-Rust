@@ -42,13 +42,11 @@ fn build_profile() -> &'static str {
 /// UFFS binaries: (binary_name, package_name)
 /// - uffs: Main CLI tool
 /// - uffs_mft: Low-level MFT reading tool
-/// - uffs_tui: Terminal UI (placeholder)
-/// - uffs_gui: Graphical UI (placeholder)
+///
+/// NOTE: uffs_tui and uffs_gui have moved to the private uffs-products repo.
 const BINARIES: &[(&str, &str)] = &[
     ("uffs", "uffs-cli"),
     ("uffs_mft", "uffs-mft"),
-    ("uffs_tui", "uffs-tui"),
-    ("uffs_gui", "uffs-gui"),
 ];
 
 fn main() {

@@ -26,7 +26,7 @@ UFFS **reads the NTFS Master File Table directly** — once — and holds it in 
 
 ---
 
-## Benchmark (v0.4.107)
+## Benchmark (v0.4.108)
 
 Measured on AMD Ryzen 9 3900XT, 64 GB RAM, 7 NTFS volumes (NVMe + SATA SSD + SATA HDD), 25.9M total records:
 
@@ -88,7 +88,6 @@ uffs daemon restart
 | `uffs-core` | Query engine (Polars lazy API) |
 | `uffs-daemon` | Background index server ([📖](docs/user-manual/daemon.md)) |
 | `uffs-cli` | Command-line interface ([📖](docs/user-manual/cli-overview.md)) |
-| `uffs-tui` | Terminal UI ([📖](docs/user-manual/tui-search-box.md)) |
 | `uffs-mcp` | MCP server for AI agents ([📖](docs/user-manual/mcp.md)) |
 | `uffs-polars` | Polars compilation-isolation facade |
 | `uffs-client` | IPC client library |

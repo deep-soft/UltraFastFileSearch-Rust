@@ -51,7 +51,7 @@ Most tests run cross-platform. Tests that need live MFT access are typically `#[
 ## Architecture guardrails
 
 - Do not depend on `polars` directly; use `uffs-polars`.
-- Preserve the crate layering: `uffs-polars` ← `uffs-mft` ← `uffs-core` ← `uffs-cli` / `uffs-tui`.
+- Preserve the crate layering: `uffs-polars` ← `uffs-mft` ← `uffs-core` ← `uffs-cli`.
 - Prefer fixture-, golden-, or saved-MFT/index-based tests for portable validation.
 - Update docs when contributor-facing workflow or user-visible behavior changes.
 

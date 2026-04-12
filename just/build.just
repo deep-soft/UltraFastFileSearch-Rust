@@ -69,9 +69,11 @@ copy-binary profile:
 # Build release binaries and install all platform-relevant ones to ~/bin.
 #
 # Platform binaries:
-#   All platforms : uffs, uffs_tui, uffs-daemon, uffs-mcp
-#   Windows only  : uffs-broker, uffs_gui
+#   All platforms : uffs, uffs-daemon, uffs-mcp
+#   Windows only  : uffs-broker
 #   macOS/Linux   : (uffs-broker excluded — Windows-only component)
+#
+# NOTE: uffs_tui and uffs_gui have moved to the private uffs-products repo.
 [unix]
 use:
     #!/usr/bin/env bash
@@ -83,7 +85,7 @@ use:
     mkdir -p "$BIN_DIR"
 
     # Platform-relevant binaries (name in target/release → name in ~/bin)
-    BINARIES=("uffs" "uffs_tui" "uffs-daemon" "uffs-mcp")
+    BINARIES=("uffs" "uffs-daemon" "uffs-mcp")
     INSTALLED=0
     SKIPPED=0
 
@@ -132,7 +134,7 @@ use:
     if ($latestItem -and $latestItem.LinkType -eq 'SymbolicLink') { $distDir = $latestItem.Target } elseif ($latestItem -and -not $latestItem.PSIsContainer) { $target = (Get-Content "dist\latest" -Raw).Trim(); if (Test-Path "dist\$target") { $distDir = "dist\$target" } }; \
     if (-not $distDir) { $versions = Get-ChildItem -Path "dist" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^v\d+\.\d+\.\d+$' } | Sort-Object { [version]($_.Name -replace '^v','') } -Descending; if ($versions) { $distDir = $versions[0].FullName } }; \
     if (-not $distDir) { Write-Host "❌ No binaries found in dist/. Run 'just phase2-ship' first." -ForegroundColor Red; exit 1 }; \
-    Write-Host "  → Using: $distDir" -ForegroundColor Cyan; $binaries = @("uffs", "uffs_mft", "uffs_tui", "uffs_gui"); $installed = 0; $skipped = 0; \
+    Write-Host "  → Using: $distDir" -ForegroundColor Cyan; $binaries = @("uffs", "uffs_mft"); $installed = 0; $skipped = 0; \
     foreach ($bin in $binaries) { $src = "$distDir\$bin\$bin-windows-x64.exe"; $dest = "$binDir\$bin.exe"; if (Test-Path $src) { Copy-Item $src $dest -Force; Write-Host "  ✅ $bin.exe" -ForegroundColor Green; $installed++ } else { Write-Host "  ⚠️  $bin (not found)" -ForegroundColor Yellow; $skipped++ } }; \
     Write-Host "✅ Installed $installed binaries to ~/bin" -ForegroundColor Green; if ($skipped -gt 0) { Write-Host "⚠️  Skipped $skipped (run 'just phase2-ship' to build all binaries)" -ForegroundColor Yellow }
 

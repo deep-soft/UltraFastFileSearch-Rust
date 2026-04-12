@@ -65,12 +65,12 @@ crates/
 ├── uffs-core/     Query engine using Polars lazy API. Platform-agnostic.
 │                  Key types: MftQuery (fluent builder), FastPathResolver, IndexSearch.
 ├── uffs-cli/      CLI binary (`uffs`). Built on clap. Subcommands: search, index, info, stats.
-├── uffs-tui/      Terminal UI binary (`uffs_tui`). Built on ratatui/crossterm.
-├── uffs-gui/      GUI placeholder (future).
 └── uffs-diag/     Diagnostic tools (temporarily in workspace members for analysis).
 ```
 
-**Dependency graph:** `uffs-polars` ← `uffs-mft` ← `uffs-core` ← `uffs-cli` / `uffs-tui`
+> **Note:** `uffs-tui` and `uffs-gui` have moved to the private `uffs-products` repo.
+
+**Dependency graph:** `uffs-polars` ← `uffs-mft` ← `uffs-core` ← `uffs-cli`
 
 **Never import `polars` directly** — always use `uffs-polars` as the dependency.
 

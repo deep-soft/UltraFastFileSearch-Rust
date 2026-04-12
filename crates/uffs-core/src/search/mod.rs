@@ -3,9 +3,8 @@
 
 //! Search engine: backend, sort, filters, query routing, tree walk.
 //!
-//! This module contains the compact-index search infrastructure extracted
-//! from `uffs-tui` so it can be shared between the TUI, daemon, and any
-//! future surface.
+//! This module contains the compact-index search infrastructure shared
+//! between the TUI, daemon, CLI, and any future surface.
 
 pub mod backend;
 pub mod columns;

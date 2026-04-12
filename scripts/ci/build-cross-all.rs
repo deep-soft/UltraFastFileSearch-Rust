@@ -40,14 +40,12 @@ const HOST_TRIPLE: &str = "aarch64-apple-darwin";
 /// UFFS binaries: (binary_name, package_name)
 /// - uffs: Main CLI tool
 /// - uffs_mft: Low-level MFT reading tool
-/// - uffs_tui: Terminal UI (placeholder)
-/// - uffs_gui: Graphical UI (placeholder)
 /// - uffs-diag binaries: intentionally omitted from dist/ packaging
+///
+/// NOTE: uffs_tui and uffs_gui have moved to the private uffs-products repo.
 const BINARIES: &[(&str, &str)] = &[
     ("uffs", "uffs-cli"),
     ("uffs_mft", "uffs-mft"),
-    ("uffs_tui", "uffs-tui"),
-    ("uffs_gui", "uffs-gui"),
     // `uffs-diag` is a workspace member, but these binaries are not shipped in `dist/`.
     // Build them directly with Cargo when a diagnostic workflow needs them.
     // ("analyze_mft_parents", "uffs-diag"),
