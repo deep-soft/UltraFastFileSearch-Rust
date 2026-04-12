@@ -1,74 +1,59 @@
-# UFFS - Ultra Fast File Search
+# UFFS — Ultra Fast File Search
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
-**Ultra-high-performance file search for Windows using direct NTFS MFT reading and Polars DataFrames.**
+**The fastest open-source NTFS file search engine.** Reads the Master File Table directly, indexes 25.9 million files across 7 drives, and answers every query in ~200 ms.
 
-> 🦀 UFFS is a Windows-first search engine built for fast NTFS indexing, instant repeated queries, and practical file-system analysis.
+> An open-source alternative to [Everything (voidtools)](https://www.voidtools.com/), [WizFile](https://antibody-software.com/wizfile/), [UltraSearch](https://www.jam-software.com/ultrasearch), and other NTFS search tools — built in Rust with Polars DataFrames, a background daemon, 40+ filters, and an MCP server for AI agents.
 
-📖 **[Full User Manual](docs/user-manual/index.md)** — installation, tutorials, 40+ filters, daemon management, AI agent integration.
+📖 **[Full User Manual](docs/user-manual/index.md)** — installation, tutorials, filters, daemon, TUI, MCP integration, and more.
 
 ---
 
-## ⚡ Why UFFS is Lightning Fast
+## Why UFFS?
 
-Traditional file search tools (including `os.walk`, `FindFirstFile`, etc.) work like this:
+Most file search tools ask the OS to enumerate files one at a time (`FindFirstFile`, `os.walk`).
+UFFS **reads the NTFS Master File Table directly** — once — and holds it in memory using Polars DataFrames.
 
-1. Ask the OS to find a file
-2. OS reads the **entire MFT** (Master File Table) - the "phonebook" of all files
-3. Returns info for **one file**
-4. **Throws away the MFT**
-5. Repeat for the next file 🐌
+- ⚡ **172 million records/second** scan throughput (HOT daemon)
+- 🔍 **40+ filters** — size, date, extension, type, attributes, path length, tree size, regex
+- 🖥️ **CLI + TUI + MCP** — terminal, interactive UI, and AI-agent integration
+- 🔄 **Background daemon** — loads once, answers every query in ~200 ms
+- 🧩 **Cross-platform** — native NTFS on Windows; offline MFT analysis on macOS and Linux
 
-**UFFS reads the MFT directly** - once - and queries it in memory using Polars DataFrames. This is like reading the entire phonebook once instead of looking up each name individually.
+---
 
-### Benchmark Results (v0.4.106 — 25.9 Million Records, 7 Drives)
+## Benchmark (v0.4.106)
 
-| Phase | What happens | ALL drives (25.9M) | Single NVMe (3.5M) |
-|-------|-------------|-------------------:|--------------------:|
-| **COLD** | Raw MFT read + full index build | 66.5 s | 7.5 s |
-| **WARM CACHE** | Daemon loads serialized cache | 7.3 s | 2.6 s |
+Measured on AMD Ryzen 9 3900XT, 64 GB RAM, 7 NTFS volumes (NVMe + SATA SSD + SATA HDD), 25.9M total records:
+
+| Phase | What happens | ALL 7 drives | Single NVMe |
+|-------|-------------|-------------:|------------:|
+| **COLD** | Raw MFT read + index build | 66.5 s | 7.5 s |
+| **WARM CACHE** | Load serialized `.iocp` cache | 7.3 s | 2.6 s |
 | **HOT** | In-memory query (daemon running) | **381 ms** | **229 ms** |
 
-| Metric | Value |
-|--------|------:|
-| HOT scan throughput | **172 million records/sec** |
-| Cold→Hot speedup (NVMe) | **33×** |
-| Cold→Hot speedup (HDD) | **259×** |
-| Cold→Hot speedup (ALL) | **175×** |
+Cold→Hot speedup: **175×** (all drives) · **259×** (8.3M-record HDD).
 
-> 📖 **[Full benchmark data](docs/user-manual/performance.md)** —
-> per-drive tables, profile internals, query pattern comparison, C++ parity.
+> 📖 **[Full benchmark data](docs/user-manual/performance.md)** — per-drive tables, profile internals, C++ parity comparison.
 
 ---
 
-## 🚀 Quick Start
-
-### Installation
+## Quick Start
 
 ```bash
 # Build from source (requires Rust nightly — see rust-toolchain.toml)
 cargo build --release
 
-# The binary will be at:
-#   Windows: target/release/uffs.exe
-#   Linux/macOS: target/release/uffs
-```
+# Search all drives (daemon starts automatically)
+uffs "*.rs"
 
-> **Full install guide:** [docs/user-manual/installation.md](docs/user-manual/installation.md)
+# Search a specific drive
+uffs "*.txt" --drive C
 
-### Basic Usage
-
-```bash
-# Search for all .rs files on C: drive
-uffs "*.rs" --drive C
-
-# Search across multiple drives
-uffs "*.txt" --drives C,D,E
-
-# Search all drives (default — daemon starts automatically)
-uffs "project*"
+# Filter by size, date, type
+uffs "*.log" --min-size 100MB --newer 7d --files-only
 
 # macOS/Linux: search offline MFT captures
 uffs "*.txt" --data-dir ~/uffs_data
@@ -78,361 +63,96 @@ uffs daemon status
 uffs daemon restart
 ```
 
-> **5-minute tutorial:** [docs/user-manual/getting-started.md](docs/user-manual/getting-started.md)
-
-## 🤝 Contributing
-
-Want to contribute? Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the pinned toolchain, `just`/`cargo` workflows, and Windows/Admin caveats. For the broader docs map, see [docs/README.md](docs/README.md) and [docs/dev/README.md](docs/dev/README.md).
+> 📖 **[Installation](docs/user-manual/installation.md)** · **[5-minute tutorial](docs/user-manual/getting-started.md)** · **[CLI reference](docs/user-manual/cli-overview.md)** · **[40+ filters](docs/user-manual/filters.md)**
 
 ---
 
-## 📖 Usage Examples
+## How It Works
 
-### Simple Search
+1. **Read** — Opens the raw NTFS volume and reads the MFT sequentially using IOCP with a sliding window. Bitmap skip eliminates 40–55% of I/O by skipping deleted records.
+2. **Parse** — Each I/O buffer is parsed inline into a compact 224-byte `FileRecord` — zero intermediate copies, zero per-record heap allocations. On NVMe, Rayon parallelizes parsing across all CPU cores.
+3. **Index** — Records are loaded into Polars DataFrames with an inverted extension index for 50–200× faster `*.ext` queries.
+4. **Serve** — A background daemon holds the index in memory and answers queries via IPC. CLI, TUI, and MCP clients all share the same daemon.
 
-| Command | Result |
-|---------|--------|
-| `uffs "c:/pro*"` | Files & folders starting with "pro" on C: |
-| `uffs "*.txt"` | All .txt files on ALL drives |
-| `uffs "*.txt" --drives C,D,M` | All .txt files on C:, D:, and M: |
-| `uffs "project*" --ext rs,toml` | Rust project files |
-
-### Filter Options
-
-```bash
-# Files only (no directories)
-uffs "*.log" --files-only
-
-# Directories only
-uffs "node_modules" --dirs-only
-
-# Size filters
-uffs "*.mp4" --min-size 100MB --max-size 4GB
-
-# Limit results
-uffs "*.tmp" --limit 100
-
-# Case-sensitive search
-uffs "README" --case
-```
-
-### Output Options
-
-```bash
-# Output to CSV file
-uffs "*.rs" --out results.csv
-
-# Custom columns
-uffs "*" --columns path,size,created --out files.csv
-
-# Custom separator and quotes
-uffs "*" --sep ";" --quotes "'" --out data.csv
-
-# Include/exclude header
-uffs "*" --header false --out raw.csv
-
-# JSON output
-uffs "*.rs" --format json
-```
-
-### Available Columns
-
-| Column | Description |
-|--------|-------------|
-| `path` | Full path including filename |
-| `name` | Filename only |
-| `pathonly` | Directory path only |
-| `size` | File size in bytes |
-| `sizeondisk` | Actual disk space used |
-| `created` | Creation timestamp |
-| `written` | Last modified timestamp |
-| `accessed` | Last accessed timestamp |
-| `type` | File type |
-| `directory` | Is a directory |
-| `compressed` | Is compressed |
-| `encrypted` | Is encrypted |
-| `hidden` | Hidden attribute |
-| `system` | System attribute |
-| `readonly` | Read-only attribute |
-| `all` | All available columns |
+> 📖 **[Architecture deep-dive](docs/architecture/engine/01-overview.md)** — 11 documents covering every subsystem.
 
 ---
 
-## 🛠️ Commands
+## Architecture
 
-### Search (default action)
-Search for files matching a pattern. `search` is not a subcommand; the pattern is passed directly to `uffs`.
-
-```bash
-uffs "*.rs" --drive C --files-only --limit 100
-```
-
-### `uffs index`
-Build a persistent index for instant future searches.
-
-```bash
-# Index a single drive
-uffs index -d C c_drive.parquet
-
-# Index multiple drives
-uffs index --drives C,D,E all_drives.parquet
-```
-
-### `uffs info`
-Display information about an index file.
-
-```bash
-uffs info c_drive.parquet
-```
-
-### `uffs stats`
-Show statistics about indexed files.
-
-```bash
-uffs stats c_drive.parquet --top 20
-```
-
-### Raw MFT workflows
-For saved raw MFT data, use the low-level `uffs_mft` tool to save/load files, then use `uffs --mft-file` to search them.
-
-```bash
-uffs_mft save --drive C --output c_mft.raw
-uffs_mft load c_mft.raw --output parsed.parquet
-uffs "*.rs" --mft-file c_mft.raw --drive C
-```
+| Crate | Role |
+|-------|------|
+| `uffs-mft` | Direct MFT reading → Polars DataFrame ([📖](crates/uffs-mft/README.md)) |
+| `uffs-core` | Query engine (Polars lazy API) |
+| `uffs-daemon` | Background index server ([📖](docs/user-manual/daemon.md)) |
+| `uffs-cli` | Command-line interface ([📖](docs/user-manual/cli-overview.md)) |
+| `uffs-tui` | Terminal UI ([📖](docs/user-manual/tui-search-box.md)) |
+| `uffs-mcp` | MCP server for AI agents ([📖](docs/user-manual/mcp.md)) |
+| `uffs-polars` | Polars compilation-isolation facade |
+| `uffs-client` | IPC client library |
 
 ---
 
-## 🏗️ Architecture
+## Alternatives & Landscape
 
-UFFS is built as a modular Rust workspace:
+UFFS was built after the author wrote [an earlier C++ MFT search tool](docs/user-manual/performance.md#9--c-vs-rust-parity-comparison) and then rebuilt it from scratch in Rust for safety, performance, and maintainability. The Rust version is **47× faster** than the warm C++ path on HOT queries.
 
-| Crate | Description | Documentation |
-|-------|-------------|---------------|
-| `uffs-polars` | Polars facade (compilation isolation) | - |
-| `uffs-mft` | Direct MFT reading → Polars DataFrame | [📖 README](crates/uffs-mft/README.md) |
-| `uffs-core` | Query engine using Polars lazy API | - |
-| `uffs-daemon` | Background daemon (in-memory index server) | [📖 Daemon](docs/user-manual/daemon.md) |
-| `uffs-client` | IPC client library (CLI → daemon) | - |
-| `uffs-cli` | Command-line interface (`uffs`) | [📖 CLI](docs/user-manual/cli-overview.md) |
-| `uffs-tui` | Terminal UI (`uffs_tui`) | [📖 TUI](docs/user-manual/tui-search-box.md) |
-| `uffs-mcp` | MCP server for AI agents | [📖 MCP](docs/user-manual/mcp.md) |
-| `uffs-gui` | Graphical UI (planned) | - |
+### How UFFS compares to other file search tools
 
-### Key Features
+| Category | Tools | How UFFS differs |
+|----------|-------|-----------------|
+| **Instant NTFS filename search** | [Everything (voidtools)](https://www.voidtools.com/), [WizFile](https://antibody-software.com/wizfile/), [WizTree](https://www.diskanalyzer.com/), [UltraSearch (JAM Software)](https://www.jam-software.com/ultrasearch), [SwiftSearch](https://sourceforge.net/projects/swiftsearch/), [Locate32](https://locate32.cogit.net/) | Open-source Rust engine; Polars DataFrames; daemon + CLI + TUI + MCP; 40+ filters; forensic mode; cross-platform offline analysis |
+| **Content / regex search** | [FileLocator Pro / Agent Ransack](https://www.mythicsoft.com/filelocatorpro/), [grepWin](https://tools.stefankueng.com/grepWin.html), [AstroGrep](http://astrogrep.sourceforge.net/), [dnGrep](https://dngrep.github.io/), [SearchMyFiles (NirSoft)](https://www.nirsoft.net/utils/search_my_files.html) | UFFS focuses on MFT-level metadata speed; pairs well with `ripgrep` for content |
+| **Enterprise / eDiscovery** | [X1 Search](https://www.x1.com/), [dtSearch](https://www.dtsearch.com/), [Copernic](https://copernic.com/) | UFFS is a specialist local-NTFS tool, not a multi-repository governance platform |
+| **Developer CLI** | [fd](https://github.com/sharkdp/fd), [ripgrep](https://github.com/BurntSushi/ripgrep), [fzf](https://github.com/junegunn/fzf), [GNU find](https://www.gnu.org/software/findutils/) | UFFS reads the MFT instead of walking directories — orders of magnitude faster for whole-drive search |
+| **Forensic MFT tools** | [MFTECmd (Eric Zimmerman)](https://ericzimmerman.github.io/), [analyzeMFT](https://github.com/dkovar/analyzeMFT) | UFFS is an interactive search engine, not a one-shot parser; includes daemon, TUI, and live queries |
+| **Linux / macOS** | [FSearch](https://github.com/cboxdoerfer/fsearch), [Recoll](https://www.recoll.org/), [DocFetcher](https://docfetcher.sourceforge.net/), [Catfish](https://docs.xfce.org/apps/catfish/start), [Find Any File](https://findanyfile.app/), [HoudahSpot](https://www.houdah.com/houdahSpot/) | UFFS supports offline MFT analysis on macOS/Linux via cached index files |
 
-- **Direct MFT Access**: Bypasses Windows file enumeration APIs
-- **Polars DataFrames**: Powerful, memory-efficient data manipulation
-- **Async I/O**: High-throughput disk reading with Tokio
-- **Parquet Persistence**: Compressed, columnar index storage
-- **Multi-drive Parallel Search**: Query all drives concurrently
-- **SIMD-accelerated Pattern Matching**: Fast glob and regex support
-
-### Low-Level MFT Tools
-
-The `uffs_mft` binary provides direct MFT access for advanced users:
-
-```bash
-# Quick MFT info (~10ms)
-uffs_mft info --drive C
-
-# Full MFT analysis with file statistics (~10-30s)
-uffs_mft info --drive C --deep
-
-# Export MFT to Parquet (fast mode - default)
-uffs_mft read --drive C --output mft.parquet
-
-# Export with complete extension data (slower)
-uffs_mft read --drive C --output mft.parquet --full
-
-# Benchmark single drive
-uffs_mft bench --drive C --runs 3
-
-# Benchmark all drives
-uffs_mft bench-all --output benchmark.json
-
-# List NTFS drives
-uffs_mft drives
-```
-
-**Read Modes:**
-- `--mode auto` (default): SSD→parallel, HDD→prefetch
-- `--mode parallel`: Best for SSDs (8MB chunks)
-- `--mode prefetch`: Best for HDDs (double-buffered 4MB chunks)
-- `--mode streaming`: Low memory usage
-
-**Fast vs Full:**
-- Default (fast): Skips extension records (~1% of files), ~15-25% faster
-- `--full`: Merges extension records for complete hard link/ADS data
-
-**Forensic Mode:**
-- `--forensic`: Include deleted, corrupt, and extension records for incident response and data recovery
-
-See [uffs-mft README](crates/uffs-mft/README.md) for detailed documentation.
+> 📖 **[Full competitor landscape analysis](docs/mft_competitor_landscape_deep_research.md)** — 12 tools, corporate adoption data, market positioning.
 
 ---
 
-## 🔥 What Makes UFFS Blazing Fast
+## Requirements
 
-UFFS employs multiple layers of optimization to achieve maximum performance when reading the NTFS Master File Table:
-
-### 1. Direct MFT Access with `FILE_FLAG_NO_BUFFERING`
-
-Instead of using Windows file enumeration APIs, UFFS opens the raw volume and reads the MFT directly using unbuffered I/O. This bypasses the Windows file system cache and gives us full control over read patterns.
-
-### 2. SSD/HDD-Aware I/O Tuning
-
-UFFS automatically detects whether a drive is an SSD or HDD using Windows storage APIs (`IOCTL_STORAGE_QUERY_PROPERTY`) and tunes I/O parameters accordingly:
-
-| Drive Type | Chunk Size | Rationale |
-|------------|------------|-----------|
-| **SSD** | 8 MB | Large sequential reads, no seek penalty |
-| **HDD** | 4 MB | Balance between syscall overhead and seek time |
-
-### 3. Minimal System Calls
-
-By using large chunk sizes (4-8 MB instead of the typical 1 MB), UFFS reduces the number of `ReadFile` system calls by 4-8x. For a 4.5 GB MFT, this means ~500-1000 syscalls instead of ~4,500.
-
-### 4. Zero-Allocation Record Parsing
-
-Each thread uses a thread-local buffer for record parsing, eliminating per-record heap allocations. This is critical when processing millions of MFT records:
-
-```rust
-// Instead of allocating per record:
-let mut record_buf = record_data.to_vec();  // ❌ Allocates
-
-// We use thread-local buffers:
-parse_record_zero_alloc(record_data, frs);  // ✅ Reuses buffer
-```
-
-### 5. Double-Buffered Prefetch
-
-The `PrefetchMftReader` uses two alternating buffers to overlap I/O with processing:
-- Read into buffer A while processing buffer B
-- Swap buffers and repeat
-- CPU never waits for disk I/O
-
-### 6. Parallel Record Processing with Rayon
-
-After reading chunks from disk, UFFS uses Rayon's parallel iterators to parse records across all CPU cores. Each core processes a portion of the chunk simultaneously.
-
-### 7. Fragmented MFT Support
-
-The MFT can be scattered across multiple non-contiguous extents on disk. UFFS handles this by:
-1. Getting the extent map via `FSCTL_GET_RETRIEVAL_POINTERS`
-2. Mapping Virtual Cluster Numbers (VCN) to Logical Cluster Numbers (LCN)
-3. Reading from the correct physical locations
-
-### 8. Polars Lazy Evaluation
-
-Query operations use Polars' lazy API, which optimizes the query plan before execution. Filters are pushed down, columns are pruned, and operations are parallelized automatically.
-
-### 9. SoA Layout (Struct-of-Arrays)
-
-Instead of parsing into `Vec<ParsedRecord>` (Array-of-Structs) and then converting to DataFrame columns, UFFS parses directly into column vectors (Struct-of-Arrays). This eliminates the expensive AoS→SoA transpose and reduces df_build time by **90%**.
-
-### 10. Fast Path (Skip Extension Records)
-
-Extension records (~1% of files) contain overflow attributes for files with many hard links or ADS. The fast path skips these for maximum speed, while `--full` mode merges them for complete data.
-
-### Performance Summary
-
-| Optimization | Impact |
-|--------------|--------|
-| Direct MFT access | Bypasses slow Windows APIs |
-| Large chunk sizes | 4-8x fewer syscalls |
-| SSD/HDD detection | Optimal I/O parameters per drive |
-| Thread-local buffers | ~0 allocations during parsing |
-| Double-buffering | Overlapped I/O with processing |
-| Rayon parallelism | All CPU cores utilized |
-| Polars lazy eval | Optimized query execution |
-| **SoA layout** | **90% faster df_build** |
-| **Fast path** | **15-25% faster on SSD** |
+- **Windows** for live NTFS MFT reading (Administrator privileges required)
+- **macOS / Linux** for offline MFT analysis (no admin needed)
+- **Rust 1.85+** (Edition 2024) to build from source
 
 ---
 
-## ⚠️ Requirements
+## Documentation
 
-### Platform
-- **Windows only** for MFT reading (the core functionality)
-- Cross-platform for working with saved indexes
-
-### Privileges
-- **Administrator privileges required** for direct MFT access
-- Windows will show a UAC prompt when running UFFS
-
-### Build Requirements
-- Rust 1.85+ (Edition 2024)
-- Windows SDK (for MFT reading)
-
----
-
-## 📊 Output Formats
-
-### Console (default)
-Pretty-printed table output for terminal viewing.
-
-### CSV
-```bash
-uffs "*.rs" --out results.csv --sep "," --header true
-```
-
-### JSON
-```bash
-uffs "*.rs" --format json --out results.json
-```
-
-### Parquet
-Indexes are stored in Parquet format for efficient storage and fast loading.
+| Topic | Link |
+|-------|------|
+| Installation | [docs/user-manual/installation.md](docs/user-manual/installation.md) |
+| Getting started (5 min) | [docs/user-manual/getting-started.md](docs/user-manual/getting-started.md) |
+| CLI overview & examples | [docs/user-manual/cli-overview.md](docs/user-manual/cli-overview.md) |
+| 40+ search filters | [docs/user-manual/filters.md](docs/user-manual/filters.md) |
+| Daemon management | [docs/user-manual/daemon.md](docs/user-manual/daemon.md) |
+| TUI interactive search | [docs/user-manual/tui-search-box.md](docs/user-manual/tui-search-box.md) |
+| MCP server (AI agents) | [docs/user-manual/mcp.md](docs/user-manual/mcp.md) |
+| Performance & benchmarks | [docs/user-manual/performance.md](docs/user-manual/performance.md) |
+| Cache & data sources | [docs/user-manual/cache-and-data.md](docs/user-manual/cache-and-data.md) |
+| Architecture (11 docs) | [docs/architecture/engine/](docs/architecture/engine/) |
+| FAQ | [docs/user-manual/faq.md](docs/user-manual/faq.md) |
+| Troubleshooting | [docs/user-manual/troubleshooting.md](docs/user-manual/troubleshooting.md) |
 
 ---
 
-## 🔧 Advanced Usage
+## Contributing
 
-### Using with Polars/Pandas
-
-Export to CSV or Parquet and load in your data analysis tools:
-
-```python
-import polars as pl
-
-# Load UFFS index
-df = pl.read_parquet("c_drive.parquet")
-
-# Analyze file distribution
-df.group_by("extension").agg(
-    pl.count().alias("count"),
-    pl.col("size").sum().alias("total_size")
-).sort("total_size", descending=True)
-```
-
-### Piping to Other Tools
-
-```bash
-# Find large log files and process with grep
-uffs "*.log" --min-size 100MB --out console | grep "error"
-
-# Export for further processing
-uffs "*" --columns path,size --out - | sort -t, -k2 -n -r | head -100
-```
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the pinned toolchain, `just`/`cargo` workflows, and Windows/Admin caveats. For the broader docs map, see [docs/README.md](docs/README.md) and [docs/dev/README.md](docs/dev/README.md).
 
 ---
 
-## 📜 License
+## License
 
-This project is licensed under the **Mozilla Public License 2.0 (MPL-2.0)**.
-
-See [LICENSE](LICENSE) for details.
+[Mozilla Public License 2.0 (MPL-2.0)](LICENSE)
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 UFFS benefits from the broader NTFS tooling ecosystem, including [SwiftSearch](https://sourceforge.net/projects/swiftsearch/) by wfunction.
 
----
-
-## 📬 Contact
-
-- **Author**: Robert Nio
-- **Repository**: [github.com/githubrobbi/UltraFastFileSearch](https://github.com/githubrobbi/UltraFastFileSearch)
+**Author:** Robert Nio · [github.com/githubrobbi/UltraFastFileSearch](https://github.com/githubrobbi/UltraFastFileSearch)
