@@ -50,6 +50,7 @@ Start here and follow the arrows.  Each page builds on the previous one.
  Deep Knowledge
  ┌─────────────────────────────────────────────────────┐
  │  concepts.md → advanced-diagnostics.md              │
+ │    └── performance.md  (benchmarks & profiling)     │
  └──────────────────────────┬──────────────────────────┘
                             ▼
  Reference
@@ -93,6 +94,7 @@ Start here and follow the arrows.  Each page builds on the previous one.
 |------|---------------|
 | [Concepts](concepts.md) | Size vs SizeOnDisk, treesize, bulkiness, timestamps |
 | [Advanced Diagnostics](advanced-diagnostics.md) | --profile, --benchmark, logging, env vars |
+| [Performance](performance.md) | Benchmarks, per-drive profiling, validation throughput |
 
 ### Reference
 
@@ -121,5 +123,6 @@ Start here and follow the arrows.  Each page builds on the previous one.
 | Clean up disk space | [Getting Started](getting-started.md) §5 — Triage recipes |
 | Get a filesystem overview | [Aggregation](aggregation.md) §1 — `uffs agg overview` |
 | Understand why sizes differ from Explorer | [Concepts](concepts.md) §1 |
+| See real-world performance numbers | [Performance](performance.md) |
 | Set up UFFS for AI agents | [MCP Server](mcp.md) |
 | Fix "daemon won't start" | [Troubleshooting](troubleshooting.md) |
