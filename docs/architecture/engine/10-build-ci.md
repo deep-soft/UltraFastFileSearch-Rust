@@ -15,7 +15,7 @@ This document describes how UFFS is built, tested, and distributed. After readin
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| **Rust** | 1.85+ | Edition 2024 required |
+| **Rust** | 1.91+ | Edition 2024, nightly required |
 | **Cargo** | Latest | Workspace resolver v2 |
 | **Windows SDK** | 10.0+ | For Windows API bindings |
 | **Git LFS** | Any | For test fixtures |
@@ -401,6 +401,6 @@ cargo llvm-cov --workspace
 
 ---
 
-*Document Version: 1.0*
-*Last Updated: 2026-03-23*
-*UFFS Version: 0.3.62*
+*Document Version: 2.0*
+*Last Updated: 2026-04-12*
+*UFFS Version: 0.4.106*

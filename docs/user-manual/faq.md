@@ -43,7 +43,7 @@ and Linux, no — UFFS reads regular files (MFT captures).
 ### Why does the first search take so long?
 
 The daemon is loading the MFT and building the in-memory index.  This
-only happens once (~7 s from cache, or ~60 s cold for a large system).
+only happens once (~7 s from cache, or ~66 s cold for a large system).
 Every subsequent search completes in ~200 ms end-to-end.
 See [Performance](performance.md) for full benchmark data.
 

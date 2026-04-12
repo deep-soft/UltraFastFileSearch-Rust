@@ -1,7 +1,7 @@
 # UFFS — Ultra Fast File Search
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](https://www.rust-lang.org)
 
 **The fastest open-source NTFS file search engine.** Reads the Master File Table directly, indexes 25.9 million files across 7 drives, and answers every query in ~200 ms.
 
@@ -116,7 +116,7 @@ UFFS was built after the author wrote [an earlier C++ MFT search tool](docs/user
 
 - **Windows** for live NTFS MFT reading (Administrator privileges required)
 - **macOS / Linux** for offline MFT analysis (no admin needed)
-- **Rust 1.85+** (Edition 2024) to build from source
+- **Rust 1.91+** (Edition 2024, nightly required) to build from source
 
 ---
 

@@ -231,6 +231,6 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 ---
 
-*Document Version: 1.0*
-*Last Updated: 2026-03-23*
-*UFFS Version: 0.3.62*
+*Document Version: 2.0*
+*Last Updated: 2026-04-12*
+*UFFS Version: 0.4.106*

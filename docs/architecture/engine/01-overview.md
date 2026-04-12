@@ -4,7 +4,7 @@
 
 Ultra Fast File Search (UFFS) is a high-performance Windows file search utility written in Rust that achieves its speed by directly reading the NTFS Master File Table (MFT) rather than using standard Windows file enumeration APIs. On NVMe drives, UFFS indexes 3.5M files in ~7.5 seconds cold; once the daemon is hot, searches across 25.9M records (7 drives) complete in ~200 ms end-to-end.
 
-This document series provides a comprehensive architectural reference for the **Rust engine** (v0.4.106, Edition 2024). A developer reading these documents should be able to understand, maintain, extend, or reimplement the core engine from scratch.
+This document series provides a comprehensive architectural reference for the **Rust engine** (v0.4.106, Rust 1.91+ / Edition 2024). A developer reading these documents should be able to understand, maintain, extend, or reimplement the core engine from scratch.
 
 ---
 
@@ -391,6 +391,6 @@ HOT scan throughput: **172 million records/second**.
 
 ---
 
-*Document Version: 1.0*
-*Last Updated: 2026-03-23*
-*UFFS Version: 0.3.62 (Rust 1.85+ / Edition 2024)*
+*Document Version: 2.0*
+*Last Updated: 2026-04-12*
+*UFFS Version: 0.4.106 (Rust 1.91+ / Edition 2024)*

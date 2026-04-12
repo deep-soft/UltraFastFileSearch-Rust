@@ -1,7 +1,7 @@
 # UFFS Engine Architecture Documentation
 
-**Version**: 0.3.62 (Rust 1.85+ / Edition 2024)
-**Last Updated**: 2026-03-23
+**Version**: 0.4.106 (Rust 1.91+ / Edition 2024)
+**Last Updated**: 2026-04-12
 
 This documentation series provides a comprehensive architectural reference for the UFFS (Ultra Fast File Search) Rust engine — a high-performance NTFS MFT reader that indexes millions of files in seconds.
 

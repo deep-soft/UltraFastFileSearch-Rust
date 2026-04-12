@@ -11,7 +11,7 @@ Thanks for helping improve UFFS.
 ## Toolchain and setup
 
 - Use the pinned nightly toolchain from `rust-toolchain.toml`.
-- The workspace MSRV is Rust 1.85, but day-to-day development should use the pinned nightly.
+- The workspace MSRV is Rust 1.91, but day-to-day development should use the pinned nightly.
 - `just` is the primary workflow entry point.
 
 Recommended setup:
