@@ -235,37 +235,68 @@ fn delete_cache() {
     }
 }
 
-/// Discover available drives.
+/// Discover available drives — no daemon needed.
 ///
-/// Non-Windows: scan the data directory for `drive_*` subdirs (no daemon needed).
-/// Windows: trigger daemon auto-start and parse `daemon status`.
-fn discover_drives(bin: &PathBuf, sources: &DataSources) -> Vec<String> {
-    // If we have a data dir, we already discovered drives from the filesystem.
+/// Non-Windows: scan the data directory for `drive_*` subdirs.
+/// Windows: enumerate fixed NTFS drives via `wmic` (lightweight, no MFT load).
+fn discover_drives(_bin: &PathBuf, sources: &DataSources) -> Vec<String> {
+    // If we have a data dir, drives were already discovered from the filesystem.
     if sources.data_dir.is_some() {
         let d = sources.available_drives();
         if !d.is_empty() { return d; }
     }
-    // Windows fallback: ask the running daemon.
-    let src = sources.args_for("ALL");
-    let mut cmd = Command::new(bin);
-    cmd.args(["*", "--limit", "1"]);
-    for a in &src { cmd.arg(a); }
-    let _ = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status();
-    std::thread::sleep(Duration::from_secs(2));
-    let out = Command::new(bin).args(["daemon", "status"])
-        .stderr(Stdio::null()).output().ok();
-    let stdout = out.map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
-    let mut drives = Vec::new();
-    for line in stdout.lines() {
-        let t = line.trim();
-        if t.contains("records") {
-            if let Some(ch) = t.chars().next() {
-                if ch.is_ascii_uppercase() { drives.push(ch.to_string()); }
+    // Windows: ask the OS directly — no daemon, no MFT loading.
+    if cfg!(windows) {
+        return discover_windows_ntfs_drives();
+    }
+    Vec::new()
+}
+
+/// Enumerate fixed NTFS drives on Windows using `wmic`.
+///
+/// Runs: `wmic logicaldisk where "DriveType=3" get DeviceID,FileSystem /format:csv`
+/// which lists local fixed drives with their filesystem type. We filter to NTFS.
+/// Falls back to A–Z probing if wmic is unavailable.
+fn discover_windows_ntfs_drives() -> Vec<String> {
+    // Try wmic first (available on all supported Windows versions).
+    if let Ok(out) = Command::new("wmic")
+        .args(["logicaldisk", "where", "DriveType=3", "get", "DeviceID,FileSystem", "/format:csv"])
+        .stdout(Stdio::piped()).stderr(Stdio::null())
+        .output()
+    {
+        if out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let mut drives = Vec::new();
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split(',').collect();
+                // CSV format: Node,DeviceID,FileSystem
+                if parts.len() >= 3 {
+                    let device_id = parts[1].trim();
+                    let fs = parts[2].trim();
+                    if fs.eq_ignore_ascii_case("NTFS") {
+                        if let Some(ch) = device_id.chars().next() {
+                            if ch.is_ascii_uppercase() {
+                                drives.push(ch.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            if !drives.is_empty() {
+                drives.sort();
+                return drives;
             }
         }
     }
-    drives.sort(); drives
+    // Fallback: probe A–Z for existing drive roots.
+    let mut drives = Vec::new();
+    for letter in b'A'..=b'Z' {
+        let root = format!("{}:\\", letter as char);
+        if std::path::Path::new(&root).exists() {
+            drives.push((letter as char).to_string());
+        }
+    }
+    drives
 }
 
 fn run_once(bin: &PathBuf, args: &[String]) -> RunTiming {
