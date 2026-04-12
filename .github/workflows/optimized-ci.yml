@@ -45,10 +45,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: llvm-tools-preview
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -84,10 +82,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: x86_64-pc-windows-msvc
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -112,8 +108,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -138,8 +134,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -167,10 +163,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: miri
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2

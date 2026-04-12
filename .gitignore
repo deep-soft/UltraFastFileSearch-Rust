@@ -19,14 +19,15 @@ Cargo.lock
 /_trash/**/.keep
 
 # =============================================================================
-# Build artifacts
+# Build artifacts & generated binaries
 # =============================================================================
 build/
+*.rlib
+*.bin
+/test_scf
 
 # =============================================================================
-# Distributable binaries
-# Only the latest 2 versions are tracked in git.
-# Older versions are purged from history. Use GitHub Releases for archival.
+# Logs, vendor, misc
 # =============================================================================
 /Shell/
 /LOG/
@@ -72,6 +73,7 @@ metadata.json
 # =============================================================================
 # Local-only spec/prompt files
 # =============================================================================
+/prompts/
 INTENT_PROMPT.md
 INTENT_PROMPT_V2.md
 INTENT_SPEC_FAANG_CORE_INFRA.mdconsole

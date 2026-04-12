@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
 # Show current version.
 version:
     @printf "\033[0;34m📋 Current version:\033[0m\n"

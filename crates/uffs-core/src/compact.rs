@@ -9,6 +9,7 @@
 //! `.uffs` cache file.
 //!
 //! See `docs/architecture/COMPACT_INDEX_DESIGN.md` for the full design.
+//! Exception: `file_size_policy` — core data structures + builder, tightly coupled.
 
 use std::time::Instant;
 

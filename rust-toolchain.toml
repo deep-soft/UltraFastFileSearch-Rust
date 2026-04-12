@@ -6,9 +6,9 @@
 # and prevents issues caused by switching between stable/nightly toolchains
 
 [toolchain]
-# Pinned nightly — 2026-03-25 nightly made core::unicode::{Case_Ignorable, Cased}
-# private, breaking polars-ops string case.rs. Pin until Polars upstream fixes it.
-channel = "nightly-2026-03-24"
+# Latest nightly — updated 2026-04-12.
+# CI must NOT override this with `@nightly`; this file is the single source of truth.
+channel = "nightly-2026-04-11"
 
 # Specify components that should always be available
 components = [

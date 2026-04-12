@@ -1,4 +1,6 @@
 #!/usr/bin/env rust-script
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
 //! ```cargo
 //! [dependencies]
 //! serde_json = "1.0"

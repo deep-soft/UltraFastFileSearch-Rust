@@ -64,8 +64,8 @@ impl IpcServer {
 
     /// Verify that the connecting client has the same UID as the daemon.
     ///
-    /// - **macOS**: uses `getpeereid()` via the raw fd
-    /// - **Linux**: uses `SO_PEERCRED` via `UCred`
+    /// - **macOS/BSD**: uses `getpeereid()` via the raw fd
+    /// - **Linux**: uses `SO_PEERCRED` via `getsockopt`
     /// - **Windows**: always returns `true` (named pipe DACL handles this)
     #[cfg(unix)]
     #[expect(
@@ -81,24 +81,10 @@ impl IpcServer {
         #[expect(unsafe_code, reason = "getuid is a standard POSIX call")]
         let my_uid = unsafe { libc::getuid() };
 
-        let mut peer_uid: libc::uid_t = 0;
-        let mut peer_group_id: libc::gid_t = 0;
-
-        // SAFETY: `getpeereid()` writes into the two out-params. We pass valid
-        // mutable pointers and a valid fd obtained from the stream.
-        #[expect(unsafe_code, reason = "getpeereid is a standard POSIX call")]
-        let getpeer_rc = unsafe {
-            libc::getpeereid(
-                fd,
-                core::ptr::addr_of_mut!(peer_uid),
-                core::ptr::addr_of_mut!(peer_group_id),
-            )
-        };
-
-        if getpeer_rc != 0_i32 {
-            tracing::warn!("getpeereid failed, rejecting connection");
+        let Some(peer_uid) = Self::get_peer_uid(fd) else {
+            tracing::warn!("peer credential check failed, rejecting connection");
             return false;
-        }
+        };
 
         if peer_uid != my_uid {
             tracing::warn!(
@@ -110,6 +96,59 @@ impl IpcServer {
         }
 
         true
+    }
+
+    /// macOS/BSD: retrieve peer UID via `getpeereid()`.
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    fn get_peer_uid(fd: std::os::unix::io::RawFd) -> Option<libc::uid_t> {
+        let mut uid: libc::uid_t = 0;
+        let mut gid: libc::gid_t = 0;
+
+        // SAFETY: `getpeereid()` writes into the two out-params.  We pass valid
+        // mutable pointers and a valid fd obtained from the stream.
+        #[expect(unsafe_code, reason = "getpeereid is a standard POSIX call")]
+        let rc = unsafe {
+            libc::getpeereid(
+                fd,
+                core::ptr::addr_of_mut!(uid),
+                core::ptr::addr_of_mut!(gid),
+            )
+        };
+
+        if rc != 0_i32 {
+            return None;
+        }
+        Some(uid)
+    }
+
+    /// Linux: retrieve peer UID via `SO_PEERCRED` / `getsockopt`.
+    #[cfg(target_os = "linux")]
+    fn get_peer_uid(fd: std::os::unix::io::RawFd) -> Option<libc::uid_t> {
+        let mut cred: libc::ucred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut len = core::mem::size_of::<libc::ucred>() as libc::socklen_t;
+
+        // SAFETY: `getsockopt` with `SO_PEERCRED` reads the ucred struct for
+        // the peer of a Unix domain socket.  We pass a valid fd and correctly
+        // sized buffer.
+        #[expect(unsafe_code, reason = "getsockopt SO_PEERCRED is standard Linux")]
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                core::ptr::addr_of_mut!(cred).cast(),
+                core::ptr::addr_of_mut!(len),
+            )
+        };
+
+        if rc != 0_i32 {
+            return None;
+        }
+        Some(cred.uid)
     }
 
     /// Windows: peer credential verification via ACL (handled at socket level).

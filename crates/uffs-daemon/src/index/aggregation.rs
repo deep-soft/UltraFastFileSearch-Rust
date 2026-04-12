@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
+//! Exception: `file_size_policy` — aggregation dispatch, tightly coupled helpers.
 
 // Aggregation handler bridges wire protocol to core aggregate engine.
 // Same statistical patterns as uffs-core::aggregate apply here.

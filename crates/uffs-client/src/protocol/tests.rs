@@ -2,6 +2,7 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Protocol round-trip and serde tests.
+//! Exception: `file_size_policy` — wire format test suite cohesion.
 
 #![expect(
     clippy::indexing_slicing,

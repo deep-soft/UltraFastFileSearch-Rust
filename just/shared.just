@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
 # Shared settings, flags, helpers, and bootstrap.
 # Updated: April 2026 — Nightly (1.96+) / Edition 2024
 
@@ -47,6 +50,43 @@ _install-component COMPONENT:
     else
         printf "\033[0;32m✅ {{ COMPONENT }} component already installed (skip)\033[0m\n"
     fi
+
+# Sync the nightly toolchain to the latest date and update rust-toolchain.toml.
+# Run this when you want to bump the pinned nightly (e.g. before `just go`).
+toolchain-sync:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf "\033[0;34m🔧 Syncing to latest nightly toolchain...\033[0m\n"
+
+    # Determine today's date for the nightly channel.
+    TODAY=$(date -u +%Y-%m-%d)
+    NEW_CHANNEL="nightly-${TODAY}"
+    TOOLCHAIN_FILE="rust-toolchain.toml"
+
+    # Read the current channel.
+    CURRENT=$(grep '^channel' "$TOOLCHAIN_FILE" | sed 's/.*"\(.*\)".*/\1/')
+    if [ "$CURRENT" = "$NEW_CHANNEL" ]; then
+        printf "\033[0;32m✅ Already on latest nightly (%s)\033[0m\n" "$NEW_CHANNEL"
+        rustc --version
+        exit 0
+    fi
+
+    printf "\033[0;34m   %s → %s\033[0m\n" "$CURRENT" "$NEW_CHANNEL"
+
+    # Update the file.
+    sed -i'' -e "s/channel = \"${CURRENT}\"/channel = \"${NEW_CHANNEL}\"/" "$TOOLCHAIN_FILE"
+    # Update the comment date.
+    sed -i'' -e "s/# Latest nightly — updated .*/# Latest nightly — updated $(date -u +%Y-%m-%d)./" "$TOOLCHAIN_FILE"
+
+    # Install the new toolchain (rustup reads rust-toolchain.toml automatically).
+    printf "\033[0;34m   Installing %s...\033[0m\n" "$NEW_CHANNEL"
+    rustup toolchain install "$NEW_CHANNEL" --profile default
+    rustup default "$NEW_CHANNEL"
+
+    # Verify.
+    printf "\033[0;32m✅ Toolchain synced to %s\033[0m\n" "$NEW_CHANNEL"
+    rustc --version
+    cargo --version
 
 # Universal development environment setup
 setup:

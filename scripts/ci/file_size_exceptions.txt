@@ -13,3 +13,15 @@ crates/uffs-mft/src/io/parser/index_extension.rs|PERMANENT: Extension record par
 crates/uffs-mft/src/parse/direct_index_extension.rs|PERMANENT: Offline variant of extension parser; same structural reasoning as io/parser counterparts
 crates/uffs-mft/src/reader/index_read.rs|PERMANENT: Single impl MftReader block with tightly coupled cfg-gated pipeline stages
 crates/uffs-diag/src/bin/compare_scan_parity.rs|PERMANENT: Standalone diagnostic binary; single-file readability outweighs LOC policy for tooling
+crates/uffs-mcp/src/cookbook.rs|PERMANENT: Declarative JSON data (curated agent cookbook examples); splitting by line count would fragment the cohesive narrative
+crates/uffs-cli/src/args.rs|PERMANENT: Single clap derive hierarchy — attribute macros on one struct tree cannot span files
+crates/uffs-client/src/connect.rs|PERMANENT: Client connection lifecycle (connect, readiness, keepalive) is one flow; splitting fragments the state machine
+crates/uffs-core/src/compact_cache.rs|PERMANENT: Serialize/deserialize pipeline for compact index cache; tight coupling, only 26 over limit
+crates/uffs-core/src/compact.rs|PERMANENT: Core compact index data structures + builder; only 13 over limit
+crates/uffs-daemon/src/index/aggregation.rs|PERMANENT: Daemon-side aggregation dispatch; tightly coupled helpers, only 54 over limit
+crates/uffs-daemon/src/index/mod.rs|PERMANENT: Single IndexManager impl with 15 cohesive methods; splitting impl across files hurts readability
+crates/uffs-client/src/protocol/tests.rs|PERMANENT: Wire format round-trip test suite; splitting fragments test cohesion
+crates/uffs-core/src/search/backend_tests.rs|PERMANENT: Backend sort/filter integration test suite; shared fixtures require cohesion
+crates/uffs-core/src/search/query_tests.rs|PERMANENT: Integration query test suite; shared synthetic index fixture requires cohesion
+crates/uffs-daemon/src/index/tests.rs|PERMANENT: Aggregation integration test suite; shared drive fixture requires cohesion
+crates/uffs-core/src/aggregate/integration_tests.rs|PERMANENT: Aggregate engine integration test suite; shared synthetic drive fixture requires cohesion

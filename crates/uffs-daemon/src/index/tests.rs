@@ -2,6 +2,7 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Integration tests for aggregation and predicate conversion.
+//! Exception: `file_size_policy` — aggregation test suite, shared fixture requires cohesion.
 
 #![expect(
     clippy::indexing_slicing,

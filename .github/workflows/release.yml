@@ -130,10 +130,8 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: ${{ matrix.target }}
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2

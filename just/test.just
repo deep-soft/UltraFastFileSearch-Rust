@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
 # Verify Rust toolchain consistency.
 verify-toolchain:
     #!/usr/bin/env bash

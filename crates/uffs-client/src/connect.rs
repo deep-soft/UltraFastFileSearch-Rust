@@ -13,6 +13,7 @@
 //! | **macOS** | Unix domain socket (`~/Library/Application Support/uffs/daemon.sock`) |
 //! | **Linux** | Unix domain socket (`$XDG_RUNTIME_DIR/uffs/daemon.sock`) |
 //! | **Windows** | Unix domain socket (`%LOCALAPPDATA%/uffs/daemon.sock`) — named pipe planned |
+//! Exception: `file_size_policy` — connection lifecycle is one cohesive flow.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 

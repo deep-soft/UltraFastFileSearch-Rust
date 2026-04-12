@@ -15,6 +15,7 @@ on:
       - '**/Cargo.lock'
       - '.github/workflows/ci.yml'
       - '.github/workflows/optimized-ci.yml'
+      - 'rust-toolchain.toml'
       - 'scripts/ci/check_file_size_policy.sh'
       - 'scripts/ci/file_size_exceptions.txt'
       - 'scripts/ci/ci-pipeline.rs'
@@ -28,6 +29,7 @@ on:
       - '**/Cargo.lock'
       - '.github/workflows/ci.yml'
       - '.github/workflows/optimized-ci.yml'
+      - 'rust-toolchain.toml'
       - 'scripts/ci/check_file_size_policy.sh'
       - 'scripts/ci/file_size_exceptions.txt'
       - 'scripts/ci/ci-pipeline.rs'
@@ -51,10 +53,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -67,10 +67,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: clippy
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -86,8 +84,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -103,8 +101,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -126,8 +124,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2

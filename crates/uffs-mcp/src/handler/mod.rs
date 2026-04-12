@@ -15,9 +15,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use rmcp::model::{
     AnnotateAble, CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult,
     Implementation, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, PromptMessage, RawResource, RawResourceTemplate,
+    ListToolsResult, PaginatedRequestParams, RawResource, RawResourceTemplate,
     ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-    ServerInfo, Tool, ToolAnnotations,
+    ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
@@ -30,125 +30,15 @@ use crate::roots::{self, SharedRootsState};
 use crate::stats::McpStats;
 use crate::tools;
 
-// ── Agent instructions ────────────────────────────────────────────────
-//
-// This is the first thing every MCP agent sees.  It must be:
-// • Concise enough to fit in a context window without crowding.
-// • Comprehensive enough that an agent can answer filesystem questions
-//   without reading any other docs.
-// • Actionable — every sentence should help the agent decide which tool
-//   to call and with which parameters.
+mod definitions;
+mod instructions;
+mod prompts;
 
-/// Server instructions returned in the `initialize` response.
-///
-/// Designed to be read by LLM agents, not humans.  Teaches the agent
-/// how to use UFFS tools effectively in the fewest possible queries.
-const AGENT_INSTRUCTIONS: &str = "\
-UFFS — Ultra Fast File Search.  Indexes NTFS drives via the Master File \
-Table and serves sub-millisecond queries over millions of files.
+pub(crate) use definitions::{is_known_tool, percent_decode_path};
+pub use definitions::{prompt_definitions, tool_definitions};
+pub use prompts::{build_prompt_messages, str_arg, u64_arg};
 
-TOOLS (all read-only):
-• uffs_search   — Search files/dirs.  Supports glob (*.pdf), regex (>pattern), \
-  substring (invoice), and match-all (*).  40+ filter parameters: size, date, \
-  extension, type, path, NTFS attributes, bulkiness, treesize, descendants.
-• uffs_aggregate — Server-side analytics.  Use presets for one-call answers: \
-  overview, by_type, by_extension, by_drive, by_size, by_age, storage, \
-  activity, top_folders, duplicates, media, cleanup.
-• uffs_facet_values — Discover distinct values of a field (extension, type, \
-  drive) with counts and byte totals.  Use BEFORE searching to understand \
-  what exists.
-• uffs_info     — Full metadata for a single file/directory by path.
-• uffs_drives   — List indexed drives with record counts.
-• uffs_status   — Daemon health, uptime, memory, loading progress.
-
-QUERY STRATEGY (minimize round-trips):
-1. Start with uffs_aggregate preset='overview' to get the lay of the land.
-2. Use uffs_facet_values to discover what extensions/types/drives exist.
-3. Use uffs_search with specific filters to drill down.
-4. Combine multiple filters in ONE call — they are ANDed.  More filters = \
-   fewer results = faster.
-
-KEY PARAMETERS for uffs_search:
-• pattern: '*' (match-all), '*.ext' (glob), 'word' (substring), '>regex'
-• filter: 'files', 'dirs', or 'all'
-• ext: 'pdf' or collection aliases: pictures, documents, videos, music, \
-  archives, code
-• type_filter: semantic category: picture, document, archive, code, video, \
-  audio, executable, database, config, log, system
-• min_size / max_size: bytes (1073741824 = 1 GB)
-• newer / older: '7d', '24h', '2w', '2026-01-15', 'today', 'last_30d'
-• newer_created / older_created / newer_accessed / older_accessed
-• path_contains: scope to a subtree ('Users\\\\name' or 'Users/name')
-• drives: ['C'] or ['C','D'] to scope to specific drives
-• sort: 'modified', '-size', 'name', '-treesize', '-descendants', '-bulkiness'
-• limit: max results (default 50, cap 500)
-• projection: columns to return — name, ext, type, size, modified, path, drive, \
-  created, accessed, allocated, treesize, descendants, tree_allocated
-• whole_word: true for word-boundary matching
-• attr: NTFS attributes — 'hidden', 'system', 'compressed', 'encrypted', etc.
-• min_descendants / max_descendants: filter dirs by child count
-
-KEY PARAMETERS for uffs_aggregate:
-• preset: one-word shortcut — overview, by_type, by_extension, by_drive, \
-  by_size, by_age, storage, activity, top_folders, duplicates, media, cleanup
-• aggregations: array of custom power-syntax specs for full control. \
-  10 kinds: count, stats:FIELD, terms:FIELD, hist:FIELD, datehist:FIELD, \
-  range:FIELD, missing:FIELD, distinct:FIELD, rollup:path, duplicates:KEY+KEY. \
-  Options: top=N, sample=N, interval=N, calendar=day|week|month|quarter|year, \
-  depth=N, bins=A..B+C..D, sub=kind:field.
-• pattern / drives: scope aggregation to a subset (same as search).
-• page_size: enable paginated buckets. Response includes next_cursor.
-• cursor: opaque token from previous response to fetch the next page.
-POWER MOVE: stack multiple specs in ONE call — \
-  aggregations=['count','stats:size','terms:type,top=10'] runs all in one pass.
-AGGREGATABLE fields (stats/hist/range): size, allocated, modified, created, \
-  accessed, descendants, treesize, tree_allocated, bulkiness, name_length, \
-  path_length.
-GROUPABLE fields (terms/rollup): extension, type, drive, name, directory, \
-  hidden, system, compressed, encrypted, read_only, archive, sparse, reparse, \
-  temporary, offline.
-
-KEY PARAMETERS for uffs_facet_values:
-• field: 'extension', 'type', or 'drive'
-• top: number of values to return (default 20)
-• pattern: scope to files matching a search pattern
-• prefix: filter values by prefix (e.g. 'doc' → doc, docx, docm)
-• page_size / cursor: pagination (same as aggregate)
-
-RESOURCES (readable even if tools are unavailable):
-• uffs://cookbook — ESSENTIAL: ~30 curated example queries with ready-to-use \
-  arguments objects organized by workflow.  Read this FIRST to learn patterns.
-• uffs://schema/search — JSON Schema for uffs_search parameters.
-• uffs://schema/fields — Complete field catalog with types and capabilities.
-• uffs://presets/aggregate — List of aggregate presets with descriptions.
-• uffs://drives — Live drive listing.
-• uffs://status — Daemon health.
-• uffs://info/{path} — Dynamic resource template for file metadata \
-  (percent-encode path: C:\\Windows → C%3A%5CWindows).
-
-COMMON USER REQUESTS (natural language -> tool call):
-• Find my file        -> uffs_search pattern='filename'
-• Where is folder X?  -> uffs_search pattern='X' filter='dirs'
-• What eats space?    -> uffs_aggregate preset='overview', then sort='-size'
-• Clean up disk       -> uffs_aggregate preset='cleanup', then old+large search
-• Recent files        -> uffs_search newer='7d' sort='-modified'
-• Recently opened     -> uffs_search newer_accessed='7d' sort='-accessed'
-• Find duplicates     -> uffs_aggregate preset='duplicates'
-• Empty folders       -> uffs_search filter='dirs' max_descendants=0
-• Long path problems  -> uffs_search min_path_length=260 sort='-path_length'
-• Hidden files        -> uffs_search attr='hidden' sort='-size'
-• Find config files   -> uffs_search ext='json,toml,yaml,yml,ini,env,cfg'
-• Big photos/videos   -> uffs_search ext='pictures,videos' min_size=52428800 sort='-size'
-• Recent executables  -> uffs_search type_filter='executable' newer='7d'
-• Old large files     -> uffs_search min_size=104857600 older='365d' sort='-size'
-• Inventory a drive   -> uffs_aggregate preset='overview' drives=['X']
-NOTE: UFFS does NOT search inside file contents — it searches file names, \
-paths, and metadata.  For content search, suggest ripgrep or similar.
-
-PROMPTS (guided multi-step workflows):
-find_large_files, find_by_extension, disk_usage_report, cleanup_report, \
-recent_changes, duplicate_investigation, subtree_analysis.
-";
+use instructions::AGENT_INSTRUCTIONS;
 
 /// Connection strategy for the daemon client.
 ///
@@ -158,10 +48,8 @@ recent_changes, duplicate_investigation, subtree_analysis.
 enum ClientSlot {
     /// Connected (or reconnectable) client.
     ///
-    /// Used by both stdio (`mcp run`) and HTTP gateway (`mcp serve`).
-    /// The `client` starts as `Some` for eager connections (stdio) or
-    /// `None` for lazy connections (HTTP).  Either way, if the daemon
-    /// dies, the client is cleared and reconnected on the next tool call.
+    /// Used by the **HTTP gateway**: each SSE session gets its own
+    /// `UffsMcpServer` with a pre-connected client.
     Active {
         /// Args forwarded to `uffs daemon run` on auto-start / reconnect.
         spawn_args: Vec<String>,
@@ -347,6 +235,7 @@ impl core::ops::DerefMut for ClientGuard<'_> {
             .expect("BUG: client not initialized before deref_mut")
     }
 }
+
 
 impl UffsMcpServer {
     /// Gate on daemon readiness — returns `Err` if the daemon is still
@@ -571,22 +460,22 @@ impl ServerHandler for UffsMcpServer {
         self.touch();
         Ok(ListResourcesResult {
             resources: vec![
-                // ── Live metadata (require daemon) ──────────────────
+                RawResource::new("uffs://schema/fields", "Field Catalog")
+                    .with_description(
+                        "Complete catalog of fields available for searching, filtering, \
+                         sorting, and aggregating — includes types and capabilities",
+                    )
+                    .with_mime_type("application/json")
+                    .no_annotation(),
                 RawResource::new("uffs://drives", "Indexed Drives")
-                    .with_description("List of all NTFS drives indexed by the UFFS daemon")
+                    .with_description(
+                        "Live listing of currently indexed NTFS drives with record counts",
+                    )
                     .with_mime_type("application/json")
                     .no_annotation(),
                 RawResource::new("uffs://status", "Daemon Status")
                     .with_description(
-                        "Current daemon status: loading progress, uptime, connections",
-                    )
-                    .with_mime_type("application/json")
-                    .no_annotation(),
-                // ── Static schema resources (no daemon needed) ──────
-                RawResource::new("uffs://schema/fields", "Field Catalog")
-                    .with_description(
-                        "Canonical field catalog: every searchable/sortable/filterable \
-                         field with type, aliases, and aggregation capability",
+                        "Daemon health, state, uptime, memory, PID, and drive-loading progress",
                     )
                     .with_mime_type("application/json")
                     .no_annotation(),
@@ -738,403 +627,6 @@ impl ServerHandler for UffsMcpServer {
         Ok(GetPromptResult::new(messages)
             .with_description(format!("UFFS prompt: {}", request.name)))
     }
-}
-
-/// Helper to extract a string argument from the prompt args map.
-#[must_use]
-pub fn str_arg<'a>(args: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(|val| val.as_str())
-}
-
-/// Helper to extract a numeric argument from the prompt args map.
-#[must_use]
-pub fn u64_arg(args: &serde_json::Map<String, Value>, key: &str, default: u64) -> u64 {
-    str_arg(args, key)
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .unwrap_or(default)
-}
-
-/// Build a single user-role prompt message.
-fn user_msg(text: String) -> Vec<PromptMessage> {
-    vec![PromptMessage::new_text(
-        rmcp::model::PromptMessageRole::User,
-        text,
-    )]
-}
-
-/// Build the messages for a given prompt name and arguments.
-///
-/// # Errors
-///
-/// Returns `McpError::invalid_params` if the prompt name is unknown.
-pub fn build_prompt_messages(
-    name: &str,
-    args: &serde_json::Map<String, Value>,
-) -> Result<Vec<PromptMessage>, McpError> {
-    match name {
-        "find_large_files" => {
-            let limit = u64_arg(args, "limit", 50);
-            Ok(user_msg(format!(
-                "Use the uffs_search tool to find the {limit} largest files. \
-                 Use pattern '*', sort by 'size' descending, limit {limit}, \
-                 filter 'files'. Show results as a table with name, size, and path."
-            )))
-        }
-        "recent_changes" => {
-            let days = u64_arg(args, "days", 1);
-            Ok(user_msg(format!(
-                "Use the uffs_search tool to find files modified in the last \
-                 {days} day(s). Use pattern '*', sort by 'modified' descending, \
-                 limit 100. Show results as a table."
-            )))
-        }
-        "find_by_extension" => {
-            let ext = str_arg(args, "extension").unwrap_or("txt");
-            let limit = u64_arg(args, "limit", 100);
-            Ok(user_msg(format!(
-                "Use the uffs_search tool to find all *.{ext} files. Use pattern \
-                 '*.{ext}', sort by 'modified' descending, limit {limit}. \
-                 Show results as a table."
-            )))
-        }
-        "find_duplicates_by_name" => {
-            let filename = str_arg(args, "filename").unwrap_or("*");
-            Ok(user_msg(format!(
-                "Use the uffs_search tool to find all files named '{filename}' \
-                 across all drives. This helps identify duplicate files. \
-                 Show the full path for each result."
-            )))
-        }
-        "disk_usage_report" => {
-            let drive = str_arg(args, "drive").unwrap_or("");
-            let scope = if drive.is_empty() {
-                String::new()
-            } else {
-                format!(" Scope to drive {drive}: only.")
-            };
-            Ok(user_msg(format!(
-                "Generate a disk usage report.{scope}\n\n\
-                 Step 1: Call uffs_aggregate with preset 'overview' to get total \
-                 file count and size.\n\
-                 Step 2: Call uffs_aggregate with preset 'by_type' to see breakdown \
-                 by file type (documents, images, video, audio, archives, etc.).\n\
-                 Step 3: Call uffs_aggregate with preset 'by_extension' (top 20) to \
-                 see the most common extensions.\n\
-                 Step 4: Call uffs_aggregate with preset 'storage' to see size \
-                 distribution buckets.\n\n\
-                 Present the results as a clear, structured report with totals, \
-                 percentages, and top contributors. Highlight anything unusual."
-            )))
-        }
-        "cleanup_report" => {
-            let min_size = u64_arg(args, "min_size_mb", 100);
-            Ok(user_msg(format!(
-                "Generate a cleanup candidates report.\n\n\
-                 Step 1: Call uffs_aggregate with preset 'cleanup' to identify \
-                 temporary files, caches, and other cleanup candidates.\n\
-                 Step 2: Call uffs_search to find the top 50 largest files \
-                 over {min_size}MB, sorted by size descending.\n\
-                 Step 3: Call uffs_aggregate with preset 'duplicates' to find \
-                 potential duplicate files.\n\n\
-                 Present the results as an actionable cleanup report. Show total \
-                 reclaimable space, list the biggest space hogs, and highlight \
-                 duplicate groups. Be clear about which files are safe to review."
-            )))
-        }
-        "duplicate_investigation" => {
-            let ext = str_arg(args, "extension").unwrap_or("");
-            let scope = if ext.is_empty() {
-                String::new()
-            } else {
-                format!(" Focus on *.{ext} files.")
-            };
-            Ok(user_msg(format!(
-                "Investigate duplicate files.{scope}\n\n\
-                 Step 1: Call uffs_aggregate with preset 'duplicates' to find \
-                 groups of files with identical names and sizes.\n\
-                 Step 2: For the top 5 largest duplicate groups, show all file \
-                 paths using uffs_search.\n\
-                 Step 3: Summarise total wasted space and recommend which copies \
-                 might be safe to remove (e.g. copies in temp/cache directories).\n\n\
-                 Present findings as a structured report with duplicate groups, \
-                 file paths, sizes, and total reclaimable space."
-            )))
-        }
-        other => Err(McpError::invalid_params(
-            format!("Unknown prompt: {other}"),
-            None,
-        )),
-    }
-}
-
-/// Standard JSON Schema format values recognised by AJV and most validators.
-/// Non-standard formats (e.g. `uint64`, `uint32`, `uint` emitted by
-/// `schemars` for Rust integer types) cause noisy warnings in MCP clients
-/// that use AJV (Augment, `OpenCode`, Gemini CLI).
-const STANDARD_FORMATS: &[&str] = &[
-    // JSON Schema built-in string formats
-    "date-time",
-    "date",
-    "time",
-    "duration",
-    "email",
-    "idn-email",
-    "hostname",
-    "idn-hostname",
-    "ipv4",
-    "ipv6",
-    "uri",
-    "uri-reference",
-    "iri",
-    "iri-reference",
-    "uuid",
-    "uri-template",
-    "json-pointer",
-    "relative-json-pointer",
-    "regex",
-];
-
-/// Recursively strip non-standard `"format"` values from a JSON Schema tree.
-///
-/// `schemars` emits `"format": "uint64"` for `u64`, `"format": "uint32"` for
-/// `u32`, `"format": "uint"` for `usize`, etc.  These are valid Rust-specific
-/// annotations but not standard JSON Schema, and AJV-based clients warn on
-/// every one.  This walk removes them while preserving standard formats like
-/// `"date-time"` and `"uuid"`.
-fn strip_nonstandard_formats(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            if let Some(Value::String(fmt)) = map.get("format")
-                && !STANDARD_FORMATS.contains(&fmt.as_str())
-            {
-                map.remove("format");
-            }
-            for val in map.values_mut() {
-                strip_nonstandard_formats(val);
-            }
-        }
-        Value::Array(arr) => {
-            for val in arr.iter_mut() {
-                strip_nonstandard_formats(val);
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
-}
-
-/// Convert a schemars `Schema` to the rmcp `InputSchema` type
-/// (`Arc<Map<String, Value>>`), stripping non-standard format annotations.
-fn schema_to_input(schema: schemars::Schema) -> Arc<serde_json::Map<String, Value>> {
-    let mut value = serde_json::to_value(schema).unwrap_or_default();
-    strip_nonstandard_formats(&mut value);
-    if let Value::Object(map) = value {
-        Arc::new(map)
-    } else {
-        Arc::new(serde_json::Map::new())
-    }
-}
-
-/// Like [`Tool::with_output_schema`] but strips non-standard format values
-/// from the generated schema before attaching it.
-fn with_clean_output_schema<T: schemars::JsonSchema + 'static>(tool: Tool) -> Tool {
-    let schema = schemars::schema_for!(T);
-    let mut value = serde_json::to_value(schema).unwrap_or_default();
-    strip_nonstandard_formats(&mut value);
-    let mut result = tool;
-    if let Value::Object(map) = value {
-        result.output_schema = Some(Arc::new(map));
-    }
-    result
-}
-
-/// Known tool names — used for early rejection before daemon dispatch.
-const KNOWN_TOOLS: &[&str] = &[
-    "uffs_search",
-    "uffs_drives",
-    "uffs_status",
-    "uffs_info",
-    "uffs_aggregate",
-    "uffs_facet_values",
-];
-
-/// Check if a tool name is known.
-fn is_known_tool(name: &str) -> bool {
-    KNOWN_TOOLS.contains(&name)
-}
-
-/// Build the static list of tool definitions for `tools/list`.
-#[must_use]
-pub fn tool_definitions() -> Vec<Tool> {
-    use crate::schemas::{DrivesOutput, InfoOutput, StatusOutput};
-
-    let read_only = ToolAnnotations::from_raw(
-        None,        // title
-        Some(true),  // read_only_hint
-        Some(false), // destructive_hint
-        Some(true),  // idempotent_hint
-        Some(false), // open_world_hint
-    );
-
-    // Empty object schema for tools that take no arguments.
-    // Uses rmcp's own helper — produces `{"type": "object", "properties": {}}`.
-    let empty_schema = rmcp::handler::server::common::schema_for_empty_input();
-
-    vec![
-        Tool::new(
-            "uffs_search",
-            "Search files across all indexed NTFS drives. Supports glob patterns \
-             (*.rs), regex (prefix with >), and substring matching. Returns \
-             file name, size, modification time, and full path.",
-            schema_to_input(schemars::schema_for!(tools::search::SearchArgs)),
-        )
-        // NOTE: outputSchema removed — structuredContent is disabled for
-        // search (see search.rs).  Augment enforces the contract: if you
-        // declare an outputSchema you MUST return structuredContent.
-        .with_annotations(read_only.clone()),
-        with_clean_output_schema::<InfoOutput>(Tool::new(
-            "uffs_info",
-            "Look up detailed information about a specific file or directory by its \
-             full path. Returns size, timestamps, MFT attributes, and parent info.",
-            schema_to_input(schemars::schema_for!(tools::info::InfoArgs)),
-        ))
-        .with_annotations(read_only.clone()),
-        with_clean_output_schema::<DrivesOutput>(Tool::new(
-            "uffs_drives",
-            "List all NTFS drives currently indexed by the UFFS daemon. Returns \
-             drive letter, record count, and index source (MFT or cached).",
-            Arc::clone(&empty_schema),
-        ))
-        .with_annotations(read_only.clone()),
-        with_clean_output_schema::<StatusOutput>(Tool::new(
-            "uffs_status",
-            "Get the current health and loading progress of the UFFS daemon. Returns \
-             daemon state, uptime, memory usage, connection count, and PID.",
-            empty_schema,
-        ))
-        .with_annotations(read_only.clone()),
-        Tool::new(
-            "uffs_aggregate",
-            "Run server-side aggregations over the file index. Supports presets \
-             (overview, by_type, by_extension, storage, cleanup, duplicates) and \
-             custom specs. Returns counts, stats, terms, rollups, and histograms.",
-            schema_to_input(schemars::schema_for!(tools::aggregate::AggregateArgs)),
-        )
-        // NOTE: outputSchema removed — structuredContent disabled.
-        .with_annotations(read_only.clone()),
-        Tool::new(
-            "uffs_facet_values",
-            "Explore distinct values of a field (extension, type, drive, etc.). \
-             Returns top-N values with counts and byte totals. Useful for \
-             understanding the composition of files before searching.",
-            schema_to_input(schemars::schema_for!(tools::facet_values::FacetValuesArgs)),
-        )
-        // NOTE: outputSchema removed — structuredContent disabled.
-        .with_annotations(read_only),
-    ]
-}
-
-/// Build the static list of prompt definitions for `prompts/list`.
-#[must_use]
-pub fn prompt_definitions() -> Vec<rmcp::model::Prompt> {
-    use rmcp::model::{Prompt, PromptArgument};
-
-    vec![
-        Prompt::new(
-            "find_large_files",
-            Some("Find the largest files across all drives, sorted by size descending"),
-            Some(vec![
-                PromptArgument::new("limit")
-                    .with_description("Number of results (default: 50)")
-                    .with_required(false),
-            ]),
-        ),
-        Prompt::new(
-            "recent_changes",
-            Some("Find files modified in the last N days"),
-            Some(vec![
-                PromptArgument::new("days")
-                    .with_description("Number of days to look back (default: 1)")
-                    .with_required(false),
-            ]),
-        ),
-        Prompt::new(
-            "find_by_extension",
-            Some("Find all files with a specific extension"),
-            Some(vec![
-                PromptArgument::new("extension")
-                    .with_description("File extension without dot (e.g., 'rs', 'pdf', 'jpg')")
-                    .with_required(true),
-                PromptArgument::new("limit")
-                    .with_description("Number of results (default: 100)")
-                    .with_required(false),
-            ]),
-        ),
-        Prompt::new(
-            "find_duplicates_by_name",
-            Some("Search for files with the same name across all drives"),
-            Some(vec![
-                PromptArgument::new("filename")
-                    .with_description("Exact filename to search for")
-                    .with_required(true),
-            ]),
-        ),
-        Prompt::new(
-            "disk_usage_report",
-            Some("Generate a comprehensive disk usage report with type/extension/size breakdown"),
-            Some(vec![
-                PromptArgument::new("drive")
-                    .with_description("Optional drive letter to scope report (e.g., 'C')")
-                    .with_required(false),
-            ]),
-        ),
-        Prompt::new(
-            "cleanup_report",
-            Some("Identify cleanup candidates: large files, temp files, caches, and duplicates"),
-            Some(vec![
-                PromptArgument::new("min_size_mb")
-                    .with_description("Minimum file size in MB to flag (default: 100)")
-                    .with_required(false),
-            ]),
-        ),
-        Prompt::new(
-            "duplicate_investigation",
-            Some("Investigate duplicate files across all drives with size and path details"),
-            Some(vec![
-                PromptArgument::new("extension")
-                    .with_description("Optional extension filter (e.g., 'pdf', 'jpg')")
-                    .with_required(false),
-            ]),
-        ),
-    ]
-}
-
-/// Percent-decode a URI path component back to a plain string.
-///
-/// Handles `%XX` sequences (e.g. `%20` → space, `%5C` → backslash).
-pub(crate) fn percent_decode_path(encoded: &str) -> String {
-    let mut decoded = Vec::with_capacity(encoded.len());
-    let bytes = encoded.as_bytes();
-    let mut idx = 0;
-    while idx < bytes.len() {
-        // Collapse the outer bounds-check and the inner `from_str_radix` into
-        // a single `if let` chain to satisfy `collapsible_if`.  We use `.get()`
-        // instead of direct indexing to avoid `indexing_slicing` on byte arrays
-        // and `string_slice` on the `&str`.
-        if bytes.get(idx).copied() == Some(b'%')
-            && idx + 2 < bytes.len()
-            && let Some(hex_pair) = encoded.get(idx + 1..idx + 3)
-            && let Ok(byte) = u8::from_str_radix(hex_pair, 16)
-        {
-            decoded.push(byte);
-            idx += 3;
-            continue;
-        }
-        if let Some(&raw) = bytes.get(idx) {
-            decoded.push(raw);
-        }
-        idx += 1;
-    }
-    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@
 //! The [`IndexManager`] is the daemon's core data structure. It holds
 //! the compact search indices for all loaded drives and delegates to
 //! `uffs_core::search` for query execution.
+//! Exception: `file_size_policy` — single IndexManager impl, splitting hurts readability.
 
 mod aggregation;
 mod predicates;

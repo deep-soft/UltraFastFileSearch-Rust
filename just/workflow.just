@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
 # Phase 1: safe-by-default validation.
 phase1-test:
     @printf "\033[0;34m🧪 PHASE 1: Safe-by-Default Validation\033[0m\n"

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
 # Default help content.
 _default-help:
     @printf "\033[0;34m🚀 UFFS - Modern Rust Development Workflow\033[0m\n"

@@ -2,6 +2,7 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! CLI argument definitions: `Cli` struct and `Commands` enum.
+//! Exception: `file_size_policy` — single clap derive hierarchy cannot span files.
 
 use std::path::PathBuf;
 

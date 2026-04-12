@@ -107,10 +107,14 @@ fn default_mcp_log_file() -> std::path::PathBuf {
         .join("uffs_mcp.log")
 }
 
+/// Agent cookbook — curated example queries (backing `uffs://cookbook`).
+pub(crate) mod cookbook;
 /// MCP bridge error types.
 pub mod error;
 /// MCP [`ServerHandler`](rmcp::ServerHandler) implementation.
 pub mod handler;
+/// MCP server PID file management.
+pub mod pid;
 /// Static and live MCP resource implementations.
 pub mod resources;
 /// MCP roots mapping policy.
@@ -121,10 +125,8 @@ pub mod schemas;
 pub mod stats;
 /// Human-readable text formatting for tool responses.
 pub mod text;
-
 /// Individual MCP tool handlers.
 pub mod tools;
-
 /// Streamable HTTP gateway (feature-gated).
 #[cfg(feature = "streamable-http")]
 pub mod http;
@@ -139,191 +141,10 @@ use rmcp::ServiceExt;
 use tower_service as _;
 use tracing::info;
 
-// ── MCP server PID file ─────────────────────────────────────────────
-
-/// Path to the MCP server PID file.
-///
-/// Separate from the daemon PID file (`daemon.pid`).
-#[must_use]
-pub fn mcp_pid_file_path() -> std::path::PathBuf {
-    let base = dirs_next::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    base.join("uffs").join("mcp-server.pid")
-}
-
-/// Write the MCP server PID file with explicit transport info.
-///
-/// Only called by the HTTP gateway to record `http:bind:port`.
-/// Stdio servers do **not** write PID files (multiple can coexist).
-///
-/// # PID file format
-///
-/// ```text
-/// {pid}
-/// {unix_ts}
-/// {transport}         e.g. "http:127.0.0.1:8080"
-/// data-dir={path}     optional — persisted so `reload` can recover
-/// mft-file={path}     optional, repeatable
-/// no-cache            optional flag
-/// ```
-///
-/// Lines after the first 3 are optional key=value pairs.
-pub fn write_mcp_pid_file_with_transport(transport: &str) {
-    write_mcp_pid_file_full(transport, None, &[], false);
-}
-
-/// Write the MCP server PID file with transport **and** data source info.
-///
-/// Called by `mcp start` / `mcp serve` so that `mcp reload` can recover
-/// data sources even when the gateway process is already dead.
-#[expect(
-    clippy::format_push_string,
-    reason = "write! requires fmt::Write import; push_str+format is fine here"
-)]
-pub fn write_mcp_pid_file_full(
-    transport: &str,
-    data_dir: Option<&std::path::Path>,
-    mft_files: &[std::path::PathBuf],
-    no_cache: bool,
-) {
-    let path = mcp_pid_file_path();
-    if let Some(parent) = path.parent() {
-        drop(std::fs::create_dir_all(parent));
-    }
-    let pid = std::process::id();
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |dur| dur.as_secs());
-    let mut content = format!("{pid}\n{ts}\n{transport}\n");
-    if let Some(dir) = data_dir {
-        content.push_str(&format!("data-dir={}\n", dir.display()));
-    }
-    for mft in mft_files {
-        content.push_str(&format!("mft-file={}\n", mft.display()));
-    }
-    if no_cache {
-        content.push_str("no-cache\n");
-    }
-    if let Err(err) = std::fs::write(&path, content) {
-        tracing::warn!(path = %path.display(), %err, "Failed to write MCP PID file");
-    } else {
-        info!(pid, path = %path.display(), transport, "Wrote MCP server PID file");
-    }
-}
-
-/// Remove the MCP server PID file (best-effort).
-pub fn remove_mcp_pid_file() {
-    let path = mcp_pid_file_path();
-    if path.exists() {
-        drop(std::fs::remove_file(&path));
-        info!(path = %path.display(), "Removed MCP server PID file");
-    }
-}
-
-/// Parsed MCP server PID file.
-#[derive(Debug, Clone)]
-pub struct McpPidInfo {
-    /// Process ID.
-    pub pid: u32,
-    /// Start timestamp (Unix epoch seconds).
-    pub start_ts: u64,
-    /// Transport: `"stdio"` or `"http:bind:port"`.
-    pub transport: String,
-    /// Data directory (if persisted).
-    pub data_dir: Option<std::path::PathBuf>,
-    /// MFT file paths (if persisted).
-    pub mft_files: Vec<std::path::PathBuf>,
-    /// Whether `--no-cache` was set.
-    pub no_cache: bool,
-}
-
-impl McpPidInfo {
-    /// If HTTP transport, extract `(bind, port)`.
-    #[must_use]
-    pub fn http_addr(&self) -> Option<(&str, u16)> {
-        let rest = self.transport.strip_prefix("http:")?;
-        let (bind, port_str) = rest.rsplit_once(':')?;
-        let port: u16 = port_str.parse().ok()?;
-        Some((bind, port))
-    }
-
-    /// Returns `true` if data sources were persisted in the PID file.
-    #[must_use]
-    pub const fn has_data_sources(&self) -> bool {
-        self.data_dir.is_some() || !self.mft_files.is_empty()
-    }
-}
-
-/// Parse the MCP server PID file.  Returns `(pid, start_timestamp)`.
-#[must_use]
-pub fn parse_mcp_pid_file() -> Option<(u32, u64)> {
-    let info = parse_mcp_pid_file_full()?;
-    Some((info.pid, info.start_ts))
-}
-
-/// Parse the full MCP server PID file (pid, timestamp, transport, data
-/// sources).
-#[must_use]
-pub fn parse_mcp_pid_file_full() -> Option<McpPidInfo> {
-    let content = std::fs::read_to_string(mcp_pid_file_path()).ok()?;
-    let mut lines = content.lines();
-    let pid: u32 = lines.next()?.parse().ok()?;
-    let ts: u64 = lines.next()?.parse().ok()?;
-    let transport = lines.next().unwrap_or("stdio").to_owned();
-
-    let mut data_dir: Option<std::path::PathBuf> = None;
-    let mut mft_files: Vec<std::path::PathBuf> = Vec::new();
-    let mut no_cache = false;
-
-    for line in lines {
-        if let Some(dir) = line.strip_prefix("data-dir=") {
-            data_dir = Some(std::path::PathBuf::from(dir));
-        } else if let Some(mft) = line.strip_prefix("mft-file=") {
-            mft_files.push(std::path::PathBuf::from(mft));
-        } else if line == "no-cache" {
-            no_cache = true;
-        }
-    }
-
-    Some(McpPidInfo {
-        pid,
-        start_ts: ts,
-        transport,
-        data_dir,
-        mft_files,
-        no_cache,
-    })
-}
-
-/// Check if the MCP server process (from the PID file) is still alive.
-#[must_use]
-pub fn is_mcp_server_running() -> Option<u32> {
-    let (pid, _ts) = parse_mcp_pid_file()?;
-    is_process_alive(pid).then_some(pid)
-}
-
-/// Check if a process is alive (platform-specific).
-#[must_use]
-fn is_process_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // /proc/PID/status exists on Linux; on macOS use `kill -0`.
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-    }
-    #[cfg(not(unix))]
-    {
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .output()
-            .map_or(false, |o| {
-                String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())
-            })
-    }
-}
+pub use pid::{
+    is_mcp_server_running, mcp_pid_file_path, parse_mcp_pid_file, parse_mcp_pid_file_full,
+    remove_mcp_pid_file, write_mcp_pid_file_full, write_mcp_pid_file_with_transport, McpPidInfo,
+};
 
 // ── Configuration ───────────────────────────────────────────────────
 
@@ -494,8 +315,6 @@ pub async fn run_mcp_server() -> anyhow::Result<()> {
     reason = "test code — relaxed for readability"
 )]
 mod tests {
-    // ── error.rs tests ──────────────────────────────────────────────
-
     /// JSON-RPC 2.0 error code for "Invalid params".
     const INVALID_PARAMS: rmcp::model::ErrorCode = rmcp::model::ErrorCode(-32602);
     /// JSON-RPC 2.0 error code for "Internal error".
@@ -542,8 +361,6 @@ mod tests {
             assert_eq!(mcp.code, super::INTERNAL_ERROR);
         }
     }
-
-    // ── text.rs tests ───────────────────────────────────────────────
 
     mod text_tests {
         use uffs_client::protocol::SearchRow;
@@ -601,8 +418,6 @@ mod tests {
             assert!(formatted.contains('—'), "zero ts: {formatted}");
         }
     }
-
-    // ── handler.rs prompt tests ─────────────────────────────────────
 
     mod prompt_tests {
         use crate::handler::{build_prompt_messages, str_arg, u64_arg};

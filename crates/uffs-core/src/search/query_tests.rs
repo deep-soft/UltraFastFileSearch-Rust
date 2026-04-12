@@ -2,6 +2,7 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Tests for compact-index query search: matching, sorting, filtering, limits.
+//! Exception: `file_size_policy` — query test suite, shared index fixture requires cohesion.
 
 use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS, SizeInfo};
 

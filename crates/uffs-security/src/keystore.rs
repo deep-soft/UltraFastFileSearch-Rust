@@ -401,9 +401,10 @@ fn file_based_key() -> io::Result<[u8; KEY_SIZE]> {
 
 /// Returns `true` when `UFFS_DEV` is set to a truthy value.
 ///
-/// Only effective on non-Windows platforms. On Windows, DPAPI never
-/// prompts, so there's no reason to bypass it.
-#[cfg(not(target_os = "windows"))]
+/// Only used on macOS to bypass Keychain after ad-hoc code signature
+/// changes during development.  On Windows, DPAPI never prompts, and
+/// on Linux the file-based key path is already the default.
+#[cfg(target_os = "macos")]
 fn is_dev_mode() -> bool {
     std::env::var("UFFS_DEV")
         .ok()

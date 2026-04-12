@@ -3,6 +3,7 @@
 
 //! Tests for `MultiDriveBackend`, sort spec parsing, sort correctness,
 //! `display_rows_to_dataframe`, and `format_sort_spec`.
+//! Exception: `file_size_policy` — backend test suite, shared fixtures require cohesion.
 
 use super::*;
 
