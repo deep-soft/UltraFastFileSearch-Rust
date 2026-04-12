@@ -31,8 +31,9 @@ Point `--data-dir` at a directory containing MFT captures organised
 in `drive_c/`, `drive_d/`, etc.  See [Cache & Data Sources](cache-and-data.md)
 for how to set this up.
 
-> **First search is slow (~10 s).** The daemon is loading the MFT into
-> memory.  Every search after that completes in ~1 ms.
+> **First search is slow (~7 s warm cache, or ~60 s cold).** The daemon
+> is loading the MFT into memory.  Every search after that completes in
+> ~200 ms end-to-end (~150 ms daemon-side for 25.9M records).
 
 ---
 
@@ -105,7 +106,7 @@ second one was instant.  That is the daemon.
 
 - The daemon **starts automatically** on your first search.
 - It loads the MFT once and holds it in memory.
-- Every subsequent search is a sub-millisecond query against that index.
+- Every subsequent search completes in ~200 ms end-to-end.
 - Multiple CLI and TUI sessions share the same daemon.
 - It retires automatically after being idle.
 

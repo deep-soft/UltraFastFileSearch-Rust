@@ -4,8 +4,8 @@ UFFS includes built-in profiling, benchmarking, and diagnostic flags for
 performance analysis and debugging.  These are aimed at developers,
 system administrators, and CI pipelines.
 
-> **See also:** [Daemon](daemon.md) · [Concepts](concepts.md) ·
-> [CLI Overview](cli-overview.md)
+> **See also:** [Performance](performance.md) · [Daemon](daemon.md) ·
+> [Concepts](concepts.md) · [CLI Overview](cli-overview.md)
 
 ---
 

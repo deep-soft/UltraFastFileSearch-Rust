@@ -47,10 +47,11 @@ Without elevation, UFFS can still search offline MFT captures via
 
 ---
 
-## 3  First Search Is Slow (~10–30 seconds)
+## 3  First Search Is Slow
 
 **Not a bug.** The first search loads the MFT into memory and builds
-the in-memory index.  Every subsequent search completes in ~1 ms.
+the in-memory index (~7 s from cache, or ~60 s cold for a large system).
+Every subsequent search completes in ~200 ms end-to-end.
 
 If the first search is *always* slow (even when the daemon is running),
 the daemon may be restarting each time:

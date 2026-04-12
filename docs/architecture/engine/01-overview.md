@@ -2,9 +2,9 @@
 
 ## Executive Summary
 
-Ultra Fast File Search (UFFS) is a high-performance Windows file search utility written in Rust that achieves its speed by directly reading the NTFS Master File Table (MFT) rather than using standard Windows file enumeration APIs. On NVMe drives, UFFS indexes millions of files in under 6 seconds and delivers sub-second pattern matching across the entire file system.
+Ultra Fast File Search (UFFS) is a high-performance Windows file search utility written in Rust that achieves its speed by directly reading the NTFS Master File Table (MFT) rather than using standard Windows file enumeration APIs. On NVMe drives, UFFS indexes 3.5M files in ~7.5 seconds cold; once the daemon is hot, searches across 25.9M records (7 drives) complete in ~200 ms end-to-end.
 
-This document series provides a comprehensive architectural reference for the **Rust engine** (v0.3.62, Edition 2024). A developer reading these documents should be able to understand, maintain, extend, or reimplement the core engine from scratch.
+This document series provides a comprehensive architectural reference for the **Rust engine** (v0.4.106, Edition 2024). A developer reading these documents should be able to understand, maintain, extend, or reimplement the core engine from scratch.
 
 ---
 
@@ -335,14 +335,15 @@ For 2M files: ~448 MB for records + ~46 MB for names ≈ **~500 MB total**.
 
 ## Performance Summary
 
-### Benchmarks (v0.3.54, Cold Start)
+### Benchmarks (v0.4.106 — 25.9M Records, 7 Drives)
 
-| Drive | Type | Files | Time |
-|-------|------|-------|------|
-| C: | NVMe | 2.3M | 8.2s |
-| D: | HDD | 1.5M | 30.7s |
-| F: | NVMe | 1.1M | 5.1s |
-| S: | HDD | 3.2M | 71.6s |
+| Phase | ALL drives | Single NVMe (C:) | Single HDD (S:) |
+|-------|----------:|------------------:|-----------------:|
+| COLD | 66.5 s | 7.5 s | 67.0 s |
+| WARM CACHE | 7.3 s | 2.6 s | 4.7 s |
+| HOT | **381 ms** | **229 ms** | **259 ms** |
+
+HOT scan throughput: **172 million records/second**.
 
 ### Why UFFS is Fast
 

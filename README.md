@@ -23,24 +23,23 @@ Traditional file search tools (including `os.walk`, `FindFirstFile`, etc.) work 
 
 **UFFS reads the MFT directly** - once - and queries it in memory using Polars DataFrames. This is like reading the entire phonebook once instead of looking up each name individually.
 
-### Benchmark Results (v0.2.208)
+### Benchmark Results (v0.4.106 — 25.9 Million Records, 7 Drives)
 
-| Drive Type | Records | Time | Throughput |
-|------------|---------|------|------------|
-| **SSD** | 1.77M | **3.1s** | **1,472 MB/s** |
-| **SSD** | 1.53M | **2.5s** | **1,839 MB/s** |
-| **HDD** | 3.81M | **23.3s** | **206 MB/s** |
-| **HDD** | 7.18M | **45.9s** | **250 MB/s** |
-| **All 7 drives** | 18.7M | **142s** | - |
+| Phase | What happens | ALL drives (25.9M) | Single NVMe (3.5M) |
+|-------|-------------|-------------------:|--------------------:|
+| **COLD** | Raw MFT read + full index build | 66.5 s | 7.5 s |
+| **WARM CACHE** | Daemon loads serialized cache | 7.3 s | 2.6 s |
+| **HOT** | In-memory query (daemon running) | **381 ms** | **229 ms** |
 
-| Comparison | Records | Time | Notes |
-|------------|---------|------|-------|
-| **UFFS v0.2.208** | **18.7 Million** | **~142 seconds** | All disks, fast mode |
-| UFFS v0.1.30 | 18.7 Million | ~315 seconds | Baseline |
-| Everything | 19 Million | 178 seconds | All disks |
-| WizFile | 6.5 Million | 299 seconds | Single HDD |
+| Metric | Value |
+|--------|------:|
+| HOT scan throughput | **172 million records/sec** |
+| Cold→Hot speedup (NVMe) | **33×** |
+| Cold→Hot speedup (HDD) | **259×** |
+| Cold→Hot speedup (ALL) | **175×** |
 
-> **UFFS is 55% faster than v0.1.30 baseline, and achieves ~4x SSD throughput improvement!**
+> 📖 **[Full benchmark data](docs/user-manual/performance.md)** —
+> per-drive tables, profile internals, query pattern comparison, C++ parity.
 
 ---
 

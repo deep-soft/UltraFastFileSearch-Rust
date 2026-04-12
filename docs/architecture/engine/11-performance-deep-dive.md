@@ -2,7 +2,10 @@
 
 ## Introduction
 
-This document explains why UFFS is a high-performance MFT search engine, the engineering decisions behind it, and real-world benchmark data from a 7-drive, 26-million-record production system.
+This document explains why UFFS is a high-performance MFT search engine, the engineering decisions behind it, and real-world benchmark data from a 7-drive, 25.9-million-record production system.
+
+> **See also:** [Performance](../../user-manual/performance.md) for the
+> full benchmark reference with per-drive tables and validation throughput.
 
 ---
 
@@ -10,50 +13,50 @@ This document explains why UFFS is a high-performance MFT search engine, the eng
 
 UFFS operates in three performance tiers, each with dramatically different latency:
 
-| Level | What Happens | Typical Latency (26M records) |
+| Level | What Happens | Typical Latency (25.9M records) |
 |-------|-------------|-------------------------------|
-| **COLD** | No daemon, no cache. Raw MFT read from disk, full parse, compact index build, trigram index build, path resolution tree. | 66s (7 drives parallel) |
-| **WARM CACHE** | No daemon, but serialized compact index exists on disk. Daemon starts and deserializes cached index — no MFT read. | 7s |
-| **HOT** | Daemon running with in-memory index. Pure search — no I/O, no startup. | **157ms** (all 7 drives, 26M records) |
+| **COLD** | No daemon, no cache. Raw MFT read from disk, full parse, compact index build, trigram index build, path resolution tree. | 66.5 s (7 drives parallel) |
+| **WARM CACHE** | No daemon, but serialized compact index exists on disk. Daemon starts and deserializes cached index — no MFT read. | 7.3 s |
+| **HOT** | Daemon running with in-memory index. Pure search — no I/O, no startup. | **381 ms** end-to-end, **151 ms** daemon-side |
 
-The HOT path delivers **420× speedup** over COLD, and single-drive queries return in **6–100ms**.
+The HOT path delivers **175× speedup** over COLD.  Single-drive queries return in **210–260 ms** end-to-end (~25 ms daemon-side).
 
 ---
 
-## Real-World Benchmarks (v0.4.69)
+## Real-World Benchmarks (v0.4.106)
 
 ### Test Environment
 
-**System**: MASTER-PC — 24 CPU cores
-**Drives**: 7 NTFS volumes (2× NVMe, 5× HDD/USB)
-**Total records**: 25,842,119 across all drives
-**Binary**: v0.4.69 release build (LTO=fat, codegen-units=1, cross-compiled from macOS via `cargo xwin`)
-**Protocol**: 3-phase per drive — COLD → WARM CACHE → HOT, `--profile --limit 100`
+**System**: AMD Ryzen 9 3900XT — 12 cores / 24 threads, 64 GB DDR4
+**Drives**: 7 NTFS volumes (2× NVMe Samsung 990 PRO, 2× SATA Samsung 980 PRO, 2× SATA WD 8 TB HDD, 1× USB stick)
+**Total records**: 25,929,744 across all drives
+**Binary**: v0.4.106 release build (LTO=fat, codegen-units=1, cross-compiled from macOS via `cargo xwin`)
+**Protocol**: 3-phase per drive — COLD → WARM CACHE → HOT, 3 rounds each, `--limit 100`
 
-### Per-Drive 3-Phase Profile (`*` pattern)
+### Per-Drive 3-Phase Results (`*` pattern, avg of 3 rounds)
 
-| Drive | Records | COLD | WARM CACHE | HOT | COLD→HOT Speedup |
-|-------|---------|------|------------|-----|-------------------|
-| C: (NVMe) | 3,423,716 | 7,717ms | 2,417ms | **24ms** | **322×** |
-| D: (HDD) | 7,065,539 | 26,568ms | 4,511ms | **101ms** | **263×** |
-| E: (HDD/USB) | 2,929,519 | 42,609ms | 1,419ms | **21ms** | **2,029×** |
-| F: (NVMe) | 2,221,343 | 4,796ms | 1,742ms | **19ms** | **252×** |
-| G: (USB) | 15,090 | 1,416ms | 660ms | **6ms** | **236×** |
-| M: (HDD/NAS) | 1,908,805 | 26,493ms | 1,414ms | **17ms** | **1,558×** |
-| S: (HDD) | 8,278,102 | 66,828ms | 6,841ms | **79ms** | **846×** |
-| **ALL** | **25,842,119** | **66,074ms** | **7,041ms** | **157ms** | **421×** |
+| Drive | Type | Records | COLD | WARM CACHE | HOT | Cold→Hot |
+|-------|------|---------|------|------------|-----|----------|
+| C: | NVMe | 3,510,866 | 7.5 s | 2.6 s | **229 ms** | **33×** |
+| D: | SATA SSD | 7,066,019 | 28.8 s | 4.9 s | **253 ms** | **114×** |
+| E: | SATA SSD | 2,929,519 | 41.5 s | 2.6 s | **230 ms** | **180×** |
+| F: | NVMe | 2,221,343 | 4.6 s | 2.2 s | **226 ms** | **20×** |
+| G: | USB stick | 15,090 | 1.4 s | 779 ms | **211 ms** | **7×** |
+| M: | SATA HDD | 1,908,805 | 26.7 s | 1.6 s | **224 ms** | **119×** |
+| S: | SATA HDD | 8,278,102 | 67.0 s | 4.7 s | **259 ms** | **259×** |
+| **ALL** | **Mixed** | **25,929,744** | **66.5 s** | **7.3 s** | **381 ms** | **175×** |
 
-### HOT Path Timing Breakdown (ALL drives, 157ms)
+### HOT Path Timing Breakdown (ALL drives, ~200 ms)
 
 ```
 Client → Daemon
-  Connect:           4 ms    (named pipe)
+  Connect:           3 ms    (named pipe)
   Await ready:       0 ms    (daemon already warm)
-  Search (IPC):    149 ms    (daemon: 137ms search + 12ms transfer)
-  Convert rows:      0 ms    (100 rows)
+  Search (IPC):    152 ms    (daemon: 151ms search + 1ms transfer)
+  Convert rows:      0 ms    (10 rows)
 ```
 
-At 25.8M records searched in 137ms, the HOT path sustains **188 million records/second**.
+At 25.9M records searched in 151 ms, the HOT path sustains **172 million records/second**.
 
 ---
 
@@ -101,7 +104,7 @@ Read chunks sorted by physical disk offset (LCN order) to minimize head movement
 
 ### 11. Daemon Architecture with Compact Cache
 
-The daemon holds the full index in memory. First search auto-starts the daemon, which persists a serialized compact cache to disk. Subsequent daemon starts deserialize the cache (~3–7s for 26M records) instead of re-reading the MFT (~66s). Once hot, searches are pure in-memory scans — **6–157ms** depending on drive count.
+The daemon holds the full index in memory. First search auto-starts the daemon, which persists a serialized compact cache to disk. Subsequent daemon starts deserialize the cache (~7 s for 25.9M records) instead of re-reading the MFT (~66 s). Once hot, searches are pure in-memory scans — **210–380 ms** end-to-end depending on drive count.
 
 ### 12. Trigram Index for Substring Queries
 
@@ -124,22 +127,21 @@ UFFS includes a C++ reference implementation for parity verification. When compa
 | Tree metrics (descendants, treesize) | ✅ | ❌ |
 | Extension interning + inverted index | ✅ | ❌ |
 
-UFFS does **significantly more work** during COLD startup (~1.22× slower than C++) because it builds persistent data structures that make every subsequent search instant. The C++ tool re-reads the MFT on every invocation.
+UFFS does **significantly more work** during COLD startup (~1.29× slower than C++) because it builds persistent data structures that make every subsequent search instant. The C++ tool re-reads the MFT on every invocation.
 
-### Parity Comparison (v0.4.69, COLD, 7 drives)
+### Parity Comparison (v0.4.106, COLD, 6 drives)
 
 | Drive | C++ (warm disk) | Rust (cold) | Ratio | Files/sec (Rust) |
 |-------|-----------------|-------------|-------|------------------|
-| C: | 12.1s | 14.2s | 1.17× | 241,821/s |
-| D: | 40.7s | 43.8s | 1.08× | 161,177/s |
-| E: | 43.5s | 48.9s | 1.12× | 59,929/s |
-| F: | 7.1s | 10.5s | 1.48× | 211,822/s |
-| G: | 279ms | 938ms | 3.35× | 16,059/s |
-| M: | 24.1s | 29.4s | 1.22× | 64,882/s |
-| S: | 1m 1.4s | 1m 23.5s | 1.36× | 99,187/s |
-| **TOTAL** | **3m 9.3s** | **3m 51.2s** | **1.22×** | **111,782/s** |
+| C: | 12.4 s | 17.4 s | 1.40× | 201,658/s |
+| D: | 39.8 s | 47.1 s | 1.18× | 150,015/s |
+| E: | 43.6 s | 48.8 s | 1.12× | 59,998/s |
+| F: | 7.0 s | 11.0 s | 1.57× | 202,343/s |
+| M: | 24.1 s | 31.7 s | 1.31× | 60,160/s |
+| S: | 1m 1.6 s | 1m 26.8 s | 1.41× | 95,326/s |
+| **TOTAL** | **3m 8.6 s** | **4m 2.9 s** | **1.29×** | **106,695/s** |
 
-After COLD, UFFS never needs to re-read the MFT — the daemon serves all subsequent queries from memory in **6–157ms**.
+After COLD, UFFS never needs to re-read the MFT — the daemon serves all subsequent queries from memory in **210–380 ms** end-to-end.
 
 ---
 
@@ -161,5 +163,5 @@ Use `--profile` for full per-phase timing breakdown (client connect, daemon star
 
 ---
 
-*Last Updated: 2026-04-03*
-*UFFS Version: 0.4.69*
+*Last Updated: 2026-04-12*
+*UFFS Version: 0.4.106*

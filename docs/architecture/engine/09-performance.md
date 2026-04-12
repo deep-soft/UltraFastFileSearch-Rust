@@ -10,27 +10,32 @@ This document describes the performance characteristics of UFFS, the optimizatio
 
 ---
 
-## Benchmark Results (v0.3.54)
+## Benchmark Results (v0.4.106)
 
-### Full Scan (`*`) — Cold Start, 5 Runs Per Drive
+### Three-Phase Results — 7 Drives, 25.9M Records
 
-| Drive | Type | Files | Rust avg | C++ avg | Speedup |
-|-------|------|-------|----------|---------|---------|
-| C: | NVMe | 2.3M | 8.2s | 25.7s | **3.1×** |
-| D: | HDD | 1.5M | 30.7s | 64.2s | **2.1×** |
-| E: | HDD | 1.8M | 41.1s | 54.4s | **1.3×** |
-| F: | NVMe | 1.1M | 5.1s | 15.2s | **3.0×** |
-| G: | tiny | 5K | 0.42s | 0.37s | 0.9× |
-| M: | HDD | 1.2M | 26.5s | 30.4s | **1.1×** |
-| S: | HDD | 3.2M | 71.6s | 90.1s | **1.3×** |
-| ALL | parallel | - | 72.3s | 98.6s | **1.36×** |
+Tested on AMD Ryzen 9 3900XT (12c/24t), 64 GB DDR4.  Pattern: `*`,
+limit: 100, averaged over 3 rounds per phase.
+
+| Drive | Type | Records | COLD | WARM | HOT | Cold→Hot |
+|-------|------|--------:|-----:|-----:|----:|---------:|
+| C: | NVMe | 3.5M | 7.5 s | 2.6 s | 229 ms | **33×** |
+| D: | SATA SSD | 7.1M | 28.8 s | 4.9 s | 253 ms | **114×** |
+| E: | SATA SSD | 2.9M | 41.5 s | 2.6 s | 230 ms | **180×** |
+| F: | NVMe | 2.2M | 4.6 s | 2.2 s | 226 ms | **20×** |
+| G: | USB stick | 15K | 1.4 s | 779 ms | 211 ms | **7×** |
+| M: | SATA HDD | 1.9M | 26.7 s | 1.6 s | 224 ms | **119×** |
+| S: | SATA HDD | 8.3M | 67.0 s | 4.7 s | 259 ms | **259×** |
+| **ALL** | **Mixed** | **25.9M** | **66.5 s** | **7.3 s** | **381 ms** | **175×** |
 
 ### Key Observations
 
-- **NVMe drives: ~6-8s for 2M+ files** — Inline parsing and mimalloc shine when I/O is not the bottleneck
-- **HDD drives: 30-72s** — I/O-bound, but bitmap skip and IOCP tuning reduce wall-clock time
-- **Tiny drives: <0.5s** — Startup overhead dominates for small datasets
-- **Multi-drive parallel: ~72s** — Bounded concurrency avoids I/O contention
+- **NVMe drives: 5–8 s cold** — parsing is the bottleneck, not I/O
+- **SATA HDD: 27–67 s cold** — I/O-bound; bitmap skip and LCN-ordered reads are critical
+- **HOT queries: 210–260 ms per drive** — uniform regardless of media type; ~200 ms is process overhead
+- **Daemon-side search: 151 ms for 25.9M records** — 172 million records/second
+
+> 📖 **Full benchmark data:** [Performance](../../user-manual/performance.md)
 
 ---
 
@@ -83,7 +88,7 @@ This document describes the performance characteristics of UFFS, the optimizatio
 
 ## Where Time Is Spent
 
-### NVMe Drive (C:, 2.3M files, 8.2s total)
+### NVMe Drive (C:, 3.5M files, 7.5 s cold)
 
 ```
 Phase                Time     %    Notes
@@ -92,7 +97,7 @@ Volume open          <1ms   <1%   CreateFile + FSCTL
 Metadata collection    5ms   <1%   Volume data + retrieval pointers
 Bitmap read           10ms   <1%   ~250KB bitmap
 Chunk planning         1ms   <1%   In-memory calculation
-IOCP read + parse   6.5s    79%   ★ DOMINANT — parsing is bottleneck
+IOCP read + parse   5.9s    79%   ★ DOMINANT — parsing is bottleneck
 Tree metrics        0.8s    10%   Leaf-peeling O(n)
 Extension index     0.3s     4%   Build interned lookup
 Stats + finalize    0.5s     6%   Recompute, cleanup
@@ -100,7 +105,7 @@ Stats + finalize    0.5s     6%   Recompute, cleanup
 
 On NVMe, **parsing is the bottleneck** (not I/O). The disk can deliver data faster than the CPU can parse it. This is why parallel parsing helps on NVMe.
 
-### HDD Drive (S:, 3.2M files, 71.6s total)
+### SATA HDD Drive (S:, 8.3M files, 67 s cold)
 
 ```
 Phase                Time     %    Notes
@@ -109,10 +114,10 @@ Volume open          <1ms   <1%
 Metadata collection    8ms   <1%
 Bitmap read           20ms   <1%
 Chunk planning         2ms   <1%
-IOCP read + parse  68.0s    95%   ★ DOMINANT — I/O is bottleneck
-Tree metrics        1.5s     2%
-Extension index     0.8s     1%
-Stats + finalize    1.3s     2%
+IOCP read + parse  65.0s    97%   ★ DOMINANT — I/O is bottleneck
+Tree metrics        1.0s     1%
+Extension index     0.5s     1%
+Stats + finalize    0.5s     1%
 ```
 
 On HDD, **I/O is the bottleneck**. The disk head seek time dominates. Bitmap skip and LCN-ordered reads are critical here.
@@ -129,19 +134,18 @@ uffs * --drive C --profile
 
 Outputs detailed timing for each phase:
 ```
-Phase                    Duration
-─────────────────────────────────
-Volume open              0.3ms
-Get volume data          1.8ms
-Get retrieval pointers   4.2ms
-Read bitmap              8.5ms
-Generate chunks          0.9ms
-IOCP read + parse        6,423ms
-Build child lists        312ms
-Tree metrics             845ms
-Extension index          287ms
-Total                    7,884ms
-Records: 2,312,456  Files: 2,089,321  Dirs: 223,135
+=== PROFILE: Client → Daemon ===
+  Connect:              3 ms
+  Await ready:          0 ms
+  Search (IPC):       152 ms  (daemon: 151 ms, transfer: 1 ms)
+  Convert rows:         0 ms  (10 rows)
+
+=== PROFILE: Daemon Internals ===
+  Startup:           3861 ms
+  Search:             151 ms  (25,929,744 records scanned)
+  Row build:            0 ms  (10 → SearchRow)
+
+=== TOTAL: 182 ms ===
 ```
 
 ### Benchmark Mode (`--benchmark`)
@@ -194,7 +198,7 @@ Key trace points:
 
 ## Memory Usage
 
-### Typical Memory Footprint (2M files)
+### Typical Memory Footprint (3.5M files, single NVMe drive)
 
 | Component | Size | Notes |
 |-----------|------|-------|
@@ -231,7 +235,9 @@ The dominant performance advantages come from architectural decisions in the Rus
 
 ### Multi-Drive Filtered Scan (`*.ext`)
 
-Filtered multi-drive parallel scans currently take longer than full scans (78s > 72s for `*.rs` across all drives). Root cause: overhead in the multi-drive streaming writer and per-drive extension index construction. This is a documented optimization target.
+Filtered multi-drive parallel scans are marginally faster than full scans
+for selective patterns (`*.txt`: 216 ms vs `*`: 381 ms on all 7 drives).
+Fewer matching rows means less output formatting overhead.
 
 ---
 
@@ -249,6 +255,6 @@ Filtered multi-drive parallel scans currently take longer than full scans (78s >
 
 ---
 
-*Document Version: 1.0*
-*Last Updated: 2026-03-23*
-*UFFS Version: 0.3.62*
+*Document Version: 2.0*
+*Last Updated: 2026-04-12*
+*UFFS Version: 0.4.106*

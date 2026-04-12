@@ -5,7 +5,7 @@ each source, the caching pipeline, and how to set up offline MFT
 analysis on non-Windows platforms.
 
 > **See also:** [Installation](installation.md) · [Daemon](daemon.md) ·
-> [Concepts](concepts.md)
+> [Concepts](concepts.md) · [Performance](performance.md)
 
 ---
 
@@ -40,12 +40,13 @@ Raw MFT data              Cached index            In-memory index
                                                     └──────────┘
 ```
 
-**First run:** Raw MFT data is parsed, the index is built, and a
-`.iocp` cache file is written.  This takes 10–30 seconds per drive
-depending on record count.
+**First run (COLD):** Raw MFT data is parsed, the index is built, and a
+`.iocp` cache file is written.  This takes 5–67 seconds per drive
+depending on record count and media type (NVMe vs HDD).
 
-**Subsequent runs:** The daemon loads the `.iocp` cache directly,
-skipping the expensive MFT parse step.  Startup drops to 2–5 seconds.
+**Subsequent runs (WARM CACHE):** The daemon loads the `.iocp` cache
+directly, skipping the expensive MFT parse step.  Startup drops to
+2–5 seconds per drive (~7 s total for 7 drives / 25.9M records).
 
 ---
 

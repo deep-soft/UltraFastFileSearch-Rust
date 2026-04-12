@@ -2,8 +2,8 @@
 
 The UFFS daemon is a long-running background process that holds MFT
 indices in memory and serves search queries over a local IPC socket.
-Searches that would normally take 10+ seconds to load data complete in
-**~1 ms** because the daemon keeps everything hot.
+Searches that would normally take 60+ seconds to load data complete in
+**~200 ms** end-to-end because the daemon keeps everything hot.
 
 > **See also:** [Getting Started](getting-started.md) ·
 > [CLI Overview](cli-overview.md) ·
@@ -205,23 +205,30 @@ both if a graceful stop fails.
 
 ---
 
-## 8  Performance (macOS — Offline, 7 Drives, 25.8M Records)
+## 8  Performance
 
-Measured on Apple Silicon, loading 7 MFT capture files totalling 25,846,853
-NTFS records:
+### Windows — Live NTFS, 7 Drives, 25.9M Records
+
+Measured on AMD Ryzen 9 3900XT (12c/24t, 64 GB DDR4), 7 NTFS volumes
+(NVMe + SATA SSD + SATA HDD), 25,929,744 total records:
 
 | Operation                   | Time       |
 |-----------------------------|------------|
-| Daemon startup (cold)       | ~11.8 s    |
-| Search query (warm)         | ~1.2 ms    |
-| Search end-to-end (CLI)     | ~16 ms     |
+| Daemon startup (cold, all drives) | ~66 s |
+| Daemon startup (warm cache)      | ~7 s  |
+| Search end-to-end (HOT, CLI)     | ~200–380 ms |
+| Daemon-side search (HOT)         | ~151 ms |
 | Graceful stop               | ~15 ms     |
 | Hard kill                   | ~25 ms     |
-| Restart (stop + reload)     | ~12.8 s    |
 
-Startup is dominated by deserializing the `.iocp` cache files.  Once loaded,
-queries are sub-millisecond server-side; the ~16 ms CLI time includes process
-spawn, IPC round-trip, and stdout formatting.
+Cold startup is dominated by raw MFT reading.  Warm cache startup
+deserializes `.iocp` files (~7 s for 25.9M records).  Once loaded,
+the daemon-side search takes ~151 ms for all 25.9M records; the
+~200–380 ms CLI time includes process spawn, IPC round-trip, and
+stdout formatting.
+
+> 📖 **Full data:** [Performance](performance.md) — per-drive
+> cold/warm/hot tables, profile internals, query pattern comparison.
 
 ---
 
@@ -231,7 +238,7 @@ spawn, IPC round-trip, and stdout formatting.
 |---------|-------|-----|
 | "Connection refused" on search | Daemon not running | Let auto-start handle it, or `uffs daemon start` |
 | Stale PID file | Previous daemon crashed | `uffs daemon kill` removes PID + socket |
-| First search slow after restart | MFT being loaded | Normal — ~10 s for cold start, instant after |
+| First search slow after restart | MFT being loaded | Normal — ~7 s warm cache (or ~66 s cold), sub-second after |
 | "Permission denied" (Windows) | Not running as Admin | Right-click terminal → "Run as administrator" |
 | Multiple daemons running | Rare race condition | `uffs daemon kill` + `uffs daemon start` |
 

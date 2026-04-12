@@ -343,7 +343,7 @@ Walk directory tree (FindFirstFile)   Read MFT sequentially
   → 1 API call per file               → 1 sequential I/O
   → millions of calls                  → thousands of records/ms
   → random I/O to disk                → linear scan
-  → 30-60 seconds                     → 3-10 seconds
+  → 30-60 seconds                     → 5-8 s NVMe, ~200 ms once hot
 ```
 
 The MFT contains everything UFFS needs except two things:

@@ -15,7 +15,7 @@ It indexes millions of files in seconds and searches them in milliseconds.
 - **40+ filters** — size, date, extension, type, attributes, path
   length, tree size, bulkiness, and more.
 - **Background daemon** — loads the MFT once, then answers every query
-  in ~1 ms.  Starts automatically on first search.
+  in ~200 ms.  Starts automatically on first search.
 - **Cross-platform** — native NTFS access on Windows; offline MFT
   analysis on macOS and Linux.
 - **AI-agent integration** — MCP server lets Claude, Cursor, Windsurf,
