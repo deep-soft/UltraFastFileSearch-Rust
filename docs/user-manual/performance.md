@@ -21,7 +21,8 @@ benchmark and profiling scripts.
 | Motherboard | ASUS ProArt B550-CREATOR (AM4) |
 | NVMe SSD | Samsung SSD 990 PRO 2 TB (C:, F:) |
 | SATA SSD | Samsung SSD 980 PRO 1 TB (D:, E:) |
-| USB storage | WD 8 TB HDD (M:, S:), SanDisk 58 GB USB stick (G:) |
+| SATA HDD | WD 8 TB × 2 (WDC WD82PURZ, M: and S:) |
+| USB storage | SanDisk Extreme 58 GB USB stick (G:) |
 | Power profile | AMD Ryzen High Performance |
 | UFFS version | 0.4.106 |
 
@@ -34,8 +35,8 @@ benchmark and profiling scripts.
 | E: | SATA SSD | 2,929,519 | Media / archive |
 | F: | NVMe SSD | 2,221,343 | Secondary Windows install |
 | G: | USB stick | 15,090 | SanDisk Extreme 58 GB |
-| M: | USB HDD | 1,908,805 | WD 8 TB external spinning disk |
-| S: | USB HDD | 8,278,102 | WD 8 TB external spinning disk |
+| M: | SATA HDD | 1,908,805 | WD 8 TB spinning disk (WDC WD82PURZ) |
+| S: | SATA HDD | 8,278,102 | WD 8 TB spinning disk (WDC WD82PURZ) |
 | **ALL** | **Mixed** | **25,929,744** | **All 7 drives in parallel** |
 
 ---
@@ -85,8 +86,8 @@ over 3 rounds.  Pattern: `*` (full scan), limit: 100 rows.
 | S: | 8,278,102 | 67.0 s | 67.0 s | 67.1 s | 123,600 |
 | **ALL** | **25,929,744** | **66.5 s** | **66.4 s** | **66.6 s** | **389,900** |
 
-> **Note:** M:, E:, and S: are USB-attached drives where I/O is the
-> bottleneck — raw MFT reads are bound by the USB bus, not CPU.
+> **Note:** M: and S: are SATA spinning disks where I/O is the
+> bottleneck — raw MFT reads are bound by HDD seek time, not CPU.
 > NVMe drives (C:, F:) achieve 470K+ records/sec.
 > The ALL-drives cold start runs all drives in parallel, so total time
 > ≈ slowest individual drive.
@@ -141,8 +142,8 @@ for each drive.  The Cold→Hot ratio is the primary performance metric.
 | S: | 67.0 s | 4.7 s | 259 ms | **258.7×** | 14.3× |
 | **ALL** | **66.5 s** | **7.3 s** | **381 ms** | **174.5×** | **9.1×** |
 
-> On USB-attached drives (M:, S:, E:), the cold-start penalty is
-> extreme — reading raw MFT over USB is 10–60× slower than NVMe.
+> On spinning disks (M:, S:) the cold-start penalty is extreme —
+> reading raw MFT from a HDD is 10–60× slower than NVMe.
 > The daemon eliminates this entirely: once loaded, every drive
 > responds in 200–260 ms regardless of media type.
 
