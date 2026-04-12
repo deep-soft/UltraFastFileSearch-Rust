@@ -165,4 +165,3 @@ pub(crate) fn aggregate_presets_json() -> String {
 
     serde_json::to_string_pretty(&presets).unwrap_or_else(|_| "[]".to_owned())
 }
-

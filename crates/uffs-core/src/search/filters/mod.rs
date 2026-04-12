@@ -219,6 +219,12 @@ impl SearchFilters {
     /// All time-spec parsing and attribute parsing happens here so the
     /// hot-path `matches_record` loop is branch-only.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "constructs SearchFilters from 15+ filter parameters with extension \
+                  normalization and type_filter→extension promotion; splitting the \
+                  constructor would obscure the field-by-field setup"
+    )]
     pub fn from_params(params: &SearchFilterParams<'_>) -> Self {
         let now_us = now_unix_micros();
         let extensions: Vec<String> = params

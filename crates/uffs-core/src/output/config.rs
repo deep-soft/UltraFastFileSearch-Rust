@@ -549,6 +549,11 @@ mod attr {
 ///
 /// Extracted as a standalone function for readability — the column match has
 /// ~30 arms mirroring all `OutputColumn` variants.
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive match over ~30 OutputColumn variants; each arm is 1–8 lines \
+              of formatting — splitting would scatter the column→text dispatch table"
+)]
 fn write_display_row_columns(
     buf: &mut String,
     itoa_buf: &mut itoa::Buffer,

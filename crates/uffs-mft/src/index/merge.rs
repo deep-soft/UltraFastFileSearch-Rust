@@ -213,6 +213,12 @@ impl MftIndex {
     }
 
     /// Apply deferred name and stream merges from discarded records.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "three sequential chain-append blocks (links, streams, internal_streams) \
+                  with type-specific field access — extracting would require awkward re-borrows \
+                  of self.records between calls"
+    )]
     fn apply_deferred_name_merges(
         &mut self,
         deferred_merges: Vec<(u32, FileRecord)>,

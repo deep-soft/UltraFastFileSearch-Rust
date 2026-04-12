@@ -26,31 +26,18 @@ allow-print-in-tests = true
 # by "this would break downstream crates" false positives.
 avoid-breaking-exported-api = false
 
-# ── Cognitive complexity ─────────────────────────────────────────────────────
-# Default is 25.  Our parser/dispatcher functions legitimately exceed this due
-# to NTFS attribute type dispatch (10+ match arms).  We use per-function
-# #[expect] for those, but slightly raising the threshold avoids noise on
-# borderline functions that are perfectly readable.
-cognitive-complexity-threshold = 30
-
 # ── Identifier length ────────────────────────────────────────────────────────
 # min_ident_chars default is 1 (flags single-char names).  We allow common
 # loop/lambda vars but the lint still catches truly opaque names.
 min-ident-chars-threshold = 1
 
-# ── Too many lines ───────────────────────────────────────────────────────────
-# Default is 100.  Our pipeline functions are long but linear.  200 avoids
-# false positives on well-structured sequential code.
-too-many-lines-threshold = 150
-
-# ── Type complexity ──────────────────────────────────────────────────────────
-# Default is 250.  Polars lazy expressions produce deeply nested generic types.
-type-complexity-threshold = 300
-
-# ── Large enum variant ───────────────────────────────────────────────────────
-# Default is 200 bytes.  Some of our protocol/event enums carry payloads that
-# slightly exceed this.
-enum-variant-size-threshold = 256
+# ── Thresholds ──────────────────────────────────────────────────────────────
+# All thresholds at Clippy defaults.  Violations are handled with targeted
+# #[expect(lint, reason = "...")] on individual items — never blanket raises.
+# cognitive-complexity-threshold = 25   (default)
+# too-many-lines-threshold = 100        (default)
+# type-complexity-threshold = 250       (default)
+# enum-variant-size-threshold = 200     (default)
 
 # ── Documentation strictness ──────────────────────────────────────────────────
 # check-private-items = true would run missing_errors_doc / missing_panics_doc /

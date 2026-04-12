@@ -431,6 +431,12 @@ fn validate_name_only(cli: &Cli, pattern: &str) -> Result<()> {
 }
 
 /// Expand filter aliases and dispatch to the actual search command.
+#[expect(
+    clippy::too_many_lines,
+    reason = "expands filter aliases, builds SearchConfig from 20+ CLI flags, then \
+              dispatches to daemon or local search — splitting would scatter the \
+              CLI→config mapping"
+)]
 async fn dispatch_search(
     cli: Cli,
     pattern: &str,

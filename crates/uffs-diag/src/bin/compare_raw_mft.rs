@@ -115,7 +115,9 @@ fn read_header<P: AsRef<Path>>(path: P) -> Result<(RawMftHeader, BufReader<File>
 
 #[expect(
     clippy::float_arithmetic,
-    reason = "progress reporting and GiB calculations use floating-point"
+    clippy::too_many_lines,
+    reason = "diagnostic CLI main: sequential parse-args → read-headers → validate → \
+              compare-loop → report pipeline; splitting would scatter the linear flow"
 )]
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();

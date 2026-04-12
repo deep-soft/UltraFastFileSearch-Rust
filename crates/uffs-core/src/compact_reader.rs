@@ -152,6 +152,12 @@ impl FullRecordReader {
     }
 
     /// Parse the extra fields from a raw record buffer.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "sequential version-gated field reads with 5 helper macros; \
+                  the logic is linear (read field or skip) with no nesting beyond \
+                  version checks — splitting would scatter the wire-format layout"
+    )]
     fn parse_extra_fields(&self, buf: &[u8]) -> Option<ExtraRecordFields> {
         let mut pos = 0;
 

@@ -100,7 +100,9 @@ impl ChaosMftReader {
     /// Returns an error if the MFT file cannot be read or is invalid.
     #[expect(
         clippy::cognitive_complexity,
-        reason = "chaos reader: load, chunk, shuffle, spawn parser threads, merge — single orchestration pipeline"
+        clippy::too_many_lines,
+        reason = "chaos reader: load, chunk, shuffle, spawn parser threads, merge — \
+                  single orchestration pipeline that must remain cohesive"
     )]
     pub fn read_with_chaos(&self, mft_path: &Path, volume: char) -> anyhow::Result<MftIndex> {
         use alloc::sync::Arc;
@@ -386,6 +388,11 @@ mod chaos_integration_tests {
     /// --ignored`
     #[test]
     #[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "end-to-end chaos determinism test: load MFT, run 5 chaos iterations, \
+                  hash sorted output, compare SHA — must remain a single cohesive test"
+    )]
     fn test_chaos_order_d_drive() {
         use std::fs::File;
         use std::io::{BufRead, BufReader};

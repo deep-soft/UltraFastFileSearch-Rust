@@ -113,6 +113,9 @@ pub(crate) mod cookbook;
 pub mod error;
 /// MCP [`ServerHandler`](rmcp::ServerHandler) implementation.
 pub mod handler;
+/// Streamable HTTP gateway (feature-gated).
+#[cfg(feature = "streamable-http")]
+pub mod http;
 /// MCP server PID file management.
 pub mod pid;
 /// Static and live MCP resource implementations.
@@ -127,24 +130,21 @@ pub mod stats;
 pub mod text;
 /// Individual MCP tool handlers.
 pub mod tools;
-/// Streamable HTTP gateway (feature-gated).
-#[cfg(feature = "streamable-http")]
-pub mod http;
 
 // tower-service is used by http::tests — suppress unused-crate-dep warning.
 use core::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
+pub use pid::{
+    McpPidInfo, is_mcp_server_running, mcp_pid_file_path, parse_mcp_pid_file,
+    parse_mcp_pid_file_full, remove_mcp_pid_file, write_mcp_pid_file_full,
+    write_mcp_pid_file_with_transport,
+};
 use rmcp::ServiceExt;
 #[cfg(feature = "streamable-http")]
 use tower_service as _;
 use tracing::info;
-
-pub use pid::{
-    is_mcp_server_running, mcp_pid_file_path, parse_mcp_pid_file, parse_mcp_pid_file_full,
-    remove_mcp_pid_file, write_mcp_pid_file_full, write_mcp_pid_file_with_transport, McpPidInfo,
-};
 
 // ── Configuration ───────────────────────────────────────────────────
 

@@ -35,7 +35,10 @@ use crate::ntfs::{
 #[expect(
     clippy::indexing_slicing,
     clippy::missing_asserts_for_indexing,
-    reason = "all slice access is bounds-guarded by while-loop condition and per-access length checks"
+    clippy::too_many_lines,
+    reason = "NTFS attribute parser: all slice access is bounds-guarded by while-loop \
+              condition and per-access length checks; line count from nested FileName + \
+              Data attribute parsing with resident/non-resident branches"
 )]
 pub(super) fn parse_extension_to_fragment(
     data: &[u8],

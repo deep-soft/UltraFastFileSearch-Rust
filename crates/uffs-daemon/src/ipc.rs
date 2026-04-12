@@ -354,6 +354,11 @@ impl IpcServer {
 ///
 /// Returns when the lifecycle manager signals shutdown.
 #[cfg(unix)]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "server accept loop with peer credential check, connection limit, \
+              task spawn, and shutdown select — inherently branchy async I/O"
+)]
 pub(crate) async fn run_ipc_server(
     index: Arc<IndexManager>,
     lifecycle: LifecycleHandle,

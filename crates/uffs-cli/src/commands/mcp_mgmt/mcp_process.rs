@@ -7,7 +7,6 @@
 //! functions handle the OS-level process discovery, signal delivery, and
 //! config parsing that the higher-level MCP lifecycle commands depend on.
 
-
 use anyhow::Result;
 
 /// Try to find and kill any process listening on `port`.
@@ -190,7 +189,12 @@ pub(super) fn parse_ps_etime(etime: &str) -> core::time::Duration {
 /// 3. **Stdio sessions** — SIGHUP so AI hosts respawn.
 ///
 /// No arguments needed — config is inferred from running processes.
-#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+#[expect(
+    clippy::print_stdout,
+    clippy::too_many_lines,
+    reason = "CLI user-facing output; sequential reload pipeline: find daemon → \
+              check exe freshness → reload HTTP gateway → signal stdio sessions"
+)]
 pub(super) async fn mcp_reload() -> Result<()> {
     use uffs_client::connect::{UffsClient, pid_file_path, socket_path};
 

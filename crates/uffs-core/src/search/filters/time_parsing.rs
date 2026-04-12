@@ -212,6 +212,12 @@ const US_PER_DAY: i64 = 86_400 * 1_000_000;
 ///
 /// Extracted for readability — the 15 named range cases would make
 /// `parse_time_bound` exceed the `too_many_lines` threshold.
+#[expect(
+    clippy::too_many_lines,
+    reason = "single match with ~20 named time ranges (today, yesterday, this_week, …, \
+              next_year); each arm is self-contained date arithmetic — already extracted \
+              from parse_time_bound"
+)]
 fn parse_named_time_range(name: &str, now_us: i64, is_newer: bool) -> Option<i64> {
     let today_start = now_us - (now_us % US_PER_DAY);
 

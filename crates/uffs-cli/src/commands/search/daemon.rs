@@ -341,6 +341,11 @@ fn build_daemon_spawn_args(config: &SearchConfig<'_>) -> Result<Vec<String>> {
 ///
 /// Maps every CLI flag to the corresponding `SearchParams` field so the
 /// daemon applies the same filters.
+#[expect(
+    clippy::too_many_lines,
+    reason = "maps 20+ CLI flags to SearchParams fields one-to-one — each line is a \
+              trivial field assignment; splitting would scatter the CLI→params mapping"
+)]
 fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
     let filter = if config.files_only {
         Some("files".to_owned())

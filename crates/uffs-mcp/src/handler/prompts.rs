@@ -3,8 +3,8 @@
 
 //! Prompt argument helpers and `prompts/get` message builders.
 
-use rmcp::model::PromptMessage;
 use rmcp::ErrorData as McpError;
+use rmcp::model::PromptMessage;
 use serde_json::Value;
 
 /// Helper to extract a string argument from the prompt args map.

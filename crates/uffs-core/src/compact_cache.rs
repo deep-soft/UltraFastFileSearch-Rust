@@ -22,7 +22,8 @@
 //! Accepted on load; `source_epoch` defaults to 0 (always stale).
 //!
 //! **v1** (legacy): rejected — returns error, caller rebuilds.
-//! Exception: `file_size_policy` — serialize/deserialize pipeline, tight coupling.
+//! Exception: `file_size_policy` — serialize/deserialize pipeline, tight
+//! coupling.
 
 use std::path::PathBuf;
 use std::time::Instant;

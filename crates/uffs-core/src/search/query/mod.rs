@@ -57,6 +57,12 @@ impl PartialOrd for HeapEntry {
 /// `sort_column`. The exhaustive match contributes most of the line count; no
 /// logic to extract.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "two match arms: Path sort (depth-first tree walk, 60 lines) and \
+              exhaustive FieldId listing (~35 variants) delegating to numeric sort — \
+              the enum listing is the primary line contributor"
+)]
 pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
     drives: &[D],
     limit: usize,

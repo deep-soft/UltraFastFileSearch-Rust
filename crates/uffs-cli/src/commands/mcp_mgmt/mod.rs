@@ -14,8 +14,8 @@ mod mcp_process;
 
 use anyhow::{Context, Result};
 use mcp_process::{
-    build_daemon_args, kill_process_on_port, mcp_reload, mcp_restart,
-    reload_stale_stdio_sessions, signal_pid,
+    build_daemon_args, kill_process_on_port, mcp_reload, mcp_restart, reload_stale_stdio_sessions,
+    signal_pid,
 };
 use uffs_client::connect::UffsClient;
 
@@ -560,5 +560,3 @@ fn mcp_kill(port: u16, _bind: &str) {
     }
     println!("  (The daemon is not affected.)");
 }
-
-

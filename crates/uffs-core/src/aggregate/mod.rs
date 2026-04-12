@@ -571,7 +571,6 @@ pub enum AggregateError {
     InvalidConfig(String),
 }
 
-
 #[cfg(test)]
 #[expect(
     clippy::indexing_slicing,

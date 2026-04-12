@@ -36,9 +36,8 @@ mod prompts;
 
 pub(crate) use definitions::{is_known_tool, percent_decode_path};
 pub use definitions::{prompt_definitions, tool_definitions};
-pub use prompts::{build_prompt_messages, str_arg, u64_arg};
-
 use instructions::AGENT_INSTRUCTIONS;
+pub use prompts::{build_prompt_messages, str_arg, u64_arg};
 
 /// Connection strategy for the daemon client.
 ///
@@ -236,7 +235,6 @@ impl core::ops::DerefMut for ClientGuard<'_> {
     }
 }
 
-
 impl UffsMcpServer {
     /// Gate on daemon readiness — returns `Err` if the daemon is still
     /// loading drives so the LLM receives a transient error and retries.
@@ -346,6 +344,11 @@ impl ServerHandler for UffsMcpServer {
         .with_instructions(AGENT_INSTRUCTIONS.to_owned())
     }
 
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "async match + await + iteration + logging contributes to Clippy's \
+                  cognitive score, but the function is only 20 lines and trivially readable"
+    )]
     async fn on_roots_list_changed(&self, context: rmcp::service::NotificationContext<RoleServer>) {
         // Ask the client for the current list of roots.
         match context.peer.list_roots().await {

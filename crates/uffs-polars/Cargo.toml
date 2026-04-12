@@ -45,121 +45,51 @@ test = false
 # ONLY Polars — all other dependencies provided by consuming crates.
 # Pinned to a specific commit on main. Bump via: just polars
 polars = { git = "https://github.com/pola-rs/polars", rev = "880651f782d17c9477b25902ab4107f80ed51b2e", default-features = false, features = [
-    # ===== Core Features =====
+    # ===== Core =====
     "lazy",              # Lazy evaluation (query optimization)
-    "new_streaming",     # New streaming engine (replaces deprecated "streaming")
-    "dtype-full",        # All data types
-    "performant",        # Performance optimizations
-    "serde",             # Serialization support
+    "new_streaming",     # Streaming engine for large queries
+    "performant",        # Internal performance optimizations
+    "serde",             # Serialization (compact index wire format)
     "serde-lazy",        # Lazy serialization
+    "nightly",           # Nightly Rust features
+    "simd",              # SIMD vectorization
+
+    # ===== Data Types (replaces blanket "dtype-full") =====
+    "dtype-u8",          # UInt8  — flags column
+    "dtype-u16",         # UInt16 — flags column
+    "dtype-datetime",    # Datetime — timestamps
+    "dtype-array",       # Required by Polars internals (match exhaustiveness in polars-expr)
 
     # ===== String Operations =====
-    "strings",           # String manipulation
-    "regex",             # Regex pattern matching
-    "concat_str",        # String concatenation
-    "string_encoding",   # Base64/hex encoding
-    "string_pad",        # Padding strings
-    "string_reverse",    # Reverse strings
-    "string_to_integer", # Parse strings to integers
-    "find_many",         # Find multiple patterns
+    "strings",           # .str() accessor — used throughout
+    "regex",             # Regex pattern matching — core search
+    "find_many",         # .str().contains_any() — multi-literal pattern matching
 
-    # ===== Temporal Operations =====
-    "temporal",          # Date/time operations
-    "timezones",         # Timezone support
-    "dtype-date",        # Date type
-    "dtype-datetime",    # DateTime type
-    "dtype-time",        # Time type
-    "dtype-duration",    # Duration type
-    "offset_by",         # Date offset operations
+    # ===== Temporal =====
+    "temporal",          # Date/time casting (timestamps → Datetime)
+    "timezones",         # Required by Polars internals when temporal is enabled
 
     # ===== I/O Formats =====
     "parquet",           # Parquet read/write (primary persistence)
-    "json",              # JSON export
-    "csv",               # CSV export
-    "ipc",               # Arrow IPC format
+    "json",              # JSON export (CLI + MCP)
+    "csv",               # CSV export (CLI)
+    "ipc",               # Arrow IPC format (daemon wire, export)
 
     # ===== Query Operations =====
-    "sql",               # SQL query support
-    "is_in",             # IN operator
-    "rows",              # Row operations
-    "arg_where",         # Argument where
-    "rank",              # Ranking operations
-    "round_series",      # Rounding
-    "abs",               # Absolute value
-    "is_between",        # Range checks
-    "is_first_distinct", # First occurrence of each value
-    "is_last_distinct",  # Last occurrence of each value
+    "is_in",             # col.is_in([...]) — compiled_pattern
     "is_unique",         # Check for unique values
-    "search_sorted",     # Binary search in sorted arrays
-    "index_of",          # Find index of value
+    "rows",              # Row access patterns
+    "diff",              # .diff() — compact.rs
+    "bitwise",           # col("flags").bitand() — flags.rs
+    "abs",               # Required by Polars internals (match exhaustiveness in polars-expr)
 
-    # ===== DataFrame Operations =====
-    "diagonal_concat",   # Diagonal concatenation
-    "cross_join",        # Cross join
-    "semi_anti_join",    # Semi/anti joins
-    "asof_join",         # Time-series joins
-    "describe",          # DataFrame describe
-    "pivot",             # Pivot tables
-    "partition_by",      # Partitioning support
-    "zip_with",          # Zip with condition
-    "coalesce",          # COALESCE operation
-
-    # ===== Aggregations =====
-    "cum_agg",           # Cumulative aggregations
-    "rolling_window",    # Rolling window operations
-    "rolling_window_by", # Rolling window by column
-    "approx_unique",     # HyperLogLog approximate distinct counts
-    "unique_counts",     # Count unique values
-    "top_k",             # Top-K selection
-    "hist",              # Histogram binning
-    "mode",              # Mode calculation
-
-    # ===== List Operations =====
-    "list_eval",         # Evaluate expressions on lists
-    "list_to_struct",    # Convert list to struct
-    "list_count",        # Count list elements
-    "list_drop_nulls",   # Drop nulls from lists
-    "list_sample",       # Sample from lists
-    "list_any_all",      # Any/all on lists
-    "list_gather",       # Gather elements from lists
-    "list_sets",         # Set operations on lists
-    "list_filter",       # Filter list elements
-
-    # ===== Math Operations =====
-    "log",               # Logarithm functions
-    "trigonometry",      # Sin/cos/tan etc.
-    "sign",              # Sign function
-    "product",           # Product aggregation
-    "diff",              # Difference operations
-    "pct_change",        # Percentage change
-    "interpolate",       # Interpolation
-    "interpolate_by",    # Interpolate by column
-
-    # ===== Misc Features =====
-    "fmt",               # Formatting
+    # ===== Optimizer / Internal =====
+    "fmt",               # DataFrame Display formatting
     "cse",               # Common subexpression elimination
-    "row_hash",          # Row hashing
-    "random",            # Random operations
-    "dynamic_group_by",  # Dynamic group by
-    "extract_groups",    # Extract regex groups
-    "binary_encoding",   # Binary encoding
-    "to_dummies",        # One-hot encoding
-    "replace",           # Value replacement
-    "repeat_by",         # Repeat values by count
-    "rle",               # Run-length encoding
-    "cutqcut",           # Binning/quantile cuts
-    "reinterpret",       # Reinterpret data types
-    "decompress",        # Decompression
-    "fused",             # Fused operations
-    "meta",              # Expression metadata
-    "range",             # Range expressions
-    "bitwise",           # Bitwise operations
-    "extract_jsonpath",  # JSON path extraction
-
-    # ===== Performance & Debugging =====
-    "simd",              # SIMD optimizations
-    "nightly",           # Nightly Rust features
-    "dot_diagram",       # Query plan visualization
+    "decompress",        # Decompress compressed Parquet/IPC data
+    "fused",             # Fused mul-add micro-optimizations
+    "meta",              # Expression metadata (query planning)
+    "range",             # Range expressions (int_range, etc.)
 ] }
 
 # ─────────────────────────────────────────────────────────────────────────────

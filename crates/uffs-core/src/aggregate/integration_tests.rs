@@ -6,10 +6,11 @@
 //! Exception: `file_size_policy` — test cohesion; splitting by line count would
 //! fragment the test narrative built around a shared synthetic drive fixture.
 
+use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS, SizeInfo};
+
 use super::finalize::AggregateResultData;
 use super::*;
 use crate::compact::build_compact_index;
-use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS, SizeInfo};
 
 /// NTFS epoch is `1601-01-01`. Ticks per second = `10_000_000`.
 /// `2024-01-15 00:00:00 UTC` in NTFS ticks ≈ `133_496_544_000_000_000`.
@@ -71,8 +72,7 @@ fn build_agg_test_drive() -> DriveCompactIndex {
         let off = idx.add_name(name);
         let ext = idx.intern_extension(name);
         let rec = idx.get_or_create(frs);
-        rec.first_name.name =
-            IndexNameRef::new(off, uffs_mft::len_to_u16(name.len()), true, ext);
+        rec.first_name.name = IndexNameRef::new(off, uffs_mft::len_to_u16(name.len()), true, ext);
         rec.first_name.parent_frs = 100;
         rec.first_stream.size = SizeInfo {
             length: size,
@@ -663,8 +663,7 @@ fn s2f6_aggregate_and_rows_independent() {
         metrics: vec![BucketMetric::Count],
         sample: None,
     });
-    let agg_output =
-        run_aggregate(&[&drive], &[agg_spec], &FinalizeOptions::default()).unwrap();
+    let agg_output = run_aggregate(&[&drive], &[agg_spec], &FinalizeOptions::default()).unwrap();
 
     // Verify aggregation works.
     if let AggregateResultData::Buckets { rows, .. } = &agg_output.response.results[0].data {
@@ -676,8 +675,7 @@ fn s2f6_aggregate_and_rows_independent() {
 
     // Run a second, independent aggregation on the same drive.
     let agg_spec2 = AggregateSpec::new(AggregateKind::Count);
-    let agg_output2 =
-        run_aggregate(&[&drive], &[agg_spec2], &FinalizeOptions::default()).unwrap();
+    let agg_output2 = run_aggregate(&[&drive], &[agg_spec2], &FinalizeOptions::default()).unwrap();
 
     if let AggregateResultData::Count { value } = &agg_output2.response.results[0].data {
         assert!(*value >= 7, "count should be >= 7 records");
@@ -723,8 +721,8 @@ fn s3f2_paginate_extensions_total_equals_unpaginated() {
     let mut pages = 0_u32;
 
     loop {
-        let page = paginate_result(full_result, &cursor)
-            .expect("paginate should work on bucket result");
+        let page =
+            paginate_result(full_result, &cursor).expect("paginate should work on bucket result");
         for row in &page.rows {
             collected_keys.push(row.key.clone());
             collected_count += row.count;

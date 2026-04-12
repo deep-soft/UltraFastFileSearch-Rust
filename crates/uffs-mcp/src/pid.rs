@@ -130,7 +130,6 @@ pub fn parse_mcp_pid_file() -> Option<(u32, u64)> {
     Some((info.pid, info.start_ts))
 }
 
-
 /// Parse the full MCP server PID file (pid, timestamp, transport, data
 /// sources).
 #[must_use]
