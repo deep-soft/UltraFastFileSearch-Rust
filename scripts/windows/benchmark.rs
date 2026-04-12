@@ -252,15 +252,15 @@ fn discover_drives(_bin: &PathBuf, sources: &DataSources) -> Vec<String> {
     Vec::new()
 }
 
-/// Enumerate fixed NTFS drives on Windows using `wmic`.
+/// Enumerate NTFS drives on Windows using `wmic`.
 ///
-/// Runs: `wmic logicaldisk where "DriveType=3" get DeviceID,FileSystem /format:csv`
-/// which lists local fixed drives with their filesystem type. We filter to NTFS.
+/// Includes both fixed (DriveType=3) and removable (DriveType=2, e.g. USB)
+/// drives, filtered to NTFS filesystem.
 /// Falls back to A–Z probing if wmic is unavailable.
 fn discover_windows_ntfs_drives() -> Vec<String> {
-    // Try wmic first (available on all supported Windows versions).
+    // DriveType 2=Removable (USB), 3=Local Fixed. Both can be NTFS.
     if let Ok(out) = Command::new("wmic")
-        .args(["logicaldisk", "where", "DriveType=3", "get", "DeviceID,FileSystem", "/format:csv"])
+        .args(["logicaldisk", "where", "DriveType=2 or DriveType=3", "get", "DeviceID,FileSystem", "/format:csv"])
         .stdout(Stdio::piped()).stderr(Stdio::null())
         .output()
     {
