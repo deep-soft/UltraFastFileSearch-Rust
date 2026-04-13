@@ -131,7 +131,7 @@ jobs:
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@9b78309a511fc3515675f4d9e7d59679ff5d4a56 # cargo-deny
+        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # cargo-deny
 
       - name: Run dependency & license check
         run: cargo deny check
