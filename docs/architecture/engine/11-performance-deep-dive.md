@@ -112,9 +112,19 @@ Three-character trigram index built during startup. Substring queries intersect 
 
 ---
 
-## Note on C++ Comparison
+## C++ Reference Baseline (engineering validation, not public market benchmark)
 
-UFFS includes a C++ reference implementation for parity verification. When comparing COLD timings, the comparison is **not apples-to-apples**:
+UFFS keeps the earlier C++ implementation as a parity and regression baseline. This comparison is useful for validating parser correctness and understanding cold-path trade-offs, but it is not the headline market benchmark for the Rust engine.
+
+The Rust engine intentionally does more work during COLD startup: compact index build, cache serialization, extension interning, tree metrics, and daemon-ready data structures. The relevant buyer-facing payoff is not the raw COLD number alone, but the combination of:
+
+- full cold build from raw MFT
+- warm restart from serialized cache
+- hot in-memory queries once the daemon is ready
+
+Public external comparisons should therefore use the current Rust engine and separate readiness, interactive top-N, bulk retrieval, and scale-ceiling workloads.
+
+When comparing COLD timings, the comparison is **not apples-to-apples**:
 
 | | UFFS (Rust) | C++ Reference |
 |-|-------------|---------------|

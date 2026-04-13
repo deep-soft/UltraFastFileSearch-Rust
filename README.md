@@ -5,9 +5,17 @@
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows-blue.svg)](https://github.com/githubrobbi/UltraFastFileSearch/releases/latest)
 
-**The fastest open-source NTFS file search engine.** Reads the Master File Table directly, indexes 25.9 million files across 7 drives, and answers every query in ~200 ms.
+**A benchmark-driven NTFS search engine for Windows.** UFFS reads the Master File Table directly, builds a compact persisted index, and keeps large NTFS estates searchable through a background daemon.
 
-> An open-source alternative to [Everything (voidtools)](https://www.voidtools.com/), [WizFile](https://antibody-software.com/wizfile/), [UltraSearch](https://www.jam-software.com/ultrasearch), and other NTFS search tools — built in Rust with Polars DataFrames, a background daemon, 40+ filters, and an MCP server for AI agents.
+> Proven on a real 7-drive, 25.9M-record Windows system:
+> - **66.5 s COLD** — raw MFT read + compact index build
+> - **7.3 s WARM CACHE** — restart from serialized cache
+> - **381 ms HOT** — end-to-end query with a running daemon
+> - **151 ms daemon-side scan** across all 25.9M records
+
+UFFS is built for **exact filename, path, and metadata search** at scales where directory walking, shell search, and some automation surfaces become the bottleneck. It is open source, written in Rust, and designed first for deterministic local search; CLI, TUI, API, and MCP are all interfaces on top of the same engine.
+
+> An open-source NTFS search engine for Windows power users, developers, IT teams, and investigations-style workflows.
 
 📖 **[Full User Manual](docs/user-manual/index.md)** — installation, tutorials, filters, daemon, TUI, MCP integration, and more.
 
@@ -17,30 +25,31 @@
 
 ## Why UFFS?
 
-Most file search tools ask the OS to enumerate files one at a time (`FindFirstFile`, `os.walk`).
-UFFS **reads the NTFS Master File Table directly** — once — and holds it in memory using Polars DataFrames.
-
-- ⚡ **172 million records/second** scan throughput (HOT daemon)
+- ⚡ **25.9M-record proven scale** — measured across 7 NTFS volumes on real hardware
+- 🚀 **Cold / warm / hot architecture** — build once from raw MFT, restart fast from cache, answer hot queries from memory
 - 🔍 **40+ filters** — size, date, extension, type, attributes, path length, tree size, regex
-- 🖥️ **CLI + TUI + MCP** — terminal, interactive UI, and AI-agent integration
-- 🔄 **Background daemon** — loads once, answers every query in ~200 ms
-- 🧩 **Cross-platform** — native NTFS on Windows; offline MFT analysis on macOS and Linux
+- 🧩 **One engine, multiple interfaces** — CLI, TUI, daemon, API, and MCP share the same index
+- 🧭 **Deterministic local scope** — built for exact NTFS filename/path/metadata search, not fuzzy ranking
+- 🖥️ **Cross-platform offline analysis** — live NTFS on Windows; offline MFT analysis on macOS and Linux
 
 ---
 
-## Benchmark (v0.4.112)
+## Benchmark snapshot (v0.4.106)
 
-Measured on AMD Ryzen 9 3900XT, 64 GB RAM, 7 NTFS volumes (NVMe + SATA SSD + SATA HDD), 25.9M total records:
+Measured on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2, 7 NTFS volumes totaling 25,929,744 records. Query: `*`, limit: 100, averages over 3 rounds.
 
 | Phase | What happens | ALL 7 drives | Single NVMe |
-|-------|-------------|-------------:|------------:|
-| **COLD** | Raw MFT read + index build | 66.5 s | 7.5 s |
-| **WARM CACHE** | Load serialized `.iocp` cache | 7.3 s | 2.6 s |
-| **HOT** | In-memory query (daemon running) | **381 ms** | **229 ms** |
+|-------|--------------|-------------:|------------:|
+| **COLD** | Raw MFT read, parse, compact index build, cache write | 66.5 s | 7.5 s |
+| **WARM CACHE** | Daemon restart + serialized cache load | 7.3 s | 2.6 s |
+| **HOT** | Query a running daemon with the index already in memory | **381 ms end-to-end** | **229 ms end-to-end** |
 
-Cold→Hot speedup: **175×** (all drives) · **259×** (8.3M-record HDD).
+Hot-path context:
+- **151 ms daemon-side search** across all 25.9M records
+- **211–259 ms** end-to-end hot queries on single drives
+- **174.5×** cold→hot speedup across all 7 drives
 
-> 📖 **[Full benchmark data](docs/user-manual/performance.md)** — per-drive tables, profile internals, C++ parity comparison.
+> 📖 **[Full benchmark data](docs/user-manual/performance.md)** — methodology, per-drive tables, profile internals, validation throughput, and caveats.
 
 ---
 
@@ -100,25 +109,26 @@ uffs daemon restart
 
 UFFS was built after the author wrote [an earlier C++ MFT search tool](https://github.com/githubrobbi/Ultra-Fast-File-Search) and then rebuilt it from scratch in Rust for safety, performance, and maintainability.
 
-### Measured speed vs alternatives
+### Comparison scope
 
-The [C++ predecessor](https://github.com/githubrobbi/Ultra-Fast-File-Search) was benchmarked head-to-head against Everything and WizFile on the same hardware (19M records, 1 SSD + 4 HDDs). The Rust rewrite then measured against the C++ version on 7 drives (25.9M records):
+UFFS competes first in the **local NTFS filename/path/metadata** lane: exact search across large Windows filesystems with deterministic scope and a reusable in-memory daemon.
 
-| Tool | Cold index (19M records) | Warm query | Source |
-|------|-------------------------:|------------|--------|
-| **WizFile** | 299 s (1 HDD, 6.5M) | — | [C++ benchmark](https://github.com/githubrobbi/Ultra-Fast-File-Search#benchmark) |
-| **Everything** | 178 s | service keeps index hot | [C++ benchmark](https://github.com/githubrobbi/Ultra-Fast-File-Search#benchmark) |
-| **UFFS C++** | 121 s | — | [C++ benchmark](https://github.com/githubrobbi/Ultra-Fast-File-Search#benchmark) |
-| **UFFS Rust (cold)** | 66.5 s (25.9M, 7 drives) | — | [Parity test](docs/user-manual/performance.md#9--c-vs-rust-parity-comparison) |
-| **UFFS Rust (HOT)** | — | **200 ms** (25.9M records) | [Benchmark](docs/user-manual/performance.md) |
+We do **not** collapse all search products into one "fastest search tool" claim. The following are different benchmark classes and should be compared separately:
 
-Summary: **68% faster** than Everything at cold indexing · **47× faster** than C++ warm path on HOT queries · **172M records/sec** daemon-side scan throughput.
+1. **Readiness** — cold build, warm restart, and hot query
+2. **Interactive search** — end-to-end top-N query latency
+3. **Bulk retrieval** — time to stream or export large result sets
+4. **Scale ceiling** — largest corpus completed without timeout, crash, or incorrect results
+
+That distinction matters because a tool can be excellent at interactive top-N search and still hit a wall during full-result export or very large automation workloads.
+
+The older C++ implementation remains useful as a parity and regression baseline, but it is **not** the headline market benchmark for the Rust engine. Public cross-tool comparisons should be run against the current Rust engine with exact versions, settings, workloads, and raw results published alongside the charts.
 
 ### How UFFS compares to other file search tools
 
 | Category | Tools | How UFFS differs |
 |----------|-------|-----------------|
-| **Instant NTFS filename search** | [Everything (voidtools)](https://www.voidtools.com/), [WizFile](https://antibody-software.com/wizfile/), [WizTree](https://www.diskanalyzer.com/), [UltraSearch (JAM Software)](https://www.jam-software.com/ultrasearch), [SwiftSearch](https://sourceforge.net/projects/swiftsearch/), [Locate32](https://locate32.cogit.net/) | Open-source Rust engine; 68% faster cold indexing than Everything; Polars DataFrames; daemon + CLI + TUI + MCP; 40+ filters; forensic mode; cross-platform offline analysis |
+| **Instant NTFS filename search** | [Everything (voidtools)](https://www.voidtools.com/), [WizFile](https://antibody-software.com/wizfile/), [WizTree](https://www.diskanalyzer.com/), [UltraSearch (JAM Software)](https://www.jam-software.com/ultrasearch), [SwiftSearch](https://sourceforge.net/projects/swiftsearch/), [Locate32](https://locate32.cogit.net/) | Open-source Rust engine; 25.9M-record proven scale; Polars DataFrames; daemon + CLI + TUI + MCP; 40+ filters; forensic mode; cross-platform offline analysis |
 | **Content / regex search** | [FileLocator Pro / Agent Ransack](https://www.mythicsoft.com/filelocatorpro/), [grepWin](https://tools.stefankueng.com/grepWin.html), [AstroGrep](http://astrogrep.sourceforge.net/), [dnGrep](https://dngrep.github.io/), [SearchMyFiles (NirSoft)](https://www.nirsoft.net/utils/search_my_files.html) | UFFS focuses on MFT-level metadata speed; pairs well with `ripgrep` for content |
 | **Enterprise / eDiscovery** | [X1 Search](https://www.x1.com/), [dtSearch](https://www.dtsearch.com/), [Copernic](https://copernic.com/) | UFFS is a specialist local-NTFS tool, not a multi-repository governance platform |
 | **Developer CLI** | [fd](https://github.com/sharkdp/fd), [ripgrep](https://github.com/BurntSushi/ripgrep), [fzf](https://github.com/junegunn/fzf), [GNU find](https://www.gnu.org/software/findutils/) | UFFS reads the MFT instead of walking directories — orders of magnitude faster for whole-drive search |

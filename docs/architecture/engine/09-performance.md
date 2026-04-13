@@ -28,12 +28,13 @@ limit: 100, averaged over 3 rounds per phase.
 | S: | SATA HDD | 8.3M | 67.0 s | 4.7 s | 259 ms | **259×** |
 | **ALL** | **Mixed** | **25.9M** | **66.5 s** | **7.3 s** | **381 ms** | **175×** |
 
-### Key Observations
+### What the benchmark shows
 
-- **NVMe drives: 5–8 s cold** — parsing is the bottleneck, not I/O
-- **SATA HDD: 27–67 s cold** — I/O-bound; bitmap skip and LCN-ordered reads are critical
-- **HOT queries: 210–260 ms per drive** — uniform regardless of media type; ~200 ms is process overhead
-- **Daemon-side search: 151 ms for 25.9M records** — 172 million records/second
+- **Scale is the headline** — UFFS keeps **25.9M records across 7 drives** searchable from one daemon.
+- **Cold-start time is storage-bound** — NVMe is parse-bound, while HDD cold runs are dominated by seek time and raw MFT I/O.
+- **Warm restart is the operator win** — the full 25.9M-record searchable state returns in **7.3 s** from serialized cache.
+- **Hot queries are media-independent** — once the daemon is warm, single-drive end-to-end queries stay in the **211–259 ms** range regardless of whether the underlying volume is NVMe, SSD, HDD, or USB.
+- **Daemon throughput is higher than CLI wall time** — the **381 ms** all-drive hot number includes process spawn, IPC, and formatting; the actual daemon-side scan is **151 ms**.
 
 > 📖 **Full benchmark data:** [Performance](../../user-manual/performance.md)
 

@@ -11,6 +11,34 @@ benchmark and profiling scripts.
 
 ---
 
+## What these numbers mean
+
+This page intentionally separates **readiness** from **interactive query latency**.
+
+- **COLD** measures raw MFT read, parse, compact index build, and cache write.
+- **WARM CACHE** measures daemon restart from the serialized cache.
+- **HOT** measures interactive search against a running in-memory daemon.
+
+Unless explicitly noted otherwise, the headline tables on this page measure **end-to-end CLI latency** for the query `*` with `--limit 100`. That means the HOT numbers are **interactive top-N timings**, not full-result export timings. Daemon-side search time is reported separately from process spawn, IPC, and stdout formatting.
+
+This separation is deliberate. Different tools and interfaces optimize different workloads. UFFS therefore treats readiness, interactive search, bulk retrieval, and scale ceiling as separate benchmark classes instead of forcing them into one number.
+
+---
+
+## Benchmark classes and fairness rules
+
+When UFFS publishes cross-tool benchmarks, the rules are:
+
+1. Compare like-for-like workloads only.
+2. Report exact hardware, OS build, tool versions, settings, and query shape.
+3. Keep interactive top-N and bulk export benchmarks separate.
+4. Report daemon-side timings and end-to-end client timings separately.
+5. Record crashes, timeouts, OOMs, interface limits, and incomplete results as **DNF**, not as missing data.
+
+A benchmark is only useful if readers can see both the fastest successful run and the point where a tool stops being operational.
+
+---
+
 ## 1  Test System
 
 | Component | Specification |
@@ -55,7 +83,7 @@ Delete cache files            Cache files stay on disk      Index in memory
 Read raw MFT from disk        Deserialize .iocp cache       Query directly
 Parse → build index           → build index                 ↓
 Write .iocp cache             ↓                             Results
-↓                             Results                       (~200 ms)
+↓                             Results                       (211–381 ms)
 Results
 (seconds to minutes)          (~1–5 s)
 ```
@@ -332,8 +360,9 @@ C++ baseline runs warm:
 > **Context:** The C++ times are warm (OS has cached MFT pages); the
 > Rust times are cold (MFT read from disk + full parse + cache write).
 > With the daemon running (HOT), Rust answers the same queries in
-> **200 ms** — a **900× improvement** over the cold Rust path and
-> **47× faster** than the warm C++ path.
+> **381 ms end-to-end** (all 7 drives) — a **174× speedup** over the cold Rust path.
+> The C++ tool re-reads the MFT on every invocation; the Rust daemon
+> never needs to re-read after the initial cold build.
 
 ---
 
