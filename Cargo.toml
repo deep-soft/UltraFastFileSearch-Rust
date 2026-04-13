@@ -514,6 +514,14 @@ lto = "thin"
 
 [profile.test]
 inherits = "dev"
+# CI-friendly overrides: the dev profile uses codegen-units=256 for local
+# edit-build-run speed, but that produces 256 object files per crate which
+# is hostile to hosted CI runners doing full codegen. Reducing to 16
+# dramatically cuts peak RSS and link time. debug=1 gives stack traces
+# without full debuginfo cost. incremental=false is set via CARGO_INCREMENTAL=0
+# in CI (not here) so local `cargo test` still benefits from incrementals.
+debug = 1                               # Stack traces without full debuginfo cost
+codegen-units = 16                      # Sane for 4-core hosted runners (vs 256)
 
 [profile.dev.package.polars]
 opt-level = 2                           # Optimize Polars even in dev for usable performance

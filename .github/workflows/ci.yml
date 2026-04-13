@@ -45,11 +45,14 @@ env:
   CARGO_TARGET_DIR: target
   RUSTC_WRAPPER: ""
   CARGO_BUILD_JOBS: 2
+  CARGO_INCREMENTAL: 0
+  # Override codegen-units for test profile (belt-and-suspenders with Cargo.toml)
+  CARGO_PROFILE_TEST_CODEGEN_UNITS: 16
 
 jobs:
   format-check:
     name: Tier 1 / Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -62,7 +65,7 @@ jobs:
 
   clippy:
     name: Tier 1 / Clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -79,7 +82,7 @@ jobs:
 
   rustdoc:
     name: Tier 1 / Rustdoc
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
       - name: Checkout repository
@@ -94,10 +97,19 @@ jobs:
       - name: Run rustdoc warnings gate
         run: RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --all-features --no-deps
 
-  tests:
-    name: Tier 1 / Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Test Build — compile test binaries (heaviest step, separated so cache
+  # is saved even if subsequent test execution fails)
+  # ═══════════════════════════════════════════════════════════════════════════
+  test-build:
+    name: Tier 1 / Test Build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      # CI-only: replicate .cargo/config.toml [target.x86_64-unknown-linux-gnu]
+      # rustflags PLUS reduce debuginfo. RUSTFLAGS env overrides config.toml,
+      # so we must include the full set here.
+      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C link-arg=-Wl,--gc-sections"
     steps:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -105,10 +117,50 @@ jobs:
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
 
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          sudo rm -rf /usr/local/share/boost /usr/local/graalvm
+          df -h /
+
       - name: Cache dependencies
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           cache-on-failure: 'true'
+          shared-key: test-build
+
+      - name: Build test binaries
+        run: |
+          echo "::group::Compile workspace test targets"
+          cargo test --workspace --all-features --lib --tests --no-run 2>&1
+          echo "::endgroup::"
+
+      - name: Report target size
+        if: always()
+        run: du -sh target/ || true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Tests — run the pre-compiled test binaries
+  # ═══════════════════════════════════════════════════════════════════════════
+  tests:
+    name: Tier 1 / Tests
+    runs-on: ubuntu-22.04
+    needs: test-build
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C link-arg=-Wl,--gc-sections"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
+
+      - name: Restore build cache
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          save-if: 'false'
+          shared-key: test-build
 
       - name: Install nextest
         uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
@@ -116,14 +168,34 @@ jobs:
           tool: nextest
 
       - name: Run tests
-        run: cargo nextest run --workspace --all-features --lib --bins --tests --profile ci
+        run: cargo nextest run --workspace --all-features --lib --tests --profile ci
+
+  doc-tests:
+    name: Tier 1 / Doc Tests
+    runs-on: ubuntu-22.04
+    needs: test-build
+    timeout-minutes: 15
+    env:
+      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C link-arg=-Wl,--gc-sections"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
+
+      - name: Restore build cache
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          save-if: 'false'
+          shared-key: test-build
 
       - name: Run doc tests
         run: RUSTDOCFLAGS="-Dwarnings" cargo test --doc --workspace --all-features
 
   security:
     name: Tier 1 / Security
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -145,7 +217,7 @@ jobs:
 
   file-size-policy:
     name: Tier 1 / File Size Policy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -161,7 +233,7 @@ jobs:
   notify-failure:
     name: 🔔 Notify on Failure
     runs-on: ubuntu-latest
-    needs: [format-check, clippy, rustdoc, tests, security, file-size-policy]
+    needs: [format-check, clippy, rustdoc, test-build, tests, doc-tests, security, file-size-policy]
     if: failure()
     permissions:
       issues: write
