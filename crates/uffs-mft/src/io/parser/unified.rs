@@ -81,7 +81,7 @@ fn decode_utf16le_into(bytes: &[u8], out: &mut String) {
 /// For extensions, `frs_base` points to the base record; for base records,
 /// `frs_base == frs`.
 ///
-/// Records are created with [`FileRecord::new_unified()`] which starts all
+/// Records are created with [`FileRecord::new_unified()`](crate::index::FileRecord::new_unified) which starts all
 /// counts at 0.  Every accepted `$FILE_NAME` and every first-occurrence
 /// stream increments the respective count.
 ///

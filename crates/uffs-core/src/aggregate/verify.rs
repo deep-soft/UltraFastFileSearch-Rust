@@ -170,7 +170,7 @@ pub struct VerificationSummary {
 
 /// Verifies duplicate candidate groups by reading file content.
 ///
-/// Instantiate with the desired mode and budget, then call [`verify`].
+/// Instantiate with the desired mode and budget, then call [`Self::verify`].
 pub struct DuplicateVerifier {
     /// Verification mode to use.
     mode: DuplicateVerify,

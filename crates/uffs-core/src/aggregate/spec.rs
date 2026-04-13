@@ -172,11 +172,12 @@ pub enum DuplicateVerify {
 }
 
 /// Maximum allowed sample rows per bucket.
-const MAX_SAMPLE_COUNT: u8 = 5;
+/// Maximum number of sample rows per bucket.
+pub const MAX_SAMPLE_COUNT: u8 = 5;
 
 /// Default sample projection: the fields returned for each sample row
 /// when the caller doesn't specify a custom projection.
-const DEFAULT_PROJECTION: &[FieldId] = &[
+pub const DEFAULT_PROJECTION: &[FieldId] = &[
     FieldId::Name,
     FieldId::Size,
     FieldId::Modified,

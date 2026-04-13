@@ -14,7 +14,7 @@ use crate::search::field::FieldId;
 
 /// Named aggregate presets.
 ///
-/// Each variant expands into a set of [`AggregateSpec`]s via [`expand()`].
+/// Each variant expands into a set of [`AggregateSpec`]s via [`Self::expand()`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggregatePreset {
     /// Full filesystem overview: count, files-vs-dirs, size totals,

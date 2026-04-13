@@ -3,7 +3,7 @@
 
 //! Streamable HTTP gateway for the UFFS MCP server.
 //!
-//! Wraps the same [`UffsMcpServer`] handler used by the stdio transport
+//! Wraps the same [`UffsMcpServer`](crate::handler::UffsMcpServer) handler used by the stdio transport
 //! and exposes it via HTTP using [`rmcp`]'s `StreamableHttpService`.
 //!
 //! # Endpoints

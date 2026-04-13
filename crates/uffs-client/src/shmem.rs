@@ -62,7 +62,7 @@ struct ShmemHeader {
 /// Per-row fixed-size record — 88 bytes, naturally aligned.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-struct ShmemRecord {
+pub struct ShmemRecord {
     /// Drive letter as ASCII byte.
     drive: u8,
     /// 1 = directory, 0 = file.

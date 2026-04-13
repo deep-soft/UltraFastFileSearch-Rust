@@ -183,7 +183,7 @@ pub fn semantic_type_id_from_extension(ext: &str) -> u64 {
 /// Ordered names matching the IDs from [`semantic_type_id_from_extension`].
 ///
 /// Index 0 = "other", index 22 = "directory", index 23 = "file".
-const SEMANTIC_TYPE_NAMES: &[&str] = &[
+pub const SEMANTIC_TYPE_NAMES: &[&str] = &[
     "other",      // 0
     "document",   // 1
     "picture",    // 2

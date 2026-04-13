@@ -48,7 +48,7 @@ impl UffsClient {
     ///
     /// On Windows the daemon auto-discovers live NTFS drives so no extra
     /// args are needed.  On Mac/Linux, pass `--data-dir` or `--mft-file`
-    /// via [`connect_with_args`] so the daemon knows where to find data.
+    /// via [`Self::connect_with_args`] so the daemon knows where to find data.
     ///
     /// # Errors
     ///
@@ -382,7 +382,7 @@ impl UffsClient {
     /// Wait until the daemon has finished loading its indices.
     ///
     /// Polls `status()` with exponential backoff (250ms → 2s cap) until the
-    /// daemon reports [`DaemonStatus::Ready`].  Times out after
+    /// daemon reports [`crate::protocol::DaemonStatus::Ready`].  Times out after
     /// `timeout` and returns an error.
     ///
     /// If multiple consecutive I/O errors occur (e.g. broken pipe from a

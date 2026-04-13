@@ -211,7 +211,7 @@ pub const ERR_BAD_PATTERN: i32 = -2;
 /// Parameters for the `search` method.
 ///
 /// All filter fields mirror the CLI surface; see
-/// [`uffs_core::search::filters::SearchFilters`] for semantics.
+/// `uffs_core::search::filters::SearchFilters` for semantics.
 /// Every field is optional — omitted fields impose no constraint.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[expect(
@@ -651,7 +651,7 @@ pub struct BucketWire {
 ///
 /// Each entry represents one record from the bucket, projected onto a
 /// set of display fields (e.g. `name`, `size`, `modified`).  The daemon
-/// populates this from [`uffs_core::aggregate::SampleRow`] during
+/// populates this from `uffs_core::aggregate::SampleRow` during
 /// `BucketRow → BucketWire` conversion.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SampleRowWire {

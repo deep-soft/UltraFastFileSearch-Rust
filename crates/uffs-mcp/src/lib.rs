@@ -33,7 +33,7 @@ extern crate alloc;
 /// Initialise tracing for the MCP server.
 ///
 /// **Stdout is the protocol channel** — all logging MUST go to stderr or
-/// to `log_file`.  Behaviour mirrors [`uffs_daemon::init_tracing`]:
+/// to `log_file`.  Behaviour mirrors `uffs_daemon::init_tracing`:
 ///
 /// * `UFFS_LOG=trace` sets the filter; default is `"info"`.
 /// * `UFFS_LOG_FILE=/tmp/mcp.log` redirects to a file.  When a verbose level

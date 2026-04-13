@@ -45,7 +45,8 @@ mod protocol;
 ///
 /// Falls back to `./uffs_daemon.log` if the platform data directory
 /// cannot be determined.
-fn default_log_file() -> PathBuf {
+#[must_use]
+pub fn default_log_file() -> PathBuf {
     dirs_next::data_local_dir().map_or_else(
         || PathBuf::from("uffs_daemon.log"),
         |dir| dir.join("uffs").join("uffs_daemon.log"),

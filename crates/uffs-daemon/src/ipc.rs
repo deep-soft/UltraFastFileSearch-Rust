@@ -46,11 +46,10 @@ impl IpcServer {
         }
         #[cfg(target_os = "linux")]
         {
-            if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-                PathBuf::from(runtime_dir).join("uffs").join("daemon.sock")
-            } else {
-                base.join("uffs").join("daemon.sock")
-            }
+            std::env::var("XDG_RUNTIME_DIR").map_or_else(
+                |_| base.join("uffs").join("daemon.sock"),
+                |runtime_dir| PathBuf::from(runtime_dir).join("uffs").join("daemon.sock"),
+            )
         }
         #[cfg(target_os = "windows")]
         {
@@ -129,6 +128,11 @@ impl IpcServer {
             uid: 0,
             gid: 0,
         };
+        // ucred is 12 bytes (3 × i32), always fits in socklen_t (u32).
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "size_of::<ucred>() is 12, which fits in u32 socklen_t"
+        )]
         let mut len = size_of::<libc::ucred>() as libc::socklen_t;
 
         // SAFETY: `getsockopt` with `SO_PEERCRED` reads the ucred struct for

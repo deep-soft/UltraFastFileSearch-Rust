@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! MCP [`ServerHandler`] implementation — bridges rmcp to the UFFS daemon.
+//! MCP [`ServerHandler`](rmcp::ServerHandler) implementation — bridges rmcp to the UFFS daemon.
 //!
 //! This is the core of the MCP server.  It implements the rmcp
-//! [`ServerHandler`] trait, dispatching `tools/call`, `resources/read`,
+//! [`ServerHandler`](rmcp::ServerHandler) trait, dispatching `tools/call`, `resources/read`,
 //! and `prompts/get` to the appropriate handlers.
 
 extern crate alloc;
