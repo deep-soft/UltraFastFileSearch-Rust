@@ -11,8 +11,8 @@ phase1-test:
     @printf "\033[0;36m  → cargo check --workspace --all-targets --all-features\033[0m\n"
     cargo check --workspace --all-targets --all-features
     @printf "\033[0;34mStep 2: Running workspace tests (FAST-FAIL)...\033[0m\n"
-    @printf "\033[0;36m  → cargo nextest run --workspace --all-features --lib --tests --jobs 16\033[0m\n"
-    cargo nextest run --workspace --all-features --lib --tests --jobs 16
+    @printf "\033[0;36m  → cargo nextest run --workspace --all-features --lib --tests\033[0m\n"
+    cargo nextest run --workspace --all-features --lib --tests
     @printf "\033[0;32m✅ All workspace tests passed\033[0m\n"
     @printf "\033[0;34mStep 3: Documentation tests validation (FAST-FAIL)...\033[0m\n"
     @printf "\033[0;36m  → just test-doc\033[0m\n"

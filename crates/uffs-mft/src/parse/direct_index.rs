@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! Single-pass direct-to-index parser (C++-style inline approach).
+//! Single-pass direct-to-index parser.
 //!
-//! This module implements the high-performance single-pass parser that matches
-//! the C++ architecture. It parses MFT records directly into `MftIndex` without
-//! creating intermediate `ParsedRecord` allocations.
+//! This module implements the high-performance single-pass parser that builds
+//! an `MftIndex` directly from raw MFT records without creating intermediate
+//! `ParsedRecord` allocations.
 //!
 //! This is a cross-platform parser used for both Windows IOCP and file-based
 //! loading.
@@ -55,8 +55,8 @@ use crate::index::{nonneg_to_u64, u32_as_usize};
 /// Parses a record directly into `MftIndex` (single-pass inline parsing).
 ///
 /// This function parses the record and adds it directly to the index,
-/// creating parent placeholders on-demand. This is the C++-style single-pass
-/// approach that eliminates the intermediate `ParsedRecord` allocation.
+/// creating parent placeholders on-demand. This single-pass approach
+/// eliminates the intermediate `ParsedRecord` allocation.
 ///
 /// Handles ALL attribute types that `parse_record_full()` handles, including:
 /// - `$STANDARD_INFORMATION`, `$FILE_NAME`, `$DATA` (default + ADS)
@@ -65,7 +65,7 @@ use crate::index::{nonneg_to_u64, u32_as_usize};
 /// - `$OBJECT_ID`, `$VOLUME_NAME`, `$VOLUME_INFORMATION`, `$PROPERTY_SET`
 /// - `$EA`, `$EA_INFORMATION`, `$LOGGED_UTILITY_STREAM`
 /// - `$SECURITY_DESCRIPTOR`, `$ATTRIBUTE_LIST`
-/// - Unknown attribute types (counted as streams for C++ parity)
+/// - Unknown attribute types (counted as streams per NTFS convention)
 ///
 /// # Returns
 ///
@@ -105,8 +105,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
         return false;
     }
 
-    // Handle extension records: add their names/streams to the base record
-    // C++ does this inline during parsing (see ntfs_index.hpp lines 521-583)
+    // Handle extension records: add their names/streams to the base record.
+    // Extension records reference a base FRS; their attributes are merged inline.
     if !header.is_base_record() {
         let base_frs = file_reference_to_frs(header.base_file_record_segment);
         return parse_extension_to_index(data, base_frs, index);
@@ -280,8 +280,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                     }
                 } else {
                     // Resident: value_length at offset 16
-                    // Resident files have no clusters allocated - data is stored in MFT record
-                    // C++ correctly shows allocated_size=0 for resident files
+                    // Resident files have no clusters allocated — data is stored in the MFT record.
+                    // allocated_size=0 for resident files.
                     let len_offset = offset + 16;
                     if len_offset + 4 <= data.len() {
                         let len = u64::from(u32::from_le_bytes(
@@ -309,17 +309,17 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                             .map(|c| u16::from_le_bytes([c[0], c[1]]))
                             .collect();
                         let stream_name = String::from_utf16_lossy(&name_u16);
-                        // C++ parity: ALL named $DATA streams create regular
-                        // stream entries.  Internal ones are filtered from
+                        // ALL named $DATA streams create regular stream entries.
+                        // Internal ones are filtered from
                         // output by is_internal_windows_stream in the output layer.
                         additional_streams.push((stream_name, size, allocated));
                     }
                 }
             }
             Some(AttributeType::ReparsePoint) => {
-                // Parse $REPARSE_POINT to get the reparse tag
-                // C++ handles both resident and non-resident reparse points
-                // C++ also counts $REPARSE_POINT as a stream (for descendants)
+                // Parse $REPARSE_POINT to get the reparse tag.
+                // Both resident and non-resident forms are handled.
+                // $REPARSE_POINT is counted as a stream (affects descendants).
                 let (rp_size, rp_allocated) = if attr_header.is_non_resident == 0 {
                     // Resident reparse point (common case)
                     let value_length_bytes = &data[offset + 16..offset + 20];
@@ -354,14 +354,14 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                     }
                 };
 
-                // Add $REPARSE_POINT as a stream (matches C++ stream counting)
+                // Add $REPARSE_POINT as a stream (contributes to stream counting)
                 additional_streams.push((String::from("$REPARSE"), rp_size, rp_allocated));
             }
             Some(
                 AttributeType::IndexRoot | AttributeType::IndexAllocation | AttributeType::Bitmap,
             ) => {
-                // C++ includes $INDEX_ROOT and $INDEX_ALLOCATION with name $I30
-                // in directory size. For non-$I30 indexes, C++ counts them as streams.
+                // $INDEX_ROOT and $INDEX_ALLOCATION with name $I30 contribute to
+                // directory size. Non-$I30 indexes are counted as individual streams.
 
                 // Extract attribute name
                 let name_len = usize::from(attr_header.name_length);
@@ -477,7 +477,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                 | AttributeType::SecurityDescriptor
                 | AttributeType::AttributeList,
             ) => {
-                // All these are counted as streams in C++
+                // All these attribute types are counted as individual streams.
                 // Check if primary attribute (LowestVCN == 0)
                 let is_primary = if attr_header.is_non_resident == 0 {
                     true
@@ -559,7 +559,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                 }
             }
             _ => {
-                // C++ counts ALL attribute types as streams via default: case
+                // All remaining attribute types are counted as streams (catch-all).
                 // This includes truly unknown types
                 let type_code = attr_header.type_code;
 

@@ -128,7 +128,7 @@ pub(super) fn parse_file_name_full(
 ///
 /// # Special handling for `$BadClus:$Bad`
 /// The `$BadClus` file (FRS 8) has a `$Bad` stream that is a sparse file
-/// spanning the entire volume. C++ uses `InitializedSize` instead of `DataSize`
+/// spanning the entire volume. We use `InitializedSize` instead of `DataSize`
 /// for this stream to avoid reporting the full volume size.
 pub(super) fn parse_data_attribute_full(
     data: &[u8],

@@ -6,8 +6,10 @@
 # and prevents issues caused by switching between stable/nightly toolchains
 
 [toolchain]
-# Latest nightly — updated 2026-04-12.
+# Latest nightly — updated 2026-04-13.
 # CI must NOT override this with `@nightly`; this file is the single source of truth.
+# Pinned to 2026-04-11: nightly-2026-04-13 (rustc 1.97.0) breaks tokio 1.51.1
+# with unresolved import errors in tokio's io::util module.
 channel = "nightly-2026-04-11"
 
 # Specify components that should always be available

@@ -357,7 +357,7 @@ pub fn compile_parsed_pattern_with_fold(
             // so >.*\.(jpg|png) would match "icon.png.vir" (finding .png
             // mid-string). Users expect end-of-string matching: the file
             // must END with the extension. Adding $ fixes this to match
-            // C++ behavior and user intent.
+            // expected behavior and user intent.
             let anchored = if pattern_str.ends_with('$') {
                 pattern_str.to_owned()
             } else {

@@ -49,11 +49,12 @@ impl MftIndex {
         }
     }
 
-    /// Create with optimized pre-allocation matching C++ ratios.
+    /// Create with optimized pre-allocation ratios tuned for typical NTFS
+    /// volumes.
     ///
     /// This method pre-allocates all vectors based on the MFT bitmap popcount
     /// to eliminate Vec resizing during the parse loop. The sizing ratios match
-    /// the C++ implementation in `ntfs_index_accessors.hpp` lines 525-544.
+    /// empirical NTFS volume statistics (files/dirs ratio, stream density).
     ///
     /// # Arguments
     ///

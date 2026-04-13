@@ -1,4 +1,11 @@
 #!/usr/bin/env rust-script
+// =============================================================================
+// scripts/dev/find_missing_paths.rs — UFFS Missing Path Finder
+// =============================================================================
+//
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+//
 //! Find paths that are in the reference output but not in Rust output.
 //! Output the full CSV lines for analysis.
 //!

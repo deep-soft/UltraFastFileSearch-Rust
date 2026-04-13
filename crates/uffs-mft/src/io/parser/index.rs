@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! Single-pass direct-to-index parser (C++-style inline approach).
+//! Single-pass direct-to-index parser.
 //!
 //! Exception: Core MFT record parser with unified parse_record_to_index and
 //! forensic mode. This is the performance-critical hot path.
 //!
 //! This module implements the high-performance single-pass parser that matches
-//! the C++ architecture. It parses MFT records directly into `MftIndex` without
-//! creating intermediate `ParsedRecord` allocations, which is critical for IOCP
-//! performance.
+//! an `MftIndex` directly from raw MFT bytes. It parses records into `MftIndex`
+//! without creating intermediate `ParsedRecord` allocations, which is critical
+//! for IOCP performance.
 
 // Performance-critical hot-path parser — minimal, scoped lint suppressions.
 // Each suppression is justified with a reason.
@@ -41,8 +41,8 @@ use crate::parse::index_helpers::{
 /// Parses a record directly into `MftIndex` (single-pass inline parsing).
 ///
 /// This function parses the record and adds it directly to the index,
-/// creating parent placeholders on-demand. This is the C++-style single-pass
-/// approach that eliminates the intermediate `ParsedRecord` allocation.
+/// creating parent placeholders on-demand. This single-pass approach
+/// eliminates the intermediate `ParsedRecord` allocation.
 ///
 /// Handles ALL attribute types that `parse_record_full()` handles, including:
 /// - `$STANDARD_INFORMATION`, `$FILE_NAME`, `$DATA` (default + ADS)
@@ -51,7 +51,7 @@ use crate::parse::index_helpers::{
 /// - `$OBJECT_ID`, `$VOLUME_NAME`, `$VOLUME_INFORMATION`, `$PROPERTY_SET`
 /// - `$EA`, `$EA_INFORMATION`, `$LOGGED_UTILITY_STREAM`
 /// - `$SECURITY_DESCRIPTOR`, `$ATTRIBUTE_LIST`
-/// - Unknown attribute types (counted as streams for C++ parity)
+/// - Unknown attribute types (counted as streams per NTFS convention)
 ///
 /// # Returns
 ///
@@ -97,8 +97,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
         return false;
     }
 
-    // Handle extension records: add their names/streams to the base record
-    // C++ does this inline during parsing (see ntfs_index.hpp lines 521-583)
+    // Handle extension records: add their names/streams to the base record.
+    // Extension records reference a base FRS; their attributes are merged inline.
     if !header.is_base_record() {
         let base_frs = file_reference_to_frs(header.base_file_record_segment);
         return parse_extension_to_index(data, base_frs, index);
@@ -335,7 +335,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
 
                 if name_len == 0 {
                     // Default stream — mark that unnamed $DATA exists
-                    // (C++ parity: distinguishes "empty $DATA" from "no $DATA")
+                    // (distinguishes "empty $DATA" from "no $DATA")
                     let rec = index.get_or_create(frs);
                     rec.set_has_default_data();
                     default_size = size;
@@ -351,7 +351,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                             .collect();
                         let stream_name = String::from_utf16_lossy(&name_u16);
 
-                        // C++ parity: $BadClus:$Bad (FRS 8) uses InitializedSize
+                        // $BadClus:$Bad (FRS 8) uses InitializedSize
                         // instead of DataSize/AllocatedSize to avoid counting the
                         // entire volume size (ntfs_index_load.hpp lines 431-452).
                         let (stream_size, stream_alloc) = if frs == 8
@@ -374,20 +374,19 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                             (size, allocated)
                         };
 
-                        // C++ parity: ALL named $DATA streams create regular
-                        // stream entries (counted in stream_count).  Internal
-                        // ones (names starting with $) are filtered from
-                        // *output* by is_internal_windows_stream checks in the
-                        // output layer, but must be counted here to match C++
-                        // stream_count semantics for descendants.
+                        // ALL named $DATA streams create regular stream entries
+                        // (counted in stream_count).  Internal ones (names
+                        // starting with $) are filtered from *output* by
+                        // is_internal_windows_stream checks in the output layer,
+                        // but must be counted here for correct descendants.
                         additional_streams.push((stream_name, stream_size, stream_alloc));
                     }
                 }
             }
             Some(AttributeType::ReparsePoint) => {
-                // Parse $REPARSE_POINT to get the reparse tag
-                // C++ handles both resident and non-resident reparse points
-                // C++ also counts $REPARSE_POINT as a stream (for descendants)
+                // Parse $REPARSE_POINT to get the reparse tag.
+                // Both resident and non-resident forms are handled.
+                // $REPARSE_POINT is counted as a stream (affects descendants).
                 let (rp_size, rp_allocated) = if attr_header.is_non_resident == 0 {
                     // Resident reparse point (common case)
                     let value_length_bytes = &data[offset + 16..offset + 20];
@@ -429,8 +428,8 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
             Some(
                 AttributeType::IndexRoot | AttributeType::IndexAllocation | AttributeType::Bitmap,
             ) => {
-                // C++ includes $INDEX_ROOT and $INDEX_ALLOCATION with name $I30
-                // in directory size. For non-$I30 indexes, C++ counts them as streams.
+                // $INDEX_ROOT and $INDEX_ALLOCATION with name $I30 contribute to
+                // directory size. Non-$I30 indexes are counted as individual streams.
 
                 // Extract attribute name
                 let name_len = usize::from(attr_header.name_length);

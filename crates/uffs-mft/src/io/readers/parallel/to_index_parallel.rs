@@ -9,7 +9,8 @@ impl ParallelMftReader {
     /// Reads all MFT records using the legacy port parsing algorithm.
     ///
     /// This method uses `CppParsePipeline` which is a 100% faithful port of the
-    /// C++ parsing algorithm. It processes chunks using the two-phase pipeline:
+    /// single-pass parsing algorithm. It processes chunks using the two-phase
+    /// pipeline:
     /// - Phase 1: `preload_concurrent()` - USA fixup, max FRS discovery (NO
     ///   LOCK)
     /// - Phase 2: `load()` - Serialized attribute parsing (WITH LOCK)

@@ -11,9 +11,10 @@ use crate::search::field::FieldId;
 /// Legacy type alias — all output columns are now `FieldId`.
 pub type OutputColumn = FieldId;
 
-/// Column order matching C++ output exactly (25 columns).
+/// Column order matching the legacy baseline output exactly (25 columns).
 ///
-/// Used by `--parity-compat` to produce output that matches the C++ baseline.
+/// Used by `--parity-compat` to produce output that matches the legacy
+/// baseline.
 pub(crate) const PARITY_COLUMN_ORDER: &[FieldId] = &[
     FieldId::Path,
     FieldId::Name,
@@ -46,7 +47,7 @@ pub(crate) const PARITY_COLUMN_ORDER: &[FieldId] = &[
 /// order (lowest → highest), matching the NTFS evolution of attribute flags.
 ///
 /// This is the order used when `--columns all` is specified.
-pub const CPP_COLUMN_ORDER: &[FieldId] = &[
+pub const BASELINE_COLUMN_ORDER: &[FieldId] = &[
     // ── Data columns ────────────────────────────────────────────────
     FieldId::Path,
     FieldId::Name,

@@ -20,8 +20,8 @@ use crate::ntfs::StreamInfo;
 /// - `DataFrame` export (`load_raw_to_dataframe_with_options`)
 /// - Tests and diagnostic tools
 ///
-/// This implements the C++ behavior where attributes from extension
-/// records are merged into their base records.
+/// This implements extension record merging where attributes from extension
+/// records are merged into their base records per NTFS specification.
 ///
 /// # Performance Optimization (2026-01-23)
 ///
@@ -117,26 +117,25 @@ impl MftRecordMerger {
             if base_frs < self.base_records.len()
                 && let Some(ref mut base) = self.base_records[base_frs]
             {
-                // Merge names from extension records (no dedup — matches established behavior)
-                // C++ increments name_count for EVERY FILE_NAME attribute encountered,
-                // including "duplicates" across base+extension records.
+                // Merge names from extension records (no dedup — every $FILE_NAME
+                // attribute is counted, including duplicates across base+extension records).
                 for name in ext.names {
                     base.names.push(name);
                 }
                 // Merge streams from extension records
                 //
-                // legacy-output parity: C++ counts each primary attribute (LowestVCN == 0) as a
-                // separate stream via ++stream_count. It does NOT merge same-name
-                // non-$DATA streams — each internal attribute type instance is counted
-                // separately. However, $DATA streams (named ADS or unnamed default) may
-                // appear as continuation extents that should be merged by name.
+                // Each primary attribute (LowestVCN == 0) is counted as a separate
+                // stream. Same-name non-$DATA streams are NOT merged — each internal
+                // attribute type instance is counted individually. However, $DATA streams
+                // (named ADS or unnamed default) may appear as continuation extents
+                // that should be merged by name.
                 //
-                // Internal streams (names like "$EA", "$OBJECT_ID", etc.) from extension
-                // records are separate attribute instances that C++ counts individually.
+                // Internal streams ("$EA", "$OBJECT_ID", etc.) from extension records
+                // are separate attribute instances, each counted individually.
                 for stream in ext.streams {
                     // Check if this is an internal/system stream (name starts with
                     // "$" + uppercase letter). These are non-$DATA attribute types
-                    // that C++ counts as separate streams.
+                    // that are counted as separate streams.
                     let is_internal = stream
                         .name
                         .strip_prefix('$')
@@ -144,7 +143,7 @@ impl MftRecordMerger {
                         .is_some_and(|ch| ch.is_ascii_uppercase());
 
                     if is_internal {
-                        // Internal stream: always push as new (C++ counts each separately)
+                        // Internal stream: always push as new (each counted separately)
                         base.streams.push(stream);
                     } else if let Some(existing) =
                         base.streams.iter_mut().find(|s| s.name == stream.name)
@@ -189,8 +188,8 @@ impl MftRecordMerger {
         // Recalculate sizes from merged streams and fix primary name if needed
         let mut result = Vec::with_capacity(self.base_count);
         for record in self.base_records.iter_mut().flatten() {
-            // Sort names by source_frs (ascending) to match C++ MFT scan order.
-            // C++ processes records in ascending FRS order, so when an extension
+            // Sort names by source_frs (ascending) to match MFT scan order.
+            // Records are processed in ascending FRS order, so when an extension
             // record has a lower FRS than the base, its names appear first.
             record.names.sort_by_key(|n| n.source_frs);
 
@@ -254,8 +253,8 @@ impl MftRecordMerger {
     /// # Arguments
     ///
     /// * `expand_links` - If `true` (default), expand hard links to separate
-    ///   rows (matching C++ behavior and user expectations). If `false`, output
-    ///   one row per unique FRS (power user mode).
+    ///   rows (matching expected behavior). If `false`, output one row per
+    ///   unique FRS (power user mode).
     #[must_use]
     pub fn merge_into_columns(self, expand_links: bool) -> ParsedColumns {
         self.merge_into_columns_internal(expand_links)
@@ -274,26 +273,25 @@ impl MftRecordMerger {
             if base_frs < self.base_records.len()
                 && let Some(ref mut base) = self.base_records[base_frs]
             {
-                // Merge names from extension records (no dedup — matches established behavior)
-                // C++ increments name_count for EVERY FILE_NAME attribute encountered,
-                // including "duplicates" across base+extension records.
+                // Merge names from extension records (no dedup — every $FILE_NAME
+                // attribute is counted, including duplicates across base+extension records).
                 for name in ext.names {
                     base.names.push(name);
                 }
                 // Merge streams from extension records
                 //
-                // legacy-output parity: C++ counts each primary attribute (LowestVCN == 0) as a
-                // separate stream via ++stream_count. It does NOT merge same-name
-                // non-$DATA streams — each internal attribute type instance is counted
-                // separately. However, $DATA streams (named ADS or unnamed default) may
-                // appear as continuation extents that should be merged by name.
+                // Each primary attribute (LowestVCN == 0) is counted as a separate
+                // stream. Same-name non-$DATA streams are NOT merged — each internal
+                // attribute type instance is counted individually. However, $DATA streams
+                // (named ADS or unnamed default) may appear as continuation extents
+                // that should be merged by name.
                 //
-                // Internal streams (names like "$EA", "$OBJECT_ID", etc.) from extension
-                // records are separate attribute instances that C++ counts individually.
+                // Internal streams ("$EA", "$OBJECT_ID", etc.) from extension records
+                // are separate attribute instances, each counted individually.
                 for stream in ext.streams {
                     // Check if this is an internal/system stream (name starts with
                     // "$" + uppercase letter). These are non-$DATA attribute types
-                    // that C++ counts as separate streams.
+                    // that are counted as separate streams.
                     let is_internal = stream
                         .name
                         .strip_prefix('$')
@@ -301,7 +299,7 @@ impl MftRecordMerger {
                         .is_some_and(|ch| ch.is_ascii_uppercase());
 
                     if is_internal {
-                        // Internal stream: always push as new (C++ counts each separately)
+                        // Internal stream: always push as new (each counted separately)
                         base.streams.push(stream);
                     } else if let Some(existing) =
                         base.streams.iter_mut().find(|s| s.name == stream.name)
@@ -347,8 +345,8 @@ impl MftRecordMerger {
         // For directories, size comes from the default stream (which now includes
         // merged $I30 sizes from extension records)
         for record in self.base_records.iter_mut().flatten() {
-            // Sort names by source_frs (ascending) to match C++ MFT scan order.
-            // C++ processes records in ascending FRS order, so when an extension
+            // Sort names by source_frs (ascending) to match MFT scan order.
+            // Records are processed in ascending FRS order, so when an extension
             // record has a lower FRS than the base, its names appear first.
             record.names.sort_by_key(|n| n.source_frs);
 

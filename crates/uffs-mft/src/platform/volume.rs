@@ -153,9 +153,9 @@ pub struct NtfsVolumeData {
 impl NtfsVolumeData {
     /// Computes the reserved allocated bytes for the root directory.
     ///
-    /// C++ formula: `TotalReserved * BytesPerCluster`.
+    /// NTFS formula: `TotalReserved * BytesPerCluster`.
     ///
-    /// C++ suppresses the MFT zone contribution by setting
+    /// The MFT zone contribution is suppressed by setting
     /// `mft_zone_end = mft_zone_start` before computing reserved_clusters
     /// (see `mft_reader_init.hpp` lines 166-171).  So the effective formula
     /// is just `TotalReserved * BytesPerCluster`.

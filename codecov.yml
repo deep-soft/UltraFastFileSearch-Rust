@@ -3,15 +3,10 @@
 # SPDX-License-Identifier: MPL-2.0
 
 codecov:
-  # Use the global organization token
-  token: a31d7944-f126-4839-b777-d2ba80e3ccb6
-  
-  # Require CI to pass before processing coverage
+  # Token is provided via GitHub Secrets (${{ secrets.CODECOV_TOKEN }})
+  # Do NOT hardcode tokens in this file.
   require_ci_to_pass: true
-  
-  # Notify settings
   notify:
-    # Require coverage to be uploaded within 1 hour
     after_n_builds: 1
     wait_for_ci: true
 

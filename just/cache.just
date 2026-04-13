@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
+
 # Install and configure sccache for distributed compilation caching.
 setup-sccache:
     #!/usr/bin/env bash

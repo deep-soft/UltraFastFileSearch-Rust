@@ -2,6 +2,12 @@
 //! ```cargo
 //! [dependencies]
 //! ```
+// =============================================================================
+// scripts/dev/analyze_missing_frs.rs — UFFS Missing FRS Analysis
+// =============================================================================
+//
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
 
 use std::collections::BTreeSet;
 use std::env;

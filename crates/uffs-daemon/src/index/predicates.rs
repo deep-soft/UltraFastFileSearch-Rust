@@ -690,6 +690,6 @@ impl IndexManager {
     /// `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` raw NTFS bit.
     pub(super) const FLAG_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
 
-    /// C++ parity mask over the raw NTFS attribute flags.
+    /// Legacy parity mask over the raw NTFS attribute flags.
     pub(super) const PARITY_FLAG_MASK: u32 = 0x001A_EE37;
 }

@@ -79,7 +79,7 @@ fn large_sample_rows() -> Vec<DisplayRow> {
 // ===================================================================
 
 #[test]
-fn test_write_native_csv_uses_output_config_without_cpp_footer() -> TestResult {
+fn test_write_native_csv_uses_output_config_without_legacy_footer() -> TestResult {
     let path = temp_output_path("csv");
     let rows = sample_rows();
     let output_config = OutputConfig::new()
@@ -106,7 +106,7 @@ fn test_write_native_csv_uses_output_config_without_cpp_footer() -> TestResult {
 }
 
 #[test]
-fn test_write_native_custom_file_appends_cpp_drive_footer() -> TestResult {
+fn test_write_native_custom_file_appends_legacy_drive_footer() -> TestResult {
     let path = temp_output_path("txt");
     let rows = sample_rows();
     let output_config = OutputConfig::new()
@@ -165,11 +165,11 @@ fn test_write_native_json_file_has_no_footer() -> TestResult {
 }
 
 // ===================================================================
-// C++ footer tests (via write_native_results in custom format)
+// Legacy footer tests (via write_native_results in custom format)
 // ===================================================================
 
 #[test]
-fn test_cpp_footer_includes_fast_scan_message_for_full_scan_pattern() -> TestResult {
+fn test_legacy_footer_includes_fast_scan_message_for_full_scan_pattern() -> TestResult {
     let path = temp_output_path("txt");
     let rows = sample_rows();
     let output_config = OutputConfig::new()
@@ -205,7 +205,7 @@ fn test_cpp_footer_includes_fast_scan_message_for_full_scan_pattern() -> TestRes
 }
 
 #[test]
-fn test_cpp_footer_includes_fast_scan_for_cpp_transformed_pattern() -> TestResult {
+fn test_legacy_footer_includes_fast_scan_for_transformed_pattern() -> TestResult {
     let path = temp_output_path("txt");
     let rows = sample_rows();
     let output_config = OutputConfig::new()
@@ -241,7 +241,7 @@ fn test_cpp_footer_includes_fast_scan_for_cpp_transformed_pattern() -> TestResul
 }
 
 #[test]
-fn test_cpp_footer_omits_fast_scan_for_real_regex_pattern() -> TestResult {
+fn test_legacy_footer_omits_fast_scan_for_real_regex_pattern() -> TestResult {
     let path = temp_output_path("txt");
     let rows = sample_rows();
     let output_config = OutputConfig::new()
@@ -275,7 +275,7 @@ fn test_cpp_footer_omits_fast_scan_for_real_regex_pattern() -> TestResult {
 }
 
 #[test]
-fn test_cpp_footer_omits_fast_scan_message_when_many_results() -> TestResult {
+fn test_legacy_footer_omits_fast_scan_message_when_many_results() -> TestResult {
     let path = temp_output_path("txt");
     let rows = large_sample_rows();
     let output_config = OutputConfig::new()

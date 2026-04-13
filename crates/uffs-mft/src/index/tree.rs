@@ -64,7 +64,13 @@ impl MftIndex {
     /// ordering/timing issues. If the first tree pass leaves any directories
     /// with `descendants == 0`, this method rebuilds the child lists from
     /// `FILE_NAME` parent references and reruns tree metrics.
+    // cognitive_complexity fires in `--lib` but not `--tests`, so `#[expect]` is
+    // unreliable — use `#[allow]` and suppress the meta-lint.
     #[expect(
+        clippy::allow_attributes,
+        reason = "cognitive_complexity differs between lib and test compilation"
+    )]
+    #[allow(
         clippy::cognitive_complexity,
         reason = "two-pass tree metrics: rebuild children + traverse; splitting would obscure the retry logic"
     )]
@@ -95,8 +101,8 @@ impl MftIndex {
             );
         }
 
-        // C++ parity: fix total_stream_count for non-directory records that
-        // have NO unnamed $DATA attribute but DO have other streams.  In C++,
+        // Fix total_stream_count for non-directory records that have NO unnamed
+        // $DATA attribute but DO have other streams.  In the single-pass parser,
         // the first non-$STD_INFO/non-$FILE_NAME attribute becomes first_stream
         // directly — there is no phantom empty default.  The legacy Rust parser
         // (`FileRecord::new()`) always counts 1 for the default slot.  The

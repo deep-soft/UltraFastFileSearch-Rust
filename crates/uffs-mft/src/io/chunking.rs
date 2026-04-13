@@ -45,7 +45,7 @@ impl ReadChunk {
 
 /// Generates optimized read chunks for the MFT.
 ///
-/// This function implements the C++ optimization of:
+/// This function implements the optimization of:
 /// 1. Splitting the MFT into chunks based on extents
 /// 2. Using the bitmap to skip clusters with no in-use records
 /// 3. Calculating `skip_begin/skip_end` for each chunk
@@ -420,7 +420,7 @@ fn maybe_merge_chunks(
 ) -> Vec<ReadChunk> {
     if has_bitmap {
         // Keep all chunks to preserve per-chunk skip optimization.
-        // C++ team confirmed: per-~1MB-chunk skip gives ~23,000 skip opportunities
+        // Per-~1MB-chunk skip gives ~23,000 skip opportunities
         // for 11.5GB MFT, vs only 124 if merged into 62 extent-sized chunks.
         return chunks;
     }

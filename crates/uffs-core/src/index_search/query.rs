@@ -43,7 +43,7 @@ pub struct QueryOptions {
     /// Whether to expand Alternate Data Streams (ADS).
     pub expand_streams: bool,
     /// Whether to include system metafiles (FRS < 16, except root FRS 5).
-    /// Default is `false` to match C++ behavior.
+    /// Default is `false` (exclude system metafiles by default).
     pub include_system_metafiles: bool,
 }
 
@@ -55,7 +55,7 @@ impl Default for QueryOptions {
             resolve_paths: false,
             expand_names: true,
             expand_streams: true,
-            include_system_metafiles: false, // C++ default: exclude $MFT, $Bitmap, etc.
+            include_system_metafiles: false, // exclude $MFT, $Bitmap, etc. by default
         }
     }
 }
@@ -90,9 +90,9 @@ impl<'a> IndexQuery<'a> {
                 type_filter: TypeFilter::All,
                 case_sensitive: false, // Windows default
                 resolve_paths: false,
-                expand_names: true,              // Match C++ behavior by default
-                expand_streams: true,            // Match C++ behavior by default
-                include_system_metafiles: false, // Match C++ behavior by default
+                expand_names: true,              // Expand hard links by default
+                expand_streams: true,            // Expand ADS by default
+                include_system_metafiles: false, // Exclude metafiles by default
             },
             min_size: None,
             max_size: None,

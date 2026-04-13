@@ -89,13 +89,13 @@ pub(super) fn parse_base_record(
                 }
             }
             Some(AttributeType::ReparsePoint) => {
-                // Parse $REPARSE_POINT to get the reparse tag and size
-                // C++ handles both resident and non-resident reparse points:
-                // - Resident: ah->Resident.ValueLength
-                // - Non-resident: ah->NonResident.DataSize (rare, but possible)
+                // Parse $REPARSE_POINT to get the reparse tag and size.
+                // Both resident and non-resident forms are handled:
+                // - Resident: ValueLength from the attribute header
+                // - Non-resident: DataSize (rare, but possible for large reparse data)
                 //
-                // C++ also counts $REPARSE_POINT as a stream (line 696: ++stream_count)
-                // This affects the descendants count in tree metrics.
+                // $REPARSE_POINT is counted as a stream, which affects the
+                // descendants count in tree metrics.
                 let (rp_size, rp_allocated, is_resident) = if attr_header.is_non_resident == 0 {
                     // Resident reparse point (common case)
                     let value_length = u64::from(u32::from_le_bytes(
@@ -143,7 +143,7 @@ pub(super) fn parse_base_record(
                     (data_size, alloc_size, false)
                 };
 
-                // C++ counts $REPARSE_POINT as a stream for descendants calculation
+                // Count $REPARSE_POINT as a stream for descendants calculation
                 streams.push(StreamInfo {
                     name: String::from("$REPARSE"),
                     size: rp_size,
@@ -156,11 +156,11 @@ pub(super) fn parse_base_record(
             Some(
                 AttributeType::IndexRoot | AttributeType::IndexAllocation | AttributeType::Bitmap,
             ) => {
-                // C++ includes $INDEX_ROOT and $INDEX_ALLOCATION with name $I30
-                // in directory size (merged into a single stream).
+                // $INDEX_ROOT and $INDEX_ALLOCATION with name $I30 contribute
+                // to directory size (merged into a single stream entry).
                 // NOTE: $I30:$BITMAP is EXCLUDED from directory size (legacy-output parity).
-                // For non-$I30 indexes (like $SDH, $SII, $O, $Q, $R), C++ counts them as
-                // streams
+                // Non-$I30 indexes ($SDH, $SII, $O, $Q, $R) are counted as
+                // individual streams.
 
                 // Extract attribute name
                 let (is_i30, attr_name) = if attr_header.name_length > 0 {
@@ -192,7 +192,7 @@ pub(super) fn parse_base_record(
                 };
 
                 if is_i30 {
-                    // C++ includes ALL $I30 attributes uniformly (including $BITMAP).
+                    // Include ALL $I30 attributes uniformly (including $BITMAP).
                     // info->length += IsNonResident ? DataSize : ValueLength for all.
                     {
                         if attr_header.is_non_resident == 0 {
@@ -224,7 +224,7 @@ pub(super) fn parse_base_record(
                         }
                     }
                 } else {
-                    // Non-$I30 index attribute - C++ counts these as streams
+                    // Non-$I30 index attribute — counted as individual streams.
                     // Examples: $SDH, $SII (in $Secure), $O, $Q (in $Quota), $R (in $Reparse)
                     // Also includes unnamed $BITMAP (e.g., in $MFT)
 
@@ -299,18 +299,16 @@ pub(super) fn parse_base_record(
                     });
                 }
             }
-            // C++ counts these attribute types as streams (lines 590-600 in ntfs_index.hpp):
+            // The following attribute types are counted as individual streams:
             // - $OBJECT_ID (0x40)
             // - $VOLUME_NAME (0x60)
             // - $VOLUME_INFORMATION (0x70)
             // - $PROPERTY_SET (0xF0)
             // - $EA (0xE0)
             // - $EA_INFORMATION (0xD0)
-            // - $LOGGED_UTILITY_STREAM (0x100) - falls through to default: case in C++
-            // - $SECURITY_DESCRIPTOR (0x50) - falls through to default: case in C++ (line 591
-            //   commented out)
-            // - $ATTRIBUTE_LIST (0x20) - falls through to default: case in C++ (line 588 commented
-            //   out)
+            // - $LOGGED_UTILITY_STREAM (0x100)
+            // - $SECURITY_DESCRIPTOR (0x50)
+            // - $ATTRIBUTE_LIST (0x20)
             Some(
                 AttributeType::ObjectId
                 | AttributeType::VolumeName
@@ -395,7 +393,7 @@ pub(super) fn parse_base_record(
                 // Create a stream name that identifies the attribute type
                 // Note: LoggedUtilityStream (0x100) must have a synthetic name to survive
                 // the named_streams filter in index.rs - otherwise its size is dropped
-                // while still being counted, causing the 48-byte parity gap with C++.
+                // while still being counted, causing a 48-byte size discrepancy.
                 let stream_name = if attr_name.is_empty() {
                     match AttributeType::from_u32(attr_header.type_code) {
                         Some(AttributeType::ObjectId) => String::from("$OBJECT_ID"),
@@ -429,7 +427,7 @@ pub(super) fn parse_base_record(
                 });
             }
             _ => {
-                // C++ counts ALL attribute types as streams via default: case
+                // All remaining attribute types are counted as streams
                 let type_code = attr_header.type_code;
                 let attr_name = if attr_header.name_length > 0 {
                     let name_offset = offset + usize::from(attr_header.name_offset);
@@ -512,13 +510,13 @@ pub(super) fn parse_base_record(
     // Calculate primary size from default stream
     // For reparse points (junctions/symlinks), use $REPARSE_POINT size if no $DATA
     // stream
-    // For directories, C++ includes $INDEX_ROOT + $INDEX_ALLOCATION size
+    // For directories, size includes $INDEX_ROOT + $INDEX_ALLOCATION
     let is_directory = header.is_directory();
 
     // For directories with $I30 index, add a stream entry so it's counted in
-    // total_stream_count C++ counts the merged $I30 as a stream with
-    // type_name_id=0 (line 4590: info->type_name_id = type_name_id)
-    // This is essential for tree metrics parity - each directory's $I30 contributes
+    // total_stream_count. The merged $I30 is counted as a stream with
+    // type_name_id=0.
+    // This is essential for tree metrics — each directory's $I30 contributes
     // +1 to descendants
     if is_directory && dir_index_size > 0 {
         // Add $I30 as the default stream (empty name) for directories
@@ -540,8 +538,8 @@ pub(super) fn parse_base_record(
     } else {
         streams.iter().find(|s| s.name.is_empty()).map_or_else(
             || {
-                // No default $DATA stream - use reparse_size for junctions/symlinks
-                // C++ uses ah->Resident.ValueLength for reparse points
+                // No default $DATA stream — use reparse_size for junctions/symlinks
+                // (resident ValueLength from the $REPARSE_POINT attribute)
                 if reparse_tag != 0 {
                     (reparse_size, 0) // Reparse point data is resident,
                 // allocated=0

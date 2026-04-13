@@ -93,7 +93,7 @@ impl MftReader {
     ///
     /// This method measures each phase separately for benchmarking purposes,
     /// including the tree metrics computation phase which corresponds to
-    /// C++ "preprocessing" in `--benchmark-index`.
+    /// "preprocessing" phase in `--benchmark-index`.
     ///
     /// # Returns
     ///

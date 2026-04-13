@@ -1,4 +1,11 @@
 #!/usr/bin/env rust-script
+// =============================================================================
+// scripts/dev/analyze_trial_outputs.rs — UFFS Trial Output Analysis
+// =============================================================================
+//
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+//
 //! Analyze UFFS trial run outputs by comparing the reference output with Rust output.
 //!
 //! Usage:

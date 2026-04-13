@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
+
 # Comprehensive CI pipeline analysis and optimization recommendations.
 ci-analyze:
     #!/usr/bin/env bash

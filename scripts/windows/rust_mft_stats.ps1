@@ -1,5 +1,8 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+#
 # Rust MFT Statistics Collection Script
-# 
+#
 # This script runs `uffs_mft info --deep` for each NTFS drive and summarizes the results.
 # Run this on Windows with administrator privileges.
 #

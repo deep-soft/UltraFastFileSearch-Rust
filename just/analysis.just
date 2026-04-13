@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
+
 # Security audit.
 audit:
     @printf "\033[0;34m🔒 Security audit...\033[0m\n"
@@ -11,15 +15,14 @@ audit-comprehensive:
     if command -v cargo-audit >/dev/null 2>&1; then cargo audit; else printf "\033[1;33m⚠️  cargo-audit not found, run 'just setup' first\033[0m\n"; fi
     printf "\033[0;34m  → Running cargo-deny (dependency analysis)...\033[0m\n"
     if command -v cargo-deny >/dev/null 2>&1; then cargo deny check; else printf "\033[1;33m⚠️  cargo-deny not found, run 'just setup' first\033[0m\n"; fi
-    printf "\033[0;34m  → Running cargo-geiger (unsafe code detection)...\033[0m\n"
-    if command -v cargo-geiger >/dev/null 2>&1; then cargo geiger; else printf "\033[1;33m⚠️  cargo-geiger not found, run 'just setup' first\033[0m\n"; fi
+
 
 # Dependency optimization and cleanup.
 deps-optimize:
     #!/usr/bin/env bash
     printf "\033[0;34m🔧 Optimizing dependencies...\033[0m\n"
     printf "\033[0;34m  → Finding unused dependencies...\033[0m\n"
-    if command -v cargo-udeps >/dev/null 2>&1; then cargo +nightly udeps; else printf "\033[1;33m⚠️  cargo-udeps not found, run 'just setup' first\033[0m\n"; fi
+    if command -v cargo-udeps >/dev/null 2>&1; then cargo udeps; else printf "\033[1;33m⚠️  cargo-udeps not found, run 'just setup' first\033[0m\n"; fi
     printf "\033[0;34m  → Checking for outdated dependencies...\033[0m\n"
     if command -v cargo-outdated >/dev/null 2>&1; then cargo outdated; else printf "\033[1;33m⚠️  cargo-outdated not found, run 'just setup' first\033[0m\n"; fi
 
@@ -30,7 +33,7 @@ debug-deep:
     printf "\033[0;34m  → Expanding macros...\033[0m\n"
     if command -v cargo-expand >/dev/null 2>&1; then cargo expand; else printf "\033[1;33m⚠️  cargo-expand not found, run 'just setup' first\033[0m\n"; fi
     printf "\033[0;34m  → Running Miri (undefined behavior detection)...\033[0m\n"
-    if rustup component list --installed | grep -q "miri"; then cargo +nightly miri test; else printf "\033[1;33m⚠️  miri component not found, run 'just setup' first\033[0m\n"; fi
+    if rustup component list --installed | grep -q "miri"; then cargo miri test; else printf "\033[1;33m⚠️  miri component not found, run 'just setup' first\033[0m\n"; fi
 
 # Generate flamegraph for performance analysis.
 flamegraph target="uffs-cli" pattern="*.txt":

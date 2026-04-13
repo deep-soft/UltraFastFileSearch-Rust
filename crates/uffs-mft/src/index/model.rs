@@ -67,8 +67,8 @@ pub struct MftIndex {
     /// Bytes of NTFS reserved clusters to add to the root directory's
     /// `tree_allocated`.
     ///
-    /// C++ computes this as `(TotalReserved + MftZoneEnd - MftZoneStart) *
-    /// BytesPerCluster` and adds it to the root's children allocated at
+    /// Computed as `(TotalReserved + MftZoneEnd - MftZoneStart) *
+    /// BytesPerCluster` and added to the root's children allocated at
     /// depth 0. Without this adjustment the root `Size on Disk` will be
     /// off by this amount.
     pub reserved_allocated_bytes: u64,

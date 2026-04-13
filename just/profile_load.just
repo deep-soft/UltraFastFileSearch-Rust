@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
+
 # Load and analyze a profile from USB.
 profile-load:
     #!/usr/bin/env bash

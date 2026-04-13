@@ -111,7 +111,7 @@ impl SearchResult {
 
         // legacy-output parity: Only the default stream (stream_idx == 0) gets tree
         // metrics. ADS streams (stream_idx > 0) have
-        // descendants/treesize/tree_allocated = 0. In C++, each stream has its
+        // descendants/treesize/tree_allocated = 0. Each stream has its
         // own treesize field, and only the default stream accumulates
         // children's treesize (line 4794 in UltraFastFileSearch.cpp).
         let (descendants, treesize, tree_allocated) = if stream_idx == 0 {

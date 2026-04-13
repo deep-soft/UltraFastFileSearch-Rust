@@ -234,7 +234,7 @@ pub(super) fn parse_extension_to_index(
                             .map(|c| u16::from_le_bytes([c[0], c[1]]))
                             .collect();
                         let stream_name = String::from_utf16_lossy(&name_u16);
-                        // C++ parity: ALL named $DATA streams create regular
+                        // ALL named $DATA streams create regular
                         // stream entries.  Internal ones are filtered from
                         // output by is_internal_windows_stream in the output layer.
                         streams.push((stream_name, size, allocated));
@@ -461,7 +461,7 @@ pub(super) fn parse_extension_to_index(
                 // Skip - not expected in extension records
             }
             _ => {
-                // Unknown attribute types - count as streams (C++ default: case)
+                // Unknown attribute types — counted as streams (catch-all).
                 let type_code = attr_header.type_code;
 
                 let is_primary = if attr_header.is_non_resident == 0 {

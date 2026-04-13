@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Copyright 2025-2026 Robert Nio
-# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
 
 set -euo pipefail
 

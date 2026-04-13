@@ -212,11 +212,11 @@ struct TreeTraversal<'a> {
     /// Win32 paths are excluded to match Win32 enumeration behavior.
     skip_orphans: bool,
     /// Current recursion depth (0 = root directory).
-    /// C++ adds `reserved_clusters * cluster_size` to the root's children
+    /// Adds `reserved_clusters * cluster_size` to the root's children
     /// allocated at depth 0.
     depth: u32,
     /// Bytes to add to the root's children allocated at depth 0.
-    /// Mirrors C++: `(TotalReserved + MftZoneEnd - MftZoneStart) *
+    /// NTFS formula: `(TotalReserved + MftZoneEnd - MftZoneStart) *
     /// BytesPerCluster`.
     reserved_allocated_bytes: u64,
 }
@@ -362,7 +362,7 @@ impl TreeTraversal<'_> {
             let Some(stream) = self.index.streams.get(stream_idx as usize) else {
                 break;
             };
-            // WoF stream: C++ uses 0 for both length and allocated in the
+            // WoF stream: use 0 for both length and allocated in the
             // Channel-A propagation (allocated already merged into first_alloc).
             let is_wof = stream_idx == snap.wof_stream_idx;
             let slen = if is_wof { 0 } else { stream.size.length };
@@ -495,7 +495,7 @@ impl TreeTraversal<'_> {
 
         self.depth = self.depth.saturating_sub(1);
 
-        // C++ parity: at depth 0 (root) add reserved NTFS cluster allocation.
+        // At depth 0 (root) add reserved NTFS cluster allocation.
         if self.depth == 0 && self.reserved_allocated_bytes > 0 {
             agg.allocated = agg.allocated.saturating_add(self.reserved_allocated_bytes);
         }
@@ -585,7 +585,7 @@ mod tests {
     /// Tests that the delta function correctly distributes values across
     /// hardlinks.
     ///
-    /// The C++ formula is: `delta(v, i, n) = floor(v*(i+1)/n) - floor(v*i/n)`
+    /// The formula is: `delta(v, i, n) = floor(v*(i+1)/n) - floor(v*i/n)`
     /// This ensures the sum of all deltas equals the original value exactly.
     #[test]
     fn test_delta_sum_equals_original() {

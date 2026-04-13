@@ -1,4 +1,6 @@
 #!/usr/bin/env rust-script
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
 //! UFFS End-to-End Benchmark — unified cold / warm / hot measurement.
 //!
 //! Replaces the three PowerShell benchmark scripts with a single Rust script.

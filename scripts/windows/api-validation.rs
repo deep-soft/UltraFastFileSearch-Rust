@@ -11,6 +11,8 @@
 //! [target.'cfg(windows)'.dependencies]
 //! uds_windows = "1"
 //! ```
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
 //!
 //! api-validation.rs — Pure JSON-RPC API validation test suite for UFFS daemon.
 //!

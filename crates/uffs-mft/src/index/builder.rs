@@ -419,7 +419,7 @@ impl MftIndex {
         // 2. Sort directory children for deterministic OFFLINE output (Phase 4)
         // CRITICAL: OFFLINE path (from_parsed_records) requires sorted children
         // for deterministic CSV output order. LIVE paths (to_index.rs) do NOT
-        // sort to match C++ behavior (reverse MFT parse order).
+        // sort in reverse MFT parse order for deterministic output.
         tracing::debug!("[TRIP] MftIndex::from_parsed_records -> Phase 4: sort_directory_children");
         index.sort_directory_children();
 

@@ -207,7 +207,7 @@ impl ParallelMftReader {
             "📊 Generated I/O operations for inline parsing"
         );
 
-        // Pre-allocate MftIndex with C++-matching ratios to eliminate resizing during
+        // Pre-allocate MftIndex with tuned ratios to eliminate resizing during
         // parse
         let mut index = MftIndex::with_capacity_optimized(volume, estimated_records, max_frs);
 

@@ -216,7 +216,7 @@ impl MftReader {
             // Size information
             Series::new("size".into(), size_vec).into_column(),
             Series::new("allocated_size".into(), allocated_size_vec).into_column(),
-            // Timestamps (4 total, matching C++)
+            // Timestamps (4 total)
             Series::new("created".into(), created_vec)
                 .cast(&DataType::Datetime(TimeUnit::Microseconds, None))?
                 .into_column(),
@@ -234,7 +234,7 @@ impl MftReader {
             Series::new("name_count".into(), name_count_vec).into_column(),
             Series::new("stream_count".into(), stream_count_vec).into_column(),
             Series::new("stream_name".into(), stream_name_vec).into_column(),
-            // Extended attribute flags (matching C++ StandardInfo)
+            // Extended attribute flags (from $STANDARD_INFORMATION)
             Series::new("is_readonly".into(), is_readonly_vec).into_column(),
             Series::new("is_hidden".into(), is_hidden_vec).into_column(),
             Series::new("is_system".into(), is_system_vec).into_column(),
@@ -285,7 +285,7 @@ impl MftReader {
             // Size information
             Series::new("size".into(), columns.size).into_column(),
             Series::new("allocated_size".into(), columns.allocated_size).into_column(),
-            // Timestamps (4 total, matching C++)
+            // Timestamps (4 total)
             Series::new("created".into(), columns.created)
                 .cast(&DataType::Datetime(TimeUnit::Microseconds, None))?
                 .into_column(),
@@ -303,7 +303,7 @@ impl MftReader {
             Series::new("name_count".into(), columns.name_count).into_column(),
             Series::new("stream_count".into(), columns.stream_count).into_column(),
             Series::new("stream_name".into(), columns.stream_name).into_column(),
-            // Extended attribute flags (matching C++ StandardInfo)
+            // Extended attribute flags (from $STANDARD_INFORMATION)
             Series::new("is_readonly".into(), columns.is_readonly).into_column(),
             Series::new("is_hidden".into(), columns.is_hidden).into_column(),
             Series::new("is_system".into(), columns.is_system).into_column(),

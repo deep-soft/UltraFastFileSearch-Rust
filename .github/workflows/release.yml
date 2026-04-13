@@ -49,7 +49,7 @@ jobs:
       release-name: ${{ steps.validate.outputs.release-name }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
           fetch-depth: 0
@@ -126,7 +126,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
 
@@ -134,12 +134,12 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           key: release-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@e33e0265a09d1d5f4ee1a85a3e665e75715c4de5 # v4
 
       - name: Build optimized release binaries
         shell: bash
@@ -195,7 +195,7 @@ jobs:
           ls -la
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact-name }}
           path: release-artifacts/
@@ -212,13 +212,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: release-artifacts
 
@@ -303,7 +303,7 @@ jobs:
 
           ---
 
-          **Full Changelog**: https://github.com/${{ github.repository }}/compare/v0.1.0...${{ needs.release-preparation.outputs.version }}
+          **Full Changelog**: https://github.com/${{ github.repository }}/commits/${{ needs.release-preparation.outputs.version }}
           EOF
 
       - name: Create Git tag (workflow_dispatch only)
@@ -317,7 +317,7 @@ jobs:
           git push origin "${{ needs.release-preparation.outputs.tag }}"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2
         with:
           tag_name: ${{ needs.release-preparation.outputs.tag }}
           name: ${{ needs.release-preparation.outputs.release-name }}
@@ -348,4 +348,4 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔗 Links:" >> $GITHUB_STEP_SUMMARY
           echo "- [📦 Release Page](https://github.com/${{ github.repository }}/releases/tag/${{ needs.release-preparation.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
-          echo "- [📋 Full Changelog](https://github.com/${{ github.repository }}/compare/v0.1.0...${{ needs.release-preparation.outputs.version }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [📋 Full Changelog](https://github.com/${{ github.repository }}/commits/${{ needs.release-preparation.outputs.version }})" >> $GITHUB_STEP_SUMMARY

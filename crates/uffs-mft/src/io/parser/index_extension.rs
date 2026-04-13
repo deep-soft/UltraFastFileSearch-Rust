@@ -230,7 +230,7 @@ pub(super) fn parse_extension_to_index(
                 if name_len == 0 {
                     // Default $DATA stream — update base record size
                     // Mark that unnamed $DATA exists on the base record
-                    // (C++ parity: distinguishes "empty $DATA" from "no $DATA")
+                    // (distinguishes "empty $DATA" from "no $DATA")
                     {
                         let bf = frs_to_usize(base_frs);
                         if bf < index.frs_to_idx.len() {
@@ -253,7 +253,7 @@ pub(super) fn parse_extension_to_index(
                             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                             .collect();
                         let stream_name = String::from_utf16_lossy(&name_u16);
-                        // C++ parity: ALL named $DATA streams create regular
+                        // ALL named $DATA streams create regular
                         // stream entries.  Internal ones are filtered from
                         // output by is_internal_windows_stream in the output layer.
                         streams.push((stream_name, size, allocated));
@@ -438,7 +438,7 @@ pub(super) fn parse_extension_to_index(
                 // Skip - not expected in extension records
             }
             _ => {
-                // Unknown attribute types — count as streams (C++ default: case)
+                // Unknown attribute types — counted as streams (catch-all).
                 let is_primary = if attr_header.is_non_resident == 0 {
                     true
                 } else {

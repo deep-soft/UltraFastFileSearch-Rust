@@ -378,7 +378,7 @@ impl MftReader {
         // even on HDD because: no context switching, CPU cache stays hot, no
         // channel overhead, OS can optimize continuous sequential reads better.
         // For lean index (MftIndex), use SlidingIocpInline for NVMe/SSD - this uses
-        // IOCP with multiple reads in flight and inline parsing, matching C++
+        // IOCP with multiple reads in flight and inline parsing
         // performance.
         let effective_mode = index_effective_mode(self.mode, drive_type);
         debug!(
@@ -524,7 +524,7 @@ impl MftReader {
                 result?
             }
             MftReadMode::Bulk => {
-                // Bulk mode: C++ style "read all, then parse"
+                // Bulk mode: read all, then parse
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
 
@@ -553,7 +553,7 @@ impl MftReader {
                 }
             }
             MftReadMode::BulkIocp => {
-                // Bulk IOCP mode: True C++ style - queues ALL reads to IOCP at once
+                // Bulk IOCP mode: queues ALL reads to IOCP at once
                 let overlapped_handle = self.require_handle().open_overlapped_handle()?;
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
@@ -597,7 +597,7 @@ impl MftReader {
                 result?
             }
             MftReadMode::SlidingIocp => {
-                // Sliding window IOCP mode: C++ style with 2 reads in flight
+                // Sliding window IOCP mode: adaptive concurrency with multiple reads in flight
                 let overlapped_handle = self.require_handle().open_overlapped_handle()?;
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
@@ -668,7 +668,7 @@ impl MftReader {
                 let mut index = result?;
 
                 // Set reserved allocated bytes from volume data so tree metrics
-                // adds it to the root's tree_allocated (C++ parity).
+                // adds it to the root's tree_allocated.
                 let ra = volume_data.reserved_allocated_bytes();
                 debug!(
                     iocp_parse_ms = start_time.elapsed().as_millis(),

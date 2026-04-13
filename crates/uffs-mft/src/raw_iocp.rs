@@ -89,7 +89,7 @@ pub struct IocpCaptureHeader {
     pub concurrency: u8,
     /// Bytes of NTFS reserved clusters added to root's `tree_allocated`.
     ///
-    /// C++ formula: `(TotalReserved + MftZoneEnd - MftZoneStart) *
+    /// NTFS formula: `(TotalReserved + MftZoneEnd - MftZoneStart) *
     /// BytesPerCluster`. Stored at header bytes 46-53. Zero in v1 captures.
     pub reserved_allocated_bytes: u64,
 }
@@ -521,8 +521,14 @@ pub fn is_iocp_capture<P: AsRef<Path>>(path: P) -> Result<bool> {
 /// 4. Call `compute_tree_metrics()` at the end
 ///
 /// The unified parser processes base and extension records through
-/// the same attribute loop, matching C++ `load()` behavior.
+/// the same attribute loop for both base and extension records.
+// cognitive_complexity fires in `--lib` but not `--tests`, so `#[expect]` is
+// unreliable — use `#[allow]` and suppress the meta-lint.
 #[expect(
+    clippy::allow_attributes,
+    reason = "cognitive_complexity differs between lib and test compilation"
+)]
+#[allow(
     clippy::cognitive_complexity,
     reason = "IOCP replay: header parsing, chunk iteration, fixup, parsing, and tree metrics in one pipeline"
 )]

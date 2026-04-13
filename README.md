@@ -26,7 +26,7 @@ UFFS **reads the NTFS Master File Table directly** — once — and holds it in 
 
 ---
 
-## Benchmark (v0.4.111)
+## Benchmark (v0.4.112)
 
 Measured on AMD Ryzen 9 3900XT, 64 GB RAM, 7 NTFS volumes (NVMe + SATA SSD + SATA HDD), 25.9M total records:
 

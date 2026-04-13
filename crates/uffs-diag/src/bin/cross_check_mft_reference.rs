@@ -100,7 +100,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Load the reference CSV produced by the C++ reader into a `DataFrame`.
+/// Load the reference CSV produced by the legacy reader into a `DataFrame`.
 #[expect(
     clippy::single_call_fn,
     reason = "encapsulates CSV loading with focused error context"

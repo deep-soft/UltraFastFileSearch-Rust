@@ -340,8 +340,8 @@ impl StandardInfo {
         self.flags & Self::IS_RECALL_ON_DATA_ACCESS != 0
     }
 
-    /// Convert to raw NTFS attributes masked to the 15 bits the C++ baseline
-    /// tracks. Used by `--parity-compat` to produce output matching C++ SHA256.
+    /// Convert to raw NTFS attributes masked to the 15 bits the baseline output
+    /// tracks. Used by `--parity-compat` to produce deterministic output.
     #[must_use]
     pub const fn parity_attributes(&self) -> u32 {
         self.flags

@@ -242,7 +242,7 @@ impl ParsedColumns {
 
         // Create one row per (name × stream) combination
         // Filter out internal Windows streams ($OBJECT_ID, $EA_INFORMATION, etc.)
-        // to match C++ behavior (ntfs_index.hpp line 1388-1392)
+        // to produce correct directory size output
         for name_info in &names {
             for stream_info in &streams {
                 // Skip internal Windows streams (matches the legacy baseline
@@ -374,7 +374,7 @@ impl ParsedColumns {
     ///
     /// * `records` - The parsed records to convert
     /// * `expand_links` - If `true`, expand hard links to separate rows
-    ///   (matching C++ behavior). If `false`, one row per FRS.
+    ///   (standard behavior). If `false`, one row per FRS.
     #[must_use]
     pub fn from_records(records: Vec<ParsedRecord>, expand_links: bool) -> Self {
         // Estimate capacity using integer arithmetic to avoid float precision issues

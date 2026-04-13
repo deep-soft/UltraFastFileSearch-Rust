@@ -217,9 +217,18 @@ impl MftReader {
     ///
     /// Returns an error if the raw file cannot be loaded or if record parsing
     /// or index construction fails.
+    // cognitive_complexity fires in `--lib` but not `--tests`, so `#[expect]` is
+    // unreliable — use `#[allow]` and suppress the meta-lint.
+    #[expect(
+        clippy::allow_attributes,
+        reason = "cognitive_complexity differs between lib and test compilation"
+    )]
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "parsing logic with forensic/sequential/parallel branches is inherently complex"
+    )]
     #[expect(
         clippy::too_many_lines,
-        clippy::cognitive_complexity,
         reason = "parsing logic with forensic/sequential/parallel branches is inherently complex"
     )]
     pub fn load_raw_to_index_with_options<P: AsRef<Path>>(
@@ -641,7 +650,7 @@ impl MftReader {
     ///
     /// This is a single-pass implementation that parses records directly into
     /// the index without creating intermediate `ParsedRecord` allocations. It
-    /// uses the unified `process_record()` parser that mirrors C++ `load()`.
+    /// uses the unified `process_record()` single-pass parser.
     ///
     /// # Errors
     ///

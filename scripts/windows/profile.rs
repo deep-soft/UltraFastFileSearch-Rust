@@ -1,4 +1,6 @@
 #!/usr/bin/env rust-script
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
 //! UFFS Performance Profiler — 3-phase per-drive timing using `--profile`.
 //!
 //! For each discovered NTFS drive, runs three caching levels:

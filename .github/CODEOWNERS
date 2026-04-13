@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+#
+# CODEOWNERS — defines code review ownership for pull requests.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: Robert Nio owns everything
+*                                   @githubrobbi
+
+# Core crates — MFT parser, query engine, CLI
+crates/uffs-mft/                    @githubrobbi
+crates/uffs-core/                   @githubrobbi
+crates/uffs-cli/                    @githubrobbi
+crates/uffs-polars/                 @githubrobbi
+
+# Daemon and service layer
+crates/uffs-daemon/                 @githubrobbi
+
+# CI, security, and release infrastructure
+.github/                            @githubrobbi
+deny.toml                           @githubrobbi
+SECURITY.md                         @githubrobbi
+LICENSE                             @githubrobbi
+Cargo.toml                          @githubrobbi
+Cargo.lock                          @githubrobbi
+justfile                            @githubrobbi

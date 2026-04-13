@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+#
 # test_runs.ps1 - UFFS Live Data Collection (Windows only)
 #
 # Purpose:

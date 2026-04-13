@@ -42,7 +42,7 @@ impl ParsedPattern {
         let has_separator = Self::contains_path_separator(remaining);
         let pattern_type_preview = Self::detect_pattern_type(remaining);
         // Literal (bare text like "nice") is always path-aware so it matches
-        // against full paths (like Everything, WizFile, C++ UFFS).
+        // against full paths (like Everything, WizFile).
         // Glob patterns are path-aware only if they contain separators.
         let is_path = has_separator || matches!(pattern_type_preview, PatternType::Literal);
         // Normalize forward slashes to backslashes for Windows path matching.

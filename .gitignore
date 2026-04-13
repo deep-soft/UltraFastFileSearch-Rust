@@ -35,15 +35,20 @@ build/
 /missing_paths.txt
 /_trash/
 /reference/
+dist/latest
 
 # =============================================================================
-# IDE / Editor
+# IDE / Editor / AI
 # =============================================================================
 .idea/
-.vscode/settings.json
+.vscode/
+.ai/
+.claude/
+.qodo/
+.reuse/
+.windsurf/
 *.iws
 *.iml
-.claude/
 
 # =============================================================================
 # OS artifacts
@@ -66,9 +71,12 @@ Desktop.ini
 *.env
 
 # =============================================================================
-# Cargo metadata (machine-specific, auto-generated)
+# Cargo metadata & local-only cargo config
 # =============================================================================
 metadata.json
+.cargo/macos.toml
+.cargo/windows.toml
+.cargo/.zshrc
 
 # =============================================================================
 # Internal dev docs (plans, audits, investigations — local only)

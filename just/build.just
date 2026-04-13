@@ -52,7 +52,7 @@ deploy-release:
 copy-binary profile:
     #!/usr/bin/env bash
     printf "\033[0;34m📦 Cross-platform binary deployment ({{ profile }})...\033[0m\n"
-    if [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]] || [[ -n "$WINDIR" ]]; then TARGET_BINARY="tt.exe"; printf "\033[0;34m  → Windows detected, using tt.exe\033[0m\n"; else TARGET_BINARY="tt"; printf "\033[0;34m  → Unix-like system detected, using tt\033[0m\n"; fi
+    if [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]] || [[ -n "$WINDIR" ]]; then TARGET_BINARY="uffs.exe"; printf "\033[0;34m  → Windows detected\033[0m\n"; else TARGET_BINARY="uffs"; printf "\033[0;34m  → Unix-like system detected\033[0m\n"; fi
     SOURCE_DIR="target/{{ profile }}"
     SOURCE_PATH="$SOURCE_DIR/$TARGET_BINARY"
     if [[ ! -f "$SOURCE_PATH" ]]; then printf "\033[0;31m❌ Binary not found: $SOURCE_PATH\033[0m\n"; printf "\033[1;33m💡 Run 'just build' first\033[0m\n"; exit 1; fi
@@ -62,7 +62,6 @@ copy-binary profile:
     printf "\033[0;34m  → Destination: $DEST_PATH\033[0m\n"
     if cp "$SOURCE_PATH" "$DEST_PATH" && chmod +x "$DEST_PATH"; then
         printf "\033[0;32m✅ Binary deployed to ~/bin/$TARGET_BINARY\033[0m\n"
-        if command -v xattr >/dev/null 2>&1; then xattr -w com.uffs.buildtype "{{ profile }}" "$DEST_PATH" 2>/dev/null || true; printf "\033[0;32m🏷️  Extended attributes set\033[0m\n"; fi
     else
         printf "\033[0;31m❌ Failed to copy binary\033[0m\n"
         exit 1
@@ -131,15 +130,25 @@ use:
 # Uses pre-built binaries from the CI shipping pipeline (cross-compiled on macOS).
 [windows]
 use:
-    Write-Host "📦 Installing latest UFFS binaries to ~/bin..." -ForegroundColor Blue; \
-    $binDir = "$env:USERPROFILE\bin"; if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }; \
-    $distDir = $null; $latestItem = Get-Item "dist\latest" -ErrorAction SilentlyContinue; \
-    if ($latestItem -and $latestItem.LinkType -eq 'SymbolicLink') { $distDir = $latestItem.Target } elseif ($latestItem -and -not $latestItem.PSIsContainer) { $target = (Get-Content "dist\latest" -Raw).Trim(); if (Test-Path "dist\$target") { $distDir = "dist\$target" } }; \
-    if (-not $distDir) { $versions = Get-ChildItem -Path "dist" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^v\d+\.\d+\.\d+$' } | Sort-Object { [version]($_.Name -replace '^v','') } -Descending; if ($versions) { $distDir = $versions[0].FullName } }; \
-    if (-not $distDir) { Write-Host "❌ No binaries found in dist/. Run 'just phase2-ship' first." -ForegroundColor Red; exit 1 }; \
-    Write-Host "  → Using: $distDir" -ForegroundColor Cyan; $binaries = @("uffs", "uffs_mft"); $installed = 0; $skipped = 0; \
-    foreach ($bin in $binaries) { $src = "$distDir\$bin\$bin-windows-x64.exe"; $dest = "$binDir\$bin.exe"; if (Test-Path $src) { Copy-Item $src $dest -Force; Write-Host "  ✅ $bin.exe" -ForegroundColor Green; $installed++ } else { Write-Host "  ⚠️  $bin (not found)" -ForegroundColor Yellow; $skipped++ } }; \
-    Write-Host "✅ Installed $installed binaries to ~/bin" -ForegroundColor Green; if ($skipped -gt 0) { Write-Host "⚠️  Skipped $skipped (run 'just phase2-ship' to build all binaries)" -ForegroundColor Yellow }
+    #!powershell
+    Write-Host "📦 Installing latest UFFS binaries to ~/bin..." -ForegroundColor Blue
+    $binDir = "$env:USERPROFILE\bin"
+    if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
+    # Find the latest versioned dist directory
+    $versions = Get-ChildItem -Path "dist" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^v\d+\.\d+\.\d+$' } | Sort-Object { [version]($_.Name -replace '^v','') } -Descending
+    if (-not $versions) { Write-Host "❌ No binaries found in dist/. Run 'just ship' first." -ForegroundColor Red; exit 1 }
+    $distDir = $versions[0].FullName
+    Write-Host "  → Using: $distDir" -ForegroundColor Cyan
+    $binaries = @("uffs", "uffs-daemon", "uffs-mcp")
+    $installed = 0; $skipped = 0
+    foreach ($bin in $binaries) {
+        $src = "$distDir\$bin\$bin-windows-x64.exe"
+        $dest = "$binDir\$bin.exe"
+        if (Test-Path $src) { Copy-Item $src $dest -Force; Write-Host "  ✅ $bin.exe" -ForegroundColor Green; $installed++ }
+        else { Write-Host "  ⚠️  $bin (not found)" -ForegroundColor Yellow; $skipped++ }
+    }
+    Write-Host "✅ Installed $installed binaries to ~/bin" -ForegroundColor Green
+    if ($skipped -gt 0) { Write-Host "⚠️  Skipped $skipped (run 'just ship' to build)" -ForegroundColor Yellow }
 
 # Git commit with auto-generated message.
 commit:

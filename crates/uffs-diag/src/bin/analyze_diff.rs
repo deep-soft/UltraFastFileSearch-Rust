@@ -10,7 +10,7 @@
 //! # Usage
 //!
 //! ```bash
-//! analyze_diff <cpp.txt> <rust.txt>
+//! analyze_diff <baseline.txt> <rust.txt>
 //! ```
 //!
 //! # Output

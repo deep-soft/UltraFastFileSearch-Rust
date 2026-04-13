@@ -435,7 +435,7 @@ pub(crate) struct Cli {
     ///
     /// By default, literal patterns like "hallo" match anywhere in the full
     /// path (including directory names). With --name-only, matching is
-    /// restricted to the filename component — like C++ UFFS behavior.
+    /// restricted to the filename component — matching legacy UFFS behavior.
     ///
     /// Incompatible with patterns containing path separators (\ or /).
     #[arg(long, default_value = "false")]
@@ -518,15 +518,15 @@ pub(crate) struct Cli {
     #[arg(long, hide = true)]
     pub chaos_seed: Option<u64>,
 
-    /// C++ parity-compatible output: use original 25 columns with masked
+    /// Parity-compatible output: use original 25 columns with masked
     /// attributes (15 baseline bits only). For SHA256 verification against
-    /// C++ golden baseline.
+    /// the golden baseline.
     #[arg(long)]
     pub parity_compat: bool,
 
     /// NTFS reserved cluster bytes to add to root directory's `Size on Disk`.
     ///
-    /// C++ adds `(TotalReserved + MftZoneEnd - MftZoneStart) *
+    /// Adds `(TotalReserved + MftZoneEnd - MftZoneStart) *
     /// BytesPerCluster` to the root. This flag lets parity verification pass
     /// the same value when reading from offline `.iocp` captures that don't
     /// embed volume metadata.

@@ -214,7 +214,7 @@ pub fn parse_record_to_fragment(
                 } else {
                     // Resident: value_length at offset 16
                     // Resident files have no clusters allocated - data is stored in MFT record
-                    // C++ correctly shows allocated_size=0 for resident files
+                    // Resident files have allocated_size=0 (data stored in MFT record)
                     let len_offset = offset + 16;
                     if len_offset + 4 <= data.len() {
                         let len = u64::from(u32::from_le_bytes(
@@ -242,7 +242,7 @@ pub fn parse_record_to_fragment(
                             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                             .collect();
                         let stream_name = String::from_utf16_lossy(&name_u16);
-                        // C++ parity: ALL named $DATA streams create regular
+                        // ALL named $DATA streams create regular
                         // stream entries.  Internal ones are filtered from
                         // output by is_internal_windows_stream in the output layer.
                         additional_streams.push((stream_name, size, allocated));
@@ -520,7 +520,7 @@ pub fn parse_record_to_fragment(
         });
     };
 
-    // Add child entry for primary name (using C++ parse-order index)
+    // Add child entry for primary name (using MFT parse-order index)
     add_child_entry(fragment, parent_frs, primary_parse_index);
 
     // Add child entries for additional names (hardlinks)

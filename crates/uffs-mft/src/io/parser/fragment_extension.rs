@@ -170,7 +170,7 @@ pub(super) fn parse_extension_to_fragment(
                             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                             .collect();
                         let stream_name = String::from_utf16_lossy(&name_u16);
-                        // C++ parity: ALL named $DATA streams create regular
+                        // ALL named $DATA streams create regular
                         // stream entries.  Internal ones are filtered from
                         // output by is_internal_windows_stream in the output layer.
                         streams.push((stream_name, size, allocated));

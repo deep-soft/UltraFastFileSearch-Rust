@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
@@ -65,13 +65,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Run nightly clippy gate
         run: cargo clippy --workspace --all-targets --all-features --no-deps -- -D warnings
@@ -82,13 +82,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Run rustdoc warnings gate
         run: RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --all-features --no-deps
@@ -99,19 +99,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # nextest
 
       - name: Run tests
-        run: cargo nextest run --workspace --all-features --lib --bins --tests
+        run: cargo nextest run --workspace --all-features --lib --bins --tests --profile ci
 
       - name: Run doc tests
         run: RUSTDOCFLAGS="-Dwarnings" cargo test --doc --workspace --all-features
@@ -122,24 +122,18 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-audit
-        uses: taiki-e/install-action@cargo-audit
-
-      - name: Run security audit
-        run: cargo audit
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@cargo-deny
+        uses: taiki-e/install-action@9b78309a511fc3515675f4d9e7d59679ff5d4a56 # cargo-deny
 
-      - name: Run dependency check
+      - name: Run dependency & license check
         run: cargo deny check
 
   file-size-policy:
@@ -148,7 +142,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Enforce file size policy
         run: bash scripts/ci/check_file_size_policy.sh

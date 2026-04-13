@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2025-2026 SKY, LLC.
+# SPDX-License-Identifier: MPL-2.0
+
+# Rust Toolchain Configuration for UFFS Project
+# This file ensures consistent toolchain usage across all environments
+# and prevents issues caused by switching between stable/nightly toolchains
+
+[toolchain]
+# Latest nightly — updated 2026-04-13.
+# CI must NOT override this with `@nightly`; this file is the single source of truth.
+# Pinned to 2026-04-11: nightly-2026-04-13 (rustc 1.97.0) breaks tokio 1.51.1
+# with unresolved import errors in tokio's io::util module.
+channel = "nightly-2026-04-13"
+
+# Specify components that should always be available
+components = [
+    "rustc",          # The Rust compiler
+    "cargo",          # Package manager and build tool
+    "rustfmt",        # Code formatter
+    "clippy",         # Linter for catching common mistakes
+    "rust-src",       # Source code for standard library (needed for IDE features)
+    "rust-analyzer",  # Language server for IDE support
+    "llvm-tools",     # LLVM tools for coverage and profiling
+    "miri",           # Interpreter for detecting undefined behavior
+]
+
+# Specify targets for cross-compilation support
+targets = [
+    "x86_64-unknown-linux-gnu",    # Linux x64
+    "x86_64-pc-windows-msvc",      # Windows x64
+    "x86_64-apple-darwin",         # macOS Intel
+    "aarch64-apple-darwin",        # macOS Apple Silicon
+    "aarch64-unknown-linux-gnu",   # Linux ARM64
+]
+
+# Profile for development - optimized for fast compilation and good debugging
+profile = "default"

@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! Unified MFT record processor — mirrors C++ `load()` exactly.
+//! Unified MFT record processor.
 //!
 //! ONE function processes ALL records (base AND extension) through the SAME
 //! attribute loop.  This eliminates the dual-parser architecture that caused
 //! name-ordering and stream-counting discrepancies.
-//!
-//! C++ reference: `ntfs_index_load.hpp` lines 228-463.
 
 use core::mem::size_of;
 
@@ -77,24 +75,24 @@ fn decode_utf16le_into(bytes: &[u8], out: &mut String) {
     }
 }
 
-/// Process a single MFT record (base OR extension) — mirrors C++ `load()`.
+/// Process a single MFT record (base OR extension) in one pass.
 ///
 /// Both base and extension records go through the **same** attribute loop.
 /// For extensions, `frs_base` points to the base record; for base records,
-/// `frs_base == frs`.  This is identical to C++ lines 231-234.
+/// `frs_base == frs`.
 ///
 /// Records are created with [`FileRecord::new_unified()`] which starts all
 /// counts at 0.  Every accepted `$FILE_NAME` and every first-occurrence
-/// stream increments the respective count, matching C++ semantics exactly.
+/// stream increments the respective count.
 ///
 /// Returns `true` if the record was successfully processed.
 #[expect(
     clippy::too_many_lines,
-    reason = "mirrors C++ monolithic load() for exact parity"
+    reason = "single-pass MFT record processor — kept as one function for correctness"
 )]
 #[expect(
     clippy::cognitive_complexity,
-    reason = "direct C++ port — complexity matches reference"
+    reason = "single-pass attribute walk — complexity is inherent to NTFS record structure"
 )]
 #[expect(
     clippy::indexing_slicing,
@@ -109,13 +107,13 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
         return false;
     };
 
-    // C++ line 229: only process valid, in-use FILE records
+    // Only process valid, in-use FILE records
     let multi_sector_header = header.multi_sector_header;
     if !header.is_in_use() || !multi_sector_header.is_file_record() {
         return false;
     }
 
-    // C++ lines 231-233: determine base FRS
+    // Determine base FRS (extension records point to their parent base record)
     let frs_base = if header.is_base_record() {
         frs
     } else {
@@ -124,12 +122,12 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
 
     let is_directory = header.is_directory();
 
-    // C++ line 234: get or create the base record (zero-based counts).
+    // Get or create the base record (zero-based counts).
     // Cache the record index so we don't repeat the frs→idx lookup for
     // every attribute in this record.
     let base_ri = u32_as_usize(index.ensure_record(frs_base));
 
-    // ── Attribute loop (C++ lines 240-461) ──────────────────────────────
+    // ── Attribute loop ─────────────────────────────────────────────────
     let mut offset = usize::from(header.first_attribute_offset);
     let max_offset = core::cmp::min(u32_as_usize(header.bytes_in_use), data.len());
 
@@ -146,7 +144,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
         }
 
         match AttributeType::from_u32(attr_header.type_code) {
-            // ── $STANDARD_INFORMATION (0x10) — C++ lines 249-259 ────
+            // ── $STANDARD_INFORMATION (0x10) ─────────────────────────
             Some(AttributeType::StandardInformation) => {
                 if attr_header.is_non_resident == 0 {
                     let vo = usize::from(rd_u16(data, offset + 20));
@@ -171,7 +169,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                 }
             }
 
-            // ── $FILE_NAME (0x30) — C++ lines 264-309 ──────────────
+            // ── $FILE_NAME (0x30) ─────────────────────────────────────
             // Push-to-front: each new $FILE_NAME overwrites first_name.
             Some(AttributeType::FileName) => {
                 if attr_header.is_non_resident == 0 {
@@ -182,7 +180,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             FileNameAttribute::read_from_prefix(&data[fn_off..])
                         && fn_attr.file_name_namespace != 2
                     {
-                        // C++ line 271: skip DOS-only names
+                        // Skip DOS-only names (namespace 2)
                         let parent_frs = file_reference_to_frs(fn_attr.parent_directory);
                         let name_len = usize::from(fn_attr.file_name_length);
                         let ns = fn_off + size_of::<FileNameAttribute>();
@@ -191,7 +189,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             let nb = &data[ns..ns + name_len * 2];
                             decode_utf16le_into(nb, name_buf);
 
-                            // C++ lines 273-278: push old first_name to chain
+                            // Push old first_name to chain
                             // Copy first_name before mutating (borrow checker)
                             let old_valid = index.records[base_ri].first_name.name.is_valid();
                             let old_first = index.records[base_ri].first_name; // Copy
@@ -201,7 +199,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                                 index.records[base_ri].first_name.next_entry = link_idx;
                             }
 
-                            // C++ lines 281-289: overwrite first_name
+                            // Overwrite first_name with the new name
                             let name_off = index.add_name(name_buf);
                             let is_ascii = name_buf.is_ascii();
                             let ext_id = index.intern_extension(name_buf);
@@ -215,9 +213,8 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             index.records[base_ri].first_name.name = name_ref;
                             index.records[base_ri].first_name.parent_frs = parent_frs;
 
-                            // C++ lines 293-304: build parent-child
+                            // Build parent-child relationship.
                             // name_index = name_count BEFORE increment
-                            // (C++ line 302)
                             let name_index = index.records[base_ri].name_count;
 
                             if parent_frs != frs_base && parent_frs != u64::from(NO_ENTRY) {
@@ -235,8 +232,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                                 });
                             }
 
-                            // C++ line 307: ++name_count
-                            // With zero-based counts, ALWAYS increment
+                            // Increment name_count (zero-based, always increment)
                             // (including the first name).
                             index.records[base_ri].name_count += 1;
                         }
@@ -244,9 +240,9 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                 }
             }
 
-            // ── ALL OTHER ATTRIBUTES — C++ lines 315-459 ───────────
+            // ── ALL OTHER ATTRIBUTES ──────────────────────────────────
             _ => {
-                // C++ line 358: is_primary_attribute
+                // Determine if this is the primary (unnamed) data attribute
                 let is_primary = if attr_header.is_non_resident == 0 {
                     true
                 } else {
@@ -259,7 +255,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                     let attr_type = attr_header.type_code;
                     let aname_len = usize::from(attr_header.name_length);
 
-                    // C++ lines 361-366: $I30 check
+                    // $I30 directory index check
                     let is_i30 = matches!(
                         AttributeType::from_u32(attr_type),
                         Some(
@@ -285,7 +281,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         }
                     }
 
-                    // C++ lines 430-452: size calculation
+                    // Size calculation for primary data attribute
                     let is_badclus_bad =
                         frs_base == 8 && aname_len == 4 && has_stream_name && name_buf == "$Bad";
 
@@ -345,8 +341,8 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         rec.first_stream.size.allocated += alloc;
                         rec.first_stream.flags = 8_u8 << 2_u8; // type_name_id=8 for $DATA
                     } else if attr_type == AttributeType::DATA_TYPE && aname_len > 0 {
-                        // Named $DATA: ADS (user-visible stream)
-                        // C++ creates a stream entry; output layer filters internals
+                        // Named $DATA: ADS (user-visible stream).
+                        // Output layer filters internal streams.
                         if has_stream_name && !name_buf.is_empty() {
                             let sn_off = index.add_name(name_buf);
                             let is_ascii = name_buf.is_ascii();

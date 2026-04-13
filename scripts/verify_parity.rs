@@ -2153,9 +2153,9 @@ fn format_duration(duration: Duration) -> String {
 /// Resolves the drive data directory.
 ///
 /// Supports two directory structures:
-/// 1. New: `<base>/drive_<letter>/` (e.g., `/Users/rnio/uffs_data/drive_d/`)
+/// 1. New: `<base>/drive_<letter>/` (e.g., `~/uffs_data/drive_d/`)
 /// 2. Legacy: `<base>/` with files directly in base (e.g.,
-///    `/Users/rnio/uffs_data/D_mft.bin`)
+///    `~/uffs_data/D_mft.bin`)
 fn resolve_drive_dir(base_dir: &Path, drive_lower: &str) -> PathBuf {
     // Try new structure first: base/drive_<letter>/
     let new_style = base_dir.join(format!("drive_{drive_lower}"));

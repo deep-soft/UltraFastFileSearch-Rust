@@ -1,67 +1,73 @@
-# =============================================================================
-# .config/nextest.toml
-# =============================================================================
-#
 # SPDX-License-Identifier: MPL-2.0
 # Copyright (c) 2025-2026 SKY, LLC.
 #
-# UFFS - Ultra Fast File Search
-#
+# UFFS — nextest repository configuration
+# https://nexte.st/docs/configuration/reference/
 
-# Nextest configuration optimized for M1 Mac with 64GB RAM
-# https://nexte.st/book/configuration.html
+# Require nextest ≥ 0.9.130 (flaky-result, fail-fast object, run-extra-args)
+nextest-version = { required = "0.9.130", recommended = "0.9.132" }
 
+# ---------------------------------------------------------------------------
+# Default profile — local development
+# ---------------------------------------------------------------------------
 [profile.default]
-# Optimize for M1 Mac (8-10 cores, 64GB RAM)
-test-threads = 12
-retries = 1
+# Auto-detect CPUs; reserve 2 for the OS / IDE / language server.
+test-threads = -2
+retries = 0
+fail-fast = true
 
-# Timeout settings - generous for integration tests
-slow-timeout = { period = "120s", terminate-after = 2 }
+slow-timeout = { period = "120s", terminate-after = 2, grace-period = "10s" }
 leak-timeout = "100ms"
 
-# Test execution settings
 failure-output = "immediate-final"
 success-output = "never"
-status-level = "retry"
+status-level  = "pass"
+final-status-level = "flaky"
 
-# Memory and resource optimization
-junit = { path = "target/nextest-junit.xml" }
-
+# ---------------------------------------------------------------------------
+# CI profile — conservative, deterministic, full diagnostics
+# Usage: cargo nextest run --profile ci
+# ---------------------------------------------------------------------------
 [profile.ci]
-# CI profile with more conservative settings
-test-threads = 8
-retries = 2
-slow-timeout = { period = "300s", terminate-after = 3 }
+test-threads = 4
+retries = { backoff = "exponential", count = 3, delay = "1s", max-delay = "10s", jitter = true }
+fail-fast = false
+flaky-result = "fail"
 
-[profile.fast]
-# Ultra-fast profile for development (maximum parallelism)
-# Excludes ignored tests by default (nextest behavior)
-test-threads = 16
-retries = 0
-slow-timeout = { period = "60s", terminate-after = 1 }
-failure-output = "immediate"
+slow-timeout = { period = "300s", terminate-after = 3, grace-period = "15s" }
+leak-timeout = "500ms"
 
-[profile.ludicrous]
-# LUDICROUS SPEED profile for M1 + 64GB (use with caution!)
-test-threads = 20
-retries = 0
-slow-timeout = { period = "45s", terminate-after = 1 }
-failure-output = "immediate"
+failure-output = "immediate-final"
+success-output = "never"
+status-level  = "skip"
+final-status-level = "all"
 
+[profile.ci.junit]
+path = "junit.xml"
+report-name = "uffs-ci"
+store-success-output = false
+store-failure-output = true
+
+# ---------------------------------------------------------------------------
+# Slow / integration profile — for #[ignore] tests on Windows with live MFT
+# Usage: cargo nextest run --profile slow --run-ignored ignored-only
+# ---------------------------------------------------------------------------
 [profile.slow]
-# Profile for slow/ignored tests
-test-threads = 8
+test-threads = 4
 retries = 1
-slow-timeout = { period = "1800s", terminate-after = 2 }
+fail-fast = false
 
-# Test filtering and grouping
-[test-groups]
-# Group slow tests to run with lower concurrency
-slow-tests = { max-threads = 4 }
+slow-timeout = { period = "600s", terminate-after = 3 }
+leak-timeout = "1s"
 
-# Override settings for specific slow tests
-# Note: All slow tests are marked with #[ignore] and run via 'just test-slow'
-# Examples: test_validate_production, test_validate_all (comprehensive validation)
+failure-output = "immediate-final"
+final-status-level = "all"
 
-
+# ---------------------------------------------------------------------------
+# Per-test overrides
+# ---------------------------------------------------------------------------
+# Integration / validation tests are heavyweight (disk I/O, large DataFrames).
+[[profile.default.overrides]]
+filter = 'test(/^test_validate/)'
+threads-required = 2
+slow-timeout = { period = "300s", terminate-after = 2 }

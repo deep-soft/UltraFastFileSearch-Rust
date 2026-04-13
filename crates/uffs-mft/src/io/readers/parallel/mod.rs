@@ -121,16 +121,14 @@ pub struct ParallelMftReader {
 
 #[cfg(windows)]
 impl ParallelMftReader {
-    /// Default chunk size for SSD (64 KB) - let OS read-ahead handle
-    /// prefetching. C++ team insight: With FILE_FLAG_SEQUENTIAL_SCAN,
-    /// smaller buffers keep the I/O pipeline fed while OS does aggressive
-    /// read-ahead.
+    /// Default chunk size for SSD (64 KB) — let OS read-ahead handle
+    /// prefetching. With `FILE_FLAG_SEQUENTIAL_SCAN`, smaller buffers keep
+    /// the I/O pipeline fed while the OS does aggressive read-ahead.
     pub const DEFAULT_CHUNK_SIZE_SSD: usize = 64 * 1024;
 
-    /// Default chunk size for HDD (64 KB) - let OS read-ahead handle
-    /// prefetching. C++ team insight: With FILE_FLAG_SEQUENTIAL_SCAN,
-    /// smaller buffers keep the I/O pipeline fed while OS does aggressive
-    /// read-ahead.
+    /// Default chunk size for HDD (64 KB) — let OS read-ahead handle
+    /// prefetching. With `FILE_FLAG_SEQUENTIAL_SCAN`, smaller buffers keep
+    /// the I/O pipeline fed while the OS does aggressive read-ahead.
     pub const DEFAULT_CHUNK_SIZE_HDD: usize = 64 * 1024;
 
     /// 1 MB chunk size constant.

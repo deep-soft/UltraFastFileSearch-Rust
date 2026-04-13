@@ -10,11 +10,11 @@
 use super::*;
 
 impl ParallelMftReader {
-    /// Reads all MFT records using bulk I/O (C++ style: read all, then parse).
+    /// Reads all MFT records using bulk I/O (read all, then parse).
     ///
     /// This method pre-allocates a single buffer for the entire MFT and reads
     /// each extent directly into it, eliminating per-chunk allocations and
-    /// copies. This matches the C++ "tsunami" pattern for maximum I/O
+    /// copies. This uses the "tsunami" pattern for maximum I/O
     /// throughput.
     ///
     /// # Performance
@@ -38,7 +38,7 @@ impl ParallelMftReader {
         reason = "FFI: SetFilePointerEx and ReadFile for bulk MFT reads"
     )]
     /// Bulk read using IOCP - queues ALL reads at once, lets Windows optimize
-    /// disk scheduling. This is the C++ approach: submit all I/O
+    /// disk scheduling. All I/O is submitted
     /// operations, then wait for completions.
     pub fn read_all_bulk<F>(
         &self,
@@ -58,7 +58,7 @@ impl ParallelMftReader {
         info!(
             total_records,
             total_bytes_mb = total_bytes / (1024 * 1024),
-            "🚀 Starting bulk MFT read (C++ IOCP style: queue all, then parse)"
+            "🚀 Starting bulk MFT read (queue all, then parse)"
         );
 
         // Phase 1: Allocate single buffer for entire MFT

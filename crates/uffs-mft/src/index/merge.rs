@@ -30,7 +30,13 @@ impl MftIndex {
     /// - Deduplication of records (same FRS from different fragments)
     /// - Name buffer concatenation with offset adjustment
     /// - Link/stream/child list merging
+    // cognitive_complexity fires in `--lib` but not `--tests`, so `#[expect]` is
+    // unreliable — use `#[allow]` and suppress the meta-lint.
     #[expect(
+        clippy::allow_attributes,
+        reason = "cognitive_complexity differs between lib and test compilation"
+    )]
+    #[allow(
         clippy::cognitive_complexity,
         reason = "O(n) merge of parallel fragments: dedup records, rebase name/link/stream/child offsets"
     )]

@@ -98,8 +98,17 @@ impl ChaosMftReader {
     /// # Errors
     ///
     /// Returns an error if the MFT file cannot be read or is invalid.
+    // cognitive_complexity fires in `--lib` but not `--tests`, so `#[expect]` is
+    // unreliable — use `#[allow]` and suppress the meta-lint.
     #[expect(
+        clippy::allow_attributes,
+        reason = "cognitive_complexity differs between lib and test compilation"
+    )]
+    #[allow(
         clippy::cognitive_complexity,
+        reason = "chaos reader: load, chunk, shuffle, spawn parser threads, merge — single orchestration pipeline"
+    )]
+    #[expect(
         clippy::too_many_lines,
         reason = "chaos reader: load, chunk, shuffle, spawn parser threads, merge — \
                   single orchestration pipeline that must remain cohesive"
@@ -384,10 +393,52 @@ fn sha256_for_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
 mod chaos_integration_tests {
     use super::*;
 
-    /// Run with: `cargo test -p uffs-mft --lib -- chaos_order --nocapture
-    /// --ignored`
+    /// Resolve the MFT test file path.
+    ///
+    /// Priority:
+    ///   1. `UFFS_MFT_TEST_FILE` env var (explicit path to any `.bin`/`.iocp`)
+    ///   2. `UFFS_MFT_TEST_DIR` env var + `drive_d/D_mft.bin`
+    ///   3. Fallback: `~/uffs_data/drive_d/D_mft.bin`
+    ///
+    /// Returns `None` (and prints a skip message) if the resolved path
+    /// doesn't exist on disk.
+    fn resolve_mft_path() -> Option<std::path::PathBuf> {
+        use std::path::PathBuf;
+
+        let path = std::env::var("UFFS_MFT_TEST_FILE").map_or_else(
+            |_| {
+                let base = std::env::var("UFFS_MFT_TEST_DIR").map_or_else(
+                    |_| {
+                        dirs_next::home_dir()
+                            .unwrap_or_else(|| PathBuf::from("."))
+                            .join("uffs_data")
+                    },
+                    PathBuf::from,
+                );
+                base.join("drive_d").join("D_mft.bin")
+            },
+            PathBuf::from,
+        );
+
+        if path.exists() {
+            Some(path)
+        } else {
+            eprintln!("⚠️  Offline MFT not found at: {}", path.display());
+            eprintln!(
+                "   Set UFFS_MFT_TEST_FILE=/path/to/file.bin or \
+                 UFFS_MFT_TEST_DIR=/path/to/data to override."
+            );
+            None
+        }
+    }
+
+    /// Run with:
+    ///   `cargo test -p uffs-mft --lib -- chaos_order --nocapture --ignored`
+    ///
+    /// Override MFT path:
+    ///   `UFFS_MFT_TEST_FILE=/path/to/D_mft.bin cargo test ...`
     #[test]
-    #[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
+    #[ignore = "requires offline MFT (set UFFS_MFT_TEST_FILE or UFFS_MFT_TEST_DIR)"]
     #[expect(
         clippy::too_many_lines,
         reason = "end-to-end chaos determinism test: load MFT, run 5 chaos iterations, \
@@ -396,7 +447,6 @@ mod chaos_integration_tests {
     fn test_chaos_order_d_drive() {
         use std::fs::File;
         use std::io::{BufRead, BufReader};
-        use std::path::PathBuf;
         const EXPECTED_SORTED_SHA: &str =
             "028356d4c9298ca8ef790229f4d4270ea29827ad155051e01181181fa34a531e";
 
@@ -406,16 +456,13 @@ mod chaos_integration_tests {
             .with_test_writer()
             .try_init();
 
-        let mft_path = PathBuf::from("/Users/rnio/uffs_data/drive_d/D_mft.bin");
-        if !mft_path.exists() {
-            eprintln!("⚠️  Offline MFT not found at: {}", mft_path.display());
-            eprintln!("   This test requires the offline D: drive MFT. Skipping.");
+        let Some(mft_path) = resolve_mft_path() else {
             return;
-        }
+        };
 
         println!("\n═══════════════════════════════════════════════════════");
         println!("     CHAOS-ORDER SHA256 VALIDATION TEST");
-        println!("     (Full-field parity with C++ ground truth)");
+        println!("     (Full-field parity with ground truth)");
         println!("═══════════════════════════════════════════════════════\n");
 
         // ──────────────────────────────────────────────────────────────
@@ -513,9 +560,9 @@ mod chaos_integration_tests {
         println!();
 
         // ──────────────────────────────────────────────────────────────
-        // Phase 5: Validate against C++ ground truth
+        // Phase 5: Validate against ground truth
         // ──────────────────────────────────────────────────────────────
-        println!("✅ Phase 5: Validating against C++ ground truth");
+        println!("✅ Phase 5: Validating against ground truth");
         println!("   Expected:   {EXPECTED_SORTED_SHA}");
         println!("   Sequential: {sequential_sha}");
         println!("   Chaos:      {chaos_sha}");
@@ -562,29 +609,22 @@ mod chaos_integration_tests {
 
         println!("═══════════════════════════════════════════════════════");
         println!("✅ VALIDATION PASSED!");
-        println!("   Chaos-order matches C++ ground truth exactly.");
+        println!("   Chaos-order matches ground truth exactly.");
         println!("═══════════════════════════════════════════════════════");
     }
 
     /// Tests reverse-order parsing (simpler chaos strategy).
     #[test]
-    #[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
+    #[ignore = "requires offline MFT (set UFFS_MFT_TEST_FILE or UFFS_MFT_TEST_DIR)"]
     fn test_reverse_order_d_drive() {
-        use std::path::PathBuf;
-
         let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
             .with_test_writer()
             .try_init();
 
-        let mft_path = PathBuf::from("/Users/rnio/uffs_data/drive_d/D_mft.bin");
-        if !mft_path.exists() {
-            eprintln!(
-                "⚠️  Test skipped: offline MFT not found at {}",
-                mft_path.display()
-            );
+        let Some(mft_path) = resolve_mft_path() else {
             return;
-        }
+        };
 
         let chaos_reader = ChaosMftReader::new(ChaosStrategy::Reverse, 2 * 1024 * 1024);
 
@@ -609,23 +649,16 @@ mod chaos_integration_tests {
 
     /// Tests interleaved chunk order (controlled chaos).
     #[test]
-    #[ignore = "requires offline MFT at /Users/rnio/uffs_data/drive_d/D_mft.bin"]
+    #[ignore = "requires offline MFT (set UFFS_MFT_TEST_FILE or UFFS_MFT_TEST_DIR)"]
     fn test_interleaved_order_d_drive() {
-        use std::path::PathBuf;
-
         let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
             .with_test_writer()
             .try_init();
 
-        let mft_path = PathBuf::from("/Users/rnio/uffs_data/drive_d/D_mft.bin");
-        if !mft_path.exists() {
-            eprintln!(
-                "⚠️  Test skipped: offline MFT not found at {}",
-                mft_path.display()
-            );
+        let Some(mft_path) = resolve_mft_path() else {
             return;
-        }
+        };
 
         let chaos_reader = ChaosMftReader::new(ChaosStrategy::Interleaved, 2 * 1024 * 1024);
 
@@ -662,10 +695,10 @@ mod chaos_integration_tests {
 //
 // For parity testing, use verify_parity.rs:
 //
-//   rust-script scripts/verify_parity.rs /Users/rnio/uffs_data D --regenerate
+//   rust-script scripts/verify_parity.rs ~/uffs_data D --regenerate
 //
 // The script will:
 // 1. Look for D_mft.iocp first (IOCP capture, preferred)
 // 2. Fall back to D_mft.bin (raw MFT, sequential)
 // 3. Display which format is being used
-// 4. Compare output with C++ golden baseline
+// 4. Compare output with golden baseline

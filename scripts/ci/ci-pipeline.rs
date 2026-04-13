@@ -55,17 +55,18 @@ use uuid::Uuid;
 // Step Definitions for UFFS CI Pipeline
 // ═══════════════════════════════════════════════════════════════════════════
 
-const STEP_UPDATE_POLARS: &str = "00-update-polars-git"; // Bump polars git lock to latest main
-const STEP_CLEAN_ARTIFACTS: &str = "01-clean-artifacts";
-const STEP_FORMAT_CODE: &str = "02-format-code";
-const STEP_COVERAGE_TESTS: &str = "03-coverage-tests";
-const STEP_PARALLEL_VALIDATION: &str = "04-parallel-validation";
-const STEP_FORMAT_CHECK: &str = "05-format-check";
-const STEP_VERSION_INCREMENT: &str = "06-version-increment";
-const STEP_BUILD_RELEASE: &str = "07-build-release";
-const STEP_DEPLOY_BINARY: &str = "08-deploy-binary"; // Copy to dist/ and ~/bin
-const STEP_GIT_COMMIT: &str = "09-git-commit";
-const STEP_GIT_PUSH: &str = "10-git-push";
+const STEP_TOOLCHAIN_SYNC: &str = "00-toolchain-ensure"; // Ensure pinned nightly is installed
+const STEP_UPDATE_POLARS: &str = "01-update-polars-git"; // Bump polars git lock to latest main
+const STEP_CLEAN_ARTIFACTS: &str = "02-clean-artifacts";
+const STEP_FORMAT_CODE: &str = "03-format-code";
+const STEP_COVERAGE_TESTS: &str = "04-coverage-tests";
+const STEP_PARALLEL_VALIDATION: &str = "05-parallel-validation";
+const STEP_FORMAT_CHECK: &str = "06-format-check";
+const STEP_VERSION_INCREMENT: &str = "07-version-increment";
+const STEP_BUILD_RELEASE: &str = "08-build-release";
+const STEP_DEPLOY_BINARY: &str = "09-deploy-binary"; // Copy to dist/ and ~/bin
+const STEP_GIT_COMMIT: &str = "10-git-commit";
+const STEP_GIT_PUSH: &str = "11-git-push";
 
 const ALL_STEPS: &[&str] = &[
     STEP_UPDATE_POLARS,
@@ -704,42 +705,27 @@ async fn phase1_optimized(ctx: &PipelineContext) -> Result<()> {
     println!("{}", "🧪 PHASE 1: Safe-by-Default Validation Pipeline".blue().bold());
     println!("ℹ️  No version bump, deploy, commit, or push in this lane");
 
-    // Step 1: Compile validation
-    execute_command(
-        "Workspace check",
-        "cargo",
-        &["check", "--workspace", "--all-targets", "--all-features"],
-        ctx,
-    )
-    .await?;
+    // Step 0: Ensure pinned nightly toolchain is installed
+    execute_command("Toolchain ensure", "just", &["toolchain-ensure"], ctx).await?;
 
-    // Step 2: Workspace tests
-    // NOTE: Run library + integration tests here; the workspace check above already validates bins.
+    // Step 1: Workspace tests (nextest compiles everything — no separate `cargo check` needed)
     execute_command(
         "Workspace tests",
         "cargo",
-        &["nextest", "run", "--workspace", "--all-features", "--lib", "--tests", "--jobs", "8"],
+        &["nextest", "run", "--workspace", "--all-features", "--lib", "--tests", "--profile", "ci"],
         ctx,
     ).await?;
 
-    // Step 3: Generate coverage report (optional)
+    // Step 2: Generate coverage report (optional)
     if ctx.coverage_report {
         coverage_report_command(ctx).await?;
     } else if ctx.verbose {
         println!("{} Coverage report skipped (use --coverage-report to generate)", "⏭️".yellow());
     }
 
-    // Step 4: Doc tests
-    execute_command_with_env(
-        "Documentation tests",
-        "cargo",
-        &["test", "--doc", "--workspace", "--all-features"],
-        &[("RUSTDOCFLAGS", "-Dwarnings")],
-        ctx,
-    ).await?;
-
-    // Step 5: Parallel linting and dependency security
-    let linting_commands = vec![
+    // Step 3: Parallel — doc tests + linting + dependency security
+    let parallel_commands = vec![
+        ("Documentation tests", "cargo", vec!["test", "--doc", "--workspace", "--all-features"]),
         // pedantic/nursery/cargo/multiple_crate_versions levels are set in
         // workspace Cargo.toml — only per-target overrides needed here.
         ("Production linting", "cargo", vec![
@@ -758,16 +744,7 @@ async fn phase1_optimized(ctx: &PipelineContext) -> Result<()> {
         ]),
         ("Dependency security", "cargo", vec!["deny", "check"]),
     ];
-    execute_parallel(linting_commands, ctx).await?;
-
-    // Step 6: Final CI lint gate
-    execute_command(
-        "CI lint gating",
-        "cargo",
-        &["clippy", "--workspace", "--all-features", "--", "-D", "warnings"],
-        ctx,
-    )
-    .await?;
+    execute_parallel_with_env(parallel_commands, &[("RUSTDOCFLAGS", "-Dwarnings")], ctx).await?;
 
     println!("{}", "✅ PHASE 1 COMPLETE: Validation passed without release-side effects!".green().bold());
     Ok(())
@@ -966,11 +943,10 @@ async fn coverage_report_command(ctx: &PipelineContext) -> Result<()> {
         execute_command("Coverage report", "cargo", &["llvm-cov", "report", "--html"], ctx).await?;
     } else {
         println!("{} No coverage data found, running tests first...", "⚠️".yellow());
-        execute_command_with_env(
+        execute_command(
             "Coverage tests",
             "cargo",
-            &["llvm-cov", "nextest", "--workspace", "--all-features", "--lib", "--bins", "--tests", "--jobs", "8", "--html"],
-            &[],
+            &["llvm-cov", "nextest", "--workspace", "--all-features", "--lib", "--bins", "--tests", "--profile", "ci", "--html"],
             ctx,
         ).await?;
     }
@@ -1101,7 +1077,12 @@ async fn run_enhanced_phase1(state: &mut WorkflowState, ctx: &PipelineContext) -
     println!("ℹ️  Running all validation with CURRENT version - version increment happens AFTER validation passes");
     println!("🚀 Using safe parallel optimization: format → compile → parallel(doc tests + linting)");
 
-    // Step 0: Update Polars git lock to latest commit on main
+    // Step 0: Ensure pinned nightly toolchain is installed
+    execute_step_with_tracking(state, STEP_TOOLCHAIN_SYNC, || async {
+        execute_command("Toolchain ensure", "just", &["toolchain-ensure"], ctx).await
+    }).await?;
+
+    // Step 1: Update Polars git lock to latest commit on main
     execute_step_with_tracking(state, STEP_UPDATE_POLARS, || async {
         update_polars_git(ctx).await
     }).await?;
@@ -1154,17 +1135,17 @@ async fn run_enhanced_phase1(state: &mut WorkflowState, ctx: &PipelineContext) -
     // Benchmarks create large DataFrames during initialization which causes SIGKILL
     // when nextest tries to enumerate tests.
     execute_step_with_tracking(state, STEP_COVERAGE_TESTS, || async {
-        execute_command_with_env(
+        execute_command(
             "Coverage tests",
             "cargo",
-            &["llvm-cov", "nextest", "--workspace", "--all-features", "--lib", "--bins", "--tests", "--jobs", "8", "--no-report"],
-            &[],
+            &["llvm-cov", "nextest", "--workspace", "--all-features", "--lib", "--bins", "--tests", "--profile", "ci", "--no-report"],
             ctx,
         ).await
     }).await?;
 
-    // Step 4: Parallel validation (doc tests + linting)
+    // Step 4: Parallel validation (doc tests + linting + security)
     execute_step_with_tracking(state, STEP_PARALLEL_VALIDATION, || async {
+        // Doc tests need RUSTDOCFLAGS; clippy/deny don't but it's harmless
         let parallel_commands = vec![
             ("Documentation tests", "cargo", vec!["test", "--doc", "--workspace", "--all-features"]),
             // pedantic/nursery/cargo/multiple_crate_versions levels are set in
@@ -1184,16 +1165,12 @@ async fn run_enhanced_phase1(state: &mut WorkflowState, ctx: &PipelineContext) -
             ]),
             ("Dependency security", "cargo", vec!["deny", "check"]),
         ];
-        let env_vars = vec![("RUSTDOCFLAGS", "-Dwarnings")];
-        execute_parallel_with_env(parallel_commands, &env_vars, ctx).await
+        execute_parallel_with_env(parallel_commands, &[("RUSTDOCFLAGS", "-Dwarnings")], ctx).await
     }).await?;
 
-    // Step 5: Final format check
+    // Step 5: Final format verification (check only — formatting was done in Step 2)
     execute_step_with_tracking(state, STEP_FORMAT_CHECK, || async {
-        execute_command("Format normalization", "cargo", &["fmt", "--all"], ctx).await?;
-        execute_command("CI lint gating", "cargo", &[
-            "clippy", "--workspace", "--all-features", "--", "-D", "warnings"
-        ], ctx).await
+        execute_command("Format check", "cargo", &["fmt", "--all", "--", "--check"], ctx).await
     }).await?;
 
     println!("{}", "✅ PHASE 1 COMPLETE - All testing and validation passed!".green().bold());

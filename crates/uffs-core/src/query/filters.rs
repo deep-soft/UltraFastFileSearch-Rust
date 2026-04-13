@@ -75,7 +75,7 @@ impl MftQuery {
     /// - FRS 11: `$Extend` (extended metadata)
     /// - FRS 12-15: Reserved
     ///
-    /// This matches the C++ `UltraFastFileSearch` behavior which excludes
+    /// This matches the legacy UFFS behavior which excludes
     /// these but keeps the root directory.
     #[must_use]
     pub fn hide_metadata_records(self) -> Self {

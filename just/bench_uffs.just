@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
+
 # Compare Rust vs reference binary (integration benchmark).
 bench-vs-cpp drive="C":
     #!/usr/bin/env bash

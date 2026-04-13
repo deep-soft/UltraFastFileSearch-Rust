@@ -13,7 +13,8 @@
 //!
 //! # Reference
 //!
-//! Based on the original C++ UFFS implementation and NTFS documentation.
+//! Based on NTFS on-disk format documentation and the Microsoft NTFS
+//! specification.
 //!
 //! # Platform Support
 //!
@@ -50,9 +51,8 @@ pub const fn filetime_to_unix_micros(filetime: i64) -> i64 {
     // Difference is 11644473600 seconds = 116444736000000000 * 100ns
     const FILETIME_UNIX_DIFF: i64 = 116_444_736_000_000_000;
 
-    // legacy-output parity: allow negative Unix timestamps (pre-1970 dates).
-    // C++ uses FileTimeToLocalFileTime() which handles all valid FILETIME values.
-    // Only clamp for filetime == 0 (unset/null timestamp).
+    // Allow negative Unix timestamps (pre-1970 dates) — FILETIME can represent
+    // dates back to 1601. Only clamp for filetime == 0 (unset/null timestamp).
     if filetime == 0 {
         return 0;
     }

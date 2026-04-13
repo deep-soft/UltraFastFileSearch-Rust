@@ -559,14 +559,14 @@ impl FileRecord {
         }
     }
 
-    /// Create a new record with zero-based counts, matching C++ constructor.
+    /// Create a new record with zero-based counts.
     ///
     /// Unlike [`new()`](Self::new) which initialises counts at 1 (assuming
     /// every record will have at least one name and one stream), this
     /// constructor starts all counts at 0.  The unified parser
     /// (`process_record`) then increments them for **every** accepted
     /// attribute, including the first, producing correct-by-construction
-    /// values that match the C++ `load()` behaviour.
+    /// values that match the unified parser's expectations.
     #[must_use]
     pub fn new_unified(frs: u64) -> Self {
         Self {

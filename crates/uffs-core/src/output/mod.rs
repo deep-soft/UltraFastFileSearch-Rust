@@ -14,7 +14,7 @@ mod config;
 
 use uffs_polars::DataFrame;
 
-pub use self::column::{CPP_COLUMN_ORDER, OutputColumn};
+pub use self::column::{BASELINE_COLUMN_ORDER, OutputColumn};
 pub use self::config::OutputConfig;
 use crate::error::Result;
 

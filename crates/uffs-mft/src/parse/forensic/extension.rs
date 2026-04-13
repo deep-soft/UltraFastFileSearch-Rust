@@ -140,9 +140,9 @@ pub(super) fn parse_extension_record(
                 };
 
                 if is_i30 {
-                    // Parity Fix: C++ does NOT include $I30:$BITMAP in directory size.
+                    // $I30:$BITMAP is NOT included in directory size.
                     // $BITMAP is metadata (used/free slots in the directory index),
-                    // not part of directory byte size. Skip this attribute to match C++.
+                    // not part of directory byte size. Skip this attribute.
                     if matches!(
                         AttributeType::from_u32(attr_header.type_code),
                         Some(AttributeType::Bitmap)
@@ -237,7 +237,7 @@ pub(super) fn parse_extension_record(
                 | AttributeType::AttributeList,
             ) => {
                 // Handle other stream-creating attributes
-                // Note: AttributeList (0x20) IS counted as a stream in C++ via the default:
+                // Note: AttributeList (0x20) IS counted as a stream (catch-all below).
                 // case
                 let attr_name = if attr_header.name_length > 0 {
                     let name_offset = offset + usize::from(attr_header.name_offset);
@@ -317,7 +317,7 @@ pub(super) fn parse_extension_record(
                 });
             }
             _ => {
-                // C++ counts ALL attribute types as streams via default: case
+                // All remaining attribute types are counted as streams (catch-all).
                 let type_code = attr_header.type_code;
                 let attr_name = if attr_header.name_length > 0 {
                     let name_offset = offset + usize::from(attr_header.name_offset);

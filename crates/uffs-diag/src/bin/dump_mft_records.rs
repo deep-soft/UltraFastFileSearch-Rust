@@ -5,7 +5,7 @@
 //!
 //! Offline, cross-platform tool operating on `uffs_mft`'s raw MFT format
 //! (`*.raw` produced by `uffs_mft save`). This lets us inspect header flags
-//! and basic structure for selected records to compare against C++ behavior.
+//! and basic structure for selected records to verify parse correctness.
 //!
 //! Usage:
 //! ```text

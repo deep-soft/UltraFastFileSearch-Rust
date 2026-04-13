@@ -57,7 +57,7 @@ fn test_parse_separator_special() {
     assert_eq!(OutputConfig::parse_separator("tab"), "\t");
     assert_eq!(OutputConfig::parse_separator("NEWLINE"), "\n");
     assert_eq!(OutputConfig::parse_separator(";"), ";");
-    // CPP compatibility values
+    // Legacy compatibility values
     assert_eq!(OutputConfig::parse_separator("NEW LINE"), "\n");
     assert_eq!(OutputConfig::parse_separator("SPACE"), " ");
     assert_eq!(OutputConfig::parse_separator("RETURN"), "\r");
@@ -68,13 +68,13 @@ fn test_parse_separator_special() {
 
 #[test]
 fn test_parse_column_aliases() {
-    // Short aliases for CPP compatibility
+    // Short aliases for legacy compatibility
     assert_eq!(OutputColumn::parse("r"), Some(OutputColumn::ReadOnly));
     assert_eq!(OutputColumn::parse("a"), Some(OutputColumn::Archive));
     assert_eq!(OutputColumn::parse("s"), Some(OutputColumn::System));
     assert_eq!(OutputColumn::parse("h"), Some(OutputColumn::Hidden));
     assert_eq!(OutputColumn::parse("o"), Some(OutputColumn::Offline));
-    // CPP name aliases
+    // Legacy name aliases
     assert_eq!(OutputColumn::parse("written"), Some(OutputColumn::Modified));
     assert_eq!(
         OutputColumn::parse("notcontent"),
@@ -84,7 +84,7 @@ fn test_parse_column_aliases() {
         OutputColumn::parse("directory"),
         Some(OutputColumn::DirectoryFlag)
     );
-    // CPP typo support
+    // Legacy typo support
     assert_eq!(
         OutputColumn::parse("decendents"),
         Some(OutputColumn::Descendants)
@@ -368,7 +368,7 @@ fn test_parity_compat_directory_formatting() {
 
 /// Regression test: root directory path must NOT get a double trailing
 /// backslash in parity mode. Root's path is already `G:\` — appending `\` would
-/// produce `G:\\` which mismatches the C++ baseline.
+/// produce `G:\\` which mismatches the legacy baseline.
 #[test]
 fn test_parity_root_no_double_trailing_backslash() {
     use crate::search::backend::DisplayRow;
@@ -421,13 +421,13 @@ fn test_parity_root_no_double_trailing_backslash() {
 
 // ── Regression tests for T101–T118: computed columns in `--columns all` ──
 
-/// `CPP_COLUMN_ORDER` ("--columns all") must include Tree Size, Tree Allocated,
-/// Bulkiness, Type, Extension, Name Length, and Path Length.
+/// `BASELINE_COLUMN_ORDER` ("--columns all") must include Tree Size, Tree
+/// Allocated, Bulkiness, Type, Extension, Name Length, and Path Length.
 #[test]
-fn cpp_column_order_includes_computed_columns() {
-    use super::CPP_COLUMN_ORDER;
+fn baseline_column_order_includes_computed_columns() {
+    use super::BASELINE_COLUMN_ORDER;
 
-    let has = |col: OutputColumn| CPP_COLUMN_ORDER.contains(&col);
+    let has = |col: OutputColumn| BASELINE_COLUMN_ORDER.contains(&col);
     assert!(has(OutputColumn::TreeSize), "TreeSize missing from all");
     assert!(
         has(OutputColumn::TreeAllocated),

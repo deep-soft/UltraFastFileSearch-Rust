@@ -37,38 +37,124 @@ check-cross:
     @printf "\033[0;34m Cross-compilation validation using CI pipeline...\033[0m\n"
     rust-script scripts/ci/ci-pipeline.rs cross-check
 
-# Install core development tools.
-devenv-tools:
-    @printf "\033[0;34m🛠️ Installing core development tools...\033[0m\n"
-    cargo install cargo-nextest
-    cargo install cargo-llvm-cov
-    cargo install cargo-audit
-    cargo install cargo-deny
-    cargo install cargo-semver-checks
-    @printf "\033[0;32m✅ Core tools installed\033[0m\n"
-
-# Run all tests (alias for test).
-devenv-test-all: test
-    @printf "\033[0;32m✅ All tests complete\033[0m\n"
-
-# Install all modern development tools.
-install-tools:
-    @printf "\033[0;34m🔧 Installing modern development tools...\033[0m\n"
-    @printf "\033[1;33mUsing cargo-binstall for fast installation...\033[0m\n"
-    cargo binstall cargo-nextest cargo-llvm-cov cargo-audit cargo-watch just --no-confirm
-    @printf "\033[0;32m✅ All modern tools installed successfully!\033[0m\n"
-
-# Update all development tools to latest versions.
+# Update everything: Rust toolchain, cargo tools, system packages.
+# Uses cargo-binstall (pre-built binaries) when available for ~100× faster installs.
+# Run before `just go` or `just ship` to stay cutting-edge.
+[unix]
 update-tools:
-    @printf "\033[0;34m🔄 Updating development tools...\033[0m\n"
-    @if command -v cargo-install-update >/dev/null 2>&1; then \
-        cargo install-update -a; \
-    else \
-        printf "\033[1;33mInstalling cargo-update for efficient updates...\033[0m\n"; \
-        just _install-if-missing cargo-update cargo-update; \
-        cargo install-update -a; \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf "\033[1;34m🔄 Updating all development tools\033[0m\n"
+    echo "========================================================"
+
+    # ── 1. Rust toolchain ──────────────────────────────────────
+    printf "\n\033[0;34m🦀 Step 1/3: Rust toolchain\033[0m\n"
+    if command -v brew >/dev/null 2>&1 && brew list rustup 2>/dev/null | grep -q rustup; then
+        printf "  → rustup managed by Homebrew\n"
+        brew upgrade rustup 2>/dev/null || true
+    else
+        rustup self update 2>/dev/null || true
     fi
-    @printf "\033[0;32m✅ All tools updated to latest versions!\033[0m\n"
+    rustup update
+    just toolchain-sync
+    printf "\033[0;32m  ✅ Rust toolchain up to date\033[0m\n"
+
+    # ── 2. Cargo tools ─────────────────────────────────────────
+    printf "\n\033[0;34m📦 Step 2/3: Cargo tools\033[0m\n"
+    TOOLS=(
+        cargo-nextest
+        cargo-llvm-cov
+        cargo-deny
+        cargo-xwin
+        sccache
+        cargo-machete
+        cargo-outdated
+        cargo-semver-checks
+        cargo-mutants
+        cargo-insta
+        rust-script
+        flamegraph
+        samply
+    )
+    TOOL_LIST="${TOOLS[*]}"
+    if command -v cargo-binstall >/dev/null 2>&1; then
+        printf "  → Using cargo-binstall (fast, pre-built binaries)\n"
+        cargo binstall -y --no-confirm $TOOL_LIST
+    else
+        printf "  → Using cargo install (compiling from source — slower)\n"
+        printf "  💡 Install cargo-binstall for ~100× faster updates:\n"
+        printf "     curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash\n"
+        cargo install $TOOL_LIST
+    fi
+    printf "\033[0;32m  ✅ Cargo tools up to date\033[0m\n"
+
+    # ── 3. System packages ─────────────────────────────────────
+    printf "\n\033[0;34m🍺 Step 3/3: System packages\033[0m\n"
+    if command -v brew >/dev/null 2>&1; then
+        brew upgrade just 2>/dev/null || printf "  → just already up to date\n"
+    else
+        printf "  → No Homebrew detected, skipping system packages\n"
+    fi
+    printf "\033[0;32m  ✅ System packages up to date\033[0m\n"
+
+    echo ""
+    printf "\033[1;32m🎉 All tools updated!\033[0m\n"
+    printf "  rustc:    $(rustc --version)\n"
+    printf "  nextest:  $(cargo nextest --version 2>/dev/null | head -1)\n"
+    printf "  llvm-cov: $(cargo llvm-cov --version 2>/dev/null)\n"
+
+[windows]
+update-tools:
+    #!powershell
+    Write-Host "`n🔄 Updating all development tools" -ForegroundColor Blue
+    Write-Host "========================================================"
+
+    # ── 1. Rust toolchain ──────────────────────────────────────
+    Write-Host "`n🦀 Step 1/3: Rust toolchain" -ForegroundColor Blue
+    rustup self update 2>$null
+    rustup update
+    just toolchain-sync
+    Write-Host "  ✅ Rust toolchain up to date" -ForegroundColor Green
+
+    # ── 2. Cargo tools ─────────────────────────────────────────
+    Write-Host "`n📦 Step 2/3: Cargo tools" -ForegroundColor Blue
+    $tools = @(
+        "cargo-nextest"
+        "cargo-llvm-cov"
+        "cargo-deny"
+        "sccache"
+        "cargo-machete"
+        "cargo-outdated"
+        "cargo-semver-checks"
+        "cargo-mutants"
+        "cargo-insta"
+        "rust-script"
+    )
+    $toolList = $tools -join " "
+    if (Get-Command cargo-binstall -ErrorAction SilentlyContinue) {
+        Write-Host "  → Using cargo-binstall (fast, pre-built binaries)"
+        Invoke-Expression "cargo binstall -y --no-confirm $toolList"
+    } else {
+        Write-Host "  → Using cargo install (compiling from source — slower)"
+        Write-Host "  💡 Install cargo-binstall for faster updates:" -ForegroundColor Yellow
+        Invoke-Expression "cargo install $toolList"
+    }
+    Write-Host "  ✅ Cargo tools up to date" -ForegroundColor Green
+
+    # ── 3. System packages ─────────────────────────────────────
+    Write-Host "`n📦 Step 3/3: System packages" -ForegroundColor Blue
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget upgrade Casey.Just 2>$null
+    } elseif (Get-Command scoop -ErrorAction SilentlyContinue) {
+        scoop update just 2>$null
+    } else {
+        Write-Host "  → No winget/scoop detected, skipping system packages"
+    }
+    Write-Host "  ✅ System packages up to date" -ForegroundColor Green
+
+    Write-Host "`n🎉 All tools updated!" -ForegroundColor Green
+    Write-Host "  rustc:    $(rustc --version)"
+    Write-Host "  nextest:  $(cargo nextest --version 2>$null | Select-Object -First 1)"
 
 
 

@@ -51,8 +51,26 @@ _install-component COMPONENT:
         printf "\033[0;32m✅ {{ COMPONENT }} component already installed (skip)\033[0m\n"
     fi
 
+# Ensure the pinned nightly toolchain (from rust-toolchain.toml) is installed.
+# Called automatically by the CI pipeline. Does NOT change the pinned version.
+toolchain-ensure:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TOOLCHAIN_FILE="rust-toolchain.toml"
+    CURRENT=$(grep '^channel' "$TOOLCHAIN_FILE" | sed 's/.*"\(.*\)".*/\1/')
+    printf "\033[0;34m🔧 Ensuring toolchain %s is installed...\033[0m\n" "$CURRENT"
+    if ! rustup toolchain install "$CURRENT" --profile default 2>&1; then
+        printf "\033[0;33m⚠️  Install failed — clearing rustup download cache and retrying...\033[0m\n"
+        rm -rf ~/.rustup/downloads/*
+        rustup toolchain install "$CURRENT" --profile default
+    fi
+    rustup default "$CURRENT"
+    printf "\033[0;32m✅ Toolchain %s ready\033[0m\n" "$CURRENT"
+    rustc --version
+
 # Sync the nightly toolchain to the latest date and update rust-toolchain.toml.
-# Run this when you want to bump the pinned nightly (e.g. before `just go`).
+# Run this MANUALLY when you want to bump the pinned nightly (e.g. before `just go`).
+# Do NOT call from CI — use `toolchain-ensure` instead.
 toolchain-sync:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -79,8 +97,13 @@ toolchain-sync:
     sed -i'' -e "s/# Latest nightly — updated .*/# Latest nightly — updated $(date -u +%Y-%m-%d)./" "$TOOLCHAIN_FILE"
 
     # Install the new toolchain (rustup reads rust-toolchain.toml automatically).
+    # Retry with cache clear on failure (stale .partial files cause rename errors).
     printf "\033[0;34m   Installing %s...\033[0m\n" "$NEW_CHANNEL"
-    rustup toolchain install "$NEW_CHANNEL" --profile default
+    if ! rustup toolchain install "$NEW_CHANNEL" --profile default 2>&1; then
+        printf "\033[0;33m⚠️  Install failed — clearing rustup download cache and retrying...\033[0m\n"
+        rm -rf ~/.rustup/downloads/*
+        rustup toolchain install "$NEW_CHANNEL" --profile default
+    fi
     rustup default "$NEW_CHANNEL"
 
     # Verify.
@@ -88,33 +111,35 @@ toolchain-sync:
     rustc --version
     cargo --version
 
-# Universal development environment setup
+# First-time development environment setup (install-if-missing only).
+# For updates, use `just update-tools`.
 setup:
     #!/usr/bin/env bash
-    printf "\033[0;34m🔧 Universal Smart Development Environment Setup\033[0m\n"
+    printf "\033[0;34m🔧 Development Environment Setup\033[0m\n"
     printf "\033[0;34m   Nightly toolchain + essential Rust development tools\033[0m\n"
+    echo "========================================================"
     just _install-if-missing cargo-binstall cargo-binstall
-    just _install-if-missing cargo-watch cargo-watch
     just _install-if-missing cargo-nextest cargo-nextest
     just _install-if-missing cargo-llvm-cov cargo-llvm-cov
     just _install-if-missing cargo-deny cargo-deny
-    just _install-if-missing cargo-audit cargo-audit
-    just _install-if-missing cargo-geiger cargo-geiger
-    just _install-if-missing cargo-outdated cargo-outdated
-    just _install-if-missing cargo-udeps cargo-udeps
+    just _install-if-missing cargo-xwin cargo-xwin
     just _install-if-missing cargo-machete cargo-machete
-    just _install-if-missing cargo-expand cargo-expand
+    just _install-if-missing cargo-outdated cargo-outdated
     just _install-if-missing cargo-semver-checks cargo-semver-checks
+    just _install-if-missing cargo-mutants cargo-mutants
+    just _install-if-missing cargo-insta cargo-insta
+    just _install-if-missing cargo-watch cargo-watch
+    just _install-if-missing cargo-expand cargo-expand
     just _install-if-missing rust-script rust-script
-    just _install-if-missing cargo-criterion cargo-criterion
-    just _install-if-missing cargo-update cargo-update
     just _install-if-missing sccache sccache
-    just _install-component llvm-tools-preview
+    just _install-if-missing flamegraph flamegraph
+    just _install-if-missing samply samply
+    just _install-component llvm-tools
     just _install-component miri
     printf "\033[0;32m✅ Development environment setup complete!\033[0m\n"
     printf "\033[0;34mToolchain: $(rustc --version)\033[0m\n"
     printf "\033[0;34mNext steps:\033[0m\n"
+    printf "  • Run 'just update-tools' to update everything to latest\n"
     printf "  • Run 'just go' to validate everything safely\n"
-    printf "  • Run 'just phase2-ship' for the explicit ship lane\n"
-    printf "  • Run 'just ci-analyze' for CI pipeline optimization\n"
+    printf "  • Run 'just ship' for the full ship pipeline\n"
 

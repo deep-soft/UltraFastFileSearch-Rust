@@ -279,10 +279,10 @@ fn main() {
         }
     }
 
-    // Only update checksums/symlinks/git for release builds
+    // Only update checksums/git for release builds
     if build_mode == BuildMode::Release {
         update_all_checksums(&version, &build_order);
-        update_latest_symlink(&version);
+        prune_old_dist_versions(&version, 2);
 
         // Add binaries to git for sharing
         add_binaries_to_git(&version);
@@ -753,17 +753,57 @@ fn copy_binaries_to_dist(version: &str, target: &Target, target_dir: &Path) -> b
     all_success
 }
 
-fn update_latest_symlink(version: &str) {
-    let latest_link = Path::new("dist/latest");
+/// Keep only the `keep` most recent versioned directories in `dist/`.
+/// Versions are sorted lexicographically (vX.Y.Z sorts correctly).
+/// Also removes the legacy `dist/latest` symlink if present.
+fn prune_old_dist_versions(current: &str, keep: usize) {
+    let dist = Path::new("dist");
+
+    // Remove legacy symlink
+    let latest_link = dist.join("latest");
     if latest_link.exists() || latest_link.is_symlink() {
-        let _ = fs::remove_file(latest_link);
+        let _ = fs::remove_file(&latest_link);
+        println!("🗑️  Removed dist/latest symlink");
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::symlink;
-        if symlink(version, latest_link).is_ok() {
-            println!("✅ Updated dist/latest -> {}", version);
+
+    // Collect versioned directories (start with 'v')
+    let mut versions: Vec<String> = fs::read_dir(dist)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('v') { Some(name) } else { None }
+        })
+        .collect();
+
+    versions.sort();
+
+    // Always keep the current version + the most recent `keep` versions
+    let to_remove: Vec<String> = if versions.len() > keep {
+        versions[..versions.len() - keep]
+            .iter()
+            .filter(|v| v.as_str() != current)
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    for v in &to_remove {
+        let path = dist.join(v);
+        if let Err(e) = fs::remove_dir_all(&path) {
+            eprintln!("⚠️  Failed to remove dist/{}: {}", v, e);
+        } else {
+            println!("🗑️  Pruned old dist/{}", v);
         }
+    }
+
+    if to_remove.is_empty() {
+        println!("✅ dist/ clean — {} version(s) retained", versions.len());
+    } else {
+        println!("✅ Pruned {} old version(s), kept {}", to_remove.len(), keep);
     }
 }
 

@@ -13,8 +13,8 @@
 #   - cross_check_mft_reference: Cross-check MFT records against reference CSV
 #   - compare_raw_mft: Compare two raw MFT files record-by-record
 #   - inspect_mft_record_flow: Inspect raw->fixup->parse pipeline for FRS
-#   - analyze_diff: Deep comparison of C++ vs Rust UFFS outputs
-#   - compare_scan_parity: Comprehensive C++ vs Rust scan output parity check
+#   - analyze_diff: Deep comparison of legacy vs Rust UFFS outputs
+#   - compare_scan_parity: Comprehensive legacy vs Rust scan output parity check
 # ============================================================================
 
 [package]

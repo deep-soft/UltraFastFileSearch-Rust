@@ -8,6 +8,8 @@
 //! colored = "2"
 //! dirs-next = "2"
 //! ```
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
 //!
 //! mcp-validation.rs — MCP server capability & conformance validation.
 //!

@@ -8,7 +8,7 @@ use std::io::Write;
 
 use uffs_polars::{Column, DataFrame, DataType};
 
-use super::{CPP_COLUMN_ORDER, OutputColumn};
+use super::{BASELINE_COLUMN_ORDER, OutputColumn};
 use crate::error::Result;
 
 /// Output configuration for customizable formatting.
@@ -31,7 +31,7 @@ pub struct OutputConfig {
     /// `FileTimeToLocalFileTime()` uses the CURRENT timezone offset for ALL
     /// timestamps, ignoring historical DST.
     pub timezone_offset_secs: i32,
-    /// C++ parity-compat mode: directories get trailing `\` in `Path`,
+    /// Parity-compat mode: directories get trailing `\` in `Path`,
     /// empty `Name`, self-path in `PathOnly`, and treesize for `Size`.
     pub parity_compat: bool,
     // NOTE: Tripwire was removed from OutputConfig (Fix #1).
@@ -41,7 +41,7 @@ pub struct OutputConfig {
 
 impl Default for OutputConfig {
     fn default() -> Self {
-        // Get current timezone offset once, matching C++ behavior where
+        // Get current timezone offset once. On Windows,
         // Windows' FileTimeToLocalFileTime() uses the CURRENT offset for all timestamps
         let timezone_offset_secs = chrono::Local::now().offset().local_minus_utc();
 
@@ -169,7 +169,7 @@ impl OutputConfig {
         self
     }
 
-    /// Enable C++ parity-compat directory formatting.
+    /// Enable parity-compat directory formatting.
     #[must_use]
     pub const fn with_parity_compat(mut self, enabled: bool) -> Self {
         self.parity_compat = enabled;
@@ -229,11 +229,12 @@ impl OutputConfig {
         reason = "if-let-else is clearer for control flow with early return"
     )]
     pub fn write<W: Write>(&self, df: &DataFrame, mut writer: W) -> Result<()> {
-        // Determine columns to output - use CPP_COLUMN_ORDER when "all" is specified
+        // Determine columns to output - use BASELINE_COLUMN_ORDER when "all" is
+        // specified
         let output_cols: &[OutputColumn] = if let Some(cols) = &self.columns {
             cols.as_slice()
         } else {
-            CPP_COLUMN_ORDER
+            BASELINE_COLUMN_ORDER
         };
 
         let fixed_tz = chrono::FixedOffset::east_opt(self.timezone_offset_secs);
@@ -262,7 +263,7 @@ impl OutputConfig {
                 header.push_str(col.display_name());
                 header.push_str(&self.quote);
             }
-            // C++ outputs header followed by empty line
+            // Header followed by empty line
             header.push('\n');
             header.push('\n');
             writer.write_all(header.as_bytes())?;
@@ -284,7 +285,7 @@ impl OutputConfig {
                     }
                     Err(default_value) => {
                         // Column not in DataFrame - use appropriate default.
-                        // Numeric columns (like Descendants) should show "0" to match C++.
+                        // Numeric columns (like Descendants) should show "0".
                         row_buffer.push_str(default_value);
                     }
                 }
@@ -313,7 +314,7 @@ impl OutputConfig {
         let output_cols: &[OutputColumn] = self
             .columns
             .as_ref()
-            .map_or(CPP_COLUMN_ORDER, |cols| cols.as_slice());
+            .map_or(BASELINE_COLUMN_ORDER, |cols| cols.as_slice());
 
         // Header
         if self.header {
@@ -428,8 +429,8 @@ impl OutputConfig {
                 }
             }
             DataType::Datetime(TimeUnit::Microseconds, _) => {
-                // Convert UTC timestamp to local time using FIXED offset (matching C++ output).
-                // C++ uses Windows' FileTimeToLocalFileTime() which applies the CURRENT
+                // Convert UTC timestamp to local time using FIXED offset.
+                // Windows' FileTimeToLocalFileTime() applies the CURRENT
                 // timezone offset to ALL timestamps, ignoring historical DST transitions.
                 // We match this by using a fixed offset computed once at startup.
                 if let Ok(AnyValue::Datetime(ts, TimeUnit::Microseconds, _)) = series.get(row_idx)
@@ -447,7 +448,7 @@ impl OutputConfig {
                     // This matches established behavior: same offset for all timestamps
                     if let Some(timezone_offset) = fixed_tz {
                         let local_dt = utc_dt.with_timezone(timezone_offset);
-                        // Format WITHOUT subseconds to match C++ output exactly
+                        // Format WITHOUT subseconds to match baseline output exactly
                         Self::append_display(row_buffer, local_dt.format("%Y-%m-%d %H:%M:%S"));
                     } else {
                         // Fallback: format as UTC if offset is invalid
@@ -521,7 +522,7 @@ mod attr {
     pub(super) const RECALL_ON_DATA: u32 = 0x0040_0000;
     /// Parity-compat mask — must match `StandardInfo::parity_attributes()`.
     ///
-    /// Includes the 15 attribute bits the C++ baseline tracks:
+    /// Includes the 15 attribute bits the legacy baseline tracks:
     /// `READONLY` | `HIDDEN` | `SYSTEM` | `DIRECTORY` | `ARCHIVE` | `SPARSE` |
     /// `REPARSE` | `COMPRESSED` | `OFFLINE` | `NOT_INDEXED` | `ENCRYPTED` |
     /// `INTEGRITY` | `NO_SCRUB` | `PINNED` | `UNPINNED`.

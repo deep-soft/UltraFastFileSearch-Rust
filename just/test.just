@@ -27,7 +27,7 @@ fmt-check:
 # Run all tests with nextest.
 test:
     @printf "\033[0;34m🧪 Running all tests with nextest (FAST-FAIL)...\033[0m\n"
-    cargo llvm-cov nextest run --workspace --all-features --all-targets --jobs 16 --no-report
+    cargo llvm-cov nextest --workspace --all-features --all-targets --no-report
 
 # Run documentation tests separately.
 test-doc:
@@ -42,15 +42,13 @@ test-slow:
 
 # Generate coverage report.
 coverage:
-    @printf "\033[0;34m📊 Generating coverage report...\033[0m\n"
-    cargo clean
     @if command -v cargo-llvm-cov >/dev/null 2>&1; then \
-        cargo llvm-cov nextest --workspace --all-features --all-targets --jobs 16 --html; \
+        cargo llvm-cov nextest --workspace --all-features --all-targets --html; \
         printf "\033[0;32m📁 Coverage report: target/llvm-cov/html/index.html\033[0m\n"; \
     else \
         printf "\033[1;33mInstalling cargo-llvm-cov...\033[0m\n"; \
         just _install-if-missing cargo-llvm-cov cargo-llvm-cov; \
-        cargo llvm-cov nextest --workspace --all-features --all-targets --jobs 16 --html; \
+        cargo llvm-cov nextest --workspace --all-features --all-targets --html; \
         printf "\033[0;32m📁 Coverage report: target/llvm-cov/html/index.html\033[0m\n"; \
     fi
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env rust-script
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
 //! Everything Capacity Probe — discover per-drive IPC/OOM limits of Everything (es.exe).
 //!
 //! Run on Windows (elevated recommended) from the repo root:

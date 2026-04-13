@@ -1,4 +1,11 @@
 #!/usr/bin/env rust-script
+// =============================================================================
+// scripts/dev/diagnose_mft_counts.rs — UFFS MFT Record Count Diagnostics
+// =============================================================================
+//
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+//
 //! Diagnostic script to compare MFT record counts between the reference output and Rust output.
 //!
 //! Usage:
@@ -12,7 +19,7 @@
 //!
 //! ```cargo
 //! [dependencies]
-//! polars = { version = "0.46", features = ["lazy", "csv", "strings"] }
+//! polars = { version = "0.53", features = ["lazy", "csv", "strings"] }
 //! ```
 
 use polars::prelude::*;

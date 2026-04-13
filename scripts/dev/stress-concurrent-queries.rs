@@ -10,6 +10,12 @@
 //! uds_windows = "1.1"
 //! ```
 // =============================================================================
+// scripts/dev/stress-concurrent-queries.rs — UFFS Concurrent Query Stress Test
+// =============================================================================
+//
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+//
 // Concurrent query stress test for the UFFS daemon.
 //
 // Ramps concurrency from 1 → max (default 128), measures per-query

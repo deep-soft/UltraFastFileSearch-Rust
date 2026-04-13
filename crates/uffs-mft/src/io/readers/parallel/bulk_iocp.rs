@@ -7,7 +7,7 @@ use super::*;
 
 impl ParallelMftReader {
     /// Bulk read using true IOCP - queues ALL reads at once, lets Windows
-    /// optimize disk scheduling. This is the C++ approach: submit all I/O
+    /// optimize disk scheduling. All I/O is submitted
     /// operations simultaneously, then wait for completions.
     ///
     /// # Arguments
@@ -40,7 +40,7 @@ impl ParallelMftReader {
         info!(
             total_records,
             total_bytes_mb = total_bytes / (1024 * 1024),
-            "🚀 Starting IOCP bulk MFT read (C++ style: queue ALL, then parse)"
+            "🚀 Starting IOCP bulk MFT read (queue ALL, then parse)"
         );
 
         // Phase 1: Allocate single buffer for entire MFT
@@ -193,7 +193,7 @@ impl ParallelMftReader {
             "📤 Queued all reads to IOCP (adaptive I/O size)"
         );
 
-        // Wait for all completions using multiple worker threads (C++ approach)
+        // Wait for all completions using multiple worker threads
         // This keeps the I/O pipeline full by processing completions in parallel
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};

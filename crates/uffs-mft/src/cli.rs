@@ -50,7 +50,7 @@ pub(crate) enum Commands {
 
         /// Output one row per unique FRS instead of expanding hard links.
         /// By default, hard links are expanded to separate rows (matching
-        /// C++/Explorer). Use this flag for power users who want to
+        /// Explorer). Use this flag for power users who want to
         /// count unique files, not paths.
         #[arg(long)]
         unique: bool,
@@ -80,7 +80,7 @@ pub(crate) enum Commands {
 
         /// Output one row per unique FRS instead of expanding hard links.
         /// By default, hard links are expanded to separate rows (matching
-        /// C++/Explorer). Use this flag for power users who want to
+        /// Explorer). Use this flag for power users who want to
         /// count unique files, not paths.
         #[arg(long)]
         unique: bool,
@@ -264,7 +264,7 @@ pub(crate) enum Commands {
     ///
     /// Measures pure disk I/O throughput by reading the entire MFT with
     /// synchronous 1MB reads. Does NOT parse records or build `DataFrame`s.
-    /// Use this to compare raw read performance between Rust and C++.
+    /// Use this to measure raw disk I/O throughput in isolation.
     ///
     /// # Examples
     ///
@@ -328,14 +328,14 @@ pub(crate) enum Commands {
         mode: String,
 
         /// Disable MFT bitmap optimization (read entire MFT sequentially).
-        /// C++ team insight: Sequential reads may be faster than seeking to
-        /// skip unused records on HDD.
+        /// Sequential reads may be faster than seeking to skip unused records
+        /// on HDD.
         #[arg(long)]
         no_bitmap: bool,
 
         /// Disable placeholder creation for missing parent directories.
-        /// C++ team insight: They don't add placeholders upfront - they resolve
-        /// paths lazily. Disabling saves ~15% of CPU time.
+        /// Without placeholders, paths are resolved lazily. Disabling saves
+        /// ~15% of CPU time.
         #[arg(long)]
         no_placeholders: bool,
 
@@ -369,7 +369,7 @@ pub(crate) enum Commands {
     ///
     /// This command measures ONLY the tree metrics computation phase
     /// (descendants, treesize, `tree_allocated`), which corresponds to
-    /// the C++ "preprocessing" phase in `--benchmark-index`.
+    /// the "preprocessing" phase in `--benchmark-index`.
     ///
     /// Use this for direct apples-to-apples comparison of tree algorithm
     /// performance between Rust and the reference benchmark.

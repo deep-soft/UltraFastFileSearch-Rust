@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+
+
 # Debug version of benchmark-flows with visible output.
 benchmark-flows-debug:
     #!/usr/bin/env bash
@@ -65,7 +69,7 @@ benchmark-llvm-reuse:
     cargo clean
     printf "\033[0;34m  → Step 1: Coverage analysis (full LLVM compilation)...\033[0m\n"
     STEP1_START=$(date +%s)
-    cargo llvm-cov nextest --workspace --all-features --all-targets --jobs 16 --no-report
+    cargo llvm-cov nextest --workspace --all-features --all-targets --no-report
     STEP1_END=$(date +%s)
     STEP1_TIME=$((STEP1_END - STEP1_START))
     printf "\033[0;34m  → Step 2: Coverage data ready (HTML skipped for speed)...\033[0m\n"
@@ -75,7 +79,7 @@ benchmark-llvm-reuse:
     STEP2_TIME=$((STEP2_END - STEP2_START))
     printf "\033[0;34m  → Step 3: Additional test run (artifact reuse)...\033[0m\n"
     STEP3_START=$(date +%s)
-    cargo llvm-cov nextest run --workspace --all-features --all-targets --jobs 16 --no-report
+    cargo llvm-cov nextest --workspace --all-features --all-targets --no-report
     STEP3_END=$(date +%s)
     STEP3_TIME=$((STEP3_END - STEP3_START))
     END_TIME=$(date +%s)
@@ -133,15 +137,11 @@ benchmark-both:
     printf "\033[0;34m📊 Review the timing results above to compare approaches\033[0m\n"
     printf "\033[0;34m💡 Consider the approach that best fits your development workflow\033[0m\n"
 
-# Performance profiling with advanced tools.
+# Build timing analysis.
 benchmark-advanced:
     #!/usr/bin/env bash
-    printf "\033[0;34m📊 Advanced performance profiling...\033[0m\n"
-    if command -v cargo-criterion >/dev/null 2>&1; then printf "\033[0;34m  → Running criterion benchmarks...\033[0m\n"; cargo criterion; else printf "\033[1;33m⚠️  cargo-criterion not found, run 'just setup' first\033[0m\n"; fi
-    printf "\033[0;34m  → Analyzing memory usage patterns...\033[0m\n"
-    if command -v valgrind >/dev/null 2>&1; then printf "\033[0;34m    → Running valgrind analysis...\033[0m\n"; valgrind --tool=massif cargo test; else printf "\033[1;33m⚠️  valgrind not available, skipping memory analysis\033[0m\n"; fi
-    printf "\033[0;34m  → Analyzing build time breakdown...\033[0m\n"
+    printf "\033[0;34m📊 Build timing analysis...\033[0m\n"
     cargo build --timings
-    printf "\033[0;32m✅ Advanced profiling complete!\033[0m\n"
-    printf "\033[0;34m📊 Check target/cargo-timings/ for detailed build analysis\033[0m\n"
+    printf "\033[0;32m✅ Timing report generated!\033[0m\n"
+    printf "\033[0;34m📊 Open: target/cargo-timings/cargo-timing.html\033[0m\n"
 

@@ -133,13 +133,13 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 }
             }
             Some(AttributeType::ReparsePoint) => {
-                // Parse $REPARSE_POINT to get the reparse tag and size
-                // C++ handles both resident and non-resident reparse points:
-                // - Resident: ah->Resident.ValueLength
-                // - Non-resident: ah->NonResident.DataSize (rare, but possible)
+                // Parse $REPARSE_POINT to get the reparse tag and size.
+                // Both resident and non-resident forms are handled:
+                // - Resident: ValueLength from the attribute header
+                // - Non-resident: DataSize (rare, but possible for large reparse data)
                 //
-                // C++ also counts $REPARSE_POINT as a stream (line 696: ++stream_count)
-                // This affects the descendants count in tree metrics.
+                // $REPARSE_POINT is counted as a stream, which affects the
+                // descendants count in tree metrics.
                 let (rp_size, rp_allocated, is_resident) = if attr_header.is_non_resident == 0 {
                     // Resident reparse point (common case)
                     let value_length = u64::from(u32::from_le_bytes(
@@ -187,7 +187,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     (data_size, alloc_size, false)
                 };
 
-                // C++ counts $REPARSE_POINT as a stream for descendants calculation
+                // Count $REPARSE_POINT as a stream for descendants calculation
                 // Add it as a special stream with name "$REPARSE" to distinguish from $DATA
                 // Note: The size is already captured in reparse_size for the record's size
                 // calculation, but we need the stream for stream_count.
@@ -203,11 +203,11 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
             Some(
                 AttributeType::IndexRoot | AttributeType::IndexAllocation | AttributeType::Bitmap,
             ) => {
-                // C++ includes $INDEX_ROOT and $INDEX_ALLOCATION with name $I30
-                // in directory size (merged into a single stream).
+                // $INDEX_ROOT and $INDEX_ALLOCATION with name $I30 contribute
+                // to directory size (merged into a single stream entry).
                 // NOTE: $I30:$BITMAP is EXCLUDED from directory size (legacy-output parity).
-                // For non-$I30 indexes (like $SDH, $SII, $O, $Q, $R), C++ counts them as
-                // streams
+                // Non-$I30 indexes ($SDH, $SII, $O, $Q, $R) are counted as
+                // individual streams.
 
                 // Extract attribute name
                 let (is_i30, attr_name) = if attr_header.name_length > 0 {
@@ -239,7 +239,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 };
 
                 if is_i30 {
-                    // C++ includes ALL $I30 attributes uniformly (including $BITMAP).
+                    // Include ALL $I30 attributes uniformly (including $BITMAP).
                     // info->length += IsNonResident ? DataSize : ValueLength for all.
                     {
                         if attr_header.is_non_resident == 0 {
@@ -271,7 +271,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                         }
                     }
                 } else {
-                    // Non-$I30 index attribute - C++ counts these as streams
+                    // Non-$I30 index attribute — counted as individual streams.
                     // Examples: $SDH, $SII (in $Secure), $O, $Q (in $Quota), $R (in $Reparse)
                     // Also includes unnamed $BITMAP (e.g., in $MFT)
 
@@ -346,15 +346,15 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     });
                 }
             }
-            // C++ counts these attribute types as streams (lines 590-600 in ntfs_index.hpp):
+            // The following attribute types are counted as individual streams:
             // - $OBJECT_ID (0x40)
             // - $VOLUME_NAME (0x60)
             // - $VOLUME_INFORMATION (0x70)
             // - $PROPERTY_SET (0xF0)
             // - $EA (0xE0)
             // - $EA_INFORMATION (0xD0)
-            // - $LOGGED_UTILITY_STREAM (0x100) - falls through to default: case in C++
-            // - And any other attribute type (default case)
+            // - $LOGGED_UTILITY_STREAM (0x100)
+            // - And any other attribute type (catch-all)
             Some(
                 AttributeType::ObjectId
                 | AttributeType::VolumeName
@@ -366,12 +366,8 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 | AttributeType::SecurityDescriptor
                 | AttributeType::AttributeList,
             ) => {
-                // Note: LoggedUtilityStream IS counted as a stream in C++ via the default: case
-                // The commented out line 589 just means it's not an explicit case, so it falls
-                // through
-                // Note: AttributeList (0x20) IS counted as a stream in C++ via the default:
-                // case (line 588 is commented out, so it falls through to
-                // default: at line 600) This is critical for tree metrics
+                // Note: LoggedUtilityStream (0x100) and AttributeList (0x20) are both
+                // counted as streams. This is critical for tree metrics
                 // parity - ~60k records have $ATTRIBUTE_LIST
 
                 // Extract attribute name (if any)
@@ -447,7 +443,7 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                 // Create a stream name that identifies the attribute type
                 // Note: LoggedUtilityStream (0x100) must have a synthetic name to survive
                 // the named_streams filter in index.rs - otherwise its size is dropped
-                // while still being counted, causing the 48-byte parity gap with C++.
+                // while still being counted, causing a 48-byte size discrepancy.
                 let stream_name = if attr_name.is_empty() {
                     match AttributeType::from_u32(attr_header.type_code) {
                         Some(AttributeType::ObjectId) => String::from("$OBJECT_ID"),
@@ -480,14 +476,13 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
                     is_resident,
                 });
             }
-            // Skip known non-stream attributes silently
-            // Note: SecurityDescriptor (0x50) IS counted as a stream in C++ via the default: case
-            // (line 591 is commented out, so it falls through to default: at line 600)
+            // Skip known non-stream attributes silently.
+            // Note: SecurityDescriptor (0x50) IS counted as a stream (catch-all below).
             Some(AttributeType::StandardInformation | AttributeType::FileName) => {}
             _ => {
-                // C++ counts ALL attribute types as streams via the default: case
-                // (ntfs_index_load.hpp lines 315-426). Any attribute type not explicitly
-                // handled above still gets counted. This includes truly unknown types
+                // All remaining attribute types are counted as streams.
+                // Any attribute type not explicitly handled above still gets counted.
+                // This includes truly unknown types.
                 // that from_u32() returns None for.
                 let type_code = attr_header.type_code;
                 debug!(
@@ -601,23 +596,23 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
     // Some records have their $FILE_NAME attributes in extension records
     // (when the base record has an $ATTRIBUTE_LIST). These base records
     // will have their names populated during the merge step.
-    // C++ handles this by processing all records in a single pass and
-    // looking up the base record for each extension record.
+    // The unified parser handles this in a single pass; the two-pass parser
+    // defers extension record merging to a later step.
 
     // Calculate primary size from default stream
     // For reparse points (junctions/symlinks), use $REPARSE_POINT size if no $DATA
     // stream
-    // For directories, C++ includes $INDEX_ROOT + $INDEX_ALLOCATION size
+    // For directories, size includes $INDEX_ROOT + $INDEX_ALLOCATION
     let is_directory = header.is_directory();
 
     // For directories with $I30 index, add a stream entry so it's counted in
-    // total_stream_count. C++ counts the merged $I30 as a stream with
-    // type_name_id=0 (line 4590: info->type_name_id = type_name_id)
+    // total_stream_count. The merged $I30 is counted as a stream with
+    // type_name_id=0.
     // This is essential for tree metrics parity - each directory's $I30 contributes
     // +1 to descendants.
     //
     // IMPORTANT: Junctions/reparse directories ALSO get the $I30 stream counted.
-    // C++ uses a two-channel model:
+    // Two-channel model for reparse directories:
     //   - Channel A (propagation): ALL streams count (dir + reparse) -> parents see
     //     2
     //   - Channel B (printed): only directory stream -> junction prints
@@ -645,8 +640,8 @@ pub fn parse_record_full(data: &[u8], frs: u64) -> ParseResult {
     } else {
         streams.iter().find(|s| s.name.is_empty()).map_or_else(
             || {
-                // No default $DATA stream - use reparse_size for junctions/symlinks
-                // C++ uses ah->Resident.ValueLength for reparse points
+                // No default $DATA stream — use reparse_size for junctions/symlinks
+                // (resident ValueLength from the $REPARSE_POINT attribute)
                 if reparse_tag != 0 {
                     (reparse_size, 0) // Reparse point data is resident,
                 // allocated=0

@@ -6,14 +6,14 @@
 use super::*;
 
 impl ParallelMftReader {
-    /// Sliding window IOCP read - C++ style with 2-4 reads in flight.
+    /// Sliding window IOCP read with 2-4 reads in flight.
     ///
     /// This matches the legacy implementation exactly:
     /// - Only 2-4 reads queued at a time (not 11,500!)
     /// - Per-read buffer allocation with recycling
     /// - Process data as it arrives (overlap I/O with parsing)
     ///
-    /// Key insight from C++ team: HDDs have a single read head, so queuing
+    /// Key insight: HDDs have a single read head, so queuing
     /// thousands of reads just creates I/O scheduler overhead. 2 reads in
     /// flight = one reading, one being set up.
     #[expect(

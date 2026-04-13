@@ -407,7 +407,7 @@ impl MftReader {
                 result?
             }
             MftReadMode::Bulk => {
-                // Bulk mode: C++ style "read all, then parse"
+                // Bulk mode: read all, then parse
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
 
@@ -436,7 +436,7 @@ impl MftReader {
                 }
             }
             MftReadMode::BulkIocp => {
-                // Bulk IOCP mode: True C++ style - queues ALL reads to IOCP at once
+                // Bulk IOCP mode: queues ALL reads to IOCP at once
                 let overlapped_handle = self.require_handle().open_overlapped_handle()?;
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
@@ -480,7 +480,7 @@ impl MftReader {
                 result?
             }
             MftReadMode::SlidingIocp => {
-                // Sliding window IOCP mode: C++ style with 2 reads in flight
+                // Sliding window IOCP mode: adaptive concurrency with multiple reads in flight
                 let overlapped_handle = self.require_handle().open_overlapped_handle()?;
                 let parallel_reader =
                     ParallelMftReader::new_optimized(extent_map, bitmap, drive_type);
