@@ -129,7 +129,7 @@ impl IpcServer {
             uid: 0,
             gid: 0,
         };
-        let mut len = core::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let mut len = size_of::<libc::ucred>() as libc::socklen_t;
 
         // SAFETY: `getsockopt` with `SO_PEERCRED` reads the ucred struct for
         // the peer of a Unix domain socket.  We pass a valid fd and correctly
