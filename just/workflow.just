@@ -31,6 +31,7 @@ phase1-test:
     just lint-ci
     @echo ""
     @printf "\033[0;32m✅ PHASE 1 COMPLETE: Validation passed with no release-side effects.\033[0m\n"
+    @printf "\033[0;36m📝 Note: Linux-specific code paths (cfg target_os = linux) are validated by CI on push.\033[0m\n"
     @printf "\033[0;34m💡 Next: Run 'just phase2-ship' only when ready to version/deploy/commit/push\033[0m\n"
 
 # Phase 2: version, build, deploy, commit, and push.
@@ -44,18 +45,22 @@ phase2-ship:
 phase2-commit: phase2-ship
 
 # Safe-by-default validation workflow (Rust optimized).
+# Lints macOS code paths locally; Linux paths validated by CI on push.
 go:
     @printf "\033[0;34m🚀 Safe-by-Default Validation Workflow (RUST OPTIMIZED)\033[0m\n"
     @printf "\033[1;33mNo version bump, deploy, commit, or push in this default lane.\033[0m\n"
+    @printf "\033[0;36m📝 Lints macOS code paths — Linux cfg() paths validated by CI on push.\033[0m\n"
     @echo "========================================================"
     rust-script scripts/ci/ci-pipeline.rs go
 
 # Full ship pipeline: Phase 1 validation + Phase 2 deploy (resumable).
 # Re-runs automatically skip already-completed steps.
+# Lints macOS code paths locally; Linux paths validated by CI on push.
 # Pass flags like: just ship -v, just ship --coverage-report
 ship *ARGS:
     @printf "\033[0;34m🚢 Full Ship Pipeline (Phase 1 + Phase 2, Resumable)\033[0m\n"
     @printf "\033[1;33mValidates and ships. Re-runs skip completed steps.\033[0m\n"
+    @printf "\033[0;36m📝 Lints macOS code paths — Linux cfg() paths validated by CI on push.\033[0m\n"
     @echo "========================================================"
     rust-script scripts/ci/ci-pipeline.rs ship {{ ARGS }}
 
