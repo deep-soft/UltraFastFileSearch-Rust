@@ -50,7 +50,6 @@ polars = { git = "https://github.com/pola-rs/polars", rev = "880651f782d17c9477b
     "new_streaming",     # Streaming engine for large queries
     "performant",        # Internal performance optimizations
     "serde",             # Serialization (compact index wire format)
-    "serde-lazy",        # Lazy serialization
     "nightly",           # Nightly Rust features
     "simd",              # SIMD vectorization
 
@@ -73,23 +72,15 @@ polars = { git = "https://github.com/pola-rs/polars", rev = "880651f782d17c9477b
     "parquet",           # Parquet read/write (primary persistence)
     "json",              # JSON export (CLI + MCP)
     "csv",               # CSV export (CLI)
-    "ipc",               # Arrow IPC format (daemon wire, export)
 
     # ===== Query Operations =====
     "is_in",             # col.is_in([...]) — compiled_pattern
-    "is_unique",         # Check for unique values
-    "rows",              # Row access patterns
     "diff",              # .diff() — compact.rs
     "bitwise",           # col("flags").bitand() — flags.rs
     "abs",               # Required by Polars internals (match exhaustiveness in polars-expr)
 
     # ===== Optimizer / Internal =====
     "fmt",               # DataFrame Display formatting
-    "cse",               # Common subexpression elimination
-    "decompress",        # Decompress compressed Parquet/IPC data
-    "fused",             # Fused mul-add micro-optimizations
-    "meta",              # Expression metadata (query planning)
-    "range",             # Range expressions (int_range, etc.)
 ] }
 
 # ─────────────────────────────────────────────────────────────────────────────
