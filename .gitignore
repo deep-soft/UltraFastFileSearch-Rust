@@ -9,6 +9,10 @@ target/
 Cargo.lock
 **/*.rs.bk
 *.pdb
+# macOS sed -i backup files
+*.toml-e
+*.yml-e
+*.rs-e
 
 # =============================================================================
 # Trash / quarantine (local rollback staging)
