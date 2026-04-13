@@ -16,7 +16,8 @@
 //! NTFS specification data containing no user information.  The file
 //! format is:
 //!
-//! 1. [`UpcaseHeader`](crate::platform::upcase::UpcaseHeader) (64 bytes) — magic, NTFS version, serial, CRC-32
+//! 1. [`UpcaseHeader`](crate::platform::upcase::UpcaseHeader) (64 bytes) —
+//!    magic, NTFS version, serial, CRC-32
 //! 2. Raw table (128 KB) — `[u16; 65_536]` little-endian
 //!
 //! Total file size: 131,136 bytes.  The raw table starts at offset 64.

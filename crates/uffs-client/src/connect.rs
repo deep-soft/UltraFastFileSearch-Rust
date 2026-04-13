@@ -382,8 +382,8 @@ impl UffsClient {
     /// Wait until the daemon has finished loading its indices.
     ///
     /// Polls `status()` with exponential backoff (250ms → 2s cap) until the
-    /// daemon reports [`crate::protocol::DaemonStatus::Ready`].  Times out after
-    /// `timeout` and returns an error.
+    /// daemon reports [`crate::protocol::DaemonStatus::Ready`].  Times out
+    /// after `timeout` and returns an error.
     ///
     /// If multiple consecutive I/O errors occur (e.g. broken pipe from a
     /// stale socket), the client automatically reconnects to the daemon.

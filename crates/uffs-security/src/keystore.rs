@@ -335,7 +335,7 @@ fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
 
 /// Linux file-based key retrieval or generation.
 ///
-/// Delegates to [`file_based_key`] — the key is a raw 32-byte file stored at
+/// Delegates to `file_based_key` — the key is a raw 32-byte file stored at
 /// `~/.local/share/uffs/key.bin` with owner-only permissions (`0600`).
 ///
 /// # Errors

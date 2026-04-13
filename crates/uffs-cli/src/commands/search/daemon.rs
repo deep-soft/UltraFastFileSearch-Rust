@@ -3,8 +3,9 @@
 
 //! Daemon-based search: routes CLI search through the UFFS daemon via IPC.
 //!
-//! This module builds [`SearchParams`](uffs_client::protocol::SearchParams) from CLI arguments and sends the query
-//! to the daemon. The response rows are converted to [`DisplayRow`](uffs_core::search::backend::DisplayRow) so the
+//! This module builds [`SearchParams`](uffs_client::protocol::SearchParams)
+//! from CLI arguments and sends the query to the daemon. The response rows are
+//! converted to [`DisplayRow`](uffs_core::search::backend::DisplayRow) so the
 //! existing output pipeline works unchanged.
 
 use anyhow::{Context, Result};

@@ -8,7 +8,8 @@
 //! Only record index + drive ordinal + sort key are stored — no paths or
 //! names — so the per-record cost is just 16 bytes.
 //!
-//! After the scan, [`SampleHeap::drain_sorted`](crate::aggregate::sample_heap::SampleHeap::drain_sorted)
+//! After the scan,
+//! [`SampleHeap::drain_sorted`](crate::aggregate::sample_heap::SampleHeap::drain_sorted)
 //! returns the entries in final display order (descending or ascending)
 //! so they can be materialized into [`SampleRow`]s by the finalize step.
 
