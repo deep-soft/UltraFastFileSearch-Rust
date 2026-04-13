@@ -48,6 +48,8 @@ use clap::Parser;
 use criterion as _;
 // Pipelining / chaos-test dependencies (used cross-platform)
 use crossbeam_channel as _;
+#[cfg(test)]
+use hex as _;
 // Platform-gated dependencies (used on Windows only)
 #[cfg(not(windows))]
 use indicatif as _;
@@ -58,8 +60,6 @@ use rand as _;
 use rand_chacha as _;
 use rayon as _;
 use rustc_hash as _;
-#[cfg(test)]
-use hex as _;
 #[cfg(test)]
 use sha2 as _;
 // SmallVec for path chain building (used in index.rs PathResolver)
