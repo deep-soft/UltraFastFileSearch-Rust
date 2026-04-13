@@ -281,12 +281,18 @@ fn main() {
 
     // Upload to GitHub Release for release builds
     if build_mode == BuildMode::Release {
-        create_checksums(&version, &build_order);
+        // Also stage macOS host binaries (built in the earlier release build step)
+        stage_host_binaries(&version, &target_dir);
+
+        create_checksums_from_staging(&version);
         upload_to_github_release(&version);
 
+        // Integration test: download release back to dist/ for local use
+        download_release_to_dist(&version);
+
         println!(
-            "\n✅ Windows build complete!\n📦 Binaries uploaded to GitHub Release {}",
-            version
+            "\n✅ Build complete!\n📦 Binaries uploaded to GitHub Release {} and cached in dist/{}",
+            version, version
         );
     } else if build_mode == BuildMode::Profiling {
         println!(
@@ -388,6 +394,132 @@ fn upload_to_github_release(version: &str) {
     // Clean up staging directory
     let _ = fs::remove_dir_all(&staging_dir);
     println!("  🧹 Cleaned up staging directory");
+}
+
+/// Stage macOS host binaries into the release staging directory.
+/// These are built by the earlier `cargo build --release` step.
+fn stage_host_binaries(version: &str, target_dir: &Path) {
+    println!("\n📁 Staging macOS ARM64 binaries...");
+    let staging_dir = PathBuf::from(format!("target/release-staging/{}", version));
+    let _ = fs::create_dir_all(&staging_dir);
+
+    for (binary, _) in BINARIES {
+        let source = target_dir.join("release").join(binary);
+        let dest_name = format!("{}-macos-arm64", binary);
+        let dest = staging_dir.join(&dest_name);
+
+        if source.exists() {
+            if let Err(e) = fs::copy(&source, &dest) {
+                eprintln!("  ⚠️  Failed to stage macOS {}: {}", binary, e);
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(m) = fs::metadata(&dest) {
+                        let mut p = m.permissions();
+                        p.set_mode(0o755);
+                        let _ = fs::set_permissions(&dest, p);
+                    }
+                }
+                if let Ok(m) = fs::metadata(&dest) {
+                    let size_mb = m.len() as f64 / 1_048_576.0;
+                    println!("  ✅ {} ({:.1} MB)", dest_name, size_mb);
+                }
+            }
+        } else {
+            eprintln!("  ⚠️  macOS binary not found: {:?} (skipping)", source);
+        }
+    }
+}
+
+/// Download the release from GitHub back to dist/ as an integration test
+/// and local cache for `just use`.
+fn download_release_to_dist(version: &str) {
+    println!("\n🔄 Downloading release {} from GitHub (integration test)...", version);
+    let dist_dir = format!("dist/{}", version);
+
+    if let Err(e) = fs::create_dir_all(&dist_dir) {
+        eprintln!("  ❌ Failed to create {}: {}", dist_dir, e);
+        return;
+    }
+
+    let status = Command::new("gh")
+        .args(["release", "download", version, "--dir", &dist_dir, "--clobber"])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            // List what we downloaded
+            if let Ok(entries) = fs::read_dir(&dist_dir) {
+                let mut files: Vec<String> = entries
+                    .flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        let size = e.metadata().ok().map(|m| m.len()).unwrap_or(0);
+                        Some(format!("     {} ({:.1} MB)", name, size as f64 / 1_048_576.0))
+                    })
+                    .collect();
+                files.sort();
+                println!("  ✅ Downloaded {} files to {}:", files.len(), dist_dir);
+                for f in &files {
+                    println!("{}", f);
+                }
+            }
+
+            // Prune old versions (keep current + 1 previous)
+            prune_old_dist_versions(version, 2);
+        }
+        Ok(s) => {
+            eprintln!("  ⚠️  gh release download exited with {} — dist/ may be incomplete", s);
+        }
+        Err(e) => {
+            eprintln!("  ⚠️  Failed to run gh release download: {} — dist/ not populated", e);
+        }
+    }
+}
+
+/// Keep only the `keep` most recent versioned directories in dist/.
+fn prune_old_dist_versions(current: &str, keep: usize) {
+    let dist = Path::new("dist");
+    if !dist.exists() {
+        return;
+    }
+
+    let mut versions: Vec<String> = fs::read_dir(dist)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('v') { Some(name) } else { None }
+        })
+        .collect();
+
+    versions.sort();
+
+    let to_remove: Vec<String> = if versions.len() > keep {
+        versions[..versions.len() - keep]
+            .iter()
+            .filter(|v| v.as_str() != current)
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    for v in &to_remove {
+        let path = dist.join(v);
+        if let Err(e) = fs::remove_dir_all(&path) {
+            eprintln!("  ⚠️  Failed to remove dist/{}: {}", v, e);
+        } else {
+            println!("  🗑️  Pruned old dist/{}", v);
+        }
+    }
+
+    if !to_remove.is_empty() {
+        println!("  ✅ Pruned {} old version(s), kept {}", to_remove.len(), keep);
+    }
 }
 
 fn build_native_only() {
@@ -781,23 +913,29 @@ fn stage_binaries(version: &str, target: &Target, target_dir: &Path) -> bool {
 }
 
 /// Create checksums file in the staging directory.
-fn create_checksums(version: &str, targets: &[&Target]) {
+/// Create checksums for all binaries in the staging directory.
+fn create_checksums_from_staging(version: &str) {
     println!("\n📋 Creating checksums...");
     let staging_dir = PathBuf::from(format!("target/release-staging/{}", version));
     let checksums_path = staging_dir.join("CHECKSUMS.txt");
     let mut lines: Vec<String> = Vec::new();
 
-    for target in targets {
-        for (binary, _) in BINARIES {
-            let bin_file = if target.triple.contains("windows") {
-                format!("{}-{}.exe", binary, target.platform_name)
-            } else {
-                format!("{}-{}", binary, target.platform_name)
-            };
-            let p = staging_dir.join(&bin_file);
+    if let Ok(entries) = fs::read_dir(&staging_dir) {
+        let mut files: Vec<_> = entries
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .collect();
+        files.sort_by_key(|e| e.file_name());
+
+        for entry in &files {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "CHECKSUMS.txt" {
+                continue;
+            }
+            let p = entry.path();
             if let Some(hash) = calc_hash(&p) {
                 if let Ok(m) = fs::metadata(&p) {
-                    lines.push(format!("{}  {} ({} bytes)", hash, bin_file, m.len()));
+                    lines.push(format!("{}  {} ({} bytes)", hash, name, m.len()));
                 }
             }
         }
@@ -806,7 +944,7 @@ fn create_checksums(version: &str, targets: &[&Target]) {
     if let Err(e) = fs::write(&checksums_path, lines.join("\n") + "\n") {
         eprintln!("⚠️  Failed to write checksums: {}", e);
     } else {
-        println!("✅ Created {}", checksums_path.display());
+        println!("✅ Created {} ({} entries)", checksums_path.display(), lines.len());
     }
 }
 

@@ -68,47 +68,76 @@ copy-binary profile:
     fi
     if ! echo "$PATH" | grep -q "$HOME/bin"; then printf "\033[1;33m⚠️  ~/bin not in PATH. Add this to your shell profile:\033[0m\n"; printf "   export PATH=\"\$HOME/bin:\$PATH\"\n"; fi
 
-# Build release binaries and install all platform-relevant ones to ~/bin.
+# Install UFFS binaries from local dist/ cache to ~/bin.
+# If dist/ is empty, downloads the latest release from GitHub first.
 #
-# Platform binaries:
-#   All platforms : uffs, uffs-daemon, uffs-mcp
-#   Windows only  : uffs-broker
-#   macOS/Linux   : (uffs-broker excluded — Windows-only component)
+# Platform binaries installed:
+#   macOS   : uffs-macos-arm64 → uffs, uffs_mft-macos-arm64 → uffs_mft
+#   Windows : uffs-windows-x64.exe → uffs.exe, uffs_mft-windows-x64.exe → uffs_mft.exe
 #
 # NOTE: uffs_tui and uffs_gui have moved to the private uffs-products repo.
 [unix]
 use:
     #!/usr/bin/env bash
     set -euo pipefail
-    printf "\033[0;34m🔨 Building release binaries...\033[0m\n"
-    cargo build --release --workspace 2>&1 | tail -5
+    printf "\033[0;34m📦 Installing UFFS binaries from dist/ cache...\033[0m\n"
+
+    # Find latest version in dist/
+    DIST_DIR=""
+    if [[ -d "dist" ]]; then
+        DIST_DIR=$(ls -d dist/v* 2>/dev/null | sort -V | tail -1 || true)
+    fi
+
+    # Fallback: download from GitHub Release
+    if [[ -z "$DIST_DIR" ]] || [[ ! -d "$DIST_DIR" ]]; then
+        printf "\033[1;33m⚠️  No local dist/ cache found. Downloading from GitHub Release...\033[0m\n"
+        if ! command -v gh &>/dev/null; then
+            printf "\033[0;31m❌ gh CLI not found. Install with: brew install gh\033[0m\n"
+            exit 1
+        fi
+        VERSION=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+        if [[ -z "$VERSION" ]]; then
+            printf "\033[0;31m❌ No GitHub Release found. Run 'just ship' first.\033[0m\n"
+            exit 1
+        fi
+        DIST_DIR="dist/$VERSION"
+        mkdir -p "$DIST_DIR"
+        gh release download "$VERSION" --dir "$DIST_DIR" --clobber
+        printf "\033[0;32m✅ Downloaded %s to %s\033[0m\n" "$VERSION" "$DIST_DIR"
+    fi
+
+    printf "\033[0;34m  → Using: %s\033[0m\n" "$DIST_DIR"
 
     BIN_DIR="$HOME/bin"
     mkdir -p "$BIN_DIR"
 
-    # Platform-relevant binaries (name in target/release → name in ~/bin)
-    BINARIES=("uffs" "uffs-daemon" "uffs-mcp")
+    # Map release asset names → install names
+    declare -A BINARIES=(
+        ["uffs-macos-arm64"]="uffs"
+        ["uffs_mft-macos-arm64"]="uffs_mft"
+    )
     INSTALLED=0
     SKIPPED=0
 
     printf "\033[0;34m📦 Installing to %s\033[0m\n" "$BIN_DIR"
-    for BIN in "${BINARIES[@]}"; do
-        SRC="target/release/$BIN"
+    for SRC_NAME in "${!BINARIES[@]}"; do
+        DEST_NAME="${BINARIES[$SRC_NAME]}"
+        SRC="$DIST_DIR/$SRC_NAME"
         if [[ -f "$SRC" ]]; then
-            cp "$SRC" "$BIN_DIR/$BIN"
-            chmod +x "$BIN_DIR/$BIN"
-            SIZE=$(du -sh "$BIN_DIR/$BIN" | cut -f1)
-            printf "  \033[0;32m✅ %-16s %s\033[0m\n" "$BIN" "$SIZE"
+            cp "$SRC" "$BIN_DIR/$DEST_NAME"
+            chmod +x "$BIN_DIR/$DEST_NAME"
+            SIZE=$(du -sh "$BIN_DIR/$DEST_NAME" | cut -f1)
+            printf "  \033[0;32m✅ %-16s → %-16s %s\033[0m\n" "$SRC_NAME" "$DEST_NAME" "$SIZE"
             INSTALLED=$((INSTALLED + 1))
         else
-            printf "  \033[1;33m⚠️  %-16s (not found in target/release/)\033[0m\n" "$BIN"
+            printf "  \033[1;33m⚠️  %-16s (not found in %s)\033[0m\n" "$SRC_NAME" "$DIST_DIR"
             SKIPPED=$((SKIPPED + 1))
         fi
     done
 
     printf "\n\033[0;32m✅ Installed %d binaries to ~/bin\033[0m\n" "$INSTALLED"
     if [[ $SKIPPED -gt 0 ]]; then
-        printf "\033[1;33m⚠️  Skipped %d (build may have failed)\033[0m\n" "$SKIPPED"
+        printf "\033[1;33m⚠️  Skipped %d\033[0m\n" "$SKIPPED"
     fi
 
     # Check PATH
@@ -119,65 +148,73 @@ use:
 
     # Show versions
     printf "\n\033[0;34m📋 Installed versions:\033[0m\n"
-    for BIN in "${BINARIES[@]}"; do
-        if [[ -x "$BIN_DIR/$BIN" ]]; then
-            VER=$("$BIN_DIR/$BIN" --version 2>/dev/null || echo "unknown")
-            printf "  %-16s %s\n" "$BIN" "$VER"
+    for DEST_NAME in "${BINARIES[@]}"; do
+        if [[ -x "$BIN_DIR/$DEST_NAME" ]]; then
+            VER=$("$BIN_DIR/$DEST_NAME" --version 2>/dev/null || echo "unknown")
+            printf "  %-16s %s\n" "$DEST_NAME" "$VER"
         fi
     done
 
-# Install UFFS binaries from the latest GitHub Release to ~/bin (Windows).
-# Downloads pre-built binaries using `gh release download`.
-# Prerequisite: `gh` CLI installed and authenticated (winget install GitHub.cli)
+# Install UFFS binaries from local dist/ cache to ~/bin (Windows).
+# If dist/ is empty, downloads the latest release from GitHub first.
+# Prerequisite for fallback: `gh` CLI (winget install GitHub.cli)
 [windows]
 use:
     #!powershell
-    Write-Host "📦 Downloading latest UFFS binaries from GitHub Release..." -ForegroundColor Blue
+    Write-Host "📦 Installing UFFS binaries from dist/ cache..." -ForegroundColor Blue
 
-    # Check gh CLI is available
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        Write-Host "❌ gh CLI not found. Install with: winget install GitHub.cli" -ForegroundColor Red
-        exit 1
+    # Find latest version in dist/
+    $distDir = $null
+    if (Test-Path "dist") {
+        $versions = Get-ChildItem -Path "dist" -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^v\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]($_.Name -replace '^v','') } -Descending
+        if ($versions) { $distDir = $versions[0].FullName }
     }
+
+    # Fallback: download from GitHub Release
+    if (-not $distDir) {
+        Write-Host "⚠️  No local dist/ cache found. Downloading from GitHub Release..." -ForegroundColor Yellow
+        if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+            Write-Host "❌ gh CLI not found. Install with: winget install GitHub.cli" -ForegroundColor Red
+            exit 1
+        }
+        $version = (gh release view --json tagName -q ".tagName" 2>$null)
+        if (-not $version) { Write-Host "❌ No GitHub Release found. Run 'just ship' first." -ForegroundColor Red; exit 1 }
+        $distDir = "dist\$version"
+        New-Item -ItemType Directory -Path $distDir -Force | Out-Null
+        gh release download $version --dir $distDir --clobber
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "❌ Failed to download release." -ForegroundColor Red; exit 1
+        }
+        Write-Host "✅ Downloaded $version to $distDir" -ForegroundColor Green
+    }
+
+    Write-Host "  → Using: $distDir" -ForegroundColor Cyan
 
     $binDir = "$env:USERPROFILE\bin"
     if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
 
-    # Create temp download directory
-    $tempDir = Join-Path $env:TEMP "uffs-release-$(Get-Date -Format 'yyyyMMddHHmmss')"
-    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-
-    # Download latest release assets matching windows pattern
-    Write-Host "  → Downloading from latest release..." -ForegroundColor Cyan
-    gh release download --latest --pattern "*windows*" --dir $tempDir 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "❌ Failed to download release. Run 'gh auth login' if not authenticated." -ForegroundColor Red
-        Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-        exit 1
-    }
-
-    # Install downloaded binaries
+    # Map release asset names → install names
     $binaries = @{
         "uffs-windows-x64.exe" = "uffs.exe"
         "uffs_mft-windows-x64.exe" = "uffs_mft.exe"
     }
     $installed = 0; $skipped = 0
     foreach ($src in $binaries.Keys) {
-        $srcPath = Join-Path $tempDir $src
-        $destPath = Join-Path $binDir $binaries[$src]
+        $srcPath = Join-Path $distDir $src
+        $destName = $binaries[$src]
+        $destPath = Join-Path $binDir $destName
         if (Test-Path $srcPath) {
             Copy-Item $srcPath $destPath -Force
             $size = [math]::Round((Get-Item $destPath).Length / 1MB, 1)
-            Write-Host "  ✅ $($binaries[$src]) ($size MB)" -ForegroundColor Green
+            Write-Host "  ✅ $src → $destName ($size MB)" -ForegroundColor Green
             $installed++
         } else {
-            Write-Host "  ⚠️  $src (not in release)" -ForegroundColor Yellow
+            Write-Host "  ⚠️  $src (not found in $distDir)" -ForegroundColor Yellow
             $skipped++
         }
     }
-
-    # Clean up
-    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 
     Write-Host "`n✅ Installed $installed binaries to ~/bin" -ForegroundColor Green
     if ($skipped -gt 0) { Write-Host "⚠️  Skipped $skipped" -ForegroundColor Yellow }
