@@ -1,7 +1,12 @@
 # UFFS — Ultra Fast File Search
 
+[![CI](https://github.com/githubrobbi/UltraFastFileSearch/actions/workflows/ci.yml/badge.svg)](https://github.com/githubrobbi/UltraFastFileSearch/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/githubrobbi/UltraFastFileSearch?label=release)](https://github.com/githubrobbi/UltraFastFileSearch/releases/latest)
+[![codecov](https://codecov.io/gh/githubrobbi/UltraFastFileSearch/graph/badge.svg)](https://codecov.io/gh/githubrobbi/UltraFastFileSearch)
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 [![Rust](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](https://www.rust-lang.org)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-blue.svg)](https://github.com/githubrobbi/UltraFastFileSearch/releases/latest)
+[![GitHub Downloads](https://img.shields.io/github/downloads/githubrobbi/UltraFastFileSearch/total?label=downloads)](https://github.com/githubrobbi/UltraFastFileSearch/releases)
 
 **The fastest open-source NTFS file search engine.** Reads the Master File Table directly, indexes 25.9 million files across 7 drives, and answers every query in ~200 ms.
 
