@@ -252,10 +252,10 @@ fn main() {
             exit(1);
         }
 
-        // Only copy to dist/ for release builds (not profiling or dev)
+        // Only stage binaries for release builds (not profiling or dev)
         if build_mode == BuildMode::Release {
-            if !copy_binaries_to_dist(&version, target, &target_dir) {
-                eprintln!("\n❌ Binary copy failed for {} - aborting!", target.triple);
+            if !stage_binaries(&version, target, &target_dir) {
+                eprintln!("\n❌ Binary staging failed for {} - aborting!", target.triple);
                 eprintln!("   This usually means the build succeeded but binaries were not placed in the expected location.");
                 eprintln!(
                     "   Check the target directory: {:?}",
@@ -266,7 +266,7 @@ fn main() {
         }
 
         // Critical disk optimization: delete the *target-specific* build tree after
-        // we've copied the final binaries into dist/.
+        // we've staged the final binaries.
         if prune_cross_targets && target.triple != HOST_TRIPLE {
             prune_target_artifacts_for_triple(&target_dir, target.triple);
             print_free_disk(&target_dir, "after prune");
@@ -279,16 +279,13 @@ fn main() {
         }
     }
 
-    // Only update checksums/git for release builds
+    // Upload to GitHub Release for release builds
     if build_mode == BuildMode::Release {
-        update_all_checksums(&version, &build_order);
-        prune_old_dist_versions(&version, 2);
-
-        // Add binaries to git for sharing
-        add_binaries_to_git(&version);
+        create_checksums(&version, &build_order);
+        upload_to_github_release(&version);
 
         println!(
-            "\n✅ Windows build complete!\n📦 Binaries in dist/{}/*/",
+            "\n✅ Windows build complete!\n📦 Binaries uploaded to GitHub Release {}",
             version
         );
     } else if build_mode == BuildMode::Profiling {
@@ -303,39 +300,94 @@ fn main() {
     println!("ℹ️  Note: UFFS only runs on Windows (requires NTFS MFT access)");
 }
 
-fn add_binaries_to_git(version: &str) {
-    println!("\n📦 Adding binaries to git...");
-    let dist_path = format!("dist/{}", version);
+/// Upload staged binaries to a GitHub Release using `gh release create`.
+/// Creates the release and uploads all binaries + checksums as assets.
+fn upload_to_github_release(version: &str) {
+    println!("\n📦 Uploading binaries to GitHub Release {}...", version);
+    let staging_dir = PathBuf::from(format!("target/release-staging/{}", version));
 
-    // Check if dist directory exists
-    if !Path::new(&dist_path).exists() {
-        eprintln!("  ⚠️  {} does not exist, skipping git add", dist_path);
-        return;
+    if !staging_dir.exists() {
+        eprintln!("  ❌ Staging directory does not exist: {:?}", staging_dir);
+        exit(1);
     }
 
-    // Add the dist directory to git
-    let status = Command::new("git").args(["add", &dist_path]).status();
+    // Collect all files to upload
+    let mut assets: Vec<String> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&staging_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                assets.push(path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    if assets.is_empty() {
+        eprintln!("  ❌ No assets found in staging directory");
+        exit(1);
+    }
+
+    println!("  📋 Uploading {} assets:", assets.len());
+    for a in &assets {
+        println!("     → {}", Path::new(a).file_name().unwrap_or_default().to_string_lossy());
+    }
+
+    // Build gh release create command
+    let mut args = vec![
+        "release".to_string(),
+        "create".to_string(),
+        version.to_string(),
+        "--title".to_string(),
+        format!("UFFS {}", version),
+        "--notes".to_string(),
+        format!("UFFS {} — Windows binaries (cross-compiled from macOS ARM64).\n\nSee README for installation instructions.", version),
+        "--latest".to_string(),
+    ];
+
+    // Add all asset files
+    for asset in &assets {
+        args.push(asset.clone());
+    }
+
+    let status = Command::new("gh")
+        .args(&args)
+        .status();
 
     match status {
         Ok(s) if s.success() => {
-            println!("  ✅ Added {} to git staging", dist_path);
-
-            // Show what was added
-            let output = Command::new("git")
-                .args(["status", "--porcelain", &dist_path])
-                .output();
-
-            if let Ok(o) = output {
-                let files = String::from_utf8_lossy(&o.stdout);
-                let count = files.lines().count();
-                if count > 0 {
-                    println!("  📋 {} files staged for commit", count);
+            println!("  ✅ GitHub Release {} created with {} assets", version, assets.len());
+        }
+        Ok(s) => {
+            // Release may already exist — try uploading assets to existing release
+            eprintln!("  ⚠️  gh release create exited with {}, trying to upload to existing release...", s);
+            let upload_status = Command::new("gh")
+                .args(["release", "upload", version, "--clobber"])
+                .args(&assets)
+                .status();
+            match upload_status {
+                Ok(s) if s.success() => {
+                    println!("  ✅ Assets uploaded to existing release {}", version);
+                }
+                Ok(s) => {
+                    eprintln!("  ❌ Failed to upload assets: exit {}", s);
+                    exit(1);
+                }
+                Err(e) => {
+                    eprintln!("  ❌ Failed to run gh release upload: {}", e);
+                    exit(1);
                 }
             }
         }
-        Ok(_) => eprintln!("  ⚠️  git add failed"),
-        Err(e) => eprintln!("  ⚠️  git add error: {}", e),
+        Err(e) => {
+            eprintln!("  ❌ Failed to run gh: {}", e);
+            eprintln!("  💡 Make sure `gh` CLI is installed and authenticated");
+            exit(1);
+        }
     }
+
+    // Clean up staging directory
+    let _ = fs::remove_dir_all(&staging_dir);
+    println!("  🧹 Cleaned up staging directory");
 }
 
 fn build_native_only() {
@@ -672,17 +724,19 @@ fn build_for_target(target: &Target, target_dir: &Path, verbose: bool) -> bool {
     true
 }
 
-/// Copy built binaries to dist directory.
-/// Returns true if ALL binaries were copied successfully, false if any are
-/// missing or failed.
-fn copy_binaries_to_dist(version: &str, target: &Target, target_dir: &Path) -> bool {
-    let profile = build_profile();
+/// Stage built binaries to a temporary directory for GitHub Release upload.
+/// Returns true if ALL binaries were staged successfully.
+fn stage_binaries(version: &str, target: &Target, target_dir: &Path) -> bool {
     let output_dir = build_output_dir();
-    println!("  📁 Copying {} binaries to dist/{}...", profile, version);
+    let staging_dir = PathBuf::from(format!("target/release-staging/{}", version));
+    println!("  📁 Staging binaries for release {}...", version);
+
+    if let Err(e) = fs::create_dir_all(&staging_dir) {
+        eprintln!("  ❌ Failed to create staging dir: {}", e);
+        return false;
+    }
 
     let mut all_success = true;
-    let mut missing_binaries: Vec<String> = Vec::new();
-    let mut failed_copies: Vec<String> = Vec::new();
 
     for (binary, _) in BINARIES {
         let bin_name = if target.triple.contains("windows") {
@@ -694,25 +748,17 @@ fn copy_binaries_to_dist(version: &str, target: &Target, target_dir: &Path) -> b
             .join(target.triple)
             .join(output_dir)
             .join(&bin_name);
-        let dest_dir = format!("dist/{}/{}", version, binary);
         let dest_name = if target.triple.contains("windows") {
             format!("{}-{}.exe", binary, target.platform_name)
         } else {
             format!("{}-{}", binary, target.platform_name)
         };
-        let dest = format!("{}/{}", dest_dir, dest_name);
+        let dest = staging_dir.join(&dest_name);
 
-        if let Err(e) = fs::create_dir_all(&dest_dir) {
-            eprintln!("  ❌ Failed to create {}: {}", dest_dir, e);
-            all_success = false;
-            failed_copies.push(format!("{} (dir creation failed: {})", binary, e));
-            continue;
-        }
         if source.exists() {
             if let Err(e) = fs::copy(&source, &dest) {
-                eprintln!("  ❌ Failed to copy {}: {}", binary, e);
+                eprintln!("  ❌ Failed to stage {}: {}", binary, e);
                 all_success = false;
-                failed_copies.push(format!("{} (copy failed: {})", binary, e));
             } else {
                 #[cfg(unix)]
                 {
@@ -728,88 +774,17 @@ fn copy_binaries_to_dist(version: &str, target: &Target, target_dir: &Path) -> b
         } else {
             eprintln!("  ❌ Binary not found: {:?}", source);
             all_success = false;
-            missing_binaries.push(bin_name);
         }
-    }
-
-    // Report summary of failures
-    if !missing_binaries.is_empty() {
-        eprintln!(
-            "\n❌ FATAL: {} binaries missing for {}: {:?}",
-            missing_binaries.len(),
-            target.triple,
-            missing_binaries
-        );
-    }
-    if !failed_copies.is_empty() {
-        eprintln!(
-            "\n❌ FATAL: {} binaries failed to copy for {}: {:?}",
-            failed_copies.len(),
-            target.triple,
-            failed_copies
-        );
     }
 
     all_success
 }
 
-/// Keep only the `keep` most recent versioned directories in `dist/`.
-/// Versions are sorted lexicographically (vX.Y.Z sorts correctly).
-/// Also removes the legacy `dist/latest` symlink if present.
-fn prune_old_dist_versions(current: &str, keep: usize) {
-    let dist = Path::new("dist");
-
-    // Remove legacy symlink
-    let latest_link = dist.join("latest");
-    if latest_link.exists() || latest_link.is_symlink() {
-        let _ = fs::remove_file(&latest_link);
-        println!("🗑️  Removed dist/latest symlink");
-    }
-
-    // Collect versioned directories (start with 'v')
-    let mut versions: Vec<String> = fs::read_dir(dist)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('v') { Some(name) } else { None }
-        })
-        .collect();
-
-    versions.sort();
-
-    // Always keep the current version + the most recent `keep` versions
-    let to_remove: Vec<String> = if versions.len() > keep {
-        versions[..versions.len() - keep]
-            .iter()
-            .filter(|v| v.as_str() != current)
-            .cloned()
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    for v in &to_remove {
-        let path = dist.join(v);
-        if let Err(e) = fs::remove_dir_all(&path) {
-            eprintln!("⚠️  Failed to remove dist/{}: {}", v, e);
-        } else {
-            println!("🗑️  Pruned old dist/{}", v);
-        }
-    }
-
-    if to_remove.is_empty() {
-        println!("✅ dist/ clean — {} version(s) retained", versions.len());
-    } else {
-        println!("✅ Pruned {} old version(s), kept {}", to_remove.len(), keep);
-    }
-}
-
-fn update_all_checksums(version: &str, targets: &[&Target]) {
-    println!("\n📋 Updating checksums...");
-    let path = format!("dist/{}/checksums.txt", version);
+/// Create checksums file in the staging directory.
+fn create_checksums(version: &str, targets: &[&Target]) {
+    println!("\n📋 Creating checksums...");
+    let staging_dir = PathBuf::from(format!("target/release-staging/{}", version));
+    let checksums_path = staging_dir.join("CHECKSUMS.txt");
     let mut lines: Vec<String> = Vec::new();
 
     for target in targets {
@@ -819,23 +794,23 @@ fn update_all_checksums(version: &str, targets: &[&Target]) {
             } else {
                 format!("{}-{}", binary, target.platform_name)
             };
-            let p = format!("dist/{}/{}/{}", version, binary, bin_file);
+            let p = staging_dir.join(&bin_file);
             if let Some(hash) = calc_hash(&p) {
                 if let Ok(m) = fs::metadata(&p) {
-                    lines.push(format!("{}  {} ({} bytes)", hash, p, m.len()));
+                    lines.push(format!("{}  {} ({} bytes)", hash, bin_file, m.len()));
                 }
             }
         }
     }
 
-    if let Err(e) = fs::write(&path, lines.join("\n") + "\n") {
+    if let Err(e) = fs::write(&checksums_path, lines.join("\n") + "\n") {
         eprintln!("⚠️  Failed to write checksums: {}", e);
     } else {
-        println!("✅ Updated {}", path);
+        println!("✅ Created {}", checksums_path.display());
     }
 }
 
-fn calc_hash(path: &str) -> Option<String> {
+fn calc_hash(path: &Path) -> Option<String> {
     fs::read(path).ok().map(|c| {
         let mut h = Sha256::new();
         h.update(&c);

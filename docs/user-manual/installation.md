@@ -1,7 +1,8 @@
 # Installation
 
-Pre-built Windows binaries are included in the repository.  Most users
-do not need to build from source.
+Pre-built Windows binaries are available from
+[GitHub Releases](https://github.com/githubrobbi/UltraFastFileSearch/releases).
+Most users do not need to build from source.
 
 > **See also:** [Getting Started](getting-started.md) ·
 > [CLI Overview](cli-overview.md) · [Daemon](daemon.md) ·
@@ -11,35 +12,36 @@ do not need to build from source.
 
 ## 1  Pre-Built Binaries (Recommended)
 
-Pre-built Windows x64 binaries ship inside the repository under
-`dist/`.  Pick the **highest version number** — that is the latest
-release.
+Download the latest Windows x64 binaries from the
+[GitHub Releases page](https://github.com/githubrobbi/UltraFastFileSearch/releases/latest).
 
-```
-dist/
-├── v0.4.103/
-├── v0.4.104/
-└── v0.4.105/          ← latest
-    ├── checksums.txt
-    ├── uffs/
-    │   └── uffs-windows-x64.exe        ← main CLI (starts daemon + MCP)
-    ├── uffs_mft/
-    │   └── uffs_mft-windows-x64.exe    ← low-level MFT tool
-    ├── uffs_tui/
-    │   └── uffs_tui-windows-x64.exe    ← terminal UI
-    └── uffs_gui/
-        └── uffs_gui-windows-x64.exe    ← GUI (placeholder)
-```
+Each release includes:
+- `uffs-windows-x64.exe` — main CLI (starts daemon + MCP)
+- `uffs_mft-windows-x64.exe` — low-level MFT tool
+- `CHECKSUMS.txt` — SHA-256 hashes for verification
 
 ### Quick Setup (Windows)
 
-1. Copy `uffs-windows-x64.exe` to a directory on your PATH and
-   **rename it to `uffs.exe`** — all documentation and examples
-   assume the binary is called `uffs`.
+**Option A — Using `gh` CLI (recommended for developers):**
 
-2. Open a terminal **as Administrator** (required for live NTFS access).
+```powershell
+# Install gh CLI if needed: winget install GitHub.cli
+# Then from the repo directory:
+just use
+```
 
-3. Run your first search:
+This downloads the latest release binaries and installs them to `~/bin`.
+
+**Option B — Manual download:**
+
+1. Download `uffs-windows-x64.exe` from the
+   [latest release](https://github.com/githubrobbi/UltraFastFileSearch/releases/latest).
+
+2. Copy to a directory on your PATH and **rename to `uffs.exe`**.
+
+3. Open a terminal **as Administrator** (required for live NTFS access).
+
+4. Run your first search:
 
    ```powershell
    uffs "*.txt" --limit 5
@@ -47,7 +49,7 @@ dist/
 
    The daemon starts automatically.  Every search after this is instant.
 
-4. To start the MCP server for AI agents:
+5. To start the MCP server for AI agents:
 
    ```powershell
    uffs mcp start
@@ -59,16 +61,13 @@ dist/
 
 ### Verify Checksums
 
-Each release includes `checksums.txt` with SHA-256 hashes:
+Each release includes `CHECKSUMS.txt` with SHA-256 hashes:
 
 ```powershell
 # PowerShell
-Get-FileHash dist\v0.4.105\uffs\uffs-windows-x64.exe -Algorithm SHA256
-# Compare with dist/v0.4.105/checksums.txt
+Get-FileHash uffs-windows-x64.exe -Algorithm SHA256
+# Compare with CHECKSUMS.txt from the release
 ```
-
-> **Note:** A `LATEST` symlink exists in some clones but does not
-> survive Git operations.  Always pick the highest version number.
 
 ---
 
@@ -182,16 +181,16 @@ just go          # Full validation: format, lint, test, coverage
 just test        # Run all tests with nextest
 ```
 
-`just use` is the easiest way to get going — it builds release binaries
-and installs them to `~/bin` with the correct names (`uffs`, `uffs_tui`,
-`uffs-daemon`, `uffs-mcp`).  If `~/bin` is not on your PATH, it prints
-the line to add to your shell profile.
+`just use` is the easiest way to get going — on macOS/Linux it builds
+release binaries from source and installs them to `~/bin`; on Windows
+it downloads the latest release from GitHub.  If `~/bin` is not on your
+PATH, it prints the line to add to your shell profile.
 
 Run `just` with no arguments to see all available tasks.
 
 ### Cross-Compiling Windows Binaries (from macOS / Linux)
 
-This is how the pre-built binaries in `dist/` are produced:
+This is how the release binaries are cross-compiled:
 
 ```bash
 cargo install cargo-xwin

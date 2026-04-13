@@ -25,7 +25,7 @@ _default-help:
     @echo "  just build           Dev build"
     @echo "  just build-release   Optimized release build"
     @echo "  just build-local     Build + install all binaries to ~/bin"
-    @echo "  just use             Install release binaries to ~/bin"
+    @echo "  just use             Install binaries to ~/bin (Windows: from GitHub Release, Unix: build from source)"
     @echo "  just version         Show current version"
     @echo ""
     @printf "\033[0;32m🔧 Development:\033[0m\n"

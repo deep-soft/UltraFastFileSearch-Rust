@@ -18,10 +18,4 @@
 *.ico binary
 *.svg binary
 
-# Distribution binaries (platform-specific executables)
-dist/**/*-macos-arm64 binary
-dist/**/*-macos-intel binary
-dist/**/*-linux-x64 binary
-dist/**/*-linux-arm64 binary
-dist/**/*-windows-x64.exe binary
 

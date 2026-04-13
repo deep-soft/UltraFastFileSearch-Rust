@@ -126,29 +126,71 @@ use:
         fi
     done
 
-# Install shipped UFFS binaries from dist/ to ~/bin (Windows).
-# Uses pre-built binaries from the CI shipping pipeline (cross-compiled on macOS).
+# Install UFFS binaries from the latest GitHub Release to ~/bin (Windows).
+# Downloads pre-built binaries using `gh release download`.
+# Prerequisite: `gh` CLI installed and authenticated (winget install GitHub.cli)
 [windows]
 use:
     #!powershell
-    Write-Host "📦 Installing latest UFFS binaries to ~/bin..." -ForegroundColor Blue
+    Write-Host "📦 Downloading latest UFFS binaries from GitHub Release..." -ForegroundColor Blue
+
+    # Check gh CLI is available
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        Write-Host "❌ gh CLI not found. Install with: winget install GitHub.cli" -ForegroundColor Red
+        exit 1
+    }
+
     $binDir = "$env:USERPROFILE\bin"
     if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
-    # Find the latest versioned dist directory
-    $versions = Get-ChildItem -Path "dist" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^v\d+\.\d+\.\d+$' } | Sort-Object { [version]($_.Name -replace '^v','') } -Descending
-    if (-not $versions) { Write-Host "❌ No binaries found in dist/. Run 'just ship' first." -ForegroundColor Red; exit 1 }
-    $distDir = $versions[0].FullName
-    Write-Host "  → Using: $distDir" -ForegroundColor Cyan
-    $binaries = @("uffs", "uffs-daemon", "uffs-mcp")
-    $installed = 0; $skipped = 0
-    foreach ($bin in $binaries) {
-        $src = "$distDir\$bin\$bin-windows-x64.exe"
-        $dest = "$binDir\$bin.exe"
-        if (Test-Path $src) { Copy-Item $src $dest -Force; Write-Host "  ✅ $bin.exe" -ForegroundColor Green; $installed++ }
-        else { Write-Host "  ⚠️  $bin (not found)" -ForegroundColor Yellow; $skipped++ }
+
+    # Create temp download directory
+    $tempDir = Join-Path $env:TEMP "uffs-release-$(Get-Date -Format 'yyyyMMddHHmmss')"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
+    # Download latest release assets matching windows pattern
+    Write-Host "  → Downloading from latest release..." -ForegroundColor Cyan
+    gh release download --latest --pattern "*windows*" --dir $tempDir 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "❌ Failed to download release. Run 'gh auth login' if not authenticated." -ForegroundColor Red
+        Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        exit 1
     }
-    Write-Host "✅ Installed $installed binaries to ~/bin" -ForegroundColor Green
-    if ($skipped -gt 0) { Write-Host "⚠️  Skipped $skipped (run 'just ship' to build)" -ForegroundColor Yellow }
+
+    # Install downloaded binaries
+    $binaries = @{
+        "uffs-windows-x64.exe" = "uffs.exe"
+        "uffs_mft-windows-x64.exe" = "uffs_mft.exe"
+    }
+    $installed = 0; $skipped = 0
+    foreach ($src in $binaries.Keys) {
+        $srcPath = Join-Path $tempDir $src
+        $destPath = Join-Path $binDir $binaries[$src]
+        if (Test-Path $srcPath) {
+            Copy-Item $srcPath $destPath -Force
+            $size = [math]::Round((Get-Item $destPath).Length / 1MB, 1)
+            Write-Host "  ✅ $($binaries[$src]) ($size MB)" -ForegroundColor Green
+            $installed++
+        } else {
+            Write-Host "  ⚠️  $src (not in release)" -ForegroundColor Yellow
+            $skipped++
+        }
+    }
+
+    # Clean up
+    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+
+    Write-Host "`n✅ Installed $installed binaries to ~/bin" -ForegroundColor Green
+    if ($skipped -gt 0) { Write-Host "⚠️  Skipped $skipped" -ForegroundColor Yellow }
+
+    # Show versions
+    Write-Host "`n📋 Installed versions:" -ForegroundColor Blue
+    foreach ($dest in $binaries.Values) {
+        $destPath = Join-Path $binDir $dest
+        if (Test-Path $destPath) {
+            $ver = & $destPath --version 2>$null
+            Write-Host "  $dest`t$ver"
+        }
+    }
 
 # Git commit with auto-generated message.
 commit:

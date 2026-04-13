@@ -64,7 +64,7 @@ const STEP_PARALLEL_VALIDATION: &str = "05-parallel-validation";
 const STEP_FORMAT_CHECK: &str = "06-format-check";
 const STEP_VERSION_INCREMENT: &str = "07-version-increment";
 const STEP_BUILD_RELEASE: &str = "08-build-release";
-const STEP_DEPLOY_BINARY: &str = "09-deploy-binary"; // Copy to dist/ and ~/bin
+const STEP_DEPLOY_BINARY: &str = "09-deploy-binary"; // Upload to GitHub Release
 const STEP_GIT_COMMIT: &str = "10-git-commit";
 const STEP_GIT_PUSH: &str = "11-git-push";
 
@@ -829,11 +829,11 @@ async fn build_release(ctx: &PipelineContext) -> Result<()> {
     Ok(())
 }
 
-/// Deploy binary to dist/ directory and ~/bin
-/// On macOS ARM64, runs cross-compilation for all platforms
-/// On other platforms, runs local build only
+/// Deploy binary: cross-compile and upload to GitHub Release.
+/// On macOS ARM64, runs cross-compilation for Windows and uploads to GitHub Release.
+/// On other platforms, runs local build only.
 async fn deploy_binary(ctx: &PipelineContext) -> Result<()> {
-    println!("{}", "📦 Deploying binary to dist/ and ~/bin...".blue());
+    println!("{}", "📦 Building and uploading to GitHub Release...".blue());
 
     // Detect if we're on macOS ARM64 for cross-compilation
     let is_macos_arm64 = std::env::consts::OS == "macos" && std::env::consts::ARCH == "aarch64";
@@ -858,7 +858,7 @@ async fn deploy_binary(ctx: &PipelineContext) -> Result<()> {
         ).await?;
     }
 
-    println!("{} Binary deployed successfully", "✅".green());
+    println!("{} Binary built and uploaded to GitHub Release", "✅".green());
     Ok(())
 }
 
@@ -1197,7 +1197,7 @@ async fn run_enhanced_phase2(state: &mut WorkflowState, ctx: &PipelineContext) -
         build_release(ctx).await
     }).await?;
 
-    // Step 8: Deploy binary (copy to dist/ and ~/bin)
+    // Step 8: Deploy binary (upload to GitHub Release)
     execute_step_with_tracking(state, STEP_DEPLOY_BINARY, || async {
         deploy_binary(ctx).await
     }).await?;
@@ -1302,7 +1302,7 @@ async fn run_ship_pipeline(ctx: &PipelineContext) -> Result<()> {
     }
 
     println!();
-    println!("{} Binary deployed to dist/ and ~/bin", "📦".green());
+    println!("{} Binary uploaded to GitHub Release", "📦".green());
     println!("{} Changes committed and pushed", "📤".green());
 
     Ok(())

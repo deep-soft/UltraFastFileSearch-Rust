@@ -35,7 +35,8 @@ build/
 /missing_paths.txt
 /_trash/
 /reference/
-dist/latest
+# Binaries are distributed via GitHub Releases, not committed to the repo
+dist/
 
 # =============================================================================
 # IDE / Editor / AI
