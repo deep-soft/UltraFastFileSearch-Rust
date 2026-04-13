@@ -753,6 +753,6 @@ fn query_memory_linux() -> Option<SystemMemory> {
 fn parse_meminfo_kb(rest: &str) -> u64 {
     rest.split_whitespace()
         .next()
-        .and_then(|s| s.parse().ok())
+        .and_then(|val| val.parse().ok())
         .unwrap_or(0)
 }

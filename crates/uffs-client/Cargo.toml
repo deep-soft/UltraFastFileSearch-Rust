@@ -39,8 +39,8 @@ tracing.workspace = true
 dirs-next.workspace = true
 memmap2.workspace = true
 
-# Daemon identity verification: exe path lookup
-[target.'cfg(unix)'.dependencies]
+# Daemon identity verification: exe path lookup (macOS only — uses proc_pidpath)
+[target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]

@@ -18,11 +18,10 @@ pub fn socket_path() -> PathBuf {
     }
     #[cfg(target_os = "linux")]
     {
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            PathBuf::from(runtime_dir).join("uffs").join("daemon.sock")
-        } else {
-            base.join("uffs").join("daemon.sock")
-        }
+        std::env::var("XDG_RUNTIME_DIR").map_or_else(
+            |_| base.join("uffs").join("daemon.sock"),
+            |runtime_dir| PathBuf::from(runtime_dir).join("uffs").join("daemon.sock"),
+        )
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
