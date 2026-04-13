@@ -376,7 +376,7 @@ fn sha256_for_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
         hasher.update(line.as_bytes());
         hasher.update(b"\n");
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

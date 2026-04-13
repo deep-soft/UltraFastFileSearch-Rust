@@ -59,6 +59,8 @@ use rand_chacha as _;
 use rayon as _;
 use rustc_hash as _;
 #[cfg(test)]
+use hex as _;
+#[cfg(test)]
 use sha2 as _;
 // SmallVec for path chain building (used in index.rs PathResolver)
 use smallvec as _;

@@ -52,7 +52,7 @@ jobs:
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Install tools
-        uses: taiki-e/install-action@735e5d244e4d2172f3fd68868cdf4d67a80b2394 # v2
+        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
@@ -60,7 +60,7 @@ jobs:
         run: cargo llvm-cov nextest --workspace --all-features --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@ad3126e916f78f00edff4ed0317cf185271ccc2d # v6
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -131,7 +131,7 @@ jobs:
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Install cargo-udeps
-        uses: taiki-e/install-action@f3855272e498e5c90bbbcf1e9b5de4ef53d91b1b # cargo-udeps
+        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # cargo-udeps
 
       - name: Run cargo-udeps
         run: cargo udeps --workspace --all-targets --all-features

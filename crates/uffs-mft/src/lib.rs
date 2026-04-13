@@ -75,6 +75,8 @@ use clap as _;
 #[cfg(test)]
 use criterion as _;
 use dirs_next as _;
+#[cfg(test)]
+use hex as _;
 use hostname as _;
 use indicatif as _;
 #[cfg(test)]

@@ -24,6 +24,7 @@ use clap as _;
 use criterion as _;
 use crossbeam_channel as _;
 use dirs_next as _;
+use hex as _;
 use hostname as _;
 use indicatif as _;
 use proptest as _;

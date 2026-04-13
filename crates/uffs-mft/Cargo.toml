@@ -42,7 +42,7 @@ smallvec.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 rayon.workspace = true
-zstd = { version = "0.13.3", optional = true, features = ["zstdmt"] }
+zstd = { workspace = true, optional = true }
 
 # CLI (for uffs_mft binary)
 clap.workspace = true
@@ -57,14 +57,14 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 dirs-next.workspace = true
 chrono.workspace = true
-hostname = "0.4.2"
-rustc-hash = "2.1.1"
+hostname.workspace = true
+rustc-hash.workspace = true
 zerocopy.workspace = true
 
 # Chaos test harness dependencies (ChaosMftReader is public for CLI)
-rand = "0.9.2"
-rand_chacha = "0.9.0"
-crossbeam-channel = "0.5.15"
+rand.workspace = true
+rand_chacha.workspace = true
+crossbeam-channel.workspace = true
 bytemuck.workspace = true
 
 # Windows APIs (Windows only)
@@ -75,9 +75,10 @@ windows.workspace = true
 criterion.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros"] }
-sha2 = "0.10"  # For SHA256 validation in chaos tests
+sha2.workspace = true  # For SHA256 validation in chaos tests
+hex.workspace = true   # For hex-encoding SHA256 digests (sha2 0.11 removed LowerHex impl)
 tracing-subscriber = { workspace = true }
-tempfile = "3.27.0"
+tempfile.workspace = true
 
 [[bench]]
 name = "mft_read"

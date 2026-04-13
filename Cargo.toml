@@ -41,7 +41,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.4.112"
+version = "0.5.1"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
@@ -159,6 +159,7 @@ hex = "0.4.3"
 
 # ───── Parallelism ─────
 rayon = "1.11.0"
+crossbeam-channel = "0.5.15"
 
 # ───── Memory ─────
 mimalloc = "0.1.48"
@@ -166,10 +167,12 @@ memmap2 = "0.9.10"
 
 # ───── System ─────
 libc = "0.2"
+hostname = "0.4.2"
 
 # ───── Security / Crypto ─────
 aes-gcm = "0.10"
 rand = "0.10.1"
+rand_chacha = "0.10.0"
 security-framework = "3.7.0"
 
 # ───── Compression ─────
@@ -179,6 +182,7 @@ zstd = { version = "0.13.3", features = ["zstdmt"] }
 criterion = "0.8.2"
 proptest = "1.11.0"
 assert_cmd = "2.2.0"
+tempfile = "3.27.0"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # WORKSPACE-WIDE SUPER STRICT LINTING CONFIGURATION (2026 CUTTING-EDGE STANDARDS)
