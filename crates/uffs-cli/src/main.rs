@@ -263,7 +263,17 @@ fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
 /// doesn't show backtraces for user-facing errors like "file not found".
 #[tracing::instrument(level = "info", skip_all)]
 async fn run() -> Result<()> {
+    // Startup profiler: reuse t0 from main() if available.
+    let mut prof = StartupProfiler::new(
+        STARTUP_PROFILER_T0
+            .get()
+            .copied()
+            .unwrap_or_else(std::time::Instant::now),
+    );
+    prof.mark("run() entered (tokio spawned)");
+
     let cli = Cli::parse();
+    prof.mark("clap Cli::parse()");
 
     // `uffs daemon run` manages its own tracing subscriber so it can
     // honour --log-level / --log-file.  Skip the CLI's init_logging for
@@ -285,7 +295,9 @@ async fn run() -> Result<()> {
         None
     } else {
         let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
-        Some(init_logging(verbose))
+        let guard = init_logging(verbose);
+        prof.mark("init_logging()");
+        Some(guard)
     };
 
     // Handle subcommands or default search action
@@ -443,6 +455,18 @@ async fn dispatch_search(
     exclude: Option<&str>,
     match_path: bool,
 ) -> Result<()> {
+    // Startup profiling: mark when dispatch begins (after match + pattern extraction).
+    if std::env::var_os("UFFS_PROFILE_STARTUP").is_some() {
+        if let Some(&t0) = STARTUP_PROFILER_T0.get() {
+            let elapsed = t0.elapsed();
+            eprintln!(
+                "  [STARTUP] {:<28} (total: {:>7.2} ms)",
+                "dispatch_search() entered",
+                elapsed.as_secs_f64() * 1000.0,
+            );
+        }
+    }
+
     // Expand collection aliases / presets
     let ext_expanded = cli
         .ext
@@ -601,13 +625,81 @@ async fn run_until_shutdown() -> Result<()> {
     }
 }
 
-#[tokio::main]
+/// Startup profiler — prints phase timings to stderr when
+/// `UFFS_PROFILE_STARTUP=1` is set.  Uses raw `eprintln!` (not tracing)
+/// so it can measure tracing init itself.
+struct StartupProfiler {
+    /// Whether profiling is enabled.
+    enabled: bool,
+    /// Process-level t0 — set at the very first instruction.
+    t0: std::time::Instant,
+    /// Previous checkpoint.
+    prev: std::time::Instant,
+}
+
+impl StartupProfiler {
+    /// Create a new profiler.  `t0` should be captured at the very first
+    /// instruction of `main()`.
+    fn new(t0: std::time::Instant) -> Self {
+        let enabled = std::env::var_os("UFFS_PROFILE_STARTUP").is_some();
+        Self {
+            enabled,
+            t0,
+            prev: t0,
+        }
+    }
+
+    /// Record a phase completion.
+    #[expect(clippy::print_stderr, reason = "intentional profiling output")]
+    fn mark(&mut self, phase: &str) {
+        if !self.enabled {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let delta = now.duration_since(self.prev);
+        let total = now.duration_since(self.t0);
+        eprintln!(
+            "  [STARTUP] {phase:<28} {:>7.2} ms  (total: {:>7.2} ms)",
+            delta.as_secs_f64() * 1000.0,
+            total.as_secs_f64() * 1000.0,
+        );
+        self.prev = now;
+    }
+}
+
+/// Manual entry point — creates the tokio runtime explicitly so we can
+/// measure its startup cost separately from the rest of the application.
 #[expect(
     clippy::print_stderr,
     reason = "intentional user-facing error output to stderr"
 )]
-async fn main() {
-    if let Err(err) = run_until_shutdown().await {
+fn main() {
+    let t0 = std::time::Instant::now();
+    let mut prof = StartupProfiler::new(t0);
+    prof.mark("binary entry + alloc init");
+
+    // Build tokio runtime manually (instead of #[tokio::main]) so we can
+    // measure its cost.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build();
+    prof.mark("tokio runtime build");
+
+    let rt = match runtime {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("Error: failed to create tokio runtime: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    // Store the profiler in a thread-local so `run()` can access it.
+    STARTUP_PROFILER_T0.set(t0).ok();
+
+    let result = rt.block_on(run_until_shutdown());
+    prof.mark("total (after block_on)");
+
+    if let Err(err) = result {
         // Print error without backtrace for clean user-facing output
         // Use anyhow's chain() to iterate through the error chain
         for (idx, cause) in err.chain().enumerate() {
@@ -621,6 +713,9 @@ async fn main() {
         std::process::exit(1);
     }
 }
+
+/// Thread-local t0 for startup profiling — set by `main()`, read by `run()`.
+static STARTUP_PROFILER_T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 #[cfg(test)]
 mod tests {
