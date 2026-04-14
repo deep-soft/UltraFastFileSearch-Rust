@@ -7,11 +7,12 @@
 
 **A benchmark-driven NTFS search engine for Windows.** UFFS reads the Master File Table directly, builds a compact persisted index, and keeps large NTFS estates searchable through a background daemon.
 
-> Proven on a real 7-drive, 25.9M-record Windows system — tested to **100M records**:
+> Proven on a real 7-drive, 25.9M-record Windows system; scale-ceiling tested to **100.4M records** with offline MFT clones:
 > - **66 s COLD** — raw MFT read + compact index build
 > - **6.9 s WARM CACHE** — restart from serialized cache
-> - **9–13 ms HOT** — targeted query end-to-end (exact/prefix/ext/substring)
-> - **0–3 ms daemon-side** for targeted queries, even at 100M records
+> - **163 ms HOT full scan (`*`)** — end-to-end across all 7 live drives
+> - **9–13 ms HOT targeted queries** — exact/prefix/ext/substring end-to-end
+> - **0–3 ms daemon-side** for targeted queries, even at 100.4M records
 
 UFFS is built for **exact filename, path, and metadata search** at scales where directory walking, shell search, and some automation surfaces become the bottleneck. It is open source, written in Rust, and designed first for deterministic local search; CLI, TUI, API, and MCP are all interfaces on top of the same engine.
 
@@ -48,7 +49,7 @@ Hot-path context (30 rounds, p50):
 - **0–1 ms daemon-side** for targeted queries (exact, prefix, ext, substring, combined)
 - **9–13 ms** end-to-end for targeted queries across all drives
 - **407×** cold→hot speedup across all 7 drives
-- **326k rows/sec** bulk export throughput (CSV, `--out-dir`)
+- **323k rows/sec** bulk export throughput (CSV, `--out-dir`)
 - **100.4M records** tested: targeted queries still **11–13 ms e2e**
 
 > 📖 **[Full benchmark data](docs/user-manual/performance.md)** — methodology, per-drive tables, interactive search percentiles, bulk retrieval, scale ceiling, and caveats.
@@ -86,7 +87,7 @@ uffs daemon restart
 
 1. **Read** — Opens the raw NTFS volume and reads the MFT sequentially using IOCP with a sliding window. Bitmap skip eliminates 40–55% of I/O by skipping deleted records.
 2. **Parse** — Each I/O buffer is parsed inline into a compact 224-byte `FileRecord` — zero intermediate copies, zero per-record heap allocations. On NVMe, Rayon parallelizes parsing across all CPU cores.
-3. **Index** — Records are loaded into Polars DataFrames with an inverted extension index for 50–200× faster `*.ext` queries.
+3. **Index** — Records are stored in a compact in-memory index with extension and trigram accelerators for fast targeted queries. DataFrame/export paths are built on top of the same core engine.
 4. **Serve** — A background daemon holds the index in memory and answers queries via IPC. CLI, TUI, and MCP clients all share the same daemon.
 
 > 📖 **[Architecture deep-dive](docs/architecture/engine/01-overview.md)** — 11 documents covering every subsystem.
@@ -97,7 +98,7 @@ uffs daemon restart
 
 | Crate | Role |
 |-------|------|
-| `uffs-mft` | Direct MFT reading → Polars DataFrame ([📖](crates/uffs-mft/README.md)) |
+| `uffs-mft` | Direct MFT reading → compact in-memory index ([📖](crates/uffs-mft/README.md)) |
 | `uffs-core` | Query engine (Polars lazy API) |
 | `uffs-daemon` | Background index server ([📖](docs/user-manual/daemon.md)) |
 | `uffs-cli` | Command-line interface ([📖](docs/user-manual/cli-overview.md)) |
@@ -130,7 +131,7 @@ The older C++ implementation remains useful as a parity and regression baseline,
 
 | Category | Tools | How UFFS differs |
 |----------|-------|-----------------|
-| **Instant NTFS filename search** | [Everything (voidtools)](https://www.voidtools.com/), [WizFile](https://antibody-software.com/wizfile/), [WizTree](https://www.diskanalyzer.com/), [UltraSearch (JAM Software)](https://www.jam-software.com/ultrasearch), [SwiftSearch](https://sourceforge.net/projects/swiftsearch/), [Locate32](https://locate32.cogit.net/) | Open-source Rust engine; 25.9M-record proven scale; Polars DataFrames; daemon + CLI + TUI + MCP; 40+ filters; forensic mode; cross-platform offline analysis |
+| **Instant NTFS filename search** | [Everything (voidtools)](https://www.voidtools.com/), [WizFile](https://antibody-software.com/wizfile/), [WizTree](https://www.diskanalyzer.com/), [UltraSearch (JAM Software)](https://www.jam-software.com/ultrasearch), [SwiftSearch](https://sourceforge.net/projects/swiftsearch/), [Locate32](https://locate32.cogit.net/) | Open-source Rust engine; 100M-record proven scale; compact index + daemon + CLI + TUI + MCP; 40+ filters; forensic mode; cross-platform offline analysis |
 | **Content / regex search** | [FileLocator Pro / Agent Ransack](https://www.mythicsoft.com/filelocatorpro/), [grepWin](https://tools.stefankueng.com/grepWin.html), [AstroGrep](http://astrogrep.sourceforge.net/), [dnGrep](https://dngrep.github.io/), [SearchMyFiles (NirSoft)](https://www.nirsoft.net/utils/search_my_files.html) | UFFS focuses on MFT-level metadata speed; pairs well with `ripgrep` for content |
 | **Enterprise / eDiscovery** | [X1 Search](https://www.x1.com/), [dtSearch](https://www.dtsearch.com/), [Copernic](https://copernic.com/) | UFFS is a specialist local-NTFS tool, not a multi-repository governance platform |
 | **Developer CLI** | [fd](https://github.com/sharkdp/fd), [ripgrep](https://github.com/BurntSushi/ripgrep), [fzf](https://github.com/junegunn/fzf), [GNU find](https://www.gnu.org/software/findutils/) | UFFS reads the MFT instead of walking directories — orders of magnitude faster for whole-drive search |

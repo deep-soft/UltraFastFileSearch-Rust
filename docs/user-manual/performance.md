@@ -67,6 +67,10 @@ A benchmark is only useful if readers can see both the fastest successful run an
 | S: | SATA HDD | 8,278,102 | WD 8 TB spinning disk (WDC WD82PURZ) |
 | **ALL** | **Mixed** | **25,929,744** | **All 7 drives in parallel** |
 
+> **Corpus note:** The 25.9M-record benchmark corpus is a live working Windows machine, so per-drive record counts can drift slightly between runs as files are created, deleted, or updated. Minor differences of a few thousand records across tables reflect different benchmark passes on the same system, not different methodology.
+>
+> **Scale-ceiling note:** The 42.5M–100.4M tiers are constructed by adding offline MFT clones to the live 7-drive corpus on the same machine. They are scale-ceiling workloads, not additional live volumes.
+
 ---
 
 ## 2  The Three-Phase Model
@@ -260,7 +264,7 @@ Two output modes are tested: shell pipe (stdout) and direct file write (`--out-d
 | Mode | 8.3M rows | Rows/sec | Relative |
 |------|----------:|---------:|---------:|
 | Pipe (stdout) | 68 s | 122k/s | 1.0× |
-| `--out-dir` | 25.6 s | 326k/s | **2.7×** |
+| `--out-dir` | 25.6 s | 323k/s | **2.6×** |
 
 > **Recommendation:** For exports exceeding ~100k rows, use `--out-dir`
 > to bypass the shell pipe bottleneck.
@@ -374,12 +378,12 @@ C++ baseline runs warm:
 | Drive | C++ (warm) | Rust (cold) | Ratio | Rust records/sec |
 |-------|----------:|------------:|------:|-----------------:|
 | C: | 12.4 s | 17.4 s | 1.40× slower | 201,658 |
-| D: | 47.1 s | 47.1 s | 1.00× | — |
-| E: | 43.6 s | 48.8 s | 1.12× slower | — |
-| F: | 7.0 s | 11.0 s | 1.57× slower | — |
-| M: | 24.1 s | 31.7 s | 1.32× slower | — |
-| S: | 61.6 s | 86.8 s | 1.41× slower | — |
-| **TOTAL** | **3m 9s** | **4m 3s** | **1.29× slower** | **106,695** |
+| D: | 39.8 s | 47.1 s | 1.18× slower | 150,015 |
+| E: | 43.6 s | 48.8 s | 1.12× slower | 59,998 |
+| F: | 7.0 s | 11.0 s | 1.57× slower | 202,343 |
+| M: | 24.1 s | 31.7 s | 1.31× slower | 60,160 |
+| S: | 1m 1.6 s | 1m 26.8 s | 1.41× slower | 95,326 |
+| **TOTAL** | **3m 8.6 s** | **4m 2.9 s** | **1.29× slower** | **106,695** |
 
 > **Context:** The C++ times are warm (OS has cached MFT pages); the
 > Rust times are cold (MFT read from disk + full parse + cache write).

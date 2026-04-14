@@ -50,10 +50,10 @@ limit: 100, per-drive profile.
 | 10k | 10,001 | 323 ms | 31.0k/s |
 | 100k | 100,001 | 1.4 s | 72.5k/s |
 | 1M | 1,000,001 | 3.4 s | 292k/s |
-| ALL (per-drive) | 8.3M | 25.6 s | **326k/s** |
+| ALL (per-drive) | 8.3M | 25.6 s | **323k/s** |
 
-> **Pipe vs `--out-dir`:** Shell pipe throughput peaks at ~135k rows/s.
-> Using `--out-dir` (direct file write) reaches **326k rows/s** — a **2.4× speedup** on full exports.
+> **Pipe vs `--out-dir`:** Shell pipe throughput peaks at ~122k rows/s.
+> Using `--out-dir` (direct file write) reaches **323k rows/s** — a **2.6× speedup** on full exports.
 
 ### Scale Ceiling (interactive search, `--limit 100`, 30 rounds)
 
@@ -78,7 +78,7 @@ limit: 100, per-drive profile.
 - **Warm restart is the operator win** — the full 25.9M-record searchable state returns in **6.9 s** from serialized cache.
 - **Hot queries are media-independent** — once the daemon is warm, single-drive end-to-end queries complete in **6–54 ms** depending on drive size. Targeted queries return in **9–13 ms** end-to-end.
 - **Daemon throughput is higher than CLI wall time** — the **163 ms** all-drive hot number includes process spawn, IPC, and formatting; the actual daemon-side scan is **155 ms**.
-- **Bulk export peaks at 326k rows/sec** — using direct file output (`--out-dir`), a full 8.3M-record drive exports in ~25 seconds.
+- **Bulk export peaks at 323k rows/sec** — using direct file output (`--out-dir`), a full 8.3M-record drive exports in ~25 seconds.
 
 > 📖 **Full benchmark data:** [Performance](../../user-manual/performance.md)
 
@@ -243,12 +243,12 @@ Key trace points:
 
 ## Memory Usage
 
-### Typical Memory Footprint (3.5M files, single NVMe drive)
+### Typical Memory Footprint (C: drive — 3.5M MFT records, ~2M active files)
 
 | Component | Size | Notes |
 |-----------|------|-------|
-| `records: Vec<FileRecord>` | 448 MB | 2M × 224 bytes |
-| `frs_to_idx: Vec<u32>` | 20 MB | 5M × 4 bytes (sparse) |
+| `records: Vec<FileRecord>` | 448 MB | 2M active × 224 bytes |
+| `frs_to_idx: Vec<u32>` | 14 MB | 3.5M × 4 bytes (sparse, covers full MFT) |
 | `names: String` | 46 MB | 2M × 23 bytes avg |
 | `links: Vec<LinkInfo>` | 3 MB | ~125K hardlinks |
 | `streams: Vec<IndexStreamInfo>` | 15 MB | ~500K ADS |

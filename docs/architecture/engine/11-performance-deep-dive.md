@@ -73,8 +73,8 @@ Full scans sustain **167 million records/second**.
 | 1M | 1,000,001 | 3.4 s | 292k/s |
 | ALL (8.3M) | 8,278,106 | 25.6 s | **326k/s** |
 
-Pipe-based output peaks at ~135k rows/s.  Direct file write (`--out-dir`)
-reaches **326k rows/s** — a **2.4× speedup**.
+Pipe-based output peaks at ~122k rows/s.  Direct file write (`--out-dir`)
+reaches **323k rows/s** — a **2.6× speedup**.
 
 ### Scale Ceiling (100M records, 16 drives, 30 rounds)
 
