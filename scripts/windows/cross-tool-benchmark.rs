@@ -476,6 +476,13 @@ fn main() {
             if let Some(ref es) = cfg.es {
                 eprintln!("  Everything HOT:  {} rounds (always-hot, daemon model)", cfg.rounds);
                 for &(label, _, es_pat, _, _, validate) in PATTERNS {
+                    // Skip full_scan for Everything — es.exe has a 2GB IPC
+                    // memory limit that crashes on drives with >2M entries.
+                    // See verify_parity.rs and Everything 1.4 known limitation.
+                    if label == "full_scan" {
+                        eprintln!("    {label:<12} SKIP (es.exe 2GB IPC limit)");
+                        continue;
+                    }
                     eprint!("    {label:<12} ");  flush();
                     let mut runs = Vec::new();
                     for _ in 0..cfg.rounds {
