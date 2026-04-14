@@ -155,6 +155,7 @@ struct BulkConfig {
     tiers: Vec<u64>,
     sources: DataSources,
     format: String, // csv, json, ndjson
+    out_dir: Option<PathBuf>,
 }
 
 // ─── Daemon lifecycle ───────────────────────────────────────────────────────
@@ -209,18 +210,41 @@ fn assert_ready(bin: &PathBuf) -> bool {
 
 // ─── Row counting ───────────────────────────────────────────────────────────
 
-/// Run a search and count rows in stdout (CSV lines minus header).
-fn run_tier(bin: &PathBuf, source_args: &[String], limit: u64, format: &str) -> TierResult {
+/// Count lines in a file (minus header for CSV).
+fn count_rows_in_file(path: &std::path::Path, format: &str) -> u64 {
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+    let count = reader.lines().count() as u64;
+    match format {
+        "csv" => count.saturating_sub(1), // skip header
+        _ => count,
+    }
+}
+
+/// Run a search and count rows. When `out_file` is Some, uses `--out <file>`
+/// to bypass shell pipes; otherwise pipes stdout.
+fn run_tier(
+    bin: &PathBuf, source_args: &[String], limit: u64, format: &str,
+    out_file: Option<&std::path::Path>,
+) -> TierResult {
     let mut args: Vec<String> = vec!["*".into()];
     args.extend(source_args.iter().cloned());
     args.extend(["--format".into(), format.into()]);
     if limit > 0 {
         args.extend(["--limit".into(), limit.to_string()]);
     }
+    if let Some(path) = out_file {
+        args.extend(["--out".into(), path.to_string_lossy().into_owned()]);
+    }
 
     let t0 = Instant::now();
     let child = Command::new(bin).args(&args)
-        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+        .stdout(if out_file.is_some() { Stdio::null() } else { Stdio::piped() })
+        .stderr(Stdio::piped()).spawn();
     let child = match child {
         Ok(c) => c,
         Err(e) => {
@@ -238,23 +262,25 @@ fn run_tier(bin: &PathBuf, source_args: &[String], limit: u64, format: &str) -> 
 
     match output {
         Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
 
-            // Count rows: for CSV, skip header line; for JSON, count array entries.
-            let rows = match format {
-                "csv" => {
-                    let lines: Vec<&str> = stdout.lines().collect();
-                    if lines.len() > 1 { (lines.len() - 1) as u64 } else { 0 }
+            // Count rows: from file if --out was used, otherwise from stdout.
+            let rows = if let Some(path) = out_file {
+                count_rows_in_file(path, format)
+            } else {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                match format {
+                    "csv" => {
+                        let lines: Vec<&str> = stdout.lines().collect();
+                        if lines.len() > 1 { (lines.len() - 1) as u64 } else { 0 }
+                    }
+                    "json" => {
+                        stdout.matches("\"Name\"").count().saturating_sub(1) as u64
+                    }
+                    _ => stdout.lines().count() as u64,
                 }
-                "json" => {
-                    // Simple: count occurrences of `"Name"` in JSON array output.
-                    stdout.matches("\"Name\"").count().saturating_sub(1) as u64
-                }
-                _ => stdout.lines().count() as u64,
             };
 
-            // Grab last few stderr lines for diagnostics.
             let snippet: String = stderr.lines().rev().take(3)
                 .collect::<Vec<_>>().into_iter().rev()
                 .collect::<Vec<_>>().join(" | ");
@@ -305,7 +331,12 @@ fn bench_drive(cfg: &BulkConfig, drive: &str) -> DriveResults {
         let mut tier_results = Vec::new();
         for &limit in &cfg.tiers {
             eprint!("    {:>6}: ", tier_label(limit)); flush();
-            let r = run_tier(&cfg.bin, &search_src, limit, &cfg.format);
+            // Build --out file path if out_dir is set.
+            let out_file = cfg.out_dir.as_ref().map(|dir| {
+                dir.join(format!("{}_r{}_{}.{}", drive, round, tier_label(limit), &cfg.format))
+            });
+            let r = run_tier(&cfg.bin, &search_src, limit, &cfg.format,
+                out_file.as_deref());
             let rps = r.rows_per_sec();
             let rps_str = if rps > 1_000_000.0 { format!("{:.1}M/s", rps / 1_000_000.0) }
                 else if rps > 1_000.0 { format!("{:.0}k/s", rps / 1_000.0) }
@@ -490,6 +521,7 @@ fn parse_args() -> BulkConfig {
     let mut tiers: Vec<u64> = Vec::new();
     let mut data_dir: Option<PathBuf> = None;
     let mut format = "csv".to_string();
+    let mut out_dir: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -510,6 +542,7 @@ fn parse_args() -> BulkConfig {
             }
             "--format" => { i += 1; if i < args.len() { format = args[i].clone(); } }
             "--data-dir" => { i += 1; if i < args.len() { data_dir = Some(PathBuf::from(&args[i])); } }
+            "--out-dir" => { i += 1; if i < args.len() { out_dir = Some(PathBuf::from(&args[i])); } }
             "--help" | "-h" => {
                 eprintln!("UFFS Bulk Retrieval Benchmark");
                 eprintln!();
@@ -522,6 +555,7 @@ fn parse_args() -> BulkConfig {
                 eprintln!("  --tiers 100,10000   Comma-separated limit tiers (default: 100,1k,10k,100k,1M,ALL)");
                 eprintln!("  --format csv|json   Output format to test (default: csv)");
                 eprintln!("  --data-dir PATH     MFT data directory");
+                eprintln!("  --out-dir PATH      Write uffs output to files (bypasses pipe)");
                 std::process::exit(0);
             }
             other => {
@@ -558,7 +592,12 @@ fn parse_args() -> BulkConfig {
     };
 
     let bin = bin.unwrap_or_else(|| PathBuf::from(default_binary()));
-    BulkConfig { bin, drives, rounds, tiers, sources, format }
+    // Create out_dir if specified.
+    if let Some(ref dir) = out_dir {
+        let _ = std::fs::create_dir_all(dir);
+        eprintln!("  Output dir: {}", dir.display());
+    }
+    BulkConfig { bin, drives, rounds, tiers, sources, format, out_dir }
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
