@@ -140,7 +140,7 @@ jobs:
           key: release-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup just
-        uses: extractions/setup-just@e33e0265a09d1d5f4ee1a85a3e665e75715c4de5 # v4
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
       - name: Build optimized release binaries
         shell: bash
