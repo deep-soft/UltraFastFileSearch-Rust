@@ -145,16 +145,39 @@ pool pre-creation.
 
 ### 4.1.1  The real bottleneck: binary size → process creation
 
-| | uffs.exe | es.exe |
-|-|---------|--------|
-| Binary size | 52.7 MB | ~200 KB |
-| Process creation | ~136 ms | ~15 ms |
-| In-process work | ~28 ms | ~50 ms |
-| **Wall clock** | **~164 ms** | **~68 ms** |
+**Measured binary size vs process load time (Windows, 10-run avg):**
 
-UFFS actually does LESS in-process work than Everything (28 ms vs ~50 ms).
-The daemon search (0 ms for 7M records) is faster than Everything's
-search. **The entire perf gap is binary loading time.**
+| Binary | Size | Load time | Notes |
+|--------|------|-----------|-------|
+| es.exe (C) | 0.15 MB | 35.6 ms | Floor — minimal C binary |
+| uffs.com (C++) | 1.2 MB | 40.9 ms | +5 ms over floor |
+| uffs_mft.exe (Rust) | 20.5 MB | 77.5 ms | +42 ms over floor |
+| uffs.exe (Rust+Polars) | 52.7 MB | 152.5 ms | +117 ms over floor |
+
+**Formula: ~35 ms floor + ~2.2 ms per MB of binary.**
+
+```
+160 ┤                                          ● uffs.exe (52.7 MB)
+    ┤
+120 ┤
+    ┤
+ 80 ┤                     ● uffs_mft (20.5 MB)
+    ┤
+ 40 ┤  ● es  ● uffs.com
+ 35 ┤──●──────────────────── floor (~35 ms)
+  0 └──────────────────────────────────────────
+       0    5   10   15   20   25   30   40   50 MB
+```
+
+**A thin CLI client at ~2 MB → ~40 ms load + 16 ms search = 56 ms total.**
+**That beats Everything's 68 ms.**
+
+| | uffs.exe (current) | thin client (projected) | es.exe |
+|-|-------------------|------------------------|--------|
+| Binary size | 52.7 MB | ~2 MB | 0.15 MB |
+| Process load | 152 ms | ~40 ms | 36 ms |
+| In-process work | 28 ms | ~16 ms | ~32 ms |
+| **Wall clock** | **164 ms** | **~56 ms** | **68 ms** |
 
 Optimization implications:
 - tokio (2.5 ms), clap (1 ms), logging (2.3 ms) = 5.8 ms — **NOT** bottlenecks
