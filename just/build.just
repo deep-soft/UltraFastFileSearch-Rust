@@ -216,16 +216,18 @@ use:
         }
     }
 
-    Write-Host "`n✅ Installed $installed binaries to ~/bin" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "✅ Installed $installed binaries to ~/bin" -ForegroundColor Green
     if ($skipped -gt 0) { Write-Host "⚠️  Skipped $skipped" -ForegroundColor Yellow }
 
     # Show versions
-    Write-Host "`n📋 Installed versions:" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "📋 Installed versions:" -ForegroundColor Blue
     foreach ($dest in $binaries.Values) {
         $destPath = Join-Path $binDir $dest
         if (Test-Path $destPath) {
             $ver = & $destPath --version 2>$null
-            Write-Host "  $dest`t$ver"
+            Write-Host ("  {0}  {1}" -f $dest, $ver)
         }
     }
 
