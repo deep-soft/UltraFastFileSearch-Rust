@@ -220,7 +220,7 @@ fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     let bpath = bench_out_path();
     let out_arg = format!("--out={}", bpath);
     let args = [pattern, "--drive", drive, &out_arg, "--profile"];
-    eprintln!("      CMD: \"{}\" {}", bin.display(), args.iter().map(|a| format!("\"{}\"", a)).collect::<Vec<_>>().join(" "));
+    eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
     let t = Instant::now();
     let r = Command::new(bin)
         .args(args)
@@ -262,7 +262,7 @@ fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     let bpath = bench_out_path();
     let query = if pattern == "*" { format!("{}:\\", drive) } else { format!("{}:\\ {}", drive, pattern) };
     let args = [query.as_str(), "-export-csv", bpath.as_str()];
-    eprintln!("      CMD: \"{}\" {}", bin.display(), args.iter().map(|a| format!("\"{}\"", a)).collect::<Vec<_>>().join(" "));
+    eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
     let t = Instant::now();
     let r = Command::new(bin)
         .args(args)
@@ -301,7 +301,7 @@ fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate:
     }
     args.push(format!("--drives={}", drive));
     args.push(format!("--out={}", bpath));
-    eprintln!("      CMD: \"{}\" {}", bin.display(), args.iter().map(|a| format!("\"{}\"", a)).collect::<Vec<_>>().join(" "));
+    eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
     let t = Instant::now();
     let r = Command::new(bin)
         .args(&args)
