@@ -71,7 +71,21 @@ Fixed the benchmark to use path-only output for all three tools:
 - `uffs.com --columns=path` → 1 column
 - `es.exe -export-csv` → already 1 column (full path, header: `Filename`)
 
-This eliminates the I/O asymmetry. **Re-run needed** to get fair numbers.
+This eliminates the I/O asymmetry.
+
+### Fair results (path-only, 10 rounds, HOT only)
+
+Partial results from targeted runs with `--patterns exact`:
+
+| Drive | Pattern | UFFS HOT p50 | Everything p50 | Ratio |
+|-------|---------|-------------|----------------|-------|
+| D: | exact (3 rows) | 164 ms | 68 ms | 2.4× slower |
+
+With path-only output, UFFS is still ~2.4× slower than Everything.
+The I/O asymmetry was NOT the main bottleneck for small result sets —
+**process startup overhead is** (see Section 4).
+
+Full fair benchmark with all patterns and drives pending.
 
 ## 4  Where Does UFFS Spend 164 ms? (Profile Forensics)
 
@@ -112,13 +126,41 @@ Wall clock:     164 ms   ← WHERE ARE THE OTHER 154 ms?
 
 ### 4.3  IPC comparison
 
+Everything's IPC is documented at https://www.voidtools.com/support/everything/sdk/ipc
+and the es.exe source is at https://github.com/voidtools/ES.
+
+**Everything's IPC flow** (from `src/es.c`):
+1. `FindWindow("EVERYTHING_TASKBAR_NOTIFICATION")` — locate the service
+2. Allocate `EVERYTHING_IPC_QUERY` struct with search string
+3. `SendMessage(WM_COPYDATA)` — kernel copies query into service process
+4. Service searches its in-memory index (sorted arrays, no DataFrame)
+5. Service replies via `WM_COPYDATA` with result list
+6. es.exe iterates results and writes to file/stdout via `fprintf`
+
+This is **zero-copy IPC**: `WM_COPYDATA` maps the sender's buffer into
+the receiver's address space via the kernel. No serialization, no JSON
+parsing, no socket handshake. The entire IPC round-trip is a single
+synchronous `SendMessage` call (~5 ms for small result sets).
+
+**UFFS's IPC flow** (from `crates/uffs-client/src/connect.rs`):
+1. `UnixStream::connect(socket_path)` — connect to daemon socket
+2. Build `RpcRequest { jsonrpc: "2.0", method: "search", params: ... }`
+3. `serde_json::to_value(params)` → `serde_json::to_string(request)`
+4. Write JSON string to socket + `\n` delimiter
+5. Daemon parses JSON, executes search, builds response
+6. `serde_json::to_value(&response)` → `serde_json::to_string(rpc_response)`
+7. Write response JSON to socket
+8. Client reads line, `serde_json::from_str` → `serde_json::from_value`
+9. Deserialize into `SearchResponse` with `Vec<SearchRow>`
+
 | Factor | Everything | UFFS |
 |--------|-----------|------|
-| Mechanism | `WM_COPYDATA` | JSON-RPC 2.0 over Unix socket |
-| Serialization | None (raw memory) | serde_json (2 ser + 2 deser) |
+| Mechanism | `WM_COPYDATA` (Win32) | JSON-RPC 2.0 over Unix socket |
+| Serialization | None (raw `memcpy`) | serde_json (2 ser + 2 deser) |
 | Data flow | es.exe → kernel copy → reply | params→JSON→socket→parse→search→SearchRow→JSON→socket→parse→DisplayRow |
 | Conversions | 0 | 4 (DisplayRow→SearchRow→JSON string→SearchRow→DisplayRow) |
-| Protocol overhead | 0 bytes | ~200 bytes envelope per request |
+| Protocol overhead | ~0 bytes | ~200 bytes JSON-RPC envelope per request |
+| Blocking model | Synchronous `SendMessage` | Async tokio + await |
 
 ### 4.4  The double conversion problem
 
@@ -194,8 +236,36 @@ executable with:
 
 ## 7  Next Steps
 
-- [ ] Re-run benchmark with path-only output (fair comparison)
+- [x] Fix benchmark: path-only output for all tools (fair I/O)
+- [x] Fix benchmark: es.exe args must be separate (path + query)
+- [x] Fix benchmark: add `--patterns` filter for targeted debugging
+- [x] Fix benchmark: lightweight daemon warmup (no full scan)
+- [x] Analyze Everything SDK IPC mechanism (WM_COPYDATA)
+- [x] Deep-dive UFFS startup overhead (profile forensics)
+- [ ] Run full fair benchmark (all patterns × all tools × 10 rounds)
 - [ ] Prototype `uffs-fast` thin client to validate Tier 1 hypothesis
-- [ ] Profile startup with `cargo instruments` (or ETW on Windows)
+- [ ] Profile startup with ETW on Windows to measure exact breakdown
 - [ ] Implement lazy field resolution (Tier 3)
 - [ ] Re-benchmark after each optimization tier
+
+## 8  Methodology Notes
+
+### Benchmark script
+`scripts/windows/cross-tool-benchmark.rs` (rust-script)
+
+### Key flags
+```
+--tools uffs,cpp,es    Select which tools to benchmark
+--drives C,D           Select drives
+--patterns exact,ext_dll  Select specific query patterns
+--rounds 10            Number of rounds per pattern
+--skip-cold            Skip COLD/WARM phases (HOT only)
+```
+
+### Test environment
+- AMD Ryzen 9 3900XT, 12 cores / 24 threads
+- 64 GB DDR4-3600 RAM
+- C: Samsung 980 PRO NVMe (1 TB) — 3.5M MFT records
+- D: Samsung 870 EVO SATA (4 TB) — 7.1M MFT records
+- Windows 11 Pro 24H2 (Build 26100)
+- Everything 1.4.1.1024 (service mode, IPC v2)
