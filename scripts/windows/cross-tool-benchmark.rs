@@ -66,7 +66,12 @@ use std::time::{Duration, Instant};
 const TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_ROUNDS: usize = 10;
 const DEFAULT_DRIVES: &[&str] = &["C", "D"];
-const BENCH_OUT: &str = "bench_out.csv"; // temp file for direct-write output
+
+/// Absolute path for bench output file — avoids cwd ambiguity.
+fn bench_out_path() -> String {
+    let tmp = env::temp_dir();
+    tmp.join("uffs_bench_out.csv").to_string_lossy().into_owned()
+}
 /// (label, uffs_rust_pattern, es_search, cpp_pattern, cpp_ext, validate)
 /// cpp_ext: if non-empty, C++ UFFS uses `* --ext=<val>` instead of glob
 /// validate: case-insensitive substring that every result line must contain
@@ -176,9 +181,23 @@ fn is_header_or_footer(line: &str) -> bool {
 /// Validates that each data line contains `needle` (case-insensitive).
 /// Returns (data_rows, bad_rows).
 fn count_and_validate(path: &str, needle: &str) -> (u64, u64) {
+    // Try UTF-8 first, then fall back to reading raw bytes (handles UTF-16 BOM)
     let content = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(_) => return (0, 0),
+        Err(_) => {
+            // Fallback: read raw bytes, strip UTF-16 LE BOM, decode lossy
+            match std::fs::read(path) {
+                Ok(bytes) if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE => {
+                    // UTF-16 LE: decode pairs of bytes
+                    let u16s: Vec<u16> = bytes[2..].chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .collect();
+                    String::from_utf16_lossy(&u16s)
+                }
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(_) => return (0, 0),
+            }
+        }
     };
     let data: Vec<&str> = content.lines()
         .filter(|l| !is_header_or_footer(l))
@@ -191,14 +210,15 @@ fn count_and_validate(path: &str, needle: &str) -> (u64, u64) {
     let bad = data.iter().filter(|l| !l.to_lowercase().contains(&needle_lower)).count() as u64;
     (total, bad)
 }
-fn cleanup_bench_file() { let _ = std::fs::remove_file(BENCH_OUT); }
+fn cleanup_bench_file() { let p = bench_out_path(); let _ = std::fs::remove_file(&p); }
 
 // ── Run: UFFS (Rust) ─────────────────────────────────────────────────────────
-/// uffs.exe pattern --drive X --out=bench_out.csv --profile
+/// uffs.exe pattern --drive X --out=<tmp>/uffs_bench_out.csv --profile
 /// No limit — all results written to file.  Search is the default action.
 fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     cleanup_bench_file();
-    let out_arg = format!("--out={}", BENCH_OUT);
+    let bpath = bench_out_path();
+    let out_arg = format!("--out={}", bpath);
     let t = Instant::now();
     let r = Command::new(bin)
         .args([pattern, "--drive", drive, &out_arg, "--profile"])
@@ -208,7 +228,7 @@ fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     match r {
         Ok(o) if o.status.success() => {
             let err = String::from_utf8_lossy(&o.stderr);
-            let (rows, bad_rows) = count_and_validate(BENCH_OUT, validate);
+            let (rows, bad_rows) = count_and_validate(&bpath, validate);
             let dms = parse_daemon_ms(&err);
             cleanup_bench_file();
             Timing { wall_ms: wall, daemon_ms: dms, rows, bad_rows, ok: true, ..Default::default() }
@@ -233,20 +253,21 @@ fn parse_daemon_ms(s: &str) -> u64 {
 }
 
 // ── Run: Everything (es.exe) ─────────────────────────────────────────────────
-/// es.exe "<D>:\ <pattern>" -export-csv bench_out.csv
+/// es.exe "<D>:\ <pattern>" -export-csv <tmp>/uffs_bench_out.csv
 /// No -n limit — all results written to file.
 fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     cleanup_bench_file();
+    let bpath = bench_out_path();
     let query = if pattern == "*" { format!("{}:\\", drive) } else { format!("{}:\\ {}", drive, pattern) };
     let t = Instant::now();
     let r = Command::new(bin)
-        .args([&query, "-export-csv", BENCH_OUT])
+        .args([&query, "-export-csv", &bpath])
         .stdout(Stdio::null()).stderr(Stdio::piped())
         .output();
     let wall = t.elapsed().as_millis() as u64;
     match r {
         Ok(o) if o.status.success() => {
-            let (rows, bad_rows) = count_and_validate(BENCH_OUT, validate);
+            let (rows, bad_rows) = count_and_validate(&bpath, validate);
             cleanup_bench_file();
             Timing { wall_ms: wall, rows, bad_rows, ok: true, ..Default::default() }
         }
@@ -264,6 +285,7 @@ fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
 /// Substring match needs *needle* glob wildcards.
 fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate: &str) -> Timing {
     cleanup_bench_file();
+    let bpath = bench_out_path();
     let mut args: Vec<String> = Vec::new();
     if !cpp_ext.is_empty() {
         args.push("*".into());
@@ -274,7 +296,7 @@ fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate:
         args.push(pattern.into());
     }
     args.push(format!("--drives={}", drive));
-    args.push(format!("--out={}", BENCH_OUT));
+    args.push(format!("--out={}", bpath));
     let t = Instant::now();
     let r = Command::new(bin)
         .args(&args)
@@ -283,7 +305,7 @@ fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate:
     let wall = t.elapsed().as_millis() as u64;
     match r {
         Ok(o) if o.status.success() => {
-            let (rows, bad_rows) = count_and_validate(BENCH_OUT, validate);
+            let (rows, bad_rows) = count_and_validate(&bpath, validate);
             cleanup_bench_file();
             Timing { wall_ms: wall, rows, bad_rows, ok: true, ..Default::default() }
         }
@@ -371,7 +393,7 @@ fn main() {
     println!("║  Drives:       {:?}", cfg.drives);
     println!("║  Patterns:     {} queries", PATTERNS.len());
     println!("║  Rounds:       {} per pattern per tool", cfg.rounds);
-    println!("║  Output:       file (--out / -export-csv → {})", BENCH_OUT);
+    println!("║  Output:       file (--out / -export-csv → {})", bench_out_path());
     println!("║  Limit:        none (all results, fair for C++)");
     println!("║  Timeout:      {} s → DNF", TIMEOUT.as_secs());
     println!("║  Skip COLD:    {}", cfg.skip_cold);
