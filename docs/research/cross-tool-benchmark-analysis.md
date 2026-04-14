@@ -110,40 +110,57 @@ Instrumented with `UFFS_PROFILE_STARTUP=1` (raw `eprintln!`, not tracing).
 
 **macOS (Apple Silicon, release build):**
 
-| Phase | Cold (1st run) | Hot (cached) |
-|-------|---------------|-------------|
-| Binary entry + alloc init | 0.04 ms | — |
-| tokio runtime build | 1.48 ms | — |
-| run() entered (tokio spawned) | 2.35 ms | — |
-| Clap Cli::parse() | 0.96 ms | — |
-| init_logging() | 1.06 ms | — |
-| dispatch_search() entered | 4.43 ms | — |
-| **Total (macOS)** | **5.2 ms** | **1.3 ms** |
+| Phase | Time | Cumulative |
+|-------|------|-----------|
+| Binary entry + alloc init | 0.04 ms | 0.04 ms |
+| tokio runtime build | 1.48 ms | 1.52 ms |
+| run() entered (tokio spawned) | 0.87 ms | 2.35 ms |
+| Clap Cli::parse() | 0.96 ms | 3.31 ms |
+| init_logging() | 1.06 ms | 4.37 ms |
+| dispatch_search() entered | 0.06 ms | 4.43 ms |
+| **Total (macOS)** | **5.2 ms** | |
 
-**Windows (estimated, awaiting measurement):**
+**Windows (AMD Ryzen 9 3900XT, release build, MEASURED):**
 
-| Phase | Est. cost | What it does |
-|-------|-----------|-------------|
-| Windows process creation | ~30–50 ms | Load 8 MB binary, relocations, DLL init |
-| tokio runtime build | ~5 ms | Thread pool creation on Windows |
-| Clap Cli::parse() | ~2 ms | 40+ flags, subcommands |
-| init_logging() | ~3 ms | Rolling file appender + thread |
-| **Pre-connect subtotal** | **~40–60 ms** | **Before daemon connect** |
-| Daemon connect (AF_UNIX bridge) | ~20–40 ms | 2 bridge threads + duplex streams |
-| IPC round-trip (search) | ~10 ms | JSON-RPC ser/deser |
-| Convert + output | ~10 ms | SearchRow → DisplayRow → CSV |
-| **Total (estimated)** | **~80–120 ms** | |
+| Phase | Time | Cumulative |
+|-------|------|-----------|
+| Binary entry + alloc init | 0.07 ms | 0.07 ms |
+| tokio runtime build | 2.52 ms | 2.59 ms |
+| run() entered (tokio spawned) | 1.56 ms | 4.15 ms |
+| Clap Cli::parse() | 1.08 ms | 5.24 ms |
+| init_logging() | 2.27 ms | 7.51 ms |
+| dispatch_search() entered | 1.52 ms | 9.03 ms |
+| Connect (socket + bridge threads) | 5 ms | — |
+| Search IPC (7M records) | 0 ms | — |
+| Convert + output | 0 ms | — |
+| **total (after block_on)** | **25.82 ms** | **28.41 ms** |
 
-**Key finding:** tokio (1.5 ms), clap (1.0 ms), and logging (1.1 ms)
-are NOT the bottleneck on macOS. The 164 ms on Windows likely comes from:
-1. Windows process creation overhead (~30–50 ms)
-2. The AF_UNIX bridge thread dance in `platform_connect()` (~20–40 ms)
-3. IPC + conversion (~20 ms)
+**Benchmark wall clock: 164 ms.  In-process: 28 ms.**
 
-**Awaiting Windows measurement** — deploy and run:
-```
-$env:UFFS_PROFILE_STARTUP=1; uffs notepad.exe --profile
-```
+**⇒ 136 ms is OS-level process creation overhead** — before `main()`
+even runs. This is Windows loading the 52.7 MB uffs.exe binary: PE
+parsing, section mapping, DLL initialization (ucrt, kernel32, ws2_32,
+ntdll), CRT startup, mimalloc allocator init, TLS setup, and thread
+pool pre-creation.
+
+### 4.1.1  The real bottleneck: binary size → process creation
+
+| | uffs.exe | es.exe |
+|-|---------|--------|
+| Binary size | 52.7 MB | ~200 KB |
+| Process creation | ~136 ms | ~15 ms |
+| In-process work | ~28 ms | ~50 ms |
+| **Wall clock** | **~164 ms** | **~68 ms** |
+
+UFFS actually does LESS in-process work than Everything (28 ms vs ~50 ms).
+The daemon search (0 ms for 7M records) is faster than Everything's
+search. **The entire perf gap is binary loading time.**
+
+Optimization implications:
+- tokio (2.5 ms), clap (1 ms), logging (2.3 ms) = 5.8 ms — **NOT** bottlenecks
+- The AF_UNIX bridge (5 ms connect) is fast
+- IPC round-trip (0 ms) is fast
+- **The only fix: reduce binary size** (strip Polars from CLI, use thin client)
 
 ### 4.2  Everything client startup cost (~10–15 ms)
 
