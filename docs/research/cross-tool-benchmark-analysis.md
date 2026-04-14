@@ -69,54 +69,133 @@ Fixed the benchmark to use path-only output for all three tools:
 
 - `uffs.exe --columns Path` → 1 column
 - `uffs.com --columns=path` → 1 column
-- `es.exe -export-csv` → already 1 column (Filename)
+- `es.exe -export-csv` → already 1 column (full path, header: `Filename`)
 
 This eliminates the I/O asymmetry. **Re-run needed** to get fair numbers.
 
-## 4  Architectural Differences Affecting Timing
+## 4  Where Does UFFS Spend 164 ms? (Profile Forensics)
+
+The `--profile` output for `notepad.exe` on D: (3 rows, HOT):
+
+```
+Connect:           2 ms
+Await ready:       0 ms
+Search (IPC):      0 ms  (daemon: 0 ms, transfer: 0 ms)
+Convert rows:      0 ms  (3 rows)
+Output/write:      8 ms
+─────────────────────────
+Profile total:   ~10 ms   ← only 6% of wall clock!
+Wall clock:     164 ms   ← WHERE ARE THE OTHER 154 ms?
+```
+
+**Answer: process startup overhead the profiler doesn't measure.**
+
+### 4.1  UFFS client startup cost (~100–120 ms)
+
+| Phase | Est. cost | What it does |
+|-------|-----------|-------------|
+| Windows process creation | ~30–50 ms | Load 8 MB binary, relocations, DLL init |
+| `#[tokio::main]` | ~15 ms | Tokio multi-thread runtime init |
+| `init_logging()` | ~5–10 ms | Tracing subscriber + file appender |
+| `Cli::parse()` (clap derive) | ~10 ms | 40+ flags, subcommands, validation |
+| Static initializers | ~5–10 ms | Regex, OnceLock, lazy_static |
+| **Subtotal** | **~70–100 ms** | **Before any search work begins** |
+
+### 4.2  Everything client startup cost (~10–15 ms)
+
+| Phase | Est. cost | What it does |
+|-------|-----------|-------------|
+| Windows process creation | ~10–15 ms | Load 200 KB binary, minimal C runtime |
+| Arg parsing | ~0 ms | Hand-rolled, no framework |
+| FindWindow | ~1 ms | Find Everything IPC window |
+| **Subtotal** | **~12–16 ms** | |
+
+### 4.3  IPC comparison
+
+| Factor | Everything | UFFS |
+|--------|-----------|------|
+| Mechanism | `WM_COPYDATA` | JSON-RPC 2.0 over Unix socket |
+| Serialization | None (raw memory) | serde_json (2 ser + 2 deser) |
+| Data flow | es.exe → kernel copy → reply | params→JSON→socket→parse→search→SearchRow→JSON→socket→parse→DisplayRow |
+| Conversions | 0 | 4 (DisplayRow→SearchRow→JSON string→SearchRow→DisplayRow) |
+| Protocol overhead | 0 bytes | ~200 bytes envelope per request |
+
+### 4.4  The double conversion problem
+
+```
+Daemon side:                          Client side:
+CompactRecord                         JSON string
+  → DisplayRow (path resolved)          → serde_json::from_value
+  → SearchRow  (clone all fields)       → SearchRow
+  → serde_json::to_value               → search_row_to_display_row
+  → serde_json::to_string              → DisplayRow (clone AGAIN)
+  → write to socket                    → write_native_results
+```
+
+For 3 rows this is negligible. For 166K rows (ext_dll), this is
+4 full copies of every string × 166K = ~660K string allocations.
+
+## 5  Architectural Differences Summary
 
 | Factor | Everything | UFFS Rust | Impact |
 |--------|-----------|-----------|--------|
-| Daemon model | Windows service (always hot) | Auto-start daemon | ES: 0 ms startup; UFFS: ~170ms IPC overhead |
-| IPC mechanism | Named pipe (lightweight) | Named pipe + serde | ES: raw bytes; UFFS: serialized SearchRow |
-| Index format | Proprietary B-tree | Polars DataFrame + trigram | ES optimized for lookup; UFFS for analytics |
-| File write | Direct write | BufWriter + CSV formatting | ES: simpler I/O path |
-| Result building | Minimal (path only) | Full DisplayRow (30+ fields) | UFFS builds more per result even with --columns Path |
-| Process model | es.exe = thin client | uffs.exe = thick client | es.exe likely faster process spawn |
+| Binary size | ~200 KB (C) | ~8 MB (Rust+Polars+tokio) | 40× larger → ~40 ms extra load |
+| Async runtime | None | tokio multi-thread | ~15 ms init |
+| Arg parsing | Hand-rolled | clap derive (40+ flags) | ~10 ms |
+| IPC | WM_COPYDATA (zero-copy) | JSON-RPC over socket | ~5 ms extra |
+| Data conversions | 0 copies | 4 copies per row | O(n) overhead |
+| Index | Sorted arrays + hash | Polars DataFrame + trigram | Different trade-offs |
+| Daemon model | Windows service (always-on) | Auto-start process | Same when warm |
 
-## 5  Optimization Opportunities
+## 6  Optimization Opportunities
 
-### 5.1 Quick wins (expected 2–3× improvement)
+### 6.1  Tier 1: Thin client (~70–90 ms savings, brings us to ~70 ms)
 
-1. **Lazy field resolution** — only resolve fields requested by `--columns`.
-   Currently UFFS builds ALL 30+ fields in DisplayRow, then throws
-   away the ones not requested. For path-only, skip size/dates/flags.
-2. **Streaming file write** — write each row directly to BufWriter
-   as it's matched, instead of collecting all DisplayRows in memory
-   first and then writing. Eliminates the 2× memory overhead.
-3. **Skip SearchRow serialization** — for `--out=file.csv`, write
-   directly from daemon index to file, bypassing IPC entirely.
+**Build a `uffs-fast` or `uffs-es` binary** — a minimal ~200 KB
+executable with:
+- No Polars, no tokio (blocking I/O), no clap (hand-parsed args)
+- No tracing, no logging
+- Connects to the daemon via blocking socket I/O
+- Sends pre-built JSON-RPC query
+- Reads response, writes paths to file or stdout
+- **Expected result: 60–80 ms** (matching Everything)
 
-### 5.2 Medium-term (expected 5–10× for targeted queries)
+### 6.2  Tier 2: Eliminate double conversion (~5–10 ms for large sets)
 
-4. **In-daemon file export** — the daemon already has the index in
-   memory. Export directly from the daemon process to the output file,
-   eliminating IPC transfer entirely for bulk exports.
-5. **SIMD path assembly** — the path resolution (parent chain walk)
-   is the dominant CPU cost for large result sets. SIMD memcpy of
-   path segments could improve throughput.
+- Daemon writes `path` strings directly to response JSON (skip
+  DisplayRow → SearchRow intermediate)
+- Client reads paths directly (skip SearchRow → DisplayRow)
+- For `--columns Path`, daemon could send a bare `["path1","path2"]`
+  array instead of full SearchRow objects
 
-### 5.3 Stretch goals
+### 6.3  Tier 3: Lazy field resolution (~10–20 ms for large sets)
 
-6. **Memory-mapped result passing** — shared memory for large result
-   sets instead of pipe-based IPC.
-7. **Columnar export** — write Parquet instead of CSV for downstream
-   analytics workflows.
+- Only resolve fields requested by `--columns`
+- For path-only: skip size/dates/flags/allocated/descendants
+- `make_display_row()` currently populates ALL 15+ fields
 
-## 6  Next Steps
+### 6.4  Tier 4: Streaming file write
+
+- Write each row directly to BufWriter as it's matched
+- Currently: collect ALL DisplayRows → then write
+- Eliminates 2× memory overhead for large result sets
+
+### 6.5  Tier 5: In-daemon file export
+
+- For `--out=file.csv`, the daemon writes the file directly
+- Eliminates IPC transfer entirely for bulk exports
+- The daemon already has the data in memory
+
+### 6.6  Stretch goals
+
+- **Shared memory IPC** — mmap result buffer, pass offset to client
+- **Columnar export** — Parquet/Arrow IPC instead of CSV
+- **WM_COPYDATA IPC** — match Everything's zero-copy mechanism (Windows only)
+
+## 7  Next Steps
 
 - [ ] Re-run benchmark with path-only output (fair comparison)
-- [ ] Profile UFFS HOT to identify where time is spent per-query
-- [ ] Implement lazy field resolution (5.1.1)
-- [ ] Implement streaming file write (5.1.2)
-- [ ] Re-benchmark after optimizations
+- [ ] Prototype `uffs-fast` thin client to validate Tier 1 hypothesis
+- [ ] Profile startup with `cargo instruments` (or ETW on Windows)
+- [ ] Implement lazy field resolution (Tier 3)
+- [ ] Re-benchmark after each optimization tier
