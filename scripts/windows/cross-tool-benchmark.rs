@@ -305,7 +305,9 @@ fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate:
     let t = Instant::now();
     let r = Command::new(bin)
         .args(&args)
-        .stdout(Stdio::null()).stderr(Stdio::piped())
+        // NOTE: must use Stdio::piped(), NOT Stdio::null().
+        // C++ UFFS silently produces empty --out= files when stdout is NUL.
+        .stdout(Stdio::piped()).stderr(Stdio::piped())
         .output();
     let wall = t.elapsed().as_millis() as u64;
     match r {
