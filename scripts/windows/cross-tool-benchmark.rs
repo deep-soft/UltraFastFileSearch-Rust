@@ -67,14 +67,17 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_ROUNDS: usize = 10;
 const DEFAULT_DRIVES: &[&str] = &["C", "D"];
 const BENCH_OUT: &str = "bench_out.csv"; // temp file for direct-write output
-/// (label, uffs_rust_pattern, es_search, us_pattern, cpp_ext_override)
-/// cpp_ext_override: if non-empty, C++ UFFS uses `* --ext=<val>` instead of glob
-const PATTERNS: &[(&str, &str, &str, &str, &str)] = &[
-    ("full_scan",  "*",           "*",           "*",           ""),
-    ("exact",      "notepad.exe", "notepad.exe", "notepad.exe", ""),
-    ("prefix",     "win*",        "win*",        "win*",        ""),
-    ("ext_rare",   "*.dbt",       "ext:dbt",     "*.dbt",       "dbt"),
-    ("substring",  "config",      "config",      "config",      ""),
+/// (label, uffs_rust_pattern, es_search, cpp_pattern, cpp_ext, validate)
+/// cpp_ext: if non-empty, C++ UFFS uses `* --ext=<val>` instead of glob
+/// validate: case-insensitive substring that every result line must contain
+///           (empty = skip validation, e.g. full_scan)
+const PATTERNS: &[(&str, &str, &str, &str, &str, &str)] = &[
+    ("full_scan",  "*",           "*",           "*",           "",    ""),
+    ("exact",      "notepad.exe", "notepad.exe", "notepad.exe", "",    "notepad.exe"),
+    ("prefix",     "win*",        "win*",        "win*",        "",    "win"),
+    ("ext_rare",   "*.dbt",       "ext:dbt",     "*.dbt",       "dbt", ".dbt"),
+    ("ext_dll",    "*.dll",       "ext:dll",     "*.dll",       "dll", ".dll"),
+    ("substring",  "config",      "config",      "config",      "",    "config"),
 ];
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -86,7 +89,7 @@ impl Phase { fn label(self) -> &'static str { match self { Self::Cold=>"COLD", S
 
 #[derive(Clone, Default)]
 #[allow(dead_code)] // fields read in summary output and live progress lines
-struct Timing { wall_ms: u64, daemon_ms: u64, rows: u64, ok: bool, dnf: bool, err: String }
+struct Timing { wall_ms: u64, daemon_ms: u64, rows: u64, bad_rows: u64, ok: bool, dnf: bool, err: String }
 
 struct Row { tool: Tool, phase: Phase, drive: String, pat: String, runs: Vec<Timing> }
 struct Cfg { uffs: PathBuf, uffs_cpp: Option<PathBuf>, es: Option<PathBuf>,
@@ -156,21 +159,44 @@ fn uffs_purge_cache() {
 }
 
 
-/// Count lines in the bench output file (subtract header).
-fn count_file_rows(path: &str) -> u64 {
-    std::fs::read_to_string(path)
-        .map(|s| {
-            let total = s.lines().filter(|l| !l.trim().is_empty()).count();
-            if total > 0 { (total - 1) as u64 } else { 0 } // subtract CSV header
-        })
-        .unwrap_or(0)
+/// Check if a line is a header, footer, or empty (not a data row).
+/// Matches the same logic as verify_parity.rs `is_footer_or_header_line`.
+/// Handles UFFS (Rust) CSV header, UFFS (C++) header + footer, and blanks.
+fn is_header_or_footer(line: &str) -> bool {
+    let t = line.trim();
+    t.is_empty()
+        || t.starts_with("\"Path\"")              // Rust CSV header
+        || t.starts_with("Path\t")                // TSV header
+        || t.starts_with("Drives?")               // C++ footer
+        || t.starts_with("MMMmmm that was FAST")  // C++ footer
+        || t.starts_with("Search path")            // C++ footer
+}
+
+/// Count data lines in bench output file, filtering headers/footers.
+/// Validates that each data line contains `needle` (case-insensitive).
+/// Returns (data_rows, bad_rows).
+fn count_and_validate(path: &str, needle: &str) -> (u64, u64) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return (0, 0),
+    };
+    let data: Vec<&str> = content.lines()
+        .filter(|l| !is_header_or_footer(l))
+        .collect();
+    let total = data.len() as u64;
+    if needle.is_empty() || total == 0 {
+        return (total, 0);
+    }
+    let needle_lower = needle.to_lowercase();
+    let bad = data.iter().filter(|l| !l.to_lowercase().contains(&needle_lower)).count() as u64;
+    (total, bad)
 }
 fn cleanup_bench_file() { let _ = std::fs::remove_file(BENCH_OUT); }
 
 // ── Run: UFFS (Rust) ─────────────────────────────────────────────────────────
 /// uffs.exe pattern --drive X --out=bench_out.csv --profile
 /// No limit — all results written to file.  Search is the default action.
-fn run_uffs(bin: &Path, drive: &str, pattern: &str) -> Timing {
+fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     cleanup_bench_file();
     let out_arg = format!("--out={}", BENCH_OUT);
     let t = Instant::now();
@@ -182,10 +208,10 @@ fn run_uffs(bin: &Path, drive: &str, pattern: &str) -> Timing {
     match r {
         Ok(o) if o.status.success() => {
             let err = String::from_utf8_lossy(&o.stderr);
-            let rows = count_file_rows(BENCH_OUT);
+            let (rows, bad_rows) = count_and_validate(BENCH_OUT, validate);
             let dms = parse_daemon_ms(&err);
             cleanup_bench_file();
-            Timing { wall_ms: wall, daemon_ms: dms, rows, ok: true, ..Default::default() }
+            Timing { wall_ms: wall, daemon_ms: dms, rows, bad_rows, ok: true, ..Default::default() }
         }
         Ok(o) => {
             cleanup_bench_file();
@@ -209,7 +235,7 @@ fn parse_daemon_ms(s: &str) -> u64 {
 // ── Run: Everything (es.exe) ─────────────────────────────────────────────────
 /// es.exe "<D>:\ <pattern>" -export-csv bench_out.csv
 /// No -n limit — all results written to file.
-fn run_es(bin: &Path, drive: &str, pattern: &str) -> Timing {
+fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     cleanup_bench_file();
     let query = if pattern == "*" { format!("{}:\\", drive) } else { format!("{}:\\ {}", drive, pattern) };
     let t = Instant::now();
@@ -220,9 +246,9 @@ fn run_es(bin: &Path, drive: &str, pattern: &str) -> Timing {
     let wall = t.elapsed().as_millis() as u64;
     match r {
         Ok(o) if o.status.success() => {
-            let rows = count_file_rows(BENCH_OUT);
+            let (rows, bad_rows) = count_and_validate(BENCH_OUT, validate);
             cleanup_bench_file();
-            Timing { wall_ms: wall, rows, ok: true, ..Default::default() }
+            Timing { wall_ms: wall, rows, bad_rows, ok: true, ..Default::default() }
         }
         Ok(o) => {
             cleanup_bench_file();
@@ -236,11 +262,9 @@ fn run_es(bin: &Path, drive: &str, pattern: &str) -> Timing {
 /// C++ UFFS reads MFT every invocation (no daemon). No --limit flag.
 /// Extension filter uses --ext=<ext> instead of glob *.ext.
 /// Substring match needs *needle* glob wildcards.
-fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str) -> Timing {
+fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate: &str) -> Timing {
     cleanup_bench_file();
     let mut args: Vec<String> = Vec::new();
-    // Pattern: if cpp_ext is set, use * as pattern + --ext flag
-    // For substring "config", wrap as *config* for glob matching
     if !cpp_ext.is_empty() {
         args.push("*".into());
         args.push(format!("--ext={}", cpp_ext));
@@ -259,9 +283,9 @@ fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str) -> Timing
     let wall = t.elapsed().as_millis() as u64;
     match r {
         Ok(o) if o.status.success() => {
-            let rows = count_file_rows(BENCH_OUT);
+            let (rows, bad_rows) = count_and_validate(BENCH_OUT, validate);
             cleanup_bench_file();
-            Timing { wall_ms: wall, rows, ok: true, ..Default::default() }
+            Timing { wall_ms: wall, rows, bad_rows, ok: true, ..Default::default() }
         }
         Ok(o) => {
             cleanup_bench_file();
@@ -367,12 +391,12 @@ fn main() {
             uffs_purge_cache();
             eprintln!(" done.");
 
-            for &(label, pat, _, _, _) in PATTERNS {
+            for &(label, pat, _, _, _, validate) in PATTERNS {
                 eprint!("    {label:<12} ");  flush();
                 // COLD: only 1 round (destructive — restarts daemon each time)
                 uffs_stop(&cfg.uffs);
                 uffs_purge_cache();
-                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat));
+                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, validate));
                 let verdict = if t.dnf { "DNF" } else if t.ok { "PASS" } else { "ERROR" };
                 eprintln!("{:>8}  {}", fms(t.wall_ms), verdict);
                 all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Cold, drive: drive.clone(),
@@ -386,10 +410,10 @@ fn main() {
             uffs_stop(&cfg.uffs);
             eprintln!(" done.");
 
-            for &(label, pat, _, _, _) in PATTERNS {
+            for &(label, pat, _, _, _, validate) in PATTERNS {
                 eprint!("    {label:<12} ");  flush();
                 uffs_stop(&cfg.uffs);
-                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat));
+                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, validate));
                 let verdict = if t.dnf { "DNF" } else if t.ok { "PASS" } else { "ERROR" };
                 eprintln!("{:>8}  {}", fms(t.wall_ms), verdict);
                 all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Warm, drive: drive.clone(),
@@ -400,14 +424,14 @@ fn main() {
         // ── UFFS HOT ────────────────────────────────────────────────────
         if cfg.tools.contains(&Tool::Uffs) {
             // Warm up daemon with a throwaway query
-            let _ = run_uffs(&cfg.uffs, drive, "*");
+            let _ = run_uffs(&cfg.uffs, drive, "*", "");
             eprintln!("  UFFS HOT:  {} rounds", cfg.rounds);
 
-            for &(label, pat, _, _, _) in PATTERNS {
+            for &(label, pat, _, _, _, validate) in PATTERNS {
                 eprint!("    {label:<12} ");  flush();
                 let mut runs = Vec::new();
                 for _ in 0..cfg.rounds {
-                    runs.push(check_dnf(run_uffs(&cfg.uffs, drive, pat)));
+                    runs.push(check_dnf(run_uffs(&cfg.uffs, drive, pat, validate)));
                 }
                 let s = sw(&runs);
                 let mut dm: Vec<u64> = runs.iter().filter(|r| r.ok && r.daemon_ms > 0).map(|r| r.daemon_ms).collect();
@@ -424,11 +448,11 @@ fn main() {
         if cfg.tools.contains(&Tool::UffsCpp) {
             if let Some(ref cpp) = cfg.uffs_cpp {
                 eprintln!("  UFFS C++ (MFT re-read, no --limit):  {} rounds", cfg.rounds);
-                for &(label, pat, _, _, cpp_ext) in PATTERNS {
+                for &(label, pat, _, _, cpp_ext, validate) in PATTERNS {
                     eprint!("    {label:<12} ");  flush();
                     let mut runs = Vec::new();
                     for _ in 0..cfg.rounds {
-                        runs.push(check_dnf(run_uffs_cpp(cpp, drive, pat, cpp_ext)));
+                        runs.push(check_dnf(run_uffs_cpp(cpp, drive, pat, cpp_ext, validate)));
                     }
                     let s = sw(&runs);
                     let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
@@ -443,11 +467,11 @@ fn main() {
         if cfg.tools.contains(&Tool::Everything) {
             if let Some(ref es) = cfg.es {
                 eprintln!("  Everything HOT:  {} rounds (always-hot, daemon model)", cfg.rounds);
-                for &(label, _, es_pat, _, _) in PATTERNS {
+                for &(label, _, es_pat, _, _, validate) in PATTERNS {
                     eprint!("    {label:<12} ");  flush();
                     let mut runs = Vec::new();
                     for _ in 0..cfg.rounds {
-                        runs.push(check_dnf(run_es(es, drive, es_pat)));
+                        runs.push(check_dnf(run_es(es, drive, es_pat, validate)));
                     }
                     let s = sw(&runs);
                     let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
@@ -474,29 +498,36 @@ fn print_summary(cfg: &Cfg, rows: &[Row]) {
     println!();
 
     // Header
-    println!("| Drive | Tool         | Phase | Pattern      | p50      | p95      | Rows   | Verdict |");
-    println!("|-------|--------------|-------|--------------|----------|----------|--------|---------|");
+    println!("| Drive | Tool         | Phase | Pattern      | p50      | p95      | Rows   | Bad  | Verdict |");
+    println!("|-------|--------------|-------|--------------|----------|----------|--------|------|---------|");
 
     for row in rows {
         let s = sw(&row.runs);
         let any_dnf = row.runs.iter().any(|r| r.dnf);
         let all_ok = row.runs.iter().all(|r| r.ok);
-        let verdict = if any_dnf { "DNF" } else if all_ok { "PASS" } else { "ERROR" };
+        let any_bad = row.runs.iter().any(|r| r.bad_rows > 0);
+        let verdict = if any_dnf { "DNF" } else if any_bad { "WRONG" } else if all_ok { "PASS" } else { "ERROR" };
 
         let p50_str = if s.is_empty() { "—".to_string() } else { fms(p50(&s)) };
         let p95_str = if s.is_empty() { "—".to_string() } else { fms(p95(&s)) };
         let rows_str = row.runs.iter().find(|r| r.ok).map_or("—".into(), |r| format!("{}", r.rows));
+        let bad_str = row.runs.iter().find(|r| r.ok).map_or("—".into(), |r| {
+            if r.bad_rows == 0 { "0".into() } else { format!("{}", r.bad_rows) }
+        });
 
         // Print any errors from failed runs
         for r in &row.runs {
             if !r.ok && !r.err.is_empty() {
                 eprintln!("  ⚠ {} {} {}/{}: {}", row.tool.label(), row.phase.label(), row.drive, row.pat, r.err);
             }
+            if r.bad_rows > 0 {
+                eprintln!("  ⚠ {} {} {}/{}: {} rows failed validation", row.tool.label(), row.phase.label(), row.drive, row.pat, r.bad_rows);
+            }
         }
 
-        println!("| {:<5} | {:<12} | {:<5} | {:<12} | {:>8} | {:>8} | {:>6} | {:<7} |",
+        println!("| {:<5} | {:<12} | {:<5} | {:<12} | {:>8} | {:>8} | {:>6} | {:>4} | {:<7} |",
             format!("{}:", row.drive), row.tool.label(), row.phase.label(),
-            row.pat, p50_str, p95_str, rows_str, verdict);
+            row.pat, p50_str, p95_str, rows_str, bad_str, verdict);
     }
 
     println!();
@@ -510,7 +541,7 @@ fn print_summary(cfg: &Cfg, rows: &[Row]) {
     println!("|-------|--------------|-------------|--------------|----------------|");
 
     for drive in &cfg.drives {
-        for &(label, _, _, _, _) in PATTERNS {
+        for &(label, _, _, _, _, _) in PATTERNS {
             let uffs_p50 = find_p50(rows, Tool::Uffs, Phase::Hot, drive, label);
             let cpp_p50 = find_p50(rows, Tool::UffsCpp, Phase::Hot, drive, label);
             let es_p50 = find_p50(rows, Tool::Everything, Phase::Hot, drive, label);
