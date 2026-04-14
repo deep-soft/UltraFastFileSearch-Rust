@@ -67,10 +67,10 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_ROUNDS: usize = 10;
 const DEFAULT_DRIVES: &[&str] = &["C", "D"];
 
-/// Absolute path for bench output file — avoids cwd ambiguity.
+/// Bench output file in current working directory.
+/// C++ UFFS cannot write to absolute paths — relative paths work fine.
 fn bench_out_path() -> String {
-    let tmp = env::temp_dir();
-    tmp.join("uffs_bench_out.csv").to_string_lossy().into_owned()
+    "uffs_bench_out.csv".to_string()
 }
 /// (label, uffs_rust_pattern, es_search, cpp_pattern, cpp_ext, validate)
 /// cpp_ext: if non-empty, C++ UFFS uses `* --ext=<val>` instead of glob
