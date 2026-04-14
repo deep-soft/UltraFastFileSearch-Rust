@@ -111,7 +111,15 @@ impl DataSources {
     fn empty() -> Self {
         DataSources { data_dir: None, drive_files: std::collections::HashMap::new() }
     }
-    fn args_for(&self, drive: &str) -> Vec<String> {
+    /// Args for `uffs daemon start` — only --data-dir / --mft-file (NOT --drive).
+    fn daemon_start_args(&self) -> Vec<String> {
+        match &self.data_dir {
+            Some(d) => vec!["--data-dir".into(), d.to_string_lossy().into_owned()],
+            None => vec![], // Windows live: daemon auto-discovers drives
+        }
+    }
+    /// Args for search commands — can include --drive for single-drive queries.
+    fn search_args(&self, drive: &str) -> Vec<String> {
         if drive != "ALL" {
             if let Some(mft) = self.drive_files.get(drive) {
                 return vec!["--mft-file".into(), mft.to_string_lossy().into_owned()];
@@ -287,18 +295,19 @@ fn compute_stats(timings: &[ProfileTiming]) -> LatencyStats {
 
 fn bench_drive(cfg: &InteractiveConfig, drive: &str) -> DriveResults {
     eprintln!("\n━━━ Drive {drive}: Interactive Search ━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    let src = cfg.sources.args_for(drive);
+    let daemon_args = cfg.sources.daemon_start_args();
+    let search_src = cfg.sources.search_args(drive);
 
-    // Ensure daemon is HOT.
+    // Ensure daemon is HOT — start with daemon args (--data-dir), not --drive.
     eprint!("  Ensuring daemon is running + Ready... "); flush();
     if !assert_ready(&cfg.bin) {
-        if !start_and_await_ready(&cfg.bin, &src) {
+        if !start_and_await_ready(&cfg.bin, &daemon_args) {
             eprintln!("FAILED");
             return DriveResults { drive: drive.into(), patterns: vec![] };
         }
-        // Warmup.
+        // Warmup search (uses search args which CAN include --drive).
         let mut warmup: Vec<String> = vec!["*".into(), "--profile".into(), "--limit".into(), "100".into()];
-        warmup.extend(src.iter().cloned());
+        warmup.extend(search_src.iter().cloned());
         let _ = run_profiled(&cfg.bin, &warmup);
     }
     eprintln!("ready");
@@ -313,7 +322,7 @@ fn bench_drive(cfg: &InteractiveConfig, drive: &str) -> DriveResults {
             let mut args: Vec<String> = vec![
                 pat.into(), "--profile".into(), "--limit".into(), "100".into(),
             ];
-            args.extend(src.iter().cloned());
+            args.extend(search_src.iter().cloned());
             let t = run_profiled(&cfg.bin, &args);
             let status = if t.timed_out { "T/O" } else if !t.success { "FAIL" }
                 else { "OK" };
@@ -336,7 +345,7 @@ fn bench_drive(cfg: &InteractiveConfig, drive: &str) -> DriveResults {
             let mut args: Vec<String> = vec![
                 pat.clone(), "--profile".into(), "--limit".into(), "100".into(),
             ];
-            args.extend(src.iter().cloned());
+            args.extend(search_src.iter().cloned());
             timings.push(run_profiled(&cfg.bin, &args));
         }
         all_patterns.push(PatternResult { label: pat.clone(), description: desc.clone(), timings });
@@ -350,7 +359,7 @@ fn bench_drive(cfg: &InteractiveConfig, drive: &str) -> DriveResults {
             for _round in 1..=cfg.rounds {
                 let mut args: Vec<String> = filter_args.iter().map(|s| s.to_string()).collect();
                 args.extend(["--profile".into(), "--limit".into(), "100".into()]);
-                args.extend(src.iter().cloned());
+                args.extend(search_src.iter().cloned());
                 timings.push(run_profiled(&cfg.bin, &args));
             }
             all_patterns.push(PatternResult {

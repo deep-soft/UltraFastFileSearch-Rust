@@ -106,7 +106,15 @@ impl DataSources {
         DataSources { data_dir: None, drive_files: std::collections::HashMap::new() }
     }
 
-    fn args_for(&self, drive: &str) -> Vec<String> {
+    /// Args for `uffs daemon start` — only --data-dir / --mft-file (NOT --drive).
+    fn daemon_start_args(&self) -> Vec<String> {
+        match &self.data_dir {
+            Some(d) => vec!["--data-dir".into(), d.to_string_lossy().into_owned()],
+            None => vec![], // Windows live: daemon auto-discovers drives
+        }
+    }
+    /// Args for search commands — can include --drive for single-drive queries.
+    fn search_args(&self, drive: &str) -> Vec<String> {
         if drive != "ALL" {
             if let Some(mft) = self.drive_files.get(drive) {
                 return vec!["--mft-file".into(), mft.to_string_lossy().into_owned()];
@@ -269,19 +277,20 @@ fn run_tier(bin: &PathBuf, source_args: &[String], limit: u64, format: &str) -> 
 
 fn bench_drive(cfg: &BulkConfig, drive: &str) -> DriveResults {
     eprintln!("\n━━━ Drive {drive}: Bulk Retrieval ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    let src = cfg.sources.args_for(drive);
+    let daemon_args = cfg.sources.daemon_start_args();
+    let search_src = cfg.sources.search_args(drive);
 
     // Ensure daemon is HOT before bulk tests.
     eprint!("  Ensuring daemon is running + Ready... "); flush();
     if !assert_ready(&cfg.bin) {
-        if !start_and_await_ready(&cfg.bin, &src) {
+        if !start_and_await_ready(&cfg.bin, &daemon_args) {
             eprintln!("FAILED — daemon did not reach Ready");
             return DriveResults { drive: drive.into(), rounds: vec![] };
         }
         // Warmup search.
         let warmup_args = {
             let mut a: Vec<String> = vec!["*".into()];
-            a.extend(src.iter().cloned());
+            a.extend(search_src.iter().cloned());
             a.extend(["--limit".into(), "100".into()]);
             a
         };
@@ -296,7 +305,7 @@ fn bench_drive(cfg: &BulkConfig, drive: &str) -> DriveResults {
         let mut tier_results = Vec::new();
         for &limit in &cfg.tiers {
             eprint!("    {:>6}: ", tier_label(limit)); flush();
-            let r = run_tier(&cfg.bin, &src, limit, &cfg.format);
+            let r = run_tier(&cfg.bin, &search_src, limit, &cfg.format);
             let rps = r.rows_per_sec();
             let rps_str = if rps > 1_000_000.0 { format!("{:.1}M/s", rps / 1_000_000.0) }
                 else if rps > 1_000.0 { format!("{:.0}k/s", rps / 1_000.0) }
