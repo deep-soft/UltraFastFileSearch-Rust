@@ -18,7 +18,8 @@
 //!
 //! # Tool CLI references
 //!
-//!   UFFS (Rust): uffs.exe search "<pattern>" --drive <X> --limit <N> --profile
+//!   UFFS (Rust): uffs.exe "<pattern>" --drive <X> -n <N> --profile
+//!     - Search is the default action (no "search" subcommand).
 //!     - Daemon model: COLD/WARM/HOT phases.
 //!     - Ref: internal — see `uffs.exe --help`
 //!   UFFS (C++):  uffs.com <pattern> --drives=<X>
@@ -82,6 +83,7 @@ impl Tool { fn label(self) -> &'static str { match self { Self::Uffs=>"UFFS", Se
 impl Phase { fn label(self) -> &'static str { match self { Self::Cold=>"COLD", Self::Warm=>"WARM", Self::Hot=>"HOT" } } }
 
 #[derive(Clone, Default)]
+#[allow(dead_code)] // fields read in summary output and live progress lines
 struct Timing { wall_ms: u64, daemon_ms: u64, rows: u64, ok: bool, dnf: bool, err: String }
 
 struct Row { tool: Tool, phase: Phase, drive: String, pat: String, runs: Vec<Timing> }
@@ -152,11 +154,13 @@ fn uffs_purge_cache() {
 }
 
 
-// ── Run: UFFS ────────────────────────────────────────────────────────────────
+// ── Run: UFFS (Rust) ─────────────────────────────────────────────────────────
+/// uffs.exe pattern --drive X -n N --profile
+/// Note: search is the DEFAULT action — no "search" subcommand.
 fn run_uffs(bin: &Path, drive: &str, pattern: &str, limit: u32) -> Timing {
     let t = Instant::now();
     let r = Command::new(bin)
-        .args(["search", pattern, "--drive", drive, "--limit", &limit.to_string(), "--profile"])
+        .args([pattern, "--drive", drive, "-n", &limit.to_string(), "--profile"])
         .stdout(Stdio::piped()).stderr(Stdio::piped())
         .output();
     let wall = t.elapsed().as_millis() as u64;
@@ -382,8 +386,11 @@ fn main() {
                     runs.push(check_dnf(run_uffs(&cfg.uffs, drive, pat, cfg.limit)));
                 }
                 let s = sw(&runs);
+                let mut dm: Vec<u64> = runs.iter().filter(|r| r.ok && r.daemon_ms > 0).map(|r| r.daemon_ms).collect();
+                dm.sort();
                 let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else { "PASS" };
-                eprintln!("p50={:>6}  p95={:>6}  {}", fms(p50(&s)), fms(p95(&s)), verdict);
+                let daemon_str = if dm.is_empty() { String::new() } else { format!("  daemon_p50={}", fms(p50(&dm))) };
+                eprintln!("p50={:>6}  p95={:>6}{}  rows={}  {}", fms(p50(&s)), fms(p95(&s)), daemon_str, runs.iter().find(|r| r.ok).map_or(0, |r| r.rows), verdict);
                 all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Hot, drive: drive.clone(),
                     pat: label.into(), runs });
             }
@@ -443,8 +450,8 @@ fn print_summary(cfg: &Cfg, rows: &[Row]) {
     println!();
 
     // Header
-    println!("| Drive | Tool         | Phase | Pattern      | p50      | p95      | Verdict |");
-    println!("|-------|--------------|-------|--------------|----------|----------|---------|");
+    println!("| Drive | Tool         | Phase | Pattern      | p50      | p95      | Rows   | Verdict |");
+    println!("|-------|--------------|-------|--------------|----------|----------|--------|---------|");
 
     for row in rows {
         let s = sw(&row.runs);
@@ -454,10 +461,18 @@ fn print_summary(cfg: &Cfg, rows: &[Row]) {
 
         let p50_str = if s.is_empty() { "—".to_string() } else { fms(p50(&s)) };
         let p95_str = if s.is_empty() { "—".to_string() } else { fms(p95(&s)) };
+        let rows_str = row.runs.iter().find(|r| r.ok).map_or("—".into(), |r| format!("{}", r.rows));
 
-        println!("| {:<5} | {:<12} | {:<5} | {:<12} | {:>8} | {:>8} | {:<7} |",
+        // Print any errors from failed runs
+        for r in &row.runs {
+            if !r.ok && !r.err.is_empty() {
+                eprintln!("  ⚠ {} {} {}/{}: {}", row.tool.label(), row.phase.label(), row.drive, row.pat, r.err);
+            }
+        }
+
+        println!("| {:<5} | {:<12} | {:<5} | {:<12} | {:>8} | {:>8} | {:>6} | {:<7} |",
             format!("{}:", row.drive), row.tool.label(), row.phase.label(),
-            row.pat, p50_str, p95_str, verdict);
+            row.pat, p50_str, p95_str, rows_str, verdict);
     }
 
     println!();
