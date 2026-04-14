@@ -71,7 +71,7 @@ const PATTERNS: &[(&str, &str, &str, &str, &str)] = &[
     ("full_scan",  "*",           "*",           "*",           ""),
     ("exact",      "notepad.exe", "notepad.exe", "notepad.exe", ""),
     ("prefix",     "win*",        "win*",        "win*",        ""),
-    ("extension",  "*.dll",       "ext:dll",     "*.dll",       "dll"),
+    ("ext_rare",   "*.dbt",       "ext:dbt",     "*.dbt",       "dbt"),
     ("substring",  "config",      "config",      "config",      ""),
 ];
 
