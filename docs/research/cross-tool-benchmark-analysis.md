@@ -394,8 +394,8 @@ executable with:
 - [ ] Phase 1a: Add CLI pipe interface to daemon (raw text commands)
 - [ ] Phase 1b: Build thin C/Rust pipe client (~5–500 KB)
 - [ ] Phase 1c: PowerShell function for zero-binary search
-- [ ] Phase 2a: Daemon-writes-file-directly for `--out`
-- [ ] Phase 2b: Streaming IPC for stdout (line-by-line, constant memory)
+- [ ] Phase 2: Daemon-writes-file-directly for `--out`
+      (stdout path already handled by JSON inline + shmem)
 - [ ] Phase 3: Lazy field resolution (only build requested columns)
 - [ ] Re-benchmark after each phase
 
@@ -526,114 +526,85 @@ uffs-mcp ──UffsClient──▶ uffs-daemon (same daemon)
 
 **Target: ~1 GB for D: (7M records) — matching Everything's density.**
 
-### 9.4  Data transfer bottleneck analysis
+### 9.4  Data transfer architecture (current state + gap)
 
-For small result sets (3 rows), IPC is 0 ms. For large result sets,
-IPC becomes the dominant bottleneck:
+#### What already exists
 
-| Query | Rows | Path data | JSON inflated | Current IPC cost |
-|-------|------|-----------|--------------|-----------------|
-| exact (notepad.exe) | 3 | ~300 B | ~600 B | 0 ms |
-| ext_dll (*.dll) | 166K | ~16 MB | ~32 MB | ~50–100 ms |
-| full_scan (*) | 7M | ~700 MB | ~1.4 GB | seconds / OOM |
+The daemon already has a two-tier transport, implemented in
+`crates/uffs-client/src/shmem.rs`:
 
-**Current data flow (4 copies + 2× inflation):**
+| Result size | Transport | How it works |
+|-------------|-----------|-------------|
+| < 100K rows | JSON inline | Daemon serializes `Vec<SearchRow>` to JSON, sends over pipe |
+| ≥ 100K rows | **Shared memory** | Daemon writes `ShmemRecord` array + string table to mmap'd temp file (`SHMEM_THRESHOLD = 100_000`). Client mmaps file, reads rows, deletes file |
+
+The shmem path uses a well-designed binary layout:
+```
+[ShmemHeader: 48 bytes]           magic, version, row_count, offsets
+[ShmemRecord × N: 80 bytes each] fixed-width fields per row
+[String table: UTF-8 blob]       all path + name strings back-to-back
+```
+
+This avoids JSON inflation for large sets. However, **both tiers
+still build `Vec<SearchRow>` in the daemon and convert to
+`Vec<DisplayRow>` in the client** — the 4-copy problem persists
+for the data transformation, just not the transport.
+
+#### Current data flow (all paths)
 
 ```
 Daemon:  search → Vec<SearchRow>           ← copy 1 (allocate rows)
-         → serde_json::to_value            ← copy 2 (clone into JSON Value)
-         → serde_json::to_string           ← serialize to string
-         → write ~32 MB JSON to pipe       ← pipe I/O
+         ┌─ < 100K: serde_json::to_value   ← copy 2 → pipe transfer
+         └─ ≥ 100K: write shmem file       ← copy 2 → mmap transfer
 
-Client:  read ~32 MB JSON from pipe        ← pipe I/O
-         → serde_json::from_str            ← copy 3 (parse into SearchRow)
+Client:  read response (JSON or shmem)     ← copy 3 (parse/read)
          → search_row_to_display_row       ← copy 4 (clone into DisplayRow)
-         → write CSV to file               ← final file I/O
+         → write CSV to file or stdout     ← final I/O
 ```
 
-For 166K rows: ~64 MB allocated in daemon, ~64 MB transferred over pipe,
-~64 MB parsed in client, ~16 MB written to file = **~200 MB of memory
-churn and ~130 MB of I/O** for 16 MB of actual path data.
+For `--out file.csv`, the client writes a file that the **daemon could
+have written directly** — skipping copies 2, 3, and 4 entirely.
 
-### 9.4.1  Data transfer strategies
+#### The gap: `--out` file export
 
-**Strategy A: Daemon writes file directly (best for `--out`)**
+| Scenario | Current flow | Proposed flow |
+|----------|-------------|--------------|
+| `uffs X` (stdout, < 100K) | JSON inline → print | **Keep as-is** (works fine) |
+| `uffs X` (stdout, ≥ 100K) | shmem → print | **Keep as-is** (already optimized) |
+| `uffs X --out file.csv` | JSON/shmem → client → write file | **NEW: daemon writes file directly** |
 
-For `--out file.csv`, skip IPC entirely:
+For `--out`, the entire JSON/shmem transfer is wasted work — the
+daemon already has the data in memory, and the client immediately
+writes it to a file. Instead:
 
 ```
-Client → daemon:  "search notepad.exe --drive D --out C:\results.csv"
+Client → daemon:  { "pattern": "*.dll", "output_file": "C:\\results.csv",
+                    "columns": ["Path"], "format": "csv" }
 Daemon:           search → write directly to C:\results.csv
-Daemon → client:  "done, 166K rows"
+Daemon → client:  { "rows_written": 166000, "duration_ms": 45 }
 ```
 
-Total IPC: ~200 bytes. Everything else is direct file I/O at disk speed.
-The daemon already has the data in memory — just tell it where to write.
+Total IPC: ~200 bytes. No `Vec<SearchRow>`, no serialization, no
+shmem file, no client-side conversion.
 
-| Metric | Current | Daemon-writes-file |
-|--------|---------|-------------------|
-| IPC transfer | 32 MB | 200 B |
-| Memory copies | 4 | 0 |
-| File writes | client | daemon (direct) |
-| **Total overhead** | **~100 ms** | **~0 ms** |
+| Metric | Current (`--out`, 166K rows) | Daemon-writes-file |
+|--------|----------------------------|-------------------|
+| IPC transfer | 32 MB (JSON) or 14 MB (shmem) | 200 B |
+| Memory copies | 4 | 1 (search → file writer) |
+| Temp files | 1 shmem file (≥ 100K) | 0 |
+| Client work | parse + convert + write | wait for "done" |
+| **Estimated overhead** | **~50–100 ms** | **~0 ms** |
 
-**Strategy B: Streaming IPC (best for stdout/terminal)**
+#### Summary: two clean modes
 
-Instead of building entire response in memory, stream line by line:
+| Mode | Trigger | Transport | Status |
+|------|---------|-----------|--------|
+| **Interactive** | No `--out` | JSON (< 100K) or shmem (≥ 100K) | ✅ Already built |
+| **File export** | `--out file.csv` | Daemon writes file directly | ❌ **New work** |
 
-```
-Daemon:  for each match → format one line → write to pipe immediately
-Client:  read line → print line → (never holds full result set)
-```
-
-No 2 GB limit, no large allocation, constant memory. Results appear
-instantly. Pipe throughput ~200–400 MB/s on Windows.
-
-**Strategy C: Shared memory (best for large programmatic access)**
-
-```
-Daemon:  search → write results to shared memory region (CreateFileMapping)
-Client:  MapViewOfFile → read directly from daemon's result buffer
-```
-
-Zero copy, memory speed (~10 GB/s). No pipe, no serialization.
-
-**Strategy D: Binary protocol (reduces pipe bandwidth 2–3×)**
-
-Replace JSON-RPC with:
-- **MessagePack**: ~50% smaller than JSON, still schemaless
-- **FlatBuffers**: zero-copy deserialization on client side
-- **Raw fixed-width**: path offset + length into a string blob
-
-**Strategy E: Temp file handoff (simple, reliable)**
-
-```
-Client:  "search X, write to %TEMP%\uffs_12345.csv"
-Daemon:  writes temp file directly
-Client:  reads/streams the temp file to stdout (or renames to --out)
-```
-
-Simple, no shared memory complexity, works everywhere.
-
-### 9.4.2  Data transfer strategy comparison
-
-| Strategy | IPC overhead (166K rows) | Memory | Complexity |
-|----------|------------------------|--------|------------|
-| Current (JSON over pipe) | ~100 ms, ~200 MB alloc | 4× copies | — |
-| **A: Daemon writes file** | ~0 ms (200 B IPC) | 0 extra | Low |
-| **B: Streaming pipe** | ~40 ms (no inflation) | constant | Medium |
-| **C: Shared memory** | ~0 ms (zero copy) | 1× result size | Medium |
-| **D: Binary protocol** | ~30 ms (2× smaller) | 2× copies | Low |
-| **E: Temp file handoff** | ~5 ms (file path only) | 0 extra | Low |
-
-### 9.4.3  Recommended strategy per use case
-
-| Use case | Best strategy | Why |
-|----------|--------------|-----|
-| `uffs X --out file.csv` | **A: Daemon writes file** | Zero IPC overhead |
-| `uffs X` (terminal) | **B: Streaming pipe** | Results appear instantly |
-| MCP / HTTP API | **B: Streaming JSON** | Standard, compatible |
-| Programmatic / large sets | **C: Shared memory** or **E: Temp file** | No pipe limit |
+No streaming, no new binary protocols, no temp file handoff needed.
+The existing JSON + shmem combo handles interactive/stdout well.
+The only missing piece is daemon-writes-file for `--out`.
 
 ### 9.5  Latency reduction roadmap (revised with measured data)
 
@@ -646,13 +617,14 @@ Simple, no shared memory complexity, works everywhere.
 | PowerShell function | 0 KB | 0 ms | ~5 ms | Low |
 | HTTP `Invoke-RestMethod` | 0 KB | 0 ms | ~15 ms | Low |
 
-**Phase 2: Data transfer (measured: ~100 ms for 166K rows → target: ~0 ms)**
+**Phase 2: File export — daemon writes `--out` directly**
 
 | Change | Improvement | Difficulty |
 |--------|------------|-----------|
-| Daemon writes `--out` directly | ~100 ms → 0 ms | Medium |
-| Streaming pipe for stdout | ~100 ms → ~40 ms, constant mem | Medium |
-| Binary protocol (MessagePack) | 2–3× less IPC bandwidth | Low |
+| Daemon writes `--out` directly | ~100 ms → 0 ms for bulk export | Medium |
+
+Note: stdout/interactive path does NOT need changes — JSON inline
+(< 100K rows) and shmem (≥ 100K rows) already handle it well.
 
 **Phase 3: Search engine (already fast — 0 ms for 7M records)**
 
