@@ -227,7 +227,7 @@ use:
         $destPath = Join-Path $binDir $dest
         if (Test-Path $destPath) {
             $ver = & $destPath --version 2>$null
-            Write-Host ("  {0}  {1}" -f $dest, $ver)
+            Write-Host "  $dest  $ver"
         }
     }
 
