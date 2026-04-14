@@ -305,20 +305,21 @@ fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate:
     let t = Instant::now();
     let r = Command::new(bin)
         .args(&args)
-        // NOTE: must use Stdio::piped(), NOT Stdio::null().
-        // C++ UFFS silently produces empty --out= files when stdout is NUL.
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
-        .output();
+        // MUST use Stdio::inherit() — the C++ UFFS internally does freopen()
+        // on stdout to redirect to the --out= file.  If we pre-redirect stdout
+        // to null/pipe, freopen fails silently → empty output file.
+        .stdout(Stdio::inherit()).stderr(Stdio::inherit())
+        .status();
     let wall = t.elapsed().as_millis() as u64;
     match r {
-        Ok(o) if o.status.success() => {
+        Ok(s) if s.success() => {
             let (rows, bad_rows) = count_and_validate(&bpath, validate);
             cleanup_bench_file();
             Timing { wall_ms: wall, rows, bad_rows, ok: true, ..Default::default() }
         }
-        Ok(o) => {
+        Ok(s) => {
             cleanup_bench_file();
-            Timing { wall_ms: wall, err: String::from_utf8_lossy(&o.stderr).into(), ..Default::default() }
+            Timing { wall_ms: wall, err: format!("exit {}", s.code().unwrap_or(-1)), ..Default::default() }
         }
         Err(e) => Timing { wall_ms: wall, err: e.to_string(), ..Default::default() },
     }
