@@ -248,7 +248,158 @@ executable with:
 - [ ] Implement lazy field resolution (Tier 3)
 - [ ] Re-benchmark after each optimization tier
 
-## 8  Methodology Notes
+## 8  Memory Analysis: Why UFFS Uses 16 GB vs Everything's ~750 MB
+
+### 8.1  Current UFFS memory breakdown (D: = 7.07M records)
+
+| Component | Formula | Est. size |
+|-----------|---------|-----------|
+| `CompactRecord` array | 72 B × 7.07M | 509 MB |
+| `names` (UTF-8 blob) | ~23 B avg × 7.07M | 163 MB |
+| `names_lower` (lowercase copy) | same as names | 163 MB |
+| `TrigramIndex` postings | ~10 trigrams/name × 4 B × 7.07M | 283 MB |
+| `children` (Vec<Vec<u32>>) | ~1.5 child entries × 4 B × 7.07M | 42 MB |
+| `frs_to_idx` mapping | 4 B × max_frs (~8M) | 32 MB |
+| Vec overallocation (+5%) | ~5% of above | ~60 MB |
+| Polars/tokio/tracing runtime | fixed overhead | ~50 MB |
+| **Subtotal D:** | | **~1.3 GB** |
+
+But observed = **6 GB**.  Possible explanations for the 4.7 GB gap:
+- `MftIndex` (224 B/record) not fully dropped after compaction → 1.58 GB
+- Polars DataFrame still held for aggregation/stats → 1+ GB
+- Trigram postings lists over-allocated (roaring bitmaps? Vec capacity) → 1+ GB
+- Peak memory during compaction (old + new index simultaneously) → 1+ GB
+
+### 8.2  Everything's memory model (~750 MB for 10M records)
+
+Everything uses a purpose-built custom index:
+
+| Component | Formula | Est. size |
+|-----------|---------|-----------|
+| Per-file record | ~44 B (parent_id, size, 3 dates, flags) | 440 MB |
+| Filename storage | ~30 B avg (UTF-16) | 300 MB |
+| Sorted name index | pointers only | ~40 MB |
+| **Total** | | **~780 MB** |
+
+Everything does NOT store:
+- No lowercase name copy (folds at search time using SIMD)
+- No trigram index (uses sorted arrays + binary search)
+- No tree metrics (descendants, treesize, tree_allocated)
+- No allocated_size (computes on demand from NTFS)
+- No extension interning table
+
+### 8.3  What UFFS stores that Everything doesn't
+
+| Field | UFFS | Everything | Bytes/record |
+|-------|------|-----------|--------------|
+| `allocated` (size on disk) | stored | not stored | +8 B |
+| `treesize` (subtree sum) | stored | not stored | +8 B |
+| `tree_allocated` | stored | not stored | — (removed) |
+| `descendants` (subtree count) | stored | not stored | +4 B |
+| `names_lower` (case-fold copy) | stored | folds at query time | +23 B avg |
+| `TrigramIndex` | stored | not stored | +40 B avg |
+| **Extra per record** | | | **~83 B** |
+
+For 10M records: 83 B × 10M = **830 MB** of data Everything doesn't need.
+
+## 9  Architectural Redesign Proposal
+
+### 9.1  Current architecture
+
+```
+┌──────────────────────────────────────────────────────┐
+│  uffs.exe (~8 MB)                                     │
+│  tokio + clap + tracing + Polars + serde              │
+│  ┌─────────────────────────────────────────────────┐  │
+│  │ CLI client  │  JSON-RPC  │  daemon connect       │  │
+│  └─────────────────────────────────────────────────┘  │
+│        │                                              │
+│        ▼  Unix socket / named pipe                    │
+│  ┌─────────────────────────────────────────────────┐  │
+│  │ uffs-daemon (embedded in uffs.exe)               │  │
+│  │ CompactRecord + NameArena + Trigram + Polars      │  │
+│  │ IndexManager + tokio + tracing                    │  │
+│  │ ~6 GB RAM for D: alone                            │  │
+│  └─────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────┘
+
+uffs-mcp ──UffsClient──▶ uffs-daemon (same daemon)
+```
+
+**Problems:**
+1. CLI binary is 8 MB → ~100 ms startup overhead
+2. Daemon holds Polars + trigram + lowercase names → 6+ GB RAM
+3. JSON-RPC serialization: 4 copies per result row
+4. DisplayRow builds ALL 15 fields even when only Path requested
+5. Single monolithic daemon — analytics and search share the same RAM
+
+### 9.2  Proposed architecture: Split Index + Thin Client
+
+```
+                    ┌──────────────────────────────────────┐
+                    │  uffs-engine (~200 KB daemon)          │
+                    │  NO Polars, NO tokio (io_uring/epoll)  │
+                    │  Custom lean index:                    │
+                    │    CompactRecord  (72 B/rec)           │
+                    │    NameArena      (23 B/rec)           │
+                    │    ExtensionIndex (O(1) ext lookup)    │
+                    │    Sorted name array (binary search)   │
+                    │  Binary IPC (MessagePack / FlatBuffers)│
+                    │  ~800 MB for D: (vs 6 GB today)        │
+                    └───────────┬──────────────────────────┘
+                                │ binary pipe / shared memory
+              ┌─────────────────┼─────────────────────┐
+              ▼                 ▼                     ▼
+    ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
+    │ uffs (thin)   │  │ uffs-mcp     │  │ uffs-analytics   │
+    │ ~200 KB       │  │ MCP bridge   │  │ Polars on-demand  │
+    │ no tokio      │  │ JSON-RPC→bin │  │ loaded only for   │
+    │ no clap       │  │              │  │ aggregation queries│
+    │ blocking I/O  │  │              │  │                   │
+    │ ~30 ms startup│  │              │  │ Not in search path│
+    └──────────────┘  └──────────────┘  └──────────────────┘
+```
+
+### 9.3  Memory reduction roadmap
+
+| Change | Savings | Difficulty |
+|--------|---------|-----------|
+| Drop `names_lower` — fold at query time | 163 MB (D:) | Easy |
+| Drop TrigramIndex — use sorted name array + binary search | 283 MB (D:) | Medium |
+| Drop Polars from search daemon (analytics-only) | 50+ MB base | Medium |
+| Ensure MftIndex dropped after compaction | 1.58 GB (D:) | Easy (audit) |
+| Drop `tree_allocated` from CompactRecord (compute on demand) | 0 (already gone) | — |
+| Shrink CompactRecord to 56 B (drop treesize from hot record) | 112 MB (D:) | Easy |
+| **Total potential savings** | **~2.1 GB** per drive | |
+
+**Target: ~1 GB for D: (7M records) — matching Everything's density.**
+
+### 9.4  Latency reduction roadmap
+
+| Change | Est. improvement | Difficulty |
+|--------|-----------------|-----------|
+| Thin CLI client (no tokio/clap/tracing) | 100 ms → 30 ms | Medium |
+| Binary IPC (MessagePack instead of JSON) | ~5 ms savings | Easy |
+| Lazy field resolution (only build requested columns) | ~10 ms for large sets | Easy |
+| Eliminate double conversion (4 copies → 1) | ~5 ms for large sets | Medium |
+| In-daemon file export (skip IPC for --out) | ~20 ms savings | Medium |
+| **Combined** | **~30–40 ms HOT** | |
+
+**Target: 30–40 ms for targeted queries (matching Everything's ~68 ms).**
+
+### 9.5  What we KEEP (competitive advantages over Everything)
+
+These features justify UFFS's existence — don't cut them:
+
+1. **Cross-platform** — Everything is Windows-only
+2. **Tree metrics** (descendants, treesize) — no other tool has this
+3. **Rich filtering** (size ranges, date ranges, NTFS flags, bulkiness)
+4. **Aggregation engine** (terms, histograms, rollups via Polars)
+5. **MCP integration** — AI agents can query the filesystem
+6. **Full-text trigram search** — Everything uses simpler matching
+7. **Cache files** (.uffs) — instant daemon restart without MFT re-read
+
+## 10  Methodology Notes
 
 ### Benchmark script
 `scripts/windows/cross-tool-benchmark.rs` (rust-script)
