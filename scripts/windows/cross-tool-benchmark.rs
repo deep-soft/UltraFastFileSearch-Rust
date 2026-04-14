@@ -397,8 +397,9 @@ fn main() {
                 uffs_stop(&cfg.uffs);
                 uffs_purge_cache();
                 let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, validate));
-                let verdict = if t.dnf { "DNF" } else if t.ok { "PASS" } else { "ERROR" };
-                eprintln!("{:>8}  {}", fms(t.wall_ms), verdict);
+                let verdict = if t.dnf { "DNF" } else if t.bad_rows > 0 { "WRONG" } else if t.ok { "PASS" } else { "ERROR" };
+                let bad_str = if t.bad_rows > 0 { format!("  bad={}", t.bad_rows) } else { String::new() };
+                eprintln!("{:>8}  rows={:<8}{} {}", fms(t.wall_ms), t.rows, bad_str, verdict);
                 all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Cold, drive: drive.clone(),
                     pat: label.into(), runs: vec![t] });
             }
@@ -414,8 +415,9 @@ fn main() {
                 eprint!("    {label:<12} ");  flush();
                 uffs_stop(&cfg.uffs);
                 let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, validate));
-                let verdict = if t.dnf { "DNF" } else if t.ok { "PASS" } else { "ERROR" };
-                eprintln!("{:>8}  {}", fms(t.wall_ms), verdict);
+                let verdict = if t.dnf { "DNF" } else if t.bad_rows > 0 { "WRONG" } else if t.ok { "PASS" } else { "ERROR" };
+                let bad_str = if t.bad_rows > 0 { format!("  bad={}", t.bad_rows) } else { String::new() };
+                eprintln!("{:>8}  rows={:<8}{} {}", fms(t.wall_ms), t.rows, bad_str, verdict);
                 all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Warm, drive: drive.clone(),
                     pat: label.into(), runs: vec![t] });
             }
@@ -436,9 +438,12 @@ fn main() {
                 let s = sw(&runs);
                 let mut dm: Vec<u64> = runs.iter().filter(|r| r.ok && r.daemon_ms > 0).map(|r| r.daemon_ms).collect();
                 dm.sort();
-                let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else { "PASS" };
+                let any_bad = runs.iter().any(|r| r.bad_rows > 0);
+                let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else { "PASS" };
                 let daemon_str = if dm.is_empty() { String::new() } else { format!("  daemon_p50={}", fms(p50(&dm))) };
-                eprintln!("p50={:>6}  p95={:>6}{}  rows={}  {}", fms(p50(&s)), fms(p95(&s)), daemon_str, runs.iter().find(|r| r.ok).map_or(0, |r| r.rows), verdict);
+                let first_ok = runs.iter().find(|r| r.ok);
+                let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
+                eprintln!("p50={:>6}  p95={:>6}{}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), daemon_str, first_ok.map_or(0, |r| r.rows), bad_str, verdict);
                 all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Hot, drive: drive.clone(),
                     pat: label.into(), runs });
             }
@@ -455,8 +460,11 @@ fn main() {
                         runs.push(check_dnf(run_uffs_cpp(cpp, drive, pat, cpp_ext, validate)));
                     }
                     let s = sw(&runs);
-                    let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
-                    eprintln!("p50={:>6}  p95={:>6}  {}", fms(p50(&s)), fms(p95(&s)), verdict);
+                    let first_ok = runs.iter().find(|r| r.ok);
+                    let any_bad = runs.iter().any(|r| r.bad_rows > 0);
+                    let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
+                    let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
+                    eprintln!("p50={:>6}  p95={:>6}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows), bad_str, verdict);
                     all_rows.push(Row { tool: Tool::UffsCpp, phase: Phase::Hot, drive: drive.clone(),
                         pat: label.into(), runs });
                 }
@@ -474,8 +482,11 @@ fn main() {
                         runs.push(check_dnf(run_es(es, drive, es_pat, validate)));
                     }
                     let s = sw(&runs);
-                    let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
-                    eprintln!("p50={:>6}  p95={:>6}  {}", fms(p50(&s)), fms(p95(&s)), verdict);
+                    let first_ok = runs.iter().find(|r| r.ok);
+                    let any_bad = runs.iter().any(|r| r.bad_rows > 0);
+                    let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
+                    let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
+                    eprintln!("p50={:>6}  p95={:>6}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows), bad_str, verdict);
                     all_rows.push(Row { tool: Tool::Everything, phase: Phase::Hot, drive: drive.clone(),
                         pat: label.into(), runs });
                 }
