@@ -150,16 +150,19 @@ fn find_uffs_cpp() -> Option<PathBuf> {
 
 // ── UFFS lifecycle ───────────────────────────────────────────────────────────
 fn uffs_stop(bin: &Path) {
-    let _ = Command::new(bin).args(["daemon","stop"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
-    std::thread::sleep(Duration::from_secs(1));
+    // "daemon kill" is a hard kill; "daemon stop" is a graceful shutdown
+    // that may leave shared memory / cache warm.
+    let _ = Command::new(bin).args(["daemon","kill"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    std::thread::sleep(Duration::from_secs(2));
 }
 fn uffs_purge_cache() {
-    let d = PathBuf::from(env::var("LOCALAPPDATA").unwrap_or_default()).join("uffs").join("cache");
-    if let Ok(es) = std::fs::read_dir(&d) {
-        for e in es.flatten() {
-            let p = e.path();
-            if p.extension().map_or(false, |x| x == "iocp" || x == "bin") { let _ = std::fs::remove_file(&p); }
-        }
+    // Remove both cache locations:
+    //   %LOCALAPPDATA%\uffs\cache\  (primary)
+    //   %TEMP%\uffs_index_cache\    (fallback / legacy)
+    let cache1 = PathBuf::from(env::var("LOCALAPPDATA").unwrap_or_default()).join("uffs").join("cache");
+    let cache2 = PathBuf::from(env::temp_dir()).join("uffs_index_cache");
+    for dir in [&cache1, &cache2] {
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
