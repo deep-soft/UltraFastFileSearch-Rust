@@ -18,18 +18,19 @@
 //!
 //! # Tool CLI references
 //!
-//!   UFFS (Rust): uffs.exe "<pattern>" --drive <X> --out=bench_out.csv --profile
+//!   UFFS (Rust): uffs.exe "<pattern>" --drive <X> --out=bench_out.csv --columns Path --profile
 //!     - Search is the default action (no "search" subcommand).
-//!     - No limit — all results written to file.
+//!     - No limit — all results written to file.  Path-only for fair I/O.
 //!     - Daemon model: COLD/WARM/HOT phases.
 //!     - Ref: internal — see `uffs.exe --help`
-//!   UFFS (C++):  uffs.com <pattern> --drives=<X>
+//!   UFFS (C++):  uffs.com <pattern> --drives=<X> --columns=path
 //!     - No daemon, no --limit. Reads MFT every invocation. Outputs ALL results.
+//!     - Path-only output (--columns=path) for fair comparison.
 //!     - Extension filter: --ext=dll (separate flag, not glob *.dll)
 //!     - Substring: *config* (glob wildcards needed)
 //!     - Ref: https://github.com/githubrobbi/Ultra-Fast-File-Search
 //!   Everything:  es.exe "<X>:\" <pattern> -export-csv bench_out.csv
-//!     - No limit — all results written to file.
+//!     - No limit — all results written to file.  Outputs Filename (path) only.
 //!     - Requires Everything service running.
 //!     - Ref: https://www.voidtools.com/support/everything/command_line_interface/
 //!
@@ -226,7 +227,8 @@ fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     cleanup_bench_file();
     let bpath = bench_out_path();
     let out_arg = format!("--out={}", bpath);
-    let args = [pattern, "--drive", drive, &out_arg, "--profile"];
+    // Path-only output for fair comparison with es.exe (which only outputs Filename).
+    let args = [pattern, "--drive", drive, &out_arg, "--profile", "--columns", "Path"];
     eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
     let t = Instant::now();
     let r = Command::new(bin)
@@ -316,6 +318,8 @@ fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate:
     }
     args.push(format!("--drives={}", drive));
     args.push(format!("--out={}", bpath));
+    // Path-only output for fair comparison with es.exe.
+    args.push("--columns=path".into());
     eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
     let t = Instant::now();
     let r = Command::new(bin)
@@ -417,6 +421,7 @@ fn main() {
     println!("║  Patterns:     {} queries", PATTERNS.len());
     println!("║  Rounds:       {} per pattern per tool", cfg.rounds);
     println!("║  Output:       file (--out / -export-csv → {})", bench_out_path());
+    println!("║  Columns:      path-only (fair: all tools write ~same bytes/row)");
     println!("║  Limit:        none (all results, fair for C++)");
     println!("║  Timeout:      {} s → DNF", TIMEOUT.as_secs());
     println!("║  Skip COLD:    {}", cfg.skip_cold);
@@ -615,7 +620,7 @@ fn print_summary(cfg: &Cfg, rows: &[Row]) {
 
     println!();
     println!("Legend:  PASS = completed within {}s.  DNF = timed out.  SKIP = tool not found.", TIMEOUT.as_secs());
-    println!("Note:   All tools write ALL results to file (no limit).  Fair I/O for all.");
+    println!("Note:   All tools write ALL results to file (no limit).  Path-only output for fair I/O.");
     println!("        UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).");
     println!("        UFFS (C++) re-reads MFT every invocation (no daemon).");
     println!("        Everything is always-hot (daemon model).");
