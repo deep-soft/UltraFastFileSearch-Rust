@@ -166,15 +166,18 @@ fn uffs_purge_cache() {
 
 /// Check if a line is a header, footer, or empty (not a data row).
 /// Matches the same logic as verify_parity.rs `is_footer_or_header_line`.
-/// Handles UFFS (Rust) CSV header, UFFS (C++) header + footer, and blanks.
+/// Handles all three tools' CSV headers/footers.
 fn is_header_or_footer(line: &str) -> bool {
     let t = line.trim();
     t.is_empty()
-        || t.starts_with("\"Path\"")              // Rust CSV header
+        || t.starts_with("\"Path\"")              // UFFS Rust CSV header
         || t.starts_with("Path\t")                // TSV header
+        || t.starts_with("\"Filename\"")           // Everything es.exe -export-csv header
+        || t.starts_with("Filename,")              // Everything es.exe alt header
         || t.starts_with("Drives?")               // C++ footer
         || t.starts_with("MMMmmm that was FAST")  // C++ footer
         || t.starts_with("Search path")            // C++ footer
+        || t.starts_with("Finished")               // C++ footer
 }
 
 /// Count data lines in bench output file, filtering headers/footers.
@@ -264,20 +267,22 @@ fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     let args = [query.as_str(), "-export-csv", bpath.as_str()];
     eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
     let t = Instant::now();
+    // Use Stdio::inherit() — es.exe may need a real console handle for
+    // -export-csv to work (same freopen issue as C++ UFFS).
     let r = Command::new(bin)
         .args(args)
-        .stdout(Stdio::null()).stderr(Stdio::piped())
-        .output();
+        .stdout(Stdio::inherit()).stderr(Stdio::inherit())
+        .status();
     let wall = t.elapsed().as_millis() as u64;
     match r {
-        Ok(o) if o.status.success() => {
+        Ok(s) if s.success() => {
             let (rows, bad_rows) = count_and_validate(&bpath, validate);
             cleanup_bench_file();
             Timing { wall_ms: wall, rows, bad_rows, ok: true, ..Default::default() }
         }
-        Ok(o) => {
+        Ok(s) => {
             cleanup_bench_file();
-            Timing { wall_ms: wall, err: String::from_utf8_lossy(&o.stderr).into(), ..Default::default() }
+            Timing { wall_ms: wall, err: format!("exit {}", s.code().unwrap_or(-1)), ..Default::default() }
         }
         Err(e) => Timing { wall_ms: wall, err: e.to_string(), ..Default::default() },
     }
