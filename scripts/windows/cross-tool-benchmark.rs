@@ -128,12 +128,19 @@ fn find_uffs_cpp() -> Option<PathBuf> {
     })
 }
 fn find_us() -> Option<PathBuf> {
-    let (pf, pf86) = (env::var("ProgramFiles").unwrap_or_default(),
-        env::var("ProgramFiles(x86)").unwrap_or_default());
+    let home = env::var("USERPROFILE").unwrap_or_default();
+    let localapp = env::var("LOCALAPPDATA").unwrap_or_default();
+    let pf = env::var("ProgramFiles").unwrap_or_default();
+    let pf86 = env::var("ProgramFiles(x86)").unwrap_or_default();
     find_in(&[
+        // User-local install (common with JAM Software installer)
+        PathBuf::from(&localapp).join("Programs").join("JAM Software").join("UltraSearch").join("UltraSearch.exe"),
+        PathBuf::from(&home).join("AppData").join("Local").join("Programs").join("JAM Software").join("UltraSearch").join("UltraSearch.exe"),
+        // System-wide installs
         PathBuf::from(&pf).join("JAM Software").join("UltraSearch").join("UltraSearch.exe"),
         PathBuf::from(&pf86).join("JAM Software").join("UltraSearch").join("UltraSearch.exe"),
         PathBuf::from(&pf).join("JAM Software").join("UltraSearch Professional").join("UltraSearch.exe"),
+        PathBuf::from(&pf86).join("JAM Software").join("UltraSearch Professional").join("UltraSearch.exe"),
     ])
 }
 
