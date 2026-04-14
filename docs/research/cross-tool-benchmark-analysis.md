@@ -401,25 +401,82 @@ executable with:
 
 ## 8  Memory Analysis: Why UFFS Uses 16 GB vs Everything's ~750 MB
 
-### 8.1  Current UFFS memory breakdown (D: = 7.07M records)
+### 8.1  Current UFFS memory breakdown — traced from source
 
-| Component | Formula | Est. size |
-|-----------|---------|-----------|
-| `CompactRecord` array | 72 B × 7.07M | 509 MB |
-| `names` (UTF-8 blob) | ~23 B avg × 7.07M | 163 MB |
-| `names_lower` (lowercase copy) | same as names | 163 MB |
-| `TrigramIndex` postings | ~10 trigrams/name × 4 B × 7.07M | 283 MB |
-| `children` (Vec<Vec<u32>>) | ~1.5 child entries × 4 B × 7.07M | 42 MB |
-| `frs_to_idx` mapping | 4 B × max_frs (~8M) | 32 MB |
-| Vec overallocation (+5%) | ~5% of above | ~60 MB |
-| Polars/tokio/tracing runtime | fixed overhead | ~50 MB |
-| **Subtotal D:** | | **~1.3 GB** |
+Source: `DriveCompactIndex` in `crates/uffs-core/src/compact.rs`
 
-But observed = **6 GB**.  Possible explanations for the 4.7 GB gap:
-- `MftIndex` (224 B/record) not fully dropped after compaction → 1.58 GB
-- Polars DataFrame still held for aggregation/stats → 1+ GB
-- Trigram postings lists over-allocated (roaring bitmaps? Vec capacity) → 1+ GB
-- Peak memory during compaction (old + new index simultaneously) → 1+ GB
+**D: drive (7.07M records) — steady state:**
+
+| Component | Source | Formula | Size |
+|-----------|--------|---------|------|
+| `records: Vec<CompactRecord>` | `compact.rs:23` | 72 B × 7.07M | 509 MB |
+| `names: Vec<u8>` | `compact.rs:93` | ~23 B avg × 7.07M | 163 MB |
+| `names_lower: Vec<u8>` | `compact.rs:95` | ~23 B avg × 7.07M | 163 MB |
+| `trigram: TrigramIndex` postings | `trigram.rs:18` HashMap<[u8;3], Vec<u32>> | ~10 trigrams/name × 4 B × 7.07M | 283 MB |
+| `trigram` HashMap overhead | ~56 B/bucket × ~30K unique trigrams | + Vec capacity overalloc | ~72 MB |
+| `children: Vec<Vec<u32>>` outer | `compact.rs:99` | 24 B × 7.07M (Vec struct per record) | 170 MB |
+| `children` inner data | pushed in `compact.rs:239` | ~7M child entries × 4 B | 28 MB |
+| `children` inner Vec overhead | ~1M directory allocations | ~48 B alloc overhead × 1M | 48 MB |
+| **Steady state D:** | | | **~1,436 MB ≈ 1.4 GB** |
+
+**Peak during loading (before MftIndex is dropped):**
+
+| Component | Source | Size |
+|-----------|--------|------|
+| `MftIndex` (224 B/record + names + links + streams + children + frs_to_idx) | `compact_loader.rs:115` | ~3 GB |
+| Trigram build temp `Vec<String>` (7.07M × (24 + 23 + ~32 alloc overhead)) | `compact.rs:212-224` | ~558 MB |
+| `DriveCompactIndex` being built | above | ~1.4 GB |
+| **Peak D:** | | **~5 GB** |
+
+After `load_drive()` returns, `mft_index` goes out of scope and IS
+dropped (verified — `build_compact_index` takes `&MftIndex`, local
+variable on stack).  The temp `Vec<String>` for trigram build is also
+dropped (scoped in a block at `compact.rs:211-225`).
+
+**Steady state should be ~1.4 GB per large drive.**
+
+### 8.1.1  Why 16 GB observed vs ~1.4 GB expected?
+
+For 7 drives with an average of 3.5M records each:
+- Expected steady state: 7 × ~700 MB = **~5 GB**
+- Observed: **~16 GB**
+- **Gap: ~11 GB**
+
+Likely causes:
+
+1. **mimalloc doesn't return freed memory to the OS** — peak of ~5 GB
+   during each drive load is retained as committed pages. With 7
+   sequential loads, mimalloc may retain ~3 GB of freed pages.
+
+2. **Vec capacity overallocation** — HashMap and Vec use doubling
+   strategy; actual capacity may be 50-100% above len(). For trigram
+   postings (283 MB data), capacity could be ~420 MB.
+
+3. **Some drives are much larger** — if D: has 7M records but other
+   drives have 3-5M each, total could be 25M+ records → ~5 GB
+   steady state before overhead.
+
+4. **Background cache save threads** — `save_to_cache_background()`
+   serializes MftIndex to a buffer (~500 MB) in a background thread.
+   Multiple drives saving concurrently could hold ~1-2 GB of
+   serialization buffers.
+
+5. **HashMap fragmentation** — TrigramIndex uses `HashMap<[u8;3], Vec<u32>>`
+   with ~30K entries. Each Vec is a separate heap allocation.
+   7 drives × 30K × 3 allocs (key + value + data) = ~630K allocations
+   creating memory fragmentation.
+
+### 8.1.2  Reduction opportunities
+
+| Change | Savings per drive | Effort |
+|--------|-------------------|--------|
+| Drop `names_lower` — fold at query time (Everything does this) | ~163 MB × 7 = **1.1 GB** | Low |
+| Replace `children: Vec<Vec<u32>>` with CSR (already used in cache!) | ~170 MB × 7 = **1.2 GB** | Medium |
+| Replace trigram `HashMap<[u8;3], Vec<u32>>` with CSR arrays | ~72 MB × 7 = **500 MB** overhead | Medium |
+| Call `mimalloc_purge()` after each drive load | reclaim freed pages | Low |
+| Shrink-to-fit all Vecs after build | reclaim capacity slack | Low |
+
+**Conservative target: ~5 GB for 7 drives (from 16 GB)**
 
 ### 8.2  Everything's memory model (~750 MB for 10M records)
 
@@ -439,19 +496,36 @@ Everything does NOT store:
 - No allocated_size (computes on demand from NTFS)
 - No extension interning table
 
-### 8.3  What UFFS stores that Everything doesn't
+### 8.3  Per-record comparison: UFFS vs Everything
 
-| Field | UFFS | Everything | Bytes/record |
-|-------|------|-----------|--------------|
-| `allocated` (size on disk) | stored | not stored | +8 B |
-| `treesize` (subtree sum) | stored | not stored | +8 B |
-| `tree_allocated` | stored | not stored | — (removed) |
-| `descendants` (subtree count) | stored | not stored | +4 B |
-| `names_lower` (case-fold copy) | stored | folds at query time | +23 B avg |
-| `TrigramIndex` | stored | not stored | +40 B avg |
-| **Extra per record** | | | **~83 B** |
+| Field | UFFS (bytes) | Everything (bytes) | Notes |
+|-------|-------------|-------------------|-------|
+| parent ID | 4 (u32 idx) | 4 (u32) | Same |
+| file size | 8 (u64) | 8 (u64) | Same |
+| created | 8 (i64) | 8 (i64) | Same |
+| modified | 8 (i64) | 8 (i64) | Same |
+| accessed | 8 (i64) | 8 (i64) | Same |
+| flags | 4 (u32) | 4 (u32) | Same |
+| name_offset + name_len | 4 + 2 = 6 | 4 (pointer) | Similar |
+| extension_id | 2 | 0 | UFFS only |
+| **allocated** (size on disk) | **8** | **0** | UFFS only |
+| **treesize** (subtree sum) | **8** | **0** | UFFS only |
+| **descendants** (subtree count) | **4** | **0** | UFFS only |
+| **names_lower** (lowercase copy) | **~23 avg** | **0** | Folds at query time |
+| **trigram postings** | **~50 avg** | **0** | Uses sorted arrays |
+| **children Vec struct** | **24** | **0** | Per-record overhead |
+| Filename (UTF-8 vs UTF-16) | ~23 avg | ~30 avg (UTF-16) | UFFS wins |
+| **CompactRecord total** | **72** | **~44** | |
+| **Total per record** | **~203 B** | **~78 B** | **2.6× denser** |
 
-For 10M records: 83 B × 10M = **830 MB** of data Everything doesn't need.
+For 10M records:
+- Everything: 78 × 10M = **~780 MB**
+- UFFS: 203 × 10M = **~2.0 GB** (steady state, calculated)
+- UFFS observed: **~16 GB** (with mimalloc fragmentation + overhead)
+
+The 2.6× density gap is structural — UFFS stores more data per record
+(tree metrics, trigram, lowercase names). The 8× gap between calculated
+(2 GB) and observed (16 GB) is operational overhead (see §8.1.1).
 
 ## 9  Architectural Redesign Proposal
 
