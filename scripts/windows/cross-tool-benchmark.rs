@@ -219,9 +219,11 @@ fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     cleanup_bench_file();
     let bpath = bench_out_path();
     let out_arg = format!("--out={}", bpath);
+    let args = [pattern, "--drive", drive, &out_arg, "--profile"];
+    eprintln!("      CMD: \"{}\" {}", bin.display(), args.iter().map(|a| format!("\"{}\"", a)).collect::<Vec<_>>().join(" "));
     let t = Instant::now();
     let r = Command::new(bin)
-        .args([pattern, "--drive", drive, &out_arg, "--profile"])
+        .args(args)
         .stdout(Stdio::piped()).stderr(Stdio::piped())
         .output();
     let wall = t.elapsed().as_millis() as u64;
@@ -259,9 +261,11 @@ fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     cleanup_bench_file();
     let bpath = bench_out_path();
     let query = if pattern == "*" { format!("{}:\\", drive) } else { format!("{}:\\ {}", drive, pattern) };
+    let args = [query.as_str(), "-export-csv", bpath.as_str()];
+    eprintln!("      CMD: \"{}\" {}", bin.display(), args.iter().map(|a| format!("\"{}\"", a)).collect::<Vec<_>>().join(" "));
     let t = Instant::now();
     let r = Command::new(bin)
-        .args([&query, "-export-csv", &bpath])
+        .args(args)
         .stdout(Stdio::null()).stderr(Stdio::piped())
         .output();
     let wall = t.elapsed().as_millis() as u64;
@@ -297,6 +301,7 @@ fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate:
     }
     args.push(format!("--drives={}", drive));
     args.push(format!("--out={}", bpath));
+    eprintln!("      CMD: \"{}\" {}", bin.display(), args.iter().map(|a| format!("\"{}\"", a)).collect::<Vec<_>>().join(" "));
     let t = Instant::now();
     let r = Command::new(bin)
         .args(&args)
