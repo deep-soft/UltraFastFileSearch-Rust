@@ -497,9 +497,14 @@ fn main() {
 
         // ── UFFS HOT ────────────────────────────────────────────────────
         if cfg.tools.contains(&Tool::Uffs) {
-            // Warm up daemon with a throwaway query
-            let _ = run_uffs(&cfg.uffs, drive, "*", "");
-            eprintln!("  UFFS HOT:  {} rounds", cfg.rounds);
+            // Warm up daemon: tiny query just to trigger daemon startup + index load.
+            // Use a pattern that matches nothing, and limit 1 to minimise I/O.
+            eprint!("  UFFS HOT:  warming up daemon...");  flush();
+            let _ = Command::new(&cfg.uffs)
+                .args(["__uffs_warmup_probe__", "--drive", drive, "--limit", "1"])
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .status();
+            eprintln!(" ready.  {} rounds", cfg.rounds);
 
             for &(label, pat, _, _, _, validate) in PATTERNS {
                 if cfg.skip_pattern(label) { continue; }
