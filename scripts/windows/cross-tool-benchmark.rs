@@ -18,8 +18,9 @@
 //!
 //! # Tool CLI references
 //!
-//!   UFFS (Rust): uffs.exe "<pattern>" --drive <X> -n <N> --profile
+//!   UFFS (Rust): uffs.exe "<pattern>" --drive <X> --out=bench_out.csv --profile
 //!     - Search is the default action (no "search" subcommand).
+//!     - No limit — all results written to file.
 //!     - Daemon model: COLD/WARM/HOT phases.
 //!     - Ref: internal — see `uffs.exe --help`
 //!   UFFS (C++):  uffs.com <pattern> --drives=<X>
@@ -27,7 +28,8 @@
 //!     - Extension filter: --ext=dll (separate flag, not glob *.dll)
 //!     - Substring: *config* (glob wildcards needed)
 //!     - Ref: https://github.com/githubrobbi/Ultra-Fast-File-Search
-//!   Everything:  es.exe "<X>:\" <pattern> -n <N>
+//!   Everything:  es.exe "<X>:\" <pattern> -export-csv bench_out.csv
+//!     - No limit — all results written to file.
 //!     - Requires Everything service running.
 //!     - Ref: https://www.voidtools.com/support/everything/command_line_interface/
 //!
@@ -61,10 +63,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const TIMEOUT: Duration = Duration::from_secs(30);
-const DEFAULT_LIMIT: u32 = 100;
+const TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_ROUNDS: usize = 10;
 const DEFAULT_DRIVES: &[&str] = &["C", "D"];
+const BENCH_OUT: &str = "bench_out.csv"; // temp file for direct-write output
 /// (label, uffs_rust_pattern, es_search, us_pattern, cpp_ext_override)
 /// cpp_ext_override: if non-empty, C++ UFFS uses `* --ext=<val>` instead of glob
 const PATTERNS: &[(&str, &str, &str, &str, &str)] = &[
@@ -88,7 +90,7 @@ struct Timing { wall_ms: u64, daemon_ms: u64, rows: u64, ok: bool, dnf: bool, er
 
 struct Row { tool: Tool, phase: Phase, drive: String, pat: String, runs: Vec<Timing> }
 struct Cfg { uffs: PathBuf, uffs_cpp: Option<PathBuf>, es: Option<PathBuf>,
-             drives: Vec<String>, rounds: usize, limit: u32,
+             drives: Vec<String>, rounds: usize,
              tools: Vec<Tool>, skip_cold: bool }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -154,25 +156,41 @@ fn uffs_purge_cache() {
 }
 
 
+/// Count lines in the bench output file (subtract header).
+fn count_file_rows(path: &str) -> u64 {
+    std::fs::read_to_string(path)
+        .map(|s| {
+            let total = s.lines().filter(|l| !l.trim().is_empty()).count();
+            if total > 0 { (total - 1) as u64 } else { 0 } // subtract CSV header
+        })
+        .unwrap_or(0)
+}
+fn cleanup_bench_file() { let _ = std::fs::remove_file(BENCH_OUT); }
+
 // ── Run: UFFS (Rust) ─────────────────────────────────────────────────────────
-/// uffs.exe pattern --drive X -n N --profile
-/// Note: search is the DEFAULT action — no "search" subcommand.
-fn run_uffs(bin: &Path, drive: &str, pattern: &str, limit: u32) -> Timing {
+/// uffs.exe pattern --drive X --out=bench_out.csv --profile
+/// No limit — all results written to file.  Search is the default action.
+fn run_uffs(bin: &Path, drive: &str, pattern: &str) -> Timing {
+    cleanup_bench_file();
+    let out_arg = format!("--out={}", BENCH_OUT);
     let t = Instant::now();
     let r = Command::new(bin)
-        .args([pattern, "--drive", drive, "-n", &limit.to_string(), "--profile"])
+        .args([pattern, "--drive", drive, &out_arg, "--profile"])
         .stdout(Stdio::piped()).stderr(Stdio::piped())
         .output();
     let wall = t.elapsed().as_millis() as u64;
     match r {
         Ok(o) if o.status.success() => {
-            let out = String::from_utf8_lossy(&o.stdout);
             let err = String::from_utf8_lossy(&o.stderr);
-            let rows = out.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("===") && !l.starts_with("---")).count() as u64;
+            let rows = count_file_rows(BENCH_OUT);
             let dms = parse_daemon_ms(&err);
+            cleanup_bench_file();
             Timing { wall_ms: wall, daemon_ms: dms, rows, ok: true, ..Default::default() }
         }
-        Ok(o) => Timing { wall_ms: wall, err: String::from_utf8_lossy(&o.stderr).into(), ..Default::default() },
+        Ok(o) => {
+            cleanup_bench_file();
+            Timing { wall_ms: wall, err: String::from_utf8_lossy(&o.stderr).into(), ..Default::default() }
+        }
         Err(e) => Timing { wall_ms: wall, err: e.to_string(), ..Default::default() },
     }
 }
@@ -189,21 +207,27 @@ fn parse_daemon_ms(s: &str) -> u64 {
 }
 
 // ── Run: Everything (es.exe) ─────────────────────────────────────────────────
-fn run_es(bin: &Path, drive: &str, pattern: &str, limit: u32) -> Timing {
+/// es.exe "<D>:\ <pattern>" -export-csv bench_out.csv
+/// No -n limit — all results written to file.
+fn run_es(bin: &Path, drive: &str, pattern: &str) -> Timing {
+    cleanup_bench_file();
     let query = if pattern == "*" { format!("{}:\\", drive) } else { format!("{}:\\ {}", drive, pattern) };
     let t = Instant::now();
     let r = Command::new(bin)
-        .args([&query, "-n", &limit.to_string()])
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
+        .args([&query, "-export-csv", BENCH_OUT])
+        .stdout(Stdio::null()).stderr(Stdio::piped())
         .output();
     let wall = t.elapsed().as_millis() as u64;
     match r {
         Ok(o) if o.status.success() => {
-            let out = String::from_utf8_lossy(&o.stdout);
-            let rows = out.lines().filter(|l| !l.trim().is_empty()).count() as u64;
+            let rows = count_file_rows(BENCH_OUT);
+            cleanup_bench_file();
             Timing { wall_ms: wall, rows, ok: true, ..Default::default() }
         }
-        Ok(o) => Timing { wall_ms: wall, err: String::from_utf8_lossy(&o.stderr).into(), ..Default::default() },
+        Ok(o) => {
+            cleanup_bench_file();
+            Timing { wall_ms: wall, err: String::from_utf8_lossy(&o.stderr).into(), ..Default::default() }
+        }
         Err(e) => Timing { wall_ms: wall, err: e.to_string(), ..Default::default() },
     }
 }
@@ -213,6 +237,7 @@ fn run_es(bin: &Path, drive: &str, pattern: &str, limit: u32) -> Timing {
 /// Extension filter uses --ext=<ext> instead of glob *.ext.
 /// Substring match needs *needle* glob wildcards.
 fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str) -> Timing {
+    cleanup_bench_file();
     let mut args: Vec<String> = Vec::new();
     // Pattern: if cpp_ext is set, use * as pattern + --ext flag
     // For substring "config", wrap as *config* for glob matching
@@ -220,27 +245,28 @@ fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str) -> Timing
         args.push("*".into());
         args.push(format!("--ext={}", cpp_ext));
     } else if !pattern.contains('*') && !pattern.contains('?') && pattern != "*" {
-        // Plain substring like "config" → wrap in glob wildcards
-        // But exact names like "notepad.exe" also need wildcards to find in any dir
         args.push(format!("*{}*", pattern));
     } else {
         args.push(pattern.into());
     }
     args.push(format!("--drives={}", drive));
-    args.push("--out=console".into());
+    args.push(format!("--out={}", BENCH_OUT));
     let t = Instant::now();
     let r = Command::new(bin)
         .args(&args)
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
+        .stdout(Stdio::null()).stderr(Stdio::piped())
         .output();
     let wall = t.elapsed().as_millis() as u64;
     match r {
         Ok(o) if o.status.success() => {
-            let out = String::from_utf8_lossy(&o.stdout);
-            let rows = out.lines().filter(|l| !l.trim().is_empty()).count() as u64;
+            let rows = count_file_rows(BENCH_OUT);
+            cleanup_bench_file();
             Timing { wall_ms: wall, rows, ok: true, ..Default::default() }
         }
-        Ok(o) => Timing { wall_ms: wall, err: String::from_utf8_lossy(&o.stderr).into(), ..Default::default() },
+        Ok(o) => {
+            cleanup_bench_file();
+            Timing { wall_ms: wall, err: String::from_utf8_lossy(&o.stderr).into(), ..Default::default() }
+        }
         Err(e) => Timing { wall_ms: wall, err: e.to_string(), ..Default::default() },
     }
 }
@@ -255,7 +281,6 @@ fn parse_args() -> Cfg {
     let args: Vec<String> = env::args().collect();
     let mut drives: Option<Vec<String>> = None;
     let mut rounds = DEFAULT_ROUNDS;
-    let mut limit = DEFAULT_LIMIT;
     let mut tools_str: Option<String> = None;
     let mut skip_cold = false;
     let mut uffs_bin: Option<PathBuf> = None;
@@ -264,7 +289,6 @@ fn parse_args() -> Cfg {
         match args[i].as_str() {
             "--drives" => { i += 1; drives = Some(args[i].split(',').map(|s| s.trim().to_uppercase()).collect()); }
             "--rounds" => { i += 1; rounds = args[i].parse().unwrap_or(DEFAULT_ROUNDS); }
-            "--limit"  => { i += 1; limit = args[i].parse().unwrap_or(DEFAULT_LIMIT); }
             "--tools"  => { i += 1; tools_str = Some(args[i].clone()); }
             "--skip-cold" => { skip_cold = true; }
             "--uffs-bin" => { i += 1; uffs_bin = Some(PathBuf::from(&args[i])); }
@@ -292,7 +316,7 @@ fn parse_args() -> Cfg {
         if uffs_cpp.is_some() { tools.push(Tool::UffsCpp); }
         if es.is_some() { tools.push(Tool::Everything); }
     }
-    Cfg { uffs, uffs_cpp, es, drives, rounds, limit, tools, skip_cold }
+    Cfg { uffs, uffs_cpp, es, drives, rounds, tools, skip_cold }
 }
 
 fn print_help() {
@@ -301,7 +325,6 @@ fn print_help() {
     eprintln!("OPTIONS:");
     eprintln!("  --drives C,D        Drives to benchmark (default: C,D)");
     eprintln!("  --rounds 10         Rounds per pattern (default: 10)");
-    eprintln!("  --limit 100         Result cap for UFFS Rust & Everything (default: 100)");
     eprintln!("  --tools uffs,cpp,es Comma-separated tools (default: all found)");
     eprintln!("                      Values: uffs, cpp/uffs-cpp, es/everything");
     eprintln!("  --skip-cold         Skip UFFS COLD and WARM phases");
@@ -324,7 +347,8 @@ fn main() {
     println!("║  Drives:       {:?}", cfg.drives);
     println!("║  Patterns:     {} queries", PATTERNS.len());
     println!("║  Rounds:       {} per pattern per tool", cfg.rounds);
-    println!("║  Limit:        {} rows", cfg.limit);
+    println!("║  Output:       file (--out / -export-csv → {})", BENCH_OUT);
+    println!("║  Limit:        none (all results, fair for C++)");
     println!("║  Timeout:      {} s → DNF", TIMEOUT.as_secs());
     println!("║  Skip COLD:    {}", cfg.skip_cold);
     println!("╚══════════════════════════════════════════════════════════════════════════════╝");
@@ -348,7 +372,7 @@ fn main() {
                 // COLD: only 1 round (destructive — restarts daemon each time)
                 uffs_stop(&cfg.uffs);
                 uffs_purge_cache();
-                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, cfg.limit));
+                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat));
                 let verdict = if t.dnf { "DNF" } else if t.ok { "PASS" } else { "ERROR" };
                 eprintln!("{:>8}  {}", fms(t.wall_ms), verdict);
                 all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Cold, drive: drive.clone(),
@@ -365,7 +389,7 @@ fn main() {
             for &(label, pat, _, _, _) in PATTERNS {
                 eprint!("    {label:<12} ");  flush();
                 uffs_stop(&cfg.uffs);
-                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, cfg.limit));
+                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat));
                 let verdict = if t.dnf { "DNF" } else if t.ok { "PASS" } else { "ERROR" };
                 eprintln!("{:>8}  {}", fms(t.wall_ms), verdict);
                 all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Warm, drive: drive.clone(),
@@ -376,14 +400,14 @@ fn main() {
         // ── UFFS HOT ────────────────────────────────────────────────────
         if cfg.tools.contains(&Tool::Uffs) {
             // Warm up daemon with a throwaway query
-            let _ = run_uffs(&cfg.uffs, drive, "*", 1);
+            let _ = run_uffs(&cfg.uffs, drive, "*");
             eprintln!("  UFFS HOT:  {} rounds", cfg.rounds);
 
             for &(label, pat, _, _, _) in PATTERNS {
                 eprint!("    {label:<12} ");  flush();
                 let mut runs = Vec::new();
                 for _ in 0..cfg.rounds {
-                    runs.push(check_dnf(run_uffs(&cfg.uffs, drive, pat, cfg.limit)));
+                    runs.push(check_dnf(run_uffs(&cfg.uffs, drive, pat)));
                 }
                 let s = sw(&runs);
                 let mut dm: Vec<u64> = runs.iter().filter(|r| r.ok && r.daemon_ms > 0).map(|r| r.daemon_ms).collect();
@@ -423,7 +447,7 @@ fn main() {
                     eprint!("    {label:<12} ");  flush();
                     let mut runs = Vec::new();
                     for _ in 0..cfg.rounds {
-                        runs.push(check_dnf(run_es(es, drive, es_pat, cfg.limit)));
+                        runs.push(check_dnf(run_es(es, drive, es_pat)));
                     }
                     let s = sw(&runs);
                     let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
@@ -497,8 +521,9 @@ fn print_summary(cfg: &Cfg, rows: &[Row]) {
 
     println!();
     println!("Legend:  PASS = completed within {}s.  DNF = timed out.  SKIP = tool not found.", TIMEOUT.as_secs());
-    println!("Note:   UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).");
-    println!("        UFFS (C++) re-reads MFT every invocation.  No --limit flag (outputs ALL results).");
+    println!("Note:   All tools write ALL results to file (no limit).  Fair I/O for all.");
+    println!("        UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).");
+    println!("        UFFS (C++) re-reads MFT every invocation (no daemon).");
     println!("        Everything is always-hot (daemon model).");
     println!("        UltraSearch excluded — no functional headless CLI (see script header).");
 }
