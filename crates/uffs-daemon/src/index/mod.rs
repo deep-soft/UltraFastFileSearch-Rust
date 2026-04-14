@@ -179,6 +179,9 @@ impl IndexManager {
                 }
             }
 
+            // Return freed pages to the OS after each drive load.
+            release_allocator_pages();
+
             let mut progress = self.status.write().await;
             *progress = DaemonStatus::Loading {
                 drives_loaded: loaded,
@@ -323,6 +326,12 @@ impl IndexManager {
                     tracing::error!(error = %err, "Task panicked loading drive");
                 }
             }
+
+            // Return freed pages to the OS after each drive load.
+            // The MftIndex (~3 GB for large drives) was dropped inside
+            // load_drive(), but the system allocator retains those pages
+            // as committed virtual memory.  This reclaims them.
+            release_allocator_pages();
 
             // Update load heartbeat — tells the idle timer we're still
             // making progress, preventing a false stall-timeout.
@@ -899,5 +908,52 @@ impl IndexManager {
         }
 
         missing
+    }
+}
+
+// ── Allocator page release ──────────────────────────────────────────────
+
+/// Ask the system allocator to return freed pages to the OS.
+///
+/// After a large allocation+free cycle (e.g. `MftIndex` → drop), the
+/// system allocator retains committed virtual memory.  This function
+/// issues a best-effort request to reclaim those pages so the process
+/// RSS reflects actual usage.
+///
+/// - **Windows:** `HeapCompact(GetProcessHeap())` for each heap.
+/// - **Linux/glibc:** `malloc_trim(0)`.
+/// - **macOS:** no-op (macOS `libmalloc` returns pages eagerly).
+fn release_allocator_pages() {
+    #[cfg(target_os = "windows")]
+    {
+        #[allow(unsafe_code)]
+        // SAFETY: `GetProcessHeap` + `HeapCompact` are safe Win32 APIs
+        // that ask the default CRT heap to coalesce and decommit free
+        // blocks.  No memory is freed that is still reachable.
+        unsafe {
+            use windows::Win32::System::Memory::{GetProcessHeap, HEAP_FLAGS, HeapCompact};
+            if let Ok(heap) = GetProcessHeap() {
+                let _ = HeapCompact(heap, HEAP_FLAGS(0));
+            }
+        }
+        tracing::debug!("HeapCompact(GetProcessHeap()) completed");
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        #[allow(unsafe_code)]
+        // SAFETY: `malloc_trim` is a glibc extension that releases free
+        // memory at the top of the heap back to the OS.  It does not
+        // affect allocated blocks.
+        unsafe {
+            libc::malloc_trim(0);
+        }
+        tracing::debug!("malloc_trim(0) completed");
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        // macOS libmalloc returns pages eagerly — nothing needed.
+        tracing::debug!("allocator page release: no-op on this platform");
     }
 }

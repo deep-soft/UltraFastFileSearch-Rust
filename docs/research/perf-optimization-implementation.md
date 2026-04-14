@@ -52,7 +52,9 @@ in `crates/uffs-core/src/compact.rs` and in `TrigramIndex::build()`.
 - `crates/uffs-core/src/trigram.rs` — after building keys, offsets, values
 - `crates/uffs-core/src/compact.rs` — `ExtensionIndex::build()`
 
-**Status:** [ ] Not started
+**Status:** [x] Complete — `shrink_to_fit()` added at end of
+`build_compact_index()` in `compact.rs:731-745` with tracing of
+reclaimed bytes.
 
 ---
 
@@ -77,7 +79,12 @@ uses the system allocator.
 - `crates/uffs-daemon/src/index/mod.rs` — after each drive result in
   the `join_set.join_next()` loop (around line 252)
 
-**Status:** [ ] Not started
+**Status:** [x] Complete — `release_allocator_pages()` added in
+`index/mod.rs` after each drive load, in both the MFT live-read loop
+and the data-dir cache-load loop.  Platform-specific:
+- Windows: `HeapCompact(GetProcessHeap(), HEAP_FLAGS(0))`
+- Linux: `malloc_trim(0)`
+- macOS: no-op (returns pages eagerly)
 
 ---
 
@@ -137,6 +144,14 @@ present, the daemon:
 
 Total IPC: ~200 bytes instead of ~32 MB.
 
+**Status:** [x] Complete — atomic file output implemented:
+- `SearchParams.output_file` + `output_format` fields added to protocol
+- Daemon writes directly to `.uffs.tmp` temp file via `BufWriter<File>`
+- On success: `sync_all()` → atomic `rename()` to target path
+- Zero rows → no file created/touched (target untouched)
+- Write error → temp file cleaned up, falls back to normal IPC
+- CLI resolves `--out` to absolute path, passes to daemon
+- Supports CSV, JSON, JSONL formats with column projection
 
 ---
 

@@ -418,6 +418,18 @@ pub struct SearchParams {
     /// that has more.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agg_page_size: Option<u16>,
+
+    // ── Direct file output ────────────────────────────────────────
+    /// When set, the daemon writes results directly to this file path
+    /// instead of sending rows through IPC.  The response contains only
+    /// metadata (`rows_written`, timing).  This eliminates serialization
+    /// and IPC overhead for bulk exports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_file: Option<String>,
+    /// Output format for `output_file` (default: `"csv"`).
+    /// Supported: `"csv"`, `"json"`, `"jsonl"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
 }
 
 /// Default-true helper for serde.
@@ -477,6 +489,8 @@ impl Default for SearchParams {
             include_rows: true,
             agg_cursor: None,
             agg_page_size: None,
+            output_file: None,
+            output_format: None,
         }
     }
 }

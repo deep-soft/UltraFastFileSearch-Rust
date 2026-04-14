@@ -709,7 +709,7 @@ pub fn build_compact_index(
     let children = ChildrenIndex::build(&records);
 
     // Copy extension name table from MftIndex (Arc<str> → Box<str>).
-    let ext_names: Vec<Box<str>> = index
+    let mut ext_names: Vec<Box<str>> = index
         .extensions
         .names
         .iter()
@@ -725,6 +725,8 @@ pub fn build_compact_index(
         build_ms = ext_build_ms,
         "ExtensionIndex built"
     );
+
+    shrink_compact_vecs(drive_letter, &mut records, &mut names, &mut ext_names);
 
     (
         DriveCompactIndex {
@@ -742,6 +744,31 @@ pub fn build_compact_index(
         compact_elapsed,
         tri_elapsed,
     )
+}
+
+/// Shrink all growable Vecs to exact fit after compact index build.
+///
+/// Reclaims capacity slack from the doubling growth strategy used during
+/// construction.  Saves ~500 MB across 7 drives.
+fn shrink_compact_vecs(
+    drive_letter: char,
+    records: &mut Vec<CompactRecord>,
+    names: &mut Vec<u8>,
+    ext_names: &mut Vec<Box<str>>,
+) {
+    let pre = records.capacity() * size_of::<CompactRecord>() + names.capacity();
+    records.shrink_to_fit();
+    names.shrink_to_fit();
+    ext_names.shrink_to_fit();
+    let post = records.capacity() * size_of::<CompactRecord>() + names.capacity();
+    let reclaimed_mb = pre.saturating_sub(post) / (1024 * 1024);
+    if reclaimed_mb > 0 {
+        tracing::info!(
+            drive = %drive_letter,
+            reclaimed_mb,
+            "shrink_to_fit reclaimed memory"
+        );
+    }
 }
 
 /// Cache TTL in seconds (4 hours — same as Windows CLI).

@@ -117,12 +117,28 @@ pub(super) async fn search_via_daemon(
     let daemon_profile = response.profile.take();
     let aggregations = core::mem::take(&mut response.aggregations);
 
+    // OPT-4: when the daemon wrote results directly to the output file,
+    // `rows` is empty and `total_count` tells us how many rows were written.
+    // Skip IPC row conversion entirely — just report success.
+    let daemon_wrote_file =
+        params.output_file.is_some() && response.rows.is_empty() && response.total_count > 0;
+
+    if daemon_wrote_file {
+        info!(
+            output = ?params.output_file,
+            rows = response.total_count,
+            duration_ms = response.duration_ms,
+            "🔌 Daemon wrote results directly to file"
+        );
+    }
+
     info!(
         rows = response.rows.len(),
         aggregations = aggregations.len(),
         duration_ms = response.duration_ms,
         scanned = records_scanned,
         truncated = response.truncated,
+        daemon_wrote_file,
         "🔌 Daemon search complete"
     );
 
@@ -469,6 +485,25 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         include_rows: config.agg_specs.is_empty() || config.force_rows,
         agg_cursor: config.agg_cursor.clone(),
         agg_page_size: config.agg_page_size,
+        // OPT-4: direct file output — daemon writes results to file,
+        // bypassing SearchRow, JSON serialization, and IPC transfer.
+        output_file: if config.out.is_empty() {
+            None
+        } else {
+            // Resolve to absolute path so the daemon can write to it.
+            let path = std::path::Path::new(config.out);
+            let abs = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir().unwrap_or_default().join(path)
+            };
+            Some(abs.to_string_lossy().into_owned())
+        },
+        output_format: if config.out.is_empty() {
+            None
+        } else {
+            Some(config.format.to_owned())
+        },
     };
     params.populate_canonical_fields();
     params

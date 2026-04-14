@@ -189,8 +189,10 @@ pub(super) fn finalize_output(
     let t_output = std::time::Instant::now();
 
     // Skip row output when running aggregate-only (unless --rows was given).
+    // Also skip when the daemon already wrote the output file directly (OPT-4).
     let has_aggs = !aggregations.is_empty();
-    let show_rows = !config.benchmark && (!has_aggs || config.force_rows);
+    let daemon_wrote_file = !config.out.is_empty() && rows.is_empty();
+    let show_rows = !config.benchmark && !daemon_wrote_file && (!has_aggs || config.force_rows);
     if show_rows {
         write_native_results(
             rows,

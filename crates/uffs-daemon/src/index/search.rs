@@ -12,13 +12,14 @@
 //! Search execution: query dispatch, profile construction, and drive info.
 
 use core::sync::atomic::Ordering;
+use std::io::Write;
 use std::time::Instant;
 
 use uffs_client::protocol::{
     DriveInfo, DriveProfile, DrivesResponse, SearchFilterMode, SearchParams, SearchProfile,
     SearchResponse, SearchResponseMode, SearchRow,
 };
-use uffs_core::search::backend::{FilterMode, SearchRequest, SortSpec, search_index};
+use uffs_core::search::backend::{DisplayRow, FilterMode, SearchRequest, SortSpec, search_index};
 use uffs_core::search::field::FieldId;
 use uffs_core::search::filters::{SearchFilterParams, SearchFilters};
 
@@ -270,6 +271,59 @@ impl IndexManager {
         if let Some(limit) = effective_params.limit {
             filtered_rows.truncate(limit as usize);
         }
+
+        // ── Direct file output (OPT-4) ──────────────────────────────
+        // When `output_file` is set, write results directly to file and
+        // return metadata-only response.  Skips SearchRow allocation,
+        // JSON serialization, and IPC transfer entirely.
+        if let Some(output_path) = &effective_params.output_file {
+            let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
+            let format = effective_params.output_format.as_deref().unwrap_or("csv");
+            let projection = &effective_params.projection;
+
+            match Self::write_rows_to_file(&filtered_rows, output_path, format, projection) {
+                Ok(rows_written) => {
+                    tracing::info!(
+                        output = output_path,
+                        rows = rows_written,
+                        format,
+                        duration_ms,
+                        "daemon wrote results directly to file"
+                    );
+                    // Update perf counters.
+                    let query_us = query_start.elapsed().as_micros();
+                    self.queries_total.fetch_add(1, Ordering::Relaxed);
+                    self.queries_total_us.fetch_add(
+                        u64::try_from(query_us).unwrap_or(u64::MAX),
+                        Ordering::Relaxed,
+                    );
+                    return SearchResponse {
+                        rows: Vec::new(),
+                        total_count,
+                        records_scanned: result.records_scanned,
+                        duration_ms,
+                        truncated: false,
+                        shmem_path: None,
+                        shmem_count: None,
+                        profile: None,
+                        applied_sorts: Vec::new(),
+                        applied_projection: Vec::new(),
+                        response_mode: None,
+                        projected_rows: None,
+                        aggregations: vec![],
+                    };
+                }
+                Err(err) => {
+                    tracing::error!(
+                        output = output_path,
+                        error = %err,
+                        "failed to write results to file — falling back to IPC"
+                    );
+                    // Fall through to the normal IPC path.
+                }
+            }
+        }
+
         let rows: Vec<SearchRow> = filtered_rows
             .iter()
             .map(Self::display_row_to_search_row)
@@ -493,5 +547,271 @@ impl IndexManager {
         }
 
         preds
+    }
+
+    // ── Direct file output (OPT-4) ──────────────────────────────────
+
+    /// Write `DisplayRow`s directly to a file, bypassing `SearchRow` and IPC.
+    ///
+    /// Uses atomic write semantics: writes to a `.uffs.tmp` sibling file,
+    /// then renames to the target path only after all data is flushed and
+    /// synced.  If the search produces 0 rows, the target file is NOT
+    /// created/touched.  If the daemon crashes mid-write, only the temp
+    /// file is left — the original target (if any) is untouched.
+    ///
+    /// Supported formats: `csv`, `json`, `jsonl`.  When `projection` is
+    /// non-empty, only the requested columns are included.
+    fn write_rows_to_file(
+        rows: &[DisplayRow],
+        path: &str,
+        format: &str,
+        projection: &[String],
+    ) -> Result<usize, std::io::Error> {
+        use std::io::BufWriter;
+
+        // Zero results → don't create the file at all.
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let target = std::path::Path::new(path);
+        let tmp_path = target.with_extension("uffs.tmp");
+
+        // Write to temp file — target is untouched until rename.
+        let file = std::fs::File::create(&tmp_path)?;
+        let mut w = BufWriter::with_capacity(256 * 1024, file);
+
+        let write_result = match format {
+            "csv" => Self::write_csv(&mut w, rows, projection),
+            "json" => Self::write_json(&mut w, rows, projection),
+            "jsonl" => Self::write_jsonl(&mut w, rows, projection),
+            other => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsupported output format: {other}"),
+            )),
+        };
+
+        // On write error, clean up the temp file and propagate.
+        if let Err(err) = write_result {
+            drop(w);
+            let _cleanup: Result<(), std::io::Error> = std::fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+
+        // Flush + sync to disk before renaming.
+        w.flush()?;
+        w.into_inner()
+            .map_err(std::io::IntoInnerError::into_error)?
+            .sync_all()?;
+
+        // Atomic rename: target appears only with complete data.
+        std::fs::rename(&tmp_path, target)?;
+
+        Ok(rows.len())
+    }
+
+    /// Write rows as CSV with optional column projection.
+    fn write_csv(
+        w: &mut impl Write,
+        rows: &[DisplayRow],
+        projection: &[String],
+    ) -> std::io::Result<()> {
+        let use_all = projection.is_empty();
+
+        // Header
+        if use_all {
+            writeln!(
+                w,
+                "Drive,Path,Name,Size,Modified,Created,Accessed,Flags,Allocated,Descendants,Treesize,TreeAllocated,IsDirectory"
+            )?;
+        } else {
+            let header: Vec<&str> = projection.iter().map(String::as_str).collect();
+            writeln!(w, "{}", header.join(","))?;
+        }
+
+        for row in rows {
+            if use_all {
+                writeln!(
+                    w,
+                    "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                    row.drive,
+                    Self::csv_escape(&row.path),
+                    Self::csv_escape(row.name()),
+                    row.size,
+                    row.modified,
+                    row.created,
+                    row.accessed,
+                    row.flags,
+                    row.allocated,
+                    row.descendants,
+                    row.treesize,
+                    row.tree_allocated,
+                    row.is_directory,
+                )?;
+            } else {
+                Self::write_csv_projected_row(w, row, projection)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Write a single CSV row with only the projected columns.
+    fn write_csv_projected_row(
+        w: &mut impl Write,
+        row: &DisplayRow,
+        projection: &[String],
+    ) -> std::io::Result<()> {
+        let mut first = true;
+        for col in projection {
+            if !first {
+                write!(w, ",")?;
+            }
+            first = false;
+            match col.as_str() {
+                "drive" => write!(w, "{}", row.drive)?,
+                "path" => write!(w, "{}", Self::csv_escape(&row.path))?,
+                "name" => write!(w, "{}", Self::csv_escape(row.name()))?,
+                "size" => write!(w, "{}", row.size)?,
+                "modified" => write!(w, "{}", row.modified)?,
+                "created" => write!(w, "{}", row.created)?,
+                "accessed" => write!(w, "{}", row.accessed)?,
+                "flags" => write!(w, "{}", row.flags)?,
+                "allocated" => write!(w, "{}", row.allocated)?,
+                "descendants" => write!(w, "{}", row.descendants)?,
+                "treesize" => write!(w, "{}", row.treesize)?,
+                "tree_allocated" => write!(w, "{}", row.tree_allocated)?,
+                "type" | "is_directory" => write!(w, "{}", row.is_directory)?,
+                _ => write!(w, "")?,
+            }
+        }
+        writeln!(w)?;
+        Ok(())
+    }
+
+    /// Minimal CSV escaping: wrap in quotes if the value contains commas or
+    /// quotes.
+    fn csv_escape(val: &str) -> alloc::borrow::Cow<'_, str> {
+        if val.contains(',') || val.contains('"') || val.contains('\n') {
+            alloc::borrow::Cow::Owned(format!("\"{}\"", val.replace('"', "\"\"")))
+        } else {
+            alloc::borrow::Cow::Borrowed(val)
+        }
+    }
+
+    /// Write rows as a JSON array.
+    fn write_json(
+        w: &mut impl Write,
+        rows: &[DisplayRow],
+        projection: &[String],
+    ) -> std::io::Result<()> {
+        writeln!(w, "[")?;
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                writeln!(w, ",")?;
+            }
+            Self::write_json_row(w, row, projection)?;
+        }
+        writeln!(w, "\n]")?;
+        Ok(())
+    }
+
+    /// Write rows as JSON Lines (one JSON object per line).
+    fn write_jsonl(
+        w: &mut impl Write,
+        rows: &[DisplayRow],
+        projection: &[String],
+    ) -> std::io::Result<()> {
+        for row in rows {
+            Self::write_json_row(w, row, projection)?;
+            writeln!(w)?;
+        }
+        Ok(())
+    }
+
+    /// Write a JSON field separator (comma) if not the first field.
+    fn json_sep(w: &mut impl Write, first: &mut bool) -> std::io::Result<()> {
+        if !*first {
+            write!(w, ",")?;
+        }
+        *first = false;
+        Ok(())
+    }
+
+    /// Write a numeric JSON field: `"name":value`.
+    fn json_field(
+        w: &mut impl Write,
+        first: &mut bool,
+        name: &str,
+        val: &dyn core::fmt::Display,
+    ) -> std::io::Result<()> {
+        Self::json_sep(w, first)?;
+        write!(w, "\"{name}\":{val}")
+    }
+
+    /// Write a string JSON field: `"name":"escaped_value"`.
+    fn json_str_field(
+        w: &mut impl Write,
+        first: &mut bool,
+        name: &str,
+        val: &str,
+    ) -> std::io::Result<()> {
+        Self::json_sep(w, first)?;
+        let escaped = val.replace('\\', "\\\\").replace('"', "\\\"");
+        write!(w, "\"{name}\":\"{escaped}\"")
+    }
+
+    /// Write a single row as a JSON object.
+    fn write_json_row(
+        w: &mut impl Write,
+        row: &DisplayRow,
+        projection: &[String],
+    ) -> std::io::Result<()> {
+        let use_all = projection.is_empty();
+        let should = |col: &str| use_all || projection.iter().any(|pc| pc == col);
+
+        write!(w, "{{")?;
+        let mut first = true;
+
+        if should("drive") {
+            Self::json_str_field(w, &mut first, "drive", &row.drive.to_string())?;
+        }
+        if should("path") {
+            Self::json_str_field(w, &mut first, "path", &row.path)?;
+        }
+        if should("name") {
+            Self::json_str_field(w, &mut first, "name", row.name())?;
+        }
+        if should("size") {
+            Self::json_field(w, &mut first, "size", &row.size)?;
+        }
+        if should("modified") {
+            Self::json_field(w, &mut first, "modified", &row.modified)?;
+        }
+        if should("created") {
+            Self::json_field(w, &mut first, "created", &row.created)?;
+        }
+        if should("accessed") {
+            Self::json_field(w, &mut first, "accessed", &row.accessed)?;
+        }
+        if should("flags") {
+            Self::json_field(w, &mut first, "flags", &row.flags)?;
+        }
+        if should("allocated") {
+            Self::json_field(w, &mut first, "allocated", &row.allocated)?;
+        }
+        if should("descendants") {
+            Self::json_field(w, &mut first, "descendants", &row.descendants)?;
+        }
+        if should("treesize") {
+            Self::json_field(w, &mut first, "treesize", &row.treesize)?;
+        }
+        if should("tree_allocated") {
+            Self::json_field(w, &mut first, "tree_allocated", &row.tree_allocated)?;
+        }
+        if should("is_directory") || should("type") {
+            Self::json_field(w, &mut first, "is_directory", &row.is_directory)?;
+        }
+        write!(w, "}}")?;
+        Ok(())
     }
 }
