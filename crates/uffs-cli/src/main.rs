@@ -682,6 +682,9 @@ impl StartupProfiler {
 fn main() {
     let t0 = std::time::Instant::now();
     let mut prof = StartupProfiler::new(t0);
+    if prof.enabled {
+        eprintln!("=== STARTUP PROFILER active ===");
+    }
     prof.mark("binary entry + alloc init");
 
     // Build tokio runtime manually (instead of #[tokio::main]) so we can
