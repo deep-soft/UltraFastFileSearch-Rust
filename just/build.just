@@ -161,9 +161,7 @@ use:
 [windows]
 use:
     #!powershell
-    Write-Host "📦 Installing UFFS binaries from dist/ cache..." -ForegroundColor Blue
-
-    # Find latest version in dist/
+    Write-Host "[use] Installing UFFS binaries from dist/ cache..." -ForegroundColor Blue
     $distDir = $null
     if (Test-Path "dist") {
         $versions = Get-ChildItem -Path "dist" -Directory -ErrorAction SilentlyContinue |
@@ -171,34 +169,28 @@ use:
             Sort-Object { [version]($_.Name -replace '^v','') } -Descending
         if ($versions) { $distDir = $versions[0].FullName }
     }
-
-    # Fallback: download from GitHub Release
     if (-not $distDir) {
-        Write-Host "⚠️  No local dist/ cache found. Downloading from GitHub Release..." -ForegroundColor Yellow
+        Write-Host "  No local dist/ cache. Downloading from GitHub Release..." -ForegroundColor Yellow
         if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-            Write-Host "❌ gh CLI not found. Install with: winget install GitHub.cli" -ForegroundColor Red
+            Write-Host "  FAIL: gh CLI not found. Install with: winget install GitHub.cli" -ForegroundColor Red
             exit 1
         }
         $version = (gh release view --json tagName -q ".tagName" 2>$null)
-        if (-not $version) { Write-Host "❌ No GitHub Release found. Run 'just ship' first." -ForegroundColor Red; exit 1 }
-        $distDir = "dist\$version"
+        if (-not $version) { Write-Host "  FAIL: No GitHub Release found." -ForegroundColor Red; exit 1 }
+        $distDir = Join-Path "dist" $version
         New-Item -ItemType Directory -Path $distDir -Force | Out-Null
         gh release download $version --dir $distDir --clobber
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "❌ Failed to download release." -ForegroundColor Red; exit 1
+            Write-Host "  FAIL: download failed." -ForegroundColor Red; exit 1
         }
-        Write-Host "✅ Downloaded $version to $distDir" -ForegroundColor Green
+        Write-Host "  OK: Downloaded $version to $distDir" -ForegroundColor Green
     }
-
-    Write-Host "  → Using: $distDir" -ForegroundColor Cyan
-
-    $binDir = "$env:USERPROFILE\bin"
+    Write-Host "  Source: $distDir" -ForegroundColor Cyan
+    $binDir = Join-Path $env:USERPROFILE 'bin'
     if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
-
-    # Map release asset names → install names
     $binaries = @{
-        "uffs-windows-x64.exe" = "uffs.exe"
-        "uffs_mft-windows-x64.exe" = "uffs_mft.exe"
+        'uffs-windows-x64.exe' = 'uffs.exe'
+        'uffs_mft-windows-x64.exe' = 'uffs_mft.exe'
     }
     $installed = 0; $skipped = 0
     foreach ($src in $binaries.Keys) {
@@ -207,27 +199,24 @@ use:
         $destPath = Join-Path $binDir $destName
         if (Test-Path $srcPath) {
             Copy-Item $srcPath $destPath -Force
-            $size = [math]::Round((Get-Item $destPath).Length / 1MB, 1)
-            Write-Host "  ✅ $src → $destName ($size MB)" -ForegroundColor Green
+            $sz = [math]::Round((Get-Item $destPath).Length / 1MB, 1)
+            Write-Host "  OK: $src -> $destName ($sz MB)" -ForegroundColor Green
             $installed++
         } else {
-            Write-Host "  ⚠️  $src (not found in $distDir)" -ForegroundColor Yellow
+            Write-Host "  SKIP: $src not in $distDir" -ForegroundColor Yellow
             $skipped++
         }
     }
-
     Write-Host ""
-    Write-Host "✅ Installed $installed binaries to ~/bin" -ForegroundColor Green
-    if ($skipped -gt 0) { Write-Host "⚠️  Skipped $skipped" -ForegroundColor Yellow }
-
-    # Show versions
+    Write-Host "  Installed $installed binaries to ~/bin" -ForegroundColor Green
+    if ($skipped -gt 0) { Write-Host "  Skipped $skipped" -ForegroundColor Yellow }
     Write-Host ""
-    Write-Host "📋 Installed versions:" -ForegroundColor Blue
-    foreach ($dest in $binaries.Values) {
-        $destPath = Join-Path $binDir $dest
-        if (Test-Path $destPath) {
-            $ver = & $destPath --version 2>$null
-            Write-Host "  $dest  $ver"
+    Write-Host "  Installed versions:" -ForegroundColor Blue
+    foreach ($d in $binaries.Values) {
+        $p = Join-Path $binDir $d
+        if (Test-Path $p) {
+            $v = & $p --version 2>$null
+            Write-Host "    $d  $v"
         }
     }
 
