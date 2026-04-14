@@ -71,3 +71,14 @@ final-status-level = "all"
 filter = 'test(/^test_validate/)'
 threads-required = 2
 slow-timeout = { period = "300s", terminate-after = 2 }
+
+# Shmem tests share a global temp directory — the GC test sweeps ALL .bin
+# files, racing with write/read tests in other nextest processes.
+# Serialise them so only one shmem test runs at a time.
+[[profile.default.overrides]]
+filter = 'package(uffs-client) & test(shmem::)'
+threads-required = 'num-cpus'
+
+[[profile.ci.overrides]]
+filter = 'package(uffs-client) & test(shmem::)'
+threads-required = 'num-cpus'
