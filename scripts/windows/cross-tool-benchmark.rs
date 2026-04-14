@@ -100,7 +100,14 @@ struct Timing { wall_ms: u64, daemon_ms: u64, rows: u64, bad_rows: u64, ok: bool
 struct Row { tool: Tool, phase: Phase, drive: String, pat: String, runs: Vec<Timing> }
 struct Cfg { uffs: PathBuf, uffs_cpp: Option<PathBuf>, es: Option<PathBuf>,
              drives: Vec<String>, rounds: usize,
-             tools: Vec<Tool>, skip_cold: bool }
+             tools: Vec<Tool>, skip_cold: bool,
+             patterns: Option<Vec<String>> }
+impl Cfg {
+    fn skip_pattern(&self, label: &str) -> bool {
+        self.patterns.as_ref().map_or(false, |ps| !ps.iter().any(|p| p == &label.to_lowercase()))
+    }
+}
+
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 fn flush() { std::io::stderr().flush().ok(); std::io::stdout().flush().ok(); }
@@ -215,8 +222,15 @@ fn count_and_validate(path: &str, needle: &str) -> (u64, u64) {
         return (total, 0);
     }
     let needle_lower = needle.to_lowercase();
-    let bad = data.iter().filter(|l| !l.to_lowercase().contains(&needle_lower)).count() as u64;
-    (total, bad)
+    let bad_lines: Vec<&&str> = data.iter().filter(|l| !l.to_lowercase().contains(&needle_lower)).collect();
+    if !bad_lines.is_empty() {
+        eprintln!("  ⚠ {} rows failed validation (needle={:?}):", bad_lines.len(), needle);
+        for (i, line) in bad_lines.iter().enumerate().take(5) {
+            let preview: String = line.chars().take(120).collect();
+            eprintln!("    bad[{}]: {:?}", i, preview);
+        }
+    }
+    (total, bad_lines.len() as u64)
 }
 fn cleanup_bench_file() { let p = bench_out_path(); let _ = std::fs::remove_file(&p); }
 
@@ -357,12 +371,14 @@ fn parse_args() -> Cfg {
     let mut tools_str: Option<String> = None;
     let mut skip_cold = false;
     let mut uffs_bin: Option<PathBuf> = None;
+    let mut patterns_filter: Option<Vec<String>> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--drives" => { i += 1; drives = Some(args[i].split(',').map(|s| s.trim().to_uppercase()).collect()); }
             "--rounds" => { i += 1; rounds = args[i].parse().unwrap_or(DEFAULT_ROUNDS); }
             "--tools"  => { i += 1; tools_str = Some(args[i].clone()); }
+            "--patterns" => { i += 1; patterns_filter = Some(args[i].split(',').map(|s| s.trim().to_lowercase()).collect()); }
             "--skip-cold" => { skip_cold = true; }
             "--uffs-bin" => { i += 1; uffs_bin = Some(PathBuf::from(&args[i])); }
             "--help" | "-h" => { print_help(); std::process::exit(0); }
@@ -389,7 +405,7 @@ fn parse_args() -> Cfg {
         if uffs_cpp.is_some() { tools.push(Tool::UffsCpp); }
         if es.is_some() { tools.push(Tool::Everything); }
     }
-    Cfg { uffs, uffs_cpp, es, drives, rounds, tools, skip_cold }
+    Cfg { uffs, uffs_cpp, es, drives, rounds, tools, skip_cold, patterns: patterns_filter }
 }
 
 fn print_help() {
@@ -418,7 +434,11 @@ fn main() {
     if let Some(ref es) = cfg.es   { println!("║  Everything:   {}", es.display()); }
     else                            { println!("║  Everything:   NOT FOUND (SKIP)"); }
     println!("║  Drives:       {:?}", cfg.drives);
-    println!("║  Patterns:     {} queries", PATTERNS.len());
+    if let Some(ref ps) = cfg.patterns {
+        println!("║  Patterns:     {} (filtered: {})", PATTERNS.len(), ps.join(", "));
+    } else {
+        println!("║  Patterns:     {} queries", PATTERNS.len());
+    }
     println!("║  Rounds:       {} per pattern per tool", cfg.rounds);
     println!("║  Output:       file (--out / -export-csv → {})", bench_out_path());
     println!("║  Columns:      path-only (fair: all tools write ~same bytes/row)");
@@ -442,6 +462,7 @@ fn main() {
             eprintln!(" done.");
 
             for &(label, pat, _, _, _, validate) in PATTERNS {
+                if cfg.skip_pattern(label) { continue; }
                 eprint!("    {label:<12} ");  flush();
                 // COLD: only 1 round (destructive — restarts daemon each time)
                 uffs_stop(&cfg.uffs);
@@ -462,6 +483,7 @@ fn main() {
             eprintln!(" done.");
 
             for &(label, pat, _, _, _, validate) in PATTERNS {
+                if cfg.skip_pattern(label) { continue; }
                 eprint!("    {label:<12} ");  flush();
                 uffs_stop(&cfg.uffs);
                 let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, validate));
@@ -480,6 +502,7 @@ fn main() {
             eprintln!("  UFFS HOT:  {} rounds", cfg.rounds);
 
             for &(label, pat, _, _, _, validate) in PATTERNS {
+                if cfg.skip_pattern(label) { continue; }
                 eprint!("    {label:<12} ");  flush();
                 let mut runs = Vec::new();
                 for _ in 0..cfg.rounds {
@@ -504,6 +527,7 @@ fn main() {
             if let Some(ref cpp) = cfg.uffs_cpp {
                 eprintln!("  UFFS C++ (MFT re-read, no --limit):  {} rounds", cfg.rounds);
                 for &(label, pat, _, _, cpp_ext, validate) in PATTERNS {
+                    if cfg.skip_pattern(label) { continue; }
                     eprint!("    {label:<12} ");  flush();
                     let mut runs = Vec::new();
                     for _ in 0..cfg.rounds {
@@ -526,6 +550,7 @@ fn main() {
             if let Some(ref es) = cfg.es {
                 eprintln!("  Everything HOT:  {} rounds (always-hot, daemon model)", cfg.rounds);
                 for &(label, _, es_pat, _, _, validate) in PATTERNS {
+                    if cfg.skip_pattern(label) { continue; }
                     // Skip full_scan for Everything — es.exe has a 2GB IPC
                     // memory limit that crashes on drives with >2M entries.
                     // See verify_parity.rs and Everything 1.4 known limitation.
@@ -610,6 +635,7 @@ fn print_summary(cfg: &Cfg, rows: &[Row]) {
 
     for drive in &cfg.drives {
         for &(label, _, _, _, _, _) in PATTERNS {
+            if cfg.skip_pattern(label) { continue; }
             let uffs_p50 = find_p50(rows, Tool::Uffs, Phase::Hot, drive, label);
             let cpp_p50 = find_p50(rows, Tool::UffsCpp, Phase::Hot, drive, label);
             let es_p50 = find_p50(rows, Tool::Everything, Phase::Hot, drive, label);
