@@ -455,17 +455,15 @@ async fn dispatch_search(
     exclude: Option<&str>,
     match_path: bool,
 ) -> Result<()> {
-    // Startup profiling: mark when dispatch begins (after match + pattern extraction).
-    if std::env::var_os("UFFS_PROFILE_STARTUP").is_some() {
-        if let Some(&t0) = STARTUP_PROFILER_T0.get() {
-            let elapsed = t0.elapsed();
-            eprintln!(
-                "  [STARTUP] {:<28} (total: {:>7.2} ms)",
-                "dispatch_search() entered",
-                elapsed.as_secs_f64() * 1000.0,
-            );
-        }
-    }
+    // Startup profiling: mark when dispatch begins (after match + pattern
+    // extraction).
+    let mut prof = StartupProfiler::new(
+        STARTUP_PROFILER_T0
+            .get()
+            .copied()
+            .unwrap_or_else(std::time::Instant::now),
+    );
+    prof.mark("dispatch_search() entered");
 
     // Expand collection aliases / presets
     let ext_expanded = cli
@@ -650,18 +648,26 @@ impl StartupProfiler {
     }
 
     /// Record a phase completion.
-    #[expect(clippy::print_stderr, reason = "intentional profiling output")]
+    ///
+    /// Uses `eprintln!` (not tracing) because this measures tracing init
+    /// itself.
+    #[expect(
+        clippy::print_stderr,
+        reason = "must bypass tracing to measure tracing init"
+    )]
     fn mark(&mut self, phase: &str) {
         if !self.enabled {
             return;
         }
         let now = std::time::Instant::now();
-        let delta = now.duration_since(self.prev);
-        let total = now.duration_since(self.t0);
+        let delta_us = now.duration_since(self.prev).as_micros();
+        let total_us = now.duration_since(self.t0).as_micros();
         eprintln!(
-            "  [STARTUP] {phase:<28} {:>7.2} ms  (total: {:>7.2} ms)",
-            delta.as_secs_f64() * 1000.0,
-            total.as_secs_f64() * 1000.0,
+            "  [STARTUP] {phase:<28} {:>4}.{:02} ms  (total: {:>4}.{:02} ms)",
+            delta_us / 1000,
+            (delta_us % 1000) / 10,
+            total_us / 1000,
+            (total_us % 1000) / 10,
         );
         self.prev = now;
     }

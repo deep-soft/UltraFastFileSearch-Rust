@@ -450,6 +450,18 @@ fn main() {
 
     let mut all_rows: Vec<Row> = Vec::new();
 
+    // ── Daemon warmup (once for all drives) ─────────────────────────────
+    if cfg.tools.contains(&Tool::Uffs) && cfg.skip_cold {
+        // When skipping COLD/WARM, ensure the daemon is running before HOT.
+        // The daemon loads ALL drives on startup, so one probe is enough.
+        eprint!("  Warming up UFFS daemon (all drives)...");  flush();
+        let _ = Command::new(&cfg.uffs)
+            .args(["__uffs_warmup_probe__", "--limit", "1"])
+            .stdout(Stdio::null()).stderr(Stdio::null())
+            .status();
+        eprintln!(" ready.");
+    }
+
     for drive in &cfg.drives {
         println!("━━━ Drive {}:  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", drive);
 
