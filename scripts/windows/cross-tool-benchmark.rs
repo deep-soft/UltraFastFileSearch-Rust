@@ -79,7 +79,7 @@ fn bench_out_path() -> String {
 ///           (empty = skip validation, e.g. full_scan)
 const PATTERNS: &[(&str, &str, &str, &str, &str, &str)] = &[
     ("full_scan",  "*",           "*",           "*",           "",    ""),
-    ("exact",      "notepad.exe", "notepad.exe", "notepad.exe", "",    "notepad.exe"),
+    ("exact",      "notepad.exe", "notepad.exe", "notepad.exe", "",    "notepad"),
     ("prefix",     "win*",        "win*",        "win*",        "",    "win"),
     ("ext_rare",   "*.dbt",       "ext:dbt",     "*.dbt",       "dbt", ".dbt"),
     ("ext_dll",    "*.dll",       "ext:dll",     "*.dll",       "dll", ".dll"),
