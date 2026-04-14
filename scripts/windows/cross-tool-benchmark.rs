@@ -175,8 +175,9 @@ fn is_header_or_footer(line: &str) -> bool {
     t.is_empty()
         || t.starts_with("\"Path\"")              // UFFS Rust CSV header
         || t.starts_with("Path\t")                // TSV header
-        || t.starts_with("\"Filename\"")           // Everything es.exe -export-csv header
-        || t.starts_with("Filename,")              // Everything es.exe alt header
+        || t == "Filename"                          // Everything es.exe -export-csv header (single column)
+        || t.starts_with("\"Filename\"")           // Everything es.exe -export-csv header (quoted)
+        || t.starts_with("Filename,")              // Everything es.exe alt header (multi-column)
         || t.starts_with("Drives?")               // C++ footer
         || t.starts_with("MMMmmm that was FAST")  // C++ footer
         || t.starts_with("Search path")            // C++ footer
@@ -266,14 +267,20 @@ fn parse_daemon_ms(s: &str) -> u64 {
 fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     cleanup_bench_file();
     let bpath = bench_out_path();
-    let query = if pattern == "*" { format!("{}:\\", drive) } else { format!("{}:\\ {}", drive, pattern) };
-    let args = [query.as_str(), "-export-csv", bpath.as_str()];
+    // es.exe expects path filter and search term as SEPARATE arguments:
+    //   es.exe "C:\" ext:dll -export-csv file.csv
+    // NOT as one combined string.
+    let drive_path = format!("{}:\\", drive);
+    let mut args: Vec<String> = vec![drive_path.clone()];
+    if pattern != "*" {
+        args.push(pattern.to_string());
+    }
+    args.push("-export-csv".to_string());
+    args.push(bpath.clone());
     eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
     let t = Instant::now();
-    // Use Stdio::inherit() — es.exe may need a real console handle for
-    // -export-csv to work (same freopen issue as C++ UFFS).
     let r = Command::new(bin)
-        .args(args)
+        .args(&args)
         .stdout(Stdio::inherit()).stderr(Stdio::inherit())
         .status();
     let wall = t.elapsed().as_millis() as u64;
