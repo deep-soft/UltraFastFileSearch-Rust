@@ -104,16 +104,46 @@ Wall clock:     164 ms   ← WHERE ARE THE OTHER 154 ms?
 
 **Answer: process startup overhead the profiler doesn't measure.**
 
-### 4.1  UFFS client startup cost (~100–120 ms)
+### 4.1  UFFS client startup cost — MEASURED
+
+Instrumented with `UFFS_PROFILE_STARTUP=1` (raw `eprintln!`, not tracing).
+
+**macOS (Apple Silicon, release build):**
+
+| Phase | Cold (1st run) | Hot (cached) |
+|-------|---------------|-------------|
+| Binary entry + alloc init | 0.04 ms | — |
+| tokio runtime build | 1.48 ms | — |
+| run() entered (tokio spawned) | 2.35 ms | — |
+| Clap Cli::parse() | 0.96 ms | — |
+| init_logging() | 1.06 ms | — |
+| dispatch_search() entered | 4.43 ms | — |
+| **Total (macOS)** | **5.2 ms** | **1.3 ms** |
+
+**Windows (estimated, awaiting measurement):**
 
 | Phase | Est. cost | What it does |
 |-------|-----------|-------------|
 | Windows process creation | ~30–50 ms | Load 8 MB binary, relocations, DLL init |
-| `#[tokio::main]` | ~15 ms | Tokio multi-thread runtime init |
-| `init_logging()` | ~5–10 ms | Tracing subscriber + file appender |
-| `Cli::parse()` (clap derive) | ~10 ms | 40+ flags, subcommands, validation |
-| Static initializers | ~5–10 ms | Regex, OnceLock, lazy_static |
-| **Subtotal** | **~70–100 ms** | **Before any search work begins** |
+| tokio runtime build | ~5 ms | Thread pool creation on Windows |
+| Clap Cli::parse() | ~2 ms | 40+ flags, subcommands |
+| init_logging() | ~3 ms | Rolling file appender + thread |
+| **Pre-connect subtotal** | **~40–60 ms** | **Before daemon connect** |
+| Daemon connect (AF_UNIX bridge) | ~20–40 ms | 2 bridge threads + duplex streams |
+| IPC round-trip (search) | ~10 ms | JSON-RPC ser/deser |
+| Convert + output | ~10 ms | SearchRow → DisplayRow → CSV |
+| **Total (estimated)** | **~80–120 ms** | |
+
+**Key finding:** tokio (1.5 ms), clap (1.0 ms), and logging (1.1 ms)
+are NOT the bottleneck on macOS. The 164 ms on Windows likely comes from:
+1. Windows process creation overhead (~30–50 ms)
+2. The AF_UNIX bridge thread dance in `platform_connect()` (~20–40 ms)
+3. IPC + conversion (~20 ms)
+
+**Awaiting Windows measurement** — deploy and run:
+```
+$env:UFFS_PROFILE_STARTUP=1; uffs notepad.exe --profile
+```
 
 ### 4.2  Everything client startup cost (~10–15 ms)
 
