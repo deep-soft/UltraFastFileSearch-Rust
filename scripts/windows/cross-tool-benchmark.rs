@@ -18,11 +18,17 @@
 //!
 //! # Tool CLI references
 //!
-//!   UFFS:        uffs.exe "<pattern>" --drive <X> --limit <N> --profile
+//!   UFFS (Rust): uffs.exe search "<pattern>" --drive <X> --limit <N> --profile
+//!     - Daemon model: COLD/WARM/HOT phases.
+//!     - Ref: internal — see `uffs.exe --help`
+//!   UFFS (C++):  uffs.com <pattern> --drives=<X>
+//!     - No daemon, no --limit. Reads MFT every invocation. Outputs ALL results.
+//!     - Extension filter: --ext=dll (separate flag, not glob *.dll)
+//!     - Substring: *config* (glob wildcards needed)
+//!     - Ref: https://github.com/githubrobbi/Ultra-Fast-File-Search
 //!   Everything:  es.exe "<X>:\" <pattern> -n <N>
 //!     - Requires Everything service running.
 //!     - Ref: https://www.voidtools.com/support/everything/command_line_interface/
-//!     - Ref: https://github.com/voidtools/ES
 //!   UltraSearch: ultrasearch.exe "<X>:\" "<pattern>" /CLIPBOARD /NOGUI /CLOSE
 //!     - No stdout — results go to clipboard. We time the process.
 //!     - Ref: https://manuals.jam-software.com/ultrasearch/EN/CommandLine.html
@@ -51,18 +57,19 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_LIMIT: u32 = 100;
 const DEFAULT_ROUNDS: usize = 10;
 const DEFAULT_DRIVES: &[&str] = &["C", "D"];
-/// (label, uffs_pattern, es_search, us_pattern)
-const PATTERNS: &[(&str, &str, &str, &str)] = &[
-    ("full_scan",  "*",           "*",           "*"),
-    ("exact",      "notepad.exe", "notepad.exe", "notepad.exe"),
-    ("prefix",     "win*",        "win*",        "win*"),
-    ("extension",  "*.dll",       "ext:dll",     "*.dll"),
-    ("substring",  "config",      "config",      "config"),
+/// (label, uffs_rust_pattern, es_search, us_pattern, cpp_ext_override)
+/// cpp_ext_override: if non-empty, C++ UFFS uses `* --ext=<val>` instead of glob
+const PATTERNS: &[(&str, &str, &str, &str, &str)] = &[
+    ("full_scan",  "*",           "*",           "*",           ""),
+    ("exact",      "notepad.exe", "notepad.exe", "notepad.exe", ""),
+    ("prefix",     "win*",        "win*",        "win*",        ""),
+    ("extension",  "*.dll",       "ext:dll",     "*.dll",       "dll"),
+    ("substring",  "config",      "config",      "config",      ""),
 ];
 
 // ── Types ────────────────────────────────────────────────────────────────────
-#[derive(Clone, Copy, PartialEq, Eq)] enum Tool { Uffs, Everything, UltraSearch }
-impl Tool { fn label(self) -> &'static str { match self { Self::Uffs=>"UFFS", Self::Everything=>"Everything", Self::UltraSearch=>"UltraSearch" } } }
+#[derive(Clone, Copy, PartialEq, Eq)] enum Tool { Uffs, UffsCpp, Everything, UltraSearch }
+impl Tool { fn label(self) -> &'static str { match self { Self::Uffs=>"UFFS", Self::UffsCpp=>"UFFS-C++", Self::Everything=>"Everything", Self::UltraSearch=>"UltraSearch" } } }
 
 #[derive(Clone, Copy, PartialEq, Eq)] enum Phase { Cold, Warm, Hot }
 impl Phase { fn label(self) -> &'static str { match self { Self::Cold=>"COLD", Self::Warm=>"WARM", Self::Hot=>"HOT" } } }
@@ -71,7 +78,7 @@ impl Phase { fn label(self) -> &'static str { match self { Self::Cold=>"COLD", S
 struct Timing { wall_ms: u64, daemon_ms: u64, rows: u64, ok: bool, dnf: bool, err: String }
 
 struct Row { tool: Tool, phase: Phase, drive: String, pat: String, runs: Vec<Timing> }
-struct Cfg { uffs: PathBuf, es: Option<PathBuf>, us: Option<PathBuf>,
+struct Cfg { uffs: PathBuf, uffs_cpp: Option<PathBuf>, es: Option<PathBuf>, us: Option<PathBuf>,
              drives: Vec<String>, rounds: usize, limit: u32,
              tools: Vec<Tool>, skip_cold: bool }
 
@@ -112,6 +119,12 @@ fn find_es() -> Option<PathBuf> {
             PathBuf::from(&pf86).join("Everything").join("es.exe"),
             PathBuf::from(&pf).join("Everything 1.5a").join("es.exe"),
         ])
+    })
+}
+fn find_uffs_cpp() -> Option<PathBuf> {
+    where_exe("uffs.com").or_else(|| {
+        let h = env::var("USERPROFILE").unwrap_or_default();
+        find_in(&[PathBuf::from(&h).join("bin").join("uffs.com")])
     })
 }
 fn find_us() -> Option<PathBuf> {
@@ -208,6 +221,43 @@ fn run_us(bin: &Path, drive: &str, pattern: &str) -> Timing {
     }
 }
 
+// ── Run: UFFS C++ (uffs.com) ─────────────────────────────────────────────────
+/// C++ UFFS reads MFT every invocation (no daemon). No --limit flag.
+/// Extension filter uses --ext=<ext> instead of glob *.ext.
+/// Substring match needs *needle* glob wildcards.
+fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str) -> Timing {
+    let mut args: Vec<String> = Vec::new();
+    // Pattern: if cpp_ext is set, use * as pattern + --ext flag
+    // For substring "config", wrap as *config* for glob matching
+    if !cpp_ext.is_empty() {
+        args.push("*".into());
+        args.push(format!("--ext={}", cpp_ext));
+    } else if !pattern.contains('*') && !pattern.contains('?') && pattern != "*" {
+        // Plain substring like "config" → wrap in glob wildcards
+        // But exact names like "notepad.exe" also need wildcards to find in any dir
+        args.push(format!("*{}*", pattern));
+    } else {
+        args.push(pattern.into());
+    }
+    args.push(format!("--drives={}", drive));
+    args.push("--out=console".into());
+    let t = Instant::now();
+    let r = Command::new(bin)
+        .args(&args)
+        .stdout(Stdio::piped()).stderr(Stdio::piped())
+        .output();
+    let wall = t.elapsed().as_millis() as u64;
+    match r {
+        Ok(o) if o.status.success() => {
+            let out = String::from_utf8_lossy(&o.stdout);
+            let rows = out.lines().filter(|l| !l.trim().is_empty()).count() as u64;
+            Timing { wall_ms: wall, rows, ok: true, ..Default::default() }
+        }
+        Ok(o) => Timing { wall_ms: wall, err: String::from_utf8_lossy(&o.stderr).into(), ..Default::default() },
+        Err(e) => Timing { wall_ms: wall, err: e.to_string(), ..Default::default() },
+    }
+}
+
 fn check_dnf(mut t: Timing) -> Timing {
     if t.wall_ms > TIMEOUT.as_millis() as u64 { t.dnf = true; }
     t
@@ -237,6 +287,7 @@ fn parse_args() -> Cfg {
         i += 1;
     }
     let uffs = uffs_bin.or_else(find_uffs).expect("ERROR: uffs.exe not found.  Use --uffs-bin <path>.");
+    let uffs_cpp = find_uffs_cpp();
     let es = find_es();
     let us = find_us();
     let drives = drives.unwrap_or_else(|| DEFAULT_DRIVES.iter().map(|s| s.to_string()).collect());
@@ -245,6 +296,7 @@ fn parse_args() -> Cfg {
         for t in ts.split(',') {
             match t.trim().to_lowercase().as_str() {
                 "uffs" => tools.push(Tool::Uffs),
+                "uffs-cpp" | "uffs_cpp" | "cpp" => if uffs_cpp.is_some() { tools.push(Tool::UffsCpp); },
                 "everything" | "es" => if es.is_some() { tools.push(Tool::Everything); },
                 "ultrasearch" | "us" => if us.is_some() { tools.push(Tool::UltraSearch); },
                 _ => eprintln!("Unknown tool: {t}"),
@@ -252,22 +304,24 @@ fn parse_args() -> Cfg {
         }
     } else {
         tools.push(Tool::Uffs);
+        if uffs_cpp.is_some() { tools.push(Tool::UffsCpp); }
         if es.is_some() { tools.push(Tool::Everything); }
         if us.is_some() { tools.push(Tool::UltraSearch); }
     }
-    Cfg { uffs, es, us, drives, rounds, limit, tools, skip_cold }
+    Cfg { uffs, uffs_cpp, es, us, drives, rounds, limit, tools, skip_cold }
 }
 
 fn print_help() {
-    eprintln!("Cross-Tool Benchmark — UFFS vs Everything vs UltraSearch");
+    eprintln!("Cross-Tool Benchmark — UFFS (Rust) vs UFFS (C++) vs Everything vs UltraSearch");
     eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("  --drives C,D        Drives to benchmark (default: C,D)");
     eprintln!("  --rounds 10         Rounds per pattern (default: 10)");
-    eprintln!("  --limit 100         Result cap (default: 100)");
-    eprintln!("  --tools uffs,es     Comma-separated tools (default: all found)");
+    eprintln!("  --limit 100         Result cap for UFFS Rust & Everything (default: 100)");
+    eprintln!("  --tools uffs,cpp,es Comma-separated tools (default: all found)");
+    eprintln!("                      Values: uffs, cpp/uffs-cpp, es/everything, us/ultrasearch");
     eprintln!("  --skip-cold         Skip UFFS COLD and WARM phases");
-    eprintln!("  --uffs-bin <path>   Path to uffs.exe");
+    eprintln!("  --uffs-bin <path>   Path to uffs.exe (Rust)");
     eprintln!("  --help              This message");
 }
 
@@ -278,7 +332,9 @@ fn main() {
     println!("╔══════════════════════════════════════════════════════════════════════════════╗");
     println!("║                     Cross-Tool Benchmark v1.0                               ║");
     println!("╠══════════════════════════════════════════════════════════════════════════════╣");
-    println!("║  UFFS:         {}",  cfg.uffs.display());
+    println!("║  UFFS (Rust):  {}",  cfg.uffs.display());
+    if let Some(ref cpp) = cfg.uffs_cpp { println!("║  UFFS (C++):   {}", cpp.display()); }
+    else                                 { println!("║  UFFS (C++):   NOT FOUND (SKIP)"); }
     if let Some(ref es) = cfg.es   { println!("║  Everything:   {}", es.display()); }
     else                            { println!("║  Everything:   NOT FOUND (SKIP)"); }
     if let Some(ref us) = cfg.us   { println!("║  UltraSearch:  {}", us.display()); }
@@ -305,7 +361,7 @@ fn main() {
             uffs_purge_cache();
             eprintln!(" done.");
 
-            for &(label, pat, _, _) in PATTERNS {
+            for &(label, pat, _, _, _) in PATTERNS {
                 eprint!("    {label:<12} ");  flush();
                 // COLD: only 1 round (destructive — restarts daemon each time)
                 uffs_stop(&cfg.uffs);
@@ -324,7 +380,7 @@ fn main() {
             uffs_stop(&cfg.uffs);
             eprintln!(" done.");
 
-            for &(label, pat, _, _) in PATTERNS {
+            for &(label, pat, _, _, _) in PATTERNS {
                 eprint!("    {label:<12} ");  flush();
                 uffs_stop(&cfg.uffs);
                 let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, cfg.limit));
@@ -341,7 +397,7 @@ fn main() {
             let _ = run_uffs(&cfg.uffs, drive, "*", 1);
             eprintln!("  UFFS HOT:  {} rounds", cfg.rounds);
 
-            for &(label, pat, _, _) in PATTERNS {
+            for &(label, pat, _, _, _) in PATTERNS {
                 eprint!("    {label:<12} ");  flush();
                 let mut runs = Vec::new();
                 for _ in 0..cfg.rounds {
@@ -355,11 +411,30 @@ fn main() {
             }
         }
 
+        // ── UFFS C++ (uffs.com) ──────────────────────────────────────────
+        if cfg.tools.contains(&Tool::UffsCpp) {
+            if let Some(ref cpp) = cfg.uffs_cpp {
+                eprintln!("  UFFS C++ (MFT re-read, no --limit):  {} rounds", cfg.rounds);
+                for &(label, pat, _, _, cpp_ext) in PATTERNS {
+                    eprint!("    {label:<12} ");  flush();
+                    let mut runs = Vec::new();
+                    for _ in 0..cfg.rounds {
+                        runs.push(check_dnf(run_uffs_cpp(cpp, drive, pat, cpp_ext)));
+                    }
+                    let s = sw(&runs);
+                    let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
+                    eprintln!("p50={:>6}  p95={:>6}  {}", fms(p50(&s)), fms(p95(&s)), verdict);
+                    all_rows.push(Row { tool: Tool::UffsCpp, phase: Phase::Hot, drive: drive.clone(),
+                        pat: label.into(), runs });
+                }
+            }
+        }
+
         // ── Everything ──────────────────────────────────────────────────
         if cfg.tools.contains(&Tool::Everything) {
             if let Some(ref es) = cfg.es {
                 eprintln!("  Everything HOT:  {} rounds (always-hot, daemon model)", cfg.rounds);
-                for &(label, _, es_pat, _) in PATTERNS {
+                for &(label, _, es_pat, _, _) in PATTERNS {
                     eprint!("    {label:<12} ");  flush();
                     let mut runs = Vec::new();
                     for _ in 0..cfg.rounds {
@@ -378,7 +453,7 @@ fn main() {
         if cfg.tools.contains(&Tool::UltraSearch) {
             if let Some(ref us) = cfg.us {
                 eprintln!("  UltraSearch (MFT re-read):  {} rounds", cfg.rounds);
-                for &(label, _, _, us_pat) in PATTERNS {
+                for &(label, _, _, us_pat, _) in PATTERNS {
                     eprint!("    {label:<12} ");  flush();
                     let mut runs = Vec::new();
                     for _ in 0..cfg.rounds {
@@ -432,24 +507,25 @@ fn print_summary(cfg: &Cfg, rows: &[Row]) {
     println!("║                     HOT COMPARISON (head-to-head)                          ║");
     println!("╚══════════════════════════════════════════════════════════════════════════════╝");
     println!();
-    println!("| Drive | Pattern      | UFFS HOT p50 | Everything p50 | UltraSearch p50 |");
-    println!("|-------|--------------|-------------|----------------|-----------------|");
+    println!("| Drive | Pattern      | UFFS HOT p50 | UFFS-C++ p50 | Everything p50 | UltraSearch p50 |");
+    println!("|-------|--------------|-------------|--------------|----------------|-----------------|");
 
     for drive in &cfg.drives {
-        for &(label, _, _, _) in PATTERNS {
+        for &(label, _, _, _, _) in PATTERNS {
             let uffs_p50 = find_p50(rows, Tool::Uffs, Phase::Hot, drive, label);
+            let cpp_p50 = find_p50(rows, Tool::UffsCpp, Phase::Hot, drive, label);
             let es_p50 = find_p50(rows, Tool::Everything, Phase::Hot, drive, label);
             let us_p50 = find_p50(rows, Tool::UltraSearch, Phase::Hot, drive, label);
-            println!("| {:<5} | {:<12} | {:>11} | {:>14} | {:>15} |",
-                format!("{}:", drive), label, uffs_p50, es_p50, us_p50);
+            println!("| {:<5} | {:<12} | {:>11} | {:>12} | {:>14} | {:>15} |",
+                format!("{}:", drive), label, uffs_p50, cpp_p50, es_p50, us_p50);
         }
     }
 
     println!();
     println!("Legend:  PASS = completed within {}s.  DNF = timed out.  SKIP = tool not found.", TIMEOUT.as_secs());
-    println!("Note:   Everything is always-hot (daemon).  UltraSearch re-reads MFT each time.");
-    println!("        UFFS COLD = no cache, no daemon.  UFFS WARM = cache on disk, daemon restarted.");
-    println!("        UFFS HOT = daemon running, index in memory.");
+    println!("Note:   UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).");
+    println!("        UFFS (C++) re-reads MFT every invocation.  No --limit flag (outputs ALL results).");
+    println!("        Everything is always-hot (daemon model).  UltraSearch re-reads MFT each time.");
 }
 
 fn find_p50(rows: &[Row], tool: Tool, phase: Phase, drive: &str, pat: &str) -> String {
