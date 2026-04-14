@@ -547,23 +547,94 @@ The shmem path uses a well-designed binary layout:
 
 This avoids JSON inflation for large sets. However, **both tiers
 still build `Vec<SearchRow>` in the daemon and convert to
-`Vec<DisplayRow>` in the client** — the 4-copy problem persists
-for the data transformation, just not the transport.
+`Vec<DisplayRow>` in the client** — the copy chain persists for
+the data transformation, just not the transport.
 
-#### Current data flow (all paths)
+#### Precise copy analysis (traced from source code)
+
+**JSON inline path** (< 100K rows, e.g. 50K × 100 B avg path):
 
 ```
-Daemon:  search → Vec<SearchRow>           ← copy 1 (allocate rows)
-         ┌─ < 100K: serde_json::to_value   ← copy 2 → pipe transfer
-         └─ ≥ 100K: write shmem file       ← copy 2 → mmap transfer
+DAEMON:
+  CompactRecord + NameArena
+    → DisplayRow     path: String ALLOCATED           16 MB  ← copy 1
+                     (FastPathResolver walks parent chain,
+                      assembles full path into new String)
+    → SearchRow      row.path.clone()                 16 MB  ← copy 2
+                     row.name().to_owned()
+                     (display_row_to_search_row in projection.rs)
+    → serde_json::to_value   path.clone() → Value     16 MB  ← copy 3
+                     (Serialize trait clones each String)
+    → serde_json::to_string  JSON formatting           33 MB  ← copy 4
+                     (2× inflation: quotes, escaping, field names)
+    → write to socket                                          (I/O)
 
-Client:  read response (JSON or shmem)     ← copy 3 (parse/read)
-         → search_row_to_display_row       ← copy 4 (clone into DisplayRow)
-         → write CSV to file or stdout     ← final I/O
+CLIENT:
+    → serde_json::from_str   parse into Value          16 MB  ← copy 5
+    → serde_json::from_value extract into SearchRow    16 MB  ← copy 6
+    → search_row_to_display_row                         0 MB  ← move (not copy)
+                     (DisplayRow::new takes path by value)
+    → write_native_results                                     (I/O)
+
+TOTAL: ~113 MB heap allocated for 16 MB of actual path data
+       = 7× memory inflation, 6 copies of every path string
 ```
+
+Key code locations:
+- `display_row_to_search_row()` — `crates/uffs-daemon/src/index/projection.rs:17`
+- `projected_value()` — `projection.rs:132`: `row.path.clone()` into `Value::String`
+- `search_row_to_display_row()` — `crates/uffs-cli/src/commands/search/daemon.rs:468`
+
+**Shmem path** (≥ 100K rows, e.g. 166K × 100 B avg path):
+
+```
+DAEMON:
+  CompactRecord + NameArena
+    → DisplayRow     path: String ALLOCATED           16 MB  ← copy 1
+    → SearchRow      path.clone()                     16 MB  ← copy 2
+    → string table   path bytes memcpy'd              16 MB  ← copy 3
+                     (write_search_results in shmem.rs:169)
+    → write mmap'd file                                        (I/O)
+
+CLIENT:
+    → read mmap → SearchRow  String::from(bytes)      16 MB  ← copy 4
+                     (read_search_results in shmem.rs:305)
+    → search_row_to_display_row                        0 MB  ← move
+    → write_native_results                                     (I/O)
+
+TOTAL: ~64 MB for 16 MB of actual data = 4× inflation
+```
+
+**Daemon-writes-file path** (proposed for `--out`):
+
+```
+DAEMON:
+  CompactRecord + NameArena
+    → resolve path into reusable stack buffer          0 MB  ← no alloc per row
+                     (walk parent chain, write segments
+                      directly into BufWriter<File>)
+    → write to BufWriter<File>                                 (I/O only)
+
+TOTAL: ~0 MB heap overhead per row. One streaming pass.
+       Path segments written directly from NameArena.
+```
+
+#### Memory comparison (166K rows, ~100 B avg path = 16 MB raw data)
+
+| Transport | Copies | Heap alloc | Status |
+|-----------|--------|-----------|--------|
+| JSON inline | 6 | ~113 MB (7× inflation) | Current (< 100K) |
+| Shared memory | 4 | ~64 MB (4× inflation) | Current (≥ 100K) |
+| **Daemon writes file** | **0–1** | **~0 MB** | **Proposed (--out)** |
+
+The unnecessary intermediate in both paths is **SearchRow** — a
+protocol type nearly identical to `DisplayRow`, existing only because
+the daemon and client live in separate processes.  For `--out`, the
+daemon has the raw data in `NameArena` and can write path segments
+directly to the output file without allocating any intermediate Strings.
 
 For `--out file.csv`, the client writes a file that the **daemon could
-have written directly** — skipping copies 2, 3, and 4 entirely.
+have written directly** — skipping ALL copies entirely.
 
 #### The gap: `--out` file export
 
@@ -587,13 +658,14 @@ Daemon → client:  { "rows_written": 166000, "duration_ms": 45 }
 Total IPC: ~200 bytes. No `Vec<SearchRow>`, no serialization, no
 shmem file, no client-side conversion.
 
-| Metric | Current (`--out`, 166K rows) | Daemon-writes-file |
-|--------|----------------------------|-------------------|
-| IPC transfer | 32 MB (JSON) or 14 MB (shmem) | 200 B |
-| Memory copies | 4 | 1 (search → file writer) |
-| Temp files | 1 shmem file (≥ 100K) | 0 |
-| Client work | parse + convert + write | wait for "done" |
-| **Estimated overhead** | **~50–100 ms** | **~0 ms** |
+| Metric | JSON (< 100K) | Shmem (≥ 100K) | Daemon-writes-file |
+|--------|--------------|----------------|-------------------|
+| Heap alloc (166K rows) | ~113 MB | ~64 MB | ~0 MB |
+| String copies per row | 6 | 4 | 0–1 |
+| IPC transfer | 32 MB JSON | 14 MB mmap file | 200 B |
+| Temp files | 0 | 1 shmem file | 0 |
+| Client work | parse + convert + write | read + convert + write | wait for "done" |
+| **Estimated overhead** | **~100 ms** | **~50 ms** | **~0 ms** |
 
 #### Summary: two clean modes
 
