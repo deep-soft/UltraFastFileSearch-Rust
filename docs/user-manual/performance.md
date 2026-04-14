@@ -52,7 +52,7 @@ A benchmark is only useful if readers can see both the fastest successful run an
 | SATA HDD | WD 8 TB × 2 (WDC WD82PURZ, M: and S:) |
 | USB storage | SanDisk Extreme 58 GB USB stick (G:) |
 | Power profile | AMD Ryzen High Performance |
-| UFFS version | 0.4.106 |
+| UFFS version | 0.5.4 |
 
 ### Drives Under Test
 
@@ -83,9 +83,9 @@ Delete cache files            Cache files stay on disk      Index in memory
 Read raw MFT from disk        Deserialize .iocp cache       Query directly
 Parse → build index           → build index                 ↓
 Write .iocp cache             ↓                             Results
-↓                             Results                       (211–381 ms)
+↓                             Results                       (6–163 ms)
 Results
-(seconds to minutes)          (~1–5 s)
+(seconds to minutes)          (~0.6–6.9 s)
 ```
 
 | Phase | What happens | When it occurs |
@@ -103,16 +103,16 @@ over 3 rounds.  Pattern: `*` (full scan), limit: 100 rows.
 
 ### Cold Start (Raw MFT Read)
 
-| Drive | Records | Avg | Min | Max | Records/sec |
-|-------|--------:|----:|----:|----:|------------:|
-| G: | 15,090 | 1.4 s | 1.0 s | 1.5 s | 10,900 |
-| F: | 2,221,343 | 4.6 s | 4.6 s | 4.6 s | 485,500 |
-| C: | 3,510,866 | 7.5 s | 7.3 s | 7.8 s | 470,900 |
-| M: | 1,908,805 | 26.7 s | 26.7 s | 26.7 s | 71,500 |
-| D: | 7,066,019 | 28.8 s | 28.7 s | 28.8 s | 245,800 |
-| E: | 2,929,519 | 41.5 s | 40.8 s | 42.8 s | 70,600 |
-| S: | 8,278,102 | 67.0 s | 67.0 s | 67.1 s | 123,600 |
-| **ALL** | **25,929,744** | **66.5 s** | **66.4 s** | **66.6 s** | **389,900** |
+| Drive | Records | Total | Startup | Search |
+|-------|--------:|------:|--------:|-------:|
+| G: | 15,094 | 1.3 s | 540 ms | <1 ms |
+| F: | 2,221,347 | 4.3 s | 3.6 s | 13 ms |
+| C: | 3,512,541 | 7.7 s | 6.8 s | 30 ms |
+| M: | 1,908,809 | 26.4 s | 24.9 s | 11 ms |
+| D: | 7,066,020 | 28.6 s | 27.1 s | 94 ms |
+| E: | 2,929,523 | 42.5 s | 41.7 s | 18 ms |
+| S: | 8,278,106 | 67 s | 65 s | 99 ms |
+| **ALL** | **25,931,436** | **66 s** | **65 s** | **235 ms** |
 
 > **Note:** M: and S: are SATA spinning disks where I/O is the
 > bottleneck — raw MFT reads are bound by HDD seek time, not CPU.
@@ -122,34 +122,34 @@ over 3 rounds.  Pattern: `*` (full scan), limit: 100 rows.
 
 ### Warm Cache (Serialized .iocp Load)
 
-| Drive | Records | Avg | Speedup vs Cold |
-|-------|--------:|----:|----------------:|
-| G: | 15,090 | 779 ms | 1.8× |
-| M: | 1,908,805 | 1.6 s | 17.1× |
-| F: | 2,221,343 | 2.2 s | 2.1× |
-| C: | 3,510,866 | 2.6 s | 2.9× |
-| E: | 2,929,519 | 2.6 s | 16.1× |
-| D: | 7,066,019 | 4.9 s | 5.8× |
-| S: | 8,278,102 | 4.7 s | 14.3× |
-| **ALL** | **25,929,744** | **7.3 s** | **9.1×** |
+| Drive | Records | Total | Speedup vs Cold |
+|-------|--------:|------:|----------------:|
+| G: | 15,094 | 572 ms | 2.3× |
+| F: | 2,221,347 | 1.4 s | 3.1× |
+| M: | 1,908,809 | 1.4 s | 19.5× |
+| E: | 2,929,523 | 2.4 s | 18.0× |
+| C: | 3,512,541 | 6.4 s | 1.2× |
+| D: | 7,066,020 | 6.4 s | 4.4× |
+| S: | 8,278,106 | 4.8 s | 14.0× |
+| **ALL** | **25,931,436** | **6.9 s** | **9.6×** |
 
 ### Hot (In-Memory Query)
 
-| Drive | Records | Avg | Speedup vs Cold |
-|-------|--------:|----:|----------------:|
-| G: | 15,090 | 211 ms | 6.5× |
-| M: | 1,908,805 | 224 ms | 119.2× |
-| F: | 2,221,343 | 226 ms | 20.3× |
-| C: | 3,510,866 | 229 ms | 32.6× |
-| E: | 2,929,519 | 230 ms | 180.4× |
-| D: | 7,066,019 | 253 ms | 113.7× |
-| S: | 8,278,102 | 259 ms | 258.7× |
-| **ALL** | **25,929,744** | **381 ms** | **174.5×** |
+| Drive | Records | Total | Cold→Hot |
+|-------|--------:|------:|---------:|
+| G: | 15,094 | 6 ms | **219×** |
+| M: | 1,908,809 | 18 ms | **1469×** |
+| F: | 2,221,347 | 19 ms | **229×** |
+| E: | 2,929,523 | 24 ms | **1771×** |
+| C: | 3,512,541 | 27 ms | **284×** |
+| D: | 7,066,020 | 49 ms | **584×** |
+| S: | 8,278,106 | 54 ms | **1236×** |
+| **ALL** | **25,931,436** | **163 ms** | **407×** |
 
-> **Note:** HOT timings include ~200 ms of process startup overhead
+> **Note:** HOT timings include process startup overhead
 > (spawning `uffs.exe`, connecting to daemon via IPC, formatting output).
-> The actual daemon-side search takes **~16–150 ms** depending on drive
-> count (see §6 Profile Internals).
+> The actual daemon-side search takes **0–155 ms** depending on drive
+> count and pattern (see §6 Profile Internals).
 
 ---
 
@@ -161,54 +161,45 @@ for each drive.  The Cold→Hot ratio is the primary performance metric.
 
 | Drive | Cold | Warm | Hot | Cold→Hot | Cold→Warm |
 |-------|-----:|-----:|----:|---------:|----------:|
-| C: | 7.5 s | 2.6 s | 229 ms | **32.6×** | 2.9× |
-| D: | 28.8 s | 4.9 s | 253 ms | **113.7×** | 5.8× |
-| E: | 41.5 s | 2.6 s | 230 ms | **180.4×** | 16.1× |
-| F: | 4.6 s | 2.2 s | 226 ms | **20.3×** | 2.1× |
-| G: | 1.4 s | 779 ms | 211 ms | **6.5×** | 1.8× |
-| M: | 26.7 s | 1.6 s | 224 ms | **119.2×** | 17.1× |
-| S: | 67.0 s | 4.7 s | 259 ms | **258.7×** | 14.3× |
-| **ALL** | **66.5 s** | **7.3 s** | **381 ms** | **174.5×** | **9.1×** |
+| C: | 7.7 s | 6.4 s | 27 ms | **284×** | 1.2× |
+| D: | 28.6 s | 6.4 s | 49 ms | **584×** | 4.4× |
+| E: | 42.5 s | 2.4 s | 24 ms | **1771×** | 18.0× |
+| F: | 4.3 s | 1.4 s | 19 ms | **229×** | 3.1× |
+| G: | 1.3 s | 572 ms | 6 ms | **219×** | 2.3× |
+| M: | 26.4 s | 1.4 s | 18 ms | **1469×** | 19.5× |
+| S: | 67 s | 4.8 s | 54 ms | **1236×** | 14.0× |
+| **ALL** | **66 s** | **6.9 s** | **163 ms** | **407×** | **9.6×** |
 
 > On spinning disks (M:, S:) the cold-start penalty is extreme —
 > reading raw MFT from a HDD is 10–60× slower than NVMe.
 > The daemon eliminates this entirely: once loaded, every drive
-> responds in 200–260 ms regardless of media type.
+> responds in **6–54 ms** regardless of media type.
 
 ---
 
 ## 5  HOT Query Patterns
 
 Different search patterns exercise different code paths in the query
-engine.  The benchmark runs three representative patterns against a
-hot daemon:
+engine.  The benchmark tests eight representative patterns against a
+hot daemon across all drives (25.9M records, 30 rounds):
 
-| Pattern | Query path | What it tests |
-|---------|-----------|---------------|
-| `*` | Full scan — DataFrame pass-through | Baseline: no filtering |
-| `*.txt` | Extension filter — Polars column predicate | Indexed column filter |
-| `test` | Substring search — contains match | String scanning |
-
-### Results (HOT, per drive, avg of 3 rounds)
-
-| Drive | `*` | `*.txt` | `test` |
-|-------|----:|--------:|-------:|
-| C: | 229 ms | 211 ms | 212 ms |
-| D: | 253 ms | 211 ms | 215 ms |
-| E: | 230 ms | 213 ms | 212 ms |
-| F: | 226 ms | 217 ms | 213 ms |
-| G: | 211 ms | 210 ms | 210 ms |
-| M: | 224 ms | 209 ms | 210 ms |
-| S: | 259 ms | 210 ms | 214 ms |
-| **ALL** | **381 ms** | **216 ms** | **217 ms** |
+| Pattern | e2e p50 | e2e p95 | daemon p50 | daemon p95 |
+|---------|--------:|--------:|-----------:|-----------:|
+| `*` (full scan) | 161 ms | 183 ms | 152 ms | 172 ms |
+| `notepad.exe` (exact) | 9 ms | 9 ms | 0 ms | 0 ms |
+| `win*` (prefix) | 10 ms | 10 ms | 1 ms | 1 ms |
+| `*.dll` (extension) | 9 ms | 10 ms | 1 ms | 1 ms |
+| `config` (substring) | 10 ms | 11 ms | 1 ms | 1 ms |
+| date filter | 152 ms | 156 ms | 143 ms | 147 ms |
+| size filter | 153 ms | 160 ms | 144 ms | 150 ms |
+| combined | 9 ms | 10 ms | 0 ms | 0 ms |
 
 > **Observations:**
-> - Extension filters (`*.txt`) and substring searches (`test`) are
->   marginally faster than `*` because fewer rows pass through to output
->   formatting.
-> - The `*` scan on ALL drives (381 ms) is the only case where search
->   time scales with drive count — it must touch every record across
->   25.9M rows.  Filtered queries stay flat at ~215 ms.
+> - Targeted patterns (exact name, prefix, extension, substring, combined)
+>   return in **9–11 ms e2e** — all daemon-side work completes in **0–1 ms**.
+> - Only unfiltered `*` scans and date/size filters touch the full DataFrame;
+>   these scale linearly with record count.
+> - Filtered queries stay flat at ~10 ms regardless of corpus size.
 
 ---
 
@@ -217,68 +208,101 @@ hot daemon:
 The `--profile` flag breaks down where time is spent inside the daemon.
 This data is from a hot daemon with all 7 drives loaded (25.9M records):
 
-```
-=== PROFILE: Client → Daemon ===
-  Connect:              3 ms
-  Await ready:          0 ms
-  Search (IPC):       152 ms  (daemon: 151 ms, transfer: 1 ms)
-  Convert rows:         0 ms  (10 rows)
-
-=== PROFILE: Daemon Internals ===
-  Startup:           3861 ms  (all drives loaded)
-  Lock acquire:         0 ms
-  Search:             151 ms  (25,929,744 records scanned)
-  Row build:            0 ms  (10 → SearchRow)
-
-=== PROFILE: Per-Drive ===
-  Drive       Records   Matches     Cache   MFT ms
-     C:     3,510,866         0      2798        0
-     D:     7,066,019         5      3789        0
-     E:     2,929,519         2      2113        0
-     F:     2,221,343         0      1764        0
-     G:        15,090         0        11        0
-     M:     1,908,805         0      1442        0
-     S:     8,278,102         3      5088        0
-    SUM    25,929,744               17005      686
-
-=== TOTAL: 182 ms ===
-```
-
-### Where the 200 ms Goes
-
 | Component | Time | Notes |
 |-----------|-----:|-------|
-| Process spawn | ~25 ms | OS creates `uffs.exe` process |
-| IPC connect | 3 ms | Named pipe handshake |
-| Daemon search | 151 ms | Scan 25.9M records across 7 drives |
-| IPC transfer | 1 ms | Send result rows back |
-| Row conversion | <1 ms | Deserialize 10 rows |
-| Output formatting | ~20 ms | Format and write to stdout |
-| **Total** | **~200 ms** | |
+| Process spawn | ~8 ms | OS creates `uffs.exe` process |
+| IPC connect | 1 ms | Named pipe handshake |
+| Daemon search | 155 ms | Scan 25.9M records across 7 drives |
+| IPC transfer | <1 ms | Send result rows back |
+| Row conversion | <1 ms | Deserialize rows |
+| Output formatting | ~5 ms | Format and write to stdout |
+| **Total** | **~163 ms** | |
 
-> The daemon-side search (151 ms for 25.9M records) translates to
-> **172 million records/second** scan throughput.
+> The daemon-side search (155 ms for 25.9M records) translates to
+> **167 million records/second** scan throughput.  Targeted queries
+> skip the full scan entirely and return in **0–1 ms daemon-side**.
 
 ### Per-Drive Profile (Cold Start)
 
-From the `profile.rs` 3-phase profiler with `--profile` enabled:
-
-| Drive | Records | Cold Total | Connect | Await Ready | Startup | Search |
-|-------|--------:|-----------:|--------:|------------:|--------:|-------:|
-| C: | 3,503,124 | 7.0 s | 1.2 s | 5.8 s | 5.9 s | 48 ms |
-| D: | 7,066,019 | 28.5 s | 556 ms | 27.9 s | 26.5 s | 52 ms |
-| E: | 2,929,519 | 42.7 s | 601 ms | 42.0 s | 41.5 s | 53 ms |
-| F: | 2,221,343 | 4.4 s | 568 ms | 3.8 s | 3.7 s | 20 ms |
-| G: | 15,090 | 1.4 s | 598 ms | 790 ms | 516 ms | <1 ms |
-| M: | 1,908,805 | 26.5 s | 574 ms | 25.9 s | 25.7 s | 12 ms |
-| S: | 8,278,102 | 67 s | 583 ms | 66 s | 65 s | 97 ms |
+| Drive | Records | Cold Total | Startup | Search |
+|-------|--------:|-----------:|--------:|-------:|
+| C: | 3,512,541 | 7.7 s | 6.8 s | 30 ms |
+| D: | 7,066,020 | 28.6 s | 27.1 s | 94 ms |
+| E: | 2,929,523 | 42.5 s | 41.7 s | 18 ms |
+| F: | 2,221,347 | 4.3 s | 3.6 s | 13 ms |
+| G: | 15,094 | 1.3 s | 540 ms | <1 ms |
+| M: | 1,908,809 | 26.4 s | 24.9 s | 11 ms |
+| S: | 8,278,106 | 67 s | 65 s | 99 ms |
 
 > Cold-start time is dominated by **MFT read + parse** (the "Startup"
 > column).  Search itself is always <100 ms even on 8M records.
 
 ---
 
-## 7  Validation Suite Throughput
+## 7  Bulk Retrieval Throughput
+
+Bulk retrieval measures how fast UFFS can export large result sets.
+Two output modes are tested: shell pipe (stdout) and direct file write (`--out-dir`).
+
+### CSV Export — Live Drives (7 drives, 25.9M records, `--out-dir`)
+
+| Tier | Rows | Avg Time | Rows/sec |
+|------|-----:|---------:|---------:|
+| 100 | 101 | 213 ms | 474/s |
+| 1k | 1,001 | 202 ms | 5.0k/s |
+| 10k | 10,001 | 323 ms | 31k/s |
+| 100k | 100,001 | 1.4 s | 73k/s |
+| 1M | 1,000,001 | 3.4 s | 292k/s |
+| ALL (per-drive) | 8.3M | 25.6 s | **326k/s** |
+
+### Pipe vs Direct File Write
+
+| Mode | 8.3M rows | Rows/sec | Relative |
+|------|----------:|---------:|---------:|
+| Pipe (stdout) | 68 s | 122k/s | 1.0× |
+| `--out-dir` | 25.6 s | 326k/s | **2.7×** |
+
+> **Recommendation:** For exports exceeding ~100k rows, use `--out-dir`
+> to bypass the shell pipe bottleneck.
+
+### CSV vs JSON
+
+Format makes no material difference to throughput.  Both CSV and JSON
+achieve comparable rows/sec at each tier — the bottleneck is query
+evaluation and IPC, not serialization.
+
+---
+
+## 8  Scale Ceiling
+
+The scale ceiling test loads progressively larger MFT collections
+(cloned offline drives + live drives) and measures interactive
+search latency at each tier.
+
+### Results (interactive search, `--limit 100`, 30 rounds per tier)
+
+| Total Records | Drives | `*` e2e p50 | `*` e2e p95 | targeted p50 | Status |
+|--------------:|-------:|------------:|------------:|-------------:|--------|
+| 25.9M | 7 | 161 ms | 183 ms | 9–10 ms | ✅ |
+| 42.5M | 9 | 259 ms | 312 ms | 9–10 ms | ✅ |
+| 59.0M | 11 | 471 ms | 502 ms | 10–12 ms | ✅ |
+| 75.6M | 13 | 600 ms | 626 ms | 10–12 ms | ✅ |
+| 92.2M | 15 | 670 ms | 731 ms | 11–14 ms | ✅ |
+| **100.4M** | **16** | **808 ms** | **855 ms** | **11–13 ms** | **✅** |
+| >100M | 17+ | — | — | — | ❌ OOM |
+
+> **Key insight:** Targeted queries (exact name, prefix, extension,
+> substring, combined) stay at **0–3 ms daemon-side** regardless of
+> corpus size.  Only unfiltered `*` scans and temporal/size filters
+> scale linearly with total records.
+>
+> The OOM at >100M records is a memory ceiling on this test machine
+> (64 GB DDR4).  Each MFT record occupies ~640 bytes in the in-memory
+> DataFrame.
+
+---
+
+## 9  Validation Suite Throughput
 
 UFFS ships three validation suites that double as performance
 benchmarks for the query engine under realistic workloads.  All suites
@@ -321,7 +345,7 @@ run against a hot daemon loaded with 25.9M records across 7 drives.
 
 ---
 
-## 8  Daemon Runtime Statistics
+## 10  Daemon Runtime Statistics
 
 After a full session (43 minutes uptime, validation + profiling + benchmark):
 
@@ -340,7 +364,7 @@ After a full session (43 minutes uptime, validation + profiling + benchmark):
 
 ---
 
-## 9  C++ vs Rust Parity Comparison
+## 11  C++ vs Rust Parity Comparison
 
 UFFS was rewritten from C++ to Rust.  The parity test runs both
 implementations on the same drives and compares output.  The Rust
@@ -360,13 +384,13 @@ C++ baseline runs warm:
 > **Context:** The C++ times are warm (OS has cached MFT pages); the
 > Rust times are cold (MFT read from disk + full parse + cache write).
 > With the daemon running (HOT), Rust answers the same queries in
-> **381 ms end-to-end** (all 7 drives) — a **174× speedup** over the cold Rust path.
+> **163 ms end-to-end** (all 7 drives) — a **407× speedup** over the cold Rust path.
 > The C++ tool re-reads the MFT on every invocation; the Rust daemon
 > never needs to re-read after the initial cold build.
 
 ---
 
-## 10  Running Your Own Benchmarks
+## 12  Running Your Own Benchmarks
 
 UFFS includes two profiling scripts in `scripts/windows/`:
 

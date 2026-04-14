@@ -7,11 +7,11 @@
 
 **A benchmark-driven NTFS search engine for Windows.** UFFS reads the Master File Table directly, builds a compact persisted index, and keeps large NTFS estates searchable through a background daemon.
 
-> Proven on a real 7-drive, 25.9M-record Windows system:
-> - **66.5 s COLD** — raw MFT read + compact index build
-> - **7.3 s WARM CACHE** — restart from serialized cache
-> - **381 ms HOT** — end-to-end query with a running daemon
-> - **151 ms daemon-side scan** across all 25.9M records
+> Proven on a real 7-drive, 25.9M-record Windows system — tested to **100M records**:
+> - **66 s COLD** — raw MFT read + compact index build
+> - **6.9 s WARM CACHE** — restart from serialized cache
+> - **9–13 ms HOT** — targeted query end-to-end (exact/prefix/ext/substring)
+> - **0–3 ms daemon-side** for targeted queries, even at 100M records
 
 UFFS is built for **exact filename, path, and metadata search** at scales where directory walking, shell search, and some automation surfaces become the bottleneck. It is open source, written in Rust, and designed first for deterministic local search; CLI, TUI, API, and MCP are all interfaces on top of the same engine.
 
@@ -25,7 +25,7 @@ UFFS is built for **exact filename, path, and metadata search** at scales where 
 
 ## Why UFFS?
 
-- ⚡ **25.9M-record proven scale** — measured across 7 NTFS volumes on real hardware
+- ⚡ **100M-record proven scale** — measured from 25.9M across 7 drives up to 100.4M across 16 drives
 - 🚀 **Cold / warm / hot architecture** — build once from raw MFT, restart fast from cache, answer hot queries from memory
 - 🔍 **40+ filters** — size, date, extension, type, attributes, path length, tree size, regex
 - 🧩 **One engine, multiple interfaces** — CLI, TUI, daemon, API, and MCP share the same index
@@ -34,22 +34,24 @@ UFFS is built for **exact filename, path, and metadata search** at scales where 
 
 ---
 
-## Benchmark snapshot (v0.4.106)
+## Benchmark snapshot (v0.5.4)
 
-Measured on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2, 7 NTFS volumes totaling 25,929,744 records. Query: `*`, limit: 100, averages over 3 rounds.
+Measured on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2, 7 NTFS volumes totaling 25.9M records; scaled to 100.4M with offline MFT clones.
 
 | Phase | What happens | ALL 7 drives | Single NVMe |
 |-------|--------------|-------------:|------------:|
-| **COLD** | Raw MFT read, parse, compact index build, cache write | 66.5 s | 7.5 s |
-| **WARM CACHE** | Daemon restart + serialized cache load | 7.3 s | 2.6 s |
-| **HOT** | Query a running daemon with the index already in memory | **381 ms end-to-end** | **229 ms end-to-end** |
+| **COLD** | Raw MFT read, parse, compact index build, cache write | 66 s | 7.7 s |
+| **WARM CACHE** | Daemon restart + serialized cache load | 6.9 s | 6.4 s |
+| **HOT** | Query a running daemon with the index already in memory | **163 ms e2e** (`*`) | **27 ms e2e** |
 
-Hot-path context:
-- **151 ms daemon-side search** across all 25.9M records
-- **211–259 ms** end-to-end hot queries on single drives
-- **174.5×** cold→hot speedup across all 7 drives
+Hot-path context (30 rounds, p50):
+- **0–1 ms daemon-side** for targeted queries (exact, prefix, ext, substring, combined)
+- **9–13 ms** end-to-end for targeted queries across all drives
+- **407×** cold→hot speedup across all 7 drives
+- **326k rows/sec** bulk export throughput (CSV, `--out-dir`)
+- **100.4M records** tested: targeted queries still **11–13 ms e2e**
 
-> 📖 **[Full benchmark data](docs/user-manual/performance.md)** — methodology, per-drive tables, profile internals, validation throughput, and caveats.
+> 📖 **[Full benchmark data](docs/user-manual/performance.md)** — methodology, per-drive tables, interactive search percentiles, bulk retrieval, scale ceiling, and caveats.
 
 ---
 

@@ -10,31 +10,75 @@ This document describes the performance characteristics of UFFS, the optimizatio
 
 ---
 
-## Benchmark Results (v0.4.106)
+## Benchmark Results (v0.5.4)
 
 ### Three-Phase Results — 7 Drives, 25.9M Records
 
 Tested on AMD Ryzen 9 3900XT (12c/24t), 64 GB DDR4.  Pattern: `*`,
-limit: 100, averaged over 3 rounds per phase.
+limit: 100, per-drive profile.
 
 | Drive | Type | Records | COLD | WARM | HOT | Cold→Hot |
 |-------|------|--------:|-----:|-----:|----:|---------:|
-| C: | NVMe | 3.5M | 7.5 s | 2.6 s | 229 ms | **33×** |
-| D: | SATA SSD | 7.1M | 28.8 s | 4.9 s | 253 ms | **114×** |
-| E: | SATA SSD | 2.9M | 41.5 s | 2.6 s | 230 ms | **180×** |
-| F: | NVMe | 2.2M | 4.6 s | 2.2 s | 226 ms | **20×** |
-| G: | USB stick | 15K | 1.4 s | 779 ms | 211 ms | **7×** |
-| M: | SATA HDD | 1.9M | 26.7 s | 1.6 s | 224 ms | **119×** |
-| S: | SATA HDD | 8.3M | 67.0 s | 4.7 s | 259 ms | **259×** |
-| **ALL** | **Mixed** | **25.9M** | **66.5 s** | **7.3 s** | **381 ms** | **175×** |
+| C: | NVMe | 3.5M | 7.7 s | 6.4 s | 27 ms | **284×** |
+| D: | SATA SSD | 7.1M | 28.6 s | 6.4 s | 49 ms | **584×** |
+| E: | SATA SSD | 2.9M | 42.5 s | 2.4 s | 24 ms | **1771×** |
+| F: | NVMe | 2.2M | 4.3 s | 1.4 s | 19 ms | **229×** |
+| G: | USB stick | 15K | 1.3 s | 572 ms | 6 ms | **219×** |
+| M: | SATA HDD | 1.9M | 26.4 s | 1.4 s | 18 ms | **1469×** |
+| S: | SATA HDD | 8.3M | 67 s | 4.8 s | 54 ms | **1236×** |
+| **ALL** | **Mixed** | **25.9M** | **66 s** | **6.9 s** | **163 ms** | **407×** |
+
+### Interactive Search Percentile Latency (HOT, 25.9M records, 30 rounds)
+
+| Pattern | e2e p50 | e2e p95 | daemon p50 | daemon p95 |
+|---------|--------:|--------:|-----------:|-----------:|
+| `*` (full scan) | 161 ms | 183 ms | 152 ms | 172 ms |
+| `notepad.exe` (exact) | 9 ms | 9 ms | 0 ms | 0 ms |
+| `win*` (prefix) | 10 ms | 10 ms | 1 ms | 1 ms |
+| `*.dll` (extension) | 9 ms | 10 ms | 1 ms | 1 ms |
+| `config` (substring) | 10 ms | 11 ms | 1 ms | 1 ms |
+| date filter | 152 ms | 156 ms | 143 ms | 147 ms |
+| size filter | 153 ms | 160 ms | 144 ms | 150 ms |
+| combined | 9 ms | 10 ms | 0 ms | 0 ms |
+
+### Bulk Retrieval Throughput (7 drives, 25.9M records, `--out-dir`, CSV)
+
+| Tier | Rows | Avg Time | Avg Rows/sec |
+|------|-----:|---------:|-------------:|
+| 100 | 101 | 213 ms | 474/s |
+| 1k | 1,001 | 202 ms | 5.0k/s |
+| 10k | 10,001 | 323 ms | 31.0k/s |
+| 100k | 100,001 | 1.4 s | 72.5k/s |
+| 1M | 1,000,001 | 3.4 s | 292k/s |
+| ALL (per-drive) | 8.3M | 25.6 s | **326k/s** |
+
+> **Pipe vs `--out-dir`:** Shell pipe throughput peaks at ~135k rows/s.
+> Using `--out-dir` (direct file write) reaches **326k rows/s** — a **2.4× speedup** on full exports.
+
+### Scale Ceiling (interactive search, `--limit 100`, 30 rounds)
+
+| Total Records | Drives | `*` p50 (e2e) | targeted p50 | Status |
+|--------------:|-------:|--------------:|-------------:|--------|
+| 25.9M | 7 | 161 ms | 9–10 ms | ✅ PASS |
+| 42.5M | 9 | 259 ms | 9–10 ms | ✅ PASS |
+| 59.0M | 11 | 471 ms | 10–12 ms | ✅ PASS |
+| 75.6M | 13 | 600 ms | 10–12 ms | ✅ PASS |
+| 92.2M | 15 | 670 ms | 11–14 ms | ✅ PASS |
+| **100.4M** | **16** | **808 ms** | **11–13 ms** | **✅ PASS** |
+| >100M | 17+ | — | — | ❌ OOM |
+
+> Targeted queries (exact name, prefix, extension, substring, combined)
+> stay at **0–3 ms daemon-side** regardless of corpus size.  Only
+> unfiltered `*` scans scale linearly with total records.
 
 ### What the benchmark shows
 
-- **Scale is the headline** — UFFS keeps **25.9M records across 7 drives** searchable from one daemon.
+- **Scale is the headline** — UFFS keeps **100M+ records across 16 drives** searchable from one daemon.
 - **Cold-start time is storage-bound** — NVMe is parse-bound, while HDD cold runs are dominated by seek time and raw MFT I/O.
-- **Warm restart is the operator win** — the full 25.9M-record searchable state returns in **7.3 s** from serialized cache.
-- **Hot queries are media-independent** — once the daemon is warm, single-drive end-to-end queries stay in the **211–259 ms** range regardless of whether the underlying volume is NVMe, SSD, HDD, or USB.
-- **Daemon throughput is higher than CLI wall time** — the **381 ms** all-drive hot number includes process spawn, IPC, and formatting; the actual daemon-side scan is **151 ms**.
+- **Warm restart is the operator win** — the full 25.9M-record searchable state returns in **6.9 s** from serialized cache.
+- **Hot queries are media-independent** — once the daemon is warm, single-drive end-to-end queries complete in **6–54 ms** depending on drive size. Targeted queries return in **9–13 ms** end-to-end.
+- **Daemon throughput is higher than CLI wall time** — the **163 ms** all-drive hot number includes process spawn, IPC, and formatting; the actual daemon-side scan is **155 ms**.
+- **Bulk export peaks at 326k rows/sec** — using direct file output (`--out-dir`), a full 8.3M-record drive exports in ~25 seconds.
 
 > 📖 **Full benchmark data:** [Performance](../../user-manual/performance.md)
 
@@ -236,9 +280,10 @@ The dominant performance advantages come from architectural decisions in the Rus
 
 ### Multi-Drive Filtered Scan (`*.ext`)
 
-Filtered multi-drive parallel scans are marginally faster than full scans
-for selective patterns (`*.txt`: 216 ms vs `*`: 381 ms on all 7 drives).
-Fewer matching rows means less output formatting overhead.
+Filtered multi-drive parallel scans are dramatically faster than full scans.
+Targeted patterns (`*.dll`, `config`, `notepad.exe`) return in **9–13 ms e2e**
+vs **161 ms** for `*` on all 7 drives.  At 100M records the gap widens:
+`*` takes 808 ms but targeted queries stay at **11–13 ms**.
 
 ---
 
@@ -256,6 +301,6 @@ Fewer matching rows means less output formatting overhead.
 
 ---
 
-*Document Version: 2.0*
-*Last Updated: 2026-04-12*
-*UFFS Version: 0.4.106*
+*Document Version: 3.0*
+*Last Updated: 2026-04-14*
+*UFFS Version: 0.5.4*

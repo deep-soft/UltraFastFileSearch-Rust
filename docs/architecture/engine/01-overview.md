@@ -335,15 +335,17 @@ For 2M files: ~448 MB for records + ~46 MB for names ≈ **~500 MB total**.
 
 ## Performance Summary
 
-### Benchmarks (v0.4.106 — 25.9M Records, 7 Drives)
+### Benchmarks (v0.5.4 — 25.9M Records, 7 Drives; tested to 100M)
 
 | Phase | ALL drives | Single NVMe (C:) | Single HDD (S:) |
 |-------|----------:|------------------:|-----------------:|
-| COLD | 66.5 s | 7.5 s | 67.0 s |
-| WARM CACHE | 7.3 s | 2.6 s | 4.7 s |
-| HOT | **381 ms** | **229 ms** | **259 ms** |
+| COLD | 66 s | 7.7 s | 67 s |
+| WARM CACHE | 6.9 s | 6.4 s | 4.8 s |
+| HOT (`*`) | **163 ms** | **27 ms** | **54 ms** |
+| HOT (targeted) | **9–10 ms** | **9 ms** | **10 ms** |
 
-HOT scan throughput: **172 million records/second**.
+HOT scan throughput: **167 million records/second** (`*` full scan).
+Targeted queries: **0–1 ms daemon-side** even at 100M records.
 
 ### Why UFFS is Fast
 
