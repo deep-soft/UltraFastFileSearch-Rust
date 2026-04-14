@@ -82,20 +82,35 @@ use:
     set -euo pipefail
     printf "\033[0;34m📦 Installing UFFS binaries from dist/ cache...\033[0m\n"
 
-    # Find latest version in dist/
+    # Read workspace version from Cargo.toml
+    CARGO_VER=$(awk '/^\[workspace\.package\]/{flag=1; next} flag && /^version/{print "v"$3; exit}' Cargo.toml | tr -d '"')
+
+    # Find matching dist/ version (prefer workspace version)
     DIST_DIR=""
-    if [[ -d "dist" ]]; then
-        DIST_DIR=$(ls -d dist/v* 2>/dev/null | sort -V | tail -1 || true)
+    if [[ -n "$CARGO_VER" ]] && [[ -d "dist/$CARGO_VER" ]]; then
+        DIST_DIR="dist/$CARGO_VER"
+        printf "\033[0;32m  Found dist/%s (matches workspace)\033[0m\n" "$CARGO_VER"
+    elif [[ -d "dist" ]]; then
+        LATEST=$(ls -d dist/v* 2>/dev/null | sort -V | tail -1 || true)
+        if [[ -n "$LATEST" ]] && [[ -d "$LATEST" ]]; then
+            LATEST_VER=$(basename "$LATEST")
+            if [[ -n "$CARGO_VER" ]] && [[ "$LATEST_VER" != "$CARGO_VER" ]]; then
+                printf "\033[1;33m⚠️  dist/ has %s but workspace is %s\033[0m\n" "$LATEST_VER" "$CARGO_VER"
+                printf "\033[1;33m   Downloading %s from GitHub Release...\033[0m\n" "$CARGO_VER"
+            else
+                DIST_DIR="$LATEST"
+            fi
+        fi
     fi
 
     # Fallback: download from GitHub Release
     if [[ -z "$DIST_DIR" ]] || [[ ! -d "$DIST_DIR" ]]; then
-        printf "\033[1;33m⚠️  No local dist/ cache found. Downloading from GitHub Release...\033[0m\n"
+        printf "\033[1;33m⚠️  No matching dist/ cache. Downloading from GitHub Release...\033[0m\n"
         if ! command -v gh &>/dev/null; then
             printf "\033[0;31m❌ gh CLI not found. Install with: brew install gh\033[0m\n"
             exit 1
         fi
-        VERSION=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+        VERSION="${CARGO_VER:-$(gh release view --json tagName -q .tagName 2>/dev/null || true)}"
         if [[ -z "$VERSION" ]]; then
             printf "\033[0;31m❌ No GitHub Release found. Run 'just ship' first.\033[0m\n"
             exit 1
@@ -162,20 +177,44 @@ use:
 use:
     #!powershell
     Write-Host "[use] Installing UFFS binaries from dist/ cache..." -ForegroundColor Blue
+
+    # Read workspace version from Cargo.toml
+    $cargoVer = $null
+    $inPkg = $false
+    foreach ($line in Get-Content "Cargo.toml") {
+        if ($line -match '^\[workspace\.package\]') { $inPkg = $true; continue }
+        if ($inPkg -and $line -match '^version\s*=\s*"([^"]+)"') { $cargoVer = "v$($Matches[1])"; break }
+        if ($line -match '^\[' -and $inPkg) { break }
+    }
+
+    # Try to find matching dist/ version (prefer workspace version)
     $distDir = $null
-    if (Test-Path "dist") {
+    if ($cargoVer -and (Test-Path (Join-Path "dist" $cargoVer))) {
+        $distDir = (Join-Path "dist" $cargoVer)
+        Write-Host "  Found dist/$cargoVer (matches workspace)" -ForegroundColor Green
+    } elseif (Test-Path "dist") {
         $versions = Get-ChildItem -Path "dist" -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '^v\d+\.\d+\.\d+$' } |
             Sort-Object { [version]($_.Name -replace '^v','') } -Descending
-        if ($versions) { $distDir = $versions[0].FullName }
+        if ($versions) {
+            $distDir = $versions[0].FullName
+            $distVer = $versions[0].Name
+            if ($cargoVer -and $distVer -ne $cargoVer) {
+                Write-Host "  WARNING: dist/ has $distVer but workspace is $cargoVer" -ForegroundColor Yellow
+                Write-Host "  Downloading $cargoVer from GitHub Release..." -ForegroundColor Yellow
+                $distDir = $null  # force download
+            }
+        }
     }
+
+    # Fallback: download from GitHub Release
     if (-not $distDir) {
-        Write-Host "  No local dist/ cache. Downloading from GitHub Release..." -ForegroundColor Yellow
+        Write-Host "  No matching dist/ cache. Downloading from GitHub Release..." -ForegroundColor Yellow
         if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
             Write-Host "  FAIL: gh CLI not found. Install with: winget install GitHub.cli" -ForegroundColor Red
             exit 1
         }
-        $version = (gh release view --json tagName -q ".tagName" 2>$null)
+        $version = if ($cargoVer) { $cargoVer } else { (gh release view --json tagName -q ".tagName" 2>$null) }
         if (-not $version) { Write-Host "  FAIL: No GitHub Release found." -ForegroundColor Red; exit 1 }
         $distDir = Join-Path "dist" $version
         New-Item -ItemType Directory -Path $distDir -Force | Out-Null
