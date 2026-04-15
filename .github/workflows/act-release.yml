@@ -134,7 +134,7 @@ jobs:
       - name: patch .cargo/config.toml
         shell: bash
         run: |
-          sed -i 's/rustc-wrapper/#rustc-wrapper/' .cargo/config.toml || true;
+          sed -i bak 's/rustc-wrapper/#rustc-wrapper/' .cargo/config.toml || true;
           cat .cargo/config.toml | grep rustc-wrapper || true;
           cat .cargo/config.toml || true;
 
