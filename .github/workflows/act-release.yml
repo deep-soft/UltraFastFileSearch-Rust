@@ -131,11 +131,19 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
 
+      - name: patch .cargo/config.toml
+        shell: bash
+        run: |
+          sed -i 's/rustc-wrapper/#rustc-wrapper/' .cargo/config.toml || true;
+          cat .cargo/config.toml | grep rustc-wrapper || true;
+          cat .cargo/config.toml || true;
+
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
 
-      - name: cargo install sccache
-        run: cargo install sccache
+# failed on windows-msvc and apple-darwin
+#      - name: cargo install sccache
+#        run: cargo install sccache
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
