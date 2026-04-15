@@ -487,6 +487,8 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
         agg_page_size: config.agg_page_size,
         // OPT-4: direct file output — daemon writes results to file,
         // bypassing SearchRow, JSON serialization, and IPC transfer.
+        // Passes the full OutputConfig so the daemon produces identical
+        // output to the CLI (separator, quotes, header, pos/neg, columns).
         output_file: if config.out.is_empty() {
             None
         } else {
@@ -499,11 +501,17 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
             };
             Some(abs.to_string_lossy().into_owned())
         },
-        output_format: if config.out.is_empty() {
-            None
-        } else {
-            Some(config.format.to_owned())
-        },
+        output_separator: Some(config.output_config.separator.clone()),
+        output_quote: Some(config.output_config.quote.clone()),
+        output_header: Some(config.output_config.header),
+        output_pos: Some(config.output_config.pos.clone()),
+        output_neg: Some(config.output_config.neg.clone()),
+        output_columns: config.output_config.columns.as_ref().map(|cols| {
+            cols.iter()
+                .map(|col| col.canonical_name())
+                .collect::<Vec<_>>()
+                .join(",")
+        }),
     };
     params.populate_canonical_fields();
     params

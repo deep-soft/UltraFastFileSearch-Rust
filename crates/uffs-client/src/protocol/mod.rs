@@ -426,10 +426,27 @@ pub struct SearchParams {
     /// and IPC overhead for bulk exports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_file: Option<String>,
-    /// Output format for `output_file` (default: `"csv"`).
-    /// Supported: `"csv"`, `"json"`, `"jsonl"`.
+    /// Output config: column separator (default: `","`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_format: Option<String>,
+    pub output_separator: Option<String>,
+    /// Output config: quote character for strings (default: `"\""`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_quote: Option<String>,
+    /// Output config: include header row (default: `true`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_header: Option<bool>,
+    /// Output config: representation for active boolean attributes (default:
+    /// `"1"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_pos: Option<String>,
+    /// Output config: representation for inactive boolean attributes (default:
+    /// `"0"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_neg: Option<String>,
+    /// Output config: columns to output (default: all).
+    /// Comma-separated column names like `"path,name,size"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_columns: Option<String>,
 }
 
 /// Default-true helper for serde.
@@ -490,7 +507,12 @@ impl Default for SearchParams {
             agg_cursor: None,
             agg_page_size: None,
             output_file: None,
-            output_format: None,
+            output_separator: None,
+            output_quote: None,
+            output_header: None,
+            output_pos: None,
+            output_neg: None,
+            output_columns: None,
         }
     }
 }

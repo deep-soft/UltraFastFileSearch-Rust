@@ -226,6 +226,11 @@ async fn daemon_status() -> Result<()> {
     }
     println!("Connections:   {}", status.connections);
 
+    // Memory info.
+    if let Some(heap) = status.index_heap_bytes {
+        println!("Index heap:    {} MB", heap / (1024 * 1024));
+    }
+
     // Also show loaded drives.
     let drives = client
         .drives()
@@ -235,12 +240,30 @@ async fn daemon_status() -> Result<()> {
         println!("Drives:        (none loaded)");
     } else {
         for dr in &drives.drives {
-            println!(
-                "  {}: — {:>10} records ({})",
-                dr.letter,
-                uffs_core::format::format_number_commas(dr.records as u64),
-                dr.source
-            );
+            // Find memory info for this drive.
+            let mem = status.drive_memory.iter().find(|dm| dm.drive == dr.letter);
+            if let Some(dm) = mem {
+                let mb = |bytes: u64| bytes / (1024 * 1024);
+                println!(
+                    "  {}: — {:>10} records ({}) — {} MB  [rec={} names={} tri={} ch={} ext={}]",
+                    dr.letter,
+                    uffs_core::format::format_number_commas(dr.records as u64),
+                    dr.source,
+                    mb(dm.heap_bytes),
+                    mb(dm.records_bytes),
+                    mb(dm.names_bytes),
+                    mb(dm.trigram_bytes),
+                    mb(dm.children_bytes),
+                    mb(dm.ext_index_bytes),
+                );
+            } else {
+                println!(
+                    "  {}: — {:>10} records ({})",
+                    dr.letter,
+                    uffs_core::format::format_number_commas(dr.records as u64),
+                    dr.source
+                );
+            }
         }
     }
     Ok(())

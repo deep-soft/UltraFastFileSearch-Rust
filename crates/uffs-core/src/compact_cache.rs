@@ -126,6 +126,74 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
     buf
 }
 
+/// Streaming variant of [`serialize_compact`]: writes the same byte layout
+/// directly to any `impl Write` without allocating a contiguous buffer.
+///
+/// For a 7M-record drive the serialized size is ~1.1 GB.  Piping this into a
+/// `zstd::Encoder<Vec<u8>>` reduces peak memory from ~1.3 GB to ~200 MB
+/// (the compressed output size).
+///
+/// # Errors
+///
+/// Returns an error if any write fails.
+pub fn serialize_compact_to_writer(
+    index: &DriveCompactIndex,
+    writer: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    let record_count = index.records.len();
+    let names_len = index.names.len();
+
+    let (csr_offsets, csr_values) = index.children.as_csr();
+    let (tri_keys, tri_offsets, tri_values) = index.trigram.as_csr();
+
+    // Header (26 bytes for v3+)
+    writer.write_all(COMPACT_MAGIC)?;
+    writer.write_all(&COMPACT_VERSION.to_le_bytes())?;
+    write_u32(writer, record_count)?;
+    write_u32(writer, names_len)?;
+    writer.write_all(&index.source_epoch.to_le_bytes())?;
+
+    // Records — bulk copy via bytemuck
+    writer.write_all(bytemuck::cast_slice(&index.records))?;
+
+    // Names (original case)
+    writer.write_all(&index.names)?;
+
+    // Children CSR
+    writer.write_all(bytemuck::cast_slice(csr_offsets))?;
+    writer.write_all(bytemuck::cast_slice(csr_values))?;
+
+    // v6: char-trigram CSR
+    write_u32(writer, tri_keys.len())?;
+    writer.write_all(bytemuck::cast_slice(tri_keys))?;
+    writer.write_all(bytemuck::cast_slice(tri_offsets))?;
+    write_u32(writer, tri_values.len())?;
+    writer.write_all(bytemuck::cast_slice(tri_values))?;
+
+    // v7: ext_names table — length-prefixed strings
+    write_u32(writer, index.ext_names.len())?;
+    for name in &index.ext_names {
+        let bytes = name.as_bytes();
+        let len: u16 = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
+        writer.write_all(&len.to_le_bytes())?;
+        writer.write_all(bytes.get(..usize::from(len)).unwrap_or(bytes))?;
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+/// Write a `usize` as little-endian `u32` to a writer.
+fn write_u32(writer: &mut impl std::io::Write, val: usize) -> std::io::Result<()> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "record/name counts fit in u32 for any realistic MFT"
+    )]
+    let val_u32 = val as u32;
+    writer.write_all(&val_u32.to_le_bytes())
+}
+
+
 /// Deserializes a compact index from raw bytes.
 ///
 /// **v6**: char-trigram CSR on disk — zero-rebuild.

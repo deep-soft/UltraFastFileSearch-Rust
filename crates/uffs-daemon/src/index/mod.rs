@@ -344,12 +344,31 @@ impl IndexManager {
             };
         }
 
+        // Final allocator purge after all drives are loaded.
+        release_allocator_pages();
+
         self.set_ready().await;
 
         let snap = self.snapshot().await;
         let drive_count = snap.drives.len();
         let total_records = snap.total_records();
+
+        // Log per-drive heap breakdown.
+        let mut total_heap: u64 = 0;
+        for dr in &snap.drives {
+            dr.log_heap_report();
+            total_heap += dr.heap_size_bytes().total as u64;
+        }
+        let heap_mb = total_heap / (1024 * 1024);
+        tracing::info!(
+            drives = drive_count,
+            total_records,
+            index_heap_mb = heap_mb,
+            "[MEM] All drives loaded: index heap = {} MB",
+            heap_mb,
+        );
         drop(snap);
+
         self.events.emit(DaemonEvent::DaemonReady {
             drives: drive_count,
             total_records,
@@ -456,11 +475,36 @@ impl IndexManager {
             total_records = records,
             "Status queried"
         );
+
+        // Collect per-drive memory breakdown.
+        let snap = self.snapshot().await;
+        let mut drive_memory = Vec::with_capacity(snap.drives.len());
+        let mut total_index_heap: u64 = 0;
+        for dr in &snap.drives {
+            let hr = dr.heap_size_bytes();
+            let heap = hr.total as u64;
+            total_index_heap += heap;
+            drive_memory.push(uffs_client::protocol::DriveMemoryInfo {
+                drive: dr.letter,
+                records: dr.records.len(),
+                heap_bytes: heap,
+                records_bytes: hr.records as u64,
+                names_bytes: hr.names as u64,
+                trigram_bytes: hr.trigram as u64,
+                children_bytes: hr.children as u64,
+                ext_index_bytes: hr.ext_index as u64,
+            });
+        }
+        drop(snap);
+
         StatusResponse {
             status: status.clone(),
             uptime_secs: self.start_time.elapsed().as_secs(),
             connections,
             pid: std::process::id(),
+            rss_bytes: None,
+            index_heap_bytes: Some(total_index_heap),
+            drive_memory,
         }
     }
 

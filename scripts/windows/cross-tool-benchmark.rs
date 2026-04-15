@@ -180,9 +180,13 @@ fn uffs_purge_cache() {
 /// Handles all three tools' CSV headers/footers.
 fn is_header_or_footer(line: &str) -> bool {
     let t = line.trim();
+    let tl = t.to_ascii_lowercase();
     t.is_empty()
-        || t.starts_with("\"Path\"")              // UFFS Rust CSV header
-        || t.starts_with("Path\t")                // TSV header
+        || tl.starts_with("\"path\"")             // UFFS CSV header (quoted)
+        || tl.starts_with("path,")                // UFFS daemon CSV header (unquoted)
+        || tl.starts_with("path\t")               // TSV header
+        || tl == "path"                            // single-column header
+        || tl.starts_with("drive,")               // UFFS daemon full CSV header
         || t == "Filename"                          // Everything es.exe -export-csv header (single column)
         || t.starts_with("\"Filename\"")           // Everything es.exe -export-csv header (quoted)
         || t.starts_with("Filename,")              // Everything es.exe alt header (multi-column)

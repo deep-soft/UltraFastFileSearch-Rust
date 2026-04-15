@@ -278,15 +278,15 @@ impl IndexManager {
         // JSON serialization, and IPC transfer entirely.
         if let Some(output_path) = &effective_params.output_file {
             let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
-            let format = effective_params.output_format.as_deref().unwrap_or("csv");
-            let projection = &effective_params.projection;
 
-            match Self::write_rows_to_file(&filtered_rows, output_path, format, projection) {
+            // Reconstruct OutputConfig from protocol fields.
+            let output_config = build_output_config(&effective_params);
+
+            match Self::write_rows_to_file(&filtered_rows, output_path, &output_config) {
                 Ok(rows_written) => {
                     tracing::info!(
                         output = output_path,
                         rows = rows_written,
-                        format,
                         duration_ms,
                         "daemon wrote results directly to file"
                     );
@@ -553,19 +553,16 @@ impl IndexManager {
 
     /// Write `DisplayRow`s directly to a file, bypassing `SearchRow` and IPC.
     ///
-    /// Uses atomic write semantics: writes to a `.uffs.tmp` sibling file,
-    /// then renames to the target path only after all data is flushed and
-    /// synced.  If the search produces 0 rows, the target file is NOT
-    /// created/touched.  If the daemon crashes mid-write, only the temp
-    /// file is left — the original target (if any) is untouched.
+    /// Uses the same `OutputConfig::write_display_rows` that the CLI uses,
+    /// so all formatting options (separator, quotes, header, pos/neg,
+    /// columns, timestamps) produce identical output.
     ///
-    /// Supported formats: `csv`, `json`, `jsonl`.  When `projection` is
-    /// non-empty, only the requested columns are included.
+    /// Atomic write: writes to a `.uffs.tmp` sibling file, renames to
+    /// target only after flush + sync.  Zero rows → no file created.
     fn write_rows_to_file(
         rows: &[DisplayRow],
         path: &str,
-        format: &str,
-        projection: &[String],
+        output_config: &uffs_core::output::OutputConfig,
     ) -> Result<usize, std::io::Error> {
         use std::io::BufWriter;
 
@@ -579,28 +576,23 @@ impl IndexManager {
 
         // Write to temp file — target is untouched until rename.
         let file = std::fs::File::create(&tmp_path)?;
-        let mut w = BufWriter::with_capacity(256 * 1024, file);
+        let mut writer = BufWriter::with_capacity(256 * 1024, file);
 
-        let write_result = match format {
-            "csv" => Self::write_csv(&mut w, rows, projection),
-            "json" => Self::write_json(&mut w, rows, projection),
-            "jsonl" => Self::write_jsonl(&mut w, rows, projection),
-            other => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("unsupported output format: {other}"),
-            )),
-        };
+        let write_result = output_config
+            .write_display_rows(rows, &mut writer)
+            .map_err(std::io::Error::other);
 
         // On write error, clean up the temp file and propagate.
         if let Err(err) = write_result {
-            drop(w);
+            drop(writer);
             let _cleanup: Result<(), std::io::Error> = std::fs::remove_file(&tmp_path);
             return Err(err);
         }
 
         // Flush + sync to disk before renaming.
-        w.flush()?;
-        w.into_inner()
+        writer.flush()?;
+        writer
+            .into_inner()
             .map_err(std::io::IntoInnerError::into_error)?
             .sync_all()?;
 
@@ -609,209 +601,33 @@ impl IndexManager {
 
         Ok(rows.len())
     }
+}
 
-    /// Write rows as CSV with optional column projection.
-    fn write_csv(
-        w: &mut impl Write,
-        rows: &[DisplayRow],
-        projection: &[String],
-    ) -> std::io::Result<()> {
-        let use_all = projection.is_empty();
+/// Reconstruct an [`OutputConfig`] from protocol fields in [`SearchParams`].
+///
+/// The CLI serialises its `OutputConfig` into individual string fields
+/// (`output_separator`, `output_quote`, etc.) so the daemon can rebuild
+/// an identical config without needing serde on `OutputConfig` itself.
+fn build_output_config(params: &SearchParams) -> uffs_core::output::OutputConfig {
+    let mut cfg = uffs_core::output::OutputConfig::default();
 
-        // Header
-        if use_all {
-            writeln!(
-                w,
-                "Drive,Path,Name,Size,Modified,Created,Accessed,Flags,Allocated,Descendants,Treesize,TreeAllocated,IsDirectory"
-            )?;
-        } else {
-            let header: Vec<&str> = projection.iter().map(String::as_str).collect();
-            writeln!(w, "{}", header.join(","))?;
-        }
-
-        for row in rows {
-            if use_all {
-                writeln!(
-                    w,
-                    "{},{},{},{},{},{},{},{},{},{},{},{},{}",
-                    row.drive,
-                    Self::csv_escape(&row.path),
-                    Self::csv_escape(row.name()),
-                    row.size,
-                    row.modified,
-                    row.created,
-                    row.accessed,
-                    row.flags,
-                    row.allocated,
-                    row.descendants,
-                    row.treesize,
-                    row.tree_allocated,
-                    row.is_directory,
-                )?;
-            } else {
-                Self::write_csv_projected_row(w, row, projection)?;
-            }
-        }
-        Ok(())
+    if let Some(sep) = &params.output_separator {
+        cfg = cfg.with_separator(sep);
     }
-
-    /// Write a single CSV row with only the projected columns.
-    fn write_csv_projected_row(
-        w: &mut impl Write,
-        row: &DisplayRow,
-        projection: &[String],
-    ) -> std::io::Result<()> {
-        let mut first = true;
-        for col in projection {
-            if !first {
-                write!(w, ",")?;
-            }
-            first = false;
-            match col.as_str() {
-                "drive" => write!(w, "{}", row.drive)?,
-                "path" => write!(w, "{}", Self::csv_escape(&row.path))?,
-                "name" => write!(w, "{}", Self::csv_escape(row.name()))?,
-                "size" => write!(w, "{}", row.size)?,
-                "modified" => write!(w, "{}", row.modified)?,
-                "created" => write!(w, "{}", row.created)?,
-                "accessed" => write!(w, "{}", row.accessed)?,
-                "flags" => write!(w, "{}", row.flags)?,
-                "allocated" => write!(w, "{}", row.allocated)?,
-                "descendants" => write!(w, "{}", row.descendants)?,
-                "treesize" => write!(w, "{}", row.treesize)?,
-                "tree_allocated" => write!(w, "{}", row.tree_allocated)?,
-                "type" | "is_directory" => write!(w, "{}", row.is_directory)?,
-                _ => write!(w, "")?,
-            }
-        }
-        writeln!(w)?;
-        Ok(())
+    if let Some(quote) = &params.output_quote {
+        cfg = cfg.with_quote(quote);
     }
-
-    /// Minimal CSV escaping: wrap in quotes if the value contains commas or
-    /// quotes.
-    fn csv_escape(val: &str) -> alloc::borrow::Cow<'_, str> {
-        if val.contains(',') || val.contains('"') || val.contains('\n') {
-            alloc::borrow::Cow::Owned(format!("\"{}\"", val.replace('"', "\"\"")))
-        } else {
-            alloc::borrow::Cow::Borrowed(val)
-        }
+    if let Some(header) = params.output_header {
+        cfg = cfg.with_header(header);
     }
-
-    /// Write rows as a JSON array.
-    fn write_json(
-        w: &mut impl Write,
-        rows: &[DisplayRow],
-        projection: &[String],
-    ) -> std::io::Result<()> {
-        writeln!(w, "[")?;
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                writeln!(w, ",")?;
-            }
-            Self::write_json_row(w, row, projection)?;
-        }
-        writeln!(w, "\n]")?;
-        Ok(())
+    if let Some(pos) = &params.output_pos {
+        cfg = cfg.with_pos(pos);
     }
-
-    /// Write rows as JSON Lines (one JSON object per line).
-    fn write_jsonl(
-        w: &mut impl Write,
-        rows: &[DisplayRow],
-        projection: &[String],
-    ) -> std::io::Result<()> {
-        for row in rows {
-            Self::write_json_row(w, row, projection)?;
-            writeln!(w)?;
-        }
-        Ok(())
+    if let Some(neg) = &params.output_neg {
+        cfg = cfg.with_neg(neg);
     }
-
-    /// Write a JSON field separator (comma) if not the first field.
-    fn json_sep(w: &mut impl Write, first: &mut bool) -> std::io::Result<()> {
-        if !*first {
-            write!(w, ",")?;
-        }
-        *first = false;
-        Ok(())
+    if let Some(cols_str) = &params.output_columns {
+        cfg = cfg.with_columns(cols_str);
     }
-
-    /// Write a numeric JSON field: `"name":value`.
-    fn json_field(
-        w: &mut impl Write,
-        first: &mut bool,
-        name: &str,
-        val: &dyn core::fmt::Display,
-    ) -> std::io::Result<()> {
-        Self::json_sep(w, first)?;
-        write!(w, "\"{name}\":{val}")
-    }
-
-    /// Write a string JSON field: `"name":"escaped_value"`.
-    fn json_str_field(
-        w: &mut impl Write,
-        first: &mut bool,
-        name: &str,
-        val: &str,
-    ) -> std::io::Result<()> {
-        Self::json_sep(w, first)?;
-        let escaped = val.replace('\\', "\\\\").replace('"', "\\\"");
-        write!(w, "\"{name}\":\"{escaped}\"")
-    }
-
-    /// Write a single row as a JSON object.
-    fn write_json_row(
-        w: &mut impl Write,
-        row: &DisplayRow,
-        projection: &[String],
-    ) -> std::io::Result<()> {
-        let use_all = projection.is_empty();
-        let should = |col: &str| use_all || projection.iter().any(|pc| pc == col);
-
-        write!(w, "{{")?;
-        let mut first = true;
-
-        if should("drive") {
-            Self::json_str_field(w, &mut first, "drive", &row.drive.to_string())?;
-        }
-        if should("path") {
-            Self::json_str_field(w, &mut first, "path", &row.path)?;
-        }
-        if should("name") {
-            Self::json_str_field(w, &mut first, "name", row.name())?;
-        }
-        if should("size") {
-            Self::json_field(w, &mut first, "size", &row.size)?;
-        }
-        if should("modified") {
-            Self::json_field(w, &mut first, "modified", &row.modified)?;
-        }
-        if should("created") {
-            Self::json_field(w, &mut first, "created", &row.created)?;
-        }
-        if should("accessed") {
-            Self::json_field(w, &mut first, "accessed", &row.accessed)?;
-        }
-        if should("flags") {
-            Self::json_field(w, &mut first, "flags", &row.flags)?;
-        }
-        if should("allocated") {
-            Self::json_field(w, &mut first, "allocated", &row.allocated)?;
-        }
-        if should("descendants") {
-            Self::json_field(w, &mut first, "descendants", &row.descendants)?;
-        }
-        if should("treesize") {
-            Self::json_field(w, &mut first, "treesize", &row.treesize)?;
-        }
-        if should("tree_allocated") {
-            Self::json_field(w, &mut first, "tree_allocated", &row.tree_allocated)?;
-        }
-        if should("is_directory") || should("type") {
-            Self::json_field(w, &mut first, "is_directory", &row.is_directory)?;
-        }
-        write!(w, "}}")?;
-        Ok(())
-    }
+    cfg
 }

@@ -275,6 +275,36 @@ pub struct StatusResponse {
     pub connections: usize,
     /// Daemon process ID.
     pub pid: u32,
+    /// Process RSS (resident set size) in bytes, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rss_bytes: Option<u64>,
+    /// Calculated heap footprint of all loaded indices (bytes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_heap_bytes: Option<u64>,
+    /// Per-drive memory breakdown (drive letter → heap bytes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drive_memory: Vec<DriveMemoryInfo>,
+}
+
+/// Per-drive memory breakdown for status reporting.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DriveMemoryInfo {
+    /// Drive letter.
+    pub drive: char,
+    /// Number of records in this drive's index.
+    pub records: usize,
+    /// Calculated heap footprint in bytes.
+    pub heap_bytes: u64,
+    /// Breakdown: records Vec.
+    pub records_bytes: u64,
+    /// Breakdown: names Vec.
+    pub names_bytes: u64,
+    /// Breakdown: trigram index.
+    pub trigram_bytes: u64,
+    /// Breakdown: children index.
+    pub children_bytes: u64,
+    /// Breakdown: extension index.
+    pub ext_index_bytes: u64,
 }
 
 /// Response for the `stats` method — daemon performance metrics.

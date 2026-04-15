@@ -143,6 +143,12 @@ pub struct ChildrenIndex {
 }
 
 impl ChildrenIndex {
+    /// Total heap capacity (offsets + values) in bytes.
+    #[must_use]
+    pub const fn heap_size_bytes(&self) -> usize {
+        self.offsets.capacity() * size_of::<u32>() + self.values.capacity() * size_of::<u32>()
+    }
+
     /// Build from `CompactRecord::parent_idx` in two passes (count + scatter).
     #[must_use]
     pub fn build(records: &[CompactRecord]) -> Self {
@@ -239,6 +245,12 @@ pub struct ExtensionIndex {
 }
 
 impl ExtensionIndex {
+    /// Total heap capacity (offsets + values) in bytes.
+    #[must_use]
+    pub const fn heap_size_bytes(&self) -> usize {
+        self.offsets.capacity() * size_of::<u32>() + self.values.capacity() * size_of::<u32>()
+    }
+
     /// Build from compact records in two passes (count + scatter).
     #[must_use]
     pub fn build(records: &[CompactRecord]) -> Self {
@@ -343,6 +355,25 @@ pub struct DriveCompactIndex {
     pub source_epoch: u64,
 }
 
+/// Per-component heap footprint of a [`DriveCompactIndex`].
+#[derive(Debug, Clone)]
+pub struct HeapReport {
+    /// `records: Vec<CompactRecord>` capacity in bytes.
+    pub records: usize,
+    /// `names: Vec<u8>` capacity in bytes.
+    pub names: usize,
+    /// `TrigramIndex` total heap (keys + offsets + values).
+    pub trigram: usize,
+    /// `ChildrenIndex` total heap (offsets + values).
+    pub children: usize,
+    /// `ExtensionIndex` total heap (offsets + values).
+    pub ext_index: usize,
+    /// `ext_names: Vec<Box<str>>` heap (Vec + string data).
+    pub ext_names: usize,
+    /// Sum of all components.
+    pub total: usize,
+}
+
 impl AsRef<Self> for DriveCompactIndex {
     fn as_ref(&self) -> &Self {
         self
@@ -350,6 +381,54 @@ impl AsRef<Self> for DriveCompactIndex {
 }
 
 impl DriveCompactIndex {
+    /// Compute the total heap footprint of this index (in bytes).
+    ///
+    /// This measures *capacity* (what the allocator reserved), not *len*
+    /// (what we're using).  The gap between the two is what `shrink_to_fit`
+    /// reclaims.  Use this after loading to verify memory usage.
+    #[must_use]
+    pub fn heap_size_bytes(&self) -> HeapReport {
+        let records = self.records.capacity() * size_of::<CompactRecord>();
+        let names = self.names.capacity();
+        let trigram = self.trigram.heap_size_bytes();
+        let children = self.children.heap_size_bytes();
+        let ext_index = self.ext_index.heap_size_bytes();
+        let ext_names_data: usize = self.ext_names.iter().map(|en| en.len()).sum();
+        let ext_names_vec = self.ext_names.capacity() * size_of::<Box<str>>();
+        let ext_names = ext_names_data + ext_names_vec;
+        HeapReport {
+            records,
+            names,
+            trigram,
+            children,
+            ext_index,
+            ext_names,
+            total: records + names + trigram + children + ext_index + ext_names,
+        }
+    }
+
+    /// Log the heap report at `info` level.
+    pub fn log_heap_report(&self) {
+        let hr = self.heap_size_bytes();
+        let mb = |bytes: usize| bytes / (1024 * 1024);
+        tracing::info!(
+            drive = %self.letter,
+            records_count = self.records.len(),
+            records_mb = mb(hr.records),
+            names_mb = mb(hr.names),
+            trigram_mb = mb(hr.trigram),
+            children_mb = mb(hr.children),
+            ext_index_mb = mb(hr.ext_index),
+            ext_names_mb = mb(hr.ext_names),
+            total_mb = mb(hr.total),
+            "[HEAP] {}: rec={} names={} tri={} ch={} ext={} | total={} MB",
+            self.letter,
+            mb(hr.records), mb(hr.names), mb(hr.trigram),
+            mb(hr.children), mb(hr.ext_index),
+            mb(hr.total),
+        );
+    }
+
     /// Resolve extension filter strings to their `u16` IDs on this drive.
     ///
     /// Returns a sorted, deduplicated `Vec<u16>` of matching IDs.

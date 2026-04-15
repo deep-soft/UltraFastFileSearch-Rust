@@ -57,6 +57,14 @@ pub struct TrigramIndex {
 }
 
 impl TrigramIndex {
+    /// Total heap capacity of this index (keys + offsets + values) in bytes.
+    #[must_use]
+    pub const fn heap_size_bytes(&self) -> usize {
+        self.keys.capacity() * size_of::<u64>()
+            + self.offsets.capacity() * size_of::<u32>()
+            + self.values.capacity() * size_of::<u32>()
+    }
+
     /// Create an empty trigram index (no postings).
     #[must_use]
     pub fn empty() -> Self {

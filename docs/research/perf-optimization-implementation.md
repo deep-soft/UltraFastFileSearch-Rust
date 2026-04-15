@@ -1,6 +1,6 @@
 # Performance Optimization — Implementation Tracker
 
-Status: **In Progress** | Created: 2026-04-14
+Status: **In Progress** (OPT-1,2,4 complete) | Created: 2026-04-14
 
 ## Codebase Reality Check
 
@@ -52,9 +52,11 @@ in `crates/uffs-core/src/compact.rs` and in `TrigramIndex::build()`.
 - `crates/uffs-core/src/trigram.rs` — after building keys, offsets, values
 - `crates/uffs-core/src/compact.rs` — `ExtensionIndex::build()`
 
-**Status:** [x] Complete — `shrink_to_fit()` added at end of
-`build_compact_index()` in `compact.rs:731-745` with tracing of
-reclaimed bytes.
+**Status:** [x] Complete — `shrink_to_fit()` added in
+`shrink_compact_vecs()` (called at end of `build_compact_index()`)
+with tracing of reclaimed bytes.  Also added `heap_size_bytes()`
+methods on `DriveCompactIndex`, `ChildrenIndex`, `ExtensionIndex`,
+and `TrigramIndex` for per-component memory reporting.
 
 ---
 
@@ -80,11 +82,17 @@ uses the system allocator.
   the `join_set.join_next()` loop (around line 252)
 
 **Status:** [x] Complete — `release_allocator_pages()` added in
-`index/mod.rs` after each drive load, in both the MFT live-read loop
-and the data-dir cache-load loop.  Platform-specific:
+`index/mod.rs` after each drive load and after all drives are loaded.
+Platform-specific:
 - Windows: `HeapCompact(GetProcessHeap(), HEAP_FLAGS(0))`
 - Linux: `malloc_trim(0)`
 - macOS: no-op (returns pages eagerly)
+
+Also added memory visibility to daemon status:
+- `daemon status` now shows per-drive heap breakdown:
+  `D: — 7,066,020 records (live) — 1089 MB [rec=566 names=163 tri=280 ch=52 ext=28]`
+- Total index heap shown: `Index heap: 1089 MB`
+- `DriveCompactIndex::log_heap_report()` logs breakdown after each drive load
 
 ---
 
@@ -144,14 +152,19 @@ present, the daemon:
 
 Total IPC: ~200 bytes instead of ~32 MB.
 
-**Status:** [x] Complete — atomic file output implemented:
-- `SearchParams.output_file` + `output_format` fields added to protocol
-- Daemon writes directly to `.uffs.tmp` temp file via `BufWriter<File>`
-- On success: `sync_all()` → atomic `rename()` to target path
+**Status:** [x] Complete — atomic file output with full `OutputConfig`:
+- `SearchParams.output_file` + output config fields added to protocol
+  (`output_separator`, `output_quote`, `output_header`, `output_pos`,
+  `output_neg`, `output_columns`)
+- Daemon reconstructs `OutputConfig` from protocol fields and calls
+  `OutputConfig::write_display_rows()` — identical output to CLI
+- Writes to `.uffs.tmp` temp file → `sync_all()` → atomic `rename()`
 - Zero rows → no file created/touched (target untouched)
 - Write error → temp file cleaned up, falls back to normal IPC
-- CLI resolves `--out` to absolute path, passes to daemon
-- Supports CSV, JSON, JSONL formats with column projection
+- CLI resolves `--out` to absolute path, passes full output config
+- Supports all output options: `--sep`, `--quotes`, `--header`,
+  `--pos`, `--neg`, `--columns` (all 30+ column types including
+  individual NTFS attribute flags)
 
 ---
 
@@ -193,19 +206,21 @@ the query, streams the response to stdout or file.
 
 ## Priority Matrix
 
-| # | Optimization | Savings | Effort | Priority |
-|---|-------------|---------|--------|----------|
-| OPT-1 | `shrink_to_fit()` | ~500 MB RAM | Trivial | 🔴 Do first |
-| OPT-2 | Allocator purge | ~2-3 GB RAM | Low | 🔴 Do first |
-| OPT-4 | Daemon writes `--out` | eliminates IPC | Medium | 🟠 Do second |
-| OPT-3 | Cache save streaming | ~1 GB peak RAM | Investigation | 🟡 Investigate |
-| OPT-5 | Thin CLI client | 152→15 ms load | Medium | 🟡 After validation |
+| # | Optimization | Savings | Effort | Status |
+|---|-------------|---------|--------|--------|
+| OPT-1 | `shrink_to_fit()` + heap reporting | ~500 MB RAM | Trivial | ✅ Done |
+| OPT-2 | Allocator purge + memory visibility | ~2-3 GB RAM | Low | ✅ Done |
+| OPT-4 | Daemon writes `--out` (full OutputConfig) | eliminates IPC | Medium | ✅ Done |
+| OPT-3 | Cache save streaming | ~1 GB peak RAM | Investigation | 🟡 Not started |
+| OPT-5 | Thin CLI client | 152→15 ms load | Medium | 🟡 Not started |
 
 ## Implementation Order
 
-1. **OPT-1 + OPT-2** — trivial memory wins, no behavior change
+1. ~~**OPT-1 + OPT-2** — trivial memory wins, no behavior change~~ ✅ Done
 2. **Measure** — confirm memory reduction on Windows with 7 drives
-3. **OPT-4** — daemon-writes-file for `--out`
+   - D: alone: 8 GB RSS (was ~14 GB), index heap ~1.1 GB
+   - Gap still large → allocator not returning pages (next: investigate)
+3. ~~**OPT-4** — daemon-writes-file for `--out`~~ ✅ Done
 4. **OPT-3** — investigate cache save memory, fix if worthwhile
 5. **OPT-5** — thin client (after architecture is validated)
 
