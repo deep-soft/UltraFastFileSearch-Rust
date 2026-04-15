@@ -1,6 +1,6 @@
 # Performance Optimization — Implementation Tracker
 
-Status: **In Progress** (OPT-1,2,3,4 complete) | Created: 2026-04-14
+Status: **In Progress** (OPT-1,2,3,4,6,7 complete) | Created: 2026-04-14
 
 ## Codebase Reality Check
 
@@ -221,17 +221,26 @@ the query, streams the response to stdout or file.
 | OPT-2 | Allocator purge + memory visibility | ~2-3 GB RAM | Low | ✅ Done |
 | OPT-4 | Daemon writes `--out` (full OutputConfig) | eliminates IPC | Medium | ✅ Done |
 | OPT-3 | Cache save streaming | ~1 GB peak RAM | Medium | ✅ Done |
+| OPT-6 | mimalloc global allocator | RSS→heap gap | Low | ✅ Done |
+| OPT-7 | Trigram frequency-cap pruning | ~20-30% tri RAM | Low | ✅ Done |
 | OPT-5 | Thin CLI client | 152→15 ms load | Medium | 🟡 Not started |
 
 ## Implementation Order
 
 1. ~~**OPT-1 + OPT-2** — trivial memory wins, no behavior change~~ ✅ Done
 2. **Measure** — confirm memory reduction on Windows with 7 drives
-   - D: alone: 8 GB RSS (was ~14 GB), index heap ~1.1 GB
-   - Gap still large → allocator not returning pages (next: investigate)
+   - All 7 drives: index heap 4,781 MB, RSS settled at ~12 GB, peak ~23 GB
+   - Gap: ~7.2 GB from allocator not returning freed pages
 3. ~~**OPT-4** — daemon-writes-file for `--out`~~ ✅ Done
 4. ~~**OPT-3** — streaming cache save (eliminate 1.1 GB buffer)~~ ✅ Done
-5. **OPT-5** — thin client (after architecture is validated)
+5. ~~**OPT-6** — mimalloc as `#[global_allocator]` for daemon~~ ✅ Done
+   - `mi_collect(true)` replaces `HeapCompact` — aggressively decommits
+   - Added to all free-memory sites: per-drive load, refresh, hot-load
+6. ~~**OPT-7** — trigram frequency-cap pruning~~ ✅ Done
+   - Trigrams in >25% of records pruned (too common for selectivity)
+   - Minimum cap of 1024 prevents over-pruning small indices
+   - Search side unaffected (`filter_map` skips missing trigrams)
+7. **OPT-5** — thin client (after architecture is validated)
 
 ## Non-goals (preserve current functionality)
 

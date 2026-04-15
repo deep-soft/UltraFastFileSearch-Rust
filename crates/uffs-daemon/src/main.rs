@@ -21,12 +21,21 @@
 
 use std::path::PathBuf;
 
+use mimalloc::MiMalloc;
+
+/// Use mimalloc globally — faster than the Windows CRT heap and, critically,
+/// `mi_collect(true)` can aggressively decommit freed pages so RSS reflects
+/// actual usage after `MftIndex` temporaries are dropped.
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 // Suppress unused-crate-dependency warnings for deps consumed by the
 // library crate (lib.rs) rather than the binary.
 use anyhow as _;
 use clap::Parser;
 use dirs_next as _;
 use libc as _;
+use libmimalloc_sys as _;
 use rand as _;
 use serde as _;
 use serde_json as _;

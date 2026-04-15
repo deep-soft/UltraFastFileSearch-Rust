@@ -145,6 +145,27 @@ impl TrigramIndex {
             }
         }
 
+        // ── Prune high-frequency trigrams ──────────────────────────
+        // Trigrams appearing in >25% of records are too common to provide
+        // useful selectivity.  Pruning them saves memory (posting lists
+        // are the dominant cost) and makes searches faster (shorter
+        // intersection chains).  The search side handles missing trigrams
+        // gracefully — `filter_map` skips them.
+        let record_count = records.len();
+        // Minimum cap of 1024 so small indices aren't over-pruned.
+        let freq_cap = (record_count / 4).max(1024);
+        let pre_prune = global_counts.len();
+        global_counts.retain(|_tri, cnt| (*cnt as usize) <= freq_cap);
+        let pruned = pre_prune.saturating_sub(global_counts.len());
+        if pruned > 0 {
+            tracing::debug!(
+                pruned,
+                pre_prune,
+                freq_cap,
+                "trigram build: pruned high-frequency trigrams"
+            );
+        }
+
         // ── Sort keys + prefix sum → CSR offsets ────────────────────
         let mut sorted_keys: Vec<(u64, u32)> = global_counts.into_iter().collect();
         sorted_keys.sort_unstable_by_key(|&(packed, _)| packed);

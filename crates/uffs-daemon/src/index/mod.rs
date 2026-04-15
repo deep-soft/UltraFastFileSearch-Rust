@@ -595,6 +595,9 @@ impl IndexManager {
                     tracing::error!(drive = %letter, error = %join_err, "Task panicked during refresh");
                 }
             }
+
+            // Reclaim pages freed by the old drive index and MftIndex temporaries.
+            release_allocator_pages();
         }
 
         self.set_ready().await;
@@ -822,6 +825,9 @@ impl IndexManager {
             tokio::task::spawn_blocking(move || uffs_core::compact::load_drive(&source, no_cache))
                 .await;
 
+        // Reclaim pages freed by MftIndex temporaries during load.
+        release_allocator_pages();
+
         match result {
             Ok(Ok((drive_index, timing))) => {
                 let records = drive_index.records.len();
@@ -964,40 +970,21 @@ impl IndexManager {
 /// issues a best-effort request to reclaim those pages so the process
 /// RSS reflects actual usage.
 ///
-/// - **Windows:** `HeapCompact(GetProcessHeap())` for each heap.
-/// - **Linux/glibc:** `malloc_trim(0)`.
-/// - **macOS:** no-op (macOS `libmalloc` returns pages eagerly).
+/// Uses `mi_collect(true)` (mimalloc) which aggressively decommits freed
+/// pages.  This replaces the previous `HeapCompact` / `malloc_trim` calls
+/// which only work with the system allocator — since we now use mimalloc as
+/// `#[global_allocator]`, those had no effect.
 fn release_allocator_pages() {
-    #[cfg(target_os = "windows")]
-    {
-        #[allow(unsafe_code)]
-        // SAFETY: `GetProcessHeap` + `HeapCompact` are safe Win32 APIs
-        // that ask the default CRT heap to coalesce and decommit free
-        // blocks.  No memory is freed that is still reachable.
-        unsafe {
-            use windows::Win32::System::Memory::{GetProcessHeap, HEAP_FLAGS, HeapCompact};
-            if let Ok(heap) = GetProcessHeap() {
-                let _ = HeapCompact(heap, HEAP_FLAGS(0));
-            }
-        }
-        tracing::debug!("HeapCompact(GetProcessHeap()) completed");
-    }
+    mi_collect_force();
+    tracing::debug!("mi_collect(true) completed");
+}
 
-    #[cfg(target_os = "linux")]
-    {
-        #[allow(unsafe_code)]
-        // SAFETY: `malloc_trim` is a glibc extension that releases free
-        // memory at the top of the heap back to the OS.  It does not
-        // affect allocated blocks.
-        unsafe {
-            libc::malloc_trim(0);
-        }
-        tracing::debug!("malloc_trim(0) completed");
-    }
-
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    {
-        // macOS libmalloc returns pages eagerly — nothing needed.
-        tracing::debug!("allocator page release: no-op on this platform");
+/// Call `mi_collect(true)` to aggressively decommit freed mimalloc segments.
+#[expect(unsafe_code, reason = "FFI call to mimalloc's mi_collect")]
+fn mi_collect_force() {
+    // SAFETY: `mi_collect(true)` only decommits unreferenced mimalloc
+    // segments.  No allocated data is affected.
+    unsafe {
+        libmimalloc_sys::mi_collect(true);
     }
 }

@@ -19,6 +19,7 @@ use std::path::PathBuf;
 // behind cfg gates.
 use clap as _;
 use dirs_next as _;
+use mimalloc as _;
 use serde as _;
 use thiserror as _;
 use tracing_appender as _;
