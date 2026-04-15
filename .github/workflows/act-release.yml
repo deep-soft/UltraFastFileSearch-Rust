@@ -135,7 +135,7 @@ jobs:
         shell: bash
         run: |
           echo "uffs-daemon";
-          sed -ibak 's/ use libc/# use libc/' crates/uffs-daemon/src/main.rs || true;
+          sed -ibak 's/use libc/# use libc/' crates/uffs-daemon/src/main.rs || true;
           cat crates/uffs-daemon/src/main.rs | grep "use libc" || true;
           echo ".cargo/config.toml";
           sed -ibak 's/rustc-wrapper/#rustc-wrapper/' .cargo/config.toml || true;
