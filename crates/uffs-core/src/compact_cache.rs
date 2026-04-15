@@ -136,9 +136,9 @@ pub fn serialize_compact(index: &DriveCompactIndex) -> Vec<u8> {
 /// # Errors
 ///
 /// Returns an error if any write fails.
-pub fn serialize_compact_to_writer(
+pub fn serialize_compact_to_writer<W: std::io::Write>(
     index: &DriveCompactIndex,
-    writer: &mut impl std::io::Write,
+    writer: &mut W,
 ) -> std::io::Result<()> {
     let record_count = index.records.len();
     let names_len = index.names.len();
@@ -184,7 +184,7 @@ pub fn serialize_compact_to_writer(
 }
 
 /// Write a `usize` as little-endian `u32` to a writer.
-fn write_u32(writer: &mut impl std::io::Write, val: usize) -> std::io::Result<()> {
+fn write_u32<W: std::io::Write>(writer: &mut W, val: usize) -> std::io::Result<()> {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "record/name counts fit in u32 for any realistic MFT"
@@ -192,7 +192,6 @@ fn write_u32(writer: &mut impl std::io::Write, val: usize) -> std::io::Result<()
     let val_u32 = val as u32;
     writer.write_all(&val_u32.to_le_bytes())
 }
-
 
 /// Deserializes a compact index from raw bytes.
 ///
@@ -392,73 +391,102 @@ fn parse_compact_header(data: &[u8]) -> Result<(u64, usize, u16), &'static str> 
 
 /// Saves a compact index to its cache file (zstd + AES-256-GCM), blocking.
 ///
+/// Uses streaming serialization — no ~1.1 GB intermediate buffer.
 /// Prefer [`save_compact_cache_background`] for non-blocking saves.
 ///
 /// # Errors
 /// Returns an error if compression, encryption, or file writing fails.
 pub fn save_compact_cache(index: &DriveCompactIndex) -> std::io::Result<()> {
     let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
-    let t_total = Instant::now();
-    let t_ser = Instant::now();
-    let serialized = serialize_compact(index);
-    let ser_ms = t_ser.elapsed().as_millis();
-    let uncompressed_len = serialized.len();
     let path = compact_cache_path(index.letter);
     if let Some(dir) = path.parent() {
         uffs_mft::cache::create_secure_dir(dir)?;
     }
-    uffs_mft::cache::compress_encrypt_write(serialized, &path, ZSTD_LEVEL, profile, "compact")?;
-    if profile {
-        let uncomp_mb = uncompressed_len / (1024 * 1024);
-        tracing::debug!(
-            target: "cache_profile",
-            ser_ms = %ser_ms,
-            uncomp_mb,
-            total_ms = %t_total.elapsed().as_millis(),
-            "compact_save"
-        );
-    }
-    Ok(())
+    uffs_mft::cache::compress_encrypt_write_streaming(
+        |encoder| serialize_compact_to_writer(index, encoder),
+        &path,
+        ZSTD_LEVEL,
+        profile,
+        "compact",
+    )
 }
 
-/// Serializes the compact index synchronously and spawns a background thread
-/// to compress, encrypt, and write the cache file.
+/// Streams the compact index into a zstd encoder on the calling thread
+/// (no ~1.1 GB intermediate buffer), then spawns a background thread
+/// for encryption and disk write.
 ///
-/// Serialization (~100-250ms) runs on the calling thread; the heavy
-/// compress + encrypt + write (~3-5s) runs in a detached background thread.
-/// Uses [`atomic_write`](uffs_mft::cache::atomic_write), so partial writes
-/// from process exit are safe.
+/// Calling-thread work: serialize → zstd compress (~200 MB output).
+/// Background-thread work: AES-256-GCM encrypt → atomic disk write.
+///
+/// Peak memory: ~200 MB (compressed) + ~200 MB (encrypted) = ~400 MB,
+/// down from ~1.3 GB with the old `serialize_compact` + `compress` path.
 ///
 /// # Errors
-/// Returns an error only if serialization or directory creation fails.
+/// Returns an error only if compression or directory creation fails.
 pub fn save_compact_cache_background(index: &DriveCompactIndex) -> std::io::Result<()> {
     let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
-    let t_ser = Instant::now();
-    let serialized = serialize_compact(index);
-    let ser_ms = t_ser.elapsed().as_millis();
+    let t_compress = Instant::now();
+
+    // Serialize directly into the zstd encoder — no 1.1 GB buffer.
+    let mut encoder = uffs_mft::cache::new_zstd_mt_encoder(ZSTD_LEVEL)?;
+    serialize_compact_to_writer(index, &mut encoder)?;
+    let compressed = encoder.finish()?;
+
+    let compress_ms = t_compress.elapsed().as_millis();
     if profile {
-        let mb = serialized.len() / (1024 * 1024);
-        tracing::debug!(target: "cache_profile", ser_ms = %ser_ms, mb, "compact_ser");
+        let comp_mb = compressed.len() / (1024 * 1024);
+        tracing::debug!(
+            target: "cache_profile",
+            compress_ms = %compress_ms,
+            comp_mb,
+            "compact_streaming_ser+compress"
+        );
     }
+
     let path = compact_cache_path(index.letter);
     if let Some(dir) = path.parent() {
         uffs_mft::cache::create_secure_dir(dir)?;
     }
     let drive = index.letter;
+
+    // Background: encrypt + atomic write (only ~200 MB moves to thread).
     std::thread::Builder::new()
         .name(format!("compact-save-{drive}"))
         .spawn(move || {
-            if let Err(err) = uffs_mft::cache::compress_encrypt_write(
-                serialized, &path, ZSTD_LEVEL, profile, "compact",
-            ) {
-                tracing::warn!(
-                    drive = %drive,
-                    error = %err,
-                    "Background compact cache save failed"
-                );
+            if let Err(err) = encrypt_and_write(drive, compressed, &path, profile) {
+                tracing::warn!(drive = %drive, error = %err, "Background compact cache save failed");
             }
         })
         .map_err(|err| std::io::Error::other(format!("spawn failed: {err}")))?;
+    Ok(())
+}
+
+/// Encrypt compressed cache data and write atomically to disk.
+///
+/// Extracted from the `save_compact_cache_background` closure to keep
+/// cognitive complexity low.
+fn encrypt_and_write(
+    drive: char,
+    compressed: Vec<u8>,
+    path: &std::path::Path,
+    profile: bool,
+) -> std::io::Result<()> {
+    let t_enc = Instant::now();
+    let key = uffs_security::keystore::get_cache_key()
+        .map_err(|err| std::io::Error::other(format!("cache key unavailable: {err}")))?;
+    let encrypted = uffs_security::crypto::encrypt_cache(&compressed, &key)?;
+    // Drop compressed — only encrypted needed for write.
+    drop(compressed);
+    uffs_mft::cache::atomic_write(path, &encrypted)?;
+    if profile {
+        let enc_write_ms = t_enc.elapsed().as_millis();
+        tracing::debug!(
+            target: "cache_profile",
+            drive = %drive,
+            enc_write_ms = %enc_write_ms,
+            "compact_bg_encrypt+write"
+        );
+    }
     Ok(())
 }
 

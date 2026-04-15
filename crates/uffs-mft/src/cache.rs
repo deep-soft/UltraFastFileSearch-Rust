@@ -659,7 +659,6 @@ where
     Ok(())
 }
 
-
 /// Compresses, encrypts, and atomically writes serialized cache bytes to disk.
 ///
 /// Designed to be called from a background thread — all work is self-contained.

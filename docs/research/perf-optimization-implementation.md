@@ -1,6 +1,6 @@
 # Performance Optimization — Implementation Tracker
 
-Status: **In Progress** (OPT-1,2,4 complete) | Created: 2026-04-14
+Status: **In Progress** (OPT-1,2,3,4 complete) | Created: 2026-04-14
 
 ## Codebase Reality Check
 
@@ -110,26 +110,35 @@ thread for zstd compression + encryption + disk write. For D: drive:
 During save, both the serialized and compressed buffers exist
 simultaneously → ~1.3 GB temporary allocation.
 
-**Current code path:**
+**Previous code path:**
 ```
-compact_cache.rs:228  serialize_compact(&index)     → Vec<u8> ~1.1 GB
-compact_cache.rs:236  zstd::encode_all(...)          → Vec<u8> ~200 MB
-                      (serialized dropped here)
-compact_cache.rs:242  encrypt_cache(...)             → Vec<u8> ~200 MB
-                      (compressed dropped here)
-compact_cache.rs:245  atomic_write(...)              → disk
+serialize_compact(&index)     → Vec<u8> ~1.1 GB      ← eliminated
+zstd::encode_all(...)          → Vec<u8> ~200 MB
+encrypt_cache(...)             → Vec<u8> ~200 MB
+atomic_write(...)              → disk
+Peak: ~1.3 GB (serialized + compressed coexist)
 ```
 
-**Possible fixes:**
-- Stream serialization → zstd → encrypt → disk (no full buffer)
-- Serialize directly to a zstd encoder (pipe, no intermediate Vec)
-- Delay cache save until after all drives are loaded
+**New streaming code path:**
+```
+serialize_compact_to_writer → zstd::Encoder<Vec<u8>>  (no intermediate buffer)
+encoder.finish()             → Vec<u8> ~200 MB (compressed)
+encrypt_cache(...)           → Vec<u8> ~200 MB
+atomic_write(...)            → disk
+Peak: ~400 MB (compressed + encrypted coexist)
+```
 
-**Files to investigate:**
-- `crates/uffs-core/src/compact_cache.rs` — `serialize_compact()` + `save_compact_cache()`
-- `crates/uffs-core/src/compact_loader.rs:129` — where bg save is triggered
-
-**Status:** [ ] Not started
+**Status:** [x] Complete — streaming serialization eliminates 1.1 GB buffer:
+- `serialize_compact_to_writer()`: writes same byte layout directly to
+  any `impl Write`, zero intermediate allocation
+- `save_compact_cache_background()`: calling thread does
+  serialize → zstd compress (~200 MB output), background thread does
+  AES-256-GCM encrypt → atomic disk write
+- `save_compact_cache()` (blocking): uses
+  `compress_encrypt_write_streaming()` with closure
+- `compress_encrypt_write_streaming()` added to `uffs-mft/cache.rs`
+- `new_zstd_mt_encoder()` extracts encoder creation for reuse
+- Peak memory: ~400 MB (down from ~1.3 GB)
 
 ---
 
@@ -211,7 +220,7 @@ the query, streams the response to stdout or file.
 | OPT-1 | `shrink_to_fit()` + heap reporting | ~500 MB RAM | Trivial | ✅ Done |
 | OPT-2 | Allocator purge + memory visibility | ~2-3 GB RAM | Low | ✅ Done |
 | OPT-4 | Daemon writes `--out` (full OutputConfig) | eliminates IPC | Medium | ✅ Done |
-| OPT-3 | Cache save streaming | ~1 GB peak RAM | Investigation | 🟡 Not started |
+| OPT-3 | Cache save streaming | ~1 GB peak RAM | Medium | ✅ Done |
 | OPT-5 | Thin CLI client | 152→15 ms load | Medium | 🟡 Not started |
 
 ## Implementation Order
@@ -221,7 +230,7 @@ the query, streams the response to stdout or file.
    - D: alone: 8 GB RSS (was ~14 GB), index heap ~1.1 GB
    - Gap still large → allocator not returning pages (next: investigate)
 3. ~~**OPT-4** — daemon-writes-file for `--out`~~ ✅ Done
-4. **OPT-3** — investigate cache save memory, fix if worthwhile
+4. ~~**OPT-3** — streaming cache save (eliminate 1.1 GB buffer)~~ ✅ Done
 5. **OPT-5** — thin client (after architecture is validated)
 
 ## Non-goals (preserve current functionality)
