@@ -18,6 +18,8 @@ use std::process::Command;
 use anyhow as _;
 use clap as _;
 use libc as _;
+use libmimalloc_sys as _;
+use mimalloc as _;
 use rand as _;
 use serde as _;
 use serde_json as _;
@@ -32,15 +34,15 @@ use uffs_daemon as _;
 use uffs_mft as _;
 use uffs_security as _;
 
-/// Find the daemon binary.
+/// Find the daemon binary (`uffsd`).
 fn daemon_exe() -> PathBuf {
     let current = std::env::current_exe().expect("current_exe");
 
-    // Try: pop binary name, pop deps/, look for uffs-daemon
+    // Try: pop binary name, pop deps/, look for uffsd
     let mut candidate = current.clone();
     candidate.pop(); // remove test binary
     candidate.pop(); // remove deps/
-    candidate.push("uffs-daemon");
+    candidate.push("uffsd");
     if candidate.exists() {
         return candidate;
     }
@@ -48,13 +50,13 @@ fn daemon_exe() -> PathBuf {
     // Try without deps/ (in case test isn't in deps/)
     let mut alt = current;
     alt.pop();
-    alt.push("uffs-daemon");
+    alt.push("uffsd");
     if alt.exists() {
         return alt;
     }
 
     // Fallback: assume it's in PATH
-    PathBuf::from("uffs-daemon")
+    PathBuf::from("uffsd")
 }
 
 /// Get the platform socket path.

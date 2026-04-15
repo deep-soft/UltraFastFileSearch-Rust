@@ -243,7 +243,7 @@ fn encode_cursor(offset: u32) -> String {
     clippy::too_many_lines,
     reason = "param mapping from MCP to SearchParams — mirrors CLI arg processing"
 )]
-pub(crate) async fn run(
+pub async fn run(
     client: &mut UffsClient,
     args: SearchArgs,
     roots_state: &RootsState,
@@ -449,7 +449,7 @@ pub(crate) async fn run(
 /// Bundled context for [`format_text_output`] to avoid too many parameters.
 struct FormatContext<'a> {
     /// The page of search result rows.
-    page_rows: &'a [uffs_client::protocol::SearchRow],
+    page_rows: &'a [uffs_client::protocol::response::SearchRow],
     /// Columns to display.
     projection: &'a [String],
     /// Optional warnings to show before the table.
@@ -563,7 +563,7 @@ fn col_header(col: &str) -> &'static str {
 }
 
 /// Extract a column value from a search row for the human-readable table.
-fn col_value(col: &str, row: &uffs_client::protocol::SearchRow) -> String {
+fn col_value(col: &str, row: &uffs_client::protocol::response::SearchRow) -> String {
     match col {
         "name" => row.name.clone(),
         "ext" => extract_ext(&row.name),
@@ -574,17 +574,17 @@ fn col_value(col: &str, row: &uffs_client::protocol::SearchRow) -> String {
                 "file".to_owned()
             }
         }
-        "size" => uffs_client::protocol::format_size(row.size),
-        "allocated" => uffs_client::protocol::format_size(row.allocated),
-        "modified" => uffs_client::protocol::format_time(row.modified),
-        "created" => uffs_client::protocol::format_time(row.created),
-        "accessed" => uffs_client::protocol::format_time(row.accessed),
+        "size" => uffs_client::protocol::response::format_size(row.size),
+        "allocated" => uffs_client::protocol::response::format_size(row.allocated),
+        "modified" => uffs_client::protocol::response::format_time(row.modified),
+        "created" => uffs_client::protocol::response::format_time(row.created),
+        "accessed" => uffs_client::protocol::response::format_time(row.accessed),
         "path" => row.path.clone(),
         "drive" => row.drive.to_string(),
         "flags" => format!("0x{:08X}", row.flags),
         "descendants" => row.descendants.to_string(),
-        "treesize" => uffs_client::protocol::format_size(row.treesize),
-        "tree_allocated" => uffs_client::protocol::format_size(row.tree_allocated),
+        "treesize" => uffs_client::protocol::response::format_size(row.treesize),
+        "tree_allocated" => uffs_client::protocol::response::format_size(row.tree_allocated),
         _ => String::new(),
     }
 }
@@ -593,7 +593,8 @@ fn col_value(col: &str, row: &uffs_client::protocol::SearchRow) -> String {
 ///
 /// Encodes backslashes, spaces, and other URI-unsafe characters while keeping
 /// drive letters and forward slashes readable.
-pub(crate) fn percent_encode_path(path: &str) -> String {
+#[must_use]
+pub fn percent_encode_path(path: &str) -> String {
     // Normalize backslashes to forward slashes for URI compatibility.
     let normalized = path.replace('\\', "/");
     // Percent-encode characters that aren't URI-safe path characters.

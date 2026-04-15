@@ -135,7 +135,7 @@ fn format_bucket_summary(
 ///
 /// Columns: `| Name | Ext | Type | Size | Modified | Path |`
 #[must_use]
-pub fn format_search_row(row: &uffs_client::protocol::SearchRow) -> String {
+pub fn format_search_row(row: &uffs_client::protocol::response::SearchRow) -> String {
     let ext = match row.name.rsplit_once('.') {
         Some((_, ext)) if !ext.is_empty() => ext.to_ascii_lowercase(),
         _ => String::new(),
@@ -146,8 +146,8 @@ pub fn format_search_row(row: &uffs_client::protocol::SearchRow) -> String {
         row.name,
         ext,
         kind,
-        uffs_client::protocol::format_size(row.size),
-        uffs_client::protocol::format_time(row.modified),
+        uffs_client::protocol::response::format_size(row.size),
+        uffs_client::protocol::response::format_time(row.modified),
         row.path,
     )
 }

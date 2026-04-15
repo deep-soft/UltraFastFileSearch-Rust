@@ -96,7 +96,7 @@ fn with_clean_output_schema<T: schemars::JsonSchema + 'static>(tool: Tool) -> To
 }
 
 /// Known tool names — used for early rejection before daemon dispatch.
-pub(crate) const KNOWN_TOOLS: &[&str] = &[
+pub const KNOWN_TOOLS: &[&str] = &[
     "uffs_search",
     "uffs_drives",
     "uffs_status",
@@ -106,7 +106,8 @@ pub(crate) const KNOWN_TOOLS: &[&str] = &[
 ];
 
 /// Check if a tool name is known.
-pub(crate) fn is_known_tool(name: &str) -> bool {
+#[must_use]
+pub fn is_known_tool(name: &str) -> bool {
     KNOWN_TOOLS.contains(&name)
 }
 
@@ -259,7 +260,8 @@ pub fn prompt_definitions() -> Vec<rmcp::model::Prompt> {
 /// Percent-decode a URI path component back to a plain string.
 ///
 /// Handles `%XX` sequences (e.g. `%20` → space, `%5C` → backslash).
-pub(crate) fn percent_decode_path(encoded: &str) -> String {
+#[must_use]
+pub fn percent_decode_path(encoded: &str) -> String {
     let mut decoded = Vec::with_capacity(encoded.len());
     let bytes = encoded.as_bytes();
     let mut idx = 0;

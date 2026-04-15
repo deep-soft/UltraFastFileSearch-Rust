@@ -342,7 +342,7 @@ pub struct DriveCompactIndex {
     /// Enables O(K) `--ext` queries where K = matching records, not O(N).
     pub ext_index: ExtensionIndex,
     /// NTFS `$UpCase` case folding engine for this volume.
-    pub fold: uffs_text::CaseFold,
+    pub fold: uffs_text::case_fold::CaseFold,
     /// Extension name table: `ext_names[extension_id]` → lowercase extension
     /// string (e.g. `"rs"`, `"txt"`). Index 0 = no extension.
     /// Used to resolve `--ext` filter strings to `u16` IDs for O(1)
@@ -861,7 +861,7 @@ pub(crate) const INDEX_TTL_SECONDS: u64 = 14400;
 /// `drive_letter`. On success, log the result at `INFO` and any diffs
 /// from the compiled-in default at `WARN`. On failure, log at `WARN`
 /// and fall back to [`CaseFold::default_table()`].
-pub(crate) fn resolve_case_fold(drive_letter: char) -> uffs_text::CaseFold {
+pub(crate) fn resolve_case_fold(drive_letter: char) -> uffs_text::case_fold::CaseFold {
     let live_table = match uffs_mft::platform::upcase::read_upcase_table(drive_letter) {
         Ok(table) => table,
         Err(err) => {
@@ -870,19 +870,19 @@ pub(crate) fn resolve_case_fold(drive_letter: char) -> uffs_text::CaseFold {
                 error = %err,
                 "$UpCase live read failed — falling back to compiled-in default table"
             );
-            return uffs_text::CaseFold::default_table();
+            return uffs_text::case_fold::CaseFold::default_table();
         }
     };
 
     // Leak the box to get a `&'static [u16]` for CaseFold::from_ntfs.
-    let live_fold = uffs_text::CaseFold::from_ntfs(Box::leak(live_table));
+    let live_fold = uffs_text::case_fold::CaseFold::from_ntfs(Box::leak(live_table));
     log_upcase_comparison(drive_letter, &live_fold);
     live_fold
 }
 
 /// Log the comparison between live and compiled-in `$UpCase` tables.
-fn log_upcase_comparison(drive_letter: char, live_fold: &uffs_text::CaseFold) {
-    let default = uffs_text::CaseFold::default_table();
+fn log_upcase_comparison(drive_letter: char, live_fold: &uffs_text::case_fold::CaseFold) {
+    let default = uffs_text::case_fold::CaseFold::default_table();
     let diffs = default.diff(live_fold);
 
     if diffs.is_empty() {

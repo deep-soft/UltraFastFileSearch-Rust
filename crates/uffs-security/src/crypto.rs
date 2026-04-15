@@ -396,9 +396,6 @@ mod tests {
     /// decrypt still works.
     #[test]
     fn decrypt_v1_backward_compat() {
-        use aes_gcm::aead::generic_array::GenericArray;
-        use aes_gcm::{AeadInPlace, Aes256Gcm, KeyInit, Nonce};
-
         let key_bytes = [0x77_u8; 32];
         let plaintext = b"v1 payload data";
         let nonce_bytes = [0x01_u8; 12];

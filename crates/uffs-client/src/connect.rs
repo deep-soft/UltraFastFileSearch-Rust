@@ -19,7 +19,12 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::protocol::{DrivesResponse, RpcRequest, SearchParams, SearchResponse, StatusResponse};
+use crate::daemon_ctl::{
+    find_daemon_exe, keepalive_send_blocking, pid_file_path, socket_path, spawn_daemon,
+    verify_daemon_after_connect,
+};
+use crate::protocol::response::{DrivesResponse, SearchResponse, StatusResponse};
+use crate::protocol::{RpcRequest, SearchParams};
 
 /// Thin client for the UFFS daemon.
 ///
@@ -43,8 +48,8 @@ impl UffsClient {
     /// Connect to a running daemon, or auto-start one if not running.
     ///
     /// Tries to connect to the socket. If the socket doesn't exist or
-    /// connection fails, spawns `uffs daemon run` as a detached process
-    /// and retries with exponential backoff (up to ~30s).
+    /// connection fails, spawns `uffsd` as a detached process and retries
+    /// with exponential backoff (up to ~30s).
     ///
     /// On Windows the daemon auto-discovers live NTFS drives so no extra
     /// args are needed.  On Mac/Linux, pass `--data-dir` or `--mft-file`
@@ -72,10 +77,10 @@ impl UffsClient {
     /// Connect to a running daemon, or auto-start one with extra CLI
     /// arguments.
     ///
-    /// `spawn_args` are forwarded to `uffs daemon run` **only** when
-    /// the daemon is not already running and must be auto-started.  If
-    /// a daemon is already listening, the args are ignored (it already
-    /// has its data loaded).
+    /// `spawn_args` are forwarded to `uffsd` **only** when the daemon
+    /// is not already running and must be auto-started.  If a daemon is
+    /// already listening, the args are ignored (it already has its data
+    /// loaded).
     ///
     /// Typical usage (Mac/Linux):
     /// ```rust,ignore
@@ -104,7 +109,7 @@ impl UffsClient {
             return Ok(client);
         }
 
-        // Auto-start the daemon using the same binary (`uffs daemon run`)
+        // Auto-start the daemon (`uffsd`)
         Self::auto_start_daemon(spawn_args)?;
 
         // Retry with exponential backoff until connected.
@@ -138,20 +143,20 @@ impl UffsClient {
     /// Returns [`ClientError`](crate::error::ClientError) if the daemon
     /// executable cannot be found or the spawn fails.
     fn auto_start_daemon(spawn_args: &[String]) -> Result<(), crate::error::ClientError> {
-        tracing::info!("Daemon not running, auto-starting via `uffs daemon run`...");
+        tracing::info!("Daemon not running, auto-starting via `uffsd`...");
 
-        let uffs_exe = find_uffs_exe();
-        let mut cmd_args: Vec<&str> = vec!["daemon", "run"];
+        let daemon_exe = find_daemon_exe();
+        let mut cmd_args: Vec<&str> = Vec::new();
         for arg in spawn_args {
             cmd_args.push(arg.as_str());
         }
-        log_spawn_details(&uffs_exe, &cmd_args);
+        log_spawn_details(&daemon_exe, &cmd_args);
 
         // On Windows, MFT reading requires Administrator privileges. If the
         // current process is not elevated, we use `ShellExecuteW` with the
         // "runas" verb to trigger a UAC consent dialog. If already elevated
         // (or the broker service is available), we spawn normally.
-        spawn_daemon(&uffs_exe, &cmd_args)?;
+        spawn_daemon(&daemon_exe, &cmd_args)?;
         tracing::debug!("auto_start_daemon: spawn returned OK");
         Ok(())
     }
@@ -373,7 +378,7 @@ impl UffsClient {
     /// Returns a `ClientError` on connection, protocol, or timeout failure.
     pub async fn stats(
         &mut self,
-    ) -> Result<crate::protocol::StatsResponse, crate::error::ClientError> {
+    ) -> Result<crate::protocol::response::StatsResponse, crate::error::ClientError> {
         let result = self.send_request("stats", None).await?;
         serde_json::from_value(result)
             .map_err(|err| crate::error::ClientError::Protocol(err.to_string()))
@@ -382,8 +387,8 @@ impl UffsClient {
     /// Wait until the daemon has finished loading its indices.
     ///
     /// Polls `status()` with exponential backoff (250ms → 2s cap) until the
-    /// daemon reports [`crate::protocol::DaemonStatus::Ready`].  Times out
-    /// after `timeout` and returns an error.
+    /// daemon reports [`crate::protocol::response::DaemonStatus::Ready`].
+    /// Times out after `timeout` and returns an error.
     ///
     /// If multiple consecutive I/O errors occur (e.g. broken pipe from a
     /// stale socket), the client automatically reconnects to the daemon.
@@ -464,7 +469,7 @@ impl UffsClient {
         &mut self,
         mft_files: &[String],
         no_cache: bool,
-    ) -> Result<crate::protocol::LoadDriveResponse, crate::error::ClientError> {
+    ) -> Result<crate::protocol::response::LoadDriveResponse, crate::error::ClientError> {
         let params = serde_json::json!({
             "mft_files": mft_files,
             "no_cache": no_cache,
@@ -493,7 +498,7 @@ impl UffsClient {
     pub async fn info(
         &mut self,
         path: &str,
-    ) -> Result<crate::protocol::InfoResponse, crate::error::ClientError> {
+    ) -> Result<crate::protocol::response::InfoResponse, crate::error::ClientError> {
         let params = serde_json::json!({"path": path});
         let result = self.send_request("info", Some(params)).await?;
         serde_json::from_value(result)
@@ -611,7 +616,7 @@ impl UffsClient {
         match self.status().await {
             Ok(resp) => {
                 tracing::info!(poll_count, status = ?resp.status, "await_ready: got status");
-                if resp.status == crate::protocol::DaemonStatus::Ready {
+                if resp.status == crate::protocol::response::DaemonStatus::Ready {
                     PollOutcome::Ready
                 } else {
                     PollOutcome::NotReady
@@ -829,14 +834,8 @@ impl UffsClient {
     }
 }
 
-// ── Daemon lifecycle helpers (extracted to daemon_ctl.rs) ──────────────────
-// Re-exported here so callers see no change.
-pub use crate::daemon_ctl::{
-    find_daemon_exe, find_uffs_exe, parse_pid_file, pid_file_path, socket_path,
-};
-pub(crate) use crate::daemon_ctl::{
-    keepalive_send_blocking, spawn_daemon, verify_daemon_after_connect,
-};
+// Daemon lifecycle helpers live in crate::daemon_ctl — import from there
+// directly.
 
 // ── Logging helpers ─────────────────────────────────────────────────
 // Extracted to keep calling functions under the cognitive-complexity limit.

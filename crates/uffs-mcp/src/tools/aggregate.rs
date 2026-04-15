@@ -66,7 +66,7 @@ fn default_pattern() -> String {
 /// # Errors
 ///
 /// Returns [`BridgeError`] if the daemon call fails.
-pub(crate) async fn run(
+pub async fn run(
     client: &mut UffsClient,
     args: AggregateArgs,
     roots_state: &RootsState,

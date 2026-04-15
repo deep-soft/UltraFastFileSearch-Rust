@@ -103,7 +103,7 @@ fn serve_pipe_requests() -> anyhow::Result<()> {
                     None,
                     "identity verification failed",
                 );
-                tracing::warn!(pid, "Rejected broker client — not uffs-daemon");
+                tracing::warn!(pid, "Rejected broker client — not uffsd");
                 disconnect_and_close(&pipe);
                 continue;
             }
@@ -372,7 +372,6 @@ fn wait_for_client(pipe: &windows::Win32::Foundation::HANDLE) -> anyhow::Result<
 /// Disconnect client and close pipe handle.
 #[cfg(windows)]
 fn disconnect_and_close(pipe: &windows::Win32::Foundation::HANDLE) {
-    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Pipes::DisconnectNamedPipe;
 
     #[expect(
@@ -410,7 +409,6 @@ fn get_pipe_client_pid(pipe: &windows::Win32::Foundation::HANDLE) -> Option<u32>
 /// Verify that a client process is a legitimate uffs-daemon.
 #[cfg(windows)]
 fn verify_client(pid: u32) -> bool {
-    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
         QueryFullProcessImageNameW,
@@ -443,7 +441,12 @@ fn verify_client(pid: u32) -> bool {
         .and_then(|n| n.to_str())
         .unwrap_or("");
 
-    name == "uffs-daemon.exe" || name == "uffs-daemon" || name.starts_with("uffs_daemon")
+    name == "uffsd"
+        || name == "uffsd.exe"
+        || name == "uffs-daemon.exe"
+        || name == "uffs-daemon"
+        || name.starts_with("uffs-daemon")
+        || name.starts_with("uffs_daemon")
 }
 
 // ── D7.5: Handle Brokering ──────────────────────────────────────────────

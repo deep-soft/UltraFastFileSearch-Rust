@@ -1,17 +1,19 @@
 # ============================================================================
-# uffs-cli: Command-Line Interface
+# uffs-cli: Thin CLI Client
 # ============================================================================
-# Fast file search from the command line.
+# Lightweight command-line client for UFFS.  All heavy lifting (MFT reading,
+# polars queries, index management) happens in the daemon (`uffsd`).
+# This crate depends only on `uffs-client` for IPC and formatting helpers.
 #
 # Usage:
-#   uffs search "*.rs" --drive C
-#   uffs index --drive C --output c_drive.parquet
-#   uffs search "*.txt" --index c_drive.parquet
+#   uffs "*.rs" --drive C
+#   uffs stats
+#   uffs daemon start
 # ============================================================================
 
 [package]
 name = "uffs-cli"
-description = "Command-line interface for UFFS (Ultra Fast File Search)"
+description = "Thin command-line client for UFFS (Ultra Fast File Search)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -27,9 +29,9 @@ name = "uffs"
 path = "src/main.rs"
 
 [dependencies]
-# Internal crates
-uffs-mft.workspace = true
-uffs-core.workspace = true
+# UFFS client library (IPC, protocol, format helpers)
+uffs-client.workspace = true
+uffs-mcp.workspace = true
 
 # Async runtime
 tokio.workspace = true
@@ -47,18 +49,11 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 dirs-next.workspace = true
 
-# Polars facade (for main CLI index/search commands)
-uffs-polars.workspace = true
-
-# Time handling
-chrono.workspace = true
+# Serialization
+serde_json.workspace = true
 
 # Memory allocator - mimalloc is faster than system allocator on all platforms
 mimalloc.workspace = true
-uffs-client.workspace = true
-uffs-daemon.workspace = true
-uffs-mcp.workspace = true
-serde_json.workspace = true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lints (inherit from workspace)

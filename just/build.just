@@ -52,28 +52,33 @@ deploy-release:
 copy-binary profile:
     #!/usr/bin/env bash
     printf "\033[0;34m📦 Cross-platform binary deployment ({{ profile }})...\033[0m\n"
-    if [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]] || [[ -n "$WINDIR" ]]; then TARGET_BINARY="uffs.exe"; printf "\033[0;34m  → Windows detected\033[0m\n"; else TARGET_BINARY="uffs"; printf "\033[0;34m  → Unix-like system detected\033[0m\n"; fi
+    if [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]] || [[ -n "$WINDIR" ]]; then EXT=".exe"; printf "\033[0;34m  → Windows detected\033[0m\n"; else EXT=""; printf "\033[0;34m  → Unix-like system detected\033[0m\n"; fi
     SOURCE_DIR="target/{{ profile }}"
-    SOURCE_PATH="$SOURCE_DIR/$TARGET_BINARY"
-    if [[ ! -f "$SOURCE_PATH" ]]; then printf "\033[0;31m❌ Binary not found: $SOURCE_PATH\033[0m\n"; printf "\033[1;33m💡 Run 'just build' first\033[0m\n"; exit 1; fi
     mkdir -p ~/bin
-    DEST_PATH="$HOME/bin/$TARGET_BINARY"
-    printf "\033[0;34m  → Source: $SOURCE_PATH\033[0m\n"
-    printf "\033[0;34m  → Destination: $DEST_PATH\033[0m\n"
-    if cp "$SOURCE_PATH" "$DEST_PATH" && chmod +x "$DEST_PATH"; then
-        printf "\033[0;32m✅ Binary deployed to ~/bin/$TARGET_BINARY\033[0m\n"
-    else
-        printf "\033[0;31m❌ Failed to copy binary\033[0m\n"
-        exit 1
-    fi
+    for BIN in uffs uffsd; do
+        SOURCE_PATH="$SOURCE_DIR/${BIN}${EXT}"
+        DEST_PATH="$HOME/bin/${BIN}${EXT}"
+        if [[ ! -f "$SOURCE_PATH" ]]; then
+            printf "\033[1;33m⚠️  %s not found: %s (skipping)\033[0m\n" "$BIN" "$SOURCE_PATH"
+            continue
+        fi
+        printf "\033[0;34m  → %s → %s\033[0m\n" "$SOURCE_PATH" "$DEST_PATH"
+        if cp "$SOURCE_PATH" "$DEST_PATH" && chmod +x "$DEST_PATH"; then
+            printf "\033[0;32m✅ %s deployed to ~/bin/\033[0m\n" "${BIN}${EXT}"
+        else
+            printf "\033[0;31m❌ Failed to copy %s\033[0m\n" "$BIN"
+            exit 1
+        fi
+    done
     if ! echo "$PATH" | grep -q "$HOME/bin"; then printf "\033[1;33m⚠️  ~/bin not in PATH. Add this to your shell profile:\033[0m\n"; printf "   export PATH=\"\$HOME/bin:\$PATH\"\n"; fi
 
 # Install UFFS binaries from local dist/ cache to ~/bin.
 # If dist/ is empty, downloads the latest release from GitHub first.
 #
 # Platform binaries installed:
-#   macOS   : uffs-macos-arm64 → uffs, uffs_mft-macos-arm64 → uffs_mft
-#   Windows : uffs-windows-x64.exe → uffs.exe, uffs_mft-windows-x64.exe → uffs_mft.exe
+#   macOS   : uffs-macos-arm64 → uffs, uffsd-macos-arm64 → uffsd, uffs_mft-macos-arm64 → uffs_mft
+#   Windows : uffs-windows-x64.exe → uffs.exe, uffsd-windows-x64.exe → uffsd.exe,
+#             uffs_mft-windows-x64.exe → uffs_mft.exe
 #
 # NOTE: uffs_tui and uffs_gui have moved to the private uffs-products repo.
 [unix]
@@ -129,6 +134,7 @@ use:
     # Map release asset names → install names
     declare -A BINARIES=(
         ["uffs-macos-arm64"]="uffs"
+        ["uffsd-macos-arm64"]="uffsd"
         ["uffs_mft-macos-arm64"]="uffs_mft"
     )
     INSTALLED=0
@@ -229,6 +235,7 @@ use:
     if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
     $binaries = @{
         'uffs-windows-x64.exe' = 'uffs.exe'
+        'uffsd-windows-x64.exe' = 'uffsd.exe'
         'uffs_mft-windows-x64.exe' = 'uffs_mft.exe'
     }
     $installed = 0; $skipped = 0

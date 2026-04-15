@@ -322,7 +322,7 @@ fn read_ext_names_table(data: &[u8], offset: usize) -> Vec<Box<str>> {
 fn rebuild_ext_names(
     records: &[CompactRecord],
     names: &[u8],
-    fold: uffs_text::CaseFold,
+    fold: uffs_text::case_fold::CaseFold,
 ) -> Vec<Box<str>> {
     let max_id = records
         .iter()
@@ -794,7 +794,7 @@ mod tests {
                 ..CompactRecord::default()
             },
         ];
-        let fold = uffs_text::CaseFold::default_table();
+        let fold = uffs_text::case_fold::CaseFold::default_table();
         let trigram = TrigramIndex::build(&records, &names, fold);
         let children = ChildrenIndex::build(&records);
         let ext_index = ExtensionIndex::build(&records);

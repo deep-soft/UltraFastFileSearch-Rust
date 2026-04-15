@@ -4,7 +4,7 @@
 //! Shared record-filter helpers for `IndexQuery` execution.
 
 use uffs_mft::index::{FileRecord, MftIndex};
-use uffs_text::CaseFold;
+use uffs_text::case_fold::CaseFold;
 
 use super::TypeFilter;
 use crate::index_search::IndexPattern;

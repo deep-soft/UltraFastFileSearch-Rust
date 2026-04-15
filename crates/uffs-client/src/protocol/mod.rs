@@ -4,10 +4,10 @@
 //! JSON-RPC 2.0 protocol types shared between client and daemon.
 //!
 //! These types define the wire format for IPC communication. Both
-//! `uffs-daemon` and `uffs-client` depend on this module.
+//! `uffsd` (daemon) and `uffs` (CLI) both depend on this module.
 
-mod response;
-mod search_params;
+pub mod response;
+pub mod search_params;
 #[cfg(test)]
 mod tests;
 
@@ -447,6 +447,14 @@ pub struct SearchParams {
     /// Comma-separated column names like `"path,name,size"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_columns: Option<String>,
+    /// Output config: enable parity-compat formatting (trailing `\` on
+    /// directory paths, empty `Name` for dirs, `treesize` for dir `Size`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_parity_compat: Option<bool>,
+    /// Output config: timezone offset in hours from UTC for timestamp
+    /// formatting (overrides auto-detected local timezone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tz_offset_hours: Option<i32>,
 }
 
 /// Default-true helper for serde.
@@ -513,6 +521,8 @@ impl Default for SearchParams {
             output_pos: None,
             output_neg: None,
             output_columns: None,
+            output_parity_compat: None,
+            output_tz_offset_hours: None,
         }
     }
 }

@@ -4,16 +4,13 @@
 //! Daemon-based search: routes CLI search through the UFFS daemon via IPC.
 //!
 //! This module builds [`SearchParams`](uffs_client::protocol::SearchParams)
-//! from CLI arguments and sends the query to the daemon. The response rows are
-//! converted to [`DisplayRow`](uffs_core::search::backend::DisplayRow) so the
-//! existing output pipeline works unchanged.
+//! from CLI arguments and sends the query to the daemon.  Response rows are
+//! `SearchRow` — no conversion to `DisplayRow`, no polars, no `uffs-core`.
 
 use anyhow::{Context, Result};
 use tracing::info;
-use uffs_client::protocol::{
-    SearchFilterMode, SearchParams, SearchProfile, SearchResponseMode, SearchRow,
-};
-use uffs_core::search::backend::DisplayRow;
+use uffs_client::protocol::response::{SearchProfile, SearchRow};
+use uffs_client::protocol::{SearchFilterMode, SearchParams, SearchResponseMode};
 
 use super::SearchConfig;
 
@@ -33,7 +30,7 @@ fn fmt_number(num: usize) -> String {
 /// Search via the UFFS daemon.
 ///
 /// Connects to a running daemon (auto-starting if needed), sends the search
-/// query, and converts the response to `Vec<DisplayRow>`.
+/// query, and returns the response `SearchRow`s directly.
 ///
 /// # Data source discovery
 ///
@@ -45,10 +42,13 @@ fn fmt_number(num: usize) -> String {
     clippy::cognitive_complexity,
     reason = "search param building + response formatting with column projection"
 )]
-pub(super) async fn search_via_daemon(
+/// # Errors
+///
+/// Returns an error if the operation fails.
+pub async fn search_via_daemon(
     config: &SearchConfig<'_>,
 ) -> Result<(
-    Vec<DisplayRow>,
+    Vec<SearchRow>,
     Vec<uffs_client::protocol::AggregateResultWire>,
 )> {
     let spawn_args = build_daemon_spawn_args(config)?;
@@ -142,13 +142,8 @@ pub(super) async fn search_via_daemon(
         "🔌 Daemon search complete"
     );
 
-    let t_convert = std::time::Instant::now();
-    let rows: Vec<DisplayRow> = response
-        .rows
-        .into_iter()
-        .map(search_row_to_display_row)
-        .collect();
-    let convert_ms = t_convert.elapsed().as_millis();
+    let rows = response.rows;
+    let convert_ms: u128 = 0; // no conversion needed — SearchRow used directly
 
     // Emit profile breakdown to stderr when --profile or --benchmark is active.
     if profile {
@@ -177,7 +172,7 @@ struct ClientTiming {
     ipc_ms: u128,
     /// Daemon-reported search duration (ms).
     daemon_ms: u64,
-    /// Time to convert `SearchRow` → `DisplayRow` (ms).
+    /// Conversion overhead (ms) — zero since `SearchRow` is used directly.
     convert_ms: u128,
     /// Number of result rows returned.
     row_count: usize,
@@ -399,17 +394,15 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
     let sorts = config.sort.map_or_else(Vec::new, |sort| {
         SearchParams::canonicalize_legacy_sort(sort, config.sort_desc)
     });
-    let projection = config
-        .output_config
-        .columns
-        .as_ref()
-        .map(|columns| {
-            columns
-                .iter()
-                .map(|column| column.canonical_name().to_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+    let projection: Vec<String> = if config.columns.is_empty() {
+        Vec::new()
+    } else {
+        config
+            .columns
+            .split(',')
+            .map(|col| col.trim().to_owned())
+            .collect()
+    };
 
     let mut params = SearchParams {
         pattern: config.pattern.to_owned(),
@@ -461,8 +454,7 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
             .agg_specs
             .iter()
             .map(|spec| {
-                let is_preset =
-                    uffs_core::aggregate::presets::AggregatePreset::parse(spec).is_some();
+                let is_preset = uffs_client::format::is_aggregate_preset(spec);
                 uffs_client::protocol::AggregateSpecWire {
                     kind: if spec == "count" {
                         "count".to_owned()
@@ -501,39 +493,19 @@ fn build_search_params(config: &SearchConfig<'_>) -> SearchParams {
             };
             Some(abs.to_string_lossy().into_owned())
         },
-        output_separator: Some(config.output_config.separator.clone()),
-        output_quote: Some(config.output_config.quote.clone()),
-        output_header: Some(config.output_config.header),
-        output_pos: Some(config.output_config.pos.clone()),
-        output_neg: Some(config.output_config.neg.clone()),
-        output_columns: config.output_config.columns.as_ref().map(|cols| {
-            cols.iter()
-                .map(|col| col.canonical_name())
-                .collect::<Vec<_>>()
-                .join(",")
-        }),
+        output_separator: Some(config.sep.to_owned()),
+        output_quote: Some(config.quotes.to_owned()),
+        output_header: Some(config.header),
+        output_pos: Some(config.pos.to_owned()),
+        output_neg: Some(config.neg.to_owned()),
+        output_columns: if config.columns.is_empty() {
+            None
+        } else {
+            Some(config.columns.to_owned())
+        },
+        output_parity_compat: (config.columns == "parity").then_some(true),
+        output_tz_offset_hours: config.tz_offset,
     };
     params.populate_canonical_fields();
     params
-}
-
-/// Convert a daemon [`SearchRow`] to a [`DisplayRow`].
-///
-/// Both types carry the same fields — this is a mechanical mapping.
-fn search_row_to_display_row(row: SearchRow) -> DisplayRow {
-    DisplayRow::new(
-        0,
-        row.drive,
-        row.path,
-        row.size,
-        row.is_directory,
-        row.modified,
-        row.created,
-        row.accessed,
-        row.flags,
-        row.allocated,
-        row.descendants,
-        row.treesize,
-        row.tree_allocated,
-    )
 }

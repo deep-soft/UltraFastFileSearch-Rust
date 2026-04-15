@@ -10,7 +10,7 @@
 //! The MCP server writes its own PID file (`~/.uffs/mcp-server.pid`) so
 //! that `status`, `stop`, `kill`, and `restart` can find it.
 
-mod mcp_process;
+pub mod mcp_process;
 
 use anyhow::{Context, Result};
 use mcp_process::{
@@ -22,7 +22,11 @@ use uffs_client::connect::UffsClient;
 use crate::args::McpAction;
 
 /// Execute an MCP management action.
-pub(crate) async fn mcp(action: &McpAction) -> Result<()> {
+///
+/// # Errors
+///
+/// Returns an error if the operation fails.
+pub async fn mcp(action: &McpAction) -> Result<()> {
     match action {
         McpAction::Start {
             mft_file,
@@ -138,7 +142,7 @@ async fn mcp_serve(
 
     // ── Start the HTTP gateway ──────────────────────────────────────
     let transport = format!("http:{bind}:{port}");
-    uffs_mcp::write_mcp_pid_file_full(&transport, data_dir, mft_files, false);
+    uffs_mcp::pid::write_mcp_pid_file_full(&transport, data_dir, mft_files, false);
 
     let addr: core::net::SocketAddr = format!("{bind}:{port}")
         .parse()
@@ -153,7 +157,7 @@ async fn mcp_serve(
     let result = uffs_mcp::http::run_gateway(config).await;
 
     // Clean up PID file on exit.
-    uffs_mcp::remove_mcp_pid_file();
+    uffs_mcp::pid::remove_mcp_pid_file();
     result
 }
 
@@ -190,7 +194,7 @@ async fn mcp_start(
     // healthy.  If the gateway is alive but the daemon is dead, restart
     // the daemon only — leave the gateway alone.
     let gateway_alive =
-        uffs_mcp::is_mcp_server_running().is_some() || port_is_occupied(bind, port).await;
+        uffs_mcp::pid::is_mcp_server_running().is_some() || port_is_occupied(bind, port).await;
 
     if gateway_alive && preflight_reclaim_or_reuse(bind, port, &daemon_args).await? {
         return Ok(());
@@ -300,12 +304,12 @@ async fn preflight_reclaim_or_reuse(bind: &str, port: u16, daemon_args: &[String
         // Gateway is dead / stale — kill whatever is on the port and let
         // the caller start fresh.
         println!("  Stale process on port {port} is not healthy — killing it...");
-        let tracked_pid = uffs_mcp::parse_mcp_pid_file().map(|(pid, _ts)| pid);
+        let tracked_pid = uffs_mcp::pid::parse_mcp_pid_file().map(|(pid, _ts)| pid);
         if let Some(pid) = tracked_pid {
             signal_pid(pid, true);
         }
         kill_process_on_port(port, tracked_pid.unwrap_or(0));
-        uffs_mcp::remove_mcp_pid_file();
+        uffs_mcp::pid::remove_mcp_pid_file();
         tokio::time::sleep(core::time::Duration::from_secs(1)).await;
 
         if port_is_occupied(bind, port).await {
@@ -381,9 +385,9 @@ async fn mcp_status() -> Result<()> {
     println!();
 
     // MCP server process status.
-    match uffs_mcp::parse_mcp_pid_file_full() {
+    match uffs_mcp::pid::parse_mcp_pid_file_full() {
         Some(info) => {
-            let alive = uffs_mcp::is_mcp_server_running().is_some();
+            let alive = uffs_mcp::pid::is_mcp_server_running().is_some();
             let uptime_secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |dur| dur.as_secs().saturating_sub(info.start_ts));
@@ -393,7 +397,7 @@ async fn mcp_status() -> Result<()> {
                 println!("  Transport:   {}", info.transport);
                 println!(
                     "  Uptime:      {}",
-                    uffs_core::format::format_duration(uptime)
+                    uffs_client::format::format_duration(uptime)
                 );
 
                 // If HTTP transport, probe the /health endpoint.
@@ -429,9 +433,9 @@ async fn mcp_status() -> Result<()> {
         if let Ok(status) = client.status().await {
             println!("Daemon:        reachable (PID {})", status.pid);
             let state = match &status.status {
-                uffs_client::protocol::DaemonStatus::Ready => "Ready",
-                uffs_client::protocol::DaemonStatus::Loading { .. } => "Loading",
-                uffs_client::protocol::DaemonStatus::Refreshing { .. } => "Refreshing",
+                uffs_client::protocol::response::DaemonStatus::Ready => "Ready",
+                uffs_client::protocol::response::DaemonStatus::Loading { .. } => "Loading",
+                uffs_client::protocol::response::DaemonStatus::Refreshing { .. } => "Refreshing",
             };
             println!("  Status:      {state}");
         } else {
@@ -455,7 +459,7 @@ async fn mcp_status() -> Result<()> {
 #[expect(clippy::print_stdout, reason = "CLI output")]
 async fn mcp_stats() -> Result<()> {
     // MCP server process info.
-    match uffs_mcp::is_mcp_server_running() {
+    match uffs_mcp::pid::is_mcp_server_running() {
         Some(pid) => println!("MCP server PID: {pid}"),
         None => println!("MCP server:     not running"),
     }
@@ -471,11 +475,11 @@ async fn mcp_stats() -> Result<()> {
         .await
         .with_context(|| "Failed to query stats from daemon")?;
 
-    let fmt = uffs_core::format::format_duration;
+    let fmt = uffs_client::format::format_duration;
     let uptime = core::time::Duration::from_secs(stats.uptime_secs);
     let startup = core::time::Duration::from_millis(stats.startup_duration_ms);
     let avg_query =
-        core::time::Duration::from_micros(uffs_mft::f64_to_u64(stats.avg_query_time_us));
+        core::time::Duration::from_micros(uffs_client::format::f64_to_u64(stats.avg_query_time_us));
     let total_query = core::time::Duration::from_micros(stats.total_query_time_us);
 
     println!();
@@ -484,7 +488,7 @@ async fn mcp_stats() -> Result<()> {
     println!("Startup duration:  {}", fmt(startup));
     println!(
         "Total records:     {}",
-        uffs_core::format::format_number_commas(stats.total_records as u64)
+        uffs_client::format::format_number_commas(stats.total_records as u64)
     );
     println!("Queries served:    {}", stats.total_queries);
     if stats.total_queries > 0 {
@@ -508,7 +512,7 @@ async fn mcp_stats() -> Result<()> {
 /// ensure the process actually terminates.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn mcp_stop() {
-    let Some(pid) = uffs_mcp::is_mcp_server_running() else {
+    let Some(pid) = uffs_mcp::pid::is_mcp_server_running() else {
         println!("MCP server is not running.");
         return;
     };
@@ -531,11 +535,11 @@ fn mcp_stop() {
 /// The daemon is NOT affected.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn mcp_kill(port: u16, _bind: &str) {
-    let pid_path = uffs_mcp::mcp_pid_file_path();
+    let pid_path = uffs_mcp::pid::mcp_pid_file_path();
     let mut killed_any = false;
 
     // 1. Kill the process tracked in the PID file.
-    let tracked_pid = if let Some(info) = uffs_mcp::parse_mcp_pid_file_full() {
+    let tracked_pid = if let Some(info) = uffs_mcp::pid::parse_mcp_pid_file_full() {
         println!("Killing MCP server (PID {})...", info.pid);
         signal_pid(info.pid, true);
         killed_any = true;

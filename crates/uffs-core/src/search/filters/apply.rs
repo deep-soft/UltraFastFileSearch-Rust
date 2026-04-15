@@ -21,7 +21,7 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
     if filters.is_empty() {
         return;
     }
-    let fold = uffs_text::CaseFold::default_table();
+    let fold = uffs_text::case_fold::CaseFold::default_table();
     let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
     rows.retain(|row| {
         if filters.hide_system && row.name().starts_with('$') {

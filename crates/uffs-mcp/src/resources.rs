@@ -8,10 +8,11 @@
 //! directly in [`crate::handler`].
 
 use serde::Serialize;
-use uffs_core::search::field::{FieldAccess, FieldId, FieldType};
+use uffs_client::schema::{FieldAccess, FieldId, FieldType};
 
-// Re-export cookbook_json so handler can use `crate::resources::cookbook_json()`.
-pub(crate) use crate::cookbook::cookbook_json;
+// Re-export cookbook_json so handler can use
+// `crate::resources::cookbook_json()`. cookbook_json lives in crate::cookbook —
+// import from there directly.
 
 // ── uffs://schema/fields ─────────────────────────────────────────────
 
@@ -47,7 +48,8 @@ struct FieldEntry {
 }
 
 /// Build the `uffs://schema/fields` JSON string.
-pub(crate) fn field_catalog_json() -> String {
+#[must_use]
+pub fn field_catalog_json() -> String {
     let entries: Vec<FieldEntry> = FieldId::ALL
         .iter()
         .map(|id| {
@@ -83,7 +85,8 @@ pub(crate) fn field_catalog_json() -> String {
 // ── uffs://schema/search ─────────────────────────────────────────────
 
 /// Build the `uffs://schema/search` JSON string from the schemars schema.
-pub(crate) fn search_schema_json() -> String {
+#[must_use]
+pub fn search_schema_json() -> String {
     let schema = schemars::schema_for!(crate::tools::search::SearchArgs);
     serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_owned())
 }
@@ -91,7 +94,8 @@ pub(crate) fn search_schema_json() -> String {
 // ── uffs://schema/aggregate ──────────────────────────────────────────
 
 /// Build the `uffs://schema/aggregate` JSON string from the schemars schema.
-pub(crate) fn aggregate_schema_json() -> String {
+#[must_use]
+pub fn aggregate_schema_json() -> String {
     let schema = schemars::schema_for!(crate::tools::aggregate::AggregateArgs);
     serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_owned())
 }
@@ -108,7 +112,8 @@ struct PresetEntry {
 }
 
 /// Build the `uffs://presets/aggregate` JSON string.
-pub(crate) fn aggregate_presets_json() -> String {
+#[must_use]
+pub fn aggregate_presets_json() -> String {
     let presets = vec![
         PresetEntry {
             name: "overview",

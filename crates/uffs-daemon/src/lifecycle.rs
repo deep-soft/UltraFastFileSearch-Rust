@@ -566,11 +566,11 @@ impl LifecycleManager {
         if let Ok(current) = std::env::current_exe()
             && let Some(dir) = current.parent()
         {
-            let daemon = dir.join("uffs-daemon");
+            let daemon = dir.join("uffsd");
             if daemon.exists() {
                 return Self::fnv1a_hash(daemon.to_string_lossy().as_bytes());
             }
-            let daemon_exe = dir.join("uffs-daemon.exe");
+            let daemon_exe = dir.join("uffsd.exe");
             if daemon_exe.exists() {
                 return Self::fnv1a_hash(daemon_exe.to_string_lossy().as_bytes());
             }

@@ -8,10 +8,11 @@
 //!
 //! ## Current Capabilities
 //!
-//! - **[`CaseFold`]**: NTFS `$UpCase` case folding engine (128 KB table,
-//!   `Copy`, zero-alloc comparisons, buffer-reuse folding)
-//! - **Trigram key helpers**: [`pack_char_trigram`] / [`unpack_char_trigram`]
-//!   for packing 3 folded `u16` codepoints into a `u64`.
+//! - **[`case_fold::CaseFold`]**: NTFS `$UpCase` case folding engine (128 KB
+//!   table, `Copy`, zero-alloc comparisons, buffer-reuse folding)
+//! - **Trigram key helpers**: [`trigram_key::pack_char_trigram`] /
+//!   [`trigram_key::unpack_char_trigram`] for packing 3 folded `u16` codepoints
+//!   into a `u64`.
 //!
 //! ## Future (i18n)
 //!
@@ -20,8 +21,5 @@
 //! - Locale-aware collation
 //! - Search tokenisation
 
-mod case_fold;
-mod trigram_key;
-
-pub use case_fold::{CaseFold, UpcaseDiff};
-pub use trigram_key::{pack_char_trigram, unpack_char_trigram};
+pub mod case_fold;
+pub mod trigram_key;

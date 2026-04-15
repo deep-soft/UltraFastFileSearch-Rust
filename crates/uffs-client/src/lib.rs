@@ -25,7 +25,10 @@ use uffs_security as _;
 pub mod connect;
 pub mod daemon_ctl;
 pub mod error;
+pub mod format;
 pub mod protocol;
 pub mod shmem;
 pub mod types;
 pub mod verify;
+
+pub mod schema;

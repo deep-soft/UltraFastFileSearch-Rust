@@ -16,7 +16,11 @@ use clap::{Parser, Subcommand};
 /// - With colon: `C:`, `c:`
 ///
 /// Returns uppercase drive letter.
-pub(crate) fn parse_drive_letter(input: &str) -> Result<char, String> {
+///
+/// # Errors
+///
+/// Returns an error if the operation fails.
+pub fn parse_drive_letter(input: &str) -> Result<char, String> {
     let trimmed = input.trim();
     // Strip trailing colon if present (`C:` -> `C`).
     let letter_str = trimmed.strip_suffix(':').unwrap_or(trimmed);
@@ -41,10 +45,10 @@ pub(crate) fn parse_drive_letter(input: &str) -> Result<char, String> {
 
 /// Parse a human-readable size string for clap `value_parser`.
 ///
-/// Delegates to [`uffs_core::search::filters::parse_size`] which accepts
+/// Delegates to [`uffs_client::format::parse_size`] which accepts
 /// bare integers (bytes) and suffixes: `B`, `KB`, `MB`, `GB`, `TB`.
 fn parse_size_arg(input: &str) -> Result<u64, String> {
-    uffs_core::search::filters::parse_size(input)
+    uffs_client::format::parse_size(input)
 }
 
 /// UFFS - Ultra Fast File Search using direct MFT reading
@@ -63,7 +67,7 @@ fn parse_size_arg(input: &str) -> Result<u64, String> {
     clippy::struct_excessive_bools,
     reason = "CLI args struct mirrors many boolean flags from clap"
 )]
-pub(crate) struct Cli {
+pub struct Cli {
     /// Enable verbose output
     #[arg(short, long, global = true)]
     pub verbose: bool,
@@ -540,38 +544,7 @@ pub(crate) struct Cli {
 /// This matches ripgrep/fd/Everything patterns where the tool name IS the
 /// search.
 #[derive(Subcommand)]
-pub(crate) enum Commands {
-    /// Build an index from drive MFT(s)
-    ///
-    /// By default, indexes ALL available NTFS drives. Use --drive or --drives
-    /// to limit to specific drives.
-    ///
-    /// If no extension is provided, defaults to `.parquet`.
-    ///
-    /// Examples:
-    ///   uffs index index.parquet           # Index ALL drives
-    ///   uffs index -d C index.parquet      # Index only C: drive
-    ///   uffs index --drives C,D,E out.parquet  # Index C:, D:, E:
-    ///   uffs index myindex                 # Creates myindex.parquet
-    Index {
-        /// Output file path (extension defaults to .parquet)
-        output: PathBuf,
-
-        /// Drive letter to index (limits to single drive)
-        #[arg(short, long, conflicts_with = "drives", value_parser = parse_drive_letter)]
-        drive: Option<char>,
-
-        /// Multiple drive letters to index (e.g., C,D,E)
-        #[arg(long, value_delimiter = ',', conflicts_with = "drive", value_parser = parse_drive_letter)]
-        drives: Option<Vec<char>>,
-    },
-
-    /// Show information about an index file
-    Info {
-        /// Index file path
-        path: PathBuf,
-    },
-
+pub enum Commands {
     /// Show statistics about files in an index
     ///
     /// Without a path, connects to the daemon and runs the `overview`
@@ -742,7 +715,7 @@ HTTP vs STDIO
 
 /// Actions for `uffs daemon` subcommand.
 #[derive(Subcommand)]
-pub(crate) enum DaemonAction {
+pub enum DaemonAction {
     /// Start the daemon with specified data sources.
     ///
     /// On Windows, live NTFS drives are auto-discovered if no MFT files
@@ -783,55 +756,11 @@ pub(crate) enum DaemonAction {
     Kill,
     /// Stop then restart the daemon (re-loads all indices).
     Restart,
-
-    /// Run the daemon in-process (used internally by auto-start).
-    ///
-    /// This is the embedded daemon entry point — same functionality as the
-    /// standalone `uffs-daemon` binary.  Normally invoked by the client
-    /// library's auto-start logic; not intended for direct user use.
-    #[command(hide = true)]
-    Run {
-        /// Raw MFT file(s) to load.
-        #[arg(long = "mft-file", value_delimiter = ',')]
-        mft_files: Vec<PathBuf>,
-
-        /// Data directory containing `drive_*` subdirectories.
-        #[arg(long = "data-dir")]
-        data_dir: Option<PathBuf>,
-
-        /// Live drive letters (Windows only).
-        #[arg(long = "drive")]
-        drives: Vec<char>,
-
-        /// Idle timeout in seconds (default 7200 = 2 hours).
-        #[arg(long, default_value = "7200")]
-        idle_timeout: u64,
-
-        /// Disable auto-retire.
-        #[arg(long)]
-        no_retire: bool,
-
-        /// Skip cache.
-        #[arg(long)]
-        no_cache: bool,
-
-        /// Log level.
-        #[arg(long, default_value = "info")]
-        log_level: String,
-
-        /// Write daemon logs to a file instead of stdout.
-        ///
-        /// When the daemon is spawned as a detached process its stdout is
-        /// `/dev/null`, so setting `--log-file` is the only way to capture
-        /// tracing output.  Pass `"-"` for the default `./uffs_daemon.log`.
-        #[arg(long, value_name = "PATH")]
-        log_file: Option<PathBuf>,
-    },
 }
 
 /// Actions for `uffs mcp` subcommand.
 #[derive(Subcommand)]
-pub(crate) enum McpAction {
+pub enum McpAction {
     /// Start the MCP HTTP server as a background service.
     ///
     /// Spawns the MCP HTTP gateway and returns immediately.  The server

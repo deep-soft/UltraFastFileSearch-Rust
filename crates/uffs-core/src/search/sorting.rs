@@ -44,7 +44,7 @@ pub fn sort_rows(
         column,
         descending,
         extra_tiers,
-        uffs_text::CaseFold::default_table(),
+        uffs_text::case_fold::CaseFold::default_table(),
     );
 }
 
@@ -54,7 +54,7 @@ pub fn sort_rows_with_fold(
     column: FieldId,
     descending: bool,
     extra_tiers: &[SortSpec],
-    fold: uffs_text::CaseFold,
+    fold: uffs_text::case_fold::CaseFold,
 ) {
     if rows.len() <= 1 {
         return;

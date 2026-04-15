@@ -10,6 +10,7 @@
 )]
 
 use super::*;
+use crate::protocol::response::{DaemonStatus, SearchResponse, SearchRow};
 
 /// D2.2.5: serialize/deserialize round-trip for request.
 #[test]

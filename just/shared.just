@@ -21,7 +21,7 @@ export RUSTC_WRAPPER := ""
 # Clippy flags — supplement workspace.lints (belt-and-suspenders for CI).
 # Workspace Cargo.toml [workspace.lints] is the source of truth; these ensure
 # the justfile lint recipes stay strict even if workspace lints drift.
-common_flags := "-D clippy::pedantic -D clippy::nursery -D clippy::cargo -A clippy::multiple_crate_versions -W clippy::panic -W clippy::todo -W clippy::unimplemented -D warnings"
+common_flags := "-D clippy::pedantic -D clippy::nursery -D clippy::cargo -A clippy::multiple_crate_versions -A clippy::redundant_pub_crate -W clippy::panic -W clippy::todo -W clippy::unimplemented -D warnings"
 prod_flags := common_flags + " -W clippy::unwrap_used -W clippy::expect_used -W clippy::missing_docs_in_private_items"
 test_flags := common_flags + " -A clippy::unwrap_used -A clippy::expect_used"
 

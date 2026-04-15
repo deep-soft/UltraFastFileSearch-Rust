@@ -6,37 +6,29 @@
 //! This module provides the public command surface for the UFFS CLI and shared
 //! helpers used by the split command modules.
 
+// indicatif is only used on Windows; retain the dep for cross-compilation.
+#[cfg(not(windows))]
+use indicatif as _;
 #[cfg(windows)]
 use indicatif::MultiProgress;
 #[cfg(windows)]
 use indicatif::{ProgressBar, ProgressStyle};
 
 /// Aggregate analytics subcommand.
-pub(crate) mod aggregate;
+pub mod aggregate;
 /// Daemon management subcommands.
-mod daemon_mgmt;
-/// Index subcommand implementation.
-mod index;
-/// Info subcommand implementation.
-mod info;
+pub mod daemon_mgmt;
+// Index and info subcommands were merged into other modules.
 /// MCP server management subcommands.
-mod mcp_mgmt;
+pub mod mcp_mgmt;
 /// Output helpers for search results.
-mod output;
+pub mod output;
 /// Search command implementation.
-pub(crate) mod search;
+pub mod search;
 /// Stats subcommand implementation.
-mod stats;
+pub mod stats;
 /// Combined `uffs status` command.
-mod system_status;
-
-pub(crate) use self::daemon_mgmt::daemon;
-pub(crate) use self::index::index;
-pub(crate) use self::info::info;
-pub(crate) use self::mcp_mgmt::mcp;
-pub(crate) use self::search::search;
-pub(crate) use self::stats::stats;
-pub(crate) use self::system_status::system_status;
+pub mod system_status;
 
 /// Check if progress bars are disabled via `UFFS_NO_PROGRESS=1` environment
 /// variable.
@@ -98,15 +90,40 @@ fn format_size(bytes: u64) -> String {
     const GB: u64 = MB * 1024;
     const TB: u64 = GB * 1024;
 
-    let bytes_f64 = uffs_mft::u64_to_f64(bytes);
+    // Precision loss acceptable — display-only formatting where ±1 byte is fine.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "display-only human-readable formatting"
+    )]
+    let bytes_f64 = bytes as f64;
     if bytes >= TB {
-        format!("{:.2} TB", bytes_f64 / uffs_mft::u64_to_f64(TB))
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "display-only human-readable formatting"
+        )]
+        let divisor = TB as f64;
+        format!("{:.2} TB", bytes_f64 / divisor)
     } else if bytes >= GB {
-        format!("{:.2} GB", bytes_f64 / uffs_mft::u64_to_f64(GB))
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "display-only human-readable formatting"
+        )]
+        let divisor = GB as f64;
+        format!("{:.2} GB", bytes_f64 / divisor)
     } else if bytes >= MB {
-        format!("{:.2} MB", bytes_f64 / uffs_mft::u64_to_f64(MB))
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "display-only human-readable formatting"
+        )]
+        let divisor = MB as f64;
+        format!("{:.2} MB", bytes_f64 / divisor)
     } else if bytes >= KB {
-        format!("{:.2} KB", bytes_f64 / uffs_mft::u64_to_f64(KB))
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "display-only human-readable formatting"
+        )]
+        let divisor = KB as f64;
+        format!("{:.2} KB", bytes_f64 / divisor)
     } else {
         format!("{bytes} B")
     }

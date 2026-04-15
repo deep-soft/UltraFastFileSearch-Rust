@@ -8,6 +8,11 @@
 //! [`ServerHandler`](rmcp::ServerHandler) trait, dispatching `tools/call`,
 //! `resources/read`, and `prompts/get` to the appropriate handlers.
 
+pub use definitions::{prompt_definitions, tool_definitions};
+pub use prompts::{build_prompt_messages, str_arg, u64_arg};
+
+use crate::handler::definitions::percent_decode_path;
+
 extern crate alloc;
 
 use alloc::sync::Arc;
@@ -31,14 +36,12 @@ use crate::roots::{self, SharedRootsState};
 use crate::stats::McpStats;
 use crate::tools;
 
-mod definitions;
-mod instructions;
-mod prompts;
+pub mod definitions;
+pub mod instructions;
+pub mod prompts;
 
-pub(crate) use definitions::{is_known_tool, percent_decode_path};
-pub use definitions::{prompt_definitions, tool_definitions};
+use definitions::is_known_tool;
 use instructions::AGENT_INSTRUCTIONS;
-pub use prompts::{build_prompt_messages, str_arg, u64_arg};
 
 /// Connection strategy for the daemon client.
 ///
@@ -197,8 +200,8 @@ impl UffsMcpServer {
     }
 
     /// Read-only access to the shared roots state.
-    #[expect(dead_code, reason = "accessor for future external use")]
-    pub(crate) const fn roots(&self) -> &SharedRootsState {
+    #[must_use]
+    pub const fn roots(&self) -> &SharedRootsState {
         &self.roots
     }
 }
@@ -209,7 +212,7 @@ impl UffsMcpServer {
 /// `Option<UffsClient>` has been populated by [`UffsMcpServer::client()`],
 /// so the `expect` is structurally unreachable (the `Option` is always
 /// populated by `client()` before the guard is returned).
-pub(crate) struct ClientGuard<'a>(tokio::sync::MutexGuard<'a, Option<UffsClient>>);
+pub struct ClientGuard<'a>(tokio::sync::MutexGuard<'a, Option<UffsClient>>);
 
 #[expect(
     clippy::expect_used,
@@ -242,7 +245,7 @@ impl UffsMcpServer {
     ///
     /// Returns `Ok(())` when ready.
     async fn readiness_gate(client: &mut UffsClient) -> Result<(), BridgeError> {
-        use uffs_client::protocol::DaemonStatus;
+        use uffs_client::protocol::response::DaemonStatus;
         let status = client
             .status()
             .await
@@ -550,7 +553,7 @@ impl ServerHandler for UffsMcpServer {
             "uffs://schema/search" => crate::resources::search_schema_json(),
             "uffs://schema/aggregate" => crate::resources::aggregate_schema_json(),
             "uffs://presets/aggregate" => crate::resources::aggregate_presets_json(),
-            "uffs://cookbook" => crate::resources::cookbook_json(),
+            "uffs://cookbook" => crate::cookbook::cookbook_json(),
 
             // Live metadata resources — need daemon.
             "uffs://drives" => {
