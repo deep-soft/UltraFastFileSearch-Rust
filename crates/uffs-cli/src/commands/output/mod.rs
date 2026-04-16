@@ -13,9 +13,8 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use anyhow::{Context, Result};
-use serde_json::Value;
-
 use parity::{write_legacy_drive_footer, write_parity};
+use serde_json::Value;
 
 // ── Value extraction helpers ───────────────────────────────────────────
 

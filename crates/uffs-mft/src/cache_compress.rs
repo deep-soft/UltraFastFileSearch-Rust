@@ -7,9 +7,8 @@
 
 use std::path::Path;
 
-use crate::index::usize_to_f64;
-
 use super::atomic_write;
+use crate::index::usize_to_f64;
 
 /// Compresses `data` with zstd using multi-threaded mode.
 ///
