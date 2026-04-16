@@ -87,6 +87,8 @@ metadata.json
 # Internal dev docs (plans, audits, investigations — local only)
 # =============================================================================
 /docs/dev/
+/docs/research/
+/docs/refactor/
 
 # =============================================================================
 # Local-only spec/prompt files
