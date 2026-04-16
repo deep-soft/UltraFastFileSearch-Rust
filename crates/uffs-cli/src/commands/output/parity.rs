@@ -184,29 +184,21 @@ fn push_u64(buf: &mut String, value: u64) {
     let _ok = write!(buf, "{value}");
 }
 
-/// Format a Unix-microsecond timestamp with timezone offset into `buf`.
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "timestamps are non-negative in practice"
-)]
-fn append_datetime_tz(buf: &mut String, unix_us: i64, tz_offset_secs: i32) {
+/// Format a raw FILETIME with timezone bias directly into `buf`.
+///
+/// Mirrors C++ `RtlTimeToTimeFields` — applies TZ bias in FILETIME ticks,
+/// then decomposes.  No intermediate Unix conversion.
+fn append_datetime_tz(buf: &mut String, filetime: i64, tz_offset_secs: i32) {
     use core::fmt::Write;
-    if unix_us <= 0 {
-        return;
+    let local_ft = uffs_mft::ntfs::filetime_with_tz_bias(filetime, tz_offset_secs);
+    if let Some((year, month, day, hour, minute, second)) =
+        uffs_mft::ntfs::filetime_to_calendar(local_ft)
+    {
+        let _ok = write!(
+            buf,
+            "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
+        );
     }
-    let adjusted = unix_us / 1_000_000 + i64::from(tz_offset_secs);
-    if adjusted < 0 {
-        return;
-    }
-    let total = adjusted as u64;
-    let (year, month, day) = super::days_to_ymd(total / 86400);
-    let _ok = write!(
-        buf,
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
-        (total / 3600) % 24,
-        (total / 60) % 60,
-        total % 60
-    );
 }
 
 /// Append the legacy drive footer for baseline-compatible custom output.

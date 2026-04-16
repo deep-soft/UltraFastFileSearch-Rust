@@ -38,6 +38,7 @@ anyhow.workspace = true
 # Serialization
 serde_json.workspace = true
 which = "8.0.2"
+uffs-mft = { version = "0.5.20", path = "../uffs-mft" }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lints (inherit from workspace)

@@ -17,7 +17,7 @@ use crate::index::{
 };
 use crate::ntfs::{
     AttributeRecordHeader, AttributeType, FileNameAttribute, FileRecordSegmentHeader,
-    StandardInformation, file_reference_to_frs, filetime_to_unix_micros,
+    StandardInformation, file_reference_to_frs,
 };
 
 /// Decode a UTF-16LE byte slice into `out`, replacing unpaired surrogates
@@ -158,10 +158,10 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         // ExtendedStandardInfo struct entirely.
                         let mut info =
                             crate::index::StandardInfo::from_raw_ntfs_flags(si.file_attributes);
-                        info.created = filetime_to_unix_micros(si.creation_time);
-                        info.modified = filetime_to_unix_micros(si.modification_time);
-                        info.accessed = filetime_to_unix_micros(si.access_time);
-                        info.mft_changed = filetime_to_unix_micros(si.mft_change_time);
+                        info.created = si.creation_time;
+                        info.modified = si.modification_time;
+                        info.accessed = si.access_time;
+                        info.mft_changed = si.mft_change_time;
                         if is_directory {
                             info.set_directory(true);
                         }

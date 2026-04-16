@@ -52,48 +52,20 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Formats a Unix-microsecond timestamp as `YYYY-MM-DD HH:MM:SS`.
+/// Formats a Windows FILETIME as `YYYY-MM-DD HH:MM:SS`.
 ///
 /// Returns `"—"` for zero/invalid timestamps.
 ///
 /// Uses Howard Hinnant's civil calendar algorithm (same as the CLI's
 /// `append_datetime`). No external crate dependency.
 #[must_use]
-pub fn format_timestamp(unix_micros: i64) -> String {
-    if unix_micros == 0 {
-        return "—".to_owned();
+pub fn format_timestamp(filetime: i64) -> String {
+    match uffs_mft::ntfs::filetime_to_calendar(filetime) {
+        Some((year, month, day, hour, minute, second)) => {
+            format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+        }
+        None => "—".to_owned(),
     }
-    let adjusted_secs = unix_micros.div_euclid(1_000_000);
-
-    // Civil time decomposition (no leap seconds — matches chrono behavior).
-    // rem_euclid is always non-negative → safe to narrow to u32 via try_from.
-    let day_secs = u32::try_from(adjusted_secs.rem_euclid(86_400)).unwrap_or(0);
-    let days = adjusted_secs.div_euclid(86_400) + 719_468; // shift to 0000-03-01 epoch
-
-    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
-    // doe is in [0, 146_096] — always fits u32.
-    let doe = u32::try_from(days - era * 146_097).unwrap_or(0);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let year_offset = i64::from(yoe) + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let month_proxy = (5 * doy + 2) / 153;
-    let day = doy - (153 * month_proxy + 2) / 5 + 1;
-    let month = if month_proxy < 10 {
-        month_proxy + 3
-    } else {
-        month_proxy - 9
-    };
-    let year = if month <= 2 {
-        year_offset + 1
-    } else {
-        year_offset
-    };
-
-    let hour = day_secs / 3600;
-    let minute = (day_secs % 3600) / 60;
-    let second = day_secs % 60;
-
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
 }
 
 /// Formats a boolean as a filled or hollow circle glyph.
@@ -141,5 +113,91 @@ pub fn format_duration(duration: core::time::Duration) -> String {
         format!("{microseconds:>3} μs {nanoseconds:>3} ns")
     } else {
         format!("{nanoseconds:>3} ns")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use uffs_mft::ntfs::{FILETIME_TICKS_PER_SECOND, FILETIME_UNIX_DIFF};
+
+    use super::*;
+
+    // ═══════════════════════════════════════════════════════════════════
+    // format_timestamp
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn format_timestamp_zero_returns_dash() {
+        assert_eq!(format_timestamp(0), "—");
+    }
+
+    #[test]
+    fn format_timestamp_post_1970() {
+        // 2024-01-01 00:00:00 UTC
+        let ft: i64 = 133_485_408_000_000_000;
+        assert_eq!(format_timestamp(ft), "2024-01-01 00:00:00");
+    }
+
+    #[test]
+    fn format_timestamp_pre_1970() {
+        // 1959-12-02 03:45:50 — the parity baseline case.
+        let unix_secs: i64 = -318_197_650;
+        let ft = unix_secs * FILETIME_TICKS_PER_SECOND + FILETIME_UNIX_DIFF;
+        assert_eq!(format_timestamp(ft), "1959-12-02 03:45:50");
+    }
+
+    #[test]
+    fn format_timestamp_leap_day() {
+        // 2000-02-29 12:00:00 — century leap year.
+        let unix_secs: i64 = 951_825_600;
+        let ft = unix_secs * FILETIME_TICKS_PER_SECOND + FILETIME_UNIX_DIFF;
+        assert_eq!(format_timestamp(ft), "2000-02-29 12:00:00");
+    }
+
+    #[test]
+    fn format_timestamp_unix_epoch() {
+        // 1970-01-01 00:00:00 — boundary between positive/negative unix time.
+        assert_eq!(format_timestamp(FILETIME_UNIX_DIFF), "1970-01-01 00:00:00");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // format_number_commas
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn format_number_commas_small() {
+        assert_eq!(format_number_commas(0), "0");
+        assert_eq!(format_number_commas(999), "999");
+    }
+
+    #[test]
+    fn format_number_commas_thousands() {
+        assert_eq!(format_number_commas(1_000), "1,000");
+        assert_eq!(format_number_commas(1_234_567), "1,234,567");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // format_bytes
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn format_bytes_under_1kb() {
+        assert_eq!(format_bytes(512), " 512 B");
+    }
+
+    #[test]
+    fn format_bytes_megabytes() {
+        let result = format_bytes(10 * 1024 * 1024);
+        assert!(result.contains("MB"), "expected MB in '{result}'");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // format_bool
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn format_bool_values() {
+        assert_eq!(format_bool(true), "●");
+        assert_eq!(format_bool(false), "○");
     }
 }

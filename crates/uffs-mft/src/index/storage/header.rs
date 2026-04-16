@@ -21,7 +21,9 @@ const INDEX_MAGIC: &[u8; 8] = b"UFFSIDX\0";
 /// - v10: `ExtensionIndex` CSR appended — zero rebuild on load
 /// - v11: `ChildInfo` is Pod (24 bytes with explicit padding)
 /// - v12: `build_epoch` (Unix µs) in header for cache staleness detection
-const INDEX_VERSION: u32 = 12;
+/// - v13: timestamps stored as raw FILETIME (100-ns ticks since 1601-01-01)
+///   instead of Unix microseconds — matches C++ baseline semantics
+const INDEX_VERSION: u32 = 13;
 
 /// Persistent index header stored at the beginning of the index file.
 #[derive(Debug, Clone)]

@@ -4,10 +4,7 @@
 //! Tests for parse-module helpers, record decoding, and regressions.
 
 use super::*;
-use crate::ntfs::{
-    AttributeType, ExtendedStandardInfo, FILE_RECORD_MAGIC, NameInfo, ReparseTag,
-    filetime_to_unix_micros,
-};
+use crate::ntfs::{AttributeType, ExtendedStandardInfo, FILE_RECORD_MAGIC, NameInfo, ReparseTag};
 
 fn write_u16_le(buffer: &mut [u8], offset: usize, value: u16) {
     buffer[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
@@ -244,10 +241,10 @@ fn test_parse_standard_info_full_reads_unaligned_v30_payload() {
     let mut result = ExtendedStandardInfo::default();
     parse_standard_info_full(&data, attr_offset, &mut result);
 
-    assert_eq!(result.created, filetime_to_unix_micros(creation_time));
-    assert_eq!(result.modified, filetime_to_unix_micros(modification_time));
-    assert_eq!(result.mft_changed, filetime_to_unix_micros(mft_change_time));
-    assert_eq!(result.accessed, filetime_to_unix_micros(access_time));
+    assert_eq!(result.created, creation_time);
+    assert_eq!(result.modified, modification_time);
+    assert_eq!(result.mft_changed, mft_change_time);
+    assert_eq!(result.accessed, access_time);
     assert_eq!(result.owner_id, owner_id);
     assert_eq!(result.security_id, security_id);
     assert_eq!(result.usn, usn);
@@ -292,16 +289,10 @@ fn test_parse_file_name_full_reads_unaligned_payload() {
         assert_eq!(name_info.name, name);
         assert_eq!(name_info.parent_frs, 42);
         assert_eq!(name_info.namespace, 1);
-        assert_eq!(name_info.fn_created, filetime_to_unix_micros(creation_time));
-        assert_eq!(
-            name_info.fn_modified,
-            filetime_to_unix_micros(modification_time)
-        );
-        assert_eq!(name_info.fn_accessed, filetime_to_unix_micros(access_time));
-        assert_eq!(
-            name_info.fn_mft_changed,
-            filetime_to_unix_micros(mft_change_time)
-        );
+        assert_eq!(name_info.fn_created, creation_time);
+        assert_eq!(name_info.fn_modified, modification_time);
+        assert_eq!(name_info.fn_accessed, access_time);
+        assert_eq!(name_info.fn_mft_changed, mft_change_time);
         assert_eq!(name_info.source_frs, 99);
     }
 }

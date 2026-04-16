@@ -492,112 +492,123 @@ fn filter_older_modified_accepts_old_files() {
 // TIME GRAMMAR TESTS — Named Time Ranges
 // ════════════════════════════════════════════════════════════════════════
 
-/// Microseconds per day constant for tests.
-const US_PER_DAY: i64 = 86_400 * 1_000_000;
+/// FILETIME ticks per day constant for tests.
+const FT_PER_DAY: i64 = 86_400 * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND;
+/// FILETIME ticks per second constant for tests.
+const FT_PER_SEC: i64 = uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND;
+/// Days from FILETIME epoch (1601-01-01) to Unix epoch (1970-01-01).
+const DAYS_1601_TO_1970: i64 = uffs_mft::ntfs::FILETIME_UNIX_DIFF / FT_PER_DAY;
+
+/// Helper: compute FILETIME for N days after 1601-01-01.
+const fn ft_days(days_since_1601: i64) -> i64 {
+    days_since_1601 * FT_PER_DAY
+}
 
 #[test]
 fn parse_time_bound_duration_7d() {
-    let now = 100 * US_PER_DAY;
+    let now = ft_days(DAYS_1601_TO_1970 + 100);
     let result = parse_time_bound("7d", now, true).unwrap();
-    assert_eq!(result, now - 7 * US_PER_DAY);
+    assert_eq!(result, now - 7 * FT_PER_DAY);
 }
 
 #[test]
 fn parse_time_bound_duration_24h() {
-    let now = 100 * US_PER_DAY;
+    let now = ft_days(DAYS_1601_TO_1970 + 100);
     let result = parse_time_bound("24h", now, true).unwrap();
-    assert_eq!(result, now - 24 * 3600 * 1_000_000);
+    assert_eq!(result, now - 24 * 3600 * FT_PER_SEC);
 }
 
 #[test]
 fn parse_time_bound_iso_date() {
     let result = parse_time_bound("1970-01-02", 0, true).unwrap();
-    assert_eq!(result, US_PER_DAY); // Jan 2 1970 = 1 day from epoch
+    // 1970-01-02 = DAYS_1601_TO_1970 + 1 days from 1601 epoch
+    assert_eq!(result, ft_days(DAYS_1601_TO_1970 + 1));
 }
 
 #[test]
 fn parse_time_bound_today() {
-    let now = 100 * US_PER_DAY + 42_000_000; // 100 days + offset
+    let now = ft_days(DAYS_1601_TO_1970 + 100) + 42_000_000;
     let result = parse_time_bound("today", now, true).unwrap();
-    assert_eq!(result, 100 * US_PER_DAY); // midnight of day 100
+    assert_eq!(result, ft_days(DAYS_1601_TO_1970 + 100));
 }
 
 #[test]
 fn parse_time_bound_yesterday_newer() {
-    let now = 100 * US_PER_DAY + 42_000_000;
+    let now = ft_days(DAYS_1601_TO_1970 + 100) + 42_000_000;
     let result = parse_time_bound("yesterday", now, true).unwrap();
-    assert_eq!(result, 99 * US_PER_DAY);
+    assert_eq!(result, ft_days(DAYS_1601_TO_1970 + 99));
 }
 
 #[test]
 fn parse_time_bound_yesterday_older() {
-    let now = 100 * US_PER_DAY + 42_000_000;
+    let now = ft_days(DAYS_1601_TO_1970 + 100) + 42_000_000;
     let result = parse_time_bound("yesterday", now, false).unwrap();
-    assert_eq!(result, 100 * US_PER_DAY); // today midnight = end of yesterday
+    assert_eq!(result, ft_days(DAYS_1601_TO_1970 + 100));
 }
 
 #[test]
 fn parse_time_bound_last_7d() {
-    let now = 100 * US_PER_DAY;
+    let now = ft_days(DAYS_1601_TO_1970 + 100);
     let result = parse_time_bound("last_7d", now, true).unwrap();
-    assert_eq!(result, now - 7 * US_PER_DAY);
+    assert_eq!(result, now - 7 * FT_PER_DAY);
 }
 
 #[test]
 fn parse_time_bound_last_30d() {
-    let now = 100 * US_PER_DAY;
+    let now = ft_days(DAYS_1601_TO_1970 + 100);
     let result = parse_time_bound("last_30d", now, true).unwrap();
-    assert_eq!(result, now - 30 * US_PER_DAY);
+    assert_eq!(result, now - 30 * FT_PER_DAY);
 }
 
 #[test]
 fn parse_time_bound_this_year() {
-    // 2026-04-04 ≈ day 20548 from epoch. Jan 1 2026 ≈ day 20454.
-    let now_us = 20548 * US_PER_DAY;
-    let result = parse_time_bound("this_year", now_us, true).unwrap();
-    // Should be Jan 1 of current year.
-    let jan1_days = (2026 - 1970) * 365 + (2026 - 1969) / 4;
-    assert_eq!(result, jan1_days * US_PER_DAY);
+    // 2026-04-04 from FILETIME epoch:
+    // Days from 1601 to 2026-04-04 = DAYS_1601_TO_1970 + 20548
+    let now_ft = ft_days(DAYS_1601_TO_1970 + 20548);
+    let result = parse_time_bound("this_year", now_ft, true).unwrap();
+    // Should be Jan 1 2026. Days from 1601 to 2026-01-01:
+    let jan1_days = DAYS_1601_TO_1970 + (2026 - 1970) * 365 + (2026 - 1969) / 4;
+    assert_eq!(result, ft_days(jan1_days));
 }
 
 #[test]
 fn parse_time_bound_this_month() {
-    // Day 100 from epoch = April 11, 1970. Day 1 of April = day 90.
-    let now_us = 100 * US_PER_DAY;
-    let result = parse_time_bound("this_month", now_us, true).unwrap();
-    // Should be start of current month.
-    assert!(result <= now_us);
-    assert!(result >= now_us - 31 * US_PER_DAY);
+    // Day 100 from Unix epoch = April 11, 1970.
+    let now_ft = ft_days(DAYS_1601_TO_1970 + 100);
+    let result = parse_time_bound("this_month", now_ft, true).unwrap();
+    assert!(result <= now_ft);
+    assert!(result >= now_ft - 31 * FT_PER_DAY);
 }
 
 #[test]
 fn parse_time_bound_last_year_newer() {
-    let now_us = 20548 * US_PER_DAY;
-    let result = parse_time_bound("last_year", now_us, true).unwrap();
-    let jan1_2025 = (2025 - 1970) * 365 + (2025 - 1969) / 4;
-    assert_eq!(result, jan1_2025 * US_PER_DAY);
+    let now_ft = ft_days(DAYS_1601_TO_1970 + 20548);
+    let result = parse_time_bound("last_year", now_ft, true).unwrap();
+    let jan1_2025 = DAYS_1601_TO_1970 + (2025 - 1970) * 365 + (2025 - 1969) / 4;
+    assert_eq!(result, ft_days(jan1_2025));
 }
 
 #[test]
 fn parse_time_bound_last_year_older() {
-    let now_us = 20548 * US_PER_DAY;
-    let result = parse_time_bound("last_year", now_us, false).unwrap();
-    let jan1_2026 = (2026 - 1970) * 365 + (2026 - 1969) / 4;
-    assert_eq!(result, jan1_2026 * US_PER_DAY);
+    let now_ft = ft_days(DAYS_1601_TO_1970 + 20548);
+    let result = parse_time_bound("last_year", now_ft, false).unwrap();
+    let jan1_2026 = DAYS_1601_TO_1970 + (2026 - 1970) * 365 + (2026 - 1969) / 4;
+    assert_eq!(result, ft_days(jan1_2026));
 }
 
 #[test]
 fn parse_time_bound_unknown_returns_none() {
-    assert!(parse_time_bound("foobar", 100 * US_PER_DAY, true).is_none());
+    assert!(parse_time_bound("foobar", ft_days(DAYS_1601_TO_1970 + 100), true).is_none());
 }
 
 #[test]
 fn parse_time_bound_this_week() {
-    // Thursday epoch + 7 days = another Thursday.
-    let now_us = 7 * US_PER_DAY;
-    let result = parse_time_bound("this_week", now_us, true).unwrap();
-    // Should be Monday = day 4 from epoch (epoch was Thursday).
-    assert_eq!(result, 4 * US_PER_DAY);
+    // 1601-01-01 was Monday. Unix epoch (1970-01-01) was Thursday.
+    // Unix day 7 = 1970-01-08 = Thursday. From 1601: DAYS_1601_TO_1970+7.
+    let now_ft = ft_days(DAYS_1601_TO_1970 + 7);
+    let result = parse_time_bound("this_week", now_ft, true).unwrap();
+    // Monday of that week: 1970-01-05 = DAYS_1601_TO_1970 + 4
+    assert_eq!(result, ft_days(DAYS_1601_TO_1970 + 4));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -664,17 +675,87 @@ fn parse_size_invalid() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn month_from_unix_micros_epoch() {
-    // 1970-01-01 00:00:00 UTC → January
+fn month_from_filetime_1970_epoch() {
+    // 1970-01-01 00:00:00 UTC as FILETIME → January
+    // FILETIME_UNIX_DIFF = 116_444_736_000_000_000
+    let ft = uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    assert_eq!(month_from_unix_micros(ft), 1);
+}
+
+#[test]
+fn month_from_filetime_zero_is_january() {
+    // FILETIME 0 = 1601-01-01 → January (default for unset)
     assert_eq!(month_from_unix_micros(0), 1);
 }
 
 #[test]
-fn month_from_unix_micros_december() {
-    // 2025-12-15 00:00:00 UTC → December
-    // Dec 15 2025 = roughly 20437 days
-    let us = 1_765_756_800_000_000_i64; // 2025-12-15 00:00 UTC
-    assert_eq!(month_from_unix_micros(us), 12);
+fn month_from_filetime_december() {
+    // 2025-12-15 00:00:00 UTC as FILETIME → December
+    let unix_us = 1_765_756_800_000_000_i64;
+    let ft = unix_us * uffs_mft::ntfs::FILETIME_TICKS_PER_MICROSECOND
+        + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    assert_eq!(month_from_unix_micros(ft), 12);
+}
+
+#[test]
+fn month_from_filetime_pre_1970() {
+    // 1959-12-02 03:45:50 UTC → December
+    let unix_secs: i64 = -318_197_650;
+    let ft =
+        unix_secs * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    assert_eq!(month_from_unix_micros(ft), 12);
+}
+
+#[test]
+fn month_from_filetime_leap_day() {
+    // 2000-02-29 12:00:00 UTC → February
+    let unix_secs: i64 = 951_825_600;
+    let ft =
+        unix_secs * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    assert_eq!(month_from_unix_micros(ft), 2);
+}
+
+#[test]
+fn month_from_filetime_year_boundary() {
+    // 1999-12-31 23:59:59 → December
+    let unix_secs_dec31: i64 = 946_684_799;
+    let ft_dec31 = unix_secs_dec31 * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND
+        + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    assert_eq!(month_from_unix_micros(ft_dec31), 12);
+
+    // 2000-01-01 00:00:00 → January
+    let unix_secs_jan01: i64 = 946_684_800;
+    let ft_jan01 = unix_secs_jan01 * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND
+        + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    assert_eq!(month_from_unix_micros(ft_jan01), 1);
+}
+
+#[test]
+fn month_from_filetime_each_month() {
+    // Verify all 12 months are reachable — use the 15th of each month in 2024.
+    let months_unix_secs: [(u32, i64); 12] = [
+        (1, 1_705_276_800),  // 2024-01-15
+        (2, 1_707_955_200),  // 2024-02-15
+        (3, 1_710_460_800),  // 2024-03-15
+        (4, 1_713_139_200),  // 2024-04-15
+        (5, 1_715_731_200),  // 2024-05-15
+        (6, 1_718_409_600),  // 2024-06-15
+        (7, 1_721_001_600),  // 2024-07-15
+        (8, 1_723_680_000),  // 2024-08-15
+        (9, 1_726_358_400),  // 2024-09-15
+        (10, 1_728_950_400), // 2024-10-15
+        (11, 1_731_628_800), // 2024-11-15
+        (12, 1_734_220_800), // 2024-12-15
+    ];
+    for (expected_month, unix_secs) in months_unix_secs {
+        let ft = unix_secs * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND
+            + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+        assert_eq!(
+            month_from_unix_micros(ft),
+            expected_month,
+            "month mismatch for unix_secs={unix_secs}"
+        );
+    }
 }
 
 #[test]

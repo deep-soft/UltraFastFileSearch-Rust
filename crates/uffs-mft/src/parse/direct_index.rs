@@ -82,7 +82,7 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
     use crate::index::{IndexNameRef, LinkInfo, NO_ENTRY, SizeInfo, StandardInfo, len_to_u16};
     use crate::ntfs::{
         AttributeRecordHeader, AttributeType, FileNameAttribute, FileRecordSegmentHeader,
-        StandardInformation, file_reference_to_frs, filetime_to_unix_micros,
+        StandardInformation, file_reference_to_frs,
     };
 
     if data.len() < size_of::<FileRecordSegmentHeader>() {
@@ -168,10 +168,10 @@ pub fn parse_record_to_index(data: &[u8], frs: u64, index: &mut crate::index::Mf
                         let ext =
                             crate::ntfs::ExtendedStandardInfo::from_attributes(si.file_attributes);
                         let mut info = StandardInfo::from_extended(&ext);
-                        info.created = filetime_to_unix_micros(si.creation_time);
-                        info.modified = filetime_to_unix_micros(si.modification_time);
-                        info.accessed = filetime_to_unix_micros(si.access_time);
-                        info.mft_changed = filetime_to_unix_micros(si.mft_change_time);
+                        info.created = si.creation_time;
+                        info.modified = si.modification_time;
+                        info.accessed = si.access_time;
+                        info.mft_changed = si.mft_change_time;
                         std_info = info;
                     }
                 }

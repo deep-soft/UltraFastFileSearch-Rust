@@ -710,50 +710,10 @@ fn format_range_key(index: usize, boundaries: &[u64]) -> String {
     }
 }
 
-/// Format a timestamp key (epoch microseconds to ISO-ish date).
-fn format_timestamp_key(ts_us: i64) -> String {
-    let secs = ts_us / 1_000_000;
-    let days = secs / 86400;
-    let mut y = 1970_i64;
-    let mut remaining = days;
-
-    loop {
-        let year_days = if is_leap(y) { 366 } else { 365 };
-        if remaining < year_days {
-            break;
-        }
-        remaining -= year_days;
-        y += 1;
+/// Format a FILETIME timestamp key as an ISO date (`YYYY-MM-DD`).
+fn format_timestamp_key(filetime: i64) -> String {
+    match uffs_mft::ntfs::filetime_to_calendar(filetime) {
+        Some((year, month, day, ..)) => format!("{year:04}-{month:02}-{day:02}"),
+        None => "0000-00-00".to_owned(),
     }
-
-    let leap = is_leap(y);
-    let month_days: [i64; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 1_u32;
-    for &md in &month_days {
-        if remaining < md {
-            break;
-        }
-        remaining -= md;
-        m += 1;
-    }
-    let d = remaining + 1;
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-/// Check if a year is a leap year.
-const fn is_leap(y: i64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }

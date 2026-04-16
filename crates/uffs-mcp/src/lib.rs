@@ -383,7 +383,9 @@ mod tests {
 
         #[test]
         fn format_row_basic() {
-            let row = test_row("hello.rs", 1024, 1_705_312_200_000_000, "C:\\src\\hello.rs");
+            // 2024-01-15 as FILETIME (raw 100-ns ticks since 1601-01-01)
+            let ft_2024_01_15 = 1_705_312_200_000_000_i64 * 10 + 116_444_736_000_000_000;
+            let row = test_row("hello.rs", 1024, ft_2024_01_15, "C:\\src\\hello.rs");
             let formatted = format_search_row(&row);
             assert!(formatted.contains("hello.rs"), "name: {formatted}");
             assert!(formatted.contains("1.0 KB"), "size: {formatted}");
@@ -396,7 +398,8 @@ mod tests {
             let row = test_row(
                 "big.bin",
                 1_073_741_824,
-                1_700_000_000_000_000,
+                // 2023-11-14 as FILETIME
+                1_700_000_000_000_000_i64 * 10 + 116_444_736_000_000_000,
                 "D:\\data\\big.bin",
             );
             let formatted = format_search_row(&row);
