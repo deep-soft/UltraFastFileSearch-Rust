@@ -52,18 +52,6 @@ struct Cfg {
     es_bin: Option<PathBuf>,
 }
 
-#[derive(Clone, Default)]
-struct Sample {
-    wall_ms: f64,
-    label: String,
-}
-
-struct MeasureResult {
-    label: String,
-    binary_size: u64,
-    samples: Vec<Sample>,
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn flush() { std::io::stderr().flush().ok(); std::io::stdout().flush().ok(); }
@@ -287,17 +275,37 @@ rustflags = ["-C", "target-feature=+crt-static"]
     // CARGO_TARGET_DIR / config that points elsewhere (which breaks our
     // exe-path assumption and can cause cross-project build-script lock
     // collisions on shared target directories).
+    //
+    // Retry up to 3x on transient "Access is denied (os error 5)" link-copy
+    // failures caused by Windows Defender briefly locking freshly-written
+    // build-script binaries during cargo's rename step.
     let local_target = proj_dir.join("target");
     eprint!("  Building {:<35} ", variant.name);
     flush();
-    let output = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(&proj_dir)
-        .env("CARGO_TARGET_DIR", &local_target)
-        .env_remove("CARGO_BUILD_TARGET_DIR")
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output();
+    let mut output = None;
+    for attempt in 1..=3u32 {
+        let out = Command::new("cargo")
+            .args(["build", "--release"])
+            .current_dir(&proj_dir)
+            .env("CARGO_TARGET_DIR", &local_target)
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        let retry = match &out {
+            Ok(o) if !o.status.success() => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                err.contains("Access is denied") || err.contains("os error 5")
+            }
+            _ => false,
+        };
+        output = Some(out);
+        if !retry { break; }
+        eprint!("(retry {}) ", attempt);
+        flush();
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let output = output.unwrap();
 
     match output {
         Ok(o) if o.status.success() => {
@@ -515,7 +523,7 @@ fn run_startup(cfg: &Cfg) {
     let _ = fs::remove_file(&out_file);
 
     // 6. Medium search → NUL (more rows, IPC transfer cost)
-    let t_medium_nul = measure_binary(&cfg.uffs_bin,
+    let _t_medium_nul = measure_binary(&cfg.uffs_bin,
         &["*.dll", &drive_arg, "--columns", "Path"],
         cfg.rounds, "uffs *.dll → NUL (medium result)", || Stdio::null());
 
