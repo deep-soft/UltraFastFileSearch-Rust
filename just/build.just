@@ -72,18 +72,63 @@ copy-binary profile:
     done
     if ! echo "$PATH" | grep -q "$HOME/bin"; then printf "\033[1;33m⚠️  ~/bin not in PATH. Add this to your shell profile:\033[0m\n"; printf "   export PATH=\"\$HOME/bin:\$PATH\"\n"; fi
 
-# Install UFFS binaries from local dist/ cache to ~/bin.
-# If dist/ is empty, downloads the latest release from GitHub first.
-#
-# Platform binaries installed:
-#   macOS   : uffs-macos-arm64 → uffs, uffsd-macos-arm64 → uffsd,
-#             uffsmcp-macos-arm64 → uffsmcp, uffs_mft-macos-arm64 → uffs_mft
-#   Windows : uffs-windows-x64.exe → uffs.exe, uffsd-windows-x64.exe → uffsd.exe,
-#             uffsmcp-windows-x64.exe → uffsmcp.exe, uffs_mft-windows-x64.exe → uffs_mft.exe
-#
-# NOTE: uffs_tui and uffs_gui have moved to the private uffs-products repo.
+# Build the entire workspace (release) and copy ALL binary artifacts to ~/bin.
+# One `cargo build --release --workspace` does the heavy lifting; then every
+# binary in target/release/ is installed.
 [unix]
 use:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf "\033[1;34m📦 Build + install ALL UFFS binaries to ~/bin\033[0m\n"
+    echo "========================================================"
+
+    # 1. Single workspace-wide release build
+    printf "\n\033[0;34m🔨 Building release workspace...\033[0m\n"
+    START=$(date +%s)
+    cargo build --release --workspace
+    END=$(date +%s)
+    printf "\033[0;32m  → Built in %ds\033[0m\n" $((END - START))
+
+    # 2. Copy every binary artifact to ~/bin
+    BIN_DIR="$HOME/bin"
+    mkdir -p "$BIN_DIR"
+    INSTALLED=0
+    printf "\n\033[0;34m📦 Installing to %s\033[0m\n" "$BIN_DIR"
+    for SRC in target/release/*; do
+        [[ -f "$SRC" && -x "$SRC" ]] || continue
+        NAME=$(basename "$SRC")
+        # Skip non-binaries (shared libs, build scripts, deps fingerprints, etc.)
+        [[ "$NAME" == *.d ]] && continue
+        [[ "$NAME" == *.dylib ]] && continue
+        [[ "$NAME" == *.so ]] && continue
+        [[ "$NAME" == *.rlib ]] && continue
+        # Skip if it contains a dot (e.g. libfoo.a) — real binaries have no extension on Unix
+        [[ "$NAME" == *.* ]] && continue
+        DEST="$BIN_DIR/$NAME"
+        # If a directory exists with the same name, remove it first
+        if [[ -d "$DEST" ]]; then
+            printf "  \033[1;33m⚠️  Removing stale directory %s\033[0m\n" "$DEST"
+            rm -rf "$DEST"
+        fi
+        cp "$SRC" "$DEST"
+        chmod +x "$DEST"
+        SIZE=$(du -sh "$BIN_DIR/$NAME" | cut -f1)
+        printf "  \033[0;32m✅ %-30s %s\033[0m\n" "$NAME" "$SIZE"
+        INSTALLED=$((INSTALLED + 1))
+    done
+
+    printf "\n\033[0;32m✅ Installed %d binaries to ~/bin\033[0m\n" "$INSTALLED"
+
+    # Check PATH
+    if ! echo "$PATH" | grep -q "$HOME/bin"; then
+        printf "\n\033[1;33m⚠️  ~/bin not in PATH. Add to your shell profile:\033[0m\n"
+        printf "   export PATH=\"\$HOME/bin:\$PATH\"\n"
+    fi
+
+# Install UFFS binaries from dist/ cache or GitHub Release to ~/bin.
+# For pre-built release assets (cross-compiled). Use `just use` for local dev builds.
+[unix]
+use-dist:
     #!/usr/bin/env bash
     set -euo pipefail
     printf "\033[0;34m📦 Installing UFFS binaries from dist/ cache...\033[0m\n"
