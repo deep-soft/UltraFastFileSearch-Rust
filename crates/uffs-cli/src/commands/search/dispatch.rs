@@ -51,7 +51,7 @@ pub fn write_rows(rows: &[serde_json::Value], args: &[String]) -> Result<()> {
     let columns = if parity_compat {
         "parity"
     } else {
-        arg_val(args, "--columns").unwrap_or("all")
+        arg_val(args, "--columns").unwrap_or("")
     };
     let sep = arg_val(args, "--sep").unwrap_or(",");
     let quotes = arg_val(args, "--quotes").unwrap_or("\"");
@@ -113,7 +113,7 @@ pub fn write_rows(rows: &[serde_json::Value], args: &[String]) -> Result<()> {
 pub fn write_aggregations(aggregations: &[serde_json::Value], args: &[String]) -> Result<()> {
     let format = arg_val(args, "--format")
         .or_else(|| arg_val(args, "-f"))
-        .unwrap_or("table");
+        .unwrap_or("csv");
     match format {
         "json" => {
             let json = serde_json::to_string_pretty(aggregations)?;

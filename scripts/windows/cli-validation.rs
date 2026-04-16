@@ -1798,8 +1798,9 @@ fn print_results(results: &[TestResult]) {
 
     // When running a small number of tests (e.g. --tests filter), show
     // full CLI command for every test — same info shown on failure, so
-    // users can replay or inspect.
-    if total <= 10 && total > 0 {
+    // users can replay or inspect.  Skip when every test already
+    // appeared in the failure box to avoid duplicate output.
+    if total <= 10 && total > 0 && passed > 0 {
         eprintln!();
         eprintln!("  ┌─ Test Details ───────────────────────────────────────────────────────┐");
         for r in results {

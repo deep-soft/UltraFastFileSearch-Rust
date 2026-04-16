@@ -180,10 +180,12 @@ fn write_formatted<W: Write>(
     }
 }
 
-/// Serialise rows as a JSON array.
+/// Serialise rows as NDJSON (one JSON object per line).
 fn write_json<W: Write>(writer: &mut W, rows: &[Value]) -> Result<()> {
-    serde_json::to_writer_pretty(&mut *writer, rows)?;
-    writeln!(writer)?;
+    for row in rows {
+        serde_json::to_writer(&mut *writer, row)?;
+        writeln!(writer)?;
+    }
     Ok(())
 }
 
@@ -212,13 +214,162 @@ fn write_table<W: Write>(writer: &mut W, rows: &[Value]) -> Result<()> {
     Ok(())
 }
 
+// ── Column definition table ─────────────────────────────────────────
+//
+// Inlined from `uffs-core::FieldId` / `field_metadata` so the CLI stays
+// dependency-free (thin-client design).  Keep in sync with FieldId.
+
+/// A column definition: `(canonical_name, &[aliases], display_name)`.
+type ColDef = (&'static str, &'static [&'static str], &'static str);
+
+/// Lookup table: canonical name + aliases → display name.
+static COL_TABLE: &[ColDef] = &[
+    ("name", &[], "Name"),
+    ("path", &[], "Path"),
+    ("path_only", &["pathonly", "path only"], "Path Only"),
+    ("size", &[], "Size"),
+    (
+        "size_on_disk",
+        &["allocated", "allocated_size", "sod"],
+        "Size on Disk",
+    ),
+    ("created", &[], "Created"),
+    ("modified", &["written"], "Last Written"),
+    ("accessed", &[], "Last Accessed"),
+    ("extension", &["ext"], "Extension"),
+    ("drive", &["drv"], "Drive"),
+    ("type", &["kind"], "Type"),
+    ("descendants", &[], "Descendants"),
+    ("treesize", &["tree_size"], "Tree Size"),
+    ("tree_allocated", &[], "Tree Allocated"),
+    ("bulkiness", &[], "Bulkiness"),
+    ("name_length", &["namelength", "name length"], "Name Length"),
+    ("path_length", &["pathlength", "path length"], "Path Length"),
+    // Boolean attribute columns
+    ("hidden", &[], "Hidden"),
+    ("system", &[], "System"),
+    ("archive", &[], "Archive"),
+    ("readonly", &["read_only"], "Read-only"),
+    ("compressed", &[], "Compressed"),
+    ("encrypted", &[], "Encrypted"),
+    ("sparse", &[], "Sparse"),
+    ("reparse", &[], "Reparse"),
+    ("offline", &[], "Offline"),
+    (
+        "not_indexed",
+        &["notindexed", "not indexed"],
+        "Not content indexed file",
+    ),
+    (
+        "directory_flag",
+        &["directoryflag", "directory flag"],
+        "Directory Flag",
+    ),
+    ("integrity", &[], "Integrity"),
+    ("no_scrub", &["noscrub"], "No scrub file"),
+    ("pinned", &[], "Pinned"),
+    ("unpinned", &[], "Unpinned"),
+    ("recall_on_open", &["recallonopen"], "Recall on open"),
+    (
+        "recall_on_data_access",
+        &["recallondataaccess"],
+        "Recall on data access",
+    ),
+    ("temporary", &[], "Temporary"),
+    ("virtual", &[], "Virtual"),
+    ("attributes", &["parity_attributes"], "Attributes"),
+    ("attribute_value", &[], "AttributeValue"),
+    ("flags", &[], "Flags"),
+];
+
+/// Column order used when `--columns all` is specified (matches
+/// `uffs-core::output::column::BASELINE_COLUMN_ORDER`).
+static ALL_COLUMNS: &[&str] = &[
+    "path",
+    "name",
+    "path_only",
+    "size",
+    "size_on_disk",
+    "created",
+    "modified",
+    "accessed",
+    "descendants",
+    "readonly",
+    "hidden",
+    "system",
+    "directory_flag",
+    "archive",
+    "sparse",
+    "reparse",
+    "compressed",
+    "offline",
+    "not_indexed",
+    "encrypted",
+    "integrity",
+    "no_scrub",
+    "recall_on_open",
+    "pinned",
+    "unpinned",
+    "recall_on_data_access",
+    "attributes",
+    "treesize",
+    "tree_allocated",
+    "bulkiness",
+    "type",
+    "extension",
+    "name_length",
+    "path_length",
+];
+
 /// Default column set when none is specified.
-const DEFAULT_COLUMNS: &str = "name,size,modified,path";
+static DEFAULT_COLS: &[&str] = &["name", "size", "modified", "path"];
+
+/// Resolve a user column name to its canonical name.
+fn resolve_col_name(input: &str) -> Option<&'static str> {
+    let lowered = input.to_ascii_lowercase();
+    let trimmed = lowered.trim();
+    for &(canon, aliases, _display) in COL_TABLE {
+        if canon.eq_ignore_ascii_case(trimmed) {
+            return Some(canon);
+        }
+        for &alias in aliases {
+            if alias.eq_ignore_ascii_case(trimmed) {
+                return Some(canon);
+            }
+        }
+    }
+    None
+}
+
+/// Get display name for a canonical column name.
+fn display_name(canonical: &str) -> &str {
+    for &(canon, _, display) in COL_TABLE {
+        if canon == canonical {
+            return display;
+        }
+    }
+    canonical
+}
+
+/// Resolve column specification string to a list of canonical names.
+fn resolve_columns(columns: &str) -> Vec<&'static str> {
+    if columns.is_empty() {
+        DEFAULT_COLS.to_vec()
+    } else if columns.eq_ignore_ascii_case("all") {
+        ALL_COLUMNS.to_vec()
+    } else {
+        columns
+            .split(',')
+            .filter_map(|name| resolve_col_name(name.trim()))
+            .collect()
+    }
+}
 
 /// Write columnar (CSV-style) output from `SearchRow` fields.
 ///
-/// Columns are resolved by name from `SearchRow` fields. Unknown columns
-/// are silently ignored.
+/// Columns are resolved through the inline column table so display
+/// names, flag decomposition, and derived columns (Path Only, Bulkiness,
+/// etc.) work correctly.
 fn write_columnar<W: Write>(
     writer: &mut W,
     rows: &[Value],
@@ -227,28 +378,30 @@ fn write_columnar<W: Write>(
     quote: &str,
     header: bool,
 ) -> Result<()> {
-    let col_spec = if columns.is_empty() || columns.eq_ignore_ascii_case("parity") {
-        DEFAULT_COLUMNS
-    } else {
-        columns
-    };
+    let fields = resolve_columns(columns);
 
-    let col_names: Vec<&str> = col_spec.split(',').map(str::trim).collect();
-
-    // Header row
+    // Header row — use display_name() for Title-Case headers.
     if header {
-        let header_line: Vec<&str> = col_names.clone();
-        writeln!(writer, "{}", header_line.join(separator))?;
+        for (idx, field) in fields.iter().enumerate() {
+            if idx > 0 {
+                write!(writer, "{separator}")?;
+            }
+            let name = display_name(field);
+            if quote.is_empty() {
+                write!(writer, "{name}")?;
+            } else {
+                write!(writer, "{quote}{name}{quote}")?;
+            }
+        }
+        writeln!(writer)?;
     }
 
     for row in rows {
-        let mut first = true;
-        for col in &col_names {
-            if !first {
+        for (idx, field) in fields.iter().enumerate() {
+            if idx > 0 {
                 write!(writer, "{separator}")?;
             }
-            first = false;
-            let value = extract_column(row, col);
+            let value = extract_field(row, field);
             if quote.is_empty() {
                 write!(writer, "{value}")?;
             } else {
@@ -260,31 +413,84 @@ fn write_columnar<W: Write>(
     Ok(())
 }
 
-/// Extract a column value from a JSON row by column name.
-fn extract_column(row: &Value, col: &str) -> String {
-    match col.to_ascii_lowercase().as_str() {
+/// Extract a field value from a JSON row by canonical column name.
+///
+/// Handles flag decomposition, path derivation, and computed columns.
+fn extract_field(row: &Value, field: &str) -> String {
+    let flags = vu32(row, "flags");
+    match field {
         "name" => vs(row, "name"),
         "path" => vs(row, "path"),
-        "size" => vu(row, "size").to_string(),
-        "allocated" | "allocated_size" | "size_on_disk" => vu(row, "allocated").to_string(),
-        "modified" | "written" => format_unix_us(vi(row, "modified")),
-        "created" => format_unix_us(vi(row, "created")),
-        "accessed" => format_unix_us(vi(row, "accessed")),
-        "ext" | "extension" => extract_extension(&vs(row, "name")),
-        "drive" => vs(row, "drive"),
-        "type" | "kind" => {
+        "path_only" => {
+            let path = vs(row, "path");
             if vb(row, "is_directory") {
-                "dir".to_owned()
+                path
+            } else if let Some(pos) = path.rfind('\\') {
+                path.get(..=pos).unwrap_or(&path).to_owned()
             } else {
-                "file".to_owned()
+                path
             }
         }
-        "flags" => format!("{:#010x}", vu32(row, "flags")),
+        "size" => vu(row, "size").to_string(),
+        "size_on_disk" => vu(row, "allocated").to_string(),
+        "created" => format_unix_us(vi(row, "created")),
+        "modified" => format_unix_us(vi(row, "modified")),
+        "accessed" => format_unix_us(vi(row, "accessed")),
+        "extension" => extract_extension(&vs(row, "name")),
+        "drive" => vs(row, "drive"),
+        "type" => if vb(row, "is_directory") {
+            "dir"
+        } else {
+            "file"
+        }
+        .to_owned(),
         "descendants" => vu(row, "descendants").to_string(),
         "treesize" => vu(row, "treesize").to_string(),
         "tree_allocated" => vu(row, "tree_allocated").to_string(),
+        "bulkiness" => {
+            let is_dir = vb(row, "is_directory");
+            let (logical, alloc) = if is_dir {
+                (vu(row, "treesize"), vu(row, "tree_allocated"))
+            } else {
+                (vu(row, "size"), vu(row, "allocated"))
+            };
+            alloc
+                .checked_mul(100)
+                .and_then(|numerator| numerator.checked_div(logical))
+                .unwrap_or(0)
+                .to_string()
+        }
+        "name_length" => vs(row, "name").len().to_string(),
+        "path_length" => vs(row, "path").len().to_string(),
+        // Boolean flag columns
+        "hidden" => flag_bit(flags, parity_flags::HIDDEN),
+        "system" => flag_bit(flags, parity_flags::SYSTEM),
+        "archive" => flag_bit(flags, parity_flags::ARCHIVE),
+        "readonly" => flag_bit(flags, parity_flags::READONLY),
+        "compressed" => flag_bit(flags, parity_flags::COMPRESSED),
+        "encrypted" => flag_bit(flags, parity_flags::ENCRYPTED),
+        "sparse" => flag_bit(flags, parity_flags::SPARSE),
+        "reparse" => flag_bit(flags, parity_flags::REPARSE),
+        "offline" => flag_bit(flags, parity_flags::OFFLINE),
+        "not_indexed" => flag_bit(flags, parity_flags::NOT_INDEXED),
+        "directory_flag" => flag_bit(flags, parity_flags::DIRECTORY),
+        "integrity" => flag_bit(flags, parity_flags::INTEGRITY),
+        "no_scrub" => flag_bit(flags, parity_flags::NO_SCRUB),
+        "pinned" => flag_bit(flags, parity_flags::PINNED),
+        "unpinned" => flag_bit(flags, parity_flags::UNPINNED),
+        "recall_on_open" => flag_bit(flags, 0x0004_0000),
+        "recall_on_data_access" => flag_bit(flags, 0x0040_0000),
+        "temporary" => flag_bit(flags, 0x0100),
+        "virtual" => flag_bit(flags, 0x0001_0000),
+        "attributes" | "parity_attributes" => (flags & parity_flags::PARITY_MASK).to_string(),
+        "attribute_value" | "flags" => flags.to_string(),
         _ => String::new(),
     }
+}
+
+/// Format a flag bit as "1" or "0".
+fn flag_bit(flags: u32, bit: u32) -> String {
+    if flags & bit != 0 { "1" } else { "0" }.to_owned()
 }
 
 /// Extract file extension from a filename.
