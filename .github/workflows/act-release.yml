@@ -144,7 +144,7 @@ jobs:
 
       - name: patch .cargo/config.toml
         # if: ${{ github.event.inputs.patch_1 == 'true' }}
-        if: ${{ github.event == 'push' || inputs.patch_1 }}
+        if: ${{ github.event == 'push' || (github.event == 'workflow_dispatch' && inputs.patch_1) }}
         shell: bash
         run: |
           echo ".cargo/config.toml";
