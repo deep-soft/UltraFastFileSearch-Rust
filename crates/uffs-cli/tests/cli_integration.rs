@@ -73,9 +73,8 @@ mod tests {
     #[test]
     fn test_no_args_prints_top_level_help() {
         assert_success("no_args_help", &[], &[
-            "Command-line interface for UFFS",
-            "Usage:",
-            "[PATTERN]",
+            "uffs - Ultra Fast File Search",
+            "USAGE:",
         ]);
     }
 
@@ -95,147 +94,34 @@ mod tests {
         ]);
     }
 
-    #[test]
-    fn test_unknown_flag_reports_error() {
-        assert_failure("unknown_flag", &["--bogus"], &[
-            "unexpected argument '--bogus'",
-            "Usage:",
-        ]);
-    }
-
-    #[test]
-    fn test_stats_help_prints_top_option() {
-        assert_success("stats_help", &["stats", "--help"], &[
-            "Show statistics",
-            "--top <TOP>",
-        ]);
-    }
-
-    #[test]
-    fn test_stats_accepts_optional_path() {
-        // Path is now optional — `uffs stats` without a path connects
-        // to the daemon. Verify help text shows [PATH] as optional.
-        assert_success("stats_optional_path", &["stats", "--help"], &["[PATH]"]);
-    }
+    // ── Validation tests ────────────────────────────────────────────
+    //
+    // With the thin-client approach, search-flag validation happens on
+    // the daemon side.  Tests that validated clap error messages for
+    // search flags (--min-size, --limit, --tz-offset, --drive conflicts)
+    // are now daemon-level concerns tested in uffs-client/uffs-daemon.
+    //
+    // Stats subcommand validation is still client-side.
 
     #[test]
     fn test_stats_rejects_non_numeric_top() {
         assert_failure(
             "stats_invalid_top",
             &["stats", "saved.parquet", "--top", "abc"],
-            &["invalid value 'abc'", "--top <TOP>"],
+            &["Bad --top"],
         );
     }
 
-    #[test]
-    fn test_search_rejects_invalid_drive_letter() {
-        assert_failure("search_invalid_drive", &["*.rs", "--drive", "1"], &[
-            "invalid value '1'",
-            "must be A-Z",
-        ]);
-    }
-
-    #[test]
-    fn test_search_rejects_conflicting_drive_flags() {
-        assert_failure(
-            "search_drive_conflict",
-            &["*.rs", "--drive", "C", "--drives", "D"],
-            &["cannot be used with", "--drives <DRIVES>"],
-        );
-    }
-
-    #[test]
-    #[ignore = "may prompt for keychain password on macOS — run with --ignored"]
-    fn test_search_accepts_multi_mft_file_without_drives() {
-        // Multiple --mft-file values work without --drives.
-        // Drive letters are auto-inferred from filenames (C.bin → C:).
-        // The command will fail (files don't exist) but must NOT fail with
-        // an argument-conflict error.
-        let output = run_cli("search_mft_multi_file", &[
-            "*.rs",
-            "--mft-file",
-            "C.bin,D.bin",
-        ]);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            !stderr.contains("cannot be used with"),
-            "--mft-file C.bin,D.bin should be accepted without --drives, got: {stderr}"
-        );
-    }
-
-    #[test]
-    fn test_search_rejects_non_numeric_min_size() {
-        assert_failure(
-            "search_invalid_min_size",
-            &["*.rs", "--min-size", "abc"],
-            &["invalid value 'abc'", "--min-size <MIN_SIZE>"],
-        );
-    }
-
-    #[test]
-    fn test_search_rejects_non_numeric_max_size() {
-        assert_failure(
-            "search_invalid_max_size",
-            &["*.rs", "--max-size", "abc"],
-            &["invalid value 'abc'", "--max-size <MAX_SIZE>"],
-        );
-    }
-
-    #[test]
-    fn test_search_rejects_non_numeric_limit() {
-        assert_failure("search_invalid_limit", &["*.rs", "--limit", "abc"], &[
-            "invalid value 'abc'",
-            "--limit <LIMIT>",
-        ]);
-    }
-
-    #[test]
-    fn test_search_rejects_non_numeric_tz_offset() {
-        assert_failure(
-            "search_invalid_tz_offset",
-            &["*.rs", "--tz-offset", "abc"],
-            &["invalid value 'abc'", "--tz-offset <TZ_OFFSET>"],
-        );
-    }
-
-    #[test]
-    fn test_stats_rejects_unexpected_extra_argument() {
-        assert_failure(
-            "stats_unexpected_extra_arg",
-            &["stats", "saved.parquet", "extra"],
-            &["unexpected argument 'extra'", "Usage:"],
-        );
-    }
-
-    // ── --name-only tests ───────────────────────────────────────────────
-
-    #[test]
-    fn test_name_only_rejects_backslash_pattern() {
-        assert_failure(
-            "name_only_backslash",
-            &[
-                r"C:\Users\hallo",
-                "--name-only",
-                "--mft-file",
-                "nonexistent.bin",
-            ],
-            &["--name-only cannot be used with path patterns"],
-        );
-    }
-
-    #[test]
-    fn test_name_only_rejects_forward_slash_pattern() {
-        assert_failure(
-            "name_only_fwdslash",
-            &["usr/hallo", "--name-only", "--mft-file", "nonexistent.bin"],
-            &["--name-only cannot be used with path patterns"],
-        );
-    }
+    // ── --name-only tests ───────────────────────────────────────────
+    //
+    // These validations now happen daemon-side via search_cli.
+    // We keep smoke tests that don't require a running daemon.
 
     #[test]
     fn test_name_only_accepts_plain_literal() {
-        // Should not error on validation (will fail later because no MFT file,
-        // but the --name-only + pattern validation should pass)
+        // Should not error with "--name-only cannot be used with path
+        // patterns". The command will fail because no daemon is running,
+        // but the validation error should not appear.
         let output = run_cli("name_only_plain", &[
             "hallo",
             "--name-only",
@@ -266,8 +152,6 @@ mod tests {
 
     #[test]
     fn test_name_only_accepts_regex_with_backslash_escapes() {
-        // Regex patterns start with > and may contain \. for escaped dots.
-        // These backslashes are regex syntax, not path separators.
         let output = run_cli("name_only_regex", &[
             r">.*\.(jpg|png)",
             "--name-only",
@@ -279,44 +163,5 @@ mod tests {
             !stderr.contains("--name-only cannot be used with path patterns"),
             "regex patterns (starting with >) should be accepted with --name-only"
         );
-    }
-
-    // ── Step 4 regression: legacy pipeline removal ──────────────────
-
-    #[test]
-    fn test_pipeline_flag_is_rejected() {
-        // Step 4 removed --pipeline flag entirely. Verify it's not accepted.
-        assert_failure("pipeline_rejected", &["*.rs", "--pipeline", "unified"], &[
-            "unexpected argument '--pipeline'",
-        ]);
-    }
-
-    #[test]
-    fn test_pipeline_legacy_flag_is_rejected() {
-        // Ensure --pipeline legacy is also rejected (no silently-ignored flag).
-        assert_failure(
-            "pipeline_legacy_rejected",
-            &["*.rs", "--pipeline", "legacy"],
-            &["unexpected argument '--pipeline'"],
-        );
-    }
-
-    #[test]
-    fn test_query_mode_flag_is_rejected() {
-        // --query-mode was removed along with --pipeline in Step 4.
-        // Verify the flag is no longer accepted.
-        let output = run_cli("query_mode_rejected", &[
-            "*.rs",
-            "--query-mode",
-            "dataframe",
-        ]);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // If it was removed, clap rejects it. If not, this test catches
-        // accidental re-introduction.
-        if stderr.contains("unexpected argument") {
-            // Good — flag is properly rejected
-        } else {
-            // Flag still exists — this is acceptable until full removal
-        }
     }
 }

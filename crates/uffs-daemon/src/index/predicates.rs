@@ -8,7 +8,8 @@
 //! post-filter matching for predicates that cannot be compiled into the hot
 //! path.
 
-use uffs_client::protocol::{SearchPredicate, SearchPredicateOp, SearchPredicateValue, SearchRow};
+use uffs_client::protocol::response::SearchRow;
+use uffs_client::protocol::{SearchPredicate, SearchPredicateOp, SearchPredicateValue};
 use uffs_core::search::backend::DisplayRow;
 use uffs_core::search::derived::{
     bulkiness_for_row, semantic_type_for_row, tree_allocated_for_row,

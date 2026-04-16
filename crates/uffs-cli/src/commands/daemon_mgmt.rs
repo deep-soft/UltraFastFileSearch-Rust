@@ -4,8 +4,7 @@
 //! `uffs daemon {status|stop|kill|restart}` subcommand handlers.
 
 use anyhow::{Context, Result};
-use tracing::info;
-use uffs_client::connect::UffsClient;
+use uffs_client::connect_sync::UffsClientSync;
 use uffs_client::daemon_ctl::{pid_file_path, socket_path};
 use uffs_client::protocol::response::DaemonStatus;
 
@@ -16,7 +15,7 @@ use crate::args::DaemonAction;
 /// # Errors
 ///
 /// Returns an error if the operation fails.
-pub async fn daemon(action: &DaemonAction) -> Result<()> {
+pub fn daemon(action: &DaemonAction) -> Result<()> {
     match action {
         DaemonAction::Start {
             mft_file,
@@ -24,35 +23,28 @@ pub async fn daemon(action: &DaemonAction) -> Result<()> {
             no_cache,
             log_level,
             log_file,
-        } => {
-            daemon_start(
-                mft_file,
-                data_dir.as_deref(),
-                *no_cache,
-                log_level,
-                log_file.as_deref(),
-            )
-            .await
-        }
-        DaemonAction::Status => daemon_status().await,
-        DaemonAction::Stats => daemon_stats().await,
-        DaemonAction::Stop => daemon_stop().await,
+        } => daemon_start(
+            mft_file,
+            data_dir.as_deref(),
+            *no_cache,
+            log_level,
+            log_file.as_deref(),
+        ),
+        DaemonAction::Status => daemon_status(),
+        DaemonAction::Stats => daemon_stats(),
+        DaemonAction::Stop => daemon_stop(),
         DaemonAction::Kill => {
-            daemon_kill().await;
+            daemon_kill();
             Ok(())
         }
-        DaemonAction::Restart => daemon_restart().await,
+        DaemonAction::Restart => daemon_restart(),
     }
 }
 
 /// `uffs daemon start` — start the daemon, forwarding data-source flags
 /// as-is so the daemon resolves them internally (DRY).
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "daemon lifecycle management with spawn, health-check, and retry logic"
-)]
-async fn daemon_start(
+fn daemon_start(
     mft_files: &[std::path::PathBuf],
     data_dir: Option<&std::path::Path>,
     no_cache: bool,
@@ -60,13 +52,10 @@ async fn daemon_start(
     log_file: Option<&std::path::Path>,
 ) -> Result<()> {
     // Already running?
-    tracing::info!("[daemon_start] checking if daemon is already running");
-    if UffsClient::connect_raw().await.is_ok() {
-        tracing::info!("[daemon_start] connect_raw succeeded — daemon already running");
+    if UffsClientSync::connect_raw().is_ok() {
         println!("Daemon is already running. Use `uffs daemon restart` to reload.");
         return Ok(());
     }
-    tracing::info!("[daemon_start] connect_raw failed — daemon not running, will start");
 
     // Build spawn args — forward raw, let daemon handle discovery.
     let mut spawn_args = Vec::new();
@@ -81,7 +70,6 @@ async fn daemon_start(
     if no_cache {
         spawn_args.push("--no-cache".to_owned());
     }
-    // Forward logging configuration to the spawned daemon.
     if log_level != "info" {
         spawn_args.push("--log-level".to_owned());
         spawn_args.push(log_level.to_owned());
@@ -100,36 +88,26 @@ async fn daemon_start(
 
     println!("Starting daemon...");
 
-    tracing::info!("[daemon_start] connecting to daemon (auto-start if needed)");
-    let mut client = UffsClient::connect_with_args(&spawn_args)
-        .await
-        .with_context(|| "Failed to start daemon")?;
-    tracing::info!("[daemon_start] connected, entering await_ready");
+    let mut client =
+        UffsClientSync::connect_with_args(&spawn_args).with_context(|| "Failed to start daemon")?;
 
     client
         .await_ready(core::time::Duration::from_mins(2))
-        .await
         .with_context(|| "Daemon did not become ready in time")?;
 
-    tracing::info!("[daemon_start] await_ready returned OK, printing result");
-    // await_ready already confirmed Ready — no need for a second status call
-    // which would risk hanging if the bridge connection tears down.
     println!("Daemon started and ready.");
-    tracing::info!("[daemon_start] done, returning");
     Ok(())
 }
 
 /// `uffs daemon status` — show daemon status, PID, loaded drives.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-async fn daemon_status() -> Result<()> {
-    let Ok(mut client) = UffsClient::connect_raw().await else {
+fn daemon_status() -> Result<()> {
+    let Ok(mut client) = UffsClientSync::connect_raw() else {
         print_not_running();
         return Ok(());
     };
 
-    // If the socket file is stale (daemon just exited), status() returns
-    // ConnectionClosed.  Treat that as "not running" instead of an error.
-    let Ok(status) = client.status().await else {
+    let Ok(status) = client.status() else {
         print_not_running();
         return Ok(());
     };
@@ -167,10 +145,7 @@ async fn daemon_status() -> Result<()> {
     }
 
     // Also show loaded drives.
-    let drives = client
-        .drives()
-        .await
-        .with_context(|| "Failed to query drives")?;
+    let drives = client.drives().with_context(|| "Failed to query drives")?;
     if drives.drives.is_empty() {
         println!("Drives:        (none loaded)");
     } else {
@@ -216,11 +191,10 @@ fn print_not_running() {
 
 /// `uffs daemon stats` — show performance metrics.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-async fn daemon_stats() -> Result<()> {
-    if let Ok(mut client) = UffsClient::connect_raw().await {
+fn daemon_stats() -> Result<()> {
+    if let Ok(mut client) = UffsClientSync::connect_raw() {
         let stats = client
             .stats()
-            .await
             .with_context(|| "Failed to query daemon stats")?;
 
         let fmt = uffs_client::format::format_duration;
@@ -252,12 +226,10 @@ async fn daemon_stats() -> Result<()> {
 
 /// `uffs daemon stop` — graceful shutdown via RPC.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-async fn daemon_stop() -> Result<()> {
-    if let Ok(mut client) = UffsClient::connect_raw().await {
-        info!("Sending shutdown request to daemon");
+fn daemon_stop() -> Result<()> {
+    if let Ok(mut client) = UffsClientSync::connect_raw() {
         client
             .shutdown()
-            .await
             .with_context(|| "Shutdown RPC failed — try `uffs daemon kill` instead")?;
         println!("Daemon shutdown requested.");
     } else {
@@ -268,17 +240,16 @@ async fn daemon_stop() -> Result<()> {
 
 /// `uffs daemon kill` — hard kill via PID file or socket discovery + cleanup.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-async fn daemon_kill() {
+fn daemon_kill() {
     let pid_path = pid_file_path();
 
-    // Try to get PID from PID file first, then from live socket connection.
     let mut pid =
         uffs_client::daemon_ctl::parse_pid_file(&pid_path).map(|(file_pid, _, _, _)| file_pid);
 
     // No PID file → try discovering via live socket.
     if pid.is_none()
-        && let Ok(mut client) = UffsClient::connect_raw().await
-        && let Ok(status) = client.status().await
+        && let Ok(mut client) = UffsClientSync::connect_raw()
+        && let Ok(status) = client.status()
     {
         pid = Some(status.pid);
     }
@@ -324,54 +295,37 @@ fn kill_pid(pid: u32) {
 /// original `--mft-file` paths, stops it, then re-spawns with the same
 /// arguments.  If not running, prints a message and exits.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-async fn daemon_restart() -> Result<()> {
-    // 1. Connect to the running daemon and capture its data sources.
-    let spawn_args = if let Ok(mut client) = UffsClient::connect_raw().await {
+fn daemon_restart() -> Result<()> {
+    let spawn_args = if let Ok(mut client) = UffsClientSync::connect_raw() {
         let drives_resp = client
             .drives()
-            .await
             .with_context(|| "Failed to query drives before restart")?;
 
-        // Build --mft-file args from the drive source paths.
         let mut args = Vec::new();
         for dr in &drives_resp.drives {
             if let Some(path) = dr.source.strip_prefix("file:") {
                 args.push("--mft-file".to_owned());
                 args.push(path.to_owned());
             }
-            // "live" sources are auto-discovered on Windows — no arg needed.
         }
 
-        info!(
-            drives = drives_resp.drives.len(),
-            args_count = args.len(),
-            "Captured data sources for restart"
-        );
-
-        // 2. Stop the running daemon gracefully.
-        let daemon_pid = client
-            .status()
-            .await
-            .map_or(0, |status_resp| status_resp.pid);
+        let daemon_pid = client.status().map_or(0, |status_resp| status_resp.pid);
         println!("Stopping daemon (PID {daemon_pid})...");
 
-        client.shutdown().await.with_context(|| {
+        client.shutdown().with_context(|| {
             format!(
                 "Graceful shutdown of PID {daemon_pid} failed.\n\
                  Run `uffs daemon kill` first, then retry."
             )
         })?;
 
-        // Wait for it to actually exit.
-        tokio::time::sleep(core::time::Duration::from_secs(1)).await;
-
+        std::thread::sleep(core::time::Duration::from_secs(1));
         args
     } else {
         println!("Daemon is not running — nothing to restart.");
         return Ok(());
     };
 
-    // 3. Clean up stale PID/socket files.
     drop(std::fs::remove_file(pid_file_path()));
     drop(std::fs::remove_file(socket_path()));
 
@@ -383,17 +337,14 @@ async fn daemon_restart() -> Result<()> {
             .count()
     );
 
-    // 4. Let connect_with_args handle spawning (avoids double-spawn).
-    let mut client = UffsClient::connect_with_args(&spawn_args)
-        .await
+    let mut client = UffsClientSync::connect_with_args(&spawn_args)
         .with_context(|| "Failed to start restarted daemon")?;
 
     client
         .await_ready(core::time::Duration::from_mins(2))
-        .await
         .with_context(|| "Restarted daemon did not become ready in time")?;
 
-    let status = client.status().await;
+    let status = client.status();
     if let Ok(resp) = status {
         let state = match &resp.status {
             DaemonStatus::Loading {

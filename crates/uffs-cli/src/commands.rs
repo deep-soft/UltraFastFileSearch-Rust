@@ -6,14 +6,6 @@
 //! This module provides the public command surface for the UFFS CLI and shared
 //! helpers used by the split command modules.
 
-// indicatif is only used on Windows; retain the dep for cross-compilation.
-#[cfg(not(windows))]
-use indicatif as _;
-#[cfg(windows)]
-use indicatif::MultiProgress;
-#[cfg(windows)]
-use indicatif::{ProgressBar, ProgressStyle};
-
 /// Aggregate analytics subcommand.
 pub mod aggregate;
 /// Daemon management subcommands.
@@ -29,42 +21,6 @@ pub mod search;
 pub mod stats;
 /// Combined `uffs status` command.
 pub mod system_status;
-
-/// Check if progress bars are disabled via `UFFS_NO_PROGRESS=1` environment
-/// variable.
-#[cfg(windows)]
-#[inline]
-fn is_progress_disabled() -> bool {
-    std::env::var("UFFS_NO_PROGRESS")
-        .map(|val| val == "1" || val.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-/// Create a multi-progress container for multiple drives.
-/// Returns `None` if progress is disabled via `UFFS_NO_PROGRESS=1`.
-#[cfg(windows)]
-fn create_multi_progress() -> Option<MultiProgress> {
-    if is_progress_disabled() {
-        None
-    } else {
-        Some(MultiProgress::new())
-    }
-}
-
-/// Create a progress bar for a specific drive.
-#[cfg(windows)]
-fn add_drive_progress(mp: &MultiProgress, drive: char) -> ProgressBar {
-    let pb = mp.add(ProgressBar::new(0));
-    pb.set_style(
-        ProgressStyle::with_template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {bytes:>7}/{total_bytes:7} {msg}",
-        )
-        .unwrap_or_else(|_| ProgressStyle::default_bar())
-        .progress_chars("=>-"),
-    );
-    pb.set_message(format!("Reading {drive}:\\$MFT"));
-    pb
-}
 
 /// Format a number with comma separators.
 fn format_number(num: u64) -> String {

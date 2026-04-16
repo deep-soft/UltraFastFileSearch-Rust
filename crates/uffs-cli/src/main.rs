@@ -1,39 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! UFFS (Ultra Fast File Search) CLI
+//! UFFS (Ultra Fast File Search) CLI — thin synchronous client.
 //!
-//! Fast file search from the command line.
-//!
-//! ## Usage
-//!
-//! Search is the default action (no subcommand needed):
-//! ```bash
-//! uffs *.txt              # Find all .txt files
-//! uffs c:/pro*            # Find files starting with "pro" on C:
-//! uffs --ext=rs,toml      # Find Rust files
-//! ```
-//!
-//! ## Logging
-//!
-//! Use `-v` / `--verbose` for info-level terminal output:
-//! ```bash
-//! uffs -v *.txt
-//! ```
-//!
-//! For finer control, use environment variables:
-//! - `RUST_LOG`: Terminal log level (default: `error`, or `info` with `-v`)
-//! - `RUST_LOG_FILE`: File log level (default: `info`)
-//! - `UFFS_LOG_DIR`: Log directory (default: `~/bin/uffs/logs`)
-//!
-//! Examples:
-//! ```bash
-//! # Debug mode - verbose terminal output
-//! RUST_LOG=debug uffs *.txt
-//!
-//! # Trace mode - maximum verbosity
-//! RUST_LOG=trace RUST_LOG_FILE=trace uffs *.txt
-//! ```
+//! All heavy lifting (including CLI arg parsing) happens in the daemon.
+//! This binary detects subcommands and forwards raw search args via
+//! `search_cli` RPC.
 
 // CLI main module uses single-call functions by design
 #![expect(
@@ -41,636 +13,266 @@
     reason = "CLI entry point functions are called once from main"
 )]
 
-use std::io;
-use std::path::PathBuf;
-
-use anyhow::Result;
+use anyhow::{Context, Result};
 #[cfg(test)]
 use assert_cmd as _;
-use clap::Parser;
-use mimalloc::MiMalloc;
-use tracing_subscriber::fmt::time::UtcTime;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::{EnvFilter, Layer};
-
-/// Use mimalloc globally - faster than system allocator for our workload:
-/// many small allocations (file names, records) + large buffers (MFT,
-/// `DataFrame`). Works well on Windows, macOS, and Linux without build
-/// complexity.
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
 
 pub mod args;
 pub mod commands;
 
-use args::{Cli, Commands};
-
-/// Operation label used for CLI-wide shutdown classification.
-const CLI_OPERATION: &str = "uffs";
-
-/// Maps spawned CLI task failures onto a descriptive `anyhow::Error`.
-fn classify_cli_task_error(
-    operation: &'static str,
-    error: &tokio::task::JoinError,
-) -> anyhow::Error {
-    if error.is_cancelled() {
-        return anyhow::anyhow!("{operation}: task cancelled — {error}");
-    }
-    anyhow::anyhow!("{operation}: task join failed — {error}")
-}
-
-/// Builds the explicit cancellation outcome for a Ctrl+C shutdown request.
-fn shutdown_requested_error(operation: &'static str) -> anyhow::Error {
-    anyhow::anyhow!("{operation}: shutdown requested by Ctrl+C")
-}
-
-/// Builds a wait failure when the CLI cannot install a Ctrl+C listener.
-fn ctrl_c_listener_error(operation: &'static str, error: &io::Error) -> anyhow::Error {
-    anyhow::anyhow!("{operation}: failed to listen for Ctrl+C: {error}")
-}
-/// Initialize logging with terminal + file support.
-///
-/// If `verbose` is true and `RUST_LOG` is not set, uses `info` level for
-/// terminal. Otherwise, terminal logging is controlled by `RUST_LOG` (default:
-/// `error`). File logging is controlled by `RUST_LOG_FILE` (default: `info`).
-/// Log directory is controlled by `UFFS_LOG_DIR` (default: `~/bin/rust`).
-///
-/// Returns a guard that must be kept alive for the duration of the program.
-///
-/// # Panics
-///
-/// Panics if the global tracing subscriber cannot be set (should only happen
-/// if called more than once).
-// Extracted for clarity and maintainability - logging setup is complex enough
-// to warrant its own function even if only called once.
-#[expect(
-    clippy::single_call_fn,
-    reason = "extracted for clarity — logging setup is complex enough to warrant its own function"
-)]
-fn init_logging(verbose: bool) -> tracing_appender::non_blocking::WorkerGuard {
-    use std::fs;
-
-    use tracing_appender::non_blocking::NonBlocking;
-    use tracing_appender::rolling::{RollingFileAppender, Rotation};
-    use tracing_subscriber::registry::Registry;
-
-    // Get log directory (default: ~/bin/uffs/logs)
-    let log_dir = std::env::var("UFFS_LOG_DIR").map_or_else(
-        |_| {
-            dirs_next::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("bin")
-                .join("uffs")
-                .join("logs")
-        },
-        PathBuf::from,
-    );
-
-    // Create log directory if it doesn't exist (ignore errors - logging will fail
-    // gracefully)
-    drop(fs::create_dir_all(&log_dir));
-
-    // Create rolling file appender (daily rotation).
-    // Use the builder API which returns Result instead of panicking, and retry
-    // briefly to handle transient Windows file-lock races (e.g. previous daemon
-    // process still releasing the log file handle).
-    let max_attempts = 4_u32;
-    let mut file_log_err: Option<String> = None;
-    let mut file_log_attempt = 0_u32;
-    let (non_blocking, guard): (NonBlocking, _) = {
-        let mut last_err = None;
-        let mut appender = None;
-        for attempt in 0..max_attempts {
-            if attempt > 0 {
-                std::thread::sleep(core::time::Duration::from_millis(250));
-            }
-            match RollingFileAppender::builder()
-                .rotation(Rotation::DAILY)
-                .filename_prefix("uffs_log_")
-                .build(&log_dir)
-            {
-                Ok(file_appender) => {
-                    file_log_attempt = attempt;
-                    appender = Some(file_appender);
-                    break;
-                }
-                Err(init_err) => last_err = Some(init_err),
-            }
-        }
-        appender.map_or_else(
-            || {
-                file_log_err = Some(
-                    last_err
-                        .as_ref()
-                        .map_or_else(|| "unknown error".to_owned(), ToString::to_string),
-                );
-                NonBlocking::new(io::sink())
-            },
-            NonBlocking::new,
-        )
-    };
-
-    // Terminal filter: -v sets info if RUST_LOG not explicitly set
-    let terminal_default = if verbose { "info" } else { "error" };
-    let terminal_filter =
-        EnvFilter::new(std::env::var("RUST_LOG").unwrap_or_else(|_| terminal_default.to_owned()));
-
-    // File filter (default: info - more verbose for debugging)
-    let file_filter =
-        EnvFilter::new(std::env::var("RUST_LOG_FILE").unwrap_or_else(|_| "info".to_owned()));
-
-    // Timer format
-    let timer = UtcTime::rfc_3339();
-
-    // Terminal layer (to stderr to avoid corrupting CSV output, with ANSI colors,
-    // file/line info, thread IDs)
-    let terminal_layer = tracing_subscriber::fmt::layer()
-        .with_writer(io::stderr)
-        .with_timer(timer.clone())
-        .with_ansi(true)
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_ids(true)
-        .with_target(true)
-        .with_filter(terminal_filter);
-
-    // File layer (no ANSI colors, but with full context)
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(non_blocking)
-        .with_timer(timer)
-        .with_ansi(false)
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_ids(true)
-        .with_target(true)
-        .with_filter(file_filter);
-
-    // Combine layers
-    let subscriber = Registry::default().with(terminal_layer).with(file_layer);
-
-    // This should only be called once at program startup
-    #[expect(
-        clippy::expect_used,
-        reason = "global subscriber set once at startup; panic is intentional if called twice"
-    )]
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set global tracing subscriber - was init_logging called twice?");
-
-    // Post-init diagnostics: surface file-appender issues through tracing now
-    // that the subscriber is active. This ensures problems are visible in both
-    // the terminal and (if the file appender recovered) the log file.
-    if let Some(err_msg) = &file_log_err {
-        tracing::error!(
-            log_dir = %log_dir.display(),
-            attempts = max_attempts,
-            error = %err_msg,
-            "File logging DISABLED — log file could not be opened after all retries. \
-             All tracing output is terminal-only for this session."
-        );
-    } else if file_log_attempt > 0 {
-        tracing::warn!(
-            log_dir = %log_dir.display(),
-            retries = file_log_attempt,
-            "Log file opened after {file_log_attempt} retries — \
-             previous process may have been slow to release the file handle"
-        );
-    }
-
-    guard
-}
-
 /// Run the CLI and return a result.
-///
-/// This is separated from `main()` to allow custom error handling that
-/// doesn't show backtraces for user-facing errors like "file not found".
-#[tracing::instrument(level = "info", skip_all)]
-async fn run() -> Result<()> {
-    // Startup profiler: reuse t0 from main() if available.
-    let mut prof = StartupProfiler::new(
-        STARTUP_PROFILER_T0
-            .get()
-            .copied()
-            .unwrap_or_else(std::time::Instant::now),
-    );
-    prof.mark("run() entered (tokio spawned)");
+fn run() -> Result<()> {
+    let raw_args: Vec<String> = std::env::args().collect();
+    let tokens: Vec<&str> = raw_args.iter().skip(1).map(String::as_str).collect();
 
-    let cli = Cli::parse();
-    prof.mark("clap Cli::parse()");
+    // Fast paths: help / version / no args.
+    match tokens.first().copied() {
+        None | Some("--help" | "-h" | "help") => {
+            args::print_help();
+            return Ok(());
+        }
+        Some("--version" | "-V" | "version") => {
+            args::print_version();
+            return Ok(());
+        }
+        _ => {}
+    }
 
-    // Skip logging init for `uffs mcp run/serve` — the MCP server initialises
-    // its own tracing subscriber.
-    let is_mcp_run = matches!(
-        &cli.command,
-        Some(Commands::Mcp {
-            action: args::McpAction::Run { .. } | args::McpAction::Serve { .. }
-        })
-    );
-    let _guard = if is_mcp_run {
-        None
-    } else {
-        let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
-        let guard = init_logging(verbose);
-        prof.mark("init_logging()");
-        Some(guard)
-    };
-
-    // Handle subcommands or default search action
-    match cli.command {
-        Some(Commands::Stats {
-            path,
-            top,
-            data_dir,
-            mft_file,
-        }) => {
-            if let Some(stats_path) = path {
-                commands::stats::stats(Some(&stats_path), top)?;
-            } else {
-                // Daemon mode: run overview preset through search path.
-                let config = commands::search::SearchConfig::aggregate_only(
-                    "*",
-                    vec!["overview".to_owned()],
-                    "table",
-                    data_dir,
-                    mft_file,
-                    None,
-                    None,
-                );
-                commands::search::run_with_config(&config).await?;
-            }
-        }
-        Some(Commands::Aggregate {
-            preset,
-            format,
-            data_dir,
-            mft_file,
-            agg_cursor,
-            agg_page_size,
-        }) => {
-            // Route through the standard search path — aggregate-only,
-            // no rows returned.  The search daemon lifecycle (auto-start,
-            // await_ready, data-dir forwarding) is handled automatically.
-            // Pass the preset name directly — `build_search_params`
-            // detects known preset names via `AggregatePreset::parse`
-            // and sets `kind: "preset"` + `preset: Some(name)` on the
-            // wire automatically.
-            let agg_spec = preset;
-            let config = commands::search::SearchConfig::aggregate_only(
-                "*",
-                vec![agg_spec],
-                &format,
-                data_dir,
-                mft_file,
-                agg_cursor,
-                agg_page_size,
-            );
-            commands::search::run_with_config(&config).await?;
-        }
-        Some(Commands::Daemon { action }) => {
-            commands::daemon_mgmt::daemon(&action).await?;
-        }
-        Some(Commands::Mcp { action }) => {
-            commands::mcp_mgmt::mcp(&action).await?;
-        }
-        Some(Commands::SystemStatus) => {
-            commands::system_status::system_status().await?;
-        }
-        None => {
-            run_search(cli).await?;
+    // Detect subcommand as first non-flag token.
+    let first = tokens.first().copied().unwrap_or("");
+    let subcmd_args = raw_args.get(2..).unwrap_or_default();
+    match first {
+        "stats" => run_stats(subcmd_args)?,
+        "aggregate" | "agg" => run_aggregate(subcmd_args)?,
+        "daemon" => run_daemon(subcmd_args)?,
+        "mcp" => commands::mcp_mgmt::mcp_from_args(subcmd_args)?,
+        "status" => commands::system_status::system_status(),
+        _ => {
+            // Default: search — forward ALL args after "uffs" to daemon.
+            run_search(raw_args.get(1..).unwrap_or_default())?;
         }
     }
 
     Ok(())
 }
 
-/// Handle the default search subcommand.
-///
-/// Extracted from `run()` to stay under the `too_many_lines` lint limit.
-async fn run_search(mut cli: Cli) -> Result<()> {
-    // Synthesise pattern from --begins-with / --ends-with / --contains (take to
-    // avoid partial move)
-    let raw_pattern = cli
-        .pattern
-        .take()
-        .or_else(|| cli.begins_with.take().map(|prefix| format!("{prefix}*")))
-        .or_else(|| cli.ends_with.take().map(|suffix| format!("*{suffix}")))
-        .or_else(|| cli.contains.take().map(|needle| format!("*{needle}*")));
-
-    // Merge --not-contains into --exclude (take to avoid partial move of `cli`)
-    let exclude = match (cli.exclude.take(), cli.not_contains.take()) {
-        (Some(ex), Some(nc)) => Some(format!("{ex},*{nc}*")),
-        (Some(ex), None) => Some(ex),
-        (None, Some(nc)) => Some(format!("*{nc}*")),
-        (None, None) => None,
-    };
-
-    if let Some(resolved) = raw_pattern {
-        let (match_path, pattern) = parse_scope_prefix(resolved, &mut cli);
-        validate_name_only(&cli, &pattern)?;
-        dispatch_search(cli, &pattern, exclude.as_deref(), match_path).await?;
-    } else {
-        use clap::CommandFactory;
-        Cli::command().print_help()?;
+/// Forward raw search args to the daemon via `search_cli` RPC.
+fn run_search(args: &[String]) -> Result<()> {
+    if args.is_empty() {
+        args::print_help();
+        return Ok(());
     }
 
-    Ok(())
-}
+    // Extract daemon-spawn args (--data-dir, --mft-file, --no-cache)
+    // from the raw args so we can auto-start the daemon if needed.
+    let spawn_args = extract_spawn_args(args);
 
-/// Parse Everything-style scope prefixes (`path:`, `dir:`, `file:`) from the
-/// resolved pattern and update the CLI flags accordingly.
-fn parse_scope_prefix(resolved: String, cli: &mut Cli) -> (bool, String) {
-    if let Some(rest) = resolved.strip_prefix("path:") {
-        (true, rest.to_owned())
-    } else if let Some(rest) = resolved.strip_prefix("dir:") {
-        cli.dirs_only = true;
-        (false, rest.to_owned())
-    } else if let Some(rest) = resolved.strip_prefix("file:") {
-        cli.files_only = true;
-        (false, rest.to_owned())
-    } else {
-        (false, resolved)
-    }
-}
+    let t_connect = std::time::Instant::now();
+    let mut client = uffs_client::connect_sync::UffsClientSync::connect_with_args(&spawn_args)
+        .with_context(|| "Failed to connect to UFFS daemon")?;
+    let connect_ms = t_connect.elapsed().as_millis();
 
-/// Validate `--name-only`: incompatible with patterns containing path
-/// separators.
-fn validate_name_only(cli: &Cli, pattern: &str) -> Result<()> {
-    if cli.name_only
-        && (pattern.contains('\\') || pattern.contains('/'))
-        && !pattern.starts_with('>')
-    {
-        anyhow::bail!(
-            "--name-only cannot be used with path patterns (pattern contains '\\' or '/'). \
-             Remove the path from the pattern or drop --name-only."
-        );
-    }
-    Ok(())
-}
-
-/// Expand filter aliases and dispatch to the actual search command.
-#[expect(
-    clippy::too_many_lines,
-    reason = "expands filter aliases, builds SearchConfig from 20+ CLI flags, then \
-              dispatches to daemon or local search — splitting would scatter the \
-              CLI→config mapping"
-)]
-async fn dispatch_search(
-    cli: Cli,
-    pattern: &str,
-    exclude: Option<&str>,
-    match_path: bool,
-) -> Result<()> {
-    // Startup profiling: mark when dispatch begins (after match + pattern
-    // extraction).
-    let mut prof = StartupProfiler::new(
-        STARTUP_PROFILER_T0
-            .get()
-            .copied()
-            .unwrap_or_else(std::time::Instant::now),
-    );
-    prof.mark("dispatch_search() entered");
-
-    // Pass ext and attr specs raw — the daemon's SearchFilters::from_params
-    // handles alias expansion internally (e.g., "code" → "rs,py,js,...").
-    let ext_raw = cli.ext.as_deref().map(str::to_owned);
-    let attr_raw = cli.attr.as_deref().map(str::to_owned);
-    // Month spec is parsed client-side because the protocol uses Vec<u32>.
-    let month_expanded: Vec<u32> = cli
-        .month
-        .as_deref()
-        .map(uffs_client::format::parse_month_spec)
-        .unwrap_or_default();
-
-    // Merge --exact-size / --exact-descendants
-    let (min_size, max_size) = (
-        cli.exact_size.or(cli.min_size),
-        cli.exact_size.or(cli.max_size),
-    );
-    let (min_desc, max_desc) = (
-        cli.exact_descendants.or(cli.min_descendants),
-        cli.exact_descendants.or(cli.max_descendants),
-    );
-
-    // Merge --between START,END → newer + older
-    let (bn, bo) = cli.between.as_ref().map_or((None, None), |between| {
-        let mut parts = between.splitn(2, ',');
-        (
-            parts.next().map(String::from),
-            parts.next().map(String::from),
-        )
-    });
-    let (newer, older) = (
-        cli.newer.as_deref().or(bn.as_deref()),
-        cli.older.as_deref().or(bo.as_deref()),
-    );
-
-    commands::search::search(
-        pattern,
-        cli.drive,
-        cli.drives,
-        cli.mft_file,
-        cli.data_dir,
-        cli.files_only,
-        cli.dirs_only,
-        cli.hide_system,
-        cli.hide_ads,
-        cli.profile,
-        cli.benchmark,
-        cli.no_cache,
-        min_size,
-        max_size,
-        min_desc,
-        max_desc,
-        cli.limit,
-        &cli.format,
-        cli.case,
-        cli.smart_case,
-        attr_raw.as_deref(),
-        newer,
-        older,
-        cli.newer_created.as_deref(),
-        cli.older_created.as_deref(),
-        cli.newer_accessed.as_deref(),
-        cli.older_accessed.as_deref(),
-        exclude,
-        cli.in_path.as_deref(),
-        cli.type_filter.as_deref(),
-        cli.min_bulkiness,
-        cli.max_bulkiness,
-        cli.min_name_length,
-        cli.max_name_length,
-        cli.min_path_length,
-        cli.max_path_length,
-        cli.exact_size_on_disk.or(cli.min_size_on_disk),
-        cli.exact_size_on_disk.or(cli.max_size_on_disk),
-        cli.min_treesize,
-        cli.max_treesize,
-        cli.min_tree_allocated,
-        cli.max_tree_allocated,
-        &month_expanded,
-        match_path,
-        cli.word,
-        cli.sort.as_deref(),
-        cli.sort_desc,
-        ext_raw.as_deref(),
-        &cli.out,
-        if cli.parity_compat {
-            "parity"
-        } else {
-            &cli.columns
-        },
-        &cli.sep,
-        &cli.quotes,
-        cli.header,
-        &cli.pos,
-        &cli.neg,
-        cli.tz_offset,
-        {
-            let mut agg = cli.agg;
-            if cli.count && !agg.iter().any(|item| item == "count") {
-                agg.push("count".to_owned());
-            }
-            for facet in &cli.facet {
-                if let Some((field, top)) = facet.split_once(':') {
-                    agg.push(format!("terms:{field},top={top}"));
-                } else {
-                    agg.push(format!("terms:{facet},top=20"));
-                }
-            }
-            for stat in &cli.stats {
-                agg.push(format!("stats:{stat}"));
-            }
-            for hist in &cli.histogram {
-                if let Some((field, interval)) = hist.split_once(':') {
-                    agg.push(format!("hist:{field},interval={interval}"));
-                } else {
-                    agg.push(format!("hist:{hist}"));
-                }
-            }
-            agg
-        },
-        cli.rows,
-        cli.agg_cursor,
-        cli.agg_page_size,
-    )
-    .await
-}
-
-/// Runs the CLI while listening for Ctrl+C so shutdown reaches long-running
-/// command flows started from the binary entrypoint.
-#[expect(
-    clippy::single_call_fn,
-    reason = "entrypoint wrapper exists solely to propagate shutdown into the spawned command task"
-)]
-#[tracing::instrument(level = "debug", skip_all, fields(operation = CLI_OPERATION))]
-async fn run_until_shutdown() -> Result<()> {
-    let mut run_task = tokio::spawn(run());
-
-    tokio::select! {
-        result = &mut run_task => {
-            match result {
-                Ok(outcome) => outcome,
-                Err(error) => Err(classify_cli_task_error(CLI_OPERATION, &error)),
-            }
-        }
-        signal = tokio::signal::ctrl_c() => {
-            run_task.abort();
-
-            match signal {
-                Ok(()) => Err(shutdown_requested_error(CLI_OPERATION)),
-                Err(error) => Err(ctrl_c_listener_error(CLI_OPERATION, &error)),
-            }
-        }
-    }
-}
-
-/// Startup profiler — prints phase timings to stderr when
-/// `UFFS_PROFILE_STARTUP=1` is set.  Uses raw `eprintln!` (not tracing)
-/// so it can measure tracing init itself.
-struct StartupProfiler {
-    /// Whether profiling is enabled.
-    enabled: bool,
-    /// Process-level t0 — set at the very first instruction.
-    t0: std::time::Instant,
-    /// Previous checkpoint.
-    prev: std::time::Instant,
-}
-
-impl StartupProfiler {
-    /// Create a new profiler.  `t0` should be captured at the very first
-    /// instruction of `main()`.
-    fn new(t0: std::time::Instant) -> Self {
-        let enabled = std::env::var_os("UFFS_PROFILE_STARTUP").is_some();
-        Self {
-            enabled,
-            t0,
-            prev: t0,
-        }
-    }
-
-    /// Record a phase completion.
-    ///
-    /// Uses `eprintln!` (not tracing) because this measures tracing init
-    /// itself.
+    let t_ready = std::time::Instant::now();
+    // 2 minutes — `from_mins` is nightly-only as of 2026-04.
     #[expect(
-        clippy::print_stderr,
-        reason = "must bypass tracing to measure tracing init"
+        clippy::duration_suboptimal_units,
+        reason = "Duration::from_mins is nightly-only"
     )]
-    fn mark(&mut self, phase: &str) {
-        if !self.enabled {
-            return;
+    let ready_timeout = core::time::Duration::from_secs(120);
+    client
+        .await_ready(ready_timeout)
+        .with_context(|| "Daemon did not become ready in time")?;
+    let ready_ms = t_ready.elapsed().as_millis();
+
+    let t_search = std::time::Instant::now();
+    let args_owned: Vec<String> = args.to_vec();
+    let response = client
+        .search_cli_raw(&args_owned)
+        .with_context(|| "Daemon search_cli failed")?;
+    let ipc_ms = t_search.elapsed().as_millis();
+
+    let rows = response.get("rows").and_then(serde_json::Value::as_array);
+    let aggregations = response
+        .get("aggregations")
+        .and_then(serde_json::Value::as_array);
+    let duration_ms = response
+        .get("duration_ms")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0_u64);
+
+    let profile = args
+        .iter()
+        .any(|arg| arg == "--profile" || arg == "--benchmark");
+    if profile {
+        #[expect(
+            clippy::print_stderr,
+            reason = "intentional --profile output to stderr"
+        )]
+        {
+            eprintln!("=== PROFILE: Client → Daemon ===");
+            eprintln!("  Connect:         {connect_ms:>6} ms");
+            eprintln!("  Await ready:     {ready_ms:>6} ms");
+            eprintln!("  Search (IPC):    {ipc_ms:>6} ms  (daemon: {duration_ms} ms)");
+            let row_count = rows.map_or(0, Vec::len);
+            eprintln!("  Rows returned:   {row_count:>6}");
         }
-        let now = std::time::Instant::now();
-        let delta_us = now.duration_since(self.prev).as_micros();
-        let total_us = now.duration_since(self.t0).as_micros();
-        eprintln!(
-            "  [STARTUP] {phase:<28} {:>4}.{:02} ms  (total: {:>4}.{:02} ms)",
-            delta_us / 1000,
-            (delta_us % 1000) / 10,
-            total_us / 1000,
-            (total_us % 1000) / 10,
-        );
-        self.prev = now;
     }
+
+    // Output rows (daemon already wrote to file via OPT-4 if --out was set).
+    if let Some(row_arr) = rows.filter(|arr| !arr.is_empty()) {
+        commands::search::dispatch::write_rows(row_arr, args)?;
+    }
+
+    // Output aggregations if present.
+    if let Some(agg_arr) = aggregations.filter(|arr| !arr.is_empty()) {
+        commands::search::dispatch::write_aggregations(agg_arr, args)?;
+    }
+
+    Ok(())
 }
 
-/// Manual entry point — creates the tokio runtime explicitly so we can
-/// measure its startup cost separately from the rest of the application.
+/// Extract daemon-spawn-relevant flags from raw CLI args.
+///
+/// The daemon auto-start needs `--data-dir`, `--mft-file`, `--no-cache`,
+/// `--drive`, and log env vars. Everything else is irrelevant for spawn.
+fn extract_spawn_args(args: &[String]) -> Vec<String> {
+    let mut spawn = Vec::new();
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        let flag = arg.split('=').next().unwrap_or(arg.as_str());
+        match flag {
+            "--data-dir" | "--mft-file" | "--drive" | "--drives" | "--log-level" | "--log-file" => {
+                spawn.push(arg.clone());
+                // If not `--flag=val` form, consume the next token as value.
+                if !arg.contains('=')
+                    && iter.peek().is_some_and(|peeked| {
+                        !peeked.starts_with('-') || flag == "--drive" || flag == "--drives"
+                    })
+                {
+                    // peek() confirmed the value exists, so next() is safe.
+                    spawn.push(iter.next().map_or_else(String::new, String::clone));
+                }
+            }
+            "--no-cache" => spawn.push(arg.clone()),
+            _ => {}
+        }
+    }
+
+    // Forward log env vars.
+    if let Ok(ll) = std::env::var("UFFS_LOG") {
+        spawn.push("--log-level".to_owned());
+        spawn.push(ll);
+    }
+    if let Ok(lf) = std::env::var("UFFS_LOG_FILE") {
+        spawn.push("--log-file".to_owned());
+        spawn.push(lf);
+    }
+
+    spawn
+}
+
+/// Handle `uffs stats [path] [--top N] [--data-dir ...] [--mft-file ...]`.
+fn run_stats(args: &[String]) -> Result<()> {
+    // Simple arg extraction for stats subcommand.
+    let mut path: Option<std::path::PathBuf> = None;
+    let mut top: u32 = 10;
+    let mut data_dir: Option<std::path::PathBuf> = None;
+    let mut mft_file: Vec<std::path::PathBuf> = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--top" => {
+                if let Some(val) = iter.next() {
+                    top = val
+                        .parse()
+                        .map_err(|err| anyhow::anyhow!("Bad --top: {err}"))?;
+                }
+            }
+            "--data-dir" => {
+                if let Some(val) = iter.next() {
+                    data_dir = Some(val.into());
+                }
+            }
+            "--mft-file" => {
+                if let Some(val) = iter.next() {
+                    mft_file = val.split(',').map(|part| part.trim().into()).collect();
+                }
+            }
+            other if !other.starts_with('-') && path.is_none() => {
+                path = Some(other.into());
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(stats_path) = path {
+        commands::stats::stats(Some(&stats_path), top)?;
+    } else {
+        // Synthesise search args for an aggregate-only overview query.
+        let mut synth_args = vec![
+            "*".to_owned(),
+            "--agg".to_owned(),
+            "overview".to_owned(),
+            "--format".to_owned(),
+            "table".to_owned(),
+            "--limit".to_owned(),
+            "0".to_owned(),
+        ];
+        if let Some(dir) = data_dir {
+            synth_args.extend(["--data-dir".to_owned(), dir.to_string_lossy().into_owned()]);
+        }
+        for mf in &mft_file {
+            synth_args.extend(["--mft-file".to_owned(), mf.to_string_lossy().into_owned()]);
+        }
+        run_search(&synth_args)?;
+    }
+    Ok(())
+}
+
+/// Handle `uffs aggregate|agg <preset> [--format ...] [--data-dir ...]`.
+fn run_aggregate(args: &[String]) -> Result<()> {
+    // Extract the preset (first positional arg).
+    let preset = args
+        .iter()
+        .find(|arg| !arg.starts_with('-'))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Usage: uffs aggregate <PRESET>\n\
+                 Available presets: overview, by_type, by_extension, by_drive, by_size, by_age, count"
+            )
+        })?;
+
+    // Synthesise search args: `* --agg <preset> --limit 0 [remaining flags]`.
+    let mut synth_args = vec![
+        "*".to_owned(),
+        "--agg".to_owned(),
+        preset.clone(),
+        "--limit".to_owned(),
+        "0".to_owned(),
+    ];
+    // Forward all flags (skip the preset positional).
+    for arg in args {
+        if arg == preset {
+            continue;
+        }
+        synth_args.push(arg.clone());
+    }
+    run_search(&synth_args)
+}
+
+/// Handle `uffs daemon <action> [flags...]`.
+fn run_daemon(args: &[String]) -> Result<()> {
+    let action = args::parse_daemon_action(args)?;
+    commands::daemon_mgmt::daemon(&action)
+}
+
+/// Entry point — synchronous, no runtime.
 #[expect(
     clippy::print_stderr,
     reason = "intentional user-facing error output to stderr"
 )]
 fn main() {
-    let t0 = std::time::Instant::now();
-    let mut prof = StartupProfiler::new(t0);
-    if prof.enabled {
-        eprintln!("=== STARTUP PROFILER active ===");
-    }
-    prof.mark("binary entry + alloc init");
-
-    // Build tokio runtime manually (instead of #[tokio::main]) so we can
-    // measure its cost.
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build();
-    prof.mark("tokio runtime build");
-
-    let rt = match runtime {
-        Ok(rt) => rt,
-        Err(err) => {
-            eprintln!("Error: failed to create tokio runtime: {err}");
-            std::process::exit(1);
-        }
-    };
-
-    // Store the profiler in a thread-local so `run()` can access it.
-    STARTUP_PROFILER_T0.set(t0).ok();
-
-    let result = rt.block_on(run_until_shutdown());
-    prof.mark("total (after block_on)");
-
-    if let Err(err) = result {
-        // Print error without backtrace for clean user-facing output
-        // Use anyhow's chain() to iterate through the error chain
+    if let Err(err) = run() {
         for (idx, cause) in err.chain().enumerate() {
             if idx == 0 {
                 eprintln!("Error: {cause}");
@@ -678,13 +280,9 @@ fn main() {
                 eprintln!("  Caused by: {cause}");
             }
         }
-
         std::process::exit(1);
     }
 }
-
-/// Thread-local t0 for startup profiling — set by `main()`, read by `run()`.
-static STARTUP_PROFILER_T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 #[cfg(test)]
 mod tests {
@@ -693,39 +291,9 @@ mod tests {
         reason = "test module — relaxed linting"
     )]
 
-    use std::path::PathBuf;
+    use uffs_client::protocol::SearchParams;
 
-    use clap::{CommandFactory, Parser};
-
-    use super::args::{Cli, parse_drive_letter};
-    use super::{classify_cli_task_error, ctrl_c_listener_error, shutdown_requested_error};
-
-    fn render_long_help(mut command: clap::Command) -> String {
-        let mut buffer = Vec::new();
-        command
-            .write_long_help(&mut buffer)
-            .expect("CLI help should render successfully");
-        String::from_utf8(buffer).expect("CLI help should be valid UTF-8")
-    }
-
-    fn parse_cli(args: &[&str]) -> Result<Cli, clap::Error> {
-        Cli::try_parse_from(args)
-    }
-
-    #[test]
-    fn test_cli_definition_is_valid() {
-        Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn test_top_level_help_includes_examples_and_default_search_guidance() {
-        let help = render_long_help(Cli::command());
-
-        assert!(help.contains("Search is the default action"));
-        assert!(help.contains("uffs '*.txt'"));
-        assert!(help.contains("uffs '>.*\\.log$' --drive C"));
-        assert!(help.contains("uffs '*' --mft-file G_mft.bin --drive G"));
-    }
+    use super::args::parse_drive_letter;
 
     #[test]
     fn test_parse_drive_letter_accepts_letter_colon_and_whitespace_variants() {
@@ -743,62 +311,43 @@ mod tests {
     }
 
     #[test]
-    fn test_default_search_parses_offline_mft_mode_and_common_options() {
-        let cli = parse_cli(&[
-            "uffs",
+    fn test_from_cli_args_basic_search() {
+        let args: Vec<String> = [
             "*.rs",
-            "--mft-file",
-            "raw.bin",
             "--drive",
-            "g:",
+            "C",
             "--format",
             "json",
             "--tz-offset",
             "-8",
-        ])
-        .expect("default search args should parse");
-
-        assert!(cli.command.is_none());
-        assert_eq!(cli.pattern.as_deref(), Some("*.rs"));
-        assert_eq!(cli.drive, Some('G'));
-        assert_eq!(cli.drives, None);
-        assert_eq!(cli.mft_file.as_slice(), &[PathBuf::from("raw.bin")]);
-        assert_eq!(cli.format, "json");
-        assert_eq!(cli.tz_offset, Some(-8));
-    }
-
-    #[tokio::test]
-    async fn test_classify_cli_task_error_maps_cancelled_joins() {
-        let handle = tokio::spawn(async {
-            core::future::pending::<()>().await;
-        });
-        handle.abort();
-
-        let outcome = handle.await;
-        assert!(outcome.is_err(), "aborted task unexpectedly completed");
-        let Err(join_error) = outcome else {
-            return;
-        };
-
-        let error = classify_cli_task_error("uffs", &join_error);
-        let msg = error.to_string();
-        assert!(msg.contains("uffs"));
-        assert!(msg.contains("cancelled"));
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        let params = SearchParams::from_cli_args(&args).expect("should parse");
+        assert_eq!(params.pattern, "*.rs");
+        assert_eq!(params.drives, vec!['C']);
+        assert_eq!(params.output_tz_offset_hours, Some(-8));
     }
 
     #[test]
-    fn test_shutdown_requested_error_is_cancelled() {
-        let error = shutdown_requested_error("uffs");
-        let msg = error.to_string();
-        assert!(msg.contains("uffs"));
-        assert!(msg.contains("shutdown"));
+    fn test_from_cli_args_sugar_begins_with() {
+        let args: Vec<String> = ["--begins-with", "report"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let params = SearchParams::from_cli_args(&args).expect("should parse");
+        assert_eq!(params.pattern, "report*");
     }
 
     #[test]
-    fn test_ctrl_c_listener_error_is_wait_failed() {
-        let error = ctrl_c_listener_error("uffs", &std::io::Error::other("listener unavailable"));
-        let msg = error.to_string();
-        assert!(msg.contains("uffs"));
-        assert!(msg.contains("Ctrl+C"));
+    fn test_from_cli_args_sugar_between() {
+        let args: Vec<String> = ["*", "--between", "2026-01-01,2026-03-31"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let params = SearchParams::from_cli_args(&args).expect("should parse");
+        assert_eq!(params.newer.as_deref(), Some("2026-01-01"));
+        assert_eq!(params.older.as_deref(), Some("2026-03-31"));
     }
 }

@@ -37,27 +37,36 @@ use sha2::{Digest, Sha256};
 /// Host triple for macOS ARM64 (the expected cross-compilation host)
 const HOST_TRIPLE: &str = "aarch64-apple-darwin";
 
-/// UFFS binaries: (binary_name, package_name)
-/// - uffs: Main CLI tool (thin client)
-/// - uffsd: Background daemon (holds MFT index, serves queries via IPC)
-/// - uffs_mft: Low-level MFT reading tool
-/// - uffs-diag binaries: intentionally omitted from dist/ packaging
+/// Binaries uploaded to GitHub Release (the shipping set).
 ///
 /// NOTE: uffs_tui and uffs_gui have moved to the private uffs-products repo.
-const BINARIES: &[(&str, &str)] = &[
+const RELEASE_BINARIES: &[(&str, &str)] = &[
     ("uffs", "uffs-cli"),
     ("uffsd", "uffs-daemon"),
+    ("uffsmcp", "uffs-mcp"),
     ("uffs_mft", "uffs-mft"),
-    // `uffs-diag` is a workspace member, but these binaries are not shipped in `dist/`.
-    // Build them directly with Cargo when a diagnostic workflow needs them.
-    // ("analyze_mft_parents", "uffs-diag"),
-    // ("dump_mft_records", "uffs-diag"),
-    // ("scan_mft_magic", "uffs-diag"),
-    // ("dump_mft_extents", "uffs-diag"),
-    // ("cross_check_mft_reference", "uffs-diag"),
-    // ("compare_raw_mft", "uffs-diag"),
-    // ("inspect_mft_record_flow", "uffs-diag"),
-    // ("analyze_diff", "uffs-diag"),
+];
+
+/// All workspace binaries — release + diagnostic tools.
+/// Everything here gets built (via `--workspace`) and copied to `dist/`.
+/// Only `RELEASE_BINARIES` are uploaded to GitHub Release.
+const ALL_BINARIES: &[(&str, &str)] = &[
+    // Release binaries
+    ("uffs", "uffs-cli"),
+    ("uffsd", "uffs-daemon"),
+    ("uffsmcp", "uffs-mcp"),
+    ("uffs_mft", "uffs-mft"),
+    // Diagnostic binaries
+    ("analyze_mft_parents", "uffs-diag"),
+    ("dump_mft_records", "uffs-diag"),
+    ("scan_mft_magic", "uffs-diag"),
+    ("dump_mft_extents", "uffs-diag"),
+    ("cross_check_mft_reference", "uffs-diag"),
+    ("compare_raw_mft", "uffs-diag"),
+    ("inspect_mft_record_flow", "uffs-diag"),
+    ("analyze_diff", "uffs-diag"),
+    ("compare_scan_parity", "uffs-diag"),
+    ("verify_iocp_capture", "uffs-diag"),
     // ("compare_scan_parity", "uffs-diag"),
 ];
 
@@ -292,6 +301,10 @@ fn main() {
         // Integration test: download release back to dist/ for local use
         download_release_to_dist(&version);
 
+        // Copy all binaries (incl. diag) to dist/ — diag binaries aren't on
+        // GitHub Release, so we copy them directly from the build output.
+        copy_all_binaries_to_dist(&version, &target_dir);
+
         println!(
             "\n✅ Build complete!\n📦 Binaries uploaded to GitHub Release {} and cached in dist/{}",
             version, version
@@ -405,7 +418,7 @@ fn stage_host_binaries(version: &str, target_dir: &Path) {
     let staging_dir = PathBuf::from(format!("target/release-staging/{}", version));
     let _ = fs::create_dir_all(&staging_dir);
 
-    for (binary, _) in BINARIES {
+    for (binary, _) in RELEASE_BINARIES {
         let source = target_dir.join("release").join(binary);
         let dest_name = format!("{}-macos-arm64", binary);
         let dest = staging_dir.join(&dest_name);
@@ -433,6 +446,97 @@ fn stage_host_binaries(version: &str, target_dir: &Path) {
         }
     }
 }
+
+/// Copy ALL workspace binaries (release + diag) to `dist/<version>/`.
+/// Release binaries are already there from `download_release_to_dist`,
+/// so this adds the diagnostic binaries from the build output.
+fn copy_all_binaries_to_dist(version: &str, target_dir: &Path) {
+    let dist_dir = PathBuf::from(format!("dist/{}", version));
+    let _ = fs::create_dir_all(&dist_dir);
+
+    let output_dir = build_output_dir();
+    let mut copied = 0u32;
+
+    // Diagnostic binaries only — release binaries are already in dist/ from GH download.
+    let diag_binaries: Vec<_> = ALL_BINARIES
+        .iter()
+        .filter(|(b, _)| !RELEASE_BINARIES.iter().any(|(rb, _)| rb == b))
+        .collect();
+
+    if diag_binaries.is_empty() {
+        return;
+    }
+
+    println!("\n📁 Copying diagnostic binaries to dist/{}...", version);
+
+    for target in TARGETS {
+        for (binary, _) in &diag_binaries {
+            let bin_name = if target.triple.contains("windows") {
+                format!("{}.exe", binary)
+            } else {
+                (*binary).to_string()
+            };
+            let source = target_dir
+                .join(target.triple)
+                .join(output_dir)
+                .join(&bin_name);
+            let dest_name = if target.triple.contains("windows") {
+                format!("{}-{}.exe", binary, target.platform_name)
+            } else {
+                format!("{}-{}", binary, target.platform_name)
+            };
+            let dest = dist_dir.join(&dest_name);
+
+            if source.exists() {
+                if let Err(e) = fs::copy(&source, &dest) {
+                    eprintln!("  ⚠️  Failed to copy {}: {}", dest_name, e);
+                } else {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(m) = fs::metadata(&dest) {
+                            let mut p = m.permissions();
+                            p.set_mode(0o755);
+                            let _ = fs::set_permissions(&dest, p);
+                        }
+                    }
+                    copied += 1;
+                    println!("  ✅ {}", dest_name);
+                }
+            }
+        }
+    }
+
+    // Also copy macOS host diag binaries
+    for (binary, _) in &diag_binaries {
+        let source = target_dir.join("release").join(binary);
+        let dest_name = format!("{}-macos-arm64", binary);
+        let dest = dist_dir.join(&dest_name);
+
+        if source.exists() {
+            if let Err(e) = fs::copy(&source, &dest) {
+                eprintln!("  ⚠️  Failed to copy {}: {}", dest_name, e);
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(m) = fs::metadata(&dest) {
+                        let mut p = m.permissions();
+                        p.set_mode(0o755);
+                        let _ = fs::set_permissions(&dest, p);
+                    }
+                }
+                copied += 1;
+                println!("  ✅ {}", dest_name);
+            }
+        }
+    }
+
+    if copied > 0 {
+        println!("  📦 {} diagnostic binaries copied to dist/{}", copied, version);
+    }
+}
+
 
 /// Download the release from GitHub back to dist/ as an integration test
 /// and local cache for `just use`.
@@ -757,102 +861,107 @@ fn build_for_target(target: &Target, target_dir: &Path, verbose: bool) -> bool {
     let build_mode = get_build_mode();
     let profile = build_profile();
 
-    for (binary, package) in BINARIES {
-        let mut args: Vec<&str> = if target.use_xwin {
-            vec!["xwin", "build"]
-        } else {
-            vec!["build"]
-        };
+    // Build all binaries in a single cargo invocation.
+    // This shares the entire dependency compilation chain (Polars alone is ~4 min)
+    // instead of recompiling it per binary.
+    let mut args: Vec<&str> = if target.use_xwin {
+        vec!["xwin", "build"]
+    } else {
+        vec!["build"]
+    };
 
-        // Add profile based on build mode
-        match build_mode {
-            BuildMode::Release => {
-                args.push("--release");
-            }
-            BuildMode::Profiling => {
-                // Use profiling profile for performance analysis with debug symbols
-                args.extend_from_slice(&["--profile", "profiling"]);
-            }
-            BuildMode::Dev => {
-                if target.use_xwin {
-                    // Use xwin-dev profile for xwin dev builds to avoid COFF archive size limits
-                    // See: docs/xwin-msvc-rlib-size-root-cause-and-workarounds.md
-                    args.extend_from_slice(&["--profile", "xwin-dev"]);
-                }
+    // Add profile based on build mode
+    match build_mode {
+        BuildMode::Release => {
+            args.push("--release");
+        }
+        BuildMode::Profiling => {
+            // Use profiling profile for performance analysis with debug symbols
+            args.extend_from_slice(&["--profile", "profiling"]);
+        }
+        BuildMode::Dev => {
+            if target.use_xwin {
+                // Use xwin-dev profile for xwin dev builds to avoid COFF archive size limits
+                // See: docs/xwin-msvc-rlib-size-root-cause-and-workarounds.md
+                args.extend_from_slice(&["--profile", "xwin-dev"]);
             }
         }
+    }
 
-        // Add target and package args
-        args.extend_from_slice(&["--target", target.triple, "--bin", binary, "-p", package]);
+    // Add target triple and build entire workspace in one invocation.
+    // All binaries (incl. diag) are built; only RELEASE_BINARIES get uploaded
+    // to GitHub Release, but ALL_BINARIES are copied to dist/.
+    args.extend_from_slice(&["--target", target.triple, "--workspace"]);
 
-        // Print verbose command info (similar to CI pipeline format)
-        println!(
-            "  → {} ({}) → cargo {} (target: {})",
-            binary,
-            profile,
-            args.join(" "),
-            target.triple
+    // Print what we're building
+    println!(
+        "  → workspace ({}) → cargo {} (target: {})",
+        profile,
+        args.join(" "),
+        target.triple
+    );
+
+    let mut cmd = Command::new("cargo");
+    cmd.args(&args);
+
+    // Set CARGO_TARGET_DIR to the expanded path (cargo xwin doesn't expand ~ in config)
+    cmd.env("CARGO_TARGET_DIR", target_dir);
+
+    // For Windows cross-compilation, add LLVM to PATH for clang-cl
+    if target.use_xwin {
+        let llvm_bin = "/opt/homebrew/opt/llvm/bin";
+        let current_path = env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", llvm_bin, current_path);
+        cmd.env("PATH", new_path);
+        cmd.env(
+            "CC_x86_64_pc_windows_msvc",
+            format!("{}/clang-cl", llvm_bin),
         );
+        cmd.env(
+            "CXX_x86_64_pc_windows_msvc",
+            format!("{}/clang-cl", llvm_bin),
+        );
+        cmd.env(
+            "AR_x86_64_pc_windows_msvc",
+            format!("{}/llvm-lib", llvm_bin),
+        );
+    }
 
-        let mut cmd = Command::new("cargo");
-        cmd.args(&args);
+    // For Linux musl cross-compilation, set bindgen to use musl headers
+    if target.triple == "x86_64-unknown-linux-musl" {
+        let musl_sysroot = "/opt/homebrew/opt/musl-cross/libexec/x86_64-linux-musl";
+        cmd.env(
+            "BINDGEN_EXTRA_CLANG_ARGS",
+            format!(
+                "--sysroot={} -isystem {}/include",
+                musl_sysroot, musl_sysroot
+            ),
+        );
+    }
 
-        // Set CARGO_TARGET_DIR to the expanded path (cargo xwin doesn't expand ~ in config)
-        cmd.env("CARGO_TARGET_DIR", target_dir);
+    // In verbose mode, inherit stdio; otherwise capture output
+    if verbose {
+        cmd.stdout(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::inherit());
+    } else {
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::piped());
+    }
 
-        // For Windows cross-compilation, add LLVM to PATH for clang-cl
-        if target.use_xwin {
-            let llvm_bin = "/opt/homebrew/opt/llvm/bin";
-            let current_path = env::var("PATH").unwrap_or_default();
-            let new_path = format!("{}:{}", llvm_bin, current_path);
-            cmd.env("PATH", new_path);
-            cmd.env(
-                "CC_x86_64_pc_windows_msvc",
-                format!("{}/clang-cl", llvm_bin),
-            );
-            cmd.env(
-                "CXX_x86_64_pc_windows_msvc",
-                format!("{}/clang-cl", llvm_bin),
-            );
-            cmd.env(
-                "AR_x86_64_pc_windows_msvc",
-                format!("{}/llvm-lib", llvm_bin),
-            );
-        }
-
-        // For Linux musl cross-compilation, set bindgen to use musl headers
-        if target.triple == "x86_64-unknown-linux-musl" {
-            let musl_sysroot = "/opt/homebrew/opt/musl-cross/libexec/x86_64-linux-musl";
-            cmd.env(
-                "BINDGEN_EXTRA_CLANG_ARGS",
-                format!(
-                    "--sysroot={} -isystem {}/include",
-                    musl_sysroot, musl_sysroot
-                ),
-            );
-        }
-
-        // In verbose mode, inherit stdio; otherwise capture output
-        if verbose {
-            cmd.stdout(std::process::Stdio::inherit());
-            cmd.stderr(std::process::Stdio::inherit());
-        } else {
-            cmd.stdout(std::process::Stdio::null());
-            cmd.stderr(std::process::Stdio::piped());
-        }
-
-        let output = cmd.output().expect("cargo failed to start");
-        if !output.status.success() {
-            eprintln!("  ❌ Failed to build {} for {}", binary, target.triple);
-            if !verbose {
-                // Print stderr on failure even in non-verbose mode
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stderr.is_empty() {
-                    eprintln!("{}", stderr);
-                }
+    let output = cmd.output().expect("cargo failed to start");
+    if !output.status.success() {
+        eprintln!("  ❌ Build failed for {}", target.triple);
+        if !verbose {
+            // Print stderr on failure even in non-verbose mode
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                eprintln!("{}", stderr);
             }
-            return false;
         }
+        return false;
+    }
+
+    for (binary, _) in ALL_BINARIES {
         println!("  ✅ {}", binary);
     }
     true
@@ -872,7 +981,7 @@ fn stage_binaries(version: &str, target: &Target, target_dir: &Path) -> bool {
 
     let mut all_success = true;
 
-    for (binary, _) in BINARIES {
+    for (binary, _) in RELEASE_BINARIES {
         let bin_name = if target.triple.contains("windows") {
             format!("{}.exe", binary)
         } else {

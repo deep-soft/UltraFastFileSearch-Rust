@@ -15,10 +15,10 @@ use core::sync::atomic::Ordering;
 use std::io::Write;
 use std::time::Instant;
 
-use uffs_client::protocol::{
-    DriveInfo, DriveProfile, DrivesResponse, SearchFilterMode, SearchParams, SearchProfile,
-    SearchResponse, SearchResponseMode, SearchRow,
+use uffs_client::protocol::response::{
+    DriveInfo, DriveProfile, DrivesResponse, SearchProfile, SearchResponse, SearchRow,
 };
+use uffs_client::protocol::{SearchFilterMode, SearchParams, SearchResponseMode};
 use uffs_core::search::backend::{DisplayRow, FilterMode, SearchRequest, SortSpec, search_index};
 use uffs_core::search::field::FieldId;
 use uffs_core::search::filters::{SearchFilterParams, SearchFilters};
@@ -31,12 +31,12 @@ impl IndexManager {
     /// When `params.profile` is `true`, populates `SearchResponse::profile`
     /// with a per-phase timing breakdown so the CLI can print it.
     #[expect(
-        clippy::cognitive_complexity,
+        clippy::too_many_lines,
         reason = "search orchestration with multi-drive merge, sorting, and response formatting"
     )]
     #[expect(
-        clippy::too_many_lines,
-        reason = "search orchestration with multi-drive merge, sorting, and response formatting"
+        clippy::cognitive_complexity,
+        reason = "search filter application with many predicate branches"
     )]
     pub(crate) async fn search(&self, params: &SearchParams) -> SearchResponse {
         // Acquire a concurrency permit — blocks if too many searches

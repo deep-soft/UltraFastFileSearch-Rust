@@ -3,13 +3,11 @@
 
 //! MCP server PID file management.
 //!
-//! The PID file is used by `mcp status` / `mcp reload` to find a running
-//! HTTP gateway.  Stdio servers do **not** write PID files (multiple can
-//! coexist).
+//! Pure file I/O utilities for reading and writing the MCP server PID file.
+//! Lives in `uffs-client` so that both `uffs` (CLI) and `uffsmcp` can use
+//! it without creating a circular dependency.
 
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use tracing::info;
 
 /// Path to the MCP server PID file.
 ///
@@ -24,6 +22,14 @@ pub fn mcp_pid_file_path() -> std::path::PathBuf {
 ///
 /// Only called by the HTTP gateway to record `http:bind:port`.
 /// Stdio servers do **not** write PID files (multiple can coexist).
+pub fn write_mcp_pid_file_with_transport(transport: &str) {
+    write_mcp_pid_file_full(transport, None, &[], false);
+}
+
+/// Write the MCP server PID file with transport **and** data source info.
+///
+/// Called by `mcp start` / `mcp serve` so that `mcp reload` can recover
+/// data sources even when the gateway process is already dead.
 ///
 /// # PID file format
 ///
@@ -35,16 +41,6 @@ pub fn mcp_pid_file_path() -> std::path::PathBuf {
 /// mft-file={path}     optional, repeatable
 /// no-cache            optional flag
 /// ```
-///
-/// Lines after the first 3 are optional key=value pairs.
-pub fn write_mcp_pid_file_with_transport(transport: &str) {
-    write_mcp_pid_file_full(transport, None, &[], false);
-}
-
-/// Write the MCP server PID file with transport **and** data source info.
-///
-/// Called by `mcp start` / `mcp serve` so that `mcp reload` can recover
-/// data sources even when the gateway process is already dead.
 #[expect(
     clippy::format_push_string,
     reason = "write! requires fmt::Write import; push_str+format is fine here"
@@ -76,7 +72,7 @@ pub fn write_mcp_pid_file_full(
     if let Err(err) = std::fs::write(&path, content) {
         tracing::warn!(path = %path.display(), %err, "Failed to write MCP PID file");
     } else {
-        info!(pid, path = %path.display(), transport, "Wrote MCP server PID file");
+        tracing::info!(pid, path = %path.display(), transport, "Wrote MCP server PID file");
     }
 }
 
@@ -85,7 +81,7 @@ pub fn remove_mcp_pid_file() {
     let path = mcp_pid_file_path();
     if path.exists() {
         drop(std::fs::remove_file(&path));
-        info!(path = %path.display(), "Removed MCP server PID file");
+        tracing::info!(path = %path.display(), "Removed MCP server PID file");
     }
 }
 

@@ -1,0 +1,462 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
+//! Synchronous IPC client for the UFFS daemon.
+//!
+//! Zero async overhead — uses blocking `UnixStream` directly.
+//! Designed for the CLI thin client where every invocation is a single
+//! request-response round-trip.
+//!
+//! # Platform support
+//!
+//! | Platform    | Transport                                          |
+//! |-------------|----------------------------------------------------|
+//! | macOS/Linux | `std::os::unix::net::UnixStream`                   |
+//! | Windows     | `std::os::windows::net::UnixStream` (Win10 1803+)  |
+
+use std::io::{BufRead, BufReader, Read, Write};
+
+use crate::daemon_ctl::{find_daemon_exe, pid_file_path, socket_path, spawn_daemon};
+use crate::error::ClientError;
+
+/// Synchronous thin client for the UFFS daemon.
+///
+/// One request, one response, no event loop.
+pub struct UffsClientSync {
+    /// Buffered reader for the IPC socket.
+    reader: BufReader<Box<dyn Read + Send>>,
+    /// Writer half of the IPC socket.
+    writer: Box<dyn Write + Send>,
+    /// Monotonically increasing JSON-RPC request ID.
+    next_id: u64,
+}
+
+impl UffsClientSync {
+    /// Connect to a running daemon, or auto-start one if not running.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConnectionFailed` if the daemon cannot be reached after
+    /// retries, or `DaemonStartFailed` if auto-start fails.
+    pub fn connect() -> Result<Self, ClientError> {
+        Self::connect_with_args(&[])
+    }
+
+    /// Connect without auto-starting the daemon.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConnectionFailed` if no daemon is listening.
+    pub fn connect_raw() -> Result<Self, ClientError> {
+        Self::platform_connect()
+            .map_err(|err| ClientError::ConnectionFailed(format!("No daemon is running: {err}")))
+    }
+
+    /// Connect to a running daemon, or auto-start one with extra CLI args.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConnectionFailed` or `DaemonStartFailed`.
+    pub fn connect_with_args(spawn_args: &[String]) -> Result<Self, ClientError> {
+        let sock = socket_path();
+
+        // Try connecting first — fast path if daemon is already running.
+        if let Ok(client) = Self::platform_connect() {
+            return Ok(client);
+        }
+
+        // Auto-start the daemon.
+        auto_start_daemon(spawn_args)?;
+
+        // Retry with backoff.
+        let mut delay_ms = 50_u64;
+        let max_attempts = 20_usize;
+        for attempt in 1..=max_attempts {
+            std::thread::sleep(core::time::Duration::from_millis(delay_ms));
+
+            if let Ok(client) = Self::platform_connect() {
+                return Ok(client);
+            }
+
+            delay_ms = (delay_ms * 2).min(2000);
+
+            // Log sparingly — eprintln is intentional user-facing output
+            // during daemon auto-start retries (no tracing in thin client).
+            if attempt <= 3 || attempt == max_attempts {
+                #[expect(
+                    clippy::print_stderr,
+                    reason = "intentional user-facing retry progress"
+                )]
+                {
+                    let sock_state = if sock.exists() { "exists" } else { "missing" };
+                    eprintln!(
+                        "[uffs] connect attempt {attempt}/{max_attempts} (socket: {sock_state})"
+                    );
+                }
+            }
+        }
+
+        Err(ClientError::ConnectionFailed(format!(
+            "Could not connect to daemon after {max_attempts} attempts"
+        )))
+    }
+
+    /// Send a JSON-RPC request and read the response (blocking).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    fn send_request(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ClientError> {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        // Compose JSON-RPC request.
+        let req = params.map_or_else(
+            || format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}"}}"#),
+            |par| format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{par}}}"#),
+        );
+
+        self.writer
+            .write_all(req.as_bytes())
+            .map_err(|err| ClientError::Io(err.to_string()))?;
+        self.writer
+            .write_all(b"\n")
+            .map_err(|err| ClientError::Io(err.to_string()))?;
+        self.writer
+            .flush()
+            .map_err(|err| ClientError::Io(err.to_string()))?;
+
+        // Read lines until we get a response with matching id.
+        // Skip notifications (no `id` field).
+        loop {
+            let mut raw_line = String::new();
+            let bytes_read = self
+                .reader
+                .read_line(&mut raw_line)
+                .map_err(|err| ClientError::Io(err.to_string()))?;
+            if bytes_read == 0 {
+                return Err(ClientError::ConnectionClosed);
+            }
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let val: serde_json::Value = serde_json::from_str(trimmed)
+                .map_err(|err| ClientError::Protocol(err.to_string()))?;
+
+            // Notification (no `id`) — skip.
+            if val.get("id").is_none() {
+                continue;
+            }
+
+            // Error response.
+            if let Some(err_obj) = val.get("error") {
+                let code = err_obj
+                    .get("code")
+                    .and_then(serde_json::Value::as_i64)
+                    .map_or(-1_i32, |code_i64| i32::try_from(code_i64).unwrap_or(-1_i32));
+                let message = err_obj
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown error")
+                    .to_owned();
+                return Err(ClientError::DaemonError { code, message });
+            }
+
+            // Success — return the `result` field.
+            return val
+                .get("result")
+                .cloned()
+                .ok_or_else(|| ClientError::Protocol("missing 'result' field".to_owned()));
+        }
+    }
+
+    // ── Public API ──────────────────────────────────────────────────
+
+    /// Search for files.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn search(
+        &mut self,
+        params: &crate::protocol::SearchParams,
+    ) -> Result<crate::protocol::response::SearchResponse, ClientError> {
+        let params_json =
+            serde_json::to_value(params).map_err(|err| ClientError::Protocol(err.to_string()))?;
+        let result = self.send_request("search", Some(params_json))?;
+        serde_json::from_value(result).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+
+    /// Search using raw CLI arguments — the daemon parses them.
+    ///
+    /// This lets the CLI forward its argv directly to the daemon without
+    /// locally parsing every flag into typed fields.  The daemon handles
+    /// all sugar expansion (`--begins-with`, `--between`, etc.) and builds
+    /// `SearchParams` internally.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn search_cli(
+        &mut self,
+        args: &[String],
+    ) -> Result<crate::protocol::response::SearchResponse, ClientError> {
+        let params = serde_json::json!({ "args": args });
+        let result = self.send_request("search_cli", Some(params))?;
+        serde_json::from_value(result).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+
+    /// Like [`search_cli`](Self::search_cli) but returns raw JSON instead of
+    /// a typed `SearchResponse`.
+    ///
+    /// This avoids pulling `serde` derive codegen into callers that only
+    /// need to read a few fields from the response (e.g. the thin CLI).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn search_cli_raw(&mut self, args: &[String]) -> Result<serde_json::Value, ClientError> {
+        let params = serde_json::json!({ "args": args });
+        self.send_request("search_cli", Some(params))
+    }
+
+    /// Get daemon status.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn status(&mut self) -> Result<crate::protocol::response::StatusResponse, ClientError> {
+        let result = self.send_request("status", None)?;
+        serde_json::from_value(result).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+
+    /// Get daemon status as raw JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn status_raw(&mut self) -> Result<serde_json::Value, ClientError> {
+        self.send_request("status", None)
+    }
+
+    /// List loaded drives.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn drives(&mut self) -> Result<crate::protocol::response::DrivesResponse, ClientError> {
+        let result = self.send_request("drives", None)?;
+        serde_json::from_value(result).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+
+    /// Get performance stats.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn stats(&mut self) -> Result<crate::protocol::response::StatsResponse, ClientError> {
+        let result = self.send_request("stats", None)?;
+        serde_json::from_value(result).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+
+    /// Get file info by path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn info(
+        &mut self,
+        path: &str,
+    ) -> Result<crate::protocol::response::InfoResponse, ClientError> {
+        let params = serde_json::json!({ "path": path });
+        let result = self.send_request("info", Some(params))?;
+        serde_json::from_value(result).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+
+    /// Request graceful daemon shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O or timeout failure.
+    pub fn shutdown(&mut self) -> Result<(), ClientError> {
+        let nonce = std::fs::read_to_string(pid_file_path())
+            .ok()
+            .and_then(|content| content.lines().nth(3).map(String::from))
+            .unwrap_or_default();
+        let params = serde_json::json!({ "nonce": nonce });
+        let _result = self.send_request("shutdown", Some(params))?;
+        Ok(())
+    }
+
+    /// Wait for the daemon to become ready (status == Ready).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError::Timeout` if not ready within `timeout`.
+    pub fn await_ready(&mut self, timeout: core::time::Duration) -> Result<(), ClientError> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut poll_interval = core::time::Duration::from_millis(100);
+
+        while std::time::Instant::now() < deadline {
+            match self.status() {
+                Ok(resp) if resp.status == crate::protocol::response::DaemonStatus::Ready => {
+                    return Ok(());
+                }
+                // Loading/refreshing or daemon restarting — retry.
+                Ok(_) | Err(ClientError::Io(_) | ClientError::ConnectionClosed) => {}
+                Err(other) => return Err(other),
+            }
+            std::thread::sleep(poll_interval);
+            poll_interval = (poll_interval * 2).min(core::time::Duration::from_secs(2));
+        }
+        Err(ClientError::Timeout)
+    }
+
+    /// Load a drive (MFT files).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn load_drive(
+        &mut self,
+        mft_files: &[String],
+        no_cache: bool,
+    ) -> Result<crate::protocol::response::LoadDriveResponse, ClientError> {
+        let params = serde_json::json!({
+            "mft_files": mft_files,
+            "no_cache": no_cache,
+        });
+        let result = self.send_request("load_drive", Some(params))?;
+        serde_json::from_value(result).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+
+    /// Refresh drives.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn refresh(&mut self, drives: &[char]) -> Result<(), ClientError> {
+        let params = serde_json::json!({"drives": drives});
+        let _result = self.send_request("refresh", Some(params))?;
+        Ok(())
+    }
+
+    /// Send a keepalive ping.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O or timeout failure.
+    pub fn keepalive(&mut self) -> Result<(), ClientError> {
+        let _result = self.send_request("keepalive", None)?;
+        Ok(())
+    }
+}
+
+// ── Platform-specific connection ────────────────────────────────────
+
+#[cfg(unix)]
+impl UffsClientSync {
+    /// Connect via Unix domain socket (macOS/Linux).
+    fn platform_connect() -> Result<Self, ClientError> {
+        let sock_path = socket_path();
+        let stream = std::os::unix::net::UnixStream::connect(&sock_path)
+            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
+
+        stream
+            .set_read_timeout(Some(core::time::Duration::from_secs(30)))
+            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
+
+        let writer = stream
+            .try_clone()
+            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
+
+        Ok(Self {
+            reader: BufReader::new(Box::new(stream)),
+            writer: Box::new(writer),
+            next_id: 1,
+        })
+    }
+}
+
+#[cfg(windows)]
+impl UffsClientSync {
+    /// Connect via AF_UNIX socket (Windows 10 1803+).
+    ///
+    /// No bridge threads, no tokio — just a blocking socket.
+    fn platform_connect() -> Result<Self, ClientError> {
+        let sock_path = socket_path();
+        let stream = std::os::windows::net::UnixStream::connect(&sock_path)
+            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
+
+        stream
+            .set_read_timeout(Some(core::time::Duration::from_secs(30)))
+            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
+
+        let writer = stream
+            .try_clone()
+            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
+
+        Ok(Self {
+            reader: BufReader::new(Box::new(stream)),
+            writer: Box::new(writer),
+            next_id: 1,
+        })
+    }
+}
+
+// ── Auto-start daemon ───────────────────────────────────────────────
+
+/// Spawn the daemon binary if not already running.
+fn auto_start_daemon(spawn_args: &[String]) -> Result<(), ClientError> {
+    let pid_path = pid_file_path();
+
+    // Check if daemon is already alive via PID file.
+    if pid_path.exists()
+        && crate::daemon_ctl::parse_pid_file(&pid_path)
+            .is_some_and(|(pid, _ts, _hash, _nonce)| is_process_alive(pid))
+    {
+        return Ok(());
+    }
+    if pid_path.exists() {
+        // Stale PID file — clean up.
+        drop(std::fs::remove_file(&pid_path));
+        let sock = socket_path();
+        drop(std::fs::remove_file(&sock));
+    }
+
+    let daemon_exe = find_daemon_exe();
+    let str_args: Vec<&str> = spawn_args.iter().map(String::as_str).collect();
+    spawn_daemon(&daemon_exe, &str_args)?;
+    Ok(())
+}
+
+/// Check if a process is alive.
+fn is_process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // Unix PIDs fit in i32 — wrapping is not possible in practice.
+        #[expect(clippy::cast_possible_wrap, reason = "Unix PIDs are always < 2^31")]
+        let pid_i32 = pid as i32;
+        // SAFETY: kill(pid, 0) only checks if a signal *could* be sent
+        // to the given PID — it does not actually deliver any signal.
+        // The pid comes from our own PID file (trusted input).
+        #[expect(unsafe_code, reason = "kill(pid, 0) is a safe existence check")]
+        let result = unsafe { libc::kill(pid_i32, 0) };
+        result == 0
+    }
+    #[cfg(not(unix))]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+    }
+}

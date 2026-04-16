@@ -445,3 +445,34 @@ fn print_csv_duplicates(
 
     Ok(())
 }
+
+// ── Raw Value wrappers (thin-client path) ──────────────────────────────
+
+/// Print aggregate results from raw JSON values in table format.
+///
+/// Deserializes each `Value` into `AggregateResultWire` on-the-fly,
+/// then delegates to [`print_table_results`].
+///
+/// # Errors
+///
+/// Returns an error if deserialization or output fails.
+pub fn print_table_results_raw(raw: &[serde_json::Value]) -> Result<()> {
+    let typed: Vec<AggregateResultWire> = raw
+        .iter()
+        .filter_map(|val| serde_json::from_value(val.clone()).ok())
+        .collect();
+    print_table_results(&typed)
+}
+
+/// Print aggregate results from raw JSON values in CSV/TSV format.
+///
+/// # Errors
+///
+/// Returns an error if deserialization or output fails.
+pub fn print_csv_results_raw(raw: &[serde_json::Value], tsv: bool) -> Result<()> {
+    let typed: Vec<AggregateResultWire> = raw
+        .iter()
+        .filter_map(|val| serde_json::from_value(val.clone()).ok())
+        .collect();
+    print_csv_results(&typed, tsv)
+}

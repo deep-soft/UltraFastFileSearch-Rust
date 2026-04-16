@@ -327,7 +327,7 @@ impl LifecycleManager {
     /// one full window into the future and the loop continues.
     #[expect(
         clippy::cognitive_complexity,
-        reason = "idle timer with sliding window, connection tracking, and shutdown coordination"
+        reason = "daemon lifecycle with signal handling and graceful shutdown"
     )]
     pub(crate) async fn run_idle_timer(&mut self) {
         let Some(base_timeout) = self.idle_timeout else {

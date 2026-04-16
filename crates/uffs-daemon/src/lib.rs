@@ -195,7 +195,7 @@ fn validate_data_sources(
 )]
 #[expect(
     clippy::cognitive_complexity,
-    reason = "daemon main loop with IPC, lifecycle, index loading, and shutdown coordination"
+    reason = "daemon startup with socket, config, and index orchestration"
 )]
 pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     // ── Catastrophe safety net ──────────────────────────────────────

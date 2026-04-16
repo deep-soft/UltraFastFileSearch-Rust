@@ -26,6 +26,9 @@
 //! # }
 //! ```
 
+// `clap` is used by the `uffsmcp` binary, not this library crate.
+use clap as _;
+
 // ── MCP tracing initialisation ────────────────────────────────────────
 
 extern crate alloc;
@@ -116,8 +119,6 @@ pub mod handler;
 /// Streamable HTTP gateway (feature-gated).
 #[cfg(feature = "streamable-http")]
 pub mod http;
-/// MCP server PID file management.
-pub mod pid;
 /// Static and live MCP resource implementations.
 pub mod resources;
 /// MCP roots mapping policy.
@@ -531,7 +532,7 @@ mod tests {
 
         #[test]
         fn all_7_prompts_are_defined() {
-            let defs = crate::handler::prompt_definitions();
+            let defs = crate::handler::definitions::prompt_definitions();
             assert_eq!(defs.len(), 7, "expected 7 prompts, got {}", defs.len());
 
             let names: Vec<_> = defs.iter().map(|p| p.name.as_ref()).collect();

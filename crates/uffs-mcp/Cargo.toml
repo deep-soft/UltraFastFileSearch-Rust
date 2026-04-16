@@ -24,7 +24,7 @@ name = "uffs_mcp"
 path = "src/lib.rs"
 
 [[bin]]
-name = "uffs-mcp"
+name = "uffsmcp"
 path = "src/main.rs"
 
 [[bin]]
@@ -68,6 +68,7 @@ tracing-appender.workspace = true
 # HTTP gateway (feature-gated)
 axum = { workspace = true, optional = true }
 tower-service = { workspace = true, optional = true }
+clap = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 rmcp = { workspace = true, features = ["client"] }

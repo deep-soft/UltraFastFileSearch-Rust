@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use tokio::sync::{RwLock, Semaphore};
-use uffs_client::protocol::{DaemonStatus, StatsResponse, StatusResponse};
+use uffs_client::protocol::response::{DaemonStatus, StatsResponse, StatusResponse};
 use uffs_core::search::backend::DriveIndex;
 
 use crate::events::{DaemonEvent, EventSender};
@@ -109,7 +109,7 @@ impl IndexManager {
     /// Results are collected as they complete (fastest first).
     #[expect(
         clippy::cognitive_complexity,
-        reason = "parallel drive loader with status tracking, error handling, and sorting"
+        reason = "index loading with cache/live/fallback branches"
     )]
     pub(crate) async fn load_from_data_dir(&self, mft_files: &[PathBuf], no_cache: bool) {
         let total = mft_files.len();
@@ -484,7 +484,7 @@ impl IndexManager {
             let hr = dr.heap_size_bytes();
             let heap = hr.total as u64;
             total_index_heap += heap;
-            drive_memory.push(uffs_client::protocol::DriveMemoryInfo {
+            drive_memory.push(uffs_client::protocol::response::DriveMemoryInfo {
                 drive: dr.letter,
                 records: dr.records.len(),
                 heap_bytes: heap,
@@ -511,7 +511,7 @@ impl IndexManager {
     /// Refresh specific drives (or all if empty).
     #[expect(
         clippy::cognitive_complexity,
-        reason = "refresh orchestration with per-drive reload and status updates"
+        reason = "index refresh with multi-stage validation"
     )]
     pub(crate) async fn refresh(&self, drives: &[char]) {
         let drives_to_refresh: Vec<char> = if drives.is_empty() {
@@ -610,14 +610,17 @@ impl IndexManager {
     ///
     /// Walks the `children` index top-down in `O(path_depth)` instead of
     /// scanning all records with full path resolution.
-    pub(crate) async fn info(&self, file_path: &str) -> uffs_client::protocol::InfoResponse {
+    pub(crate) async fn info(
+        &self,
+        file_path: &str,
+    ) -> uffs_client::protocol::response::InfoResponse {
         let snap = self.snapshot().await;
 
         let found_record = Self::info_tree_lookup(&snap, file_path);
 
         drop(snap);
 
-        uffs_client::protocol::InfoResponse {
+        uffs_client::protocol::response::InfoResponse {
             found: found_record.is_some(),
             record: found_record,
         }
@@ -788,7 +791,7 @@ impl IndexManager {
     /// Returns `Ok(Some(letter))` if loaded, `Ok(None)` if already present.
     #[expect(
         clippy::cognitive_complexity,
-        reason = "single-file loader with format detection, index build, and cache write"
+        reason = "multi-drive search with merge and sort"
     )]
     pub(crate) async fn load_single_mft_file(
         &self,
@@ -917,8 +920,7 @@ impl IndexManager {
     /// source found).
     #[expect(
         clippy::cognitive_complexity,
-        reason = "loop over drives with match on discover result (Ok(true)/Ok(false)/Err) \
-                  plus tracing — inherently branchy but each branch is 3 lines"
+        reason = "tree metrics computation with parent chain traversal"
     )]
     pub(crate) async fn ensure_drives_loaded(&self, drives: &[char], no_cache: bool) -> Vec<char> {
         if drives.is_empty() {

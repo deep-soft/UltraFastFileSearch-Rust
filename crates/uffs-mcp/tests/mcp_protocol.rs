@@ -24,12 +24,15 @@
 
 // Acknowledge crates used by the lib/bin but not this test target.
 use anyhow as _;
+#[cfg(feature = "streamable-http")]
 use axum as _;
+use clap as _;
 use dirs_next as _;
 use rmcp::{ClientHandler, ServiceExt};
 use schemars as _;
 use serde as _;
 use thiserror as _;
+#[cfg(feature = "streamable-http")]
 use tower_service as _;
 use tracing as _;
 use tracing_appender as _;

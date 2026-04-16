@@ -4,7 +4,7 @@
 //! Tests for output helpers.
 //!
 //! All tests exercise the unified `write_native_results` path using
-//! `SearchRow` inputs — no polars, no `DisplayRow`, no `DataFrame`.
+//! `serde_json::Value` inputs — no polars, no typed protocol structs.
 
 use core::time::Duration;
 use std::fs;
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use uffs_client::protocol::response::SearchRow;
+use serde_json::json;
 
 use super::write_native_results;
 
@@ -31,42 +31,44 @@ fn temp_output_path(extension: &str) -> PathBuf {
     ))
 }
 
-/// A single `SearchRow` matching the old `sample_df()` content.
-fn sample_rows() -> Vec<SearchRow> {
-    vec![SearchRow {
-        drive: 'C',
-        path: "C:\\Temp\\file.txt".to_owned(),
-        name: "file.txt".to_owned(),
-        size: 123,
-        is_directory: false,
-        modified: 1_700_001_100_000_000, // Unix µs ≈ 2023-11-14
-        created: 1_700_001_000_000_000,
-        accessed: 1_700_001_200_000_000,
-        flags: 0,
-        allocated: 128,
-        descendants: 0,
-        treesize: 0,
-        tree_allocated: 0,
-    }]
+/// A single row as JSON Value matching the old `sample_df()` content.
+fn sample_rows() -> Vec<serde_json::Value> {
+    vec![json!({
+        "drive": "C",
+        "path": "C:\\Temp\\file.txt",
+        "name": "file.txt",
+        "size": 123,
+        "is_directory": false,
+        "modified": 1_700_001_100_000_000_i64,
+        "created": 1_700_001_000_000_000_i64,
+        "accessed": 1_700_001_200_000_000_i64,
+        "flags": 0,
+        "allocated": 128,
+        "descendants": 0,
+        "treesize": 0,
+        "tree_allocated": 0,
+    })]
 }
 
-/// 20 000+ `SearchRow`s for testing the slow-scan footer guard.
-fn large_sample_rows() -> Vec<SearchRow> {
+/// 20 000+ rows for testing the slow-scan footer guard.
+fn large_sample_rows() -> Vec<serde_json::Value> {
     (0..20_000_u64)
-        .map(|idx| SearchRow {
-            drive: 'C',
-            path: format!("C:\\Temp\\file{idx}.txt"),
-            name: format!("file{idx}.txt"),
-            size: 100,
-            is_directory: false,
-            modified: 0,
-            created: 0,
-            accessed: 0,
-            flags: 0,
-            allocated: 128,
-            descendants: 0,
-            treesize: 0,
-            tree_allocated: 0,
+        .map(|idx| {
+            json!({
+                "drive": "C",
+                "path": format!("C:\\Temp\\file{idx}.txt"),
+                "name": format!("file{idx}.txt"),
+                "size": 100_u64,
+                "is_directory": false,
+                "modified": 0_i64,
+                "created": 0_i64,
+                "accessed": 0_i64,
+                "flags": 0_u32,
+                "allocated": 128_u64,
+                "descendants": 0_u32,
+                "treesize": 0_u64,
+                "tree_allocated": 0_u64,
+            })
         })
         .collect()
 }

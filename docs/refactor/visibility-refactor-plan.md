@@ -118,34 +118,21 @@ Deleted both re-exports from `lib.rs`. Updated all callers:
 
 ---
 
-### Phase R2: uffs-client (1 re-export) — NOT STARTED
+### Phase R2: uffs-client (1 re-export) — ✓ DONE
 
-```
-protocol/mod.rs:14  pub use response::*;
-```
-
-Delete. Callers update:
-- `uffs_client::protocol::SearchResponse` → `uffs_client::protocol::response::SearchResponse`
-
-**Note:** Removal was attempted and reverted — `uffs-daemon` and `uffs-cli`
-use `uffs_client::protocol::SearchRow` etc. via the glob re-export.
+Deleted `pub use response::*;` from `protocol/mod.rs`.
+Updated all callers — split mixed `use` statements to separate
+`protocol::response::` imports (20 response types) from `protocol::` imports
+(wire types, error codes, params). 7 files updated across uffs-daemon and uffs-cli.
 
 ---
 
-### Phase R3: uffs-mcp (2 remaining re-exports) — PARTIALLY DONE
+### Phase R3: uffs-mcp (2 remaining re-exports) — ✓ DONE
 
-Completed:
-- ✓ `lib.rs: pub use pid::{...}` — deleted (callers already use `uffs_mcp::pid::*`)
-
-Remaining:
-```
-handler/mod.rs  pub use definitions::{prompt_definitions, tool_definitions};
-handler/mod.rs  pub use prompts::{build_prompt_messages, str_arg, u64_arg};
-```
-
-These are used by `lib.rs` via `crate::handler::prompt_definitions()`.
-Must update callers to use `crate::handler::definitions::prompt_definitions()`
-before removing.
+Deleted both re-exports from `handler/mod.rs`. Updated 4 callers:
+- `handler/mod.rs`: 3 internal calls → `definitions::tool_definitions()`,
+  `definitions::prompt_definitions()`, `prompts::build_prompt_messages()`
+- `lib.rs`: 1 call → `crate::handler::definitions::prompt_definitions()`
 
 ---
 
@@ -322,13 +309,10 @@ callers within uffs-mft itself (the cross-crate callers mostly go through
 
 ---
 
-### Phase R7: uffs-diag (1 re-export) — NOT STARTED
+### Phase R7: uffs-diag (1 re-export) — ✓ DONE
 
-```
-parity/mod.rs:11  pub use stats::{ComparisonResults, FieldStats};
-```
-
-Delete. Callers update to `parity::stats::ComparisonResults`.
+Deleted `pub use stats::{ComparisonResults, FieldStats};` from `parity/mod.rs`.
+Changed `mod stats` → `pub mod stats`. Updated 1 caller in `compare_scan_parity.rs`.
 
 ---
 

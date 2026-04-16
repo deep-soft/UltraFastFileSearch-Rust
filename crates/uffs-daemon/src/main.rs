@@ -37,8 +37,6 @@ use dirs_next as _;
 #[cfg(unix)]
 use libc as _;
 use libmimalloc_sys as _;
-#[cfg(windows)]
-use windows as _;
 use rand as _;
 use serde as _;
 use serde_json as _;
@@ -51,6 +49,8 @@ use uffs_client as _;
 use uffs_core as _;
 use uffs_mft as _;
 use uffs_security as _;
+#[cfg(windows)]
+use windows as _;
 
 /// UFFS background daemon — holds MFT index, serves queries via IPC.
 #[derive(Parser)]

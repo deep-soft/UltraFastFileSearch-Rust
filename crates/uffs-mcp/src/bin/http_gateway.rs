@@ -18,6 +18,7 @@ use core::net::SocketAddr;
 
 use anyhow as _;
 use axum as _;
+use clap as _;
 use dirs_next as _;
 use rmcp as _;
 use schemars as _;
