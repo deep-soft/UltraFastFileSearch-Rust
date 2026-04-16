@@ -130,6 +130,10 @@ pub(crate) struct LifecycleManager {
     idle_timeout: Option<Duration>,
     /// Shutdown nonce (written to PID file, required for RPC shutdown).
     shutdown_nonce: Option<String>,
+    /// Whether this instance owns the PID file (wrote it on startup).
+    /// When `false`, `Drop` must NOT remove files that belong to another
+    /// running daemon.
+    owns_pid_file: bool,
 }
 
 impl LifecycleManager {
@@ -169,6 +173,7 @@ impl LifecycleManager {
             pid_path,
             idle_timeout,
             shutdown_nonce: None,
+            owns_pid_file: false,
         }
     }
 
@@ -209,6 +214,7 @@ impl LifecycleManager {
         );
         std::fs::write(&self.pid_path, content)?;
         uffs_security::fs::set_file_permissions_owner_only(&self.pid_path)?;
+        self.owns_pid_file = true;
         tracing::info!(path = %self.pid_path.display(), "PID file written");
         Ok(())
     }
@@ -581,8 +587,13 @@ impl LifecycleManager {
 
 impl Drop for LifecycleManager {
     fn drop(&mut self) {
-        self.remove_pid_file();
-        self.remove_socket_file();
+        // Only clean up files that belong to this instance.  If we detected
+        // another running daemon (`check_stale_pid` returned false) we never
+        // wrote a PID file, so we must not delete the other daemon's files.
+        if self.owns_pid_file {
+            self.remove_pid_file();
+            self.remove_socket_file();
+        }
     }
 }
 

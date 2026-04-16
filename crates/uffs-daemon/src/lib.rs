@@ -227,8 +227,10 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
         "uffsd starting"
     );
 
-    // Determine data directory
-    let data_dir = dirs_next::data_local_dir()
+    // Determine data directory:
+    // - lifecycle_dir: always %LOCALAPPDATA%\uffs — PID/socket/lock files
+    // - data_dir: user-supplied --data-dir (for MFT file discovery/hot-load)
+    let lifecycle_dir = dirs_next::data_local_dir()
         .map_or_else(|| PathBuf::from("/tmp/uffs"), |base| base.join("uffs"));
 
     // Create event broadcast channel — used for push notifications to clients.
@@ -247,7 +249,7 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
         Some(core::time::Duration::from_secs(config.idle_timeout))
     };
     let mut lifecycle_mgr =
-        lifecycle::LifecycleManager::new(&data_dir, idle_timeout, event_tx.clone());
+        lifecycle::LifecycleManager::new(&lifecycle_dir, idle_timeout, event_tx.clone());
 
     tracing::info!(data_dir = %lifecycle_mgr.data_dir().display(), "Lifecycle data directory");
 
@@ -264,20 +266,44 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     // D5.0: clean up stale shmem files from previous daemon sessions.
     uffs_client::shmem::cleanup_stale_shmem_files();
 
-    // Create index manager
-    let idx = Arc::new(index::IndexManager::new(Some(data_dir.clone()), event_tx));
+    // Create index manager — uses the user-supplied --data-dir for offline MFT
+    // discovery and hot-loading (not the lifecycle directory).
+    let idx = Arc::new(index::IndexManager::new(config.data_dir.clone(), event_tx));
     tracing::debug!(index_data_dir = ?idx.data_dir(), "Index manager created");
 
     // Merge --data-dir discovered files into --mft-file list.
+    // When --drive is specified, filter to only those drive letters.
     let mut mft_files = config.mft_files;
     if let Some(dir) = &config.data_dir {
         let discovered = uffs_mft::discovery::discover_mft_files(dir);
+        let filtered: Vec<PathBuf> = if config.drives.is_empty() {
+            discovered
+        } else {
+            discovered
+                .into_iter()
+                .filter(|path| {
+                    // Extract drive letter from path: .../drive_c/C_mft.iocp → 'C'
+                    path.parent()
+                        .and_then(|parent| parent.file_name())
+                        .and_then(|name| name.to_str())
+                        .and_then(|name| name.strip_prefix("drive_"))
+                        .and_then(|suffix| suffix.chars().next())
+                        .is_some_and(|letter| {
+                            config
+                                .drives
+                                .iter()
+                                .any(|drive| drive.eq_ignore_ascii_case(&letter))
+                        })
+                })
+                .collect()
+        };
         tracing::info!(
             data_dir = %dir.display(),
-            count = discovered.len(),
+            count = filtered.len(),
+            filter = ?config.drives,
             "Discovered MFT files from --data-dir"
         );
-        mft_files.extend(discovered);
+        mft_files.extend(filtered);
     }
     let no_cache = config.no_cache;
 

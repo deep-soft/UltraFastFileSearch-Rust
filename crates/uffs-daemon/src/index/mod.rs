@@ -881,10 +881,6 @@ impl IndexManager {
     /// If the drive is already loaded, replaces it (re-read).
     ///
     /// Returns `Ok(records)` on success.
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "platform-branching + error handling inflate complexity"
-    )]
     pub(crate) async fn hot_load_drive(
         &self,
         drive_letter: char,
@@ -892,35 +888,63 @@ impl IndexManager {
     ) -> anyhow::Result<usize> {
         let letter = drive_letter.to_ascii_uppercase();
 
-        {
-            let snap = self.snapshot().await;
-            if snap.drives.iter().any(|dr| dr.letter == letter) {
-                tracing::info!(drive = %letter, "Drive already loaded — will hot-swap after re-read");
-            }
+        if self.is_drive_loaded(letter).await {
+            tracing::info!(drive = %letter, "Drive already loaded — will hot-swap after re-read");
         }
 
-        // Determine the source.
-        #[cfg(windows)]
-        let source = uffs_core::compact::MftSource::Live(letter);
+        let source = self.resolve_drive_source(letter)?;
+        tracing::info!(drive = %letter, "Hot-loading drive");
 
+        let (drive_index, timing) = self.blocking_load_drive(source, no_cache).await?;
+        let records = drive_index.records.len();
+
+        self.emit_drive_loaded(letter, records, &timing);
+        self.store_drive_timing(letter, &timing).await;
+        // Atomic swap: old drive (if any) is replaced in a single pointer
+        // swap — in-flight queries on the old Arc finish undisturbed, new
+        // queries see the fresh data immediately.
+        self.replace_drive(letter, drive_index).await;
+
+        Ok(records)
+    }
+
+    /// Check whether a drive letter is already in the index.
+    async fn is_drive_loaded(&self, letter: char) -> bool {
+        let snap = self.snapshot().await;
+        snap.drives.iter().any(|dr| dr.letter == letter)
+    }
+
+    /// Determine the [`MftSource`] for a drive letter.
+    fn resolve_drive_source(&self, letter: char) -> anyhow::Result<uffs_core::compact::MftSource> {
+        #[cfg(windows)]
+        {
+            Ok(uffs_core::compact::MftSource::Live(letter))
+        }
         #[cfg(not(windows))]
-        let source = {
-            let Some(data_dir) = &self.data_dir else {
-                anyhow::bail!(
+        {
+            let data_dir = self.data_dir.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
                     "No data_dir configured — cannot load drive {letter}: on non-Windows"
-                );
-            };
-            let drive_lower = letter.to_ascii_lowercase();
-            let drive_subdir = data_dir.join(format!("drive_{drive_lower}"));
+                )
+            })?;
+            let drive_subdir = data_dir.join(format!("drive_{}", letter.to_ascii_lowercase()));
             let mft_path =
                 uffs_mft::discovery::find_best_mft_file(&drive_subdir).ok_or_else(|| {
                     anyhow::anyhow!("No MFT file found in {}", drive_subdir.display())
                 })?;
-            uffs_core::compact::MftSource::File(mft_path, Some(letter))
-        };
+            Ok(uffs_core::compact::MftSource::File(mft_path, Some(letter)))
+        }
+    }
 
-        tracing::info!(drive = %letter, "Hot-loading drive");
-
+    /// Run `load_drive` on a blocking thread and release allocator pages.
+    async fn blocking_load_drive(
+        &self,
+        source: uffs_core::compact::MftSource,
+        no_cache: bool,
+    ) -> anyhow::Result<(
+        uffs_core::compact::DriveCompactIndex,
+        uffs_core::compact::LoadTiming,
+    )> {
         let result =
             tokio::task::spawn_blocking(move || uffs_core::compact::load_drive(&source, no_cache))
                 .await;
@@ -928,49 +952,46 @@ impl IndexManager {
         release_allocator_pages();
 
         match result {
-            Ok(Ok((drive_index, timing))) => {
-                let records = drive_index.records.len();
-                tracing::info!(
-                    drive = %letter,
-                    records,
-                    mft_ms = timing.mft,
-                    compact_ms = timing.compact,
-                    trigram_ms = timing.trigram,
-                    "Drive hot-loaded"
-                );
-                self.events.emit(DaemonEvent::DriveLoaded {
-                    drive: letter,
-                    records,
-                    mft_ms: timing.mft,
-                    compact_ms: timing.compact,
-                    trigram_ms: timing.trigram,
-                    drives_loaded: 1,
-                    drives_total: 1,
-                });
-                self.drive_timings
-                    .write()
-                    .await
-                    .insert(letter, StoredDriveTiming {
-                        cache: timing.cache,
-                        mft: timing.mft,
-                        compact: timing.compact,
-                        trigram: timing.trigram,
-                    });
-                // Atomic swap: old drive (if any) is replaced in a single
-                // pointer swap — in-flight queries on the old Arc finish
-                // undisturbed, new queries see the fresh data immediately.
-                self.replace_drive(letter, drive_index).await;
-                Ok(records)
-            }
-            Ok(Err(load_err)) => {
-                tracing::error!(drive = %letter, error = %load_err, "Failed to hot-load drive");
-                Err(load_err)
-            }
-            Err(join_err) => {
-                tracing::error!(drive = %letter, error = %join_err, "Task panicked hot-loading drive");
-                anyhow::bail!("Task panicked: {join_err}")
-            }
+            Ok(Ok(pair)) => Ok(pair),
+            Ok(Err(load_err)) => Err(load_err),
+            Err(join_err) => anyhow::bail!("Load task panicked: {join_err}"),
         }
+    }
+
+    /// Emit a `DriveLoaded` event for a single hot-loaded drive.
+    fn emit_drive_loaded(
+        &self,
+        letter: char,
+        records: usize,
+        timing: &uffs_core::compact::LoadTiming,
+    ) {
+        tracing::info!(
+            drive = %letter, records,
+            mft_ms = timing.mft, compact_ms = timing.compact, trigram_ms = timing.trigram,
+            "Drive hot-loaded"
+        );
+        self.events.emit(DaemonEvent::DriveLoaded {
+            drive: letter,
+            records,
+            mft_ms: timing.mft,
+            compact_ms: timing.compact,
+            trigram_ms: timing.trigram,
+            drives_loaded: 1,
+            drives_total: 1,
+        });
+    }
+
+    /// Persist per-drive load timing for `--profile` reporting.
+    async fn store_drive_timing(&self, letter: char, timing: &uffs_core::compact::LoadTiming) {
+        self.drive_timings
+            .write()
+            .await
+            .insert(letter, StoredDriveTiming {
+                cache: timing.cache,
+                mft: timing.mft,
+                compact: timing.compact,
+                trigram: timing.trigram,
+            });
     }
 
     /// Discover and load a missing drive from the data directory.
