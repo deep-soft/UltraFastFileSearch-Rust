@@ -188,11 +188,12 @@ jobs:
           # Copy all binaries (cross-platform compatible)
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             # Windows: copy known .exe files (avoid picking up build tools)
-            for binary in uffs.exe uffsd.exe uffs_mft.exe; do
-              if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
-                cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
-              fi
-            done
+            # for binary in uffs.exe uffsd.exe uffs_mft.exe; do
+            #   if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
+            #     cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
+            #   fi
+            # done
+            find target/${{ matrix.target }}/release -name "uffs*.exe" -type f -exec cp {} release-artifacts/ \;
           else
             # macOS (Intel & Apple Silicon) and Linux: copy known binary names
             for binary in uffs uffsd uffs_mft; do
