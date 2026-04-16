@@ -339,6 +339,7 @@ impl RequestHandler {
         let mut already_loaded: Vec<char> = Vec::new();
         let mut errors: Vec<String> = Vec::new();
 
+        // Hot-load by MFT file path.
         for mft_file in &params.mft_files {
             let path = std::path::PathBuf::from(mft_file);
             match self
@@ -358,6 +359,20 @@ impl RequestHandler {
                 }
                 Err(load_err) => {
                     errors.push(format!("{}: {load_err}", path.display()));
+                }
+            }
+        }
+
+        // Hot-load by drive letter (live NTFS on Windows, data_dir on other
+        // platforms).
+        for &letter in &params.drives {
+            match self.index.hot_load_drive(letter, params.no_cache).await {
+                Ok(records) => {
+                    tracing::info!(drive = %letter, records, "Drive hot-loaded via RPC");
+                    loaded.push(letter.to_ascii_uppercase());
+                }
+                Err(load_err) => {
+                    errors.push(format!("{letter}: {load_err}"));
                 }
             }
         }

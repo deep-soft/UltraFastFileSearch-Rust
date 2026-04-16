@@ -28,6 +28,11 @@ pub struct LoadDriveParams {
     /// MFT file paths to load (absolute paths).
     #[serde(default)]
     pub mft_files: Vec<String>,
+    /// Drive letters to hot-load (e.g. `['D', 'E']`).
+    /// On Windows, reads the live NTFS MFT.
+    /// On non-Windows, discovers from the daemon's `data_dir`.
+    #[serde(default)]
+    pub drives: Vec<char>,
     /// Skip cache when loading.
     #[serde(default)]
     pub no_cache: bool,

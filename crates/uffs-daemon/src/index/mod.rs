@@ -873,6 +873,106 @@ impl IndexManager {
         }
     }
 
+    /// Hot-load a single drive letter into the running daemon.
+    ///
+    /// On **Windows**, reads the live NTFS MFT directly.
+    /// On **non-Windows**, looks in `data_dir` for an offline MFT file.
+    ///
+    /// If the drive is already loaded, replaces it (re-read).
+    ///
+    /// Returns `Ok(records)` on success.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "platform-branching + error handling inflate complexity"
+    )]
+    pub(crate) async fn hot_load_drive(
+        &self,
+        drive_letter: char,
+        no_cache: bool,
+    ) -> anyhow::Result<usize> {
+        let letter = drive_letter.to_ascii_uppercase();
+
+        {
+            let snap = self.snapshot().await;
+            if snap.drives.iter().any(|dr| dr.letter == letter) {
+                tracing::info!(drive = %letter, "Drive already loaded — will hot-swap after re-read");
+            }
+        }
+
+        // Determine the source.
+        #[cfg(windows)]
+        let source = uffs_core::compact::MftSource::Live(letter);
+
+        #[cfg(not(windows))]
+        let source = {
+            let Some(data_dir) = &self.data_dir else {
+                anyhow::bail!(
+                    "No data_dir configured — cannot load drive {letter}: on non-Windows"
+                );
+            };
+            let drive_lower = letter.to_ascii_lowercase();
+            let drive_subdir = data_dir.join(format!("drive_{drive_lower}"));
+            let mft_path =
+                uffs_mft::discovery::find_best_mft_file(&drive_subdir).ok_or_else(|| {
+                    anyhow::anyhow!("No MFT file found in {}", drive_subdir.display())
+                })?;
+            uffs_core::compact::MftSource::File(mft_path, Some(letter))
+        };
+
+        tracing::info!(drive = %letter, "Hot-loading drive");
+
+        let result =
+            tokio::task::spawn_blocking(move || uffs_core::compact::load_drive(&source, no_cache))
+                .await;
+
+        release_allocator_pages();
+
+        match result {
+            Ok(Ok((drive_index, timing))) => {
+                let records = drive_index.records.len();
+                tracing::info!(
+                    drive = %letter,
+                    records,
+                    mft_ms = timing.mft,
+                    compact_ms = timing.compact,
+                    trigram_ms = timing.trigram,
+                    "Drive hot-loaded"
+                );
+                self.events.emit(DaemonEvent::DriveLoaded {
+                    drive: letter,
+                    records,
+                    mft_ms: timing.mft,
+                    compact_ms: timing.compact,
+                    trigram_ms: timing.trigram,
+                    drives_loaded: 1,
+                    drives_total: 1,
+                });
+                self.drive_timings
+                    .write()
+                    .await
+                    .insert(letter, StoredDriveTiming {
+                        cache: timing.cache,
+                        mft: timing.mft,
+                        compact: timing.compact,
+                        trigram: timing.trigram,
+                    });
+                // Atomic swap: old drive (if any) is replaced in a single
+                // pointer swap — in-flight queries on the old Arc finish
+                // undisturbed, new queries see the fresh data immediately.
+                self.replace_drive(letter, drive_index).await;
+                Ok(records)
+            }
+            Ok(Err(load_err)) => {
+                tracing::error!(drive = %letter, error = %load_err, "Failed to hot-load drive");
+                Err(load_err)
+            }
+            Err(join_err) => {
+                tracing::error!(drive = %letter, error = %join_err, "Task panicked hot-loading drive");
+                anyhow::bail!("Task panicked: {join_err}")
+            }
+        }
+    }
+
     /// Discover and load a missing drive from the data directory.
     ///
     /// Returns `Ok(true)` if the drive was discovered and loaded,

@@ -401,21 +401,54 @@ fn daemon_load(
         }
     }
 
-    if paths.is_empty() {
+    // Drive letters without --data-dir → hot-load by letter.
+    // On Windows this reads live NTFS; on non-Windows the daemon uses its
+    // own data_dir.
+    let direct_drives: Vec<char> = if data_dir.is_none() && paths.is_empty() {
+        drives.to_vec()
+    } else {
+        Vec::new()
+    };
+
+    if paths.is_empty() && direct_drives.is_empty() {
         anyhow::bail!(
             "Nothing to load. Provide --mft-file <path>, --data-dir <path>, \
-             or --data-dir <path> --drive <letter>."
+             --drive <letter>, or --data-dir <path> --drive <letter>."
         );
     }
 
-    println!("Loading {} MFT file(s)...", paths.len());
-    for path in &paths {
-        println!("  → {path}");
-    }
+    // Load MFT files (if any).
+    let mut resp = if paths.is_empty() {
+        uffs_client::protocol::response::LoadDriveResponse {
+            loaded: Vec::new(),
+            already_loaded: Vec::new(),
+            errors: Vec::new(),
+        }
+    } else {
+        println!("Loading {} MFT file(s)...", paths.len());
+        for path in &paths {
+            println!("  → {path}");
+        }
+        client
+            .load_drive(&paths, no_cache)
+            .with_context(|| "load_drive IPC failed")?
+    };
 
-    let resp = client
-        .load_drive(&paths, no_cache)
-        .with_context(|| "load_drive IPC failed")?;
+    // Hot-load by drive letter (if any).
+    if !direct_drives.is_empty() {
+        let drive_list: String = direct_drives
+            .iter()
+            .map(|ch| format!("{ch}:"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("Hot-loading drive(s): {drive_list}");
+        let drive_resp = client
+            .load_drive_letters(&direct_drives, no_cache)
+            .with_context(|| "load_drive_letters IPC failed")?;
+        resp.loaded.extend(drive_resp.loaded);
+        resp.already_loaded.extend(drive_resp.already_loaded);
+        resp.errors.extend(drive_resp.errors);
+    }
 
     if !resp.loaded.is_empty() {
         println!(

@@ -65,6 +65,29 @@ impl UffsClientSync {
             return Ok(client);
         }
 
+        // On non-Windows, the daemon needs an explicit data source.
+        // Fail fast with a helpful message instead of spawning a daemon
+        // that will immediately exit (then spinning through 20 retries).
+        #[cfg(not(windows))]
+        {
+            let has_data_source = spawn_args.iter().any(|arg| {
+                arg == "--data-dir"
+                    || arg == "--mft-file"
+                    || arg.starts_with("--data-dir=")
+                    || arg.starts_with("--mft-file=")
+            });
+            if !has_data_source {
+                return Err(ClientError::ConnectionFailed(
+                    "No daemon is running and no data source was provided.\n\
+                     On macOS/Linux, start the daemon first:\n\n  \
+                     uffs daemon start --data-dir ~/uffs_data\n\n\
+                     Or pass --data-dir inline:\n\n  \
+                     uffs \"notepad.exe\" --data-dir ~/uffs_data"
+                        .to_owned(),
+                ));
+            }
+        }
+
         // Auto-start the daemon.
         auto_start_daemon(spawn_args)?;
 
@@ -330,6 +353,27 @@ impl UffsClientSync {
     ) -> Result<crate::protocol::response::LoadDriveResponse, ClientError> {
         let params = serde_json::json!({
             "mft_files": mft_files,
+            "no_cache": no_cache,
+        });
+        let result = self.send_request("load_drive", Some(params))?;
+        serde_json::from_value(result).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+
+    /// Hot-load one or more drives by letter into the running daemon.
+    ///
+    /// On Windows this reads the live NTFS MFT; on non-Windows it discovers
+    /// offline MFT files from the daemon's `data_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn load_drive_letters(
+        &mut self,
+        drives: &[char],
+        no_cache: bool,
+    ) -> Result<crate::protocol::response::LoadDriveResponse, ClientError> {
+        let params = serde_json::json!({
+            "drives": drives,
             "no_cache": no_cache,
         });
         let result = self.send_request("load_drive", Some(params))?;
