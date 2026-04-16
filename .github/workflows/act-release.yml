@@ -6,6 +6,12 @@ name: act - 🚀 UFFS Release Pipeline
 run-name: act - 🚀 UFFS Release ${{ inputs.version || github.ref_name }}
 
 on:
+#  workflow_call:
+#      patch_1:
+#        description: patch 1
+#        type: boolean
+#        default: true
+#        required: true
   workflow_dispatch:
     inputs:
       version:
@@ -137,7 +143,7 @@ jobs:
           ref: ${{ inputs.commit_sha || github.sha }}
 
       - name: patch .cargo/config.toml
-        if: ${{ inputs.patch_1 }}
+        if: ${{ github.event.inputs.patch_1 }}
         shell: bash
         run: |
           echo ".cargo/config.toml";
