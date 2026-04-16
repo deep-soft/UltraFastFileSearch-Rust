@@ -159,12 +159,18 @@ impl UffsMcpServer {
             .map_or(0, |dur| dur.as_secs())
     }
 
-    /// Get a lock on the daemon client, or return a bridge error.
+    /// Get a lock on the daemon client, connecting lazily on first call.
     ///
-    /// For [`ClientSlot::Active`]: returns the cached client, connecting
-    ///   on first call or after a reconnect-clearing.
-    /// For [`ClientSlot::None`]: returns an error.
-    async fn client(&self) -> Result<ClientGuard<'_>, BridgeError> {
+    /// If the server was constructed with daemon spawn arguments, this
+    /// returns a [`ClientGuard`] wrapping the cached (or newly-created)
+    /// connection.  If no daemon backend was configured, it returns an
+    /// error immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BridgeError::Daemon`] if the daemon connection fails or
+    /// the server was constructed without a client slot.
+    pub async fn client(&self) -> Result<ClientGuard<'_>, BridgeError> {
         match &self.slot {
             ClientSlot::Active { spawn_args, client } => {
                 let mut guard = client.lock().await;

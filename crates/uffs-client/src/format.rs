@@ -129,6 +129,101 @@ pub const fn u64_to_f64(val: u64) -> f64 {
     val as f64
 }
 
+/// Returns the local UTC offset in seconds (e.g. `-25200` for PDT / UTC−7).
+///
+/// Matches the C++ behavior where `FileTimeToLocalFileTime()` applies the
+/// CURRENT timezone offset to ALL timestamps, ignoring historical DST
+/// transitions.  Computed once at startup via platform APIs — no `chrono`
+/// dependency required.
+///
+/// Falls back to `0` (UTC) on any platform error.
+#[must_use]
+pub fn local_utc_offset_secs() -> i32 {
+    platform_tz::utc_offset_secs()
+}
+
+/// Platform-specific UTC offset detection.
+#[cfg(unix)]
+mod platform_tz {
+    /// Get local UTC offset via `libc::localtime_r` → `tm_gmtoff`.
+    #[expect(unsafe_code, reason = "FFI call to libc localtime_r")]
+    pub(super) fn utc_offset_secs() -> i32 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |dur| dur.as_secs());
+
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "current Unix epoch (u64) fits i64 time_t for centuries"
+        )]
+        let epoch = secs as libc::time_t;
+
+        // Safety: `core::mem::zeroed()` produces a valid `libc::tm` —
+        // it is a plain-old-data struct with no invariants.
+        let mut tm_buf: libc::tm = unsafe { core::mem::zeroed() };
+        // Safety: `localtime_r` is the thread-safe variant; we provide
+        // a valid `time_t` pointer and a valid output buffer pointer.
+        let result = unsafe { libc::localtime_r(&raw const epoch, &raw mut tm_buf) };
+        if result.is_null() {
+            return 0; // fallback to UTC
+        }
+
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "tm_gmtoff is at most ±50400 (±14h), fits i32"
+        )]
+        {
+            tm_buf.tm_gmtoff as i32
+        }
+    }
+}
+
+/// Platform-specific UTC offset detection.
+#[cfg(windows)]
+mod platform_tz {
+    /// `GetTimeZoneInformation` returns `2` when daylight saving is active.
+    const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+
+    /// Get local UTC offset via `GetTimeZoneInformation`.
+    #[expect(unsafe_code, reason = "FFI call to Win32 GetTimeZoneInformation")]
+    pub(super) fn utc_offset_secs() -> i32 {
+        use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+
+        let mut tz_info = TIME_ZONE_INFORMATION::default();
+        // Safety: passing a valid mutable pointer to a stack-allocated struct.
+        let result = unsafe { GetTimeZoneInformation(&mut tz_info) };
+
+        // `Bias` is in minutes, UTC = LocalTime + Bias.
+        // `DaylightBias` is typically −60 (summer), 0 otherwise.
+        let total_bias_minutes = if result == TIME_ZONE_ID_DAYLIGHT {
+            tz_info.Bias + tz_info.DaylightBias
+        } else {
+            tz_info.Bias
+        };
+
+        // Convert from "bias" (UTC = Local + Bias) to "offset" (Local = UTC + offset).
+        // offset = −Bias
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "bias minutes × 60 fits i32"
+        )]
+        {
+            -(total_bias_minutes * 60)
+        }
+    }
+}
+
+/// Fallback for non-Unix, non-Windows platforms.
+#[cfg(not(any(unix, windows)))]
+mod platform_tz {
+    /// Returns 0 (UTC) — no platform API available.
+    pub(super) const fn utc_offset_secs() -> i32 {
+        0
+    }
+}
+
 /// Parse a month/quarter spec into a vector of allowed months (1-12).
 ///
 /// Accepts:

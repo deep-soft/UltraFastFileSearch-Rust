@@ -708,6 +708,14 @@ async fn phase1_optimized(ctx: &PipelineContext) -> Result<()> {
     // Step 0: Ensure pinned nightly toolchain is installed
     execute_command("Toolchain ensure", "just", &["toolchain-ensure"], ctx).await?;
 
+    // Step 0b: File size policy (fast — catches structural violations before expensive compilation)
+    execute_command(
+        "File size policy",
+        "bash",
+        &["scripts/ci/check_file_size_policy.sh"],
+        ctx,
+    ).await?;
+
     // Step 1: Workspace tests (nextest compiles everything — no separate `cargo check` needed)
     execute_command(
         "Workspace tests",
@@ -743,6 +751,9 @@ async fn phase1_optimized(ctx: &PipelineContext) -> Result<()> {
             "-A", "clippy::unwrap_used", "-A", "clippy::expect_used",
         ]),
         ("Dependency security", "cargo", vec!["deny", "check"]),
+        ("Rustdoc link validation", "cargo", vec![
+            "doc", "--workspace", "--all-features", "--no-deps",
+        ]),
     ];
     execute_parallel_with_env(parallel_commands, &[("RUSTDOCFLAGS", "-Dwarnings")], ctx).await?;
 
@@ -1130,6 +1141,14 @@ async fn run_enhanced_phase1(state: &mut WorkflowState, ctx: &PipelineContext) -
         execute_command("Format code", "cargo", &["fmt", "--all"], ctx).await
     }).await?;
 
+    // Step 2b: File size policy (fast — catches structural violations before expensive tests)
+    execute_command(
+        "File size policy",
+        "bash",
+        &["scripts/ci/check_file_size_policy.sh"],
+        ctx,
+    ).await?;
+
     // Step 3: Coverage tests
     // NOTE: Using --lib --bins --tests instead of --all-targets to exclude benchmarks.
     // Benchmarks create large DataFrames during initialization which causes SIGKILL
@@ -1164,6 +1183,9 @@ async fn run_enhanced_phase1(state: &mut WorkflowState, ctx: &PipelineContext) -
                 "-A", "clippy::unwrap_used", "-A", "clippy::expect_used", "-A", "unused-crate-dependencies",
             ]),
             ("Dependency security", "cargo", vec!["deny", "check"]),
+            ("Rustdoc link validation", "cargo", vec![
+                "doc", "--workspace", "--all-features", "--no-deps",
+            ]),
         ];
         execute_parallel_with_env(parallel_commands, &[("RUSTDOCFLAGS", "-Dwarnings")], ctx).await
     }).await?;

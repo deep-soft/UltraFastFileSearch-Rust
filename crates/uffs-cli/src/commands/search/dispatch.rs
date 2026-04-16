@@ -45,7 +45,14 @@ pub fn write_rows(rows: &[serde_json::Value], args: &[String]) -> Result<()> {
     let format = arg_val(args, "--format")
         .or_else(|| arg_val(args, "-f"))
         .unwrap_or("csv");
-    let columns = arg_val(args, "--columns").unwrap_or("all");
+    // --parity-compat implies --columns parity (matches legacy OutputConfig
+    // behaviour).
+    let parity_compat = args.iter().any(|arg| arg == "--parity-compat");
+    let columns = if parity_compat {
+        "parity"
+    } else {
+        arg_val(args, "--columns").unwrap_or("")
+    };
     let sep = arg_val(args, "--sep").unwrap_or(",");
     let quotes = arg_val(args, "--quotes").unwrap_or("\"");
     let header = arg_val(args, "--header").is_none_or(|val| val != "false" && val != "0");
@@ -106,7 +113,7 @@ pub fn write_rows(rows: &[serde_json::Value], args: &[String]) -> Result<()> {
 pub fn write_aggregations(aggregations: &[serde_json::Value], args: &[String]) -> Result<()> {
     let format = arg_val(args, "--format")
         .or_else(|| arg_val(args, "-f"))
-        .unwrap_or("table");
+        .unwrap_or("csv");
     match format {
         "json" => {
             let json = serde_json::to_string_pretty(aggregations)?;

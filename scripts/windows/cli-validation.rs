@@ -1346,6 +1346,79 @@ fn run_custom_validator(name: &str, stdout: &str, stderr: &str) -> Result<String
             Ok(format!("{} rows (shmem transparent to CLI)", rows.len()))
         }
 
+        // ── Help / version validators ────────────────────────────────────
+        "H1" => {
+            // Main help: verify structure has key sections.
+            let sections = ["SUBCOMMANDS:", "COMMON OPTIONS:", "EXAMPLES:"];
+            for section in &sections {
+                if !stdout.contains(section) {
+                    bail!("Missing section: {section}");
+                }
+            }
+            // Verify all expected subcommands are listed.
+            let subcommands = ["daemon", "mcp", "stats", "aggregate", "status"];
+            for sub in &subcommands {
+                if !stdout.contains(sub) {
+                    bail!("Missing subcommand in help: {sub}");
+                }
+            }
+            // Verify key flags are documented.
+            let key_flags = ["--drive", "--limit", "--format", "--sort", "--ext", "--columns",
+                             "--mft-file", "--data-dir", "--newer", "--older",
+                             "--type", "--min-size", "--max-size"];
+            let mut missing: Vec<&str> = Vec::new();
+            for flag in &key_flags {
+                if !stdout.contains(flag) { missing.push(flag); }
+            }
+            if !missing.is_empty() {
+                bail!("Missing flags in help: {}", missing.join(", "));
+            }
+            Ok(format!("{} sections, {} subcommands, {} flags verified",
+                sections.len(), subcommands.len(), key_flags.len()))
+        }
+        "H2" => {
+            // Daemon help: verify lifecycle actions including 'load'.
+            let actions = ["start", "status", "stats", "stop", "kill", "restart", "load"];
+            let mut missing: Vec<&str> = Vec::new();
+            for action in &actions {
+                if !stdout.contains(action) { missing.push(action); }
+            }
+            if !missing.is_empty() {
+                bail!("Missing daemon actions: {}", missing.join(", "));
+            }
+            // Verify load-specific flags are documented.
+            if !stdout.contains("--mft-file") || !stdout.contains("--data-dir") {
+                bail!("Daemon help missing --mft-file or --data-dir for load");
+            }
+            Ok(format!("{} daemon actions verified", actions.len()))
+        }
+        "H3" => {
+            // MCP help: verify server management commands.
+            let commands = ["start", "status", "stop", "kill", "restart", "reload"];
+            let mut missing: Vec<&str> = Vec::new();
+            for cmd in &commands {
+                if !stdout.contains(cmd) { missing.push(cmd); }
+            }
+            if !missing.is_empty() {
+                bail!("Missing MCP subcommands: {}", missing.join(", "));
+            }
+            Ok(format!("{} MCP subcommands verified", commands.len()))
+        }
+        "H7" => {
+            // Version: should contain "uffs" and a semver-like version string.
+            if !stdout.contains("uffs") {
+                bail!("Version output missing 'uffs': {stdout}");
+            }
+            // Check for a version pattern like "0.5.16" or similar.
+            let has_version = stdout.trim().split_whitespace()
+                .any(|word| word.chars().next().map_or(false, |c| c.is_ascii_digit())
+                    && word.contains('.'));
+            if !has_version {
+                bail!("No version number found in: {}", stdout.trim());
+            }
+            Ok(format!("version: {}", stdout.trim()))
+        }
+
         // ── Fallback — fail loudly so unimplemented validators are noticed ──
         other => {
             bail!("custom validator '{other}' not yet implemented — implement it or remove validator field")
@@ -1798,8 +1871,9 @@ fn print_results(results: &[TestResult]) {
 
     // When running a small number of tests (e.g. --tests filter), show
     // full CLI command for every test — same info shown on failure, so
-    // users can replay or inspect.
-    if total <= 10 && total > 0 {
+    // users can replay or inspect.  Skip when every test already
+    // appeared in the failure box to avoid duplicate output.
+    if total <= 10 && total > 0 && passed > 0 {
         eprintln!();
         eprintln!("  ┌─ Test Details ───────────────────────────────────────────────────────┐");
         for r in results {

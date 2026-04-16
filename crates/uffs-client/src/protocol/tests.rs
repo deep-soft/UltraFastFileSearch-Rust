@@ -886,6 +886,246 @@ fn aggregate_result_wire_exact_omitted_when_none() {
     assert!(!json.contains("values_complete"), "json: {json}");
 }
 
+// ── from_cli_args output-field regression tests ─────────────────────
+
+/// Regression: `--parity-compat` must set `output_columns` to `"parity"`
+/// and `output_parity_compat` to `Some(true)`.
+#[test]
+fn from_cli_args_parity_compat_sets_output_columns() {
+    let args: Vec<String> = vec!["*.*", "--format", "custom", "--parity-compat"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.output_columns.as_deref(),
+        Some("parity"),
+        "--parity-compat must set output_columns to parity"
+    );
+    assert_eq!(
+        params.output_parity_compat,
+        Some(true),
+        "--parity-compat must set output_parity_compat"
+    );
+}
+
+/// Regression: when no `--sep` / `--quotes` are provided, `output_separator`
+/// and `output_quote` must be `None` so the daemon uses `OutputConfig`
+/// defaults (`,` and `"`).  Previously these were `Some("")` which
+/// caused the daemon to use empty separators — fields concatenated
+/// with no delimiters.
+#[test]
+fn from_cli_args_default_output_separator_and_quote_are_none() {
+    let args: Vec<String> = vec!["*.*"].into_iter().map(String::from).collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert!(
+        params.output_separator.is_none(),
+        "output_separator must be None when --sep not provided, got {:?}",
+        params.output_separator
+    );
+    assert!(
+        params.output_quote.is_none(),
+        "output_quote must be None when --quotes not provided, got {:?}",
+        params.output_quote
+    );
+    assert!(
+        params.output_pos.is_none(),
+        "output_pos must be None when --pos not provided, got {:?}",
+        params.output_pos
+    );
+    assert!(
+        params.output_neg.is_none(),
+        "output_neg must be None when --neg not provided, got {:?}",
+        params.output_neg
+    );
+}
+
+/// Explicit `--sep` and `--quotes` must populate `Some(...)` values.
+#[test]
+fn from_cli_args_explicit_sep_and_quotes_populate_some() {
+    let args: Vec<String> = vec!["*.*", "--sep", ";", "--quotes", "'"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.output_separator.as_deref(), Some(";"));
+    assert_eq!(params.output_quote.as_deref(), Some("'"));
+}
+
+/// `--parity-compat` without explicit `--sep` / `--quotes` must leave
+/// separator and quote as `None` (daemon uses `OutputConfig` defaults).
+#[test]
+fn from_cli_args_parity_compat_preserves_default_separator() {
+    let args: Vec<String> = vec!["*.*", "--format", "custom", "--parity-compat"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert!(
+        params.output_separator.is_none(),
+        "parity-compat must not inject an empty separator"
+    );
+    assert!(
+        params.output_quote.is_none(),
+        "parity-compat must not inject an empty quote"
+    );
+}
+
+/// `--header false` must set `output_header` to `Some(false)`.
+#[test]
+fn from_cli_args_header_false() {
+    let args: Vec<String> = ["*.*", "--header", "false"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.output_header, Some(false));
+}
+
+/// `--header true` must set `output_header` to `Some(true)`.
+#[test]
+fn from_cli_args_header_true() {
+    let args: Vec<String> = ["*.*", "--header", "true"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.output_header, Some(true));
+}
+
+/// `--pos` and `--neg` must populate `output_pos` / `output_neg`.
+#[test]
+fn from_cli_args_pos_neg_explicit() {
+    let args: Vec<String> = ["*.*", "--pos", "+", "--neg", "-"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.output_pos.as_deref(), Some("+"));
+    assert_eq!(params.output_neg.as_deref(), Some("-"));
+}
+
+/// `--out myfile.csv` must set `output_file` to an absolute path
+/// (relative paths are canonicalized via `current_dir().join(...)`).
+#[test]
+fn from_cli_args_out_file() {
+    let args: Vec<String> = ["*.*", "--out", "results.csv"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    let out = params.output_file.expect("output_file must be set");
+    assert!(
+        out.ends_with("results.csv"),
+        "output_file must end with the filename, got: {out}"
+    );
+    assert!(
+        std::path::Path::new(&out).is_absolute(),
+        "output_file must be absolute, got: {out}"
+    );
+}
+
+/// `--out console` must resolve to `None` (console output, no file).
+/// Same for aliases: `con`, `term`, `terminal`.
+#[test]
+fn from_cli_args_out_console_resolves_to_none() {
+    // "console" is the only alias that explicitly maps to None in
+    // from_cli_args; other values ("con", "term", "terminal") are
+    // treated as file names — the CLI layer handles those separately.
+    let args: Vec<String> = ["*.*", "--out", "console"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert!(
+        params.output_file.is_none(),
+        "--out console must set output_file to None"
+    );
+}
+
+/// `--columns path,name,size` must set `output_columns`.
+#[test]
+fn from_cli_args_columns_explicit() {
+    let args: Vec<String> = ["*.*", "--columns", "path,name,size"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.output_columns.as_deref(), Some("path,name,size"));
+}
+
+/// `--columns all` must set `output_columns` to `"all"` (or None).
+/// The daemon's `build_output_config` passes this to
+/// `OutputConfig::with_columns` which returns `None` for `"all"`, so both are
+/// acceptable.
+#[test]
+fn from_cli_args_columns_all() {
+    let args: Vec<String> = ["*.*", "--columns", "all"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    // "all" stored as-is; OutputConfig::with_columns("all") handles it.
+    assert_eq!(params.output_columns.as_deref(), Some("all"));
+}
+
+/// `--sep TAB` must be passed through verbatim to `output_separator`.
+/// The daemon's `build_output_config` calls `OutputConfig::with_separator`
+/// which expands `"TAB"` → `"\t"`.
+#[test]
+fn from_cli_args_sep_special_names_passed_through() {
+    let args: Vec<String> = ["*.*", "--sep", "TAB"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.output_separator.as_deref(),
+        Some("TAB"),
+        "--sep TAB must be stored as 'TAB'; expansion happens in OutputConfig"
+    );
+}
+
+/// Combining all output options in a single invocation.
+#[test]
+fn from_cli_args_all_output_options_combined() {
+    let args: Vec<String> = vec![
+        "*.*",
+        "--sep",
+        ";",
+        "--quotes",
+        "'",
+        "--header",
+        "false",
+        "--pos",
+        "YES",
+        "--neg",
+        "NO",
+        "--columns",
+        "path,name,size,created",
+        "--out",
+        "dump.csv",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.output_separator.as_deref(), Some(";"));
+    assert_eq!(params.output_quote.as_deref(), Some("'"));
+    assert_eq!(params.output_header, Some(false));
+    assert_eq!(params.output_pos.as_deref(), Some("YES"));
+    assert_eq!(params.output_neg.as_deref(), Some("NO"));
+    assert_eq!(
+        params.output_columns.as_deref(),
+        Some("path,name,size,created")
+    );
+    let out = params.output_file.expect("output_file must be set");
+    assert!(
+        out.ends_with("dump.csv"),
+        "output_file must end with filename, got: {out}"
+    );
+}
+
 /// `values_complete` is false when `other_count > 0`.
 #[test]
 fn aggregate_result_wire_values_complete_false() {

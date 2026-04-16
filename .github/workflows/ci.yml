@@ -88,6 +88,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          sudo rm -rf /usr/local/share/boost /usr/local/graalvm
+          df -h /
+
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
 
@@ -153,6 +159,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          sudo rm -rf /usr/local/share/boost /usr/local/graalvm
+          df -h /
+
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
 
@@ -180,6 +192,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          sudo rm -rf /usr/local/share/boost /usr/local/graalvm
+          df -h /
 
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show

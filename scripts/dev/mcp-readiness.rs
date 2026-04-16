@@ -25,6 +25,7 @@
 //   Scenario J: Stale port occupant → kill and start fresh
 //   Scenario K: `mcp kill` cleans up stale port processes
 //   Scenario L: Daemon killed → next tool call reconnects
+//   Scenario M: Daemon load — hot-load MFT into running daemon
 //
 // Usage:
 //   rust-script scripts/dev/mcp-readiness.rs ~/uffs_data
@@ -89,12 +90,14 @@ fn ensure_fresh_release_build() -> String {
     let ws = find_workspace_root();
     let bin = ws.join("target").join("release").join("uffs");
     eprintln!("╔══════════════════════════════════════════════════════════════════╗");
-    eprintln!("║  Building fresh release binary...                                ║");
+    eprintln!("║  Building fresh release binaries (uffs + uffsmcp)...             ║");
     eprintln!("╚══════════════════════════════════════════════════════════════════╝");
     eprintln!("  Workspace: {}", ws.display());
     let start = Instant::now();
+    // Build both uffs (thin CLI) and uffsmcp (MCP server) — `uffs mcp *`
+    // delegates to `uffsmcp` so both must be present.
     let status = Command::new("cargo")
-        .args(["build", "--release", "-p", "uffs-cli"])
+        .args(["build", "--release", "-p", "uffs-cli", "-p", "uffs-mcp"])
         .current_dir(&ws).status();
     match status {
         Ok(s) if s.success() => {
@@ -289,13 +292,40 @@ fn health_ok(host: &str, port: u16) -> bool {
     http_get(host, port, "/health").is_ok_and(|b| b == "ok")
 }
 
-/// Poll /health until ready (up to `timeout`).
+/// Check /health and return diagnostic detail.
+fn health_check_detail(host: &str, port: u16) -> (bool, String) {
+    match http_get(host, port, "/health") {
+        Ok(body) if body == "ok" => (true, "ok".to_owned()),
+        Ok(body) => (false, format!("unexpected body: {body:?}")),
+        Err(err) => (false, format!("{err:#}")),
+    }
+}
+
+/// Poll /health until ready (up to `timeout`), with periodic diagnostics.
+#[allow(dead_code)]
 fn wait_for_health(host: &str, port: u16, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
+    let start = Instant::now();
+    let deadline = start + timeout;
+    let mut attempt = 0u32;
+    let mut last_detail = String::new();
     while Instant::now() < deadline {
-        if health_ok(host, port) { return true; }
+        attempt += 1;
+        let (ok, detail) = health_check_detail(host, port);
+        if ok { return true; }
+        // Print diagnostic every 5 seconds (every 20th poll at 250ms interval).
+        if attempt <= 3 || attempt % 20 == 0 || detail != last_detail {
+            let elapsed = start.elapsed().as_secs();
+            eprintln!(
+                "    [health poll #{attempt}, +{elapsed}s] {host}:{port} → {detail}"
+            );
+            last_detail = detail;
+        }
         std::thread::sleep(Duration::from_millis(250));
     }
+    let elapsed = start.elapsed().as_secs();
+    eprintln!(
+        "    [health TIMEOUT after {attempt} attempts, {elapsed}s] last: {last_detail}"
+    );
     false
 }
 
@@ -437,54 +467,42 @@ impl Runner {
 
     /// Start the MCP HTTP server via `uffs mcp start`.
     ///
-    /// `uffs mcp start` spawns a background `uffs mcp serve` process.
-    /// On Windows, `.output()` blocks forever because the grandchild
-    /// inherits the stdout/stderr pipe handles.  We use `.spawn()` with
-    /// piped stdout and read with a timeout instead.
+    /// `uffs mcp start` already handles:
+    ///   1. Auto-starting the daemon if needed
+    ///   2. Spawning `uffs mcp serve` as a background process
+    ///   3. Polling /health until the server is ready
+    ///   4. Exiting with code 0 on success, non-zero on failure
+    ///
+    /// We simply run it with `.status()` (inherits console stdio — no
+    /// pipe handle inheritance issues on Windows) and check the exit code.
     fn mcp_start(&self) -> Result<String> {
         let port_str = self.port.to_string();
         let mut args: Vec<&str> = vec!["mcp", "start", "--port", &port_str, "--bind", &self.host];
         args.extend(self.source_args());
 
-        let mut child = Command::new(&self.binary)
+        eprintln!("    [mcp_start] {} {}", self.binary, args.join(" "));
+
+        let status = Command::new(&self.binary)
             .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .status()
             .with_context(|| format!("exec: {} {}", self.binary, args.join(" ")))?;
 
-        // `mcp start` itself polls /health and prints when ready, but it
-        // may take 2–3 min on cold starts.  We don't need to wait for the
-        // CLI to finish — just wait for /health to succeed.
-        // Give the child a moment to print its initial output.
-        std::thread::sleep(Duration::from_millis(500));
-
-        // Allow up to 3.5 min for cold starts with large indices.
-        if !wait_for_health(&self.host, self.port, Duration::from_secs(210)) {
-            // Try to capture whatever output the child produced.
-            let _ = child.kill();
-            let output = child.wait_with_output().ok();
-            let stdout = output.as_ref()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-            let stderr = output.as_ref()
-                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
-                .unwrap_or_default();
+        if !status.success() {
             bail!(
-                "MCP HTTP server didn't become healthy within 3.5 min\n\
-                 stdout: {stdout}\n\
-                 stderr: {stderr}"
+                "`uffs mcp start` exited with {status}\n\
+                 Run manually with logging:\n  \
+                 UFFS_LOG=debug UFFS_LOG_FILE=/tmp/mcp.log {} {}",
+                self.binary, args.join(" ")
             );
         }
 
-        // Server is healthy — detach from the child process.  We don't
-        // need its output; its work (spawning the background server) is done.
-        // Don't wait — the child might still be blocked on its own health
-        // polling or on handle inheritance from the grandchild.
-        //
-        // Dropping the Child on Unix/Windows is fine: it won't kill the
-        // process, just detaches our handle.
-        drop(child);
+        // Quick sanity: confirm /health is actually up.
+        let (ok, detail) = health_check_detail(&self.host, self.port);
+        if !ok {
+            bail!(
+                "`uffs mcp start` exited OK but /health check failed: {detail}"
+            );
+        }
 
         Ok(format!("healthy on {}:{}", self.host, self.port))
     }
@@ -513,6 +531,19 @@ impl Runner {
         let out = Command::new(&self.binary).args(args).output()
             .with_context(|| format!("exec: {} {}", self.binary, args.join(" ")))?;
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    /// Run a `uffs` CLI command, return combined stdout+stderr and exit code.
+    fn run_full(&self, args: &[&str]) -> Result<(String, bool)> {
+        let out = Command::new(&self.binary).args(args).output()
+            .with_context(|| format!("exec: {} {}", self.binary, args.join(" ")))?;
+        let mut combined = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if !stderr.is_empty() {
+            combined.push('\n');
+            combined.push_str(&stderr);
+        }
+        Ok((combined, out.status.success()))
     }
 
     fn ensure_daemon_stopped(&self) {
@@ -548,6 +579,13 @@ impl Runner {
         // or "Daemon is not running." when not.
         (out.contains("daemon pid") || out.contains("ready") || out.contains("loading"))
             && !out.contains("not running")
+    }
+
+    /// Run `uffs daemon load` with given args, return stdout.
+    fn daemon_load(&self, extra_args: &[&str]) -> Result<String> {
+        let mut args = vec!["daemon", "load"];
+        args.extend_from_slice(extra_args);
+        self.run_ok(&args)
     }
 
     /// Kill everything — daemon + MCP gateway.
@@ -1027,6 +1065,286 @@ fn scenario_l(r: &mut Runner) {
     r.step("L7  Stop", |r| { r.mcp_stop()?; Ok(String::new()) });
 }
 
+// ── Scenario M: Daemon load — hot-load MFT into running daemon ─────────────
+
+/// Discover `drive_*` subdirectories in a data-dir, returning
+/// `(letter, mft_file_path)` pairs sorted by letter.
+fn discover_drive_mft_files(data_dir: &str) -> Vec<(char, String)> {
+    let dir = std::path::Path::new(data_dir);
+    if !dir.is_dir() { return vec![]; }
+
+    const PRIORITY: &[&str] = &["iocp", "uffs", "bin", "raw", "mft"];
+
+    let mut results: Vec<(char, String)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let letter = name.strip_prefix("drive_")?.chars().next()?;
+            if !letter.is_ascii_alphabetic() || !entry.path().is_dir() {
+                return None;
+            }
+            // Find best MFT file by extension priority.
+            let files: Vec<std::path::PathBuf> = std::fs::read_dir(entry.path())
+                .ok()?
+                .flatten()
+                .map(|fe| fe.path())
+                .filter(|fp| fp.is_file())
+                .collect();
+            for ext in PRIORITY {
+                if let Some(path) = files.iter().find(|fp| {
+                    fp.extension()
+                        .and_then(|os| os.to_str())
+                        .is_some_and(|fe| fe.eq_ignore_ascii_case(ext))
+                }) {
+                    return Some((
+                        letter.to_ascii_uppercase(),
+                        path.to_string_lossy().into_owned(),
+                    ));
+                }
+            }
+            None
+        })
+        .collect();
+    results.sort_by_key(|(letter, _)| *letter);
+    results
+}
+
+/// Parse drive count and individual drive letters from `uffs daemon status`.
+///
+/// The status output format is:
+/// ```text
+///   Drives:      7 loaded (25,846,853 records)
+///     C:  3,428,455 records
+///     D:  7,065,539 records
+/// ```
+///
+/// Returns `(count_from_header, vec_of_drive_letters)`.
+fn parse_drives_from_status(status_output: &str) -> (usize, Vec<char>) {
+    let mut header_count: usize = 0;
+    let mut letters: Vec<char> = Vec::new();
+
+    for line in status_output.lines() {
+        let trimmed = line.trim();
+
+        // Parse "Drives:      N loaded ..." header.
+        if let Some(rest) = trimmed.strip_prefix("Drives:") {
+            let rest = rest.trim();
+            if let Some(num_str) = rest.split_whitespace().next() {
+                if let Ok(count) = num_str.parse::<usize>() {
+                    header_count = count;
+                }
+            }
+            continue;
+        }
+
+        // Parse individual drive lines like "  C: —  3,428,455 records".
+        // After trimming: starts with a single letter, then `:`.
+        if trimmed.len() >= 2 {
+            let mut chars = trimmed.chars();
+            if let Some(letter) = chars.next() {
+                if letter.is_ascii_alphabetic() && chars.next() == Some(':') {
+                    letters.push(letter.to_ascii_uppercase());
+                }
+            }
+        }
+    }
+
+    // Prefer the counted letters; fall back to header count.
+    if letters.is_empty() && header_count > 0 {
+        (header_count, letters)
+    } else {
+        (letters.len(), letters)
+    }
+}
+
+fn scenario_m(r: &mut Runner) {
+    println!("\n{}", "── Scenario M: Daemon load — hot-load MFT ──".cyan().bold());
+
+    // Discover available drives for incremental load testing.
+    let drive_mft_files = if r.source_flag == Some("--data-dir") {
+        discover_drive_mft_files(&r.source_path)
+    } else {
+        vec![]
+    };
+    let can_test_incremental = drive_mft_files.len() >= 2;
+
+    if can_test_incremental {
+        let (first, first_mft) = &drive_mft_files[0];
+        let (second, second_mft) = &drive_mft_files[1];
+        let first = *first;
+        let second = *second;
+        let first_mft = first_mft.clone();
+        let second_mft = second_mft.clone();
+
+        println!(
+            "    (found {} drives in data-dir: {} — will test incremental load: {} then {})",
+            drive_mft_files.len(),
+            drive_mft_files.iter().map(|(ch, _)| format!("{ch}:")).collect::<Vec<_>>().join(", "),
+            first, second,
+        );
+
+        // M1: Kill everything, start daemon with FIRST drive only (explicit --mft-file).
+        r.step("M1  Start daemon with single drive", |r| {
+            r.kill_all();
+            let args = vec!["daemon", "start", "--mft-file", &first_mft];
+            r.run_ok(&args)?;
+            if !r.is_daemon_running() { bail!("daemon not running"); }
+            Ok(format!("started with {first}: via --mft-file"))
+        });
+
+        // M2: Verify exactly 1 drive loaded.
+        r.step("M2  Verify exactly 1 drive loaded", |r| {
+            let status = r.daemon_status_text();
+            let (count, letters) = parse_drives_from_status(&status);
+            if count != 1 {
+                bail!(
+                    "expected exactly 1 drive, got {count} (letters: {})\n{status}",
+                    letters.iter().map(|ch| format!("{ch}:")).collect::<Vec<_>>().join(", ")
+                );
+            }
+            if !letters.is_empty() && !letters.contains(&first) {
+                bail!("expected drive {first}, found {:?}: {status}", letters);
+            }
+            if letters.contains(&second) {
+                bail!("drive {second} already loaded — expected only {first}: {status}");
+            }
+            Ok(format!("exactly 1 drive: {first}:"))
+        });
+
+        // M3: Hot-load second drive via --mft-file.
+        r.step("M3  Hot-load second drive", |r| {
+            let out = r.daemon_load(&["--mft-file", &second_mft])?;
+            let lower = out.to_lowercase();
+            if lower.contains("error") && !lower.contains("already") {
+                bail!("load failed: {out}");
+            }
+            // Should report the second drive as newly loaded (not "already loaded").
+            if lower.contains("already loaded") {
+                bail!("second drive was already loaded — should be new: {out}");
+            }
+            if !lower.contains("loaded") {
+                bail!("expected load confirmation: {out}");
+            }
+            Ok(format!("loaded drive {second}"))
+        });
+
+        // M4: Verify exactly 2 drives now loaded.
+        r.step("M4  Verify exactly 2 drives loaded", |r| {
+            let status = r.daemon_status_text();
+            let (count, letters) = parse_drives_from_status(&status);
+            if count != 2 {
+                bail!(
+                    "expected 2 drives, got {count} (letters: {})\n{status}",
+                    letters.iter().map(|ch| format!("{ch}:")).collect::<Vec<_>>().join(", ")
+                );
+            }
+            if !letters.contains(&first) {
+                bail!("status missing drive {first}: {status}");
+            }
+            if !letters.contains(&second) {
+                bail!("status missing drive {second}: {status}");
+            }
+            Ok(format!("exactly 2 drives: {first}: + {second}:"))
+        });
+
+        // M5: Search across both drives to prove unified index.
+        r.step("M5  Search spans both drives", |r| {
+            let out = r.run_ok(&["*", "--limit", "5"])?;
+            if out.trim().is_empty() { bail!("search returned nothing"); }
+            Ok(format!("{} result line(s)", out.lines().count()))
+        });
+
+        // M6: Reload second drive → "already loaded" (idempotent).
+        r.step("M6  Reload same drive → already loaded", |r| {
+            let out = r.daemon_load(&["--mft-file", &second_mft])?;
+            let lower = out.to_lowercase();
+            if !lower.contains("already loaded") && !lower.contains("skipped") {
+                bail!("expected 'already loaded': {out}");
+            }
+            Ok(String::new())
+        });
+    } else if r.source_flag == Some("--mft-file") {
+        // Single MFT file: test idempotent reload.
+        println!("    (source is single MFT file — testing idempotent reload only)");
+
+        r.step("M1  Start daemon with MFT file", |r| {
+            r.kill_all();
+            r.ensure_daemon_running()?;
+            if !r.is_daemon_running() { bail!("daemon not running"); }
+            Ok(String::new())
+        });
+
+        r.step("M2  Reload same MFT → already loaded", |r| {
+            let out = r.daemon_load(&r.source_args())?;
+            let lower = out.to_lowercase();
+            if lower.contains("error") && !lower.contains("already") {
+                bail!("unexpected error: {out}");
+            }
+            if !lower.contains("already loaded") && !lower.contains("skipped")
+                && !lower.contains("loaded")
+            {
+                bail!("expected load confirmation: {out}");
+            }
+            Ok(out.lines().last().unwrap_or("").trim().to_owned())
+        });
+    } else {
+        // Live NTFS (no --data-dir, no --mft-file): `daemon load` only supports
+        // file-based sources, so skip idempotent reload and go straight to
+        // error handling tests.
+        println!("    (live NTFS mode — no file source to reload, testing error handling only)");
+
+        r.step("M1  Start daemon (live drives)", |r| {
+            r.kill_all();
+            r.ensure_daemon_running()?;
+            if !r.is_daemon_running() { bail!("daemon not running"); }
+            Ok(String::new())
+        });
+    }
+
+    // Error handling tests — always run regardless of incremental capability.
+
+    // M7: `daemon load` with no args → informative error.
+    r.step("M7  `daemon load` no args → error message", |r| {
+        let (out, success) = r.run_full(&["daemon", "load"])?;
+        let lower = out.to_lowercase();
+        if success {
+            bail!("expected non-zero exit, but command succeeded: {out}");
+        }
+        if !lower.contains("nothing to load") && !lower.contains("provide")
+            && !lower.contains("mft-file") {
+            bail!("expected usage hint: {out}");
+        }
+        Ok(String::new())
+    });
+
+    // M8: `daemon load --mft-file <bogus>` → error reported (not a crash).
+    r.step("M8  `daemon load --mft-file /nonexistent` → daemon survives", |r| {
+        let (out, _success) = r.run_full(&["daemon", "load", "--mft-file", "/nonexistent/fake.bin"])?;
+        if !r.is_daemon_running() {
+            bail!("daemon crashed after bad load: {out}");
+        }
+        Ok(out.lines().filter(|l| !l.is_empty()).last().unwrap_or("").trim().to_owned())
+    });
+
+    // M9: Final health check — search still works.
+    r.step("M9  Daemon still healthy after all loads", |r| {
+        if !r.is_daemon_running() { bail!("daemon not running"); }
+        let out = r.run_ok(&["*", "--limit", "1"])?;
+        if out.trim().is_empty() { bail!("search returned nothing — index may be broken"); }
+        Ok(String::new())
+    });
+
+    // M10: Cleanup.
+    r.step("M10 Stop daemon", |r| {
+        r.daemon_kill()?;
+        r.ensure_daemon_stopped();
+        Ok(String::new())
+    });
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
@@ -1054,6 +1372,26 @@ fn main() -> Result<()> {
         },
     };
 
+    // ── Preflight: verify companion binaries exist ──────────────────
+    // `uffs mcp *` delegates to the standalone `uffsmcp` binary.
+    // Fail immediately with a clear message instead of waiting 3.5 min
+    // for a health timeout.
+    {
+        let uffs_path = std::path::Path::new(&binary);
+        let mcp_name = if cfg!(windows) { "uffsmcp.exe" } else { "uffsmcp" };
+        let mcp_path = uffs_path.parent()
+            .map(|dir| dir.join(mcp_name))
+            .unwrap_or_else(|| std::path::PathBuf::from(mcp_name));
+        if !mcp_path.exists() {
+            bail!(
+                "Companion binary `{mcp_name}` not found at {}\n\
+                 `uffs mcp *` delegates to `{mcp_name}` which must sit alongside `uffs`.\n\
+                 Rebuild and deploy: just build-local   (or: just use)",
+                mcp_path.display(),
+            );
+        }
+    }
+
     println!("  binary:    {}", binary);
     println!("  port:      {}", port);
     match source_flag {
@@ -1075,6 +1413,7 @@ fn main() -> Result<()> {
     scenario_j(&mut r);
     scenario_k(&mut r);
     scenario_l(&mut r);
+    scenario_m(&mut r);
 
     // Cleanup.
     r.kill_all();

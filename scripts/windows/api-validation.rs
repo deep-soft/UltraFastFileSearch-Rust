@@ -600,7 +600,13 @@ fn run_tests(sock: &str, specs: Vec<TestSpec>, args: &ScriptArgs) -> Vec<TestRes
                         full.extend(cli_parts);
                     }
                     full.iter()
-                        .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() })
+                        .map(|a| {
+                            if a.contains(' ') || a.contains('*') || a.contains('>') || a.contains('<') {
+                                format!("\"{a}\"")
+                            } else {
+                                a.clone()
+                            }
+                        })
                         .collect::<Vec<_>>()
                         .join(" ")
                 };
@@ -2441,8 +2447,9 @@ fn main() {
 
     // When running a small number of tests (e.g. --tests filter), show
     // full CLI + RPC details for every test — same info that is shown on
-    // failure, so users can replay or inspect.
-    if total <= 10 && total > 0 {
+    // failure, so users can replay or inspect.  Skip when every test
+    // already appeared in the failure box to avoid duplicate output.
+    if total <= 10 && total > 0 && passed > 0 {
         eprintln!();
         eprintln!("  ┌─ Test Details ───────────────────────────────────────────────────────┐");
         for r in &results {

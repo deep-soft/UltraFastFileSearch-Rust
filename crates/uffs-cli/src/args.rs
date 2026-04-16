@@ -79,6 +79,17 @@ pub enum DaemonAction {
     Kill,
     /// Stop then restart.
     Restart,
+    /// Hot-load additional MFT file(s) or drive(s) into a running daemon.
+    Load {
+        /// Raw MFT file(s) to hot-load.
+        mft_file: Vec<PathBuf>,
+        /// Data directory — discover and load a specific drive from it.
+        data_dir: Option<PathBuf>,
+        /// Drive letter(s) to load (Windows live only).
+        drives: Vec<char>,
+        /// Skip cache when loading.
+        no_cache: bool,
+    },
 }
 
 /// Parse `uffs daemon <action> [flags...]` from raw args.
@@ -139,8 +150,49 @@ pub fn parse_daemon_action(args: &[String]) -> Result<DaemonAction, anyhow::Erro
         "stop" => Ok(DaemonAction::Stop),
         "kill" => Ok(DaemonAction::Kill),
         "restart" => Ok(DaemonAction::Restart),
+        "load" => {
+            let mut mft_file = Vec::new();
+            let mut data_dir = None;
+            let mut drives = Vec::new();
+            let mut no_cache = false;
+            let rest = args.get(1..).unwrap_or_default();
+            let mut iter = rest.iter();
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
+                    "--mft-file" => {
+                        if let Some(val) = iter.next() {
+                            for part in val.split(',') {
+                                mft_file.push(PathBuf::from(part.trim()));
+                            }
+                        }
+                    }
+                    "--data-dir" => {
+                        if let Some(val) = iter.next() {
+                            data_dir = Some(val.into());
+                        }
+                    }
+                    "--drive" | "-d" => {
+                        if let Some(val) = iter.next() {
+                            for part in val.split(',') {
+                                if let Ok(letter) = parse_drive_letter(part) {
+                                    drives.push(letter);
+                                }
+                            }
+                        }
+                    }
+                    "--no-cache" => no_cache = true,
+                    _ => {}
+                }
+            }
+            Ok(DaemonAction::Load {
+                mft_file,
+                data_dir,
+                drives,
+                no_cache,
+            })
+        }
         other => anyhow::bail!(
-            "Unknown daemon action: '{other}'. Use: start, status, stats, stop, kill, restart"
+            "Unknown daemon action: '{other}'. Use: start, status, stats, stop, kill, restart, load"
         ),
     }
 }
@@ -166,7 +218,7 @@ EXAMPLES:
 SUBCOMMANDS:
   stats             Show filesystem statistics
   aggregate|agg     Run aggregate analytics
-  daemon            Manage the UFFS daemon
+  daemon            Manage the UFFS daemon (start/stop/load/status)
   mcp               Manage the UFFS MCP server
   status            Show combined system status
 
@@ -205,4 +257,93 @@ pub fn print_help() {
 #[expect(clippy::print_stdout, reason = "intentional version output")]
 pub fn print_version() {
     println!("uffs {}", env!("CARGO_PKG_VERSION"));
+}
+
+// ── Subcommand help texts ─────────────────────────────────────────────
+
+/// Help text for `uffs daemon`.
+const DAEMON_HELP: &str = "\
+uffs daemon — Manage the UFFS background daemon
+
+USAGE:  uffs daemon <ACTION> [OPTIONS]
+
+ACTIONS:
+  start              Start the daemon
+    --data-dir PATH    Data directory with drive_* subdirs
+    --mft-file PATH    Raw MFT file(s), comma-separated
+    --no-cache         Skip cached index, re-parse MFT
+  status             Show daemon status (running, drives, PID)
+  stats              Show performance statistics
+  stop               Gracefully stop the daemon
+  kill               Hard kill + remove PID/socket files
+  restart            Stop then restart (re-loads all indices)
+  load               Hot-load additional MFT file(s) into running daemon
+    --mft-file PATH    Raw MFT file(s) to load
+    --data-dir PATH    Data directory with drive_* subdirs
+    --drive LETTER     Drive letter(s) to load from data-dir
+    --no-cache         Skip cache when loading
+";
+
+/// Print daemon help.
+#[expect(clippy::print_stdout, reason = "intentional help output")]
+pub fn print_daemon_help() {
+    print!("{DAEMON_HELP}");
+}
+
+/// Help text for `uffs stats`.
+const STATS_HELP: &str = "\
+uffs stats — Show filesystem statistics
+
+USAGE:  uffs stats [PATH] [OPTIONS]
+
+ARGUMENTS:
+  [PATH]               Index file path (optional; omit to query daemon)
+
+OPTIONS:
+  --top <N>            Show top N largest files (default: 10)
+  --data-dir <PATH>    Data directory with drive_* subdirs
+  --mft-file <PATH>    Raw MFT file(s)
+";
+
+/// Print stats help.
+#[expect(clippy::print_stdout, reason = "intentional help output")]
+pub fn print_stats_help() {
+    print!("{STATS_HELP}");
+}
+
+/// Help text for `uffs aggregate`.
+const AGGREGATE_HELP: &str = "\
+uffs aggregate — Run aggregate analytics on the filesystem index
+
+USAGE:  uffs aggregate <PRESET> [OPTIONS]
+
+ARGUMENTS:
+  <PRESET>             overview, by_type, by_extension, by_drive,
+                       by_size, by_age, count
+
+OPTIONS:
+  --format <FMT>       Output format: table (default), csv, json
+  --data-dir <PATH>    Data directory with drive_* subdirs
+  --mft-file <PATH>    Raw MFT file(s)
+  --agg-cursor <TOK>   Continue from previous page
+  --agg-page-size <N>  Max buckets per page
+";
+
+/// Print aggregate help.
+#[expect(clippy::print_stdout, reason = "intentional help output")]
+pub fn print_aggregate_help() {
+    print!("{AGGREGATE_HELP}");
+}
+
+/// Help text for `uffs status`.
+const STATUS_HELP: &str = "\
+uffs status — Show combined system status (daemon + MCP HTTP server)
+
+USAGE:  uffs status
+";
+
+/// Print status help.
+#[expect(clippy::print_stdout, reason = "intentional help output")]
+pub fn print_status_help() {
+    print!("{STATUS_HELP}");
 }

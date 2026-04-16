@@ -46,7 +46,13 @@ fn run() -> Result<()> {
         "aggregate" | "agg" => run_aggregate(subcmd_args)?,
         "daemon" => run_daemon(subcmd_args)?,
         "mcp" => commands::mcp_mgmt::mcp_from_args(subcmd_args)?,
-        "status" => commands::system_status::system_status(),
+        "status" => {
+            if subcmd_args.iter().any(|arg| arg == "--help" || arg == "-h") {
+                args::print_status_help();
+            } else {
+                commands::system_status::system_status();
+            }
+        }
         _ => {
             // Default: search — forward ALL args after "uffs" to daemon.
             run_search(raw_args.get(1..).unwrap_or_default())?;
@@ -91,7 +97,6 @@ fn run_search(args: &[String]) -> Result<()> {
         .with_context(|| "Daemon search_cli failed")?;
     let ipc_ms = t_search.elapsed().as_millis();
 
-    let rows = response.get("rows").and_then(serde_json::Value::as_array);
     let aggregations = response
         .get("aggregations")
         .and_then(serde_json::Value::as_array);
@@ -99,6 +104,33 @@ fn run_search(args: &[String]) -> Result<()> {
         .get("duration_ms")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0_u64);
+
+    // D5.1: When the daemon used shmem for large result sets, read from
+    // the shmem file instead of the (empty) inline `rows` array.
+    let shmem_rows: Option<Vec<serde_json::Value>> = response
+        .get("shmem_path")
+        .and_then(serde_json::Value::as_str)
+        .map(|path_str| {
+            let shmem_path = std::path::Path::new(path_str);
+            let shmem_resp = uffs_client::shmem::read_search_results(shmem_path)
+                .with_context(|| format!("Failed to read shmem results from {path_str}"))
+                .ok();
+            // Best-effort cleanup of the shmem file.
+            let _ignored = std::fs::remove_file(shmem_path);
+            shmem_resp
+                .map(|resp| {
+                    resp.rows
+                        .iter()
+                        .filter_map(|row| serde_json::to_value(row).ok())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        });
+
+    let inline_rows = response.get("rows").and_then(serde_json::Value::as_array);
+    let rows: Option<&[serde_json::Value]> = shmem_rows
+        .as_deref()
+        .or_else(|| inline_rows.map(Vec::as_slice));
 
     let profile = args
         .iter()
@@ -113,14 +145,18 @@ fn run_search(args: &[String]) -> Result<()> {
             eprintln!("  Connect:         {connect_ms:>6} ms");
             eprintln!("  Await ready:     {ready_ms:>6} ms");
             eprintln!("  Search (IPC):    {ipc_ms:>6} ms  (daemon: {duration_ms} ms)");
-            let row_count = rows.map_or(0, Vec::len);
+            let row_count = rows.map_or(0, <[serde_json::Value]>::len);
             eprintln!("  Rows returned:   {row_count:>6}");
         }
     }
 
-    // Output rows (daemon already wrote to file via OPT-4 if --out was set).
-    if let Some(row_arr) = rows.filter(|arr| !arr.is_empty()) {
-        commands::search::dispatch::write_rows(row_arr, args)?;
+    // OPT-4: When --out is specified, the daemon writes the file directly
+    // and returns an empty `rows` array.  Don't overwrite the file.
+    let has_out = args.iter().any(|arg| arg == "--out");
+    let daemon_wrote_file = has_out && rows.is_none_or(<[serde_json::Value]>::is_empty);
+
+    if !daemon_wrote_file && let Some(row_slice) = rows {
+        commands::search::dispatch::write_rows(row_slice, args)?;
     }
 
     // Output aggregations if present.
@@ -173,6 +209,10 @@ fn extract_spawn_args(args: &[String]) -> Vec<String> {
 
 /// Handle `uffs stats [path] [--top N] [--data-dir ...] [--mft-file ...]`.
 fn run_stats(args: &[String]) -> Result<()> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        args::print_stats_help();
+        return Ok(());
+    }
     // Simple arg extraction for stats subcommand.
     let mut path: Option<std::path::PathBuf> = None;
     let mut top: u32 = 10;
@@ -231,6 +271,10 @@ fn run_stats(args: &[String]) -> Result<()> {
 
 /// Handle `uffs aggregate|agg <preset> [--format ...] [--data-dir ...]`.
 fn run_aggregate(args: &[String]) -> Result<()> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        args::print_aggregate_help();
+        return Ok(());
+    }
     // Extract the preset (first positional arg).
     let preset = args
         .iter()
@@ -250,6 +294,11 @@ fn run_aggregate(args: &[String]) -> Result<()> {
         "--limit".to_owned(),
         "0".to_owned(),
     ];
+    // Default to table format for `uffs agg` unless user specifies --format.
+    let has_format = args.iter().any(|arg| arg == "--format" || arg == "-f");
+    if !has_format {
+        synth_args.extend(["--format".to_owned(), "table".to_owned()]);
+    }
     // Forward all flags (skip the preset positional).
     for arg in args {
         if arg == preset {
@@ -262,6 +311,10 @@ fn run_aggregate(args: &[String]) -> Result<()> {
 
 /// Handle `uffs daemon <action> [flags...]`.
 fn run_daemon(args: &[String]) -> Result<()> {
+    if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        args::print_daemon_help();
+        return Ok(());
+    }
     let action = args::parse_daemon_action(args)?;
     commands::daemon_mgmt::daemon(&action)
 }

@@ -29,6 +29,17 @@ env:
   CARGO_BUILD_JOBS: 2
 
 jobs:
+  file-size-policy:
+    name: Tier 2 / File Size Policy
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Enforce file size policy
+        run: bash scripts/ci/check_file_size_policy.sh
+
   coverage:
     name: Tier 2 / Coverage
     runs-on: ubuntu-latest

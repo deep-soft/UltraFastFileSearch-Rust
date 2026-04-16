@@ -38,6 +38,12 @@ pub fn daemon(action: &DaemonAction) -> Result<()> {
             Ok(())
         }
         DaemonAction::Restart => daemon_restart(),
+        DaemonAction::Load {
+            mft_file,
+            data_dir,
+            drives,
+            no_cache,
+        } => daemon_load(mft_file, data_dir.as_deref(), drives, *no_cache),
     }
 }
 
@@ -360,4 +366,157 @@ fn daemon_restart() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// `uffs daemon load` — hot-load MFT file(s) into a running daemon.
+///
+/// Resolves data sources the same way `daemon start` does, but sends
+/// them to the running daemon via the `load_drive` IPC method instead
+/// of spawning a new process.
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn daemon_load(
+    mft_files: &[std::path::PathBuf],
+    data_dir: Option<&std::path::Path>,
+    drives: &[char],
+    no_cache: bool,
+) -> Result<()> {
+    let Ok(mut client) = UffsClientSync::connect_raw() else {
+        println!("Daemon is not running. Start it first with `uffs daemon start`.");
+        return Ok(());
+    };
+
+    // Collect MFT file paths to send to the daemon.
+    let mut paths: Vec<String> = Vec::new();
+
+    // Direct --mft-file arguments.
+    for mft_path in mft_files {
+        paths.push(mft_path.to_string_lossy().into_owned());
+    }
+
+    // Resolve --data-dir (optionally filtered by --drive letters).
+    if let Some(dir) = data_dir {
+        let drive_subdirs = resolve_drive_subdirs(dir, drives);
+        for mft_path in &drive_subdirs {
+            paths.push(mft_path.to_string_lossy().into_owned());
+        }
+    }
+
+    if paths.is_empty() {
+        anyhow::bail!(
+            "Nothing to load. Provide --mft-file <path>, --data-dir <path>, \
+             or --data-dir <path> --drive <letter>."
+        );
+    }
+
+    println!("Loading {} MFT file(s)...", paths.len());
+    for path in &paths {
+        println!("  → {path}");
+    }
+
+    let resp = client
+        .load_drive(&paths, no_cache)
+        .with_context(|| "load_drive IPC failed")?;
+
+    if !resp.loaded.is_empty() {
+        println!(
+            "Loaded: {}",
+            resp.loaded
+                .iter()
+                .map(|ch| format!("{ch}:"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !resp.already_loaded.is_empty() {
+        println!(
+            "Already loaded (skipped): {}",
+            resp.already_loaded
+                .iter()
+                .map(|ch| format!("{ch}:"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    for err_msg in &resp.errors {
+        println!("Error: {err_msg}");
+    }
+
+    Ok(())
+}
+
+/// Discover MFT files in `data_dir/drive_*` subdirectories.
+///
+/// If `drives` is non-empty, only look in `drive_c`, `drive_d`, etc. for
+/// the specified letters.  Otherwise, scan all `drive_*` subdirs.
+///
+/// Returns the best MFT file path from each matching subdirectory.
+#[expect(clippy::print_stderr, reason = "CLI diagnostic warning")]
+fn resolve_drive_subdirs(data_dir: &std::path::Path, drives: &[char]) -> Vec<std::path::PathBuf> {
+    let mut results = Vec::new();
+
+    let entries = match std::fs::read_dir(data_dir) {
+        Ok(iter) => iter,
+        Err(err) => {
+            eprintln!(
+                "Warning: cannot read data-dir {}: {err}",
+                data_dir.display()
+            );
+            return results;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|osn| osn.to_str()) else {
+            continue;
+        };
+        // Match `drive_c`, `drive_d`, etc.
+        let Some(letter_str) = name.strip_prefix("drive_") else {
+            continue;
+        };
+        let Some(letter) = letter_str.chars().next().filter(char::is_ascii_alphabetic) else {
+            continue;
+        };
+
+        // If specific drives requested, skip others.
+        if !drives.is_empty() && !drives.iter().any(|dr| dr.eq_ignore_ascii_case(&letter)) {
+            continue;
+        }
+
+        // Find the best MFT file in this subdir (prefer .iocp > .uffs > .bin > .raw).
+        if let Some(best) = find_best_mft_in_dir(&path) {
+            results.push(best);
+        }
+    }
+
+    results
+}
+
+/// Find the best MFT file in a directory by extension preference.
+///
+/// Preference order: `.iocp` > `.uffs` > `.bin` > `.raw` > `.mft`.
+fn find_best_mft_in_dir(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    const PRIORITY: &[&str] = &["iocp", "uffs", "bin", "raw", "mft"];
+
+    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+
+    for ext in PRIORITY {
+        if let Some(path) = entries.iter().find(|path| {
+            path.extension()
+                .and_then(|osn| osn.to_str())
+                .is_some_and(|file_ext| file_ext.eq_ignore_ascii_case(ext))
+        }) {
+            return Some(path.clone());
+        }
+    }
+
+    None
 }

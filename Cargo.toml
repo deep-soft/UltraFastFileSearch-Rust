@@ -41,7 +41,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.5.13"
+version = "0.5.20"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
@@ -92,6 +92,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Pipes",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_System_Time",
     "Win32_System_Wmi",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",

@@ -33,7 +33,7 @@ path = "src/bin/http_gateway.rs"
 required-features = ["streamable-http"]
 
 [features]
-default = []
+default = ["streamable-http"]
 streamable-http = [
     "rmcp/transport-streamable-http-server",
     "dep:axum",

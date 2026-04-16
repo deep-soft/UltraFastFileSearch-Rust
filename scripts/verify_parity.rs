@@ -148,14 +148,17 @@ fn main() {
 
 /// Ensure a fresh release build exists (macOS only).
 ///
-/// Runs `cargo build --release` from the workspace root before verification
-/// to guarantee the binary matches the current source code.
+/// Builds both `uffs` (thin CLI) and `uffsd` (daemon) explicitly.
+/// A workspace-wide `cargo build --release` can sometimes skip `uffs-daemon`
+/// when cargo's fingerprint cache thinks it's up-to-date (especially with
+/// sccache).  Building both packages explicitly avoids stale-binary issues
+/// where the CLI sends `search_cli` but the daemon doesn't recognise it.
 #[cfg(target_os = "macos")]
 fn ensure_fresh_release_build() {
     let workspace_root = find_workspace_root();
 
     println!("╔══════════════════════════════════════════════════════════════════╗");
-    println!("║  Building fresh release binary (cargo build --release)...        ║");
+    println!("║  Building fresh release binaries (uffs + uffsd)...              ║");
     println!("╚══════════════════════════════════════════════════════════════════╝");
     println!();
     println!("Workspace: {}", workspace_root.display());
@@ -163,8 +166,10 @@ fn ensure_fresh_release_build() {
 
     let start_time = Instant::now();
 
+    // Build both packages explicitly — workspace-wide builds can miss uffs-daemon
+    // due to cargo fingerprint/sccache caching issues.
     let status = Command::new("cargo")
-        .args(["build", "--release"])
+        .args(["build", "--release", "-p", "uffs-cli", "-p", "uffs-daemon"])
         .current_dir(&workspace_root)
         .status();
 

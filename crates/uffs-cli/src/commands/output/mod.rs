@@ -6,11 +6,14 @@
 //! Formats `SearchRow` (from the daemon protocol) directly — no polars,
 //! no `DisplayRow`, no `DataFrame`.  This is the thin-client output path.
 
+mod parity;
+
 use core::time::Duration;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use anyhow::{Context, Result};
+use parity::{write_legacy_drive_footer, write_parity};
 use serde_json::Value;
 
 // ── Value extraction helpers ───────────────────────────────────────────
@@ -95,7 +98,10 @@ pub fn write_native_results(
     let parity_ctx = ParityContext {
         pos,
         neg,
-        tz_offset_secs: tz_offset.map_or(0_i32, |hours| hours * 3_600_i32),
+        tz_offset_secs: tz_offset.map_or_else(
+            || *LOCAL_TZ_OFFSET_SECS,
+            |hours| hours.saturating_mul(3_600_i32),
+        ),
     };
 
     if is_console {
@@ -180,10 +186,12 @@ fn write_formatted<W: Write>(
     }
 }
 
-/// Serialise rows as a JSON array.
+/// Serialise rows as NDJSON (one JSON object per line).
 fn write_json<W: Write>(writer: &mut W, rows: &[Value]) -> Result<()> {
-    serde_json::to_writer_pretty(&mut *writer, rows)?;
-    writeln!(writer)?;
+    for row in rows {
+        serde_json::to_writer(&mut *writer, row)?;
+        writeln!(writer)?;
+    }
     Ok(())
 }
 
@@ -212,13 +220,162 @@ fn write_table<W: Write>(writer: &mut W, rows: &[Value]) -> Result<()> {
     Ok(())
 }
 
+// ── Column definition table ─────────────────────────────────────────
+//
+// Inlined from `uffs-core::FieldId` / `field_metadata` so the CLI stays
+// dependency-free (thin-client design).  Keep in sync with FieldId.
+
+/// A column definition: `(canonical_name, &[aliases], display_name)`.
+type ColDef = (&'static str, &'static [&'static str], &'static str);
+
+/// Lookup table: canonical name + aliases → display name.
+static COL_TABLE: &[ColDef] = &[
+    ("name", &[], "Name"),
+    ("path", &[], "Path"),
+    ("path_only", &["pathonly", "path only"], "Path Only"),
+    ("size", &[], "Size"),
+    (
+        "size_on_disk",
+        &["allocated", "allocated_size", "sod"],
+        "Size on Disk",
+    ),
+    ("created", &[], "Created"),
+    ("modified", &["written"], "Last Written"),
+    ("accessed", &[], "Last Accessed"),
+    ("extension", &["ext"], "Extension"),
+    ("drive", &["drv"], "Drive"),
+    ("type", &["kind"], "Type"),
+    ("descendants", &[], "Descendants"),
+    ("treesize", &["tree_size"], "Tree Size"),
+    ("tree_allocated", &[], "Tree Allocated"),
+    ("bulkiness", &[], "Bulkiness"),
+    ("name_length", &["namelength", "name length"], "Name Length"),
+    ("path_length", &["pathlength", "path length"], "Path Length"),
+    // Boolean attribute columns
+    ("hidden", &[], "Hidden"),
+    ("system", &[], "System"),
+    ("archive", &[], "Archive"),
+    ("readonly", &["read_only"], "Read-only"),
+    ("compressed", &[], "Compressed"),
+    ("encrypted", &[], "Encrypted"),
+    ("sparse", &[], "Sparse"),
+    ("reparse", &[], "Reparse"),
+    ("offline", &[], "Offline"),
+    (
+        "not_indexed",
+        &["notindexed", "not indexed"],
+        "Not content indexed file",
+    ),
+    (
+        "directory_flag",
+        &["directoryflag", "directory flag"],
+        "Directory Flag",
+    ),
+    ("integrity", &[], "Integrity"),
+    ("no_scrub", &["noscrub"], "No scrub file"),
+    ("pinned", &[], "Pinned"),
+    ("unpinned", &[], "Unpinned"),
+    ("recall_on_open", &["recallonopen"], "Recall on open"),
+    (
+        "recall_on_data_access",
+        &["recallondataaccess"],
+        "Recall on data access",
+    ),
+    ("temporary", &[], "Temporary"),
+    ("virtual", &[], "Virtual"),
+    ("attributes", &["parity_attributes"], "Attributes"),
+    ("attribute_value", &[], "AttributeValue"),
+    ("flags", &[], "Flags"),
+];
+
+/// Column order used when `--columns all` is specified (matches
+/// `uffs-core::output::column::BASELINE_COLUMN_ORDER`).
+static ALL_COLUMNS: &[&str] = &[
+    "path",
+    "name",
+    "path_only",
+    "size",
+    "size_on_disk",
+    "created",
+    "modified",
+    "accessed",
+    "descendants",
+    "readonly",
+    "hidden",
+    "system",
+    "directory_flag",
+    "archive",
+    "sparse",
+    "reparse",
+    "compressed",
+    "offline",
+    "not_indexed",
+    "encrypted",
+    "integrity",
+    "no_scrub",
+    "recall_on_open",
+    "pinned",
+    "unpinned",
+    "recall_on_data_access",
+    "attributes",
+    "treesize",
+    "tree_allocated",
+    "bulkiness",
+    "type",
+    "extension",
+    "name_length",
+    "path_length",
+];
+
 /// Default column set when none is specified.
-const DEFAULT_COLUMNS: &str = "name,size,modified,path";
+static DEFAULT_COLS: &[&str] = &["name", "size", "modified", "path"];
+
+/// Resolve a user column name to its canonical name.
+fn resolve_col_name(input: &str) -> Option<&'static str> {
+    let lowered = input.to_ascii_lowercase();
+    let trimmed = lowered.trim();
+    for &(canon, aliases, _display) in COL_TABLE {
+        if canon.eq_ignore_ascii_case(trimmed) {
+            return Some(canon);
+        }
+        for &alias in aliases {
+            if alias.eq_ignore_ascii_case(trimmed) {
+                return Some(canon);
+            }
+        }
+    }
+    None
+}
+
+/// Get display name for a canonical column name.
+fn display_name(canonical: &str) -> &str {
+    for &(canon, _, display) in COL_TABLE {
+        if canon == canonical {
+            return display;
+        }
+    }
+    canonical
+}
+
+/// Resolve column specification string to a list of canonical names.
+fn resolve_columns(columns: &str) -> Vec<&'static str> {
+    if columns.is_empty() {
+        DEFAULT_COLS.to_vec()
+    } else if columns.eq_ignore_ascii_case("all") {
+        ALL_COLUMNS.to_vec()
+    } else {
+        columns
+            .split(',')
+            .filter_map(|name| resolve_col_name(name.trim()))
+            .collect()
+    }
+}
 
 /// Write columnar (CSV-style) output from `SearchRow` fields.
 ///
-/// Columns are resolved by name from `SearchRow` fields. Unknown columns
-/// are silently ignored.
+/// Columns are resolved through the inline column table so display
+/// names, flag decomposition, and derived columns (Path Only, Bulkiness,
+/// etc.) work correctly.
 fn write_columnar<W: Write>(
     writer: &mut W,
     rows: &[Value],
@@ -227,28 +384,30 @@ fn write_columnar<W: Write>(
     quote: &str,
     header: bool,
 ) -> Result<()> {
-    let col_spec = if columns.is_empty() || columns.eq_ignore_ascii_case("parity") {
-        DEFAULT_COLUMNS
-    } else {
-        columns
-    };
+    let fields = resolve_columns(columns);
 
-    let col_names: Vec<&str> = col_spec.split(',').map(str::trim).collect();
-
-    // Header row
+    // Header row — use display_name() for Title-Case headers.
     if header {
-        let header_line: Vec<&str> = col_names.clone();
-        writeln!(writer, "{}", header_line.join(separator))?;
+        for (idx, field) in fields.iter().enumerate() {
+            if idx > 0 {
+                write!(writer, "{separator}")?;
+            }
+            let name = display_name(field);
+            if quote.is_empty() {
+                write!(writer, "{name}")?;
+            } else {
+                write!(writer, "{quote}{name}{quote}")?;
+            }
+        }
+        writeln!(writer)?;
     }
 
     for row in rows {
-        let mut first = true;
-        for col in &col_names {
-            if !first {
+        for (idx, field) in fields.iter().enumerate() {
+            if idx > 0 {
                 write!(writer, "{separator}")?;
             }
-            first = false;
-            let value = extract_column(row, col);
+            let value = extract_field(row, field);
             if quote.is_empty() {
                 write!(writer, "{value}")?;
             } else {
@@ -260,31 +419,84 @@ fn write_columnar<W: Write>(
     Ok(())
 }
 
-/// Extract a column value from a JSON row by column name.
-fn extract_column(row: &Value, col: &str) -> String {
-    match col.to_ascii_lowercase().as_str() {
+/// Extract a field value from a JSON row by canonical column name.
+///
+/// Handles flag decomposition, path derivation, and computed columns.
+fn extract_field(row: &Value, field: &str) -> String {
+    let flags = vu32(row, "flags");
+    match field {
         "name" => vs(row, "name"),
         "path" => vs(row, "path"),
-        "size" => vu(row, "size").to_string(),
-        "allocated" | "allocated_size" | "size_on_disk" => vu(row, "allocated").to_string(),
-        "modified" | "written" => format_unix_us(vi(row, "modified")),
-        "created" => format_unix_us(vi(row, "created")),
-        "accessed" => format_unix_us(vi(row, "accessed")),
-        "ext" | "extension" => extract_extension(&vs(row, "name")),
-        "drive" => vs(row, "drive"),
-        "type" | "kind" => {
+        "path_only" => {
+            let path = vs(row, "path");
             if vb(row, "is_directory") {
-                "dir".to_owned()
+                path
+            } else if let Some(pos) = path.rfind('\\') {
+                path.get(..=pos).unwrap_or(&path).to_owned()
             } else {
-                "file".to_owned()
+                path
             }
         }
-        "flags" => format!("{:#010x}", vu32(row, "flags")),
+        "size" => vu(row, "size").to_string(),
+        "size_on_disk" => vu(row, "allocated").to_string(),
+        "created" => format_unix_us(vi(row, "created")),
+        "modified" => format_unix_us(vi(row, "modified")),
+        "accessed" => format_unix_us(vi(row, "accessed")),
+        "extension" => extract_extension(&vs(row, "name")),
+        "drive" => vs(row, "drive"),
+        "type" => if vb(row, "is_directory") {
+            "dir"
+        } else {
+            "file"
+        }
+        .to_owned(),
         "descendants" => vu(row, "descendants").to_string(),
         "treesize" => vu(row, "treesize").to_string(),
         "tree_allocated" => vu(row, "tree_allocated").to_string(),
+        "bulkiness" => {
+            let is_dir = vb(row, "is_directory");
+            let (logical, alloc) = if is_dir {
+                (vu(row, "treesize"), vu(row, "tree_allocated"))
+            } else {
+                (vu(row, "size"), vu(row, "allocated"))
+            };
+            alloc
+                .checked_mul(100)
+                .and_then(|numerator| numerator.checked_div(logical))
+                .unwrap_or(0)
+                .to_string()
+        }
+        "name_length" => vs(row, "name").len().to_string(),
+        "path_length" => vs(row, "path").len().to_string(),
+        // Boolean flag columns
+        "hidden" => flag_bit(flags, parity_flags::HIDDEN),
+        "system" => flag_bit(flags, parity_flags::SYSTEM),
+        "archive" => flag_bit(flags, parity_flags::ARCHIVE),
+        "readonly" => flag_bit(flags, parity_flags::READONLY),
+        "compressed" => flag_bit(flags, parity_flags::COMPRESSED),
+        "encrypted" => flag_bit(flags, parity_flags::ENCRYPTED),
+        "sparse" => flag_bit(flags, parity_flags::SPARSE),
+        "reparse" => flag_bit(flags, parity_flags::REPARSE),
+        "offline" => flag_bit(flags, parity_flags::OFFLINE),
+        "not_indexed" => flag_bit(flags, parity_flags::NOT_INDEXED),
+        "directory_flag" => flag_bit(flags, parity_flags::DIRECTORY),
+        "integrity" => flag_bit(flags, parity_flags::INTEGRITY),
+        "no_scrub" => flag_bit(flags, parity_flags::NO_SCRUB),
+        "pinned" => flag_bit(flags, parity_flags::PINNED),
+        "unpinned" => flag_bit(flags, parity_flags::UNPINNED),
+        "recall_on_open" => flag_bit(flags, 0x0004_0000),
+        "recall_on_data_access" => flag_bit(flags, 0x0040_0000),
+        "temporary" => flag_bit(flags, 0x0100),
+        "virtual" => flag_bit(flags, 0x0001_0000),
+        "attributes" | "parity_attributes" => (flags & parity_flags::PARITY_MASK).to_string(),
+        "attribute_value" | "flags" => flags.to_string(),
         _ => String::new(),
     }
+}
+
+/// Format a flag bit as "1" or "0".
+fn flag_bit(flags: u32, bit: u32) -> String {
+    if flags & bit != 0 { "1" } else { "0" }.to_owned()
 }
 
 /// Extract file extension from a filename.
@@ -345,206 +557,19 @@ mod parity_flags {
         | UNPINNED;
 }
 
-/// Parity-compat CSV header (25 columns, matching legacy baseline).
-const PARITY_HEADER: &[&str] = &[
-    "Path",
-    "Name",
-    "Path Only",
-    "Size",
-    "Size on Disk",
-    "Created",
-    "Last Written",
-    "Last Accessed",
-    "Descendants",
-    "Read-only",
-    "Archive",
-    "System",
-    "Hidden",
-    "Offline",
-    "Not content indexed file",
-    "No scrub file",
-    "Integrity",
-    "Pinned",
-    "Unpinned",
-    "Directory Flag",
-    "Compressed",
-    "Encrypted",
-    "Sparse",
-    "Reparse",
-    "Attributes",
-];
-
-/// Boolean columns in parity order (matches `PARITY_HEADER[9..25]`).
-const PARITY_BOOL_FLAGS: &[u32] = &[
-    parity_flags::READONLY,
-    parity_flags::ARCHIVE,
-    parity_flags::SYSTEM,
-    parity_flags::HIDDEN,
-    parity_flags::OFFLINE,
-    parity_flags::NOT_INDEXED,
-    parity_flags::NO_SCRUB,
-    parity_flags::INTEGRITY,
-    parity_flags::PINNED,
-    parity_flags::UNPINNED,
-    parity_flags::DIRECTORY,
-    parity_flags::COMPRESSED,
-    parity_flags::ENCRYPTED,
-    parity_flags::SPARSE,
-    parity_flags::REPARSE,
-];
-
-/// Write parity-compat 25-column CSV output from `SearchRow` data.
+/// Local timezone offset in seconds, computed once at startup.
 ///
-/// This mirrors the daemon-side `write_display_row_columns` output exactly:
-/// - Directories: trailing `\` on path, empty name, `path_only` = path, size =
-///   `treesize`
-/// - Timestamps: adjusted by `tz_offset_secs`
-/// - Booleans: `pos`/`neg` strings
-/// - Last column: raw attributes masked to parity 15 bits
-fn write_parity<W: Write>(
-    writer: &mut W,
-    rows: &[Value],
-    separator: &str,
-    quote: &str,
-    ctx: &ParityContext<'_>,
-) -> Result<()> {
-    // Header
-    let mut header = String::with_capacity(512);
-    for (idx, col) in PARITY_HEADER.iter().enumerate() {
-        if idx > 0 {
-            header.push_str(separator);
-        }
-        header.push_str(quote);
-        header.push_str(col);
-        header.push_str(quote);
-    }
-    // C++ baseline: header followed by empty line
-    header.push('\n');
-    header.push('\n');
-    writer.write_all(header.as_bytes())?;
+/// Matches C++ behavior where `FileTimeToLocalFileTime()` uses the
+/// CURRENT timezone offset for ALL timestamps, ignoring historical
+/// DST transitions.
+///
+/// Uses platform APIs (no chrono dependency) via `uffs-client`.
+static LOCAL_TZ_OFFSET_SECS: std::sync::LazyLock<i32> =
+    std::sync::LazyLock::new(uffs_client::format::local_utc_offset_secs);
 
-    let mut buf = String::with_capacity(512);
-
-    for row in rows {
-        buf.clear();
-        let is_dir = vb(row, "is_directory");
-        let flags = vu32(row, "flags");
-        let path = vs(row, "path");
-        let name = vs(row, "name");
-
-        // 0: Path (quoted, trailing \ for dirs)
-        buf.push_str(quote);
-        buf.push_str(&path);
-        if is_dir && !path.ends_with('\\') {
-            buf.push('\\');
-        }
-        buf.push_str(quote);
-
-        // 1: Name (quoted, empty for dirs)
-        buf.push_str(separator);
-        buf.push_str(quote);
-        if !is_dir {
-            buf.push_str(&name);
-        }
-        buf.push_str(quote);
-
-        // 2: PathOnly (quoted)
-        buf.push_str(separator);
-        buf.push_str(quote);
-        if is_dir {
-            buf.push_str(&path);
-            if !path.ends_with('\\') {
-                buf.push('\\');
-            }
-        } else if let Some(bslash) = path.rfind('\\') {
-            if let Some(slice) = path.get(..=bslash) {
-                buf.push_str(slice);
-            }
-        } else {
-            buf.push_str(&path);
-        }
-        buf.push_str(quote);
-
-        // 3: Size (treesize for dirs)
-        buf.push_str(separator);
-        let size = if is_dir {
-            vu(row, "treesize")
-        } else {
-            vu(row, "size")
-        };
-        push_u64(&mut buf, size);
-
-        // 4: SizeOnDisk (tree_allocated for dirs)
-        buf.push_str(separator);
-        let alloc = if is_dir {
-            vu(row, "tree_allocated")
-        } else {
-            vu(row, "allocated")
-        };
-        push_u64(&mut buf, alloc);
-
-        // 5-7: Created, Modified, Accessed
-        for key in &["created", "modified", "accessed"] {
-            buf.push_str(separator);
-            append_datetime_tz(&mut buf, vi(row, key), ctx.tz_offset_secs);
-        }
-
-        // 8: Descendants
-        buf.push_str(separator);
-        push_u64(&mut buf, vu(row, "descendants"));
-
-        // 9-23: Boolean flag columns (15 columns)
-        for &flag in PARITY_BOOL_FLAGS {
-            buf.push_str(separator);
-            buf.push_str(if flags & flag != 0 { ctx.pos } else { ctx.neg });
-        }
-
-        // 24: ParityAttributes (masked to 15 bits)
-        buf.push_str(separator);
-        push_u64(&mut buf, u64::from(flags & parity_flags::PARITY_MASK));
-
-        buf.push('\n');
-        writer.write_all(buf.as_bytes())?;
-    }
-
-    Ok(())
-}
-
-/// Append a `u64` value to a string buffer without allocation.
-fn push_u64(buf: &mut String, value: u64) {
-    use core::fmt::Write;
-    let _ok = write!(buf, "{value}");
-}
-
-/// Format a Unix-microsecond timestamp with timezone offset into `buf`.
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "timestamp values are non-negative in practice"
-)]
-fn append_datetime_tz(buf: &mut String, unix_us: i64, tz_offset_secs: i32) {
-    use core::fmt::Write;
-
-    if unix_us <= 0 {
-        return;
-    }
-    let secs = unix_us / 1_000_000;
-    let adjusted = secs + i64::from(tz_offset_secs);
-    if adjusted < 0 {
-        return;
-    }
-    let total = adjusted as u64;
-    let seconds = total % 60;
-    let minutes = (total / 60) % 60;
-    let hours = (total / 3600) % 24;
-    let days = total / 86400;
-    let (year, month, day) = days_to_ymd(days);
-    let _ok = write!(
-        buf,
-        "{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}"
-    );
-}
-
-/// Format a Unix-microsecond timestamp into `YYYY-MM-DD HH:MM:SS` UTC.
+/// Format a Unix-microsecond timestamp into `YYYY-MM-DD HH:MM:SS` local time.
+///
+/// Applies the fixed local timezone offset captured at startup.
 #[expect(
     clippy::cast_sign_loss,
     reason = "timestamp values are non-negative in practice"
@@ -553,13 +578,17 @@ fn format_unix_us(unix_us: i64) -> String {
     if unix_us <= 0 {
         return String::new();
     }
-    let secs = (unix_us / 1_000_000) as u64;
-    format_unix_timestamp(secs)
+    let secs = unix_us / 1_000_000;
+    let adjusted = secs + i64::from(*LOCAL_TZ_OFFSET_SECS);
+    if adjusted < 0 {
+        return String::new();
+    }
+    format_unix_timestamp(adjusted as u64)
 }
 
-/// Format a Unix timestamp as `YYYY-MM-DD HH:MM:SS` UTC.
+/// Format a Unix timestamp as `YYYY-MM-DD HH:MM:SS`.
 ///
-/// Minimal implementation — no timezone, no leap-second handling.
+/// Minimal implementation — no leap-second handling.
 /// Sufficient for file timestamps.
 fn format_unix_timestamp(secs: u64) -> String {
     // Days since Unix epoch
@@ -595,53 +624,6 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if month <= 2 { y + 1 } else { y };
     (year as u32, month, day)
-}
-
-/// Append the legacy drive footer for baseline-compatible custom output.
-///
-/// Uses CRLF line endings (`\r\n`) to match legacy baseline behavior.
-fn write_legacy_drive_footer<W: Write + ?Sized>(
-    writer: &mut W,
-    ctx: &CppFooterContext<'_>,
-) -> Result<()> {
-    if ctx.output_targets.is_empty() {
-        return Ok(());
-    }
-
-    write!(writer, "\r\n\r\n")?;
-    write!(
-        writer,
-        "Drives? \t{}\t{}\r\n",
-        ctx.output_targets.len(),
-        format_legacy_drive_letters(ctx.output_targets)
-    )?;
-    write!(writer, "\r\n")?;
-
-    let is_full_scan = matches!(ctx.pattern, "" | "*" | "**" | "**/*")
-        || ctx.pattern.strip_prefix('>').is_some_and(|rest| {
-            rest.split('|')
-                .all(|seg| seg.ends_with(".*") && seg.len() <= 4)
-        });
-    if ctx.row_count < 20_000 && is_full_scan {
-        write!(
-            writer,
-            "MMMmmm that was FAST ... maybe your searchstring was wrong?\t{pattern}\r\n",
-            pattern = ctx.pattern
-        )?;
-        write!(writer, "Search path. E.g. 'C:/' or 'C:\\Prog**' \r\n")?;
-    }
-
-    Ok(())
-}
-
-/// Format drive letters using the legacy footer style.
-#[must_use]
-fn format_legacy_drive_letters(output_targets: &[char]) -> String {
-    output_targets
-        .iter()
-        .map(|drive| format!("{}:", drive.to_ascii_uppercase()))
-        .collect::<Vec<_>>()
-        .join("|")
 }
 
 #[cfg(test)]

@@ -55,7 +55,7 @@ copy-binary profile:
     if [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]] || [[ -n "$WINDIR" ]]; then EXT=".exe"; printf "\033[0;34m  → Windows detected\033[0m\n"; else EXT=""; printf "\033[0;34m  → Unix-like system detected\033[0m\n"; fi
     SOURCE_DIR="target/{{ profile }}"
     mkdir -p ~/bin
-    for BIN in uffs uffsd; do
+    for BIN in uffs uffsd uffsmcp; do
         SOURCE_PATH="$SOURCE_DIR/${BIN}${EXT}"
         DEST_PATH="$HOME/bin/${BIN}${EXT}"
         if [[ ! -f "$SOURCE_PATH" ]]; then
@@ -76,9 +76,10 @@ copy-binary profile:
 # If dist/ is empty, downloads the latest release from GitHub first.
 #
 # Platform binaries installed:
-#   macOS   : uffs-macos-arm64 → uffs, uffsd-macos-arm64 → uffsd, uffs_mft-macos-arm64 → uffs_mft
+#   macOS   : uffs-macos-arm64 → uffs, uffsd-macos-arm64 → uffsd,
+#             uffsmcp-macos-arm64 → uffsmcp, uffs_mft-macos-arm64 → uffs_mft
 #   Windows : uffs-windows-x64.exe → uffs.exe, uffsd-windows-x64.exe → uffsd.exe,
-#             uffs_mft-windows-x64.exe → uffs_mft.exe
+#             uffsmcp-windows-x64.exe → uffsmcp.exe, uffs_mft-windows-x64.exe → uffs_mft.exe
 #
 # NOTE: uffs_tui and uffs_gui have moved to the private uffs-products repo.
 [unix]
@@ -135,6 +136,7 @@ use:
     declare -A BINARIES=(
         ["uffs-macos-arm64"]="uffs"
         ["uffsd-macos-arm64"]="uffsd"
+        ["uffsmcp-macos-arm64"]="uffsmcp"
         ["uffs_mft-macos-arm64"]="uffs_mft"
     )
     INSTALLED=0
@@ -236,6 +238,7 @@ use:
     $binaries = @{
         'uffs-windows-x64.exe' = 'uffs.exe'
         'uffsd-windows-x64.exe' = 'uffsd.exe'
+        'uffsmcp-windows-x64.exe' = 'uffsmcp.exe'
         'uffs_mft-windows-x64.exe' = 'uffs_mft.exe'
     }
     $installed = 0; $skipped = 0

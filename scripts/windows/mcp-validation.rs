@@ -377,6 +377,10 @@ struct McpTest {
     kind: McpTestKind,
     /// Payload-level validation from TOML (column checks, sort checks, row counts).
     payload_checks: Option<PayloadChecks>,
+    /// Original CLI args from TOML (for building reproduction CLI string).
+    cli_args: Vec<String>,
+    /// RPC method name (for building reproduction RPC string).
+    rpc_method: String,
 }
 
 /// Payload validation rules extracted from the TOML definition.
@@ -432,6 +436,10 @@ struct TestResult {
     elapsed_ms: u128,
     mcp_request: String,
     mcp_response: String,
+    /// Equivalent CLI command for copy-paste debugging.
+    cli_command: String,
+    /// Equivalent daemon RPC call for debugging.
+    rpc_call: String,
 }
 // ── TOML loading ────────────────────────────────────────────────────────────
 
@@ -652,6 +660,8 @@ fn load_tests_from_toml() -> Vec<McpTest> {
                     method: mcp_method.clone(), params, checks,
                 }),
                 payload_checks: None,
+                cli_args: def.cli_args.clone(),
+                rpc_method: mcp_method.clone(),
             });
             continue;
         }
@@ -699,6 +709,8 @@ fn load_tests_from_toml() -> Vec<McpTest> {
                 tool: tool_name.to_owned(), args: params, checks,
             }),
             payload_checks: payload,
+            cli_args: def.cli_args.clone(),
+            rpc_method: rpc.clone(),
         });
     }
     eprintln!("  ({} mcp tests, {} cli-only skipped, {} disabled)",
@@ -714,7 +726,11 @@ fn load_tests_from_toml() -> Vec<McpTest> {
 // chains multiple MCP tool calls exactly as an LLM would.
 
 fn flow(id: &str, name: &str, f: fn(&mut McpSession) -> Result<String>) -> McpTest {
-    McpTest { id: id.to_owned(), name: format!("{id} {name}"), kind: McpTestKind::AgentFlow(f), payload_checks: None }
+    McpTest {
+        id: id.to_owned(), name: format!("{id} {name}"),
+        kind: McpTestKind::AgentFlow(f), payload_checks: None,
+        cli_args: Vec::new(), rpc_method: "(agent-flow)".into(),
+    }
 }
 
 /// §8.1 Known-item lookup: "Find the largest .exe, then inspect it."
@@ -1072,6 +1088,49 @@ fn validate_payload(result: &Value, checks: &PayloadChecks) -> Result<()> {
     Ok(())
 }
 
+/// Build a shell-safe CLI reproduction string from binary + args.
+///
+/// Quotes arguments containing shell metacharacters (`*`, `>`, `<`, spaces)
+/// so the displayed command can be copy-pasted directly into a terminal.
+fn build_cli_string(bin: &str, cli_args: &[String], source_flag: Option<&str>, source_path: &str) -> String {
+    let mut parts = vec![bin.to_string()];
+
+    let is_daemon_cmd = cli_args.first().map(|a| a.as_str()) == Some("daemon")
+        || cli_args.first().map(|a| a.as_str()) == Some("info");
+
+    if cli_args.is_empty() {
+        parts.push("\"*\"".into());
+    } else {
+        for a in cli_args {
+            if a.contains(' ') || a.contains('*') || a.contains('>') || a.contains('<') {
+                parts.push(format!("\"{a}\""));
+            } else {
+                parts.push(a.clone());
+            }
+        }
+    }
+
+    if !is_daemon_cmd {
+        if let Some(flag) = source_flag {
+            parts.push(flag.to_string());
+            parts.push(source_path.to_string());
+        }
+    }
+
+    parts.join(" ")
+}
+
+/// Build a compact RPC reproduction string: `method(params_json)`.
+fn build_rpc_string(method: &str, cli_args: &[String]) -> String {
+    if cli_args.is_empty() {
+        return method.to_string();
+    }
+    // Re-derive RPC params from CLI args (same as api-validation).
+    let (_, params) = cli_args_to_mcp_params(cli_args);
+    format!("{method}({params})")
+}
+
+
 
 /// Run a single test.  M100-M103 (initialize) are special: the init
 /// handshake is completed once at session start, so we skip actually
@@ -1081,8 +1140,16 @@ fn run_test(
     mcp: &mut McpSession,
     test: &McpTest,
     init_result: &Value,
+    script_args: &ScriptArgs,
 ) -> TestResult {
     let t0 = Instant::now();
+
+    // Build CLI/RPC reproduction strings once for all paths.
+    let cli_command = build_cli_string(
+        &script_args.bin, &test.cli_args,
+        script_args.source_flag, &script_args.source_path,
+    );
+    let rpc_call = build_rpc_string(&test.rpc_method, &test.cli_args);
 
     // Agent flows get their own execution path — multi-step, so we show
     // the step descriptions rather than a single payload.
@@ -1095,12 +1162,14 @@ fn run_test(
                 passed: true, message: detail, elapsed_ms: elapsed,
                 mcp_request: "(multi-step agent flow)".into(),
                 mcp_response: String::new(),
+                cli_command: cli_command.clone(), rpc_call: rpc_call.clone(),
             },
             Err(e) => TestResult {
                 id: test.id.clone(), name: test.name.clone(),
                 passed: false, message: format!("{e:#}"), elapsed_ms: elapsed,
                 mcp_request: "(multi-step agent flow)".into(),
                 mcp_response: String::new(),
+                cli_command: cli_command.clone(), rpc_call: rpc_call.clone(),
             },
         };
         if r.passed && elapsed > AGENT_FLOW_TIMEOUT_MS {
@@ -1193,11 +1262,13 @@ fn run_test(
             id: test.id.clone(), name: test.name.clone(),
             passed: true, message: String::new(), elapsed_ms: elapsed,
             mcp_request: req_str, mcp_response: resp_str,
+            cli_command: cli_command.clone(), rpc_call: rpc_call.clone(),
         },
         Err(e) => TestResult {
             id: test.id.clone(), name: test.name.clone(),
             passed: false, message: format!("{e:#}"), elapsed_ms: elapsed,
             mcp_request: req_str, mcp_response: resp_str,
+            cli_command, rpc_call,
         },
     };
     if result.passed && elapsed > budget {
@@ -1421,7 +1492,7 @@ fn main() -> Result<()> {
     let test_start = Instant::now();
     let mut results = Vec::new();
     for test in &tests {
-        let r = run_test(&mut mcp, test, &init_result);
+        let r = run_test(&mut mcp, test, &init_result, &args);
         let status = if r.passed {
             format!("{}", "PASS".green().bold())
         } else {
@@ -1459,6 +1530,8 @@ fn main() -> Result<()> {
                 eprintln!("  │");
                 eprintln!("  │  {} {}", "❌".red(), r.name);
                 eprintln!("  │  {}: {}", "Error".red().bold(), r.message);
+                eprintln!("  │  {}:   {}", "CLI".yellow().bold(), r.cli_command);
+                eprintln!("  │  {}:   {}", "RPC".cyan().bold(), r.rpc_call);
                 // Show the MCP request payload.
                 eprintln!("  │  {}:", "MCP Request".yellow().bold());
                 for line in r.mcp_request.lines() {
@@ -1486,8 +1559,9 @@ fn main() -> Result<()> {
 
     // When running a small number of tests (e.g. --tests M100), show full
     // MCP payloads for every test — same info shown on failure, so users
-    // can replay or inspect each request.
-    if total <= 10 && total > 0 {
+    // can replay or inspect each request.  Skip when every test already
+    // appeared in the failure box above to avoid duplicate output.
+    if total <= 10 && total > 0 && passed > 0 {
         eprintln!();
         eprintln!("  ┌─ Test Details ───────────────────────────────────────────────────────┐");
         for r in &results {
@@ -1495,6 +1569,8 @@ fn main() -> Result<()> {
             eprintln!("  │");
             eprintln!("  │  {icon} {} ({}ms)", r.name, r.elapsed_ms);
             eprintln!("  │  {}: {}", "Result".bold(), if r.message.is_empty() { "OK" } else { &r.message });
+            eprintln!("  │  {}:    {}", "CLI".yellow().bold(), r.cli_command);
+            eprintln!("  │  {}:    {}", "RPC".cyan().bold(), r.rpc_call);
             eprintln!("  │  {}:", "MCP Request".yellow().bold());
             for line in r.mcp_request.lines() {
                 eprintln!("  │    {}", line.yellow());

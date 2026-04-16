@@ -14,6 +14,13 @@ use crate::format::parse_size;
 
 // ── tiny helpers ───────────────────────────────────────────────────────
 
+/// Returns `Some(val)` if `val` is non-empty, otherwise `None`.
+/// Used for optional output-config fields that should fall back to
+/// `OutputConfig` defaults when the user did not supply them.
+fn non_empty(val: String) -> Option<String> {
+    if val.is_empty() { None } else { Some(val) }
+}
+
 /// Consume next token or report missing value.
 fn take_next(flag: &str, iter: &mut impl Iterator<Item = String>) -> Result<String, String> {
     iter.next()
@@ -657,16 +664,12 @@ impl RawCliArgs {
             agg_page_size: self.agg_page_size,
             // Direct file output
             output_file,
-            output_separator: Some(self.sep),
-            output_quote: Some(self.quotes),
+            output_separator: non_empty(self.sep),
+            output_quote: non_empty(self.quotes),
             output_header: Some(self.header),
-            output_pos: Some(self.pos),
-            output_neg: Some(self.neg),
-            output_columns: if columns.is_empty() {
-                None
-            } else {
-                Some(columns)
-            },
+            output_pos: non_empty(self.pos),
+            output_neg: non_empty(self.neg),
+            output_columns: non_empty(columns),
             output_parity_compat: self.parity_compat.then_some(true),
             output_tz_offset_hours: self.tz_offset,
         };
