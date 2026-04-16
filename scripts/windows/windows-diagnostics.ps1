@@ -38,6 +38,11 @@ param(
 $ErrorActionPreference = "Continue"
 Set-StrictMode -Version Latest
 
+# Detect whether we're running elevated (needed for ETW/Defender sections).
+$isAdmin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 function Write-Header($title) {
@@ -204,7 +209,7 @@ function Run-ImportAudit {
         }
 
         Write-Host ""
-        Write-Host "  {0,-35} {1,10} {2,15}" -f "DLL", "Functions", "Hot path?"
+        Write-Host ("  {0,-35} {1,10} {2,15}" -f "DLL", "Functions", "Hot path?")
         Write-Host "  $('-' * 65)"
         $knownHot = @("kernel32.dll", "ntdll.dll", "ucrtbase.dll", "vcruntime140.dll", "msvcrt.dll")
         $knownCold = @("ws2_32.dll", "advapi32.dll", "bcrypt.dll", "secur32.dll")
@@ -213,7 +218,7 @@ function Run-ImportAudit {
             $hotness = if ($knownHot -contains $dll.Key) { "YES" }
                        elseif ($knownCold -contains $dll.Key) { "delay-load?" }
                        else { "check" }
-            Write-Host "  {0,-35} {1,10} {2,15}" -f $dll.Key, $dll.Value, $hotness
+            Write-Host ("  {0,-35} {1,10} {2,15}" -f $dll.Key, $dll.Value, $hotness)
         }
 
         Write-Host "`n  Total DLLs imported: $($dllFuncs.Count)"
