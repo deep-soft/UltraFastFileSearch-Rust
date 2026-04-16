@@ -157,20 +157,17 @@ fn measure_binary(bin: &Path, args: &[&str], rounds: usize, label: &str,
 /// Rust source for a minimal null binary (just exits).
 const NULL_RUST_SRC: &str = r#"fn main() {}"#;
 
-/// Rust source that connects to an AF_UNIX socket (measures Winsock import cost).
-/// NOTE: only compiles on Windows (std::os::windows::net::UnixStream).
-#[allow(dead_code)]
-const NULL_RUST_SOCKET_SRC: &str = "
-#[cfg(windows)]
-use std::os::windows::net::UnixStream;
-
+/// Rust source that opens a TCP socket (measures Winsock/ws2_32 import cost on Windows).
+/// std does not expose AF_UNIX on stable Windows; TCP connect pulls in the same
+/// Winsock DLLs so this is a faithful proxy for AF_UNIX import overhead.
+const NULL_RUST_SOCKET_SRC: &str = r#"use std::net::TcpStream;
+use std::time::Duration;
 fn main() {
-    #[cfg(windows)]
-    { let _ = UnixStream::connect(r\"\\\\?\\pipe\\uffs-null-test\"); }
-    #[cfg(not(windows))]
-    { eprintln!(\"AF_UNIX test only runs on Windows\"); }
+    // Connect to a port that is almost certainly closed — we only care about
+    // the cost of loading ws2_32.dll and initializing Winsock, not the result.
+    let _ = TcpStream::connect_timeout(&"127.0.0.1:1".parse().unwrap(), Duration::from_millis(50));
 }
-";
+"#;
 
 /// Rust source that opens a named pipe (measures kernel32-only path).
 const NULL_RUST_PIPE_SRC: &str = r#"
@@ -227,7 +224,7 @@ const NULL_VARIANTS: &[NullVariant] = &[
         source: NULL_RUST_SOCKET_SRC,
         deps: "",
         crt_static: false,
-        description: "AF_UNIX socket connect — Winsock import cost (Windows only)",
+        description: "TCP connect — Winsock/ws2_32 import cost",
     },
     NullVariant {
         name: "null-rust-json",
@@ -286,20 +283,27 @@ rustflags = ["-C", "target-feature=+crt-static"]
         let _ = fs::write(cargo_dir.join("config.toml"), config);
     }
 
-    // Build
+    // Build — force a project-local target dir, ignoring any inherited
+    // CARGO_TARGET_DIR / config that points elsewhere (which breaks our
+    // exe-path assumption and can cause cross-project build-script lock
+    // collisions on shared target directories).
+    let local_target = proj_dir.join("target");
     eprint!("  Building {:<35} ", variant.name);
     flush();
     let output = Command::new("cargo")
         .args(["build", "--release"])
         .current_dir(&proj_dir)
+        .env("CARGO_TARGET_DIR", &local_target)
+        .env_remove("CARGO_BUILD_TARGET_DIR")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output();
 
     match output {
         Ok(o) if o.status.success() => {
-            let exe_name = format!("{}.exe", variant.name);
-            let exe_path = proj_dir.join("target").join("release").join(&exe_name);
+            let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+            let exe_name = format!("{}{}", variant.name, exe_suffix);
+            let exe_path = local_target.join("release").join(&exe_name);
             if exe_path.exists() {
                 eprintln!("OK  ({})", fmt_size(file_size(&exe_path)));
                 Some(exe_path)
@@ -357,8 +361,7 @@ fn run_null_matrix(cfg: &Cfg) {
     eprintln!("\n── System binary references ──");
     let system_bins: &[(&str, &[&str])] = &[
         ("cmd.exe /c exit", &["/c", "exit"]),
-        ("help.exe", &[]),
-        ("where.exe /?", &["/?"])
+        ("where.exe /?", &["/?"]),
     ];
     for (label, args) in system_bins {
         let bin_name = label.split_whitespace().next().unwrap_or("unknown");
@@ -435,6 +438,38 @@ fn which_bin(name: &str) -> Option<PathBuf> {
         let l = s.lines().next().unwrap_or("").trim();
         if !l.is_empty() && Path::new(l).exists() { Some(PathBuf::from(l)) } else { None }
     })
+}
+
+/// Locate a binary by stem name (e.g. "uffs", "es"), trying in order:
+///   1. PATH lookup (`where`/`which`)
+///   2. `~/bin/<name>[.exe]` — the user keeps all tools here on Windows
+///   3. Repo-local `target/release/<name>[.exe]` and `target/debug/<name>[.exe]`
+fn find_bin(stem: &str) -> Option<PathBuf> {
+    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+    let with_ext = format!("{}{}", stem, exe_suffix);
+
+    // 1. PATH
+    if let Some(p) = which_bin(&with_ext) { return Some(p); }
+    if let Some(p) = which_bin(stem) { return Some(p); }
+
+    // 2. ~/bin/<name>[.exe]
+    let home = env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from);
+    if let Some(h) = home {
+        let candidate = h.join("bin").join(&with_ext);
+        if candidate.exists() { return Some(candidate); }
+    }
+
+    // 3. Repo-local target/<profile>/<name>[.exe]
+    if let Ok(cwd) = env::current_dir() {
+        for profile in ["release", "debug"] {
+            let candidate = cwd.join("target").join(profile).join(&with_ext);
+            if candidate.exists() { return Some(candidate); }
+        }
+    }
+
+    None
 }
 
 // ── Mode: Startup decomposition ──────────────────────────────────────────────
@@ -698,15 +733,17 @@ fn parse_args() -> Cfg {
         i += 1;
     }
 
-    // Try to find uffs.exe if not specified
+    // Try to find uffs.exe if not specified.
+    //   1. PATH (via `where`/`which`)
+    //   2. User bin dir: ~/bin/uffs[.exe]   (the user keeps all binaries here on Windows)
+    //   3. Repo-local release build: target/release/uffs[.exe]
+    //   4. Repo-local debug build:   target/debug/uffs[.exe]
     if !uffs_bin.exists() {
-        if let Some(found) = which_bin("uffs.exe") {
-            uffs_bin = found;
-        }
+        if let Some(found) = find_bin("uffs") { uffs_bin = found; }
     }
 
-    // Try to find es.exe
-    let es_bin = which_bin("es.exe");
+    // Try to find es.exe (same lookup strategy)
+    let es_bin = find_bin("es");
 
     // Build directory for null binaries
     let build_dir = env::temp_dir().join("uffs-startup-profiler");
