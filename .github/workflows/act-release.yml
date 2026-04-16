@@ -27,10 +27,10 @@ on:
         description: 'Commit SHA to release'
         required: false
         type: string
-      skip_patch_1:
-        description: skip patch 1
+      patch_1:
+        description: patch 1
         type: boolean
-        default: false
+        default: true
         required: true
   push:
     tags:
@@ -143,8 +143,8 @@ jobs:
           ref: ${{ inputs.commit_sha || github.sha }}
 
       - name: patch .cargo/config.toml
-        #was: if: ${{ github.event.inputs.patch_1 == 'true' }}
-        if: ${{ github.event.inputs.skip_patch_1 }}
+        # if: ${{ github.event.inputs.patch_1 == 'true' }}
+        if: ${{ github.event == 'push' || inputs.patch_1 }}
         shell: bash
         run: |
           echo ".cargo/config.toml";
