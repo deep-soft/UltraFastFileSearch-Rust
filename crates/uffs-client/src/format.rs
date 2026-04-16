@@ -183,12 +183,13 @@ mod platform_tz {
 /// Platform-specific UTC offset detection.
 #[cfg(windows)]
 mod platform_tz {
+    /// `GetTimeZoneInformation` returns `2` when daylight saving is active.
+    const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+
     /// Get local UTC offset via `GetTimeZoneInformation`.
     #[expect(unsafe_code, reason = "FFI call to Win32 GetTimeZoneInformation")]
     pub(super) fn utc_offset_secs() -> i32 {
-        use windows::Win32::System::Time::{
-            GetTimeZoneInformation, TIME_ZONE_ID_DAYLIGHT, TIME_ZONE_INFORMATION,
-        };
+        use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
 
         let mut tz_info = TIME_ZONE_INFORMATION::default();
         // Safety: passing a valid mutable pointer to a stack-allocated struct.
