@@ -76,6 +76,11 @@ lint-all:
     just fmt-check
     @printf "\033[0;32m✅ All lint checks passed\033[0m\n"
 
+# Validate rustdoc links and warnings (catches private-intra-doc-links etc.).
+rustdoc:
+    @printf "\033[0;34m📚 Rustdoc link validation...\033[0m\n"
+    RUSTDOCFLAGS='-Dwarnings' cargo doc --workspace --all-features --no-deps
+
 # Enforce oversized Rust file policy with explicit exceptions.
 file-size-policy:
     @printf "\033[0;34m📏 Checking oversized Rust file policy...\033[0m\n"
