@@ -291,13 +291,39 @@ fn health_ok(host: &str, port: u16) -> bool {
     http_get(host, port, "/health").is_ok_and(|b| b == "ok")
 }
 
-/// Poll /health until ready (up to `timeout`).
+/// Check /health and return diagnostic detail.
+fn health_check_detail(host: &str, port: u16) -> (bool, String) {
+    match http_get(host, port, "/health") {
+        Ok(body) if body == "ok" => (true, "ok".to_owned()),
+        Ok(body) => (false, format!("unexpected body: {body:?}")),
+        Err(err) => (false, format!("{err:#}")),
+    }
+}
+
+/// Poll /health until ready (up to `timeout`), with periodic diagnostics.
 fn wait_for_health(host: &str, port: u16, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
+    let start = Instant::now();
+    let deadline = start + timeout;
+    let mut attempt = 0u32;
+    let mut last_detail = String::new();
     while Instant::now() < deadline {
-        if health_ok(host, port) { return true; }
+        attempt += 1;
+        let (ok, detail) = health_check_detail(host, port);
+        if ok { return true; }
+        // Print diagnostic every 5 seconds (every 20th poll at 250ms interval).
+        if attempt <= 3 || attempt % 20 == 0 || detail != last_detail {
+            let elapsed = start.elapsed().as_secs();
+            eprintln!(
+                "    [health poll #{attempt}, +{elapsed}s] {host}:{port} → {detail}"
+            );
+            last_detail = detail;
+        }
         std::thread::sleep(Duration::from_millis(250));
     }
+    let elapsed = start.elapsed().as_secs();
+    eprintln!(
+        "    [health TIMEOUT after {attempt} attempts, {elapsed}s] last: {last_detail}"
+    );
     false
 }
 
@@ -439,54 +465,42 @@ impl Runner {
 
     /// Start the MCP HTTP server via `uffs mcp start`.
     ///
-    /// `uffs mcp start` spawns a background `uffs mcp serve` process.
-    /// On Windows, `.output()` blocks forever because the grandchild
-    /// inherits the stdout/stderr pipe handles.  We use `.spawn()` with
-    /// piped stdout and read with a timeout instead.
+    /// `uffs mcp start` already handles:
+    ///   1. Auto-starting the daemon if needed
+    ///   2. Spawning `uffs mcp serve` as a background process
+    ///   3. Polling /health until the server is ready
+    ///   4. Exiting with code 0 on success, non-zero on failure
+    ///
+    /// We simply run it with `.status()` (inherits console stdio — no
+    /// pipe handle inheritance issues on Windows) and check the exit code.
     fn mcp_start(&self) -> Result<String> {
         let port_str = self.port.to_string();
         let mut args: Vec<&str> = vec!["mcp", "start", "--port", &port_str, "--bind", &self.host];
         args.extend(self.source_args());
 
-        let mut child = Command::new(&self.binary)
+        eprintln!("    [mcp_start] {} {}", self.binary, args.join(" "));
+
+        let status = Command::new(&self.binary)
             .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .status()
             .with_context(|| format!("exec: {} {}", self.binary, args.join(" ")))?;
 
-        // `mcp start` itself polls /health and prints when ready, but it
-        // may take 2–3 min on cold starts.  We don't need to wait for the
-        // CLI to finish — just wait for /health to succeed.
-        // Give the child a moment to print its initial output.
-        std::thread::sleep(Duration::from_millis(500));
-
-        // Allow up to 3.5 min for cold starts with large indices.
-        if !wait_for_health(&self.host, self.port, Duration::from_secs(210)) {
-            // Try to capture whatever output the child produced.
-            let _ = child.kill();
-            let output = child.wait_with_output().ok();
-            let stdout = output.as_ref()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-            let stderr = output.as_ref()
-                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
-                .unwrap_or_default();
+        if !status.success() {
             bail!(
-                "MCP HTTP server didn't become healthy within 3.5 min\n\
-                 stdout: {stdout}\n\
-                 stderr: {stderr}"
+                "`uffs mcp start` exited with {status}\n\
+                 Run manually with logging:\n  \
+                 UFFS_LOG=debug UFFS_LOG_FILE=/tmp/mcp.log {} {}",
+                self.binary, args.join(" ")
             );
         }
 
-        // Server is healthy — detach from the child process.  We don't
-        // need its output; its work (spawning the background server) is done.
-        // Don't wait — the child might still be blocked on its own health
-        // polling or on handle inheritance from the grandchild.
-        //
-        // Dropping the Child on Unix/Windows is fine: it won't kill the
-        // process, just detaches our handle.
-        drop(child);
+        // Quick sanity: confirm /health is actually up.
+        let (ok, detail) = health_check_detail(&self.host, self.port);
+        if !ok {
+            bail!(
+                "`uffs mcp start` exited OK but /health check failed: {detail}"
+            );
+        }
 
         Ok(format!("healthy on {}:{}", self.host, self.port))
     }
