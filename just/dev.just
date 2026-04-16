@@ -37,6 +37,14 @@ check-cross:
     @printf "\033[0;34m Cross-compilation validation using CI pipeline...\033[0m\n"
     rust-script scripts/ci/ci-pipeline.rs cross-check
 
+# Type-check all #[cfg(windows)] code paths from macOS using cargo-xwin.
+# Catches missing imports, wrong types, and dead code in Windows-only blocks
+# that `cargo check` on macOS silently skips.
+check-windows:
+    @printf "\033[0;34m🪟 Windows cross-check (cargo xwin check)...\033[0m\n"
+    cargo xwin check --workspace --target x86_64-pc-windows-msvc
+    @printf "\033[0;32m✅ Windows cross-check passed\033[0m\n"
+
 # Update everything: Rust toolchain, cargo tools, system packages.
 # Uses cargo-binstall (pre-built binaries) when available for ~100× faster installs.
 # Run before `just go` or `just ship` to stay cutting-edge.

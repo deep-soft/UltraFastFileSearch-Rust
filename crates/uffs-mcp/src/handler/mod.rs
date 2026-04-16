@@ -8,9 +8,6 @@
 //! [`ServerHandler`](rmcp::ServerHandler) trait, dispatching `tools/call`,
 //! `resources/read`, and `prompts/get` to the appropriate handlers.
 
-pub use definitions::{prompt_definitions, tool_definitions};
-pub use prompts::{build_prompt_messages, str_arg, u64_arg};
-
 use crate::handler::definitions::percent_decode_path;
 
 extern crate alloc;
@@ -350,8 +347,7 @@ impl ServerHandler for UffsMcpServer {
 
     #[expect(
         clippy::cognitive_complexity,
-        reason = "async match + await + iteration + logging contributes to Clippy's \
-                  cognitive score, but the function is only 20 lines and trivially readable"
+        reason = "async match + await + iteration + logging contributes to Clippy score"
     )]
     async fn on_roots_list_changed(&self, context: rmcp::service::NotificationContext<RoleServer>) {
         // Ask the client for the current list of roots.
@@ -383,7 +379,7 @@ impl ServerHandler for UffsMcpServer {
     ) -> Result<ListToolsResult, McpError> {
         self.touch();
         Ok(ListToolsResult {
-            tools: tool_definitions(),
+            tools: definitions::tool_definitions(),
             next_cursor: None,
             meta: None,
         })
@@ -615,7 +611,7 @@ impl ServerHandler for UffsMcpServer {
     ) -> Result<ListPromptsResult, McpError> {
         self.touch();
         Ok(ListPromptsResult {
-            prompts: prompt_definitions(),
+            prompts: definitions::prompt_definitions(),
             next_cursor: None,
             meta: None,
         })
@@ -629,7 +625,7 @@ impl ServerHandler for UffsMcpServer {
         self.stats.record_prompt_get();
         let prompt_args = request.arguments.unwrap_or_default();
 
-        let messages = build_prompt_messages(request.name.as_ref(), &prompt_args)?;
+        let messages = prompts::build_prompt_messages(request.name.as_ref(), &prompt_args)?;
 
         Ok(GetPromptResult::new(messages)
             .with_description(format!("UFFS prompt: {}", request.name)))

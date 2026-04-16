@@ -41,7 +41,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.5.12"
+version = "0.5.13"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
@@ -67,8 +67,6 @@ uffs-text     = { path = "crates/uffs-text" }
 uffs-mft      = { path = "crates/uffs-mft", features = ["zstd"] }
 uffs-core     = { path = "crates/uffs-core" }
 uffs-client   = { path = "crates/uffs-client" }
-uffs-daemon   = { path = "crates/uffs-daemon" }
-uffs-mcp      = { path = "crates/uffs-mcp", features = ["streamable-http"] }
 # NOTE: no `uffs-diag` workspace dependency alias on purpose.
 # It is a top-level diagnostic/tool crate, not a shared runtime dependency.
 
@@ -102,7 +100,6 @@ windows = { version = "0.62.2", features = [
 # ───── Serialization ─────
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-toml = "1.1.2"
 
 # ───── Data Structures ─────
 bitflags = "2.11.0"
@@ -130,11 +127,6 @@ tracing-appender = "0.2.4"
 # ───── CLI ─────
 clap = { version = "4.6.0", features = ["derive", "env", "unicode", "wrap_help"] }
 indicatif = "0.18.4"
-
-# ───── TUI ─────
-ratatui = "0.30.0"
-crossterm = "0.29.0"
-ratatui-textarea = { version = "0.9.0", features = ["crossterm", "search"] }
 devicons = "0.6.12"
 
 # ───── Pattern Matching ─────

@@ -1513,6 +1513,27 @@ async fn main() -> Result<()> {
                 println!("   This check will run in CI with proper toolchain setup");
                 println!("✅ Cross-compilation setup completed (skipped locally)");
             }
+
+            // Windows cross-check — catches #[cfg(windows)] code errors from macOS.
+            // Uses cargo-xwin which bundles MSVC headers/libs for C build scripts.
+            let has_cargo_xwin = std::process::Command::new("cargo")
+                .args(["xwin", "--version"])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false);
+
+            if has_cargo_xwin {
+                execute_command(
+                    "Cross-compile syntax check (Windows x86_64)",
+                    "cargo",
+                    &["xwin", "check", "--workspace", "--target", "x86_64-pc-windows-msvc"],
+                    &ctx,
+                ).await.context("Windows cross-compilation syntax check failed")?;
+                println!("✅ Windows cross-compilation syntax check passed");
+            } else {
+                println!("⚠️  cargo-xwin not available — skipping Windows cross-check");
+                println!("   Install with: cargo install cargo-xwin");
+            }
         }
     }
 

@@ -3,10 +3,12 @@
 
 //! JSON-RPC request handler: dispatches methods to [`IndexManager`].
 
+use uffs_client::protocol::response::{
+    FacetValuesParams, FacetValuesResponse, LoadDriveParams, LoadDriveResponse, RefreshParams,
+};
 use uffs_client::protocol::{
-    AggregateSpecWire, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, FacetValuesParams,
-    FacetValuesResponse, LoadDriveParams, LoadDriveResponse, RefreshParams, RpcErrorResponse,
-    RpcRequest, RpcResponse, SearchParams,
+    AggregateSpecWire, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcErrorResponse, RpcRequest,
+    RpcResponse, SearchParams,
 };
 
 /// Maximum pattern length to prevent regex `DoS` (`S4.4.3`).
@@ -40,6 +42,7 @@ impl RequestHandler {
             "search" => self.handle_search(id, req).await,
             "drives" => self.handle_drives(id).await,
             "status" => self.handle_status(id, connections).await,
+            "search_cli" => self.handle_search_cli(id, req).await,
             "stats" => self.handle_stats(id).await,
             "info" => self.handle_info(id, req).await,
             "load_drive" => self.handle_load_drive(id, req).await,
@@ -59,7 +62,7 @@ impl RequestHandler {
     /// Handle `search` method.
     #[expect(
         clippy::cognitive_complexity,
-        reason = "search handler with param extraction, validation, and response formatting"
+        reason = "handler dispatch with JSON-RPC routing, error handling"
     )]
     async fn handle_search(&self, id: u64, req: &RpcRequest) -> String {
         let search_params: SearchParams = match req
@@ -170,6 +173,54 @@ impl RequestHandler {
         }
 
         json
+    }
+
+    /// Handle `search_cli` method — parse raw CLI args into [`SearchParams`]
+    /// and run the standard search.
+    ///
+    /// The CLI sends its raw `argv` (after subcommand detection) so it
+    /// never needs to parse search flags locally.
+    async fn handle_search_cli(&self, id: u64, req: &RpcRequest) -> String {
+        // Extract the `args` array from the params.
+        let args: Vec<String> = match req
+            .params
+            .as_ref()
+            .and_then(|val| val.get("args"))
+            .and_then(|val| serde_json::from_value(val.clone()).ok())
+        {
+            Some(cli_args) => cli_args,
+            None => {
+                return serde_json::to_string(&RpcErrorResponse::error(
+                    Some(id),
+                    ERR_INVALID_PARAMS,
+                    "Missing or invalid 'args' array",
+                ))
+                .unwrap_or_default();
+            }
+        };
+
+        // Parse into SearchParams using the shared CLI parser.
+        let search_params = match SearchParams::from_cli_args(&args) {
+            Ok(params) => params,
+            Err(msg) => {
+                return serde_json::to_string(&RpcErrorResponse::error(
+                    Some(id),
+                    ERR_INVALID_PARAMS,
+                    &msg,
+                ))
+                .unwrap_or_default();
+            }
+        };
+
+        // Construct a synthetic RpcRequest with the parsed params
+        // and delegate to the standard search handler.
+        let search_req = RpcRequest {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(id),
+            method: "search".to_owned(),
+            params: serde_json::to_value(&search_params).ok(),
+        };
+        self.handle_search(id, &search_req).await
     }
 
     /// Handle `stats` method — performance metrics.

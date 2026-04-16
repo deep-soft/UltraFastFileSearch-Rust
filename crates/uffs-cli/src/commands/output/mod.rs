@@ -11,8 +11,39 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use anyhow::{Context, Result};
-use tracing::info;
-use uffs_client::protocol::response::SearchRow;
+use serde_json::Value;
+
+// ── Value extraction helpers ───────────────────────────────────────────
+
+/// Get string field.
+fn vs(row: &Value, key: &str) -> String {
+    row[key].as_str().unwrap_or("").to_owned()
+}
+
+/// Get u64 field.
+fn vu(row: &Value, key: &str) -> u64 {
+    row[key].as_u64().unwrap_or(0)
+}
+
+/// Get i64 field.
+fn vi(row: &Value, key: &str) -> i64 {
+    row[key].as_i64().unwrap_or(0)
+}
+
+/// Get u32 field (clamped to `u32::MAX` on overflow).
+fn vu32(row: &Value, key: &str) -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "flags are stored as u32 in NTFS — overflow is not possible in practice"
+    )]
+    let val = row.get(key).and_then(Value::as_u64).unwrap_or(0) as u32;
+    val
+}
+
+/// Get bool field.
+fn vb(row: &Value, key: &str) -> bool {
+    row[key].as_bool().unwrap_or(false)
+}
 
 /// Context for legacy baseline-compatible footer formatting.
 pub struct CppFooterContext<'a> {
@@ -35,7 +66,7 @@ pub struct CppFooterContext<'a> {
 /// Returns an error if the operation fails.
 #[expect(clippy::too_many_arguments, reason = "output config forwarding")]
 pub fn write_native_results(
-    rows: &[SearchRow],
+    rows: &[Value],
     format: &str,
     out: &str,
     columns: &str,
@@ -98,7 +129,7 @@ pub fn write_native_results(
             &parity_ctx,
         )?;
         writer.flush()?;
-        info!(file = out, "Results written to file");
+        // Results written to file.
     }
 
     Ok(())
@@ -118,7 +149,7 @@ struct ParityContext<'a> {
 #[expect(clippy::too_many_arguments, reason = "output config forwarding")]
 fn write_formatted<W: Write>(
     writer: &mut W,
-    rows: &[SearchRow],
+    rows: &[Value],
     format: &str,
     columns: &str,
     separator: &str,
@@ -150,14 +181,14 @@ fn write_formatted<W: Write>(
 }
 
 /// Serialise rows as a JSON array.
-fn write_json<W: Write>(writer: &mut W, rows: &[SearchRow]) -> Result<()> {
+fn write_json<W: Write>(writer: &mut W, rows: &[Value]) -> Result<()> {
     serde_json::to_writer_pretty(&mut *writer, rows)?;
     writeln!(writer)?;
     Ok(())
 }
 
 /// Write a simple aligned text table (name, size, modified, path).
-fn write_table<W: Write>(writer: &mut W, rows: &[SearchRow]) -> Result<()> {
+fn write_table<W: Write>(writer: &mut W, rows: &[Value]) -> Result<()> {
     // Header
     writeln!(
         writer,
@@ -167,12 +198,15 @@ fn write_table<W: Write>(writer: &mut W, rows: &[SearchRow]) -> Result<()> {
     writeln!(writer, "{}", "─".repeat(120))?;
 
     for row in rows {
-        let size_str = uffs_client::format::format_bytes(row.size);
-        let time_str = format_unix_us(row.modified);
+        let size_str = uffs_client::format::format_bytes(vu(row, "size"));
+        let time_str = format_unix_us(vi(row, "modified"));
         writeln!(
             writer,
             "{:<50} {:>12} {:>19} {}",
-            row.name, size_str, time_str, row.path
+            vs(row, "name"),
+            size_str,
+            time_str,
+            vs(row, "path")
         )?;
     }
     Ok(())
@@ -187,7 +221,7 @@ const DEFAULT_COLUMNS: &str = "name,size,modified,path";
 /// are silently ignored.
 fn write_columnar<W: Write>(
     writer: &mut W,
-    rows: &[SearchRow],
+    rows: &[Value],
     columns: &str,
     separator: &str,
     quote: &str,
@@ -226,29 +260,29 @@ fn write_columnar<W: Write>(
     Ok(())
 }
 
-/// Extract a column value from a `SearchRow` by column name.
-fn extract_column(row: &SearchRow, col: &str) -> String {
+/// Extract a column value from a JSON row by column name.
+fn extract_column(row: &Value, col: &str) -> String {
     match col.to_ascii_lowercase().as_str() {
-        "name" => row.name.clone(),
-        "path" => row.path.clone(),
-        "size" => row.size.to_string(),
-        "allocated" | "allocated_size" | "size_on_disk" => row.allocated.to_string(),
-        "modified" | "written" => format_unix_us(row.modified),
-        "created" => format_unix_us(row.created),
-        "accessed" => format_unix_us(row.accessed),
-        "ext" | "extension" => extract_extension(&row.name),
-        "drive" => row.drive.to_string(),
+        "name" => vs(row, "name"),
+        "path" => vs(row, "path"),
+        "size" => vu(row, "size").to_string(),
+        "allocated" | "allocated_size" | "size_on_disk" => vu(row, "allocated").to_string(),
+        "modified" | "written" => format_unix_us(vi(row, "modified")),
+        "created" => format_unix_us(vi(row, "created")),
+        "accessed" => format_unix_us(vi(row, "accessed")),
+        "ext" | "extension" => extract_extension(&vs(row, "name")),
+        "drive" => vs(row, "drive"),
         "type" | "kind" => {
-            if row.is_directory {
+            if vb(row, "is_directory") {
                 "dir".to_owned()
             } else {
                 "file".to_owned()
             }
         }
-        "flags" => format!("{:#010x}", row.flags),
-        "descendants" => row.descendants.to_string(),
-        "treesize" => row.treesize.to_string(),
-        "tree_allocated" => row.tree_allocated.to_string(),
+        "flags" => format!("{:#010x}", vu32(row, "flags")),
+        "descendants" => vu(row, "descendants").to_string(),
+        "treesize" => vu(row, "treesize").to_string(),
+        "tree_allocated" => vu(row, "tree_allocated").to_string(),
         _ => String::new(),
     }
 }
@@ -369,7 +403,7 @@ const PARITY_BOOL_FLAGS: &[u32] = &[
 /// - Last column: raw attributes masked to parity 15 bits
 fn write_parity<W: Write>(
     writer: &mut W,
-    rows: &[SearchRow],
+    rows: &[Value],
     separator: &str,
     quote: &str,
     ctx: &ParityContext<'_>,
@@ -393,13 +427,15 @@ fn write_parity<W: Write>(
 
     for row in rows {
         buf.clear();
-        let is_dir = row.is_directory;
-        let flags = row.flags;
+        let is_dir = vb(row, "is_directory");
+        let flags = vu32(row, "flags");
+        let path = vs(row, "path");
+        let name = vs(row, "name");
 
         // 0: Path (quoted, trailing \ for dirs)
         buf.push_str(quote);
-        buf.push_str(&row.path);
-        if is_dir && !row.path.ends_with('\\') {
+        buf.push_str(&path);
+        if is_dir && !path.ends_with('\\') {
             buf.push('\\');
         }
         buf.push_str(quote);
@@ -408,7 +444,7 @@ fn write_parity<W: Write>(
         buf.push_str(separator);
         buf.push_str(quote);
         if !is_dir {
-            buf.push_str(&row.name);
+            buf.push_str(&name);
         }
         buf.push_str(quote);
 
@@ -416,42 +452,46 @@ fn write_parity<W: Write>(
         buf.push_str(separator);
         buf.push_str(quote);
         if is_dir {
-            buf.push_str(&row.path);
-            if !row.path.ends_with('\\') {
+            buf.push_str(&path);
+            if !path.ends_with('\\') {
                 buf.push('\\');
             }
-        } else if let Some(bslash) = row.path.rfind('\\') {
-            if let Some(slice) = row.path.get(..=bslash) {
+        } else if let Some(bslash) = path.rfind('\\') {
+            if let Some(slice) = path.get(..=bslash) {
                 buf.push_str(slice);
             }
         } else {
-            buf.push_str(&row.path);
+            buf.push_str(&path);
         }
         buf.push_str(quote);
 
         // 3: Size (treesize for dirs)
         buf.push_str(separator);
-        let size = if is_dir { row.treesize } else { row.size };
+        let size = if is_dir {
+            vu(row, "treesize")
+        } else {
+            vu(row, "size")
+        };
         push_u64(&mut buf, size);
 
         // 4: SizeOnDisk (tree_allocated for dirs)
         buf.push_str(separator);
         let alloc = if is_dir {
-            row.tree_allocated
+            vu(row, "tree_allocated")
         } else {
-            row.allocated
+            vu(row, "allocated")
         };
         push_u64(&mut buf, alloc);
 
         // 5-7: Created, Modified, Accessed
-        for ts in &[row.created, row.modified, row.accessed] {
+        for key in &["created", "modified", "accessed"] {
             buf.push_str(separator);
-            append_datetime_tz(&mut buf, *ts, ctx.tz_offset_secs);
+            append_datetime_tz(&mut buf, vi(row, key), ctx.tz_offset_secs);
         }
 
         // 8: Descendants
         buf.push_str(separator);
-        push_u64(&mut buf, u64::from(row.descendants));
+        push_u64(&mut buf, vu(row, "descendants"));
 
         // 9-23: Boolean flag columns (15 columns)
         for &flag in PARITY_BOOL_FLAGS {

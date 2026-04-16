@@ -31,29 +31,13 @@ path = "src/main.rs"
 [dependencies]
 # UFFS client library (IPC, protocol, format helpers)
 uffs-client.workspace = true
-uffs-mcp.workspace = true
-
-# Async runtime
-tokio.workspace = true
-
-# CLI
-clap.workspace = true
-indicatif.workspace = true
 
 # Error handling
 anyhow.workspace = true
 
-# Logging
-tracing.workspace = true
-tracing-subscriber.workspace = true
-tracing-appender.workspace = true
-dirs-next.workspace = true
-
 # Serialization
 serde_json.workspace = true
-
-# Memory allocator - mimalloc is faster than system allocator on all platforms
-mimalloc.workspace = true
+which = "8.0.2"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lints (inherit from workspace)

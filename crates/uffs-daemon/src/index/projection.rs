@@ -3,7 +3,8 @@
 
 //! Row conversion, sorting, and field projection for search responses.
 
-use uffs_client::protocol::{SearchParams, SearchRow, SearchSortDirection, SearchSortSpec};
+use uffs_client::protocol::response::SearchRow;
+use uffs_client::protocol::{SearchParams, SearchSortDirection, SearchSortSpec};
 use uffs_core::search::backend::DisplayRow;
 use uffs_core::search::field::{FieldId, SortDirection};
 

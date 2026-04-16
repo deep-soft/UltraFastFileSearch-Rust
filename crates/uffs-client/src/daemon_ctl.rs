@@ -143,10 +143,6 @@ pub fn find_daemon_exe() -> PathBuf {
 /// # Errors
 ///
 /// Returns `DaemonStartFailed` if spawning fails.
-#[expect(
-    clippy::single_call_fn,
-    reason = "platform-specific spawn logic — clarity over inlining"
-)]
 pub fn spawn_daemon(exe: &std::path::Path, args: &[&str]) -> Result<(), crate::error::ClientError> {
     #[cfg(unix)]
     spawn_daemon_unix(exe, args)?;

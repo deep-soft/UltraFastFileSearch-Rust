@@ -1,0 +1,676 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
+//! Parse raw CLI argument strings into [`SearchParams`].
+//!
+//! This module lives in `uffs-client` so the daemon can build a
+//! `SearchParams` from the CLI's raw `argv` without the CLI needing
+//! to parse each flag into typed fields first.  All sugar expansion
+//! (`--begins-with`, `--between`, `--exact-size`, `--word`, etc.)
+//! happens here.
+
+use super::{SearchFilterMode, SearchParams, SearchResponseMode};
+use crate::format::parse_size;
+
+// ── tiny helpers ───────────────────────────────────────────────────────
+
+/// Consume next token or report missing value.
+fn take_next(flag: &str, iter: &mut impl Iterator<Item = String>) -> Result<String, String> {
+    iter.next()
+        .ok_or_else(|| format!("Missing value for {flag}"))
+}
+
+/// Handle `--flag=val` or `--flag <val>`.
+fn flag_val(
+    cur: &str,
+    flag: &str,
+    iter: &mut impl Iterator<Item = String>,
+) -> Result<String, String> {
+    cur.strip_prefix(&format!("{flag}="))
+        .map_or_else(|| take_next(flag, iter), |rest| Ok(rest.to_owned()))
+}
+
+/// Parse comma-separated drive letters.
+fn drives_csv(input: &str) -> Result<Vec<char>, String> {
+    input
+        .split(',')
+        .map(|part| {
+            let stripped = part.trim();
+            let trimmed = stripped.strip_suffix(':').unwrap_or(stripped);
+            let ch = trimmed
+                .chars()
+                .next()
+                .ok_or_else(|| "empty drive".to_owned())?;
+            if trimmed.len() != 1 || !ch.is_ascii_alphabetic() {
+                return Err(format!("Bad drive: '{part}'"));
+            }
+            Ok(ch.to_ascii_uppercase())
+        })
+        .collect()
+}
+
+/// Parse string to `u16`.
+fn parse_u16(flag: &str, text: &str) -> Result<u16, String> {
+    text.parse().map_err(|err| format!("Bad {flag}: {err}"))
+}
+/// Parse string to `u32`.
+fn parse_u32(flag: &str, text: &str) -> Result<u32, String> {
+    text.parse().map_err(|err| format!("Bad {flag}: {err}"))
+}
+/// Parse string to `u64`.
+fn parse_u64(flag: &str, text: &str) -> Result<u64, String> {
+    text.parse().map_err(|err| format!("Bad {flag}: {err}"))
+}
+/// Parse string to `i32`.
+fn parse_i32(flag: &str, text: &str) -> Result<i32, String> {
+    text.parse().map_err(|err| format!("Bad {flag}: {err}"))
+}
+
+/// Parse boolean value.
+fn parse_bool(flag: &str, text: &str) -> Result<bool, String> {
+    match text {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        _ => Err(format!("Bad bool for {flag}: '{text}'")),
+    }
+}
+
+// ── Public entry point ─────────────────────────────────────────────────
+
+impl SearchParams {
+    /// Build a fully-populated `SearchParams` from raw CLI argument strings.
+    ///
+    /// Handles all sugar expansion (`--begins-with`, `--between`,
+    /// `--exact-size`, `--word`, `--count`/`--facet`/`--stats`/`--histogram`
+    /// → `--agg`, etc.) so the caller doesn't need to.
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive error string on malformed arguments.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "mechanical 1:1 flag-to-field mapping"
+    )]
+    pub fn from_cli_args(args: &[String]) -> Result<Self, String> {
+        let mut raw = RawCliArgs::default();
+        let mut iter = args.iter().cloned().peekable();
+
+        while let Some(arg) = iter.next() {
+            let flag = arg.split('=').next().unwrap_or(&arg);
+            match flag {
+                "--verbose" | "-v" | "--no-bitmap" | "--debug-tree" => {}
+                "--files-only" => raw.files_only = true,
+                "--dirs-only" => raw.dirs_only = true,
+                "--hide-system" => raw.hide_system = true,
+                "--hide-ads" => raw.hide_ads = true,
+                "--profile" => raw.profile = true,
+                "--benchmark" => raw.benchmark = true,
+                "--no-cache" => raw.no_cache = true,
+                "--case" => raw.case = true,
+                "--smart-case" => raw.smart_case = true,
+                "--word" => raw.word = true,
+                "--name-only" => raw.name_only = true,
+                "--sort-desc" => raw.sort_desc = true,
+                "--parity-compat" => raw.parity_compat = true,
+                "--count" => raw.count = true,
+                "--rows" => raw.rows = true,
+                "--drive" | "-d" => {
+                    let dv = flag_val(&arg, flag, &mut iter)?;
+                    raw.drive = drives_csv(&dv)?.into_iter().next();
+                }
+                "--drives" => {
+                    let dv = flag_val(&arg, "--drives", &mut iter)?;
+                    raw.drives = Some(drives_csv(&dv)?);
+                }
+                "--mft-file" => {
+                    let mv = flag_val(&arg, "--mft-file", &mut iter)?;
+                    raw.mft_file = mv.split(',').map(|sv| sv.trim().to_owned()).collect();
+                }
+                "--data-dir" => raw.data_dir = Some(flag_val(&arg, "--data-dir", &mut iter)?),
+                "--agg" => raw.agg.push(flag_val(&arg, "--agg", &mut iter)?),
+                "--facet" => raw.facet.push(flag_val(&arg, "--facet", &mut iter)?),
+                "--stats" => raw.stats.push(flag_val(&arg, "--stats", &mut iter)?),
+                "--histogram" => raw
+                    .histogram
+                    .push(flag_val(&arg, "--histogram", &mut iter)?),
+                "--agg-cursor" => raw.agg_cursor = Some(flag_val(&arg, "--agg-cursor", &mut iter)?),
+                "--agg-page-size" => {
+                    let pv = flag_val(&arg, "--agg-page-size", &mut iter)?;
+                    raw.agg_page_size = Some(parse_u16("--agg-page-size", &pv)?);
+                }
+                "--attr" => raw.attr = Some(flag_val(&arg, "--attr", &mut iter)?),
+                "--newer" => raw.newer = Some(flag_val(&arg, "--newer", &mut iter)?),
+                "--older" => raw.older = Some(flag_val(&arg, "--older", &mut iter)?),
+                "--newer-created" => {
+                    raw.newer_created = Some(flag_val(&arg, "--newer-created", &mut iter)?);
+                }
+                "--older-created" => {
+                    raw.older_created = Some(flag_val(&arg, "--older-created", &mut iter)?);
+                }
+                "--newer-accessed" => {
+                    raw.newer_accessed = Some(flag_val(&arg, "--newer-accessed", &mut iter)?);
+                }
+                "--older-accessed" => {
+                    raw.older_accessed = Some(flag_val(&arg, "--older-accessed", &mut iter)?);
+                }
+                "--exclude" => raw.exclude = Some(flag_val(&arg, "--exclude", &mut iter)?),
+                "--in-path" => raw.in_path = Some(flag_val(&arg, "--in-path", &mut iter)?),
+                "--type" => raw.type_filter = Some(flag_val(&arg, "--type", &mut iter)?),
+                "--ext" => raw.ext = Some(flag_val(&arg, "--ext", &mut iter)?),
+                "--month" => raw.month = Some(flag_val(&arg, "--month", &mut iter)?),
+                "--between" => raw.between = Some(flag_val(&arg, "--between", &mut iter)?),
+                "--begins-with" => {
+                    raw.begins_with = Some(flag_val(&arg, "--begins-with", &mut iter)?);
+                }
+                "--ends-with" => raw.ends_with = Some(flag_val(&arg, "--ends-with", &mut iter)?),
+                "--contains" => raw.contains = Some(flag_val(&arg, "--contains", &mut iter)?),
+                "--not-contains" => {
+                    raw.not_contains = Some(flag_val(&arg, "--not-contains", &mut iter)?);
+                }
+                "--sort" => raw.sort = Some(flag_val(&arg, "--sort", &mut iter)?),
+                "--format" | "-f" => raw.format = flag_val(&arg, flag, &mut iter)?,
+                "--out" => raw.out = flag_val(&arg, "--out", &mut iter)?,
+                "--columns" => raw.columns = flag_val(&arg, "--columns", &mut iter)?,
+                "--sep" => raw.sep = flag_val(&arg, "--sep", &mut iter)?,
+                "--quotes" => raw.quotes = flag_val(&arg, "--quotes", &mut iter)?,
+                "--header" => {
+                    raw.header = parse_bool("--header", &flag_val(&arg, "--header", &mut iter)?)?;
+                }
+                "--pos" => raw.pos = flag_val(&arg, "--pos", &mut iter)?,
+                "--neg" => raw.neg = flag_val(&arg, "--neg", &mut iter)?,
+                "--query-mode" => raw.query_mode = flag_val(&arg, "--query-mode", &mut iter)?,
+                "--limit" | "-n" => raw.limit = parse_u32(flag, &flag_val(&arg, flag, &mut iter)?)?,
+                "--tz-offset" => {
+                    raw.tz_offset = Some(parse_i32(
+                        "--tz-offset",
+                        &flag_val(&arg, "--tz-offset", &mut iter)?,
+                    )?);
+                }
+                "--min-size" => {
+                    raw.min_size = Some(parse_size(&flag_val(&arg, "--min-size", &mut iter)?)?);
+                }
+                "--max-size" => {
+                    raw.max_size = Some(parse_size(&flag_val(&arg, "--max-size", &mut iter)?)?);
+                }
+                "--exact-size" => {
+                    raw.exact_size = Some(parse_size(&flag_val(&arg, "--exact-size", &mut iter)?)?);
+                }
+                "--min-size-on-disk" => {
+                    raw.min_size_on_disk = Some(parse_size(&flag_val(
+                        &arg,
+                        "--min-size-on-disk",
+                        &mut iter,
+                    )?)?);
+                }
+                "--max-size-on-disk" => {
+                    raw.max_size_on_disk = Some(parse_size(&flag_val(
+                        &arg,
+                        "--max-size-on-disk",
+                        &mut iter,
+                    )?)?);
+                }
+                "--exact-size-on-disk" => {
+                    raw.exact_size_on_disk = Some(parse_size(&flag_val(
+                        &arg,
+                        "--exact-size-on-disk",
+                        &mut iter,
+                    )?)?);
+                }
+                "--min-treesize" => {
+                    raw.min_treesize =
+                        Some(parse_size(&flag_val(&arg, "--min-treesize", &mut iter)?)?);
+                }
+                "--max-treesize" => {
+                    raw.max_treesize =
+                        Some(parse_size(&flag_val(&arg, "--max-treesize", &mut iter)?)?);
+                }
+                "--min-tree-allocated" => {
+                    raw.min_tree_allocated = Some(parse_size(&flag_val(
+                        &arg,
+                        "--min-tree-allocated",
+                        &mut iter,
+                    )?)?);
+                }
+                "--max-tree-allocated" => {
+                    raw.max_tree_allocated = Some(parse_size(&flag_val(
+                        &arg,
+                        "--max-tree-allocated",
+                        &mut iter,
+                    )?)?);
+                }
+                "--min-descendants" => {
+                    raw.min_descendants = Some(parse_u32(
+                        "--min-descendants",
+                        &flag_val(&arg, "--min-descendants", &mut iter)?,
+                    )?);
+                }
+                "--max-descendants" => {
+                    raw.max_descendants = Some(parse_u32(
+                        "--max-descendants",
+                        &flag_val(&arg, "--max-descendants", &mut iter)?,
+                    )?);
+                }
+                "--exact-descendants" => {
+                    raw.exact_descendants = Some(parse_u32(
+                        "--exact-descendants",
+                        &flag_val(&arg, "--exact-descendants", &mut iter)?,
+                    )?);
+                }
+                "--min-name-length" => {
+                    raw.min_name_length = Some(parse_u16(
+                        "--min-name-length",
+                        &flag_val(&arg, "--min-name-length", &mut iter)?,
+                    )?);
+                }
+                "--max-name-length" => {
+                    raw.max_name_length = Some(parse_u16(
+                        "--max-name-length",
+                        &flag_val(&arg, "--max-name-length", &mut iter)?,
+                    )?);
+                }
+                "--min-path-length" => {
+                    raw.min_path_length = Some(parse_u16(
+                        "--min-path-length",
+                        &flag_val(&arg, "--min-path-length", &mut iter)?,
+                    )?);
+                }
+                "--max-path-length" => {
+                    raw.max_path_length = Some(parse_u16(
+                        "--max-path-length",
+                        &flag_val(&arg, "--max-path-length", &mut iter)?,
+                    )?);
+                }
+                "--min-bulkiness" => {
+                    raw.min_bulkiness = Some(parse_u64(
+                        "--min-bulkiness",
+                        &flag_val(&arg, "--min-bulkiness", &mut iter)?,
+                    )?);
+                }
+                "--max-bulkiness" => {
+                    raw.max_bulkiness = Some(parse_u64(
+                        "--max-bulkiness",
+                        &flag_val(&arg, "--max-bulkiness", &mut iter)?,
+                    )?);
+                }
+                "--chaos-seed" | "--reserved-allocated" => {
+                    let _ignored: String = flag_val(&arg, flag, &mut iter)?;
+                }
+                other => {
+                    if other.starts_with('-') {
+                        return Err(format!("Unknown flag: '{other}'"));
+                    }
+                    if raw.pattern.is_some() {
+                        return Err(format!("Unexpected argument: '{other}'"));
+                    }
+                    raw.pattern = Some(arg);
+                }
+            }
+        }
+
+        raw.into_search_params()
+    }
+}
+
+// ── Raw CLI args holder ────────────────────────────────────────────────
+
+/// Transient container for raw CLI values before sugar expansion.
+///
+/// Fields mirror CLI flags 1:1; documented at the flag-parsing level.
+#[derive(Default)]
+#[expect(clippy::struct_excessive_bools, reason = "mirrors CLI flags")]
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::missing_docs_in_private_items,
+        reason = "fields mirror CLI flags — documented at the parser level"
+    )
+)]
+struct RawCliArgs {
+    pattern: Option<String>,
+    drive: Option<char>,
+    drives: Option<Vec<char>>,
+    files_only: bool,
+    dirs_only: bool,
+    hide_system: bool,
+    hide_ads: bool,
+    profile: bool,
+    benchmark: bool,
+    no_cache: bool,
+    case: bool,
+    smart_case: bool,
+    word: bool,
+    name_only: bool,
+    sort_desc: bool,
+    parity_compat: bool,
+    count: bool,
+    rows: bool,
+    sort: Option<String>,
+    ext: Option<String>,
+    attr: Option<String>,
+    newer: Option<String>,
+    older: Option<String>,
+    newer_created: Option<String>,
+    older_created: Option<String>,
+    newer_accessed: Option<String>,
+    older_accessed: Option<String>,
+    exclude: Option<String>,
+    in_path: Option<String>,
+    type_filter: Option<String>,
+    month: Option<String>,
+    between: Option<String>,
+    begins_with: Option<String>,
+    ends_with: Option<String>,
+    contains: Option<String>,
+    not_contains: Option<String>,
+    limit: u32,
+    min_size: Option<u64>,
+    max_size: Option<u64>,
+    exact_size: Option<u64>,
+    min_size_on_disk: Option<u64>,
+    max_size_on_disk: Option<u64>,
+    exact_size_on_disk: Option<u64>,
+    min_treesize: Option<u64>,
+    max_treesize: Option<u64>,
+    min_tree_allocated: Option<u64>,
+    max_tree_allocated: Option<u64>,
+    min_descendants: Option<u32>,
+    max_descendants: Option<u32>,
+    exact_descendants: Option<u32>,
+    min_name_length: Option<u16>,
+    max_name_length: Option<u16>,
+    min_path_length: Option<u16>,
+    max_path_length: Option<u16>,
+    min_bulkiness: Option<u64>,
+    max_bulkiness: Option<u64>,
+    format: String,
+    out: String,
+    columns: String,
+    sep: String,
+    quotes: String,
+    header: bool,
+    pos: String,
+    neg: String,
+    query_mode: String,
+    tz_offset: Option<i32>,
+    agg: Vec<String>,
+    facet: Vec<String>,
+    stats: Vec<String>,
+    histogram: Vec<String>,
+    agg_cursor: Option<String>,
+    agg_page_size: Option<u16>,
+    mft_file: Vec<String>,
+    data_dir: Option<String>,
+}
+
+impl RawCliArgs {
+    /// Convert raw CLI values into a fully-populated [`SearchParams`],
+    /// performing all sugar expansion.
+    #[expect(clippy::too_many_lines, reason = "sugar expansion for 60+ flags")]
+    fn into_search_params(mut self) -> Result<SearchParams, String> {
+        // ── Pattern sugar: --begins-with / --ends-with / --contains ─
+        let raw_pattern = self
+            .pattern
+            .take()
+            .or_else(|| self.begins_with.take().map(|prefix| format!("{prefix}*")))
+            .or_else(|| self.ends_with.take().map(|suffix| format!("*{suffix}")))
+            .or_else(|| self.contains.take().map(|needle| format!("*{needle}*")))
+            .unwrap_or_else(|| "*".to_owned());
+
+        // ── --not-contains → merge into --exclude ──────────────────
+        let exclude = match (self.exclude.take(), self.not_contains.take()) {
+            (Some(ex), Some(nc)) => Some(format!("{ex},*{nc}*")),
+            (Some(ex), None) => Some(ex),
+            (None, Some(nc)) => Some(format!("*{nc}*")),
+            (None, None) => None,
+        };
+
+        // ── Scope prefixes: path:/dir:/file: ───────────────────────
+        let (match_path, pattern) = if let Some(rest) = raw_pattern.strip_prefix("path:") {
+            (true, rest.to_owned())
+        } else if let Some(rest) = raw_pattern.strip_prefix("dir:") {
+            self.dirs_only = true;
+            (false, rest.to_owned())
+        } else if let Some(rest) = raw_pattern.strip_prefix("file:") {
+            self.files_only = true;
+            (false, rest.to_owned())
+        } else {
+            (false, raw_pattern)
+        };
+
+        // ── --name-only validation ─────────────────────────────────
+        if self.name_only
+            && (pattern.contains('\\') || pattern.contains('/'))
+            && !pattern.starts_with('>')
+        {
+            return Err(
+                "--name-only cannot be used with path patterns containing '\\' or '/'".to_owned(),
+            );
+        }
+
+        // ── --exact-size / --exact-descendants ─────────────────────
+        let min_size = self.exact_size.or(self.min_size);
+        let max_size = self.exact_size.or(self.max_size);
+        let min_desc = self.exact_descendants.or(self.min_descendants);
+        let max_desc = self.exact_descendants.or(self.max_descendants);
+        let min_sod = self.exact_size_on_disk.or(self.min_size_on_disk);
+        let max_sod = self.exact_size_on_disk.or(self.max_size_on_disk);
+
+        // ── --between START,END → newer + older ────────────────────
+        let (between_newer, between_older) = self.between.as_ref().map_or((None, None), |bv| {
+            let mut parts = bv.splitn(2, ',');
+            (
+                parts.next().map(String::from),
+                parts.next().map(String::from),
+            )
+        });
+        let newer = self.newer.or(between_newer);
+        let older = self.older.or(between_older);
+
+        // ── Month spec → Vec<u32> ──────────────────────────────────
+        let allowed_months: Vec<u32> = self
+            .month
+            .as_deref()
+            .map(crate::format::parse_month_spec)
+            .unwrap_or_default();
+
+        // ── Smart case ─────────────────────────────────────────────
+        let case_sensitive = if self.case {
+            true
+        } else if self.smart_case {
+            pattern.chars().any(char::is_uppercase)
+        } else {
+            false
+        };
+
+        // ── Aggregate sugar ────────────────────────────────────────
+        let mut agg_specs = self.agg;
+        if self.count && !agg_specs.iter().any(|spec| spec == "count") {
+            agg_specs.push("count".to_owned());
+        }
+        for facet in &self.facet {
+            if let Some((field, top)) = facet.split_once(':') {
+                agg_specs.push(format!("terms:{field},top={top}"));
+            } else {
+                agg_specs.push(format!("terms:{facet},top=20"));
+            }
+        }
+        for stat in &self.stats {
+            agg_specs.push(format!("stats:{stat}"));
+        }
+        for hist in &self.histogram {
+            if let Some((field, interval)) = hist.split_once(':') {
+                agg_specs.push(format!("hist:{field},interval={interval}"));
+            } else {
+                agg_specs.push(format!("hist:{hist}"));
+            }
+        }
+        let force_rows = self.rows;
+        let agg_only = !agg_specs.is_empty() && !force_rows;
+
+        // ── Drives ─────────────────────────────────────────────────
+        let drives: Vec<char> = self
+            .drives
+            .or_else(|| self.drive.map(|ch| vec![ch]))
+            .unwrap_or_default();
+
+        // ── Filter mode ────────────────────────────────────────────
+        let filter_mode = if self.files_only {
+            Some(SearchFilterMode::Files)
+        } else if self.dirs_only {
+            Some(SearchFilterMode::Dirs)
+        } else {
+            Some(SearchFilterMode::All)
+        };
+        let filter = if self.files_only {
+            Some("files".to_owned())
+        } else if self.dirs_only {
+            Some("dirs".to_owned())
+        } else {
+            None
+        };
+
+        // ── Limit ──────────────────────────────────────────────────
+        let limit = if agg_only {
+            Some(0)
+        } else {
+            (self.limit > 0).then_some(self.limit)
+        };
+
+        // ── Sort ───────────────────────────────────────────────────
+        let sorts = self.sort.as_deref().map_or_else(Vec::new, |sort_str| {
+            SearchParams::canonicalize_legacy_sort(sort_str, self.sort_desc)
+        });
+
+        // ── Columns / projection ───────────────────────────────────
+        let columns = if self.parity_compat {
+            "parity".to_owned()
+        } else {
+            self.columns
+        };
+        let projection: Vec<String> = if columns.is_empty() {
+            Vec::new()
+        } else {
+            columns
+                .split(',')
+                .map(|col| col.trim().to_owned())
+                .collect()
+        };
+
+        // ── Output config ──────────────────────────────────────────
+        let output_file = if self.out.is_empty() || self.out == "console" {
+            None
+        } else {
+            let path = std::path::Path::new(&self.out);
+            let abs = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir().unwrap_or_default().join(path)
+            };
+            Some(abs.to_string_lossy().into_owned())
+        };
+
+        // ── Aggregation wire specs ─────────────────────────────────
+        let aggregations = agg_specs
+            .iter()
+            .map(|spec| {
+                let is_preset = crate::format::is_aggregate_preset(spec);
+                super::AggregateSpecWire {
+                    kind: if spec == "count" {
+                        "count".to_owned()
+                    } else if is_preset {
+                        "preset".to_owned()
+                    } else {
+                        "raw".to_owned()
+                    },
+                    label: (!is_preset && spec != "count").then(|| spec.clone()),
+                    preset: is_preset.then(|| spec.clone()),
+                    ..super::AggregateSpecWire::default()
+                }
+            })
+            .collect();
+
+        // ── Assemble ───────────────────────────────────────────────
+        let mut params = SearchParams {
+            // Core
+            pattern,
+            case_sensitive,
+            whole_word: false,
+            match_path,
+            // Sort
+            sort: self.sort,
+            sorts,
+            sort_desc: self.sort_desc,
+            // Limit
+            limit,
+            // Filter mode
+            filter,
+            filter_mode,
+            predicates: Vec::new(),
+            drives,
+            projection,
+            response_mode: Some(SearchResponseMode::Rows),
+            // Size
+            min_size,
+            max_size,
+            // Descendants
+            min_descendants: min_desc,
+            max_descendants: max_desc,
+            // Time
+            newer,
+            older,
+            newer_created: self.newer_created,
+            older_created: self.older_created,
+            newer_accessed: self.newer_accessed,
+            older_accessed: self.older_accessed,
+            // Attribute / extension / exclude
+            attr: self.attr,
+            ext: self.ext,
+            exclude,
+            path_contains: self.in_path,
+            type_filter: self.type_filter,
+            min_bulkiness: self.min_bulkiness,
+            max_bulkiness: self.max_bulkiness,
+            // Length
+            min_name_len: self.min_name_length,
+            max_name_len: self.max_name_length,
+            min_path_len: self.min_path_length,
+            max_path_len: self.max_path_length,
+            // Size-on-disk
+            min_allocated: min_sod,
+            max_allocated: max_sod,
+            // Tree metrics
+            min_treesize: self.min_treesize,
+            max_treesize: self.max_treesize,
+            min_tree_allocated: self.min_tree_allocated,
+            max_tree_allocated: self.max_tree_allocated,
+            // Month
+            allowed_months,
+            // Misc
+            hide_system: self.hide_system,
+            hide_ads: self.hide_ads,
+            // Profiling
+            profile: self.profile || self.benchmark,
+            // Aggregation
+            aggregations,
+            include_rows: agg_specs.is_empty() || force_rows,
+            agg_cursor: self.agg_cursor,
+            agg_page_size: self.agg_page_size,
+            // Direct file output
+            output_file,
+            output_separator: Some(self.sep),
+            output_quote: Some(self.quotes),
+            output_header: Some(self.header),
+            output_pos: Some(self.pos),
+            output_neg: Some(self.neg),
+            output_columns: if columns.is_empty() {
+                None
+            } else {
+                Some(columns)
+            },
+            output_parity_compat: self.parity_compat.then_some(true),
+            output_tz_offset_hours: self.tz_offset,
+        };
+        params.populate_canonical_fields();
+        Ok(params)
+    }
+}

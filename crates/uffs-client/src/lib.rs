@@ -23,9 +23,11 @@ use serde as _;
 use uffs_security as _;
 
 pub mod connect;
+pub mod connect_sync;
 pub mod daemon_ctl;
 pub mod error;
 pub mod format;
+pub mod mcp_pid;
 pub mod protocol;
 pub mod shmem;
 pub mod types;

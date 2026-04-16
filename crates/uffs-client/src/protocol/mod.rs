@@ -6,12 +6,12 @@
 //! These types define the wire format for IPC communication. Both
 //! `uffsd` (daemon) and `uffs` (CLI) both depend on this module.
 
+pub mod cli_args;
 pub mod response;
 pub mod search_params;
 #[cfg(test)]
 mod tests;
 
-pub use response::*;
 use serde::{Deserialize, Serialize};
 
 // ────────────────────────────────────────────────────────────────────────────

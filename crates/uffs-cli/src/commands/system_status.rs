@@ -9,45 +9,31 @@
 //! - **MCP Stdio Sessions**: active `uffs mcp run` processes (one per AI host)
 
 use anyhow::{Context, Result};
-use uffs_client::connect::UffsClient;
+use uffs_client::connect_sync::UffsClientSync;
 use uffs_client::protocol::response::DaemonStatus;
 
 /// `uffs status` — show combined system status.
-///
-/// Displays daemon health (PID, uptime, drives), MCP HTTP gateway
-/// state (PID, transport, health endpoint), and active MCP stdio
-/// sessions in a single unified output.
 ///
 /// # Errors
 ///
 /// Returns an error if the operation fails.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-pub async fn system_status() -> Result<()> {
+pub fn system_status() {
     println!("═══ UFFS System Status ═══");
     println!();
-
-    // ── Daemon ──────────────────────────────────────────────────────
-    print_daemon_status().await;
-
+    print_daemon_status();
     println!();
-
-    // ── MCP HTTP Gateway ─────────────────────────────────────────────
-    print_mcp_http_status().await;
-
+    print_mcp_http_status();
     println!();
-
-    // ── MCP Stdio Sessions ───────────────────────────────────────────
     print_mcp_stdio_sessions();
-
-    Ok(())
 }
 
 /// Print daemon status section.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-async fn print_daemon_status() {
+fn print_daemon_status() {
     println!("── Daemon ──");
 
-    let Ok(mut client) = UffsClient::connect_raw().await else {
+    let Ok(mut client) = UffsClientSync::connect_raw() else {
         println!("  Status:      not running");
         let pid_path = uffs_client::daemon_ctl::pid_file_path();
         if pid_path.exists() {
@@ -56,7 +42,7 @@ async fn print_daemon_status() {
         return;
     };
 
-    let Ok(status) = client.status().await else {
+    let Ok(status) = client.status() else {
         println!("  Status:      connected but not responding");
         return;
     };
@@ -103,7 +89,7 @@ async fn print_daemon_status() {
     println!("  Connections: {}", status.connections);
 
     // Drive summary.
-    if let Ok(drives) = client.drives().await {
+    if let Ok(drives) = client.drives() {
         if drives.drives.is_empty() {
             println!("  Drives:      (none loaded)");
         } else {
@@ -124,7 +110,7 @@ async fn print_daemon_status() {
     }
 
     // Performance stats.
-    if let Ok(stats) = client.stats().await {
+    if let Ok(stats) = client.stats() {
         let fmt = uffs_client::format::format_duration;
         let startup = core::time::Duration::from_millis(stats.startup_duration_ms);
         println!("  Startup:     {}", fmt(startup));
@@ -141,12 +127,12 @@ async fn print_daemon_status() {
 
 /// Print MCP HTTP gateway status section.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-async fn print_mcp_http_status() {
+fn print_mcp_http_status() {
     println!("── MCP HTTP Gateway ──");
 
     // Read the PID file.  Only show HTTP-transport entries here;
     // stdio entries are handled by `print_mcp_stdio_sessions()`.
-    let info = match uffs_mcp::pid::parse_mcp_pid_file_full() {
+    let info = match uffs_client::mcp_pid::parse_mcp_pid_file_full() {
         Some(info) if info.http_addr().is_some() => info,
         _ => {
             println!("  Status:      not running");
@@ -154,7 +140,7 @@ async fn print_mcp_http_status() {
         }
     };
 
-    let alive = uffs_mcp::pid::is_mcp_server_running().is_some();
+    let alive = uffs_client::mcp_pid::is_mcp_server_running().is_some();
     if !alive {
         println!(
             "  Status:      not running (stale PID file, PID {})",
@@ -188,7 +174,7 @@ async fn print_mcp_http_status() {
 
     // Probe HTTP /status endpoint for health + stats.
     if let Some((bind, port)) = info.http_addr() {
-        match http_get_json(bind, port, "/status").await {
+        match http_get_json(bind, port, "/status") {
             Ok(json) => {
                 println!("  Health:      ✓ (http://{bind}:{port}/health)");
                 println!("  Endpoint:    http://{bind}:{port}/mcp");
@@ -419,21 +405,22 @@ fn resolve_parent_name(ppid: u32) -> Option<String> {
     Some(short)
 }
 
-/// HTTP GET returning parsed JSON body.
-async fn http_get_json(bind: &str, port: u16, path: &str) -> Result<serde_json::Value> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+/// HTTP GET returning parsed JSON body (blocking).
+fn http_get_json(bind: &str, port: u16, path: &str) -> Result<serde_json::Value> {
+    use std::io::{Read, Write};
 
     let addr = format!("{bind}:{port}");
-    let stream = tokio::net::TcpStream::connect(&addr)
-        .await
-        .with_context(|| format!("connect to {addr}"))?;
-    let (mut reader, mut writer) = stream.into_split();
+    let mut stream =
+        std::net::TcpStream::connect(&addr).with_context(|| format!("connect to {addr}"))?;
+    stream
+        .set_read_timeout(Some(core::time::Duration::from_secs(5)))
+        .ok();
 
     let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
-    writer.write_all(request.as_bytes()).await?;
+    stream.write_all(request.as_bytes())?;
 
     let mut response = Vec::new();
-    reader.read_to_end(&mut response).await?;
+    stream.read_to_end(&mut response)?;
 
     let text = String::from_utf8_lossy(&response);
     let body = text

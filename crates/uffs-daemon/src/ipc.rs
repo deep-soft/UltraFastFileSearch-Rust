@@ -360,8 +360,7 @@ impl IpcServer {
 #[cfg(unix)]
 #[expect(
     clippy::cognitive_complexity,
-    reason = "server accept loop with peer credential check, connection limit, \
-              task spawn, and shutdown select — inherently branchy async I/O"
+    reason = "IPC message router with streaming and notifications"
 )]
 pub(crate) async fn run_ipc_server(
     index: Arc<IndexManager>,

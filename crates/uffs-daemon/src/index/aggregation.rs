@@ -180,12 +180,12 @@ impl IndexManager {
     /// bounds).  Both are optional and compose: a record must pass *both*
     /// to be fed to accumulators.
     #[expect(
-        clippy::cognitive_complexity,
-        reason = "multi-spec aggregation engine with predicate filtering and accumulation"
-    )]
-    #[expect(
         clippy::too_many_arguments,
         reason = "aggregation engine needs snapshot, specs, predicates, pagination, pattern, drives, and filter"
+    )]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "aggregation engine with multiple spec types"
     )]
     pub(crate) fn run_aggregations(
         snapshot: &DriveIndex,

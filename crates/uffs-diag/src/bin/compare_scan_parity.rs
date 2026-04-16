@@ -79,7 +79,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
-use uffs_diag::parity::{ComparisonResults, FieldStats};
+use uffs_diag::parity::stats::{ComparisonResults, FieldStats};
 use uffs_polars::{CsvReadOptions, DataFrame, SerReader, StringChunked};
 
 // ============================================================================
