@@ -1203,36 +1203,41 @@ fn scenario_m(r: &mut Runner) {
             }
             Ok(String::new())
         });
-    } else {
-        println!(
-            "    ({}— skipping incremental load, testing reload + error handling only)",
-            if drive_letters.len() == 1 {
-                format!("only 1 drive ({}) in data-dir ", drive_letters[0])
-            } else if r.source_flag == Some("--mft-file") {
-                "source is single MFT file ".to_owned()
-            } else {
-                "no data-dir ".to_owned()
-            }
-        );
+    } else if r.source_flag == Some("--mft-file") {
+        // Single MFT file: test idempotent reload.
+        println!("    (source is single MFT file — testing idempotent reload only)");
 
-        // Fallback: start with full source, test reload.
-        r.step("M1  Start daemon with full source", |r| {
+        r.step("M1  Start daemon with MFT file", |r| {
             r.kill_all();
             r.ensure_daemon_running()?;
             if !r.is_daemon_running() { bail!("daemon not running"); }
             Ok(String::new())
         });
 
-        r.step("M2  Reload same source → already loaded", |r| {
+        r.step("M2  Reload same MFT → already loaded", |r| {
             let out = r.daemon_load(&r.source_args())?;
             let lower = out.to_lowercase();
             if lower.contains("error") && !lower.contains("already") {
                 bail!("unexpected error: {out}");
             }
-            if !lower.contains("already loaded") && !lower.contains("skipped") && !lower.contains("loaded") {
+            if !lower.contains("already loaded") && !lower.contains("skipped")
+                && !lower.contains("loaded")
+            {
                 bail!("expected load confirmation: {out}");
             }
             Ok(out.lines().last().unwrap_or("").trim().to_owned())
+        });
+    } else {
+        // Live NTFS (no --data-dir, no --mft-file): `daemon load` only supports
+        // file-based sources, so skip idempotent reload and go straight to
+        // error handling tests.
+        println!("    (live NTFS mode — no file source to reload, testing error handling only)");
+
+        r.step("M1  Start daemon (live drives)", |r| {
+            r.kill_all();
+            r.ensure_daemon_running()?;
+            if !r.is_daemon_running() { bail!("daemon not running"); }
+            Ok(String::new())
         });
     }
 
