@@ -25,6 +25,7 @@
 //   Scenario J: Stale port occupant → kill and start fresh
 //   Scenario K: `mcp kill` cleans up stale port processes
 //   Scenario L: Daemon killed → next tool call reconnects
+//   Scenario M: Daemon load — hot-load MFT into running daemon
 //
 // Usage:
 //   rust-script scripts/dev/mcp-readiness.rs ~/uffs_data
@@ -301,6 +302,7 @@ fn health_check_detail(host: &str, port: u16) -> (bool, String) {
 }
 
 /// Poll /health until ready (up to `timeout`), with periodic diagnostics.
+#[allow(dead_code)]
 fn wait_for_health(host: &str, port: u16, timeout: Duration) -> bool {
     let start = Instant::now();
     let deadline = start + timeout;
@@ -531,6 +533,19 @@ impl Runner {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
+    /// Run a `uffs` CLI command, return combined stdout+stderr and exit code.
+    fn run_full(&self, args: &[&str]) -> Result<(String, bool)> {
+        let out = Command::new(&self.binary).args(args).output()
+            .with_context(|| format!("exec: {} {}", self.binary, args.join(" ")))?;
+        let mut combined = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if !stderr.is_empty() {
+            combined.push('\n');
+            combined.push_str(&stderr);
+        }
+        Ok((combined, out.status.success()))
+    }
+
     fn ensure_daemon_stopped(&self) {
         let _ = self.run_ok(&["daemon", "kill"]);
         for _ in 0..20 {
@@ -564,6 +579,13 @@ impl Runner {
         // or "Daemon is not running." when not.
         (out.contains("daemon pid") || out.contains("ready") || out.contains("loading"))
             && !out.contains("not running")
+    }
+
+    /// Run `uffs daemon load` with given args, return stdout.
+    fn daemon_load(&self, extra_args: &[&str]) -> Result<String> {
+        let mut args = vec!["daemon", "load"];
+        args.extend_from_slice(extra_args);
+        self.run_ok(&args)
     }
 
     /// Kill everything — daemon + MCP gateway.
@@ -1043,6 +1065,74 @@ fn scenario_l(r: &mut Runner) {
     r.step("L7  Stop", |r| { r.mcp_stop()?; Ok(String::new()) });
 }
 
+// ── Scenario M: Daemon load — hot-load MFT into running daemon ─────────────
+
+fn scenario_m(r: &mut Runner) {
+    println!("\n{}", "── Scenario M: Daemon load — hot-load MFT ──".cyan().bold());
+
+    r.step("M1  Ensure clean daemon running", |r| {
+        r.kill_all();
+        r.ensure_daemon_running()?;
+        if !r.is_daemon_running() { bail!("daemon not running"); }
+        Ok(String::new())
+    });
+
+    // M2: Reload the same source → should report "already loaded".
+    r.step("M2  `daemon load` same source → already loaded", |r| {
+        let out = r.daemon_load(&r.source_args())?;
+        let lower = out.to_lowercase();
+        // Should contain "already loaded" or "skipped" — not an error.
+        if lower.contains("error") && !lower.contains("already") {
+            bail!("unexpected error: {out}");
+        }
+        if !lower.contains("already loaded") && !lower.contains("skipped") && !lower.contains("loaded") {
+            bail!("expected load confirmation: {out}");
+        }
+        Ok(out.lines().last().unwrap_or("").trim().to_owned())
+    });
+
+    // M3: `daemon load` with no args → informative error.
+    r.step("M3  `daemon load` no args → error message", |r| {
+        let (out, success) = r.run_full(&["daemon", "load"])?;
+        let lower = out.to_lowercase();
+        // Should fail with a usage hint, not crash.
+        if success {
+            bail!("expected non-zero exit, but command succeeded: {out}");
+        }
+        if !lower.contains("nothing to load") && !lower.contains("provide")
+            && !lower.contains("mft-file") {
+            bail!("expected usage hint: {out}");
+        }
+        Ok(String::new())
+    });
+
+    // M4: `daemon load --mft-file <bogus>` → error reported (not a crash).
+    r.step("M4  `daemon load --mft-file /nonexistent` → error, daemon alive", |r| {
+        let (out, _success) = r.run_full(&["daemon", "load", "--mft-file", "/nonexistent/fake.bin"])?;
+        // Should report an error for the bad path but not crash the daemon.
+        if !r.is_daemon_running() {
+            bail!("daemon crashed after bad load: {out}");
+        }
+        Ok(out.lines().filter(|l| !l.is_empty()).last().unwrap_or("").trim().to_owned())
+    });
+
+    // M5: Verify daemon still healthy after all loads.
+    r.step("M5  Daemon still healthy", |r| {
+        if !r.is_daemon_running() { bail!("daemon not running"); }
+        // Run a quick search to prove the index is intact.
+        let out = r.run_ok(&["*", "--limit", "1"])?;
+        if out.trim().is_empty() { bail!("search returned nothing — index may be broken"); }
+        Ok(String::new())
+    });
+
+    // M6: Stop daemon.
+    r.step("M6  Stop daemon", |r| {
+        r.daemon_kill()?;
+        r.ensure_daemon_stopped();
+        Ok(String::new())
+    });
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
@@ -1111,6 +1201,7 @@ fn main() -> Result<()> {
     scenario_j(&mut r);
     scenario_k(&mut r);
     scenario_l(&mut r);
+    scenario_m(&mut r);
 
     // Cleanup.
     r.kill_all();

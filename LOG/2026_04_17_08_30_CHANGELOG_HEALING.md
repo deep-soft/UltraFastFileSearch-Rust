@@ -70,3 +70,38 @@ pipe handles, no Windows inheritance issue). The script now:
 Also added `health_check_detail()` and diagnostic logging to
 `wait_for_health()` so future failures show what's actually happening
 instead of silently timing out.
+
+---
+
+## Round 3: Thin-client timestamps +7h offset vs C++ (live parity)
+
+### What Failed
+
+Parity comparison (`LOG/Output`) shows every timestamp in Rust output is
+exactly +7 hours ahead of the C++ baseline. All 15,055 "field difference"
+lines have the same +7h shift on created, modified, and accessed.
+
+### Root Cause
+
+MFT stores timestamps as Windows FILETIME in UTC. The C++ binary converts
+to local time via `FileTimeToLocalFileTime()`. The Rust thin client outputs
+raw UTC — it never applied a timezone offset.
+
+Two code paths were affected:
+1. **`format_unix_us()`** — used by `extract_field()` for CSV/table output:
+   rendered raw UTC.
+2. **`ParityContext::tz_offset_secs`** — defaulted to `0` (UTC) when
+   `--tz-offset` was not specified.
+
+### Fix
+
+- Added `local_utc_offset_secs()` to `uffs-client::format` using platform
+  APIs — `libc::localtime_r` → `tm_gmtoff` on Unix,
+  `GetTimeZoneInformation` on Windows. No `chrono` dependency needed,
+  keeping the CLI thin.
+- `format_unix_us()` now applies the local offset via `LOCAL_TZ_OFFSET_SECS`
+  (computed once at startup).
+- `ParityContext::tz_offset_secs` auto-detects when `--tz-offset` is not
+  specified (was hardcoded to 0).
+- Added `Win32_System_Time` feature to workspace `windows` crate for
+  `GetTimeZoneInformation` on Windows.

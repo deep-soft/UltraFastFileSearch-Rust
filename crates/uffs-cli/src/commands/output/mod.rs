@@ -95,7 +95,10 @@ pub fn write_native_results(
     let parity_ctx = ParityContext {
         pos,
         neg,
-        tz_offset_secs: tz_offset.map_or(0_i32, |hours| hours * 3_600_i32),
+        tz_offset_secs: tz_offset.map_or_else(
+            || *LOCAL_TZ_OFFSET_SECS,
+            |hours| hours.saturating_mul(3_600_i32),
+        ),
     };
 
     if is_console {
@@ -750,7 +753,19 @@ fn append_datetime_tz(buf: &mut String, unix_us: i64, tz_offset_secs: i32) {
     );
 }
 
-/// Format a Unix-microsecond timestamp into `YYYY-MM-DD HH:MM:SS` UTC.
+/// Local timezone offset in seconds, computed once at startup.
+///
+/// Matches C++ behavior where `FileTimeToLocalFileTime()` uses the
+/// CURRENT timezone offset for ALL timestamps, ignoring historical
+/// DST transitions.
+///
+/// Uses platform APIs (no chrono dependency) via `uffs-client`.
+static LOCAL_TZ_OFFSET_SECS: std::sync::LazyLock<i32> =
+    std::sync::LazyLock::new(uffs_client::format::local_utc_offset_secs);
+
+/// Format a Unix-microsecond timestamp into `YYYY-MM-DD HH:MM:SS` local time.
+///
+/// Applies the fixed local timezone offset captured at startup.
 #[expect(
     clippy::cast_sign_loss,
     reason = "timestamp values are non-negative in practice"
@@ -759,13 +774,17 @@ fn format_unix_us(unix_us: i64) -> String {
     if unix_us <= 0 {
         return String::new();
     }
-    let secs = (unix_us / 1_000_000) as u64;
-    format_unix_timestamp(secs)
+    let secs = unix_us / 1_000_000;
+    let adjusted = secs + i64::from(*LOCAL_TZ_OFFSET_SECS);
+    if adjusted < 0 {
+        return String::new();
+    }
+    format_unix_timestamp(adjusted as u64)
 }
 
-/// Format a Unix timestamp as `YYYY-MM-DD HH:MM:SS` UTC.
+/// Format a Unix timestamp as `YYYY-MM-DD HH:MM:SS`.
 ///
-/// Minimal implementation — no timezone, no leap-second handling.
+/// Minimal implementation — no leap-second handling.
 /// Sufficient for file timestamps.
 fn format_unix_timestamp(secs: u64) -> String {
     // Days since Unix epoch

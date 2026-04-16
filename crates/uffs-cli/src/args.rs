@@ -79,6 +79,17 @@ pub enum DaemonAction {
     Kill,
     /// Stop then restart.
     Restart,
+    /// Hot-load additional MFT file(s) or drive(s) into a running daemon.
+    Load {
+        /// Raw MFT file(s) to hot-load.
+        mft_file: Vec<PathBuf>,
+        /// Data directory — discover and load a specific drive from it.
+        data_dir: Option<PathBuf>,
+        /// Drive letter(s) to load (Windows live only).
+        drives: Vec<char>,
+        /// Skip cache when loading.
+        no_cache: bool,
+    },
 }
 
 /// Parse `uffs daemon <action> [flags...]` from raw args.
@@ -139,8 +150,49 @@ pub fn parse_daemon_action(args: &[String]) -> Result<DaemonAction, anyhow::Erro
         "stop" => Ok(DaemonAction::Stop),
         "kill" => Ok(DaemonAction::Kill),
         "restart" => Ok(DaemonAction::Restart),
+        "load" => {
+            let mut mft_file = Vec::new();
+            let mut data_dir = None;
+            let mut drives = Vec::new();
+            let mut no_cache = false;
+            let rest = args.get(1..).unwrap_or_default();
+            let mut iter = rest.iter();
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
+                    "--mft-file" => {
+                        if let Some(val) = iter.next() {
+                            for part in val.split(',') {
+                                mft_file.push(PathBuf::from(part.trim()));
+                            }
+                        }
+                    }
+                    "--data-dir" => {
+                        if let Some(val) = iter.next() {
+                            data_dir = Some(val.into());
+                        }
+                    }
+                    "--drive" | "-d" => {
+                        if let Some(val) = iter.next() {
+                            for part in val.split(',') {
+                                if let Ok(letter) = parse_drive_letter(part) {
+                                    drives.push(letter);
+                                }
+                            }
+                        }
+                    }
+                    "--no-cache" => no_cache = true,
+                    _ => {}
+                }
+            }
+            Ok(DaemonAction::Load {
+                mft_file,
+                data_dir,
+                drives,
+                no_cache,
+            })
+        }
         other => anyhow::bail!(
-            "Unknown daemon action: '{other}'. Use: start, status, stats, stop, kill, restart"
+            "Unknown daemon action: '{other}'. Use: start, status, stats, stop, kill, restart, load"
         ),
     }
 }
@@ -166,7 +218,7 @@ EXAMPLES:
 SUBCOMMANDS:
   stats             Show filesystem statistics
   aggregate|agg     Run aggregate analytics
-  daemon            Manage the UFFS daemon
+  daemon            Manage the UFFS daemon (start/stop/load/status)
   mcp               Manage the UFFS MCP server
   status            Show combined system status
 
