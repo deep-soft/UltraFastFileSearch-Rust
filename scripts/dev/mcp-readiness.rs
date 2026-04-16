@@ -89,12 +89,14 @@ fn ensure_fresh_release_build() -> String {
     let ws = find_workspace_root();
     let bin = ws.join("target").join("release").join("uffs");
     eprintln!("╔══════════════════════════════════════════════════════════════════╗");
-    eprintln!("║  Building fresh release binary...                                ║");
+    eprintln!("║  Building fresh release binaries (uffs + uffsmcp)...             ║");
     eprintln!("╚══════════════════════════════════════════════════════════════════╝");
     eprintln!("  Workspace: {}", ws.display());
     let start = Instant::now();
+    // Build both uffs (thin CLI) and uffsmcp (MCP server) — `uffs mcp *`
+    // delegates to `uffsmcp` so both must be present.
     let status = Command::new("cargo")
-        .args(["build", "--release", "-p", "uffs-cli"])
+        .args(["build", "--release", "-p", "uffs-cli", "-p", "uffs-mcp"])
         .current_dir(&ws).status();
     match status {
         Ok(s) if s.success() => {
@@ -1053,6 +1055,26 @@ fn main() -> Result<()> {
             ),
         },
     };
+
+    // ── Preflight: verify companion binaries exist ──────────────────
+    // `uffs mcp *` delegates to the standalone `uffsmcp` binary.
+    // Fail immediately with a clear message instead of waiting 3.5 min
+    // for a health timeout.
+    {
+        let uffs_path = std::path::Path::new(&binary);
+        let mcp_name = if cfg!(windows) { "uffsmcp.exe" } else { "uffsmcp" };
+        let mcp_path = uffs_path.parent()
+            .map(|dir| dir.join(mcp_name))
+            .unwrap_or_else(|| std::path::PathBuf::from(mcp_name));
+        if !mcp_path.exists() {
+            bail!(
+                "Companion binary `{mcp_name}` not found at {}\n\
+                 `uffs mcp *` delegates to `{mcp_name}` which must sit alongside `uffs`.\n\
+                 Rebuild and deploy: just build-local   (or: just use)",
+                mcp_path.display(),
+            );
+        }
+    }
 
     println!("  binary:    {}", binary);
     println!("  port:      {}", port);
