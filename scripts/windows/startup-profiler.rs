@@ -52,18 +52,6 @@ struct Cfg {
     es_bin: Option<PathBuf>,
 }
 
-#[derive(Clone, Default)]
-struct Sample {
-    wall_ms: f64,
-    label: String,
-}
-
-struct MeasureResult {
-    label: String,
-    binary_size: u64,
-    samples: Vec<Sample>,
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn flush() { std::io::stderr().flush().ok(); std::io::stdout().flush().ok(); }
@@ -157,20 +145,17 @@ fn measure_binary(bin: &Path, args: &[&str], rounds: usize, label: &str,
 /// Rust source for a minimal null binary (just exits).
 const NULL_RUST_SRC: &str = r#"fn main() {}"#;
 
-/// Rust source that connects to an AF_UNIX socket (measures Winsock import cost).
-/// NOTE: only compiles on Windows (std::os::windows::net::UnixStream).
-#[allow(dead_code)]
-const NULL_RUST_SOCKET_SRC: &str = "
-#[cfg(windows)]
-use std::os::windows::net::UnixStream;
-
+/// Rust source that opens a TCP socket (measures Winsock/ws2_32 import cost on Windows).
+/// std does not expose AF_UNIX on stable Windows; TCP connect pulls in the same
+/// Winsock DLLs so this is a faithful proxy for AF_UNIX import overhead.
+const NULL_RUST_SOCKET_SRC: &str = r#"use std::net::TcpStream;
+use std::time::Duration;
 fn main() {
-    #[cfg(windows)]
-    { let _ = UnixStream::connect(r\"\\\\?\\pipe\\uffs-null-test\"); }
-    #[cfg(not(windows))]
-    { eprintln!(\"AF_UNIX test only runs on Windows\"); }
+    // Connect to a port that is almost certainly closed — we only care about
+    // the cost of loading ws2_32.dll and initializing Winsock, not the result.
+    let _ = TcpStream::connect_timeout(&"127.0.0.1:1".parse().unwrap(), Duration::from_millis(50));
 }
-";
+"#;
 
 /// Rust source that opens a named pipe (measures kernel32-only path).
 const NULL_RUST_PIPE_SRC: &str = r#"
@@ -227,7 +212,7 @@ const NULL_VARIANTS: &[NullVariant] = &[
         source: NULL_RUST_SOCKET_SRC,
         deps: "",
         crt_static: false,
-        description: "AF_UNIX socket connect — Winsock import cost (Windows only)",
+        description: "TCP connect — Winsock/ws2_32 import cost",
     },
     NullVariant {
         name: "null-rust-json",
@@ -286,20 +271,52 @@ rustflags = ["-C", "target-feature=+crt-static"]
         let _ = fs::write(cargo_dir.join("config.toml"), config);
     }
 
-    // Build
+    // Build — force a project-local target dir, ignoring any inherited
+    // CARGO_TARGET_DIR / config that points elsewhere (which breaks our
+    // exe-path assumption and can cause cross-project build-script lock
+    // collisions on shared target directories).
+    //
+    // Retry up to 3x on transient "Access is denied (os error 5)" link-copy
+    // failures caused by Windows Defender briefly locking freshly-written
+    // build-script binaries during cargo's rename step.
+    let local_target = proj_dir.join("target");
     eprint!("  Building {:<35} ", variant.name);
     flush();
-    let output = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(&proj_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output();
+    let mut output = None;
+    for attempt in 1..=3u32 {
+        // `-j 1` serializes build-script link/rename steps, avoiding the
+        // Windows "file briefly locked between write and rename" race that
+        // produces "Access is denied (os error 5)" on cargo's link-or-copy
+        // step. The tiny null-binary builds don't benefit from parallelism
+        // anyway.
+        let out = Command::new("cargo")
+            .args(["build", "--release", "-j", "1"])
+            .current_dir(&proj_dir)
+            .env("CARGO_TARGET_DIR", &local_target)
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        let retry = match &out {
+            Ok(o) if !o.status.success() => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                err.contains("Access is denied") || err.contains("os error 5")
+            }
+            _ => false,
+        };
+        output = Some(out);
+        if !retry { break; }
+        eprint!("(retry {}) ", attempt);
+        flush();
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let output = output.unwrap();
 
     match output {
         Ok(o) if o.status.success() => {
-            let exe_name = format!("{}.exe", variant.name);
-            let exe_path = proj_dir.join("target").join("release").join(&exe_name);
+            let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+            let exe_name = format!("{}{}", variant.name, exe_suffix);
+            let exe_path = local_target.join("release").join(&exe_name);
             if exe_path.exists() {
                 eprintln!("OK  ({})", fmt_size(file_size(&exe_path)));
                 Some(exe_path)
@@ -357,8 +374,7 @@ fn run_null_matrix(cfg: &Cfg) {
     eprintln!("\n── System binary references ──");
     let system_bins: &[(&str, &[&str])] = &[
         ("cmd.exe /c exit", &["/c", "exit"]),
-        ("help.exe", &[]),
-        ("where.exe /?", &["/?"])
+        ("where.exe /?", &["/?"]),
     ];
     for (label, args) in system_bins {
         let bin_name = label.split_whitespace().next().unwrap_or("unknown");
@@ -437,6 +453,63 @@ fn which_bin(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// Pick a build directory that is *not* inside `%TEMP%` on Windows.
+/// `%TEMP%` (under `AppData\Local\Temp`) is aggressively scanned by
+/// SmartScreen and the Windows Search Indexer, which briefly locks newly
+/// written build-script binaries and causes cargo's link-or-copy step to
+/// fail with `Access is denied (os error 5)` even when all AV is disabled.
+fn pick_build_dir() -> PathBuf {
+    const DIR_NAME: &str = "uffs-startup-profiler";
+    if cfg!(windows) {
+        if let Some(local) = env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(local).join(DIR_NAME);
+        }
+        if let Some(home) = env::var_os("USERPROFILE") {
+            return PathBuf::from(home).join("AppData").join("Local").join(DIR_NAME);
+        }
+    } else {
+        if let Some(cache) = env::var_os("XDG_CACHE_HOME") {
+            return PathBuf::from(cache).join(DIR_NAME);
+        }
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(".cache").join(DIR_NAME);
+        }
+    }
+    env::temp_dir().join(DIR_NAME)
+}
+
+/// Locate a binary by stem name (e.g. "uffs", "es"), trying in order:
+///   1. PATH lookup (`where`/`which`)
+///   2. `~/bin/<name>[.exe]` — the user keeps all tools here on Windows
+///   3. Repo-local `target/release/<name>[.exe]` and `target/debug/<name>[.exe]`
+fn find_bin(stem: &str) -> Option<PathBuf> {
+    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+    let with_ext = format!("{}{}", stem, exe_suffix);
+
+    // 1. PATH
+    if let Some(p) = which_bin(&with_ext) { return Some(p); }
+    if let Some(p) = which_bin(stem) { return Some(p); }
+
+    // 2. ~/bin/<name>[.exe]
+    let home = env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from);
+    if let Some(h) = home {
+        let candidate = h.join("bin").join(&with_ext);
+        if candidate.exists() { return Some(candidate); }
+    }
+
+    // 3. Repo-local target/<profile>/<name>[.exe]
+    if let Ok(cwd) = env::current_dir() {
+        for profile in ["release", "debug"] {
+            let candidate = cwd.join("target").join(profile).join(&with_ext);
+            if candidate.exists() { return Some(candidate); }
+        }
+    }
+
+    None
+}
+
 // ── Mode: Startup decomposition ──────────────────────────────────────────────
 
 fn run_startup(cfg: &Cfg) {
@@ -480,7 +553,7 @@ fn run_startup(cfg: &Cfg) {
     let _ = fs::remove_file(&out_file);
 
     // 6. Medium search → NUL (more rows, IPC transfer cost)
-    let t_medium_nul = measure_binary(&cfg.uffs_bin,
+    let _t_medium_nul = measure_binary(&cfg.uffs_bin,
         &["*.dll", &drive_arg, "--columns", "Path"],
         cfg.rounds, "uffs *.dll → NUL (medium result)", || Stdio::null());
 
@@ -698,18 +771,26 @@ fn parse_args() -> Cfg {
         i += 1;
     }
 
-    // Try to find uffs.exe if not specified
+    // Try to find uffs.exe if not specified.
+    //   1. PATH (via `where`/`which`)
+    //   2. User bin dir: ~/bin/uffs[.exe]   (the user keeps all binaries here on Windows)
+    //   3. Repo-local release build: target/release/uffs[.exe]
+    //   4. Repo-local debug build:   target/debug/uffs[.exe]
     if !uffs_bin.exists() {
-        if let Some(found) = which_bin("uffs.exe") {
-            uffs_bin = found;
-        }
+        if let Some(found) = find_bin("uffs") { uffs_bin = found; }
     }
 
-    // Try to find es.exe
-    let es_bin = which_bin("es.exe");
+    // Try to find es.exe (same lookup strategy)
+    let es_bin = find_bin("es");
 
-    // Build directory for null binaries
-    let build_dir = env::temp_dir().join("uffs-startup-profiler");
+    // Build directory for null binaries.
+    // We deliberately AVOID %TEMP% / env::temp_dir() on Windows — that path
+    // is aggressively scanned by SmartScreen + Windows Search Indexer, which
+    // causes transient "Access is denied" rename failures during cargo's
+    // link-or-copy step (even with AV disabled). Prefer:
+    //   Windows: %LOCALAPPDATA%\uffs-startup-profiler
+    //   Unix:    $XDG_CACHE_HOME or ~/.cache/uffs-startup-profiler, else /tmp
+    let build_dir = pick_build_dir();
     let _ = fs::create_dir_all(&build_dir);
 
     Cfg { mode, rounds, uffs_bin, drive, build_dir, es_bin }
