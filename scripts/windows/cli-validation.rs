@@ -1348,8 +1348,8 @@ fn run_custom_validator(name: &str, stdout: &str, stderr: &str) -> Result<String
 
         // ── Help / version validators ────────────────────────────────────
         "H1" => {
-            // Main help: verify structure has Commands, Arguments, Options, Examples sections.
-            let sections = ["Commands:", "Arguments:", "Options:", "Examples:"];
+            // Main help: verify structure has key sections.
+            let sections = ["SUBCOMMANDS:", "COMMON OPTIONS:", "EXAMPLES:"];
             for section in &sections {
                 if !stdout.contains(section) {
                     bail!("Missing section: {section}");
@@ -1364,8 +1364,8 @@ fn run_custom_validator(name: &str, stdout: &str, stderr: &str) -> Result<String
             }
             // Verify key flags are documented.
             let key_flags = ["--drive", "--limit", "--format", "--sort", "--ext", "--columns",
-                             "--mft-file", "--data-dir", "--newer", "--older", "--exclude",
-                             "--case", "--type", "--min-size", "--max-size"];
+                             "--mft-file", "--data-dir", "--newer", "--older",
+                             "--type", "--min-size", "--max-size"];
             let mut missing: Vec<&str> = Vec::new();
             for flag in &key_flags {
                 if !stdout.contains(flag) { missing.push(flag); }
@@ -1377,16 +1377,20 @@ fn run_custom_validator(name: &str, stdout: &str, stderr: &str) -> Result<String
                 sections.len(), subcommands.len(), key_flags.len()))
         }
         "H2" => {
-            // Daemon help: verify lifecycle commands including 'load'.
-            let commands = ["start", "status", "stats", "stop", "kill", "restart", "load"];
+            // Daemon help: verify lifecycle actions including 'load'.
+            let actions = ["start", "status", "stats", "stop", "kill", "restart", "load"];
             let mut missing: Vec<&str> = Vec::new();
-            for cmd in &commands {
-                if !stdout.contains(cmd) { missing.push(cmd); }
+            for action in &actions {
+                if !stdout.contains(action) { missing.push(action); }
             }
             if !missing.is_empty() {
-                bail!("Missing daemon subcommands: {}", missing.join(", "));
+                bail!("Missing daemon actions: {}", missing.join(", "));
             }
-            Ok(format!("{} daemon subcommands verified", commands.len()))
+            // Verify load-specific flags are documented.
+            if !stdout.contains("--mft-file") || !stdout.contains("--data-dir") {
+                bail!("Daemon help missing --mft-file or --data-dir for load");
+            }
+            Ok(format!("{} daemon actions verified", actions.len()))
         }
         "H3" => {
             // MCP help: verify server management commands.

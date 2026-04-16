@@ -46,7 +46,13 @@ fn run() -> Result<()> {
         "aggregate" | "agg" => run_aggregate(subcmd_args)?,
         "daemon" => run_daemon(subcmd_args)?,
         "mcp" => commands::mcp_mgmt::mcp_from_args(subcmd_args)?,
-        "status" => commands::system_status::system_status(),
+        "status" => {
+            if subcmd_args.iter().any(|arg| arg == "--help" || arg == "-h") {
+                args::print_status_help();
+            } else {
+                commands::system_status::system_status();
+            }
+        }
         _ => {
             // Default: search — forward ALL args after "uffs" to daemon.
             run_search(raw_args.get(1..).unwrap_or_default())?;
@@ -203,6 +209,10 @@ fn extract_spawn_args(args: &[String]) -> Vec<String> {
 
 /// Handle `uffs stats [path] [--top N] [--data-dir ...] [--mft-file ...]`.
 fn run_stats(args: &[String]) -> Result<()> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        args::print_stats_help();
+        return Ok(());
+    }
     // Simple arg extraction for stats subcommand.
     let mut path: Option<std::path::PathBuf> = None;
     let mut top: u32 = 10;
@@ -261,6 +271,10 @@ fn run_stats(args: &[String]) -> Result<()> {
 
 /// Handle `uffs aggregate|agg <preset> [--format ...] [--data-dir ...]`.
 fn run_aggregate(args: &[String]) -> Result<()> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        args::print_aggregate_help();
+        return Ok(());
+    }
     // Extract the preset (first positional arg).
     let preset = args
         .iter()
@@ -297,6 +311,10 @@ fn run_aggregate(args: &[String]) -> Result<()> {
 
 /// Handle `uffs daemon <action> [flags...]`.
 fn run_daemon(args: &[String]) -> Result<()> {
+    if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        args::print_daemon_help();
+        return Ok(());
+    }
     let action = args::parse_daemon_action(args)?;
     commands::daemon_mgmt::daemon(&action)
 }

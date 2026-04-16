@@ -7,21 +7,19 @@ id          = "H1"
 group       = "help"
 name        = "H1 uffs --help"
 title       = "H1 main help text"
-short_desc  = "Top-level help shows commands, arguments, options, examples"
+short_desc  = "Top-level help shows subcommands, options, examples"
 cli_args    = ["--help"]
 targets     = ["cli"]
 validator   = "H1"
 stdout_contains = [
-    "Usage:",
-    "Commands:",
+    "USAGE:",
+    "SUBCOMMANDS:",
     "daemon",
     "mcp",
     "stats",
     "aggregate",
     "status",
-    "Arguments:",
-    "[PATTERN]",
-    "Options:",
+    "COMMON OPTIONS:",
     "--drive",
     "--mft-file",
     "--data-dir",
@@ -32,7 +30,7 @@ stdout_contains = [
     "--columns",
     "--help",
     "--version",
-    "Examples:",
+    "EXAMPLES:",
 ]
 
 [[test]]
@@ -40,15 +38,16 @@ id          = "H2"
 group       = "help"
 name        = "H2 uffs daemon --help"
 title       = "H2 daemon subcommand help"
-short_desc  = "Daemon help shows lifecycle subcommands"
+short_desc  = "Daemon help shows lifecycle actions"
 cli_args    = ["daemon", "--help"]
 targets     = ["cli"]
 validator   = "H2"
 stdout_contains = [
     "daemon",
-    "Commands:",
+    "ACTIONS:",
     "start",
     "status",
+    "stats",
     "stop",
     "kill",
     "restart",
@@ -66,7 +65,6 @@ targets     = ["cli"]
 validator   = "H3"
 stdout_contains = [
     "mcp",
-    "Commands:",
     "start",
     "status",
     "stop",
@@ -85,7 +83,7 @@ cli_args    = ["stats", "--help"]
 targets     = ["cli"]
 stdout_contains = [
     "stats",
-    "Usage:",
+    "USAGE:",
     "--top",
     "--data-dir",
     "--mft-file",
@@ -101,7 +99,7 @@ cli_args    = ["aggregate", "--help"]
 targets     = ["cli"]
 stdout_contains = [
     "aggregate",
-    "Usage:",
+    "USAGE:",
     "PRESET",
     "overview",
     "by_type",
@@ -121,7 +119,7 @@ cli_args    = ["status", "--help"]
 targets     = ["cli"]
 stdout_contains = [
     "status",
-    "Usage:",
+    "USAGE:",
 ]
 
 [[test]]

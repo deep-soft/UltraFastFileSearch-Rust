@@ -258,3 +258,92 @@ pub fn print_help() {
 pub fn print_version() {
     println!("uffs {}", env!("CARGO_PKG_VERSION"));
 }
+
+// ── Subcommand help texts ─────────────────────────────────────────────
+
+/// Help text for `uffs daemon`.
+const DAEMON_HELP: &str = "\
+uffs daemon — Manage the UFFS background daemon
+
+USAGE:  uffs daemon <ACTION> [OPTIONS]
+
+ACTIONS:
+  start              Start the daemon
+    --data-dir PATH    Data directory with drive_* subdirs
+    --mft-file PATH    Raw MFT file(s), comma-separated
+    --no-cache         Skip cached index, re-parse MFT
+  status             Show daemon status (running, drives, PID)
+  stats              Show performance statistics
+  stop               Gracefully stop the daemon
+  kill               Hard kill + remove PID/socket files
+  restart            Stop then restart (re-loads all indices)
+  load               Hot-load additional MFT file(s) into running daemon
+    --mft-file PATH    Raw MFT file(s) to load
+    --data-dir PATH    Data directory with drive_* subdirs
+    --drive LETTER     Drive letter(s) to load from data-dir
+    --no-cache         Skip cache when loading
+";
+
+/// Print daemon help.
+#[expect(clippy::print_stdout, reason = "intentional help output")]
+pub fn print_daemon_help() {
+    print!("{DAEMON_HELP}");
+}
+
+/// Help text for `uffs stats`.
+const STATS_HELP: &str = "\
+uffs stats — Show filesystem statistics
+
+USAGE:  uffs stats [PATH] [OPTIONS]
+
+ARGUMENTS:
+  [PATH]               Index file path (optional; omit to query daemon)
+
+OPTIONS:
+  --top <N>            Show top N largest files (default: 10)
+  --data-dir <PATH>    Data directory with drive_* subdirs
+  --mft-file <PATH>    Raw MFT file(s)
+";
+
+/// Print stats help.
+#[expect(clippy::print_stdout, reason = "intentional help output")]
+pub fn print_stats_help() {
+    print!("{STATS_HELP}");
+}
+
+/// Help text for `uffs aggregate`.
+const AGGREGATE_HELP: &str = "\
+uffs aggregate — Run aggregate analytics on the filesystem index
+
+USAGE:  uffs aggregate <PRESET> [OPTIONS]
+
+ARGUMENTS:
+  <PRESET>             overview, by_type, by_extension, by_drive,
+                       by_size, by_age, count
+
+OPTIONS:
+  --format <FMT>       Output format: table (default), csv, json
+  --data-dir <PATH>    Data directory with drive_* subdirs
+  --mft-file <PATH>    Raw MFT file(s)
+  --agg-cursor <TOK>   Continue from previous page
+  --agg-page-size <N>  Max buckets per page
+";
+
+/// Print aggregate help.
+#[expect(clippy::print_stdout, reason = "intentional help output")]
+pub fn print_aggregate_help() {
+    print!("{AGGREGATE_HELP}");
+}
+
+/// Help text for `uffs status`.
+const STATUS_HELP: &str = "\
+uffs status — Show combined system status (daemon + MCP HTTP server)
+
+USAGE:  uffs status
+";
+
+/// Print status help.
+#[expect(clippy::print_stdout, reason = "intentional help output")]
+pub fn print_status_help() {
+    print!("{STATUS_HELP}");
+}
