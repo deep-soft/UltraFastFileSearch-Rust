@@ -47,13 +47,14 @@ pub struct ParsedRecord {
     pub in_use: bool,
     /// Whether this is a directory.
     pub is_directory: bool,
-    /// Creation time from primary `$FILE_NAME` (Unix microseconds).
+    /// Creation time from primary `$FILE_NAME` (raw FILETIME: 100-ns ticks
+    /// since 1601-01-01).
     pub fn_created: i64,
-    /// Modification time from primary `$FILE_NAME` (Unix microseconds).
+    /// Modification time from primary `$FILE_NAME` (raw FILETIME).
     pub fn_modified: i64,
-    /// Access time from primary `$FILE_NAME` (Unix microseconds).
+    /// Access time from primary `$FILE_NAME` (raw FILETIME).
     pub fn_accessed: i64,
-    /// MFT change time from primary `$FILE_NAME` (Unix microseconds).
+    /// MFT change time from primary `$FILE_NAME` (raw FILETIME).
     pub fn_mft_changed: i64,
     /// Reparse tag from `$REPARSE_POINT` attribute (0 if not a reparse point).
     /// Common values: symlink (0xA000000C), junction (0xA0000003), `OneDrive`,

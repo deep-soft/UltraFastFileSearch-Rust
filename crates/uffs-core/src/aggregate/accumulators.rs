@@ -637,26 +637,39 @@ const fn is_missing(field: Option<FieldId>, record: &CompactRecord) -> bool {
     }
 }
 
-/// Truncate a microsecond timestamp to a calendar interval boundary.
-const fn truncate_timestamp(ts_us: i64, calendar: super::spec::CalendarInterval) -> i64 {
+/// Truncate a raw FILETIME (100-ns ticks since 1601) to a calendar interval
+/// boundary.
+///
+/// Returns a FILETIME value aligned to the start of the given interval.
+const fn truncate_timestamp(filetime: i64, calendar: super::spec::CalendarInterval) -> i64 {
+    use uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND;
+
     use super::spec::CalendarInterval;
-    let secs = ts_us / 1_000_000;
-    let truncated_secs = match calendar {
-        CalendarInterval::Hour => (secs / 3600) * 3600,
-        CalendarInterval::Day => (secs / 86400) * 86400,
+
+    let ticks_per_hour: i64 = FILETIME_TICKS_PER_SECOND * 3600;
+    let ticks_per_day: i64 = FILETIME_TICKS_PER_SECOND * 86400;
+
+    match calendar {
+        CalendarInterval::Hour => (filetime / ticks_per_hour) * ticks_per_hour,
+        CalendarInterval::Day => (filetime / ticks_per_day) * ticks_per_day,
         CalendarInterval::Week => {
-            // Align to Monday (Unix epoch 1970-01-01 was Thursday, day 4).
-            let days = secs / 86400;
-            let day_of_week = (days + 3) % 7; // Mon=0
-            (days - day_of_week) * 86400
+            // FILETIME epoch 1601-01-01 was a Monday — convenient!
+            let days = filetime / ticks_per_day;
+            let day_of_week = days % 7; // Mon=0 (since 1601-01-01 = Monday)
+            (days - day_of_week) * ticks_per_day
         }
         CalendarInterval::Month => {
-            // Approximate: 30-day months. For exact calendar alignment,
-            // use chrono in a later stage.
-            (secs / 2_592_000) * 2_592_000
+            // Approximate: 30-day months.
+            let ticks_per_30d = ticks_per_day * 30;
+            (filetime / ticks_per_30d) * ticks_per_30d
         }
-        CalendarInterval::Quarter => (secs / 7_776_000) * 7_776_000,
-        CalendarInterval::Year => (secs / 31_536_000) * 31_536_000,
-    };
-    truncated_secs * 1_000_000
+        CalendarInterval::Quarter => {
+            let ticks_per_90d = ticks_per_day * 90;
+            (filetime / ticks_per_90d) * ticks_per_90d
+        }
+        CalendarInterval::Year => {
+            let ticks_per_365d = ticks_per_day * 365;
+            (filetime / ticks_per_365d) * ticks_per_365d
+        }
+    }
 }

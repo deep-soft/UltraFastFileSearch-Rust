@@ -428,40 +428,38 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Format a Unix-microsecond timestamp as `YYYY-MM-DD HH:MM`.
+/// Format a raw FILETIME timestamp as `YYYY-MM-DD HH:MM`.
+///
+/// Decomposes the FILETIME directly — no intermediate Unix conversion.
 #[must_use]
-pub fn format_time(unix_micros: i64) -> String {
-    if unix_micros == 0 {
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "Hinnant algorithm: intermediate values are bounded for valid dates"
+)]
+pub fn format_time(filetime: i64) -> String {
+    const TICKS_PER_SECOND: i64 = 10_000_000; // 100-ns intervals per second
+    if filetime == 0 {
         return "—".to_owned();
     }
-    let secs = unix_micros / 1_000_000;
-    // Simple UTC conversion (good enough for display)
-    let days_since_epoch = secs / 86400;
-    // rem_euclid is always non-negative → safe to narrow to u32.
-    let day_secs = u32::try_from(secs.rem_euclid(86400)).unwrap_or(0);
-    let hour = day_secs / 3600;
-    let minute = (day_secs % 3600) / 60;
+    let total_secs = filetime / TICKS_PER_SECOND;
+    let days_since_1601 = total_secs.div_euclid(86400);
+    let day_secs = total_secs.rem_euclid(86400);
+    let hour = (day_secs / 3600) as u32;
+    let minute = ((day_secs % 3600) / 60) as u32;
 
-    // Approximate date (Howard Hinnant algorithm, simplified)
-    let civil_z = days_since_epoch + 719_468;
-    let era = if civil_z >= 0 {
-        civil_z
-    } else {
-        civil_z - 146_096
-    } / 146_097;
-    // doe is in [0, 146_096] — always fits u32.
-    let doe = u32::try_from(civil_z - era * 146_097).unwrap_or(0);
+    // Hinnant civil_from_days:
+    // 719468 (0000-03-01→1970-01-01) − 134774 (1601-01-01→1970-01-01) = 584694
+    let z = days_since_1601 + 584_694;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = (z - era * 146_097) as u32;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let base_year = i64::from(yoe) + era * 400;
+    let y = i64::from(yoe) + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let month_proxy = (5 * doy + 2) / 153;
-    let day = doy - (153 * month_proxy + 2) / 5 + 1;
-    let month = if month_proxy < 10 {
-        month_proxy + 3
-    } else {
-        month_proxy - 9
-    };
-    let year = if month <= 2 { base_year + 1 } else { base_year };
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
 
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }

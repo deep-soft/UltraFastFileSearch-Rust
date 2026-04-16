@@ -43,23 +43,82 @@ pub use self::records::{
     fixup_file_record,
 };
 
+/// Number of 100-nanosecond intervals per second.
+pub const FILETIME_TICKS_PER_SECOND: i64 = 10_000_000;
+
+/// Number of 100-nanosecond intervals per microsecond.
+pub const FILETIME_TICKS_PER_MICROSECOND: i64 = 10;
+
+/// Difference between the FILETIME epoch (1601-01-01) and the Unix epoch
+/// (1970-01-01), in 100-nanosecond intervals.
+pub const FILETIME_UNIX_DIFF: i64 = 116_444_736_000_000_000;
+
 /// Converts a Windows FILETIME (100-nanosecond intervals since 1601-01-01)
 /// to Unix timestamp in microseconds.
+///
+/// **Deprecated path** — prefer storing raw FILETIME values and using
+/// [`filetime_to_calendar`] for display.  This function exists only for
+/// backward compatibility during migration.
 #[must_use]
 pub const fn filetime_to_unix_micros(filetime: i64) -> i64 {
-    // FILETIME epoch is 1601-01-01, Unix epoch is 1970-01-01
-    // Difference is 11644473600 seconds = 116444736000000000 * 100ns
-    const FILETIME_UNIX_DIFF: i64 = 116_444_736_000_000_000;
-
-    // Allow negative Unix timestamps (pre-1970 dates) — FILETIME can represent
-    // dates back to 1601. Only clamp for filetime == 0 (unset/null timestamp).
     if filetime == 0 {
         return 0;
     }
+    (filetime - FILETIME_UNIX_DIFF) / FILETIME_TICKS_PER_MICROSECOND
+}
 
-    // Convert from 100ns to microseconds (works for both positive and negative
-    // offsets)
-    (filetime - FILETIME_UNIX_DIFF) / 10
+/// Decompose a raw FILETIME into calendar fields `(year, month, day, hour,
+/// minute, second)`.
+///
+/// This mirrors the Windows `RtlTimeToTimeFields` approach — works directly
+/// with FILETIME ticks (100-ns intervals since 1601-01-01), no intermediate
+/// Unix conversion.  Handles all valid FILETIME values including pre-1970.
+///
+/// Returns `None` for `filetime == 0` (unset / null timestamp in NTFS).
+#[must_use]
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "Hinnant algorithm: intermediate values are bounded and non-negative for valid dates"
+)]
+pub const fn filetime_to_calendar(filetime: i64) -> Option<(i32, u32, u32, u32, u32, u32)> {
+    if filetime == 0 {
+        return None;
+    }
+    // Convert to total seconds since 1601-01-01, then split into days
+    // and time-of-day using Euclidean division (remainder always ≥ 0).
+    let total_secs = filetime / FILETIME_TICKS_PER_SECOND;
+    let days_since_1601 = total_secs.div_euclid(86400);
+    let day_secs = total_secs.rem_euclid(86400);
+
+    let hour = (day_secs / 3600) as u32;
+    let minute = ((day_secs % 3600) / 60) as u32;
+    let second = (day_secs % 60) as u32;
+
+    // Hinnant algorithm expects days since 0000-03-01.
+    //   719468 (0000-03-01 to 1970-01-01) − 134774 (1601-01-01 to 1970-01-01)
+    //   = 584694
+    let z = days_since_1601 + 584_694; // days since 0000-03-01
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+
+    Some((year as i32, month, day, hour, minute, second))
+}
+
+/// Apply a timezone bias (in seconds) to a raw FILETIME value.
+///
+/// The bias is added as FILETIME ticks.  This is the FILETIME equivalent of
+/// `system_time + time_zone_bias` in the C++ code.
+#[must_use]
+pub const fn filetime_with_tz_bias(filetime: i64, tz_bias_secs: i32) -> i64 {
+    filetime + (tz_bias_secs as i64) * FILETIME_TICKS_PER_SECOND
 }
 
 /// Extracts the File Record Segment number from a file reference.

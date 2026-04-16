@@ -21,7 +21,7 @@ pub(super) fn parse_standard_info_full(
 
     use crate::ntfs::{
         STANDARD_INFO_SIZE_V12, STANDARD_INFO_SIZE_V30, StandardInformation,
-        StandardInformationExtended, filetime_to_unix_micros,
+        StandardInformationExtended,
     };
 
     let value_length_bytes = &data[attr_offset + 16..attr_offset + 20];
@@ -40,10 +40,10 @@ pub(super) fn parse_standard_info_full(
         };
 
         *result = ExtendedStandardInfo {
-            created: filetime_to_unix_micros(si.creation_time),
-            modified: filetime_to_unix_micros(si.modification_time),
-            accessed: filetime_to_unix_micros(si.access_time),
-            mft_changed: filetime_to_unix_micros(si.mft_change_time),
+            created: si.creation_time,
+            modified: si.modification_time,
+            accessed: si.access_time,
+            mft_changed: si.mft_change_time,
             usn: si.usn,
             security_id: si.security_id,
             owner_id: si.owner_id,
@@ -57,10 +57,10 @@ pub(super) fn parse_standard_info_full(
         };
 
         *result = ExtendedStandardInfo {
-            created: filetime_to_unix_micros(si.creation_time),
-            modified: filetime_to_unix_micros(si.modification_time),
-            accessed: filetime_to_unix_micros(si.access_time),
-            mft_changed: filetime_to_unix_micros(si.mft_change_time),
+            created: si.creation_time,
+            modified: si.modification_time,
+            accessed: si.access_time,
+            mft_changed: si.mft_change_time,
             usn: 0,
             security_id: 0,
             owner_id: 0,
@@ -79,7 +79,7 @@ pub(super) fn parse_file_name_full(
 
     use smallvec::SmallVec;
 
-    use crate::ntfs::{FileNameAttribute, file_reference_to_frs, filetime_to_unix_micros};
+    use crate::ntfs::{FileNameAttribute, file_reference_to_frs};
 
     let value_offset_bytes = &data[attr_offset + 20..attr_offset + 22];
     let value_offset = u16::from_le_bytes(value_offset_bytes.try_into().unwrap_or([0, 0])) as usize;
@@ -116,10 +116,10 @@ pub(super) fn parse_file_name_full(
         name,
         parent_frs: file_reference_to_frs(fn_attr.parent_directory),
         namespace: fn_attr.file_name_namespace,
-        fn_created: filetime_to_unix_micros(fn_attr.creation_time),
-        fn_modified: filetime_to_unix_micros(fn_attr.modification_time),
-        fn_accessed: filetime_to_unix_micros(fn_attr.access_time),
-        fn_mft_changed: filetime_to_unix_micros(fn_attr.mft_change_time),
+        fn_created: fn_attr.creation_time,
+        fn_modified: fn_attr.modification_time,
+        fn_accessed: fn_attr.access_time,
+        fn_mft_changed: fn_attr.mft_change_time,
         source_frs,
     })
 }

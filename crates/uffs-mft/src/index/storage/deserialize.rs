@@ -201,7 +201,7 @@ impl MftIndex {
             6 => 185,
             7 => 193,
             8 | 9 => 195,
-            10..=12 => 240, // Pod layout with padding
+            10..=13 => 240, // Pod layout with padding
             _ => return Err("Unsupported index version"),
         };
         let record_bytes =

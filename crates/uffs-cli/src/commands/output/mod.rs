@@ -207,7 +207,7 @@ fn write_table<W: Write>(writer: &mut W, rows: &[Value]) -> Result<()> {
 
     for row in rows {
         let size_str = uffs_client::format::format_bytes(vu(row, "size"));
-        let time_str = format_unix_us(vi(row, "modified"));
+        let time_str = format_filetime_local(vi(row, "modified"));
         writeln!(
             writer,
             "{:<50} {:>12} {:>19} {}",
@@ -439,9 +439,9 @@ fn extract_field(row: &Value, field: &str) -> String {
         }
         "size" => vu(row, "size").to_string(),
         "size_on_disk" => vu(row, "allocated").to_string(),
-        "created" => format_unix_us(vi(row, "created")),
-        "modified" => format_unix_us(vi(row, "modified")),
-        "accessed" => format_unix_us(vi(row, "accessed")),
+        "created" => format_filetime_local(vi(row, "created")),
+        "modified" => format_filetime_local(vi(row, "modified")),
+        "accessed" => format_filetime_local(vi(row, "accessed")),
         "extension" => extract_extension(&vs(row, "name")),
         "drive" => vs(row, "drive"),
         "type" => if vb(row, "is_directory") {
@@ -567,63 +567,18 @@ mod parity_flags {
 static LOCAL_TZ_OFFSET_SECS: std::sync::LazyLock<i32> =
     std::sync::LazyLock::new(uffs_client::format::local_utc_offset_secs);
 
-/// Format a Unix-microsecond timestamp into `YYYY-MM-DD HH:MM:SS` local time.
+/// Format a raw FILETIME into `YYYY-MM-DD HH:MM:SS` local time.
 ///
-/// Applies the fixed local timezone offset captured at startup.
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "timestamp values are non-negative in practice"
-)]
-fn format_unix_us(unix_us: i64) -> String {
-    if unix_us <= 0 {
-        return String::new();
+/// Applies the fixed timezone bias directly in FILETIME ticks (matching
+/// C++ `FileTimeToLocalFileTime`), then decomposes via `filetime_to_calendar`.
+fn format_filetime_local(filetime: i64) -> String {
+    let local_ft = uffs_mft::ntfs::filetime_with_tz_bias(filetime, *LOCAL_TZ_OFFSET_SECS);
+    match uffs_mft::ntfs::filetime_to_calendar(local_ft) {
+        Some((year, month, day, hour, minute, second)) => {
+            format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+        }
+        None => String::new(),
     }
-    let secs = unix_us / 1_000_000;
-    let adjusted = secs + i64::from(*LOCAL_TZ_OFFSET_SECS);
-    if adjusted < 0 {
-        return String::new();
-    }
-    format_unix_timestamp(adjusted as u64)
-}
-
-/// Format a Unix timestamp as `YYYY-MM-DD HH:MM:SS`.
-///
-/// Minimal implementation — no leap-second handling.
-/// Sufficient for file timestamps.
-fn format_unix_timestamp(secs: u64) -> String {
-    // Days since Unix epoch
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    let (year, month, day) = days_to_ymd(days);
-    format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}")
-}
-
-/// Convert days since Unix epoch to (year, month, day).
-///
-/// Uses the civil calendar algorithm from Howard Hinnant.
-#[expect(
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation,
-    reason = "calendar arithmetic requires signed intermediates and truncation is safe for valid dates"
-)]
-fn days_to_ymd(days: u64) -> (u32, u32, u32) {
-    // Algorithm from https://howardhinnant.github.io/date_algorithms.html
-    let z = days as i64 + 719_468;
-    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
-    let doe = (z - era * 146_097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = i64::from(yoe) + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { y + 1 } else { y };
-    (year as u32, month, day)
 }
 
 #[cfg(test)]
