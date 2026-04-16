@@ -8,10 +8,9 @@ extern crate alloc;
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tracing::info;
-use uffs_core::output::OutputConfig;
-use uffs_core::pattern::ParsedPattern;
+use uffs_client::format::extract_drive_letter;
 
 use super::super::output::write_native_results;
 use super::SearchConfig;
@@ -20,7 +19,8 @@ use super::util::compute_output_targets;
 /// Build search configuration from CLI parameters.
 #[expect(clippy::too_many_arguments, reason = "mirrors CLI parameters")]
 #[expect(clippy::fn_params_excessive_bools, reason = "mirrors CLI parameters")]
-pub(super) fn build_search_config<'a>(
+#[must_use]
+pub fn build_search_config<'a>(
     pattern: &'a str,
     single_drive: Option<char>,
     multi_drives: Option<Vec<char>>,
@@ -82,7 +82,7 @@ pub(super) fn build_search_config<'a>(
     agg_cursor: Option<String>,
     agg_page_size: Option<u16>,
     start_time: std::time::Instant,
-) -> Result<SearchConfig<'a>> {
+) -> SearchConfig<'a> {
     // Smart case: if enabled and pattern has any uppercase letter,
     // automatically enable case-sensitive matching.
     let effective_case_sensitive =
@@ -95,29 +95,12 @@ pub(super) fn build_search_config<'a>(
         alloc::borrow::Cow::Borrowed(pattern)
     };
 
-    let parsed = ParsedPattern::parse(&effective_pattern)
-        .with_context(|| format!("Invalid pattern: {pattern}"))?
-        .with_case_sensitive(effective_case_sensitive);
-
     // Extract drive letter from pattern (e.g., "c:/*.txt" → Some('C')).
-    let pattern_drive = parsed.drive();
-
-    let is_parity = columns.eq_ignore_ascii_case("parity");
-    let mut output_config = OutputConfig::new()
-        .with_columns(columns)
-        .with_separator(sep)
-        .with_quote(quotes)
-        .with_header(header)
-        .with_pos(pos)
-        .with_neg(neg)
-        .with_parity_compat(is_parity);
-    if let Some(hours) = tz_offset {
-        output_config = output_config.with_tz_offset_hours(hours);
-    }
+    let pattern_drive = extract_drive_letter(&effective_pattern);
 
     let output_targets = compute_output_targets(single_drive, multi_drives.as_ref(), pattern_drive);
 
-    Ok(SearchConfig {
+    SearchConfig {
         pattern,
         single_drive,
         multi_drives,
@@ -165,23 +148,33 @@ pub(super) fn build_search_config<'a>(
         sort_desc,
         format,
         out,
-        output_config,
+        columns,
+        sep,
+        quotes,
+        header,
+        pos,
+        neg,
+        tz_offset,
         output_targets,
         start_time,
         agg_specs,
         force_rows,
         agg_cursor,
         agg_page_size,
-    })
+    }
 }
 
 /// Finalize search output — all paths converge here.
 ///
-/// For json/table formats, a small `DataFrame` is created from the result rows
-/// only (not the full MFT) to reuse existing Polars serialization.
+/// Formats `SearchRow`s directly via `serde_json` (json) or columnar text
+/// (csv/custom/table).  No polars, no `DataFrame`.
 /// Aggregate results (if any) are printed after the rows.
-pub(super) fn finalize_output(
-    rows: &[uffs_core::search::backend::DisplayRow],
+///
+/// # Errors
+///
+/// Returns an error if the operation fails.
+pub fn finalize_output(
+    rows: &[uffs_client::protocol::response::SearchRow],
     aggregations: &[uffs_client::protocol::AggregateResultWire],
     config: &SearchConfig<'_>,
 ) -> Result<()> {
@@ -198,7 +191,13 @@ pub(super) fn finalize_output(
             rows,
             config.format,
             config.out,
-            &config.output_config,
+            config.columns,
+            config.sep,
+            config.quotes,
+            config.header,
+            config.pos,
+            config.neg,
+            config.tz_offset,
             &config.output_targets,
             elapsed,
             config.pattern,
@@ -236,7 +235,7 @@ pub(super) fn finalize_output(
     );
 
     if config.benchmark {
-        print_benchmark_stats_native(rows, elapsed);
+        print_benchmark_stats_native(rows.len(), elapsed);
     } else if config.profile {
         print_profile_stats_native(rows.len(), output_ms, elapsed);
     }
@@ -259,13 +258,10 @@ fn print_profile_stats_native(row_count: usize, output_ms: u128, elapsed: core::
 
 /// Print benchmark statistics for native results.
 #[expect(clippy::print_stderr, reason = "intentional user-facing output")]
-fn print_benchmark_stats_native(
-    rows: &[uffs_core::search::backend::DisplayRow],
-    elapsed: core::time::Duration,
-) {
+fn print_benchmark_stats_native(row_count: usize, elapsed: core::time::Duration) {
     let total_ms = elapsed.as_millis();
     let secs = elapsed.as_secs_f64();
     eprintln!("=== BENCHMARK MODE (no output) ===");
-    eprintln!("  Records found:   {:>10}", rows.len());
+    eprintln!("  Records found:   {row_count:>10}");
     eprintln!("  Total time:      {total_ms:>10} ms ({secs:.2} s)");
 }

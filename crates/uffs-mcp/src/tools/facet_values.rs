@@ -57,7 +57,7 @@ const fn default_top() -> u16 {
 /// # Errors
 ///
 /// Returns [`BridgeError`] if the daemon call fails.
-pub(crate) async fn run(
+pub async fn run(
     client: &mut UffsClient,
     args: FacetValuesArgs,
     roots_state: &RootsState,

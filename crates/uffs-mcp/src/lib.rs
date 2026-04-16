@@ -108,7 +108,7 @@ fn default_mcp_log_file() -> std::path::PathBuf {
 }
 
 /// Agent cookbook — curated example queries (backing `uffs://cookbook`).
-pub(crate) mod cookbook;
+pub mod cookbook;
 /// MCP bridge error types.
 pub mod error;
 /// MCP [`ServerHandler`](rmcp::ServerHandler) implementation.
@@ -121,7 +121,7 @@ pub mod pid;
 /// Static and live MCP resource implementations.
 pub mod resources;
 /// MCP roots mapping policy.
-pub(crate) mod roots;
+pub mod roots;
 /// Output schema types for `outputSchema` / `structuredContent`.
 pub mod schemas;
 /// MCP server runtime statistics (lock-free counters).
@@ -136,11 +136,6 @@ use core::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-pub use pid::{
-    McpPidInfo, is_mcp_server_running, mcp_pid_file_path, parse_mcp_pid_file,
-    parse_mcp_pid_file_full, remove_mcp_pid_file, write_mcp_pid_file_full,
-    write_mcp_pid_file_with_transport,
-};
 use rmcp::ServiceExt;
 #[cfg(feature = "streamable-http")]
 use tower_service as _;
@@ -363,7 +358,7 @@ mod tests {
     }
 
     mod text_tests {
-        use uffs_client::protocol::SearchRow;
+        use uffs_client::protocol::response::SearchRow;
 
         use crate::text::format_search_row;
 
@@ -420,7 +415,7 @@ mod tests {
     }
 
     mod prompt_tests {
-        use crate::handler::{build_prompt_messages, str_arg, u64_arg};
+        use crate::handler::prompts::{build_prompt_messages, str_arg, u64_arg};
 
         #[test]
         fn str_arg_extracts_string() {
@@ -553,7 +548,7 @@ mod tests {
     // ── tool definition tests ───────────────────────────────────────
 
     mod tool_def_tests {
-        use crate::handler::tool_definitions;
+        use crate::handler::definitions::tool_definitions;
 
         #[test]
         fn six_tools_defined() {
@@ -691,7 +686,7 @@ mod tests {
     // ── percent encode/decode round-trip ────────────────────────────
 
     mod percent_encode_tests {
-        use crate::handler::percent_decode_path;
+        use crate::handler::definitions::percent_decode_path;
         use crate::tools::search::percent_encode_path;
 
         #[test]
@@ -740,12 +735,13 @@ mod tests {
     // ── idle timeout (sliding-window) tests ─────────────────────────────
 
     mod idle_timeout_tests {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
         use crate::wait_for_genuine_idle;
         extern crate alloc;
 
         use alloc::sync::Arc;
         use core::sync::atomic::{AtomicU64, Ordering};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         fn now_epoch() -> u64 {
             SystemTime::now()

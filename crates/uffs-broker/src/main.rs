@@ -23,7 +23,7 @@ use anyhow as _;
 use tracing_subscriber as _;
 use uffs_security as _;
 
-mod broker;
+pub mod broker;
 
 fn main() {
     #[cfg(windows)]

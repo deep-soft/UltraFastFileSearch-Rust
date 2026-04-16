@@ -6,6 +6,8 @@
 //! Exception: continuation of filters test suite; cohesion with tests.rs
 //! requires shared helpers and tightly coupled assertions.
 
+use uffs_text::case_fold::CaseFold;
+
 use super::super::*;
 use super::*;
 
@@ -43,12 +45,7 @@ fn filter_hide_ads_rejects_colon_in_name() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "ADS names containing ':' should be rejected"
     );
 }
@@ -62,12 +59,7 @@ fn filter_hide_ads_accepts_normal_names() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "Normal names without ':' should pass hide_ads"
     );
 }
@@ -85,12 +77,7 @@ fn filter_min_name_len_rejects_short_names() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "name 'a.txt' (5 chars) should be rejected by min_name_len=10"
     );
 }
@@ -104,12 +91,7 @@ fn filter_min_name_len_accepts_long_names() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "name 'long_filename.txt' (17 chars) should pass min_name_len=10"
     );
 }
@@ -123,12 +105,7 @@ fn filter_max_name_len_rejects_long_names() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "name 'very_long_filename.txt' (22 chars) should be rejected by max_name_len=10"
     );
 }
@@ -142,12 +119,7 @@ fn filter_max_name_len_accepts_short_names() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "name 'hi.rs' (5 chars) should pass max_name_len=10"
     );
 }
@@ -162,12 +134,7 @@ fn filter_name_len_range() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "name 'medium.txt' (10 chars) should pass 5..15 range"
     );
 }
@@ -185,12 +152,7 @@ fn filter_min_allocated_rejects_small_allocation() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "allocated=1024 should be rejected by min_allocated=4096"
     );
 }
@@ -204,12 +166,7 @@ fn filter_min_allocated_accepts_large_allocation() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "allocated=1024 should pass min_allocated=512"
     );
 }
@@ -223,12 +180,7 @@ fn filter_max_allocated_rejects_large_allocation() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "allocated=1024 should be rejected by max_allocated=512"
     );
 }
@@ -242,12 +194,7 @@ fn filter_max_allocated_accepts_small_allocation() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "allocated=1024 should pass max_allocated=2048"
     );
 }
@@ -265,12 +212,7 @@ fn filter_min_treesize_rejects_small_tree() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "treesize=5000 should be rejected by min_treesize=10000"
     );
 }
@@ -284,12 +226,7 @@ fn filter_min_treesize_accepts_large_tree() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "treesize=5000 should pass min_treesize=1000"
     );
 }
@@ -303,12 +240,7 @@ fn filter_max_treesize_rejects_large_tree() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "treesize=5000 should be rejected by max_treesize=1000"
     );
 }
@@ -322,12 +254,7 @@ fn filter_max_treesize_accepts_small_tree() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "treesize=5000 should pass max_treesize=10000"
     );
 }
@@ -345,12 +272,7 @@ fn filter_min_tree_allocated_rejects_small_tree() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "tree_allocated=5000 should be rejected by min_tree_allocated=10000"
     );
 }
@@ -364,12 +286,7 @@ fn filter_max_tree_allocated_accepts_small_tree() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "tree_allocated=5000 should pass max_tree_allocated=10000"
     );
 }
@@ -383,12 +300,7 @@ fn filter_max_tree_allocated_rejects_large_tree() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "tree_allocated=5000 should be rejected by max_tree_allocated=1000"
     );
 }
@@ -408,12 +320,7 @@ fn filter_allowed_months_accepts_matching_month() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "month=1 (January) should match modified=200_000_000µs"
     );
 }
@@ -428,12 +335,7 @@ fn filter_allowed_months_rejects_non_matching_month() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "months [6,7,8] should reject file modified in month 1"
     );
 }
@@ -447,12 +349,7 @@ fn filter_empty_months_means_no_filter() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "empty allowed_months should pass all records"
     );
 }
@@ -471,12 +368,7 @@ fn filter_combined_allocated_plus_size() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "size=1000 >= 500 AND allocated=1024 <= 2048 should pass"
     );
 }
@@ -491,12 +383,7 @@ fn filter_combined_name_len_plus_size() {
         ..Default::default()
     };
     assert!(
-        !filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "name_len=5 < 10 should reject even though size passes"
     );
 }
@@ -511,12 +398,7 @@ fn filter_combined_treesize_plus_descendants() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "treesize=5000 >= 1000 AND descendants=10 >= 5 should pass"
     );
 }
@@ -531,12 +413,7 @@ fn filter_combined_month_plus_attr() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "archive flag set + month=11 should pass"
     );
 }
@@ -558,12 +435,7 @@ fn filter_combined_all_new_fields() {
         ..Default::default()
     };
     assert!(
-        filters.matches_record(
-            &rec,
-            &names,
-            &mut Vec::new(),
-            uffs_text::CaseFold::default_table()
-        ),
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
         "all new filter fields should pass with matching test record"
     );
 }

@@ -7,7 +7,7 @@ use regex::Regex;
 use uffs_mft::index::{
     IndexNameRef, IndexStreamInfo, LinkInfo, MftIndex, NO_ENTRY, ROOT_FRS, SizeInfo,
 };
-use uffs_text::CaseFold;
+use uffs_text::case_fold::CaseFold;
 
 use super::*;
 

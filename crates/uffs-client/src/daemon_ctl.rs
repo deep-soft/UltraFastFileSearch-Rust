@@ -30,7 +30,7 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// S4.3.4: Verify daemon identity after connecting.
-pub(crate) fn verify_daemon_after_connect() {
+pub fn verify_daemon_after_connect() {
     let pid_path = pid_file_path();
     if !pid_path.exists() {
         tracing::debug!("No PID file found, skipping daemon identity verification");
@@ -45,7 +45,7 @@ pub(crate) fn verify_daemon_after_connect() {
 }
 
 /// Send a keepalive message using blocking std I/O (works on all platforms).
-pub(crate) fn keepalive_send_blocking(sock_path: &std::path::Path) {
+pub fn keepalive_send_blocking(sock_path: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -89,7 +89,7 @@ pub fn parse_pid_file(path: &std::path::Path) -> Option<(u32, u64, u64, String)>
     Some((pid, ts, hash, nonce))
 }
 
-/// Find the `uffs` executable (the CLI binary that also embeds the daemon).
+/// Find the `uffs` CLI executable.
 #[must_use]
 pub fn find_uffs_exe() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
@@ -108,24 +108,28 @@ pub fn find_uffs_exe() -> PathBuf {
     PathBuf::from("uffs")
 }
 
-/// Find the `uffs-daemon` executable (legacy — prefer `find_uffs_exe`).
+/// Find the `uffsd` daemon executable.
+///
+/// Search order:
+/// 1. If the current binary is already `uffsd`, return it.
+/// 2. Look for `uffsd` / `uffsd.exe` next to the current binary.
+/// 3. Fall back to bare `uffsd` (rely on `$PATH`).
 #[must_use]
 pub fn find_daemon_exe() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| {
-            let parent = exe.parent()?;
-            let unix = parent.join("uffs-daemon");
-            let win = parent.join("uffs-daemon.exe");
-            if unix.exists() {
-                Some(unix)
-            } else if win.exists() {
-                Some(win)
-            } else {
-                None
+    if let Ok(exe) = std::env::current_exe() {
+        let name = exe.file_stem().and_then(|stem| stem.to_str()).unwrap_or("");
+        if name == "uffsd" {
+            return exe;
+        }
+        if let Some(parent) = exe.parent() {
+            let daemon_bin = if cfg!(windows) { "uffsd.exe" } else { "uffsd" };
+            let sibling = parent.join(daemon_bin);
+            if sibling.exists() {
+                return sibling;
             }
-        })
-        .unwrap_or_else(|| PathBuf::from("uffs-daemon"))
+        }
+    }
+    PathBuf::from("uffsd")
 }
 
 // ── Daemon Spawn ──────────────────────────────────────────────────────────
@@ -143,10 +147,7 @@ pub fn find_daemon_exe() -> PathBuf {
     clippy::single_call_fn,
     reason = "platform-specific spawn logic — clarity over inlining"
 )]
-pub(crate) fn spawn_daemon(
-    exe: &std::path::Path,
-    args: &[&str],
-) -> Result<(), crate::error::ClientError> {
+pub fn spawn_daemon(exe: &std::path::Path, args: &[&str]) -> Result<(), crate::error::ClientError> {
     #[cfg(unix)]
     spawn_daemon_unix(exe, args)?;
 
@@ -178,7 +179,7 @@ fn spawn_daemon_unix(
         .spawn()
         .map_err(|spawn_err| {
             crate::error::ClientError::DaemonStartFailed(format!(
-                "Failed to spawn {} daemon run: {spawn_err}",
+                "Failed to spawn {}: {spawn_err}",
                 exe.display()
             ))
         })?;
@@ -291,7 +292,6 @@ fn spawn_detached_no_inherit(
 /// Check if the current process is running with Administrator privileges.
 #[cfg(windows)]
 fn is_elevated() -> bool {
-    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Security::{
         GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
     };
@@ -303,6 +303,7 @@ fn is_elevated() -> bool {
         reason = "Win32 token elevation check requires unsafe FFI"
     )]
     unsafe {
+        use windows::Win32::Foundation::CloseHandle;
         let mut token = windows::Win32::Foundation::HANDLE::default();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
             return false;

@@ -320,7 +320,7 @@ mod tests {
             trigram: TrigramIndex::empty(),
             children,
             ext_index: ExtensionIndex::build(&[]),
-            fold: uffs_text::CaseFold::default_table(),
+            fold: uffs_text::case_fold::CaseFold::default_table(),
             ext_names: vec![],
             source: IndexSource::MftFile(PathBuf::from("C:")),
             source_epoch: 0,

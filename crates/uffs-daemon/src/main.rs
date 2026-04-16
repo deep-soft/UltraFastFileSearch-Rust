@@ -34,8 +34,11 @@ static GLOBAL: MiMalloc = MiMalloc;
 use anyhow as _;
 use clap::Parser;
 use dirs_next as _;
+#[cfg(unix)]
 use libc as _;
 use libmimalloc_sys as _;
+#[cfg(windows)]
+use windows as _;
 use rand as _;
 use serde as _;
 use serde_json as _;

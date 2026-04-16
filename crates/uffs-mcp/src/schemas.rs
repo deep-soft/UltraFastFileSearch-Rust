@@ -39,7 +39,7 @@ pub struct SearchOutput {
 
 /// A single search result row (structured).
 ///
-/// Mirrors every field from [`uffs_client::protocol::SearchRow`] so
+/// Mirrors every field from [`uffs_client::protocol::response::SearchRow`] so
 /// `structuredContent` exposes 100% of the data the CLI/API returns.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchRowOutput {

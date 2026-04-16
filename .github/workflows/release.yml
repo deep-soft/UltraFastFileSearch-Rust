@@ -173,11 +173,15 @@ jobs:
 
           # Copy all binaries (cross-platform compatible)
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            # Windows: copy .exe files
-            find target/${{ matrix.target }}/release -name "*.exe" -type f -exec cp {} release-artifacts/ \;
+            # Windows: copy known .exe files (avoid picking up build tools)
+            for binary in uffs.exe uffsd.exe uffs_mft.exe; do
+              if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
+                cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
+              fi
+            done
           else
             # macOS (Intel & Apple Silicon) and Linux: copy known binary names
-            for binary in uffs; do
+            for binary in uffs uffsd uffs_mft; do
               if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
                 cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
               fi
@@ -275,15 +279,19 @@ jobs:
 
           ### Linux (x86_64)
           - `uffs-linux-x64` - Ultra-fast file search CLI
+          - `uffsd-linux-x64` - Background daemon (MFT index server)
 
           ### Windows (x86_64)
           - `uffs-windows-x64.exe` - Ultra-fast file search CLI
+          - `uffsd-windows-x64.exe` - Background daemon (MFT index server)
 
           ### macOS (x86_64)
           - `uffs-macos-x64` - Ultra-fast file search CLI
+          - `uffsd-macos-x64` - Background daemon (MFT index server)
 
           ### macOS (ARM64)
           - `uffs-macos-arm64` - Ultra-fast file search CLI
+          - `uffsd-macos-arm64` - Background daemon (MFT index server)
 
           ## 🔐 Verification
 

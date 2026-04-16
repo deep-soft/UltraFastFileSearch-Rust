@@ -10,15 +10,19 @@
 
 use anyhow::{Context, Result};
 use uffs_client::connect::UffsClient;
-use uffs_client::protocol::DaemonStatus;
+use uffs_client::protocol::response::DaemonStatus;
 
 /// `uffs status` — show combined system status.
 ///
 /// Displays daemon health (PID, uptime, drives), MCP HTTP gateway
 /// state (PID, transport, health endpoint), and active MCP stdio
 /// sessions in a single unified output.
+///
+/// # Errors
+///
+/// Returns an error if the operation fails.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-pub(crate) async fn system_status() -> Result<()> {
+pub async fn system_status() -> Result<()> {
     println!("═══ UFFS System Status ═══");
     println!();
 
@@ -45,7 +49,7 @@ async fn print_daemon_status() {
 
     let Ok(mut client) = UffsClient::connect_raw().await else {
         println!("  Status:      not running");
-        let pid_path = uffs_client::connect::pid_file_path();
+        let pid_path = uffs_client::daemon_ctl::pid_file_path();
         if pid_path.exists() {
             println!("  PID file:    {} (stale)", pid_path.display());
         }
@@ -74,7 +78,7 @@ async fn print_daemon_status() {
     println!("  Status:      running (PID {}){stale_tag}", status.pid);
     println!(
         "  Uptime:      {}",
-        uffs_core::format::format_duration(uptime)
+        uffs_client::format::format_duration(uptime)
     );
 
     match &status.status {
@@ -107,13 +111,13 @@ async fn print_daemon_status() {
             println!(
                 "  Drives:      {} loaded ({} records)",
                 drives.drives.len(),
-                uffs_core::format::format_number_commas(total_records as u64),
+                uffs_client::format::format_number_commas(total_records as u64),
             );
             for dr in &drives.drives {
                 println!(
                     "    {}: {:>10} records",
                     dr.letter,
-                    uffs_core::format::format_number_commas(dr.records as u64),
+                    uffs_client::format::format_number_commas(dr.records as u64),
                 );
             }
         }
@@ -121,13 +125,14 @@ async fn print_daemon_status() {
 
     // Performance stats.
     if let Ok(stats) = client.stats().await {
-        let fmt = uffs_core::format::format_duration;
+        let fmt = uffs_client::format::format_duration;
         let startup = core::time::Duration::from_millis(stats.startup_duration_ms);
         println!("  Startup:     {}", fmt(startup));
         println!("  Queries:     {}", stats.total_queries);
         if stats.total_queries > 0 {
-            let avg =
-                core::time::Duration::from_micros(uffs_mft::f64_to_u64(stats.avg_query_time_us));
+            let avg = core::time::Duration::from_micros(uffs_client::format::f64_to_u64(
+                stats.avg_query_time_us,
+            ));
             println!("  Avg query:   {}", fmt(avg));
             println!("  Queries/s:   {:.2}", stats.queries_per_second);
         }
@@ -141,7 +146,7 @@ async fn print_mcp_http_status() {
 
     // Read the PID file.  Only show HTTP-transport entries here;
     // stdio entries are handled by `print_mcp_stdio_sessions()`.
-    let info = match uffs_mcp::parse_mcp_pid_file_full() {
+    let info = match uffs_mcp::pid::parse_mcp_pid_file_full() {
         Some(info) if info.http_addr().is_some() => info,
         _ => {
             println!("  Status:      not running");
@@ -149,7 +154,7 @@ async fn print_mcp_http_status() {
         }
     };
 
-    let alive = uffs_mcp::is_mcp_server_running().is_some();
+    let alive = uffs_mcp::pid::is_mcp_server_running().is_some();
     if !alive {
         println!(
             "  Status:      not running (stale PID file, PID {})",
@@ -178,7 +183,7 @@ async fn print_mcp_http_status() {
     println!("  Status:      running (PID {}){stale_tag}", info.pid);
     println!(
         "  Uptime:      {}",
-        uffs_core::format::format_duration(uptime)
+        uffs_client::format::format_duration(uptime)
     );
 
     // Probe HTTP /status endpoint for health + stats.
@@ -219,7 +224,10 @@ fn print_mcp_stats(stats: &serde_json::Value) {
     println!("  Tool calls:  {tool_calls} ({tool_errors} errors)");
     if tool_calls > 0 {
         let avg = core::time::Duration::from_micros(avg_latency);
-        println!("  Avg latency: {}", uffs_core::format::format_duration(avg));
+        println!(
+            "  Avg latency: {}",
+            uffs_client::format::format_duration(avg)
+        );
     }
     if resource_reads > 0 || prompt_gets > 0 {
         println!("  Resources:   {resource_reads} reads, {prompt_gets} prompts");
@@ -278,7 +286,7 @@ fn print_mcp_stdio_sessions() {
         println!(
             "  {num}. PID {pid:<8} uptime: {uptime}{ppid_info}{stale_tag}",
             pid = session.pid,
-            uptime = uffs_core::format::format_duration(session.uptime),
+            uptime = uffs_client::format::format_duration(session.uptime),
         );
     }
     if any_stale {

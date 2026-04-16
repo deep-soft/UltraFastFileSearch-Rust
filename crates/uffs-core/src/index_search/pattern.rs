@@ -3,16 +3,16 @@
 
 //! Pattern compilation and matching for direct `MftIndex` search.
 //!
-//! Uses `uffs_text::CaseFold` for NTFS-compatible case-insensitive matching.
-//! Pattern strings are pre-folded to `Vec<u16>` at compile time; input strings
-//! are folded char-by-char at match time.  This is zero-allocation for the
-//! common Exact/Prefix/Suffix/Contains variants.
+//! Uses [`uffs_text::case_fold::CaseFold`] for NTFS-compatible case-insensitive
+//! matching. Pattern strings are pre-folded to `Vec<u16>` at compile time;
+//! input strings are folded char-by-char at match time.  This is
+//! zero-allocation for the common Exact/Prefix/Suffix/Contains variants.
 
 use std::collections::HashSet;
 
 use aho_corasick::AhoCorasick;
 use regex::Regex;
-use uffs_text::CaseFold;
+use uffs_text::case_fold::CaseFold;
 
 use crate::compiled_pattern::{GlobKind, classify_glob};
 use crate::error::{CoreError, Result};

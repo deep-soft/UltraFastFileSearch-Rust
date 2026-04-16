@@ -252,7 +252,7 @@ impl SearchFilters {
                 "normalized extension filter strings"
             );
         }
-        let fold_table = uffs_text::CaseFold::default_table();
+        let fold_table = uffs_text::case_fold::CaseFold::default_table();
         let exclude_lower = params.exclude.map(|excl| {
             let mut buf = Vec::with_capacity(excl.len());
             fold_table.fold_into(excl, &mut buf).to_owned()
@@ -510,7 +510,7 @@ impl SearchFilters {
         rec: &CompactRecord,
         names: &[u8],
         fold_buf: &mut Vec<u8>,
-        fold: uffs_text::CaseFold,
+        fold: uffs_text::case_fold::CaseFold,
     ) -> bool {
         // `hide_system` uses the cached `name_first_byte` field — avoids
         // random access into the names arena (25M records → cache misses).

@@ -629,5 +629,11 @@ fn build_output_config(params: &SearchParams) -> uffs_core::output::OutputConfig
     if let Some(cols_str) = &params.output_columns {
         cfg = cfg.with_columns(cols_str);
     }
+    if params.output_parity_compat == Some(true) {
+        cfg = cfg.with_parity_compat(true);
+    }
+    if let Some(tz_hours) = params.output_tz_offset_hours {
+        cfg = cfg.with_tz_offset_hours(tz_hours);
+    }
     cfg
 }

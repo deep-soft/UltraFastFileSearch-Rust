@@ -40,12 +40,14 @@ fn build_profile() -> &'static str {
 }
 
 /// UFFS binaries: (binary_name, package_name)
-/// - uffs: Main CLI tool
+/// - uffs: Main CLI tool (thin client)
+/// - uffsd: Background daemon (holds MFT index, serves queries via IPC)
 /// - uffs_mft: Low-level MFT reading tool
 ///
 /// NOTE: uffs_tui and uffs_gui have moved to the private uffs-products repo.
 const BINARIES: &[(&str, &str)] = &[
     ("uffs", "uffs-cli"),
+    ("uffsd", "uffs-daemon"),
     ("uffs_mft", "uffs-mft"),
 ];
 

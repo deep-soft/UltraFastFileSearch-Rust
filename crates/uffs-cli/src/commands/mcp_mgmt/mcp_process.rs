@@ -13,7 +13,7 @@ use anyhow::Result;
 ///
 /// `skip_pid` is a PID we already killed (to avoid double-killing).
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-pub(super) fn kill_process_on_port(port: u16, skip_pid: u32) {
+pub fn kill_process_on_port(port: u16, skip_pid: u32) {
     #[cfg(unix)]
     {
         // Use lsof to find the PID listening on the port.
@@ -79,8 +79,8 @@ pub(super) fn kill_process_on_port(port: u16, skip_pid: u32) {
 /// `uffs mcp restart` — kill the running MCP server so the AI host
 /// respawns it (or the user can run `uffs mcp start` again).
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-pub(super) fn mcp_restart() {
-    let Some(pid) = uffs_mcp::is_mcp_server_running() else {
+pub fn mcp_restart() {
+    let Some(pid) = uffs_mcp::pid::is_mcp_server_running() else {
         println!("MCP server is not running — nothing to restart.");
         println!("  Start it with: uffs mcp start");
         return;
@@ -88,7 +88,7 @@ pub(super) fn mcp_restart() {
 
     println!("Stopping MCP server (PID {pid})...");
     signal_pid(pid, true);
-    drop(std::fs::remove_file(uffs_mcp::mcp_pid_file_path()));
+    drop(std::fs::remove_file(uffs_mcp::pid::mcp_pid_file_path()));
     println!("MCP server killed.");
     println!("  The AI host will respawn it, or run: uffs mcp start");
     println!("  (The daemon continues running — no re-index needed.)");
@@ -102,7 +102,7 @@ pub(super) fn mcp_restart() {
 /// running `uffs mcp run` process's binary.  Sends SIGHUP to stale
 /// sessions so their AI hosts respawn with the updated binary.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
-pub(super) fn reload_stale_stdio_sessions() {
+pub fn reload_stale_stdio_sessions() {
     let Ok(current_exe) = std::env::current_exe() else {
         return;
     };
@@ -142,7 +142,8 @@ pub(super) fn reload_stale_stdio_sessions() {
 /// Get the start time of a process via `ps -p <pid> -o etime=`.
 ///
 /// Returns the approximate `SystemTime` when the process was spawned.
-pub(super) fn process_start_time(pid: u32) -> Option<std::time::SystemTime> {
+#[must_use]
+pub fn process_start_time(pid: u32) -> Option<std::time::SystemTime> {
     let output = std::process::Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "etime="])
         .stdout(std::process::Stdio::piped())
@@ -155,7 +156,8 @@ pub(super) fn process_start_time(pid: u32) -> Option<std::time::SystemTime> {
 }
 
 /// Parse `ps` elapsed time format: `[[dd-]hh:]mm:ss`.
-pub(super) fn parse_ps_etime(etime: &str) -> core::time::Duration {
+#[must_use]
+pub fn parse_ps_etime(etime: &str) -> core::time::Duration {
     let mut total_secs: u64 = 0;
     let (days_part, time_part) = if let Some((days, rest)) = etime.split_once('-') {
         (days.parse::<u64>().unwrap_or(0), rest)
@@ -195,8 +197,12 @@ pub(super) fn parse_ps_etime(etime: &str) -> core::time::Duration {
     reason = "CLI user-facing output; sequential reload pipeline: find daemon → \
               check exe freshness → reload HTTP gateway → signal stdio sessions"
 )]
-pub(super) async fn mcp_reload() -> Result<()> {
-    use uffs_client::connect::{UffsClient, pid_file_path, socket_path};
+/// # Errors
+///
+/// Returns an error if the operation fails.
+pub async fn mcp_reload() -> Result<()> {
+    use uffs_client::connect::UffsClient;
+    use uffs_client::daemon_ctl::{pid_file_path, socket_path};
 
     let exe_mtime = std::env::current_exe()
         .ok()
@@ -214,10 +220,10 @@ pub(super) async fn mcp_reload() -> Result<()> {
     // On non-Windows, the daemon needs data sources to restart.
     // Read from the PID file first (persisted at startup), fall back
     // to the process cmdline for backward compatibility.
-    let pid_info = uffs_mcp::parse_mcp_pid_file_full();
+    let pid_info = uffs_mcp::pid::parse_mcp_pid_file_full();
     let gw_pid = pid_info
         .as_ref()
-        .filter(|_info| uffs_mcp::is_mcp_server_running().is_some())
+        .filter(|_info| uffs_mcp::pid::is_mcp_server_running().is_some())
         .map(|info| info.pid);
 
     let gw_config = {
@@ -291,7 +297,7 @@ pub(super) async fn mcp_reload() -> Result<()> {
             if has_data_sources {
                 println!("  ✗ HTTP gateway PID {pid} is stale — restarting...");
                 signal_pid(pid, true);
-                drop(std::fs::remove_file(uffs_mcp::mcp_pid_file_path()));
+                drop(std::fs::remove_file(uffs_mcp::pid::mcp_pid_file_path()));
                 std::thread::sleep(core::time::Duration::from_millis(500));
                 println!(
                     "  ↻ Restarting HTTP gateway on {}:{}...",
@@ -347,24 +353,25 @@ pub(super) async fn mcp_reload() -> Result<()> {
 }
 
 /// Config extracted from a running `uffs mcp serve` process cmdline.
-pub(super) struct GatewayConfig {
+pub struct GatewayConfig {
     /// `--bind` value.
-    pub(super) bind: String,
+    pub bind: String,
     /// `--port` value.
-    pub(super) port: u16,
+    pub port: u16,
     /// `--data-dir` value (if any).
-    pub(super) data_dir: Option<std::path::PathBuf>,
+    pub data_dir: Option<std::path::PathBuf>,
     /// `--mft-file` values.
-    pub(super) mft_files: Vec<std::path::PathBuf>,
+    pub mft_files: Vec<std::path::PathBuf>,
     /// `--no-cache` flag.
-    pub(super) no_cache: bool,
+    pub no_cache: bool,
 }
 
 /// Read the gateway config from a running process's command line.
 ///
 /// Runs `ps -p <pid> -o args=` and parses out `--port`, `--bind`,
 /// `--data-dir`, `--mft-file`, and `--no-cache`.
-pub(super) fn read_gateway_config(pid: u32) -> Option<GatewayConfig> {
+#[must_use]
+pub fn read_gateway_config(pid: u32) -> Option<GatewayConfig> {
     let output = std::process::Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "args="])
         .stdout(std::process::Stdio::piped())
@@ -431,7 +438,8 @@ pub(super) fn read_gateway_config(pid: u32) -> Option<GatewayConfig> {
 }
 
 /// Find PIDs of running `uffs mcp run` processes.
-pub(super) fn find_mcp_run_pids() -> Vec<u32> {
+#[must_use]
+pub fn find_mcp_run_pids() -> Vec<u32> {
     let Ok(raw_output) = std::process::Command::new("ps")
         .args(["-eo", "pid,args"])
         .stdout(std::process::Stdio::piped())
@@ -463,7 +471,8 @@ pub(super) fn find_mcp_run_pids() -> Vec<u32> {
 }
 
 /// Resolve the name of a parent process by PID.
-pub(super) fn resolve_parent_name(child_pid: u32) -> Option<String> {
+#[must_use]
+pub fn resolve_parent_name(child_pid: u32) -> Option<String> {
     // Get the PPID first, then resolve its name.
     let ppid_output = std::process::Command::new("ps")
         .args(["-p", &child_pid.to_string(), "-o", "ppid="])
@@ -496,7 +505,8 @@ pub(super) fn resolve_parent_name(child_pid: u32) -> Option<String> {
 // ── helpers ─────────────────────────────────────────────────────────
 
 /// Build `--mft-file` / `--data-dir` args for daemon auto-start.
-pub(super) fn build_daemon_args(
+#[must_use]
+pub fn build_daemon_args(
     mft_files: &[std::path::PathBuf],
     data_dir: Option<&std::path::Path>,
 ) -> Vec<String> {
@@ -515,7 +525,7 @@ pub(super) fn build_daemon_args(
 /// Send SIGHUP to a process (Unix only; no-op on Windows).
 ///
 /// Used to signal stdio MCP sessions to exit so their host can respawn.
-pub(super) fn signal_pid_hup(pid: u32) {
+pub fn signal_pid_hup(pid: u32) {
     #[cfg(unix)]
     {
         drop(
@@ -535,7 +545,7 @@ pub(super) fn signal_pid_hup(pid: u32) {
 ///
 /// When `force` is true: SIGKILL (Unix) / `/F` (Windows).
 /// When `force` is false: SIGTERM (Unix) / normal taskkill (Windows).
-pub(super) fn signal_pid(pid: u32, force: bool) {
+pub fn signal_pid(pid: u32, force: bool) {
     #[cfg(unix)]
     {
         let sig = if force { "-9" } else { "-15" };

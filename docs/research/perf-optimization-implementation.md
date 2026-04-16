@@ -2,6 +2,38 @@
 
 Status: **In Progress** (OPT-1,2,3,4,6,7 complete) | Created: 2026-04-14
 
+## Measured Results (7 drives, 25.95M records)
+
+| Metric | Before all OPTs | After OPT-1,2,3,4 | After OPT-6,7 (current) |
+|---|---|---|---|
+| **Peak RSS** | ~23 GB | ~23 GB | **~10 GB** |
+| **Settled RSS** | ~14 GB | ~12 GB | **~6 GB** |
+| **Index heap** | ~4.8 GB | ~4.8 GB | **~3.5 GB** (est. with pruning) |
+
+### Per-drive memory breakdown (from `uffs daemon status`)
+
+```
+Index heap:    4781 MB
+  G: —     15,094 records (live) —    2 MB  [rec=1   names=0   tri=0   ch=0  ext=0]
+  F: —  2,221,346 records (live) —  448 MB  [rec=169 names=57  tri=193 ch=16 ext=8]
+  C: —  3,533,886 records (live) —  731 MB  [rec=269 names=94  tri=324 ch=26 ext=13]
+  M: —  1,908,808 records (live) —  301 MB  [rec=145 names=29  tri=104 ch=14 ext=7]
+  D: —  7,066,020 records (live) — 1459 MB  [rec=539 names=209 tri=629 ch=53 ext=26]
+  E: —  2,929,522 records (live) —  474 MB  [rec=223 names=47  tri=168 ch=22 ext=11]
+  S: —  8,278,105 records (live) — 1363 MB  [rec=631 names=140 tri=495 ch=63 ext=31]
+```
+
+### Memory composition (all drives, pre-pruning)
+
+| Component | Total MB | % of heap | Notes |
+|-----------|----------|-----------|-------|
+| `records` | 1,977 | 41% | `Vec<CompactRecord>` — 26M × 80 bytes |
+| `trigram` | 1,913 | 40% | Keys + offsets + posting lists |
+| `names` | 576 | 12% | `Vec<u8>` — all filenames concatenated |
+| `children` | 194 | 4% | Parent→children CSR index |
+| `ext_index` | 96 | 2% | Extension→records CSR index |
+| **Total** | **4,756** | **100%** | |
+
 ## Codebase Reality Check
 
 Before planning optimizations, we audited the current code and found
@@ -28,7 +60,7 @@ several optimizations from the analysis doc were **already implemented**:
 | **Steady state D:** | | **~1,089 MB ≈ 1.1 GB** |
 
 For 7 drives (est. 25M total records): **~3.5–4 GB steady state**.
-Observed: **~16 GB** → gap of ~12 GB.
+Observed before optimizations: **~16 GB** → gap of ~12 GB.
 
 ---
 
@@ -69,29 +101,30 @@ The system allocator may not return freed pages to the OS immediately,
 leading to high RSS.
 
 **Fix:** After each drive load completes (in the daemon's drive loading
-loop), call platform-specific memory release:
-- Linux/macOS: `libc::malloc_trim(0)` or `jemalloc::purge()`
-- Windows: `HeapCompact(GetProcessHeap(), 0)` or `SetProcessWorkingSetSizeEx`
-- Cross-platform: ensure no custom allocator is holding pages
+loop), call allocator-specific memory release.
 
-Note: daemon does NOT use mimalloc (only the CLI does). The daemon
-uses the system allocator.
+**Note:** Originally used platform-specific calls (`HeapCompact` on
+Windows, `malloc_trim` on Linux). These were replaced by
+`mi_collect(true)` in OPT-6 when mimalloc became the global allocator.
 
-**Files to change:**
-- `crates/uffs-daemon/src/index/mod.rs` — after each drive result in
-  the `join_set.join_next()` loop (around line 252)
+**Files changed:**
+- `crates/uffs-daemon/src/index/mod.rs` — `release_allocator_pages()`
 
-**Status:** [x] Complete — `release_allocator_pages()` added in
-`index/mod.rs` after each drive load and after all drives are loaded.
-Platform-specific:
-- Windows: `HeapCompact(GetProcessHeap(), HEAP_FLAGS(0))`
-- Linux: `malloc_trim(0)`
-- macOS: no-op (returns pages eagerly)
+**Status:** [x] Complete — `release_allocator_pages()` calls
+`mi_collect(true)` at 5 sites covering every memory-freeing moment:
+
+| Call site | What's freed |
+|-----------|-------------|
+| After each MFT file load | MftIndex temp (~1.6 GB) |
+| After each live drive load | MftIndex temp (~1.6 GB) |
+| After all drives loaded | Final cleanup |
+| After each drive refresh | Old drive index + MftIndex temp |
+| After hot-load | MftIndex temp |
 
 Also added memory visibility to daemon status:
 - `daemon status` now shows per-drive heap breakdown:
-  `D: — 7,066,020 records (live) — 1089 MB [rec=566 names=163 tri=280 ch=52 ext=28]`
-- Total index heap shown: `Index heap: 1089 MB`
+  `D: — 7,066,020 records (live) — 1459 MB [rec=539 names=209 tri=629 ch=53 ext=26]`
+- Total index heap shown: `Index heap: 4781 MB`
 - `DriveCompactIndex::log_heap_report()` logs breakdown after each drive load
 
 ---
@@ -209,7 +242,109 @@ All options talk to the same daemon via the existing Unix socket /
 named pipe. The thin client is just a pipe adapter — it sends
 the query, streams the response to stdout or file.
 
-**Status:** [ ] Not started
+**Architecture analysis:**
+
+The current `uffs` CLI binary contains both thin (daemon-client) and
+fat (direct MFT) code paths:
+
+| Subcommand | Needs daemon? | Needs uffs-core/polars? |
+|---|---|---|
+| `uffs *.rs` (search) | ✅ | ❌ just sends protocol |
+| `uffs aggregate` | ✅ | ❌ just sends protocol |
+| `uffs daemon start/stop/status` | ❌ | ❌ |
+| `uffs daemon run` | — | ✅ IS the daemon |
+| `uffs mcp start/run` | ✅ | ❌ just proxies |
+| `uffs stats` | ✅ | ❌ sends aggregate |
+| `uffs status` | ✅ | ❌ |
+| `uffs index` | ❌ | ✅ reads MFT, writes parquet |
+| `uffs info` | ❌ | ✅ reads parquet |
+
+The 152 ms startup comes from linking `uffs-core` → `uffs-polars` →
+polars. But 90% of commands only need `uffs-client` (already thin).
+
+**Key finding:** `uffs index` and `uffs info` are **duplicates** of
+existing `uffs_mft` subcommands:
+- `uffs index --drive C out.parquet` = `uffs_mft read -d C -o out.parquet`
+- `uffs info out.parquet` = `uffs_mft load out.parquet --info-only`
+
+The `uffs_mft` versions are more capable (support `--mode`, `--full`,
+`--unique`, `--forensic`, `--build-index`, `--debug-tree`, etc.).
+
+**Recommended approach (Option A — two binaries):**
+```
+uffs      → thin (~15 ms startup) — search, aggregate, daemon mgmt, mcp, stats
+uffs-srv  → fat (current daemon) — runs as background service
+```
+- `uffs` links only: `clap`, `uffs-client`, `uffs-security`, `serde`, `tokio`
+- `uffs-srv` keeps everything: `uffs-core`, `uffs-mft`, `uffs-polars`
+- `uffs daemon start` spawns `uffs-srv` instead of `uffs daemon run`
+- `uffs index` / `uffs info` removed (use `uffs_mft read` / `uffs_mft load`)
+- User experience: **identical** — `uffs *.rs` still works, 10× faster
+
+**Status:** ✅ Done — CLI is now a thin client, zero polars/uffs-core/uffs-mft in dep tree
+
+---
+
+### OPT-6: mimalloc as global allocator for daemon
+
+**Priority:** High | **Effort:** Low | **Est. savings:** RSS→heap gap closed
+
+**Problem:** After OPT-1 through OPT-4, index heap was 4.8 GB but
+RSS settled at 12 GB — a 7.2 GB gap. The Windows CRT allocator was
+holding freed pages from MftIndex temporaries (~1.6 GB per drive × 7)
+and old serialization buffers.
+
+`HeapCompact(GetProcessHeap())` had no effect because mimalloc was
+already the global allocator via the CLI binary — the CRT heap was
+unused.
+
+**Fix:**
+- Added `mimalloc` + `libmimalloc-sys` (with `extended` feature) to
+  `uffs-daemon`
+- Set `#[global_allocator] static GLOBAL: MiMalloc` in daemon's `main.rs`
+- Replaced `HeapCompact` / `malloc_trim` with `mi_collect(true)` which
+  aggressively decommits freed segments
+- Added `mi_collect(true)` to all 5 memory-freeing sites (see OPT-2)
+
+**Result:** RSS settled at ~6 GB (was 12 GB) — **6 GB recovered**.
+Peak RSS dropped from ~23 GB to ~10 GB.
+
+**Status:** [x] Complete
+
+---
+
+### OPT-7: Trigram frequency-cap pruning
+
+**Priority:** Medium | **Effort:** Low | **Est. savings:** ~20-30% trigram RAM
+
+**Problem:** The trigram index consumes 1,913 MB (40% of total heap).
+The `values: Vec<u32>` posting lists are ~99% of that. Each record
+contributes ~18 unique trigrams on average:
+
+```
+25.95M records × ~18 trigrams/record × 4 bytes = ~1,868 MB ≈ 1,913 MB
+```
+
+Many trigrams appear in millions of records — common patterns like
+`exe`, `dll`, `win`, `the`, `ing`. These huge posting lists:
+1. Waste memory (a trigram hitting 50% of records = 3.5M × 4 = 14 MB)
+2. Are useless for filtering (low selectivity, expensive to intersect)
+
+**Fix:** During the trigram build, prune any trigram whose document
+frequency exceeds 25% of total records (`records.len() / 4`):
+
+```rust
+let freq_cap = (record_count / 4).max(1024);
+global_counts.retain(|_tri, cnt| (*cnt as usize) <= freq_cap);
+```
+
+- Minimum cap of 1024 prevents over-pruning small indices (tests pass)
+- Search side unaffected: `filter_map` in `search()` silently skips
+  missing trigrams — fewer, more selective trigrams are used
+- Searches actually get **faster** (shorter intersection chains)
+
+**Status:** [x] Complete — implemented in `TrigramIndex::build()` in
+`crates/uffs-core/src/trigram.rs`. Pruning count logged via tracing.
 
 ---
 
@@ -223,24 +358,31 @@ the query, streams the response to stdout or file.
 | OPT-3 | Cache save streaming | ~1 GB peak RAM | Medium | ✅ Done |
 | OPT-6 | mimalloc global allocator | RSS→heap gap | Low | ✅ Done |
 | OPT-7 | Trigram frequency-cap pruning | ~20-30% tri RAM | Low | ✅ Done |
-| OPT-5 | Thin CLI client | 152→15 ms load | Medium | 🟡 Not started |
+| OPT-5 | Thin CLI client | 152→15 ms load | Medium | ✅ Done |
 
 ## Implementation Order
 
 1. ~~**OPT-1 + OPT-2** — trivial memory wins, no behavior change~~ ✅ Done
-2. **Measure** — confirm memory reduction on Windows with 7 drives
+2. **Measure round 1** — after OPT-1,2,3,4
    - All 7 drives: index heap 4,781 MB, RSS settled at ~12 GB, peak ~23 GB
    - Gap: ~7.2 GB from allocator not returning freed pages
 3. ~~**OPT-4** — daemon-writes-file for `--out`~~ ✅ Done
 4. ~~**OPT-3** — streaming cache save (eliminate 1.1 GB buffer)~~ ✅ Done
 5. ~~**OPT-6** — mimalloc as `#[global_allocator]` for daemon~~ ✅ Done
-   - `mi_collect(true)` replaces `HeapCompact` — aggressively decommits
-   - Added to all free-memory sites: per-drive load, refresh, hot-load
 6. ~~**OPT-7** — trigram frequency-cap pruning~~ ✅ Done
-   - Trigrams in >25% of records pruned (too common for selectivity)
-   - Minimum cap of 1024 prevents over-pruning small indices
-   - Search side unaffected (`filter_map` skips missing trigrams)
-7. **OPT-5** — thin client (after architecture is validated)
+7. **Measure round 2** — after OPT-6,7
+   - **Peak RSS: ~10 GB** (was ~23 GB — **-57%**)
+   - **Settled RSS: ~6 GB** (was ~14 GB — **-57%**)
+   - mimalloc + `mi_collect(true)` closed the RSS→heap gap
+   - Trigram pruning reduced posting list memory
+8. ~~**OPT-5** — thin client~~ ✅ Done
+   - `uffs index` / `uffs info` removed from CLI (duplicates of `uffs_mft`)
+   - `uffs-core`, `uffs-mft`, `uffs-polars` removed from `uffs-cli` deps
+   - `uffs-core` also removed from `uffs-mcp` deps
+   - `FieldId` types moved to `uffs-client::schema` (shared without polars)
+   - Daemon binary renamed to `uffsd` (`[[bin]]` in `uffs-daemon`)
+   - Format helpers moved to `uffs-client::format`
+   - Expected: 52.7 MB → ~2 MB binary, 152 ms → ~15 ms startup
 
 ## Non-goals (preserve current functionality)
 

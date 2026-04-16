@@ -14,7 +14,7 @@ use crate::schemas::StatusOutput;
 /// # Errors
 ///
 /// Returns [`BridgeError`] if the daemon call fails.
-pub(crate) async fn run(client: &mut UffsClient) -> Result<CallToolResult, BridgeError> {
+pub async fn run(client: &mut UffsClient) -> Result<CallToolResult, BridgeError> {
     let response = client
         .status()
         .await

@@ -19,7 +19,7 @@ use uffs_client::protocol::{
 
 /// A single resolved root scope entry.
 #[derive(Debug, Clone)]
-pub(crate) struct RootScope {
+pub struct RootScope {
     /// Original URI from the client (e.g. `"file:///C:/Users/me/project"`).
     pub uri: String,
     /// Display name from the client, if any.
@@ -34,7 +34,7 @@ pub(crate) struct RootScope {
 
 /// Shared roots state held by the MCP server.
 #[derive(Debug, Default)]
-pub(crate) struct RootsState {
+pub struct RootsState {
     /// Whether the client has advertised roots at least once.
     pub advertised: bool,
     /// Resolved root scopes.
@@ -44,7 +44,7 @@ pub(crate) struct RootsState {
 }
 
 /// Thread-safe handle to the roots state.
-pub(crate) type SharedRootsState = Arc<RwLock<RootsState>>;
+pub type SharedRootsState = Arc<RwLock<RootsState>>;
 
 /// Parse a `file://` URI into an NTFS-style path.
 ///
@@ -93,7 +93,7 @@ fn resolve_root(root: &rmcp::model::Root) -> RootScope {
 }
 
 /// Update the [`RootsState`] from a list of roots received from the client.
-pub(crate) fn update_roots_state(state: &mut RootsState, roots: &[rmcp::model::Root]) {
+pub fn update_roots_state(state: &mut RootsState, roots: &[rmcp::model::Root]) {
     state.advertised = true;
     state.roots.clear();
     state.warnings.clear();
@@ -120,7 +120,8 @@ pub(crate) fn update_roots_state(state: &mut RootsState, roots: &[rmcp::model::R
 /// - `warnings`: any warnings about unmappable roots
 ///
 /// Returns `None` if no roots have been advertised or all roots are unmappable.
-pub(crate) fn roots_scope(state: &RootsState) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
+#[must_use]
+pub fn roots_scope(state: &RootsState) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
     if !state.advertised || state.roots.is_empty() {
         return None;
     }
@@ -163,7 +164,7 @@ pub(crate) fn roots_scope(state: &RootsState) -> Option<(Vec<String>, Vec<String
 ///
 /// If a root points to a drive root (e.g. `C:`), no path predicate is
 /// injected — the drive filter alone is sufficient.
-pub(crate) fn apply_roots_scope(state: &RootsState, params: &mut SearchParams) {
+pub fn apply_roots_scope(state: &RootsState, params: &mut SearchParams) {
     let Some((drives, prefixes, _warnings)) = roots_scope(state) else {
         return;
     };

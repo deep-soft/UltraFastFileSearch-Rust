@@ -42,15 +42,15 @@ mod lifecycle;
 /// JSON-RPC protocol types.
 mod protocol;
 
-/// Default log file location: `<data-local-dir>/uffs/uffs_daemon.log`.
+/// Default log file location: `<data-local-dir>/uffs/uffsd.log`.
 ///
-/// Falls back to `./uffs_daemon.log` if the platform data directory
+/// Falls back to `./uffsd.log` if the platform data directory
 /// cannot be determined.
 #[must_use]
 pub fn default_log_file() -> PathBuf {
     dirs_next::data_local_dir().map_or_else(
-        || PathBuf::from("uffs_daemon.log"),
-        |dir| dir.join("uffs").join("uffs_daemon.log"),
+        || PathBuf::from("uffsd.log"),
+        |dir| dir.join("uffs").join("uffsd.log"),
     )
 }
 
@@ -103,7 +103,7 @@ pub fn init_tracing(
                 .unwrap_or_else(|| std::path::Path::new(".")),
             resolved
                 .file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new("uffs_daemon.log")),
+                .unwrap_or_else(|| std::ffi::OsStr::new("uffsd.log")),
         );
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
         // `try_init` — a subscriber may already exist when invoked via
@@ -224,7 +224,7 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
         data_dir = ?config.data_dir,
         no_cache = config.no_cache,
         no_retire = config.no_retire,
-        "uffs-daemon starting"
+        "uffsd starting"
     );
 
     // Determine data directory

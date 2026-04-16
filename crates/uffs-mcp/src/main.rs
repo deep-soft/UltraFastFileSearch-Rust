@@ -28,7 +28,6 @@ use thiserror as _;
 use tower_service as _;
 use tracing_appender as _;
 use uffs_client as _;
-use uffs_core as _;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

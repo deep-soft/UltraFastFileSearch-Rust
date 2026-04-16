@@ -47,13 +47,11 @@ use std::path::PathBuf;
 use anyhow::Result;
 #[cfg(test)]
 use assert_cmd as _;
-use chrono as _;
 use clap::Parser;
 use mimalloc::MiMalloc;
 use tracing_subscriber::fmt::time::UtcTime;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Layer};
-use uffs_polars as _;
 
 /// Use mimalloc globally - faster than system allocator for our workload:
 /// many small allocations (file names, records) + large buffers (MFT,
@@ -62,49 +60,33 @@ use uffs_polars as _;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-mod args;
-mod commands;
+pub mod args;
+pub mod commands;
 
 use args::{Cli, Commands};
 
 /// Operation label used for CLI-wide shutdown classification.
 const CLI_OPERATION: &str = "uffs";
 
-/// Maps spawned CLI task failures onto the approved cancellation taxonomy.
-#[must_use]
+/// Maps spawned CLI task failures onto a descriptive `anyhow::Error`.
 fn classify_cli_task_error(
     operation: &'static str,
     error: &tokio::task::JoinError,
-) -> uffs_mft::MftError {
+) -> anyhow::Error {
     if error.is_cancelled() {
-        return uffs_mft::MftError::Cancelled {
-            operation,
-            reason: error.to_string(),
-        };
+        return anyhow::anyhow!("{operation}: task cancelled — {error}");
     }
-
-    uffs_mft::MftError::WaitFailed {
-        operation,
-        reason: error.to_string(),
-    }
+    anyhow::anyhow!("{operation}: task join failed — {error}")
 }
 
 /// Builds the explicit cancellation outcome for a Ctrl+C shutdown request.
-#[must_use]
-fn shutdown_requested_error(operation: &'static str) -> uffs_mft::MftError {
-    uffs_mft::MftError::Cancelled {
-        operation,
-        reason: "shutdown requested by Ctrl+C".to_owned(),
-    }
+fn shutdown_requested_error(operation: &'static str) -> anyhow::Error {
+    anyhow::anyhow!("{operation}: shutdown requested by Ctrl+C")
 }
 
 /// Builds a wait failure when the CLI cannot install a Ctrl+C listener.
-#[must_use]
-fn ctrl_c_listener_error(operation: &'static str, error: &io::Error) -> uffs_mft::MftError {
-    uffs_mft::MftError::WaitFailed {
-        operation,
-        reason: format!("failed to listen for Ctrl+C: {error}"),
-    }
+fn ctrl_c_listener_error(operation: &'static str, error: &io::Error) -> anyhow::Error {
+    anyhow::anyhow!("{operation}: failed to listen for Ctrl+C: {error}")
 }
 /// Initialize logging with terminal + file support.
 ///
@@ -275,23 +257,15 @@ async fn run() -> Result<()> {
     let cli = Cli::parse();
     prof.mark("clap Cli::parse()");
 
-    // `uffs daemon run` manages its own tracing subscriber so it can
-    // honour --log-level / --log-file.  Skip the CLI's init_logging for
-    // that subcommand — otherwise `try_init` in `daemon_run` silently
-    // fails because the global subscriber is already installed.
-    let is_daemon_run = matches!(
-        &cli.command,
-        Some(Commands::Daemon {
-            action: args::DaemonAction::Run { .. }
-        })
-    );
+    // Skip logging init for `uffs mcp run/serve` — the MCP server initialises
+    // its own tracing subscriber.
     let is_mcp_run = matches!(
         &cli.command,
         Some(Commands::Mcp {
             action: args::McpAction::Run { .. } | args::McpAction::Serve { .. }
         })
     );
-    let _guard = if is_daemon_run || is_mcp_run {
+    let _guard = if is_mcp_run {
         None
     } else {
         let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
@@ -302,16 +276,6 @@ async fn run() -> Result<()> {
 
     // Handle subcommands or default search action
     match cli.command {
-        Some(Commands::Index {
-            output,
-            drive,
-            drives,
-        }) => {
-            commands::index(output, drive, drives).await?;
-        }
-        Some(Commands::Info { path }) => {
-            commands::info(&path)?;
-        }
         Some(Commands::Stats {
             path,
             top,
@@ -319,7 +283,7 @@ async fn run() -> Result<()> {
             mft_file,
         }) => {
             if let Some(stats_path) = path {
-                commands::stats(Some(&stats_path), top).await?;
+                commands::stats::stats(Some(&stats_path), top)?;
             } else {
                 // Daemon mode: run overview preset through search path.
                 let config = commands::search::SearchConfig::aggregate_only(
@@ -362,13 +326,13 @@ async fn run() -> Result<()> {
             commands::search::run_with_config(&config).await?;
         }
         Some(Commands::Daemon { action }) => {
-            commands::daemon(&action).await?;
+            commands::daemon_mgmt::daemon(&action).await?;
         }
         Some(Commands::Mcp { action }) => {
-            commands::mcp(&action).await?;
+            commands::mcp_mgmt::mcp(&action).await?;
         }
         Some(Commands::SystemStatus) => {
-            commands::system_status().await?;
+            commands::system_status::system_status().await?;
         }
         None => {
             run_search(cli).await?;
@@ -465,19 +429,15 @@ async fn dispatch_search(
     );
     prof.mark("dispatch_search() entered");
 
-    // Expand collection aliases / presets
-    let ext_expanded = cli
-        .ext
-        .as_deref()
-        .map(uffs_core::extensions::expand_ext_spec);
-    let attr_expanded = cli
-        .attr
-        .as_deref()
-        .map(uffs_core::search::filters::expand_attr_spec);
+    // Pass ext and attr specs raw — the daemon's SearchFilters::from_params
+    // handles alias expansion internally (e.g., "code" → "rs,py,js,...").
+    let ext_raw = cli.ext.as_deref().map(str::to_owned);
+    let attr_raw = cli.attr.as_deref().map(str::to_owned);
+    // Month spec is parsed client-side because the protocol uses Vec<u32>.
     let month_expanded: Vec<u32> = cli
         .month
         .as_deref()
-        .map(uffs_core::search::filters::parse_month_spec)
+        .map(uffs_client::format::parse_month_spec)
         .unwrap_or_default();
 
     // Merge --exact-size / --exact-descendants
@@ -503,7 +463,7 @@ async fn dispatch_search(
         cli.older.as_deref().or(bo.as_deref()),
     );
 
-    commands::search(
+    commands::search::search(
         pattern,
         cli.drive,
         cli.drives,
@@ -524,7 +484,7 @@ async fn dispatch_search(
         &cli.format,
         cli.case,
         cli.smart_case,
-        attr_expanded.as_deref(),
+        attr_raw.as_deref(),
         newer,
         older,
         cli.newer_created.as_deref(),
@@ -551,7 +511,7 @@ async fn dispatch_search(
         cli.word,
         cli.sort.as_deref(),
         cli.sort_desc,
-        ext_expanded.as_deref(),
+        ext_raw.as_deref(),
         &cli.out,
         if cli.parity_compat {
             "parity"
@@ -609,15 +569,15 @@ async fn run_until_shutdown() -> Result<()> {
         result = &mut run_task => {
             match result {
                 Ok(outcome) => outcome,
-                Err(error) => Err(classify_cli_task_error(CLI_OPERATION, &error).into()),
+                Err(error) => Err(classify_cli_task_error(CLI_OPERATION, &error)),
             }
         }
         signal = tokio::signal::ctrl_c() => {
             run_task.abort();
 
             match signal {
-                Ok(()) => Err(shutdown_requested_error(CLI_OPERATION).into()),
-                Err(error) => Err(ctrl_c_listener_error(CLI_OPERATION, &error).into()),
+                Ok(()) => Err(shutdown_requested_error(CLI_OPERATION)),
+                Err(error) => Err(ctrl_c_listener_error(CLI_OPERATION, &error)),
             }
         }
     }
@@ -737,7 +697,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::args::{Cli, Commands, parse_drive_letter};
+    use super::args::{Cli, parse_drive_letter};
     use super::{classify_cli_task_error, ctrl_c_listener_error, shutdown_requested_error};
 
     fn render_long_help(mut command: clap::Command) -> String {
@@ -765,7 +725,6 @@ mod tests {
         assert!(help.contains("uffs '*.txt'"));
         assert!(help.contains("uffs '>.*\\.log$' --drive C"));
         assert!(help.contains("uffs '*' --mft-file G_mft.bin --drive G"));
-        assert!(help.contains("uffs index -d C index.parquet"));
     }
 
     #[test]
@@ -808,41 +767,6 @@ mod tests {
         assert_eq!(cli.tz_offset, Some(-8));
     }
 
-    #[test]
-    fn test_index_subcommand_normalizes_multi_drive_input() {
-        let cli = parse_cli(&["uffs", "index", "out.parquet", "--drives", "c:,d,e:"])
-            .expect("index args should parse");
-
-        match cli.command {
-            Some(Commands::Index {
-                output,
-                drive,
-                drives,
-            }) => {
-                assert_eq!(output, PathBuf::from("out.parquet"));
-                assert_eq!(drive, None);
-                assert_eq!(drives, Some(vec!['C', 'D', 'E']));
-            }
-            _ => panic!("expected index subcommand"),
-        }
-    }
-
-    #[test]
-    fn test_index_help_includes_examples_and_multi_drive_guidance() {
-        let mut command = Cli::command();
-        let help = render_long_help(
-            command
-                .find_subcommand_mut("index")
-                .expect("index subcommand should exist")
-                .clone(),
-        );
-
-        assert!(help.contains("By default, indexes ALL available NTFS drives"));
-        assert!(help.contains("uffs index -d C index.parquet"));
-        assert!(help.contains("uffs index --drives C,D,E out.parquet"));
-        assert!(help.contains("Creates myindex.parquet"));
-    }
-
     #[tokio::test]
     async fn test_classify_cli_task_error_maps_cancelled_joins() {
         let handle = tokio::spawn(async {
@@ -857,30 +781,24 @@ mod tests {
         };
 
         let error = classify_cli_task_error("uffs", &join_error);
-
-        assert!(matches!(error, uffs_mft::MftError::Cancelled {
-            operation: "uffs",
-            ..
-        }));
+        let msg = error.to_string();
+        assert!(msg.contains("uffs"));
+        assert!(msg.contains("cancelled"));
     }
 
     #[test]
     fn test_shutdown_requested_error_is_cancelled() {
         let error = shutdown_requested_error("uffs");
-
-        assert!(matches!(error, uffs_mft::MftError::Cancelled {
-            operation: "uffs",
-            ..
-        }));
+        let msg = error.to_string();
+        assert!(msg.contains("uffs"));
+        assert!(msg.contains("shutdown"));
     }
 
     #[test]
     fn test_ctrl_c_listener_error_is_wait_failed() {
         let error = ctrl_c_listener_error("uffs", &std::io::Error::other("listener unavailable"));
-
-        assert!(matches!(error, uffs_mft::MftError::WaitFailed {
-            operation: "uffs",
-            ..
-        }));
+        let msg = error.to_string();
+        assert!(msg.contains("uffs"));
+        assert!(msg.contains("Ctrl+C"));
     }
 }

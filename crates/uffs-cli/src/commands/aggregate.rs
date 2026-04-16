@@ -24,7 +24,11 @@ use uffs_client::protocol::AggregateResultWire;
 use super::{format_number, format_size};
 
 /// Print aggregate results in a human-readable table format.
-pub(crate) fn print_table_results(results: &[AggregateResultWire]) -> Result<()> {
+///
+/// # Errors
+///
+/// Returns an error if the operation fails.
+pub fn print_table_results(results: &[AggregateResultWire]) -> Result<()> {
     let mut stdout = std::io::stdout().lock();
 
     for result in results {
@@ -47,7 +51,7 @@ pub(crate) fn print_table_results(results: &[AggregateResultWire]) -> Result<()>
                     writeln!(
                         stdout,
                         "  Avg:    {}",
-                        format_size(uffs_mft::f64_to_u64(stats.avg))
+                        format_size(uffs_client::format::f64_to_u64(stats.avg))
                     )?;
                     if stats.waste_bytes > 0 {
                         writeln!(
@@ -89,7 +93,11 @@ pub(crate) fn print_table_results(results: &[AggregateResultWire]) -> Result<()>
 }
 
 /// Print aggregate results in CSV/TSV format.
-pub(crate) fn print_csv_results(results: &[AggregateResultWire], tsv: bool) -> Result<()> {
+///
+/// # Errors
+///
+/// Returns an error if the operation fails.
+pub fn print_csv_results(results: &[AggregateResultWire], tsv: bool) -> Result<()> {
     let mut stdout = std::io::stdout().lock();
     let sep = if tsv { '\t' } else { ',' };
 
@@ -256,7 +264,7 @@ fn print_duplicate_table(stdout: &mut impl Write, result: &AggregateResultWire) 
 
     for row in &result.buckets {
         let reclaimable = row.total_allocated.unwrap_or(0);
-        let file_size = uffs_mft::f64_to_u64(row.avg_size.unwrap_or(0.0));
+        let file_size = uffs_client::format::f64_to_u64(row.avg_size.unwrap_or(0.0));
         let verified_mark = if row.verified { " ✓" } else { "" };
 
         writeln!(
@@ -414,7 +422,7 @@ fn print_csv_duplicates(
 
     for row in &result.buckets {
         let reclaimable = row.total_allocated.unwrap_or(0);
-        let file_size = uffs_mft::f64_to_u64(row.avg_size.unwrap_or(0.0));
+        let file_size = uffs_client::format::f64_to_u64(row.avg_size.unwrap_or(0.0));
         write!(
             stdout,
             "{}{sep}{}{sep}{}{sep}{}{sep}{}{sep}{}",

@@ -29,7 +29,7 @@
 //! Then import from this crate:
 //!
 //! ```rust,ignore
-//! use uffs_polars::prelude::*;
+//! use uffs_polars::*;
 //!
 //! let df = DataFrame::new_infer_height(vec![
 //!     Column::new("name".into(), &["file1.txt", "file2.rs"]),

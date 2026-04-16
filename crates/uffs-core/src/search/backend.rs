@@ -356,7 +356,9 @@ impl MultiDriveBackend {
         let fold = self
             .drives
             .first()
-            .map_or_else(uffs_text::CaseFold::default_table, |drive| drive.fold);
+            .map_or_else(uffs_text::case_fold::CaseFold::default_table, |drive| {
+                drive.fold
+            });
         let needle = if case_sensitive {
             pattern.to_owned()
         } else {
@@ -591,7 +593,9 @@ pub fn search_index(
     // Fold needle using $UpCase from the first drive.
     let fold = active_drives
         .first()
-        .map_or_else(uffs_text::CaseFold::default_table, |drive| drive.fold);
+        .map_or_else(uffs_text::case_fold::CaseFold::default_table, |drive| {
+            drive.fold
+        });
     let needle = if case_sensitive {
         pattern.to_owned()
     } else {

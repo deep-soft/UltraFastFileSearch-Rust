@@ -12,18 +12,17 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use tracing::debug;
-use uffs_core::output::OutputConfig;
 
 /// Daemon-based search via IPC.
-mod daemon;
+pub mod daemon;
 /// Configuration building and output finalization.
-mod dispatch;
+pub mod dispatch;
 /// Pure utility helpers for the search command.
-mod util;
+pub mod util;
 
 /// Full search configuration — all parameters needed for daemon search.
 #[expect(clippy::struct_excessive_bools, reason = "mirrors CLI parameters")]
-pub(crate) struct SearchConfig<'a> {
+pub struct SearchConfig<'a> {
     /// Search pattern.
     pattern: &'a str,
     /// Single drive letter override.
@@ -119,8 +118,20 @@ pub(crate) struct SearchConfig<'a> {
     format: &'a str,
     /// Output path.
     out: &'a str,
-    /// Output configuration.
-    output_config: OutputConfig,
+    /// Column spec string (e.g., `"name,size,modified,path"`).
+    columns: &'a str,
+    /// Column separator string.
+    sep: &'a str,
+    /// Quote string (empty = no quoting).
+    quotes: &'a str,
+    /// Whether to print a header row.
+    header: bool,
+    /// Positive flag replacement string (e.g., `"Yes"`).
+    pos: &'a str,
+    /// Negative flag replacement string (e.g., `"No"`).
+    neg: &'a str,
+    /// Timezone offset in seconds from UTC (for parity timestamp formatting).
+    tz_offset: Option<i32>,
     /// Output targets (drive letters).
     output_targets: Vec<char>,
     /// Start time for profiling.
@@ -141,7 +152,8 @@ impl<'a> SearchConfig<'a> {
     /// Uses `"*"` as pattern (match everything), no filters, and the given
     /// aggregate specs.  The `data_dir` / `mft_file` are forwarded to the
     /// daemon for auto-start on macOS/Linux.
-    pub(crate) fn aggregate_only(
+    #[must_use]
+    pub fn aggregate_only(
         pattern: &'a str,
         agg_specs: Vec<String>,
         format: &'a str,
@@ -202,7 +214,13 @@ impl<'a> SearchConfig<'a> {
             sort_desc: false,
             format,
             out: "",
-            output_config: OutputConfig::default(),
+            columns: "",
+            sep: "\t",
+            quotes: "",
+            header: false,
+            pos: "",
+            neg: "",
+            tz_offset: None,
             output_targets: Vec::new(),
             start_time: std::time::Instant::now(),
             agg_specs,
@@ -235,7 +253,10 @@ impl<'a> SearchConfig<'a> {
     clippy::single_call_fn,
     reason = "public CLI entry point called from main dispatch"
 )]
-pub(crate) async fn search(
+/// # Errors
+///
+/// Returns an error if the operation fails.
+pub async fn search(
     pattern: &str,
     single_drive: Option<char>,
     multi_drives: Option<Vec<char>>,
@@ -362,7 +383,7 @@ pub(crate) async fn search(
         agg_cursor,
         agg_page_size,
         start_time,
-    )?;
+    );
 
     run_with_config(&config).await
 }
@@ -371,7 +392,11 @@ pub(crate) async fn search(
 ///
 /// This is the shared core used by both the search command and the
 /// aggregate subcommand.
-pub(crate) async fn run_with_config(config: &SearchConfig<'_>) -> Result<()> {
+///
+/// # Errors
+///
+/// Returns an error if the operation fails.
+pub async fn run_with_config(config: &SearchConfig<'_>) -> Result<()> {
     let (rows, aggregations) = daemon::search_via_daemon(config).await?;
     dispatch::finalize_output(&rows, &aggregations, config)
 }

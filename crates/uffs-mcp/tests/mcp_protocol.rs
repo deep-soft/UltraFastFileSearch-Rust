@@ -35,7 +35,6 @@ use tracing as _;
 use tracing_appender as _;
 use tracing_subscriber as _;
 use uffs_client as _;
-use uffs_core as _;
 use uffs_mcp::handler::UffsMcpServer;
 
 /// Spin up an in-process MCP server + client pair over a duplex channel.

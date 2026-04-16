@@ -6,7 +6,7 @@
 //! After connecting to the daemon socket, the client reads the PID file
 //! and verifies:
 //! 1. The PID in the file is alive
-//! 2. The exe path of that PID matches the expected `uffs-daemon` binary
+//! 2. The exe path of that PID matches the expected `uffsd` binary
 //!
 //! This prevents a rogue process from impersonating the daemon by placing
 //! a fake socket file.
@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 /// Verify that the daemon process identified by `pid` is running the
-/// expected `uffs-daemon` binary.
+/// expected `uffsd` binary.
 ///
 /// Returns `true` if verification passes or cannot be performed (graceful
 /// degradation — don't block the user if the OS API isn't available).
@@ -46,7 +46,7 @@ fn log_identity_failed(pid: u32, daemon_path: &std::path::Path) {
     tracing::warn!(
         pid,
         exe = %daemon_path.display(),
-        "Daemon identity verification FAILED — process is not uffs-daemon"
+        "Daemon identity verification FAILED — process is not uffsd"
     );
 }
 
@@ -67,10 +67,15 @@ fn log_identity_result(pid: u32, daemon_path: &std::path::Path, sig_ok: bool) {
     );
 }
 
-/// Check whether `path` looks like a valid `uffs-daemon` binary name.
+/// Check whether `path` looks like a valid daemon binary name.
+///
+/// Accepts both `uffsd` (current) and legacy `uffs-daemon` / `uffs_daemon`
+/// names for backward compatibility.
 fn is_uffs_daemon_binary(path: &std::path::Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    name == "uffs-daemon"
+    let name = path.file_name().and_then(|osn| osn.to_str()).unwrap_or("");
+    name == "uffsd"
+        || name == "uffsd.exe"
+        || name == "uffs-daemon"
         || name == "uffs-daemon.exe"
         || name.starts_with("uffs-daemon")
         || name.starts_with("uffs_daemon")

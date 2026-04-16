@@ -4,7 +4,8 @@
 //! Pure utility helpers for the search command.
 
 /// Compute the list of output targets (drive letters) for results.
-pub(super) fn compute_output_targets(
+#[must_use]
+pub fn compute_output_targets(
     single_drive: Option<char>,
     multi_drives: Option<&Vec<char>>,
     pattern_drive: Option<char>,

@@ -342,7 +342,7 @@ pub fn run_aggregate_filtered(
     options: &FinalizeOptions,
     pattern: &str,
 ) -> Result<AggregateOutput, AggregateError> {
-    use uffs_text::CaseFold;
+    use uffs_text::case_fold::CaseFold;
 
     use crate::index_search::compile_parsed_pattern;
     use crate::pattern::ParsedPattern;
@@ -433,7 +433,7 @@ pub fn run_aggregate_with_filters(
     filter: &AggregateFilter,
 ) -> Result<AggregateOutput, AggregateError> {
     // Fast path: no filters and trivial pattern → unfiltered scan.
-    use uffs_text::CaseFold;
+    use uffs_text::case_fold::CaseFold;
 
     use crate::index_search::compile_parsed_pattern;
     use crate::pattern::ParsedPattern;

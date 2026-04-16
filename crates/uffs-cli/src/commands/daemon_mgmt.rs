@@ -5,13 +5,18 @@
 
 use anyhow::{Context, Result};
 use tracing::info;
-use uffs_client::connect::{UffsClient, pid_file_path, socket_path};
-use uffs_client::protocol::DaemonStatus;
+use uffs_client::connect::UffsClient;
+use uffs_client::daemon_ctl::{pid_file_path, socket_path};
+use uffs_client::protocol::response::DaemonStatus;
 
 use crate::args::DaemonAction;
 
 /// Execute a daemon management action.
-pub(crate) async fn daemon(action: &DaemonAction) -> Result<()> {
+///
+/// # Errors
+///
+/// Returns an error if the operation fails.
+pub async fn daemon(action: &DaemonAction) -> Result<()> {
     match action {
         DaemonAction::Start {
             mft_file,
@@ -37,77 +42,7 @@ pub(crate) async fn daemon(action: &DaemonAction) -> Result<()> {
             Ok(())
         }
         DaemonAction::Restart => daemon_restart().await,
-        DaemonAction::Run {
-            mft_files,
-            data_dir,
-            drives,
-            idle_timeout,
-            no_retire,
-            no_cache,
-            log_level,
-            log_file,
-        } => {
-            daemon_run(&DaemonRunParams {
-                mft_files,
-                data_dir: data_dir.as_ref(),
-                drives,
-                idle_timeout: *idle_timeout,
-                no_retire: *no_retire,
-                no_cache: *no_cache,
-                log_level,
-                log_file: log_file.as_deref(),
-            })
-            .await
-        }
     }
-}
-
-/// Parameters for `daemon_run`, grouped to stay under the argument-count limit.
-struct DaemonRunParams<'a> {
-    /// MFT file paths to load.
-    mft_files: &'a [std::path::PathBuf],
-    /// Optional data directory override.
-    data_dir: Option<&'a std::path::PathBuf>,
-    /// Drive letters to scan.
-    drives: &'a [char],
-    /// Idle timeout in seconds.
-    idle_timeout: u64,
-    /// Disable retirement of stale indices.
-    no_retire: bool,
-    /// Disable on-disk caching.
-    no_cache: bool,
-    /// Log level spec (e.g. `"info"`, `"debug"`).
-    log_level: &'a str,
-    /// Optional log file path.
-    log_file: Option<&'a std::path::Path>,
-}
-
-/// `uffs daemon run` — run the daemon in-process (embedded mode).
-///
-/// This is the same daemon logic as the standalone `uffs-daemon` binary,
-/// invoked by the client's auto-start mechanism so only a single `uffs`
-/// binary needs to be deployed.
-async fn daemon_run(params: &DaemonRunParams<'_>) -> Result<()> {
-    // Initialise tracing for the daemon — when launched as a detached
-    // background process, no subscriber exists yet.  When called in-process
-    // (e.g. `uffs daemon run` from the same CLI binary), a subscriber may
-    // already be installed; `try_init` gracefully handles that.
-    // UFFS_LOG env var overrides --log-level for diagnostic sessions.
-    let log_spec = std::env::var("UFFS_LOG").unwrap_or_else(|_| params.log_level.to_owned());
-    let _guard = uffs_daemon::init_tracing(&log_spec, params.log_file);
-
-    uffs_daemon::run_daemon(uffs_daemon::DaemonConfig {
-        mft_files: params.mft_files.to_vec(),
-        data_dir: params.data_dir.cloned(),
-        drives: params.drives.to_vec(),
-        idle_timeout: params.idle_timeout,
-        no_retire: params.no_retire,
-        no_cache: params.no_cache,
-        log_level: params.log_level.to_owned(),
-        log_file: params.log_file.map(std::path::Path::to_path_buf),
-    })
-    .await
-    .with_context(|| "daemon run failed")
 }
 
 /// `uffs daemon start` — start the daemon, forwarding data-source flags
@@ -203,7 +138,7 @@ async fn daemon_status() -> Result<()> {
     println!("Daemon PID:    {}", status.pid);
     println!(
         "Uptime:        {}",
-        uffs_core::format::format_duration(uptime)
+        uffs_client::format::format_duration(uptime)
     );
     match &status.status {
         DaemonStatus::Loading {
@@ -247,7 +182,7 @@ async fn daemon_status() -> Result<()> {
                 println!(
                     "  {}: — {:>10} records ({}) — {} MB  [rec={} names={} tri={} ch={} ext={}]",
                     dr.letter,
-                    uffs_core::format::format_number_commas(dr.records as u64),
+                    uffs_client::format::format_number_commas(dr.records as u64),
                     dr.source,
                     mb(dm.heap_bytes),
                     mb(dm.records_bytes),
@@ -260,7 +195,7 @@ async fn daemon_status() -> Result<()> {
                 println!(
                     "  {}: — {:>10} records ({})",
                     dr.letter,
-                    uffs_core::format::format_number_commas(dr.records as u64),
+                    uffs_client::format::format_number_commas(dr.records as u64),
                     dr.source
                 );
             }
@@ -288,11 +223,12 @@ async fn daemon_stats() -> Result<()> {
             .await
             .with_context(|| "Failed to query daemon stats")?;
 
-        let fmt = uffs_core::format::format_duration;
+        let fmt = uffs_client::format::format_duration;
         let uptime = core::time::Duration::from_secs(stats.uptime_secs);
         let startup = core::time::Duration::from_millis(stats.startup_duration_ms);
-        let avg_query =
-            core::time::Duration::from_micros(uffs_mft::f64_to_u64(stats.avg_query_time_us));
+        let avg_query = core::time::Duration::from_micros(uffs_client::format::f64_to_u64(
+            stats.avg_query_time_us,
+        ));
         let total_query = core::time::Duration::from_micros(stats.total_query_time_us);
 
         println!("═══ Daemon Performance Stats ═══");
@@ -300,7 +236,7 @@ async fn daemon_stats() -> Result<()> {
         println!("Startup duration:  {}", fmt(startup));
         println!(
             "Total records:     {}",
-            uffs_core::format::format_number_commas(stats.total_records as u64)
+            uffs_client::format::format_number_commas(stats.total_records as u64)
         );
         println!("Queries served:    {}", stats.total_queries);
         if stats.total_queries > 0 {
@@ -337,7 +273,7 @@ async fn daemon_kill() {
 
     // Try to get PID from PID file first, then from live socket connection.
     let mut pid =
-        uffs_client::connect::parse_pid_file(&pid_path).map(|(file_pid, _, _, _)| file_pid);
+        uffs_client::daemon_ctl::parse_pid_file(&pid_path).map(|(file_pid, _, _, _)| file_pid);
 
     // No PID file → try discovering via live socket.
     if pid.is_none()

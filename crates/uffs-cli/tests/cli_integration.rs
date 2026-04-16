@@ -84,7 +84,6 @@ mod tests {
         assert_success("help_flag", &["--help"], &[
             "Search is the default action",
             "uffs '*.txt'",
-            "uffs index -d C index.parquet",
         ]);
     }
 
@@ -105,42 +104,10 @@ mod tests {
     }
 
     #[test]
-    fn test_index_help_prints_examples() {
-        assert_success("index_help", &["index", "--help"], &[
-            "Build an index from drive MFT(s)",
-            "uffs index --drives C,D,E out.parquet",
-        ]);
-    }
-
-    #[test]
-    fn test_info_help_prints_required_path_argument() {
-        assert_success("info_help", &["info", "--help"], &[
-            "Show information about an index file",
-            "<PATH>",
-        ]);
-    }
-
-    #[test]
     fn test_stats_help_prints_top_option() {
         assert_success("stats_help", &["stats", "--help"], &[
-            "Show statistics about files in an index",
+            "Show statistics",
             "--top <TOP>",
-        ]);
-    }
-
-    #[test]
-    fn test_index_requires_output_argument() {
-        assert_failure("index_missing_output", &["index"], &[
-            "required arguments were not provided",
-            "<OUTPUT>",
-        ]);
-    }
-
-    #[test]
-    fn test_info_requires_path_argument() {
-        assert_failure("info_missing_path", &["info"], &[
-            "required arguments were not provided",
-            "<PATH>",
         ]);
     }
 
@@ -232,55 +199,10 @@ mod tests {
     }
 
     #[test]
-    fn test_index_rejects_invalid_single_drive() {
-        assert_failure(
-            "index_invalid_drive",
-            &["index", "out.parquet", "--drive", "1"],
-            &["invalid value '1'", "must be A-Z"],
-        );
-    }
-
-    #[test]
-    fn test_index_rejects_conflicting_drive_flags() {
-        assert_failure(
-            "index_drive_conflict",
-            &["index", "out.parquet", "--drive", "C", "--drives", "D"],
-            &["cannot be used with", "--drives <DRIVES>"],
-        );
-    }
-
-    #[test]
-    fn test_index_rejects_invalid_multi_drive_list() {
-        assert_failure(
-            "index_invalid_drives",
-            &["index", "out.parquet", "--drives", "c:,1"],
-            &["invalid value '1'", "must be A-Z"],
-        );
-    }
-
-    #[test]
-    fn test_info_rejects_unexpected_extra_argument() {
-        assert_failure(
-            "info_unexpected_extra_arg",
-            &["info", "saved.parquet", "extra"],
-            &["unexpected argument 'extra'", "Usage:"],
-        );
-    }
-
-    #[test]
     fn test_stats_rejects_unexpected_extra_argument() {
         assert_failure(
             "stats_unexpected_extra_arg",
             &["stats", "saved.parquet", "extra"],
-            &["unexpected argument 'extra'", "Usage:"],
-        );
-    }
-
-    #[test]
-    fn test_index_rejects_unexpected_extra_argument() {
-        assert_failure(
-            "index_unexpected_extra_arg",
-            &["index", "out.parquet", "extra"],
             &["unexpected argument 'extra'", "Usage:"],
         );
     }

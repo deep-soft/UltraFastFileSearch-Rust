@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::protocol::{SearchResponse, SearchRow};
+use crate::protocol::response::{SearchResponse, SearchRow};
 
 /// Result sets larger than this are written to shared memory.
 pub const SHMEM_THRESHOLD: usize = 100_000;
@@ -410,7 +410,7 @@ mod tests {
     extern crate alloc;
 
     use super::*;
-    use crate::protocol::SearchRow;
+    use crate::protocol::response::SearchRow;
 
     /// Helper: build a minimal `SearchRow` for testing.
     fn sample_row(name: &str) -> SearchRow {

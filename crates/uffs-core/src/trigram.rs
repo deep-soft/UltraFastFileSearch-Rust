@@ -38,7 +38,8 @@
 
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
-use uffs_text::{CaseFold, pack_char_trigram};
+use uffs_text::case_fold::CaseFold;
+use uffs_text::trigram_key::pack_char_trigram;
 
 use crate::compact::CompactRecord;
 

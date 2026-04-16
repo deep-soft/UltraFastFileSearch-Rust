@@ -95,3 +95,4 @@ metadata.json
 INTENT_PROMPT.md
 INTENT_PROMPT_V2.md
 INTENT_SPEC_FAANG_CORE_INFRA.mdconsole
+crates/uffs-cli/console
