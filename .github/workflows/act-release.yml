@@ -21,6 +21,11 @@ on:
         description: 'Commit SHA to release'
         required: false
         type: string
+      patch_1:
+        description: patch 1
+        type: boolean
+        default: true
+        required: true
   push:
     tags:
       - 'v*'
@@ -131,14 +136,10 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
 
-      #- name: patch uffs-daemon and .cargo/config.toml
       - name: patch .cargo/config.toml
+        if: ${{ inputs.patch_1 }}
         shell: bash
         run: |
-          # no need uffs-daemon, conditional use libc based on platform
-          # echo "uffs-daemon";
-          # sed -ibak 's|use libc|/// use libc|' crates/uffs-daemon/src/main.rs || true;
-          # cat crates/uffs-daemon/src/main.rs | grep "use libc" || true;
           echo ".cargo/config.toml";
           sed -ibak 's|rustc-wrapper|# rustc-wrapper|' .cargo/config.toml || true;
           cat .cargo/config.toml | grep rustc-wrapper || true;
