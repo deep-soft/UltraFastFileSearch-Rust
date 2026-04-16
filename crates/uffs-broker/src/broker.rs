@@ -380,7 +380,7 @@ fn disconnect_and_close(pipe: &windows::Win32::Foundation::HANDLE) {
     )]
     unsafe {
         let _ = DisconnectNamedPipe(*pipe);
-        let _ = CloseHandle(*pipe);
+        let _ = windows::Win32::Foundation::CloseHandle(*pipe);
     }
 }
 
@@ -428,7 +428,7 @@ fn verify_client(pid: u32) -> bool {
             windows::core::PWSTR(buf.as_mut_ptr()),
             &mut size,
         );
-        let _ = CloseHandle(handle);
+        let _ = windows::Win32::Foundation::CloseHandle(handle);
 
         if result.is_err() || size == 0 {
             return false;
