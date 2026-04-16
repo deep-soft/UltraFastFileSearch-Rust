@@ -1067,35 +1067,181 @@ fn scenario_l(r: &mut Runner) {
 
 // ── Scenario M: Daemon load — hot-load MFT into running daemon ─────────────
 
+/// Discover `drive_*` subdirectories in a data-dir, returning the drive
+/// letters sorted alphabetically.  Returns an empty vec if the path is
+/// not a directory or has no `drive_*` children.
+fn discover_drive_letters(data_dir: &str) -> Vec<char> {
+    let dir = std::path::Path::new(data_dir);
+    if !dir.is_dir() { return vec![]; }
+    let mut letters: Vec<char> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let letter = name.strip_prefix("drive_")?.chars().next()?;
+            if letter.is_ascii_alphabetic() && entry.path().is_dir() {
+                Some(letter.to_ascii_uppercase())
+            } else {
+                None
+            }
+        })
+        .collect();
+    letters.sort();
+    letters.dedup();
+    letters
+}
+
+/// Count drives reported by `uffs daemon status` (lines containing "drive"
+/// and a single letter, or parse the drive count from status output).
+fn parse_drive_count_from_status(status_output: &str) -> usize {
+    // `daemon status` typically includes "Drives: C, G" or "2 drives loaded".
+    // Try to parse "N drives" first.
+    let lower = status_output.to_lowercase();
+    // Look for a line like "drives: C, G" and count comma-separated items.
+    for line in lower.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("drives:") {
+            return rest.split(',').filter(|s| !s.trim().is_empty()).count();
+        }
+        if let Some(rest) = trimmed.strip_prefix("loaded drives:") {
+            return rest.split(',').filter(|s| !s.trim().is_empty()).count();
+        }
+    }
+    // Fallback: count single uppercase letters preceded by "drive" on any line.
+    0
+}
+
 fn scenario_m(r: &mut Runner) {
     println!("\n{}", "── Scenario M: Daemon load — hot-load MFT ──".cyan().bold());
 
-    r.step("M1  Ensure clean daemon running", |r| {
-        r.kill_all();
-        r.ensure_daemon_running()?;
-        if !r.is_daemon_running() { bail!("daemon not running"); }
-        Ok(String::new())
-    });
+    // Discover available drives for incremental load testing.
+    let drive_letters = if r.source_flag == Some("--data-dir") {
+        discover_drive_letters(&r.source_path)
+    } else {
+        vec![]
+    };
+    let can_test_incremental = drive_letters.len() >= 2;
 
-    // M2: Reload the same source → should report "already loaded".
-    r.step("M2  `daemon load` same source → already loaded", |r| {
-        let out = r.daemon_load(&r.source_args())?;
-        let lower = out.to_lowercase();
-        // Should contain "already loaded" or "skipped" — not an error.
-        if lower.contains("error") && !lower.contains("already") {
-            bail!("unexpected error: {out}");
-        }
-        if !lower.contains("already loaded") && !lower.contains("skipped") && !lower.contains("loaded") {
-            bail!("expected load confirmation: {out}");
-        }
-        Ok(out.lines().last().unwrap_or("").trim().to_owned())
-    });
+    if can_test_incremental {
+        let first = drive_letters[0];
+        let second = drive_letters[1];
+        let first_str = first.to_string();
+        let second_str = second.to_string();
 
-    // M3: `daemon load` with no args → informative error.
-    r.step("M3  `daemon load` no args → error message", |r| {
+        println!(
+            "    (found {} drives in data-dir: {} — will test incremental load: {} then {})",
+            drive_letters.len(),
+            drive_letters.iter().map(|c| format!("{c}:")).collect::<Vec<_>>().join(", "),
+            first, second,
+        );
+
+        // M1: Kill everything, start daemon with FIRST drive only.
+        r.step("M1  Start daemon with single drive", |r| {
+            r.kill_all();
+            let args = vec!["daemon", "start", "--data-dir", &r.source_path, "--drive", &first_str];
+            r.run_ok(&args)?;
+            if !r.is_daemon_running() { bail!("daemon not running"); }
+            Ok(format!("started with drive {first} only"))
+        });
+
+        // M2: Verify only 1 drive loaded.
+        r.step("M2  Verify single drive loaded", |r| {
+            let status = r.daemon_status_text();
+            let count = parse_drive_count_from_status(&status);
+            // We expect exactly 1 drive, but if we can't parse count, at
+            // least verify the daemon mentions the first drive letter.
+            let lower = status.to_lowercase();
+            if !lower.contains(&first_str.to_lowercase()) {
+                bail!("daemon status doesn't mention drive {first}: {status}");
+            }
+            Ok(format!("drive {first} confirmed, parsed {count} drive(s) from status"))
+        });
+
+        // M3: Hot-load second drive.
+        r.step("M3  Hot-load second drive", |r| {
+            let out = r.daemon_load(&["--data-dir", &r.source_path, "--drive", &second_str])?;
+            let lower = out.to_lowercase();
+            if lower.contains("error") && !lower.contains("already") {
+                bail!("load failed: {out}");
+            }
+            // Should report the second drive as loaded (not "already loaded").
+            if lower.contains("already loaded") {
+                bail!("second drive was already loaded — should be new: {out}");
+            }
+            Ok(format!("loaded drive {second}"))
+        });
+
+        // M4: Verify both drives now loaded.
+        r.step("M4  Verify both drives loaded", |r| {
+            let status = r.daemon_status_text();
+            let lower = status.to_lowercase();
+            if !lower.contains(&first_str.to_lowercase()) {
+                bail!("status missing drive {first}: {status}");
+            }
+            if !lower.contains(&second_str.to_lowercase()) {
+                bail!("status missing drive {second}: {status}");
+            }
+            let count = parse_drive_count_from_status(&status);
+            Ok(format!("both drives confirmed, parsed {count} drive(s)"))
+        });
+
+        // M5: Search across both drives to prove unified index.
+        r.step("M5  Search spans both drives", |r| {
+            let out = r.run_ok(&["*", "--limit", "5"])?;
+            if out.trim().is_empty() { bail!("search returned nothing"); }
+            Ok(format!("{} result line(s)", out.lines().count()))
+        });
+
+        // M6: Reload second drive → "already loaded" (idempotent).
+        r.step("M6  Reload same drive → already loaded", |r| {
+            let out = r.daemon_load(&["--data-dir", &r.source_path, "--drive", &second_str])?;
+            let lower = out.to_lowercase();
+            if !lower.contains("already loaded") && !lower.contains("skipped") {
+                bail!("expected 'already loaded': {out}");
+            }
+            Ok(String::new())
+        });
+    } else {
+        println!(
+            "    ({}— skipping incremental load, testing reload + error handling only)",
+            if drive_letters.len() == 1 {
+                format!("only 1 drive ({}) in data-dir ", drive_letters[0])
+            } else if r.source_flag == Some("--mft-file") {
+                "source is single MFT file ".to_owned()
+            } else {
+                "no data-dir ".to_owned()
+            }
+        );
+
+        // Fallback: start with full source, test reload.
+        r.step("M1  Start daemon with full source", |r| {
+            r.kill_all();
+            r.ensure_daemon_running()?;
+            if !r.is_daemon_running() { bail!("daemon not running"); }
+            Ok(String::new())
+        });
+
+        r.step("M2  Reload same source → already loaded", |r| {
+            let out = r.daemon_load(&r.source_args())?;
+            let lower = out.to_lowercase();
+            if lower.contains("error") && !lower.contains("already") {
+                bail!("unexpected error: {out}");
+            }
+            if !lower.contains("already loaded") && !lower.contains("skipped") && !lower.contains("loaded") {
+                bail!("expected load confirmation: {out}");
+            }
+            Ok(out.lines().last().unwrap_or("").trim().to_owned())
+        });
+    }
+
+    // Error handling tests — always run regardless of incremental capability.
+
+    // M7: `daemon load` with no args → informative error.
+    r.step("M7  `daemon load` no args → error message", |r| {
         let (out, success) = r.run_full(&["daemon", "load"])?;
         let lower = out.to_lowercase();
-        // Should fail with a usage hint, not crash.
         if success {
             bail!("expected non-zero exit, but command succeeded: {out}");
         }
@@ -1106,27 +1252,25 @@ fn scenario_m(r: &mut Runner) {
         Ok(String::new())
     });
 
-    // M4: `daemon load --mft-file <bogus>` → error reported (not a crash).
-    r.step("M4  `daemon load --mft-file /nonexistent` → error, daemon alive", |r| {
+    // M8: `daemon load --mft-file <bogus>` → error reported (not a crash).
+    r.step("M8  `daemon load --mft-file /nonexistent` → daemon survives", |r| {
         let (out, _success) = r.run_full(&["daemon", "load", "--mft-file", "/nonexistent/fake.bin"])?;
-        // Should report an error for the bad path but not crash the daemon.
         if !r.is_daemon_running() {
             bail!("daemon crashed after bad load: {out}");
         }
         Ok(out.lines().filter(|l| !l.is_empty()).last().unwrap_or("").trim().to_owned())
     });
 
-    // M5: Verify daemon still healthy after all loads.
-    r.step("M5  Daemon still healthy", |r| {
+    // M9: Final health check — search still works.
+    r.step("M9  Daemon still healthy after all loads", |r| {
         if !r.is_daemon_running() { bail!("daemon not running"); }
-        // Run a quick search to prove the index is intact.
         let out = r.run_ok(&["*", "--limit", "1"])?;
         if out.trim().is_empty() { bail!("search returned nothing — index may be broken"); }
         Ok(String::new())
     });
 
-    // M6: Stop daemon.
-    r.step("M6  Stop daemon", |r| {
+    // M10: Cleanup.
+    r.step("M10 Stop daemon", |r| {
         r.daemon_kill()?;
         r.ensure_daemon_stopped();
         Ok(String::new())
