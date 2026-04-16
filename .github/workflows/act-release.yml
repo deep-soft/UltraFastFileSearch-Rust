@@ -146,10 +146,6 @@ jobs:
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
 
-# failed on windows-msvc and apple-darwin
-#      - name: cargo install sccache
-#        run: cargo install sccache
-
       - name: Cache dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -189,11 +185,15 @@ jobs:
 
           # Copy all binaries (cross-platform compatible)
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            # Windows: copy .exe files
-            find target/${{ matrix.target }}/release -name "*.exe" -type f -exec cp {} release-artifacts/ \;
+            # Windows: copy known .exe files (avoid picking up build tools)
+            for binary in uffs.exe uffsd.exe uffs_mft.exe; do
+              if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
+                cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
+              fi
+            done
           else
             # macOS (Intel & Apple Silicon) and Linux: copy known binary names
-            for binary in uffs; do
+            for binary in uffs uffsd uffs_mft; do
               if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
                 cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
               fi
@@ -235,7 +235,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all artifacts
-        #uses: actions/download-artifact@3e5f45b04936ee2ba37f5960c29b0ffda4e1e04f # v8
+        # uses: actions/download-artifact@3e5f45b04936ee2ba37f5960c29b0ffda4e1e04f # v8
         uses: actions/download-artifact@v8
         with:
           path: release-artifacts
@@ -292,15 +292,19 @@ jobs:
 
           ### Linux (x86_64)
           - `uffs-linux-x64` - Ultra-fast file search CLI
+          - `uffsd-linux-x64` - Background daemon (MFT index server)
 
           ### Windows (x86_64)
           - `uffs-windows-x64.exe` - Ultra-fast file search CLI
+          - `uffsd-windows-x64.exe` - Background daemon (MFT index server)
 
           ### macOS (x86_64)
           - `uffs-macos-x64` - Ultra-fast file search CLI
+          - `uffsd-macos-x64` - Background daemon (MFT index server)
 
           ### macOS (ARM64)
           - `uffs-macos-arm64` - Ultra-fast file search CLI
+          - `uffsd-macos-arm64` - Background daemon (MFT index server)
 
           ## 🔐 Verification
 
@@ -398,7 +402,7 @@ jobs:
               ``,
               `⚠️ **This is a release pipeline failure — immediate attention required.**`,
               ``,
-              `📧 Notification sent `,
+              `📧 Notification sent`,
             ].join('\n');
 
             const existing = await github.rest.issues.listForRepo({
