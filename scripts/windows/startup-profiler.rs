@@ -284,8 +284,13 @@ rustflags = ["-C", "target-feature=+crt-static"]
     flush();
     let mut output = None;
     for attempt in 1..=3u32 {
+        // `-j 1` serializes build-script link/rename steps, avoiding the
+        // Windows "file briefly locked between write and rename" race that
+        // produces "Access is denied (os error 5)" on cargo's link-or-copy
+        // step. The tiny null-binary builds don't benefit from parallelism
+        // anyway.
         let out = Command::new("cargo")
-            .args(["build", "--release"])
+            .args(["build", "--release", "-j", "1"])
             .current_dir(&proj_dir)
             .env("CARGO_TARGET_DIR", &local_target)
             .env_remove("CARGO_BUILD_TARGET_DIR")
@@ -446,6 +451,31 @@ fn which_bin(name: &str) -> Option<PathBuf> {
         let l = s.lines().next().unwrap_or("").trim();
         if !l.is_empty() && Path::new(l).exists() { Some(PathBuf::from(l)) } else { None }
     })
+}
+
+/// Pick a build directory that is *not* inside `%TEMP%` on Windows.
+/// `%TEMP%` (under `AppData\Local\Temp`) is aggressively scanned by
+/// SmartScreen and the Windows Search Indexer, which briefly locks newly
+/// written build-script binaries and causes cargo's link-or-copy step to
+/// fail with `Access is denied (os error 5)` even when all AV is disabled.
+fn pick_build_dir() -> PathBuf {
+    const DIR_NAME: &str = "uffs-startup-profiler";
+    if cfg!(windows) {
+        if let Some(local) = env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(local).join(DIR_NAME);
+        }
+        if let Some(home) = env::var_os("USERPROFILE") {
+            return PathBuf::from(home).join("AppData").join("Local").join(DIR_NAME);
+        }
+    } else {
+        if let Some(cache) = env::var_os("XDG_CACHE_HOME") {
+            return PathBuf::from(cache).join(DIR_NAME);
+        }
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(".cache").join(DIR_NAME);
+        }
+    }
+    env::temp_dir().join(DIR_NAME)
 }
 
 /// Locate a binary by stem name (e.g. "uffs", "es"), trying in order:
@@ -753,8 +783,14 @@ fn parse_args() -> Cfg {
     // Try to find es.exe (same lookup strategy)
     let es_bin = find_bin("es");
 
-    // Build directory for null binaries
-    let build_dir = env::temp_dir().join("uffs-startup-profiler");
+    // Build directory for null binaries.
+    // We deliberately AVOID %TEMP% / env::temp_dir() on Windows — that path
+    // is aggressively scanned by SmartScreen + Windows Search Indexer, which
+    // causes transient "Access is denied" rename failures during cargo's
+    // link-or-copy step (even with AV disabled). Prefer:
+    //   Windows: %LOCALAPPDATA%\uffs-startup-profiler
+    //   Unix:    $XDG_CACHE_HOME or ~/.cache/uffs-startup-profiler, else /tmp
+    let build_dir = pick_build_dir();
     let _ = fs::create_dir_all(&build_dir);
 
     Cfg { mode, rounds, uffs_bin, drive, build_dir, es_bin }
