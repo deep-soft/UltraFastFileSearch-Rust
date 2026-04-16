@@ -1067,13 +1067,15 @@ fn scenario_l(r: &mut Runner) {
 
 // ── Scenario M: Daemon load — hot-load MFT into running daemon ─────────────
 
-/// Discover `drive_*` subdirectories in a data-dir, returning the drive
-/// letters sorted alphabetically.  Returns an empty vec if the path is
-/// not a directory or has no `drive_*` children.
-fn discover_drive_letters(data_dir: &str) -> Vec<char> {
+/// Discover `drive_*` subdirectories in a data-dir, returning
+/// `(letter, mft_file_path)` pairs sorted by letter.
+fn discover_drive_mft_files(data_dir: &str) -> Vec<(char, String)> {
     let dir = std::path::Path::new(data_dir);
     if !dir.is_dir() { return vec![]; }
-    let mut letters: Vec<char> = std::fs::read_dir(dir)
+
+    const PRIORITY: &[&str] = &["iocp", "uffs", "bin", "raw", "mft"];
+
+    let mut results: Vec<(char, String)> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
@@ -1081,110 +1083,171 @@ fn discover_drive_letters(data_dir: &str) -> Vec<char> {
             let name = entry.file_name();
             let name = name.to_str()?;
             let letter = name.strip_prefix("drive_")?.chars().next()?;
-            if letter.is_ascii_alphabetic() && entry.path().is_dir() {
-                Some(letter.to_ascii_uppercase())
-            } else {
-                None
+            if !letter.is_ascii_alphabetic() || !entry.path().is_dir() {
+                return None;
             }
+            // Find best MFT file by extension priority.
+            let files: Vec<std::path::PathBuf> = std::fs::read_dir(entry.path())
+                .ok()?
+                .flatten()
+                .map(|fe| fe.path())
+                .filter(|fp| fp.is_file())
+                .collect();
+            for ext in PRIORITY {
+                if let Some(path) = files.iter().find(|fp| {
+                    fp.extension()
+                        .and_then(|os| os.to_str())
+                        .is_some_and(|fe| fe.eq_ignore_ascii_case(ext))
+                }) {
+                    return Some((
+                        letter.to_ascii_uppercase(),
+                        path.to_string_lossy().into_owned(),
+                    ));
+                }
+            }
+            None
         })
         .collect();
-    letters.sort();
-    letters.dedup();
-    letters
+    results.sort_by_key(|(letter, _)| *letter);
+    results
 }
 
-/// Count drives reported by `uffs daemon status` (lines containing "drive"
-/// and a single letter, or parse the drive count from status output).
-fn parse_drive_count_from_status(status_output: &str) -> usize {
-    // `daemon status` typically includes "Drives: C, G" or "2 drives loaded".
-    // Try to parse "N drives" first.
-    let lower = status_output.to_lowercase();
-    // Look for a line like "drives: C, G" and count comma-separated items.
-    for line in lower.lines() {
+/// Parse drive count and individual drive letters from `uffs daemon status`.
+///
+/// The status output format is:
+/// ```text
+///   Drives:      7 loaded (25,846,853 records)
+///     C:  3,428,455 records
+///     D:  7,065,539 records
+/// ```
+///
+/// Returns `(count_from_header, vec_of_drive_letters)`.
+fn parse_drives_from_status(status_output: &str) -> (usize, Vec<char>) {
+    let mut header_count: usize = 0;
+    let mut letters: Vec<char> = Vec::new();
+
+    for line in status_output.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("drives:") {
-            return rest.split(',').filter(|s| !s.trim().is_empty()).count();
+
+        // Parse "Drives:      N loaded ..." header.
+        if let Some(rest) = trimmed.strip_prefix("Drives:") {
+            let rest = rest.trim();
+            if let Some(num_str) = rest.split_whitespace().next() {
+                if let Ok(count) = num_str.parse::<usize>() {
+                    header_count = count;
+                }
+            }
+            continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("loaded drives:") {
-            return rest.split(',').filter(|s| !s.trim().is_empty()).count();
+
+        // Parse individual drive lines like "  C: —  3,428,455 records".
+        // After trimming: starts with a single letter, then `:`.
+        if trimmed.len() >= 2 {
+            let mut chars = trimmed.chars();
+            if let Some(letter) = chars.next() {
+                if letter.is_ascii_alphabetic() && chars.next() == Some(':') {
+                    letters.push(letter.to_ascii_uppercase());
+                }
+            }
         }
     }
-    // Fallback: count single uppercase letters preceded by "drive" on any line.
-    0
+
+    // Prefer the counted letters; fall back to header count.
+    if letters.is_empty() && header_count > 0 {
+        (header_count, letters)
+    } else {
+        (letters.len(), letters)
+    }
 }
 
 fn scenario_m(r: &mut Runner) {
     println!("\n{}", "── Scenario M: Daemon load — hot-load MFT ──".cyan().bold());
 
     // Discover available drives for incremental load testing.
-    let drive_letters = if r.source_flag == Some("--data-dir") {
-        discover_drive_letters(&r.source_path)
+    let drive_mft_files = if r.source_flag == Some("--data-dir") {
+        discover_drive_mft_files(&r.source_path)
     } else {
         vec![]
     };
-    let can_test_incremental = drive_letters.len() >= 2;
+    let can_test_incremental = drive_mft_files.len() >= 2;
 
     if can_test_incremental {
-        let first = drive_letters[0];
-        let second = drive_letters[1];
-        let first_str = first.to_string();
-        let second_str = second.to_string();
+        let (first, first_mft) = &drive_mft_files[0];
+        let (second, second_mft) = &drive_mft_files[1];
+        let first = *first;
+        let second = *second;
+        let first_mft = first_mft.clone();
+        let second_mft = second_mft.clone();
 
         println!(
             "    (found {} drives in data-dir: {} — will test incremental load: {} then {})",
-            drive_letters.len(),
-            drive_letters.iter().map(|c| format!("{c}:")).collect::<Vec<_>>().join(", "),
+            drive_mft_files.len(),
+            drive_mft_files.iter().map(|(ch, _)| format!("{ch}:")).collect::<Vec<_>>().join(", "),
             first, second,
         );
 
-        // M1: Kill everything, start daemon with FIRST drive only.
+        // M1: Kill everything, start daemon with FIRST drive only (explicit --mft-file).
         r.step("M1  Start daemon with single drive", |r| {
             r.kill_all();
-            let args = vec!["daemon", "start", "--data-dir", &r.source_path, "--drive", &first_str];
+            let args = vec!["daemon", "start", "--mft-file", &first_mft];
             r.run_ok(&args)?;
             if !r.is_daemon_running() { bail!("daemon not running"); }
-            Ok(format!("started with drive {first} only"))
+            Ok(format!("started with {first}: via --mft-file"))
         });
 
-        // M2: Verify only 1 drive loaded.
-        r.step("M2  Verify single drive loaded", |r| {
+        // M2: Verify exactly 1 drive loaded.
+        r.step("M2  Verify exactly 1 drive loaded", |r| {
             let status = r.daemon_status_text();
-            let count = parse_drive_count_from_status(&status);
-            // We expect exactly 1 drive, but if we can't parse count, at
-            // least verify the daemon mentions the first drive letter.
-            let lower = status.to_lowercase();
-            if !lower.contains(&first_str.to_lowercase()) {
-                bail!("daemon status doesn't mention drive {first}: {status}");
+            let (count, letters) = parse_drives_from_status(&status);
+            if count != 1 {
+                bail!(
+                    "expected exactly 1 drive, got {count} (letters: {})\n{status}",
+                    letters.iter().map(|ch| format!("{ch}:")).collect::<Vec<_>>().join(", ")
+                );
             }
-            Ok(format!("drive {first} confirmed, parsed {count} drive(s) from status"))
+            if !letters.is_empty() && !letters.contains(&first) {
+                bail!("expected drive {first}, found {:?}: {status}", letters);
+            }
+            if letters.contains(&second) {
+                bail!("drive {second} already loaded — expected only {first}: {status}");
+            }
+            Ok(format!("exactly 1 drive: {first}:"))
         });
 
-        // M3: Hot-load second drive.
+        // M3: Hot-load second drive via --mft-file.
         r.step("M3  Hot-load second drive", |r| {
-            let out = r.daemon_load(&["--data-dir", &r.source_path, "--drive", &second_str])?;
+            let out = r.daemon_load(&["--mft-file", &second_mft])?;
             let lower = out.to_lowercase();
             if lower.contains("error") && !lower.contains("already") {
                 bail!("load failed: {out}");
             }
-            // Should report the second drive as loaded (not "already loaded").
+            // Should report the second drive as newly loaded (not "already loaded").
             if lower.contains("already loaded") {
                 bail!("second drive was already loaded — should be new: {out}");
+            }
+            if !lower.contains("loaded") {
+                bail!("expected load confirmation: {out}");
             }
             Ok(format!("loaded drive {second}"))
         });
 
-        // M4: Verify both drives now loaded.
-        r.step("M4  Verify both drives loaded", |r| {
+        // M4: Verify exactly 2 drives now loaded.
+        r.step("M4  Verify exactly 2 drives loaded", |r| {
             let status = r.daemon_status_text();
-            let lower = status.to_lowercase();
-            if !lower.contains(&first_str.to_lowercase()) {
+            let (count, letters) = parse_drives_from_status(&status);
+            if count != 2 {
+                bail!(
+                    "expected 2 drives, got {count} (letters: {})\n{status}",
+                    letters.iter().map(|ch| format!("{ch}:")).collect::<Vec<_>>().join(", ")
+                );
+            }
+            if !letters.contains(&first) {
                 bail!("status missing drive {first}: {status}");
             }
-            if !lower.contains(&second_str.to_lowercase()) {
+            if !letters.contains(&second) {
                 bail!("status missing drive {second}: {status}");
             }
-            let count = parse_drive_count_from_status(&status);
-            Ok(format!("both drives confirmed, parsed {count} drive(s)"))
+            Ok(format!("exactly 2 drives: {first}: + {second}:"))
         });
 
         // M5: Search across both drives to prove unified index.
@@ -1196,7 +1259,7 @@ fn scenario_m(r: &mut Runner) {
 
         // M6: Reload second drive → "already loaded" (idempotent).
         r.step("M6  Reload same drive → already loaded", |r| {
-            let out = r.daemon_load(&["--data-dir", &r.source_path, "--drive", &second_str])?;
+            let out = r.daemon_load(&["--mft-file", &second_mft])?;
             let lower = out.to_lowercase();
             if !lower.contains("already loaded") && !lower.contains("skipped") {
                 bail!("expected 'already loaded': {out}");
