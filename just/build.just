@@ -280,6 +280,17 @@ use:
     Write-Host "  Source: $distDir" -ForegroundColor Cyan
     $binDir = Join-Path $env:USERPROFILE 'bin'
     if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
+
+    # Kill running UFFS processes before copying to avoid file locks.
+    foreach ($proc in @('uffsd', 'uffs', 'uffsmcp', 'uffs_mft')) {
+        $running = Get-Process -Name $proc -ErrorAction SilentlyContinue
+        if ($running) {
+            Write-Host "  Stopping $proc (PID $($running.Id -join ', '))..." -ForegroundColor Yellow
+            $running | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
     $binaries = @{
         'uffs-windows-x64.exe' = 'uffs.exe'
         'uffsd-windows-x64.exe' = 'uffsd.exe'
@@ -292,10 +303,15 @@ use:
         $destName = $binaries[$src]
         $destPath = Join-Path $binDir $destName
         if (Test-Path $srcPath) {
-            Copy-Item $srcPath $destPath -Force
-            $sz = [math]::Round((Get-Item $destPath).Length / 1MB, 1)
-            Write-Host "  OK: $src -> $destName ($sz MB)" -ForegroundColor Green
-            $installed++
+            try {
+                Copy-Item $srcPath $destPath -Force -ErrorAction Stop
+                $sz = [math]::Round((Get-Item $destPath).Length / 1MB, 1)
+                Write-Host "  OK: $src -> $destName ($sz MB)" -ForegroundColor Green
+                $installed++
+            } catch {
+                Write-Host "  FAIL: $src -> $destName (file locked: $_)" -ForegroundColor Red
+                $skipped++
+            }
         } else {
             Write-Host "  SKIP: $src not in $distDir" -ForegroundColor Yellow
             $skipped++
