@@ -52,6 +52,10 @@ pub fn daemon(action: &DaemonAction) -> Result<()> {
 /// `uffs daemon start` — start the daemon, forwarding data-source flags
 /// as-is so the daemon resolves them internally (DRY).
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+#[expect(
+    clippy::use_debug,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
 fn daemon_start(
     mft_files: &[std::path::PathBuf],
     data_dir: Option<&std::path::Path>,
@@ -65,6 +69,11 @@ fn daemon_start(
         println!("Daemon is already running. Use `uffs daemon restart` to reload.");
         return Ok(());
     }
+
+    // [diag] Show what the CLI received before building spawn args.
+    println!(
+        "[diag] daemon_start: drives={drives:?}  log_level={log_level:?}  log_file={log_file:?}"
+    );
 
     // Build spawn args — forward raw, let daemon handle discovery.
     let mut spawn_args = Vec::new();
@@ -83,14 +92,52 @@ fn daemon_start(
     if no_cache {
         spawn_args.push("--no-cache".to_owned());
     }
-    if log_level != "info" {
+
+    // ── Env-var forwarding ────────────────────────────────────────────────
+    // The spawned daemon is a detached background process.  On Windows it is
+    // often elevated via ShellExecuteW("runas"), which starts a new session
+    // and does NOT reliably inherit the parent PowerShell's env block.
+    // We therefore bake RUST_LOG / UFFS_LOG / UFFS_LOG_DIR into argv so the
+    // daemon always receives them regardless of how it is elevated.
+
+    // Probe env vars (read once so we can print them before forwarding).
+    let env_rust_log = std::env::var("RUST_LOG").ok();
+    let env_uffs_log = std::env::var("UFFS_LOG").ok();
+    let env_uffs_log_dir = std::env::var("UFFS_LOG_DIR").ok();
+
+    // Effective log level: CLI arg wins; fall back to UFFS_LOG then RUST_LOG.
+    let effective_log_level: String = if log_level == "info" {
+        env_uffs_log
+            .clone()
+            .or_else(|| env_rust_log.clone())
+            .unwrap_or_else(|| log_level.to_owned())
+    } else {
+        log_level.to_owned()
+    };
+    if effective_log_level != "info" {
         spawn_args.push("--log-level".to_owned());
-        spawn_args.push(log_level.to_owned());
+        spawn_args.push(effective_log_level.clone());
     }
-    if let Some(path) = log_file {
+
+    // Effective log file: CLI arg wins; fall back to $UFFS_LOG_DIR/uffsd.log.
+    let derived_log_file = env_uffs_log_dir
+        .as_deref()
+        .map(|dir| std::path::PathBuf::from(dir).join("uffsd.log"));
+    let effective_log_file = log_file
+        .map(std::path::Path::to_path_buf)
+        .or(derived_log_file);
+    if let Some(path) = &effective_log_file {
         spawn_args.push("--log-file".to_owned());
         spawn_args.push(path.to_string_lossy().into_owned());
     }
+
+    // [diag] Print every diagnostic variable so we can trace the full chain.
+    println!("[diag] env  RUST_LOG    = {env_rust_log:?}");
+    println!("[diag] env  UFFS_LOG    = {env_uffs_log:?}");
+    println!("[diag] env  UFFS_LOG_DIR= {env_uffs_log_dir:?}");
+    println!("[diag] eff  log_level   = {effective_log_level:?}");
+    println!("[diag] eff  log_file    = {effective_log_file:?}");
+    println!("[diag] full spawn_args  = {spawn_args:?}");
 
     if !cfg!(windows) && spawn_args.is_empty() {
         anyhow::bail!(

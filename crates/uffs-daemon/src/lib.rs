@@ -197,7 +197,25 @@ fn validate_data_sources(
     clippy::cognitive_complexity,
     reason = "daemon startup with socket, config, and index orchestration"
 )]
+#[expect(
+    clippy::print_stderr,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
+#[expect(
+    clippy::use_debug,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
 pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
+    // [diag] eprintln fires before any tracing subscriber is active, so it
+    // always appears when uffsd is run directly in the terminal.
+    eprintln!(
+        "[diag] run_daemon: pid={}  drives={:?}  mft_files={:?}  data_dir={:?}",
+        std::process::id(),
+        config.drives,
+        config.mft_files,
+        config.data_dir
+    );
+
     // ── Catastrophe safety net ──────────────────────────────────────
     // Ensure the daemon process is ALWAYS terminable.  If any thread
     // panics (e.g. inside a blocking MFT read), the default panic hook
@@ -336,6 +354,11 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     let drives: Vec<char> = Vec::new();
 
     tracing::info!(mft_files = mft_files.len(), drives = ?drives, "Final data sources");
+    // [diag] Also print to stderr so it's visible in direct-terminal runs.
+    eprintln!(
+        "[diag] run_daemon: final drives={drives:?}  mft_files_count={}",
+        mft_files.len()
+    );
 
     // Refuse to start with zero data sources — an empty daemon is useless.
     validate_data_sources(&mft_files, &drives, &lifecycle_mgr)?;

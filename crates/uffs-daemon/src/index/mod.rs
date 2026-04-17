@@ -227,6 +227,14 @@ impl IndexManager {
     /// is skipped and an error is logged.  This prevents a single stuck
     /// volume from making the daemon unkillable.
     #[cfg(windows)]
+    #[expect(
+        clippy::print_stderr,
+        reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+    )]
+    #[expect(
+        clippy::use_debug,
+        reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+    )]
     pub async fn load_live_drives(
         &self,
         drives: &[char],
@@ -234,6 +242,7 @@ impl IndexManager {
         lifecycle: &crate::lifecycle::LifecycleHandle,
     ) {
         let total = drives.len();
+        eprintln!("[diag] load_live_drives: starting — drives={drives:?}  no_cache={no_cache}");
         {
             let mut status = self.status.write().await;
             *status = DaemonStatus::Loading {
@@ -246,6 +255,7 @@ impl IndexManager {
         let mut join_set = tokio::task::JoinSet::new();
         for &letter in drives {
             tracing::info!(drive = %letter, "Loading live drive (parallel)");
+            eprintln!("[diag] load_live_drives: spawning thread for drive={letter}");
             join_set.spawn_blocking(move || {
                 let result = uffs_core::compact::load_drive(
                     &uffs_core::compact::MftSource::Live(letter),
@@ -268,6 +278,10 @@ impl IndexManager {
                 Err(_elapsed) => {
                     // Timeout — at least one drive is stuck.
                     let remaining = total.saturating_sub(loaded);
+                    eprintln!(
+                        "[diag] load_live_drives: TIMEOUT — {remaining} drive(s) stuck after {}s",
+                        Self::DRIVE_LOAD_TIMEOUT.as_secs()
+                    );
                     tracing::error!(
                         remaining,
                         timeout_secs = Self::DRIVE_LOAD_TIMEOUT.as_secs(),
@@ -319,10 +333,13 @@ impl IndexManager {
                 }
                 Ok((letter, Err(err))) => {
                     loaded += 1;
+                    // [diag] This is the key line — print the FULL error for D:.
+                    eprintln!("[diag] load_live_drives: FAILED drive={letter}  error={err:#}");
                     tracing::error!(drive = %letter, error = %err, "Failed to load live drive");
                 }
                 Err(err) => {
                     loaded += 1;
+                    eprintln!("[diag] load_live_drives: PANIC in task  error={err}");
                     tracing::error!(error = %err, "Task panicked loading drive");
                 }
             }

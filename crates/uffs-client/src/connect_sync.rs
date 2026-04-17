@@ -457,26 +457,42 @@ impl UffsClientSync {
 // ── Auto-start daemon ───────────────────────────────────────────────
 
 /// Spawn the daemon binary if not already running.
+#[expect(clippy::print_stderr, reason = "[diag] diagnostic tracing")]
+#[expect(
+    clippy::use_debug,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
 fn auto_start_daemon(spawn_args: &[String]) -> Result<(), ClientError> {
     let pid_path = pid_file_path();
+
+    // [diag] Show what we are about to do.
+    eprintln!("[diag] auto_start_daemon: spawn_args={spawn_args:?}");
 
     // Check if daemon is already alive via PID file.
     if pid_path.exists()
         && crate::daemon_ctl::parse_pid_file(&pid_path)
             .is_some_and(|(pid, _ts, _hash, _nonce)| is_process_alive(pid))
     {
+        eprintln!("[diag] auto_start_daemon: daemon already alive per PID file — skipping spawn");
         return Ok(());
     }
     if pid_path.exists() {
         // Stale PID file — clean up.
+        eprintln!("[diag] auto_start_daemon: stale PID file — cleaning up");
         drop(std::fs::remove_file(&pid_path));
         let sock = socket_path();
         drop(std::fs::remove_file(&sock));
     }
 
     let daemon_exe = find_daemon_exe();
+    eprintln!(
+        "[diag] auto_start_daemon: daemon_exe={}",
+        daemon_exe.display()
+    );
     let str_args: Vec<&str> = spawn_args.iter().map(String::as_str).collect();
+    eprintln!("[diag] auto_start_daemon: calling spawn_daemon with args={str_args:?}");
     spawn_daemon(&daemon_exe, &str_args)?;
+    eprintln!("[diag] auto_start_daemon: spawn_daemon returned OK");
     Ok(())
 }
 
