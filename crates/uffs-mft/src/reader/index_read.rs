@@ -737,18 +737,30 @@ impl MftReader {
                         return Ok(index);
                     }
                     Err(iocp_err) => {
-                        // ── IOCP failed — fall back to synchronous reader ───
-                        // Readonly / write-protected volumes (Win32 error 19)
-                        // reject overlapped I/O even for reads.  The
-                        // synchronous `Parallel` reader uses the non-overlapped
-                        // handle and works fine on these volumes.
+                        // ── IOCP failed — fall back to $MFT file reading ────
+                        // Write-protected volumes (Win32 error 19) reject ALL
+                        // raw volume I/O (both overlapped and synchronous).
+                        // Opening `X:\$MFT` directly as a file bypasses this
+                        // because the filesystem driver handles VCN→LCN
+                        // translation internally.
                         warn!(
                             volume = %self.volume,
                             error = %iocp_err,
-                            "⚠️  IOCP inline read failed — falling back to synchronous parallel reader"
+                            "⚠️  IOCP inline read failed — falling back to $MFT file reader"
                         );
-                        parallel_reader
-                            .read_all_parallel_with_progress::<fn(u64, u64)>(handle, true, None)?
+                        let mft_handle = self.require_handle().open_mft_read_handle()?;
+                        let mft_result = crate::io::readers::mft_file::read_mft_from_file_handle(
+                            mft_handle,
+                            record_size,
+                            total_records,
+                        );
+                        // SAFETY: `mft_handle` was opened by `open_mft_read_handle`
+                        // and is no longer used after the read. Closed exactly once.
+                        #[expect(unsafe_code, reason = "FFI: CloseHandle on $MFT file handle")]
+                        {
+                            unsafe { windows::Win32::Foundation::CloseHandle(mft_handle) }.ok();
+                        }
+                        mft_result?
                     }
                 }
             }

@@ -325,6 +325,45 @@ impl VolumeHandle {
         }
     }
 
+    /// Opens a read handle to `X:\$MFT` for direct file-based MFT reading.
+    ///
+    /// This is used as a fallback on write-protected volumes where raw volume
+    /// I/O (`\\.\X:`) fails with `ERROR_WRITE_PROTECT`.  Reading `$MFT` as a
+    /// file works because the filesystem driver handles the VCN→LCN mapping
+    /// internally.  Byte 0 of the returned handle corresponds to FRS 0.
+    ///
+    /// Requires Administrator privileges and `FILE_FLAG_BACKUP_SEMANTICS`.
+    #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
+    pub fn open_mft_read_handle(&self) -> Result<HANDLE> {
+        let mft_path: Vec<u16> = format!("{}:\\$MFT", self.volume)
+            .encode_utf16()
+            .chain(core::iter::once(0))
+            .collect();
+
+        // SAFETY: `mft_path` is UTF-16 and NUL-terminated for the duration of
+        // the call, optional pointers are passed as `None`, and ownership of
+        // any returned handle is transferred to the caller.
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR::from_raw(mft_path.as_ptr()),
+                FILE_READ_DATA | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_SEQUENTIAL_SCAN,
+                None,
+            )
+        };
+
+        match handle {
+            Ok(h) => Ok(h),
+            Err(err) => Err(MftError::VolumeOpen {
+                volume: self.volume,
+                source: std::io::Error::from_raw_os_error(err.code().0 as i32),
+            }),
+        }
+    }
+
     /// Returns the byte offset of the MFT on the volume.
     #[must_use]
     pub fn mft_byte_offset(&self) -> u64 {

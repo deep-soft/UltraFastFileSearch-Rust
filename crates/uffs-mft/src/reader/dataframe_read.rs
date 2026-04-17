@@ -570,15 +570,24 @@ impl MftReader {
                 match result {
                     Ok(records) => records,
                     Err(iocp_err) => {
-                        // Readonly / write-protected volumes reject overlapped
-                        // I/O.  Fall back to the synchronous parallel reader.
+                        // Write-protected volumes reject ALL raw volume I/O.
+                        // Fall back to reading `X:\$MFT` directly as a file.
                         warn!(
                             volume = %self.volume,
                             error = %iocp_err,
-                            "⚠️  IOCP read failed — falling back to synchronous parallel reader"
+                            "⚠️  IOCP read failed — falling back to $MFT file reader"
                         );
-                        parallel_reader
-                            .read_all_parallel_with_progress::<fn(u64, u64)>(handle, true, None)?
+                        let mft_handle = self.require_handle().open_mft_read_handle()?;
+                        let mft_result = crate::io::readers::mft_file::read_mft_from_file_handle(
+                            mft_handle,
+                            self.require_handle().file_record_size(),
+                            total_records,
+                        );
+                        #[expect(unsafe_code, reason = "FFI: CloseHandle on $MFT file handle")]
+                        {
+                            unsafe { windows::Win32::Foundation::CloseHandle(mft_handle) }.ok();
+                        }
+                        mft_result?
                     }
                 }
             }
