@@ -20,12 +20,14 @@ pub fn daemon(action: &DaemonAction) -> Result<()> {
         DaemonAction::Start {
             mft_file,
             data_dir,
+            drives,
             no_cache,
             log_level,
             log_file,
         } => daemon_start(
             mft_file,
             data_dir.as_deref(),
+            drives,
             *no_cache,
             log_level,
             log_file.as_deref(),
@@ -53,6 +55,7 @@ pub fn daemon(action: &DaemonAction) -> Result<()> {
 fn daemon_start(
     mft_files: &[std::path::PathBuf],
     data_dir: Option<&std::path::Path>,
+    drives: &[char],
     no_cache: bool,
     log_level: &str,
     log_file: Option<&std::path::Path>,
@@ -72,6 +75,10 @@ fn daemon_start(
     for mft_path in mft_files {
         spawn_args.push("--mft-file".to_owned());
         spawn_args.push(mft_path.to_string_lossy().into_owned());
+    }
+    for letter in drives {
+        spawn_args.push("--drive".to_owned());
+        spawn_args.push(letter.to_string());
     }
     if no_cache {
         spawn_args.push("--no-cache".to_owned());

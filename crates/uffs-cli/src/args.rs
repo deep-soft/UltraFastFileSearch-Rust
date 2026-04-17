@@ -62,6 +62,8 @@ pub enum DaemonAction {
         mft_file: Vec<PathBuf>,
         /// Data directory.
         data_dir: Option<PathBuf>,
+        /// Drive letter(s) to load (filters `--data-dir` discovery).
+        drives: Vec<char>,
         /// Skip file cache.
         no_cache: bool,
         /// Log level.
@@ -99,101 +101,117 @@ pub enum DaemonAction {
 /// Returns an error on invalid action or flags.
 pub fn parse_daemon_action(args: &[String]) -> Result<DaemonAction, anyhow::Error> {
     let action = args.first().map_or("status", String::as_str);
+    let rest = args.get(1..).unwrap_or_default();
     match action {
-        "start" => {
-            let mut mft_file = Vec::new();
-            let mut data_dir = None;
-            let mut no_cache = false;
-            let mut log_level = "info".to_owned();
-            let mut log_file = None;
-            let rest = args.get(1..).unwrap_or_default();
-            let mut iter = rest.iter();
-            while let Some(arg) = iter.next() {
-                match arg.as_str() {
-                    "--mft-file" => {
-                        if let Some(val) = iter.next() {
-                            mft_file = val
-                                .split(',')
-                                .map(|part| PathBuf::from(part.trim()))
-                                .collect();
-                        }
-                    }
-                    "--data-dir" => {
-                        if let Some(val) = iter.next() {
-                            data_dir = Some(val.into());
-                        }
-                    }
-                    "--no-cache" => no_cache = true,
-                    "--log-level" => {
-                        if let Some(val) = iter.next() {
-                            log_level.clone_from(val);
-                        }
-                    }
-                    "--log-file" => {
-                        if let Some(val) = iter.next() {
-                            log_file = Some(val.into());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Ok(DaemonAction::Start {
-                mft_file,
-                data_dir,
-                no_cache,
-                log_level,
-                log_file,
-            })
-        }
+        "start" => Ok(parse_daemon_start(rest)),
         "status" => Ok(DaemonAction::Status),
         "stats" => Ok(DaemonAction::Stats),
         "stop" => Ok(DaemonAction::Stop),
         "kill" => Ok(DaemonAction::Kill),
         "restart" => Ok(DaemonAction::Restart),
-        "load" => {
-            let mut mft_file = Vec::new();
-            let mut data_dir = None;
-            let mut drives = Vec::new();
-            let mut no_cache = false;
-            let rest = args.get(1..).unwrap_or_default();
-            let mut iter = rest.iter();
-            while let Some(arg) = iter.next() {
-                match arg.as_str() {
-                    "--mft-file" => {
-                        if let Some(val) = iter.next() {
-                            for part in val.split(',') {
-                                mft_file.push(PathBuf::from(part.trim()));
-                            }
-                        }
-                    }
-                    "--data-dir" => {
-                        if let Some(val) = iter.next() {
-                            data_dir = Some(val.into());
-                        }
-                    }
-                    "--drive" | "-d" => {
-                        if let Some(val) = iter.next() {
-                            for part in val.split(',') {
-                                if let Ok(letter) = parse_drive_letter(part) {
-                                    drives.push(letter);
-                                }
-                            }
-                        }
-                    }
-                    "--no-cache" => no_cache = true,
-                    _ => {}
-                }
-            }
-            Ok(DaemonAction::Load {
-                mft_file,
-                data_dir,
-                drives,
-                no_cache,
-            })
-        }
+        "load" => Ok(parse_daemon_load(rest)),
         other => anyhow::bail!(
             "Unknown daemon action: '{other}'. Use: start, status, stats, stop, kill, restart, load"
         ),
+    }
+}
+
+/// Parse `uffs daemon start [flags...]`.
+fn parse_daemon_start(rest: &[String]) -> DaemonAction {
+    let mut mft_file = Vec::new();
+    let mut data_dir = None;
+    let mut drives = Vec::new();
+    let mut no_cache = false;
+    let mut log_level = "info".to_owned();
+    let mut log_file = None;
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--mft-file" => {
+                if let Some(val) = iter.next() {
+                    mft_file = val
+                        .split(',')
+                        .map(|part| PathBuf::from(part.trim()))
+                        .collect();
+                }
+            }
+            "--data-dir" => {
+                if let Some(val) = iter.next() {
+                    data_dir = Some(val.into());
+                }
+            }
+            "--drive" => {
+                if let Some(val) = iter.next() {
+                    for ch in val.chars() {
+                        if ch.is_ascii_alphabetic() {
+                            drives.push(ch.to_ascii_uppercase());
+                        }
+                    }
+                }
+            }
+            "--no-cache" => no_cache = true,
+            "--log-level" => {
+                if let Some(val) = iter.next() {
+                    log_level.clone_from(val);
+                }
+            }
+            "--log-file" => {
+                if let Some(val) = iter.next() {
+                    log_file = Some(val.into());
+                }
+            }
+            _ => {}
+        }
+    }
+    DaemonAction::Start {
+        mft_file,
+        data_dir,
+        drives,
+        no_cache,
+        log_level,
+        log_file,
+    }
+}
+
+/// Parse `uffs daemon load [flags...]`.
+fn parse_daemon_load(rest: &[String]) -> DaemonAction {
+    let mut mft_file = Vec::new();
+    let mut data_dir = None;
+    let mut drives = Vec::new();
+    let mut no_cache = false;
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--mft-file" => {
+                if let Some(val) = iter.next() {
+                    for part in val.split(',') {
+                        mft_file.push(PathBuf::from(part.trim()));
+                    }
+                }
+            }
+            "--data-dir" => {
+                if let Some(val) = iter.next() {
+                    data_dir = Some(val.into());
+                }
+            }
+            "--drive" | "-d" => {
+                if let Some(val) = iter.next() {
+                    for part in val.split(',') {
+                        if let Ok(letter) = parse_drive_letter(part) {
+                            drives.push(letter);
+                        }
+                    }
+                }
+            }
+            "--no-cache" => no_cache = true,
+            _ => {}
+        }
+    }
+    DaemonAction::Load {
+        mft_file,
+        data_dir,
+        drives,
+        no_cache,
     }
 }
 
