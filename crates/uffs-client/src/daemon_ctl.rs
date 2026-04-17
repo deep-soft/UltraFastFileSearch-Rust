@@ -186,13 +186,14 @@ pub fn find_daemon_exe() -> PathBuf {
 /// [`ElevationPolicy::AllowUacPrompt`].
 ///
 /// Has no effect on Unix — Unix spawn never triggers UAC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ElevationPolicy {
     /// Spawn only if this process is already elevated.  If not, return
     /// [`ClientError::DaemonNeedsElevation`] without touching the UI.
     ///
     /// This is the default for every implicit auto-spawn path (e.g.
     /// `UffsClient::connect_with_args`).
+    #[default]
     RequireExistingElevation,
 
     /// When not elevated, request a UAC prompt via `ShellExecuteW`
@@ -201,12 +202,6 @@ pub enum ElevationPolicy {
     /// Used by `uffs daemon start --elevate` and by auto-spawn paths
     /// when the environment variable `UFFS_ELEVATE=1` is set.
     AllowUacPrompt,
-}
-
-impl Default for ElevationPolicy {
-    fn default() -> Self {
-        Self::RequireExistingElevation
-    }
 }
 
 /// Pure policy decision used by [`resolve_elevation_policy`].
@@ -267,21 +262,29 @@ pub fn resolve_elevation_policy(force_allow: bool) -> ElevationPolicy {
 /// Returns [`ClientError::DaemonStartFailed`] if the process creation
 /// itself fails, or [`ClientError::DaemonNeedsElevation`] if the policy
 /// does not allow a UAC prompt in the current elevation state.
+#[cfg(unix)]
+pub fn spawn_daemon(
+    exe: &std::path::Path,
+    args: &[&str],
+    _policy: ElevationPolicy,
+) -> Result<(), crate::error::ClientError> {
+    // `policy` is Windows-only; the Unix spawn never prompts for
+    // elevation.  The parameter stays in the public signature so
+    // callers can pass the same value on every platform.
+    spawn_daemon_unix(exe, args)
+}
+
+/// Windows implementation of [`spawn_daemon`].
+///
+/// See the generic doc comment above — behavior is decided by
+/// `policy` combined with the current elevation state.
+#[cfg(windows)]
 pub fn spawn_daemon(
     exe: &std::path::Path,
     args: &[&str],
     policy: ElevationPolicy,
 ) -> Result<(), crate::error::ClientError> {
-    #[cfg(unix)]
-    {
-        let _ = policy;
-        spawn_daemon_unix(exe, args)?;
-    }
-
-    #[cfg(windows)]
-    spawn_daemon_windows(exe, args, policy)?;
-
-    Ok(())
+    spawn_daemon_windows(exe, args, policy)
 }
 
 /// Unix daemon spawn: simple detached process.

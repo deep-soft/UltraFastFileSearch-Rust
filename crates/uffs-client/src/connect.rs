@@ -124,6 +124,12 @@ impl UffsClient {
         Self::connect_with_args_inner(spawn_args, ElevationPolicy::AllowUacPrompt).await
     }
 
+    /// Shared body for [`Self::connect_with_args`] and
+    /// [`Self::connect_with_elevation`].
+    ///
+    /// Takes an explicit [`ElevationPolicy`] so each public entry
+    /// point can decide whether a missing elevated context is a
+    /// hard error (the default) or a prompt request.
     async fn connect_with_args_inner(
         spawn_args: &[String],
         policy: ElevationPolicy,
