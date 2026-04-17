@@ -101,16 +101,27 @@ pgo:
     fi
     printf "\033[0;34m  llvm-profdata: %s\033[0m\n" "$LLVM_PROFDATA"
 
-    PGO_DIR="$(pwd)/target/pgo-data"
+    # Honour CARGO_TARGET_DIR / .cargo/config.toml `build.target-dir`.
+    # The workspace ships windows.toml with `target-dir = "C:/rust-target/uffs"`
+    # and advises Unix users to set `CARGO_TARGET_DIR` manually — so a
+    # hard-coded `target/` here fails whenever either override is live.
+    TARGET_DIR="${CARGO_TARGET_DIR:-$(pwd)/target}"
+    printf "\033[0;34m  target dir:    %s\033[0m\n" "$TARGET_DIR"
+    PGO_DIR="${TARGET_DIR}/pgo-data"
     rm -rf "$PGO_DIR"
     mkdir -p "$PGO_DIR"
 
     # Phase 1: instrumented build
     printf "\n\033[0;34m🔨 Phase 1/3: building instrumented uffs-cli\033[0m\n"
     RUSTFLAGS="-Cprofile-generate=${PGO_DIR}" cargo build --release -p uffs-cli
-    INSTRUMENTED="target/release/uffs"
+    INSTRUMENTED="${TARGET_DIR}/release/uffs"
     if [[ ! -x "$INSTRUMENTED" ]]; then
-        INSTRUMENTED="target/release/uffs.exe"
+        INSTRUMENTED="${TARGET_DIR}/release/uffs.exe"
+    fi
+    if [[ ! -x "$INSTRUMENTED" ]]; then
+        printf "\033[1;31m❌ instrumented binary missing under %s/release/\033[0m\n" "$TARGET_DIR"
+        printf "\033[0;34m   Set CARGO_TARGET_DIR or check .cargo/config.toml `build.target-dir`.\033[0m\n"
+        exit 1
     fi
     printf "\033[0;32m  ✓ instrumented binary: %s\033[0m\n" "$INSTRUMENTED"
 
@@ -137,7 +148,7 @@ pgo:
     "$LLVM_PROFDATA" merge -o "$MERGED" "$PGO_DIR"
     printf "\033[0;32m  ✓ merged profile: %s\033[0m\n" "$MERGED"
     RUSTFLAGS="-Cprofile-use=${MERGED}" cargo build --release -p uffs-cli
-    printf "\033[0;32m✅ PGO build complete — `target/release/uffs` now uses the merged profile\033[0m\n"
+    printf "\033[0;32m✅ PGO build complete — %s/release/uffs now uses the merged profile\033[0m\n" "$TARGET_DIR"
     printf "\033[0;34m   Run `just use` to install, then re-bench against the pre-PGO baseline.\033[0m\n"
 
 # Windows variant of the PGO pipeline.  Uses PowerShell because
@@ -171,7 +182,21 @@ pgo:
     }
     Write-Host "  llvm-profdata: $LLVM_PROFDATA" -ForegroundColor DarkGray
 
-    $PGO_DIR = Join-Path (Get-Location) 'target\pgo-data'
+    # Honour CARGO_TARGET_DIR / .cargo/config.toml `build.target-dir`.
+    # The workspace ships windows.toml with
+    # `target-dir = "C:/rust-target/uffs"` and the primary config.toml
+    # documents the CARGO_TARGET_DIR override, so a hard-coded
+    # `target\` here breaks on any developer who applies either
+    # mechanism.  Prefer the env var so we pick up values set in the
+    # user's PowerShell profile without reading the cargo config.
+    if ($env:CARGO_TARGET_DIR) {
+        $TARGET_DIR = $env:CARGO_TARGET_DIR
+    } else {
+        $TARGET_DIR = Join-Path (Get-Location) 'target'
+    }
+    Write-Host "  target dir:    $TARGET_DIR" -ForegroundColor DarkGray
+
+    $PGO_DIR = Join-Path $TARGET_DIR 'pgo-data'
     if (Test-Path $PGO_DIR) { Remove-Item -Recurse -Force $PGO_DIR }
     New-Item -ItemType Directory -Path $PGO_DIR | Out-Null
 
@@ -184,9 +209,10 @@ pgo:
     } finally {
         Remove-Item Env:RUSTFLAGS
     }
-    $INSTRUMENTED = 'target\release\uffs.exe'
+    $INSTRUMENTED = Join-Path $TARGET_DIR 'release\uffs.exe'
     if (-not (Test-Path $INSTRUMENTED)) {
         Write-Host "[pgo] instrumented binary missing: $INSTRUMENTED" -ForegroundColor Red
+        Write-Host "      Set CARGO_TARGET_DIR or check .cargo/config.toml build.target-dir." -ForegroundColor DarkGray
         exit 1
     }
     Write-Host "  ok: $INSTRUMENTED" -ForegroundColor Green
@@ -225,6 +251,6 @@ pgo:
     } finally {
         Remove-Item Env:RUSTFLAGS
     }
-    Write-Host "`n[pgo] complete -- target\release\uffs.exe now uses the merged profile" -ForegroundColor Green
+    Write-Host "`n[pgo] complete -- $INSTRUMENTED now uses the merged profile" -ForegroundColor Green
     Write-Host "      Run 'just use' to install, then re-bench against the pre-PGO baseline." -ForegroundColor DarkGray
 
