@@ -16,7 +16,10 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 
-use crate::daemon_ctl::{find_daemon_exe, pid_file_path, socket_path, spawn_daemon};
+use crate::daemon_ctl::{
+    ElevationPolicy, find_daemon_exe, pid_file_path, resolve_elevation_policy, socket_path,
+    spawn_daemon,
+};
 use crate::error::ClientError;
 
 /// Synchronous thin client for the UFFS daemon.
@@ -54,10 +57,39 @@ impl UffsClientSync {
 
     /// Connect to a running daemon, or auto-start one with extra CLI args.
     ///
+    /// Auto-start uses the default
+    /// [`ElevationPolicy::RequireExistingElevation`].  On Windows, if
+    /// the daemon must be spawned and the current process is not
+    /// elevated, this returns [`ClientError::DaemonNeedsElevation`]
+    /// instead of silently triggering UAC.  See
+    /// [`Self::connect_with_elevation`] for the opt-in variant.
+    ///
     /// # Errors
     ///
-    /// Returns `ConnectionFailed` or `DaemonStartFailed`.
+    /// Returns `ConnectionFailed`, `DaemonStartFailed`, or
+    /// `DaemonNeedsElevation` (Windows, non-admin shell only).
     pub fn connect_with_args(spawn_args: &[String]) -> Result<Self, ClientError> {
+        Self::connect_with_args_inner(spawn_args, resolve_elevation_policy(false))
+    }
+
+    /// Connect to a running daemon; if we must auto-start, request a
+    /// UAC prompt on Windows when the current process is not elevated.
+    ///
+    /// Used by `uffs daemon start --elevate`.  All other entry points
+    /// default to [`ElevationPolicy::RequireExistingElevation`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::connect_with_args`], minus
+    /// `DaemonNeedsElevation` (converted into a UAC prompt).
+    pub fn connect_with_elevation(spawn_args: &[String]) -> Result<Self, ClientError> {
+        Self::connect_with_args_inner(spawn_args, ElevationPolicy::AllowUacPrompt)
+    }
+
+    fn connect_with_args_inner(
+        spawn_args: &[String],
+        policy: ElevationPolicy,
+    ) -> Result<Self, ClientError> {
         let sock = socket_path();
 
         // Try connecting first — fast path if daemon is already running.
@@ -88,8 +120,8 @@ impl UffsClientSync {
             }
         }
 
-        // Auto-start the daemon.
-        auto_start_daemon(spawn_args)?;
+        // Auto-start the daemon with the requested elevation policy.
+        auto_start_daemon(spawn_args, policy)?;
 
         // Retry with backoff.
         let mut delay_ms = 50_u64;
@@ -496,7 +528,10 @@ impl UffsClientSync {
 // ── Auto-start daemon ───────────────────────────────────────────────
 
 /// Spawn the daemon binary if not already running.
-fn auto_start_daemon(spawn_args: &[String]) -> Result<(), ClientError> {
+fn auto_start_daemon(
+    spawn_args: &[String],
+    policy: ElevationPolicy,
+) -> Result<(), ClientError> {
     let pid_path = pid_file_path();
 
     // Check if daemon is already alive via PID file.
@@ -515,7 +550,7 @@ fn auto_start_daemon(spawn_args: &[String]) -> Result<(), ClientError> {
 
     let daemon_exe = find_daemon_exe();
     let str_args: Vec<&str> = spawn_args.iter().map(String::as_str).collect();
-    spawn_daemon(&daemon_exe, &str_args)?;
+    spawn_daemon(&daemon_exe, &str_args, policy)?;
     Ok(())
 }
 

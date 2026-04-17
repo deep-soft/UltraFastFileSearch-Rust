@@ -170,21 +170,116 @@ pub fn find_daemon_exe() -> PathBuf {
 
 // ── Daemon Spawn ──────────────────────────────────────────────────────────
 
+/// Policy for whether `spawn_daemon` may trigger a Windows UAC prompt.
+///
+/// Before v0.5.36, `spawn_daemon` on Windows unconditionally used
+/// `ShellExecuteW("runas")` whenever the current process was not
+/// elevated — so any non-admin shell running `uffs <pattern>` with the
+/// daemon stopped would get a UAC dialog as a side-effect.  That was
+/// surprising and made piping or scripting the CLI fragile.
+///
+/// The new default is [`ElevationPolicy::RequireExistingElevation`]:
+/// the spawn succeeds only if the current process is already elevated;
+/// otherwise it returns [`ClientError::DaemonNeedsElevation`] and the
+/// CLI renders an actionable message.  Callers that actually want the
+/// UAC dialog (e.g. `uffs daemon start --elevate`) must opt in with
+/// [`ElevationPolicy::AllowUacPrompt`].
+///
+/// Has no effect on Unix — Unix spawn never triggers UAC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElevationPolicy {
+    /// Spawn only if this process is already elevated.  If not, return
+    /// [`ClientError::DaemonNeedsElevation`] without touching the UI.
+    ///
+    /// This is the default for every implicit auto-spawn path (e.g.
+    /// `UffsClient::connect_with_args`).
+    RequireExistingElevation,
+
+    /// When not elevated, request a UAC prompt via `ShellExecuteW`
+    /// with the `"runas"` verb.  Preserves the pre-v0.5.36 behavior.
+    ///
+    /// Used by `uffs daemon start --elevate` and by auto-spawn paths
+    /// when the environment variable `UFFS_ELEVATE=1` is set.
+    AllowUacPrompt,
+}
+
+impl Default for ElevationPolicy {
+    fn default() -> Self {
+        Self::RequireExistingElevation
+    }
+}
+
+/// Pure policy decision used by [`resolve_elevation_policy`].
+///
+/// Rules, in priority order:
+///
+/// 1. If `force_allow` is `true` (e.g. `uffs daemon start --elevate`),
+///    return [`ElevationPolicy::AllowUacPrompt`].
+/// 2. Otherwise, if `env_value` contains a truthy token (`1`, `true`,
+///    `yes`, `on`, case-insensitive — leading/trailing whitespace is
+///    trimmed), return [`ElevationPolicy::AllowUacPrompt`].  This is
+///    how `UFFS_ELEVATE` is interpreted.
+/// 3. Otherwise, return [`ElevationPolicy::RequireExistingElevation`].
+///
+/// Kept env-free so both the async and sync clients (and tests) can
+/// share one decision matrix without racing on real environment state.
+#[must_use]
+pub fn elevation_policy_from(force_allow: bool, env_value: Option<&str>) -> ElevationPolicy {
+    if force_allow {
+        return ElevationPolicy::AllowUacPrompt;
+    }
+    if let Some(raw) = env_value {
+        let normalized = raw.trim().to_ascii_lowercase();
+        if matches!(normalized.as_str(), "1" | "true" | "yes" | "on") {
+            return ElevationPolicy::AllowUacPrompt;
+        }
+    }
+    ElevationPolicy::RequireExistingElevation
+}
+
+/// Resolve the effective [`ElevationPolicy`] for an implicit
+/// auto-spawn.
+///
+/// Reads the `UFFS_ELEVATE` environment variable once and feeds the
+/// result into [`elevation_policy_from`].  `force_allow = true` from
+/// an explicit `--elevate` flag short-circuits the env lookup.
+#[must_use]
+pub fn resolve_elevation_policy(force_allow: bool) -> ElevationPolicy {
+    elevation_policy_from(force_allow, std::env::var("UFFS_ELEVATE").ok().as_deref())
+}
+
 /// Spawn the daemon as a detached background process.
 ///
-/// On **Unix**, uses a normal `Command::new` spawn (no elevation needed).
-/// On **Windows**, elevation-aware: uses `CreateProcessW` if already elevated,
-/// or `ShellExecuteW("runas")` to trigger a UAC prompt.
+/// On **Unix**, uses a normal `Command::new` spawn (no elevation needed);
+/// the `policy` parameter is ignored.
+///
+/// On **Windows**, behavior depends on `policy` and the current
+/// elevation state:
+///
+/// | already elevated | policy                        | action                        |
+/// |------------------|-------------------------------|-------------------------------|
+/// | yes              | any                           | `CreateProcessW` (no UAC)     |
+/// | no               | `RequireExistingElevation`    | return `DaemonNeedsElevation` |
+/// | no               | `AllowUacPrompt`              | `ShellExecuteW("runas")` + UAC|
 ///
 /// # Errors
 ///
-/// Returns `DaemonStartFailed` if spawning fails.
-pub fn spawn_daemon(exe: &std::path::Path, args: &[&str]) -> Result<(), crate::error::ClientError> {
+/// Returns [`ClientError::DaemonStartFailed`] if the process creation
+/// itself fails, or [`ClientError::DaemonNeedsElevation`] if the policy
+/// does not allow a UAC prompt in the current elevation state.
+pub fn spawn_daemon(
+    exe: &std::path::Path,
+    args: &[&str],
+    policy: ElevationPolicy,
+) -> Result<(), crate::error::ClientError> {
     #[cfg(unix)]
-    spawn_daemon_unix(exe, args)?;
+    {
+        let _ = policy;
+        spawn_daemon_unix(exe, args)?;
+    }
 
     #[cfg(windows)]
-    spawn_daemon_windows(exe, args)?;
+    spawn_daemon_windows(exe, args, policy)?;
 
     Ok(())
 }
@@ -227,20 +322,40 @@ fn spawn_daemon_unix(
 fn spawn_daemon_windows(
     exe: &std::path::Path,
     args: &[&str],
+    policy: ElevationPolicy,
 ) -> Result<(), crate::error::ClientError> {
     let elevated = is_elevated();
-    tracing::debug!(exe = %exe.display(), ?args, elevated, "spawn_daemon_windows");
+    tracing::debug!(
+        exe = %exe.display(),
+        ?args,
+        elevated,
+        ?policy,
+        "spawn_daemon_windows"
+    );
 
     if elevated {
         tracing::debug!("spawning via CreateProcessW (no handle inheritance)");
         spawn_detached_no_inherit(exe, args)?;
-    } else {
-        tracing::debug!("NOT elevated, using ShellExecuteW runas");
-        tracing::info!("Not elevated — requesting elevation via UAC prompt");
-        shell_execute_elevated(exe, args)?;
-        tracing::debug!("ShellExecuteW returned OK");
+        return Ok(());
     }
-    Ok(())
+
+    match policy {
+        ElevationPolicy::AllowUacPrompt => {
+            tracing::debug!("NOT elevated, using ShellExecuteW runas (policy allows UAC)");
+            tracing::info!("Not elevated — requesting elevation via UAC prompt");
+            shell_execute_elevated(exe, args)?;
+            tracing::debug!("ShellExecuteW returned OK");
+            Ok(())
+        }
+        ElevationPolicy::RequireExistingElevation => {
+            tracing::info!(
+                "Not elevated and policy forbids UAC — returning DaemonNeedsElevation"
+            );
+            Err(crate::error::ClientError::DaemonNeedsElevation {
+                daemon_path: exe.display().to_string(),
+            })
+        }
+    }
 }
 
 /// Spawn the daemon as a fully detached process with NO handle inheritance.

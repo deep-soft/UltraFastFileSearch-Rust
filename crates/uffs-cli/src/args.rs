@@ -70,6 +70,16 @@ pub enum DaemonAction {
         log_level: String,
         /// Log file path.
         log_file: Option<PathBuf>,
+        /// Explicitly request a UAC prompt on Windows when the current
+        /// process is not elevated.
+        ///
+        /// Without this flag the CLI refuses to spawn an elevated
+        /// daemon from a non-admin shell and returns an actionable
+        /// `DaemonNeedsElevation` error instead.  Passing `--elevate`
+        /// restores the pre-v0.5.36 behavior for this one invocation;
+        /// setting `UFFS_ELEVATE=1` in the environment has the same
+        /// effect for every auto-spawn.
+        elevate: bool,
     },
     /// Show daemon status.
     Status,
@@ -124,6 +134,7 @@ fn parse_daemon_start(rest: &[String]) -> DaemonAction {
     let mut no_cache = false;
     let mut log_level = "info".to_owned();
     let mut log_file = None;
+    let mut elevate = false;
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -160,6 +171,7 @@ fn parse_daemon_start(rest: &[String]) -> DaemonAction {
                     log_file = Some(val.into());
                 }
             }
+            "--elevate" => elevate = true,
             _ => {}
         }
     }
@@ -170,6 +182,7 @@ fn parse_daemon_start(rest: &[String]) -> DaemonAction {
         no_cache,
         log_level,
         log_file,
+        elevate,
     }
 }
 
@@ -290,6 +303,8 @@ ACTIONS:
     --data-dir PATH    Data directory with drive_* subdirs
     --mft-file PATH    Raw MFT file(s), comma-separated
     --no-cache         Skip cached index, re-parse MFT
+    --elevate          Request a UAC prompt (Windows) if not elevated
+                       [env: UFFS_ELEVATE=1]
   status             Show daemon status (running, drives, PID)
   stats              Show performance statistics
   stop               Gracefully stop the daemon

@@ -19,8 +19,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::daemon_ctl::{
-    find_daemon_exe, keepalive_send_blocking, pid_file_path, socket_path, spawn_daemon,
-    verify_daemon_after_connect,
+    ElevationPolicy, find_daemon_exe, keepalive_send_blocking, pid_file_path,
+    resolve_elevation_policy, socket_path, spawn_daemon, verify_daemon_after_connect,
 };
 use crate::protocol::response::{DrivesResponse, SearchResponse, StatusResponse};
 use crate::protocol::{RpcRequest, SearchParams};
@@ -81,6 +81,14 @@ impl UffsClient {
     /// already listening, the args are ignored (it already has its data
     /// loaded).
     ///
+    /// Auto-start uses the default
+    /// [`ElevationPolicy::RequireExistingElevation`] — on Windows, if
+    /// the daemon must be spawned and the current process is not
+    /// elevated, this returns [`ClientError::DaemonNeedsElevation`]
+    /// instead of triggering a UAC prompt.  Callers that want the
+    /// pre-v0.5.36 behavior (automatic UAC dialog) should use
+    /// [`Self::connect_with_elevation`] or set `UFFS_ELEVATE=1`.
+    ///
     /// Typical usage (Mac/Linux):
     /// ```rust,ignore
     /// let args = vec!["--data-dir".into(), "/path/to/uffs_data".into()];
@@ -89,9 +97,35 @@ impl UffsClient {
     ///
     /// # Errors
     ///
-    /// Returns `ConnectionFailed` or `DaemonStartFailed`.
+    /// Returns `ConnectionFailed`, `DaemonStartFailed`, or
+    /// `DaemonNeedsElevation` (Windows, non-admin shell only).
     pub async fn connect_with_args(
         spawn_args: &[String],
+    ) -> Result<Self, crate::error::ClientError> {
+        Self::connect_with_args_inner(spawn_args, resolve_elevation_policy(false)).await
+    }
+
+    /// Connect to a running daemon; if we must auto-start it, explicitly
+    /// request a UAC prompt on Windows when the current process is not
+    /// elevated.
+    ///
+    /// This is the opt-in variant used by `uffs daemon start --elevate`.
+    /// All other entry points default to
+    /// [`ElevationPolicy::RequireExistingElevation`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::connect_with_args`], minus
+    /// `DaemonNeedsElevation` (which is turned into a UAC prompt).
+    pub async fn connect_with_elevation(
+        spawn_args: &[String],
+    ) -> Result<Self, crate::error::ClientError> {
+        Self::connect_with_args_inner(spawn_args, ElevationPolicy::AllowUacPrompt).await
+    }
+
+    async fn connect_with_args_inner(
+        spawn_args: &[String],
+        policy: ElevationPolicy,
     ) -> Result<Self, crate::error::ClientError> {
         let sock = socket_path();
         let pid_path = pid_file_path();
@@ -100,6 +134,7 @@ impl UffsClient {
             socket_exists = sock.exists(),
             pid_file = %pid_path.display(),
             pid_file_exists = pid_path.exists(),
+            ?policy,
             "connect_with_args: paths"
         );
 
@@ -108,8 +143,8 @@ impl UffsClient {
             return Ok(client);
         }
 
-        // Auto-start the daemon (`uffsd`)
-        Self::auto_start_daemon(spawn_args)?;
+        // Auto-start the daemon (`uffsd`) with the requested policy.
+        Self::auto_start_daemon(spawn_args, policy)?;
 
         // Retry with exponential backoff until connected.
         Self::retry_connect(&sock, &pid_path).await
@@ -135,14 +170,19 @@ impl UffsClient {
         }
     }
 
-    /// Spawn the daemon process with the given extra args.
+    /// Spawn the daemon process with the given extra args and elevation
+    /// policy.
     ///
     /// # Errors
     ///
     /// Returns [`ClientError`](crate::error::ClientError) if the daemon
-    /// executable cannot be found or the spawn fails.
-    fn auto_start_daemon(spawn_args: &[String]) -> Result<(), crate::error::ClientError> {
-        tracing::info!("Daemon not running, auto-starting via `uffsd`...");
+    /// executable cannot be found, the spawn fails, or the policy
+    /// forbids elevation in the current context.
+    fn auto_start_daemon(
+        spawn_args: &[String],
+        policy: ElevationPolicy,
+    ) -> Result<(), crate::error::ClientError> {
+        tracing::info!(?policy, "Daemon not running, auto-starting via `uffsd`...");
 
         let daemon_exe = find_daemon_exe();
         let mut cmd_args: Vec<&str> = Vec::new();
@@ -151,11 +191,12 @@ impl UffsClient {
         }
         log_spawn_details(&daemon_exe, &cmd_args);
 
-        // On Windows, MFT reading requires Administrator privileges. If the
-        // current process is not elevated, we use `ShellExecuteW` with the
-        // "runas" verb to trigger a UAC consent dialog. If already elevated
-        // (or the broker service is available), we spawn normally.
-        spawn_daemon(&daemon_exe, &cmd_args)?;
+        // On Windows, reading the MFT requires Administrator privileges.
+        // The default policy is `RequireExistingElevation` — if we are
+        // not already elevated, we return `DaemonNeedsElevation` and let
+        // the CLI render an actionable message.  Callers opt in to a
+        // UAC prompt via `connect_with_elevation` or `UFFS_ELEVATE=1`.
+        spawn_daemon(&daemon_exe, &cmd_args, policy)?;
         tracing::debug!("auto_start_daemon: spawn returned OK");
         Ok(())
     }
@@ -742,7 +783,81 @@ impl UffsClient {
 }
 
 // Daemon lifecycle helpers live in crate::daemon_ctl — import from there
-// directly.
+// directly.  The elevation policy resolver also lives there so the
+// sync client (which is not gated behind the `async` feature) can reach
+// it without cross-feature plumbing.
+
+#[cfg(test)]
+mod elevation_policy_tests {
+    use crate::daemon_ctl::{ElevationPolicy, elevation_policy_from};
+
+    /// Explicit `force_allow` (e.g. `--elevate`) always wins, even
+    /// against an empty or falsy env value.
+    #[test]
+    fn force_allow_always_permits_uac() {
+        assert_eq!(
+            elevation_policy_from(true, None),
+            ElevationPolicy::AllowUacPrompt,
+        );
+        assert_eq!(
+            elevation_policy_from(true, Some("")),
+            ElevationPolicy::AllowUacPrompt,
+        );
+        assert_eq!(
+            elevation_policy_from(true, Some("0")),
+            ElevationPolicy::AllowUacPrompt,
+        );
+    }
+
+    /// Without `force_allow` and without the env var, the default
+    /// policy must refuse UAC.  This is the behavioral change v0.5.36
+    /// introduces and the linchpin for the whole P7 fix.
+    #[test]
+    fn missing_env_defaults_to_require_existing_elevation() {
+        assert_eq!(
+            elevation_policy_from(false, None),
+            ElevationPolicy::RequireExistingElevation,
+        );
+    }
+
+    /// Every documented truthy token must promote to
+    /// `AllowUacPrompt`.  Trimming and case-folding are also expected.
+    #[test]
+    fn truthy_env_values_permit_uac() {
+        for token in [
+            "1", "true", "TRUE", "True", "yes", "YES", "on", "ON", "  1  ", " yes\n",
+        ] {
+            assert_eq!(
+                elevation_policy_from(false, Some(token)),
+                ElevationPolicy::AllowUacPrompt,
+                "token {token:?} should enable UAC",
+            );
+        }
+    }
+
+    /// Falsy / unrecognised tokens must keep the conservative default.
+    #[test]
+    fn falsy_or_unknown_env_values_keep_default() {
+        for token in ["0", "false", "no", "off", "", "maybe", "2", "nope"] {
+            assert_eq!(
+                elevation_policy_from(false, Some(token)),
+                ElevationPolicy::RequireExistingElevation,
+                "token {token:?} should not enable UAC",
+            );
+        }
+    }
+
+    /// [`ElevationPolicy::default`] must be the safe option.  New
+    /// callers that rely on `..Default::default()` must not silently
+    /// get the UAC-triggering variant.
+    #[test]
+    fn default_policy_is_require_existing_elevation() {
+        assert_eq!(
+            ElevationPolicy::default(),
+            ElevationPolicy::RequireExistingElevation,
+        );
+    }
+}
 
 // ── Logging helpers ─────────────────────────────────────────────────
 // Extracted to keep calling functions under the cognitive-complexity limit.

@@ -397,6 +397,14 @@ fn run_daemon(args: &[String]) -> Result<()> {
 )]
 fn main() {
     if let Err(err) = run() {
+        // Special-case DaemonNeedsElevation: render a multi-option help
+        // message instead of the generic `Error: ... Caused by: ...`
+        // chain, so a UAC failure reads like advice and not a crash.
+        if let Some(needs) = find_needs_elevation(&err) {
+            eprintln!("{}", format_elevation_help(needs));
+            std::process::exit(1);
+        }
+
         for (idx, cause) in err.chain().enumerate() {
             if idx == 0 {
                 eprintln!("Error: {cause}");
@@ -406,6 +414,50 @@ fn main() {
         }
         std::process::exit(1);
     }
+}
+
+/// Walk an [`anyhow::Error`] chain looking for
+/// [`uffs_client::error::ClientError::DaemonNeedsElevation`].
+///
+/// Returns the daemon path that would have been spawned, so the
+/// formatter can quote it back to the user verbatim.  Returns `None`
+/// if no elevation error is present in the chain.
+fn find_needs_elevation(err: &anyhow::Error) -> Option<&str> {
+    for cause in err.chain() {
+        if let Some(uffs_client::error::ClientError::DaemonNeedsElevation { daemon_path }) =
+            cause.downcast_ref::<uffs_client::error::ClientError>()
+        {
+            return Some(daemon_path.as_str());
+        }
+    }
+    None
+}
+
+/// Render the "daemon needs admin" help message.
+///
+/// Lists three independent recovery paths so users can pick whichever
+/// fits their workflow — scripted, interactive one-off, or permanent.
+fn format_elevation_help(daemon_path: &str) -> String {
+    format!(
+        "Error: UFFS daemon needs admin privileges to read NTFS Master File Tables.\n\
+         \n\
+         The daemon is not running, and this shell is not elevated.  To start it, pick one:\n\
+         \n  \
+         1. Relaunch in an elevated shell (PowerShell/cmd \"Run as administrator\"),\n     \
+            then retry the command.\n\
+         \n  \
+         2. Explicitly request a UAC prompt for this invocation:\n       \
+               uffs daemon start --elevate\n     \
+            Or set it as the default for the current session:\n       \
+               set UFFS_ELEVATE=1     (cmd)\n       \
+               $env:UFFS_ELEVATE = '1'  (PowerShell)\n\
+         \n  \
+         3. Install the broker service — one-time setup, no future UAC prompts:\n       \
+               uffs-broker --install\n\
+         \n\
+         Daemon binary that would have been spawned:\n  \
+           {daemon_path}"
+    )
 }
 
 #[cfg(test)]
@@ -418,6 +470,60 @@ mod tests {
     use uffs_client::protocol::SearchParams;
 
     use super::args::parse_drive_letter;
+    use super::{find_needs_elevation, format_elevation_help};
+
+    /// The elevation help must name every recovery path the user has,
+    /// so a UAC-blocked invocation becomes actionable advice rather
+    /// than a dead-end crash.  Locks the contract in place.
+    #[test]
+    fn elevation_help_lists_all_recovery_paths() {
+        let help =
+            format_elevation_help(r"C:\Program Files\uffs\uffsd.exe");
+        assert!(
+            help.contains("admin"),
+            "help must mention admin: {help}"
+        );
+        assert!(
+            help.contains("--elevate"),
+            "help must document --elevate: {help}"
+        );
+        assert!(
+            help.contains("UFFS_ELEVATE"),
+            "help must document the env var: {help}"
+        );
+        assert!(
+            help.contains("uffs-broker --install"),
+            "help must document the broker install path: {help}"
+        );
+        assert!(
+            help.contains(r"C:\Program Files\uffs\uffsd.exe"),
+            "help must quote the daemon path: {help}"
+        );
+    }
+
+    /// `find_needs_elevation` must walk through any `.with_context`
+    /// layers that the CLI adds on top of the raw `ClientError`.
+    #[test]
+    fn find_needs_elevation_walks_anyhow_context() {
+        let base = anyhow::Error::from(
+            uffs_client::error::ClientError::DaemonNeedsElevation {
+                daemon_path: "uffsd-test".to_owned(),
+            },
+        );
+        let wrapped: anyhow::Error = base.context("while connecting");
+        assert_eq!(find_needs_elevation(&wrapped), Some("uffsd-test"));
+    }
+
+    /// Unrelated errors must not be mistaken for an elevation problem,
+    /// so the default `Error: ... / Caused by:` chain is preserved for
+    /// everything else.
+    #[test]
+    fn find_needs_elevation_returns_none_for_other_errors() {
+        let other = anyhow::Error::from(
+            uffs_client::error::ClientError::ConnectionFailed("nope".to_owned()),
+        );
+        assert!(find_needs_elevation(&other).is_none());
+    }
 
     #[test]
     fn test_parse_drive_letter_accepts_letter_colon_and_whitespace_variants() {
