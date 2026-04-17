@@ -335,9 +335,13 @@ impl VolumeHandle {
     /// file works because the filesystem driver handles the VCN→LCN mapping
     /// internally.  Byte 0 of the returned handle corresponds to FRS 0.
     ///
-    /// Requires Administrator privileges and `FILE_FLAG_BACKUP_SEMANTICS`.
+    /// Automatically enables `SeBackupPrivilege` in the process token before
+    /// opening — required for `FILE_FLAG_BACKUP_SEMANTICS` on NTFS metafiles.
     #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
     pub fn open_mft_read_handle(&self) -> Result<HANDLE> {
+        // Enable SeBackupPrivilege — required for $MFT access even as admin
+        enable_backup_privilege();
+
         let mft_path: Vec<u16> = format!("{}:\\$MFT", self.volume)
             .encode_utf16()
             .chain(core::iter::once(0))
@@ -840,5 +844,68 @@ mod tests {
             operation: "read_all_index",
             ..
         }));
+    }
+}
+
+/// Enables `SeBackupPrivilege` in the current process token.
+///
+/// `FILE_FLAG_BACKUP_SEMANTICS` only bypasses NTFS security checks when the
+/// calling thread's token has `SeBackupPrivilege` **enabled** (not just
+/// present).  Administrator tokens include it but it's disabled by default.
+///
+/// This is required to open `$MFT` for reading on write-protected volumes.
+/// The privilege is process-wide and persists for the lifetime of the process,
+/// so calling this multiple times is harmless.
+#[expect(
+    unsafe_code,
+    reason = "FFI: OpenProcessToken, LookupPrivilegeValueW, AdjustTokenPrivileges"
+)]
+fn enable_backup_privilege() {
+    use windows::Win32::Foundation::LUID;
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_BACKUP_NAME,
+        SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // SAFETY: `GetCurrentProcess()` returns the current pseudo-handle.
+    // `OpenProcessToken` writes to `token`, which is valid stack storage.
+    let mut token = HANDLE::default();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &mut token) }
+        .is_err()
+    {
+        tracing::debug!("Could not open process token for privilege adjustment");
+        return;
+    }
+
+    let mut luid = LUID::default();
+    // SAFETY: `SE_BACKUP_NAME` is a static wide string and `luid` is valid
+    // writable storage.
+    if unsafe { LookupPrivilegeValueW(None, SE_BACKUP_NAME, &mut luid) }.is_err() {
+        // SAFETY: `token` was opened above and is closed exactly once.
+        unsafe { CloseHandle(token) }.ok();
+        tracing::debug!("Could not look up SeBackupPrivilege LUID");
+        return;
+    }
+
+    let tp = TOKEN_PRIVILEGES {
+        PrivilegeCount: 1,
+        Privileges: [LUID_AND_ATTRIBUTES {
+            Luid: luid,
+            Attributes: SE_PRIVILEGE_ENABLED,
+        }],
+    };
+
+    // SAFETY: `token` is a valid process token opened with
+    // `TOKEN_ADJUST_PRIVILEGES`, `tp` is a valid `TOKEN_PRIVILEGES` struct,
+    // and no previous-state buffer is requested.
+    let result = unsafe { AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None) };
+
+    // SAFETY: `token` was opened above and is closed exactly once.
+    unsafe { CloseHandle(token) }.ok();
+
+    match result {
+        Ok(()) => tracing::info!("✅ SeBackupPrivilege enabled"),
+        Err(e) => tracing::debug!(error = %e, "Could not enable SeBackupPrivilege"),
     }
 }
