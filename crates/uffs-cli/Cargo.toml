@@ -53,6 +53,19 @@ which = "8.0.2"
 uffs-time.workspace = true
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Features
+# ─────────────────────────────────────────────────────────────────────────────
+# `mcp-http-probe`: enable `uffs system-status` probing of the MCP HTTP
+# gateway.  Disabled by default because it is the sole user of
+# `std::net::TcpStream` in the CLI, which unconditionally links
+# `ws2_32.dll` on Windows and adds measurable process-launch overhead.
+# Without this feature, `system-status` still reports the configured
+# HTTP bind address — it just doesn't actively probe `/status`.
+[features]
+default = []
+mcp-http-probe = []
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Lints (inherit from workspace)
 # ─────────────────────────────────────────────────────────────────────────────
 [lints]
