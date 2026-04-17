@@ -134,6 +134,15 @@ fn run_search(args: &[String]) -> Result<()> {
         .as_deref()
         .or_else(|| inline_rows.map(Vec::as_slice));
 
+    // Path-only single-buffer fast path.  When the daemon decides the
+    // projection is path-only and the row count is small enough to
+    // inline, it packs every path into `paths_blob` as a newline-
+    // terminated UTF-8 buffer.  Writing it to stdout is then a single
+    // syscall instead of N per-row format + write calls.
+    let paths_blob: Option<&str> = response
+        .get("paths_blob")
+        .and_then(serde_json::Value::as_str);
+
     let profile = args
         .iter()
         .any(|arg| arg == "--profile" || arg == "--benchmark");
@@ -147,8 +156,14 @@ fn run_search(args: &[String]) -> Result<()> {
             eprintln!("  Connect:         {connect_ms:>6} ms");
             eprintln!("  Await ready:     {ready_ms:>6} ms");
             eprintln!("  Search (IPC):    {ipc_ms:>6} ms  (daemon: {duration_ms} ms)");
-            let row_count = rows.map_or(0, <[serde_json::Value]>::len);
+            let row_count = paths_blob.map_or_else(
+                || rows.map_or(0, <[serde_json::Value]>::len),
+                |blob| blob.bytes().filter(|byte| *byte == b'\n').count(),
+            );
             eprintln!("  Rows returned:   {row_count:>6}");
+            if paths_blob.is_some() {
+                eprintln!("  Transport:       paths_blob (single write_all)");
+            }
         }
     }
 
@@ -158,10 +173,21 @@ fn run_search(args: &[String]) -> Result<()> {
     let has_out = args
         .iter()
         .any(|arg| arg == "--out" || arg.starts_with("--out="));
-    let daemon_wrote_file = has_out && rows.is_none_or(<[serde_json::Value]>::is_empty);
+    let daemon_wrote_file =
+        has_out && rows.is_none_or(<[serde_json::Value]>::is_empty) && paths_blob.is_none();
 
-    if !daemon_wrote_file && let Some(row_slice) = rows {
-        commands::search::dispatch::write_rows(row_slice, args)?;
+    if !daemon_wrote_file {
+        if let Some(blob) = paths_blob {
+            // Single write_all to stdout — the whole point of the
+            // paths_blob transport.  A `BufWriter` is unnecessary: the
+            // buffer is already one contiguous slice.
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            std::io::Write::write_all(&mut handle, blob.as_bytes())
+                .with_context(|| "Failed to write paths_blob to stdout")?;
+        } else if let Some(row_slice) = rows {
+            commands::search::dispatch::write_rows(row_slice, args)?;
+        }
     }
 
     // Output aggregations if present.

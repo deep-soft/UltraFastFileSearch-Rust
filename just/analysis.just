@@ -49,3 +49,93 @@ flamegraph target="uffs-cli" pattern="*.txt":
     printf "\033[0;32m✅ Flamegraph generated: $FLAMEGRAPH_OUTPUT\033[0m\n"
     printf "\033[0;34m   Open in browser to analyze CPU hotspots\033[0m\n"
 
+# Profile-Guided Optimization for the uffs-cli launcher.
+#
+# Three-phase workflow:
+#
+#   1. Build an instrumented `uffs` binary (emits profraw samples on each
+#      run).  The full release profile + per-package `opt-level = "z"`
+#      override is still applied.
+#   2. Drive the instrumented binary through a representative corpus of
+#      queries (matches the cross-tool bench patterns).  Each invocation
+#      appends to the profraw directory.
+#   3. Merge the raw samples with `llvm-profdata` and rebuild the binary
+#      with `-Cprofile-use`, which tells LLVM to lay out the hot blocks
+#      contiguously and inline the hot call graph.
+#
+# Prerequisites:
+#   - `llvm-tools-preview` rustup component:
+#       rustup component add llvm-tools-preview
+#   - A running UFFS daemon (`uffs daemon start`).  The corpus queries
+#     will auto-spawn one if not already running.
+#
+# Output:
+#   - `target/pgo-data/`    raw samples (discarded on each fresh run)
+#   - `target/pgo-data/merged.profdata`  merged profile
+#   - `target/release/uffs` PGO-optimized binary (overwrites existing)
+#
+# See docs/research/perf-phase2-measurement-plan.md §2.3 for expected
+# gains and A/B methodology.
+pgo:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf "\033[1;34m🏁 PGO pipeline for uffs-cli\033[0m\n"
+    printf "\033[0;34m   Three phases: instrumented build → corpus run → optimized rebuild\033[0m\n"
+    echo ""
+
+    # Locate llvm-profdata shipped with the Rust toolchain.
+    LLVM_PROFDATA=""
+    for candidate in \
+        "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's|host: ||p')/bin/llvm-profdata" \
+        "$(command -v llvm-profdata || true)"; do
+        if [[ -n "$candidate" && -x "$candidate" ]]; then
+            LLVM_PROFDATA="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$LLVM_PROFDATA" ]]; then
+        printf "\033[1;31m❌ llvm-profdata not found\033[0m\n"
+        printf "\033[0;34m   Install with: rustup component add llvm-tools-preview\033[0m\n"
+        exit 1
+    fi
+    printf "\033[0;34m  llvm-profdata: %s\033[0m\n" "$LLVM_PROFDATA"
+
+    PGO_DIR="$(pwd)/target/pgo-data"
+    rm -rf "$PGO_DIR"
+    mkdir -p "$PGO_DIR"
+
+    # Phase 1: instrumented build
+    printf "\n\033[0;34m🔨 Phase 1/3: building instrumented uffs-cli\033[0m\n"
+    RUSTFLAGS="-Cprofile-generate=${PGO_DIR}" cargo build --release -p uffs-cli
+    INSTRUMENTED="target/release/uffs"
+    if [[ ! -x "$INSTRUMENTED" ]]; then
+        INSTRUMENTED="target/release/uffs.exe"
+    fi
+    printf "\033[0;32m  ✓ instrumented binary: %s\033[0m\n" "$INSTRUMENTED"
+
+    # Phase 2: corpus run.  Patterns match scripts/windows/cross-tool-benchmark.rs
+    # so the PGO optimizer tunes for the exact queries we benchmark.
+    printf "\n\033[0;34m🏃 Phase 2/3: driving corpus (10× each pattern)\033[0m\n"
+    DRIVE_FLAG=""
+    if [[ -n "${UFFS_PGO_DRIVE:-}" ]]; then
+        DRIVE_FLAG="--drive ${UFFS_PGO_DRIVE}"
+        printf "\033[0;34m  drive filter: %s\033[0m\n" "$UFFS_PGO_DRIVE"
+    fi
+    for pattern in "notepad.exe" "win*" "*.dbt" "*.dll" "config"; do
+        printf "\033[0;34m    → %s\033[0m\n" "$pattern"
+        for _ in $(seq 1 10); do
+            "$INSTRUMENTED" "$pattern" $DRIVE_FLAG --columns path --out=/tmp/uffs_pgo.csv >/dev/null 2>&1 || true
+        done
+    done
+    rm -f /tmp/uffs_pgo.csv
+    printf "\033[0;32m  ✓ corpus run complete\033[0m\n"
+
+    # Phase 3: merge + rebuild
+    printf "\n\033[0;34m🧬 Phase 3/3: merging profraw and rebuilding\033[0m\n"
+    MERGED="${PGO_DIR}/merged.profdata"
+    "$LLVM_PROFDATA" merge -o "$MERGED" "$PGO_DIR"
+    printf "\033[0;32m  ✓ merged profile: %s\033[0m\n" "$MERGED"
+    RUSTFLAGS="-Cprofile-use=${MERGED}" cargo build --release -p uffs-cli
+    printf "\033[0;32m✅ PGO build complete — `target/release/uffs` now uses the merged profile\033[0m\n"
+    printf "\033[0;34m   Run `just use` to install, then re-bench against the pre-PGO baseline.\033[0m\n"
+

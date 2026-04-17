@@ -216,6 +216,7 @@ fn search_response_round_trip() {
             ("size".to_owned(), serde_json::Value::from(1024_u64)),
         ])]),
         aggregations: vec![],
+        paths_blob: None,
     };
     let json = serde_json::to_string(&resp).expect("serialize");
     let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");
@@ -226,6 +227,54 @@ fn search_response_round_trip() {
     assert_eq!(parsed.applied_sorts.len(), 1);
     assert_eq!(parsed.applied_projection.len(), 2);
     assert!(parsed.projected_rows.is_some());
+}
+
+/// `SearchResponse` round-trip with the path-only `paths_blob` transport.
+///
+/// Covers the single-buffer fast path: daemon sets `paths_blob`, leaves
+/// `rows` empty, and the CLI writes the blob directly to stdout with
+/// one `write_all`.  Also checks that an absent blob does not serialise
+/// as `"paths_blob": null` in the JSON (which would waste bytes).
+#[test]
+fn search_response_paths_blob_round_trip() {
+    let blob = "C:\\Windows\\System32\\a.dll\nC:\\Windows\\System32\\b.dll\n";
+    let resp = SearchResponse {
+        rows: vec![],
+        total_count: 2,
+        records_scanned: 250_000,
+        duration_ms: 5,
+        truncated: false,
+        shmem_path: None,
+        shmem_count: None,
+        profile: None,
+        applied_sorts: vec![],
+        applied_projection: vec!["path".to_owned()],
+        response_mode: Some(SearchResponseMode::Rows),
+        projected_rows: None,
+        aggregations: vec![],
+        paths_blob: Some(blob.to_owned()),
+    };
+    let json = serde_json::to_string(&resp).expect("serialize");
+    assert!(
+        json.contains("\"paths_blob\""),
+        "paths_blob must be present when Some"
+    );
+
+    let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");
+    assert!(parsed.rows.is_empty(), "rows must be empty in blob mode");
+    assert!(parsed.shmem_path.is_none());
+    assert_eq!(parsed.paths_blob.as_deref(), Some(blob));
+
+    // Empty blob must NOT appear in the JSON at all (skip_serializing_if).
+    let empty_resp = SearchResponse {
+        paths_blob: None,
+        ..resp
+    };
+    let empty_json = serde_json::to_string(&empty_resp).expect("serialize");
+    assert!(
+        !empty_json.contains("paths_blob"),
+        "None paths_blob must not be serialized"
+    );
 }
 
 // ── S1C.4 — Aggregate wire type round-trip tests ──────────────────
@@ -569,6 +618,7 @@ fn search_response_with_aggregations_round_trip() {
                 values_complete: None,
             },
         ],
+        paths_blob: None,
     };
     let json = serde_json::to_string(&resp).expect("serialize");
     let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");

@@ -58,6 +58,7 @@ impl IndexManager {
                     response_mode: None,
                     projected_rows: None,
                     aggregations: vec![],
+                    paths_blob: None,
                 };
             }
         };
@@ -230,6 +231,7 @@ impl IndexManager {
                     response_mode: None,
                     projected_rows: None,
                     aggregations: vec![],
+                    paths_blob: None,
                 };
             }
             Err(_timeout) => {
@@ -251,6 +253,7 @@ impl IndexManager {
                     response_mode: None,
                     projected_rows: None,
                     aggregations: vec![],
+                    paths_blob: None,
                 };
             }
         };
@@ -311,6 +314,7 @@ impl IndexManager {
                         response_mode: None,
                         projected_rows: None,
                         aggregations: vec![],
+                        paths_blob: None,
                     };
                 }
                 Err(err) => {
@@ -412,6 +416,10 @@ impl IndexManager {
             response_mode: Some(response_mode),
             projected_rows,
             aggregations: agg_results,
+            // Populated by `handle_search` when projection is path-only
+            // and the row count is below the shmem threshold.  The
+            // search core itself always returns full [`SearchRow`]s.
+            paths_blob: None,
         }
     }
 
