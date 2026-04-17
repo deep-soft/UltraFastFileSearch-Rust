@@ -737,30 +737,19 @@ impl MftReader {
                         return Ok(index);
                     }
                     Err(iocp_err) => {
-                        // ── IOCP failed — fall back to $MFT file reading ────
-                        // Write-protected volumes (Win32 error 19) reject ALL
-                        // raw volume I/O (both overlapped and synchronous).
-                        // Opening `X:\$MFT` directly as a file bypasses this
-                        // because the filesystem driver handles VCN→LCN
-                        // translation internally.
+                        // ── IOCP failed — cascading fallback ────────────────
+                        // Write-protected volumes reject IOCP I/O. Try two
+                        // fallback strategies before giving up:
+                        //
+                        // 1. Open `X:\$MFT` as a file (filesystem-mediated)
+                        // 2. Re-open volume with FILE_FLAG_NO_BUFFERING (bypasses cache manager,
+                        //    direct device I/O)
                         warn!(
                             volume = %self.volume,
                             error = %iocp_err,
-                            "⚠️  IOCP inline read failed — falling back to $MFT file reader"
+                            "⚠️  IOCP inline read failed — trying fallback strategies"
                         );
-                        let mft_handle = self.require_handle().open_mft_read_handle()?;
-                        let mft_result = crate::io::readers::mft_file::read_mft_from_file_handle(
-                            mft_handle,
-                            record_size,
-                            total_records,
-                        );
-                        // SAFETY: `mft_handle` was opened by `open_mft_read_handle`
-                        // and is no longer used after the read. Closed exactly once.
-                        #[expect(unsafe_code, reason = "FFI: CloseHandle on $MFT file handle")]
-                        {
-                            unsafe { windows::Win32::Foundation::CloseHandle(mft_handle) }.ok();
-                        }
-                        mft_result?
+                        self.read_write_protect_fallback(record_size, total_records)?
                     }
                 }
             }
@@ -837,5 +826,69 @@ impl MftReader {
 
         tracing::debug!(volume = %self.volume, "[TRIP] reader::read_mft_index_internal EXIT");
         Ok(index)
+    }
+
+    /// Cascading fallback for write-protected volumes.
+    ///
+    /// Tries, in order:
+    /// 1. Open `X:\$MFT` directly as a file and read it sequentially.
+    /// 2. Re-open the volume with `FILE_FLAG_NO_BUFFERING` (bypasses cache
+    ///    manager) and use the synchronous parallel reader.
+    ///
+    /// Returns `Vec<ParsedRecord>` on success.
+    #[cfg(windows)]
+    pub(crate) fn read_write_protect_fallback(
+        &self,
+        record_size: u32,
+        total_records: u64,
+    ) -> Result<Vec<crate::io::ParsedRecord>> {
+        let vh = self.require_handle();
+
+        // ── Strategy 1: read $MFT as a file ────────────────────────────
+        match vh.open_mft_read_handle() {
+            Ok(mft_handle) => {
+                info!(volume = %self.volume, "📂 Fallback 1: reading $MFT as file");
+                let result = crate::io::readers::mft_file::read_mft_from_file_handle(
+                    mft_handle,
+                    record_size,
+                    total_records,
+                );
+                // SAFETY: `mft_handle` from `open_mft_read_handle`, closed
+                // exactly once after the read completes.
+                #[expect(unsafe_code, reason = "FFI: CloseHandle on $MFT file handle")]
+                {
+                    unsafe { windows::Win32::Foundation::CloseHandle(mft_handle) }.ok();
+                }
+                return result;
+            }
+            Err(e) => {
+                warn!(
+                    volume = %self.volume,
+                    error = %e,
+                    "⚠️  Fallback 1 ($MFT file) failed — trying unbuffered volume I/O"
+                );
+            }
+        }
+
+        // ── Strategy 2: unbuffered volume handle (FILE_FLAG_NO_BUFFERING) ──
+        let unbuf_handle = vh.open_unbuffered_handle()?;
+        info!(volume = %self.volume, "📂 Fallback 2: unbuffered volume I/O (NO_BUFFERING)");
+        let vd = vh.volume_data();
+        let extents = vh.get_mft_extents()?;
+        let extent_map = crate::io::MftExtentMap::new(extents, vd.bytes_per_cluster, record_size);
+        let reader = crate::io::ParallelMftReader::new_optimized(
+            extent_map,
+            vh.get_mft_bitmap().ok(),
+            crate::platform::DriveType::Hdd,
+        );
+        let result =
+            reader.read_all_parallel_with_progress::<fn(u64, u64)>(unbuf_handle, true, None);
+        // SAFETY: `unbuf_handle` from `open_unbuffered_handle`, closed
+        // exactly once after the read completes.
+        #[expect(unsafe_code, reason = "FFI: CloseHandle on unbuffered volume handle")]
+        {
+            unsafe { windows::Win32::Foundation::CloseHandle(unbuf_handle) }.ok();
+        }
+        result
     }
 }

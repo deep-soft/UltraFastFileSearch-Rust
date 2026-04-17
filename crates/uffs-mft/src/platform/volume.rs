@@ -2,6 +2,9 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Windows NTFS volume handle and metadata access helpers.
+//!
+//! Exception: Volume handle + write-protect fallback handles; splitting would
+//! fragment the handle lifecycle.
 
 use std::mem::size_of;
 use std::time::Duration;
@@ -351,6 +354,47 @@ impl VolumeHandle {
                 None,
                 OPEN_EXISTING,
                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_SEQUENTIAL_SCAN,
+                None,
+            )
+        };
+
+        match handle {
+            Ok(h) => Ok(h),
+            Err(err) => Err(MftError::VolumeOpen {
+                volume: self.volume,
+                source: std::io::Error::from_raw_os_error(err.code().0 as i32),
+            }),
+        }
+    }
+
+    /// Opens an unbuffered volume handle for direct I/O.
+    ///
+    /// On write-protected volumes the cache-manager path
+    /// (`FILE_FLAG_SEQUENTIAL_SCAN`) fails with `ERROR_WRITE_PROTECT`.
+    /// `FILE_FLAG_NO_BUFFERING` bypasses the cache manager entirely and
+    /// issues I/O directly to the device driver, which only requires
+    /// sector-aligned buffers and offsets (already guaranteed by
+    /// [`AlignedBuffer`]).
+    ///
+    /// The caller is responsible for closing the returned handle.
+    #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
+    pub fn open_unbuffered_handle(&self) -> Result<HANDLE> {
+        let volume_path: Vec<u16> = format!("\\\\.\\{}:", self.volume)
+            .encode_utf16()
+            .chain(core::iter::once(0))
+            .collect();
+
+        // SAFETY: `volume_path` is UTF-16 and NUL-terminated for the duration
+        // of the call, optional pointers are passed as `None`, and the
+        // returned handle is transferred to the caller.
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR::from_raw(volume_path.as_ptr()),
+                FILE_READ_DATA | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_NO_BUFFERING,
                 None,
             )
         };
