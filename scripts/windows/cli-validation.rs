@@ -1017,6 +1017,79 @@ fn run_custom_validator(name: &str, stdout: &str, stderr: &str) -> Result<String
             }
             Ok(format!("{} rows, sorted by name length desc", rows.len()))
         }
+        "T67f2" => {
+            // Mirror of the same-named validator in api-validation.rs.
+            //
+            // PathOnly sort must honour Windows Explorer's `Folder`
+            // column convention: when two rows share the same parent
+            // directory (case-insensitive), the secondary tiebreaker
+            // is filename ASC.  Mirrored by
+            // `search_index_path_only_sort_name_asc_within_same_folder`
+            // in crates/uffs-core/src/search/backend_tests.rs.
+            //
+            // This validator *only* checks the tiebreaker invariant —
+            // it intentionally does NOT re-validate primary
+            // `path_only` ASC ordering (that's T67f's job via the
+            // generic sort_checks framework).  The daemon's sort uses
+            // NTFS $UpCase (upper-fold), while the generic framework
+            // uses `.to_lowercase()`; the two conventions disagree on
+            // characters between `Z` (0x5A) and `a` (0x61) — notably
+            // `_` (0x5F) — so a primary check here would spuriously
+            // fail on inputs like `pmf_ryzenaimax` vs `pmf_ryzen_ai`.
+            // Same-folder siblings share identical case-folded
+            // prefixes so the ambiguity cannot surface for the
+            // tiebreaker comparison.
+            let (h, rows) = parse_csv(stdout);
+            if rows.len() < 2 {
+                bail!(
+                    "Need ≥ 2 rows to validate path_only+name sort, got {}",
+                    rows.len()
+                );
+            }
+            let pairs: Vec<(String, String)> = rows
+                .iter()
+                .map(|r| {
+                    let path = col_val(r, &h, "Path");
+                    let name = col_val(r, &h, "Name");
+                    let dir = path
+                        .strip_suffix(&name)
+                        .unwrap_or(&path)
+                        .trim_end_matches('\\')
+                        .to_owned();
+                    (dir, name.to_owned())
+                })
+                .collect();
+            let mut saw_tiebreaker = false;
+            for w in pairs.windows(2) {
+                let (po0, n0) = &w[0];
+                let (po1, n1) = &w[1];
+                if po0.eq_ignore_ascii_case(po1) {
+                    saw_tiebreaker = true;
+                    let n0_fold = n0.to_lowercase();
+                    let n1_fold = n1.to_lowercase();
+                    if n0_fold > n1_fold {
+                        bail!(
+                            "Not asc (name tiebreaker within '{}'): '{}' > '{}'",
+                            po0, n0, n1
+                        );
+                    }
+                }
+            }
+            if !saw_tiebreaker {
+                bail!(
+                    "Test vacuous: {} rows all have distinct path_only \
+                     values — no adjacent pair with equal path_only to \
+                     exercise the name tiebreaker.  Expand the search or \
+                     raise --limit so rows from the same folder appear \
+                     together.",
+                    rows.len()
+                );
+            }
+            Ok(format!(
+                "{} rows, name-ASC tiebreaker verified for same-folder siblings",
+                rows.len()
+            ))
+        }
         "T78" => {
             let (h, rows) = parse_csv(stdout);
             for (i, row) in rows.iter().enumerate() {
