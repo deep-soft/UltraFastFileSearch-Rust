@@ -528,10 +528,7 @@ impl UffsClientSync {
 // ── Auto-start daemon ───────────────────────────────────────────────
 
 /// Spawn the daemon binary if not already running.
-fn auto_start_daemon(
-    spawn_args: &[String],
-    policy: ElevationPolicy,
-) -> Result<(), ClientError> {
+fn auto_start_daemon(spawn_args: &[String], policy: ElevationPolicy) -> Result<(), ClientError> {
     let pid_path = pid_file_path();
 
     // Check if daemon is already alive via PID file.

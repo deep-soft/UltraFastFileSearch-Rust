@@ -24,6 +24,11 @@ use uffs_security as _;
 /// `ws2_32.dll`) from its binary.
 #[cfg(feature = "async")]
 pub mod connect;
+/// Tracing helpers used only by [`connect`].  Private; sibling file
+/// to keep `connect.rs` under the 800-LOC file-size policy after the
+/// v0.5.36 UAC work expanded its public entry points.
+#[cfg(feature = "async")]
+mod connect_logging;
 pub mod connect_sync;
 pub mod daemon_ctl;
 pub mod error;

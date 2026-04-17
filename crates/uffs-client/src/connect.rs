@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use crate::connect_logging::{log_connect_attempt, log_connect_error, log_spawn_details};
 use crate::daemon_ctl::{
     ElevationPolicy, find_daemon_exe, keepalive_send_blocking, pid_file_path,
     resolve_elevation_policy, socket_path, spawn_daemon, verify_daemon_after_connect,
@@ -782,118 +783,9 @@ impl UffsClient {
     }
 }
 
-// Daemon lifecycle helpers live in crate::daemon_ctl — import from there
-// directly.  The elevation policy resolver also lives there so the
-// sync client (which is not gated behind the `async` feature) can reach
-// it without cross-feature plumbing.
-
-#[cfg(test)]
-mod elevation_policy_tests {
-    use crate::daemon_ctl::{ElevationPolicy, elevation_policy_from};
-
-    /// Explicit `force_allow` (e.g. `--elevate`) always wins, even
-    /// against an empty or falsy env value.
-    #[test]
-    fn force_allow_always_permits_uac() {
-        assert_eq!(
-            elevation_policy_from(true, None),
-            ElevationPolicy::AllowUacPrompt,
-        );
-        assert_eq!(
-            elevation_policy_from(true, Some("")),
-            ElevationPolicy::AllowUacPrompt,
-        );
-        assert_eq!(
-            elevation_policy_from(true, Some("0")),
-            ElevationPolicy::AllowUacPrompt,
-        );
-    }
-
-    /// Without `force_allow` and without the env var, the default
-    /// policy must refuse UAC.  This is the behavioral change v0.5.36
-    /// introduces and the linchpin for the whole P7 fix.
-    #[test]
-    fn missing_env_defaults_to_require_existing_elevation() {
-        assert_eq!(
-            elevation_policy_from(false, None),
-            ElevationPolicy::RequireExistingElevation,
-        );
-    }
-
-    /// Every documented truthy token must promote to
-    /// `AllowUacPrompt`.  Trimming and case-folding are also expected.
-    #[test]
-    fn truthy_env_values_permit_uac() {
-        for token in [
-            "1", "true", "TRUE", "True", "yes", "YES", "on", "ON", "  1  ", " yes\n",
-        ] {
-            assert_eq!(
-                elevation_policy_from(false, Some(token)),
-                ElevationPolicy::AllowUacPrompt,
-                "token {token:?} should enable UAC",
-            );
-        }
-    }
-
-    /// Falsy / unrecognised tokens must keep the conservative default.
-    #[test]
-    fn falsy_or_unknown_env_values_keep_default() {
-        for token in ["0", "false", "no", "off", "", "maybe", "2", "nope"] {
-            assert_eq!(
-                elevation_policy_from(false, Some(token)),
-                ElevationPolicy::RequireExistingElevation,
-                "token {token:?} should not enable UAC",
-            );
-        }
-    }
-
-    /// [`ElevationPolicy::default`] must be the safe option.  New
-    /// callers that rely on `..Default::default()` must not silently
-    /// get the UAC-triggering variant.
-    #[test]
-    fn default_policy_is_require_existing_elevation() {
-        assert_eq!(
-            ElevationPolicy::default(),
-            ElevationPolicy::RequireExistingElevation,
-        );
-    }
-}
-
-// ── Logging helpers ─────────────────────────────────────────────────
-// Extracted to keep calling functions under the cognitive-complexity limit.
-
-/// Log daemon spawn details (exe path, existence, command args).
-fn log_spawn_details(uffs_exe: &std::path::Path, cmd_args: &[&str]) {
-    tracing::debug!(
-        uffs_exe = %uffs_exe.display(),
-        uffs_exe_exists = uffs_exe.exists(),
-        ?cmd_args,
-        "auto_start_daemon: resolved exe, spawning"
-    );
-}
-
-/// Log a connect retry attempt with socket/PID file status.
-fn log_connect_attempt(
-    attempt: usize,
-    max_attempts: usize,
-    delay_ms: u64,
-    sock: &std::path::Path,
-    pid_path: &std::path::Path,
-) {
-    tracing::debug!(
-        attempt,
-        max_attempts,
-        delay_ms,
-        sock_exists = sock.exists(),
-        pid_exists = pid_path.exists(),
-        "connect attempt"
-    );
-}
-
-/// Log a failed connect attempt (only for first 3 and final attempts to avoid
-/// spam).
-fn log_connect_error(attempt: usize, max_attempts: usize, err: &crate::error::ClientError) {
-    if attempt <= 3 || attempt == max_attempts {
-        tracing::debug!(attempt, %err, "connect attempt failed");
-    }
-}
+// Daemon lifecycle helpers live in crate::daemon_ctl — import from
+// there directly.  The elevation policy resolver and its regression
+// tests also live there so the sync client (which is not gated behind
+// the `async` feature) can reach them without cross-feature plumbing.
+// Tracing helpers extracted to `crate::connect_logging` to keep this
+// file under the 800-LOC ceiling after the v0.5.36 UAC work.

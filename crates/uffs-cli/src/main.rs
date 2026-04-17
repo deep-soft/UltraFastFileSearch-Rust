@@ -477,12 +477,8 @@ mod tests {
     /// than a dead-end crash.  Locks the contract in place.
     #[test]
     fn elevation_help_lists_all_recovery_paths() {
-        let help =
-            format_elevation_help(r"C:\Program Files\uffs\uffsd.exe");
-        assert!(
-            help.contains("admin"),
-            "help must mention admin: {help}"
-        );
+        let help = format_elevation_help(r"C:\Program Files\uffs\uffsd.exe");
+        assert!(help.contains("admin"), "help must mention admin: {help}");
         assert!(
             help.contains("--elevate"),
             "help must document --elevate: {help}"
@@ -505,11 +501,9 @@ mod tests {
     /// layers that the CLI adds on top of the raw `ClientError`.
     #[test]
     fn find_needs_elevation_walks_anyhow_context() {
-        let base = anyhow::Error::from(
-            uffs_client::error::ClientError::DaemonNeedsElevation {
-                daemon_path: "uffsd-test".to_owned(),
-            },
-        );
+        let base = anyhow::Error::from(uffs_client::error::ClientError::DaemonNeedsElevation {
+            daemon_path: "uffsd-test".to_owned(),
+        });
         let wrapped: anyhow::Error = base.context("while connecting");
         assert_eq!(find_needs_elevation(&wrapped), Some("uffsd-test"));
     }
@@ -519,9 +513,9 @@ mod tests {
     /// everything else.
     #[test]
     fn find_needs_elevation_returns_none_for_other_errors() {
-        let other = anyhow::Error::from(
-            uffs_client::error::ClientError::ConnectionFailed("nope".to_owned()),
-        );
+        let other = anyhow::Error::from(uffs_client::error::ClientError::ConnectionFailed(
+            "nope".to_owned(),
+        ));
         assert!(find_needs_elevation(&other).is_none());
     }
 

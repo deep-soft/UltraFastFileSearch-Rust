@@ -213,12 +213,12 @@ impl Default for ElevationPolicy {
 ///
 /// Rules, in priority order:
 ///
-/// 1. If `force_allow` is `true` (e.g. `uffs daemon start --elevate`),
-///    return [`ElevationPolicy::AllowUacPrompt`].
-/// 2. Otherwise, if `env_value` contains a truthy token (`1`, `true`,
-///    `yes`, `on`, case-insensitive — leading/trailing whitespace is
-///    trimmed), return [`ElevationPolicy::AllowUacPrompt`].  This is
-///    how `UFFS_ELEVATE` is interpreted.
+/// 1. If `force_allow` is `true` (e.g. `uffs daemon start --elevate`), return
+///    [`ElevationPolicy::AllowUacPrompt`].
+/// 2. Otherwise, if `env_value` contains a truthy token (`1`, `true`, `yes`,
+///    `on`, case-insensitive — leading/trailing whitespace is trimmed), return
+///    [`ElevationPolicy::AllowUacPrompt`].  This is how `UFFS_ELEVATE` is
+///    interpreted.
 /// 3. Otherwise, return [`ElevationPolicy::RequireExistingElevation`].
 ///
 /// Kept env-free so both the async and sync clients (and tests) can
@@ -348,9 +348,7 @@ fn spawn_daemon_windows(
             Ok(())
         }
         ElevationPolicy::RequireExistingElevation => {
-            tracing::info!(
-                "Not elevated and policy forbids UAC — returning DaemonNeedsElevation"
-            );
+            tracing::info!("Not elevated and policy forbids UAC — returning DaemonNeedsElevation");
             Err(crate::error::ClientError::DaemonNeedsElevation {
                 daemon_path: exe.display().to_string(),
             })
@@ -544,5 +542,77 @@ fn shell_execute_elevated(
             "ShellExecuteW(runas) failed for {}: code={code} — {msg}",
             exe.display()
         )))
+    }
+}
+
+#[cfg(test)]
+mod elevation_policy_tests {
+    use super::{ElevationPolicy, elevation_policy_from};
+
+    /// Explicit `force_allow` (e.g. `--elevate`) always wins, even
+    /// against an empty or falsy env value.
+    #[test]
+    fn force_allow_always_permits_uac() {
+        assert_eq!(
+            elevation_policy_from(true, None),
+            ElevationPolicy::AllowUacPrompt,
+        );
+        assert_eq!(
+            elevation_policy_from(true, Some("")),
+            ElevationPolicy::AllowUacPrompt,
+        );
+        assert_eq!(
+            elevation_policy_from(true, Some("0")),
+            ElevationPolicy::AllowUacPrompt,
+        );
+    }
+
+    /// Without `force_allow` and without the env var, the default
+    /// policy must refuse UAC.  This is the behavioral change v0.5.36
+    /// introduces and the linchpin for the whole P7 fix.
+    #[test]
+    fn missing_env_defaults_to_require_existing_elevation() {
+        assert_eq!(
+            elevation_policy_from(false, None),
+            ElevationPolicy::RequireExistingElevation,
+        );
+    }
+
+    /// Every documented truthy token must promote to
+    /// `AllowUacPrompt`.  Trimming and case-folding are also expected.
+    #[test]
+    fn truthy_env_values_permit_uac() {
+        for token in [
+            "1", "true", "TRUE", "True", "yes", "YES", "on", "ON", "  1  ", " yes\n",
+        ] {
+            assert_eq!(
+                elevation_policy_from(false, Some(token)),
+                ElevationPolicy::AllowUacPrompt,
+                "token {token:?} should enable UAC",
+            );
+        }
+    }
+
+    /// Falsy / unrecognised tokens must keep the conservative default.
+    #[test]
+    fn falsy_or_unknown_env_values_keep_default() {
+        for token in ["0", "false", "no", "off", "", "maybe", "2", "nope"] {
+            assert_eq!(
+                elevation_policy_from(false, Some(token)),
+                ElevationPolicy::RequireExistingElevation,
+                "token {token:?} should not enable UAC",
+            );
+        }
+    }
+
+    /// [`ElevationPolicy::default`] must be the safe option.  New
+    /// callers that rely on `..Default::default()` must not silently
+    /// get the UAC-triggering variant.
+    #[test]
+    fn default_policy_is_require_existing_elevation() {
+        assert_eq!(
+            ElevationPolicy::default(),
+            ElevationPolicy::RequireExistingElevation,
+        );
     }
 }
