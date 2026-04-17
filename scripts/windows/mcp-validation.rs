@@ -330,6 +330,16 @@ struct TestDef {
     skip: Option<bool>,
     #[serde(default)] #[allow(dead_code)] tags: Vec<String>,
 
+    /// Negative-path test for raw JSON-RPC error responses (e.g. the
+    /// daemon's unknown-method `-32601` behaviour).  These tests call
+    /// an arbitrary JSON-RPC method and inspect the `error` object,
+    /// a concept that has no direct equivalent on the MCP stdio
+    /// transport (which only exposes tool calls via `tools/call`, not
+    /// arbitrary method names).  MCP skips such tests with a clear
+    /// diagnostic so the author knows coverage exists via the
+    /// corresponding MCP-side test (e.g. `M700` mirrors `RPC.5`).
+    #[serde(default)] expect_error: Option<bool>,
+
     // ── Per-target checks (ignored by MCP validator) ───────────
     #[allow(dead_code)] #[serde(default)] cli_checks: Option<Value>,
     #[allow(dead_code)] #[serde(default)] api_checks: Option<Value>,
@@ -654,6 +664,18 @@ fn load_tests_from_toml() -> Vec<McpTest> {
         if def.skip.unwrap_or(false) { skipped += 1; continue; }
         let is_mcp = def.targets.iter().any(|t| t == "mcp" || t == "api");
         if !is_mcp { not_mcp += 1; continue; }
+
+        // Negative-path raw-RPC error tests (e.g. `RPC.5` unknown
+        // method) have no MCP equivalent — MCP's `tools/call` envelope
+        // only exposes registered tools, not arbitrary method names,
+        // so a "call method that does not exist" assertion is
+        // meaningless here.  The mirror test for MCP lives alongside
+        // the MCP-native protocol tests (e.g. `M700`).  Skip silently
+        // but count in `skipped` so the test counts are transparent.
+        if def.expect_error.unwrap_or(false) {
+            skipped += 1;
+            continue;
+        }
 
         // ── MCP-native test (from 12-mcp.toml) ────────────────────
         if let Some(ref mcp_method) = def.mcp_method {

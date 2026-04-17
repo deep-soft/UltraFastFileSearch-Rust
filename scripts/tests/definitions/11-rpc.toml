@@ -52,3 +52,34 @@ rpc_params  = "{}"
 validator   = "RPC.4"
 stdout_contains = ["Uptime:", "Total records:", "Queries served:"]
 
+# RPC.5 — negative-path test for JSON-RPC unknown-method handling.
+#
+# Calls a method name the daemon does not know and expects a
+# structured JSON-RPC error response with code -32601
+# (MethodNotFound), not a crash and not a silent success.  This
+# mirrors the M700 MCP test (which covers the same daemon-layer
+# behaviour via the MCP tool-call envelope) and the daemon's own
+# integration test at
+# `crates/uffs-daemon/tests/ipc_integration.rs:209-218`.
+#
+# `expect_error = true` tells api-validation.rs to:
+#   1. Require the RPC response to contain `error` (not `result`).
+#   2. Pass the FULL response to the `RPC.5` custom validator so it
+#      can inspect the error code / message.
+#   3. Skip the normal row/column/sort/anti-vacuous checks.
+#
+# Not targeted at CLI: the CLI does not expose arbitrary JSON-RPC
+# methods — only specific subcommands (daemon status, stats, etc.) —
+# so there's no surface to test "unknown method" at the CLI layer.
+[[test]]
+id          = "RPC.5"
+group       = "rpc"
+name        = "RPC.5 unknown method"
+title       = "RPC.5 unknown method returns JSON-RPC error"
+short_desc  = "Calling a nonexistent RPC method returns -32601 (MethodNotFound)"
+targets     = ["api"]
+rpc_method  = "this_method_does_not_exist"
+rpc_params  = "{}"
+expect_error = true
+validator   = "RPC.5"
+
