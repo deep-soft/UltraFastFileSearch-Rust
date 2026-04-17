@@ -644,6 +644,306 @@ fn search_index_drives_filter_excludes_non_matching() {
     assert!(!result.rows.is_empty(), "must have at least one C: result");
 }
 
+// ── *.ext → ext-filter safety-net promotion tests ───────────────────
+//
+// These pin the dispatch-time rewrite in `search_index` that routes
+// `pattern="*.txt"` through `numeric_top_n::ext_fast_path` instead of
+// the trigram+glob path.  Paired with the parse-time rewrite in
+// `uffs_client::protocol::cli_args::is_pure_ext_glob` (see its
+// regression tests for shape-acceptance coverage).
+
+/// Baseline: `*.txt` on the fixture with `report.txt` on C and
+/// `data.csv` on D must return exactly the C file.
+#[test]
+fn search_index_promotes_ext_glob_and_returns_matching_results() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest::new("*.txt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    // After the safety net mutates filters, the ext should be populated.
+    assert_eq!(
+        filters.extensions,
+        vec!["txt".to_owned()],
+        "safety net must push lowercase ext into filters"
+    );
+    // Fixture has exactly one .txt file on C.
+    assert_eq!(result.rows.len(), 1, "expected one .txt result");
+    let first = result
+        .rows
+        .first()
+        .expect("asserted non-empty above");
+    assert!(
+        first.path.ends_with("report.txt"),
+        "expected report.txt, got: {}",
+        first.path
+    );
+}
+
+/// Parity: `*.txt` (with empty extensions) and `*` with
+/// `extensions=["txt"]` must produce identical result sets.
+#[test]
+fn search_index_ext_glob_parity_with_explicit_extensions() {
+    let index = build_two_drive_index();
+
+    let mut filters_glob = super::super::filters::SearchFilters::default();
+    let r_glob = search_index(
+        &index,
+        SearchRequest::new("*.txt", &mut filters_glob),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+
+    let mut filters_explicit = super::super::filters::SearchFilters {
+        extensions: vec!["txt".to_owned()],
+        ..super::super::filters::SearchFilters::default()
+    };
+    let r_explicit = search_index(
+        &index,
+        SearchRequest::new("*", &mut filters_explicit),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+
+    assert_eq!(
+        r_glob.rows.len(),
+        r_explicit.rows.len(),
+        "row count parity between *.txt glob and --ext txt"
+    );
+    let glob_paths: std::collections::HashSet<_> =
+        r_glob.rows.iter().map(|row| row.path.clone()).collect();
+    let explicit_paths: std::collections::HashSet<_> =
+        r_explicit.rows.iter().map(|row| row.path.clone()).collect();
+    assert_eq!(
+        glob_paths, explicit_paths,
+        "result set parity between *.txt glob and --ext txt"
+    );
+}
+
+/// Multi-segment `*.tar.gz` must stay on the trigram path and NOT
+/// populate `extensions`.
+#[test]
+fn search_index_multi_segment_ext_not_promoted() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let _result = search_index(
+        &index,
+        SearchRequest::new("*.tar.gz", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    assert!(
+        filters.extensions.is_empty(),
+        "safety net must NOT promote multi-segment ext globs — filters.extensions should stay empty"
+    );
+}
+
+/// Case-sensitive `*.TXT` must NOT promote (ext index is case-folded,
+/// would produce wrong semantics for strict-case callers).
+#[test]
+fn search_index_case_sensitive_ext_glob_not_promoted() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let _result = search_index(
+        &index,
+        SearchRequest {
+            case_sensitive: true,
+            ..SearchRequest::new("*.TXT", &mut filters)
+        },
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    assert!(
+        filters.extensions.is_empty(),
+        "case-sensitive *.TXT must stay on trigram path — filters.extensions should stay empty"
+    );
+}
+
+/// Explicit `extensions` pre-populated must NOT be clobbered even if
+/// pattern is `*.<other>`.
+#[test]
+fn search_index_explicit_extensions_not_clobbered() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters {
+        extensions: vec!["csv".to_owned()],
+        ..super::super::filters::SearchFilters::default()
+    };
+    let _result = search_index(
+        &index,
+        SearchRequest::new("*.txt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    // Safety net must leave existing extensions alone.
+    assert_eq!(
+        filters.extensions,
+        vec!["csv".to_owned()],
+        "explicit extensions must not be clobbered by safety net"
+    );
+}
+
+// ── <letter>: → drive-filter promotion safety-net tests ────────────
+//
+// These pin the dispatch-time rewrite in `search_index` that promotes
+// bare drive prefixes (`C:<rest>`) to the drive filter + stripped
+// pattern, composing with the ext-glob promotion where applicable.
+// Paired with the parse-time rewrite in
+// `uffs_client::protocol::cli_args::into_search_params` (see its
+// regression tests for shape-acceptance coverage).
+
+/// Composition: `C:*.txt` with empty `drives_filter` must promote both
+/// to drive=C AND to ext=txt, finding the single C-side `report.txt`.
+#[test]
+fn search_index_promotes_drive_prefix_with_ext_glob() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest::new("C:*.txt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    assert_eq!(
+        filters.extensions,
+        vec!["txt".to_owned()],
+        "ext-glob safety net must fire on the stripped rest (*.txt)"
+    );
+    assert_eq!(
+        result.rows.len(),
+        1,
+        "drive-prefix + ext promotion must find exactly report.txt on C"
+    );
+    let first = result.rows.first().expect("asserted non-empty above");
+    assert_eq!(first.drive, 'C', "result must be from drive C only");
+    assert!(
+        first.path.ends_with("report.txt"),
+        "expected report.txt, got: {}",
+        first.path
+    );
+}
+
+/// Narrowing: `D:*.txt` must promote to drive=D AND ext=txt.  D only
+/// has `data.csv` in the fixture, so the result set is empty — proving
+/// the drive narrowing actually applied (otherwise we would have found
+/// `report.txt` on C via the ext-index).
+#[test]
+fn search_index_drive_prefix_narrows_away_other_drives() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest::new("D:*.txt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    assert_eq!(
+        filters.extensions,
+        vec!["txt".to_owned()],
+        "ext promotion must still fire after drive strip"
+    );
+    assert!(
+        result.rows.is_empty(),
+        "D drive has no .txt files — safety net must have narrowed away from C's report.txt; got {} rows: {:?}",
+        result.rows.len(),
+        result.rows.iter().map(|row| (row.drive, row.path.clone())).collect::<Vec<_>>()
+    );
+}
+
+/// Case-insensitive drive letter: `c:*.txt` (lowercase) must still
+/// promote to drive=C (uppercase normalisation) and find `report.txt`.
+#[test]
+fn search_index_drive_prefix_case_insensitive_letter() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest::new("c:*.txt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    assert_eq!(
+        result.rows.len(),
+        1,
+        "lowercase drive letter must still match drive C"
+    );
+    assert_eq!(
+        result.rows.first().expect("one row").drive,
+        'C',
+        "result must be from drive C"
+    );
+}
+
+/// Explicit `drives_filter` must NOT be clobbered by the safety net.
+/// Passing `drives_filter=['D']` with pattern `C:*.txt` keeps the D
+/// filter and leaves the pattern unchanged — the trigram path then
+/// runs on D with needle `C:*.txt`, finding nothing (file names on
+/// NTFS cannot contain `:`).
+#[test]
+fn search_index_drive_prefix_explicit_filter_not_clobbered() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            drives_filter: &['D'],
+            ..SearchRequest::new("C:*.txt", &mut filters)
+        },
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    assert!(
+        filters.extensions.is_empty(),
+        "ext promotion must NOT fire (pattern still contains `C:` prefix because drives_filter was non-empty)"
+    );
+    assert!(
+        result.rows.is_empty(),
+        "explicit drives_filter=['D'] must win; pattern `C:*.txt` cannot match names on D; got {:?}",
+        result.rows.iter().map(|row| (row.drive, row.path.clone())).collect::<Vec<_>>()
+    );
+}
+
+/// Path-anchored `C:\*.txt` must NOT trigger the drive-prefix safety
+/// net — the tree walker already scopes to the drive root and expects
+/// the full `C:\<glob>` form intact.  We verify non-promotion by
+/// checking that `filters.extensions` stays empty (drive-prefix would
+/// strip to `\*.txt` which is still not a pure ext glob, so this is
+/// an indirect but deterministic observation: the result set must
+/// match what we'd get by running the same pattern with an explicit
+/// `drives_filter=[]` on an unchanged backend).
+#[test]
+fn search_index_drive_prefix_with_separator_not_promoted() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let _result = search_index(
+        &index,
+        SearchRequest::new("C:\\*.txt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+    // Primary observation: ext-filter must stay empty — neither the
+    // drive-prefix safety net nor the ext-glob safety net should fire
+    // on a path-anchored pattern.
+    assert!(
+        filters.extensions.is_empty(),
+        "path-anchored pattern must not trigger any safety-net promotion; filters.extensions = {:?}",
+        filters.extensions
+    );
+}
+
 #[test]
 fn search_index_concurrent_calls_do_not_interfere() {
     use alloc::sync::Arc;

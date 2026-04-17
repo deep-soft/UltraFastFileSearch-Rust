@@ -565,8 +565,15 @@ impl IndexManager {
     /// so all formatting options (separator, quotes, header, pos/neg,
     /// columns, timestamps) produce identical output.
     ///
-    /// Atomic write: writes to a `.uffs.tmp` sibling file, renames to
-    /// target only after flush + sync.  Zero rows → no file created.
+    /// Atomic write: writes to a `.uffs.tmp` sibling file, then renames
+    /// to the target after a `BufWriter::flush`.  No `fsync` —
+    /// `--out=<path>` is reproducible search output, so the tmp+rename
+    /// dance protects against partial-file exposure during normal
+    /// writes but power-loss durability is intentionally not provided.
+    /// See the inline comment in the body and §Run 7 C / §Run 8 of
+    /// `docs/research/perf-phase2-measurement-plan.md` for the
+    /// measurement that motivated this trade-off.  Zero rows → no
+    /// file is created.
     fn write_rows_to_file(
         rows: &[DisplayRow],
         path: &str,
@@ -597,12 +604,25 @@ impl IndexManager {
             return Err(err);
         }
 
-        // Flush + sync to disk before renaming.
+        // Flush the BufWriter and close the underlying file.
+        //
+        // We deliberately skip `sync_all()` here.  `--out=<path>` is
+        // a user-requested export of search results; the data is
+        // reproducible from the MFT index in ~100 ms, so paying a
+        // 5-15 ms `fsync` per query for power-loss durability is not
+        // worth it — a power cut would just leave a 0-byte file and
+        // the user can simply re-run the query.  The atomic
+        // tmp+rename below still prevents partial-file exposure
+        // during normal writes.  See
+        // `docs/research/perf-phase2-measurement-plan.md` §Run 7 C /
+        // §Run 8 for the measurement that motivated dropping the
+        // sync.
         writer.flush()?;
         writer
             .into_inner()
-            .map_err(std::io::IntoInnerError::into_error)?
-            .sync_all()?;
+            .map_err(std::io::IntoInnerError::into_error)?;
+        // The File temporary above is dropped at the semicolon,
+        // closing the OS handle before the rename below.
 
         // Atomic rename: target appears only with complete data.
         std::fs::rename(&tmp_path, target)?;

@@ -1197,3 +1197,231 @@ fn aggregate_result_wire_values_complete_false() {
     assert_eq!(parsed.values_complete, Some(false));
     assert_eq!(parsed.exact, Some(true));
 }
+
+// ── *.ext → ext-filter promotion regression tests ──────────────────
+//
+// These tests pin the parse-time rewrite introduced to restore the
+// fat-CLI fast path for `*.<ext>` patterns.  They are paired with the
+// dispatch-time safety net in `uffs_core::search::backend::search_index`.
+
+/// Baseline: `*.dll` is promoted to `pattern="*" + ext=Some("dll")`
+/// so the daemon routes through `numeric_top_n::ext_fast_path`.
+#[test]
+fn from_cli_args_ext_glob_promoted() {
+    let args: Vec<String> = vec!["*.dll".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.pattern, "*",
+        "*.dll must be rewritten to pattern=* so is_match_all dispatches to numeric_top_n"
+    );
+    assert_eq!(
+        params.ext.as_deref(),
+        Some("dll"),
+        "*.dll must set ext=Some(dll) so ext_fast_path fires"
+    );
+}
+
+/// Parity: `*.dll` and `* --ext dll` produce identical `SearchParams`
+/// after parsing.  This is the guarantee that makes the promotion safe.
+#[test]
+fn from_cli_args_ext_glob_equivalent_to_explicit_ext_flag() {
+    let glob_args: Vec<String> = vec!["*.dll".into()];
+    let glob = SearchParams::from_cli_args(&glob_args).expect("parse");
+
+    let explicit_args: Vec<String> = vec!["*".into(), "--ext".into(), "dll".into()];
+    let explicit = SearchParams::from_cli_args(&explicit_args).expect("parse");
+
+    assert_eq!(glob.pattern, explicit.pattern, "pattern parity");
+    assert_eq!(glob.ext, explicit.ext, "ext parity");
+    assert_eq!(
+        glob.case_sensitive, explicit.case_sensitive,
+        "case_sensitive parity"
+    );
+    assert_eq!(glob.match_path, explicit.match_path, "match_path parity");
+}
+
+/// `*.DLL` (uppercase) must lowercase the extension before inserting
+/// into the filter — the `ExtensionIndex` is case-folded.
+#[test]
+fn from_cli_args_ext_glob_lowercases_extension() {
+    let args: Vec<String> = vec!["*.DLL".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.pattern, "*");
+    assert_eq!(
+        params.ext.as_deref(),
+        Some("dll"),
+        "extension must be lowercased for case-folded ExtensionIndex lookup"
+    );
+}
+
+/// `*.tar.gz` is NOT a pure extension glob (dot in the rest) — must
+/// stay on the trigram path unchanged.
+#[test]
+fn from_cli_args_multi_segment_ext_not_promoted() {
+    let args: Vec<String> = vec!["*.tar.gz".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.pattern, "*.tar.gz",
+        "multi-segment extension must not be promoted"
+    );
+    assert!(params.ext.is_none(), "ext must stay None");
+}
+
+/// `*.*` is the "any extension" glob — must NOT be promoted (would
+/// change meaning from "has any extension" to "match-all").
+#[test]
+fn from_cli_args_any_ext_glob_not_promoted() {
+    let args: Vec<String> = vec!["*.*".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.pattern, "*.*",
+        "*.* must stay on trigram path (matches any file with dot)"
+    );
+    assert!(params.ext.is_none());
+}
+
+/// Case-sensitive mode (`--case *.DLL`) must NOT promote — the
+/// `ExtensionIndex` is case-folded and would return all `.dll` files,
+/// but the user explicitly asked for strict-case `DLL` match.
+#[test]
+fn from_cli_args_case_sensitive_ext_glob_not_promoted() {
+    let args: Vec<String> = vec!["*.DLL".into(), "--case".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.pattern, "*.DLL",
+        "--case *.DLL must stay on trigram path (case-folded index cannot match strict case)"
+    );
+    assert!(params.ext.is_none());
+    assert!(params.case_sensitive);
+}
+
+/// Explicit `--ext` must not be clobbered: `*.dll --ext exe` keeps
+/// the user's explicit filter and leaves the pattern alone.
+#[test]
+fn from_cli_args_explicit_ext_preserved() {
+    let args: Vec<String> = vec!["*.dll".into(), "--ext".into(), "exe".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    // User explicitly said --ext exe — promotion must not touch that.
+    assert_eq!(params.ext.as_deref(), Some("exe"));
+    // Pattern stays as-is since we did NOT promote (ext was already set).
+    assert_eq!(params.pattern, "*.dll");
+}
+
+/// `path:*.dll` (path-scope) must NOT promote — the glob matches the
+/// full path, not just the filename extension.
+#[test]
+fn from_cli_args_path_scope_ext_glob_not_promoted() {
+    let args: Vec<String> = vec!["path:*.dll".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.pattern, "*.dll",
+        "path: scope strips prefix but pattern stays *.dll (path-aware)"
+    );
+    assert!(params.match_path);
+    assert!(params.ext.is_none());
+}
+
+// ── <letter>: → drive-filter promotion regression tests ──────────────
+//
+// These tests pin the parse-time rewrite that promotes a bare drive
+// prefix (`C:<rest>`) into the `drive` filter and leaves `<rest>` for
+// downstream sugar (including the ext-glob promotion).  They are paired
+// with the dispatch-time safety net in
+// `uffs_core::search::backend::{search_index, MultiDriveBackend::search}`.
+
+/// Baseline composition: `C:*.dll` → drive=C + pattern=`*` + ext=`dll`.
+/// Both the drive-prefix sugar AND the ext-glob promotion fire in the
+/// same parse, confirming they compose correctly in the documented order.
+#[test]
+fn from_cli_args_drive_prefix_with_ext_glob_promotes_both() {
+    let args: Vec<String> = vec!["C:*.dll".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.drives,
+        vec!['C'],
+        "drive prefix must populate drives filter"
+    );
+    assert_eq!(
+        params.pattern, "*",
+        "ext-glob promotion must fire on the stripped rest (*.dll)"
+    );
+    assert_eq!(
+        params.ext.as_deref(),
+        Some("dll"),
+        "lowercase extension must be extracted"
+    );
+    assert!(!params.match_path);
+    assert!(!params.case_sensitive);
+}
+
+/// Non-glob rest: `D:notepad.exe` → drive=D + pattern=`notepad.exe`.
+/// Only the drive-prefix sugar fires; the ext-glob promotion is gated
+/// on `is_pure_ext_glob` which rejects literal patterns.
+#[test]
+fn from_cli_args_drive_prefix_with_literal_preserves_pattern() {
+    let args: Vec<String> = vec!["D:notepad.exe".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.drives, vec!['D']);
+    assert_eq!(
+        params.pattern, "notepad.exe",
+        "literal pattern must be left alone after prefix strip"
+    );
+    assert!(
+        params.ext.is_none(),
+        "literal pattern must NOT trigger ext-glob promotion"
+    );
+}
+
+/// Path-anchored: `C:\*.dll` keeps the backslash and must NOT trigger
+/// the drive-prefix sugar — the tree walker already scopes to the
+/// drive root and expects the full `C:\<glob>` form intact.
+#[test]
+fn from_cli_args_drive_prefix_with_separator_not_promoted() {
+    let args: Vec<String> = vec!["C:\\*.dll".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert!(
+        params.drives.is_empty(),
+        "path-anchored C:\\*.dll must NOT populate drives filter"
+    );
+    assert_eq!(
+        params.pattern, "C:\\*.dll",
+        "path-anchored pattern must be preserved verbatim for tree walker"
+    );
+    assert!(params.ext.is_none());
+}
+
+/// Case normalisation: `c:*.log` → drive uppercased to `'C'`, ext
+/// lowercased to `"log"`.  Drive letters on NTFS are case-insensitive.
+#[test]
+fn from_cli_args_drive_prefix_lowercase_letter_is_uppercased() {
+    let args: Vec<String> = vec!["c:*.log".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.drives,
+        vec!['C'],
+        "drive letter must be uppercased regardless of input case"
+    );
+    assert_eq!(params.pattern, "*");
+    assert_eq!(params.ext.as_deref(), Some("log"));
+}
+
+/// Explicit `--drive` wins over the inferred prefix.  The prefix is
+/// still stripped (the `C:` is sugar, not part of the intended needle),
+/// but the drive assignment honours the user's explicit flag.
+#[test]
+fn from_cli_args_drive_prefix_respects_explicit_drive_flag() {
+    let args: Vec<String> = vec![
+        "--drive".into(),
+        "D".into(),
+        "C:*.dll".into(),
+    ];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.drives,
+        vec!['D'],
+        "explicit --drive D must win over inferred C prefix"
+    );
+    // Prefix is still stripped; ext-glob promotion still fires on the rest.
+    assert_eq!(params.pattern, "*");
+    assert_eq!(params.ext.as_deref(), Some("dll"));
+}

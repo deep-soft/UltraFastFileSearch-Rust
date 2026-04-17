@@ -549,7 +549,14 @@ mod tests {
         .map(ToString::to_string)
         .collect();
         let params = SearchParams::from_cli_args(&args).expect("should parse");
-        assert_eq!(params.pattern, "*.rs");
+        // `*.rs` is promoted to pattern="*" + ext=Some("rs") so the
+        // daemon can route through the ExtensionIndex fast path in
+        // `numeric_top_n::ext_fast_path` instead of the trigram + glob
+        // path.  See `is_pure_ext_glob` in cli_args.rs for the shape
+        // acceptance matrix and `test_from_cli_args_ext_glob_promoted`
+        // in uffs-client for the full rewrite semantics.
+        assert_eq!(params.pattern, "*");
+        assert_eq!(params.ext.as_deref(), Some("rs"));
         assert_eq!(params.drives, vec!['C']);
         assert_eq!(params.output_tz_offset_hours, Some(-8));
     }

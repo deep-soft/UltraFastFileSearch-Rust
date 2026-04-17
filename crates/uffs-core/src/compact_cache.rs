@@ -490,6 +490,51 @@ fn encrypt_and_write(
     Ok(())
 }
 
+/// Check whether the compact cache at `path` is still fresh enough to
+/// load, based on TTL and (optionally) mtime comparison against the
+/// `MftIndex` `.uffs` file.
+///
+/// Returns `true` when the cache passes both checks and should be read.
+/// Returns `false` when the file is missing, older than `ttl_seconds`,
+/// or older than the `MftIndex` source (cross-process staleness — the
+/// daemon rebuilt the MFT after this compact cache was written).
+/// When `trust_ttl_only` is true the mtime comparison is skipped — the
+/// caller vouches that the TTL alone is sufficient freshness evidence.
+fn is_compact_cache_fresh(
+    path: &std::path::Path,
+    drive_letter: char,
+    ttl_seconds: u64,
+    trust_ttl_only: bool,
+) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(compact_mtime) = meta.modified() else {
+        return false;
+    };
+    let Ok(age) = compact_mtime.elapsed() else {
+        return false;
+    };
+    if age.as_secs() > ttl_seconds {
+        return false;
+    }
+    if trust_ttl_only {
+        return true;
+    }
+    let mft_path = uffs_mft::cache::cache_file_path(drive_letter);
+    if let Ok(mft_meta) = std::fs::metadata(&mft_path)
+        && let Ok(mft_mtime) = mft_meta.modified()
+        && mft_mtime > compact_mtime
+    {
+        tracing::debug!(
+            drive = %drive_letter,
+            "Compact cache older than MftIndex cache — rebuilding"
+        );
+        return false;
+    }
+    true
+}
+
 /// Loads a compact index from its cache file if fresh. Returns `None` if
 /// cache is missing, stale, corrupt, or built from an older `MftIndex`.
 ///
@@ -502,10 +547,6 @@ fn encrypt_and_write(
 /// This is useful for hot-path searches where the caller knows the compact
 /// cache was just built or the `MftIndex` hasn't changed.
 #[must_use]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "cache load has many validation branches (TTL, epoch, freshness, trigram)"
-)]
 pub fn load_compact_cache(
     drive_letter: char,
     ttl_seconds: u64,
@@ -513,30 +554,8 @@ pub fn load_compact_cache(
     trust_ttl_only: bool,
 ) -> Option<DriveCompactIndex> {
     let path = compact_cache_path(drive_letter);
-    let meta = std::fs::metadata(&path).ok()?;
-    let compact_mtime = meta.modified().ok()?;
-    let age = compact_mtime.elapsed().ok()?.as_secs();
-    if age > ttl_seconds {
+    if !is_compact_cache_fresh(&path, drive_letter, ttl_seconds, trust_ttl_only) {
         return None;
-    }
-
-    // Mtime-based staleness: if the MftIndex `.uffs` file is newer than the
-    // compact cache, the compact was built from an older MftIndex.
-    // This catches cross-process updates (daemon updates MftIndex, TUI has
-    // stale compact) with zero I/O — just two stat() calls.
-    // Skipped when `trust_ttl_only` — caller trusts the TTL is sufficient.
-    if !trust_ttl_only {
-        let mft_path = uffs_mft::cache::cache_file_path(drive_letter);
-        if let Ok(mft_meta) = std::fs::metadata(&mft_path)
-            && let Ok(mft_mtime) = mft_meta.modified()
-            && mft_mtime > compact_mtime
-        {
-            tracing::debug!(
-                drive = %drive_letter,
-                "Compact cache older than MftIndex cache — rebuilding"
-            );
-            return None;
-        }
     }
 
     let profile = std::env::var_os("UFFS_CACHE_PROFILE").is_some();
