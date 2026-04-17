@@ -9,6 +9,12 @@
 use std::path::PathBuf;
 
 /// Platform-specific socket/pipe path (must match daemon's `ipc::socket_path`).
+///
+/// On Windows this returns the legacy `AF_UNIX` socket path, which is still
+/// served by the daemon as a fallback during the named-pipe transition.
+/// New code on Windows should prefer the Windows-only `pipe_name`
+/// helper in this module — it avoids the `ws2_32.dll` import
+/// (+54 ms launch cost).
 #[must_use]
 pub fn socket_path() -> PathBuf {
     let base = dirs_next::data_local_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -29,6 +35,22 @@ pub fn socket_path() -> PathBuf {
     }
 }
 
+/// Windows named-pipe path (`\\.\pipe\uffs-<hash>`).
+///
+/// This is the preferred IPC transport on Windows — replaces `AF_UNIX`
+/// to avoid the `ws2_32.dll` launch overhead.  The name is deterministic
+/// per user (FNV-1a of the user SID); see [`uffs_security::pipe`] for
+/// the security model.
+///
+/// # Errors
+///
+/// Returns an error if the user SID cannot be resolved, which should
+/// only happen on a severely broken Windows session.
+#[cfg(windows)]
+pub fn pipe_name() -> std::io::Result<String> {
+    uffs_security::pipe::pipe_name_for_current_user()
+}
+
 /// S4.3.4: Verify daemon identity after connecting.
 pub fn verify_daemon_after_connect() {
     let pid_path = pid_file_path();
@@ -45,6 +67,10 @@ pub fn verify_daemon_after_connect() {
 }
 
 /// Send a keepalive message using blocking std I/O (works on all platforms).
+///
+/// On Unix, opens the `AF_UNIX` socket at `sock_path`.
+/// On Windows, opens the named pipe (no `ws2_32` cost) — `sock_path` is
+/// unused but kept for API stability.
 pub fn keepalive_send_blocking(sock_path: &std::path::Path) {
     #[cfg(unix)]
     {
@@ -59,13 +85,23 @@ pub fn keepalive_send_blocking(sock_path: &std::path::Path) {
     }
     #[cfg(windows)]
     {
+        use std::fs::OpenOptions;
         use std::io::Write;
-        use std::os::windows::net::UnixStream;
-        if let Ok(mut stream) = UnixStream::connect(sock_path) {
+
+        // `sock_path` is unused on Windows — the pipe name is derived
+        // from the current user's SID — but we keep the parameter for
+        // cross-platform API parity.  Discard explicitly to silence the
+        // unused-parameter warning without introducing a suppression.
+        _ = sock_path;
+
+        let Ok(name) = pipe_name() else {
+            return;
+        };
+        if let Ok(mut pipe) = OpenOptions::new().read(true).write(true).open(&name) {
             let msg = r#"{"jsonrpc":"2.0","id":0,"method":"keepalive"}"#;
-            drop(stream.write_all(msg.as_bytes()));
-            drop(stream.write_all(b"\n"));
-            drop(stream.flush());
+            drop(pipe.write_all(msg.as_bytes()));
+            drop(pipe.write_all(b"\n"));
+            drop(pipe.flush());
         }
     }
 }
@@ -188,20 +224,11 @@ fn spawn_daemon_unix(
     clippy::single_call_fn,
     reason = "platform-specific helper — clarity over inlining"
 )]
-#[expect(clippy::print_stderr, reason = "[diag] diagnostic tracing")]
-#[expect(
-    clippy::use_debug,
-    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
-)]
 fn spawn_daemon_windows(
     exe: &std::path::Path,
     args: &[&str],
 ) -> Result<(), crate::error::ClientError> {
     let elevated = is_elevated();
-    eprintln!(
-        "[diag] spawn_daemon_windows: exe={}  args={args:?}  elevated={elevated}",
-        exe.display()
-    );
     tracing::debug!(exe = %exe.display(), ?args, elevated, "spawn_daemon_windows");
 
     if elevated {
@@ -221,11 +248,6 @@ fn spawn_daemon_windows(
 /// Uses `CreateProcessW` directly with `bInheritHandles = FALSE` and
 /// `DETACHED_PROCESS` creation flag.
 #[cfg(windows)]
-#[expect(clippy::print_stderr, reason = "[diag] diagnostic tracing")]
-#[expect(
-    clippy::use_debug,
-    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
-)]
 fn spawn_detached_no_inherit(
     exe: &std::path::Path,
     args: &[&str],
@@ -246,11 +268,8 @@ fn spawn_detached_no_inherit(
 
     let mut cmd_wide: Vec<u16> = cmd_line.encode_utf16().chain(core::iter::once(0)).collect();
 
-    // [diag] Print the exact command line that will be sent to CreateProcessW.
-    eprintln!("[diag] spawn_detached_no_inherit: cmd_line={cmd_line:?}");
-
     let si = STARTUPINFOW {
-        cb: size_of::<STARTUPINFOW>() as u32,
+        cb: u32::try_from(size_of::<STARTUPINFOW>()).unwrap_or(u32::MAX),
         ..Default::default()
     };
     let mut pi = PROCESS_INFORMATION::default();
@@ -270,8 +289,8 @@ fn spawn_detached_no_inherit(
             DETACHED_PROCESS,
             None,
             None,
-            &si,
-            &mut pi,
+            core::ptr::from_ref(&si),
+            core::ptr::from_mut(&mut pi),
         )
     };
 
@@ -282,12 +301,15 @@ fn spawn_detached_no_inherit(
                 pid = pi.dwProcessId,
                 "Daemon spawned (no handle inheritance)"
             );
-            // SAFETY: valid handles returned by CreateProcessW.
-            #[expect(unsafe_code, reason = "closing Win32 handles from CreateProcessW")]
-            unsafe {
-                let _ = CloseHandle(pi.hProcess);
-                let _ = CloseHandle(pi.hThread);
-            }
+            // SAFETY: both handles were just returned by CreateProcessW
+            // above and are not aliased elsewhere.
+            #[expect(unsafe_code, reason = "closing Win32 process handle")]
+            let process_close = unsafe { CloseHandle(pi.hProcess) };
+            drop(process_close);
+            // SAFETY: ditto — thread handle is owned by us.
+            #[expect(unsafe_code, reason = "closing Win32 thread handle")]
+            let thread_close = unsafe { CloseHandle(pi.hThread) };
+            drop(thread_close);
             Ok(())
         }
         Err(win_err) => {
@@ -305,34 +327,47 @@ fn spawn_detached_no_inherit(
 /// Check if the current process is running with Administrator privileges.
 #[cfg(windows)]
 fn is_elevated() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Security::{
         GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
     };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    // SAFETY: Win32 token query APIs are well-defined and we close the handle.
-    #[expect(
-        unsafe_code,
-        reason = "Win32 token elevation check requires unsafe FFI"
-    )]
-    unsafe {
-        use windows::Win32::Foundation::CloseHandle;
-        let mut token = windows::Win32::Foundation::HANDLE::default();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
-            return false;
-        }
-        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
-        let mut size = 0_u32;
-        let result = GetTokenInformation(
+    let mut token = HANDLE::default();
+
+    // SAFETY: `GetCurrentProcess` returns a pseudo-handle that does not
+    // need closing.
+    #[expect(unsafe_code, reason = "Win32 pseudo-handle accessor")]
+    let current_proc = unsafe { GetCurrentProcess() };
+    // SAFETY: `OpenProcessToken` writes a valid token handle into `token`
+    // on success; `current_proc` is valid.
+    #[expect(unsafe_code, reason = "Win32 token FFI")]
+    let open_result =
+        unsafe { OpenProcessToken(current_proc, TOKEN_QUERY, core::ptr::from_mut(&mut token)) };
+    if open_result.is_err() {
+        return false;
+    }
+
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut size = 0_u32;
+    // SAFETY: `token` is a valid token handle; the out-pointer points to
+    // a stack-owned `TOKEN_ELEVATION` that lives for the whole call.
+    #[expect(unsafe_code, reason = "Win32 token information query")]
+    let query_result = unsafe {
+        GetTokenInformation(
             token,
             TokenElevation,
             Some(core::ptr::from_mut(&mut elevation).cast()),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut size,
-        );
-        let _ = CloseHandle(token);
-        result.is_ok() && elevation.TokenIsElevated != 0
-    }
+            u32::try_from(size_of::<TOKEN_ELEVATION>()).unwrap_or(u32::MAX),
+            core::ptr::from_mut(&mut size),
+        )
+    };
+    // SAFETY: `token` is owned by this function; no other code references it.
+    #[expect(unsafe_code, reason = "CloseHandle for owned Win32 handle")]
+    let close_result = unsafe { CloseHandle(token) };
+    drop(close_result);
+
+    query_result.is_ok() && elevation.TokenIsElevated != 0
 }
 
 /// Launch a process elevated via `ShellExecuteW` with the `"runas"` verb.
@@ -341,11 +376,6 @@ fn is_elevated() -> bool {
 /// the process starts elevated; if they click "No" or dismiss the dialog,
 /// an error is returned.
 #[cfg(windows)]
-#[expect(clippy::print_stderr, reason = "[diag] diagnostic tracing")]
-#[expect(
-    clippy::use_debug,
-    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
-)]
 fn shell_execute_elevated(
     exe: &std::path::Path,
     args: &[&str],
@@ -358,9 +388,6 @@ fn shell_execute_elevated(
     let file: Vec<u16> = format!("{exe_str}\0").encode_utf16().collect();
     let params_str = args.join(" ");
     let params: Vec<u16> = format!("{params_str}\0").encode_utf16().collect();
-
-    // [diag] Print the UAC-elevated spawn attempt.
-    eprintln!("[diag] shell_execute_elevated: exe={exe_str:?}  params={params_str:?}");
 
     tracing::debug!(
         verb = "runas",

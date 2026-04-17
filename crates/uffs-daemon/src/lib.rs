@@ -197,25 +197,7 @@ fn validate_data_sources(
     clippy::cognitive_complexity,
     reason = "daemon startup with socket, config, and index orchestration"
 )]
-#[expect(
-    clippy::print_stderr,
-    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
-)]
-#[expect(
-    clippy::use_debug,
-    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
-)]
 pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
-    // [diag] eprintln fires before any tracing subscriber is active, so it
-    // always appears when uffsd is run directly in the terminal.
-    eprintln!(
-        "[diag] run_daemon: pid={}  drives={:?}  mft_files={:?}  data_dir={:?}",
-        std::process::id(),
-        config.drives,
-        config.mft_files,
-        config.data_dir
-    );
-
     // ── Catastrophe safety net ──────────────────────────────────────
     // Ensure the daemon process is ALWAYS terminable.  If any thread
     // panics (e.g. inside a blocking MFT read), the default panic hook
@@ -354,11 +336,6 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     let drives: Vec<char> = Vec::new();
 
     tracing::info!(mft_files = mft_files.len(), drives = ?drives, "Final data sources");
-    // [diag] Also print to stderr so it's visible in direct-terminal runs.
-    eprintln!(
-        "[diag] run_daemon: final drives={drives:?}  mft_files_count={}",
-        mft_files.len()
-    );
 
     // Refuse to start with zero data sources — an empty daemon is useless.
     validate_data_sources(&mft_files, &drives, &lifecycle_mgr)?;
@@ -421,6 +398,23 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
         }
     });
     tracing::info!("IPC server task spawned");
+
+    // On Windows, also listen on a named pipe.  This is the PREFERRED
+    // transport (no ws2_32 dependency, ~54 ms faster per CLI launch).
+    // The AF_UNIX listener above remains active as a fallback for older
+    // clients during the transition — it will be removed in a follow-up
+    // once all clients speak pipe.
+    #[cfg(windows)]
+    let _pipe_task = {
+        let pipe_index = Arc::clone(&idx);
+        let pipe_lifecycle = lifecycle_mgr.handle();
+        tracing::info!("Starting named-pipe IPC server...");
+        tokio::spawn(async move {
+            if let Err(pipe_err) = ipc::run_pipe_server(pipe_index, pipe_lifecycle).await {
+                tracing::error!(error = %pipe_err, "Named-pipe IPC server error");
+            }
+        })
+    };
 
     // Spawn periodic stats heartbeat — pushes stats to all connected
     // clients every 30 seconds.

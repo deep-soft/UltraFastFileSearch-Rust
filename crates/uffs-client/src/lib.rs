@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-// Enable unstable Windows Unix domain socket support (available since
-// Windows 10 1803+).  This is a nightly-only feature gate.
-#![cfg_attr(windows, feature(windows_unix_domain_sockets))]
-
 //! Thin client library for the UFFS daemon.
 //!
 //! All surfaces (CLI, TUI, GUI, MCP) use this crate to communicate with

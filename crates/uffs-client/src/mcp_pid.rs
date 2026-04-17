@@ -184,8 +184,6 @@ fn is_process_alive(pid: u32) -> bool {
         std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH"])
             .output()
-            .map_or(false, |o| {
-                String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())
-            })
+            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
     }
 }

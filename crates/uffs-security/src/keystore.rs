@@ -217,57 +217,47 @@ fn dpapi_protect(data: &[u8]) -> io::Result<Vec<u8>> {
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
     };
 
-    let mut input_blob = CRYPT_INTEGER_BLOB {
+    // DPAPI reads `pbData` and does not mutate it, but the Win32 struct
+    // type is `*mut u8`.  `cast_mut()` documents that we are handing the
+    // C API a const-origin pointer wearing a `*mut` hat — sound because
+    // the call is documented read-only for input blobs.
+    let input_blob = CRYPT_INTEGER_BLOB {
         cbData: u32::try_from(data.len()).unwrap_or(u32::MAX),
-        pbData: data.as_ptr() as *mut u8,
+        pbData: data.as_ptr().cast_mut(),
     };
-    let mut entropy_blob = CRYPT_INTEGER_BLOB {
+    let entropy_blob = CRYPT_INTEGER_BLOB {
         cbData: u32::try_from(DPAPI_ENTROPY.len()).unwrap_or(u32::MAX),
-        pbData: DPAPI_ENTROPY.as_ptr() as *mut u8,
+        pbData: DPAPI_ENTROPY.as_ptr().cast_mut(),
     };
     let mut output_blob = CRYPT_INTEGER_BLOB {
         cbData: 0,
-        pbData: std::ptr::null_mut(),
+        pbData: core::ptr::null_mut(),
     };
 
-    // SAFETY: CryptProtectData is a well-defined Win32 API.
+    // SAFETY: CryptProtectData is a well-defined Win32 API; all three
+    // blob references outlive this call and the output blob is
+    // exclusively borrowed.
     #[expect(unsafe_code, reason = "DPAPI requires unsafe FFI")]
     let ok = unsafe {
         CryptProtectData(
-            &mut input_blob,
-            None,                      // description (optional)
-            Some(&mut entropy_blob),   // entropy
+            core::ptr::from_ref(&input_blob),
+            None, // description (optional)
+            Some(core::ptr::from_ref(&entropy_blob)),
             None,                      // reserved
             None,                      // prompt struct
             CRYPTPROTECT_UI_FORBIDDEN, // no UI
-            &mut output_blob,
+            core::ptr::from_mut(&mut output_blob),
         )
     };
 
     if let Err(win_err) = ok {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("CryptProtectData failed: {win_err}"),
-        ));
+        return Err(io::Error::other(format!(
+            "CryptProtectData failed: {win_err}"
+        )));
     }
 
     // Copy output blob to Vec and free the Windows-allocated memory.
-    // SAFETY: output_blob.pbData was populated by CryptProtectData and must
-    // be freed with LocalFree. We copy the data first, then free.
-    #[expect(
-        unsafe_code,
-        reason = "reading Win32-allocated output and calling LocalFree"
-    )]
-    let result = unsafe {
-        let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize); // u32→usize lossless on 64-bit
-        let vec = slice.to_vec();
-        windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(
-            output_blob.pbData as _,
-        )));
-        vec
-    };
-
-    Ok(result)
+    Ok(read_and_free_crypt_blob(&output_blob))
 }
 
 /// Call `CryptUnprotectData` to decrypt a DPAPI blob.
@@ -277,56 +267,75 @@ fn dpapi_unprotect(blob: &[u8]) -> io::Result<Vec<u8>> {
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
     };
 
-    let mut input_blob = CRYPT_INTEGER_BLOB {
+    // See `dpapi_protect` for the rationale on `cast_mut()` over input
+    // blobs: the DPAPI contract treats them as read-only.
+    let input_blob = CRYPT_INTEGER_BLOB {
         cbData: u32::try_from(blob.len()).unwrap_or(u32::MAX),
-        pbData: blob.as_ptr() as *mut u8,
+        pbData: blob.as_ptr().cast_mut(),
     };
-    let mut entropy_blob = CRYPT_INTEGER_BLOB {
+    let entropy_blob = CRYPT_INTEGER_BLOB {
         cbData: u32::try_from(DPAPI_ENTROPY.len()).unwrap_or(u32::MAX),
-        pbData: DPAPI_ENTROPY.as_ptr() as *mut u8,
+        pbData: DPAPI_ENTROPY.as_ptr().cast_mut(),
     };
     let mut output_blob = CRYPT_INTEGER_BLOB {
         cbData: 0,
-        pbData: std::ptr::null_mut(),
+        pbData: core::ptr::null_mut(),
     };
 
-    // SAFETY: CryptUnprotectData is a well-defined Win32 API.
+    // SAFETY: CryptUnprotectData is a well-defined Win32 API; all three
+    // blob references outlive this call and the output blob is
+    // exclusively borrowed.
     #[expect(unsafe_code, reason = "DPAPI requires unsafe FFI")]
     let ok = unsafe {
         CryptUnprotectData(
-            &mut input_blob,
-            None,                      // description out
-            Some(&mut entropy_blob),   // entropy
+            core::ptr::from_ref(&input_blob),
+            None, // description out
+            Some(core::ptr::from_ref(&entropy_blob)),
             None,                      // reserved
             None,                      // prompt struct
             CRYPTPROTECT_UI_FORBIDDEN, // no UI
-            &mut output_blob,
+            core::ptr::from_mut(&mut output_blob),
         )
     };
 
     if let Err(win_err) = ok {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("CryptUnprotectData failed: {win_err}"),
-        ));
+        return Err(io::Error::other(format!(
+            "CryptUnprotectData failed: {win_err}"
+        )));
     }
 
-    // SAFETY: output_blob.pbData was populated by CryptUnprotectData and must
-    // be freed with LocalFree. We copy the data first, then free.
-    #[expect(
-        unsafe_code,
-        reason = "reading Win32-allocated output and calling LocalFree"
-    )]
-    let result = unsafe {
-        let slice = std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize); // u32→usize lossless on 64-bit
-        let vec = slice.to_vec();
-        windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(
-            output_blob.pbData as _,
-        )));
-        vec
+    Ok(read_and_free_crypt_blob(&output_blob))
+}
+
+/// Copy a `CRYPT_INTEGER_BLOB` returned by DPAPI into an owned `Vec<u8>`
+/// and free the Win32-allocated memory behind it.
+///
+/// Shared between `dpapi_protect` and `dpapi_unprotect`; both have to
+/// read `pbData .. pbData + cbData` and then `LocalFree` the allocation.
+#[cfg(target_os = "windows")]
+fn read_and_free_crypt_blob(
+    blob: &windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB,
+) -> Vec<u8> {
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+
+    // SAFETY: DPAPI populated `pbData` with a buffer of `cbData` bytes
+    // allocated via `LocalAlloc`; we read it as an immutable slice which
+    // cannot outlive this function.
+    #[expect(unsafe_code, reason = "reading Win32-allocated output buffer")]
+    let slice = unsafe { core::slice::from_raw_parts(blob.pbData, blob.cbData as usize) };
+    let vec = slice.to_vec();
+
+    // SAFETY: `blob.pbData` is the same `LocalAlloc`-backed pointer
+    // DPAPI handed us; `LocalFree` is the documented deallocator.  After
+    // this call `blob.pbData` must not be used again — the caller drops
+    // the blob immediately.  `LocalFree` returns `HLOCAL` (Copy) so the
+    // result is discarded via tail-expression.
+    #[expect(unsafe_code, reason = "LocalFree for DPAPI-allocated output")]
+    unsafe {
+        LocalFree(Some(HLOCAL(blob.pbData.cast::<core::ffi::c_void>())))
     };
 
-    Ok(result)
+    vec
 }
 
 // ────────────────────────────────────────────────────────────────────────────

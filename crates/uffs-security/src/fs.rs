@@ -46,8 +46,8 @@ pub fn create_secure_dir(path: &Path) -> io::Result<()> {
     return {
         // Try icacls first — works without elevation, sets proper DACL
         if !win_set_owner_only_acl(path) {
-            // Fallback: at least mark hidden
-            win_set_hidden(path)?;
+            // Fallback: at least mark hidden (best-effort, infallible).
+            win_set_hidden(path);
         }
         Ok(())
     };
@@ -71,47 +71,97 @@ pub fn set_file_permissions_owner_only(path: &Path) -> io::Result<()> {
 
     #[cfg(windows)]
     return {
-        // Ensure writable
-        let meta = std::fs::metadata(path)?;
-        let mut perms = meta.permissions();
-        if perms.readonly() {
-            perms.set_readonly(false);
-            std::fs::set_permissions(path, perms)?;
-        }
+        // Ensure writable — remove FILE_ATTRIBUTE_READONLY if set.
+        // We cannot use `std::fs::Permissions::set_readonly(false)` because
+        // its cross-platform semantics are not what we want (and clippy
+        // rightly flags it).  Go through Win32 directly.
+        win_clear_readonly(path)?;
         // Try proper DACL, fall back to hidden
         if !win_set_owner_only_acl(path) {
-            win_set_hidden(path)?;
+            win_set_hidden(path);
         }
         Ok(())
     };
 }
 
 /// Windows: set the `FILE_ATTRIBUTE_HIDDEN` flag on a path.
+///
+/// Best-effort: silently does nothing if the Win32 calls fail.  Callers
+/// treat this as a defense-in-depth layer on top of ACLs, not a hard
+/// guarantee.
 #[cfg(windows)]
-fn win_set_hidden(path: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
+fn win_set_hidden(path: &Path) {
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+    let wide = path_to_wide(path);
+    let Some(current) = win_get_file_attributes(&wide) else {
+        return;
+    };
+    win_set_file_attributes(&wide, current | FILE_ATTRIBUTE_HIDDEN.0);
+}
 
-    // SAFETY: GetFileAttributesW / SetFileAttributesW are well-defined Win32 APIs.
-    #[expect(unsafe_code, reason = "Win32 file attribute APIs require unsafe FFI")]
-    unsafe {
-        use windows::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_HIDDEN, FILE_FLAGS_AND_ATTRIBUTES, GetFileAttributesW,
-            SetFileAttributesW,
-        };
-        use windows::core::PCWSTR;
+/// Windows: clear the `FILE_ATTRIBUTE_READONLY` flag on a path.
+///
+/// Returns `Ok(())` unchanged if the path already has no read-only flag,
+/// or if the path does not exist (that failure surfaces downstream).
+#[cfg(windows)]
+fn win_clear_readonly(path: &Path) -> io::Result<()> {
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY;
 
-        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        let pcwstr = PCWSTR(wide.as_ptr());
-
-        let current = GetFileAttributesW(pcwstr);
-        if current != u32::MAX {
-            let _ok = SetFileAttributesW(
-                pcwstr,
-                FILE_FLAGS_AND_ATTRIBUTES(current | FILE_ATTRIBUTE_HIDDEN.0),
-            );
-        }
+    let wide = path_to_wide(path);
+    let Some(current) = win_get_file_attributes(&wide) else {
+        // GetFileAttributesW failed — surface as the last OS error so the
+        // caller sees why.
+        return Err(io::Error::last_os_error());
+    };
+    if current & FILE_ATTRIBUTE_READONLY.0 == 0 {
+        return Ok(()); // already writable
     }
-    Ok(())
+    if win_set_file_attributes(&wide, current & !FILE_ATTRIBUTE_READONLY.0) {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Encode `path` as a null-terminated UTF-16 buffer for Win32 APIs.
+///
+/// Infallible: `encode_wide` yields valid UTF-16 code units for any
+/// `OsStr`, and we only append a single null terminator.
+#[cfg(windows)]
+fn path_to_wide(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str().encode_wide().chain(Some(0_u16)).collect()
+}
+
+/// `GetFileAttributesW` wrapper — returns `None` on `INVALID_FILE_ATTRIBUTES`.
+#[cfg(windows)]
+fn win_get_file_attributes(wide: &[u16]) -> Option<u32> {
+    use windows::Win32::Storage::FileSystem::GetFileAttributesW;
+    use windows::core::PCWSTR;
+
+    // SAFETY: `wide` is a null-terminated UTF-16 buffer owned by the
+    // caller; `PCWSTR` borrows it for the duration of the Win32 call.
+    #[expect(unsafe_code, reason = "Win32 FFI — attribute query")]
+    let current = unsafe { GetFileAttributesW(PCWSTR(wide.as_ptr())) };
+    if current == u32::MAX {
+        None
+    } else {
+        Some(current)
+    }
+}
+
+/// `SetFileAttributesW` wrapper — returns `true` on success.
+#[cfg(windows)]
+fn win_set_file_attributes(wide: &[u16], attrs: u32) -> bool {
+    use windows::Win32::Storage::FileSystem::{FILE_FLAGS_AND_ATTRIBUTES, SetFileAttributesW};
+    use windows::core::PCWSTR;
+
+    // SAFETY: `wide` is a null-terminated UTF-16 buffer owned by the
+    // caller; `PCWSTR` borrows it for the duration of the Win32 call.
+    #[expect(unsafe_code, reason = "Win32 FFI — attribute set")]
+    let result =
+        unsafe { SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(attrs)) };
+    result.is_ok()
 }
 
 /// Windows: set owner-only ACL via `icacls` command.
@@ -140,7 +190,7 @@ fn win_set_owner_only_acl(path: &Path) -> bool {
         .stderr(std::process::Stdio::null())
         .status();
 
-    grant_result.map_or(false, |s| s.success())
+    grant_result.is_ok_and(|status| status.success())
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -204,16 +254,13 @@ pub fn secure_remove(path: &Path) -> io::Result<()> {
     };
 
     let file_len = meta.len();
+    // `meta` goes out of scope at end-of-function; no explicit drop needed.
 
-    // On Windows, ensure the file isn't read-only before we try to write
+    // On Windows, ensure the file isn't read-only before we try to write.
+    // See `win_clear_readonly` docs for why we don't use
+    // `std::fs::Permissions::set_readonly(false)` here.
     #[cfg(windows)]
-    {
-        let mut perms = meta.permissions();
-        if perms.readonly() {
-            perms.set_readonly(false);
-            std::fs::set_permissions(path, perms)?;
-        }
-    }
+    win_clear_readonly(path)?;
 
     let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
 
@@ -331,6 +378,12 @@ impl FileLock {
     }
 
     /// Acquire a file lock on Windows using `LockFileEx`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `io::ErrorKind::TimedOut` if the lock cannot be acquired
+    /// within `timeout`, or any other `io::Error` raised by opening the
+    /// lock file or the `LockFileEx` call itself.
     #[cfg(windows)]
     pub fn acquire(
         lock_path: &Path,
@@ -353,22 +406,39 @@ impl FileLock {
         let sleep_step = core::time::Duration::from_millis(50);
 
         loop {
-            // SAFETY: LockFileEx is a well-defined Win32 API operating on a valid handle.
+            use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::Storage::FileSystem::{
+                LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+            };
+
+            // SAFETY: `OVERLAPPED` is a POD struct of integers and pointers;
+            // zero-initialisation matches Win32's "not used for overlapped
+            // I/O" convention for `LockFileEx`.
+            #[expect(unsafe_code, reason = "zero-init POD struct for Win32")]
+            let mut overlapped: windows::Win32::System::IO::OVERLAPPED =
+                unsafe { core::mem::zeroed() };
+            let mut flags = LOCKFILE_FAIL_IMMEDIATELY;
+            if kind == LockKind::Exclusive {
+                flags |= LOCKFILE_EXCLUSIVE_LOCK;
+            }
+
+            // `as_raw_handle()` returns `*mut c_void`; wrap into the
+            // windows-rs `HANDLE` newtype with an explicit `.cast()`.
+            let handle = HANDLE(file.as_raw_handle().cast::<core::ffi::c_void>());
+
+            // SAFETY: `handle` is a valid open-for-write file handle
+            // (guaranteed by `file`'s lifetime); `overlapped` lives for
+            // the whole call.
             #[expect(unsafe_code, reason = "LockFileEx requires unsafe FFI call")]
             let lock_result = unsafe {
-                use windows::Win32::Foundation::HANDLE;
-                use windows::Win32::Storage::FileSystem::{
-                    LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
-                };
-
-                let mut overlapped: windows::Win32::System::IO::OVERLAPPED = std::mem::zeroed();
-                let mut flags = LOCKFILE_FAIL_IMMEDIATELY;
-                if kind == LockKind::Exclusive {
-                    flags |= LOCKFILE_EXCLUSIVE_LOCK;
-                }
-
-                let handle = HANDLE(file.as_raw_handle() as _);
-                LockFileEx(handle, flags, Some(0), u32::MAX, u32::MAX, &mut overlapped)
+                LockFileEx(
+                    handle,
+                    flags,
+                    Some(0),
+                    u32::MAX,
+                    u32::MAX,
+                    core::ptr::from_mut(&mut overlapped),
+                )
             };
 
             if lock_result.is_ok() {

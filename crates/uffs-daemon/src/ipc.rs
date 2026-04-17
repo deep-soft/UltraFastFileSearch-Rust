@@ -435,6 +435,147 @@ pub(crate) async fn run_ipc_server(
     }
 }
 
+/// Run the IPC server on a Windows named pipe.
+///
+/// This is the **preferred** transport on Windows — replaces the earlier
+/// AF_UNIX path, which pulled in `ws2_32.dll` (13 imports, +54 ms launch
+/// overhead per client invocation).
+///
+/// The daemon is typically elevated (MFT read requires admin).  The pipe
+/// DACL grants `GENERIC_ALL` to the *unelevated* user SID (resolved via
+/// `TokenLinkedToken` — see `uffs_security::pipe`) so that the client CLI
+/// running as the regular user can connect, while other local admins
+/// cannot.
+///
+/// `FIRST_PIPE_INSTANCE` on the initial server instance protects against
+/// name-squatting attacks from other processes on the same machine.
+///
+/// Returns when the accept loop errors terminally.  The AF_UNIX listener
+/// (below) continues running as a fallback during the transition.
+#[cfg(windows)]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "pipe accept loop + per-connection handoff — mirrors the Unix version"
+)]
+pub(crate) async fn run_pipe_server(
+    index: Arc<IndexManager>,
+    lifecycle: LifecycleHandle,
+) -> anyhow::Result<()> {
+    let pipe_name = uffs_security::pipe::pipe_name_for_current_user()
+        .map_err(|sid_err| anyhow::anyhow!("pipe name resolution failed: {sid_err}"))?;
+
+    // DACL: allow the linked-token user only.  Kept alive for the entire
+    // lifetime of the listener — every server instance borrows from it.
+    let sd = uffs_security::pipe::OwnerOnlySd::for_current_user()
+        .map_err(|sd_err| anyhow::anyhow!("owner-only DACL build failed: {sd_err}"))?;
+
+    tracing::info!(pipe = %pipe_name, "IPC server listening (named pipe)");
+
+    let events = index.event_sender().clone();
+    let handler = Arc::new(RequestHandler {
+        index,
+        lifecycle: lifecycle.clone(),
+    });
+
+    // Create the FIRST server instance with FIRST_PIPE_INSTANCE to
+    // prevent name squatting.
+    let mut server = create_pipe_server(&pipe_name, &sd, /* first= */ true)?;
+
+    loop {
+        // Wait for a client to connect to THIS instance.
+        if let Err(connect_err) = server.connect().await {
+            tracing::warn!(error = %connect_err, "named-pipe connect failed, retrying");
+            // Rebuild the server instance and continue.
+            server = create_pipe_server(&pipe_name, &sd, /* first= */ false)?;
+            continue;
+        }
+
+        // Hand off the connected instance, and spin up the NEXT listener
+        // BEFORE awaiting any further (named-pipe idiom: the next server
+        // instance must exist before the previous one is fully consumed,
+        // otherwise there is a window where new clients race and fail).
+        let connected = server;
+        server = create_pipe_server(&pipe_name, &sd, /* first= */ false)?;
+
+        let active = lifecycle.active_connections();
+        if active >= MAX_CONNECTIONS {
+            tracing::warn!(
+                active,
+                max = MAX_CONNECTIONS,
+                "[daemon-pipe] Max connections reached — dropping"
+            );
+            drop(connected);
+            continue;
+        }
+
+        lifecycle.connection_opened();
+        let handler_clone = Arc::clone(&handler);
+        let lc_clone = lifecycle.clone();
+        let event_rx = events.subscribe();
+
+        // Split the duplex pipe into owned read/write halves.
+        let (read_half, write_half) = tokio::io::split(connected);
+
+        tokio::spawn(async move {
+            let total_conns = lc_clone.active_connections();
+            tracing::debug!(
+                connections = total_conns,
+                transport = "pipe",
+                "Client connected"
+            );
+
+            if let Err(conn_err) =
+                IpcServer::handle_connection(read_half, write_half, handler_clone, event_rx).await
+            {
+                tracing::debug!(error = %conn_err, transport = "pipe", "Connection ended");
+            }
+
+            lc_clone.connection_closed();
+            let remaining = lc_clone.active_connections();
+            tracing::debug!(
+                connections = remaining,
+                transport = "pipe",
+                "Client disconnected"
+            );
+        });
+    }
+}
+
+/// Build a single named-pipe server instance bound to `pipe_name` with
+/// the owner-only `sd`.  Set `first = true` ONLY for the initial
+/// instance (enables `FIRST_PIPE_INSTANCE` squat protection).
+#[cfg(windows)]
+fn create_pipe_server(
+    pipe_name: &str,
+    sd: &uffs_security::pipe::OwnerOnlySd,
+    first: bool,
+) -> anyhow::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
+
+    let mut sa = sd.as_security_attributes();
+
+    let mut opts = ServerOptions::new();
+    opts.access_inbound(true)
+        .access_outbound(true)
+        .pipe_mode(PipeMode::Byte)
+        .in_buffer_size(65_536)
+        .out_buffer_size(65_536)
+        .reject_remote_clients(true);
+    if first {
+        opts.first_pipe_instance(true);
+    }
+
+    // SAFETY: `name_wide` is a valid null-terminated UTF-16 buffer;
+    // `sa` is a valid SECURITY_ATTRIBUTES borrowing a SECURITY_DESCRIPTOR
+    // owned by `sd` (outlives this call).
+    #[expect(unsafe_code, reason = "Win32 FFI — create named-pipe server")]
+    let server = unsafe {
+        opts.create_with_security_attributes_raw(pipe_name, core::ptr::from_mut(&mut sa).cast())
+    }?;
+
+    Ok(server)
+}
+
 /// Windows IPC server — uses Unix domain sockets (Windows 10 1803+).
 ///
 /// Mirrors the Unix version: secure dir (icacls owner-only ACL), socket
