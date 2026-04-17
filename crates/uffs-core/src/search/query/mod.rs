@@ -57,12 +57,6 @@ impl PartialOrd for HeapEntry {
 /// `sort_column`. The exhaustive match contributes most of the line count; no
 /// logic to extract.
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "two match arms: Path sort (depth-first tree walk, 60 lines) and \
-              exhaustive FieldId listing (~35 variants) delegating to numeric sort — \
-              the enum listing is the primary line contributor"
-)]
 pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
     drives: &[D],
     limit: usize,
@@ -80,73 +74,13 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
         "[2] collect_global_top_n entry"
     );
     match sort_column {
-        FieldId::Path | FieldId::PathOnly => {
-            // Hierarchical depth-first tree walk for Path sort
-            let mut path_results = Vec::with_capacity(limit);
-            let mut drive_order: Vec<usize> = (0..drives.len()).collect();
-            #[expect(clippy::indexing_slicing, reason = "indices from 0..len, always valid")]
-            drive_order.sort_unstable_by(|&idx_a, &idx_b| {
-                let ord = drives[idx_a]
-                    .as_ref()
-                    .letter
-                    .cmp(&drives[idx_b].as_ref().letter);
-                if sort_desc { ord.reverse() } else { ord }
-            });
-
-            for &drive_idx in &drive_order {
-                let Some(drive_ref) = drives.get(drive_idx) else {
-                    continue;
-                };
-                let drive = drive_ref.as_ref();
-                let mut vp_buf = [0_u8; 4];
-                let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
-
-                let mut roots: Vec<u32> = drive
-                    .records
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, rec)| rec.parent_idx == u32::MAX && rec.name_len > 0)
-                    .map(|(idx, _)| uffs_mft::len_to_u32(idx))
-                    .collect();
-
-                sort_indices_by_name(&mut roots, drive, sort_desc);
-
-                let mut dir_cache = tree::DirCache::with_capacity(256);
-                let mut stack: Vec<u32> = roots.into_iter().rev().collect();
-                while let Some(idx) = stack.pop() {
-                    if path_results.len() >= limit {
-                        return path_results;
-                    }
-
-                    let Some(rec) = drive.records.get(idx as usize) else {
-                        continue;
-                    };
-                    let name = rec.name(&drive.names);
-                    if name.is_empty() {
-                        continue;
-                    }
-
-                    let path = tree::resolve_path_cached(
-                        drive,
-                        idx as usize,
-                        volume_prefix,
-                        &mut dir_cache,
-                    );
-                    path_results.push(make_display_row(idx, drive.letter, rec, name, path));
-
-                    let child_slice = drive.children.get(idx as usize);
-                    if !child_slice.is_empty() {
-                        let mut sorted_children = child_slice.to_vec();
-                        sort_indices_by_name(&mut sorted_children, drive, sort_desc);
-                        for &child in sorted_children.iter().rev() {
-                            stack.push(child);
-                        }
-                    }
-                }
-            }
-
-            path_results
-        }
+        FieldId::Path | FieldId::PathOnly => collect_path_sorted_top_n(
+            drives,
+            limit,
+            sort_desc,
+            filter_mode,
+            search_filters,
+        ),
         // All other fields (Size, Name, Extension, Created, Modified, etc.)
         // use the generic numeric sort/collect path.
         FieldId::Size
@@ -193,6 +127,127 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
             filter_mode,
             search_filters,
         ),
+    }
+}
+
+/// Depth-first path-sorted top-N walk.
+///
+/// Walks each drive's directory tree in pre-order DFS (sorted by name
+/// per level) and collects up to `limit` rows that satisfy
+/// `filter_mode` and `search_filters`.  Non-matching records are
+/// skipped but their children are still explored — a filtered-out
+/// directory may contain matching descendants (e.g. `FilesOnly` must
+/// walk through directories to reach files inside them, and an
+/// `extensions=["exe"]` filter must walk through `.txt` directories
+/// to reach `.exe` grandchildren).
+///
+/// Extracted from `collect_global_top_n` to isolate the filter
+/// application so the `PathOnly` branch stays readable and under the
+/// `cognitive_complexity` lint threshold.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "drive_order indices are from 0..drives.len(); always valid"
+)]
+fn collect_path_sorted_top_n<D: AsRef<DriveCompactIndex>>(
+    drives: &[D],
+    limit: usize,
+    sort_desc: bool,
+    filter_mode: FilterMode,
+    search_filters: &SearchFilters,
+) -> Vec<DisplayRow> {
+    let mut path_results: Vec<DisplayRow> = Vec::new();
+    let mut drive_order: Vec<usize> = (0..drives.len()).collect();
+    drive_order.sort_unstable_by(|&idx_a, &idx_b| {
+        let ord = drives[idx_a]
+            .as_ref()
+            .letter
+            .cmp(&drives[idx_b].as_ref().letter);
+        if sort_desc { ord.reverse() } else { ord }
+    });
+
+    // Per-walk fold state, reused across every row for zero-alloc
+    // filter checks.  `fold` is always the default $UpCase table — per-
+    // drive $UpCase tables aren't available in the compact snapshot.
+    let fold = uffs_text::case_fold::CaseFold::default_table();
+    let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
+
+    for &drive_idx in &drive_order {
+        if path_results.len() >= limit {
+            break;
+        }
+        let Some(drive_ref) = drives.get(drive_idx) else {
+            continue;
+        };
+        let drive = drive_ref.as_ref();
+        let mut vp_buf = [0_u8; 4];
+        let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
+
+        let mut roots: Vec<u32> = drive
+            .records
+            .iter()
+            .enumerate()
+            .filter(|(_, rec)| rec.parent_idx == u32::MAX && rec.name_len > 0)
+            .map(|(idx, _)| uffs_mft::len_to_u32(idx))
+            .collect();
+        sort_indices_by_name(&mut roots, drive, sort_desc);
+
+        let mut dir_cache = tree::DirCache::with_capacity(256);
+        let mut stack: Vec<u32> = roots.into_iter().rev().collect();
+        while let Some(idx) = stack.pop() {
+            if path_results.len() >= limit {
+                return path_results;
+            }
+            let Some(rec) = drive.records.get(idx as usize) else {
+                continue;
+            };
+            let name = rec.name(&drive.names);
+            if name.is_empty() {
+                continue;
+            }
+
+            // Enqueue children BEFORE the filter check — a directory
+            // that fails the filter (e.g. `FilesOnly` drops dirs) may
+            // still contain matching descendants that must be visited.
+            let child_slice = drive.children.get(idx as usize);
+            if !child_slice.is_empty() {
+                let mut sorted_children = child_slice.to_vec();
+                sort_indices_by_name(&mut sorted_children, drive, sort_desc);
+                for &child in sorted_children.iter().rev() {
+                    stack.push(child);
+                }
+            }
+
+            // `filter_mode` is cheap — check before resolving path.
+            let is_dir = rec.is_directory();
+            if !passes_filter_mode(is_dir, filter_mode) {
+                continue;
+            }
+
+            // Remaining filters need the full `DisplayRow` (resolved
+            // path + semantic type).  Build it, then check.
+            let path = tree::resolve_path_cached(
+                drive,
+                idx as usize,
+                volume_prefix,
+                &mut dir_cache,
+            );
+            let row = make_display_row(idx, drive.letter, rec, name, path);
+            if !super::filters::row_passes_filters(&row, search_filters, &fold, &mut fold_buf) {
+                continue;
+            }
+            path_results.push(row);
+        }
+    }
+
+    path_results
+}
+
+/// Returns `true` if a record with `is_directory` passes `filter_mode`.
+const fn passes_filter_mode(is_directory: bool, mode: FilterMode) -> bool {
+    match mode {
+        FilterMode::All => true,
+        FilterMode::FilesOnly => !is_directory,
+        FilterMode::DirsOnly => is_directory,
     }
 }
 

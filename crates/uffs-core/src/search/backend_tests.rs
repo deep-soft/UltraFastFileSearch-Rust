@@ -915,6 +915,97 @@ fn search_index_drive_prefix_explicit_filter_not_clobbered() {
     );
 }
 
+/// Regression: `pattern="*"` with non-empty `extensions` and
+/// `sort=PathOnly` must return ONLY rows matching the extension
+/// filter.  Pre-fix, the path-sort tree walk in
+/// `collect_global_top_n` (`FieldId::Path` | `FieldId::PathOnly`
+/// branch) pushed every record it visited without consulting
+/// `search_filters` or `filter_mode`, so requests like
+/// `uffs *.exe --sort path_only` (after Run 9's `*.<ext>` rewrite to
+/// `pattern="*" + extensions=["exe"]`) returned every record
+/// including non-`.exe` directories and files.
+///
+/// Fixture has `report.txt` on C and `data.csv` on D.  Filtering by
+/// `extensions=["txt"]` must yield exactly the C-side `report.txt`,
+/// not every record from the C+D tree walk.
+#[test]
+fn search_index_path_only_sort_honors_extension_filter() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters {
+        extensions: vec!["txt".to_owned()],
+        ..super::super::filters::SearchFilters::default()
+    };
+    let result = search_index(
+        &index,
+        SearchRequest {
+            result_limit: Some(10),
+            ..SearchRequest::new("*", &mut filters)
+        },
+        FieldId::PathOnly,
+        false, // ASC
+        &[],
+    );
+    // Extension filter is case-folded at the daemon, but the fixture
+    // writes lowercase names so a case-sensitive `ends_with` is fine
+    // here — we explicitly want to detect the bug-case where records
+    // with no extension or a different extension slip through.
+    let ends_with_txt = |row: &DisplayRow| {
+        let name = row.name();
+        name.len() >= 4
+            && name
+                .get(name.len() - 4..)
+                .is_some_and(|ext| ext.eq_ignore_ascii_case(".txt"))
+    };
+    assert!(
+        result.rows.iter().all(ends_with_txt),
+        "path-sort tree walk must respect search_filters.extensions; \
+         got non-.txt rows: {:?}",
+        result
+            .rows
+            .iter()
+            .filter(|row| !ends_with_txt(row))
+            .map(|row| row.name().to_owned())
+            .collect::<Vec<_>>()
+    );
+    // Sanity: we actually got the expected .txt row.
+    assert!(
+        result.rows.iter().any(|row| row.name() == "report.txt"),
+        "expected report.txt in results"
+    );
+}
+
+/// Regression: `pattern="*"` with `filter_mode=FilesOnly` and
+/// `sort=PathOnly` must exclude directory rows.  Same root cause as
+/// the extensions test above — the path-sort tree walk was pushing
+/// every record including directories.
+#[test]
+fn search_index_path_only_sort_honors_filter_mode_files_only() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            result_limit: Some(10),
+            filter_mode: FilterMode::FilesOnly,
+            ..SearchRequest::new("*", &mut filters)
+        },
+        FieldId::PathOnly,
+        false,
+        &[],
+    );
+    assert!(
+        result.rows.iter().all(|row| !row.is_directory),
+        "path-sort tree walk with FilesOnly must exclude directories; \
+         got directory rows: {:?}",
+        result
+            .rows
+            .iter()
+            .filter(|row| row.is_directory)
+            .map(|row| row.path.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Path-anchored `C:\*.txt` must NOT trigger the drive-prefix safety
 /// net — the tree walker already scopes to the drive root and expects
 /// the full `C:\<glob>` form intact.  We verify non-promotion by

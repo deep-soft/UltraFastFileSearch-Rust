@@ -16,6 +16,106 @@ impl SearchFilters {
     }
 }
 
+/// Returns `true` if `row` passes every non-empty filter in `filters`.
+///
+/// Factored out of the `apply_search_filters` retain predicate so
+/// callers that want to filter DURING collection (e.g. the path-sort
+/// tree walk in `collect_global_top_n`) can reuse the same logic
+/// without a post-collection pass.  `fold_buf` is caller-owned for
+/// reuse across successive rows; pass a freshly `Vec::with_capacity`-
+/// allocated buffer once, reuse it per row.
+#[must_use]
+pub fn row_passes_filters(
+    row: &DisplayRow,
+    filters: &SearchFilters,
+    fold: &uffs_text::case_fold::CaseFold,
+    fold_buf: &mut Vec<u8>,
+) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+    if filters.hide_system && row.name().starts_with('$') {
+        return false;
+    }
+    if filters.hide_ads && row.name().contains(':') {
+        return false;
+    }
+    if let Some(min) = filters.min_size
+        && row.size < min
+    {
+        return false;
+    }
+    if let Some(max) = filters.max_size
+        && row.size > max
+    {
+        return false;
+    }
+    if let Some(bound) = filters.newer_us
+        && row.modified < bound
+    {
+        return false;
+    }
+    if let Some(bound) = filters.older_us
+        && row.modified >= bound
+    {
+        return false;
+    }
+    if let Some(bound) = filters.newer_created_us
+        && row.created < bound
+    {
+        return false;
+    }
+    if let Some(bound) = filters.older_created_us
+        && row.created >= bound
+    {
+        return false;
+    }
+    if let Some(bound) = filters.newer_accessed_us
+        && row.accessed < bound
+    {
+        return false;
+    }
+    if let Some(bound) = filters.older_accessed_us
+        && row.accessed >= bound
+    {
+        return false;
+    }
+    if filters.attr_require != 0 && (row.flags & filters.attr_require) != filters.attr_require {
+        return false;
+    }
+    if filters.attr_exclude != 0 && (row.flags & filters.attr_exclude) != 0 {
+        return false;
+    }
+    if let Some(min) = filters.min_descendants
+        && row.descendants < min
+    {
+        return false;
+    }
+    if let Some(max) = filters.max_descendants
+        && row.descendants > max
+    {
+        return false;
+    }
+    if !filters.extensions.is_empty() {
+        let ext = row.name().rsplit('.').next().unwrap_or("");
+        let normalized_ext = lowercase_into(ext, fold_buf);
+        if !filters
+            .extensions
+            .iter()
+            .any(|allowed| extension_matches_filter(allowed, normalized_ext))
+        {
+            return false;
+        }
+    }
+    if let Some(excl) = &filters.exclude_lower {
+        let folded_name = fold.fold_into(row.name(), fold_buf);
+        if name_matches(folded_name, excl) {
+            return false;
+        }
+    }
+    apply_derived_filters(row, filters)
+}
+
 /// Apply extended search filters to display rows (in-place).
 pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters) {
     if filters.is_empty() {
@@ -23,88 +123,7 @@ pub fn apply_search_filters(rows: &mut Vec<DisplayRow>, filters: &SearchFilters)
     }
     let fold = uffs_text::case_fold::CaseFold::default_table();
     let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
-    rows.retain(|row| {
-        if filters.hide_system && row.name().starts_with('$') {
-            return false;
-        }
-        if filters.hide_ads && row.name().contains(':') {
-            return false;
-        }
-        if let Some(min) = filters.min_size
-            && row.size < min
-        {
-            return false;
-        }
-        if let Some(max) = filters.max_size
-            && row.size > max
-        {
-            return false;
-        }
-        if let Some(bound) = filters.newer_us
-            && row.modified < bound
-        {
-            return false;
-        }
-        if let Some(bound) = filters.older_us
-            && row.modified >= bound
-        {
-            return false;
-        }
-        if let Some(bound) = filters.newer_created_us
-            && row.created < bound
-        {
-            return false;
-        }
-        if let Some(bound) = filters.older_created_us
-            && row.created >= bound
-        {
-            return false;
-        }
-        if let Some(bound) = filters.newer_accessed_us
-            && row.accessed < bound
-        {
-            return false;
-        }
-        if let Some(bound) = filters.older_accessed_us
-            && row.accessed >= bound
-        {
-            return false;
-        }
-        if filters.attr_require != 0 && (row.flags & filters.attr_require) != filters.attr_require {
-            return false;
-        }
-        if filters.attr_exclude != 0 && (row.flags & filters.attr_exclude) != 0 {
-            return false;
-        }
-        if let Some(min) = filters.min_descendants
-            && row.descendants < min
-        {
-            return false;
-        }
-        if let Some(max) = filters.max_descendants
-            && row.descendants > max
-        {
-            return false;
-        }
-        if !filters.extensions.is_empty() {
-            let ext = row.name().rsplit('.').next().unwrap_or("");
-            let normalized_ext = lowercase_into(ext, &mut fold_buf);
-            if !filters
-                .extensions
-                .iter()
-                .any(|allowed| extension_matches_filter(allowed, normalized_ext))
-            {
-                return false;
-            }
-        }
-        if let Some(excl) = &filters.exclude_lower {
-            let folded_name = fold.fold_into(row.name(), &mut fold_buf);
-            if name_matches(folded_name, excl) {
-                return false;
-            }
-        }
-        apply_derived_filters(row, filters)
-    });
+    rows.retain(|row| row_passes_filters(row, filters, &fold, &mut fold_buf));
 }
 
 /// Derived / post-filter checks for `apply_search_filters`.
