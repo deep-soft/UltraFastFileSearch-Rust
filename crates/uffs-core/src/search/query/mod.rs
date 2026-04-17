@@ -74,13 +74,42 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
         "[2] collect_global_top_n entry"
     );
     match sort_column {
-        FieldId::Path | FieldId::PathOnly => collect_path_sorted_top_n(
+        // Full-path sort: tree-walk emits records in pre-order DFS with
+        // name-sorted siblings, which is exactly lexicographic full-path
+        // ASC (and DESC when the drive+child orders are reversed).  No
+        // post-sort needed.
+        FieldId::Path => collect_path_sorted_top_n(
             drives,
             limit,
             sort_desc,
             filter_mode,
             search_filters,
         ),
+        // Parent-directory sort: tree-walk order is NOT equivalent to
+        // path_only-ASC when records interleave across depths (e.g.
+        // `/a/b/file.exe` with path_only=`/a/b` visits BEFORE
+        // `/a/other.exe` with path_only=`/a`, violating path_only-ASC).
+        // Collect all matching rows via the tree walk (no early
+        // termination), then sort by path_only and truncate.  The tree
+        // walk's inline filter already narrows to matching records so
+        // the sort input is small.
+        FieldId::PathOnly => {
+            let mut rows = collect_path_sorted_top_n(
+                drives,
+                usize::MAX,
+                sort_desc,
+                filter_mode,
+                search_filters,
+            );
+            crate::search::sorting::sort_rows(
+                &mut rows,
+                FieldId::PathOnly,
+                sort_desc,
+                &[],
+            );
+            rows.truncate(limit);
+            rows
+        }
         // All other fields (Size, Name, Extension, Created, Modified, etc.)
         // use the generic numeric sort/collect path.
         FieldId::Size

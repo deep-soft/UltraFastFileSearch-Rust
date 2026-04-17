@@ -568,6 +568,58 @@ fn sort_by_treesize_ascending() {
 // search_index() free function — concurrent-safe API
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Build a single-drive `DriveIndex` with three sibling files in the
+/// root directory, added to the `MftIndex` in non-alphabetical order.
+///
+/// Files: `gamma.txt`, `alpha.txt`, `beta.txt` (insertion order).
+///
+/// Used to verify `PathOnly` sort's name-ASC tiebreaker within the
+/// same folder (Windows Explorer `Folder` column convention): all
+/// three files have identical `path_only` (`C:\`) so the sort must
+/// fall through to the Name tiebreaker to break the tie.
+fn build_siblings_fixture() -> DriveIndex {
+    use alloc::sync::Arc;
+
+    use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS, SizeInfo};
+
+    use crate::compact::build_compact_index;
+
+    let mut idx = MftIndex::new('C');
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // Insertion order (FRS 200, 201, 202) is deliberately non-alphabetical
+    // so tree-walk `sort_indices_by_name` on the root's children has to
+    // reorder them — and the final PathOnly sort must *preserve* that
+    // name-ASC order via the Name tiebreaker even though the primary
+    // `path_only` key is identical for all three.
+    for (frs, name) in [(200, "gamma.txt"), (201, "alpha.txt"), (202, "beta.txt")] {
+        let n_off = idx.add_name(name);
+        let n_ext = idx.intern_extension(name);
+        let rec = idx.get_or_create(frs);
+        rec.first_name.name = IndexNameRef::new(
+            n_off,
+            u16::try_from(name.len()).expect("name too long"),
+            true,
+            n_ext,
+        );
+        rec.first_name.parent_frs = ROOT_FRS;
+        rec.first_stream.size = SizeInfo {
+            length: 100,
+            allocated: 512,
+        };
+        rec.stdinfo.flags = 0x20;
+    }
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    DriveIndex {
+        drives: vec![Arc::new(drive)],
+    }
+}
+
 /// Build a `DriveIndex` with two drives (C: and D:) for `search_index` tests.
 fn build_two_drive_index() -> DriveIndex {
     use alloc::sync::Arc;
@@ -971,6 +1023,97 @@ fn search_index_path_only_sort_honors_extension_filter() {
     assert!(
         result.rows.iter().any(|row| row.name() == "report.txt"),
         "expected report.txt in results"
+    );
+}
+
+/// Regression: `pattern="*"` with `sort=PathOnly` must return rows
+/// actually sorted by parent-directory (`path_only`) ASC, not by
+/// tree-walk order.  Tree-walk order is full-path-ASC, which is NOT
+/// equivalent to `path_only`-ASC when records interleave across
+/// depths.
+///
+/// The ASC-pair assertion below mirrors the api-validation `T67f`
+/// check (strip the filename suffix, trim trailing `\`, compare
+/// adjacent pairs).  Any ordering violation fails the test
+/// deterministically.
+#[test]
+fn search_index_path_only_sort_returns_path_only_asc_order() {
+    let index = build_two_drive_index();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            result_limit: Some(100),
+            ..SearchRequest::new("*", &mut filters)
+        },
+        FieldId::PathOnly,
+        false, // ASC
+        &[],
+    );
+    // Verify every adjacent pair is in path_only-ASC order.
+    //
+    // Mirrors the api-validation T67f test's per-row `_path_only`
+    // computation: strip filename from path, trim trailing `\`.
+    let path_only_of = |row: &DisplayRow| -> String {
+        let name = row.name();
+        row.path
+            .strip_suffix(name)
+            .unwrap_or(&row.path)
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    };
+    let keys: Vec<String> = result.rows.iter().map(path_only_of).collect();
+    for window in keys.windows(2) {
+        if let [prev, next] = window {
+            assert!(
+                prev <= next,
+                "path_only ASC violation: '{prev}' > '{next}' in {keys:?}"
+            );
+        }
+    }
+}
+
+/// Regression: files in the same folder must sort name-ASC as the
+/// tiebreaker after `path_only` (Windows Explorer `Folder` column
+/// convention).  Fixture inserts three files `gamma.txt`, `alpha.txt`,
+/// `beta.txt` in that non-alphabetical order into the root directory.
+/// All three share `path_only="C:\"`, so the primary sort key is
+/// equal and the Name tiebreaker in `sort_rows` must kick in and
+/// order them `alpha`, `beta`, `gamma`.
+///
+/// This pins the contract declared in §`PathOnly` sort docs that
+/// intra-folder ordering matches Windows Explorer (name-ASC).  If a
+/// future refactor of `sort_rows` drops the Name tiebreaker this test
+/// will fail deterministically.
+#[test]
+fn search_index_path_only_sort_name_asc_within_same_folder() {
+    let index = build_siblings_fixture();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            result_limit: Some(100),
+            filter_mode: FilterMode::FilesOnly,
+            ..SearchRequest::new("*", &mut filters)
+        },
+        FieldId::PathOnly,
+        false, // ASC
+        &[],
+    );
+    let file_names: Vec<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert_eq!(
+        file_names,
+        vec![
+            "alpha.txt".to_owned(),
+            "beta.txt".to_owned(),
+            "gamma.txt".to_owned(),
+        ],
+        "files in same folder must sort name-ASC after path_only \
+         (Windows Folder-column convention)"
     );
 }
 
