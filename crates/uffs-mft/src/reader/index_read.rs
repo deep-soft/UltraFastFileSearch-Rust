@@ -665,80 +665,92 @@ impl MftReader {
                     unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) }.ok();
                 }
 
-                let mut index = result?;
+                match result {
+                    Ok(mut index) => {
+                        // ── IOCP inline success path (fast) ─────────────────
+                        let ra = volume_data.reserved_allocated_bytes();
+                        debug!(
+                            iocp_parse_ms = start_time.elapsed().as_millis(),
+                            records = index.records.len(),
+                            reserved_allocated_bytes = ra,
+                            total_reserved = volume_data.total_reserved,
+                            mft_zone_start = volume_data.mft_zone_start,
+                            mft_zone_end = volume_data.mft_zone_end,
+                            bytes_per_cluster = volume_data.bytes_per_cluster,
+                            "[TIMING] IOCP+parse complete"
+                        );
+                        info!(
+                            reserved_allocated_bytes = ra,
+                            total_reserved = volume_data.total_reserved,
+                            mft_zone_start = volume_data.mft_zone_start,
+                            mft_zone_end = volume_data.mft_zone_end,
+                            bytes_per_cluster = volume_data.bytes_per_cluster,
+                            "📊 reserved_allocated_bytes for tree_allocated root adjustment"
+                        );
+                        index.reserved_allocated_bytes = ra;
 
-                // Set reserved allocated bytes from volume data so tree metrics
-                // adds it to the root's tree_allocated.
-                let ra = volume_data.reserved_allocated_bytes();
-                debug!(
-                    iocp_parse_ms = start_time.elapsed().as_millis(),
-                    records = index.records.len(),
-                    reserved_allocated_bytes = ra,
-                    total_reserved = volume_data.total_reserved,
-                    mft_zone_start = volume_data.mft_zone_start,
-                    mft_zone_end = volume_data.mft_zone_end,
-                    bytes_per_cluster = volume_data.bytes_per_cluster,
-                    "[TIMING] IOCP+parse complete"
-                );
-                info!(
-                    reserved_allocated_bytes = ra,
-                    total_reserved = volume_data.total_reserved,
-                    mft_zone_start = volume_data.mft_zone_start,
-                    mft_zone_end = volume_data.mft_zone_end,
-                    bytes_per_cluster = volume_data.bytes_per_cluster,
-                    "📊 reserved_allocated_bytes for tree_allocated root adjustment"
-                );
-                index.reserved_allocated_bytes = ra;
+                        // Compute tree metrics (directory sizes, descendant counts).
+                        debug!(
+                            records = index.records.len(),
+                            "[PARITY_TRACE] SlidingIocpInline: CALLING compute_tree_metrics()"
+                        );
+                        let tree_start = Instant::now();
+                        index.compute_tree_metrics();
+                        debug!(
+                            tree_metrics_ms = tree_start.elapsed().as_millis(),
+                            "[PARITY_TRACE] SlidingIocpInline: compute_tree_metrics() done"
+                        );
+                        let tree_ms = tree_start.elapsed().as_millis();
+                        debug!(tree_ms, "[TIMING] tree_metrics");
+                        info!(
+                            tree_metrics_ms = tree_ms,
+                            "✅ Tree metrics computed for inline index"
+                        );
 
-                // Compute tree metrics (directory sizes, descendant counts).
-                // The legacy path gets this from `from_parsed_records()`, but the
-                // inline path bypasses that, so we must call it explicitly.
-                debug!(
-                    records = index.records.len(),
-                    "[PARITY_TRACE] SlidingIocpInline: CALLING compute_tree_metrics()"
-                );
-                let tree_start = Instant::now();
-                index.compute_tree_metrics();
-                debug!(
-                    tree_metrics_ms = tree_start.elapsed().as_millis(),
-                    "[PARITY_TRACE] SlidingIocpInline: compute_tree_metrics() done"
-                );
-                let tree_ms = tree_start.elapsed().as_millis();
-                debug!(tree_ms, "[TIMING] tree_metrics");
-                info!(
-                    tree_metrics_ms = tree_ms,
-                    "✅ Tree metrics computed for inline index"
-                );
+                        // Build extension index eagerly so filtered queries
+                        // (*.txt etc.) get O(matches) lookup immediately.
+                        let ext_start = Instant::now();
+                        index.build_extension_index();
+                        let ext_ms = ext_start.elapsed().as_millis();
 
-                // Build extension index eagerly so filtered queries (*.txt
-                // etc.) get O(matches) lookup immediately.
-                let ext_start = Instant::now();
-                index.build_extension_index();
-                let ext_ms = ext_start.elapsed().as_millis();
+                        let total_index_ms = start_time.elapsed().as_millis();
+                        debug!(ext_ms, total_index_ms, "[TIMING] ext_index + total");
+                        info!(
+                            total_index_ms,
+                            tree_ms,
+                            ext_ms,
+                            records = index.records.len(),
+                            "📊 Windows LIVE index build timing breakdown"
+                        );
 
-                let total_index_ms = start_time.elapsed().as_millis();
-                debug!(ext_ms, total_index_ms, "[TIMING] ext_index + total");
-                info!(
-                    total_index_ms,
-                    tree_ms,
-                    ext_ms,
-                    records = index.records.len(),
-                    "📊 Windows LIVE index build timing breakdown"
-                );
+                        // Report final progress
+                        if let Some(ref cb) = callback {
+                            cb(MftProgress {
+                                records_read: total_records,
+                                total_records: Some(total_records),
+                                bytes_read: total_bytes,
+                                elapsed: start_time.elapsed(),
+                            });
+                        }
 
-                // Report final progress
-                if let Some(ref cb) = callback {
-                    cb(MftProgress {
-                        records_read: total_records,
-                        total_records: Some(total_records),
-                        bytes_read: total_bytes,
-                        elapsed: start_time.elapsed(),
-                    });
+                        // Return early — inline index is complete.
+                        return Ok(index);
+                    }
+                    Err(iocp_err) => {
+                        // ── IOCP failed — fall back to synchronous reader ───
+                        // Readonly / write-protected volumes (Win32 error 19)
+                        // reject overlapped I/O even for reads.  The
+                        // synchronous `Parallel` reader uses the non-overlapped
+                        // handle and works fine on these volumes.
+                        warn!(
+                            volume = %self.volume,
+                            error = %iocp_err,
+                            "⚠️  IOCP inline read failed — falling back to synchronous parallel reader"
+                        );
+                        parallel_reader
+                            .read_all_parallel_with_progress::<fn(u64, u64)>(handle, true, None)?
+                    }
                 }
-
-                // Return early - we already have the index, no need for placeholder/build
-                // phases
-                return Ok(index);
             }
             MftReadMode::Streaming | MftReadMode::Prefetch => {
                 // Fallback to parallel for streaming/prefetch modes in lean index

@@ -567,7 +567,20 @@ impl MftReader {
                     unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) }.ok();
                 }
 
-                result?
+                match result {
+                    Ok(records) => records,
+                    Err(iocp_err) => {
+                        // Readonly / write-protected volumes reject overlapped
+                        // I/O.  Fall back to the synchronous parallel reader.
+                        warn!(
+                            volume = %self.volume,
+                            error = %iocp_err,
+                            "⚠️  IOCP read failed — falling back to synchronous parallel reader"
+                        );
+                        parallel_reader
+                            .read_all_parallel_with_progress::<fn(u64, u64)>(handle, true, None)?
+                    }
+                }
             }
         };
 
