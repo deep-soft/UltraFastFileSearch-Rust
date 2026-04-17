@@ -3,7 +3,7 @@
 
 //! Daemon connection management: auto-start, connect, reconnect.
 //!
-//! [`UffsClient`] is the single entry point for all surfaces (CLI, TUI,
+//! `UffsClient` is the single entry point for all surfaces (CLI, TUI,
 //! GUI, MCP) to communicate with the daemon.
 //!
 //! # Platform Support

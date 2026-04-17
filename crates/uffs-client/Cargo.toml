@@ -18,12 +18,22 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# Default enables the async `UffsClient` (tokio-based) so existing
+# consumers (`uffs-daemon`, `uffs-mcp`) keep working with no change.
+# The CLI (`uffs-cli`) overrides with `default-features = false` to
+# drop tokio + `ws2_32.dll` from the hot-path binary.
+default = ["async"]
+async = ["dep:tokio"]
+
 [dependencies]
 # Internal
 uffs-security.workspace = true
 
-# Async
-tokio.workspace = true
+# Async — optional; only pulled when the `async` feature is enabled.
+# The sync `UffsClientSync` used by the CLI does not depend on tokio.
+# `net` is required for `tokio::net::UnixStream` / named-pipe client.
+tokio = { workspace = true, features = ["net"], optional = true }
 
 # Serialization (JSON-RPC)
 serde.workspace = true

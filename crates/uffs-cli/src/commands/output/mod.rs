@@ -572,8 +572,8 @@ static LOCAL_TZ_OFFSET_SECS: std::sync::LazyLock<i32> =
 /// Applies the fixed timezone bias directly in FILETIME ticks (matching
 /// C++ `FileTimeToLocalFileTime`), then decomposes via `filetime_to_calendar`.
 fn format_filetime_local(filetime: i64) -> String {
-    let local_ft = uffs_mft::ntfs::filetime_with_tz_bias(filetime, *LOCAL_TZ_OFFSET_SECS);
-    match uffs_mft::ntfs::filetime_to_calendar(local_ft) {
+    let local_ft = uffs_time::filetime_with_tz_bias(filetime, *LOCAL_TZ_OFFSET_SECS);
+    match uffs_time::filetime_to_calendar(local_ft) {
         Some((year, month, day, hour, minute, second)) => {
             format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
         }

@@ -18,6 +18,11 @@
 use serde as _;
 use uffs_security as _;
 
+/// Async `UffsClient` over tokio — used by the MCP gateway and daemon.
+///
+/// Gated behind the `async` feature so the sync CLI can drop tokio (and
+/// `ws2_32.dll`) from its binary.
+#[cfg(feature = "async")]
 pub mod connect;
 pub mod connect_sync;
 pub mod daemon_ctl;

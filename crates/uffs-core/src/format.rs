@@ -60,7 +60,7 @@ pub fn format_bytes(bytes: u64) -> String {
 /// `append_datetime`). No external crate dependency.
 #[must_use]
 pub fn format_timestamp(filetime: i64) -> String {
-    match uffs_mft::ntfs::filetime_to_calendar(filetime) {
+    match uffs_time::filetime_to_calendar(filetime) {
         Some((year, month, day, hour, minute, second)) => {
             format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
         }
@@ -118,7 +118,7 @@ pub fn format_duration(duration: core::time::Duration) -> String {
 
 #[cfg(test)]
 mod tests {
-    use uffs_mft::ntfs::{FILETIME_TICKS_PER_SECOND, FILETIME_UNIX_DIFF};
+    use uffs_time::{FILETIME_TICKS_PER_SECOND, FILETIME_UNIX_DIFF};
 
     use super::*;
 

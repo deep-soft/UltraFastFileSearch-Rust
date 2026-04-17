@@ -642,7 +642,7 @@ const fn is_missing(field: Option<FieldId>, record: &CompactRecord) -> bool {
 ///
 /// Returns a FILETIME value aligned to the start of the given interval.
 const fn truncate_timestamp(filetime: i64, calendar: super::spec::CalendarInterval) -> i64 {
-    use uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND;
+    use uffs_time::FILETIME_TICKS_PER_SECOND;
 
     use super::spec::CalendarInterval;
 

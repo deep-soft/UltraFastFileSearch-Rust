@@ -28,6 +28,7 @@ categories.workspace = true
 # Internal crates
 uffs-polars.workspace = true
 uffs-text.workspace = true
+uffs-time.workspace = true
 uffs-mft.workspace = true
 uffs-security.workspace = true
 

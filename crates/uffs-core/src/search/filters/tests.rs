@@ -493,11 +493,11 @@ fn filter_older_modified_accepts_old_files() {
 // ════════════════════════════════════════════════════════════════════════
 
 /// FILETIME ticks per day constant for tests.
-const FT_PER_DAY: i64 = 86_400 * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND;
+const FT_PER_DAY: i64 = 86_400 * uffs_time::FILETIME_TICKS_PER_SECOND;
 /// FILETIME ticks per second constant for tests.
-const FT_PER_SEC: i64 = uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND;
+const FT_PER_SEC: i64 = uffs_time::FILETIME_TICKS_PER_SECOND;
 /// Days from FILETIME epoch (1601-01-01) to Unix epoch (1970-01-01).
-const DAYS_1601_TO_1970: i64 = uffs_mft::ntfs::FILETIME_UNIX_DIFF / FT_PER_DAY;
+const DAYS_1601_TO_1970: i64 = uffs_time::FILETIME_UNIX_DIFF / FT_PER_DAY;
 
 /// Helper: compute FILETIME for N days after 1601-01-01.
 const fn ft_days(days_since_1601: i64) -> i64 {
@@ -678,7 +678,7 @@ fn parse_size_invalid() {
 fn month_from_filetime_1970_epoch() {
     // 1970-01-01 00:00:00 UTC as FILETIME → January
     // FILETIME_UNIX_DIFF = 116_444_736_000_000_000
-    let ft = uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    let ft = uffs_time::FILETIME_UNIX_DIFF;
     assert_eq!(month_from_unix_micros(ft), 1);
 }
 
@@ -692,8 +692,7 @@ fn month_from_filetime_zero_is_january() {
 fn month_from_filetime_december() {
     // 2025-12-15 00:00:00 UTC as FILETIME → December
     let unix_us = 1_765_756_800_000_000_i64;
-    let ft = unix_us * uffs_mft::ntfs::FILETIME_TICKS_PER_MICROSECOND
-        + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    let ft = unix_us * uffs_time::FILETIME_TICKS_PER_MICROSECOND + uffs_time::FILETIME_UNIX_DIFF;
     assert_eq!(month_from_unix_micros(ft), 12);
 }
 
@@ -701,8 +700,7 @@ fn month_from_filetime_december() {
 fn month_from_filetime_pre_1970() {
     // 1959-12-02 03:45:50 UTC → December
     let unix_secs: i64 = -318_197_650;
-    let ft =
-        unix_secs * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    let ft = unix_secs * uffs_time::FILETIME_TICKS_PER_SECOND + uffs_time::FILETIME_UNIX_DIFF;
     assert_eq!(month_from_unix_micros(ft), 12);
 }
 
@@ -710,8 +708,7 @@ fn month_from_filetime_pre_1970() {
 fn month_from_filetime_leap_day() {
     // 2000-02-29 12:00:00 UTC → February
     let unix_secs: i64 = 951_825_600;
-    let ft =
-        unix_secs * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    let ft = unix_secs * uffs_time::FILETIME_TICKS_PER_SECOND + uffs_time::FILETIME_UNIX_DIFF;
     assert_eq!(month_from_unix_micros(ft), 2);
 }
 
@@ -719,14 +716,14 @@ fn month_from_filetime_leap_day() {
 fn month_from_filetime_year_boundary() {
     // 1999-12-31 23:59:59 → December
     let unix_secs_dec31: i64 = 946_684_799;
-    let ft_dec31 = unix_secs_dec31 * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND
-        + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    let ft_dec31 =
+        unix_secs_dec31 * uffs_time::FILETIME_TICKS_PER_SECOND + uffs_time::FILETIME_UNIX_DIFF;
     assert_eq!(month_from_unix_micros(ft_dec31), 12);
 
     // 2000-01-01 00:00:00 → January
     let unix_secs_jan01: i64 = 946_684_800;
-    let ft_jan01 = unix_secs_jan01 * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND
-        + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+    let ft_jan01 =
+        unix_secs_jan01 * uffs_time::FILETIME_TICKS_PER_SECOND + uffs_time::FILETIME_UNIX_DIFF;
     assert_eq!(month_from_unix_micros(ft_jan01), 1);
 }
 
@@ -748,8 +745,7 @@ fn month_from_filetime_each_month() {
         (12, 1_734_220_800), // 2024-12-15
     ];
     for (expected_month, unix_secs) in months_unix_secs {
-        let ft = unix_secs * uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND
-            + uffs_mft::ntfs::FILETIME_UNIX_DIFF;
+        let ft = unix_secs * uffs_time::FILETIME_TICKS_PER_SECOND + uffs_time::FILETIME_UNIX_DIFF;
         assert_eq!(
             month_from_unix_micros(ft),
             expected_month,
