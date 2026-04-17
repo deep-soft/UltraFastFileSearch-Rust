@@ -91,7 +91,9 @@ fn run_search(args: &[String]) -> Result<()> {
     let ready_ms = t_ready.elapsed().as_millis();
 
     let t_search = std::time::Instant::now();
-    let args_owned: Vec<String> = args.to_vec();
+    // Resolve relative --out paths to absolute using the CLI's cwd, since the
+    // daemon process runs in a different working directory.
+    let args_owned: Vec<String> = resolve_out_path(args);
     let response = client
         .search_cli_raw(&args_owned)
         .with_context(|| "Daemon search_cli failed")?;
@@ -152,7 +154,10 @@ fn run_search(args: &[String]) -> Result<()> {
 
     // OPT-4: When --out is specified, the daemon writes the file directly
     // and returns an empty `rows` array.  Don't overwrite the file.
-    let has_out = args.iter().any(|arg| arg == "--out");
+    // Handles both `--out foo.csv` (separate arg) and `--out=foo.csv` (= form).
+    let has_out = args
+        .iter()
+        .any(|arg| arg == "--out" || arg.starts_with("--out="));
     let daemon_wrote_file = has_out && rows.is_none_or(<[serde_json::Value]>::is_empty);
 
     if !daemon_wrote_file && let Some(row_slice) = rows {
@@ -205,6 +210,46 @@ fn extract_spawn_args(args: &[String]) -> Vec<String> {
     }
 
     spawn
+}
+
+/// Resolve a relative `--out` path to absolute using the CLI's working
+/// directory.
+///
+/// The daemon runs in a different working directory, so relative paths in
+/// `--out` or `--out=<path>` would resolve against the wrong directory if
+/// passed through as-is.
+fn resolve_out_path(args: &[String]) -> Vec<String> {
+    let mut result: Vec<String> = Vec::with_capacity(args.len());
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(val) = arg.strip_prefix("--out=") {
+            // `--out=path` form — resolve inline value.
+            let resolved = resolve_to_absolute(val);
+            result.push(format!("--out={resolved}"));
+        } else if arg == "--out" {
+            result.push(arg.clone());
+            // Next token is the path value.
+            if let Some(val) = iter.next() {
+                result.push(resolve_to_absolute(val));
+            }
+        } else {
+            result.push(arg.clone());
+        }
+    }
+    result
+}
+
+/// Resolve a potentially relative path to absolute using `current_dir`.
+fn resolve_to_absolute(path_str: &str) -> String {
+    let path = std::path::Path::new(path_str);
+    if path.is_absolute() {
+        return path_str.to_owned();
+    }
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Handle `uffs stats [path] [--top N] [--data-dir ...] [--mft-file ...]`.

@@ -188,11 +188,20 @@ fn spawn_daemon_unix(
     clippy::single_call_fn,
     reason = "platform-specific helper — clarity over inlining"
 )]
+#[expect(clippy::print_stderr, reason = "[diag] diagnostic tracing")]
+#[expect(
+    clippy::use_debug,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
 fn spawn_daemon_windows(
     exe: &std::path::Path,
     args: &[&str],
 ) -> Result<(), crate::error::ClientError> {
     let elevated = is_elevated();
+    eprintln!(
+        "[diag] spawn_daemon_windows: exe={}  args={args:?}  elevated={elevated}",
+        exe.display()
+    );
     tracing::debug!(exe = %exe.display(), ?args, elevated, "spawn_daemon_windows");
 
     if elevated {
@@ -212,6 +221,11 @@ fn spawn_daemon_windows(
 /// Uses `CreateProcessW` directly with `bInheritHandles = FALSE` and
 /// `DETACHED_PROCESS` creation flag.
 #[cfg(windows)]
+#[expect(clippy::print_stderr, reason = "[diag] diagnostic tracing")]
+#[expect(
+    clippy::use_debug,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
 fn spawn_detached_no_inherit(
     exe: &std::path::Path,
     args: &[&str],
@@ -231,6 +245,9 @@ fn spawn_detached_no_inherit(
     }
 
     let mut cmd_wide: Vec<u16> = cmd_line.encode_utf16().chain(core::iter::once(0)).collect();
+
+    // [diag] Print the exact command line that will be sent to CreateProcessW.
+    eprintln!("[diag] spawn_detached_no_inherit: cmd_line={cmd_line:?}");
 
     let si = STARTUPINFOW {
         cb: size_of::<STARTUPINFOW>() as u32,
@@ -324,6 +341,11 @@ fn is_elevated() -> bool {
 /// the process starts elevated; if they click "No" or dismiss the dialog,
 /// an error is returned.
 #[cfg(windows)]
+#[expect(clippy::print_stderr, reason = "[diag] diagnostic tracing")]
+#[expect(
+    clippy::use_debug,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
 fn shell_execute_elevated(
     exe: &std::path::Path,
     args: &[&str],
@@ -336,6 +358,9 @@ fn shell_execute_elevated(
     let file: Vec<u16> = format!("{exe_str}\0").encode_utf16().collect();
     let params_str = args.join(" ");
     let params: Vec<u16> = format!("{params_str}\0").encode_utf16().collect();
+
+    // [diag] Print the UAC-elevated spawn attempt.
+    eprintln!("[diag] shell_execute_elevated: exe={exe_str:?}  params={params_str:?}");
 
     tracing::debug!(
         verb = "runas",

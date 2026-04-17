@@ -45,7 +45,8 @@ use tokio as _;
 use tracing as _;
 use tracing_appender as _;
 use tracing_subscriber as _;
-use uffs_client as _;
+use uffs_client::connect_sync::UffsClientSync;
+use uffs_client::protocol::response::LoadDriveResponse;
 use uffs_core as _;
 use uffs_mft as _;
 use uffs_security as _;
@@ -93,15 +94,51 @@ struct Cli {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::print_stderr,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
+#[expect(
+    clippy::use_debug,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Initialize tracing (standalone binary owns the subscriber).
-    // UFFS_LOG env var overrides --log-level for diagnostic sessions.
-    let log_spec = std::env::var("UFFS_LOG").unwrap_or_else(|_| cli.log_level.clone());
+    // UFFS_LOG overrides --log-level; RUST_LOG is accepted as an alias so
+    // that the standard `$env:RUST_LOG="trace"` idiom works for diagnostics.
+    let log_spec = std::env::var("UFFS_LOG")
+        .or_else(|_| std::env::var("RUST_LOG"))
+        .unwrap_or_else(|_| cli.log_level.clone());
+
+    // [diag] Print to stderr immediately — before the tracing subscriber is
+    // up — so this always appears in the terminal when uffsd is run directly.
+    eprintln!("[diag] uffsd main: drives={:?}", cli.drives);
+    eprintln!("[diag] uffsd main: mft_files={:?}", cli.mft_files);
+    eprintln!(
+        "[diag] uffsd main: log_spec={log_spec:?}  (cli.log_level={:?})",
+        cli.log_level
+    );
+    eprintln!("[diag] uffsd main: log_file={:?}", cli.log_file);
+    eprintln!(
+        "[diag] uffsd main: env UFFS_LOG={:?}  RUST_LOG={:?}",
+        std::env::var("UFFS_LOG").ok(),
+        std::env::var("RUST_LOG").ok()
+    );
+
     let _guard = uffs_daemon::init_tracing(&log_spec, cli.log_file.as_deref());
 
-    uffs_daemon::run_daemon(uffs_daemon::DaemonConfig {
+    // Keep copies for potential IPC forwarding (moved into config below).
+    let fwd_drives = cli.drives.clone();
+    let fwd_mft_files: Vec<String> = cli
+        .mft_files
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    let fwd_no_cache = cli.no_cache;
+
+    let config = uffs_daemon::DaemonConfig {
         mft_files: cli.mft_files,
         data_dir: cli.data_dir_arg,
         drives: cli.drives,
@@ -110,6 +147,83 @@ async fn main() -> anyhow::Result<()> {
         no_cache: cli.no_cache,
         log_level: cli.log_level,
         log_file: cli.log_file,
-    })
-    .await
+    };
+
+    match uffs_daemon::run_daemon(config).await {
+        Ok(()) => Ok(()),
+        Err(err) if is_already_running(&err) => {
+            // Another daemon is running — forward the load request via IPC.
+            forward_to_running_daemon(&fwd_drives, &fwd_mft_files, fwd_no_cache)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Check if the error is the "already running" sentinel.
+fn is_already_running(err: &anyhow::Error) -> bool {
+    format!("{err}").contains("Another daemon instance is already running")
+}
+
+/// Log the results of a [`LoadDriveResponse`].
+fn log_load_response(resp: &LoadDriveResponse) {
+    for letter in &resp.loaded {
+        tracing::info!(drive = %letter, "Drive loaded");
+    }
+    for letter in &resp.already_loaded {
+        tracing::info!(drive = %letter, "Drive already loaded");
+    }
+    for msg in &resp.errors {
+        tracing::error!(error = %msg, "Failed to load drive");
+    }
+}
+
+/// Forward `--drive` / `--mft-file` to the running daemon via IPC.
+#[expect(
+    clippy::print_stderr,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
+#[expect(
+    clippy::use_debug,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
+fn forward_to_running_daemon(
+    drives: &[char],
+    mft_files: &[String],
+    no_cache: bool,
+) -> anyhow::Result<()> {
+    eprintln!(
+        "[diag] forward_to_running_daemon: drives={drives:?}  mft_files={mft_files:?}  no_cache={no_cache}"
+    );
+
+    if drives.is_empty() && mft_files.is_empty() {
+        tracing::info!("Daemon is already running. Nothing to load.");
+        eprintln!("[diag] forward_to_running_daemon: nothing to load — returning");
+        return Ok(());
+    }
+
+    tracing::info!("Daemon is already running — forwarding load request via IPC...");
+    eprintln!("[diag] forward_to_running_daemon: connecting to running daemon via IPC...");
+    let mut client = UffsClientSync::connect()?;
+    eprintln!("[diag] forward_to_running_daemon: IPC connected OK");
+
+    if !drives.is_empty() {
+        eprintln!("[diag] forward_to_running_daemon: calling load_drive_letters({drives:?})");
+        let resp = client.load_drive_letters(drives, no_cache)?;
+        eprintln!(
+            "[diag] forward_to_running_daemon: response — loaded={:?}  already={:?}  errors={:?}",
+            resp.loaded, resp.already_loaded, resp.errors
+        );
+        log_load_response(&resp);
+    }
+    if !mft_files.is_empty() {
+        eprintln!("[diag] forward_to_running_daemon: calling load_drive({mft_files:?})");
+        let resp = client.load_drive(mft_files, no_cache)?;
+        eprintln!(
+            "[diag] forward_to_running_daemon: response — loaded={:?}  already={:?}  errors={:?}",
+            resp.loaded, resp.already_loaded, resp.errors
+        );
+        log_load_response(&resp);
+    }
+
+    Ok(())
 }

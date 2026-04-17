@@ -567,7 +567,29 @@ impl MftReader {
                     unsafe { windows::Win32::Foundation::CloseHandle(overlapped_handle) }.ok();
                 }
 
-                result?
+                match result {
+                    Ok(records) => records,
+                    Err(iocp_err) => {
+                        // Write-protected volumes reject ALL raw volume I/O.
+                        // Fall back to reading `X:\$MFT` directly as a file.
+                        warn!(
+                            volume = %self.volume,
+                            error = %iocp_err,
+                            "⚠️  IOCP read failed — falling back to $MFT file reader"
+                        );
+                        let mft_handle = self.require_handle().open_mft_read_handle()?;
+                        let mft_result = crate::io::readers::mft_file::read_mft_from_file_handle(
+                            mft_handle,
+                            self.require_handle().file_record_size(),
+                            total_records,
+                        );
+                        #[expect(unsafe_code, reason = "FFI: CloseHandle on $MFT file handle")]
+                        {
+                            unsafe { windows::Win32::Foundation::CloseHandle(mft_handle) }.ok();
+                        }
+                        mft_result?
+                    }
+                }
             }
         };
 

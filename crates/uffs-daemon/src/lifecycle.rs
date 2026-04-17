@@ -130,6 +130,10 @@ pub(crate) struct LifecycleManager {
     idle_timeout: Option<Duration>,
     /// Shutdown nonce (written to PID file, required for RPC shutdown).
     shutdown_nonce: Option<String>,
+    /// Whether this instance owns the PID file (wrote it on startup).
+    /// When `false`, `Drop` must NOT remove files that belong to another
+    /// running daemon.
+    owns_pid_file: bool,
 }
 
 impl LifecycleManager {
@@ -169,6 +173,7 @@ impl LifecycleManager {
             pid_path,
             idle_timeout,
             shutdown_nonce: None,
+            owns_pid_file: false,
         }
     }
 
@@ -209,6 +214,7 @@ impl LifecycleManager {
         );
         std::fs::write(&self.pid_path, content)?;
         uffs_security::fs::set_file_permissions_owner_only(&self.pid_path)?;
+        self.owns_pid_file = true;
         tracing::info!(path = %self.pid_path.display(), "PID file written");
         Ok(())
     }
@@ -259,18 +265,8 @@ impl LifecycleManager {
             return true;
         }
 
-        // Validate exe hash — if it doesn't match, it's from a different binary
-        let expected_hash = Self::expected_daemon_exe_hash();
-        if expected_hash != 0 && exe_hash != expected_hash {
-            tracing::info!(
-                pid,
-                "PID file exe hash mismatch (stale from different binary), cleaning up"
-            );
-            let _ignore = std::fs::remove_file(&self.pid_path);
-            return true;
-        }
-
-        // Check if the process is still alive
+        // Liveness check comes FIRST — if the process is alive, the daemon
+        // is running regardless of whether the binary was rebuilt since then.
         if Self::is_process_alive(pid) {
             tracing::warn!(
                 pid,
@@ -279,8 +275,19 @@ impl LifecycleManager {
             return false;
         }
 
-        // Stale PID file — process is dead, clean up
-        tracing::info!(pid, "Cleaning up stale PID file from dead process");
+        // Process is dead.  The exe hash is only useful for detecting
+        // leftover PID files from a *different* binary installation (e.g.
+        // after `just use` rebuilt everything), but only when the process
+        // is already gone.
+        let expected_hash = Self::expected_daemon_exe_hash();
+        if expected_hash != 0 && exe_hash != expected_hash {
+            tracing::info!(
+                pid,
+                "PID file exe hash mismatch (stale from different binary), cleaning up"
+            );
+        } else {
+            tracing::info!(pid, "Cleaning up stale PID file from dead process");
+        }
         let _ignore = std::fs::remove_file(&self.pid_path);
         true
     }
@@ -581,8 +588,13 @@ impl LifecycleManager {
 
 impl Drop for LifecycleManager {
     fn drop(&mut self) {
-        self.remove_pid_file();
-        self.remove_socket_file();
+        // Only clean up files that belong to this instance.  If we detected
+        // another running daemon (`check_stale_pid` returned false) we never
+        // wrote a PID file, so we must not delete the other daemon's files.
+        if self.owns_pid_file {
+            self.remove_pid_file();
+            self.remove_socket_file();
+        }
     }
 }
 

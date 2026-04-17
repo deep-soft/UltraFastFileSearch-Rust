@@ -65,6 +65,29 @@ impl UffsClientSync {
             return Ok(client);
         }
 
+        // On non-Windows, the daemon needs an explicit data source.
+        // Fail fast with a helpful message instead of spawning a daemon
+        // that will immediately exit (then spinning through 20 retries).
+        #[cfg(not(windows))]
+        {
+            let has_data_source = spawn_args.iter().any(|arg| {
+                arg == "--data-dir"
+                    || arg == "--mft-file"
+                    || arg.starts_with("--data-dir=")
+                    || arg.starts_with("--mft-file=")
+            });
+            if !has_data_source {
+                return Err(ClientError::ConnectionFailed(
+                    "No daemon is running and no data source was provided.\n\
+                     On macOS/Linux, start the daemon first:\n\n  \
+                     uffs daemon start --data-dir ~/uffs_data\n\n\
+                     Or pass --data-dir inline:\n\n  \
+                     uffs \"notepad.exe\" --data-dir ~/uffs_data"
+                        .to_owned(),
+                ));
+            }
+        }
+
         // Auto-start the daemon.
         auto_start_daemon(spawn_args)?;
 
@@ -336,6 +359,27 @@ impl UffsClientSync {
         serde_json::from_value(result).map_err(|err| ClientError::Protocol(err.to_string()))
     }
 
+    /// Hot-load one or more drives by letter into the running daemon.
+    ///
+    /// On Windows this reads the live NTFS MFT; on non-Windows it discovers
+    /// offline MFT files from the daemon's `data_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ClientError` on I/O, protocol, or timeout failure.
+    pub fn load_drive_letters(
+        &mut self,
+        drives: &[char],
+        no_cache: bool,
+    ) -> Result<crate::protocol::response::LoadDriveResponse, ClientError> {
+        let params = serde_json::json!({
+            "drives": drives,
+            "no_cache": no_cache,
+        });
+        let result = self.send_request("load_drive", Some(params))?;
+        serde_json::from_value(result).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+
     /// Refresh drives.
     ///
     /// # Errors
@@ -413,50 +457,115 @@ impl UffsClientSync {
 // ── Auto-start daemon ───────────────────────────────────────────────
 
 /// Spawn the daemon binary if not already running.
+#[expect(clippy::print_stderr, reason = "[diag] diagnostic tracing")]
+#[expect(
+    clippy::use_debug,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
 fn auto_start_daemon(spawn_args: &[String]) -> Result<(), ClientError> {
     let pid_path = pid_file_path();
+
+    // [diag] Show what we are about to do.
+    eprintln!("[diag] auto_start_daemon: spawn_args={spawn_args:?}");
 
     // Check if daemon is already alive via PID file.
     if pid_path.exists()
         && crate::daemon_ctl::parse_pid_file(&pid_path)
             .is_some_and(|(pid, _ts, _hash, _nonce)| is_process_alive(pid))
     {
+        eprintln!("[diag] auto_start_daemon: daemon already alive per PID file — skipping spawn");
         return Ok(());
     }
     if pid_path.exists() {
         // Stale PID file — clean up.
+        eprintln!("[diag] auto_start_daemon: stale PID file — cleaning up");
         drop(std::fs::remove_file(&pid_path));
         let sock = socket_path();
         drop(std::fs::remove_file(&sock));
     }
 
     let daemon_exe = find_daemon_exe();
+    eprintln!(
+        "[diag] auto_start_daemon: daemon_exe={}",
+        daemon_exe.display()
+    );
     let str_args: Vec<&str> = spawn_args.iter().map(String::as_str).collect();
+    eprintln!("[diag] auto_start_daemon: calling spawn_daemon with args={str_args:?}");
     spawn_daemon(&daemon_exe, &str_args)?;
+    eprintln!("[diag] auto_start_daemon: spawn_daemon returned OK");
     Ok(())
 }
 
-/// Check if a process is alive.
+/// Check if a process is alive **and** is actually a `uffsd` daemon.
+///
+/// A bare `kill(pid, 0)` / `tasklist` check is insufficient because the OS
+/// can recycle PIDs.  A stale PID file whose PID was reused by an unrelated
+/// process would make us think the daemon is running, so we'd skip the spawn
+/// and then fail to connect (the socket never appears).
+///
+/// On **macOS** we use `ps -p <pid> -o comm=` to verify the process name.
+/// On **Linux** we read `/proc/<pid>/comm`.
+/// On **Windows** we check `tasklist` output for `uffsd`.
 fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        // Unix PIDs fit in i32 — wrapping is not possible in practice.
+        // First, cheap signal-zero check.
         #[expect(clippy::cast_possible_wrap, reason = "Unix PIDs are always < 2^31")]
         let pid_i32 = pid as i32;
         // SAFETY: kill(pid, 0) only checks if a signal *could* be sent
         // to the given PID — it does not actually deliver any signal.
         // The pid comes from our own PID file (trusted input).
         #[expect(unsafe_code, reason = "kill(pid, 0) is a safe existence check")]
-        let result = unsafe { libc::kill(pid_i32, 0) };
-        result == 0
+        let alive = unsafe { libc::kill(pid_i32, 0) } == 0;
+        if !alive {
+            return false;
+        }
+
+        // Process exists — verify it is actually uffsd.
+        is_daemon_process(pid)
     }
     #[cfg(not(unix))]
     {
+        // Windows: `tasklist` filtered to our PID.
         std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .output()
-            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+            .is_ok_and(|output| {
+                let text = String::from_utf8_lossy(&output.stdout);
+                // tasklist prints  "uffsd.exe  <PID> ..." when the process matches.
+                // Verify both the PID and the executable name.
+                text.contains(&pid.to_string()) && text.contains("uffsd")
+            })
     }
+}
+
+/// Verify that the process with `pid` is actually a `uffsd` daemon.
+#[cfg(unix)]
+fn is_daemon_process(pid: u32) -> bool {
+    // Linux: read /proc/<pid>/comm (fastest, no fork).
+    #[cfg(target_os = "linux")]
+    {
+        let comm_path = format!("/proc/{pid}/comm");
+        if let Ok(comm) = std::fs::read_to_string(&comm_path) {
+            return comm.trim() == "uffsd";
+        }
+    }
+
+    // macOS / fallback: use `ps -p <pid> -o comm=`.
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|output| {
+            let comm = String::from_utf8_lossy(&output.stdout);
+            // `ps -o comm=` prints the executable path or basename.
+            // Match if any path component is "uffsd".
+            comm.trim()
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| name == "uffsd")
+        })
 }

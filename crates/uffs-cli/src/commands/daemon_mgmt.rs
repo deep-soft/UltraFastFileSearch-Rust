@@ -20,12 +20,14 @@ pub fn daemon(action: &DaemonAction) -> Result<()> {
         DaemonAction::Start {
             mft_file,
             data_dir,
+            drives,
             no_cache,
             log_level,
             log_file,
         } => daemon_start(
             mft_file,
             data_dir.as_deref(),
+            drives,
             *no_cache,
             log_level,
             log_file.as_deref(),
@@ -50,9 +52,14 @@ pub fn daemon(action: &DaemonAction) -> Result<()> {
 /// `uffs daemon start` — start the daemon, forwarding data-source flags
 /// as-is so the daemon resolves them internally (DRY).
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+#[expect(
+    clippy::use_debug,
+    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
+)]
 fn daemon_start(
     mft_files: &[std::path::PathBuf],
     data_dir: Option<&std::path::Path>,
+    drives: &[char],
     no_cache: bool,
     log_level: &str,
     log_file: Option<&std::path::Path>,
@@ -62,6 +69,11 @@ fn daemon_start(
         println!("Daemon is already running. Use `uffs daemon restart` to reload.");
         return Ok(());
     }
+
+    // [diag] Show what the CLI received before building spawn args.
+    println!(
+        "[diag] daemon_start: drives={drives:?}  log_level={log_level:?}  log_file={log_file:?}"
+    );
 
     // Build spawn args — forward raw, let daemon handle discovery.
     let mut spawn_args = Vec::new();
@@ -73,17 +85,59 @@ fn daemon_start(
         spawn_args.push("--mft-file".to_owned());
         spawn_args.push(mft_path.to_string_lossy().into_owned());
     }
+    for letter in drives {
+        spawn_args.push("--drive".to_owned());
+        spawn_args.push(letter.to_string());
+    }
     if no_cache {
         spawn_args.push("--no-cache".to_owned());
     }
-    if log_level != "info" {
+
+    // ── Env-var forwarding ────────────────────────────────────────────────
+    // The spawned daemon is a detached background process.  On Windows it is
+    // often elevated via ShellExecuteW("runas"), which starts a new session
+    // and does NOT reliably inherit the parent PowerShell's env block.
+    // We therefore bake RUST_LOG / UFFS_LOG / UFFS_LOG_DIR into argv so the
+    // daemon always receives them regardless of how it is elevated.
+
+    // Probe env vars (read once so we can print them before forwarding).
+    let env_rust_log = std::env::var("RUST_LOG").ok();
+    let env_uffs_log = std::env::var("UFFS_LOG").ok();
+    let env_uffs_log_dir = std::env::var("UFFS_LOG_DIR").ok();
+
+    // Effective log level: CLI arg wins; fall back to UFFS_LOG then RUST_LOG.
+    let effective_log_level: String = if log_level == "info" {
+        env_uffs_log
+            .clone()
+            .or_else(|| env_rust_log.clone())
+            .unwrap_or_else(|| log_level.to_owned())
+    } else {
+        log_level.to_owned()
+    };
+    if effective_log_level != "info" {
         spawn_args.push("--log-level".to_owned());
-        spawn_args.push(log_level.to_owned());
+        spawn_args.push(effective_log_level.clone());
     }
-    if let Some(path) = log_file {
+
+    // Effective log file: CLI arg wins; fall back to $UFFS_LOG_DIR/uffsd.log.
+    let derived_log_file = env_uffs_log_dir
+        .as_deref()
+        .map(|dir| std::path::PathBuf::from(dir).join("uffsd.log"));
+    let effective_log_file = log_file
+        .map(std::path::Path::to_path_buf)
+        .or(derived_log_file);
+    if let Some(path) = &effective_log_file {
         spawn_args.push("--log-file".to_owned());
         spawn_args.push(path.to_string_lossy().into_owned());
     }
+
+    // [diag] Print every diagnostic variable so we can trace the full chain.
+    println!("[diag] env  RUST_LOG    = {env_rust_log:?}");
+    println!("[diag] env  UFFS_LOG    = {env_uffs_log:?}");
+    println!("[diag] env  UFFS_LOG_DIR= {env_uffs_log_dir:?}");
+    println!("[diag] eff  log_level   = {effective_log_level:?}");
+    println!("[diag] eff  log_file    = {effective_log_file:?}");
+    println!("[diag] full spawn_args  = {spawn_args:?}");
 
     if !cfg!(windows) && spawn_args.is_empty() {
         anyhow::bail!(
@@ -401,21 +455,54 @@ fn daemon_load(
         }
     }
 
-    if paths.is_empty() {
+    // Drive letters without --data-dir → hot-load by letter.
+    // On Windows this reads live NTFS; on non-Windows the daemon uses its
+    // own data_dir.
+    let direct_drives: Vec<char> = if data_dir.is_none() && paths.is_empty() {
+        drives.to_vec()
+    } else {
+        Vec::new()
+    };
+
+    if paths.is_empty() && direct_drives.is_empty() {
         anyhow::bail!(
             "Nothing to load. Provide --mft-file <path>, --data-dir <path>, \
-             or --data-dir <path> --drive <letter>."
+             --drive <letter>, or --data-dir <path> --drive <letter>."
         );
     }
 
-    println!("Loading {} MFT file(s)...", paths.len());
-    for path in &paths {
-        println!("  → {path}");
-    }
+    // Load MFT files (if any).
+    let mut resp = if paths.is_empty() {
+        uffs_client::protocol::response::LoadDriveResponse {
+            loaded: Vec::new(),
+            already_loaded: Vec::new(),
+            errors: Vec::new(),
+        }
+    } else {
+        println!("Loading {} MFT file(s)...", paths.len());
+        for path in &paths {
+            println!("  → {path}");
+        }
+        client
+            .load_drive(&paths, no_cache)
+            .with_context(|| "load_drive IPC failed")?
+    };
 
-    let resp = client
-        .load_drive(&paths, no_cache)
-        .with_context(|| "load_drive IPC failed")?;
+    // Hot-load by drive letter (if any).
+    if !direct_drives.is_empty() {
+        let drive_list: String = direct_drives
+            .iter()
+            .map(|ch| format!("{ch}:"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("Hot-loading drive(s): {drive_list}");
+        let drive_resp = client
+            .load_drive_letters(&direct_drives, no_cache)
+            .with_context(|| "load_drive_letters IPC failed")?;
+        resp.loaded.extend(drive_resp.loaded);
+        resp.already_loaded.extend(drive_resp.already_loaded);
+        resp.errors.extend(drive_resp.errors);
+    }
 
     if !resp.loaded.is_empty() {
         println!(

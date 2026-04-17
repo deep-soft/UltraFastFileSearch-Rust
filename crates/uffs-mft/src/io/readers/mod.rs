@@ -28,6 +28,8 @@ mod basic;
 #[cfg(windows)]
 mod iocp;
 #[cfg(windows)]
+pub(crate) mod mft_file;
+#[cfg(windows)]
 mod pipelined;
 #[cfg(windows)]
 mod prefetch;
