@@ -60,8 +60,9 @@ impl UffsClientSync {
     /// Auto-start uses the default
     /// [`ElevationPolicy::RequireExistingElevation`].  On Windows, if
     /// the daemon must be spawned and the current process is not
-    /// elevated, this returns [`ClientError::DaemonNeedsElevation`]
-    /// instead of silently triggering UAC.  See
+    /// elevated, this returns
+    /// [`crate::error::ClientError::DaemonNeedsElevation`] instead of
+    /// silently triggering UAC.  See
     /// [`Self::connect_with_elevation`] for the opt-in variant.
     ///
     /// # Errors

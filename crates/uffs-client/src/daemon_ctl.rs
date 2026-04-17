@@ -180,7 +180,7 @@ pub fn find_daemon_exe() -> PathBuf {
 ///
 /// The new default is [`ElevationPolicy::RequireExistingElevation`]:
 /// the spawn succeeds only if the current process is already elevated;
-/// otherwise it returns [`ClientError::DaemonNeedsElevation`] and the
+/// otherwise it returns [`crate::error::ClientError::DaemonNeedsElevation`] and the
 /// CLI renders an actionable message.  Callers that actually want the
 /// UAC dialog (e.g. `uffs daemon start --elevate`) must opt in with
 /// [`ElevationPolicy::AllowUacPrompt`].
@@ -189,7 +189,8 @@ pub fn find_daemon_exe() -> PathBuf {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ElevationPolicy {
     /// Spawn only if this process is already elevated.  If not, return
-    /// [`ClientError::DaemonNeedsElevation`] without touching the UI.
+    /// [`crate::error::ClientError::DaemonNeedsElevation`] without
+    /// touching the UI.
     ///
     /// This is the default for every implicit auto-spawn path (e.g.
     /// `UffsClient::connect_with_args`).
@@ -259,8 +260,9 @@ pub fn resolve_elevation_policy(force_allow: bool) -> ElevationPolicy {
 ///
 /// # Errors
 ///
-/// Returns [`ClientError::DaemonStartFailed`] if the process creation
-/// itself fails, or [`ClientError::DaemonNeedsElevation`] if the policy
+/// Returns [`crate::error::ClientError::DaemonStartFailed`] if the
+/// process creation itself fails, or
+/// [`crate::error::ClientError::DaemonNeedsElevation`] if the policy
 /// does not allow a UAC prompt in the current elevation state.
 #[cfg(unix)]
 pub fn spawn_daemon(

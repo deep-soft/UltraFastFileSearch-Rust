@@ -85,8 +85,9 @@ impl UffsClient {
     /// Auto-start uses the default
     /// [`ElevationPolicy::RequireExistingElevation`] — on Windows, if
     /// the daemon must be spawned and the current process is not
-    /// elevated, this returns [`ClientError::DaemonNeedsElevation`]
-    /// instead of triggering a UAC prompt.  Callers that want the
+    /// elevated, this returns
+    /// [`crate::error::ClientError::DaemonNeedsElevation`] instead of
+    /// triggering a UAC prompt.  Callers that want the
     /// pre-v0.5.36 behavior (automatic UAC dialog) should use
     /// [`Self::connect_with_elevation`] or set `UFFS_ELEVATE=1`.
     ///
