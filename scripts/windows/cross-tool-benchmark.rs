@@ -18,11 +18,19 @@
 //!
 //! # Tool CLI references
 //!
-//!   UFFS (Rust): uffs.exe "<pattern>" --drive <X> --out=bench_out.csv --columns Path --profile
+//!   UFFS (Rust): uffs.exe "<pattern>" --drive <X> --out=bench_out.csv \
+//!                --columns Path --profile --hide-system --hide-ads
 //!     - Search is the default action (no "search" subcommand).
 //!     - No limit — all results written to file.  Path-only for fair I/O.
 //!     - Daemon model: COLD/WARM/HOT phases.
-//!     - Ref: internal — see `uffs.exe --help`
+//!     - `--hide-system` + `--hide-ads` are PARITY filters: Everything does
+//!       not index NTFS system files (`$MFT`, `$Bitmap`, …) or Alternate
+//!       Data Streams by default, while UFFS does. Without these flags, UFFS
+//!       returns 30–70% more rows than Everything for broad patterns
+//!       (`win*`, `config`, …), which makes timing comparisons apples-vs-
+//!       pears. With them, row counts align within a few rows across tools.
+//!     - Ref: internal — see `uffs.exe --help` and
+//!       `docs/user-manual/filters.md` §1 (Scope Filters).
 //!   UFFS (C++):  uffs.com <pattern> --drives=<X> --columns=path
 //!     - No daemon, no --limit. Reads MFT every invocation. Outputs ALL results.
 //!     - Path-only output (--columns=path) for fair comparison.
@@ -246,7 +254,15 @@ fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
     let bpath = bench_out_path();
     let out_arg = format!("--out={}", bpath);
     // Path-only output for fair comparison with es.exe (which only outputs Filename).
-    let args = [pattern, "--drive", drive, &out_arg, "--profile", "--columns", "Path"];
+    // --hide-system + --hide-ads bring UFFS result semantics in line with
+    // Everything (which does not index NTFS system files or Alternate Data
+    // Streams by default). Without these flags, UFFS returns 30-70% more
+    // rows for broad patterns and the timing comparison is meaningless.
+    let args = [
+        pattern, "--drive", drive, &out_arg, "--profile",
+        "--columns", "Path",
+        "--hide-system", "--hide-ads",
+    ];
     eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
     let t = Instant::now();
     let r = Command::new(bin)
