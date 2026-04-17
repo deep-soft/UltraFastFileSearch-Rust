@@ -1439,6 +1439,72 @@ fn run_rpc_custom_validator(name: &str, result: &Value) -> Result<String> {
             for w in lens.windows(2) { if w[0] < w[1] { bail!("Not desc: {} < {}", w[0], w[1]); } }
             Ok(format!("{} rows, sorted by name length desc", rows.len()))
         }
+        "T67f2" => {
+            // PathOnly sort must honour Windows Explorer's `Folder` column
+            // convention: when two rows share the same parent directory
+            // (case-insensitive), the secondary tiebreaker is filename
+            // ASC.  Mirrored by
+            // `search_index_path_only_sort_name_asc_within_same_folder`
+            // in crates/uffs-core/src/search/backend_tests.rs.
+            //
+            // This validator *only* checks the tiebreaker invariant — it
+            // intentionally does NOT re-validate the primary `path_only`
+            // ASC ordering.  Primary ordering is T67f's job (via the
+            // generic sort_check framework, which folds with
+            // `.to_lowercase()`); the daemon's sort uses NTFS $UpCase
+            // (upper-fold), and the two conventions only disagree on
+            // characters between `Z` (0x5A) and `a` (0x61) — notably `_`
+            // (0x5F).  Validating primary here would spuriously fail on
+            // path pairs like `pmf_ryzenaimax` vs `pmf_ryzen_ai` where
+            // upper-fold places `A`<`_` and lower-fold places `_`<`a`.
+            //
+            // The sibling rows we care about (same path_only) have
+            // identical case-folded prefixes so this ambiguity never
+            // surfaces for tiebreaker comparison.
+            let rows = get_rows(result);
+            if rows.len() < 2 {
+                bail!("Need ≥ 2 rows to validate path_only+name sort, got {}", rows.len());
+            }
+            let pairs: Vec<(String, String)> = rows.iter().map(|r| {
+                let path = field_str(r, "path");
+                let name = field_str(r, "name");
+                let dir = path
+                    .strip_suffix(&name)
+                    .unwrap_or(&path)
+                    .trim_end_matches('\\')
+                    .to_owned();
+                (dir, name.to_owned())
+            }).collect();
+            let mut saw_tiebreaker = false;
+            for w in pairs.windows(2) {
+                let (po0, n0) = &w[0];
+                let (po1, n1) = &w[1];
+                if po0.eq_ignore_ascii_case(po1) {
+                    saw_tiebreaker = true;
+                    let n0_fold = n0.to_lowercase();
+                    let n1_fold = n1.to_lowercase();
+                    if n0_fold > n1_fold {
+                        bail!(
+                            "Not asc (name tiebreaker within '{}'): '{}' > '{}'",
+                            po0, n0, n1
+                        );
+                    }
+                }
+            }
+            if !saw_tiebreaker {
+                bail!(
+                    "Test vacuous: {} rows all have distinct path_only values — \
+                     no adjacent pair with equal path_only to exercise the name \
+                     tiebreaker.  Expand the search or raise --limit so rows from \
+                     the same folder appear together.",
+                    rows.len()
+                );
+            }
+            Ok(format!(
+                "{} rows, name-ASC tiebreaker verified for same-folder siblings",
+                rows.len()
+            ))
+        }
         "T75" => {
             let rows = get_rows(result);
             if rows.is_empty() { bail!("No rows — cannot validate ext+size filter"); }

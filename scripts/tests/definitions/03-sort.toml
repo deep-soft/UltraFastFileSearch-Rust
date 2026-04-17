@@ -269,6 +269,24 @@ column = "Path Only"
 order  = "asc"
 type   = "string"
 
+# T67f2 pins Windows Explorer's `Folder` column convention: when two
+# rows share the same parent directory (path_only), the secondary sort
+# must be by filename ASC.  Uses *.dll + a larger limit so the result
+# set contains multiple DLLs from the same folder (e.g. System32) —
+# the validator rejects a vacuous pass where every path_only differs.
+# Mirrored by the `search_index_path_only_sort_name_asc_within_same_folder`
+# Rust unit test in crates/uffs-core/src/search/backend_tests.rs.
+[[test]]
+id          = "T67f2"
+group       = "sort"
+name        = "T67f2 --sort path_only (name tiebreaker within folder)"
+title       = "T67f2 --sort path_only (name tiebreaker within folder)"
+short_desc  = "T67f2 name-ASC tiebreaker within same path_only"
+cli_args    = ["*.dll", "--sort", "path_only", "--limit", "200"]
+expect_min_rows = 2
+expect_max_rows = 200
+validator   = "T67f2"
+
 [[test]]
 id          = "T67g"
 group       = "sort"
