@@ -265,18 +265,8 @@ impl LifecycleManager {
             return true;
         }
 
-        // Validate exe hash — if it doesn't match, it's from a different binary
-        let expected_hash = Self::expected_daemon_exe_hash();
-        if expected_hash != 0 && exe_hash != expected_hash {
-            tracing::info!(
-                pid,
-                "PID file exe hash mismatch (stale from different binary), cleaning up"
-            );
-            let _ignore = std::fs::remove_file(&self.pid_path);
-            return true;
-        }
-
-        // Check if the process is still alive
+        // Liveness check comes FIRST — if the process is alive, the daemon
+        // is running regardless of whether the binary was rebuilt since then.
         if Self::is_process_alive(pid) {
             tracing::warn!(
                 pid,
@@ -285,8 +275,19 @@ impl LifecycleManager {
             return false;
         }
 
-        // Stale PID file — process is dead, clean up
-        tracing::info!(pid, "Cleaning up stale PID file from dead process");
+        // Process is dead.  The exe hash is only useful for detecting
+        // leftover PID files from a *different* binary installation (e.g.
+        // after `just use` rebuilt everything), but only when the process
+        // is already gone.
+        let expected_hash = Self::expected_daemon_exe_hash();
+        if expected_hash != 0 && exe_hash != expected_hash {
+            tracing::info!(
+                pid,
+                "PID file exe hash mismatch (stale from different binary), cleaning up"
+            );
+        } else {
+            tracing::info!(pid, "Cleaning up stale PID file from dead process");
+        }
         let _ignore = std::fs::remove_file(&self.pid_path);
         true
     }
