@@ -62,9 +62,29 @@ pub(crate) struct IndexManager {
     /// Event broadcaster — pushes notifications to all connected clients.
     events: EventSender,
     // ── Concurrency control ────────────────────────────────────────
-    /// Limits simultaneous search operations to prevent CPU/memory
-    /// exhaustion.  Permits = available parallelism (CPU cores).
-    search_semaphore: Semaphore,
+    /// Limits simultaneous search operations to prevent rayon-pool
+    /// oversubscription during aggregate queries.
+    ///
+    /// Every search fans out across the loaded drives via
+    /// `drives.par_iter()` in `uffs-core`.  On a box with `C` CPU cores
+    /// and `D` loaded drives, admitting `K` concurrent searches spawns
+    /// `K × D` rayon tasks onto a `C`-thread pool.  Once `K × D > C`
+    /// the work-stealing scheduler spends significant time on pair-
+    /// merge coordination rather than compute — measured at ~9.7×
+    /// per-query slowdown at `K × D / C = 7×` oversubscription (24
+    /// concurrent queries × 7 drives on 24 cores, Windows validation
+    /// Run 7 of the 2026-04-18 healing log).
+    ///
+    /// Sizing: we target `max(2, cpus / drives)` permits so the product
+    /// `permits × drives ≤ cpus`, keeping rayon's queue depth at ≤1
+    /// task per thread even at peak admission.  The semaphore is
+    /// replaced (not mutated) when drive count changes via
+    /// [`Self::tune_concurrency`]; in-flight queries hold owned
+    /// permits on the pre-swap instance and finish naturally.
+    search_semaphore: RwLock<Arc<Semaphore>>,
+    /// Cached CPU count for the concurrency formula.  Captured once at
+    /// construction so repeated tuning calls are cheap.
+    cpus: usize,
     // ── Performance counters ────────────────────────────────────────
     /// Total search queries served.
     queries_total: AtomicU64,
@@ -78,6 +98,11 @@ pub(crate) struct IndexManager {
 
 impl IndexManager {
     /// Create a new empty index manager.
+    ///
+    /// The search semaphore is initialised with `cpus` permits; this is
+    /// retuned to `max(2, cpus / drives)` via [`Self::tune_concurrency`]
+    /// once drives are loaded.  Pre-load queries are cheap (no drives
+    /// to scan), so the initial value is not performance-critical.
     #[must_use]
     pub(crate) fn new(data_dir: Option<PathBuf>, events: EventSender) -> Self {
         let cpus = std::thread::available_parallelism().map_or(4, core::num::NonZeroUsize::get);
@@ -90,12 +115,60 @@ impl IndexManager {
             start_time: Instant::now(),
             data_dir,
             events,
-            search_semaphore: Semaphore::new(cpus),
+            search_semaphore: RwLock::new(Arc::new(Semaphore::new(cpus))),
+            cpus,
             queries_total: AtomicU64::new(0),
             queries_total_us: AtomicU64::new(0),
             startup_duration_us: AtomicU64::new(0),
             drive_timings: RwLock::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Acquire an owned search-concurrency permit.
+    ///
+    /// Returns `None` if the semaphore was closed (daemon shutting
+    /// down).  The permit is tied to the semaphore instance that was
+    /// current at acquisition time — if [`Self::tune_concurrency`]
+    /// swaps the semaphore while this permit is outstanding, the old
+    /// instance stays alive until the permit is dropped, so in-flight
+    /// queries always see a consistent admission slot.
+    pub(crate) async fn acquire_search_permit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let sem = Arc::clone(&*self.search_semaphore.read().await);
+        sem.acquire_owned().await.ok()
+    }
+
+    /// Re-size the search semaphore to match the currently loaded
+    /// drive count.
+    ///
+    /// Formula: `max(2, cpus / drives)`.  The floor of 2 keeps the
+    /// daemon responsive on single-drive boxes (where the formula
+    /// would otherwise collapse to `cpus` — identical to the pre-tune
+    /// default, which is fine) and on machines with an unusually
+    /// large number of drives (where it would hit 1 and serialize all
+    /// queries).
+    ///
+    /// Implementation: the current `Arc<Semaphore>` is swapped out
+    /// for a fresh one with the new permit count.  In-flight queries
+    /// keep the pre-swap `Arc` alive via their owned permits and
+    /// finish on the old instance; new queries acquire on the new one.
+    /// This costs one allocation and one pointer swap per drive-count
+    /// change and avoids the "forget-debt" bookkeeping that
+    /// [`Semaphore::forget_permits`] would require when in-flight
+    /// queries outnumber the target permit count.
+    pub(crate) async fn tune_concurrency(&self) {
+        let drive_count = self.snapshot().await.drives.len().max(1);
+        let target = (self.cpus / drive_count).max(2);
+        let mut slot = self.search_semaphore.write().await;
+        let previous_permits = slot.available_permits();
+        *slot = Arc::new(Semaphore::new(target));
+        drop(slot);
+        tracing::info!(
+            cpus = self.cpus,
+            drives = drive_count,
+            target,
+            previous_permits,
+            "search concurrency retuned"
+        );
     }
 
     /// Get a reference to the event sender (for IPC and lifecycle integration).
@@ -189,6 +262,10 @@ impl IndexManager {
             };
             drop(progress);
         }
+
+        // Retune the search-concurrency semaphore to match the loaded
+        // drive count before admitting queries (see `tune_concurrency`).
+        self.tune_concurrency().await;
 
         // Mark as ready + record startup duration.
         self.set_ready().await;
@@ -363,6 +440,10 @@ impl IndexManager {
 
         // Final allocator purge after all drives are loaded.
         release_allocator_pages();
+
+        // Retune the search-concurrency semaphore to match the loaded
+        // drive count before admitting queries (see `tune_concurrency`).
+        self.tune_concurrency().await;
 
         self.set_ready().await;
 
@@ -869,6 +950,8 @@ impl IndexManager {
                     drives_total: 1,
                 });
                 self.add_drive(drive_index).await;
+                // Drive count changed — resize the search semaphore.
+                self.tune_concurrency().await;
                 Ok(Some(letter))
             }
             Ok(Err(load_err)) => {

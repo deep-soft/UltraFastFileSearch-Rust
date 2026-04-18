@@ -40,27 +40,27 @@ impl IndexManager {
     )]
     pub(crate) async fn search(&self, params: &SearchParams) -> SearchResponse {
         // Acquire a concurrency permit — blocks if too many searches
-        // are already in flight (prevents CPU/memory exhaustion).
-        let _permit = match self.search_semaphore.acquire().await {
-            Ok(permit) => permit,
-            Err(_closed) => {
-                return SearchResponse {
-                    rows: Vec::new(),
-                    total_count: 0,
-                    records_scanned: 0,
-                    duration_ms: 0,
-                    truncated: false,
-                    shmem_path: None,
-                    shmem_count: None,
-                    profile: None,
-                    applied_sorts: Vec::new(),
-                    applied_projection: Vec::new(),
-                    response_mode: None,
-                    projected_rows: None,
-                    aggregations: vec![],
-                    paths_blob: None,
-                };
-            }
+        // are already in flight.  The effective cap is `max(2, cpus /
+        // drives)` (see `IndexManager::tune_concurrency`) to prevent
+        // rayon-pool oversubscription from the per-query
+        // `drives.par_iter()` fanout.
+        let Some(_permit) = self.acquire_search_permit().await else {
+            return SearchResponse {
+                rows: Vec::new(),
+                total_count: 0,
+                records_scanned: 0,
+                duration_ms: 0,
+                truncated: false,
+                shmem_path: None,
+                shmem_count: None,
+                profile: None,
+                applied_sorts: Vec::new(),
+                applied_projection: Vec::new(),
+                response_mode: None,
+                projected_rows: None,
+                aggregations: vec![],
+                paths_blob: None,
+            };
         };
 
         let query_start = Instant::now();

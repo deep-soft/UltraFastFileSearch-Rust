@@ -615,7 +615,7 @@ fn merge_accumulator_sets(a: &mut [GroupAccumulator], b: &[GroupAccumulator]) {
 /// be reduced back together, and the rayon pool ends up oversubscribed
 /// K×cores² with K concurrent queries).  See
 /// `LOG/2026_04_18_08_09_CHANGELOG_HEALING.md` Run 7 for the
-/// measurements that drove v0.5.42's revert from intra-drive rayon.
+/// measurements that drove v0.5.43's revert from intra-drive rayon.
 ///
 /// Returns `(accumulators, records_scanned, records_matched)`.
 /// For unfiltered aggregation `matched == scanned == records.len()`.
