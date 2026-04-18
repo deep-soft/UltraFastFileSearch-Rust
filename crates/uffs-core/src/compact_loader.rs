@@ -207,7 +207,9 @@ fn parse_mft_file_to_index(
         volume_letter: Some(drive_letter),
         forensic: false,
     };
-    Ok(uffs_mft::MftReader::load_raw_to_index_direct(mft_path, &options)?)
+    Ok(uffs_mft::MftReader::load_raw_to_index_direct(
+        mft_path, &options,
+    )?)
 }
 
 /// Kick off the post-parse background cache save and emit a matching

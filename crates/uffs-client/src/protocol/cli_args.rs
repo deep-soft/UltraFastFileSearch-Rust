@@ -113,10 +113,10 @@ fn is_pure_ext_glob(pattern: &str) -> bool {
 /// Returns `Some((letter_upper, rest))` when `pattern` matches exactly:
 /// - a single ASCII alphabetic character (the drive letter), followed by
 /// - a literal `:`, followed by
-/// - a non-empty `rest` that does **not** start with `\` or `/` (if it
-///   does, the pattern is path-anchored and must route through the tree
-///   walker in `uffs_core::search::tree`, which already scopes its walk
-///   to the drive root).
+/// - a non-empty `rest` that does **not** start with `\` or `/` (if it does,
+///   the pattern is path-anchored and must route through the tree walker in
+///   `uffs_core::search::tree`, which already scopes its walk to the drive
+///   root).
 ///
 /// Examples that parse:
 /// - `C:*.dll`       → `('C', "*.dll")`
@@ -586,22 +586,18 @@ impl RawCliArgs {
         //
         // Guards:
         // - `match_path` off: `path:*.dll` scans full paths, not names.
-        // - `case_sensitive` off: `--case *.DLL` would return zero
-        //   results today (no files have literal uppercase extensions
-        //   on NTFS), but the ext index is case-folded and would
-        //   return all .dll files.  Preserve the stricter semantic.
+        // - `case_sensitive` off: `--case *.DLL` would return zero results today (no
+        //   files have literal uppercase extensions on NTFS), but the ext index is
+        //   case-folded and would return all .dll files.  Preserve the stricter
+        //   semantic.
         // - `self.ext` is `None`: don't clobber an explicit `--ext`.
-        // - `is_pure_ext_glob`: only `*.<alnum+_>+` shapes are safe to
-        //   promote; `*.tar.gz`, `*.[ch]`, etc. stay on trigram.
+        // - `is_pure_ext_glob`: only `*.<alnum+_>+` shapes are safe to promote;
+        //   `*.tar.gz`, `*.[ch]`, etc. stay on trigram.
         //
         // Mirrored at dispatch time by
         // `uffs_core::search::backend::search_index` as a safety net for
         // direct JSON-RPC `search` callers that skip this parser.
-        if !match_path
-            && !case_sensitive
-            && self.ext.is_none()
-            && is_pure_ext_glob(&pattern)
-        {
+        if !match_path && !case_sensitive && self.ext.is_none() && is_pure_ext_glob(&pattern) {
             let ext = pattern
                 .strip_prefix("*.")
                 .unwrap_or_default()

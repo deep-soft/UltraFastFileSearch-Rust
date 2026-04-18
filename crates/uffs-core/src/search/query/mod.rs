@@ -78,13 +78,9 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
         // name-sorted siblings, which is exactly lexicographic full-path
         // ASC (and DESC when the drive+child orders are reversed).  No
         // post-sort needed.
-        FieldId::Path => collect_path_sorted_top_n(
-            drives,
-            limit,
-            sort_desc,
-            filter_mode,
-            search_filters,
-        ),
+        FieldId::Path => {
+            collect_path_sorted_top_n(drives, limit, sort_desc, filter_mode, search_filters)
+        }
         // Parent-directory sort: tree-walk order is NOT equivalent to
         // path_only-ASC when records interleave across depths (e.g.
         // `/a/b/file.exe` with path_only=`/a/b` visits BEFORE
@@ -101,12 +97,7 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
                 filter_mode,
                 search_filters,
             );
-            crate::search::sorting::sort_rows(
-                &mut rows,
-                FieldId::PathOnly,
-                sort_desc,
-                &[],
-            );
+            crate::search::sorting::sort_rows(&mut rows, FieldId::PathOnly, sort_desc, &[]);
             rows.truncate(limit);
             rows
         }
@@ -254,12 +245,8 @@ fn collect_path_sorted_top_n<D: AsRef<DriveCompactIndex>>(
 
             // Remaining filters need the full `DisplayRow` (resolved
             // path + semantic type).  Build it, then check.
-            let path = tree::resolve_path_cached(
-                drive,
-                idx as usize,
-                volume_prefix,
-                &mut dir_cache,
-            );
+            let path =
+                tree::resolve_path_cached(drive, idx as usize, volume_prefix, &mut dir_cache);
             let row = make_display_row(idx, drive.letter, rec, name, path);
             if !super::filters::row_passes_filters(&row, search_filters, &fold, &mut fold_buf) {
                 continue;

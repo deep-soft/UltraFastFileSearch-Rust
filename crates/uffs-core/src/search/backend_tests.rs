@@ -725,10 +725,7 @@ fn search_index_promotes_ext_glob_and_returns_matching_results() {
     );
     // Fixture has exactly one .txt file on C.
     assert_eq!(result.rows.len(), 1, "expected one .txt result");
-    let first = result
-        .rows
-        .first()
-        .expect("asserted non-empty above");
+    let first = result.rows.first().expect("asserted non-empty above");
     assert!(
         first.path.ends_with("report.txt"),
         "expected report.txt, got: {}",
@@ -908,7 +905,11 @@ fn search_index_drive_prefix_narrows_away_other_drives() {
         result.rows.is_empty(),
         "D drive has no .txt files — safety net must have narrowed away from C's report.txt; got {} rows: {:?}",
         result.rows.len(),
-        result.rows.iter().map(|row| (row.drive, row.path.clone())).collect::<Vec<_>>()
+        result
+            .rows
+            .iter()
+            .map(|row| (row.drive, row.path.clone()))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -963,7 +964,11 @@ fn search_index_drive_prefix_explicit_filter_not_clobbered() {
     assert!(
         result.rows.is_empty(),
         "explicit drives_filter=['D'] must win; pattern `C:*.txt` cannot match names on D; got {:?}",
-        result.rows.iter().map(|row| (row.drive, row.path.clone())).collect::<Vec<_>>()
+        result
+            .rows
+            .iter()
+            .map(|row| (row.drive, row.path.clone()))
+            .collect::<Vec<_>>()
     );
 }
 

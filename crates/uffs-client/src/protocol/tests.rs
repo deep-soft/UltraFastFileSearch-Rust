@@ -1410,11 +1410,7 @@ fn from_cli_args_drive_prefix_lowercase_letter_is_uppercased() {
 /// but the drive assignment honours the user's explicit flag.
 #[test]
 fn from_cli_args_drive_prefix_respects_explicit_drive_flag() {
-    let args: Vec<String> = vec![
-        "--drive".into(),
-        "D".into(),
-        "C:*.dll".into(),
-    ];
+    let args: Vec<String> = vec!["--drive".into(), "D".into(), "C:*.dll".into()];
     let params = SearchParams::from_cli_args(&args).expect("parse");
     assert_eq!(
         params.drives,
