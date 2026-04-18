@@ -78,7 +78,30 @@ The lint-healing edits introduced rustfmt drift in the same files I just touched
 
 ### Run 3 — `just ship -v`
 
-**Result:** ⏳ pending.
+**Result:** ❌ Phase 2 step `11-git-push` failed.
+
+Phase 1 + 2/build/deploy completed cleanly (release build green, binary uploaded as `v0.5.37`, auto-commit `3800ec863` created at step 10).  Step 11 then ran `git pull origin main --rebase` and bailed with `cannot pull with rebase: You have unstaged changes`.
+
+**Root cause.**  My pre-pipeline `tee` captured the run output into root-level `.ship_run3.log`.  The auto-commit at step 10 ran `git add .` which swallowed all four `.ship_run*.log` / `.clippy_run2.log` files; meanwhile `tee` kept appending to `.ship_run3.log` as the pipeline continued — so by the time step 11 fired, `.ship_run3.log` had a dirty diff against the freshly-sealed commit.
+
+**Fix (no suppression hack).**
+
+1. `.gitignore`: add patterns for transient root-level pipeline logs (`/.ship_run*.log`, `/.clippy_run*.log`, `/.git_*.txt`).  Switch `/LOG/` (directory ignore) → `/LOG/*` (contents ignore) and add a negation for `/LOG/*CHANGELOG_HEALING.md` so this changelog can be tracked.  (Git won't re-include files inside an ignored *directory*; ignoring the contents is the standard workaround.)
+2. `git rm --cached` the four log files that were swallowed.
+3. `git add` `.gitignore` + this changelog.
+4. `git commit --amend --no-edit` → new SHA `83ca02953`.
+
+### Run 4 — `just ship -v`
+
+**Result:** ✅ **GREEN.**
+
+* Phase 1 short-circuited via the resumable-step cache (steps 00-06 all `Skipping completed step`).
+* Phase 2 likewise skipped 07-10 and went straight to step 11.
+* `git pull origin main --rebase` → `up to date`.
+* `git push origin main` → `2ed5f78f5..83ca02953  main -> main`.
+* Total wall-time: 4s (because every prior step was cached from Run 3).
+
+**Outcome.**  v0.5.37 published to GitHub Releases, source pushed to `main`.
 
 ## Status
 
@@ -86,4 +109,5 @@ The lint-healing edits introduced rustfmt drift in the same files I just touched
 |---------|------------------|------------|-------|
 | 1       | `just ship -v`   | ❌ fail    | 6 lib clippy + 36 integration-test clippy errors (all in the FILETIME-fix code) |
 | 2       | `just ship -v`   | ❌ fail    | rustfmt drift in lint-fixed files |
-| 3       | `just ship -v`   | ⏳ pending | After `cargo fmt --all` |
+| 3       | `just ship -v`   | ❌ fail    | git push blocked: transient `.ship_run*.log` files were swallowed by auto-commit then mutated by `tee` |
+| 4       | `just ship -v`   | ✅ GREEN   | v0.5.37 pushed (`83ca02953`) |
