@@ -177,11 +177,59 @@ fn try_compact_cache_hit(
     }))
 }
 
+/// Parse a `.uffs` MFT file into `MftIndex`, choosing the parser that
+/// matches the file format.
+///
+/// IOCP captures must use `load_iocp_to_index` (unified `process_record`
+/// path) which mirrors the Windows LIVE inline parser exactly.  The
+/// generic `load_raw_to_index_with_options` dispatches IOCP to
+/// `load_iocp_capture_to_index` (`MftRecordMerger` multi-pass path) which
+/// produces different `total_stream_count` values and therefore
+/// different tree metrics (descendants, treesize) — a known parity
+/// divergence that we avoid by picking the right parser up front.
+fn parse_mft_file_to_index(
+    mft_path: &std::path::Path,
+    drive_letter: char,
+) -> anyhow::Result<MftIndex> {
+    // `?` performs the `MftError → anyhow::Error` conversion via
+    // `From<MftError> for anyhow::Error`, matching the original
+    // inline call site's behaviour.
+    let is_iocp = uffs_mft::is_iocp_capture(mft_path).unwrap_or(false);
+    if is_iocp {
+        tracing::info!(
+            drive = %drive_letter,
+            "📼 IOCP capture detected — using unified process_record parser for parity"
+        );
+        return Ok(uffs_mft::load_iocp_to_index(mft_path)?);
+    }
+    let options = uffs_mft::raw::LoadRawOptions {
+        header_only: false,
+        volume_letter: Some(drive_letter),
+        forensic: false,
+    };
+    Ok(uffs_mft::MftReader::load_raw_to_index_direct(
+        mft_path, &options,
+    )?)
+}
+
+/// Kick off the post-parse background cache save and emit a matching
+/// tracing line for success or failure.
+fn spawn_mft_cache_save(index: &MftIndex, drive_letter: char) {
+    match uffs_mft::cache::save_to_cache_background(index, drive_letter, 0, 0, 0) {
+        Ok(()) => {
+            tracing::info!(drive = %drive_letter, "💾 MFT cache save started (background)");
+        }
+        Err(err) => {
+            tracing::warn!(
+                drive = %drive_letter,
+                error = %err,
+                "Failed to start .uffs cache save"
+            );
+        }
+    }
+}
+
 /// Load `MftIndex` from an offline file (cache → cold parse).
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "multi-stage loader with cache/live/fallback branches"
-)]
 fn load_mft_index_from_file(
     mft_path: &std::path::Path,
     drive_letter: char,
@@ -192,7 +240,6 @@ fn load_mft_index_from_file(
     } else {
         uffs_mft::cache::load_cached_index(drive_letter, INDEX_TTL_SECONDS)
     };
-
     if let Some((cached_index, _header)) = cached {
         tracing::info!(
             drive = %drive_letter,
@@ -207,37 +254,8 @@ fn load_mft_index_from_file(
         path = %mft_path.display(),
         "📖 Parsing MFT file (delegating to uffs-mft)"
     );
-
-    // IOCP captures must use `load_iocp_to_index` (unified `process_record`
-    // path) which mirrors the Windows LIVE inline parser exactly.  The generic
-    // `load_raw_to_index_with_options` dispatches IOCP to
-    // `load_iocp_capture_to_index` (MftRecordMerger multi-pass path) which
-    // produces different `total_stream_count` values and therefore different
-    // tree metrics (descendants, treesize) — a known parity divergence.
-    let is_iocp = uffs_mft::is_iocp_capture(mft_path).unwrap_or(false);
-    let parsed = if is_iocp {
-        tracing::info!(
-            drive = %drive_letter,
-            "📼 IOCP capture detected — using unified process_record parser for parity"
-        );
-        uffs_mft::load_iocp_to_index(mft_path)?
-    } else {
-        let options = uffs_mft::raw::LoadRawOptions {
-            header_only: false,
-            volume_letter: Some(drive_letter),
-            forensic: false,
-        };
-        uffs_mft::MftReader::load_raw_to_index_direct(mft_path, &options)?
-    };
-
-    // Background save: serialize sync (~500ms), compress/encrypt/write in bg
-    // thread.
-    if let Err(err) = uffs_mft::cache::save_to_cache_background(&parsed, drive_letter, 0, 0, 0) {
-        tracing::warn!(drive = %drive_letter, error = %err, "Failed to start .uffs cache save");
-    } else {
-        tracing::info!(drive = %drive_letter, "💾 MFT cache save started (background)");
-    }
-
+    let parsed = parse_mft_file_to_index(mft_path, drive_letter)?;
+    spawn_mft_cache_save(&parsed, drive_letter);
     Ok(parsed)
 }
 

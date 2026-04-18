@@ -192,8 +192,9 @@ mod platform_tz {
         use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
 
         let mut tz_info = TIME_ZONE_INFORMATION::default();
-        // Safety: passing a valid mutable pointer to a stack-allocated struct.
-        let result = unsafe { GetTimeZoneInformation(&mut tz_info) };
+        // SAFETY: passing a valid mutable pointer to a stack-allocated
+        // struct that outlives the call.
+        let result = unsafe { GetTimeZoneInformation(core::ptr::from_mut(&mut tz_info)) };
 
         // `Bias` is in minutes, UTC = LocalTime + Bias.
         // `DaylightBias` is typically −60 (summer), 0 otherwise.
@@ -204,14 +205,9 @@ mod platform_tz {
         };
 
         // Convert from "bias" (UTC = Local + Bias) to "offset" (Local = UTC + offset).
-        // offset = −Bias
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "bias minutes × 60 fits i32"
-        )]
-        {
-            -(total_bias_minutes * 60)
-        }
+        // offset = −Bias.  `Bias` is documented as signed-minutes in range
+        // ±14 hours, so `× 60` stays well within `i32`.
+        -(total_bias_minutes * 60)
     }
 }
 

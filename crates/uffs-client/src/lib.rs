@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-// Enable unstable Windows Unix domain socket support (available since
-// Windows 10 1803+).  This is a nightly-only feature gate.
-#![cfg_attr(windows, feature(windows_unix_domain_sockets))]
-
 //! Thin client library for the UFFS daemon.
 //!
 //! All surfaces (CLI, TUI, GUI, MCP) use this crate to communicate with
@@ -22,7 +18,17 @@
 use serde as _;
 use uffs_security as _;
 
+/// Async `UffsClient` over tokio — used by the MCP gateway and daemon.
+///
+/// Gated behind the `async` feature so the sync CLI can drop tokio (and
+/// `ws2_32.dll`) from its binary.
+#[cfg(feature = "async")]
 pub mod connect;
+/// Tracing helpers used only by [`connect`].  Private; sibling file
+/// to keep `connect.rs` under the 800-LOC file-size policy after the
+/// v0.5.36 UAC work expanded its public entry points.
+#[cfg(feature = "async")]
+mod connect_logging;
 pub mod connect_sync;
 pub mod daemon_ctl;
 pub mod error;

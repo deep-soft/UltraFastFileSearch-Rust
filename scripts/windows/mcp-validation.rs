@@ -289,7 +289,15 @@ fn extract_text(result: &Value) -> String {
 #[derive(serde::Deserialize)]
 struct TestDefsFile { test: Vec<TestDef> }
 
-fn default_targets() -> Vec<String> { vec!["cli".into(), "api".into()] }
+/// MCP-side default targets: include `"mcp"` so tests that don't
+/// explicitly narrow `targets = [...]` are validated against the MCP
+/// stdio transport too.  MCP is the same daemon RPC surface as `api`
+/// (just wrapped in an MCP tool-call envelope) so the same contract
+/// invariants apply.  Tests that are MCP-incompatible (e.g. ones that
+/// only exist as CLI-specific I/O behaviour) should override by
+/// setting `targets = ["cli", "api"]` explicitly in their TOML
+/// entry.
+fn default_targets() -> Vec<String> { vec!["cli".into(), "api".into(), "mcp".into()] }
 
 /// A single test definition from TOML `[[test]]`.
 #[derive(Clone, serde::Deserialize)]
@@ -321,6 +329,16 @@ struct TestDef {
     #[serde(default = "default_targets")] targets: Vec<String>,
     skip: Option<bool>,
     #[serde(default)] #[allow(dead_code)] tags: Vec<String>,
+
+    /// Negative-path test for raw JSON-RPC error responses (e.g. the
+    /// daemon's unknown-method `-32601` behaviour).  These tests call
+    /// an arbitrary JSON-RPC method and inspect the `error` object,
+    /// a concept that has no direct equivalent on the MCP stdio
+    /// transport (which only exposes tool calls via `tools/call`, not
+    /// arbitrary method names).  MCP skips such tests with a clear
+    /// diagnostic so the author knows coverage exists via the
+    /// corresponding MCP-side test (e.g. `M700` mirrors `RPC.5`).
+    #[serde(default)] expect_error: Option<bool>,
 
     // ── Per-target checks (ignored by MCP validator) ───────────
     #[allow(dead_code)] #[serde(default)] cli_checks: Option<Value>,
@@ -646,6 +664,18 @@ fn load_tests_from_toml() -> Vec<McpTest> {
         if def.skip.unwrap_or(false) { skipped += 1; continue; }
         let is_mcp = def.targets.iter().any(|t| t == "mcp" || t == "api");
         if !is_mcp { not_mcp += 1; continue; }
+
+        // Negative-path raw-RPC error tests (e.g. `RPC.5` unknown
+        // method) have no MCP equivalent — MCP's `tools/call` envelope
+        // only exposes registered tools, not arbitrary method names,
+        // so a "call method that does not exist" assertion is
+        // meaningless here.  The mirror test for MCP lives alongside
+        // the MCP-native protocol tests (e.g. `M700`).  Skip silently
+        // but count in `skipped` so the test counts are transparent.
+        if def.expect_error.unwrap_or(false) {
+            skipped += 1;
+            continue;
+        }
 
         // ── MCP-native test (from 12-mcp.toml) ────────────────────
         if let Some(ref mcp_method) = def.mcp_method {
@@ -1085,7 +1115,106 @@ fn validate_payload(result: &Value, checks: &PayloadChecks) -> Result<()> {
         // Skip gracefully for non-search tools.
     }
 
+    // ── Custom validator ─────────────────────────────────────────
+    if let Some(ref name) = checks.validator {
+        run_mcp_custom_validator(name, result)?;
+    }
+
     Ok(())
+}
+
+/// Dispatch a named custom validator against the MCP tool-call result.
+///
+/// This mirrors `run_rpc_custom_validator` in `api-validation.rs` and
+/// `run_custom_validator` in `cli-validation.rs`.  The MCP transport
+/// wraps the daemon RPC layer, so the SAME invariants apply — every
+/// validator ported here targets `result.structuredContent.rows[]`,
+/// the MCP tool-call payload analogue of the RPC `rows` array.
+///
+/// Validators that haven't been explicitly ported yet emit a clear
+/// skip diagnostic rather than failing, so new tests can be written
+/// against MCP from day one and gaps surface without blocking the
+/// suite.  Port each validator as needed — the api-validation.rs
+/// source is the source of truth for the invariant.
+fn run_mcp_custom_validator(name: &str, result: &Value) -> Result<String> {
+    match name {
+        "T67f2" => {
+            // PathOnly sort must honour Windows Explorer's `Folder`
+            // column convention: when two rows share the same parent
+            // directory (case-insensitive), the secondary tiebreaker
+            // is filename ASC.  See the api-validation.rs and
+            // cli-validation.rs mirrors, and the Rust unit test
+            // `search_index_path_only_sort_name_asc_within_same_folder`
+            // in crates/uffs-core/src/search/backend_tests.rs.
+            //
+            // This validator only checks the tiebreaker — primary
+            // `path_only` ASC is covered by T67f via the generic
+            // sort_checks framework (see the rationale comment in the
+            // api-validation.rs mirror for the $UpCase vs lowercase
+            // fold-direction subtlety around `_`).
+            let rows = result
+                .get("structuredContent")
+                .or_else(|| result.get("structured_content"))
+                .and_then(|sc| sc.get("rows"))
+                .and_then(Value::as_array)
+                .ok_or_else(|| anyhow::anyhow!("No structuredContent.rows in MCP response"))?;
+            if rows.len() < 2 {
+                bail!(
+                    "Need ≥ 2 rows to validate path_only+name sort, got {}",
+                    rows.len()
+                );
+            }
+            let pairs: Vec<(String, String)> = rows
+                .iter()
+                .map(|r| {
+                    let path = field_str(r, "Path");
+                    let name = field_str(r, "Name");
+                    let dir = path
+                        .strip_suffix(&name)
+                        .unwrap_or(&path)
+                        .trim_end_matches('\\')
+                        .to_owned();
+                    (dir, name)
+                })
+                .collect();
+            let mut saw_tiebreaker = false;
+            for w in pairs.windows(2) {
+                let (po0, n0) = &w[0];
+                let (po1, n1) = &w[1];
+                if po0.eq_ignore_ascii_case(po1) {
+                    saw_tiebreaker = true;
+                    let n0_fold = n0.to_lowercase();
+                    let n1_fold = n1.to_lowercase();
+                    if n0_fold > n1_fold {
+                        bail!(
+                            "Not asc (name tiebreaker within '{}'): '{}' > '{}'",
+                            po0, n0, n1
+                        );
+                    }
+                }
+            }
+            if !saw_tiebreaker {
+                bail!(
+                    "Test vacuous: {} rows all have distinct path_only \
+                     values — no adjacent pair with equal path_only to \
+                     exercise the name tiebreaker.  Expand the search \
+                     or raise --limit so rows from the same folder \
+                     appear together.",
+                    rows.len()
+                );
+            }
+            Ok(format!(
+                "{} rows, name-ASC tiebreaker verified for same-folder siblings",
+                rows.len()
+            ))
+        }
+        // Graceful skip for validators that haven't been ported to MCP
+        // yet.  The api/cli suites still run them — this just keeps the
+        // MCP suite unblocked while porting happens incrementally.
+        other => Ok(format!(
+            "(validator '{other}' not yet ported to MCP — skipped, structural checks still ran)"
+        )),
+    }
 }
 
 /// Build a shell-safe CLI reproduction string from binary + args.

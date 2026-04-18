@@ -16,6 +16,10 @@
 #   .\scripts\windows\windows-diagnostics.ps1 -Mode etw
 #   .\scripts\windows\windows-diagnostics.ps1 -Mode binary-info
 #
+#   # Re-render an already-captured Defender ETL (no Admin required)
+#   .\scripts\windows\windows-diagnostics.ps1 -Mode defender-report `
+#       -DefenderEtl C:\path\to\uffs-defender.etl
+#
 #   # Specify custom binary path
 #   .\scripts\windows\windows-diagnostics.ps1 -UffsBin C:\tools\uffs.exe
 #
@@ -26,13 +30,17 @@
 #   - Visual Studio Build Tools (for dumpbin) — optional
 
 param(
-    [ValidateSet("all", "imports", "defender", "etw", "binary-info")]
+    [ValidateSet("all", "imports", "defender", "defender-report", "etw", "binary-info")]
     [string]$Mode = "all",
 
     [string]$UffsBin = "",
     [string]$OutputDir = "$env:TEMP\uffs-diagnostics",
     [int]$LaunchCount = 30,
-    [string]$Drive = "C"
+    [string]$Drive = "C",
+
+    # Re-render an already-captured Defender ETL.  Used with -Mode defender-report.
+    # Defaults to "$OutputDir\uffs-defender.etl" when empty.
+    [string]$DefenderEtl = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -81,30 +89,39 @@ function Format-Size($bytes) {
 
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
 
-# Find uffs.exe
-if ($UffsBin -eq "") {
-    $UffsBin = Find-Binary "uffs.exe"
-    if (-not $UffsBin) {
-        Write-Error "uffs.exe not found. Specify with -UffsBin parameter."
+# `defender-report` is a re-render of an already-captured ETL; it does
+# not need `uffs.exe` to be present.  All other modes do.
+$needsBinary = ($Mode -ne "defender-report")
+
+if ($needsBinary) {
+    if ($UffsBin -eq "") {
+        $UffsBin = Find-Binary "uffs.exe"
+        if (-not $UffsBin) {
+            Write-Error "uffs.exe not found. Specify with -UffsBin parameter."
+            exit 1
+        }
+    }
+
+    if (-not (Test-Path $UffsBin)) {
+        Write-Error "Binary not found: $UffsBin"
         exit 1
     }
 }
 
-if (-not (Test-Path $UffsBin)) {
-    Write-Error "Binary not found: $UffsBin"
-    exit 1
-}
-
-$uffsSize = (Get-Item $UffsBin).Length
+$uffsSize = if ($needsBinary) { (Get-Item $UffsBin).Length } else { 0 }
 Write-Host "╔══════════════════════════════════════════════════════════════╗"
 Write-Host "║  UFFS Windows Diagnostics — Phase 2 Measurement Toolkit    ║"
 Write-Host "╚══════════════════════════════════════════════════════════════╝"
 Write-Host ""
 Write-Host "  Mode:       $Mode"
-Write-Host "  uffs.exe:   $UffsBin ($(Format-Size $uffsSize))"
+if ($needsBinary) {
+    Write-Host "  uffs.exe:   $UffsBin ($(Format-Size $uffsSize))"
+}
 Write-Host "  Output:     $OutputDir"
-Write-Host "  Launches:   $LaunchCount"
-Write-Host "  Drive:      $Drive"
+if ($needsBinary) {
+    Write-Host "  Launches:   $LaunchCount"
+    Write-Host "  Drive:      $Drive"
+}
 Write-Host ""
 
 
@@ -414,21 +431,9 @@ function Run-DefenderAnalysis {
 
     if (Test-Path $defenderEtl) {
         Write-SubHeader "Step 3: Generate Defender performance report"
-        try {
-            $report = Get-MpPerformanceReport -Path $defenderEtl `
-                -TopProcesses 10 -TopFiles 20 -TopScans 20
-
-            $reportFile = Join-Path $OutputDir "defender-report.txt"
-            $report | Out-File $reportFile -Encoding UTF8
-            Write-Host "  Report saved to: $reportFile"
-            Write-Host ""
-            Write-Host "  Top processes by scan impact:"
-            $report | Select-Object -First 20 | ForEach-Object { Write-Host "    $_" }
-        } catch {
-            Write-Warning "Failed to generate report: $_"
-            Write-Host "  Try manually:"
-            Write-Host "    Get-MpPerformanceReport -Path `"$defenderEtl`" -TopProcesses 10 -TopFiles 20"
-        }
+        $reportFile = Join-Path $OutputDir "defender-report.txt"
+        $jsonFile   = Join-Path $OutputDir "defender-report.json"
+        Format-DefenderReport -EtlPath $defenderEtl -TextOut $reportFile -JsonOut $jsonFile
     } else {
         Write-Warning "Defender ETL not created. Try running manually:"
         Write-Host "  New-MpPerformanceRecording -RecordTo `"$defenderEtl`""
@@ -436,6 +441,115 @@ function Run-DefenderAnalysis {
         Write-Host "  # Press Ctrl+C to stop recording"
         Write-Host "  Get-MpPerformanceReport -Path `"$defenderEtl`" -TopProcesses 10 -TopFiles 20"
     }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 4b: Defender Report Renderer (re-usable)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Render a Defender ETL into both a human-readable text file and a JSON
+# blob.  Replaces the legacy `$report | Out-File` path which collapsed
+# the nested `TopProcesses[]` / `TopFiles[]` / `TopScans[]` arrays to
+# the literal string "@{...=System.Object[]; ...}".
+function Format-DefenderReport {
+    param(
+        [Parameter(Mandatory = $true)] [string]$EtlPath,
+        [Parameter(Mandatory = $true)] [string]$TextOut,
+        [Parameter(Mandatory = $true)] [string]$JsonOut,
+        [int]$TopProcesses = 20,
+        [int]$TopFiles = 30,
+        [int]$TopScans = 30
+    )
+
+    if (-not (Test-Path $EtlPath)) {
+        Write-Error "Defender ETL not found: $EtlPath"
+        return
+    }
+
+    $hasCmdlet = Get-Command "Get-MpPerformanceReport" -ErrorAction SilentlyContinue
+    if (-not $hasCmdlet) {
+        Write-Error "Get-MpPerformanceReport cmdlet not available (needs Defender Antivirus PerformanceAnalyzer)."
+        return
+    }
+
+    try {
+        $report = Get-MpPerformanceReport -Path $EtlPath `
+            -TopProcesses $TopProcesses -TopFiles $TopFiles -TopScans $TopScans
+    } catch {
+        Write-Error "Get-MpPerformanceReport failed: $_"
+        return
+    }
+
+    # Build the text report by rendering each sub-collection through
+    # Format-Table BEFORE serializing to disk.  Out-File on the raw
+    # PSCustomObject would emit the unhelpful "@{...=System.Object[]}".
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add("# Microsoft Defender Antivirus Performance Report")
+    [void]$lines.Add("# Source ETL : $EtlPath")
+    [void]$lines.Add("# Generated  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    [void]$lines.Add("# Top counts : processes=$TopProcesses files=$TopFiles scans=$TopScans")
+    [void]$lines.Add("")
+
+    $sections = @(
+        @{ Title = "Top Processes by scan impact"; Data = $report.TopProcesses }
+        @{ Title = "Top Files by scan impact";     Data = $report.TopFiles     }
+        @{ Title = "Top Scans by duration";        Data = $report.TopScans     }
+    )
+
+    foreach ($section in $sections) {
+        [void]$lines.Add("## $($section.Title)")
+        [void]$lines.Add("")
+        if ($section.Data) {
+            $tableText = $section.Data | Format-Table -AutoSize | Out-String
+            foreach ($l in ($tableText -split "`r?`n")) {
+                [void]$lines.Add($l)
+            }
+        } else {
+            [void]$lines.Add("(no data)")
+            [void]$lines.Add("")
+        }
+    }
+
+    ($lines -join "`n") | Out-File $TextOut -Encoding UTF8
+    $report | ConvertTo-Json -Depth 10 | Out-File $JsonOut -Encoding UTF8
+
+    Write-Host "  Text report saved to: $TextOut" -ForegroundColor Green
+    Write-Host "  JSON report saved to: $JsonOut" -ForegroundColor Green
+    Write-Host ""
+
+    if ($report.TopProcesses) {
+        Write-Host "  Top 5 processes by scan impact:"
+        $report.TopProcesses |
+            Select-Object -First 5 |
+            Format-Table -AutoSize |
+            Out-String |
+            ForEach-Object { Write-Host $_ }
+    } else {
+        Write-Host "  (no process scan data in this ETL)"
+    }
+}
+
+function Run-DefenderReport {
+    Write-Header "DEFENDER PERFORMANCE REPORT (re-render)"
+
+    $etl = if ($DefenderEtl -eq "") {
+        Join-Path $OutputDir "uffs-defender.etl"
+    } else {
+        $DefenderEtl
+    }
+
+    if (-not (Test-Path $etl)) {
+        Write-Error "ETL not found: $etl"
+        Write-Host "  Specify a different path with -DefenderEtl, or capture a fresh ETL with:"
+        Write-Host "    .\scripts\windows\windows-diagnostics.ps1 -Mode defender   # requires Admin"
+        return
+    }
+
+    $textOut = Join-Path $OutputDir "defender-report.txt"
+    $jsonOut = Join-Path $OutputDir "defender-report.json"
+
+    Write-SubHeader "Re-rendering $etl"
+    Format-DefenderReport -EtlPath $etl -TextOut $textOut -JsonOut $jsonOut
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -454,6 +568,9 @@ switch ($Mode) {
     }
     "defender" {
         Run-DefenderAnalysis
+    }
+    "defender-report" {
+        Run-DefenderReport
     }
     "all" {
         Run-BinaryInfo

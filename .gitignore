@@ -34,13 +34,27 @@ build/
 # Logs, vendor, misc
 # =============================================================================
 /Shell/
-/LOG/
+# /LOG/ holds local-only runtime logs (defender ETLs, mental_health, etc.)
+# but the per-iteration `*CHANGELOG_HEALING.md` files document each
+# `just ship -v` recovery and ARE tracked.  Using `/LOG/*` (not `/LOG/`)
+# keeps the directory itself unignored so the negation pattern below
+# can re-include the changelog files.
+/LOG/*
+!/LOG/*CHANGELOG_HEALING.md
+!/LOG/.gitkeep
 /vendor/
 /missing_paths.txt
 /_trash/
 /reference/
 # Binaries are distributed via GitHub Releases, not committed to the repo
 dist/
+# Transient pipeline / debug logs captured at the workspace root via `tee`.
+# Kept around between healing iterations but never committed.
+/.ship_run*.log
+/.clippy_run*.log
+/.git_status.txt
+/.git_show.txt
+/.git_lsfiles.txt
 
 # =============================================================================
 # IDE / Editor / AI

@@ -313,6 +313,10 @@ impl ParallelMftReader {
         debug!("Reading all chunks into memory...");
         let mut total_bytes_read: u64 = 0;
         let mut chunk_data: Vec<(ReadChunk, Vec<u8>)> = Vec::with_capacity(chunks.len());
+        let mut consecutive_failures: u32 = 0;
+        /// Abort threshold: if this many consecutive chunks fail, the volume
+        /// is likely write-protected or otherwise inaccessible.
+        const EARLY_ABORT_THRESHOLD: u32 = 10;
 
         for (idx, chunk) in chunks.into_iter().enumerate() {
             trace!(
@@ -322,6 +326,7 @@ impl ParallelMftReader {
             );
             match self.read_chunk(handle, &chunk, record_size) {
                 Ok(data) => {
+                    consecutive_failures = 0;
                     total_bytes_read += data.len() as u64;
                     trace!(
                         chunk_idx = idx,
@@ -338,7 +343,17 @@ impl ParallelMftReader {
                     chunk_data.push((chunk, data));
                 }
                 Err(e) => {
+                    consecutive_failures += 1;
                     warn!(chunk_idx = idx, error = ?e, "Failed to read chunk");
+                    if consecutive_failures >= EARLY_ABORT_THRESHOLD {
+                        warn!(
+                            consecutive_failures,
+                            remaining_chunks = num_chunks - idx - 1,
+                            "🛑 Aborting: {} consecutive chunk read failures",
+                            consecutive_failures
+                        );
+                        break;
+                    }
                 }
             }
         }

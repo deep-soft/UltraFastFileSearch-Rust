@@ -386,6 +386,8 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
         response_mode: None,
         projected_rows: None,
         aggregations: vec![],
+        // Shmem always carries full SearchRow records, never a blob.
+        paths_blob: None,
     })
 }
 

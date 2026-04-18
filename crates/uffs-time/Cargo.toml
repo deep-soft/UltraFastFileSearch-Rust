@@ -1,0 +1,29 @@
+# ============================================================================
+# uffs-time: NTFS FILETIME helpers
+# ============================================================================
+# Layer 0 Foundation crate.  No internal or external dependencies.
+#
+# Pure `const fn` arithmetic for converting Windows FILETIME (100-ns ticks
+# since 1601-01-01) to calendar fields and applying timezone bias.
+#
+# Extracted from `uffs-mft` so the thin CLI can depend on these helpers
+# without transitively linking tokio, polars, reqwest, or object_store.
+# ============================================================================
+
+[package]
+name = "uffs-time"
+description = "NTFS FILETIME arithmetic for UFFS (pure const fn, zero deps)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -23,6 +23,7 @@ members = [
     "crates/uffs-polars",   # 🚀 Polars facade (compilation isolation)
     "crates/uffs-security", # 🔒 Crypto, key storage, secure FS ops
     "crates/uffs-text",     # 📝 Unicode text processing, i18n foundation
+    "crates/uffs-time",     # ⏱️ NTFS FILETIME arithmetic (pure, zero deps)
     "crates/uffs-mft",      # 📦 MFT reading → Polars DataFrame
     "crates/uffs-core",     # 🎯 Query engine + compact search engine
     # ── Daemon Architecture ──
@@ -41,7 +42,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.5.30"
+version = "0.5.37"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
@@ -64,6 +65,7 @@ categories = ["filesystem", "command-line-utilities"]
 uffs-polars   = { path = "crates/uffs-polars" }
 uffs-security = { path = "crates/uffs-security" }
 uffs-text     = { path = "crates/uffs-text" }
+uffs-time     = { path = "crates/uffs-time" }
 uffs-mft      = { path = "crates/uffs-mft", features = ["zstd"] }
 uffs-core     = { path = "crates/uffs-core" }
 uffs-client   = { path = "crates/uffs-client" }
@@ -75,7 +77,20 @@ uffs-client   = { path = "crates/uffs-client" }
 # Run `just polars` to bump to the latest main HEAD.
 
 # ───── Async Runtime ─────
-tokio = { version = "1.51.1", features = ["full", "macros", "rt-multi-thread", "time", "tracing"] }
+# Net-free feature set so the CLI binary does not pull in `ws2_32.dll`
+# via `tokio::net`.  Crates that actually use `tokio::net` (uffs-daemon,
+# uffs-mcp, and the `async` feature of uffs-client) re-enable `net`
+# explicitly in their own Cargo.toml via `features = ["net"]`.
+tokio = { version = "1.51.1", default-features = false, features = [
+    "io-util",
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+    "tracing",
+] }
 
 # ───── Windows APIs (Windows only) ─────
 windows = { version = "0.62.2", features = [
@@ -103,7 +118,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 
 # ───── Data Structures ─────
-bitflags = "2.11.0"
+bitflags = "2.11.1"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 smallvec = "1.15.1"
 zerocopy = { version = "0.8", features = ["derive"] }
@@ -113,20 +128,20 @@ thiserror = "2.0.18"
 anyhow = "1.0.102"
 
 # ───── MCP (Model Context Protocol) ─────
-rmcp = { version = "1.4.0", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "1.5.0", features = ["server", "transport-io", "macros"] }
 schemars = "1.2.1"
 
 # ───── HTTP / Tower (for MCP Streamable HTTP gateway) ─────
-axum = "0.8.8"
+axum = "0.8.9"
 tower-service = "0.3.3"
 
 # ───── Logging & Tracing ─────
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "time", "env-filter"] }
-tracing-appender = "0.2.4"
+tracing-appender = "0.2.5"
 
 # ───── CLI ─────
-clap = { version = "4.6.0", features = ["derive", "env", "unicode", "wrap_help"] }
+clap = { version = "4.6.1", features = ["derive", "env", "unicode", "wrap_help"] }
 indicatif = "0.18.4"
 devicons = "0.6.12"
 
@@ -151,7 +166,7 @@ sha2 = "0.11.0"
 hex = "0.4.3"
 
 # ───── Parallelism ─────
-rayon = "1.11.0"
+rayon = "1.12.0"
 crossbeam-channel = "0.5.15"
 
 # ───── Memory ─────
@@ -174,7 +189,7 @@ zstd = { version = "0.13.3", features = ["zstdmt"] }
 # ───── Testing & Benchmarking ─────
 criterion = "0.8.2"
 proptest = "1.11.0"
-assert_cmd = "2.2.0"
+assert_cmd = "2.2.1"
 tempfile = "3.27.0"
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -521,6 +536,28 @@ opt-level = 2                           # Optimize Polars even in dev for usable
 
 [profile.dev.package."*"]
 opt-level = 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Launcher (thin CLI) per-package profile override
+# ─────────────────────────────────────────────────────────────────────────────
+# `uffs-cli` is a tiny launcher that spends most of its wall-clock time on
+# process creation, DLL loads, and IPC round-trip — not in its own code.
+# For this shape of binary `opt-level = "z"` (size-first) usually beats
+# `opt-level = 3` because:
+#
+#   1. Smaller code ⇒ fewer pages to demand-fault in at process start.
+#   2. Smaller code ⇒ less i-cache pressure during the brief runtime.
+#   3. The hot path is serialization + syscalls, which `-Oz` does not
+#      meaningfully slow down.
+#
+# Measured against Run 4 (v0.5.34): baseline `opt-level = 3` gives a
+# ~28 ms CLI-side floor.  A/B of `z` vs `s` vs `3` is in the
+# `perf-phase2-measurement-plan.md` §2.2.
+#
+# The workspace-level `release` profile keeps `opt-level = 3` for
+# daemon/mcp where steady-state perf dominates.
+[profile.release.package.uffs-cli]
+opt-level = "z"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cross-compile profile for cargo-xwin (macOS → Windows MSVC)

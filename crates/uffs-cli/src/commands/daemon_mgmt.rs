@@ -24,6 +24,7 @@ pub fn daemon(action: &DaemonAction) -> Result<()> {
             no_cache,
             log_level,
             log_file,
+            elevate,
         } => daemon_start(
             mft_file,
             data_dir.as_deref(),
@@ -31,6 +32,7 @@ pub fn daemon(action: &DaemonAction) -> Result<()> {
             *no_cache,
             log_level,
             log_file.as_deref(),
+            *elevate,
         ),
         DaemonAction::Status => daemon_status(),
         DaemonAction::Stats => daemon_stats(),
@@ -63,6 +65,7 @@ fn daemon_start(
     no_cache: bool,
     log_level: &str,
     log_file: Option<&std::path::Path>,
+    elevate: bool,
 ) -> Result<()> {
     // Already running?
     if UffsClientSync::connect_raw().is_ok() {
@@ -148,8 +151,16 @@ fn daemon_start(
 
     println!("Starting daemon...");
 
-    let mut client =
-        UffsClientSync::connect_with_args(&spawn_args).with_context(|| "Failed to start daemon")?;
+    // `--elevate` (or UFFS_ELEVATE=1) opts in to a UAC prompt on Windows
+    // when the current shell is not elevated.  The default path refuses
+    // to trigger UAC silently and returns DaemonNeedsElevation, which
+    // `main.rs` formats into an actionable multi-option help message.
+    let mut client = if elevate {
+        UffsClientSync::connect_with_elevation(&spawn_args)
+            .with_context(|| "Failed to start daemon (with elevation)")?
+    } else {
+        UffsClientSync::connect_with_args(&spawn_args).with_context(|| "Failed to start daemon")?
+    };
 
     client
         .await_ready(core::time::Duration::from_mins(2))

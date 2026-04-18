@@ -82,6 +82,75 @@ fn parse_bool(flag: &str, text: &str) -> Result<bool, String> {
     }
 }
 
+/// Return `true` when `s` is exactly `*.<alnum+underscore>+` — a pure
+/// extension glob that can be safely promoted to an `ExtensionIndex` lookup.
+///
+/// Examples that return `true`:  `*.dll`, `*.rs`, `*.tar_gz`, `*.7z`, `*.1`.
+///
+/// Examples that return `false` (must stay on the trigram path):
+/// - `*.*`      — rest `*` is not alnum (matches ANY extension).
+/// - `*.d??`    — question-mark not alnum.
+/// - `*.[ch]`   — character class not alnum.
+/// - `*.tar.gz` — dot in rest (multi-segment).
+/// - `*.dll*`   — trailing star not alnum.
+/// - `**/*.dll` — leading doublestar not `*.` prefix.
+/// - `*.`       — empty extension.
+///
+/// Mirrored by `uffs_core::search::backend::is_pure_ext_glob` (the
+/// daemon's belt-and-suspenders safety net at dispatch time).  Keep the
+/// two definitions in sync.
+fn is_pure_ext_glob(pattern: &str) -> bool {
+    pattern.strip_prefix("*.").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    })
+}
+
+/// Parse a bare drive-letter prefix from a pattern.
+///
+/// Returns `Some((letter_upper, rest))` when `pattern` matches exactly:
+/// - a single ASCII alphabetic character (the drive letter), followed by
+/// - a literal `:`, followed by
+/// - a non-empty `rest` that does **not** start with `\` or `/` (if it does,
+///   the pattern is path-anchored and must route through the tree walker in
+///   `uffs_core::search::tree`, which already scopes its walk to the drive
+///   root).
+///
+/// Examples that parse:
+/// - `C:*.dll`       → `('C', "*.dll")`
+/// - `D:notepad.exe` → `('D', "notepad.exe")`
+/// - `c:*.log`       → `('C', "*.log")` — letter is uppercased
+///
+/// Examples that return `None`:
+/// - `C:\*.dll`      — rest starts with `\` (path pattern, tree walker).
+/// - `C:/home/*.dll` — rest starts with `/` (path pattern).
+/// - `C:`            — empty rest.
+/// - `C`             — no colon.
+/// - `*.dll`         — no drive prefix.
+/// - `12:34`         — letter is not alphabetic.
+///
+/// Mirrored by `uffs_core::search::backend::parse_bare_drive_prefix`
+/// (the daemon's belt-and-suspenders safety net at dispatch time).
+/// Keep the two definitions in sync.
+fn parse_bare_drive_prefix(pattern: &str) -> Option<(char, &str)> {
+    let bytes = pattern.as_bytes();
+    let letter = *bytes.first()?;
+    if !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    if *bytes.get(1)? != b':' {
+        return None;
+    }
+    // Drive-letter + ':' are both ASCII → the byte offset to `rest` is 2.
+    let rest = pattern.get(2..)?;
+    if rest.is_empty() || rest.starts_with(['\\', '/']) {
+        return None;
+    }
+    Some((letter.to_ascii_uppercase() as char, rest))
+}
+
 // ── Public entry point ─────────────────────────────────────────────────
 
 impl SearchParams {
@@ -431,14 +500,31 @@ impl RawCliArgs {
             (None, None) => None,
         };
 
-        // ── Scope prefixes: path:/dir:/file: ───────────────────────
-        let (match_path, pattern) = if let Some(rest) = raw_pattern.strip_prefix("path:") {
+        // ── Scope prefixes: path:/dir:/file:/<letter>: ─────────────
+        //
+        // `pattern` is `mut` so the ext-pattern sugar block below can
+        // rewrite `*.<ext>` → `"*"` in-place without introducing a
+        // shadow binding (see the `shadow_reuse` workspace lint).
+        //
+        // The `<letter>:` branch strips a bare drive prefix like
+        // `C:*.dll` into `drive=C` + `pattern="*.dll"`, which then
+        // composes with the ext-glob promotion further down to yield
+        // `drive=C` + `pattern="*"` + `ext=Some("dll")`.  Path-anchored
+        // patterns like `C:\*.dll` keep the `\` and skip this branch —
+        // they must stay on the tree walker.  An explicit `--drive` /
+        // `--drives` flag always wins over the inferred prefix.
+        let (match_path, mut pattern) = if let Some(rest) = raw_pattern.strip_prefix("path:") {
             (true, rest.to_owned())
         } else if let Some(rest) = raw_pattern.strip_prefix("dir:") {
             self.dirs_only = true;
             (false, rest.to_owned())
         } else if let Some(rest) = raw_pattern.strip_prefix("file:") {
             self.files_only = true;
+            (false, rest.to_owned())
+        } else if let Some((letter, rest)) = parse_bare_drive_prefix(&raw_pattern) {
+            if self.drive.is_none() && self.drives.is_none() {
+                self.drive = Some(letter);
+            }
             (false, rest.to_owned())
         } else {
             (false, raw_pattern)
@@ -488,6 +574,41 @@ impl RawCliArgs {
         } else {
             false
         };
+
+        // ── Ext-pattern sugar: `*.<ext>` → pattern="*" + ext=<ext> ──
+        //
+        // Restores the fast path that the old fat-CLI used: a bare
+        // `*.<ext>` query becomes semantically identical to
+        // `* --ext <ext>`, which routes through the daemon's
+        // `ExtensionIndex` (O(K) iteration over matching records)
+        // instead of the trigram+glob path (O(candidates) with
+        // per-record glob match and name-fold).
+        //
+        // Guards:
+        // - `match_path` off: `path:*.dll` scans full paths, not names.
+        // - `case_sensitive` off: `--case *.DLL` would return zero results today (no
+        //   files have literal uppercase extensions on NTFS), but the ext index is
+        //   case-folded and would return all .dll files.  Preserve the stricter
+        //   semantic.
+        // - `self.ext` is `None`: don't clobber an explicit `--ext`.
+        // - `is_pure_ext_glob`: only `*.<alnum+_>+` shapes are safe to promote;
+        //   `*.tar.gz`, `*.[ch]`, etc. stay on trigram.
+        //
+        // Mirrored at dispatch time by
+        // `uffs_core::search::backend::search_index` as a safety net for
+        // direct JSON-RPC `search` callers that skip this parser.
+        if !match_path && !case_sensitive && self.ext.is_none() && is_pure_ext_glob(&pattern) {
+            let ext = pattern
+                .strip_prefix("*.")
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            self.ext = Some(ext);
+            // Reuse the existing `String` allocation instead of
+            // `pattern = "*".to_owned()` (which would heap-allocate a
+            // fresh `String`).  Satisfies `clippy::assigning_clones`.
+            pattern.clear();
+            pattern.push('*');
+        }
 
         // ── Aggregate sugar ────────────────────────────────────────
         let mut agg_specs = self.agg;

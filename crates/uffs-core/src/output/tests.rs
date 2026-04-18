@@ -544,3 +544,90 @@ fn write_display_rows_emits_name_length_and_path_length() {
     assert!(csv.contains(",10,"), "name length must be 10, got: {csv}");
     assert!(csv.contains(",28\n"), "path length must be 28, got: {csv}");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Regression: Polars `Datetime(TimeUnit::Microseconds)` formatter must
+// interpret values as FILETIME, not Unix microseconds.
+//
+// The DataFrames produced by `MftIndex::to_dataframe` (and the Windows
+// live-scan DataFrame in `uffs-mft::reader::dataframe_build`) declare
+// timestamp columns as `Datetime(Microseconds)` for Polars compatibility
+// but populate them with raw FILETIME i64 values (100-ns ticks since
+// 1601-01-01).  The `write_value` formatter at `output::config` must
+// therefore decompose the value via `uffs_time::filetime_to_calendar`.
+// Previously it used `chrono::DateTime::from_timestamp(micros)` which
+// produced year-6220 output for 2026-era FILETIMEs — same bug class as
+// the `append_datetime_native` regression covered in `config::tests`.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Pick one specific FILETIME (2026-01-20 00:00:00 UTC) and assert the
+/// Polars-Datetime column formatter emits `2026-01-20 00:00:00`.  If
+/// someone re-introduces the Unix-micros interpretation, this renders
+/// as `8225-01-17` or similar and the test fails immediately.
+#[test]
+fn test_write_datetime_column_formats_filetime_as_2026() {
+    use uffs_polars::{DataType, IntoColumn, NamedFrom, Series, TimeUnit};
+
+    // 2026-01-20 00:00:00 UTC as raw FILETIME.
+    // Unix seconds: 1_768_867_200 (2026-01-20).  Convert to 100-ns ticks
+    // since 1970, then add FILETIME_UNIX_DIFF to shift the epoch to 1601.
+    let ft_2026: i64 = 1_768_867_200_000_000_i64 * 10 + 116_444_736_000_000_000;
+
+    let ts_column = Series::new("modified".into(), vec![ft_2026])
+        .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+        .expect("Datetime cast should succeed")
+        .into_column();
+
+    let df = DataFrame::new_infer_height(vec![Column::new("name".into(), &["a.txt"]), ts_column])
+        .expect("DataFrame construction should succeed");
+
+    let config = OutputConfig::new()
+        .with_columns("name,modified")
+        .with_header(false)
+        .with_quote("\"")
+        .with_tz_offset_hours(0_i32);
+
+    let mut out = Vec::new();
+    config.write(&df, &mut out).expect("write should succeed");
+    let csv = String::from_utf8(out).expect("UTF-8");
+
+    assert!(
+        csv.contains("2026-01-20 00:00:00"),
+        "Polars Datetime formatter must interpret i64 as FILETIME (expected 2026-01-20, got: {csv})"
+    );
+    assert!(
+        !csv.contains("8225-") && !csv.contains("6220-"),
+        "Polars Datetime formatter must NOT treat FILETIME as Unix micros (got: {csv})"
+    );
+}
+
+/// Zero FILETIME is the NTFS sentinel for "unset" — the formatter must
+/// emit an empty field, never decompose to `1601-01-01`.
+#[test]
+fn test_write_datetime_column_zero_filetime_is_empty() {
+    use uffs_polars::{DataType, IntoColumn, NamedFrom, Series, TimeUnit};
+
+    let ts_column = Series::new("modified".into(), vec![0_i64])
+        .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+        .expect("Datetime cast should succeed")
+        .into_column();
+
+    let df =
+        DataFrame::new_infer_height(vec![Column::new("name".into(), &["unset.txt"]), ts_column])
+            .expect("DataFrame construction should succeed");
+
+    let config = OutputConfig::new()
+        .with_columns("name,modified")
+        .with_header(false)
+        .with_quote("\"")
+        .with_tz_offset_hours(0_i32);
+
+    let mut out = Vec::new();
+    config.write(&df, &mut out).expect("write should succeed");
+    let csv = String::from_utf8(out).expect("UTF-8");
+
+    assert!(
+        !csv.contains("1601-"),
+        "FILETIME 0 must NOT render as 1601-01-01 (got: {csv})"
+    );
+}

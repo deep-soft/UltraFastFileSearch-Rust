@@ -34,8 +34,9 @@ uffs-mft.workspace = true
 uffs-core.workspace = true
 uffs-client.workspace = true
 
-# Async
-tokio.workspace = true
+# Async — `net` re-enabled here because the daemon's IPC server uses
+# `tokio::net::UnixListener` (unix) / `NamedPipeServer` (windows).
+tokio = { workspace = true, features = ["net"] }
 
 # Serialization (JSON-RPC)
 serde.workspace = true

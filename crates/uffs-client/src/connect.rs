@@ -3,7 +3,7 @@
 
 //! Daemon connection management: auto-start, connect, reconnect.
 //!
-//! [`UffsClient`] is the single entry point for all surfaces (CLI, TUI,
+//! `UffsClient` is the single entry point for all surfaces (CLI, TUI,
 //! GUI, MCP) to communicate with the daemon.
 //!
 //! # Platform Support
@@ -12,16 +12,16 @@
 //! |----------|--------------|
 //! | **macOS** | Unix domain socket (`~/Library/Application Support/uffs/daemon.sock`) |
 //! | **Linux** | Unix domain socket (`$XDG_RUNTIME_DIR/uffs/daemon.sock`) |
-//! | **Windows** | Unix domain socket (`%LOCALAPPDATA%/uffs/daemon.sock`) — named pipe planned |
-//! Exception: `file_size_policy` — connection lifecycle is one cohesive flow.
+//! | **Windows** | Named pipe (`\\.\pipe\uffs-<user-sid-hash>`) |
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use crate::connect_logging::{log_connect_attempt, log_connect_error, log_spawn_details};
 use crate::daemon_ctl::{
-    find_daemon_exe, keepalive_send_blocking, pid_file_path, socket_path, spawn_daemon,
-    verify_daemon_after_connect,
+    ElevationPolicy, find_daemon_exe, keepalive_send_blocking, pid_file_path,
+    resolve_elevation_policy, socket_path, spawn_daemon, verify_daemon_after_connect,
 };
 use crate::protocol::response::{DrivesResponse, SearchResponse, StatusResponse};
 use crate::protocol::{RpcRequest, SearchParams};
@@ -82,6 +82,15 @@ impl UffsClient {
     /// already listening, the args are ignored (it already has its data
     /// loaded).
     ///
+    /// Auto-start uses the default
+    /// [`ElevationPolicy::RequireExistingElevation`] — on Windows, if
+    /// the daemon must be spawned and the current process is not
+    /// elevated, this returns
+    /// [`crate::error::ClientError::DaemonNeedsElevation`] instead of
+    /// triggering a UAC prompt.  Callers that want the
+    /// pre-v0.5.36 behavior (automatic UAC dialog) should use
+    /// [`Self::connect_with_elevation`] or set `UFFS_ELEVATE=1`.
+    ///
     /// Typical usage (Mac/Linux):
     /// ```rust,ignore
     /// let args = vec!["--data-dir".into(), "/path/to/uffs_data".into()];
@@ -90,9 +99,41 @@ impl UffsClient {
     ///
     /// # Errors
     ///
-    /// Returns `ConnectionFailed` or `DaemonStartFailed`.
+    /// Returns `ConnectionFailed`, `DaemonStartFailed`, or
+    /// `DaemonNeedsElevation` (Windows, non-admin shell only).
     pub async fn connect_with_args(
         spawn_args: &[String],
+    ) -> Result<Self, crate::error::ClientError> {
+        Self::connect_with_args_inner(spawn_args, resolve_elevation_policy(false)).await
+    }
+
+    /// Connect to a running daemon; if we must auto-start it, explicitly
+    /// request a UAC prompt on Windows when the current process is not
+    /// elevated.
+    ///
+    /// This is the opt-in variant used by `uffs daemon start --elevate`.
+    /// All other entry points default to
+    /// [`ElevationPolicy::RequireExistingElevation`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::connect_with_args`], minus
+    /// `DaemonNeedsElevation` (which is turned into a UAC prompt).
+    pub async fn connect_with_elevation(
+        spawn_args: &[String],
+    ) -> Result<Self, crate::error::ClientError> {
+        Self::connect_with_args_inner(spawn_args, ElevationPolicy::AllowUacPrompt).await
+    }
+
+    /// Shared body for [`Self::connect_with_args`] and
+    /// [`Self::connect_with_elevation`].
+    ///
+    /// Takes an explicit [`ElevationPolicy`] so each public entry
+    /// point can decide whether a missing elevated context is a
+    /// hard error (the default) or a prompt request.
+    async fn connect_with_args_inner(
+        spawn_args: &[String],
+        policy: ElevationPolicy,
     ) -> Result<Self, crate::error::ClientError> {
         let sock = socket_path();
         let pid_path = pid_file_path();
@@ -101,6 +142,7 @@ impl UffsClient {
             socket_exists = sock.exists(),
             pid_file = %pid_path.display(),
             pid_file_exists = pid_path.exists(),
+            ?policy,
             "connect_with_args: paths"
         );
 
@@ -109,8 +151,8 @@ impl UffsClient {
             return Ok(client);
         }
 
-        // Auto-start the daemon (`uffsd`)
-        Self::auto_start_daemon(spawn_args)?;
+        // Auto-start the daemon (`uffsd`) with the requested policy.
+        Self::auto_start_daemon(spawn_args, policy)?;
 
         // Retry with exponential backoff until connected.
         Self::retry_connect(&sock, &pid_path).await
@@ -136,14 +178,19 @@ impl UffsClient {
         }
     }
 
-    /// Spawn the daemon process with the given extra args.
+    /// Spawn the daemon process with the given extra args and elevation
+    /// policy.
     ///
     /// # Errors
     ///
     /// Returns [`ClientError`](crate::error::ClientError) if the daemon
-    /// executable cannot be found or the spawn fails.
-    fn auto_start_daemon(spawn_args: &[String]) -> Result<(), crate::error::ClientError> {
-        tracing::info!("Daemon not running, auto-starting via `uffsd`...");
+    /// executable cannot be found, the spawn fails, or the policy
+    /// forbids elevation in the current context.
+    fn auto_start_daemon(
+        spawn_args: &[String],
+        policy: ElevationPolicy,
+    ) -> Result<(), crate::error::ClientError> {
+        tracing::info!(?policy, "Daemon not running, auto-starting via `uffsd`...");
 
         let daemon_exe = find_daemon_exe();
         let mut cmd_args: Vec<&str> = Vec::new();
@@ -152,11 +199,12 @@ impl UffsClient {
         }
         log_spawn_details(&daemon_exe, &cmd_args);
 
-        // On Windows, MFT reading requires Administrator privileges. If the
-        // current process is not elevated, we use `ShellExecuteW` with the
-        // "runas" verb to trigger a UAC consent dialog. If already elevated
-        // (or the broker service is available), we spawn normally.
-        spawn_daemon(&daemon_exe, &cmd_args)?;
+        // On Windows, reading the MFT requires Administrator privileges.
+        // The default policy is `RequireExistingElevation` — if we are
+        // not already elevated, we return `DaemonNeedsElevation` and let
+        // the CLI render an actionable message.  Callers opt in to a
+        // UAC prompt via `connect_with_elevation` or `UFFS_ELEVATE=1`.
+        spawn_daemon(&daemon_exe, &cmd_args, policy)?;
         tracing::debug!("auto_start_daemon: spawn returned OK");
         Ok(())
     }
@@ -575,8 +623,8 @@ impl UffsClient {
                 tokio::select! {
                     () = tokio::time::sleep(interval) => {
                         // Open a short-lived blocking connection for the keepalive.
-                        // Uses std::os::unix / std::os::windows UnixStream (not tokio)
-                        // because tokio::net::UnixStream is cfg(unix)-only.
+                        // Unix: std::os::unix::net::UnixStream.
+                        // Windows: std::fs::OpenOptions on the named pipe.
                         let send_result = tokio::task::spawn_blocking({
                             let path = sock_path.clone();
                             move || keepalive_send_blocking(&path)
@@ -677,156 +725,64 @@ impl UffsClient {
     }
 }
 
-/// Windows: connect via AF_UNIX socket (Windows 10 1803+).
+/// Windows: connect via named pipe using native tokio support.
 ///
-/// `tokio::net::UnixStream` is `cfg(unix)` only in tokio. On Windows we
-/// connect with `std::os::windows::net::UnixStream` (blocking), then bridge
-/// it into async via two background threads that pump bytes between the
-/// blocking socket and tokio `DuplexStream` channels.
+/// This replaces the previous `AF_UNIX` path which required two
+/// background threads per connection (each with its own tokio runtime)
+/// to bridge a blocking `std::os::windows::net::UnixStream` to async via
+/// `tokio::io::duplex`.  The bridge existed only because
+/// `tokio::net::UnixStream` is `cfg(unix)`-only; tokio's native named-pipe
+/// client is `AsyncRead + AsyncWrite` directly, so the entire bridge
+/// machinery — and the `ws2_32.dll` import cost — disappears.
 #[cfg(windows)]
 impl UffsClient {
-    /// Platform-specific connection over AF_UNIX socket (Windows 10 1803+).
+    /// Platform-specific connection via tokio named-pipe client.
     async fn platform_connect() -> Result<Self, crate::error::ClientError> {
-        use std::io::{Read, Write};
-        use std::os::windows::net::UnixStream as StdUnixStream;
+        use tokio::net::windows::named_pipe::ClientOptions;
 
-        let sock_path = socket_path();
+        /// `ERROR_PIPE_BUSY` — all server instances are currently connected;
+        /// retry after a short sleep.  The daemon creates the next instance
+        /// immediately after accept, but there is a narrow window.
+        const ERROR_PIPE_BUSY: i32 = 231;
 
-        let std_stream = StdUnixStream::connect(&sock_path)
-            .map_err(|io_err| crate::error::ClientError::ConnectionFailed(io_err.to_string()))?;
+        let pipe_name = crate::daemon_ctl::pipe_name()
+            .map_err(|err| crate::error::ClientError::ConnectionFailed(err.to_string()))?;
 
-        // Set a read timeout so the bridge-read thread can detect when the
-        // daemon closes the socket and exit promptly instead of blocking forever.
-        std_stream
-            .set_read_timeout(Some(core::time::Duration::from_secs(5)))
-            .map_err(|io_err| crate::error::ClientError::ConnectionFailed(io_err.to_string()))?;
-
-        let std_read = std_stream
-            .try_clone()
-            .map_err(|io_err| crate::error::ClientError::ConnectionFailed(io_err.to_string()))?;
-        let std_write = std_stream;
-
-        // Create async duplex channels that bridge to the blocking socket.
-        // 64KB buffer is plenty for JSON-RPC messages.
-        let (async_read, mut bridge_write) = tokio::io::duplex(65536);
-        let (mut bridge_read, async_write) = tokio::io::duplex(65536);
-
-        // Each bridge thread gets its own dedicated tokio current-thread
-        // runtime.  Previous versions shared the caller's runtime via
-        // Handle::block_on, which caused subtle waker/scheduling issues —
-        // the DuplexStream EOF was delivered prematurely, collapsing the
-        // bridge after ~10 RPCs.  Isolated runtimes eliminate that class
-        // of bugs entirely.
-
-        // Background thread: std socket → async reader (bridge_write)
-        std::thread::spawn(move || {
-            tracing::info!("[client-bridge-read] thread started");
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(rt_err) => {
-                    tracing::info!(error = %rt_err, "[client-bridge-read] failed to create runtime");
-                    return;
-                }
-            };
-            rt.block_on(async move {
-                use tokio::io::AsyncWriteExt;
-                let mut reader = std::io::BufReader::new(std_read);
-                let mut buf = [0_u8; 8192];
-                loop {
-                    let n = match reader.read(&mut buf) {
-                        Ok(0) => {
-                            tracing::info!("[client-bridge-read] EOF from socket");
-                            break;
-                        }
-                        Err(ref read_err)
-                            if read_err.kind() == std::io::ErrorKind::TimedOut
-                                || read_err.kind() == std::io::ErrorKind::WouldBlock =>
-                        {
-                            // Read timeout — check if bridge_write is still alive
-                            // by attempting a zero-byte write.
-                            if bridge_write.write_all(&[]).await.is_err() {
-                                tracing::info!(
-                                    "[client-bridge-read] bridge closed during timeout, exiting"
-                                );
-                                break;
-                            }
-                            continue; // retry the read
-                        }
-                        Err(read_err) => {
-                            tracing::info!(
-                                error = %read_err,
-                                kind = ?read_err.kind(),
-                                "[client-bridge-read] read error from socket"
-                            );
-                            break;
-                        }
-                        Ok(n) => n,
-                    };
-                    if bridge_write.write_all(&buf[..n]).await.is_err() {
-                        tracing::info!("[client-bridge-read] bridge_write failed");
+        let pipe = {
+            let mut last_err: Option<std::io::Error> = None;
+            let mut client = None;
+            for attempt in 0_u32..5 {
+                match ClientOptions::new().read(true).write(true).open(&pipe_name) {
+                    Ok(stream) => {
+                        client = Some(stream);
                         break;
                     }
-                }
-            });
-            tracing::info!("[client-bridge-read] thread exiting");
-        });
-
-        // Background thread: async bridge_read → std socket
-        std::thread::spawn(move || {
-            tracing::info!("[client-bridge-write] thread started");
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(rt_err) => {
-                    tracing::info!(error = %rt_err, "[client-bridge-write] failed to create runtime");
-                    return;
-                }
-            };
-            let mut writer = std_write;
-            rt.block_on(async {
-                use tokio::io::AsyncReadExt;
-                let mut buf = [0_u8; 8192];
-                loop {
-                    match bridge_read.read(&mut buf).await {
-                        Ok(0) => {
-                            tracing::info!(
-                                "[client-bridge-write] EOF from bridge (async_write dropped)"
-                            );
-                            break;
-                        }
-                        Err(read_err) => {
-                            tracing::info!(
-                                error = %read_err,
-                                "[client-bridge-write] bridge read error"
-                            );
-                            break;
-                        }
-                        Ok(n) => {
-                            if writer.write_all(&buf[..n]).is_err() {
-                                tracing::info!("[client-bridge-write] socket write_all failed");
-                                break;
-                            }
-                            if writer.flush().is_err() {
-                                tracing::info!("[client-bridge-write] socket flush failed");
-                                break;
-                            }
-                        }
+                    Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                        tokio::time::sleep(core::time::Duration::from_millis(u64::from(
+                            10_u32 << attempt,
+                        )))
+                        .await;
+                        last_err = Some(err);
+                    }
+                    Err(err) => {
+                        return Err(crate::error::ClientError::ConnectionFailed(err.to_string()));
                     }
                 }
-            });
-            tracing::info!("[client-bridge-write] thread exiting");
-        });
+            }
+            client.ok_or_else(|| {
+                crate::error::ClientError::ConnectionFailed(last_err.map_or_else(
+                    || "pipe busy after retries".to_owned(),
+                    |err| format!("pipe busy after retries: {err}"),
+                ))
+            })?
+        };
 
+        let (read_half, write_half) = tokio::io::split(pipe);
         let (notification_tx, notification_rx) = tokio::sync::mpsc::unbounded_channel();
 
         Ok(Self {
-            reader: BufReader::new(Box::new(async_read)),
-            writer: Box::new(async_write),
+            reader: BufReader::new(Box::new(read_half)),
+            writer: Box::new(write_half),
             next_id: AtomicU64::new(1),
             notification_tx,
             notification_rx,
@@ -834,44 +790,9 @@ impl UffsClient {
     }
 }
 
-// Daemon lifecycle helpers live in crate::daemon_ctl — import from there
-// directly.
-
-// ── Logging helpers ─────────────────────────────────────────────────
-// Extracted to keep calling functions under the cognitive-complexity limit.
-
-/// Log daemon spawn details (exe path, existence, command args).
-fn log_spawn_details(uffs_exe: &std::path::Path, cmd_args: &[&str]) {
-    tracing::debug!(
-        uffs_exe = %uffs_exe.display(),
-        uffs_exe_exists = uffs_exe.exists(),
-        ?cmd_args,
-        "auto_start_daemon: resolved exe, spawning"
-    );
-}
-
-/// Log a connect retry attempt with socket/PID file status.
-fn log_connect_attempt(
-    attempt: usize,
-    max_attempts: usize,
-    delay_ms: u64,
-    sock: &std::path::Path,
-    pid_path: &std::path::Path,
-) {
-    tracing::debug!(
-        attempt,
-        max_attempts,
-        delay_ms,
-        sock_exists = sock.exists(),
-        pid_exists = pid_path.exists(),
-        "connect attempt"
-    );
-}
-
-/// Log a failed connect attempt (only for first 3 and final attempts to avoid
-/// spam).
-fn log_connect_error(attempt: usize, max_attempts: usize, err: &crate::error::ClientError) {
-    if attempt <= 3 || attempt == max_attempts {
-        tracing::debug!(attempt, %err, "connect attempt failed");
-    }
-}
+// Daemon lifecycle helpers live in crate::daemon_ctl — import from
+// there directly.  The elevation policy resolver and its regression
+// tests also live there so the sync client (which is not gated behind
+// the `async` feature) can reach them without cross-feature plumbing.
+// Tracing helpers extracted to `crate::connect_logging` to keep this
+// file under the 800-LOC ceiling after the v0.5.36 UAC work.

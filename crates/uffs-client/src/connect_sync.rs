@@ -12,11 +12,14 @@
 //! | Platform    | Transport                                          |
 //! |-------------|----------------------------------------------------|
 //! | macOS/Linux | `std::os::unix::net::UnixStream`                   |
-//! | Windows     | `std::os::windows::net::UnixStream` (Win10 1803+)  |
+//! | Windows     | Named pipe via `std::fs::OpenOptions` (no Winsock) |
 
 use std::io::{BufRead, BufReader, Read, Write};
 
-use crate::daemon_ctl::{find_daemon_exe, pid_file_path, socket_path, spawn_daemon};
+use crate::daemon_ctl::{
+    ElevationPolicy, find_daemon_exe, pid_file_path, resolve_elevation_policy, socket_path,
+    spawn_daemon,
+};
 use crate::error::ClientError;
 
 /// Synchronous thin client for the UFFS daemon.
@@ -54,10 +57,46 @@ impl UffsClientSync {
 
     /// Connect to a running daemon, or auto-start one with extra CLI args.
     ///
+    /// Auto-start uses the default
+    /// [`ElevationPolicy::RequireExistingElevation`].  On Windows, if
+    /// the daemon must be spawned and the current process is not
+    /// elevated, this returns
+    /// [`crate::error::ClientError::DaemonNeedsElevation`] instead of
+    /// silently triggering UAC.  See
+    /// [`Self::connect_with_elevation`] for the opt-in variant.
+    ///
     /// # Errors
     ///
-    /// Returns `ConnectionFailed` or `DaemonStartFailed`.
+    /// Returns `ConnectionFailed`, `DaemonStartFailed`, or
+    /// `DaemonNeedsElevation` (Windows, non-admin shell only).
     pub fn connect_with_args(spawn_args: &[String]) -> Result<Self, ClientError> {
+        Self::connect_with_args_inner(spawn_args, resolve_elevation_policy(false))
+    }
+
+    /// Connect to a running daemon; if we must auto-start, request a
+    /// UAC prompt on Windows when the current process is not elevated.
+    ///
+    /// Used by `uffs daemon start --elevate`.  All other entry points
+    /// default to [`ElevationPolicy::RequireExistingElevation`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::connect_with_args`], minus
+    /// `DaemonNeedsElevation` (converted into a UAC prompt).
+    pub fn connect_with_elevation(spawn_args: &[String]) -> Result<Self, ClientError> {
+        Self::connect_with_args_inner(spawn_args, ElevationPolicy::AllowUacPrompt)
+    }
+
+    /// Shared body for [`Self::connect_with_args`] and
+    /// [`Self::connect_with_elevation`].
+    ///
+    /// Takes an explicit [`ElevationPolicy`] so each public entry
+    /// point can decide whether a missing elevated context is a
+    /// hard error (the default) or a prompt request.
+    fn connect_with_args_inner(
+        spawn_args: &[String],
+        policy: ElevationPolicy,
+    ) -> Result<Self, ClientError> {
         let sock = socket_path();
 
         // Try connecting first — fast path if daemon is already running.
@@ -88,8 +127,8 @@ impl UffsClientSync {
             }
         }
 
-        // Auto-start the daemon.
-        auto_start_daemon(spawn_args)?;
+        // Auto-start the daemon with the requested elevation policy.
+        auto_start_daemon(spawn_args, policy)?;
 
         // Retry with backoff.
         let mut delay_ms = 50_u64;
@@ -430,25 +469,64 @@ impl UffsClientSync {
 
 #[cfg(windows)]
 impl UffsClientSync {
-    /// Connect via AF_UNIX socket (Windows 10 1803+).
+    /// Connect via Windows named pipe.
     ///
-    /// No bridge threads, no tokio — just a blocking socket.
+    /// This is the CLI hot path — opens the pipe with blocking
+    /// `std::fs::OpenOptions`, avoiding the `ws2_32.dll` import that
+    /// `AF_UNIX` pulled in (~54 ms per launch).
+    ///
+    /// Handles `ERROR_PIPE_BUSY` (231) by sleep-retrying a few times:
+    /// the daemon creates the next server instance immediately after
+    /// accept, but there is a tiny window where all instances are
+    /// connected and the next one hasn't been spun up yet.
     fn platform_connect() -> Result<Self, ClientError> {
-        let sock_path = socket_path();
-        let stream = std::os::windows::net::UnixStream::connect(&sock_path)
+        use std::fs::{File, OpenOptions};
+
+        /// `ERROR_PIPE_BUSY` — transient, retry with backoff.
+        const ERROR_PIPE_BUSY: i32 = 231;
+
+        let name = crate::daemon_ctl::pipe_name()
             .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
 
-        stream
-            .set_read_timeout(Some(core::time::Duration::from_secs(30)))
-            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
+        let pipe: File = {
+            let mut last_err: Option<std::io::Error> = None;
+            let mut pipe_file: Option<File> = None;
+            for attempt in 0..5_u32 {
+                match OpenOptions::new().read(true).write(true).open(&name) {
+                    Ok(file) => {
+                        pipe_file = Some(file);
+                        break;
+                    }
+                    Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                        // Pipe saturated for a moment — back off briefly.
+                        std::thread::sleep(core::time::Duration::from_millis(u64::from(
+                            10_u32 << attempt,
+                        )));
+                        last_err = Some(err);
+                    }
+                    Err(err) => {
+                        return Err(ClientError::ConnectionFailed(err.to_string()));
+                    }
+                }
+            }
+            pipe_file.ok_or_else(|| {
+                ClientError::ConnectionFailed(last_err.map_or_else(
+                    || "pipe busy after retries".to_owned(),
+                    |err| format!("pipe busy after retries: {err}"),
+                ))
+            })?
+        };
 
-        let writer = stream
+        // A second handle to the same pipe instance for the writer side.
+        // Named-pipe handles are duplicable via `DuplicateHandle` (which
+        // is what `File::try_clone` does internally on Windows).
+        let writer_handle = pipe
             .try_clone()
             .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
 
         Ok(Self {
-            reader: BufReader::new(Box::new(stream)),
-            writer: Box::new(writer),
+            reader: BufReader::new(Box::new(pipe)),
+            writer: Box::new(writer_handle),
             next_id: 1,
         })
     }
@@ -457,42 +535,26 @@ impl UffsClientSync {
 // ── Auto-start daemon ───────────────────────────────────────────────
 
 /// Spawn the daemon binary if not already running.
-#[expect(clippy::print_stderr, reason = "[diag] diagnostic tracing")]
-#[expect(
-    clippy::use_debug,
-    reason = "[diag] diagnostic tracing — remove after D: drive issue is resolved"
-)]
-fn auto_start_daemon(spawn_args: &[String]) -> Result<(), ClientError> {
+fn auto_start_daemon(spawn_args: &[String], policy: ElevationPolicy) -> Result<(), ClientError> {
     let pid_path = pid_file_path();
-
-    // [diag] Show what we are about to do.
-    eprintln!("[diag] auto_start_daemon: spawn_args={spawn_args:?}");
 
     // Check if daemon is already alive via PID file.
     if pid_path.exists()
         && crate::daemon_ctl::parse_pid_file(&pid_path)
             .is_some_and(|(pid, _ts, _hash, _nonce)| is_process_alive(pid))
     {
-        eprintln!("[diag] auto_start_daemon: daemon already alive per PID file — skipping spawn");
         return Ok(());
     }
     if pid_path.exists() {
         // Stale PID file — clean up.
-        eprintln!("[diag] auto_start_daemon: stale PID file — cleaning up");
         drop(std::fs::remove_file(&pid_path));
         let sock = socket_path();
         drop(std::fs::remove_file(&sock));
     }
 
     let daemon_exe = find_daemon_exe();
-    eprintln!(
-        "[diag] auto_start_daemon: daemon_exe={}",
-        daemon_exe.display()
-    );
     let str_args: Vec<&str> = spawn_args.iter().map(String::as_str).collect();
-    eprintln!("[diag] auto_start_daemon: calling spawn_daemon with args={str_args:?}");
-    spawn_daemon(&daemon_exe, &str_args)?;
-    eprintln!("[diag] auto_start_daemon: spawn_daemon returned OK");
+    spawn_daemon(&daemon_exe, &str_args, policy)?;
     Ok(())
 }
 

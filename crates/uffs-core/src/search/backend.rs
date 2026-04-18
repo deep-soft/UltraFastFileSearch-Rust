@@ -9,6 +9,10 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
+use super::dispatch::{
+    apply_dispatch_safety_nets, dispatch_match_all, dispatch_regex, dispatch_trigram_or_tree,
+    pick_mode_label,
+};
 use crate::compact::DriveCompactIndex;
 use crate::search::field::FieldId;
 
@@ -308,8 +312,11 @@ impl MultiDriveBackend {
         reason = "search dispatch with three modes and a drive filter"
     )]
     pub fn search(&mut self, req: SearchRequest<'_>) -> SearchResult {
+        // `pattern` is bound `mut` so the ext-glob safety net below can
+        // rewrite `*.<ext>` → `"*"` in-place without introducing a
+        // shadow binding (see the `shadow_reuse` workspace lint).
         let SearchRequest {
-            pattern,
+            mut pattern,
             case_sensitive,
             whole_word,
             match_path,
@@ -331,15 +338,35 @@ impl MultiDriveBackend {
             };
         }
 
+        // Apply both dispatch-time pattern rewrites (drive-prefix +
+        // ext-glob) via the shared helper — see `apply_dispatch_safety_nets`
+        // docs for the composition rules.  `drive_from_prefix` owns the
+        // single-element vec so the borrow in `effective_drives_filter`
+        // stays valid through the stash-and-partition block below.
+        let mut drive_from_prefix: Vec<char> = Vec::new();
+        apply_dispatch_safety_nets(
+            &mut pattern,
+            match_path,
+            case_sensitive,
+            drives_filter.is_empty(),
+            search_filters,
+            &mut drive_from_prefix,
+        );
+        let effective_drives_filter: &[char] = if drive_from_prefix.is_empty() {
+            drives_filter
+        } else {
+            &drive_from_prefix
+        };
+
         // When a drive filter is active, temporarily swap out non-matching
         // drives so the rest of the search logic (which uses `self.drives`)
         // only touches the requested subset. We restore afterwards.
-        let stashed_drives = if drives_filter.is_empty() {
+        let stashed_drives = if effective_drives_filter.is_empty() {
             None
         } else {
             let all = core::mem::take(&mut self.drives);
             let (keep, rest): (Vec<_>, Vec<_>) = all.into_iter().partition(|dr| {
-                drives_filter
+                effective_drives_filter
                     .iter()
                     .any(|fl| fl.eq_ignore_ascii_case(&dr.letter))
             });
@@ -541,10 +568,6 @@ impl MultiDriveBackend {
     clippy::too_many_lines,
     reason = "search dispatch with three modes and a drive filter — mirrors MultiDriveBackend::search"
 )]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "search dispatch with pattern/regex/glob modes, sort, and drive filter"
-)]
 pub fn search_index(
     index: &DriveIndex,
     req: SearchRequest<'_>,
@@ -552,8 +575,11 @@ pub fn search_index(
     sort_desc: bool,
     extra_sort_tiers: &[SortSpec],
 ) -> SearchResult {
+    // `pattern` is bound `mut` so the ext-glob safety net below can
+    // rewrite `*.<ext>` → `"*"` in-place without introducing a shadow
+    // binding (see the `shadow_reuse` workspace lint).
     let SearchRequest {
-        pattern,
+        mut pattern,
         case_sensitive,
         whole_word,
         match_path,
@@ -573,13 +599,33 @@ pub fn search_index(
         };
     }
 
+    // Apply both dispatch-time pattern rewrites (drive-prefix +
+    // ext-glob) via the shared helper — see `apply_dispatch_safety_nets`
+    // docs for the composition rules.  `drive_from_prefix` owns the
+    // single-element vec so the borrow in `effective_drives_filter`
+    // stays valid for the rest of the function.
+    let mut drive_from_prefix: Vec<char> = Vec::new();
+    apply_dispatch_safety_nets(
+        &mut pattern,
+        match_path,
+        case_sensitive,
+        drives_filter.is_empty(),
+        search_filters,
+        &mut drive_from_prefix,
+    );
+    let effective_drives_filter: &[char] = if drive_from_prefix.is_empty() {
+        drives_filter
+    } else {
+        &drive_from_prefix
+    };
+
     // Filter drives without mutation — just skip non-matching ones.
     let active_drives: Vec<&DriveCompactIndex> = index
         .drives
         .iter()
         .filter(|dr| {
-            drives_filter.is_empty()
-                || drives_filter
+            effective_drives_filter.is_empty()
+                || effective_drives_filter
                     .iter()
                     .any(|fl| fl.eq_ignore_ascii_case(&dr.letter))
         })
@@ -604,8 +650,6 @@ pub fn search_index(
     };
     let is_path = !is_match_all && !is_regex && crate::search::tree::is_path_pattern(&needle);
 
-    let mut rows = Vec::new();
-
     tracing::debug!(
         pattern,
         sort_column = ?sort_column,
@@ -617,95 +661,54 @@ pub fn search_index(
         "[1] search_index entry"
     );
 
-    if is_match_all {
-        let t_top_n = Instant::now();
-        rows = super::query::collect_global_top_n(
+    let rows: Vec<DisplayRow> = if is_match_all {
+        dispatch_match_all(
             &active_drives,
             limit,
             sort_column,
             sort_desc,
             filter_mode,
             search_filters,
-        );
-        let top_n_ms = t_top_n.elapsed().as_millis();
-        tracing::debug!(rows = rows.len(), top_n_ms, "[2] collect_global_top_n done");
-        if search_filters.needs_display_row_filter() {
-            let t_post = Instant::now();
-            super::filters::apply_search_filters(&mut rows, search_filters);
-            tracing::debug!(
-                rows_after = rows.len(),
-                post_filter_ms = t_post.elapsed().as_millis(),
-                "[3] post-filter done"
-            );
-        }
+        )
     } else if is_regex {
-        let regex_pattern = needle.strip_prefix('>').unwrap_or(&needle);
-        match regex::RegexBuilder::new(regex_pattern)
-            .case_insensitive(!case_sensitive)
-            .build()
-        {
-            Ok(compiled_re) => {
-                let drive_results: Vec<Vec<DisplayRow>> = active_drives
-                    .par_iter()
-                    .map(|drive| {
-                        super::query::search_compact_drive_regex(drive, &compiled_re, limit)
-                    })
-                    .collect();
-                for drive_rows in drive_results {
-                    rows.extend(drive_rows);
-                }
-                super::filters::apply_filter(&mut rows, filter_mode);
-                super::filters::apply_search_filters(&mut rows, search_filters);
-                sort_rows(&mut rows, sort_column, sort_desc, extra_sort_tiers);
-                rows.truncate(limit);
-            }
-            Err(_err) => {
-                return SearchResult {
-                    rows: Vec::new(),
-                    duration: start.elapsed(),
-                    records_scanned: 0,
-                };
-            }
-        }
+        let Some(regex_rows) = dispatch_regex(
+            &active_drives,
+            &needle,
+            case_sensitive,
+            limit,
+            filter_mode,
+            search_filters,
+            sort_column,
+            sort_desc,
+            extra_sort_tiers,
+        ) else {
+            return SearchResult {
+                rows: Vec::new(),
+                duration: start.elapsed(),
+                records_scanned: 0,
+            };
+        };
+        regex_rows
     } else {
-        let drive_results: Vec<Vec<DisplayRow>> = active_drives
-            .par_iter()
-            .map(|drive| {
-                if is_path {
-                    super::query::search_compact_drive_tree(drive, &needle, limit)
-                } else {
-                    super::query::search_compact_drive(
-                        drive,
-                        &needle,
-                        limit,
-                        case_sensitive,
-                        whole_word,
-                        match_path,
-                    )
-                }
-            })
-            .collect();
-        for drive_rows in drive_results {
-            rows.extend(drive_rows);
-        }
-        super::filters::apply_filter(&mut rows, filter_mode);
-        super::filters::apply_search_filters(&mut rows, search_filters);
-        sort_rows(&mut rows, sort_column, sort_desc, extra_sort_tiers);
-        rows.truncate(limit);
-    }
+        dispatch_trigram_or_tree(
+            &active_drives,
+            &needle,
+            is_path,
+            case_sensitive,
+            whole_word,
+            match_path,
+            limit,
+            filter_mode,
+            search_filters,
+            sort_column,
+            sort_desc,
+            extra_sort_tiers,
+        )
+    };
 
     let scanned = active_drives.iter().map(|dr| dr.records.len()).sum();
     let wall_ms = start.elapsed().as_millis();
-
-    let mode = if is_match_all {
-        "match-all"
-    } else if is_regex {
-        "regex"
-    } else if is_path {
-        "tree"
-    } else {
-        "trigram"
-    };
+    let mode = pick_mode_label(is_match_all, is_regex, is_path);
     tracing::debug!(
         target: "cache_profile",
         wall_ms = %wall_ms,
@@ -721,6 +724,14 @@ pub fn search_index(
         records_scanned: scanned,
     }
 }
+
+// ── Dispatch helpers ───────────────────────────────────────────────────
+// The pattern-rewrite safety nets (`apply_dispatch_safety_nets` and its
+// internal helpers) plus the three per-branch dispatch functions
+// (`dispatch_match_all`, `dispatch_regex`, `dispatch_trigram_or_tree`)
+// and the `pick_mode_label` tracing helper live in `dispatch.rs`,
+// extracted for the 800-LOC file-size policy.  Imported at the top of
+// this file.
 
 // ── Sorting & DataFrame conversion ─────────────────────────────────────
 // Extracted into `sorting.rs` for file-size policy compliance.

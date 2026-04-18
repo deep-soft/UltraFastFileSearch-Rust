@@ -429,32 +429,7 @@ impl OutputConfig {
                 }
             }
             DataType::Datetime(TimeUnit::Microseconds, _) => {
-                // Convert UTC timestamp to local time using FIXED offset.
-                // Windows' FileTimeToLocalFileTime() applies the CURRENT
-                // timezone offset to ALL timestamps, ignoring historical DST transitions.
-                // We match this by using a fixed offset computed once at startup.
-                if let Ok(AnyValue::Datetime(ts, TimeUnit::Microseconds, _)) = series.get(row_idx)
-                    && let Some(utc_dt) = {
-                        // Use div_euclid/rem_euclid for correct handling of negative timestamps.
-                        // rem_euclid(1_000_000) always returns [0, 999_999] for any i64 input.
-                        let secs = ts.div_euclid(1_000_000);
-                        let micros_i64 = ts.rem_euclid(1_000_000);
-                        // Safe: rem_euclid(1_000_000) is always in [0, 999_999], fits in u32
-                        let micros = u32::try_from(micros_i64).unwrap_or(0);
-                        chrono::DateTime::from_timestamp(secs, micros * 1000)
-                    }
-                {
-                    // Apply fixed timezone offset (computed once at startup)
-                    // This matches established behavior: same offset for all timestamps
-                    if let Some(timezone_offset) = fixed_tz {
-                        let local_dt = utc_dt.with_timezone(timezone_offset);
-                        // Format WITHOUT subseconds to match baseline output exactly
-                        Self::append_display(row_buffer, local_dt.format("%Y-%m-%d %H:%M:%S"));
-                    } else {
-                        // Fallback: format as UTC if offset is invalid
-                        Self::append_display(row_buffer, utc_dt.format("%Y-%m-%d %H:%M:%S"));
-                    }
-                }
+                Self::append_filetime_value(row_buffer, series, row_idx, fixed_tz);
             }
             _ => {
                 if let Ok(val) = series.get(row_idx)
@@ -463,6 +438,66 @@ impl OutputConfig {
                     Self::append_display(row_buffer, val);
                 }
             }
+        }
+    }
+
+    /// Format the value at `row_idx` of a `Datetime(Microseconds)` column
+    /// as a calendar string, treating the underlying i64 as **raw
+    /// FILETIME** (100-ns ticks since 1601-01-01).
+    ///
+    /// ── v13+ FILETIME semantics ─────────────────────────────────────────
+    ///
+    /// The `DataFrame` schema declares timestamp columns as
+    /// `Datetime(TimeUnit::Microseconds)` for backward compatibility with
+    /// Polars analytics (date ops, SQL coercion, Parquet round-trips),
+    /// but the underlying i64 values are **raw FILETIME** — see
+    /// `uffs-mft::index::dataframe.rs` and
+    /// `uffs-mft::reader::dataframe_build.rs`, which push
+    /// `rec.stdinfo.created` (FILETIME per the `StandardInfo` doc)
+    /// directly into the column with a type cast rather than a value
+    /// conversion.
+    ///
+    /// Formatting therefore has to go through the FILETIME decomposition,
+    /// not `chrono::DateTime::from_timestamp` with Unix-micros semantics —
+    /// using the latter produces year-6220 output for 2026-era timestamps
+    /// (combined ~369-year + 10× unit offset between the two encodings,
+    /// same bug class that caused the `append_datetime_native` regression
+    /// in this file).
+    ///
+    /// NOTE: Polars' own `CsvWriter` (used by `uffs load --output *.csv`)
+    /// still formats this column as Unix-micros via its built-in
+    /// `Datetime` serializer.  Fixing that requires a `DataFrame` schema
+    /// change (switch to `Int64` or pre-convert values to Unix micros)
+    /// and is tracked as a separate latent bug.
+    ///
+    /// Polars exposes two variants — `Datetime` (borrowed tz) and
+    /// `DatetimeOwned` (owned tz `Arc`) — depending on how the column was
+    /// constructed.  Both are matched here.
+    fn append_filetime_value(
+        row_buffer: &mut String,
+        series: &Column,
+        row_idx: usize,
+        fixed_tz: Option<&chrono::FixedOffset>,
+    ) {
+        use uffs_polars::{AnyValue, TimeUnit};
+
+        let filetime_opt: Option<i64> = match series.get(row_idx) {
+            Ok(
+                AnyValue::Datetime(ticks, TimeUnit::Microseconds, _)
+                | AnyValue::DatetimeOwned(ticks, TimeUnit::Microseconds, _),
+            ) => Some(ticks),
+            _ => None,
+        };
+        let Some(filetime) = filetime_opt else { return };
+        let tz_offset_secs: i32 = fixed_tz.map_or(0_i32, chrono::FixedOffset::local_minus_utc);
+        let local_ft = uffs_time::filetime_with_tz_bias(filetime, tz_offset_secs);
+        if let Some((year, month, day, hour, minute, second)) =
+            uffs_time::filetime_to_calendar(local_ft)
+        {
+            Self::append_display(
+                row_buffer,
+                format_args!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"),
+            );
         }
     }
 
@@ -705,45 +740,44 @@ fn push_flag(buf: &mut String, cfg: &OutputConfig, flags: u32, mask: u32) {
     }
 }
 
-/// Append `YYYY-MM-DD HH:MM:SS` from Unix microseconds with timezone offset.
+/// Append `YYYY-MM-DD HH:MM:SS` from a raw FILETIME (100-ns ticks since
+/// 1601-01-01) with timezone offset.
 ///
-/// Same algorithm as `row_writer::append_datetime` — no `chrono` overhead.
-fn append_datetime_native(buf: &mut String, timestamp_micros: i64, tz_offset_secs: i32) {
+/// v13+ of the compact index stores timestamps as **raw FILETIME** (matching
+/// the C++ NTFS baseline), not Unix microseconds.  Callers in this file
+/// pass `row.modified` / `row.created` / `row.accessed` which are FILETIME
+/// values — previously this function mis-interpreted them as Unix
+/// microseconds and produced year-6220 output for 2026-era timestamps (the
+/// ~369-year + 10× unit offset between the two encodings).
+///
+/// Delegates to `uffs_time::filetime_with_tz_bias` + `filetime_to_calendar`
+/// for the canonical Hinnant civil-calendar decomposition — same helpers
+/// used by the parity-compat CSV writer in
+/// `uffs_cli::commands::output::parity::append_datetime_tz`.
+///
+/// Regression-pinned by `append_datetime_native_formats_filetime_as_2024`
+/// in this module's `tests` submodule.
+fn append_datetime_native(buf: &mut String, filetime: i64, tz_offset_secs: i32) {
     use core::fmt::Write;
 
-    let adjusted_secs = timestamp_micros.div_euclid(1_000_000) + i64::from(tz_offset_secs);
-    // rem_euclid is always non-negative → safe to narrow to u32 via try_from.
-    let day_secs = u32::try_from(adjusted_secs.rem_euclid(86_400)).unwrap_or(0);
-    let days = adjusted_secs.div_euclid(86_400) + 719_468;
-
-    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
-    // doe is in [0, 146_096] — always fits u32.
-    let doe = u32::try_from(days - era * 146_097).unwrap_or(0);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let year_offset = i64::from(yoe) + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let month_proxy = (5 * doy + 2) / 153;
-    let day = doy - (153 * month_proxy + 2) / 5 + 1;
-    let month = if month_proxy < 10 {
-        month_proxy + 3
+    let local_ft = uffs_time::filetime_with_tz_bias(filetime, tz_offset_secs);
+    if let Some((year, month, day, hour, minute, second)) =
+        uffs_time::filetime_to_calendar(local_ft)
+    {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "String::write_fmt never fails"
+        )]
+        let _ = write!(
+            buf,
+            "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
+        );
     } else {
-        month_proxy - 9
-    };
-    let year = if month <= 2 {
-        year_offset + 1
-    } else {
-        year_offset
-    };
-    let hour = day_secs / 3600;
-    let minute = (day_secs % 3600) / 60;
-    let second = day_secs % 60;
-
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "String::write_fmt never fails"
-    )]
-    let _ = write!(
-        buf,
-        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
-    );
+        // `filetime == 0` (unset / null) — surface as the zero sentinel.
+        buf.push_str("0000-00-00 00:00:00");
+    }
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

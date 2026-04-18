@@ -24,3 +24,10 @@ use security_framework as _;
 pub mod crypto;
 pub mod fs;
 pub mod keystore;
+
+/// Windows named-pipe security helpers (DACL, SID resolution, pipe naming).
+///
+/// Only compiled on Windows.  See [`pipe`] module docs for the security
+/// model rationale.
+#[cfg(windows)]
+pub mod pipe;

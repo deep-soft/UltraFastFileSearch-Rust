@@ -9,6 +9,7 @@
 pub mod backend;
 pub mod columns;
 pub mod derived;
+mod dispatch;
 pub mod field;
 pub mod filters;
 pub mod query;

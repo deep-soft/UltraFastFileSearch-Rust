@@ -6,7 +6,7 @@
 /// Extracts the 1-based month number from a raw FILETIME timestamp.
 #[must_use]
 pub const fn month_from_filetime(filetime: i64) -> u32 {
-    match uffs_mft::ntfs::filetime_to_calendar(filetime) {
+    match uffs_time::filetime_to_calendar(filetime) {
         Some((_, month, ..)) => month,
         None => 1, // default to January for unset timestamps
     }
@@ -133,8 +133,7 @@ pub fn now_filetime() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |dur| {
             let unix_us = uffs_mft::micros_to_i64(dur.as_micros());
-            unix_us * uffs_mft::ntfs::FILETIME_TICKS_PER_MICROSECOND
-                + uffs_mft::ntfs::FILETIME_UNIX_DIFF
+            unix_us * uffs_time::FILETIME_TICKS_PER_MICROSECOND + uffs_time::FILETIME_UNIX_DIFF
         })
 }
 
@@ -201,7 +200,7 @@ fn parse_iso_date(trimmed: &str) -> Option<i64> {
 }
 
 /// FILETIME ticks per second (100-ns intervals).
-const TICKS_PER_SECOND: i64 = uffs_mft::ntfs::FILETIME_TICKS_PER_SECOND;
+const TICKS_PER_SECOND: i64 = uffs_time::FILETIME_TICKS_PER_SECOND;
 
 /// FILETIME ticks per day.
 const TICKS_PER_DAY: i64 = TICKS_PER_SECOND * 86_400;

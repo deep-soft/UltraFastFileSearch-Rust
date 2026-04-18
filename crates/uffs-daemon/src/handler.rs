@@ -5,6 +5,7 @@
 
 use uffs_client::protocol::response::{
     FacetValuesParams, FacetValuesResponse, LoadDriveParams, LoadDriveResponse, RefreshParams,
+    SearchResponse,
 };
 use uffs_client::protocol::{
     AggregateSpecWire, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcErrorResponse, RpcRequest,
@@ -111,9 +112,14 @@ impl RequestHandler {
         let mut response = self.index.search(&search_params).await;
         let row_count = response.rows.len();
 
+        // Path-only single-buffer fast path (see `try_pack_paths_blob`).
+        Self::try_pack_paths_blob(&search_params, &mut response);
+
         // D5.1: adaptive routing — use shmem for large result sets.
+        // Only fires when the path-only fast path did not already
+        // claim the payload.
         let mut shmem_ms: u128 = 0;
-        if row_count > uffs_client::shmem::SHMEM_THRESHOLD {
+        if response.paths_blob.is_none() && row_count > uffs_client::shmem::SHMEM_THRESHOLD {
             let t_shmem = std::time::Instant::now();
             match uffs_client::shmem::write_search_results(
                 &response.rows,
@@ -173,6 +179,72 @@ impl RequestHandler {
         }
 
         json
+    }
+
+    /// Pack a path-only search response into a single UTF-8 buffer.
+    ///
+    /// When the client asked for a path-only projection and the row
+    /// count is below the shmem threshold, replace the `SearchRow` list
+    /// with a newline-terminated blob in `paths_blob`.  The CLI then
+    /// writes the entire buffer with a single `write_all`, skipping
+    /// per-row JSON deserialization and format dispatch (both of which
+    /// scale linearly with row count).
+    ///
+    /// This is invisible to the `--out=file` bench (which never
+    /// transfers rows), but is a large win for interactive
+    /// `uffs *.ext` to stdout or for pipe composition.
+    ///
+    /// For row counts above the shmem threshold we leave the response
+    /// untouched and let the existing shmem path handle it — the shmem
+    /// cost is already amortized there, and a multi-megabyte JSON
+    /// string would be the worse choice.
+    fn try_pack_paths_blob(params: &SearchParams, response: &mut SearchResponse) {
+        let row_count = response.rows.len();
+        if row_count == 0
+            || row_count > uffs_client::shmem::SHMEM_THRESHOLD
+            || !Self::is_path_only_projection(params)
+        {
+            return;
+        }
+        let capacity: usize = response
+            .rows
+            .iter()
+            .map(|row| row.path.len().saturating_add(1))
+            .sum();
+        let mut blob = String::with_capacity(capacity);
+        for row in &response.rows {
+            blob.push_str(&row.path);
+            blob.push('\n');
+        }
+        response.paths_blob = Some(blob);
+        response.rows = Vec::new();
+    }
+
+    /// Return true when the client asked for a single path column.
+    ///
+    /// Matches the user-facing column aliases `"path"` and `"full path"`
+    /// case-insensitively.  Multi-column projections, aggregation
+    /// requests, projected-JSON mode, and custom sort clauses all
+    /// disqualify the fast path — the response must still carry the
+    /// full [`SearchRow`] data for the CLI's row-based formatters.
+    fn is_path_only_projection(params: &SearchParams) -> bool {
+        if params.projection.len() != 1 {
+            return false;
+        }
+        if !params.aggregations.is_empty() {
+            return false;
+        }
+        if matches!(
+            params.response_mode,
+            Some(uffs_client::protocol::SearchResponseMode::Json)
+        ) {
+            return false;
+        }
+        let Some(col) = params.projection.first() else {
+            return false;
+        };
+        let trimmed = col.trim();
+        trimmed.eq_ignore_ascii_case("path") || trimmed.eq_ignore_ascii_case("full path")
     }
 
     /// Handle `search_cli` method — parse raw CLI args into [`SearchParams`]

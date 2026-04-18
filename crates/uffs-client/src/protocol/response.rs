@@ -124,12 +124,25 @@ pub struct KeepaliveParams {
 
 /// Response for the `search` method.
 ///
-/// Results are delivered either inline (`rows`) or via shared memory
-/// (`shmem_path`).  When `shmem_path` is set, `rows` is empty and the
-/// client should read the file with [`crate::shmem::read_search_results`].
+/// Results are delivered via one of three channels, in priority order:
+///
+/// 1. `paths_blob` — a single UTF-8 buffer of newline-terminated paths. Used
+///    only when the client requested a path-only projection (`--columns path`)
+///    and the row count is below [`crate::shmem::SHMEM_THRESHOLD`].  The CLI
+///    then does one `write_all` to stdout, skipping per-row JSON
+///    deserialization and format dispatch entirely.  Empty when this channel is
+///    not used.
+/// 2. `shmem_path` — shared-memory file with the full [`SearchRow`] list.  Used
+///    for large result sets.  When set, `rows` is empty and the file should be
+///    read with [`crate::shmem::read_search_results`].  The client owns
+///    cleanup.
+/// 3. `rows` — traditional inline [`SearchRow`] vector.  Used for
+///    small-to-medium result sets that do not qualify for the path-only fast
+///    path.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchResponse {
-    /// Matching result rows (inline delivery — empty when shmem is used).
+    /// Matching result rows (inline delivery — empty when shmem or
+    /// paths blob is used).
     pub rows: Vec<SearchRow>,
     /// Total number of matching records (before `limit` truncation).
     ///
@@ -174,6 +187,20 @@ pub struct SearchResponse {
     /// non-empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aggregations: Vec<AggregateResultWire>,
+    /// Single-buffer path-only payload.
+    ///
+    /// When the client requests a path-only projection
+    /// (`--columns path`) and the total row count is small enough to
+    /// inline, the daemon builds a newline-terminated UTF-8 buffer of
+    /// paths and delivers it here instead of populating `rows`.  The
+    /// CLI then writes the buffer with a single `write_all` call,
+    /// bypassing per-row JSON deserialization and format dispatch.
+    ///
+    /// When this field is `Some`, `rows` is empty and
+    /// `shmem_path` is `None`.  The final byte is always `\n` when
+    /// the blob is non-empty.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub paths_blob: Option<String>,
 }
 
 /// Daemon-side timing breakdown returned when `SearchParams::profile` is set.

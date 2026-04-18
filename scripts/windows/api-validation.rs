@@ -341,7 +341,35 @@ fn daemon_socket_path() -> String {
 }
 
 /// Send a JSON-RPC request and return the parsed response.
+///
+/// Returns `Err` on transport failures (connect, parse) AND on
+/// JSON-RPC `error` responses.  For negative-path tests that want
+/// to inspect the error object, pass the full response by calling
+/// [`rpc_call_allow_error`] or set `allow_error = true` via
+/// `rpc_call_impl`.
 fn rpc_call(sock_path: &str, method: &str, params: Option<Value>) -> Result<Value> {
+    rpc_call_impl(sock_path, method, params, false)
+}
+
+/// Like [`rpc_call`] but returns the full JSON-RPC response even when
+/// the daemon responds with an `error` object.  Used by expected-
+/// error tests (e.g. `RPC.5`) so the test's validator can inspect
+/// `error.code` / `error.message`.
+fn rpc_call_allow_error(sock_path: &str, method: &str, params: Option<Value>) -> Result<Value> {
+    rpc_call_impl(sock_path, method, params, true)
+}
+
+/// Shared transport implementation for [`rpc_call`] and
+/// [`rpc_call_allow_error`].  `allow_error` controls whether a JSON-
+/// RPC `error` response becomes `Err("RPC error: ...")` (false, the
+/// default) or is returned as `Ok(resp)` with the error object intact
+/// (true, used by negative-path tests).
+fn rpc_call_impl(
+    sock_path: &str,
+    method: &str,
+    params: Option<Value>,
+    allow_error: bool,
+) -> Result<Value> {
     let id = REQ_ID.fetch_add(1, Ordering::Relaxed);
     let req = json!({
         "jsonrpc": "2.0",
@@ -397,6 +425,11 @@ fn rpc_call(sock_path: &str, method: &str, params: Option<Value>) -> Result<Valu
         if let Some(err) = resp.get("error") {
             if log_enabled() {
                 log_write(&format!("[RPC-ERR id={id}] {}", serde_json::to_string_pretty(err).unwrap_or_default()));
+            }
+            if allow_error {
+                // Caller asked for the full response (e.g. negative-path
+                // test).  Fall through and return `resp`.
+                return Ok(resp);
             }
             bail!("RPC error: {}", serde_json::to_string_pretty(err)?);
         }
@@ -498,6 +531,11 @@ struct TestSpec {
     /// Equivalent CLI args for debugging failed tests.
     /// e.g. `["*.txt", "--files-only", "--limit", "10"]`
     cli_args: Vec<String>,
+    /// When `true`, the test expects the RPC response to contain an
+    /// `error` object (not `result`).  The `check` fn receives the
+    /// FULL response (not just the inner `result`) so it can inspect
+    /// the error code / message.
+    expect_error: bool,
 }
 
 #[derive(Debug)]
@@ -545,15 +583,40 @@ fn run_tests(sock: &str, specs: Vec<TestSpec>, args: &ScriptArgs) -> Vec<TestRes
                     }
                 }
                 let t0 = Instant::now();
-                let outcome = rpc_call(&sock, &spec.method, spec.params.clone())
-                    .and_then(|resp| {
+                // Negative-path tests (expect_error) use the allow-error
+                // transport so the error response reaches the validator.
+                let transport_result = if spec.expect_error {
+                    rpc_call_allow_error(&sock, &spec.method, spec.params.clone())
+                } else {
+                    rpc_call(&sock, &spec.method, spec.params.clone())
+                };
+                let outcome = transport_result.and_then(|resp| {
+                    if spec.expect_error {
+                        // Negative-path test: the daemon must return an
+                        // `error` object, not `result`.  Pass the FULL
+                        // response so the validator can inspect the code.
+                        if resp.get("result").is_some() {
+                            return Err(anyhow::anyhow!(
+                                "Expected RPC error response but got success: {}",
+                                serde_json::to_string(&resp).unwrap_or_default()
+                            ));
+                        }
+                        if resp.get("error").is_none() {
+                            return Err(anyhow::anyhow!(
+                                "Expected RPC error object but response has neither `result` nor `error`: {}",
+                                serde_json::to_string(&resp).unwrap_or_default()
+                            ));
+                        }
+                        (spec.check)(&resp)
+                    } else {
                         let result = resp.get("result").cloned()
                             .ok_or_else(|| anyhow::anyhow!(
                                 "RPC response missing 'result' field: {}",
                                 serde_json::to_string(&resp).unwrap_or_default()
                             ))?;
                         (spec.check)(&result)
-                    });
+                    }
+                });
                 let elapsed_ms = t0.elapsed().as_millis();
                 let (passed, message) = match &outcome {
                     Ok(msg) => (true, msg.clone()),
@@ -671,6 +734,15 @@ struct TestDef {
     #[serde(default = "default_targets")] targets: Vec<String>,
     skip: Option<bool>,
     #[serde(default)] #[allow(dead_code)] tags: Vec<String>,
+
+    // ── Expected-error tests ───────────────────────────────────────
+    /// When `true`, the test expects the daemon RPC to return an error
+    /// response (no `result` field) rather than a successful result.
+    /// The test's `validator` (if any) is called on the FULL RPC
+    /// response including the `error` object, so it can inspect the
+    /// error code / message.  Used for negative-path tests like
+    /// "unknown method returns -32601" (see `RPC.5`).
+    #[serde(default)] expect_error: Option<bool>,
 
     // ── Per-target checks ────────────────────────────────────────
     /// CLI-specific (ignored by this script).
@@ -1439,6 +1511,72 @@ fn run_rpc_custom_validator(name: &str, result: &Value) -> Result<String> {
             for w in lens.windows(2) { if w[0] < w[1] { bail!("Not desc: {} < {}", w[0], w[1]); } }
             Ok(format!("{} rows, sorted by name length desc", rows.len()))
         }
+        "T67f2" => {
+            // PathOnly sort must honour Windows Explorer's `Folder` column
+            // convention: when two rows share the same parent directory
+            // (case-insensitive), the secondary tiebreaker is filename
+            // ASC.  Mirrored by
+            // `search_index_path_only_sort_name_asc_within_same_folder`
+            // in crates/uffs-core/src/search/backend_tests.rs.
+            //
+            // This validator *only* checks the tiebreaker invariant — it
+            // intentionally does NOT re-validate the primary `path_only`
+            // ASC ordering.  Primary ordering is T67f's job (via the
+            // generic sort_check framework, which folds with
+            // `.to_lowercase()`); the daemon's sort uses NTFS $UpCase
+            // (upper-fold), and the two conventions only disagree on
+            // characters between `Z` (0x5A) and `a` (0x61) — notably `_`
+            // (0x5F).  Validating primary here would spuriously fail on
+            // path pairs like `pmf_ryzenaimax` vs `pmf_ryzen_ai` where
+            // upper-fold places `A`<`_` and lower-fold places `_`<`a`.
+            //
+            // The sibling rows we care about (same path_only) have
+            // identical case-folded prefixes so this ambiguity never
+            // surfaces for tiebreaker comparison.
+            let rows = get_rows(result);
+            if rows.len() < 2 {
+                bail!("Need ≥ 2 rows to validate path_only+name sort, got {}", rows.len());
+            }
+            let pairs: Vec<(String, String)> = rows.iter().map(|r| {
+                let path = field_str(r, "path");
+                let name = field_str(r, "name");
+                let dir = path
+                    .strip_suffix(&name)
+                    .unwrap_or(&path)
+                    .trim_end_matches('\\')
+                    .to_owned();
+                (dir, name.to_owned())
+            }).collect();
+            let mut saw_tiebreaker = false;
+            for w in pairs.windows(2) {
+                let (po0, n0) = &w[0];
+                let (po1, n1) = &w[1];
+                if po0.eq_ignore_ascii_case(po1) {
+                    saw_tiebreaker = true;
+                    let n0_fold = n0.to_lowercase();
+                    let n1_fold = n1.to_lowercase();
+                    if n0_fold > n1_fold {
+                        bail!(
+                            "Not asc (name tiebreaker within '{}'): '{}' > '{}'",
+                            po0, n0, n1
+                        );
+                    }
+                }
+            }
+            if !saw_tiebreaker {
+                bail!(
+                    "Test vacuous: {} rows all have distinct path_only values — \
+                     no adjacent pair with equal path_only to exercise the name \
+                     tiebreaker.  Expand the search or raise --limit so rows from \
+                     the same folder appear together.",
+                    rows.len()
+                );
+            }
+            Ok(format!(
+                "{} rows, name-ASC tiebreaker verified for same-folder siblings",
+                rows.len()
+            ))
+        }
         "T75" => {
             let rows = get_rows(result);
             if rows.is_empty() { bail!("No rows — cannot validate ext+size filter"); }
@@ -1765,6 +1903,31 @@ fn run_rpc_custom_validator(name: &str, result: &Value) -> Result<String> {
             Ok(format!("drives_cd: all {} rows on C: or D:", rows.len()))
         }
 
+        "RPC.5" => {
+            // Expected-error test: unknown RPC method must return
+            // JSON-RPC error code -32601 (Method not found), not a
+            // crash, not a silent success.  The `result` parameter
+            // here is the FULL RPC response (set up by the
+            // `expect_error=true` branch in the caller).  Mirrors the
+            // M700 MCP test and the daemon's own integration test at
+            // `crates/uffs-daemon/tests/ipc_integration.rs:209-218`.
+            let error = result.get("error").ok_or_else(|| anyhow::anyhow!(
+                "RPC.5: response has no `error` object (expect_error branch should have caught this)"
+            ))?;
+            let code = error.get("code").and_then(Value::as_i64).ok_or_else(|| anyhow::anyhow!(
+                "RPC.5: error object missing numeric `code`: {}",
+                serde_json::to_string(error).unwrap_or_default()
+            ))?;
+            if code != -32601 {
+                bail!(
+                    "RPC.5: expected JSON-RPC error code -32601 (MethodNotFound), got {code}: {}",
+                    serde_json::to_string(error).unwrap_or_default()
+                );
+            }
+            let msg = error.get("message").and_then(Value::as_str).unwrap_or("");
+            Ok(format!("error code -32601: {msg}"))
+        }
+
         other => bail!("custom validator '{other}' not yet ported to RPC — implement it or add api_checks")
     }
 }
@@ -1773,6 +1936,19 @@ fn run_rpc_custom_validator(name: &str, result: &Value) -> Result<String> {
 fn build_rpc_validator(def: &TestDef) -> CheckFn {
     let def = def.clone();
     Box::new(move |result: &Value| {
+        // Expected-error tests: the caller has already asserted the
+        // response contains an `error` object (not `result`), and
+        // passed us the FULL response.  Row/column/sort/anti-vacuous
+        // checks are meaningless here — delegate directly to the
+        // custom validator if any, otherwise succeed trivially.
+        if def.expect_error.unwrap_or(false) {
+            if let Some(ref name) = def.validator {
+                let detail = run_rpc_custom_validator(name, result)?;
+                return Ok(format!("expected-error path: {detail}"));
+            }
+            return Ok("expected-error path: error object present (no custom validator)".into());
+        }
+
         let mut details: Vec<String> = Vec::new();
         let rows = get_rows(result);
         let n = rows.len();
@@ -2151,6 +2327,7 @@ fn load_tests_from_toml() -> (Vec<TestSpec>, Vec<String>) {
             params: Some(params),
             check: validator,
             cli_args: def.cli_args.clone(),
+            expect_error: def.expect_error.unwrap_or(false),
         });
     }
     if skipped > 0 || filtered_out > 0 {

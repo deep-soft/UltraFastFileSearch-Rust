@@ -637,7 +637,7 @@ fn run_live_drive_parity(
     //    Without this the daemon may serve in-memory results from a previous
     //    drive or session, and --no-cache only skips the MFT cache file — it
     //    doesn't prevent the daemon from using its hot in-memory index.
-    print!("  [1/4] Purging daemon + cache for cold Rust run...");
+    print!("  [1/5] Purging daemon + cache for cold Rust run...");
     io::stdout().flush().ok();
     let _ = Command::new(rust_bin)
         .args(["daemon", "kill"])
@@ -660,10 +660,49 @@ fn run_live_drive_parity(
     }
     println!(" ✅");
 
-    // 2. Run Rust (cold-disk read — no daemon, no cache, no OS filesystem cache)
-    print!("  [2/4] Running Rust scan (cold)...");
+    // 2. Explicit single-drive daemon start.
+    //    The search CLI's autospawn path already forwards `--drive <L>` via
+    //    `extract_spawn_args`, so in practice the daemon only loads the
+    //    requested drive.  But we want the single-drive invariant pinned
+    //    explicitly — matching what C++ (`uffs.com`) does on every run —
+    //    so a future regression in `extract_spawn_args` (e.g. a forgotten
+    //    flag) can never silently widen the measurement to "all NTFS
+    //    drives".  `uffs daemon start` blocks until the drive's MFT is
+    //    fully indexed (await_ready, 2 min timeout).
+    //
+    //    We start timing *before* `daemon start` so `rust_elapsed` captures
+    //    the full cold-start cost (daemon spawn + MFT load + search),
+    //    matching C++ end-to-end semantics.
+    print!("  [2/5] Starting daemon with --drive {drive_upper} only...");
     io::stdout().flush().ok();
     let rust_start = Instant::now();
+    let daemon_start_output = Command::new(rust_bin)
+        .args(["daemon", "start", "--drive", &drive_upper, "--no-cache"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output();
+    match daemon_start_output {
+        Ok(out) if out.status.success() => println!(" ✅"),
+        Ok(out) => {
+            let stderr_msg = String::from_utf8_lossy(&out.stderr);
+            let msg = format!(
+                "daemon start --drive {drive_upper} failed (exit {}): {}",
+                out.status.code().unwrap_or(-1),
+                stderr_msg.trim()
+            );
+            println!(" ❌ SKIPPED — {msg}");
+            return skipped(&msg, Duration::ZERO, rust_start.elapsed());
+        }
+        Err(e) => {
+            let msg = format!("daemon start --drive {drive_upper} failed to execute: {e}");
+            println!(" ❌ SKIPPED — {msg}");
+            return skipped(&msg, Duration::ZERO, rust_start.elapsed());
+        }
+    }
+
+    // 3. Run Rust search against the single-drive daemon just spawned.
+    print!("  [3/5] Running Rust search (cold MFT, single drive)...");
+    io::stdout().flush().ok();
     let drive_arg = drive_upper.clone();
     let mut rust_args: Vec<&str> = vec![
         pattern,
@@ -698,8 +737,8 @@ fn run_live_drive_parity(
         .stderr(std::process::Stdio::null())
         .output();
 
-    // 3. Run C++ (warm-disk read — MFT already in OS cache from Rust)
-    print!("  [3/4] Running C++ scan (warm)...");
+    // 4. Run C++ (warm-disk read — MFT already in OS cache from Rust)
+    print!("  [4/5] Running C++ scan (warm)...");
     io::stdout().flush().ok();
     let cpp_start = Instant::now();
     let cpp_drives_arg = format!("--drives={drive_upper}");
@@ -731,8 +770,8 @@ fn run_live_drive_parity(
     // };
     println!("  Everything: disabled (es.exe 2GB IPC limit — see benchmark.ps1 for timing)");
 
-    // 4. Compare using the same streaming comparison as offline mode
-    let step = "4/4";
+    // 5. Compare using the same streaming comparison as offline mode
+    let step = "5/5";
     println!("  [{}] Comparing outputs...", step);
     println!();
 

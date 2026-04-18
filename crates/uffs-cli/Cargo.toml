@@ -29,8 +29,15 @@ name = "uffs"
 path = "src/main.rs"
 
 [dependencies]
-# UFFS client library (IPC, protocol, format helpers)
-uffs-client.workspace = true
+# UFFS client library (IPC, protocol, format helpers).
+# `default-features = false` drops the async `UffsClient` + tokio
+# dependency (and therefore `ws2_32.dll`) from the CLI binary.  The CLI
+# uses only `connect_sync::UffsClientSync`.
+#
+# Not using `.workspace = true` here: workspace inheritance cannot
+# override `default-features`, so we point at the path directly.  The
+# version is pinned by the workspace via path dependency resolution.
+uffs-client = { path = "../uffs-client", default-features = false }
 
 # Error handling
 anyhow.workspace = true
@@ -38,7 +45,25 @@ anyhow.workspace = true
 # Serialization
 serde_json.workspace = true
 which = "8.0.2"
-uffs-mft = { version = "0.5.20", path = "../uffs-mft" }
+
+# FILETIME arithmetic only — zero-dep crate extracted from uffs-mft so
+# the CLI does not transitively link polars, tokio/net, reqwest, or
+# object_store.  Use `uffs_time::{filetime_to_calendar,
+# filetime_with_tz_bias}` for timestamp formatting.
+uffs-time.workspace = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Features
+# ─────────────────────────────────────────────────────────────────────────────
+# `mcp-http-probe`: enable `uffs system-status` probing of the MCP HTTP
+# gateway.  Disabled by default because it is the sole user of
+# `std::net::TcpStream` in the CLI, which unconditionally links
+# `ws2_32.dll` on Windows and adds measurable process-launch overhead.
+# Without this feature, `system-status` still reports the configured
+# HTTP bind address — it just doesn't actively probe `/status`.
+[features]
+default = []
+mcp-http-probe = []
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lints (inherit from workspace)

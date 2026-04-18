@@ -8,6 +8,7 @@
 //! - **MCP HTTP Gateway**: PID, transport, health, sessions, tool calls
 //! - **MCP Stdio Sessions**: active `uffs mcp run` processes (one per AI host)
 
+#[cfg(feature = "mcp-http-probe")]
 use anyhow::{Context, Result};
 use uffs_client::connect_sync::UffsClientSync;
 use uffs_client::protocol::response::DaemonStatus;
@@ -173,7 +174,14 @@ fn print_mcp_http_status() {
     );
 
     // Probe HTTP /status endpoint for health + stats.
+    //
+    // Gated behind the `mcp-http-probe` feature: enabling it pulls in
+    // `std::net::TcpStream`, which on Windows unconditionally links
+    // `ws2_32.dll` and adds measurable process-launch overhead.  When
+    // the feature is off we still report the configured bind address,
+    // just without actively probing it.
     if let Some((bind, port)) = info.http_addr() {
+        #[cfg(feature = "mcp-http-probe")]
         match http_get_json(bind, port, "/status") {
             Ok(json) => {
                 println!("  Health:      ✓ (http://{bind}:{port}/health)");
@@ -189,6 +197,13 @@ fn print_mcp_http_status() {
                 println!("  Endpoint:    http://{bind}:{port}/mcp");
             }
         }
+        #[cfg(not(feature = "mcp-http-probe"))]
+        {
+            println!("  Endpoint:    http://{bind}:{port}/mcp");
+            println!(
+                "  Health:      (probe disabled — rebuild with `--features mcp-http-probe` to enable)"
+            );
+        }
     }
     if gw_stale {
         println!("  Run `uffs mcp reload` to restart with the current binary.");
@@ -196,6 +211,10 @@ fn print_mcp_http_status() {
 }
 
 /// Display MCP stats from the `/status` JSON response.
+///
+/// Only compiled when [`http_get_json`] is available (i.e. the
+/// `mcp-http-probe` feature is enabled).
+#[cfg(feature = "mcp-http-probe")]
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn print_mcp_stats(stats: &serde_json::Value) {
     let tool_calls = stats["tool_calls"].as_u64().unwrap_or(0);
@@ -406,6 +425,11 @@ fn resolve_parent_name(ppid: u32) -> Option<String> {
 }
 
 /// HTTP GET returning parsed JSON body (blocking).
+///
+/// Gated behind the `mcp-http-probe` feature: it is the sole user of
+/// `std::net::TcpStream` in the CLI, and keeping it out of the default
+/// build drops `ws2_32.dll` from the Windows CLI binary.
+#[cfg(feature = "mcp-http-probe")]
 fn http_get_json(bind: &str, port: u16, path: &str) -> Result<serde_json::Value> {
     use std::io::{Read, Write};
 

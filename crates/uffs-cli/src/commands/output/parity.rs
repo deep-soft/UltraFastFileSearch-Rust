@@ -190,9 +190,9 @@ fn push_u64(buf: &mut String, value: u64) {
 /// then decomposes.  No intermediate Unix conversion.
 fn append_datetime_tz(buf: &mut String, filetime: i64, tz_offset_secs: i32) {
     use core::fmt::Write;
-    let local_ft = uffs_mft::ntfs::filetime_with_tz_bias(filetime, tz_offset_secs);
+    let local_ft = uffs_time::filetime_with_tz_bias(filetime, tz_offset_secs);
     if let Some((year, month, day, hour, minute, second)) =
-        uffs_mft::ntfs::filetime_to_calendar(local_ft)
+        uffs_time::filetime_to_calendar(local_ft)
     {
         let _ok = write!(
             buf,

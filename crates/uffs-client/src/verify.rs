@@ -185,30 +185,40 @@ fn get_process_exe_path(pid: u32) -> Option<PathBuf> {
         QueryFullProcessImageNameW,
     };
 
-    // SAFETY: OpenProcess + QueryFullProcessImageNameW are well-defined Win32 APIs.
-    #[expect(unsafe_code, reason = "Win32 process query requires unsafe FFI")]
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+    let mut buf = vec![0_u16; 4096];
+    let mut size = u32::try_from(buf.len()).unwrap_or(u32::MAX);
 
-        let mut buf = vec![0u16; 4096];
-        let mut size = buf.len() as u32;
+    // SAFETY: `OpenProcess` returns `Result<HANDLE>`; we only proceed
+    // with the handle on success.  `pid` is trusted input (our own PID).
+    #[expect(unsafe_code, reason = "Win32 OpenProcess FFI")]
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
 
-        let result = QueryFullProcessImageNameW(
+    // SAFETY: `handle` is a valid open process handle.  `buf` lives for
+    // the duration of the call.
+    #[expect(unsafe_code, reason = "Win32 QueryFullProcessImageNameW FFI")]
+    let result = unsafe {
+        QueryFullProcessImageNameW(
             handle,
             PROCESS_NAME_FORMAT(0), // Win32 path format
             windows::core::PWSTR(buf.as_mut_ptr()),
-            &mut size,
-        );
+            core::ptr::from_mut(&mut size),
+        )
+    };
 
-        let _ = CloseHandle(handle);
+    // SAFETY: `handle` is owned by this function; we close it once.
+    #[expect(unsafe_code, reason = "CloseHandle for owned Win32 handle")]
+    let close_result = unsafe { CloseHandle(handle) };
+    drop(close_result);
 
-        if result.is_err() || size == 0 {
-            return None;
-        }
-
-        let path = String::from_utf16_lossy(&buf[..size as usize]);
-        Some(PathBuf::from(path))
+    if result.is_err() || size == 0 {
+        return None;
     }
+
+    // `size` is the count of UTF-16 code units written by
+    // `QueryFullProcessImageNameW` and is always ≤ `buf.len()` on success.
+    // Use `.get()` to stay panic-free against any future reallocation.
+    let slice = buf.get(..size as usize)?;
+    Some(PathBuf::from(String::from_utf16_lossy(slice)))
 }
 
 // ── Fallback for other platforms ────────────────────────────────────────

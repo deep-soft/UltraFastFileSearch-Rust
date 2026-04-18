@@ -19,13 +19,28 @@
 #[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct StandardInfo {
-    /// Creation time (Windows FILETIME as i64)
+    /// Creation time — **raw Windows FILETIME** (100-ns ticks since
+    /// 1601-01-01 UTC), stored verbatim from `$STANDARD_INFORMATION`.
+    ///
+    /// v13+ storage invariant: do **not** pre-convert to Unix
+    /// microseconds at any layer — FILETIME is the root truth, and
+    /// it's required to represent pre-1970 dates (which Unix
+    /// micros can't express without negative values).  Callers that
+    /// need calendar fields must go through
+    /// `uffs_time::filetime_to_calendar`.  Formatters that assume Unix
+    /// micros produce year-6220 output for 2026-era timestamps — see
+    /// the regression tests in
+    /// `uffs-core::output::config::tests::append_datetime_native_*`
+    /// and `uffs-core::output::tests::test_write_datetime_column_*`.
     pub created: i64,
-    /// Last write time
+    /// Last write time — see [`StandardInfo::created`] for unit
+    /// semantics (raw FILETIME).
     pub modified: i64,
-    /// Last access time
+    /// Last access time — see [`StandardInfo::created`] for unit
+    /// semantics (raw FILETIME).
     pub accessed: i64,
-    /// MFT record change time
+    /// MFT record change time — see [`StandardInfo::created`] for
+    /// unit semantics (raw FILETIME).
     pub mft_changed: i64,
     /// Bit-packed attribute flags
     pub flags: u32,
