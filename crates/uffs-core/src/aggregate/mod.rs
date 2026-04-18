@@ -278,17 +278,19 @@ pub fn run_aggregate(
     // Build cross-drive extension mapping for correct multi-drive grouping.
     let ext_map = ExtensionMap::build(drives);
 
-    // 2. Parallel per-drive scan.  Each drive feeds a fresh local accumulator set
-    //    so the scans are lock-free; rayon's `reduce` then merges the per-drive
-    //    sets into a single combined set using `GroupAccumulator::merge`.
+    // 2. Two-level parallel scan.  Outer: `par_iter` over drives (each drive builds
+    //    its own accumulator set, lock-free).  Inner: `scan_drive` now fans out
+    //    over `drive.records` via `par_iter().fold().reduce()` so even a single
+    //    huge drive uses every core.  Both levels converge through
+    //    `GroupAccumulator::merge`, which every accumulator variant implements
+    //    correctly as of v0.5.40.
     let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
         .par_iter()
         .enumerate()
         .map(|(drive_ordinal, drive)| {
             let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
-            let mut local = plan.create_accumulators();
             let t = std::time::Instant::now();
-            let (scanned, matched) = scan_drive(drive, &plan, &mut local, ordinal, Some(&ext_map));
+            let (local, scanned, matched) = scan_drive(drive, &plan, ordinal, Some(&ext_map));
             tracing::debug!(
                 drive = %drive.letter,
                 scanned,
@@ -301,9 +303,7 @@ pub fn run_aggregate(
         .reduce(
             || (plan.create_accumulators(), 0_u64, 0_u64),
             |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
-                for (left, right) in acc_a.iter_mut().zip(acc_b.iter()) {
-                    left.merge(right);
-                }
+                merge_accumulator_sets(&mut acc_a, &acc_b);
                 (acc_a, sa + sb, ma + mb)
             },
         );
@@ -378,36 +378,48 @@ pub fn run_aggregate_filtered(
     // Build cross-drive extension mapping.
     let ext_map = ExtensionMap::build(drives);
 
-    // 2. Parallel per-drive scan with inline pattern filter.  Each drive feeds a
-    //    fresh local accumulator set; rayon's `reduce` merges them afterwards.
+    // 2. Two-level parallel scan with inline pattern filter.  Outer loop (over
+    //    drives) uses `par_iter`; inner loop (over records) uses
+    //    `par_iter().fold().reduce()` so a single large drive still saturates every
+    //    core.  Merging happens through `GroupAccumulator::merge` at both levels.
     let index_pat_ref = &index_pat;
     let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
         .par_iter()
         .enumerate()
         .map(|(drive_ordinal, drive)| {
             let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
-            let mut local = plan.create_accumulators();
-            let mut scanned: u64 = 0;
-            let mut matched: u64 = 0;
-            for (idx, record) in drive.records.iter().enumerate() {
-                scanned += 1;
-                let name = record.name(&drive.names);
-                if name.is_empty() || !index_pat_ref.matches(name, false, fold) {
-                    continue;
-                }
-                matched += 1;
-                for acc in &mut local {
-                    acc.feed(record, drive, idx, ordinal, Some(&ext_map));
-                }
-            }
+            let ext_map_ref = &ext_map;
+            let (local, scanned, matched) = drive
+                .records
+                .par_iter()
+                .enumerate()
+                .fold(
+                    || (plan.create_accumulators(), 0_u64, 0_u64),
+                    |(mut acc, s, m), (idx, record)| {
+                        let s_next = s + 1;
+                        let name = record.name(&drive.names);
+                        if name.is_empty() || !index_pat_ref.matches(name, false, fold) {
+                            return (acc, s_next, m);
+                        }
+                        for a in &mut acc {
+                            a.feed(record, drive, idx, ordinal, Some(ext_map_ref));
+                        }
+                        (acc, s_next, m + 1)
+                    },
+                )
+                .reduce(
+                    || (plan.create_accumulators(), 0_u64, 0_u64),
+                    |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
+                        merge_accumulator_sets(&mut acc_a, &acc_b);
+                        (acc_a, sa + sb, ma + mb)
+                    },
+                );
             (local, scanned, matched)
         })
         .reduce(
             || (plan.create_accumulators(), 0_u64, 0_u64),
             |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
-                for (left, right) in acc_a.iter_mut().zip(acc_b.iter()) {
-                    left.merge(right);
-                }
+                merge_accumulator_sets(&mut acc_a, &acc_b);
                 (acc_a, sa + sb, ma + mb)
             },
         );
@@ -495,50 +507,59 @@ pub fn run_aggregate_with_filters(
     let plan = AggregatePlan::compile(specs)?;
     let ext_map = ExtensionMap::build(drives);
 
-    // 2. Parallel per-drive scan with combined record-level + pattern filter.  Each
-    //    drive feeds a fresh local accumulator set; rayon's `reduce` merges them
-    //    afterwards.
+    // 2. Two-level parallel scan with combined record-level + pattern filter. Outer
+    //    `par_iter` over drives; inner `par_iter().fold().reduce()` over records so
+    //    a single dominant drive still uses every core. Merging happens through
+    //    `GroupAccumulator::merge` at both levels.
     let compiled_pattern_ref = compiled_pattern.as_ref();
     let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
         .par_iter()
         .enumerate()
         .map(|(drive_ordinal, drive)| {
             let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
-            let mut local = plan.create_accumulators();
-            let mut scanned: u64 = 0;
-            let mut matched: u64 = 0;
-            // Resolve extension names → per-drive u16 IDs (< 1µs).
+            // Resolve extension names → per-drive u16 IDs (< 1µs).  Done
+            // once per drive; borrowed by every inner-fold thread.
             let resolved_ext_ids = drive.resolve_ext_ids(&filter.extensions);
-
-            for (idx, record) in drive.records.iter().enumerate() {
-                scanned += 1;
-
-                // Record-level filter (O(1) — extension ID + directory flag + size).
-                if !filter.matches(record, &resolved_ext_ids) {
-                    continue;
-                }
-
-                // Pattern filter (if non-trivial).
-                if let Some(pat) = compiled_pattern_ref {
-                    let name = record.name(&drive.names);
-                    if name.is_empty() || !pat.matches(name, false, fold) {
-                        continue;
-                    }
-                }
-
-                matched += 1;
-                for acc in &mut local {
-                    acc.feed(record, drive, idx, ordinal, Some(&ext_map));
-                }
-            }
+            let ext_map_ref = &ext_map;
+            let resolved_ext_ids_ref = &resolved_ext_ids;
+            let (local, scanned, matched) = drive
+                .records
+                .par_iter()
+                .enumerate()
+                .fold(
+                    || (plan.create_accumulators(), 0_u64, 0_u64),
+                    |(mut acc, s, m), (idx, record)| {
+                        let s_next = s + 1;
+                        // Record-level filter (O(1) — ext ID + dir flag + size).
+                        if !filter.matches(record, resolved_ext_ids_ref) {
+                            return (acc, s_next, m);
+                        }
+                        // Pattern filter (if non-trivial).
+                        if let Some(pat) = compiled_pattern_ref {
+                            let name = record.name(&drive.names);
+                            if name.is_empty() || !pat.matches(name, false, fold) {
+                                return (acc, s_next, m);
+                            }
+                        }
+                        for a in &mut acc {
+                            a.feed(record, drive, idx, ordinal, Some(ext_map_ref));
+                        }
+                        (acc, s_next, m + 1)
+                    },
+                )
+                .reduce(
+                    || (plan.create_accumulators(), 0_u64, 0_u64),
+                    |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
+                        merge_accumulator_sets(&mut acc_a, &acc_b);
+                        (acc_a, sa + sb, ma + mb)
+                    },
+                );
             (local, scanned, matched)
         })
         .reduce(
             || (plan.create_accumulators(), 0_u64, 0_u64),
             |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
-                for (left, right) in acc_a.iter_mut().zip(acc_b.iter()) {
-                    left.merge(right);
-                }
+                merge_accumulator_sets(&mut acc_a, &acc_b);
                 (acc_a, sa + sb, ma + mb)
             },
         );
@@ -570,30 +591,60 @@ pub fn run_aggregate_with_filters(
     })
 }
 
-/// Scan a single drive's records, feeding all accumulators.
+/// Merge per-thread/per-drive accumulator sets.
 ///
-/// Returns `(records_scanned, records_matched)`.
+/// Shared reducer for both the outer (per-drive) and inner (intra-drive,
+/// per-chunk) parallel folds.  Pairs accumulators by index and calls
+/// [`GroupAccumulator::merge`] on each pair.  Every accumulator variant
+/// (including `Terms` sample heaps and `Duplicates` groups) implements
+/// `merge` correctly as of v0.5.40, so this is safe for both levels.
+#[inline]
+fn merge_accumulator_sets(a: &mut [GroupAccumulator], b: &[GroupAccumulator]) {
+    for (left, right) in a.iter_mut().zip(b.iter()) {
+        left.merge(right);
+    }
+}
+
+/// Scan a single drive's records using intra-drive parallelism, feeding
+/// all accumulators.
+///
+/// Rayon splits `drive.records` into work-stealing chunks; each chunk
+/// folds into its own local `Vec<GroupAccumulator>`.  A parallel
+/// `reduce` then merges the per-chunk results into one combined set.
+/// This means even a single drive with millions of records uses every
+/// available core, which was the ceiling left after v0.5.39's per-drive
+/// parallelism.
+///
+/// Returns `(merged_accumulators, records_scanned, records_matched)`.
+/// For unfiltered aggregation `matched == scanned == records.len()`.
 fn scan_drive(
     drive: &DriveCompactIndex,
-    _plan: &AggregatePlan,
-    accumulators: &mut [GroupAccumulator],
+    plan: &AggregatePlan,
     drive_ordinal: u8,
     ext_map: Option<&ExtensionMap>,
-) -> (u64, u64) {
+) -> (Vec<GroupAccumulator>, u64, u64) {
     let records = &drive.records;
-    let mut scanned: u64 = 0;
-
-    for (idx, record) in records.iter().enumerate() {
-        scanned += 1;
-
-        // Feed each accumulator.
-        for acc in accumulators.iter_mut() {
-            acc.feed(record, drive, idx, drive_ordinal, ext_map);
-        }
-    }
-
-    // For unfiltered aggregation, matched == scanned.
-    (scanned, scanned)
+    let merged = records
+        .par_iter()
+        .enumerate()
+        .fold(
+            || plan.create_accumulators(),
+            |mut local, (idx, record)| {
+                for acc in &mut local {
+                    acc.feed(record, drive, idx, drive_ordinal, ext_map);
+                }
+                local
+            },
+        )
+        .reduce(
+            || plan.create_accumulators(),
+            |mut a, b| {
+                merge_accumulator_sets(&mut a, &b);
+                a
+            },
+        );
+    let n = u64::try_from(records.len()).unwrap_or(u64::MAX);
+    (merged, n, n)
 }
 
 /// Errors that can occur during aggregation.

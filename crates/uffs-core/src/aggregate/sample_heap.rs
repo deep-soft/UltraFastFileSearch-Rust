@@ -14,7 +14,6 @@
 //! so they can be materialized into [`SampleRow`]s by the finalize step.
 
 use alloc::collections::BinaryHeap;
-use std::cmp::Reverse;
 
 use super::spec::TopHitsSpec;
 use crate::compact::CompactRecord;
@@ -48,14 +47,73 @@ impl Ord for SampleEntry {
     }
 }
 
-/// Bounded min-heap that keeps the top-N records per bucket.
+/// Heap key for **desc mode** (keep top-N largest `sort_key`, prefer
+/// **smallest** `rec_idx` on ties).
 ///
-/// When `sort_desc` is `true`, we want the N **largest** sort keys.
-/// A min-heap (via `BinaryHeap<Reverse<SampleEntry>>`) naturally evicts
-/// the smallest key when full — exactly what we need for "top-N largest".
+/// Ordered so that `BinaryHeap::peek` returns the **worst** entry — the
+/// one we evict first.  Worst = smallest `sort_key`, and on ties the
+/// **largest** `rec_idx`.
 ///
-/// When `sort_desc` is `false`, we want the N **smallest** sort keys.
-/// A max-heap (`BinaryHeap<SampleEntry>`) evicts the largest.
+/// This tiebreaker discipline is what makes the desc heap
+/// order-independent, which is required now that `scan_drive` fans
+/// records out across rayon chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DescKey(SampleEntry);
+
+impl Ord for DescKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // "Greater" = worse for desc.
+        //   * smaller `sort_key` is worse  → reverse the comparison.
+        //   * on tie, larger `rec_idx` is worse → forward comparison.
+        other
+            .0
+            .sort_key
+            .cmp(&self.0.sort_key)
+            .then_with(|| self.0.rec_idx.cmp(&other.0.rec_idx))
+    }
+}
+
+impl PartialOrd for DescKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Heap key for **asc mode** (keep top-N smallest `sort_key`, prefer
+/// **smallest** `rec_idx` on ties).
+///
+/// Ordered so that `BinaryHeap::peek` returns the **worst** entry — the
+/// one we evict first.  Worst = largest `sort_key`, and on ties the
+/// **largest** `rec_idx`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AscKey(SampleEntry);
+
+impl Ord for AscKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // "Greater" = worse for asc.
+        //   * larger `sort_key` is worse → forward comparison.
+        //   * on tie, larger `rec_idx` is worse → forward comparison.
+        self.0
+            .sort_key
+            .cmp(&other.0.sort_key)
+            .then_with(|| self.0.rec_idx.cmp(&other.0.rec_idx))
+    }
+}
+
+impl PartialOrd for AscKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Bounded heap that keeps the top-N records per bucket.
+///
+/// Each mode uses its own key wrapper (`DescKey` / `AscKey`) chosen so
+/// that `BinaryHeap::peek` always returns the **worst** retained entry.
+/// That lets `push_entry` evict the correct entry in O(log N) without
+/// walking the heap, and — critically — produces the same set of
+/// winners regardless of the order records arrive, which is required
+/// once `scan_drive` parallelises via `par_iter().fold().reduce()`.
 #[derive(Debug, Clone)]
 pub struct SampleHeap {
     /// Maximum entries to keep.
@@ -64,10 +122,10 @@ pub struct SampleHeap {
     sort_field: FieldId,
     /// `true` = keep largest (desc), `false` = keep smallest (asc).
     sort_desc: bool,
-    /// Min-heap for desc mode (keeps largest keys, evicts smallest).
-    heap_desc: BinaryHeap<Reverse<SampleEntry>>,
-    /// Max-heap for asc mode (keeps smallest keys, evicts largest).
-    heap_asc: BinaryHeap<SampleEntry>,
+    /// Desc-mode heap — `peek` returns the worst (most-evictable) entry.
+    heap_desc: BinaryHeap<DescKey>,
+    /// Asc-mode heap — `peek` returns the worst (most-evictable) entry.
+    heap_asc: BinaryHeap<AscKey>,
 }
 
 impl SampleHeap {
@@ -124,26 +182,37 @@ impl SampleHeap {
 
     /// Push a pre-built [`SampleEntry`] into the heap, evicting if at
     /// capacity.  Shared code path for [`Self::push`] and [`Self::merge`].
+    ///
+    /// **Tiebreaker contract.**  When the incoming entry's sort key equals
+    /// the worst heap entry's sort key, the entry with the **smaller
+    /// `rec_idx` wins**.  This keeps the sample deterministic across
+    /// insertion orders (required for intra-drive parallel scans using
+    /// `par_iter().fold(…).reduce(…)`) while also preserving the
+    /// "earliest records retained" behaviour of the pre-parallel
+    /// sequential scan.  The invariant is enforced via the mode-specific
+    /// [`DescKey`] / [`AscKey`] wrappers above.
     #[inline]
     fn push_entry(&mut self, entry: SampleEntry) {
         let cap = usize::from(self.capacity);
 
         if self.sort_desc {
             if self.heap_desc.len() < cap {
-                self.heap_desc.push(Reverse(entry));
-            } else if let Some(&Reverse(min)) = self.heap_desc.peek()
-                && entry.sort_key > min.sort_key
+                self.heap_desc.push(DescKey(entry));
+            } else if let Some(&DescKey(worst)) = self.heap_desc.peek()
+                && (entry.sort_key > worst.sort_key
+                    || (entry.sort_key == worst.sort_key && entry.rec_idx < worst.rec_idx))
             {
                 self.heap_desc.pop();
-                self.heap_desc.push(Reverse(entry));
+                self.heap_desc.push(DescKey(entry));
             }
         } else if self.heap_asc.len() < cap {
-            self.heap_asc.push(entry);
-        } else if let Some(&max) = self.heap_asc.peek()
-            && entry.sort_key < max.sort_key
+            self.heap_asc.push(AscKey(entry));
+        } else if let Some(&AscKey(worst)) = self.heap_asc.peek()
+            && (entry.sort_key < worst.sort_key
+                || (entry.sort_key == worst.sort_key && entry.rec_idx < worst.rec_idx))
         {
             self.heap_asc.pop();
-            self.heap_asc.push(entry);
+            self.heap_asc.push(AscKey(entry));
         }
     }
 
@@ -157,11 +226,11 @@ impl SampleHeap {
     /// by constructing heaps from the same spec via [`Self::from_spec`].
     pub fn merge(&mut self, other: &Self) {
         if self.sort_desc {
-            for Reverse(entry) in &other.heap_desc {
+            for DescKey(entry) in &other.heap_desc {
                 self.push_entry(*entry);
             }
         } else {
-            for entry in &other.heap_asc {
+            for AscKey(entry) in &other.heap_asc {
                 self.push_entry(*entry);
             }
         }
@@ -189,14 +258,26 @@ impl SampleHeap {
     /// - `sort_desc=false` → smallest sort key first
     pub fn drain_sorted(&mut self) -> Vec<SampleEntry> {
         let mut entries: Vec<SampleEntry> = if self.sort_desc {
-            self.heap_desc.drain().map(|Reverse(e)| e).collect()
+            self.heap_desc.drain().map(|DescKey(e)| e).collect()
         } else {
-            self.heap_asc.drain().collect()
+            self.heap_asc.drain().map(|AscKey(e)| e).collect()
         };
+        // Final presentation order: by sort_key only (primary), and on
+        // ties preserve the deterministic `rec_idx` ordering established
+        // by the heap keys so the output is stable across parallel
+        // scans.
         if self.sort_desc {
-            entries.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
+            entries.sort_by(|a, b| {
+                b.sort_key
+                    .cmp(&a.sort_key)
+                    .then_with(|| a.rec_idx.cmp(&b.rec_idx))
+            });
         } else {
-            entries.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
+            entries.sort_by(|a, b| {
+                a.sort_key
+                    .cmp(&b.sort_key)
+                    .then_with(|| a.rec_idx.cmp(&b.rec_idx))
+            });
         }
         entries
     }
@@ -307,5 +388,82 @@ mod tests {
         assert_eq!(entries[0].drive_ordinal, 1);
         assert_eq!(entries[1].sort_key, 300);
         assert_eq!(entries[1].drive_ordinal, 2);
+    }
+
+    /// Regression guard for the v0.5.41 intra-drive-parallelism work.
+    ///
+    /// Under `par_iter().fold().reduce()` the sample-heap can see records
+    /// in *any* order within a chunk, and chunks then merge in any order.
+    /// That exposes any silent order-dependence in `push_entry`.  This
+    /// test feeds five size-100 records whose `rec_idx` values are
+    /// shuffled across three different permutations and asserts the
+    /// final top-3 sample rows are **identical** under every order.
+    ///
+    /// With the old "compare by `sort_key` only" logic, the first three
+    /// records encountered won, so the result depended on iteration
+    /// order.  With the `rec_idx` tiebreaker baked into `push_entry`,
+    /// the heap now keeps the three records with the **smallest**
+    /// `rec_idx` regardless of the order they arrive.
+    #[test]
+    fn push_tiebreaker_is_order_independent_on_ties() {
+        let spec = make_spec(3, FieldId::Size, true);
+        let rec = make_record(100, 0); // identical sort_key on every push
+        let orders: [[u32; 5]; 3] = [
+            [0, 1, 2, 3, 4], // ascending
+            [4, 3, 2, 1, 0], // descending
+            [2, 4, 0, 3, 1], // shuffled
+        ];
+        let mut results: Vec<Vec<(i64, u32)>> = Vec::new();
+        for order in orders {
+            let mut heap = SampleHeap::from_spec(&spec);
+            for &rec_idx in &order {
+                heap.push(&rec, rec_idx, 0);
+            }
+            let mut pairs: Vec<(i64, u32)> = heap
+                .drain_sorted()
+                .into_iter()
+                .map(|e| (e.sort_key, e.rec_idx))
+                .collect();
+            pairs.sort_by_key(|&(_, rec_idx)| rec_idx);
+            results.push(pairs);
+        }
+        // All three orders must yield the same sorted set of winners.
+        assert_eq!(
+            results[0], results[1],
+            "asc vs desc insertion order must produce the same top-N"
+        );
+        assert_eq!(
+            results[0], results[2],
+            "asc vs shuffled insertion order must produce the same top-N"
+        );
+        // And specifically: smallest three rec_idx win on an all-tie set.
+        let winners: Vec<u32> = results[0].iter().map(|&(_, rec_idx)| rec_idx).collect();
+        assert_eq!(
+            winners,
+            vec![0_u32, 1, 2],
+            "on sort_key ties, push_entry must retain the smallest rec_idx values"
+        );
+    }
+
+    /// Ascending-mode counterpart — same invariant, different heap type.
+    #[test]
+    fn push_tiebreaker_is_order_independent_on_ties_asc() {
+        let spec = make_spec(3, FieldId::Size, false);
+        let rec = make_record(100, 0);
+        let orders: [[u32; 5]; 3] = [[0, 1, 2, 3, 4], [4, 3, 2, 1, 0], [2, 4, 0, 3, 1]];
+        let mut results: Vec<Vec<u32>> = Vec::new();
+        for order in orders {
+            let mut heap = SampleHeap::from_spec(&spec);
+            for &rec_idx in &order {
+                heap.push(&rec, rec_idx, 0);
+            }
+            let mut winners: Vec<u32> =
+                heap.drain_sorted().into_iter().map(|e| e.rec_idx).collect();
+            winners.sort_unstable();
+            results.push(winners);
+        }
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[0], results[2]);
+        assert_eq!(results[0], vec![0_u32, 1, 2]);
     }
 }
