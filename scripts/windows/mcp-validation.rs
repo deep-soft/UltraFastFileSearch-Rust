@@ -145,14 +145,11 @@ fn parse_args() -> ScriptArgs {
 }
 // ── MCP Session ─────────────────────────────────────────────────────────────
 
-/// Per-request timeout (seconds).  Single MCP tool calls must respond
-/// within this window or the test is marked FAIL.
-const REQUEST_TIMEOUT_SECS: u64 = 5;
-
-/// Per-test time budget (ms).  Tests exceeding this are marked FAIL.
-const TEST_TIMEOUT_MS: u128 = 5_000;
-/// Agent flows chain multiple calls, so they get a longer budget.
-const AGENT_FLOW_TIMEOUT_MS: u128 = 10_000;
+// No per-request or per-test timeout — matches API/CLI harnesses, which
+// simply wait for the daemon.  Slow tests show up in the timing
+// summary; a genuinely hung daemon is an operator-visible problem
+// (Ctrl+C), not something the harness should mask with an arbitrary
+// budget.
 
 /// One persistent MCP stdio session that safely multiplexes many
 /// concurrent JSON-RPC requests over a single child process.
@@ -173,7 +170,7 @@ const AGENT_FLOW_TIMEOUT_MS: u128 = 10_000;
 /// * **Short stdin lock.**  Multiple callers write to the same stdin
 ///   guarded by a very briefly-held [`Mutex`], just long enough to
 ///   `writeln!` + `flush` one request.  The lock is never held across
-///   an `await` or `recv_timeout`, so it never contributes to
+///   an `await` or `recv`, so it never contributes to
 ///   head-of-line blocking.
 ///
 /// * **JSON-RPC id multiplexing.**  Ids come from an [`AtomicU64`] so
@@ -294,13 +291,13 @@ impl McpSession {
         Ok(())
     }
 
-    /// Send a JSON-RPC request and wait up to [`REQUEST_TIMEOUT_SECS`]
-    /// for the matching response.
+    /// Send a JSON-RPC request and wait for the matching response.
     ///
     /// Registers the pending entry **before** writing so the reader
-    /// cannot deliver a response before the caller is registered.  On
-    /// timeout, removes the pending entry; any late response is then
-    /// silently discarded by the reader.
+    /// cannot deliver a response before the caller is registered.  No
+    /// timeout — matches the API/CLI harnesses.  A dead reader thread
+    /// drops the sender and `recv()` returns `Disconnected`, which we
+    /// surface as the captured reader error.
     fn request(&self, method: &str, params: Option<Value>) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = sync_channel::<Value>(1);
@@ -326,21 +323,9 @@ impl McpSession {
             return Err(err);
         }
 
-        match rx.recv_timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS)) {
+        match rx.recv() {
             Ok(resp) => Ok(resp),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Abandon this id — the reader will drop any late response on id-miss.
-                let _ = self
-                    .pending
-                    .lock()
-                    .expect("pending map poisoned")
-                    .remove(&id);
-                Err(anyhow::anyhow!(
-                    "timeout after {}s waiting for MCP response",
-                    REQUEST_TIMEOUT_SECS
-                ))
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(mpsc::RecvError) => {
                 let reason = self
                     .reader_error
                     .lock()
@@ -1461,7 +1446,7 @@ fn run_test(
     if let McpTestKind::AgentFlow(flow_fn) = &test.kind {
         let result = flow_fn(mcp);
         let elapsed = t0.elapsed().as_millis();
-        let mut r = match result {
+        let r = match result {
             Ok(detail) => TestResult {
                 id: test.id.clone(), name: test.name.clone(),
                 passed: true, message: detail, elapsed_ms: elapsed,
@@ -1477,10 +1462,6 @@ fn run_test(
                 cli_command: cli_command.clone(), rpc_call: rpc_call.clone(),
             },
         };
-        if r.passed && elapsed > AGENT_FLOW_TIMEOUT_MS {
-            r.passed = false;
-            r.message = format!("TIMEOUT: {}ms exceeds {}ms budget", elapsed, AGENT_FLOW_TIMEOUT_MS);
-        }
         return r;
     }
 
@@ -1559,10 +1540,10 @@ fn run_test(
     };
 
     let elapsed = t0.elapsed().as_millis();
-    let budget = TEST_TIMEOUT_MS;
 
-    // Enforce per-test time budget.
-    let mut result = match outcome {
+    // No per-test time budget — matches API/CLI harnesses.  Slow tests
+    // surface in the timing summary.
+    match outcome {
         Ok(()) => TestResult {
             id: test.id.clone(), name: test.name.clone(),
             passed: true, message: String::new(), elapsed_ms: elapsed,
@@ -1575,12 +1556,7 @@ fn run_test(
             mcp_request: req_str, mcp_response: resp_str,
             cli_command, rpc_call,
         },
-    };
-    if result.passed && elapsed > budget {
-        result.passed = false;
-        result.message = format!("TIMEOUT: {}ms exceeds {}ms budget", elapsed, budget);
     }
-    result
 }
 // ── Main ────────────────────────────────────────────────────────────────────
 

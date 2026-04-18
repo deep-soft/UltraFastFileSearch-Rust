@@ -119,6 +119,13 @@ impl SampleHeap {
             rec_idx,
             drive_ordinal,
         };
+        self.push_entry(entry);
+    }
+
+    /// Push a pre-built [`SampleEntry`] into the heap, evicting if at
+    /// capacity.  Shared code path for [`Self::push`] and [`Self::merge`].
+    #[inline]
+    fn push_entry(&mut self, entry: SampleEntry) {
         let cap = usize::from(self.capacity);
 
         if self.sort_desc {
@@ -137,6 +144,26 @@ impl SampleHeap {
         {
             self.heap_asc.pop();
             self.heap_asc.push(entry);
+        }
+    }
+
+    /// Merge another sample heap into this one, preserving top-N by the
+    /// shared sort key / direction.
+    ///
+    /// Used by the parallel aggregation reducer when per-drive scans
+    /// each produce their own sample heap for a given bucket.  Both
+    /// heaps must have been built from the same [`TopHitsSpec`] (same
+    /// capacity, sort field, and sort direction); callers arrange this
+    /// by constructing heaps from the same spec via [`Self::from_spec`].
+    pub fn merge(&mut self, other: &Self) {
+        if self.sort_desc {
+            for Reverse(entry) in &other.heap_desc {
+                self.push_entry(*entry);
+            }
+        } else {
+            for entry in &other.heap_asc {
+                self.push_entry(*entry);
+            }
         }
     }
 

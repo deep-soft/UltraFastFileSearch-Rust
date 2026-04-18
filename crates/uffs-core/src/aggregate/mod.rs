@@ -97,6 +97,7 @@ pub use pagination::{AggregateCursor, PaginatedBuckets, paginate_result};
 pub use parser::{parse_agg_spec, parse_and_expand_agg_specs};
 pub use planner::AggregatePlan;
 pub use presets::AggregatePreset;
+use rayon::prelude::*;
 pub use rollup::RollupAccumulator;
 pub use spec::{
     AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, DuplicateVerify, RollupMode,
@@ -277,25 +278,35 @@ pub fn run_aggregate(
     // Build cross-drive extension mapping for correct multi-drive grouping.
     let ext_map = ExtensionMap::build(drives);
 
-    // 2. Scan each drive and collect accumulators
-    let mut merged = plan.create_accumulators();
-    let mut total_scanned: u64 = 0;
-    let mut total_matched: u64 = 0;
-
-    for (drive_ordinal, drive) in drives.iter().enumerate() {
-        let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
-        let t = std::time::Instant::now();
-        let (scanned, matched) = scan_drive(drive, &plan, &mut merged, ordinal, Some(&ext_map));
-        tracing::debug!(
-            drive = %drive.letter,
-            scanned,
-            matched,
-            elapsed_ms = t.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
-            "run_aggregate: drive scan"
+    // 2. Parallel per-drive scan.  Each drive feeds a fresh local accumulator set
+    //    so the scans are lock-free; rayon's `reduce` then merges the per-drive
+    //    sets into a single combined set using `GroupAccumulator::merge`.
+    let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
+        .par_iter()
+        .enumerate()
+        .map(|(drive_ordinal, drive)| {
+            let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
+            let mut local = plan.create_accumulators();
+            let t = std::time::Instant::now();
+            let (scanned, matched) = scan_drive(drive, &plan, &mut local, ordinal, Some(&ext_map));
+            tracing::debug!(
+                drive = %drive.letter,
+                scanned,
+                matched,
+                elapsed_ms = t.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                "run_aggregate: drive scan"
+            );
+            (local, scanned, matched)
+        })
+        .reduce(
+            || (plan.create_accumulators(), 0_u64, 0_u64),
+            |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
+                for (left, right) in acc_a.iter_mut().zip(acc_b.iter()) {
+                    left.merge(right);
+                }
+                (acc_a, sa + sb, ma + mb)
+            },
         );
-        total_scanned += scanned;
-        total_matched += matched;
-    }
 
     // 3. Finalize
     let t_fin = std::time::Instant::now();
@@ -367,25 +378,39 @@ pub fn run_aggregate_filtered(
     // Build cross-drive extension mapping.
     let ext_map = ExtensionMap::build(drives);
 
-    // 2. Scan each drive, filtering by pattern.
-    let mut merged = plan.create_accumulators();
-    let mut total_scanned: u64 = 0;
-    let mut total_matched: u64 = 0;
-
-    for (drive_ordinal, drive) in drives.iter().enumerate() {
-        let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
-        for (idx, record) in drive.records.iter().enumerate() {
-            total_scanned += 1;
-            let name = record.name(&drive.names);
-            if name.is_empty() || !index_pat.matches(name, false, fold) {
-                continue;
+    // 2. Parallel per-drive scan with inline pattern filter.  Each drive feeds a
+    //    fresh local accumulator set; rayon's `reduce` merges them afterwards.
+    let index_pat_ref = &index_pat;
+    let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
+        .par_iter()
+        .enumerate()
+        .map(|(drive_ordinal, drive)| {
+            let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
+            let mut local = plan.create_accumulators();
+            let mut scanned: u64 = 0;
+            let mut matched: u64 = 0;
+            for (idx, record) in drive.records.iter().enumerate() {
+                scanned += 1;
+                let name = record.name(&drive.names);
+                if name.is_empty() || !index_pat_ref.matches(name, false, fold) {
+                    continue;
+                }
+                matched += 1;
+                for acc in &mut local {
+                    acc.feed(record, drive, idx, ordinal, Some(&ext_map));
+                }
             }
-            total_matched += 1;
-            for acc in &mut merged {
-                acc.feed(record, drive, idx, ordinal, Some(&ext_map));
-            }
-        }
-    }
+            (local, scanned, matched)
+        })
+        .reduce(
+            || (plan.create_accumulators(), 0_u64, 0_u64),
+            |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
+                for (left, right) in acc_a.iter_mut().zip(acc_b.iter()) {
+                    left.merge(right);
+                }
+                (acc_a, sa + sb, ma + mb)
+            },
+        );
 
     tracing::info!(
         total_scanned,
@@ -470,38 +495,53 @@ pub fn run_aggregate_with_filters(
     let plan = AggregatePlan::compile(specs)?;
     let ext_map = ExtensionMap::build(drives);
 
-    // 2. Scan each drive with combined filter.
-    let mut merged = plan.create_accumulators();
-    let mut total_scanned: u64 = 0;
-    let mut total_matched: u64 = 0;
+    // 2. Parallel per-drive scan with combined record-level + pattern filter.  Each
+    //    drive feeds a fresh local accumulator set; rayon's `reduce` merges them
+    //    afterwards.
+    let compiled_pattern_ref = compiled_pattern.as_ref();
+    let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
+        .par_iter()
+        .enumerate()
+        .map(|(drive_ordinal, drive)| {
+            let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
+            let mut local = plan.create_accumulators();
+            let mut scanned: u64 = 0;
+            let mut matched: u64 = 0;
+            // Resolve extension names → per-drive u16 IDs (< 1µs).
+            let resolved_ext_ids = drive.resolve_ext_ids(&filter.extensions);
 
-    for (drive_ordinal, drive) in drives.iter().enumerate() {
-        let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
-        // Resolve extension names → per-drive u16 IDs (< 1µs).
-        let resolved_ext_ids = drive.resolve_ext_ids(&filter.extensions);
+            for (idx, record) in drive.records.iter().enumerate() {
+                scanned += 1;
 
-        for (idx, record) in drive.records.iter().enumerate() {
-            total_scanned += 1;
-
-            // Record-level filter (O(1) — extension ID + directory flag + size).
-            if !filter.matches(record, &resolved_ext_ids) {
-                continue;
-            }
-
-            // Pattern filter (if non-trivial).
-            if let Some(pat) = &compiled_pattern {
-                let name = record.name(&drive.names);
-                if name.is_empty() || !pat.matches(name, false, fold) {
+                // Record-level filter (O(1) — extension ID + directory flag + size).
+                if !filter.matches(record, &resolved_ext_ids) {
                     continue;
                 }
-            }
 
-            total_matched += 1;
-            for acc in &mut merged {
-                acc.feed(record, drive, idx, ordinal, Some(&ext_map));
+                // Pattern filter (if non-trivial).
+                if let Some(pat) = compiled_pattern_ref {
+                    let name = record.name(&drive.names);
+                    if name.is_empty() || !pat.matches(name, false, fold) {
+                        continue;
+                    }
+                }
+
+                matched += 1;
+                for acc in &mut local {
+                    acc.feed(record, drive, idx, ordinal, Some(&ext_map));
+                }
             }
-        }
-    }
+            (local, scanned, matched)
+        })
+        .reduce(
+            || (plan.create_accumulators(), 0_u64, 0_u64),
+            |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
+                for (left, right) in acc_a.iter_mut().zip(acc_b.iter()) {
+                    left.merge(right);
+                }
+                (acc_a, sa + sb, ma + mb)
+            },
+        );
 
     tracing::info!(
         total_scanned,
