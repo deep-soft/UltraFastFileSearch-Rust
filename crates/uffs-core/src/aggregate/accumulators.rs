@@ -539,7 +539,17 @@ impl GroupAccumulator {
                     }
                 }
             }
-            // Duplicates don't merge across drives — they run per-drive then finalize.
+            (
+                AccumulatorKind::Duplicates { inner: a, .. },
+                AccumulatorKind::Duplicates { inner: b, .. },
+            ) => {
+                // Required when the aggregation engine runs the outer
+                // drive loop in parallel: each drive builds its own
+                // local `DuplicateAccumulator`, and this arm glues the
+                // per-drive groups back together before `finalize`
+                // drops singletons.
+                a.merge(b);
+            }
             _ => {} // mismatched kinds — should not happen
         }
     }

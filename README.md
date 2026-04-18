@@ -35,7 +35,7 @@ UFFS is built for **exact filename, path, and metadata search** at scales where 
 
 ---
 
-## Benchmark snapshot (v0.5.39)
+## Benchmark snapshot (v0.5.40)
 
 Measured on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2, 7 NTFS volumes totaling 25.9M records; scaled to 100.4M with offline MFT clones.
 
