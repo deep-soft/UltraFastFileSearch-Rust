@@ -34,14 +34,10 @@ build/
 # Logs, vendor, misc
 # =============================================================================
 /Shell/
-# /LOG/ holds local-only runtime logs (defender ETLs, mental_health, etc.)
-# but the per-iteration `*CHANGELOG_HEALING.md` files document each
-# `just ship -v` recovery and ARE tracked.  Using `/LOG/*` (not `/LOG/`)
-# keeps the directory itself unignored so the negation pattern below
-# can re-include the changelog files.
-/LOG/*
-!/LOG/*CHANGELOG_HEALING.md
-!/LOG/.gitkeep
+# /LOG/ holds local-only runtime logs (defender ETLs, mental_health,
+# per-iteration `*CHANGELOG_HEALING.md` artefacts, etc.).  Nothing
+# under /LOG/ is tracked in git.
+/LOG/
 /vendor/
 /missing_paths.txt
 /_trash/

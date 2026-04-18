@@ -25,7 +25,6 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use serde_json::Value;
-use tokio::sync::Mutex;
 use uffs_client::connect::UffsClient;
 
 use crate::error::BridgeError;
@@ -42,20 +41,31 @@ use instructions::AGENT_INSTRUCTIONS;
 
 /// Connection strategy for the daemon client.
 ///
-/// Both `Active` and `None` support auto-reconnect: if the daemon dies
-/// mid-session, the next tool call clears the stale client, reconnects
-/// via `connect_with_args` (which auto-starts the daemon), and retries.
+/// The MCP server does **not** cache a shared daemon connection.  Every
+/// tool call (and every daemon-backed resource read) opens a fresh
+/// [`UffsClient`] via [`UffsClient::connect_with_args`] and drops it when
+/// the call completes.  Rationale:
+///
+/// * **Per-request independence.** No shared `Mutex` across async boundaries,
+///   so a slow query never head-of-line-blocks other in-flight requests.  rmcp
+///   already dispatches each `tools/call` on its own task; a per-call
+///   connection is what lets those tasks actually run in parallel all the way
+///   down to the daemon.
+/// * **Capacity is owned by the daemon.** `uffs-daemon` caps concurrent
+///   searches with a `Semaphore::new(available_parallelism())` and internally
+///   fans each query out via rayon, so any MCP-side pool would be redundant
+///   (and worse, a potential extra bottleneck).
+/// * **Local-socket connect is sub-millisecond.** On Unix domain sockets /
+///   Windows named pipes the per-call overhead is far below the cost of the
+///   query itself.  Auto-reconnect is a natural side-effect: if the daemon
+///   restarted between calls, the next call just opens a new connection and
+///   succeeds.
 enum ClientSlot {
-    /// Connected (or reconnectable) client.
-    ///
-    /// Used by the **HTTP gateway**: each SSE session gets its own
-    /// `UffsMcpServer` with a pre-connected client.
+    /// Active mode — `spawn_args` are forwarded to
+    /// [`UffsClient::connect_with_args`] on every daemon-backed call.
     Active {
-        /// Args forwarded to `uffs daemon run` on auto-start / reconnect.
+        /// Args forwarded to `uffs daemon run` on auto-start.
         spawn_args: Vec<String>,
-        /// The daemon connection — `None` before first use or after a
-        /// reconnect-clearing.
-        client: Mutex<Option<UffsClient>>,
     },
     /// No daemon — metadata-only / testing.
     None,
@@ -63,7 +73,7 @@ enum ClientSlot {
 
 /// The UFFS MCP server — wraps a daemon client and dispatches MCP requests.
 pub struct UffsMcpServer {
-    /// Daemon connection (pre-connected, lazy, or none).
+    /// Daemon connection strategy (active with `spawn_args`, or none).
     slot: ClientSlot,
     /// Current roots state (updated via `on_roots_list_changed`).
     roots: SharedRootsState,
@@ -75,26 +85,28 @@ pub struct UffsMcpServer {
 }
 
 impl UffsMcpServer {
-    /// Create a new server wrapping a pre-connected daemon client.
+    /// Create a new server that dispatches to the daemon identified by
+    /// `spawn_args` (which are forwarded to
+    /// [`UffsClient::connect_with_args`] on every tool call).
     ///
-    /// The `spawn_args` are stored for reconnection if the daemon dies.
+    /// Callers that have already run a readiness check against the
+    /// daemon should simply drop their [`UffsClient`] before calling
+    /// this — the first dispatched tool call will open its own fresh
+    /// connection.  See the private `ClientSlot` enum for the
+    /// rationale behind the per-call connection model.
     #[must_use]
-    pub fn new(client: UffsClient, spawn_args: Vec<String>) -> Self {
+    pub fn new(spawn_args: Vec<String>) -> Self {
         Self::with_stats(
-            ClientSlot::Active {
-                spawn_args,
-                client: Mutex::new(Some(client)),
-            },
+            ClientSlot::Active { spawn_args },
             Arc::new(McpStats::default()),
         )
     }
 
     /// Create a server that lazily connects to the daemon on first tool call.
     ///
-    /// This is used by the HTTP gateway, where the factory closure must be
-    /// synchronous but daemon connection is async.  The `spawn_args` are
-    /// forwarded to [`UffsClient::connect_with_args`] on first use and on
-    /// reconnect after daemon failure.
+    /// Semantically identical to [`Self::new`] under the per-call
+    /// connection model; retained as a distinct constructor because the
+    /// HTTP gateway factory closure calls it explicitly.
     #[must_use]
     pub fn new_lazy(spawn_args: Vec<String>) -> Self {
         Self::new_lazy_with_stats(spawn_args, Arc::new(McpStats::default()))
@@ -104,13 +116,7 @@ impl UffsMcpServer {
     #[must_use]
     pub fn new_lazy_with_stats(spawn_args: Vec<String>, stats: Arc<McpStats>) -> Self {
         stats.session_started();
-        Self::with_stats(
-            ClientSlot::Active {
-                spawn_args,
-                client: Mutex::new(None),
-            },
-            stats,
-        )
+        Self::with_stats(ClientSlot::Active { spawn_args }, stats)
     }
 
     /// Create a server without a daemon connection.
@@ -159,46 +165,26 @@ impl UffsMcpServer {
             .map_or(0, |dur| dur.as_secs())
     }
 
-    /// Get a lock on the daemon client, connecting lazily on first call.
+    /// Open a fresh daemon connection for a single tool call or
+    /// resource read.
     ///
-    /// If the server was constructed with daemon spawn arguments, this
-    /// returns a [`ClientGuard`] wrapping the cached (or newly-created)
-    /// connection.  If no daemon backend was configured, it returns an
-    /// error immediately.
+    /// This is the sole entry point for acquiring a [`UffsClient`]
+    /// inside the handler.  Each caller gets its own connection, so
+    /// concurrent requests are fully independent — a slow query on one
+    /// connection cannot stall any other connection.
     ///
     /// # Errors
     ///
-    /// Returns [`BridgeError::Daemon`] if the daemon connection fails or
-    /// the server was constructed without a client slot.
-    pub async fn client(&self) -> Result<ClientGuard<'_>, BridgeError> {
+    /// Returns [`BridgeError::Daemon`] if the daemon cannot be reached
+    /// (after `UffsClient`'s own retry / auto-start logic has failed)
+    /// or if the server was constructed without a daemon backend
+    /// (`ClientSlot::None`).
+    async fn connect_daemon(&self) -> Result<UffsClient, BridgeError> {
         match &self.slot {
-            ClientSlot::Active { spawn_args, client } => {
-                let mut guard = client.lock().await;
-                if guard.is_none() {
-                    tracing::info!("Connecting to daemon (auto-starting if needed)...");
-                    let connected = UffsClient::connect_with_args(spawn_args)
-                        .await
-                        .map_err(|err| BridgeError::Daemon(err.to_string()))?;
-                    *guard = Some(connected);
-                }
-                Ok(ClientGuard(guard))
-            }
+            ClientSlot::Active { spawn_args } => UffsClient::connect_with_args(spawn_args)
+                .await
+                .map_err(|err| BridgeError::Daemon(err.to_string())),
             ClientSlot::None => Err(BridgeError::Daemon("Not connected to daemon".to_owned())),
-        }
-    }
-
-    /// Clear the cached daemon connection so the next `client()` call
-    /// reconnects via `connect_with_args` (auto-starting the daemon if
-    /// needed).
-    ///
-    /// Called after a tool call fails with a daemon connection error.
-    async fn clear_cached_client(&self) {
-        if let ClientSlot::Active { client, .. } = &self.slot {
-            let mut guard = client.lock().await;
-            if guard.is_some() {
-                tracing::info!("Clearing stale daemon connection for reconnect");
-                *guard = None;
-            }
         }
     }
 
@@ -206,39 +192,6 @@ impl UffsMcpServer {
     #[must_use]
     pub const fn roots(&self) -> &SharedRootsState {
         &self.roots
-    }
-}
-
-/// Wrapper that provides `&mut UffsClient` regardless of the slot type.
-///
-/// **Invariant**: the `Lazy` variant is **only** constructed after the
-/// `Option<UffsClient>` has been populated by [`UffsMcpServer::client()`],
-/// so the `expect` is structurally unreachable (the `Option` is always
-/// populated by `client()` before the guard is returned).
-pub struct ClientGuard<'a>(tokio::sync::MutexGuard<'a, Option<UffsClient>>);
-
-#[expect(
-    clippy::expect_used,
-    reason = "client() always populates the Option before returning this guard"
-)]
-impl core::ops::Deref for ClientGuard<'_> {
-    type Target = UffsClient;
-    fn deref(&self) -> &UffsClient {
-        self.0
-            .as_ref()
-            .expect("BUG: client not initialized before deref")
-    }
-}
-
-#[expect(
-    clippy::expect_used,
-    reason = "client() always populates the Option before returning this guard"
-)]
-impl core::ops::DerefMut for ClientGuard<'_> {
-    fn deref_mut(&mut self) -> &mut UffsClient {
-        self.0
-            .as_mut()
-            .expect("BUG: client not initialized before deref_mut")
     }
 }
 
@@ -274,7 +227,7 @@ impl UffsMcpServer {
         tool_name: &str,
         args: serde_json::Map<String, Value>,
     ) -> Result<CallToolResult, BridgeError> {
-        let mut client = self.client().await?;
+        let mut client = self.connect_daemon().await?;
 
         // Gate: don't run queries against a partially-loaded daemon.
         // The `uffs_status` tool is exempt so the agent can check
@@ -427,9 +380,11 @@ impl ServerHandler for UffsMcpServer {
                 tracing::warn!(
                     tool = %tool_name,
                     error = %err,
-                    "Daemon connection lost — reconnecting and retrying..."
+                    "Daemon connection lost — retrying with fresh connection..."
                 );
-                self.clear_cached_client().await;
+                // Under the per-call connection model each dispatch
+                // already opens a new socket, so a plain re-dispatch is
+                // sufficient — there is no stale cached client to clear.
                 self.dispatch_tool(&tool_name, args).await
             }
             other => other,
@@ -559,7 +514,10 @@ impl ServerHandler for UffsMcpServer {
 
             // Live metadata resources — need daemon.
             "uffs://drives" => {
-                let mut client = self.client().await?;
+                let mut client = self
+                    .connect_daemon()
+                    .await
+                    .map_err(|err| McpError::internal_error(err.to_string(), None))?;
                 let resp = client
                     .drives()
                     .await
@@ -569,7 +527,10 @@ impl ServerHandler for UffsMcpServer {
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?
             }
             "uffs://status" => {
-                let mut client = self.client().await?;
+                let mut client = self
+                    .connect_daemon()
+                    .await
+                    .map_err(|err| McpError::internal_error(err.to_string(), None))?;
                 let resp = client
                     .status()
                     .await
@@ -586,7 +547,10 @@ impl ServerHandler for UffsMcpServer {
                 // Normalize URI-style forward slashes back to Windows backslashes.
                 let win_path = decoded_path.replace('/', "\\");
 
-                let mut client = self.client().await?;
+                let mut client = self
+                    .connect_daemon()
+                    .await
+                    .map_err(|err| McpError::internal_error(err.to_string(), None))?;
                 let resp = client
                     .info(&win_path)
                     .await

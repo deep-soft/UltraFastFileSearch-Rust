@@ -7,11 +7,13 @@
 //! for match-all queries. Called by `MultiDriveBackend::search()`.
 
 mod numeric_top_n;
+mod path_only_top_n;
 
 use alloc::collections::BinaryHeap;
 use std::sync::LazyLock;
 
 use numeric_top_n::{collect_global_top_n_numeric, sort_indices_by_name};
+use path_only_top_n::collect_path_only_sorted_top_n;
 
 use super::backend::{DisplayRow, FilterMode};
 use super::field::FieldId;
@@ -81,25 +83,13 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
         FieldId::Path => {
             collect_path_sorted_top_n(drives, limit, sort_desc, filter_mode, search_filters)
         }
-        // Parent-directory sort: tree-walk order is NOT equivalent to
-        // path_only-ASC when records interleave across depths (e.g.
-        // `/a/b/file.exe` with path_only=`/a/b` visits BEFORE
-        // `/a/other.exe` with path_only=`/a`, violating path_only-ASC).
-        // Collect all matching rows via the tree walk (no early
-        // termination), then sort by path_only and truncate.  The tree
-        // walk's inline filter already narrows to matching records so
-        // the sort input is small.
+        // Parent-directory sort: the `path_only_top_n` submodule
+        // implements a two-phase tree walk that produces rows in
+        // `path_only`-sorted order directly, with early termination
+        // at `limit` and a name-ASC tiebreaker matching `sort_rows`.
+        // No post-sort or truncate required.
         FieldId::PathOnly => {
-            let mut rows = collect_path_sorted_top_n(
-                drives,
-                usize::MAX,
-                sort_desc,
-                filter_mode,
-                search_filters,
-            );
-            crate::search::sorting::sort_rows(&mut rows, FieldId::PathOnly, sort_desc, &[]);
-            rows.truncate(limit);
-            rows
+            collect_path_only_sorted_top_n(drives, limit, sort_desc, filter_mode, search_filters)
         }
         // All other fields (Size, Name, Extension, Created, Modified, etc.)
         // use the generic numeric sort/collect path.
@@ -259,7 +249,7 @@ fn collect_path_sorted_top_n<D: AsRef<DriveCompactIndex>>(
 }
 
 /// Returns `true` if a record with `is_directory` passes `filter_mode`.
-const fn passes_filter_mode(is_directory: bool, mode: FilterMode) -> bool {
+pub(super) const fn passes_filter_mode(is_directory: bool, mode: FilterMode) -> bool {
     match mode {
         FilterMode::All => true,
         FilterMode::FilesOnly => !is_directory,

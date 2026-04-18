@@ -27,10 +27,13 @@
 //!   rust-script scripts/windows/mcp-validation.rs ~/uffs_data
 //!   rust-script scripts/windows/mcp-validation.rs --bin target/release/uffs
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, sync_channel, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -151,118 +154,279 @@ const TEST_TIMEOUT_MS: u128 = 5_000;
 /// Agent flows chain multiple calls, so they get a longer budget.
 const AGENT_FLOW_TIMEOUT_MS: u128 = 10_000;
 
+/// One persistent MCP stdio session that safely multiplexes many
+/// concurrent JSON-RPC requests over a single child process.
+///
+/// # Design
+///
+/// * **One child process, one stdin, one stdout.**  Every test thread
+///   shares the same [`Arc<McpSession>`] so we exercise the real
+///   deployment shape (an AI host maintains one session per server).
+///
+/// * **Background reader thread** owns the child's stdout for the whole
+///   session.  It parses each inbound line as JSON-RPC, looks up the
+///   `id` in the `pending` map, and hands the response to the caller
+///   via a 1-slot [`sync_channel`].  Late responses (for callers that
+///   timed out) find no entry and are silently dropped — no stale
+///   bytes can poison a future request.
+///
+/// * **Short stdin lock.**  Multiple callers write to the same stdin
+///   guarded by a very briefly-held [`Mutex`], just long enough to
+///   `writeln!` + `flush` one request.  The lock is never held across
+///   an `await` or `recv_timeout`, so it never contributes to
+///   head-of-line blocking.
+///
+/// * **JSON-RPC id multiplexing.**  Ids come from an [`AtomicU64`] so
+///   many callers can mint ids without contention.  Responses are
+///   routed by id, so interleaved out-of-order replies from the server
+///   are natural — not a bug.
 struct McpSession {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    /// Background reader sends lines through this channel.
-    rx: mpsc::Receiver<String>,
-    next_id: u64,
+    /// Child process handle — `take()`-n out when shutting down so we
+    /// can call `.wait()` on the owned value.
+    child: Mutex<Option<Child>>,
+    /// Write half of the MCP pipe.  `take()`-n out on `shutdown` so the
+    /// child sees EOF and exits cleanly.
+    stdin: Mutex<Option<ChildStdin>>,
+    /// In-flight requests keyed by JSON-RPC id.  Each entry is a 1-slot
+    /// sender that the reader thread uses to deliver the matching
+    /// response exactly once.
+    pending: Mutex<HashMap<u64, SyncSender<Value>>>,
+    /// Monotonic JSON-RPC request id.
+    next_id: AtomicU64,
+    /// If the background reader exits (EOF / I/O error), the terminal
+    /// reason is recorded here so subsequent `request` calls surface it
+    /// instead of hanging forever on a dead channel.
+    reader_error: Mutex<Option<String>>,
 }
 
 impl McpSession {
-    fn spawn(binary: &str, source_args: &[&str]) -> Result<Self> {
+    /// Spawn a fresh `uffs mcp run` subprocess and attach a background
+    /// reader thread that routes JSON-RPC responses by id.
+    ///
+    /// Returns an [`Arc`] because the reader thread holds a clone for
+    /// the life of the session.
+    fn spawn(binary: &str, source_args: &[&str]) -> Result<Arc<Self>> {
         let mut args = vec!["mcp", "run"];
         args.extend(source_args);
         let mut child = Command::new(binary)
-            .args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
-            .spawn().with_context(|| format!("spawn: {binary} {}", args.join(" ")))?;
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("spawn: {binary} {}", args.join(" ")))?;
         let si = child.stdin.take().context("no stdin")?;
         let so = child.stdout.take().context("no stdout")?;
 
-        // Spawn a background thread that reads lines from stdout and sends
-        // them through a channel.  This lets us impose a timeout on reads.
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let reader = BufReader::new(so);
-            for line in reader.lines() {
-                match line {
-                    Ok(l) => { if tx.send(l).is_err() { break; } }
-                    Err(_) => break,
+        let session = Arc::new(Self {
+            child: Mutex::new(Some(child)),
+            stdin: Mutex::new(Some(si)),
+            pending: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(1),
+            reader_error: Mutex::new(None),
+        });
+
+        // Background reader — lives as long as stdout is open.
+        let reader_session = Arc::clone(&session);
+        std::thread::Builder::new()
+            .name("mcp-reader".into())
+            .spawn(move || reader_session.reader_loop(so))
+            .context("failed to spawn MCP reader thread")?;
+
+        Ok(session)
+    }
+
+    /// Reader loop: parse each line, route the response by id, drop
+    /// notifications / unmatched responses.  On EOF / I/O error, clear
+    /// all pending entries so waiters unblock with a disconnect error
+    /// instead of hanging.
+    fn reader_loop(self: Arc<Self>, so: ChildStdout) {
+        let reader = BufReader::new(so);
+        let mut final_err: Option<String> = None;
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    let parsed: Value = match serde_json::from_str(line.trim()) {
+                        Ok(v) => v,
+                        Err(err) => {
+                            eprintln!("  warning: bad JSON on MCP stdout: {err}");
+                            continue;
+                        }
+                    };
+                    // Notifications carry no id — server-initiated logs
+                    // or protocol notifications — silently discard.
+                    let Some(id) = parsed.get("id").and_then(Value::as_u64) else {
+                        continue;
+                    };
+                    let tx_opt = {
+                        let mut pending = self.pending.lock().expect("pending map poisoned");
+                        pending.remove(&id)
+                    };
+                    if let Some(tx) = tx_opt {
+                        // 1-slot channel → send never blocks.
+                        let _ = tx.send(parsed);
+                    }
+                    // else: late response for an abandoned request; drop.
+                }
+                Err(err) => {
+                    final_err = Some(format!("read error: {err}"));
+                    break;
                 }
             }
-        });
-        Ok(Self { child, stdin: Some(si), rx, next_id: 1 })
+        }
+        // Reader exiting — unblock any waiters by dropping their senders.
+        self.pending
+            .lock()
+            .expect("pending map poisoned")
+            .clear();
+        *self.reader_error.lock().expect("reader_error poisoned") =
+            Some(final_err.unwrap_or_else(|| "EOF on MCP stdout".to_owned()));
     }
 
-    fn write_line(&mut self, line: &str) -> Result<()> {
-        let si = self.stdin.as_mut().context("stdin closed")?;
-        writeln!(si, "{line}")?; si.flush()?; Ok(())
+    /// Send one framed JSON-RPC line atomically.  The stdin lock is
+    /// held only for the duration of `writeln!` + `flush` — never
+    /// across a response wait.
+    fn write_line(&self, line: &str) -> Result<()> {
+        let mut guard = self.stdin.lock().expect("stdin mutex poisoned");
+        let si = guard.as_mut().context("stdin closed")?;
+        writeln!(si, "{line}")?;
+        si.flush()?;
+        Ok(())
     }
 
-    /// Read one line from the MCP server with a timeout.
-    fn read_line_timeout(&self, timeout: Duration) -> Result<String> {
-        self.rx.recv_timeout(timeout)
-            .map_err(|e| match e {
-                mpsc::RecvTimeoutError::Timeout =>
-                    anyhow::anyhow!("timeout after {}s waiting for MCP response", timeout.as_secs()),
-                mpsc::RecvTimeoutError::Disconnected =>
-                    anyhow::anyhow!("MCP server closed stdout (EOF)"),
-            })
-    }
+    /// Send a JSON-RPC request and wait up to [`REQUEST_TIMEOUT_SECS`]
+    /// for the matching response.
+    ///
+    /// Registers the pending entry **before** writing so the reader
+    /// cannot deliver a response before the caller is registered.  On
+    /// timeout, removes the pending entry; any late response is then
+    /// silently discarded by the reader.
+    fn request(&self, method: &str, params: Option<Value>) -> Result<Value> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = sync_channel::<Value>(1);
 
-    fn request(&mut self, method: &str, params: Option<Value>) -> Result<Value> {
-        // Drain any stale responses from previous timed-out requests.
-        self.drain_stale();
+        {
+            let mut pending = self.pending.lock().expect("pending map poisoned");
+            pending.insert(id, tx);
+        }
 
-        let id = self.next_id; self.next_id += 1;
         let req = match params {
             Some(p) => json!({"jsonrpc":"2.0","id":id,"method":method,"params":p}),
-            None    => json!({"jsonrpc":"2.0","id":id,"method":method}),
+            None => json!({"jsonrpc":"2.0","id":id,"method":method}),
         };
-        self.write_line(&serde_json::to_string(&req)?)?;
+        let req_str = serde_json::to_string(&req)?;
 
-        // Read lines until we find one with our id, skipping stale responses.
-        let deadline = Instant::now() + Duration::from_secs(REQUEST_TIMEOUT_SECS);
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(anyhow::anyhow!("timeout after {}s waiting for MCP response", REQUEST_TIMEOUT_SECS));
-            }
-            let line = self.read_line_timeout(remaining)?;
-            let parsed: Value = serde_json::from_str(line.trim())
-                .with_context(|| format!("bad JSON: {line}"))?;
+        if let Err(err) = self.write_line(&req_str) {
+            // Write failed — reclaim the pending slot so it doesn't leak.
+            let _ = self
+                .pending
+                .lock()
+                .expect("pending map poisoned")
+                .remove(&id);
+            return Err(err);
+        }
 
-            // Check if this response matches our request id.
-            if let Some(resp_id) = parsed.get("id").and_then(|v| v.as_u64()) {
-                if resp_id == id {
-                    return Ok(parsed);
-                }
-                // Stale response from a timed-out request — skip it.
+        match rx.recv_timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS)) {
+            Ok(resp) => Ok(resp),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Abandon this id — the reader will drop any late response on id-miss.
+                let _ = self
+                    .pending
+                    .lock()
+                    .expect("pending map poisoned")
+                    .remove(&id);
+                Err(anyhow::anyhow!(
+                    "timeout after {}s waiting for MCP response",
+                    REQUEST_TIMEOUT_SECS
+                ))
             }
-            // Notifications (no "id") — skip them too.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let reason = self
+                    .reader_error
+                    .lock()
+                    .expect("reader_error poisoned")
+                    .clone()
+                    .unwrap_or_else(|| "MCP reader disconnected".to_owned());
+                Err(anyhow::anyhow!("MCP server closed stdout: {reason}"))
+            }
         }
     }
 
-    /// Drain any pending stale responses from the channel (non-blocking).
-    fn drain_stale(&self) {
-        while self.rx.try_recv().is_ok() {}
+    /// Send a JSON-RPC notification (no id, no response expected).
+    ///
+    /// Keeps the 100 ms post-notify sleep the original harness used so
+    /// the server has a moment to process `notifications/initialized`
+    /// before the first real request.
+    fn notify(&self, method: &str) -> Result<()> {
+        self.write_line(&serde_json::to_string(
+            &json!({"jsonrpc":"2.0","method":method}),
+        )?)?;
+        std::thread::sleep(Duration::from_millis(100));
+        Ok(())
     }
 
-    fn notify(&mut self, method: &str) -> Result<()> {
-        self.write_line(&serde_json::to_string(&json!({"jsonrpc":"2.0","method":method}))?)?;
-        std::thread::sleep(Duration::from_millis(100)); Ok(())
-    }
-
-    fn initialize(&mut self) -> Result<Value> {
-        let resp = self.request("initialize", Some(json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": { "roots": { "listChanged": true } },
-            "clientInfo": { "name": "mcp-validation", "version": "0.1.0" }
-        })))?;
+    /// Perform the MCP `initialize` handshake and follow it with the
+    /// mandatory `notifications/initialized`.
+    fn initialize(&self) -> Result<Value> {
+        let resp = self.request(
+            "initialize",
+            Some(json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "roots": { "listChanged": true } },
+                "clientInfo": { "name": "mcp-validation", "version": "0.1.0" }
+            })),
+        )?;
         self.notify("notifications/initialized")?;
         result_of(&resp)
     }
 
-    fn call_tool(&mut self, name: &str, args: Value) -> Result<Value> {
-        let resp = self.request("tools/call", Some(json!({"name": name, "arguments": args})))?;
+    /// Convenience wrapper around `tools/call`.
+    fn call_tool(&self, name: &str, args: Value) -> Result<Value> {
+        let resp = self.request(
+            "tools/call",
+            Some(json!({"name": name, "arguments": args})),
+        )?;
         result_of(&resp)
     }
 
-    fn close_stdin(&mut self) { self.stdin.take(); }
-    fn kill(&mut self) { let _ = self.child.kill(); let _ = self.child.wait(); }
+    /// Close the child's stdin — triggers a clean EOF-based shutdown.
+    fn close_stdin(&self) {
+        let _ = self
+            .stdin
+            .lock()
+            .expect("stdin mutex poisoned")
+            .take();
+    }
+
+    /// Force-kill the child and reap the process.  Idempotent.
+    fn shutdown(&self) {
+        self.close_stdin();
+        if let Some(mut child) = self
+            .child
+            .lock()
+            .expect("child mutex poisoned")
+            .take()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
-impl Drop for McpSession { fn drop(&mut self) { self.kill(); } }
+impl Drop for McpSession {
+    fn drop(&mut self) {
+        // Best-effort teardown so leaked `Arc<McpSession>`s don't leave
+        // orphan `uffs mcp run` subprocesses.  Mutex::get_mut is
+        // infallible when we hold `&mut self`.
+        let _ = self.stdin.get_mut().map(core::mem::take);
+        if let Ok(slot) = self.child.get_mut() {
+            if let Some(mut child) = slot.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
 
 fn result_of(resp: &Value) -> Result<Value> {
     if let Some(err) = resp.get("error") {
@@ -418,7 +582,7 @@ enum McpTestKind {
     /// Tool call test (maps rpc_method → MCP tool).
     ToolCall(ToolCallTest),
     /// Multi-step agent flow — chains multiple MCP calls like a real agent.
-    AgentFlow(fn(&mut McpSession) -> Result<String>),
+    AgentFlow(fn(&McpSession) -> Result<String>),
 }
 
 #[derive(Clone)]
@@ -755,7 +919,7 @@ fn load_tests_from_toml() -> Vec<McpTest> {
 // These simulate real agent workflows from §8 of the spec.  Each flow
 // chains multiple MCP tool calls exactly as an LLM would.
 
-fn flow(id: &str, name: &str, f: fn(&mut McpSession) -> Result<String>) -> McpTest {
+fn flow(id: &str, name: &str, f: fn(&McpSession) -> Result<String>) -> McpTest {
     McpTest {
         id: id.to_owned(), name: format!("{id} {name}"),
         kind: McpTestKind::AgentFlow(f), payload_checks: None,
@@ -765,7 +929,7 @@ fn flow(id: &str, name: &str, f: fn(&mut McpSession) -> Result<String>) -> McpTe
 
 /// §8.1 Known-item lookup: "Find the largest .exe, then inspect it."
 /// Agent: search → pick top result → call info on its path.
-fn flow_search_then_info(mcp: &mut McpSession) -> Result<String> {
+fn flow_search_then_info(mcp: &McpSession) -> Result<String> {
     let search = mcp.call_tool("uffs_search", json!({
         "pattern": "*.exe", "sort": "size", "sort_desc": true, "limit": 1
     }))?;
@@ -780,7 +944,7 @@ fn flow_search_then_info(mcp: &mut McpSession) -> Result<String> {
 
 /// §8.2 Summary question: "What kinds of files dominate? Show me top extensions."
 /// Agent: aggregate overview → facet extensions → search for top extension.
-fn flow_summary_then_drill(mcp: &mut McpSession) -> Result<String> {
+fn flow_summary_then_drill(mcp: &McpSession) -> Result<String> {
     // Step 1: Ask for overview.
     let overview = mcp.call_tool("uffs_aggregate", json!({"preset": "overview"}))?;
     if overview.get("isError").and_then(Value::as_bool).unwrap_or(false) {
@@ -797,7 +961,7 @@ fn flow_summary_then_drill(mcp: &mut McpSession) -> Result<String> {
 
 /// §8.3 Refinement: "What extensions exist? Let me narrow down."
 /// Agent: facet_values → refine with scoped facet → search.
-fn flow_refine_search(mcp: &mut McpSession) -> Result<String> {
+fn flow_refine_search(mcp: &McpSession) -> Result<String> {
     // Step 1: Explore what types exist.
     let types = mcp.call_tool("uffs_facet_values", json!({"field": "type", "top": 5}))?;
     if types.get("isError").and_then(Value::as_bool).unwrap_or(false) {
@@ -818,7 +982,7 @@ fn flow_refine_search(mcp: &mut McpSession) -> Result<String> {
 
 /// §8.2 + resource: Agent reads schema first, then queries.
 /// Agent: read field catalog → read search schema → search.
-fn flow_schema_then_query(mcp: &mut McpSession) -> Result<String> {
+fn flow_schema_then_query(mcp: &McpSession) -> Result<String> {
     // Step 1: Agent reads field catalog to understand available fields.
     let fields = mcp.request("resources/read", Some(json!({"uri": "uffs://schema/fields"})))?;
     result_of(&fields)?;
@@ -837,7 +1001,7 @@ fn flow_schema_then_query(mcp: &mut McpSession) -> Result<String> {
 
 /// §8.2 Agent uses a prompt then executes the suggested query.
 /// Agent: get prompt → parse tool call from message → execute.
-fn flow_prompt_guided(mcp: &mut McpSession) -> Result<String> {
+fn flow_prompt_guided(mcp: &McpSession) -> Result<String> {
     // Step 1: Agent requests the find_large_files prompt.
     let prompt_resp = mcp.request("prompts/get", Some(json!({"name": "find_large_files"})))?;
     let prompt = result_of(&prompt_resp)?;
@@ -855,7 +1019,7 @@ fn flow_prompt_guided(mcp: &mut McpSession) -> Result<String> {
 
 /// §8.4 Duplicate investigation (lightweight).
 /// Agent: explore extensions → cleanup prompt → search for temp files.
-fn flow_duplicate_investigation(mcp: &mut McpSession) -> Result<String> {
+fn flow_duplicate_investigation(mcp: &McpSession) -> Result<String> {
     // Step 1: Agent explores extensions to find duplicate-heavy types.
     let facets = mcp.call_tool("uffs_facet_values", json!({"field": "ext", "top": 10}))?;
     if facets.get("isError").and_then(Value::as_bool).unwrap_or(false) {
@@ -1259,14 +1423,26 @@ fn build_rpc_string(method: &str, cli_args: &[String]) -> String {
     format!("{method}({params})")
 }
 
-
+/// Choose a parallelism level that scales with the host CPU count.
+///
+/// Mirrors the helper in `cli-validation.rs` and `api-validation.rs`
+/// so all three suites stretch the daemon to the same bound on any
+/// given machine (Linux `sched_getaffinity`, Windows
+/// `GetActiveProcessorCount`, macOS `host_processor_info`).  The
+/// fallback of 8 matches the prior hard-coded defaults for small or
+/// unknown machines.
+fn max_parallelism() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8)
+}
 
 /// Run a single test.  M100-M103 (initialize) are special: the init
 /// handshake is completed once at session start, so we skip actually
 /// sending a duplicate initialize — instead we validate the cached
 /// init_result.
 fn run_test(
-    mcp: &mut McpSession,
+    mcp: &McpSession,
     test: &McpTest,
     init_result: &Value,
     script_args: &ScriptArgs,
@@ -1565,7 +1741,7 @@ fn main() -> Result<()> {
     eprintln!("  Spawning MCP session...");
     eprintln!("  Transport: {}", "stdio (JSON-RPC over stdin/stdout)".cyan());
     eprintln!("  Command:   {}", mcp_cmd.cyan());
-    let mut mcp = McpSession::spawn(&args.bin, &src_args)?;
+    let mcp = McpSession::spawn(&args.bin, &src_args)?;
     let init_result = mcp.initialize()?;
     eprintln!("  MCP: {} (protocol={}, server={})",
         "Initialized".green().bold(),
@@ -1612,35 +1788,101 @@ fn main() -> Result<()> {
         }
     }
 
+    // ── Parallel dispatch ──────────────────────────────────────────────
+    //
+    // We keep **one** MCP stdio session for the whole run (that's the
+    // real deployment model an AI host uses) and blast up to
+    // `max_parallelism()` concurrent `tools/call` requests through it.
+    // The `McpSession` is safe to share via `Arc`: writes are serialised
+    // by the short stdin mutex, reads are routed by JSON-RPC id through
+    // a background reader thread, so test threads never step on each
+    // other.
+    //
+    // Matching cap across all layers (harness blast ↔ MCP dispatch ↔
+    // daemon `search_semaphore`) = `available_parallelism()`, so the
+    // daemon is saturated but never oversubscribed.
+    let n_workers = max_parallelism().min(tests.len().max(1));
+
     eprintln!();
     eprintln!("┌───────────────────────────────────────────────────────────────┐");
-    eprintln!("│  MCP Validation ({} tests, agent-flow model)            │", format!("{:>3}", tests.len()));
+    eprintln!(
+        "│  MCP Validation ({} tests, parallelism: {:<3})                │",
+        format!("{:>3}", tests.len()),
+        n_workers
+    );
     eprintln!("└───────────────────────────────────────────────────────────────┘");
 
-    // Run tests — print each result inline as it completes.
     let test_start = Instant::now();
-    let mut results = Vec::new();
-    for test in &tests {
-        let r = run_test(&mut mcp, test, &init_result, &args);
-        let status = if r.passed {
-            format!("{}", "PASS".green().bold())
-        } else {
-            format!("{}", "FAIL".red().bold())
-        };
-        let timing = format!("{:>5}ms", r.elapsed_ms).dimmed();
-        if r.passed {
-            let detail = if r.message.is_empty() { String::new() } else { format!(" — {}", r.message) };
-            eprintln!("  [{status}] {timing}  {}{detail} [mcp]", r.name);
-        } else {
-            eprintln!("  [{status}] {timing}  {}: {}", r.name, r.message.red());
-        }
-        results.push(r);
+    let tests_arc = Arc::new(tests);
+    let args_arc = Arc::new(args);
+    let init_arc = Arc::new(init_result);
+    // Pre-sized slot vector so workers write their result by index and
+    // we preserve the test-definition order in the final report.
+    let slots: Vec<Mutex<Option<TestResult>>> =
+        (0..tests_arc.len()).map(|_| Mutex::new(None)).collect();
+    let slots_arc = Arc::new(slots);
+    let next_idx = Arc::new(AtomicUsize::new(0));
+
+    let mut handles = Vec::with_capacity(n_workers);
+    for _ in 0..n_workers {
+        let mcp = Arc::clone(&mcp);
+        let tests = Arc::clone(&tests_arc);
+        let slots = Arc::clone(&slots_arc);
+        let next_idx = Arc::clone(&next_idx);
+        let init_result = Arc::clone(&init_arc);
+        let args = Arc::clone(&args_arc);
+        handles.push(std::thread::spawn(move || {
+            loop {
+                let i = next_idx.fetch_add(1, Ordering::Relaxed);
+                if i >= tests.len() {
+                    break;
+                }
+                let test = &tests[i];
+                let r = run_test(&mcp, test, &init_result, &args);
+                // Print inline as each test completes.  A single
+                // `eprintln!` is one syscall, so concurrent prints are
+                // line-atomic without an explicit lock.
+                let status = if r.passed {
+                    format!("{}", "PASS".green().bold())
+                } else {
+                    format!("{}", "FAIL".red().bold())
+                };
+                let timing = format!("{:>5}ms", r.elapsed_ms).dimmed();
+                if r.passed {
+                    let detail = if r.message.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", r.message)
+                    };
+                    eprintln!("  [{status}] {timing}  {}{detail} [mcp]", r.name);
+                } else {
+                    eprintln!("  [{status}] {timing}  {}: {}", r.name, r.message.red());
+                }
+                *slots[i].lock().expect("result slot poisoned") = Some(r);
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.join();
     }
     let test_wall_ms = test_start.elapsed().as_millis();
 
+    // Reassemble results in test-definition order.
+    let results: Vec<TestResult> = slots_arc
+        .iter()
+        .map(|slot| {
+            slot.lock()
+                .expect("result slot poisoned")
+                .take()
+                .expect("every worker must fill its slot")
+        })
+        .collect();
+    // Downstream code reads `args.bin` etc. — `Arc<ScriptArgs>` derefs
+    // transparently to `&ScriptArgs`, so no unwrap is needed.
+    let args = args_arc;
+
     // Cleanup.
-    mcp.close_stdin();
-    let _ = mcp.child.wait();
+    mcp.shutdown();
 
     // Summary.
     let total = results.len();
@@ -1732,7 +1974,7 @@ fn main() -> Result<()> {
     eprintln!("  Build binary:         {:>7}ms", build_ms);
     eprintln!("  Daemon ready:         {:>7}ms  (status check + start + drive load)", daemon_ms);
     eprintln!("  ─────────────────────────────────────────────────────");
-    eprintln!("  Tests wall time:      {:>7}ms  ({total} tests, sequential MCP session)", test_wall_ms);
+    eprintln!("  Tests wall time:      {:>7}ms  ({total} tests, parallelism: {n_workers})", test_wall_ms);
     eprintln!("  Tests sum time:       {:>7}ms  (total across all tests)", test_sum_ms);
     eprintln!("  Tests avg time:       {:>7}ms  (per test)", test_avg_ms);
     if let Some(s) = slowest {

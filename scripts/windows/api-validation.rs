@@ -550,6 +550,18 @@ struct TestResult {
     cli_command: String,
 }
 
+/// Choose a parallelism level that scales with the host CPU count.
+///
+/// Mirrors the CLI script's `max_parallelism()` so both validation suites
+/// stretch the daemon the same way on any given machine (Linux `sched_getaffinity`,
+/// Windows `GetActiveProcessorCount`, macOS `host_processor_info`).  The fallback
+/// of 8 matches the old hard-coded chunk size for small/unknown machines.
+fn max_parallelism() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8)
+}
+
 fn run_tests(sock: &str, specs: Vec<TestSpec>, args: &ScriptArgs) -> Vec<TestResult> {
     use std::sync::Mutex;
     let results = Arc::new(Mutex::new(Vec::new()));
@@ -560,9 +572,9 @@ fn run_tests(sock: &str, specs: Vec<TestSpec>, args: &ScriptArgs) -> Vec<TestRes
         cli_prefix.push(args.source_path.clone());
     }
     let cli_prefix = Arc::new(cli_prefix);
-    // Run tests with a thread pool (8 threads) for parallelism.
+    // Run tests with a thread pool sized to the host's logical CPU count.
     let specs = Arc::new(specs);
-    let chunk_size = 8;
+    let chunk_size = max_parallelism();
     let total = specs.len();
     let mut idx = 0;
     while idx < total {
@@ -2596,7 +2608,7 @@ fn main() {
     let test_sum_ms: u128 = results.iter().map(|r| r.elapsed_ms).sum();
     let test_avg_ms = if total > 0 { test_sum_ms / total as u128 } else { 0 };
     let test_count = total;
-    let max_par = 8_usize; // matches chunk_size in run_tests
+    let max_par = max_parallelism(); // matches chunk_size in run_tests
     let slowest = results.iter().max_by_key(|r| r.elapsed_ms);
     let fastest = results.iter().filter(|r| r.passed).min_by_key(|r| r.elapsed_ms);
     eprintln!();
