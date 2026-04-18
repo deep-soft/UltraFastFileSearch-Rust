@@ -1154,6 +1154,210 @@ fn search_index_path_only_sort_honors_filter_mode_files_only() {
     );
 }
 
+/// Build a single-drive `DriveIndex` with a three-level nested tree,
+/// used by the `path_only` two-phase walk regression tests below.
+///
+/// Tree (insertion order is deliberately non-alphabetical so
+/// `sort_indices_by_name` has real work to do):
+/// ```text
+/// C:\
+///   ├── alpha.txt       path_only = C:\
+///   ├── beta\           path_only = C:\   (directory)
+///   │   ├── a.txt       path_only = C:\beta\
+///   │   ├── b.txt       path_only = C:\beta\
+///   │   └── c\          path_only = C:\beta\   (directory)
+///   │       └── x.txt   path_only = C:\beta\c\
+///   └── zeta.txt        path_only = C:\
+/// ```
+fn build_nested_fixture() -> DriveIndex {
+    use alloc::sync::Arc;
+
+    use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS, SizeInfo};
+
+    use crate::compact::build_compact_index;
+
+    fn make_file(idx: &mut MftIndex, frs: u64, name: &str, parent: u64) {
+        let n_off = idx.add_name(name);
+        let n_ext = idx.intern_extension(name);
+        let rec = idx.get_or_create(frs);
+        rec.first_name.name = IndexNameRef::new(
+            n_off,
+            u16::try_from(name.len()).expect("name too long"),
+            true,
+            n_ext,
+        );
+        rec.first_name.parent_frs = parent;
+        rec.first_stream.size = SizeInfo {
+            length: 100,
+            allocated: 512,
+        };
+        rec.stdinfo.flags = 0x20;
+    }
+
+    fn make_dir(idx: &mut MftIndex, frs: u64, name: &str, parent: u64) {
+        let n_off = idx.add_name(name);
+        let n_ext = idx.intern_extension(name);
+        let rec = idx.get_or_create(frs);
+        rec.first_name.name = IndexNameRef::new(
+            n_off,
+            u16::try_from(name.len()).expect("name too long"),
+            true,
+            n_ext,
+        );
+        rec.first_name.parent_frs = parent;
+        rec.stdinfo.set_directory(true);
+    }
+
+    let mut idx = MftIndex::new('C');
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // Root-level entries (non-alphabetical FRS order).
+    make_file(&mut idx, 202, "zeta.txt", ROOT_FRS);
+    make_file(&mut idx, 200, "alpha.txt", ROOT_FRS);
+    make_dir(&mut idx, 201, "beta", ROOT_FRS);
+
+    // `beta` contents (non-alphabetical FRS order).
+    make_file(&mut idx, 211, "b.txt", 201);
+    make_file(&mut idx, 210, "a.txt", 201);
+    make_dir(&mut idx, 212, "c", 201);
+
+    // `beta/c` contents.
+    make_file(&mut idx, 220, "x.txt", 212);
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    DriveIndex {
+        drives: vec![Arc::new(drive)],
+    }
+}
+
+/// Regression: `sort=PathOnly` ASC with a nested tree must emit rows
+/// grouped by `path_only` lexicographically, with a name-ASC
+/// tiebreaker inside each group.
+///
+/// Pre-fix the walker used naive pre-order DFS, which is equivalent
+/// to full-path-ASC — *not* `path_only`-ASC.  For the fixture below
+/// DFS yields `alpha, beta, a, b, c, x, zeta` (zeta buried at the
+/// end), whereas the correct `path_only`-ASC order groups all C:\
+/// entries first (`alpha, beta, zeta`), then C:\beta\ entries
+/// (`a, b, c`), then C:\beta\c\ (`x`).
+#[test]
+fn search_index_path_only_sort_asc_nested_tree() {
+    let index = build_nested_fixture();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            result_limit: Some(100),
+            filter_mode: FilterMode::FilesOnly,
+            ..SearchRequest::new("*", &mut filters)
+        },
+        FieldId::PathOnly,
+        false, // ASC
+        &[],
+    );
+    let names: Vec<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            // path_only = C:\   (name-ASC)
+            "alpha.txt".to_owned(),
+            "zeta.txt".to_owned(),
+            // path_only = C:\beta\   (name-ASC)
+            "a.txt".to_owned(),
+            "b.txt".to_owned(),
+            // path_only = C:\beta\c\
+            "x.txt".to_owned(),
+        ],
+        "path_only ASC must group by parent-directory with name-ASC tiebreaker"
+    );
+}
+
+/// Regression: `sort=PathOnly` DESC must emit rows in reverse
+/// `path_only` order — deepest `path_only` first — but with a
+/// name-ASC tiebreaker *inside* each group.  The Name tiebreaker is
+/// NOT flipped by `sort_desc` (see `sort_rows` contract).
+#[test]
+fn search_index_path_only_sort_desc_nested_tree() {
+    let index = build_nested_fixture();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            result_limit: Some(100),
+            filter_mode: FilterMode::FilesOnly,
+            ..SearchRequest::new("*", &mut filters)
+        },
+        FieldId::PathOnly,
+        true, // DESC
+        &[],
+    );
+    let names: Vec<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            // path_only = C:\beta\c\   (deepest group first in DESC)
+            "x.txt".to_owned(),
+            // path_only = C:\beta\   (still name-ASC within group)
+            "a.txt".to_owned(),
+            "b.txt".to_owned(),
+            // path_only = C:\   (shallowest group last)
+            "alpha.txt".to_owned(),
+            "zeta.txt".to_owned(),
+        ],
+        "path_only DESC groups deepest first; name tiebreaker stays ASC"
+    );
+}
+
+/// Regression: `sort=PathOnly` with a small `limit` must stop walking
+/// as soon as the limit is reached.
+///
+/// This is the whole point of the two-phase walk — the earlier
+/// implementation did `collect_path_sorted_top_n(drives, usize::MAX,
+/// ..)` + full sort + truncate, which resolved every matching
+/// record's path even when only the top-N were needed.
+///
+/// The test only pins behavioural correctness (exact truncated
+/// result).  The timing win is verified end-to-end by the
+/// `api-validation` / `mcp-validation` scenario suite.
+#[test]
+fn search_index_path_only_sort_respects_limit() {
+    let index = build_nested_fixture();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest {
+            result_limit: Some(2),
+            filter_mode: FilterMode::FilesOnly,
+            ..SearchRequest::new("*", &mut filters)
+        },
+        FieldId::PathOnly,
+        false, // ASC
+        &[],
+    );
+    let names: Vec<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["alpha.txt".to_owned(), "zeta.txt".to_owned()],
+        "limit=2 must emit only the first two path_only-ASC rows"
+    );
+}
+
 /// Path-anchored `C:\*.txt` must NOT trigger the drive-prefix safety
 /// net — the tree walker already scopes to the drive root and expects
 /// the full `C:\<glob>` form intact.  We verify non-promotion by

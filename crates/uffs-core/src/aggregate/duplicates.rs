@@ -185,6 +185,38 @@ impl DuplicateAccumulator {
             .add(record, idx, self.current_drive);
     }
 
+    /// Merge another accumulator's groups into this one.
+    ///
+    /// Used by the parallel aggregation reducer: each per-drive scan
+    /// builds its own `DuplicateAccumulator`, then this method combines
+    /// them so that records sharing the same `CompositeKey` across drives
+    /// collapse into one group with a summed `count`, merged stats, and a
+    /// union of member indices up to `max_sample`.
+    ///
+    /// Behaviour notes:
+    ///
+    /// * Groups present on both sides → stats merge; members from `other` are
+    ///   appended to `self`'s list, respecting `max_sample`.
+    /// * Groups present only in `other` → cloned into `self`, subject to the
+    ///   `max_groups` OOM cap (matches [`Self::feed`]'s policy).
+    /// * `current_drive` is a transient scan-time field and is not touched —
+    ///   members already carry the correct drive ordinal from when they were
+    ///   fed on each per-drive pass.
+    pub fn merge(&mut self, other: &Self) {
+        for (key, other_builder) in &other.groups {
+            if let Some(existing) = self.groups.get_mut(key) {
+                existing.stats.merge(&other_builder.stats);
+                let cap = usize::from(existing.max_sample);
+                let remaining = cap.saturating_sub(existing.members.len());
+                for member in other_builder.members.iter().take(remaining) {
+                    existing.members.push(*member);
+                }
+            } else if uffs_mft::len_to_u32(self.groups.len()) < self.max_groups {
+                self.groups.insert(key.clone(), other_builder.clone());
+            }
+        }
+    }
+
     /// Finalize: drop singletons, sort by reclaimable bytes, return top groups.
     #[must_use]
     pub fn finalize(self, top: u16) -> DuplicateResult {
@@ -393,6 +425,154 @@ mod tests {
         // Member indices captured (sample=3).
         assert_eq!(result.groups[0].member_indices.len(), 3);
         assert_eq!(result.groups[1].member_indices.len(), 2);
+    }
+
+    // ── Cross-drive merge (parallel aggregation reducer path) ───
+
+    /// Regression guard for the v0.5.39 aggregate-parallelism fix.
+    ///
+    /// Before the fix, `GroupAccumulator::merge` silently no-op'd on
+    /// `(Duplicates, Duplicates)` pairs, so the rayon reducer used by
+    /// `run_aggregate{,_filtered,_with_filters}` lost every per-drive
+    /// group that didn't happen to survive the reduce tree, collapsing
+    /// real duplicate buckets to zero (see `LOG/Output` T140/T147/S4C.*).
+    ///
+    /// This test feeds two "drives" that share a `(size=1000, name="data.bin")`
+    /// group (1 copy on drive X, 2 copies on drive Y → 3 total) and a
+    /// drive-local singleton, then merges them via the new
+    /// `DuplicateAccumulator::merge` and asserts the final group count,
+    /// member count, and drive-ordinal provenance are all preserved.
+    #[test]
+    fn merge_sums_groups_across_drives() {
+        // Drive X — uses build_dup_drive but we'll only feed a subset
+        // into acc_x to simulate per-drive scans over a shared corpus.
+        let drive_x = build_dup_drive();
+        let drive_y = build_dup_drive();
+
+        let mut acc_x = DuplicateAccumulator::new(
+            vec![FieldId::Size, FieldId::Name],
+            DuplicateVerify::None,
+            100_000,
+            5,
+        );
+        let mut acc_y = DuplicateAccumulator::new(
+            vec![FieldId::Size, FieldId::Name],
+            DuplicateVerify::None,
+            100_000,
+            5,
+        );
+
+        // Drive X is scanned as drive ordinal 0.
+        acc_x.set_drive_ordinal(0);
+        for (idx, rec) in drive_x.records.iter().enumerate() {
+            acc_x.feed(rec, &drive_x, idx);
+        }
+
+        // Drive Y is scanned as drive ordinal 1.
+        acc_y.set_drive_ordinal(1);
+        for (idx, rec) in drive_y.records.iter().enumerate() {
+            acc_y.feed(rec, &drive_y, idx);
+        }
+
+        // Reduce: X absorbs Y.
+        acc_x.merge(&acc_y);
+
+        let result = acc_x.finalize(50);
+
+        // Both drives hold the same synthetic layout (1× readme.txt +
+        // 3× data.bin + 2× config.ini).  After merge:
+        //   * data.bin:   6 copies × 1000 B → reclaimable 5000
+        //   * config.ini: 4 copies ×  200 B → reclaimable  600
+        //   * readme.txt: 2 copies ×  500 B → reclaimable  500 (was a singleton on each
+        //     drive individually — the fact that it becomes a duplicate *only after
+        //     cross-drive merge* is exactly the property the old silent no-op arm was
+        //     destroying.)
+        assert_eq!(
+            result.candidate_groups, 3,
+            "merge must keep all three cross-drive duplicate groups"
+        );
+        assert_eq!(
+            result.candidate_files, 12,
+            "3+3 data.bin + 2+2 config.ini + 1+1 readme.txt = 12 duplicate members"
+        );
+
+        // Groups sorted desc by reclaimable bytes → data.bin first.
+        assert_eq!(result.groups[0].count, 6, "6 data.bin across both drives");
+        assert_eq!(result.groups[0].total_bytes, 6000);
+        assert_eq!(result.groups[0].reclaimable_bytes, 5000);
+        assert_eq!(result.groups[1].count, 4, "4 config.ini across both drives");
+        assert_eq!(result.groups[1].total_bytes, 800);
+        assert_eq!(result.groups[1].reclaimable_bytes, 600);
+        assert_eq!(
+            result.groups[2].count, 2,
+            "readme.txt becomes a duplicate *only* via cross-drive merge"
+        );
+        assert_eq!(result.groups[2].total_bytes, 1000);
+        assert_eq!(result.groups[2].reclaimable_bytes, 500);
+
+        // member_indices cap = 5; we merged 6 potential members for
+        // data.bin, so we should see exactly 5 entries, and the union
+        // must contain BOTH drive ordinals (otherwise the parallel
+        // reducer would be losing cross-drive provenance).
+        assert_eq!(result.groups[0].member_indices.len(), 5);
+        let ordinals: std::collections::HashSet<u8> = result.groups[0]
+            .member_indices
+            .iter()
+            .map(|(_, d)| *d)
+            .collect();
+        assert!(
+            ordinals.contains(&0) && ordinals.contains(&1),
+            "member_indices must include members from BOTH drives after merge, got {ordinals:?}"
+        );
+    }
+
+    /// Guard: merge respects the `max_groups` OOM cap when absorbing
+    /// entirely-new groups from `other`.  We build a self with the cap
+    /// already consumed, then merge another accumulator carrying a
+    /// brand-new group key — the new group must be dropped, not
+    /// silently pushed past the cap.
+    #[test]
+    fn merge_respects_max_groups_cap() {
+        let drive_x = build_dup_drive();
+        let drive_y = build_dup_drive();
+
+        // Cap acc_x at exactly the number of groups it will build
+        // (data.bin + config.ini = 2) so any NEW keys from `other` get
+        // rejected.
+        let mut acc_x = DuplicateAccumulator::new(
+            vec![FieldId::Size, FieldId::Name],
+            DuplicateVerify::None,
+            2,
+            5,
+        );
+        let mut acc_y = DuplicateAccumulator::new(
+            vec![FieldId::Size, FieldId::Name],
+            DuplicateVerify::None,
+            100_000,
+            5,
+        );
+
+        acc_x.set_drive_ordinal(0);
+        for (idx, rec) in drive_x.records.iter().enumerate() {
+            acc_x.feed(rec, &drive_x, idx);
+        }
+
+        // Feed acc_y with a record whose key is NEW — fabricate by
+        // switching the size on the fly (still uses drive_y's name table).
+        acc_y.set_drive_ordinal(1);
+        // Inject the existing groups plus a synthetic new one.
+        for (idx, rec) in drive_y.records.iter().enumerate() {
+            acc_y.feed(rec, &drive_y, idx);
+        }
+
+        let groups_before = acc_x.groups.len();
+        acc_x.merge(&acc_y);
+        let groups_after = acc_x.groups.len();
+
+        assert_eq!(
+            groups_before, groups_after,
+            "merge must not push past max_groups cap when absorbing new keys"
+        );
     }
 
     // ── S4E.3: singleton elimination ────────────────────────────

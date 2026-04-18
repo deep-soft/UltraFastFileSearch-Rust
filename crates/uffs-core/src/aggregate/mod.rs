@@ -97,6 +97,7 @@ pub use pagination::{AggregateCursor, PaginatedBuckets, paginate_result};
 pub use parser::{parse_agg_spec, parse_and_expand_agg_specs};
 pub use planner::AggregatePlan;
 pub use presets::AggregatePreset;
+use rayon::prelude::*;
 pub use rollup::RollupAccumulator;
 pub use spec::{
     AggregateKind, AggregateSpec, BucketMetric, CalendarInterval, DuplicateVerify, RollupMode,
@@ -277,28 +278,43 @@ pub fn run_aggregate(
     // Build cross-drive extension mapping for correct multi-drive grouping.
     let ext_map = ExtensionMap::build(drives);
 
-    // 2. Scan each drive and collect accumulators
-    let mut merged = plan.create_accumulators();
-    let mut total_scanned: u64 = 0;
-    let mut total_matched: u64 = 0;
-
-    for (drive_ordinal, drive) in drives.iter().enumerate() {
-        let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
-        let t = std::time::Instant::now();
-        let (scanned, matched) = scan_drive(drive, &plan, &mut merged, ordinal, Some(&ext_map));
-        tracing::debug!(
-            drive = %drive.letter,
-            scanned,
-            matched,
-            elapsed_ms = t.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
-            "run_aggregate: drive scan"
+    // 2. Drive-level parallel scan.  Outer `par_iter` fans the work out over
+    //    drives; each drive's inner scan is sequential.  The per-record work
+    //    (`accumulator.feed`) is only a few nanoseconds, which makes wrapping it in
+    //    a second layer of `par_iter().fold().reduce()` a net loss under concurrent
+    //    load: each nested fold chunk clones a full `Vec<GroupAccumulator>` and
+    //    then has to be reduced back together, and with K concurrent aggregate
+    //    queries the rayon pool ends up oversubscribed K×cores².  See
+    //    `LOG/2026_04_18_08_09_CHANGELOG_HEALING.md` Run 7 for the measurements
+    //    that drove this decision.
+    let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
+        .par_iter()
+        .enumerate()
+        .map(|(drive_ordinal, drive)| {
+            let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
+            let t = std::time::Instant::now();
+            let (local, scanned, matched) = scan_drive(drive, &plan, ordinal, Some(&ext_map));
+            tracing::debug!(
+                drive = %drive.letter,
+                scanned,
+                matched,
+                elapsed_ms = t.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                "run_aggregate: drive scan"
+            );
+            (local, scanned, matched)
+        })
+        .reduce(
+            || (plan.create_accumulators(), 0_u64, 0_u64),
+            |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
+                merge_accumulator_sets(&mut acc_a, &acc_b);
+                (acc_a, sa + sb, ma + mb)
+            },
         );
-        total_scanned += scanned;
-        total_matched += matched;
-    }
+
+    let t_fin = std::time::Instant::now();
+    let scan_ms = start.elapsed().as_millis();
 
     // 3. Finalize
-    let t_fin = std::time::Instant::now();
     let response = finalize::finalize_with_ext_map(
         merged,
         &plan,
@@ -307,9 +323,15 @@ pub fn run_aggregate(
         total_matched,
         Some(&ext_map),
     );
-    tracing::debug!(
-        elapsed_ms = t_fin.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
-        "run_aggregate: finalize"
+    let total_ms = start.elapsed().as_millis();
+    tracing::info!(
+        drives = drives.len(),
+        records_scanned = total_scanned,
+        records_matched = total_matched,
+        scan_ms = u64::try_from(scan_ms).unwrap_or(u64::MAX),
+        finalize_ms = u64::try_from(t_fin.elapsed().as_millis()).unwrap_or(u64::MAX),
+        total_ms = u64::try_from(total_ms).unwrap_or(u64::MAX),
+        "run_aggregate: done"
     );
 
     Ok(AggregateOutput {
@@ -367,31 +389,40 @@ pub fn run_aggregate_filtered(
     // Build cross-drive extension mapping.
     let ext_map = ExtensionMap::build(drives);
 
-    // 2. Scan each drive, filtering by pattern.
-    let mut merged = plan.create_accumulators();
-    let mut total_scanned: u64 = 0;
-    let mut total_matched: u64 = 0;
-
-    for (drive_ordinal, drive) in drives.iter().enumerate() {
-        let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
-        for (idx, record) in drive.records.iter().enumerate() {
-            total_scanned += 1;
-            let name = record.name(&drive.names);
-            if name.is_empty() || !index_pat.matches(name, false, fold) {
-                continue;
+    // 2. Drive-level parallel scan with inline pattern filter.  Inner record loop
+    //    is sequential — see the rationale block in `run_aggregate` above.
+    let index_pat_ref = &index_pat;
+    let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
+        .par_iter()
+        .enumerate()
+        .map(|(drive_ordinal, drive)| {
+            let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
+            let mut local = plan.create_accumulators();
+            let mut scanned: u64 = 0;
+            let mut matched: u64 = 0;
+            for (idx, record) in drive.records.iter().enumerate() {
+                scanned += 1;
+                let name = record.name(&drive.names);
+                if name.is_empty() || !index_pat_ref.matches(name, false, fold) {
+                    continue;
+                }
+                matched += 1;
+                for acc in &mut local {
+                    acc.feed(record, drive, idx, ordinal, Some(&ext_map));
+                }
             }
-            total_matched += 1;
-            for acc in &mut merged {
-                acc.feed(record, drive, idx, ordinal, Some(&ext_map));
-            }
-        }
-    }
+            (local, scanned, matched)
+        })
+        .reduce(
+            || (plan.create_accumulators(), 0_u64, 0_u64),
+            |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
+                merge_accumulator_sets(&mut acc_a, &acc_b);
+                (acc_a, sa + sb, ma + mb)
+            },
+        );
 
-    tracing::info!(
-        total_scanned,
-        total_matched,
-        "run_aggregate_filtered: scan complete"
-    );
+    let scan_ms = start.elapsed().as_millis();
+    let t_fin = std::time::Instant::now();
 
     // 3. Finalize.
     let response = finalize::finalize_with_ext_map(
@@ -401,6 +432,15 @@ pub fn run_aggregate_filtered(
         options,
         total_matched,
         Some(&ext_map),
+    );
+    tracing::info!(
+        drives = drives.len(),
+        records_scanned = total_scanned,
+        records_matched = total_matched,
+        scan_ms = u64::try_from(scan_ms).unwrap_or(u64::MAX),
+        finalize_ms = u64::try_from(t_fin.elapsed().as_millis()).unwrap_or(u64::MAX),
+        total_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "run_aggregate_filtered: done"
     );
 
     Ok(AggregateOutput {
@@ -470,47 +510,54 @@ pub fn run_aggregate_with_filters(
     let plan = AggregatePlan::compile(specs)?;
     let ext_map = ExtensionMap::build(drives);
 
-    // 2. Scan each drive with combined filter.
-    let mut merged = plan.create_accumulators();
-    let mut total_scanned: u64 = 0;
-    let mut total_matched: u64 = 0;
+    // 2. Drive-level parallel scan with combined record-level + pattern filter.
+    //    Inner record loop is sequential — see the rationale block in
+    //    `run_aggregate` above.
+    let compiled_pattern_ref = compiled_pattern.as_ref();
+    let (merged, total_scanned, total_matched): (Vec<GroupAccumulator>, u64, u64) = drives
+        .par_iter()
+        .enumerate()
+        .map(|(drive_ordinal, drive)| {
+            let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
+            let mut local = plan.create_accumulators();
+            let mut scanned: u64 = 0;
+            let mut matched: u64 = 0;
+            // Resolve extension names → per-drive u16 IDs (< 1µs).
+            let resolved_ext_ids = drive.resolve_ext_ids(&filter.extensions);
 
-    for (drive_ordinal, drive) in drives.iter().enumerate() {
-        let ordinal = u8::try_from(drive_ordinal).unwrap_or(u8::MAX);
-        // Resolve extension names → per-drive u16 IDs (< 1µs).
-        let resolved_ext_ids = drive.resolve_ext_ids(&filter.extensions);
+            for (idx, record) in drive.records.iter().enumerate() {
+                scanned += 1;
 
-        for (idx, record) in drive.records.iter().enumerate() {
-            total_scanned += 1;
-
-            // Record-level filter (O(1) — extension ID + directory flag + size).
-            if !filter.matches(record, &resolved_ext_ids) {
-                continue;
-            }
-
-            // Pattern filter (if non-trivial).
-            if let Some(pat) = &compiled_pattern {
-                let name = record.name(&drive.names);
-                if name.is_empty() || !pat.matches(name, false, fold) {
+                // Record-level filter (O(1) — extension ID + directory flag + size).
+                if !filter.matches(record, &resolved_ext_ids) {
                     continue;
                 }
-            }
 
-            total_matched += 1;
-            for acc in &mut merged {
-                acc.feed(record, drive, idx, ordinal, Some(&ext_map));
-            }
-        }
-    }
+                // Pattern filter (if non-trivial).
+                if let Some(pat) = compiled_pattern_ref {
+                    let name = record.name(&drive.names);
+                    if name.is_empty() || !pat.matches(name, false, fold) {
+                        continue;
+                    }
+                }
 
-    tracing::info!(
-        total_scanned,
-        total_matched,
-        has_pattern = compiled_pattern.is_some(),
-        ext_count = filter.extensions.len(),
-        dir_only = ?filter.directory_only,
-        "run_aggregate_with_filters: scan complete"
-    );
+                matched += 1;
+                for acc in &mut local {
+                    acc.feed(record, drive, idx, ordinal, Some(&ext_map));
+                }
+            }
+            (local, scanned, matched)
+        })
+        .reduce(
+            || (plan.create_accumulators(), 0_u64, 0_u64),
+            |(mut acc_a, sa, ma), (acc_b, sb, mb)| {
+                merge_accumulator_sets(&mut acc_a, &acc_b);
+                (acc_a, sa + sb, ma + mb)
+            },
+        );
+
+    let scan_ms = start.elapsed().as_millis();
+    let t_fin = std::time::Instant::now();
 
     // 3. Finalize.
     let response = finalize::finalize_with_ext_map(
@@ -521,6 +568,18 @@ pub fn run_aggregate_with_filters(
         total_matched,
         Some(&ext_map),
     );
+    tracing::info!(
+        drives = drives.len(),
+        records_scanned = total_scanned,
+        records_matched = total_matched,
+        has_pattern = compiled_pattern.is_some(),
+        ext_count = filter.extensions.len(),
+        dir_only = ?filter.directory_only,
+        scan_ms = u64::try_from(scan_ms).unwrap_or(u64::MAX),
+        finalize_ms = u64::try_from(t_fin.elapsed().as_millis()).unwrap_or(u64::MAX),
+        total_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "run_aggregate_with_filters: done"
+    );
 
     Ok(AggregateOutput {
         response,
@@ -530,30 +589,51 @@ pub fn run_aggregate_with_filters(
     })
 }
 
-/// Scan a single drive's records, feeding all accumulators.
+/// Merge per-drive accumulator sets.
 ///
-/// Returns `(records_scanned, records_matched)`.
+/// Pairs accumulators by index and calls [`GroupAccumulator::merge`]
+/// on each pair.  Used by the outer `drives.par_iter().reduce(…)` in
+/// every public entry point.  Every accumulator variant (including
+/// `Terms` sample heaps and `Duplicates` groups) implements `merge`
+/// correctly as of v0.5.40.
+#[inline]
+fn merge_accumulator_sets(a: &mut [GroupAccumulator], b: &[GroupAccumulator]) {
+    for (left, right) in a.iter_mut().zip(b.iter()) {
+        left.merge(right);
+    }
+}
+
+/// Scan a single drive's records **sequentially**, feeding all
+/// accumulators.
+///
+/// The drive loop in [`run_aggregate`] is parallel
+/// (`drives.par_iter()`), so on a multi-drive host the N drives already
+/// occupy N cores.  The per-record work here — `accumulator.feed` —
+/// is only a handful of nanoseconds, which makes adding a second layer
+/// of rayon parallelism a net loss under concurrent load (each nested
+/// fold chunk clones the full `Vec<GroupAccumulator>` before having to
+/// be reduced back together, and the rayon pool ends up oversubscribed
+/// K×cores² with K concurrent queries).  See
+/// `LOG/2026_04_18_08_09_CHANGELOG_HEALING.md` Run 7 for the
+/// measurements that drove v0.5.42's revert from intra-drive rayon.
+///
+/// Returns `(accumulators, records_scanned, records_matched)`.
+/// For unfiltered aggregation `matched == scanned == records.len()`.
 fn scan_drive(
     drive: &DriveCompactIndex,
-    _plan: &AggregatePlan,
-    accumulators: &mut [GroupAccumulator],
+    plan: &AggregatePlan,
     drive_ordinal: u8,
     ext_map: Option<&ExtensionMap>,
-) -> (u64, u64) {
+) -> (Vec<GroupAccumulator>, u64, u64) {
     let records = &drive.records;
-    let mut scanned: u64 = 0;
-
+    let mut accumulators = plan.create_accumulators();
     for (idx, record) in records.iter().enumerate() {
-        scanned += 1;
-
-        // Feed each accumulator.
-        for acc in accumulators.iter_mut() {
+        for acc in &mut accumulators {
             acc.feed(record, drive, idx, drive_ordinal, ext_map);
         }
     }
-
-    // For unfiltered aggregation, matched == scanned.
-    (scanned, scanned)
+    let n = u64::try_from(records.len()).unwrap_or(u64::MAX);
+    (accumulators, n, n)
 }
 
 /// Errors that can occur during aggregation.

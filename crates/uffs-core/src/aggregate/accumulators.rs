@@ -458,13 +458,33 @@ impl GroupAccumulator {
                 a.merge(b);
             }
             (
-                AccumulatorKind::Terms { groups: a, .. },
-                AccumulatorKind::Terms { groups: b, .. },
+                AccumulatorKind::Terms {
+                    groups: a,
+                    sample_heaps: a_heaps,
+                    ..
+                },
+                AccumulatorKind::Terms {
+                    groups: b,
+                    sample_heaps: b_heaps,
+                    ..
+                },
             ) => {
                 for (key, b_stats) in b {
                     a.entry(*key)
                         .and_modify(|a_stats| a_stats.merge(b_stats))
                         .or_insert_with(|| b_stats.clone());
+                }
+                // Merge per-bucket sample heaps when both sides carry
+                // them.  This is the parallel-reducer path: each drive
+                // scan produces its own heaps, which must be combined
+                // without losing any candidate entries.
+                if let (Some(map_a), Some(map_b)) = (a_heaps.as_mut(), b_heaps) {
+                    for (key, heap_b) in map_b {
+                        map_a
+                            .entry(*key)
+                            .and_modify(|heap_a| heap_a.merge(heap_b))
+                            .or_insert_with(|| heap_b.clone());
+                    }
                 }
             }
             (
@@ -519,7 +539,17 @@ impl GroupAccumulator {
                     }
                 }
             }
-            // Duplicates don't merge across drives — they run per-drive then finalize.
+            (
+                AccumulatorKind::Duplicates { inner: a, .. },
+                AccumulatorKind::Duplicates { inner: b, .. },
+            ) => {
+                // Required when the aggregation engine runs the outer
+                // drive loop in parallel: each drive builds its own
+                // local `DuplicateAccumulator`, and this arm glues the
+                // per-drive groups back together before `finalize`
+                // drops singletons.
+                a.merge(b);
+            }
             _ => {} // mismatched kinds — should not happen
         }
     }
