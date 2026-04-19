@@ -20,9 +20,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::connect_logging::{log_connect_attempt, log_connect_error, log_spawn_details};
 use crate::daemon_ctl::{
-    ElevationPolicy, find_daemon_exe, keepalive_send_blocking, pid_file_path,
-    resolve_elevation_policy, socket_path, spawn_daemon, verify_daemon_after_connect,
+    deep_health_check_enabled, find_daemon_exe, pid_file_path, socket_path,
+    verify_daemon_after_connect_strict,
 };
+use crate::daemon_spawn::{ElevationPolicy, resolve_elevation_policy, spawn_daemon};
 use crate::protocol::response::{DrivesResponse, SearchResponse, StatusResponse};
 use crate::protocol::{RpcRequest, SearchParams};
 
@@ -166,9 +167,16 @@ impl UffsClient {
     /// running or the connection handshake fails.
     async fn try_connect_existing() -> Result<Self, crate::error::ClientError> {
         match Self::platform_connect().await {
-            Ok(client) => {
+            Ok(mut client) => {
                 tracing::debug!("connect_with_args: already connected to existing daemon");
-                verify_daemon_after_connect();
+                // Commit B: strict identity verification — refuse to
+                // hand back a client bound to a hijacked pipe/socket.
+                verify_daemon_after_connect_strict()?;
+                // Commit C: deep health check — prove the daemon is
+                // actually responsive to RPCs, not just listening.
+                if deep_health_check_enabled() {
+                    client.deep_health_check().await?;
+                }
                 Ok(client)
             }
             Err(conn_err) => {
@@ -226,9 +234,17 @@ impl UffsClient {
             log_connect_attempt(attempt, max_attempts, delay_ms, sock, pid_path);
 
             match Self::platform_connect().await {
-                Ok(client) => {
+                Ok(mut client) => {
                     tracing::info!(attempt, "Connected to daemon");
-                    verify_daemon_after_connect();
+                    // Commit B: strict identity verification — refuse to
+                    // hand back a client bound to a hijacked endpoint,
+                    // even when we just spawned the daemon ourselves.
+                    verify_daemon_after_connect_strict()?;
+                    // Commit C: deep health check — prove the daemon is
+                    // actually responsive to RPCs, not just listening.
+                    if deep_health_check_enabled() {
+                        client.deep_health_check().await?;
+                    }
                     return Ok(client);
                 }
                 Err(conn_err) => {
@@ -563,6 +579,34 @@ impl UffsClient {
         Ok(())
     }
 
+    /// Commit C — **deep health check**: round-trip a cheap `drives`
+    /// RPC right after connect to prove the daemon's request/response
+    /// loop and `IndexService` state are actually responsive.
+    ///
+    /// See [`crate::connect_sync::UffsClientSync::deep_health_check`]
+    /// (the sync-path sibling) for the full rationale — mirrored here
+    /// to close the same gap on the async path used by the MCP server
+    /// and any future async consumers.
+    ///
+    /// Skippable via `UFFS_CLIENT_SKIP_HEALTH_CHECK=1`.  Cost:
+    /// ~200–600 µs on local IPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::ClientError::ConnectionFailed`] with a
+    /// diagnostic wrapper around the underlying probe failure.
+    async fn deep_health_check(&mut self) -> Result<(), crate::error::ClientError> {
+        match self.drives().await {
+            Ok(_resp) => Ok(()),
+            Err(probe_err) => Err(crate::error::ClientError::ConnectionFailed(format!(
+                "Deep health check failed: the daemon accepted the connection but did not \
+                 respond correctly to a probe `drives` RPC ({probe_err}). The daemon may be \
+                 wedged (deadlocked worker, stuck kernel I/O); consider `uffs daemon kill` \
+                 and restart.  Set UFFS_CLIENT_SKIP_HEALTH_CHECK=1 to bypass this probe."
+            ))),
+        }
+    }
+
     /// Set the session type (D3.4.3) — tells daemon which idle timeout tier to
     /// use.
     ///
@@ -599,50 +643,11 @@ impl UffsClient {
         let _result = self.send_request("shutdown", Some(params)).await?;
         Ok(())
     }
-
-    /// Start a background keepalive task (D3.4.2).
-    ///
-    /// Sends a keepalive every `interval` to prevent the daemon from
-    /// idle-retiring while this client is alive. Returns a handle that
-    /// stops the task when dropped.
-    ///
-    /// Typical usage for long-lived sessions (TUI, GUI, MCP):
-    /// ```rust,ignore
-    /// let _keepalive = client.start_keepalive(Duration::from_secs(60));
-    /// ```
-    pub fn start_keepalive(&self, interval: core::time::Duration) -> KeepaliveGuard {
-        let _: &Self = self; // keepalive uses a separate connection, not &self
-        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
-
-        // We can't move &mut self into the task, so we open a separate
-        // keepalive connection. This is lightweight — just sends one
-        // small JSON message every 60s.
-        let sock_path = socket_path();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    () = tokio::time::sleep(interval) => {
-                        // Open a short-lived blocking connection for the keepalive.
-                        // Unix: std::os::unix::net::UnixStream.
-                        // Windows: std::fs::OpenOptions on the named pipe.
-                        let send_result = tokio::task::spawn_blocking({
-                            let path = sock_path.clone();
-                            move || keepalive_send_blocking(&path)
-                        }).await;
-                        if let Err(join_err) = send_result {
-                            tracing::debug!(error = %join_err, "keepalive send failed");
-                        }
-                    }
-                    _ = &mut cancel_rx => {
-                        return; // cancelled
-                    }
-                }
-            }
-        });
-
-        KeepaliveGuard { _cancel: cancel_tx }
-    }
 }
+
+// `start_keepalive` and `KeepaliveGuard` live in
+// [`crate::connect_keepalive`] — import directly from there rather
+// than relying on a `pub use` cascade through this module.
 
 // ── Readiness polling helpers ────────────────────────────────────────
 
@@ -687,12 +692,6 @@ impl UffsClient {
             }
         }
     }
-}
-
-/// Guard that stops the background keepalive task when dropped (D3.4.2).
-pub struct KeepaliveGuard {
-    /// Dropping this sends a cancel signal to the keepalive task.
-    _cancel: tokio::sync::oneshot::Sender<()>,
 }
 
 // ── Platform-specific connection ────────────────────────────────────────────

@@ -92,15 +92,27 @@ pub fn init_tracing(
     };
 
     if let Some(resolved) = effective_file {
-        // Ensure parent directory exists.
-        if let Some(parent) = resolved.parent() {
-            let _ignore = std::fs::create_dir_all(parent);
-        }
+        // Compute a *safe* parent directory.
+        //
+        // `PathBuf::from("uffsd.log").parent()` returns `Some(Path::new(""))`,
+        // not `None` — so the defensive `unwrap_or_else(|| Path::new("."))`
+        // below used to never fire for a relative file name, and
+        // `tracing_appender::rolling::never("", "uffsd.log")` would propagate
+        // the empty path through `create_dir_all("")`, which errors on
+        // Windows ("The system cannot find the path specified") and then
+        // panics via `.expect("initializing rolling file appender failed")`
+        // — killing the detached daemon before it ever binds IPC.
+        //
+        // Coerce both `None` and `Some("")` to the current directory so
+        // relative `--log-file` paths work the same everywhere.
+        let parent_dir = match resolved.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => std::path::Path::new("."),
+        };
+        let _mkdir_ignore = std::fs::create_dir_all(parent_dir);
 
         let file_appender = tracing_appender::rolling::never(
-            resolved
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(".")),
+            parent_dir,
             resolved
                 .file_name()
                 .unwrap_or_else(|| std::ffi::OsStr::new("uffsd.log")),

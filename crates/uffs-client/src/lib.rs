@@ -24,13 +24,44 @@ use uffs_security as _;
 /// `ws2_32.dll`) from its binary.
 #[cfg(feature = "async")]
 pub mod connect;
+/// Background keepalive task + `KeepaliveGuard` for long-lived clients.
+///
+/// `start_keepalive` is re-attached to `UffsClient` via a split `impl`;
+/// external callers import `KeepaliveGuard` directly from this module
+/// (no cascade through `connect`).
+#[cfg(feature = "async")]
+pub mod connect_keepalive;
 /// Tracing helpers used only by [`connect`].  Private; sibling file
 /// to keep `connect.rs` under the 800-LOC file-size policy after the
 /// v0.5.36 UAC work expanded its public entry points.
 #[cfg(feature = "async")]
 mod connect_logging;
 pub mod connect_sync;
+/// Platform-specific `platform_connect` impls and the `rpc_deadline` helper.
+///
+/// Split `impl` blocks live on [`connect_sync::UffsClientSync`];
+/// callers see no change.  Also hosts the env-override regression
+/// tests for `rpc_deadline`.
+pub(crate) mod connect_sync_platform;
+/// Wire-protocol unit tests for [`connect_sync::UffsClientSync`].
+///
+/// Exercises the JSON-RPC request/response path via in-memory
+/// reader/writer halves (no real socket).  `#[cfg(test)]` keeps it
+/// out of release builds entirely.
+#[cfg(test)]
+mod connect_sync_tests;
+/// Child-process handle for spawned daemons.
+///
+/// Exposes `DaemonChildHandle`, `try_wait`, and the platform-specific
+/// cleanup logic.  Canonical home — no cascade through `daemon_ctl`.
+pub mod daemon_child;
 pub mod daemon_ctl;
+/// Daemon spawn implementation.
+///
+/// Exposes `spawn_daemon`, `ElevationPolicy`, the MSVCRT-compatible
+/// arg quoter, and the Windows UAC helpers.  Canonical home — no
+/// cascade through `daemon_ctl`.
+pub mod daemon_spawn;
 pub mod error;
 pub mod format;
 pub mod mcp_pid;
@@ -38,5 +69,12 @@ pub mod protocol;
 pub mod shmem;
 pub mod types;
 pub mod verify;
+/// Windows-only per-RPC deadline enforcement.
+///
+/// Background watchdog thread that cancels synchronous I/O on the
+/// owning thread when an armed deadline expires.  See the module
+/// docs for the full design rationale.
+#[cfg(windows)]
+pub(crate) mod windows_deadline;
 
 pub mod schema;

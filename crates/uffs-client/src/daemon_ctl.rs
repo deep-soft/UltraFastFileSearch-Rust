@@ -1,10 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! Daemon lifecycle helpers: socket path, PID file, exe discovery, spawning.
+//! Daemon lifecycle helpers: socket/pipe paths, PID file, identity
+//! verification, deep-health-check toggle, keepalive, exe discovery.
 //!
-//! Extracted from `connect.rs` for file-size policy compliance.
-//! All items are re-exported from `connect.rs` — callers see no change.
+//! # Module layout
+//!
+//! Scope-cohesive siblings hold the rest of the daemon-control
+//! surface.  **Call each item from the module that defines it** —
+//! we deliberately do not cascade re-exports through `daemon_ctl`:
+//!
+//! | Module                         | Responsibility                                                        |
+//! |--------------------------------|-----------------------------------------------------------------------|
+//! | `daemon_ctl` (this)            | paths, identity verify, keepalive, exe discovery, health-check toggle |
+//! | [`crate::daemon_spawn`]        | `ElevationPolicy`, `spawn_daemon`, arg quoting, Windows UAC helpers   |
+//! | [`crate::daemon_child`]        | `DaemonChildHandle` and the cross-platform `try_wait` poll            |
 
 use std::path::PathBuf;
 
@@ -51,7 +61,33 @@ pub fn pipe_name() -> std::io::Result<String> {
     uffs_security::pipe::pipe_name_for_current_user()
 }
 
-/// S4.3.4: Verify daemon identity after connecting.
+/// Commit C — deep health check: is the check enabled?
+///
+/// Off if `UFFS_CLIENT_SKIP_HEALTH_CHECK=1` / `true` / `yes`
+/// (case-insensitive, whitespace-trimmed — PowerShell often sets env
+/// vars with a trailing newline after `$env:X = "1"`).  The health
+/// check is on by default.
+///
+/// Cost when on: ~200–600 µs per connect (one local-IPC `drives`
+/// round-trip).  Turn off for latency-critical scripts or when the
+/// daemon is known to be misbehaving and you want to inspect it
+/// manually.
+#[must_use]
+pub fn deep_health_check_enabled() -> bool {
+    let Ok(val) = std::env::var("UFFS_CLIENT_SKIP_HEALTH_CHECK") else {
+        return true;
+    };
+    let trimmed = val.trim();
+    !(trimmed == "1" || trimmed.eq_ignore_ascii_case("true") || trimmed.eq_ignore_ascii_case("yes"))
+}
+
+/// S4.3.4: Verify daemon identity after connecting (warn-only).
+///
+/// **Legacy variant kept for backward compatibility** — if identity
+/// verification fails, this only logs a `tracing::warn!` and returns,
+/// leaving the caller with an untrusted connection.  New call sites
+/// should prefer [`verify_daemon_after_connect_strict`], which refuses
+/// to continue on mismatch.
 pub fn verify_daemon_after_connect() {
     let pid_path = pid_file_path();
     if !pid_path.exists() {
@@ -64,6 +100,82 @@ pub fn verify_daemon_after_connect() {
             "Daemon identity verification failed — proceed with caution"
         );
     }
+}
+
+/// Verify daemon identity after connecting — strict variant.
+///
+/// Reads the PID file written by the daemon at startup, re-computes the
+/// FNV-1a hash of the connected daemon's exe path, and compares it with
+/// the hash stored in the PID file.  A mismatch means one of:
+///
+/// * A **rogue process** bound the named pipe / socket before the real daemon
+///   could (PID recycled, path hijacked, etc.).
+/// * The daemon binary was **swapped on disk** after the PID file was written —
+///   the exe we just connected to is not what we expected.
+/// * The daemon on the pipe is from a different install (different build,
+///   different drive letter, etc.).
+///
+/// In all three cases, continuing to talk to that process is unsafe —
+/// we'd be forwarding `--data-dir` paths, search patterns, and RPC
+/// credentials to an unknown peer.  This function therefore returns a
+/// [`crate::error::ClientError::ConnectionFailed`] with the diagnostic
+/// details so the caller can disconnect and either error out or retry.
+///
+/// If the PID file is missing or unreadable (e.g. first-ever run, or
+/// the daemon hasn't finished writing it), this returns `Ok(())` — we
+/// trade strictness for availability in the startup race window.
+///
+/// Cost: ~100–200 µs per call (one file read + one OS exe-path lookup
+/// + one FNV-1a hash over the path string — no file hashing involved).
+///
+/// # Errors
+///
+/// Returns [`crate::error::ClientError::ConnectionFailed`] when the
+/// PID file exists and its embedded exe-path hash does not match the
+/// peer's actual exe path.  The error message includes the PID file
+/// location so callers can report it verbatim.
+pub fn verify_daemon_after_connect_strict() -> Result<(), crate::error::ClientError> {
+    verify_daemon_after_connect_strict_at(&pid_file_path())
+}
+
+/// Testable inner: verify the daemon identity against a specific
+/// PID-file path.
+///
+/// Production callers use [`verify_daemon_after_connect_strict`],
+/// which reads the canonical path from [`pid_file_path`].  This
+/// variant lets tests point at a tempfile without touching the
+/// user's real daemon state.  Marked `#[doc(hidden)]` because it is
+/// an implementation detail of the strict-verify contract; its
+/// signature and semantics may change.
+///
+/// # Errors
+///
+/// Returns [`crate::error::ClientError::ConnectionFailed`] when the
+/// PID file at `pid_path` exists and its embedded exe-path hash
+/// does not match the peer's actual exe path.  Returns `Ok(())`
+/// when the file is missing, unparseable, or the hashes match.
+#[doc(hidden)]
+pub fn verify_daemon_after_connect_strict_at(
+    pid_path: &std::path::Path,
+) -> Result<(), crate::error::ClientError> {
+    if !pid_path.exists() {
+        tracing::debug!("No PID file found, skipping daemon identity verification");
+        return Ok(());
+    }
+    if crate::verify::verify_daemon_pid_file(pid_path) {
+        return Ok(());
+    }
+    tracing::warn!(
+        path = %pid_path.display(),
+        "Daemon identity verification FAILED — refusing connection"
+    );
+    Err(crate::error::ClientError::ConnectionFailed(format!(
+        "Daemon identity verification failed (PID file: {}). The process on \
+         the IPC endpoint does not match the exe hash recorded when the \
+         daemon started — another process may have hijacked the pipe/socket, \
+         or the daemon binary was replaced on disk.",
+        pid_path.display(),
+    )))
 }
 
 /// Send a keepalive message using blocking std I/O (works on all platforms).
@@ -168,456 +280,207 @@ pub fn find_daemon_exe() -> PathBuf {
     PathBuf::from("uffsd")
 }
 
-// ── Daemon Spawn ──────────────────────────────────────────────────────────
+#[cfg(test)]
+mod deep_health_check_tests {
+    use super::deep_health_check_enabled;
 
-/// Policy for whether `spawn_daemon` may trigger a Windows UAC prompt.
-///
-/// Before v0.5.36, `spawn_daemon` on Windows unconditionally used
-/// `ShellExecuteW("runas")` whenever the current process was not
-/// elevated — so any non-admin shell running `uffs <pattern>` with the
-/// daemon stopped would get a UAC dialog as a side-effect.  That was
-/// surprising and made piping or scripting the CLI fragile.
-///
-/// The new default is [`ElevationPolicy::RequireExistingElevation`]:
-/// the spawn succeeds only if the current process is already elevated;
-/// otherwise it returns [`crate::error::ClientError::DaemonNeedsElevation`] and
-/// the CLI renders an actionable message.  Callers that actually want the
-/// UAC dialog (e.g. `uffs daemon start --elevate`) must opt in with
-/// [`ElevationPolicy::AllowUacPrompt`].
-///
-/// Has no effect on Unix — Unix spawn never triggers UAC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ElevationPolicy {
-    /// Spawn only if this process is already elevated.  If not, return
-    /// [`crate::error::ClientError::DaemonNeedsElevation`] without
-    /// touching the UI.
-    ///
-    /// This is the default for every implicit auto-spawn path (e.g.
-    /// `UffsClient::connect_with_args`).
-    #[default]
-    RequireExistingElevation,
+    /// Serialise env-mutating tests in this module — cargo runs unit
+    /// tests in parallel by default, and `std::env::set_var` is process-
+    /// global, so without this mutex two tests can race on the same
+    /// variable and see each other's writes.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// When not elevated, request a UAC prompt via `ShellExecuteW`
-    /// with the `"runas"` verb.  Preserves the pre-v0.5.36 behavior.
-    ///
-    /// Used by `uffs daemon start --elevate` and by auto-spawn paths
-    /// when the environment variable `UFFS_ELEVATE=1` is set.
-    AllowUacPrompt,
-}
-
-/// Pure policy decision used by [`resolve_elevation_policy`].
-///
-/// Rules, in priority order:
-///
-/// 1. If `force_allow` is `true` (e.g. `uffs daemon start --elevate`), return
-///    [`ElevationPolicy::AllowUacPrompt`].
-/// 2. Otherwise, if `env_value` contains a truthy token (`1`, `true`, `yes`,
-///    `on`, case-insensitive — leading/trailing whitespace is trimmed), return
-///    [`ElevationPolicy::AllowUacPrompt`].  This is how `UFFS_ELEVATE` is
-///    interpreted.
-/// 3. Otherwise, return [`ElevationPolicy::RequireExistingElevation`].
-///
-/// Kept env-free so both the async and sync clients (and tests) can
-/// share one decision matrix without racing on real environment state.
-#[must_use]
-pub fn elevation_policy_from(force_allow: bool, env_value: Option<&str>) -> ElevationPolicy {
-    if force_allow {
-        return ElevationPolicy::AllowUacPrompt;
+    /// Helper: run `body` with `UFFS_CLIENT_SKIP_HEALTH_CHECK` set to
+    /// `value`, then restore it.  Uses `unsafe { std::env::set_var }`
+    /// because Rust 2024 marks env mutation as unsafe — the mutex above
+    /// guarantees no other test observes the partial write window.
+    fn with_skip_env<F: FnOnce()>(value: Option<&str>, body: F) {
+        let guard = ENV_LOCK.lock().expect("env mutex poisoned");
+        let previous = std::env::var("UFFS_CLIENT_SKIP_HEALTH_CHECK").ok();
+        if let Some(val) = value {
+            // SAFETY: the mutex above serialises all test-time env writes.
+            #[expect(unsafe_code, reason = "std::env::set_var is unsafe in Rust 2024")]
+            unsafe {
+                std::env::set_var("UFFS_CLIENT_SKIP_HEALTH_CHECK", val);
+            }
+        } else {
+            // SAFETY: same as above.
+            #[expect(unsafe_code, reason = "std::env::remove_var is unsafe in Rust 2024")]
+            unsafe {
+                std::env::remove_var("UFFS_CLIENT_SKIP_HEALTH_CHECK");
+            }
+        }
+        body();
+        match previous {
+            Some(prev) => {
+                // SAFETY: same as above — restore original value under the same lock.
+                #[expect(unsafe_code, reason = "std::env::set_var is unsafe in Rust 2024")]
+                unsafe {
+                    std::env::set_var("UFFS_CLIENT_SKIP_HEALTH_CHECK", prev);
+                }
+            }
+            None => {
+                // SAFETY: same as above.
+                #[expect(unsafe_code, reason = "std::env::remove_var is unsafe in Rust 2024")]
+                unsafe {
+                    std::env::remove_var("UFFS_CLIENT_SKIP_HEALTH_CHECK");
+                }
+            }
+        }
+        drop(guard);
     }
-    if let Some(raw) = env_value {
-        let normalized = raw.trim().to_ascii_lowercase();
-        if matches!(normalized.as_str(), "1" | "true" | "yes" | "on") {
-            return ElevationPolicy::AllowUacPrompt;
+
+    /// Default posture: health check is on when the env var is unset.
+    #[test]
+    fn default_is_enabled() {
+        with_skip_env(None, || {
+            assert!(deep_health_check_enabled());
+        });
+    }
+
+    /// Canonical opt-out tokens must disable the health check.  We
+    /// accept the three most common truthy spellings (`1`, `true`, `yes`)
+    /// case-insensitively, and trim surrounding whitespace so that
+    /// PowerShell's `$env:X = "1"` (which often leaves trailing `\r\n`)
+    /// still counts.
+    #[test]
+    fn canonical_truthy_tokens_disable() {
+        for token in [
+            "1", "true", "TRUE", "True", "yes", "YES", "Yes", "  1  ", " yes\n",
+        ] {
+            with_skip_env(Some(token), || {
+                assert!(
+                    !deep_health_check_enabled(),
+                    "token {token:?} should disable the health check",
+                );
+            });
         }
     }
-    ElevationPolicy::RequireExistingElevation
-}
 
-/// Resolve the effective [`ElevationPolicy`] for an implicit
-/// auto-spawn.
-///
-/// Reads the `UFFS_ELEVATE` environment variable once and feeds the
-/// result into [`elevation_policy_from`].  `force_allow = true` from
-/// an explicit `--elevate` flag short-circuits the env lookup.
-#[must_use]
-pub fn resolve_elevation_policy(force_allow: bool) -> ElevationPolicy {
-    elevation_policy_from(force_allow, std::env::var("UFFS_ELEVATE").ok().as_deref())
-}
-
-/// Spawn the daemon as a detached background process.
-///
-/// On **Unix**, uses a normal `Command::new` spawn (no elevation needed);
-/// the `policy` parameter is ignored.
-///
-/// On **Windows**, behavior depends on `policy` and the current
-/// elevation state:
-///
-/// | already elevated | policy                        | action                        |
-/// |------------------|-------------------------------|-------------------------------|
-/// | yes              | any                           | `CreateProcessW` (no UAC)     |
-/// | no               | `RequireExistingElevation`    | return `DaemonNeedsElevation` |
-/// | no               | `AllowUacPrompt`              | `ShellExecuteW("runas")` + UAC|
-///
-/// # Errors
-///
-/// Returns [`crate::error::ClientError::DaemonStartFailed`] if the
-/// process creation itself fails, or
-/// [`crate::error::ClientError::DaemonNeedsElevation`] if the policy
-/// does not allow a UAC prompt in the current elevation state.
-#[cfg(unix)]
-pub fn spawn_daemon(
-    exe: &std::path::Path,
-    args: &[&str],
-    _policy: ElevationPolicy,
-) -> Result<(), crate::error::ClientError> {
-    // `policy` is Windows-only; the Unix spawn never prompts for
-    // elevation.  The parameter stays in the public signature so
-    // callers can pass the same value on every platform.
-    spawn_daemon_unix(exe, args)
-}
-
-/// Windows implementation of [`spawn_daemon`].
-///
-/// See the generic doc comment above — behavior is decided by
-/// `policy` combined with the current elevation state.
-#[cfg(windows)]
-pub fn spawn_daemon(
-    exe: &std::path::Path,
-    args: &[&str],
-    policy: ElevationPolicy,
-) -> Result<(), crate::error::ClientError> {
-    spawn_daemon_windows(exe, args, policy)
-}
-
-/// Unix daemon spawn: simple detached process.
-/// # Errors
-///
-/// Returns [`ClientError`](crate::error::ClientError) if the daemon process
-/// cannot be spawned.
-#[cfg(unix)]
-#[expect(
-    clippy::single_call_fn,
-    reason = "platform-specific helper — clarity over inlining"
-)]
-fn spawn_daemon_unix(
-    exe: &std::path::Path,
-    args: &[&str],
-) -> Result<(), crate::error::ClientError> {
-    std::process::Command::new(exe)
-        .args(args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .map_err(|spawn_err| {
-            crate::error::ClientError::DaemonStartFailed(format!(
-                "Failed to spawn {}: {spawn_err}",
-                exe.display()
-            ))
-        })?;
-    Ok(())
-}
-
-/// Windows daemon spawn: elevation-aware.
-#[cfg(windows)]
-#[expect(
-    clippy::single_call_fn,
-    reason = "platform-specific helper — clarity over inlining"
-)]
-fn spawn_daemon_windows(
-    exe: &std::path::Path,
-    args: &[&str],
-    policy: ElevationPolicy,
-) -> Result<(), crate::error::ClientError> {
-    let elevated = is_elevated();
-    tracing::debug!(
-        exe = %exe.display(),
-        ?args,
-        elevated,
-        ?policy,
-        "spawn_daemon_windows"
-    );
-
-    if elevated {
-        tracing::debug!("spawning via CreateProcessW (no handle inheritance)");
-        spawn_detached_no_inherit(exe, args)?;
-        return Ok(());
-    }
-
-    match policy {
-        ElevationPolicy::AllowUacPrompt => {
-            tracing::debug!("NOT elevated, using ShellExecuteW runas (policy allows UAC)");
-            tracing::info!("Not elevated — requesting elevation via UAC prompt");
-            shell_execute_elevated(exe, args)?;
-            tracing::debug!("ShellExecuteW returned OK");
-            Ok(())
+    /// Any other value — including `0`, `false`, the empty string, or
+    /// garbage — must keep the health check **on**.  Rationale: the
+    /// default posture is "probe the daemon", and the opt-out has to
+    /// be explicit to avoid accidentally bypassing robustness because
+    /// of a mis-set env var.
+    #[test]
+    fn non_truthy_values_keep_it_enabled() {
+        for token in ["0", "false", "no", "off", "", "maybe", "2", "nope"] {
+            with_skip_env(Some(token), || {
+                assert!(
+                    deep_health_check_enabled(),
+                    "token {token:?} should NOT disable the health check",
+                );
+            });
         }
-        ElevationPolicy::RequireExistingElevation => {
-            tracing::info!("Not elevated and policy forbids UAC — returning DaemonNeedsElevation");
-            Err(crate::error::ClientError::DaemonNeedsElevation {
-                daemon_path: exe.display().to_string(),
-            })
-        }
-    }
-}
-
-/// Spawn the daemon as a fully detached process with NO handle inheritance.
-///
-/// Uses `CreateProcessW` directly with `bInheritHandles = FALSE` and
-/// `DETACHED_PROCESS` creation flag.
-#[cfg(windows)]
-fn spawn_detached_no_inherit(
-    exe: &std::path::Path,
-    args: &[&str],
-) -> Result<(), crate::error::ClientError> {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{
-        CreateProcessW, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
-    };
-
-    let mut cmd_line = String::new();
-    cmd_line.push('"');
-    cmd_line.push_str(&exe.to_string_lossy());
-    cmd_line.push('"');
-    for arg in args {
-        cmd_line.push(' ');
-        cmd_line.push_str(arg);
-    }
-
-    let mut cmd_wide: Vec<u16> = cmd_line.encode_utf16().chain(core::iter::once(0)).collect();
-
-    let si = STARTUPINFOW {
-        cb: u32::try_from(size_of::<STARTUPINFOW>()).unwrap_or(u32::MAX),
-        ..Default::default()
-    };
-    let mut pi = PROCESS_INFORMATION::default();
-
-    // SAFETY: CreateProcessW is a well-defined Win32 API. All pointers are
-    // valid: cmd_wide is a mutable null-terminated UTF-16 buffer, si is
-    // a zeroed STARTUPINFOW with cb set, pi is zeroed output buffer.
-    // We close the returned handles immediately after success.
-    #[expect(unsafe_code, reason = "CreateProcessW requires unsafe FFI")]
-    let result = unsafe {
-        CreateProcessW(
-            None,
-            Some(windows::core::PWSTR(cmd_wide.as_mut_ptr())),
-            None,
-            None,
-            false, // bInheritHandles = FALSE ← key fix
-            DETACHED_PROCESS,
-            None,
-            None,
-            core::ptr::from_ref(&si),
-            core::ptr::from_mut(&mut pi),
-        )
-    };
-
-    match result {
-        Ok(()) => {
-            tracing::debug!(pid = pi.dwProcessId, "spawn_detached_no_inherit: spawned");
-            tracing::info!(
-                pid = pi.dwProcessId,
-                "Daemon spawned (no handle inheritance)"
-            );
-            // SAFETY: both handles were just returned by CreateProcessW
-            // above and are not aliased elsewhere.
-            #[expect(unsafe_code, reason = "closing Win32 process handle")]
-            let process_close = unsafe { CloseHandle(pi.hProcess) };
-            drop(process_close);
-            // SAFETY: ditto — thread handle is owned by us.
-            #[expect(unsafe_code, reason = "closing Win32 thread handle")]
-            let thread_close = unsafe { CloseHandle(pi.hThread) };
-            drop(thread_close);
-            Ok(())
-        }
-        Err(win_err) => {
-            tracing::debug!(error = %win_err, "spawn_detached_no_inherit: FAILED");
-            Err(crate::error::ClientError::DaemonStartFailed(format!(
-                "CreateProcessW failed for {}: {win_err}",
-                exe.display()
-            )))
-        }
-    }
-}
-
-// ── Windows Elevation Helpers ─────────────────────────────────────────────
-
-/// Check if the current process is running with Administrator privileges.
-#[cfg(windows)]
-fn is_elevated() -> bool {
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Security::{
-        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
-    };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-    let mut token = HANDLE::default();
-
-    // SAFETY: `GetCurrentProcess` returns a pseudo-handle that does not
-    // need closing.
-    #[expect(unsafe_code, reason = "Win32 pseudo-handle accessor")]
-    let current_proc = unsafe { GetCurrentProcess() };
-    // SAFETY: `OpenProcessToken` writes a valid token handle into `token`
-    // on success; `current_proc` is valid.
-    #[expect(unsafe_code, reason = "Win32 token FFI")]
-    let open_result =
-        unsafe { OpenProcessToken(current_proc, TOKEN_QUERY, core::ptr::from_mut(&mut token)) };
-    if open_result.is_err() {
-        return false;
-    }
-
-    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
-    let mut size = 0_u32;
-    // SAFETY: `token` is a valid token handle; the out-pointer points to
-    // a stack-owned `TOKEN_ELEVATION` that lives for the whole call.
-    #[expect(unsafe_code, reason = "Win32 token information query")]
-    let query_result = unsafe {
-        GetTokenInformation(
-            token,
-            TokenElevation,
-            Some(core::ptr::from_mut(&mut elevation).cast()),
-            u32::try_from(size_of::<TOKEN_ELEVATION>()).unwrap_or(u32::MAX),
-            core::ptr::from_mut(&mut size),
-        )
-    };
-    // SAFETY: `token` is owned by this function; no other code references it.
-    #[expect(unsafe_code, reason = "CloseHandle for owned Win32 handle")]
-    let close_result = unsafe { CloseHandle(token) };
-    drop(close_result);
-
-    query_result.is_ok() && elevation.TokenIsElevated != 0
-}
-
-/// Launch a process elevated via `ShellExecuteW` with the `"runas"` verb.
-///
-/// This triggers the Windows UAC consent dialog. If the user clicks "Yes",
-/// the process starts elevated; if they click "No" or dismiss the dialog,
-/// an error is returned.
-#[cfg(windows)]
-fn shell_execute_elevated(
-    exe: &std::path::Path,
-    args: &[&str],
-) -> Result<(), crate::error::ClientError> {
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::core::PCWSTR;
-
-    let verb: Vec<u16> = "runas\0".encode_utf16().collect();
-    let exe_str = exe.to_string_lossy();
-    let file: Vec<u16> = format!("{exe_str}\0").encode_utf16().collect();
-    let params_str = args.join(" ");
-    let params: Vec<u16> = format!("{params_str}\0").encode_utf16().collect();
-
-    tracing::debug!(
-        verb = "runas",
-        file = %exe_str,
-        params = %params_str,
-        "ShellExecuteW"
-    );
-
-    // SAFETY: ShellExecuteW is a well-defined Win32 Shell API.
-    // All PCWSTR pointers are valid null-terminated UTF-16 buffers
-    // that outlive the call (stack-allocated Vecs above).
-    #[expect(unsafe_code, reason = "ShellExecuteW requires unsafe FFI")]
-    let hinst = unsafe {
-        ShellExecuteW(
-            None,
-            PCWSTR(verb.as_ptr()),
-            PCWSTR(file.as_ptr()),
-            PCWSTR(params.as_ptr()),
-            PCWSTR::null(),
-            windows::Win32::UI::WindowsAndMessaging::SW_HIDE,
-        )
-    };
-
-    // ShellExecuteW returns HINSTANCE — values > 32 indicate success.
-    let code = hinst.0 as isize;
-    if code > 32 {
-        tracing::debug!(code, "ShellExecuteW succeeded");
-        Ok(())
-    } else {
-        let msg = match code {
-            0 => "The OS is out of memory or resources",
-            2 => "Executable not found (ERROR_FILE_NOT_FOUND)",
-            3 => "Path not found (ERROR_PATH_NOT_FOUND)",
-            5 => "Access denied (ERROR_ACCESS_DENIED)",
-            _ => "Unknown ShellExecuteW error",
-        };
-        tracing::debug!(code, msg, "ShellExecuteW failed");
-        Err(crate::error::ClientError::DaemonStartFailed(format!(
-            "ShellExecuteW(runas) failed for {}: code={code} — {msg}",
-            exe.display()
-        )))
     }
 }
 
 #[cfg(test)]
-mod elevation_policy_tests {
-    use super::{ElevationPolicy, elevation_policy_from};
+mod verify_strict_tests {
+    use super::verify_daemon_after_connect_strict_at;
 
-    /// Explicit `force_allow` (e.g. `--elevate`) always wins, even
-    /// against an empty or falsy env value.
-    #[test]
-    fn force_allow_always_permits_uac() {
-        assert_eq!(
-            elevation_policy_from(true, None),
-            ElevationPolicy::AllowUacPrompt,
-        );
-        assert_eq!(
-            elevation_policy_from(true, Some("")),
-            ElevationPolicy::AllowUacPrompt,
-        );
-        assert_eq!(
-            elevation_policy_from(true, Some("0")),
-            ElevationPolicy::AllowUacPrompt,
-        );
-    }
-
-    /// Without `force_allow` and without the env var, the default
-    /// policy must refuse UAC.  This is the behavioral change v0.5.36
-    /// introduces and the linchpin for the whole P7 fix.
-    #[test]
-    fn missing_env_defaults_to_require_existing_elevation() {
-        assert_eq!(
-            elevation_policy_from(false, None),
-            ElevationPolicy::RequireExistingElevation,
-        );
-    }
-
-    /// Every documented truthy token must promote to
-    /// `AllowUacPrompt`.  Trimming and case-folding are also expected.
-    #[test]
-    fn truthy_env_values_permit_uac() {
-        for token in [
-            "1", "true", "TRUE", "True", "yes", "YES", "on", "ON", "  1  ", " yes\n",
-        ] {
-            assert_eq!(
-                elevation_policy_from(false, Some(token)),
-                ElevationPolicy::AllowUacPrompt,
-                "token {token:?} should enable UAC",
-            );
+    /// FNV-1a 64-bit — must match the hash written by the daemon's
+    /// `lifecycle::write_pid_file`.  Hoisted into the test module so
+    /// we can forge matching PID files on disk.
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        let mut hash: u64 = 0xCBF2_9CE4_8422_2325;
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01B3);
         }
+        hash
     }
 
-    /// Falsy / unrecognised tokens must keep the conservative default.
+    /// Missing PID file → `Ok(())`.  Locks in the "fail open during the
+    /// first-run / startup-race window" contract: we never want the
+    /// identity check to block the very first connect, before the
+    /// daemon has had a chance to write its PID file.
     #[test]
-    fn falsy_or_unknown_env_values_keep_default() {
-        for token in ["0", "false", "no", "off", "", "maybe", "2", "nope"] {
-            assert_eq!(
-                elevation_policy_from(false, Some(token)),
-                ElevationPolicy::RequireExistingElevation,
-                "token {token:?} should not enable UAC",
-            );
-        }
+    fn missing_pid_file_is_ok() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("does-not-exist.pid");
+        assert!(!path.exists());
+        assert!(
+            verify_daemon_after_connect_strict_at(&path).is_ok(),
+            "missing PID file must not block the connect",
+        );
     }
 
-    /// [`ElevationPolicy::default`] must be the safe option.  New
-    /// callers that rely on `..Default::default()` must not silently
-    /// get the UAC-triggering variant.
+    /// Valid PID file whose exe-path hash matches the **current test
+    /// process** → `Ok(())`.  This exercises the full success path:
+    /// the verifier reads the file, parses pid + hash, looks up the
+    /// process's exe path via the platform API, re-computes the
+    /// FNV-1a of that path, and confirms equality.
+    ///
+    /// Using the *test* process as the pretend-daemon is safe because
+    /// all the verifier checks is the FNV-1a of the exe-path string —
+    /// it doesn't care what the process actually does.
     #[test]
-    fn default_policy_is_require_existing_elevation() {
-        assert_eq!(
-            ElevationPolicy::default(),
-            ElevationPolicy::RequireExistingElevation,
+    fn valid_pid_file_for_current_process_is_ok() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("daemon.pid");
+        let pid = std::process::id();
+        let exe = std::env::current_exe().expect("current_exe");
+        let hash = fnv1a(exe.to_string_lossy().as_bytes());
+        std::fs::write(&path, format!("{pid}\n0\n{hash}\nnonce-xyz\n")).expect("write pid file");
+        assert!(
+            verify_daemon_after_connect_strict_at(&path).is_ok(),
+            "valid-hash PID file pointing at the test process must pass verification",
+        );
+    }
+
+    /// Tampered PID file (valid live PID, **wrong** exe-path hash) →
+    /// `Err(ConnectionFailed)`.  This is the hijacked-pipe scenario
+    /// the strict variant was designed to catch: something is alive
+    /// at the recorded PID, but its exe is not what we expected, so
+    /// the IPC endpoint could be a rogue process and continuing to
+    /// talk to it would leak our search arguments.
+    #[test]
+    fn tampered_pid_file_returns_err() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("daemon.pid");
+        let pid = std::process::id();
+        // Hash of a string that is extremely unlikely to be our own
+        // exe path — the verifier will compute the actual hash from
+        // our live exe and refuse to match.
+        let bogus_hash: u64 = 0xDEAD_BEEF_DEAD_BEEF;
+        std::fs::write(&path, format!("{pid}\n0\n{bogus_hash}\nnonce-xyz\n"))
+            .expect("write pid file");
+
+        let err = verify_daemon_after_connect_strict_at(&path)
+            .expect_err("tampered hash must return Err");
+        let crate::error::ClientError::ConnectionFailed(msg) = &err else {
+            panic!("expected ClientError::ConnectionFailed, got {err:?}");
+        };
+        assert!(
+            msg.contains("identity verification failed"),
+            "error message must explain the failure mode: {msg}",
+        );
+        assert!(
+            msg.contains(path.to_string_lossy().as_ref()),
+            "error message must include the offending PID file path: {msg}",
+        );
+    }
+
+    /// PID file with `hash == 0` falls back to process-name matching
+    /// (see `verify::verify_daemon_pid_file`).  Since the test process
+    /// is not named `uffsd`, this path returns `false` from the
+    /// underlying check, and the strict wrapper then returns `Err`.
+    /// Locks in the downgraded check behavior so future refactors do
+    /// not accidentally widen it into a silent pass.
+    #[test]
+    fn zero_hash_falls_back_to_name_check_and_refuses_non_uffsd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("daemon.pid");
+        let pid = std::process::id();
+        std::fs::write(&path, format!("{pid}\n0\n0\nnonce-xyz\n")).expect("write pid file");
+
+        // The test binary is not named `uffsd`, so the name-based
+        // fallback inside `verify::verify_daemon_identity` returns
+        // `false`, and the strict wrapper propagates the refusal.
+        assert!(
+            verify_daemon_after_connect_strict_at(&path).is_err(),
+            "hash=0 PID file pointing at a non-uffsd process must be refused",
         );
     }
 }
