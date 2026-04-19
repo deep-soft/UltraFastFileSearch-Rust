@@ -840,6 +840,228 @@ fn search_index_explicit_extensions_not_clobbered() {
     );
 }
 
+// ── *.ext + `--hide-system` / `--hide-ads` fast-path regression pins ─
+//
+// 2026-04-19 regression fix: the `is_ext_only()` gate that admits the
+// `ExtensionIndex` fast path in `numeric_top_n::collect_global_top_n_numeric`
+// used to reject the filter set whenever `hide_system` or `hide_ads`
+// was true.  Every `uffs *.<ext> --hide-system --hide-ads` query (the
+// default cross-tool bench shape — see
+// `scripts/windows/cross-tool-benchmark.rs`) therefore fell back to an
+// O(N) scan of every record on every loaded drive, costing ~216 ms on
+// Drive D's 7 M-record corpus for an 11-row `*.dbt` result.
+//
+// The fix pushes both predicates into the fast-path loop: they are
+// applied per-candidate after the CSR `ext_index` bucket has narrowed
+// the set to O(K).  The regression pins below build a three-record
+// fixture where exactly one row must survive both filters, proving:
+//
+//   1. The fast path now fires under `--hide-system --hide-ads` (otherwise the
+//      extension safety-net would not have populated `filters.extensions`).
+//   2. The inline `hide_system` check still excludes `$`-prefixed NTFS
+//      metafiles.
+//   3. The inline `hide_ads` check still excludes names containing `:`
+//      (Alternate Data Streams).
+//
+// Paired unit tests live in `filters/tests.rs::is_ext_only_*`.
+
+/// Build a single C: drive with three `.dbt` records covering the full
+/// fast-path hide-filter matrix: a system metafile, a normal file, and
+/// an ADS-named file.  Used by the hide-system / hide-ads regression
+/// pins immediately below.
+fn build_dbt_triple_fixture() -> DriveIndex {
+    use alloc::sync::Arc;
+
+    use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS};
+
+    use crate::compact::build_compact_index;
+
+    let mut idx = MftIndex::new('C');
+
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // Three candidates for a `*.dbt` query.  `frs` values are arbitrary
+    // but must be distinct.
+    //
+    // The ADS-shaped entry places the colon *before* the extension dot
+    // (`stream:ads.dbt`, not `stream.dbt:ads`).  This is a fixture
+    // construction detail, not an NTFS semantic: `MftIndex::intern_extension`
+    // does `rfind('.')`, so a trailing `:ads` after the extension would
+    // re-assign the record to the `"dbt:ads"` extension bucket and it
+    // would never enter the `"dbt"` fast path we are trying to test.
+    // With the colon first, the record is genuinely a `.dbt` file whose
+    // *name* also contains `:` — exactly the case the inline
+    // `hide_ads` check must catch.
+    for (frs, name) in [
+        (200_u64, "$secret.dbt"), // system metafile → hide_system must exclude
+        (201, "normal.dbt"),      // plain file     → must survive all filters
+        (202, "stream:ads.dbt"),  // colon in name  → hide_ads must exclude
+    ] {
+        let off = idx.add_name(name);
+        let ext = idx.intern_extension(name);
+        let rec = idx.get_or_create(frs);
+        rec.first_name.name = IndexNameRef::new(
+            off,
+            u16::try_from(name.len()).expect("name too long"),
+            true,
+            ext,
+        );
+        rec.first_name.parent_frs = ROOT_FRS;
+        rec.stdinfo.flags = 0x20;
+    }
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    DriveIndex {
+        drives: vec![Arc::new(drive)],
+    }
+}
+
+/// Regression pin — 2026-04-19: `*.dbt --hide-system --hide-ads` must
+/// return exactly `normal.dbt`.  Pre-fix this query ran an O(N) scan
+/// and returned all three records, which were only later filtered in
+/// the post-filter pass — paying scan cost proportional to the full
+/// drive record count on every rare-extension query.
+#[test]
+fn search_index_ext_fast_path_honors_hide_system_and_hide_ads() {
+    let index = build_dbt_triple_fixture();
+    let mut filters = super::super::filters::SearchFilters {
+        hide_system: true,
+        hide_ads: true,
+        ..super::super::filters::SearchFilters::default()
+    };
+    let result = search_index(
+        &index,
+        SearchRequest::new("*.dbt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+
+    assert_eq!(
+        filters.extensions,
+        vec!["dbt".to_owned()],
+        "ext-glob safety net must promote *.dbt → extensions=[dbt]"
+    );
+    assert_eq!(
+        result.rows.len(),
+        1,
+        "exactly normal.dbt must survive hide_system + hide_ads + ext filter; got {:?}",
+        result
+            .rows
+            .iter()
+            .map(|row| row.name().to_owned())
+            .collect::<Vec<_>>()
+    );
+    let row = result.rows.first().expect("asserted non-empty above");
+    assert_eq!(row.name(), "normal.dbt");
+}
+
+/// Regression pin — 2026-04-19: with both hide flags OFF the same
+/// `*.dbt` query must return all three records.  This proves the
+/// hide-system / hide-ads exclusions in the fast-path loop are gated
+/// on the flag (not unconditional), keeping the default semantics of
+/// "return everything that matches the extension" intact.
+#[test]
+fn search_index_ext_fast_path_returns_all_when_hide_flags_off() {
+    let index = build_dbt_triple_fixture();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest::new("*.dbt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+
+    let names: std::collections::HashSet<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert_eq!(
+        names.len(),
+        3,
+        "all three .dbt records must be returned when no hide flags are set; got {names:?}"
+    );
+    assert!(
+        names.contains("$secret.dbt"),
+        "system metafile must be returned by default"
+    );
+    assert!(names.contains("normal.dbt"), "normal file must be returned");
+    assert!(
+        names.contains("stream:ads.dbt"),
+        "ADS-named record must be returned by default"
+    );
+}
+
+/// Regression pin — 2026-04-19: `hide_system` alone must only exclude
+/// `$`-prefixed records, not ADS names.
+#[test]
+fn search_index_ext_fast_path_hide_system_only_excludes_dollar_prefix() {
+    let index = build_dbt_triple_fixture();
+    let mut filters = super::super::filters::SearchFilters {
+        hide_system: true,
+        ..super::super::filters::SearchFilters::default()
+    };
+    let result = search_index(
+        &index,
+        SearchRequest::new("*.dbt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+
+    let names: std::collections::HashSet<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert!(
+        !names.contains("$secret.dbt"),
+        "hide_system must exclude $secret.dbt; got {names:?}"
+    );
+    assert!(
+        names.contains("normal.dbt") && names.contains("stream:ads.dbt"),
+        "hide_system alone must keep non-$ records; got {names:?}"
+    );
+}
+
+/// Regression pin — 2026-04-19: `hide_ads` alone must only exclude
+/// colon-containing names, not `$`-prefixed records.
+#[test]
+fn search_index_ext_fast_path_hide_ads_only_excludes_colon_names() {
+    let index = build_dbt_triple_fixture();
+    let mut filters = super::super::filters::SearchFilters {
+        hide_ads: true,
+        ..super::super::filters::SearchFilters::default()
+    };
+    let result = search_index(
+        &index,
+        SearchRequest::new("*.dbt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+
+    let names: std::collections::HashSet<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert!(
+        !names.contains("stream:ads.dbt"),
+        "hide_ads must exclude colon-containing names; got {names:?}"
+    );
+    assert!(
+        names.contains("$secret.dbt") && names.contains("normal.dbt"),
+        "hide_ads alone must keep $-prefixed and plain records; got {names:?}"
+    );
+}
+
 // ── <letter>: → drive-filter promotion safety-net tests ────────────
 //
 // These pin the dispatch-time rewrite in `search_index` that promotes

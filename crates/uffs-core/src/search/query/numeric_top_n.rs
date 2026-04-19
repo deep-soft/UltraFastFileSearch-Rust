@@ -251,11 +251,34 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
 
         if ext_fast_path && !search_filters.resolved_ext_ids.is_empty() {
             // ── Fast path: iterate only ext-index candidates ─────
+            //
+            // The CSR `ext_index` bucket already narrows the candidate
+            // set from O(N) (all records on the drive, up to 7 M+) to
+            // O(K) (matches of the requested extension, typically 10s
+            // to 100 Ks).  We still have to apply the two cheap
+            // per-candidate predicates that `is_ext_only()` admits:
+            //
+            //   • `hide_system` — cached `name_first_byte == b'$'`
+            //     via `rec.is_system_metafile()`, zero name-arena
+            //     reads.  ~1 ns per candidate.
+            //
+            //   • `hide_ads` — scan the name bytes for a `:` (NTFS
+            //     ADS separator).  Name arena read + `memchr::memchr`,
+            //     ~30 ns per candidate and only evaluated when the
+            //     flag is actually set.
+            //
+            // Both predicates must run BEFORE `push_record` so filtered
+            // records never enter the heap / fallback buffer and never
+            // trigger the expensive path-resolution phase downstream.
             tracing::debug!(
                 drive = %drive.letter,
                 resolved_ids = ?search_filters.resolved_ext_ids,
+                hide_system = search_filters.hide_system,
+                hide_ads = search_filters.hide_ads,
                 "ext fast-path: scanning ext_index candidates"
             );
+            let hide_system = search_filters.hide_system;
+            let hide_ads = search_filters.hide_ads;
             for &ext_id in &search_filters.resolved_ext_ids.clone() {
                 for &rec_idx_u32 in drive.ext_index.get(ext_id) {
                     let rec_idx = rec_idx_u32 as usize;
@@ -265,6 +288,15 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
                         }
                         if matches!(filter_mode, FilterMode::FilesOnly) && rec.is_directory() {
                             continue;
+                        }
+                        if hide_system && rec.is_system_metafile() {
+                            continue;
+                        }
+                        if hide_ads {
+                            let name = rec.name(&drive.names);
+                            if memchr::memchr(b':', name.as_bytes()).is_some() {
+                                continue;
+                            }
                         }
                         push_record(drive_idx, rec_idx, rec, drive);
                     }

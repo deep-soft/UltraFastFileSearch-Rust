@@ -19,6 +19,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use crate::daemon_ctl::{find_daemon_exe, pid_file_path, socket_path};
 use crate::daemon_spawn::{ElevationPolicy, resolve_elevation_policy, spawn_daemon};
 use crate::error::ClientError;
+use crate::protocol::response::DaemonStatus;
 
 /// Synchronous thin client for the UFFS daemon.
 ///
@@ -30,6 +31,16 @@ pub struct UffsClientSync {
     writer: Box<dyn Write + Send>,
     /// Monotonically increasing JSON-RPC request ID.
     next_id: u64,
+    /// Cached `DaemonStatus` from the most recent `status` RPC.
+    ///
+    /// `deep_health_check` populates this, letting
+    /// [`Self::await_ready`] short-circuit a redundant round-trip
+    /// when the daemon is already `Ready` (~5–10 ms saving per CLI
+    /// invocation on Windows named pipes — Run 10 Part B bisect in
+    /// `docs/research/perf-phase2-measurement-plan.md`).  `None`
+    /// means "no fresh status observed yet"; callers needing a
+    /// ground-truth signal must issue a new [`Self::status`] RPC.
+    cached_status: Option<DaemonStatus>,
     /// Windows-only: per-RPC deadline guard.
     ///
     /// Unix enforces the deadline via `SO_RCVTIMEO` / `SO_SNDTIMEO`
@@ -64,6 +75,7 @@ impl UffsClientSync {
             reader,
             writer,
             next_id: 1,
+            cached_status: None,
         }
     }
 
@@ -84,6 +96,7 @@ impl UffsClientSync {
             reader,
             writer,
             next_id: 1,
+            cached_status: None,
             deadline_guard,
         }
     }
@@ -105,9 +118,19 @@ impl UffsClientSync {
             reader,
             writer,
             next_id: 1,
+            cached_status: None,
             #[cfg(windows)]
             deadline_guard: None,
         }
+    }
+
+    /// Test-only: pre-seed the cached `DaemonStatus` so
+    /// [`crate::connect_sync_tests`] can exercise the
+    /// [`Self::await_ready`] short-circuit without round-tripping
+    /// a real probe through the in-memory mock.
+    #[cfg(test)]
+    pub(crate) fn set_cached_status_for_test(&mut self, status: DaemonStatus) {
+        self.cached_status = Some(status);
     }
 
     /// Connect to a running daemon, or auto-start one if not running.
@@ -506,16 +529,28 @@ impl UffsClientSync {
 
     /// Wait for the daemon to become ready (status == Ready).
     ///
+    /// Short-circuits when `cached_status` is `Ready` (populated by
+    /// `deep_health_check` at connect time), saving an RPC
+    /// round-trip on the hot CLI path.  Falls back to the exponential
+    /// poll loop when the cache is `None`, `Loading`, or `Refreshing`.
+    ///
     /// # Errors
     ///
     /// Returns `ClientError::Timeout` if not ready within `timeout`.
     pub fn await_ready(&mut self, timeout: core::time::Duration) -> Result<(), ClientError> {
+        // Run 10 Part B short-circuit: skip the RPC on cached `Ready`.
+        if matches!(self.cached_status, Some(DaemonStatus::Ready)) {
+            return Ok(());
+        }
+
         let deadline = std::time::Instant::now() + timeout;
         let mut poll_interval = core::time::Duration::from_millis(100);
 
         while std::time::Instant::now() < deadline {
             match self.status() {
-                Ok(resp) if resp.status == crate::protocol::response::DaemonStatus::Ready => {
+                Ok(resp) if resp.status == DaemonStatus::Ready => {
+                    // Refresh cache so follow-up calls short-circuit.
+                    self.cached_status = Some(DaemonStatus::Ready);
                     return Ok(());
                 }
                 // Loading/refreshing or daemon restarting — retry.
@@ -588,36 +623,40 @@ impl UffsClientSync {
         Ok(())
     }
 
-    /// Commit C — **deep health check**: round-trip a cheap `drives`
-    /// RPC right after connect to prove the daemon's request/response
-    /// loop and `IndexService` state are actually responsive.
+    /// Commit C — **deep health check**: round-trip a `status` RPC
+    /// right after connect to prove the daemon's request/response
+    /// loop is responsive, and cache the returned [`DaemonStatus`]
+    /// so [`Self::await_ready`] can short-circuit on the hot path.
     ///
-    /// `await_ready` only proves that the status endpoint returns
-    /// `Ready` — it does **not** prove that the `IndexService` is
-    /// reachable.  A daemon stuck behind a deadlocked mutex (or one
-    /// whose worker pool has wedged on kernel I/O) can still report
-    /// `Ready` via its atomic status counters while silently failing
-    /// every subsequent `search`.  This probe closes that window.
-    ///
-    /// Called once per connect from [`Self::connect_with_args_inner`]
-    /// and skippable via `UFFS_CLIENT_SKIP_HEALTH_CHECK=1` (see
-    /// [`deep_health_check_enabled`]).  Cost: ~200–600 µs on local IPC.
+    /// Run 10 Part B (2026-04-19) consolidated the prior `drives`
+    /// liveness probe + `await_ready` readiness probe into this
+    /// single `status` call, saving one full RPC round-trip per CLI
+    /// invocation (~5–10 ms on Windows named pipes).  Skippable via
+    /// `UFFS_CLIENT_SKIP_HEALTH_CHECK=1` (see
+    /// [`deep_health_check_enabled`]).  Cost: ~200–600 µs local IPC.
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError::ConnectionFailed`] with a diagnostic
-    /// wrapper around the underlying transport/protocol error.  The
-    /// caller's retry loop (or the user) can then decide whether to
-    /// retry, kill the daemon, or escalate.
+    /// Returns [`ClientError::ConnectionFailed`] wrapping the
+    /// underlying transport/protocol error.
     pub(crate) fn deep_health_check(&mut self) -> Result<(), ClientError> {
-        self.drives().map(|_resp| ()).map_err(|probe_err| {
-            ClientError::ConnectionFailed(format!(
-                "Deep health check failed: the daemon accepted the connection but did not \
-                 respond correctly to a probe `drives` RPC ({probe_err}). The daemon may be \
-                 wedged (deadlocked worker, stuck kernel I/O); consider `uffs daemon kill` \
-                 and restart.  Set UFFS_CLIENT_SKIP_HEALTH_CHECK=1 to bypass this probe."
-            ))
-        })
+        match self.status() {
+            Ok(resp) => {
+                self.cached_status = Some(resp.status);
+                Ok(())
+            }
+            Err(probe_err) => {
+                // Torn probe — clear cache so await_ready can't lie.
+                self.cached_status = None;
+                Err(ClientError::ConnectionFailed(format!(
+                    "Deep health check failed: the daemon accepted the connection but did \
+                     not respond correctly to a probe `status` RPC ({probe_err}). The \
+                     daemon may be wedged (deadlocked worker, stuck kernel I/O); consider \
+                     `uffs daemon kill` and restart.  Set UFFS_CLIENT_SKIP_HEALTH_CHECK=1 \
+                     to bypass this probe."
+                )))
+            }
+        }
     }
 }
 

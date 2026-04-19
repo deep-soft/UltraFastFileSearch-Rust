@@ -36,6 +36,14 @@ pub mod connect_keepalive;
 /// v0.5.36 UAC work expanded its public entry points.
 #[cfg(feature = "async")]
 mod connect_logging;
+/// Platform-specific `platform_connect` impls for [`connect::UffsClient`].
+///
+/// Split `impl` blocks live on `UffsClient` via
+/// [`connect::UffsClient::from_parts`]; callers see no change.
+/// Extracted after the Run 10 Part B `cached_status` addition pushed
+/// `connect.rs` over the 800-LOC policy ceiling.
+#[cfg(feature = "async")]
+mod connect_platform;
 pub mod connect_sync;
 /// Platform-specific `platform_connect` impls and the `rpc_deadline` helper.
 ///
