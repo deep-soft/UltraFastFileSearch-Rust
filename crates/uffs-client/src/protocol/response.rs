@@ -356,6 +356,18 @@ pub struct StatsResponse {
     pub total_records: usize,
     /// Queries per second (over daemon lifetime).
     pub queries_per_second: f64,
+    /// Aggregate-cache hit count (lifetime, since daemon start).
+    ///
+    /// Defaults to `0` when the daemon is older than this field
+    /// (forward compatibility with pre-0.5.44 daemons).
+    #[serde(default)]
+    pub agg_cache_hits: u64,
+    /// Aggregate-cache miss count (lifetime, includes stale/expired).
+    #[serde(default)]
+    pub agg_cache_misses: u64,
+    /// Number of entries currently in the aggregate cache.
+    #[serde(default)]
+    pub agg_cache_entries: u64,
 }
 
 /// Daemon operational status.

@@ -379,6 +379,7 @@ impl IndexManager {
 
             Self::run_aggregations(
                 &agg_snapshot,
+                Some(self.aggregate_cache()),
                 &effective_params.aggregations,
                 predicates,
                 effective_params.agg_cursor.as_deref(),

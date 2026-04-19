@@ -189,6 +189,7 @@ impl IndexManager {
     )]
     pub(crate) fn run_aggregations(
         snapshot: &DriveIndex,
+        cache: Option<&uffs_core::aggregate::AggregateCache>,
         wire_specs: &[uffs_client::protocol::AggregateSpecWire],
         query_predicates: Vec<DrilldownPredicate>,
         agg_cursor: Option<&str>,
@@ -229,6 +230,26 @@ impl IndexManager {
             })
             .map(|arc| arc.as_ref())
             .collect();
+        // ── Cache lookup ────────────────────────────────────────────
+        //
+        // The cache key mixes every input that can change the
+        // computed `AggregateOutput` (core scan + merge + duplicate
+        // verification).  Pagination inputs (`agg_cursor`,
+        // `agg_page_size`) and wire-conversion details are excluded
+        // because they're applied *after* the cached step.
+        //
+        // Build the key before consuming `query_predicates` below so
+        // the predicates are still available by reference.
+        let cache_key_hash = cache.map(|_| {
+            Self::build_agg_cache_key(
+                &specs,
+                pattern,
+                drives_filter,
+                record_filter,
+                &query_predicates,
+            )
+        });
+
         let options = FinalizeOptions {
             query_predicates,
             ..FinalizeOptions::default()
@@ -244,31 +265,60 @@ impl IndexManager {
             pattern = ?pattern,
             ext_count = record_filter.extensions.len(),
             dir_only = ?record_filter.directory_only,
+            cache_key = cache_key_hash.unwrap_or(0),
+            cached = cache_key_hash.is_some(),
             "running aggregation"
         );
-        let mut output = match uffs_core::aggregate::run_aggregate_with_filters(
-            &drive_refs,
-            &specs,
-            &options,
-            pattern,
-            record_filter,
-        ) {
-            Ok(output) => {
-                tracing::info!(
-                    scanned = output.records_scanned,
-                    matched = output.records_matched,
-                    "aggregation complete"
-                );
-                output
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "aggregation failed");
-                return (vec![], 0);
+
+        // Try cache first.  A hit short-circuits the entire scan +
+        // duplicate-verification pipeline and simply returns the
+        // previously computed `AggregateOutput`.
+        let cached_hit = cache_key_hash.and_then(|k| cache.and_then(|c| c.get(k)));
+
+        let output = if let Some(hit) = cached_hit {
+            tracing::debug!(
+                scanned = hit.records_scanned,
+                matched = hit.records_matched,
+                "aggregation cache hit"
+            );
+            hit
+        } else {
+            match uffs_core::aggregate::run_aggregate_with_filters(
+                &drive_refs,
+                &specs,
+                &options,
+                pattern,
+                record_filter,
+            ) {
+                Ok(mut fresh) => {
+                    tracing::info!(
+                        scanned = fresh.records_scanned,
+                        matched = fresh.records_matched,
+                        "aggregation complete"
+                    );
+                    // Duplicate verification is part of the cacheable
+                    // result: its effect lives in `fresh.response`, so
+                    // run it *before* populating the cache so future
+                    // hits include verification state.
+                    Self::run_duplicate_verification(&specs, &mut fresh, &snapshot.drives);
+                    if let (Some(k), Some(c)) = (cache_key_hash, cache) {
+                        c.put(k, fresh.clone());
+                    }
+                    fresh
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "aggregation failed");
+                    return (vec![], 0);
+                }
             }
         };
 
-        // ── Duplicate verification (if any spec has verify != None) ──
-        Self::run_duplicate_verification(&specs, &mut output, &snapshot.drives);
+        // Note: duplicate verification already ran on the miss path
+        // before the result was cached, so cache hits return
+        // verified results for free.  Running `run_duplicate_verification`
+        // a second time here would re-read every member file from disk
+        // (the verifier has no "already verified" short-circuit), so
+        // we deliberately skip it.
         let records_matched = output.records_matched;
 
         // ── Apply cursor-based pagination (if requested) ────────────
@@ -550,6 +600,52 @@ impl IndexManager {
             })
             .collect();
         (wire_results, records_matched)
+    }
+
+    /// Build a deterministic `u64` cache key for an aggregate request.
+    ///
+    /// The key mixes every input that can change the computed
+    /// [`uffs_core::aggregate::AggregateOutput`]:
+    /// - `specs` — the compiled list of [`AggregateSpec`]s, including every
+    ///   `kind`, `label`, `top`, sample spec, and rollup field.
+    /// - `pattern` — glob/regex name matcher (`None` vs. `Some("")` are
+    ///   distinguished by `Option::hash`).
+    /// - `drives_filter` — the set of drive letters to scope the scan.
+    /// - `record_filter` — extensions, directory flag, size bounds.
+    /// - `query_predicates` — drill-down predicates forwarded to
+    ///   `FinalizeOptions` so bucket drilldowns reflect the original query
+    ///   scope.
+    ///
+    /// Excludes pagination (`agg_cursor`, `agg_page_size`) and
+    /// wire-conversion knobs; those are applied *after* the cached
+    /// step, so they don't affect the cached `AggregateOutput`.
+    ///
+    /// Implementation: feeds each input into a single `DefaultHasher`
+    /// via the standard [`Hash`] trait.  All participating types
+    /// derive `Hash` in `uffs-core`, so the digest is a direct
+    /// structural fingerprint — no `Debug` round-trip, no string
+    /// allocation.  Stable across daemon restarts of the same build;
+    /// hash-seed randomization only matters across processes, which
+    /// is aligned with cache lifetime.
+    fn build_agg_cache_key(
+        specs: &[uffs_core::aggregate::spec::AggregateSpec],
+        pattern: Option<&str>,
+        drives_filter: &[char],
+        record_filter: &uffs_core::aggregate::AggregateFilter,
+        query_predicates: &[DrilldownPredicate],
+    ) -> u64 {
+        use core::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // Each field is hashed with an implicit domain separator:
+        // slices and `Option` write their length / discriminant
+        // before their contents, so `("ab", "c")` and `("a", "bc")`
+        // cannot collide.
+        specs.hash(&mut hasher);
+        pattern.hash(&mut hasher);
+        drives_filter.hash(&mut hasher);
+        record_filter.hash(&mut hasher);
+        query_predicates.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Convert a single wire spec into one or more core `AggregateSpec`s.

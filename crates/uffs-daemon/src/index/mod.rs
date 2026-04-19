@@ -23,6 +23,7 @@ use std::time::Instant;
 
 use tokio::sync::{RwLock, Semaphore};
 use uffs_client::protocol::response::{DaemonStatus, StatsResponse, StatusResponse};
+use uffs_core::aggregate::AggregateCache;
 use uffs_core::search::backend::DriveIndex;
 
 use crate::events::{DaemonEvent, EventSender};
@@ -75,16 +76,35 @@ pub(crate) struct IndexManager {
     /// concurrent queries × 7 drives on 24 cores, Windows validation
     /// Run 7 of the 2026-04-18 healing log).
     ///
-    /// Sizing: we target `max(2, cpus / drives)` permits so the product
-    /// `permits × drives ≤ cpus`, keeping rayon's queue depth at ≤1
-    /// task per thread even at peak admission.  The semaphore is
-    /// replaced (not mutated) when drive count changes via
+    /// Sizing: we target `max(2, (cpus × 2) / drives)` permits by
+    /// default so the product `permits × drives ≈ 2 × cpus`, keeping
+    /// rayon's queue depth at ≤2 tasks per thread (a range the
+    /// work-stealing scheduler handles well).  The
+    /// `UFFS_SEARCH_MAX_CONCURRENCY` env var overrides the formula
+    /// for benchmark sweeps.  The semaphore is *replaced* (not
+    /// mutated) when drive count changes via
     /// [`Self::tune_concurrency`]; in-flight queries hold owned
     /// permits on the pre-swap instance and finish naturally.
     search_semaphore: RwLock<Arc<Semaphore>>,
     /// Cached CPU count for the concurrency formula.  Captured once at
     /// construction so repeated tuning calls are cheap.
     cpus: usize,
+    // ── Aggregate result cache ────────────────────────────────────
+    /// Shared cache of recent `AggregateOutput` values.
+    ///
+    /// Populated on every aggregate miss, consulted on every call;
+    /// invalidated wholesale whenever `index_version` is bumped.
+    /// Default TTL is 60 s (see `AggregateCache::default_ttl`).
+    aggregate_cache: Arc<AggregateCache>,
+    /// Monotonic index-generation counter.
+    ///
+    /// Incremented on every drive mutation (add, replace, hot-load) so
+    /// the aggregate cache can invalidate stale entries via
+    /// `AggregateCache::set_index_version`.  Using `Relaxed` ordering
+    /// is sufficient: the value is only read as a cache-invalidation
+    /// token, never to gate memory visibility of other fields (the
+    /// index `Arc` swap handles that independently).
+    index_version: AtomicU64,
     // ── Performance counters ────────────────────────────────────────
     /// Total search queries served.
     queries_total: AtomicU64,
@@ -117,6 +137,8 @@ impl IndexManager {
             events,
             search_semaphore: RwLock::new(Arc::new(Semaphore::new(cpus))),
             cpus,
+            aggregate_cache: Arc::new(AggregateCache::default_ttl()),
+            index_version: AtomicU64::new(0),
             queries_total: AtomicU64::new(0),
             queries_total_us: AtomicU64::new(0),
             startup_duration_us: AtomicU64::new(0),
@@ -137,27 +159,55 @@ impl IndexManager {
         sem.acquire_owned().await.ok()
     }
 
+    /// Environment variable that overrides the auto-tuned search-permit
+    /// count.
+    ///
+    /// Accepts any positive `usize`.  Invalid or empty values are
+    /// ignored and the auto-tuned default is used instead.  Applied
+    /// every time [`Self::tune_concurrency`] runs, so the daemon can
+    /// be re-tuned at runtime by setting the env var and invoking an
+    /// operation that re-tunes (e.g. a refresh).  Typical use is to
+    /// set it before `uffs daemon start` for benchmark sweeps:
+    ///
+    /// ```text
+    /// UFFS_SEARCH_MAX_CONCURRENCY=12 uffs daemon start
+    /// ```
+    const SEARCH_CONCURRENCY_ENV: &'static str = "UFFS_SEARCH_MAX_CONCURRENCY";
+
     /// Re-size the search semaphore to match the currently loaded
     /// drive count.
     ///
-    /// Formula: `max(2, cpus / drives)`.  The floor of 2 keeps the
-    /// daemon responsive on single-drive boxes (where the formula
-    /// would otherwise collapse to `cpus` — identical to the pre-tune
-    /// default, which is fine) and on machines with an unusually
-    /// large number of drives (where it would hit 1 and serialize all
-    /// queries).
+    /// **Default formula**: `max(2, (cpus × 2) / drives)`.
+    /// - The `cpus × 2` numerator allows roughly 2× rayon oversubscription per
+    ///   search, which the work-stealing scheduler handles well and trades a
+    ///   small per-query latency bump for much higher search throughput under
+    ///   concurrent load (tested against the api-validation harness at 24-way).
+    /// - The floor of `2` keeps the daemon responsive on single-drive boxes and
+    ///   on machines with an unusually large number of drives.
     ///
-    /// Implementation: the current `Arc<Semaphore>` is swapped out
-    /// for a fresh one with the new permit count.  In-flight queries
-    /// keep the pre-swap `Arc` alive via their owned permits and
-    /// finish on the old instance; new queries acquire on the new one.
-    /// This costs one allocation and one pointer swap per drive-count
-    /// change and avoids the "forget-debt" bookkeeping that
+    /// **Override**: the `UFFS_SEARCH_MAX_CONCURRENCY` environment
+    /// variable, when set to a positive integer, short-circuits the
+    /// formula and uses that value directly.  This is the intended
+    /// knob for benchmark sweeps — no rebuild required.
+    ///
+    /// **Implementation**: the current `Arc<Semaphore>` is swapped
+    /// out for a fresh one with the new permit count.  In-flight
+    /// queries keep the pre-swap `Arc` alive via their owned permits
+    /// and finish on the old instance; new queries acquire on the
+    /// new one.  One allocation and one pointer swap per drive-count
+    /// change; avoids the "forget-debt" bookkeeping that
     /// [`Semaphore::forget_permits`] would require when in-flight
     /// queries outnumber the target permit count.
     pub(crate) async fn tune_concurrency(&self) {
         let drive_count = self.snapshot().await.drives.len().max(1);
-        let target = (self.cpus / drive_count).max(2);
+        let auto_target = (self.cpus.saturating_mul(2) / drive_count).max(2);
+
+        let (target, source) = std::env::var(Self::SEARCH_CONCURRENCY_ENV)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .map_or((auto_target, "auto"), |n| (n, "env"));
+
         let mut slot = self.search_semaphore.write().await;
         let previous_permits = slot.available_permits();
         *slot = Arc::new(Semaphore::new(target));
@@ -165,8 +215,11 @@ impl IndexManager {
         tracing::info!(
             cpus = self.cpus,
             drives = drive_count,
+            auto_target,
             target,
+            source,
             previous_permits,
+            env_var = Self::SEARCH_CONCURRENCY_ENV,
             "search concurrency retuned"
         );
     }
@@ -496,17 +549,24 @@ impl IndexManager {
     ///
     /// Clones the `Vec` of `Arc` pointers (< 100 bytes), appends the new
     /// drive, and swaps.  In-flight queries keep the old snapshot.
+    /// Bumps `index_version` and invalidates the aggregate cache so
+    /// cached results from the previous snapshot can't leak into the
+    /// new one.
     async fn add_drive(&self, drive: uffs_core::compact::DriveCompactIndex) {
         let mut guard = self.index.write().await;
         let mut drives = guard.drives.clone();
         drives.push(Arc::new(drive));
         *guard = Arc::new(DriveIndex { drives });
+        drop(guard);
+        self.bump_index_version();
     }
 
     /// Replace a drive by letter (for refresh) via atomic pointer swap.
     ///
     /// Builds a new snapshot with the old drive removed and the new one
     /// appended.  Write lock held for < 1 μs (pointer swap only).
+    /// Bumps `index_version` so the aggregate cache drops entries
+    /// computed against the pre-refresh snapshot.
     async fn replace_drive(&self, letter: char, new_drive: uffs_core::compact::DriveCompactIndex) {
         let mut guard = self.index.write().await;
         let mut drives: Vec<Arc<uffs_core::compact::DriveCompactIndex>> = guard
@@ -517,6 +577,24 @@ impl IndexManager {
             .collect();
         drives.push(Arc::new(new_drive));
         *guard = Arc::new(DriveIndex { drives });
+        drop(guard);
+        self.bump_index_version();
+    }
+
+    /// Shared reference to the aggregate cache.
+    pub(crate) fn aggregate_cache(&self) -> &AggregateCache {
+        &self.aggregate_cache
+    }
+
+    /// Increment `index_version` and notify the aggregate cache so it
+    /// drops entries computed against the previous generation.
+    ///
+    /// Called from every drive-mutating path ([`Self::add_drive`] and
+    /// [`Self::replace_drive`]).  Cheap: one atomic fetch-add plus a
+    /// single `Mutex::lock` inside the cache.
+    fn bump_index_version(&self) {
+        let new_version = self.index_version.fetch_add(1, Ordering::Relaxed) + 1;
+        self.aggregate_cache.set_index_version(new_version);
     }
 
     /// Snapshot the current index (< 1 μs).  Callers search the returned
@@ -550,6 +628,8 @@ impl IndexManager {
             0.0
         };
 
+        let cache_stats = self.aggregate_cache.stats();
+
         StatsResponse {
             total_queries,
             total_query_time_us: total_us,
@@ -558,6 +638,9 @@ impl IndexManager {
             uptime_secs,
             total_records,
             queries_per_second: qps,
+            agg_cache_hits: cache_stats.hits,
+            agg_cache_misses: cache_stats.misses,
+            agg_cache_entries: u64::try_from(cache_stats.entries).unwrap_or(u64::MAX),
         }
     }
 

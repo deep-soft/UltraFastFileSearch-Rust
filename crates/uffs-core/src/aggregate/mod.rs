@@ -87,7 +87,7 @@ pub mod verify;
 // Re-export core public types.
 pub use accumulators::GroupAccumulator;
 pub use buckets::{AgeBucket, SizeBucket};
-pub use cache::AggregateCache;
+pub use cache::{AggregateCache, CacheStats, hash_specs};
 pub use duplicates::{DuplicateAccumulator, DuplicateResult};
 pub use export::{ExportFormat, export_results};
 pub use finalize::{
@@ -131,7 +131,7 @@ pub struct AggregateOutput {
 ///
 /// Extension IDs are **per-drive** — call
 /// [`DriveCompactIndex::resolve_ext_ids`] once per drive before scanning.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Hash)]
 pub struct AggregateFilter {
     /// Extension name strings (lowercase, no dot).  Resolved to per-drive
     /// `u16` IDs before scanning via [`DriveCompactIndex::resolve_ext_ids`].

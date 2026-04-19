@@ -289,6 +289,24 @@ fn daemon_stats() -> Result<()> {
             println!("Total query time:  {}", fmt(total_query));
         }
         println!("Queries/second:    {:.2}", stats.queries_per_second);
+
+        // Aggregate cache observability.  Hit-rate is computed on
+        // demand to avoid a division-by-zero for cold daemons.
+        let lookups = stats.agg_cache_hits.saturating_add(stats.agg_cache_misses);
+        #[expect(
+            clippy::float_arithmetic,
+            clippy::cast_precision_loss,
+            reason = "hit-rate display is best-effort approximate"
+        )]
+        let hit_rate = if lookups > 0 {
+            (stats.agg_cache_hits as f64 / lookups as f64) * 100.0_f64
+        } else {
+            0.0_f64
+        };
+        println!(
+            "Agg cache:         {} hits / {} misses ({:.1}% hit-rate, {} entries)",
+            stats.agg_cache_hits, stats.agg_cache_misses, hit_rate, stats.agg_cache_entries,
+        );
     } else {
         println!("Daemon is not running.");
     }

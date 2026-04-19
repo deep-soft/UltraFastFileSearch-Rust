@@ -10,7 +10,7 @@
 use crate::search::field::FieldId;
 
 /// A single aggregation operation to compute during a search scan.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct AggregateSpec {
     /// What kind of aggregation to perform.
     pub kind: AggregateKind,
@@ -36,7 +36,7 @@ impl AggregateSpec {
 }
 
 /// The kind of aggregation to compute.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub enum AggregateKind {
     /// Total count of matching records.
     Count,
@@ -202,7 +202,7 @@ pub const DEFAULT_PROJECTION: &[FieldId] = &[
 /// | `sort_field` | `Size` |
 /// | `sort_desc` | `true` (largest first) |
 /// | `projection` | name, size, modified, path, type, ext |
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct TopHitsSpec {
     /// Number of sample rows per bucket (1–[`MAX_SAMPLE_COUNT`]).
     pub count: u8,

@@ -98,6 +98,7 @@ fn preset_overview_returns_multiple_results() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -125,6 +126,7 @@ fn count_returns_total_records() {
     let index = test_index();
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &[spec("count")],
         Vec::new(),
         None,
@@ -150,6 +152,7 @@ fn stats_size_returns_metrics() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -179,6 +182,7 @@ fn terms_extension_returns_buckets() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -212,6 +216,7 @@ fn histogram_size_returns_buckets() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -238,6 +243,7 @@ fn date_histogram_returns_buckets() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -261,6 +267,7 @@ fn missing_extension_counts_records_without_ext() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -286,6 +293,7 @@ fn distinct_extension_counts_unique_values() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -312,6 +320,7 @@ fn rollup_drive_returns_buckets() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -336,6 +345,7 @@ fn duplicates_returns_result() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -359,6 +369,7 @@ fn raw_power_syntax_terms_works() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -380,6 +391,7 @@ fn unknown_kind_skipped_gracefully() {
     let specs = [spec("bogus_kind")];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -398,6 +410,7 @@ fn missing_field_skipped_gracefully() {
     let specs = [spec("stats")];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -431,6 +444,7 @@ fn multiple_specs_return_multiple_results() {
     ];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -459,6 +473,7 @@ fn stats_overview_preset_wire_roundtrip() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -506,6 +521,7 @@ fn terms_with_sample_produces_sample_rows_and_drilldown() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -572,6 +588,7 @@ fn terms_without_sample_has_empty_sample_rows() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -607,6 +624,7 @@ fn rollup_drive_via_wire() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -638,6 +656,7 @@ fn rollup_path_with_sample_via_wire() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -708,6 +727,7 @@ fn query_predicates_forwarded_to_drilldown() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         predicates,
         None,
@@ -744,6 +764,7 @@ fn raw_power_syntax_rollup_drive() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -768,6 +789,7 @@ fn raw_power_syntax_hist_size() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -789,6 +811,7 @@ fn raw_power_syntax_stats_size() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -815,6 +838,7 @@ fn page_size_paginates_terms_buckets() {
     // Request page_size=2 → first page should have ≤2 buckets.
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -848,6 +872,7 @@ fn cursor_returns_next_page() {
     // First page.
     let (page1, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -865,6 +890,7 @@ fn cursor_returns_next_page() {
     // Second page using cursor from first.
     let (page2, _matched_page2) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         Some(cursor),
@@ -896,6 +922,7 @@ fn page_size_does_not_affect_non_bucket_results() {
     let specs = [spec("count")];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -924,6 +951,7 @@ fn no_pagination_returns_all_buckets() {
     // Without pagination, all buckets returned.
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -955,6 +983,7 @@ fn last_page_has_no_next_cursor() {
     // Page size of 100 is bigger than our 4 extensions → single page.
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -968,4 +997,174 @@ fn last_page_has_no_next_cursor() {
         terms.next_cursor.is_none(),
         "page_size larger than total buckets should produce no next_cursor"
     );
+}
+
+// ── Aggregate cache integration ──────────────────────────────────
+
+#[test]
+fn cache_hit_on_identical_second_call() {
+    use uffs_core::aggregate::AggregateCache;
+
+    let index = test_index();
+    let cache = AggregateCache::default_ttl();
+    let specs = [AggregateSpecWire {
+        field: Some("extension".to_owned()),
+        top: Some(10),
+        ..spec("terms")
+    }];
+
+    // First call populates the cache (miss).
+    let (first, _) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &AggregateFilter::default(),
+    );
+    let stats_after_first = cache.stats();
+    assert_eq!(stats_after_first.misses, 1, "first call should miss");
+    assert_eq!(stats_after_first.hits, 0, "first call cannot hit");
+    assert_eq!(stats_after_first.entries, 1, "miss should populate cache");
+
+    // Second call with identical inputs must hit.
+    let (second, _) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &AggregateFilter::default(),
+    );
+    let stats_after_second = cache.stats();
+    assert_eq!(stats_after_second.hits, 1, "second call must hit");
+    assert_eq!(
+        stats_after_second.misses, 1,
+        "miss count must not increase on a hit"
+    );
+
+    // Response shape is identical.
+    assert_eq!(
+        first.len(),
+        second.len(),
+        "hit must return same number of results as miss"
+    );
+    let first_buckets = first.iter().find(|r| r.kind == "buckets").unwrap();
+    let second_buckets = second.iter().find(|r| r.kind == "buckets").unwrap();
+    assert_eq!(
+        first_buckets.buckets.len(),
+        second_buckets.buckets.len(),
+        "hit must return same bucket count as miss"
+    );
+}
+
+#[test]
+fn cache_miss_when_filter_differs() {
+    use uffs_core::aggregate::AggregateCache;
+
+    let index = test_index();
+    let cache = AggregateCache::default_ttl();
+    let specs = [AggregateSpecWire {
+        field: Some("extension".to_owned()),
+        top: Some(10),
+        ..spec("terms")
+    }];
+
+    // Populate cache with the unfiltered query.
+    let (_initial, _): (Vec<_>, u64) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &AggregateFilter::default(),
+    );
+    assert_eq!(cache.stats().entries, 1);
+
+    // Identical query with a different filter must NOT hit.
+    let narrower = AggregateFilter {
+        extensions: vec!["rs".to_owned()],
+        ..AggregateFilter::default()
+    };
+    let (_narrow, _): (Vec<_>, u64) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &narrower,
+    );
+    let stats = cache.stats();
+    assert_eq!(
+        stats.hits, 0,
+        "different filter must be treated as a different key"
+    );
+    assert_eq!(stats.misses, 2, "should log a second miss");
+    assert_eq!(stats.entries, 2, "second miss should create a second entry");
+}
+
+#[test]
+fn cache_invalidated_by_index_version_bump() {
+    use uffs_core::aggregate::AggregateCache;
+
+    let index = test_index();
+    let cache = AggregateCache::default_ttl();
+    let specs = [AggregateSpecWire {
+        field: Some("extension".to_owned()),
+        top: Some(10),
+        ..spec("terms")
+    }];
+
+    // Populate cache.
+    let (_seed, _): (Vec<_>, u64) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &AggregateFilter::default(),
+    );
+    assert_eq!(cache.stats().entries, 1);
+
+    // Simulate a drive mutation: version bump → cache invalidation.
+    cache.set_index_version(1);
+    assert!(
+        cache.is_empty(),
+        "set_index_version must drop stale entries"
+    );
+
+    // Second call is a miss again because the previous entry was
+    // invalidated by the version change.
+    let (_post_bump, _): (Vec<_>, u64) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &AggregateFilter::default(),
+    );
+    let stats = cache.stats();
+    assert_eq!(
+        stats.hits, 0,
+        "call after version bump must not see a cached entry"
+    );
+    assert!(stats.misses >= 2, "post-bump call must be recorded as miss");
 }
