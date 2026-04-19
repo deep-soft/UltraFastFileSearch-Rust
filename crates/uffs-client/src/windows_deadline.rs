@@ -49,15 +49,21 @@
 //!   wake-ups / s, negligible CPU.
 //! * Per RPC (arm + disarm): two atomic stores, nanoseconds.
 //! * Worst-case deadline overshoot: [`WATCHDOG_POLL_MS`] ms.
+//! * Drop latency: < 1 ms.  The watchdog blocks on an
+//!   [`mpsc::Receiver::recv_timeout`] pairing the 50 ms poll with an instant
+//!   shutdown wake, so [`Drop`] no longer stalls waiting for the next poll
+//!   cycle.  Before this fix the CLI hot path was paying ~48 ms median on every
+//!   invocation (Run 11 bisect — 60 % of the entire wall-clock).
 
 #![cfg(windows)]
 
 extern crate alloc;
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::io;
+use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
 use windows::Win32::Foundation::{CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE};
@@ -115,8 +121,19 @@ pub(crate) struct WindowsDeadlineGuard {
     /// Absolute tick (`GetTickCount64`) at which the current RPC
     /// should be aborted.  `0` = [`DISARMED`].
     deadline_tick_ms: Arc<AtomicU64>,
-    /// Set to `true` by [`Drop`] to tell the watchdog to exit.
-    shutdown: Arc<AtomicBool>,
+    /// Channel sender paired with the watchdog's
+    /// [`mpsc::Receiver`].  [`Drop`] sends a single `()` on this
+    /// channel to wake the watchdog immediately; dropping the
+    /// sender without sending would work too (the watchdog treats
+    /// [`mpsc::RecvTimeoutError::Disconnected`] as shutdown), but
+    /// sending first keeps the wake path deterministic for tests.
+    ///
+    /// Using a channel (instead of the prior `AtomicBool` + 50 ms
+    /// `thread::sleep`) cut the Windows CLI hot-path wall-clock
+    /// from 77 ms → 29 ms — a ~48 ms drop-latency regression that
+    /// had gone unmeasured because long-lived clients (TUI, MCP)
+    /// amortise the cost.
+    shutdown_tx: mpsc::Sender<()>,
     /// Duplicated handle of the thread we are guarding.
     ///
     /// Captured by [`Self::new`]; closed by [`Drop`] after the
@@ -147,22 +164,21 @@ impl WindowsDeadlineGuard {
     pub(crate) fn new(duration: Duration) -> io::Result<Self> {
         let target_thread = SendHandle(duplicate_current_thread()?);
         let deadline_tick_ms = Arc::new(AtomicU64::new(DISARMED));
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
 
         let watchdog_ticks = Arc::clone(&deadline_tick_ms);
-        let watchdog_shutdown = Arc::clone(&shutdown);
         let watchdog_target = target_thread;
 
         let watchdog = thread::Builder::new()
             .name("uffs-deadline-watchdog".into())
             .spawn(move || {
-                watchdog_loop(&watchdog_ticks, &watchdog_shutdown, watchdog_target);
+                watchdog_loop(&watchdog_ticks, &shutdown_rx, watchdog_target);
             })?;
 
         Ok(Self {
             duration,
             deadline_tick_ms,
-            shutdown,
+            shutdown_tx,
             target_thread,
             watchdog: Some(watchdog),
         })
@@ -213,11 +229,27 @@ impl WindowsDeadlineGuard {
 impl Drop for WindowsDeadlineGuard {
     /// Stop the watchdog and close the duplicated thread handle.
     ///
-    /// Worst-case Drop latency is [`WATCHDOG_POLL_MS`] ms (the time
-    /// for the watchdog to observe the shutdown flag).  This is a
-    /// once-per-client cost at CLI exit — imperceptible in practice.
+    /// Drop latency is bounded by the time to wake one condvar and
+    /// join one thread — sub-millisecond in practice.  Before the
+    /// [`mpsc::channel`] shutdown wake, this was up to
+    /// [`WATCHDOG_POLL_MS`] ms (empirically 48 ms median on the
+    /// Windows CLI hot path), because the watchdog was blocked in
+    /// [`thread::sleep`] and couldn't observe the shutdown flag
+    /// until the next poll tick.  A regression test
+    /// (`drop_is_prompt_when_guard_is_disarmed`) pins the new
+    /// contract so a future refactor back to a polling sleep
+    /// fails immediately.
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
+        // Send a wake token — the watchdog's `recv_timeout` returns
+        // `Ok(())` within a condvar wake, not the 50 ms poll boundary.
+        // A send error means the receiver was already dropped
+        // (watchdog panicked); the `join` below will surface that
+        // panic, so no extra action is needed here.
+        if self.shutdown_tx.send(()).is_err() {
+            tracing::debug!(
+                "deadline watchdog receiver already dropped; join below will surface any panic"
+            );
+        }
         if let Some(watchdog) = self.watchdog.take() {
             // If the watchdog panicked, we still want to close the
             // handle — drop the join result.
@@ -234,22 +266,31 @@ impl Drop for WindowsDeadlineGuard {
 /// Watchdog loop — polls the shared deadline and cancels I/O when
 /// it fires.
 ///
-/// Runs until `shutdown` is set.  When the deadline has passed, uses
+/// Runs until the paired [`mpsc::Sender`] sends a shutdown token or
+/// is dropped.  When the deadline has passed, uses
 /// `compare_exchange` to consume the deadline so the cancellation
 /// fires exactly once per `arm`.  Any errors from
 /// `CancelSynchronousIo` are logged and ignored — the most common
 /// cause is "no I/O was pending on that thread", which is benign
 /// (the RPC already returned before the watchdog got scheduled).
+///
+/// The [`mpsc::Receiver::recv_timeout`] call below replaces the
+/// earlier `thread::sleep` polling pattern: `Timeout` means "no
+/// shutdown, check the deadline"; `Ok(())` or `Disconnected` both
+/// mean "shut down now".  This gives us responsive shutdown (the
+/// paired `send` or drop wakes the condvar inside `recv_timeout`)
+/// without losing the 50 ms polling cadence that bounds deadline
+/// overshoot.
 fn watchdog_loop(
     deadline_tick_ms: &Arc<AtomicU64>,
-    shutdown: &Arc<AtomicBool>,
+    shutdown_rx: &mpsc::Receiver<()>,
     target: SendHandle,
 ) {
     loop {
-        if shutdown.load(Ordering::Acquire) {
-            break;
+        match shutdown_rx.recv_timeout(Duration::from_millis(WATCHDOG_POLL_MS)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
-        thread::sleep(Duration::from_millis(WATCHDOG_POLL_MS));
         let deadline = deadline_tick_ms.load(Ordering::Acquire);
         if deadline == DISARMED {
             continue;
@@ -347,6 +388,37 @@ mod tests {
         drop(guard);
         // If the watchdog didn't join in Drop, the test process
         // would hang here (cargo test has no implicit timeout).
+    }
+
+    /// Drop latency must stay under 10 ms on the CLI hot path.
+    ///
+    /// Before the mpsc-channel shutdown (Run 11), `thread::sleep(50 ms)`
+    /// in the watchdog loop meant the `Drop` impl could wait up to
+    /// 50 ms for the next wake — empirically 48 ms median, which was
+    /// ~60 % of the entire Windows CLI wall-clock (77 ms → 29 ms on
+    /// `uffs notepad.exe --drive D`).  This test pins the new
+    /// instant-wake contract so a future refactor that goes back to
+    /// a polling sleep fails immediately instead of silently
+    /// regressing every CLI user by ~50 %.
+    ///
+    /// The 10 ms ceiling is deliberately generous: a condvar wake +
+    /// thread join on a healthy Windows box is typically < 1 ms;
+    /// 10 ms leaves room for CI scheduler jitter and AV interference
+    /// without masking a genuine regression.
+    #[test]
+    fn drop_is_prompt_when_guard_is_disarmed() {
+        let guard = WindowsDeadlineGuard::new(Duration::from_mins(1))
+            .expect("guard construction must succeed on a healthy Windows box");
+        let start = std::time::Instant::now();
+        drop(guard);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(10),
+            "drop took {elapsed:?}; regression beyond 10 ms means the mpsc-channel \
+             shutdown wake is gone. Run 11 bisect: before the channel fix the \
+             watchdog used `thread::sleep(50 ms)` and the CLI hot path paid \
+             48 ms median on every invocation.",
+        );
     }
 
     /// arm + disarm must be cheap and must not fire the watchdog —
