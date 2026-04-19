@@ -52,7 +52,8 @@ use instructions::AGENT_INSTRUCTIONS;
 ///   connection is what lets those tasks actually run in parallel all the way
 ///   down to the daemon.
 /// * **Capacity is owned by the daemon.** `uffs-daemon` caps concurrent
-///   searches with a `Semaphore::new(available_parallelism())` and internally
+///   searches with a tuned `Semaphore` (`max(2, (cpus × 2) / drives)` by
+///   default, overridable via `UFFS_SEARCH_MAX_CONCURRENCY`) and internally
 ///   fans each query out via rayon, so any MCP-side pool would be redundant
 ///   (and worse, a potential extra bottleneck).
 /// * **Local-socket connect is sub-millisecond.** On Unix domain sockets /
