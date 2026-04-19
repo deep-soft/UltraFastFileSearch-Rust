@@ -891,6 +891,152 @@ fn from_params_path_contains_normalizes_forward_slashes() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// `is_ext_only` — gate for the `ExtensionIndex` fast path
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Regression pin for the 2026-04-19 fix: `--hide-system` / `--hide-ads`
+// must NOT disqualify the ext fast path, because those two predicates
+// are cheap enough to apply per-candidate inside the
+// `collect_global_top_n_numeric` fast-path loop.  Prior to this pin
+// every `uffs *.<ext> --hide-system --hide-ads` query (the default
+// bench shape) fell back to a 7 M-record linear scan.
+//
+// Anything heavier than `hide_system` / `hide_ads` — size, date,
+// attribute, exclude, descendant, bulkiness, name/path length,
+// allocated, treesize, tree_allocated, month, type — must continue to
+// disqualify the fast path because applying it per-candidate would
+// require non-trivial work (date parsing, path resolution, allocated-
+// size lookup, etc.) that defeats the O(K) advantage.
+
+#[test]
+fn is_ext_only_true_for_plain_ext_filter() {
+    let filters = SearchFilters {
+        extensions: vec!["dbt".to_owned()],
+        ..Default::default()
+    };
+    assert!(filters.is_ext_only());
+}
+
+#[test]
+fn is_ext_only_true_with_hide_system_regression_pin() {
+    // Regression pin: `--hide-system` MUST remain compatible with the
+    // ext fast path.  The fast-path loop applies the cached
+    // `is_system_metafile()` check per-candidate (~1 ns per record)
+    // instead of the previous behaviour of rejecting the fast path
+    // entirely and falling back to an O(N) linear scan of every record
+    // on every loaded drive.
+    let filters = SearchFilters {
+        hide_system: true,
+        extensions: vec!["dbt".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        filters.is_ext_only(),
+        "hide_system=true must not disqualify the ext fast path"
+    );
+}
+
+#[test]
+fn is_ext_only_true_with_hide_ads_regression_pin() {
+    // Regression pin: `--hide-ads` MUST remain compatible with the ext
+    // fast path.  The fast-path loop performs one name-arena read plus
+    // `memchr::memchr(b':')` per candidate (~30 ns), only when the
+    // flag is actually set, which is negligible compared to the full
+    // scan it replaces.
+    let filters = SearchFilters {
+        hide_ads: true,
+        extensions: vec!["dbt".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        filters.is_ext_only(),
+        "hide_ads=true must not disqualify the ext fast path"
+    );
+}
+
+#[test]
+fn is_ext_only_true_with_both_hide_flags_regression_pin() {
+    // The actual shape produced by `uffs *.dbt --hide-system --hide-ads`
+    // (which is what the cross-tool benchmark runs).
+    let filters = SearchFilters {
+        hide_system: true,
+        hide_ads: true,
+        extensions: vec!["dbt".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        filters.is_ext_only(),
+        "hide_system + hide_ads must not disqualify the ext fast path"
+    );
+}
+
+#[test]
+fn is_ext_only_false_without_extension_filter() {
+    let filters = SearchFilters {
+        hide_system: true,
+        ..Default::default()
+    };
+    assert!(
+        !filters.is_ext_only(),
+        "empty extensions must disqualify: there is nothing to look up in the ext-index"
+    );
+}
+
+#[test]
+fn is_ext_only_false_with_size_filter() {
+    let filters = SearchFilters {
+        min_size: Some(1000),
+        extensions: vec!["dll".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        !filters.is_ext_only(),
+        "size filter requires per-record size read, which the fast path does not apply"
+    );
+}
+
+#[test]
+fn is_ext_only_false_with_date_filter() {
+    let filters = SearchFilters {
+        newer_us: Some(1_000_000),
+        extensions: vec!["dll".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        !filters.is_ext_only(),
+        "date filter requires per-record timestamp read, not applied in fast path"
+    );
+}
+
+#[test]
+fn is_ext_only_false_with_attribute_filter() {
+    let filters = SearchFilters {
+        attr_require: 0x0002, // HIDDEN
+        extensions: vec!["dll".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        !filters.is_ext_only(),
+        "attribute filter requires per-record flags read, not applied in fast path"
+    );
+}
+
+#[test]
+fn is_ext_only_false_with_type_filter() {
+    let filters = SearchFilters {
+        extensions: vec!["dll".to_owned()],
+        type_filter: Some("picture".to_owned()),
+        ..Default::default()
+    };
+    // NB: field order above is correct — `extensions` (field 15) precedes
+    // `type_filter` (field 19) in the `SearchFilters` struct definition.
+    assert!(
+        !filters.is_ext_only(),
+        "type filter resolves to a superset of extensions, not applied in fast path"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Attribute presets
 // ═══════════════════════════════════════════════════════════════════════════
 

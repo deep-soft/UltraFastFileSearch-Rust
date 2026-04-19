@@ -16,11 +16,10 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 
-use crate::daemon_ctl::{
-    ElevationPolicy, find_daemon_exe, pid_file_path, resolve_elevation_policy, socket_path,
-    spawn_daemon,
-};
+use crate::daemon_ctl::{find_daemon_exe, pid_file_path, socket_path};
+use crate::daemon_spawn::{ElevationPolicy, resolve_elevation_policy, spawn_daemon};
 use crate::error::ClientError;
+use crate::protocol::response::DaemonStatus;
 
 /// Synchronous thin client for the UFFS daemon.
 ///
@@ -32,9 +31,108 @@ pub struct UffsClientSync {
     writer: Box<dyn Write + Send>,
     /// Monotonically increasing JSON-RPC request ID.
     next_id: u64,
+    /// Cached `DaemonStatus` from the most recent `status` RPC.
+    ///
+    /// `deep_health_check` populates this, letting
+    /// [`Self::await_ready`] short-circuit a redundant round-trip
+    /// when the daemon is already `Ready` (~5–10 ms saving per CLI
+    /// invocation on Windows named pipes — Run 10 Part B bisect in
+    /// `docs/research/perf-phase2-measurement-plan.md`).  `None`
+    /// means "no fresh status observed yet"; callers needing a
+    /// ground-truth signal must issue a new [`Self::status`] RPC.
+    cached_status: Option<DaemonStatus>,
+    /// Windows-only: per-RPC deadline guard.
+    ///
+    /// Unix enforces the deadline via `SO_RCVTIMEO` / `SO_SNDTIMEO`
+    /// directly on the stream at connect time; Windows named pipes
+    /// have no equivalent, so we spawn a watchdog thread that calls
+    /// `CancelSynchronousIo` when an RPC exceeds its deadline.  See
+    /// [`crate::windows_deadline`] for the full rationale.
+    ///
+    /// `None` when the deadline is disabled
+    /// (`UFFS_CLIENT_TIMEOUT_SECS=0`) — in that case no watchdog
+    /// thread is spawned and [`Self::send_request`] skips the
+    /// arm/disarm calls entirely.
+    #[cfg(windows)]
+    deadline_guard: Option<crate::windows_deadline::WindowsDeadlineGuard>,
 }
 
 impl UffsClientSync {
+    /// Assemble a client from its reader/writer halves, with no
+    /// Windows deadline guard.
+    ///
+    /// Crate-internal constructor used by the Unix
+    /// `platform_connect` (living in
+    /// [`crate::connect_sync_platform`]) — lets that split `impl`
+    /// build a value without touching the private fields directly.
+    #[cfg(unix)]
+    #[must_use]
+    pub(crate) fn from_parts(
+        reader: BufReader<Box<dyn Read + Send>>,
+        writer: Box<dyn Write + Send>,
+    ) -> Self {
+        Self {
+            reader,
+            writer,
+            next_id: 1,
+            cached_status: None,
+        }
+    }
+
+    /// Assemble a client from its parts and an optional Windows
+    /// deadline guard.
+    ///
+    /// Crate-internal constructor used by the Windows
+    /// `platform_connect` (living in
+    /// [`crate::connect_sync_platform`]).
+    #[cfg(windows)]
+    #[must_use]
+    pub(crate) fn from_parts_with_deadline_guard(
+        reader: BufReader<Box<dyn Read + Send>>,
+        writer: Box<dyn Write + Send>,
+        deadline_guard: Option<crate::windows_deadline::WindowsDeadlineGuard>,
+    ) -> Self {
+        Self {
+            reader,
+            writer,
+            next_id: 1,
+            cached_status: None,
+            deadline_guard,
+        }
+    }
+
+    /// Test-only constructor that accepts arbitrary reader/writer
+    /// halves and skips the Windows deadline guard.
+    ///
+    /// Used by the `deep_health_check` and RPC-wire tests in
+    /// [`crate::connect_sync_tests`] to drive a fully in-memory
+    /// mock daemon without opening a real socket.  `#[cfg(test)]`
+    /// keeps it out of production builds entirely.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_parts_for_test(
+        reader: BufReader<Box<dyn Read + Send>>,
+        writer: Box<dyn Write + Send>,
+    ) -> Self {
+        Self {
+            reader,
+            writer,
+            next_id: 1,
+            cached_status: None,
+            #[cfg(windows)]
+            deadline_guard: None,
+        }
+    }
+
+    /// Test-only: pre-seed the cached `DaemonStatus` so
+    /// [`crate::connect_sync_tests`] can exercise the
+    /// [`Self::await_ready`] short-circuit without round-tripping
+    /// a real probe through the in-memory mock.
+    #[cfg(test)]
+    pub(crate) fn set_cached_status_for_test(&mut self, status: DaemonStatus) {
+        self.cached_status = Some(status);
+    }
+
     /// Connect to a running daemon, or auto-start one if not running.
     ///
     /// # Errors
@@ -100,7 +198,17 @@ impl UffsClientSync {
         let sock = socket_path();
 
         // Try connecting first — fast path if daemon is already running.
-        if let Ok(client) = Self::platform_connect() {
+        // Run the strict identity check before handing the client back:
+        // a successful TCP/pipe connect only proves *something* was
+        // listening on the endpoint, not that it was the daemon we
+        // trust.  `verify_daemon_after_connect_strict` closes that
+        // window (commit B), and `deep_health_check` then proves the
+        // daemon is actually responsive to RPCs (commit C).
+        if let Ok(mut client) = Self::platform_connect() {
+            crate::daemon_ctl::verify_daemon_after_connect_strict()?;
+            if crate::daemon_ctl::deep_health_check_enabled() {
+                client.deep_health_check()?;
+            }
             return Ok(client);
         }
 
@@ -128,7 +236,12 @@ impl UffsClientSync {
         }
 
         // Auto-start the daemon with the requested elevation policy.
-        auto_start_daemon(spawn_args, policy)?;
+        // Keep the returned child handle alive for the retry loop so we
+        // can detect unexpected early exit (panic, clap parse error,
+        // validate_data_sources bail, etc.) instead of spinning through
+        // 20 retries with no diagnostic signal — see the `LOG/Output`
+        // silent-failure scenario.
+        let mut child_handle = auto_start_daemon(spawn_args, policy)?;
 
         // Retry with backoff.
         let mut delay_ms = 50_u64;
@@ -136,8 +249,48 @@ impl UffsClientSync {
         for attempt in 1..=max_attempts {
             std::thread::sleep(core::time::Duration::from_millis(delay_ms));
 
-            if let Ok(client) = Self::platform_connect() {
+            if let Ok(mut client) = Self::platform_connect() {
+                // Apply the strict identity check here too — even a
+                // daemon we just spawned ourselves could have lost the
+                // race to a rogue process that bound the endpoint
+                // milliseconds earlier.  Commit B.  Commit C then
+                // probes the IndexService with a cheap `drives` RPC so
+                // a Ready-but-wedged daemon surfaces immediately.
+                crate::daemon_ctl::verify_daemon_after_connect_strict()?;
+                if crate::daemon_ctl::deep_health_check_enabled() {
+                    client.deep_health_check()?;
+                }
                 return Ok(client);
+            }
+
+            // ── Early-exit detection ─────────────────────────────────
+            // If we spawned the daemon this call, poll the child handle
+            // once per attempt.  An exited child means uffsd failed to
+            // reach IPC bind — surface the exit code immediately instead
+            // of waiting out the full 31 s retry window with a generic
+            // "could not connect after 20 attempts" error.
+            if let Some(handle) = child_handle.as_mut() {
+                match handle.try_wait() {
+                    Ok(Some(code)) => {
+                        return Err(ClientError::DaemonStartFailed(format!(
+                            "Daemon (pid {pid}) exited with code {code} after {attempt} connect \
+                             attempt(s) — the daemon died before it could bind IPC.  \
+                             Check the daemon log (see --log-file or UFFS_LOG_DIR); common \
+                             causes: code 2 = clap argv rejected (bad flag combo), code 101 = \
+                             Rust panic, code 0 = graceful exit (validate_data_sources bailed).",
+                            pid = handle.pid(),
+                        )));
+                    }
+                    Ok(None) => {
+                        // Still alive — keep retrying the connect.
+                    }
+                    Err(poll_err) => {
+                        tracing::debug!(
+                            error = %poll_err,
+                            "connect_with_args: child liveness poll failed, ignoring"
+                        );
+                    }
+                }
             }
 
             delay_ms = (delay_ms * 2).min(2000);
@@ -165,6 +318,16 @@ impl UffsClientSync {
 
     /// Send a JSON-RPC request and read the response (blocking).
     ///
+    /// # Deadline
+    ///
+    /// On Windows, arms the [`crate::windows_deadline::WindowsDeadlineGuard`]
+    /// before any I/O and disarms it on return (success or error).
+    /// Using a [`DisarmOnDrop`] guard makes the disarm robust against
+    /// early-return paths, including `?` bubbling from the read loop.
+    ///
+    /// On Unix, the deadline is enforced by `SO_RCVTIMEO` /
+    /// `SO_SNDTIMEO` set at connect time and needs no per-call logic.
+    ///
     /// # Errors
     ///
     /// Returns `ClientError` on I/O, protocol, or timeout failure.
@@ -173,6 +336,14 @@ impl UffsClientSync {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, ClientError> {
+        // Arm the Windows deadline guard, if present.  `_disarmer`
+        // guarantees disarm on every exit path, including `?`.
+        #[cfg(windows)]
+        let _disarmer = self.deadline_guard.as_ref().map(|guard| {
+            guard.arm();
+            DisarmOnDrop { guard }
+        });
+
         let id = self.next_id;
         self.next_id += 1;
 
@@ -358,16 +529,28 @@ impl UffsClientSync {
 
     /// Wait for the daemon to become ready (status == Ready).
     ///
+    /// Short-circuits when `cached_status` is `Ready` (populated by
+    /// `deep_health_check` at connect time), saving an RPC
+    /// round-trip on the hot CLI path.  Falls back to the exponential
+    /// poll loop when the cache is `None`, `Loading`, or `Refreshing`.
+    ///
     /// # Errors
     ///
     /// Returns `ClientError::Timeout` if not ready within `timeout`.
     pub fn await_ready(&mut self, timeout: core::time::Duration) -> Result<(), ClientError> {
+        // Run 10 Part B short-circuit: skip the RPC on cached `Ready`.
+        if matches!(self.cached_status, Some(DaemonStatus::Ready)) {
+            return Ok(());
+        }
+
         let deadline = std::time::Instant::now() + timeout;
         let mut poll_interval = core::time::Duration::from_millis(100);
 
         while std::time::Instant::now() < deadline {
             match self.status() {
-                Ok(resp) if resp.status == crate::protocol::response::DaemonStatus::Ready => {
+                Ok(resp) if resp.status == DaemonStatus::Ready => {
+                    // Refresh cache so follow-up calls short-circuit.
+                    self.cached_status = Some(DaemonStatus::Ready);
                     return Ok(());
                 }
                 // Loading/refreshing or daemon restarting — retry.
@@ -439,103 +622,80 @@ impl UffsClientSync {
         let _result = self.send_request("keepalive", None)?;
         Ok(())
     }
-}
 
-// ── Platform-specific connection ────────────────────────────────────
-
-#[cfg(unix)]
-impl UffsClientSync {
-    /// Connect via Unix domain socket (macOS/Linux).
-    fn platform_connect() -> Result<Self, ClientError> {
-        let sock_path = socket_path();
-        let stream = std::os::unix::net::UnixStream::connect(&sock_path)
-            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
-
-        stream
-            .set_read_timeout(Some(core::time::Duration::from_secs(30)))
-            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
-
-        let writer = stream
-            .try_clone()
-            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
-
-        Ok(Self {
-            reader: BufReader::new(Box::new(stream)),
-            writer: Box::new(writer),
-            next_id: 1,
-        })
+    /// Commit C — **deep health check**: round-trip a `status` RPC
+    /// right after connect to prove the daemon's request/response
+    /// loop is responsive, and cache the returned [`DaemonStatus`]
+    /// so [`Self::await_ready`] can short-circuit on the hot path.
+    ///
+    /// Run 10 Part B (2026-04-19) consolidated the prior `drives`
+    /// liveness probe + `await_ready` readiness probe into this
+    /// single `status` call, saving one full RPC round-trip per CLI
+    /// invocation (~5–10 ms on Windows named pipes).  Skippable via
+    /// `UFFS_CLIENT_SKIP_HEALTH_CHECK=1` (see
+    /// [`deep_health_check_enabled`]).  Cost: ~200–600 µs local IPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::ConnectionFailed`] wrapping the
+    /// underlying transport/protocol error.
+    pub(crate) fn deep_health_check(&mut self) -> Result<(), ClientError> {
+        match self.status() {
+            Ok(resp) => {
+                self.cached_status = Some(resp.status);
+                Ok(())
+            }
+            Err(probe_err) => {
+                // Torn probe — clear cache so await_ready can't lie.
+                self.cached_status = None;
+                Err(ClientError::ConnectionFailed(format!(
+                    "Deep health check failed: the daemon accepted the connection but did \
+                     not respond correctly to a probe `status` RPC ({probe_err}). The \
+                     daemon may be wedged (deadlocked worker, stuck kernel I/O); consider \
+                     `uffs daemon kill` and restart.  Set UFFS_CLIENT_SKIP_HEALTH_CHECK=1 \
+                     to bypass this probe."
+                )))
+            }
+        }
     }
 }
 
+/// RAII helper: disarm a [`crate::windows_deadline::WindowsDeadlineGuard`]
+/// when this value is dropped.
+///
+/// Wrapping the arm/disarm pair in an RAII sentinel rather than
+/// manual disarm-before-return is crucial because `send_request`
+/// uses `?` to propagate transport and protocol errors — with manual
+/// disarm, every `?` would either have to be replaced with an
+/// explicit match (ugly) or would leak an armed deadline that then
+/// fires on the *next* RPC (subtle bug).  Dropping takes care of
+/// both the success and error paths uniformly.
 #[cfg(windows)]
-impl UffsClientSync {
-    /// Connect via Windows named pipe.
-    ///
-    /// This is the CLI hot path — opens the pipe with blocking
-    /// `std::fs::OpenOptions`, avoiding the `ws2_32.dll` import that
-    /// `AF_UNIX` pulled in (~54 ms per launch).
-    ///
-    /// Handles `ERROR_PIPE_BUSY` (231) by sleep-retrying a few times:
-    /// the daemon creates the next server instance immediately after
-    /// accept, but there is a tiny window where all instances are
-    /// connected and the next one hasn't been spun up yet.
-    fn platform_connect() -> Result<Self, ClientError> {
-        use std::fs::{File, OpenOptions};
+struct DisarmOnDrop<'guard> {
+    /// The deadline guard to disarm when this sentinel is dropped.
+    guard: &'guard crate::windows_deadline::WindowsDeadlineGuard,
+}
 
-        /// `ERROR_PIPE_BUSY` — transient, retry with backoff.
-        const ERROR_PIPE_BUSY: i32 = 231;
-
-        let name = crate::daemon_ctl::pipe_name()
-            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
-
-        let pipe: File = {
-            let mut last_err: Option<std::io::Error> = None;
-            let mut pipe_file: Option<File> = None;
-            for attempt in 0..5_u32 {
-                match OpenOptions::new().read(true).write(true).open(&name) {
-                    Ok(file) => {
-                        pipe_file = Some(file);
-                        break;
-                    }
-                    Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
-                        // Pipe saturated for a moment — back off briefly.
-                        std::thread::sleep(core::time::Duration::from_millis(u64::from(
-                            10_u32 << attempt,
-                        )));
-                        last_err = Some(err);
-                    }
-                    Err(err) => {
-                        return Err(ClientError::ConnectionFailed(err.to_string()));
-                    }
-                }
-            }
-            pipe_file.ok_or_else(|| {
-                ClientError::ConnectionFailed(last_err.map_or_else(
-                    || "pipe busy after retries".to_owned(),
-                    |err| format!("pipe busy after retries: {err}"),
-                ))
-            })?
-        };
-
-        // A second handle to the same pipe instance for the writer side.
-        // Named-pipe handles are duplicable via `DuplicateHandle` (which
-        // is what `File::try_clone` does internally on Windows).
-        let writer_handle = pipe
-            .try_clone()
-            .map_err(|err| ClientError::ConnectionFailed(err.to_string()))?;
-
-        Ok(Self {
-            reader: BufReader::new(Box::new(pipe)),
-            writer: Box::new(writer_handle),
-            next_id: 1,
-        })
+#[cfg(windows)]
+impl Drop for DisarmOnDrop<'_> {
+    fn drop(&mut self) {
+        self.guard.disarm();
     }
 }
 
 // ── Auto-start daemon ───────────────────────────────────────────────
 
 /// Spawn the daemon binary if not already running.
-fn auto_start_daemon(spawn_args: &[String], policy: ElevationPolicy) -> Result<(), ClientError> {
+///
+/// Returns:
+/// * `Ok(Some(handle))` when this call spawned a fresh daemon — the handle lets
+///   the caller's retry loop poll for unexpected early exit.
+/// * `Ok(None)` when an existing daemon was already alive and no spawn
+///   happened, so there is nothing to poll.
+fn auto_start_daemon(
+    spawn_args: &[String],
+    policy: ElevationPolicy,
+) -> Result<Option<crate::daemon_child::DaemonChildHandle>, ClientError> {
     let pid_path = pid_file_path();
 
     // Check if daemon is already alive via PID file.
@@ -543,7 +703,7 @@ fn auto_start_daemon(spawn_args: &[String], policy: ElevationPolicy) -> Result<(
         && crate::daemon_ctl::parse_pid_file(&pid_path)
             .is_some_and(|(pid, _ts, _hash, _nonce)| is_process_alive(pid))
     {
-        return Ok(());
+        return Ok(None);
     }
     if pid_path.exists() {
         // Stale PID file — clean up.
@@ -554,8 +714,8 @@ fn auto_start_daemon(spawn_args: &[String], policy: ElevationPolicy) -> Result<(
 
     let daemon_exe = find_daemon_exe();
     let str_args: Vec<&str> = spawn_args.iter().map(String::as_str).collect();
-    spawn_daemon(&daemon_exe, &str_args, policy)?;
-    Ok(())
+    let handle = spawn_daemon(&daemon_exe, &str_args, policy)?;
+    Ok(Some(handle))
 }
 
 /// Check if a process is alive **and** is actually a `uffsd` daemon.

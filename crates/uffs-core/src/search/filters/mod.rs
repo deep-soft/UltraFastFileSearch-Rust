@@ -457,15 +457,32 @@ impl SearchFilters {
         );
     }
 
-    /// Returns `true` when the only active filter is `extensions` — no
-    /// size, date, attr, exclude, descendant, or system-hide constraints.
-    /// When this is true and the pattern is match-all (`*`), we can use
-    /// the extension inverted index for O(K) iteration instead of O(N).
+    /// Returns `true` when the active filter set is simple enough to
+    /// iterate via the extension inverted index — only `extensions`
+    /// plus the cheap per-candidate predicates (`hide_system`,
+    /// `hide_ads`) that the fast-path loop in
+    /// `collect_global_top_n_numeric` can apply inline without any
+    /// secondary data structure.  Any heavier filter (size, date,
+    /// attribute, exclude, descendant, bulkiness, name/path length,
+    /// `allocated`, `treesize`, `tree_allocated`, month, type) disqualifies
+    /// the fast path because it would require per-record work that
+    /// defeats the O(K) advantage of the CSR lookup.
+    ///
+    /// **Historical note (2026-04-19).**  Prior to this session
+    /// `hide_system` and `hide_ads` were also in the rejection list,
+    /// which meant every `uffs *.<ext> --hide-system --hide-ads`
+    /// query — the default bench shape — fell back to an O(N) scan of
+    /// every record on every loaded drive.  Measured cost on Drive D
+    /// (7 M records): `*.dbt` (11 results) took **216 ms** in the
+    /// daemon versus **< 1 ms** on the fast path.  See `Run 9` in
+    /// `docs/research/perf-phase2-measurement-plan.md`.  The inline
+    /// hide-system/hide-ads checks in the fast-path loop cost ~1 ns
+    /// (cached bit) and ~30 ns (name-arena read + memchr) per
+    /// candidate respectively, which is negligible compared to the
+    /// 7 M-record full scan they replace.
     #[must_use]
     pub const fn is_ext_only(&self) -> bool {
         !self.extensions.is_empty()
-            && !self.hide_system
-            && !self.hide_ads
             && self.min_size.is_none()
             && self.max_size.is_none()
             && self.newer_us.is_none()

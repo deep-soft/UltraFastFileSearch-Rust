@@ -172,7 +172,7 @@ pub struct BucketRow {
 /// `uffs-core` so the aggregate module has no dependency on the client
 /// crate.  The daemon / CLI can convert these to wire predicates
 /// trivially.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DrilldownPredicate {
     /// Canonical field name (e.g. `"extension"`, `"drive"`, `"type"`).
     pub field: String,
@@ -183,7 +183,7 @@ pub struct DrilldownPredicate {
 }
 
 /// Value for a [`DrilldownPredicate`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DrilldownValue {
     /// A single string value.
     String(String),

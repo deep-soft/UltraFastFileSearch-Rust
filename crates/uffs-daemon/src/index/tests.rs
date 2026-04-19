@@ -98,6 +98,7 @@ fn preset_overview_returns_multiple_results() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -125,6 +126,7 @@ fn count_returns_total_records() {
     let index = test_index();
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &[spec("count")],
         Vec::new(),
         None,
@@ -150,6 +152,7 @@ fn stats_size_returns_metrics() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -179,6 +182,7 @@ fn terms_extension_returns_buckets() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -212,6 +216,7 @@ fn histogram_size_returns_buckets() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -238,6 +243,7 @@ fn date_histogram_returns_buckets() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -261,6 +267,7 @@ fn missing_extension_counts_records_without_ext() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -286,6 +293,7 @@ fn distinct_extension_counts_unique_values() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -312,6 +320,7 @@ fn rollup_drive_returns_buckets() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -336,6 +345,7 @@ fn duplicates_returns_result() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -359,6 +369,7 @@ fn raw_power_syntax_terms_works() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -380,6 +391,7 @@ fn unknown_kind_skipped_gracefully() {
     let specs = [spec("bogus_kind")];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -398,6 +410,7 @@ fn missing_field_skipped_gracefully() {
     let specs = [spec("stats")];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -431,6 +444,7 @@ fn multiple_specs_return_multiple_results() {
     ];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -459,6 +473,7 @@ fn stats_overview_preset_wire_roundtrip() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -506,6 +521,7 @@ fn terms_with_sample_produces_sample_rows_and_drilldown() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -572,6 +588,7 @@ fn terms_without_sample_has_empty_sample_rows() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -607,6 +624,7 @@ fn rollup_drive_via_wire() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -638,6 +656,7 @@ fn rollup_path_with_sample_via_wire() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -708,6 +727,7 @@ fn query_predicates_forwarded_to_drilldown() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         predicates,
         None,
@@ -744,6 +764,7 @@ fn raw_power_syntax_rollup_drive() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -768,6 +789,7 @@ fn raw_power_syntax_hist_size() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -789,6 +811,7 @@ fn raw_power_syntax_stats_size() {
     }];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -815,6 +838,7 @@ fn page_size_paginates_terms_buckets() {
     // Request page_size=2 → first page should have ≤2 buckets.
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -848,6 +872,7 @@ fn cursor_returns_next_page() {
     // First page.
     let (page1, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -865,6 +890,7 @@ fn cursor_returns_next_page() {
     // Second page using cursor from first.
     let (page2, _matched_page2) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         Some(cursor),
@@ -896,6 +922,7 @@ fn page_size_does_not_affect_non_bucket_results() {
     let specs = [spec("count")];
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -924,6 +951,7 @@ fn no_pagination_returns_all_buckets() {
     // Without pagination, all buckets returned.
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -955,6 +983,7 @@ fn last_page_has_no_next_cursor() {
     // Page size of 100 is bigger than our 4 extensions → single page.
     let (results, _matched) = IndexManager::run_aggregations(
         &index,
+        None,
         &specs,
         Vec::new(),
         None,
@@ -968,4 +997,241 @@ fn last_page_has_no_next_cursor() {
         terms.next_cursor.is_none(),
         "page_size larger than total buckets should produce no next_cursor"
     );
+}
+
+// ── Aggregate cache integration ──────────────────────────────────
+
+#[test]
+fn cache_hit_on_identical_second_call() {
+    use uffs_core::aggregate::AggregateCache;
+
+    let index = test_index();
+    let cache = AggregateCache::default_ttl();
+    let specs = [AggregateSpecWire {
+        field: Some("extension".to_owned()),
+        top: Some(10),
+        ..spec("terms")
+    }];
+
+    // First call populates the cache (miss).
+    let (first, _) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &AggregateFilter::default(),
+    );
+    let stats_after_first = cache.stats();
+    assert_eq!(stats_after_first.misses, 1, "first call should miss");
+    assert_eq!(stats_after_first.hits, 0, "first call cannot hit");
+    assert_eq!(stats_after_first.entries, 1, "miss should populate cache");
+
+    // Second call with identical inputs must hit.
+    let (second, _) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &AggregateFilter::default(),
+    );
+    let stats_after_second = cache.stats();
+    assert_eq!(stats_after_second.hits, 1, "second call must hit");
+    assert_eq!(
+        stats_after_second.misses, 1,
+        "miss count must not increase on a hit"
+    );
+
+    // Response shape is identical.
+    assert_eq!(
+        first.len(),
+        second.len(),
+        "hit must return same number of results as miss"
+    );
+    let first_buckets = first.iter().find(|r| r.kind == "buckets").unwrap();
+    let second_buckets = second.iter().find(|r| r.kind == "buckets").unwrap();
+    assert_eq!(
+        first_buckets.buckets.len(),
+        second_buckets.buckets.len(),
+        "hit must return same bucket count as miss"
+    );
+}
+
+#[test]
+fn cache_miss_when_filter_differs() {
+    use uffs_core::aggregate::AggregateCache;
+
+    let index = test_index();
+    let cache = AggregateCache::default_ttl();
+    let specs = [AggregateSpecWire {
+        field: Some("extension".to_owned()),
+        top: Some(10),
+        ..spec("terms")
+    }];
+
+    // Populate cache with the unfiltered query.
+    let (_initial, _): (Vec<_>, u64) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &AggregateFilter::default(),
+    );
+    assert_eq!(cache.stats().entries, 1);
+
+    // Identical query with a different filter must NOT hit.
+    let narrower = AggregateFilter {
+        extensions: vec!["rs".to_owned()],
+        ..AggregateFilter::default()
+    };
+    let (_narrow, _): (Vec<_>, u64) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &narrower,
+    );
+    let stats = cache.stats();
+    assert_eq!(
+        stats.hits, 0,
+        "different filter must be treated as a different key"
+    );
+    assert_eq!(stats.misses, 2, "should log a second miss");
+    assert_eq!(stats.entries, 2, "second miss should create a second entry");
+}
+
+#[test]
+fn cache_invalidated_by_index_version_bump() {
+    use uffs_core::aggregate::AggregateCache;
+
+    let index = test_index();
+    let cache = AggregateCache::default_ttl();
+    let specs = [AggregateSpecWire {
+        field: Some("extension".to_owned()),
+        top: Some(10),
+        ..spec("terms")
+    }];
+
+    // Populate cache.
+    let (_seed, _): (Vec<_>, u64) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &AggregateFilter::default(),
+    );
+    assert_eq!(cache.stats().entries, 1);
+
+    // Simulate a drive mutation: version bump → cache invalidation.
+    cache.set_index_version(1);
+    assert!(
+        cache.is_empty(),
+        "set_index_version must drop stale entries"
+    );
+
+    // Second call is a miss again because the previous entry was
+    // invalidated by the version change.
+    let (_post_bump, _): (Vec<_>, u64) = IndexManager::run_aggregations(
+        &index,
+        Some(&cache),
+        &specs,
+        Vec::new(),
+        None,
+        None,
+        None,
+        &[],
+        &AggregateFilter::default(),
+    );
+    let stats = cache.stats();
+    assert_eq!(
+        stats.hits, 0,
+        "call after version bump must not see a cached entry"
+    );
+    assert!(stats.misses >= 2, "post-bump call must be recorded as miss");
+}
+
+// ── auto-concurrency target ────────────────────────────────────────────────
+//
+// Lock in the `max(2, (cpus × 26) / (drives × 10))` formula for a handful of
+// representative box shapes.  If anyone ever wants to retune the factor,
+// these assertions will fail loudly and the developer has to update both the
+// formula *and* the docstring (which quotes the 24/7 = 8 measurement).
+
+#[test]
+fn auto_concurrency_target_24x7_landed_on_8() {
+    // The whole point of the 2.6× factor: the user's 24-core / 7-drive
+    // Windows box's empirical sweet spot (v0.5.45 sweep, 2026-04-18).
+    assert_eq!(IndexManager::auto_concurrency_target(24, 7), 8);
+}
+
+#[test]
+fn auto_concurrency_target_common_box_shapes() {
+    // (cpus, drives, expected_permits) — derived from
+    //   max(2, floor((cpus × 26) / (drives × 10)))
+    let cases: &[(usize, usize, usize)] = &[
+        // Laptops & desktops.
+        (4, 1, 10),  //  4 × 26 /  10 = 10   (single-drive 4-core)
+        (8, 1, 20),  //  8 × 26 /  10 = 20   (single-drive 8-core)
+        (8, 2, 10),  //  8 × 26 /  20 = 10
+        (12, 2, 15), // 12 × 26 /  20 = 15
+        (16, 2, 20), // 16 × 26 /  20 = 20
+        // Developer workstations (the Mac box).
+        (16, 7, 5), // 16 × 26 /  70 =  5
+        // The calibration target: user's Windows box.
+        (24, 7, 8), // 24 × 26 /  70 =  8   ← landed on 8 by design
+        // Big storage servers.
+        (32, 14, 5), // 32 × 26 / 140 =  5
+        (64, 2, 83), // 64 × 26 /  20 = 83
+        // Edge cases.
+        (1, 1, 2),    //  1 × 26 /  10 =  2 (floor of 2 kicks in at ceil)
+        (2, 1, 5),    //  2 × 26 /  10 =  5
+        (24, 100, 2), // 24 × 26 /1000 =  0 → floor to 2
+    ];
+    for &(cpus, drives, expected) in cases {
+        assert_eq!(
+            IndexManager::auto_concurrency_target(cpus, drives),
+            expected,
+            "auto_concurrency_target({cpus}, {drives}) should be {expected}"
+        );
+    }
+}
+
+#[test]
+fn auto_concurrency_target_zero_drives_treated_as_one() {
+    // Drives count of zero is clamped up to 1 so the daemon can still
+    // admit queries during the pre-load window (there is nothing to
+    // scan yet, so a permit is essentially free).
+    assert_eq!(
+        IndexManager::auto_concurrency_target(16, 0),
+        IndexManager::auto_concurrency_target(16, 1),
+        "drives = 0 must be treated identically to drives = 1"
+    );
+}
+
+#[test]
+fn auto_concurrency_target_floor_prevents_zero_permits() {
+    // Pathological shape: many drives, few CPUs.  Raw ratio rounds to
+    // zero — the floor of 2 must still apply so the daemon can make
+    // progress.
+    assert_eq!(IndexManager::auto_concurrency_target(2, 64), 2);
+    assert_eq!(IndexManager::auto_concurrency_target(1, 200), 2);
 }

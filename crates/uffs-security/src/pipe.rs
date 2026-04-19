@@ -204,16 +204,16 @@ impl OwnerOnlySd {
     }
 }
 
+#[expect(
+    unsafe_code,
+    reason = "PSECURITY_DESCRIPTOR is *mut c_void but the allocation is owned exclusively"
+)]
 // SAFETY: `OwnerOnlySd` owns its `PSECURITY_DESCRIPTOR` allocation
 // exclusively — the pointer is private, never aliased, and freed in
 // `Drop`.  Moving the struct to another thread therefore moves the
 // whole allocation with it, which is sound.  We do not implement `Sync`
 // because two threads reading `self.sd.0` and passing it to Win32 APIs
 // simultaneously has no documented guarantee in the Windows SDK.
-#[expect(
-    unsafe_code,
-    reason = "PSECURITY_DESCRIPTOR is *mut c_void but the allocation is owned exclusively"
-)]
 unsafe impl Send for OwnerOnlySd {}
 
 impl Drop for OwnerOnlySd {

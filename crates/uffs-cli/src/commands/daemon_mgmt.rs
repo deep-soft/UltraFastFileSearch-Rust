@@ -104,9 +104,18 @@ fn daemon_start(
     // daemon always receives them regardless of how it is elevated.
 
     // Probe env vars (read once so we can print them before forwarding).
-    let env_rust_log = std::env::var("RUST_LOG").ok();
-    let env_uffs_log = std::env::var("UFFS_LOG").ok();
-    let env_uffs_log_dir = std::env::var("UFFS_LOG_DIR").ok();
+    //
+    // IMPORTANT: PowerShell (and other shells in long-lived sessions) often
+    // leave variables set to the EMPTY STRING after a script unsets them —
+    // `std::env::var("X")` then returns `Ok("")`, not `Err(NotPresent)`.
+    // Treating an empty-string env var as a real value is what caused the
+    // `--log-level "" --log-file uffsd.log` silent-failure regression: uffsd
+    // received an empty EnvFilter (dropping all logs) and a relative log
+    // path whose parent `""` tripped tracing_appender's `.expect(...)` panic.
+    // So normalise `Some("")` to `None` at the source via `non_empty_env`.
+    let env_rust_log = non_empty_env(std::env::var("RUST_LOG").ok());
+    let env_uffs_log = non_empty_env(std::env::var("UFFS_LOG").ok());
+    let env_uffs_log_dir = non_empty_env(std::env::var("UFFS_LOG_DIR").ok());
 
     // Effective log level: CLI arg wins; fall back to UFFS_LOG then RUST_LOG.
     let effective_log_level: String = if log_level == "info" {
@@ -123,6 +132,11 @@ fn daemon_start(
     }
 
     // Effective log file: CLI arg wins; fall back to $UFFS_LOG_DIR/uffsd.log.
+    // The `non_empty` filter above guarantees `env_uffs_log_dir` is a real,
+    // non-empty path — otherwise `PathBuf::from("").join("uffsd.log")` would
+    // produce a relative `uffsd.log`, which in turn breaks the detached
+    // daemon's file appender (empty parent dir → create_dir_all fails →
+    // rolling-appender panics at startup, uffsd dies before binding IPC).
     let derived_log_file = env_uffs_log_dir
         .as_deref()
         .map(|dir| std::path::PathBuf::from(dir).join("uffsd.log"));
@@ -289,6 +303,24 @@ fn daemon_stats() -> Result<()> {
             println!("Total query time:  {}", fmt(total_query));
         }
         println!("Queries/second:    {:.2}", stats.queries_per_second);
+
+        // Aggregate cache observability.  Hit-rate is computed on
+        // demand to avoid a division-by-zero for cold daemons.
+        let lookups = stats.agg_cache_hits.saturating_add(stats.agg_cache_misses);
+        #[expect(
+            clippy::float_arithmetic,
+            clippy::cast_precision_loss,
+            reason = "hit-rate display is best-effort approximate"
+        )]
+        let hit_rate = if lookups > 0 {
+            (stats.agg_cache_hits as f64 / lookups as f64) * 100.0_f64
+        } else {
+            0.0_f64
+        };
+        println!(
+            "Agg cache:         {} hits / {} misses ({:.1}% hit-rate, {} entries)",
+            stats.agg_cache_hits, stats.agg_cache_misses, hit_rate, stats.agg_cache_entries,
+        );
     } else {
         println!("Daemon is not running.");
     }
@@ -593,6 +625,23 @@ fn resolve_drive_subdirs(data_dir: &std::path::Path, drives: &[char]) -> Vec<std
     results
 }
 
+/// Normalise an env-var probe so `Some("")` becomes `None`.
+///
+/// `std::env::var("X")` returns `Ok("")` when a shell has left `X` set to the
+/// empty string (common in PowerShell after a sub-script unsets a variable
+/// via assignment rather than `Remove-Item Env:\X`).  Treating that as a real
+/// value is what caused the silent `uffs daemon start` failure documented in
+/// `LOG/Output`: the CLI forwarded `--log-level ""` and
+/// `--log-file uffsd.log` (relative path, from `""+"/uffsd.log"`) to uffsd,
+/// uffsd's `tracing_appender::rolling::never("", "uffsd.log")` then panicked
+/// via `.expect("initializing rolling file appender failed")`, the panic
+/// hook called `process::exit(101)` before IPC could bind, and the client
+/// timed out after 20 retries with no diagnostic signal.
+#[must_use]
+fn non_empty_env(value: Option<String>) -> Option<String> {
+    value.filter(|val| !val.is_empty())
+}
+
 /// Find the best MFT file in a directory by extension preference.
 ///
 /// Preference order: `.iocp` > `.uffs` > `.bin` > `.raw` > `.mft`.
@@ -617,4 +666,49 @@ fn find_best_mft_in_dir(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::non_empty_env;
+
+    /// Missing env var → `None` flows through unchanged.
+    #[test]
+    fn non_empty_env_passes_none_through() {
+        assert_eq!(non_empty_env(None), None);
+    }
+
+    /// **Regression (silent-start bug, `LOG/Output`):** PowerShell leaving
+    /// `RUST_LOG=""` / `UFFS_LOG_DIR=""` set to the empty string must be
+    /// treated exactly like "unset".  Before this fix, the CLI forwarded the
+    /// empty string to uffsd as `--log-level ""` / `--log-file uffsd.log`,
+    /// uffsd panicked in the tracing appender, and the client spun through
+    /// 20 retries with no diagnostic signal.
+    #[test]
+    fn non_empty_env_collapses_empty_string_to_none() {
+        assert_eq!(non_empty_env(Some(String::new())), None);
+    }
+
+    /// A legitimate non-empty value is preserved verbatim — the filter must
+    /// not accidentally strip real log levels or directory paths.
+    #[test]
+    fn non_empty_env_preserves_real_values() {
+        assert_eq!(
+            non_empty_env(Some("debug".to_owned())),
+            Some("debug".to_owned())
+        );
+        assert_eq!(
+            non_empty_env(Some(r"C:\Users\rnio\bin".to_owned())),
+            Some(r"C:\Users\rnio\bin".to_owned())
+        );
+    }
+
+    /// Whitespace-only values are NOT treated as empty.  If someone genuinely
+    /// wants `RUST_LOG=" "` we pass it through — our only concern is the
+    /// `""` trap created by PowerShell's assignment-to-empty behaviour.
+    /// This pins the contract so a future refactor doesn't over-trim.
+    #[test]
+    fn non_empty_env_keeps_whitespace_only_values() {
+        assert_eq!(non_empty_env(Some(" ".to_owned())), Some(" ".to_owned()));
+    }
 }

@@ -87,7 +87,7 @@ pub mod verify;
 // Re-export core public types.
 pub use accumulators::GroupAccumulator;
 pub use buckets::{AgeBucket, SizeBucket};
-pub use cache::AggregateCache;
+pub use cache::{AggregateCache, CacheStats, hash_specs};
 pub use duplicates::{DuplicateAccumulator, DuplicateResult};
 pub use export::{ExportFormat, export_results};
 pub use finalize::{
@@ -131,7 +131,7 @@ pub struct AggregateOutput {
 ///
 /// Extension IDs are **per-drive** — call
 /// [`DriveCompactIndex::resolve_ext_ids`] once per drive before scanning.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Hash)]
 pub struct AggregateFilter {
     /// Extension name strings (lowercase, no dot).  Resolved to per-drive
     /// `u16` IDs before scanning via [`DriveCompactIndex::resolve_ext_ids`].
@@ -615,7 +615,7 @@ fn merge_accumulator_sets(a: &mut [GroupAccumulator], b: &[GroupAccumulator]) {
 /// be reduced back together, and the rayon pool ends up oversubscribed
 /// K×cores² with K concurrent queries).  See
 /// `LOG/2026_04_18_08_09_CHANGELOG_HEALING.md` Run 7 for the
-/// measurements that drove v0.5.42's revert from intra-drive rayon.
+/// measurements that drove v0.5.43's revert from intra-drive rayon.
 ///
 /// Returns `(accumulators, records_scanned, records_matched)`.
 /// For unfiltered aggregation `matched == scanned == records.len()`.

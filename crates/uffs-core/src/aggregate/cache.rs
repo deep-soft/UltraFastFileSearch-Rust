@@ -3,15 +3,36 @@
 
 //! Aggregate result cache.
 //!
-//! Caches aggregate results keyed by a hash of the spec + drive snapshot
-//! version. This avoids re-scanning millions of records when the same
-//! preset is requested multiple times before the index changes.
+//! Caches `AggregateOutput` values keyed by a spec + filter hash and an
+//! index-version token.  The first call for a given query pays the full
+//! scan cost; subsequent callers within the TTL window (and against the
+//! same index version) get a cheap `clone` instead of a 5-second rayon
+//! fan-out over millions of records.
+//!
+//! Key properties:
+//! - **Hit cost**: `Mutex::lock` + `HashMap::get` + `AggregateOutput::clone` —
+//!   microseconds, independent of drive size.
+//! - **Invalidation**: automatic when [`AggregateCache::set_index_version`] is
+//!   called with a new version number (drive load / refresh) or when an entry's
+//!   TTL expires.
+//! - **Key scope**: opaque `u64` hash supplied by the caller.  The core library
+//!   does not prescribe the hash function — callers are expected to mix in
+//!   every input that affects `AggregateOutput` shape (specs, pattern, drive
+//!   filter, record filter, query predicates).  The helper [`hash_specs`]
+//!   computes a stable [`std::collections::hash_map::DefaultHasher`] digest
+//!   over any `Hash`-friendly string; composite keys can be assembled by
+//!   callers via `format!` or `std::fmt::Write`.
+//!
+//! Observability: [`AggregateCache::stats`] returns live hit/miss/entry
+//! counters so the daemon can surface them via the `stats` RPC for tuning
+//! the TTL.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use super::finalize::AggregateResponse;
+use super::AggregateOutput;
 
 /// A time-limited aggregate cache.
 ///
@@ -26,17 +47,32 @@ pub struct AggregateCache {
     ttl: Duration,
     /// Drive index version at cache time (for invalidation).
     index_version: Mutex<u64>,
+    /// Lifetime count of cache hits.
+    hits: AtomicU64,
+    /// Lifetime count of cache misses (includes stale/expired).
+    misses: AtomicU64,
 }
 
 /// A single cache entry.
 #[derive(Debug, Clone)]
 struct CacheEntry {
-    /// The cached response.
-    response: AggregateResponse,
+    /// The cached aggregate output (response + scan counters).
+    output: AggregateOutput,
     /// When this entry was created.
     created: Instant,
     /// Drive index version when this was computed.
     index_version: u64,
+}
+
+/// Snapshot of cache performance counters.
+#[derive(Debug, Clone, Copy)]
+pub struct CacheStats {
+    /// Lifetime hit count.
+    pub hits: u64,
+    /// Lifetime miss count (misses, expiries, and version-stale reads).
+    pub misses: u64,
+    /// Entries currently in the cache.
+    pub entries: usize,
 }
 
 impl AggregateCache {
@@ -47,6 +83,8 @@ impl AggregateCache {
             entries: Mutex::new(HashMap::new()),
             ttl,
             index_version: Mutex::new(0),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
     }
 
@@ -78,17 +116,22 @@ impl AggregateCache {
     /// Look up a cached result.
     ///
     /// Returns `None` if the entry is missing, expired, or belongs
-    /// to a different index version.
+    /// to a different index version.  All three paths count as a
+    /// miss in [`Self::stats`].
     #[must_use]
-    pub fn get(&self, spec_hash: u64) -> Option<AggregateResponse> {
+    pub fn get(&self, spec_hash: u64) -> Option<AggregateOutput> {
         let entries = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = entries.get(&spec_hash)?;
+        let Some(entry) = entries.get(&spec_hash) else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
 
         // Check TTL.
         if entry.created.elapsed() > self.ttl {
+            self.misses.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -98,20 +141,27 @@ impl AggregateCache {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if entry.index_version != current_version {
+            self.misses.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
-        Some(entry.response.clone())
+        self.hits.fetch_add(1, Ordering::Relaxed);
+        Some(entry.output.clone())
     }
 
     /// Insert a result into the cache.
-    pub fn put(&self, spec_hash: u64, response: AggregateResponse) {
+    ///
+    /// Silently drops the entry when the cache's current index
+    /// version has advanced beyond the caller's — this protects
+    /// against races where a drive reload bumps the version between
+    /// [`Self::get`] and [`Self::put`].
+    pub fn put(&self, spec_hash: u64, output: AggregateOutput) {
         let current_version = *self
             .index_version
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = CacheEntry {
-            response,
+            output,
             created: Instant::now(),
             index_version: current_version,
         };
@@ -150,6 +200,25 @@ impl AggregateCache {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Snapshot of cache performance counters.
+    #[must_use]
+    pub fn stats(&self) -> CacheStats {
+        CacheStats {
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            entries: self.len(),
+        }
+    }
+
+    /// Reset hit/miss counters (entries preserved).
+    ///
+    /// Useful for on-demand diagnostic sessions that want a fresh
+    /// baseline without dropping cached values.
+    pub fn reset_counters(&self) {
+        self.hits.store(0, Ordering::Relaxed);
+        self.misses.store(0, Ordering::Relaxed);
+    }
 }
 
 /// Compute a hash for a set of aggregate spec labels + kinds.
@@ -166,40 +235,76 @@ pub fn hash_specs(specs_key: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aggregate::finalize::AggregateResponse;
+
+    fn empty_output() -> AggregateOutput {
+        AggregateOutput {
+            response: AggregateResponse { results: vec![] },
+            records_scanned: 0,
+            records_matched: 0,
+            execution_us: 0,
+        }
+    }
 
     #[test]
     fn cache_put_and_get() {
         let cache = AggregateCache::default_ttl();
-        let response = AggregateResponse { results: vec![] };
         let hash = hash_specs("test_key");
 
-        cache.put(hash, response);
+        cache.put(hash, empty_output());
         let cached = cache.get(hash);
         assert!(cached.is_some());
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.entries, 1);
     }
 
     #[test]
     fn cache_miss_after_version_change() {
         let cache = AggregateCache::default_ttl();
-        let response = AggregateResponse { results: vec![] };
         let hash = hash_specs("test_key");
 
-        cache.put(hash, response);
+        cache.put(hash, empty_output());
         cache.set_index_version(1);
 
         let cached = cache.get(hash);
         assert!(cached.is_none());
+        assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn cache_miss_counter_increments_on_unknown_key() {
+        let cache = AggregateCache::default_ttl();
+        assert!(cache.get(hash_specs("missing")).is_none());
+        assert_eq!(cache.stats().misses, 1);
+        assert_eq!(cache.stats().hits, 0);
     }
 
     #[test]
     fn cache_clear() {
         let cache = AggregateCache::default_ttl();
-        let response = AggregateResponse { results: vec![] };
-        cache.put(hash_specs("a"), response.clone());
-        cache.put(hash_specs("b"), response);
+        cache.put(hash_specs("a"), empty_output());
+        cache.put(hash_specs("b"), empty_output());
         assert_eq!(cache.len(), 2);
 
         cache.clear();
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn reset_counters_preserves_entries() {
+        let cache = AggregateCache::default_ttl();
+        let hash = hash_specs("k");
+        cache.put(hash, empty_output());
+        let _first: Option<AggregateOutput> = cache.get(hash);
+        let _second: Option<AggregateOutput> = cache.get(hash);
+        assert_eq!(cache.stats().hits, 2);
+
+        cache.reset_counters();
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.entries, 1);
     }
 }
