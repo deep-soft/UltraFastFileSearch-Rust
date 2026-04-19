@@ -72,15 +72,18 @@ fn uffs_bin() -> PathBuf {
     }
 }
 
-/// Path to the daemon's on-disk log file (default location on each OS).
-fn uffsd_log_path() -> Option<PathBuf> {
-    if cfg!(windows) {
-        env::var_os("LOCALAPPDATA")
-            .map(|p| PathBuf::from(p).join("uffs").join("logs").join("uffsd.log"))
-    } else {
-        env::var_os("HOME")
-            .map(|p| PathBuf::from(p).join(".uffs").join("logs").join("uffsd.log"))
-    }
+/// Directory we force the daemon to log into for this sweep.  We own
+/// this path (rather than using the platform default) because we want
+/// to *guarantee* `uffsd.log` exists — the daemon runs with
+/// `log_file = None` by default, so the tune-line grep would have
+/// nothing to read otherwise.
+fn sweep_log_dir(repo_root: &PathBuf) -> PathBuf {
+    repo_root.join("build").join("sweep-logs")
+}
+
+/// Full path to the daemon log we grep for `search concurrency retuned`.
+fn uffsd_log_path(log_dir: &PathBuf) -> PathBuf {
+    log_dir.join("uffsd.log")
 }
 
 /// Paths that should be wiped before each iteration to force a cold start.
@@ -118,12 +121,19 @@ fn kill(subcmd: &str) {
 /// the child `uffs` process does the wait internally and prints
 /// "Daemon started and ready." when the MFT load is complete.
 ///
+/// Also sets `UFFS_LOG_DIR` to `log_dir` so the daemon writes
+/// `uffsd.log` there; this is the **only** way the sweep can grep the
+/// `search concurrency retuned` line and confirm the env override took
+/// effect (without it, the daemon runs with `log_file = None` and
+/// nothing ever hits disk).
+///
 /// # Errors
 /// Returns an error if `uffs daemon start` exits non-zero.
-fn start_daemon(n: usize) -> Result<()> {
+fn start_daemon(n: usize, log_dir: &PathBuf) -> Result<()> {
     let status = Command::new(uffs_bin())
         .args(["daemon", "start"])
         .env("UFFS_SEARCH_MAX_CONCURRENCY", n.to_string())
+        .env("UFFS_LOG_DIR", log_dir)
         .status()
         .context("failed to spawn `uffs daemon start`")?;
     if !status.success() {
@@ -242,9 +252,8 @@ fn parse_avg_query(stats_text: &str) -> Option<String> {
 }
 
 /// Read the last `search concurrency retuned` line from the daemon log.
-fn last_tune_line() -> Option<String> {
-    let path = uffsd_log_path()?;
-    let text = std::fs::read_to_string(&path).ok()?;
+fn last_tune_line(log_path: &PathBuf) -> Option<String> {
+    let text = std::fs::read_to_string(log_path).ok()?;
     text.lines()
         .filter(|l| l.contains("search concurrency retuned"))
         .last()
@@ -354,15 +363,22 @@ fn main() -> Result<()> {
     let args = parse_args();
     let repo_root = find_repo_root()?;
 
+    let log_dir = sweep_log_dir(&repo_root);
+    std::fs::create_dir_all(&log_dir).with_context(|| {
+        format!(
+            "failed to create sweep log directory {}",
+            log_dir.display()
+        )
+    })?;
+    let log_path = uffsd_log_path(&log_dir);
+
     println!("{}", "UFFS concurrency sweep".bold().cyan());
     println!("  Binary       : {}", uffs_bin().display());
     println!("  Repo root    : {}", repo_root.display());
     println!("  Sweep values : {:?}", args.values);
     println!("  Wipe caches  : {}", args.wipe);
     println!("  Skip warm-up : {}", args.skip_warmup);
-    if let Some(p) = uffsd_log_path() {
-        println!("  Daemon log   : {}", p.display());
-    }
+    println!("  Daemon log   : {}", log_path.display());
 
     let mut rows: Vec<(usize, RunMetrics, String, String)> = Vec::new();
 
@@ -398,9 +414,13 @@ fn main() -> Result<()> {
         //    `uffs daemon start` blocks until the daemon reports Ready
         //    (or gives up), so we just wait for the child process to
         //    return — no polling loop required.
+        // Truncate the daemon log before each iteration so `last_tune_line`
+        // sees only this iteration's retune record (not a stale one from
+        // the previous N).
+        let _ = std::fs::write(&log_path, "");
         println!("  start  : UFFS_SEARCH_MAX_CONCURRENCY={n}");
         let t0 = Instant::now();
-        if let Err(err) = start_daemon(n) {
+        if let Err(err) = start_daemon(n, &log_dir) {
             println!("  {}", format!("FAILED: {err}").red());
             println!("  {} N={n}", "skipping".yellow());
             continue;
@@ -412,7 +432,7 @@ fn main() -> Result<()> {
         );
 
         // 4. Confirm the env override landed in the daemon.
-        if let Some(tune) = last_tune_line() {
+        if let Some(tune) = last_tune_line(&log_path) {
             println!("  tune   : {}", tune.trim().dimmed());
             let env_ok = tune.contains("source=\"env\"") && tune.contains(&format!("target={n}"));
             if !env_ok {
