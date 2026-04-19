@@ -214,9 +214,13 @@ impl IndexManager {
     /// computation directly — see [`Self::tune_concurrency`].
     #[must_use]
     pub(crate) const fn auto_concurrency_target(cpus: usize, drives: usize) -> usize {
-        let drives = if drives == 0 { 1 } else { drives };
+        // Clamp drives=0 → 1 so the pre-load admission window (before any
+        // drive has registered) still returns a usable target instead of
+        // dividing by zero.  Rename vs. the parameter so we don't trip
+        // `clippy::shadow_reuse`.
+        let effective_drives = if drives == 0 { 1 } else { drives };
         let numerator = cpus.saturating_mul(26);
-        let denominator = drives.saturating_mul(10);
+        let denominator = effective_drives.saturating_mul(10);
         // `max(2, numerator / denominator)` written out because
         // `Ord::max` is not `const` on stable.
         let raw = numerator / denominator;

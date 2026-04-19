@@ -1189,9 +1189,9 @@ fn auto_concurrency_target_common_box_shapes() {
     //   max(2, floor((cpus × 26) / (drives × 10)))
     let cases: &[(usize, usize, usize)] = &[
         // Laptops & desktops.
-        (4, 1, 10), //  4 × 26 /  10 = 10   (single-drive 4-core)
-        (8, 1, 20), //  8 × 26 /  10 = 20   (single-drive 8-core)
-        (8, 2, 10), //  8 × 26 /  20 = 10
+        (4, 1, 10),  //  4 × 26 /  10 = 10   (single-drive 4-core)
+        (8, 1, 20),  //  8 × 26 /  10 = 20   (single-drive 8-core)
+        (8, 2, 10),  //  8 × 26 /  20 = 10
         (12, 2, 15), // 12 × 26 /  20 = 15
         (16, 2, 20), // 16 × 26 /  20 = 20
         // Developer workstations (the Mac box).
@@ -1202,8 +1202,8 @@ fn auto_concurrency_target_common_box_shapes() {
         (32, 14, 5), // 32 × 26 / 140 =  5
         (64, 2, 83), // 64 × 26 /  20 = 83
         // Edge cases.
-        (1, 1, 2), //  1 × 26 /  10 =  2 (floor of 2 kicks in at ceil)
-        (2, 1, 5), //  2 × 26 /  10 =  5
+        (1, 1, 2),    //  1 × 26 /  10 =  2 (floor of 2 kicks in at ceil)
+        (2, 1, 5),    //  2 × 26 /  10 =  5
         (24, 100, 2), // 24 × 26 /1000 =  0 → floor to 2
     ];
     for &(cpus, drives, expected) in cases {
