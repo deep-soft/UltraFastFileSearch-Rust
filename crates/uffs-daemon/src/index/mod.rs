@@ -76,14 +76,15 @@ pub(crate) struct IndexManager {
     /// concurrent queries × 7 drives on 24 cores, Windows validation
     /// Run 7 of the 2026-04-18 healing log).
     ///
-    /// Sizing: we target `max(2, (cpus × 2) / drives)` permits by
-    /// default so the product `permits × drives ≈ 2 × cpus`, keeping
-    /// rayon's queue depth at ≤2 tasks per thread (a range the
-    /// work-stealing scheduler handles well).  The
-    /// `UFFS_SEARCH_MAX_CONCURRENCY` env var overrides the formula
-    /// for benchmark sweeps.  The semaphore is *replaced* (not
-    /// mutated) when drive count changes via
-    /// [`Self::tune_concurrency`]; in-flight queries hold owned
+    /// Sizing: we target `max(2, (cpus × 26) / (drives × 10))` permits
+    /// by default so the product `permits × drives ≈ 2.6 × cpus`, the
+    /// empirically-best oversubscription on multi-drive boxes (see
+    /// [`Self::auto_concurrency_target`] for the measurement that
+    /// landed on the 2.6× factor).  The `UFFS_SEARCH_MAX_CONCURRENCY`
+    /// env var overrides the formula for benchmark sweeps or for
+    /// operators who want to clamp down on oversubscription.  The
+    /// semaphore is *replaced* (not mutated) when drive count changes
+    /// via [`Self::tune_concurrency`]; in-flight queries hold owned
     /// permits on the pre-swap instance and finish naturally.
     search_semaphore: RwLock<Arc<Semaphore>>,
     /// Cached CPU count for the concurrency formula.  Captured once at
@@ -120,9 +121,10 @@ impl IndexManager {
     /// Create a new empty index manager.
     ///
     /// The search semaphore is initialised with `cpus` permits; this is
-    /// retuned to `max(2, cpus / drives)` via [`Self::tune_concurrency`]
-    /// once drives are loaded.  Pre-load queries are cheap (no drives
-    /// to scan), so the initial value is not performance-critical.
+    /// retuned via [`Self::tune_concurrency`] (see
+    /// [`Self::auto_concurrency_target`] for the formula) once drives
+    /// are loaded.  Pre-load queries are cheap (no drives to scan), so
+    /// the initial value is not performance-critical.
     #[must_use]
     pub(crate) fn new(data_dir: Option<PathBuf>, events: EventSender) -> Self {
         let cpus = std::thread::available_parallelism().map_or(4, core::num::NonZeroUsize::get);
@@ -174,16 +176,62 @@ impl IndexManager {
     /// ```
     const SEARCH_CONCURRENCY_ENV: &'static str = "UFFS_SEARCH_MAX_CONCURRENCY";
 
+    /// Compute the auto-tuned search-permit target for a given `(cpus,
+    /// drives)` topology.
+    ///
+    /// **Formula**: `max(2, (cpus × 26) / (drives × 10))`.
+    ///
+    /// That is roughly `2.6 × cpus / drives` in closed form, i.e. **30 %
+    /// more permits** than the simpler `2 × cpus / drives` heuristic used
+    /// through v0.5.45.  The extra 30 % was calibrated empirically against
+    /// the api-validation harness on a 24 CPU × 7 drive Windows box
+    /// (2026-04-18 sweep in `LOG/Output`):
+    ///
+    /// | permits | wall  | avg per-test | slowest |
+    /// |--------:|------:|-------------:|--------:|
+    /// |   6 (`2×cpus/drives`)  | 21.7 s |  1318 ms | 2792 ms |
+    /// | **8 (`2.6×cpus/drives`)** | **12.0 s** | **560 ms** | **1395 ms** |
+    /// |  12 | 12.0 s |  629 ms | 1430 ms |
+    /// |  16 | 12.6 s |  688 ms | 1491 ms |
+    /// |  24 | 11.2 s |  689 ms | 1427 ms |
+    ///
+    /// The `2 × cpus` heuristic left ~45 % of throughput on the table; at
+    /// `2.6 × cpus` wall time collapsed without meaningfully growing per-
+    /// query latency (avg-query went from 280 ms to 326 ms — ~16 %).
+    /// Beyond that, returns diminished sharply and rayon oversubscription
+    /// began showing through as per-query slowdown.
+    ///
+    /// The integer expression `(cpus × 26) / (drives × 10)` is used to
+    /// keep the formula deterministic, auditable, and free of floating-
+    /// point rounding surprises — easy to reason about in tests and in
+    /// the retune log line.
+    ///
+    /// **Floor of 2** keeps the daemon responsive on single-drive boxes
+    /// and on machines with an unusually large number of drives (where
+    /// the raw ratio can round down to 1 or 0).
+    ///
+    /// The `UFFS_SEARCH_MAX_CONCURRENCY` env var still overrides this
+    /// computation directly — see [`Self::tune_concurrency`].
+    #[must_use]
+    pub(crate) const fn auto_concurrency_target(cpus: usize, drives: usize) -> usize {
+        let drives = if drives == 0 { 1 } else { drives };
+        let numerator = cpus.saturating_mul(26);
+        let denominator = drives.saturating_mul(10);
+        // `max(2, numerator / denominator)` written out because
+        // `Ord::max` is not `const` on stable.
+        let raw = numerator / denominator;
+        if raw < 2 { 2 } else { raw }
+    }
+
     /// Re-size the search semaphore to match the currently loaded
     /// drive count.
     ///
-    /// **Default formula**: `max(2, (cpus × 2) / drives)`.
-    /// - The `cpus × 2` numerator allows roughly 2× rayon oversubscription per
-    ///   search, which the work-stealing scheduler handles well and trades a
-    ///   small per-query latency bump for much higher search throughput under
-    ///   concurrent load (tested against the api-validation harness at 24-way).
-    /// - The floor of `2` keeps the daemon responsive on single-drive boxes and
-    ///   on machines with an unusually large number of drives.
+    /// **Default formula**: see [`Self::auto_concurrency_target`] —
+    /// roughly `max(2, 2.6 × cpus / drives)`.  The 30 % oversubscription
+    /// vs. the simpler `2 × cpus / drives` lets the work-stealing
+    /// scheduler chew through concurrent queries without serialising on
+    /// the semaphore — measured 45 % wall-time improvement on 24×7
+    /// Windows with only 16 % per-query latency cost.
     ///
     /// **Override**: the `UFFS_SEARCH_MAX_CONCURRENCY` environment
     /// variable, when set to a positive integer, short-circuits the
@@ -200,7 +248,7 @@ impl IndexManager {
     /// queries outnumber the target permit count.
     pub(crate) async fn tune_concurrency(&self) {
         let drive_count = self.snapshot().await.drives.len().max(1);
-        let auto_target = (self.cpus.saturating_mul(2) / drive_count).max(2);
+        let auto_target = Self::auto_concurrency_target(self.cpus, drive_count);
 
         let (target, source) = std::env::var(Self::SEARCH_CONCURRENCY_ENV)
             .ok()

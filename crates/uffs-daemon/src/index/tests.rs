@@ -1168,3 +1168,70 @@ fn cache_invalidated_by_index_version_bump() {
     );
     assert!(stats.misses >= 2, "post-bump call must be recorded as miss");
 }
+
+// ── auto-concurrency target ────────────────────────────────────────────────
+//
+// Lock in the `max(2, (cpus × 26) / (drives × 10))` formula for a handful of
+// representative box shapes.  If anyone ever wants to retune the factor,
+// these assertions will fail loudly and the developer has to update both the
+// formula *and* the docstring (which quotes the 24/7 = 8 measurement).
+
+#[test]
+fn auto_concurrency_target_24x7_landed_on_8() {
+    // The whole point of the 2.6× factor: the user's 24-core / 7-drive
+    // Windows box's empirical sweet spot (v0.5.45 sweep, 2026-04-18).
+    assert_eq!(IndexManager::auto_concurrency_target(24, 7), 8);
+}
+
+#[test]
+fn auto_concurrency_target_common_box_shapes() {
+    // (cpus, drives, expected_permits) — derived from
+    //   max(2, floor((cpus × 26) / (drives × 10)))
+    let cases: &[(usize, usize, usize)] = &[
+        // Laptops & desktops.
+        (4, 1, 10), //  4 × 26 /  10 = 10   (single-drive 4-core)
+        (8, 1, 20), //  8 × 26 /  10 = 20   (single-drive 8-core)
+        (8, 2, 10), //  8 × 26 /  20 = 10
+        (12, 2, 15), // 12 × 26 /  20 = 15
+        (16, 2, 20), // 16 × 26 /  20 = 20
+        // Developer workstations (the Mac box).
+        (16, 7, 5), // 16 × 26 /  70 =  5
+        // The calibration target: user's Windows box.
+        (24, 7, 8), // 24 × 26 /  70 =  8   ← landed on 8 by design
+        // Big storage servers.
+        (32, 14, 5), // 32 × 26 / 140 =  5
+        (64, 2, 83), // 64 × 26 /  20 = 83
+        // Edge cases.
+        (1, 1, 2), //  1 × 26 /  10 =  2 (floor of 2 kicks in at ceil)
+        (2, 1, 5), //  2 × 26 /  10 =  5
+        (24, 100, 2), // 24 × 26 /1000 =  0 → floor to 2
+    ];
+    for &(cpus, drives, expected) in cases {
+        assert_eq!(
+            IndexManager::auto_concurrency_target(cpus, drives),
+            expected,
+            "auto_concurrency_target({cpus}, {drives}) should be {expected}"
+        );
+    }
+}
+
+#[test]
+fn auto_concurrency_target_zero_drives_treated_as_one() {
+    // Drives count of zero is clamped up to 1 so the daemon can still
+    // admit queries during the pre-load window (there is nothing to
+    // scan yet, so a permit is essentially free).
+    assert_eq!(
+        IndexManager::auto_concurrency_target(16, 0),
+        IndexManager::auto_concurrency_target(16, 1),
+        "drives = 0 must be treated identically to drives = 1"
+    );
+}
+
+#[test]
+fn auto_concurrency_target_floor_prevents_zero_permits() {
+    // Pathological shape: many drives, few CPUs.  Raw ratio rounds to
+    // zero — the floor of 2 must still apply so the daemon can make
+    // progress.
+    assert_eq!(IndexManager::auto_concurrency_target(2, 64), 2);
+    assert_eq!(IndexManager::auto_concurrency_target(1, 200), 2);
+}

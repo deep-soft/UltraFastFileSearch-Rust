@@ -40,10 +40,13 @@ impl IndexManager {
     )]
     pub(crate) async fn search(&self, params: &SearchParams) -> SearchResponse {
         // Acquire a concurrency permit — blocks if too many searches
-        // are already in flight.  The effective cap is `max(2, cpus /
-        // drives)` (see `IndexManager::tune_concurrency`) to prevent
+        // are already in flight.  The effective cap is
+        // `max(2, (cpus × 26) / (drives × 10))` by default (see
+        // `IndexManager::auto_concurrency_target`), which keeps
         // rayon-pool oversubscription from the per-query
-        // `drives.par_iter()` fanout.
+        // `drives.par_iter()` fanout bounded to ~2.6× the machine's
+        // CPU count.  Operators can clamp this down (or raise it) via
+        // the `UFFS_SEARCH_MAX_CONCURRENCY` env var.
         let Some(_permit) = self.acquire_search_permit().await else {
             return SearchResponse {
                 rows: Vec::new(),
