@@ -411,8 +411,33 @@ pub fn cleanup_stale_shmem_files() {
 mod tests {
     extern crate alloc;
 
+    use std::sync::{Mutex, MutexGuard};
+
     use super::*;
     use crate::protocol::response::SearchRow;
+
+    /// Shared-directory serialisation lock for tests that touch the
+    /// global shmem directory.
+    ///
+    /// `cleanup_stale_shmem_files` (invoked by `gc_cleans_*`) sweeps
+    /// every `.bin` under `shmem_dir()`, which would otherwise race
+    /// with `concurrent_writes_*`'s in-flight files when the cargo
+    /// test harness schedules both on parallel threads.  Production
+    /// cannot hit this: GC only runs at daemon startup, guarded by
+    /// the PID file, so a write and a sweep never overlap in real
+    /// usage.  The lock here exists purely to model that invariant
+    /// inside `cargo test`.
+    ///
+    /// Poisoning is intentionally ignored — a panicking test should
+    /// not block the rest of the suite from running.
+    static SHMEM_DIR_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquire the shmem-directory lock for the duration of a test.
+    fn lock_shmem_dir() -> MutexGuard<'static, ()> {
+        SHMEM_DIR_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     /// Helper: build a minimal `SearchRow` for testing.
     fn sample_row(name: &str) -> SearchRow {
@@ -501,6 +526,9 @@ mod tests {
     fn gc_cleans_orphaned_bins_and_preserves_non_bins() {
         // D5.3.6: Combined GC test — runs as a single test to avoid
         // races with other shmem tests (GC sweeps ALL .bin files).
+        // Serialised with `concurrent_writes_*` via `SHMEM_DIR_LOCK`
+        // so the sweep can never overlap with in-flight writes.
+        let _guard = lock_shmem_dir();
         let dir = shmem_dir().expect("shmem_dir should work");
 
         // 1. Simulate CLI crash: write shmem but never read it.
@@ -534,12 +562,16 @@ mod tests {
         // Simulate concurrent shmem usage: 8 threads each write a shmem
         // file and immediately read it back (mimicking 8 parallel CLI
         // processes).  Verifies path uniqueness, data isolation, and
-        // cleanup.
+        // cleanup.  Serialised with `gc_cleans_*` via `SHMEM_DIR_LOCK`
+        // so a concurrent GC sweep cannot wipe the files before the
+        // reader threads open them.
         use alloc::sync::Arc;
         use std::sync::Barrier;
         use std::thread;
 
         const THREADS: usize = 8;
+
+        let _guard = lock_shmem_dir();
         let barrier = Arc::new(Barrier::new(THREADS));
         // Spawn all threads first, then join in a separate loop. The barrier
         // requires all THREADS to reach `wait()` before any can proceed, so
