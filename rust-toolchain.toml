@@ -6,11 +6,18 @@
 # and prevents issues caused by switching between stable/nightly toolchains
 
 [toolchain]
-# Latest nightly — updated 2026-04-13.
+# Latest nightly — updated 2026-04-19.
 # CI must NOT override this with `@nightly`; this file is the single source of truth.
-# Pinned to 2026-04-11: nightly-2026-04-13 (rustc 1.97.0) breaks tokio 1.51.1
-# with unresolved import errors in tokio's io::util module.
-channel = "nightly-2026-04-11"
+#
+# History note: previously pinned to nightly-2026-04-11 because nightly-2026-04-13
+# broke tokio 1.51.1 via unresolved imports in tokio::io::util.  Tokio 1.52.1 (which
+# the workspace now depends on) resolves the interaction, so the original trigger is
+# gone.  Current pin is nightly-2026-04-17: the latest nightly that compiles the
+# workspace cleanly as of 2026-04-19 — nightly-2026-04-18 regresses with an E0512
+# `ethnum` transmute error in a polars transitive dep.  Run `just toolchain-sync` to
+# re-attempt a bump; the CI pipeline will auto-refresh on `ship --fresh` unless
+# `--skip-toolchain-sync` is passed.
+channel = "nightly-2026-04-17"
 
 # Specify components that should always be available
 components = [
