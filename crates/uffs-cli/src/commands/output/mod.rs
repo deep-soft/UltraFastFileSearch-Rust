@@ -105,10 +105,7 @@ pub fn write_native_results(
     };
 
     if is_console {
-        let stdout_handle = std::io::stdout();
-        let mut stdout = BufWriter::with_capacity(64 * 1024, stdout_handle.lock());
-        write_formatted(
-            &mut stdout,
+        write_to_stdout(
             rows,
             format,
             columns,
@@ -117,8 +114,7 @@ pub fn write_native_results(
             header,
             &footer_ctx,
             &parity_ctx,
-        )?;
-        stdout.flush()?;
+        )
     } else {
         let file =
             File::create(out).with_context(|| format!("Failed to create output file: {out}"))?;
@@ -135,10 +131,107 @@ pub fn write_native_results(
             &parity_ctx,
         )?;
         writer.flush()?;
-        // Results written to file.
+        Ok(())
     }
+}
 
-    Ok(())
+/// Maximum in-memory buffer size for the single-`write_all` console fast path.
+///
+/// Results rendered below this threshold are built in a `Vec<u8>` and
+/// flushed with one `stdout.lock().write_all` call — no `BufWriter`
+/// flush storms, one syscall instead of `N / 64 KB`.  Larger results
+/// fall back to the streaming `BufWriter` path so peak RSS stays
+/// bounded on pathological queries.
+const MULTICOL_BUFFER_CAP_BYTES: usize = 50 * 1024 * 1024;
+
+/// Generous per-row size estimate for the up-front cap check.
+///
+/// 256 B comfortably covers a CSV row with a ~150 B path, seven
+/// numeric/boolean columns, and quote overhead.  JSON is slightly
+/// denser (~200-300 B per row); the estimate is conservative on the
+/// high side so the cap fires only on truly huge result sets.
+const MULTICOL_AVG_BYTES_PER_ROW: usize = 256;
+
+/// Decision: render into a single buffer, or stream via `BufWriter`?
+///
+/// Extracted into a pure function so tests can pin each branch without
+/// needing a live stdout handle or a hand-crafted 50 MB fixture.
+#[derive(Debug, PartialEq, Eq)]
+enum ConsoleWriteStrategy {
+    /// Render into a `Vec<u8>` and emit one `write_all` — the fast path.
+    SingleBuffer,
+    /// Stream through a `BufWriter` — the memory-safe fallback for
+    /// result sets whose estimated byte count exceeds the cap.
+    Streaming,
+}
+
+/// Pick the console write strategy for a given row count.
+///
+/// `cap_bytes` and `est_bytes_per_row` are parameters (not constants)
+/// so tests can drive the decision with a small synthetic cap.
+const fn choose_console_strategy(
+    row_count: usize,
+    cap_bytes: usize,
+    est_bytes_per_row: usize,
+) -> ConsoleWriteStrategy {
+    // Use saturating arithmetic so a pathological `row_count` close to
+    // `usize::MAX` cannot silently wrap and misclassify as SingleBuffer.
+    if row_count.saturating_mul(est_bytes_per_row) <= cap_bytes {
+        ConsoleWriteStrategy::SingleBuffer
+    } else {
+        ConsoleWriteStrategy::Streaming
+    }
+}
+
+/// Write formatted rows to stdout, choosing between single-buffer and
+/// streaming paths based on [`choose_console_strategy`].
+#[expect(clippy::too_many_arguments, reason = "output config forwarding")]
+fn write_to_stdout(
+    rows: &[Value],
+    format: &str,
+    columns: &str,
+    separator: &str,
+    quote: &str,
+    header: bool,
+    footer_ctx: &CppFooterContext<'_>,
+    parity_ctx: &ParityContext<'_>,
+) -> Result<()> {
+    match choose_console_strategy(
+        rows.len(),
+        MULTICOL_BUFFER_CAP_BYTES,
+        MULTICOL_AVG_BYTES_PER_ROW,
+    ) {
+        ConsoleWriteStrategy::SingleBuffer => {
+            let estimated = rows.len().saturating_mul(MULTICOL_AVG_BYTES_PER_ROW);
+            let mut buf: Vec<u8> = Vec::with_capacity(estimated);
+            write_formatted(
+                &mut buf, rows, format, columns, separator, quote, header, footer_ctx, parity_ctx,
+            )?;
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            handle
+                .write_all(&buf)
+                .with_context(|| "Failed to write formatted output to stdout")?;
+            Ok(())
+        }
+        ConsoleWriteStrategy::Streaming => {
+            let stdout_handle = std::io::stdout();
+            let mut stdout = BufWriter::with_capacity(64 * 1024, stdout_handle.lock());
+            write_formatted(
+                &mut stdout,
+                rows,
+                format,
+                columns,
+                separator,
+                quote,
+                header,
+                footer_ctx,
+                parity_ctx,
+            )?;
+            stdout.flush()?;
+            Ok(())
+        }
+    }
 }
 
 /// Parity formatting context (timezone, boolean flags).

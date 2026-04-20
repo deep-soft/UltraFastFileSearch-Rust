@@ -14,7 +14,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use serde_json::json;
 
-use super::write_native_results;
+use super::{
+    ConsoleWriteStrategy, MULTICOL_AVG_BYTES_PER_ROW, MULTICOL_BUFFER_CAP_BYTES,
+    choose_console_strategy, write_native_results,
+};
 
 type TestResult = Result<()>;
 
@@ -291,4 +294,99 @@ fn test_legacy_footer_omits_fast_scan_message_when_many_results() -> TestResult 
     assert!(written.contains("Drives? \t1\tG:"));
     assert!(!written.contains("MMMmmm"));
     Ok(())
+}
+
+// ── Phase 3.2: single-buffer multi-column console render ────────────
+
+/// Tiny row counts fit comfortably under the cap → `SingleBuffer`.
+/// This is the common case — any interactive query picks this branch.
+#[test]
+fn choose_console_strategy_small_result_uses_single_buffer() {
+    // 100 rows × 256 B = 25 KB — well under the 50 MB cap.
+    assert_eq!(
+        choose_console_strategy(100, MULTICOL_BUFFER_CAP_BYTES, MULTICOL_AVG_BYTES_PER_ROW),
+        ConsoleWriteStrategy::SingleBuffer
+    );
+}
+
+/// The 45K-row benchmark baseline stays on the fast path — locks in
+/// the expected behaviour for the Phase 2 Run 11 workload.
+#[test]
+fn choose_console_strategy_benchmark_row_count_uses_single_buffer() {
+    // 45_000 × 256 B ≈ 11 MB — still well under 50 MB.
+    assert_eq!(
+        choose_console_strategy(45_000, MULTICOL_BUFFER_CAP_BYTES, MULTICOL_AVG_BYTES_PER_ROW),
+        ConsoleWriteStrategy::SingleBuffer
+    );
+}
+
+/// Pathologically large result sets flip to streaming so peak RSS
+/// stays bounded.  With the production constants, the threshold is
+/// roughly 200K rows (50 MB / 256 B).
+#[test]
+fn choose_console_strategy_huge_result_falls_back_to_streaming() {
+    // 1_000_000 × 256 B = 256 MB — 5× over the cap.
+    assert_eq!(
+        choose_console_strategy(
+            1_000_000,
+            MULTICOL_BUFFER_CAP_BYTES,
+            MULTICOL_AVG_BYTES_PER_ROW
+        ),
+        ConsoleWriteStrategy::Streaming
+    );
+}
+
+/// Boundary case: `row_count × est == cap` is inclusive of the buffer
+/// path (`<=`).  Exactly-at-cap inputs render in one buffer.
+#[test]
+fn choose_console_strategy_exactly_at_cap_uses_single_buffer() {
+    // row_count chosen so row_count × 256 == 50 MB exactly.
+    let exact = MULTICOL_BUFFER_CAP_BYTES / MULTICOL_AVG_BYTES_PER_ROW;
+    assert_eq!(
+        choose_console_strategy(exact, MULTICOL_BUFFER_CAP_BYTES, MULTICOL_AVG_BYTES_PER_ROW),
+        ConsoleWriteStrategy::SingleBuffer
+    );
+
+    // One more row tips over — streaming.
+    assert_eq!(
+        choose_console_strategy(
+            exact + 1,
+            MULTICOL_BUFFER_CAP_BYTES,
+            MULTICOL_AVG_BYTES_PER_ROW
+        ),
+        ConsoleWriteStrategy::Streaming
+    );
+}
+
+/// Overflow guard: `usize::MAX × 256` saturates, so the decision must
+/// not silently wrap and misclassify as `SingleBuffer`.  A regression
+/// here would mean catastrophic allocation attempts for attacker-
+/// controlled pagination cursors.
+#[test]
+fn choose_console_strategy_saturates_on_overflow() {
+    assert_eq!(
+        choose_console_strategy(
+            usize::MAX,
+            MULTICOL_BUFFER_CAP_BYTES,
+            MULTICOL_AVG_BYTES_PER_ROW
+        ),
+        ConsoleWriteStrategy::Streaming
+    );
+}
+
+/// A zero-byte cap forces every non-empty result onto the streaming
+/// path — useful for tests that want to exercise the fallback without
+/// generating millions of synthetic rows.
+#[test]
+fn choose_console_strategy_tiny_cap_forces_streaming() {
+    // 1 row × 256 B > 0 B → Streaming.
+    assert_eq!(
+        choose_console_strategy(1, 0, MULTICOL_AVG_BYTES_PER_ROW),
+        ConsoleWriteStrategy::Streaming
+    );
+    // 0 rows stays on SingleBuffer even with a zero cap — `0 <= 0`.
+    assert_eq!(
+        choose_console_strategy(0, 0, MULTICOL_AVG_BYTES_PER_ROW),
+        ConsoleWriteStrategy::SingleBuffer
+    );
 }
