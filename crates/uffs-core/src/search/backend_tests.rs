@@ -1344,6 +1344,59 @@ fn search_index_path_only_sort_name_asc_within_same_folder() {
     );
 }
 
+/// Regression pin — 2026-04-20: `PathOnly` sort + `--ext <target>`
+/// must go through the ext-index fast path
+/// (`path_only_top_n::collect_path_only_via_ext_index`), which
+/// short-circuits the full-tree walk entirely.  That fast path must
+/// still preserve the same name-ASC tiebreaker semantics as the
+/// tree-walk variant: all three siblings share `path_only="C:\"`
+/// so output order is determined purely by the Name tiebreaker.
+///
+/// Before the fast path existed, the tree walk achieved this by
+/// `sort_indices_by_name` on each directory's children.  The fast
+/// path achieves it by calling `backend::sort_rows(.., PathOnly, ..)`
+/// on the materialised `DisplayRow`s, which encodes the same
+/// name-ASC tiebreaker contract.  This test pins the parity.
+///
+/// If a future refactor of the fast path drops the final
+/// `sort_rows` call (or swaps it for a bare `path_only` compare that
+/// omits the Name tiebreaker) this assertion will fail
+/// deterministically.
+#[test]
+fn search_index_path_only_ext_fast_path_preserves_name_asc_tiebreaker() {
+    let index = build_siblings_fixture();
+    let mut filters = super::super::filters::SearchFilters {
+        extensions: vec!["txt".to_owned()],
+        ..super::super::filters::SearchFilters::default()
+    };
+    let result = search_index(
+        &index,
+        SearchRequest {
+            result_limit: Some(100),
+            filter_mode: FilterMode::FilesOnly,
+            ..SearchRequest::new("*", &mut filters)
+        },
+        FieldId::PathOnly,
+        false, // ASC
+        &[],
+    );
+    let file_names: Vec<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert_eq!(
+        file_names,
+        vec![
+            "alpha.txt".to_owned(),
+            "beta.txt".to_owned(),
+            "gamma.txt".to_owned(),
+        ],
+        "ext-fast-path output must still honour the name-ASC tiebreaker \
+         (intra-folder order = Windows Explorer Folder column convention)"
+    );
+}
+
 /// Regression: `pattern="*"` with `filter_mode=FilesOnly` and
 /// `sort=PathOnly` must exclude directory rows.  Same root cause as
 /// the extensions test above — the path-sort tree walk was pushing
