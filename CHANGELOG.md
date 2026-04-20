@@ -64,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   search"; `ensure_drives_loaded` as "tree metrics computation").
   Replaced with accurate per-function justifications.
 
-## [0.5.58] - 2026-04-19
+## [0.5.59] - 2026-04-19
 
 ### Added
 - **Phase 2 performance measurement series** (closed): 11 instrumented
@@ -222,8 +222,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.58...HEAD
-[0.5.58]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.0...v0.5.58
+[Unreleased]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.59...HEAD
+[0.5.59]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.0...v0.5.59
 [0.5.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.2.208...v0.3.0

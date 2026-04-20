@@ -48,7 +48,7 @@ const PARALLEL_WRITE_CHUNK: usize = 4096;
 /// Write `DisplayRow` results directly — **no `DataFrame` involved**.
 ///
 /// Uses the same separator / quote / header / boolean formatting as
-/// [`OutputConfig::write`] so output is identical to the DataFrame
+/// [`OutputConfig::write`] so output is identical to the `DataFrame`
 /// path.
 ///
 /// Above [`PARALLEL_WRITE_THRESHOLD`] the formatter runs in parallel:
@@ -107,13 +107,7 @@ pub(super) fn write_display_rows<W: Write>(
                 let mut itoa_buf = itoa::Buffer::new();
                 for row in chunk {
                     scratch.clear();
-                    write_display_row_columns(
-                        &mut scratch,
-                        &mut itoa_buf,
-                        output_cols,
-                        cfg,
-                        row,
-                    );
+                    write_display_row_columns(&mut scratch, &mut itoa_buf, output_cols, cfg, row);
                     scratch.push('\n');
                     chunk_buf.extend_from_slice(scratch.as_bytes());
                 }
