@@ -1315,3 +1315,30 @@ async fn search_with_include_rows_true_returns_rows() {
         "rows.len() must equal total_count when no limit is set and include_rows=true"
     );
 }
+
+// ── Zero-drive shutdown guard (prevents the Ready-with-no-data zombie) ──
+
+/// Regression pin for the zero-drive guard in
+/// `crate::run_daemon`'s `load_task`.  The guard keys off
+/// `IndexManager::loaded_drive_letters().await.is_empty()` — if that
+/// signal ever started reporting a non-empty vec for a fresh manager
+/// (e.g. by accidentally seeding a placeholder drive), the guard
+/// would silently stop firing and the zombie-daemon bug would
+/// reappear.  This test pins the invariant the guard relies on.
+///
+/// The end-to-end check — that `run_daemon` actually calls
+/// `request_shutdown` when every MFT parse fails — is covered by
+/// `scripts/windows/api-validation.rs` which spins up a real daemon
+/// with an empty `data_dir` and now observes it exit cleanly on
+/// macOS/Linux instead of lingering in `Ready` with zero drives.
+#[tokio::test]
+async fn fresh_index_manager_reports_no_loaded_drives() {
+    let (tx, _rx) = crate::events::event_channel();
+    let mgr = IndexManager::new(None, tx);
+    let letters = mgr.loaded_drive_letters().await;
+    assert!(
+        letters.is_empty(),
+        "a fresh IndexManager must report zero loaded drives — the run_daemon \
+         zero-drive shutdown guard relies on this signal.  got: {letters:?}",
+    );
+}

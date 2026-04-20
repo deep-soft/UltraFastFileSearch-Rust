@@ -2387,13 +2387,20 @@ fn ensure_daemon_ready(args: &ScriptArgs) -> bool {
                 for line in combined.lines() {
                     eprintln!("    {line}");
                 }
-                // Stop the stale daemon so we can restart with the data source.
-                eprintln!("  Stopping stale daemon...");
+                // Use `daemon kill` (synchronous PID kill + PID file + socket
+                // cleanup) instead of `daemon stop` (fire-and-forget shutdown
+                // RPC).  The stop RPC returns immediately while the daemon is
+                // still shutting down; a follow-up `daemon start` races the
+                // stop and often sees "already running" because `connect_raw`
+                // succeeds against the still-alive socket.  `kill` is
+                // synchronous by design and always leaves a clean slate.
+                eprintln!("  Killing stale daemon...");
                 let _ = Command::new(bin)
-                    .args(["daemon", "stop"])
+                    .args(["daemon", "kill"])
                     .output();
-                // Brief pause to let the socket close.
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                // Brief pause to let the socket slot fully release on macOS
+                // (Darwin retains the inode ~50 ms after the process exits).
+                std::thread::sleep(std::time::Duration::from_millis(250));
             } else if lower.contains("not running") {
                 eprintln!("  Daemon is not running, starting...");
             } else {

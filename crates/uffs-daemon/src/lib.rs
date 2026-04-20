@@ -357,13 +357,6 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     // Load heartbeat handle — the load task calls `record_load_progress`
     // after each drive so the idle timer can detect stalls.
     // Used only on Windows (inside cfg(windows) block below).
-    #[cfg_attr(
-        not(windows),
-        expect(
-            unused_variables,
-            reason = "load_lifecycle used only inside cfg(windows) block below"
-        )
-    )]
     let load_lifecycle = lifecycle_mgr.handle();
     let broker_is_available = broker_client::broker_available();
     let load_task = tokio::spawn(async move {
@@ -397,6 +390,29 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
             let _handle_result = broker_client::request_volume_handle('C');
         }
         tracing::info!("Load task completed");
+
+        // Zero-drive guard: `validate_data_sources` (above) rejects
+        // empty argv, but it cannot predict parse failures.  When
+        // every MFT file / live drive fails to load, the Loading →
+        // Ready transition fires anyway with an empty index — the
+        // "zombie daemon" state where status reports `Ready` but
+        // every search returns zero rows.  Catch that here by
+        // checking the actual post-load drive count.  If zero,
+        // request shutdown so the lifecycle's `select!` takes the
+        // process down cleanly; leaving such a daemon alive only
+        // wastes the socket slot and the PID file for its next
+        // idle timeout.
+        let loaded_drives = load_index.loaded_drive_letters().await;
+        if loaded_drives.is_empty() {
+            tracing::error!(
+                "Daemon loaded zero drives even though data sources were provided — every \
+                 parse attempt failed.  Shutting down to avoid the Ready-with-no-data state. \
+                 Check the load errors above; common causes: missing/corrupt .iocp files, \
+                 insufficient privileges on live drives, or a data_dir that contains no MFT \
+                 captures."
+            );
+            load_lifecycle.request_shutdown();
+        }
     });
 
     // Start IPC server
