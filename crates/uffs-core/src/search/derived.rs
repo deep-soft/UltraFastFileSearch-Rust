@@ -4,6 +4,7 @@
 //! Derived search-field helpers shared by daemon projection/filter logic.
 
 use super::backend::DisplayRow;
+use crate::compact::CompactRecord;
 use crate::extensions::collections;
 
 /// Bulkiness fixed-point scale (`1.0 == 1_000_000`).
@@ -319,6 +320,20 @@ pub const fn tree_allocated_for_row(row: &DisplayRow) -> u64 {
     }
 }
 
+/// Core bulkiness math, shared by [`bulkiness_for_row`] and
+/// [`bulkiness_for_record`].
+///
+/// Splitting the math from the field-picker lets the two wrappers
+/// stay thin and guarantees they cannot drift.
+#[must_use]
+#[inline]
+const fn bulkiness_from_sizes(logical: u64, allocated: u64) -> u64 {
+    if logical == 0 {
+        return 0;
+    }
+    allocated.saturating_mul(BULKINESS_SCALE) / logical
+}
+
 /// Bulkiness metric as fixed-point ratio scaled by [`BULKINESS_SCALE`].
 #[must_use]
 pub const fn bulkiness_for_row(row: &DisplayRow) -> u64 {
@@ -327,10 +342,31 @@ pub const fn bulkiness_for_row(row: &DisplayRow) -> u64 {
     } else {
         (row.size, row.allocated)
     };
-    if logical == 0 {
-        return 0;
-    }
-    allocated.saturating_mul(BULKINESS_SCALE) / logical
+    bulkiness_from_sizes(logical, allocated)
+}
+
+/// Same metric as [`bulkiness_for_row`] but computed directly from a
+/// [`CompactRecord`] — avoids the `DisplayRow` allocation dance on
+/// the hot sort-key path.
+///
+/// This is the *only* caller-visible difference from `bulkiness_for_row`.
+/// `CompactRecord` holds the five fields the bulkiness formula actually
+/// needs (`is_directory`, `size`, `allocated`, `treesize`,
+/// `tree_allocated`), so routing through `DisplayRow::new(...)` (with
+/// a `String::new()` path, a zeroed `record_index`, etc.) was pure
+/// waste — measured ~μs per candidate on large extension buckets.
+///
+/// Result is byte-identical to `bulkiness_for_row` called on a
+/// `DisplayRow` constructed from the same record; the equivalence is
+/// pinned by `bulkiness_for_record_matches_bulkiness_for_row`.
+#[must_use]
+pub const fn bulkiness_for_record(rec: &CompactRecord) -> u64 {
+    let (logical, allocated) = if rec.is_directory() {
+        (rec.treesize, rec.tree_allocated)
+    } else {
+        (rec.size, rec.allocated)
+    };
+    bulkiness_from_sizes(logical, allocated)
 }
 
 #[cfg(test)]
@@ -580,6 +616,85 @@ mod tests {
     fn bulkiness_zero_logical_size_returns_zero() {
         let row = file_row("C:\\empty", 0);
         assert_eq!(bulkiness_for_row(&row), 0);
+    }
+
+    // ── bulkiness_for_record equivalence (perf refactor guard) ────────
+
+    /// Build a `CompactRecord` whose `size` / `allocated` / `treesize` /
+    /// `tree_allocated` fields mirror the supplied values and whose
+    /// directory bit is set
+    /// per `is_directory`.  All other fields are zero — they don't affect
+    /// `bulkiness_for_record`.
+    fn compact_record(
+        is_directory: bool,
+        size: u64,
+        allocated: u64,
+        treesize: u64,
+        tree_allocated: u64,
+    ) -> CompactRecord {
+        CompactRecord {
+            size,
+            allocated,
+            treesize,
+            tree_allocated,
+            flags: if is_directory { 0x10 } else { 0x20 },
+            ..CompactRecord::default()
+        }
+    }
+
+    /// File record: `bulkiness_for_record` must return the same value as
+    /// `bulkiness_for_row` given equivalent inputs.  Pins the two
+    /// wrappers against silent drift in either `bulkiness_from_sizes`
+    /// or the field-picker branches.
+    #[test]
+    fn bulkiness_for_record_matches_bulkiness_for_row_file() {
+        let rec = compact_record(false, 1_000, 4_096, 0, 0);
+        let row = DisplayRow::new(
+            0, 'C', String::new(),
+            rec.size, rec.is_directory(),
+            0, 0, 0,
+            rec.flags,
+            rec.allocated,
+            0,
+            rec.treesize,
+            rec.tree_allocated,
+        );
+        assert_eq!(bulkiness_for_record(&rec), bulkiness_for_row(&row));
+        assert_eq!(bulkiness_for_record(&rec), 4_096_000);
+    }
+
+    /// Directory record: same equivalence must hold when the logical
+    /// and allocated pair is sourced from `treesize` / `tree_allocated`
+    /// instead of `size` / `allocated`.
+    #[test]
+    fn bulkiness_for_record_matches_bulkiness_for_row_directory() {
+        let rec = compact_record(true, 0, 0, 200, 300);
+        let row = dir_row("C:\\dir", 200, 300);
+        assert_eq!(bulkiness_for_record(&rec), bulkiness_for_row(&row));
+        assert_eq!(bulkiness_for_record(&rec), 1_500_000);
+    }
+
+    /// Zero-logical edge case must agree between both wrappers — and
+    /// must not panic on the internal divide-by-zero guard.
+    #[test]
+    fn bulkiness_for_record_zero_logical_returns_zero() {
+        let file = compact_record(false, 0, 512, 0, 0);
+        let dir = compact_record(true, 0, 0, 0, 512);
+        assert_eq!(bulkiness_for_record(&file), 0);
+        assert_eq!(bulkiness_for_record(&dir), 0);
+    }
+
+    /// `saturating_mul` inside the formula must prevent overflow at
+    /// the `u64::MAX * BULKINESS_SCALE` limit.  Regression pin for the
+    /// numeric top-N hot path — a panic here would take the whole
+    /// daemon down under adversarial input.
+    #[test]
+    fn bulkiness_for_record_does_not_panic_on_extreme_sizes() {
+        let rec = compact_record(false, 1, u64::MAX, 0, 0);
+        // `u64::MAX * 1_000_000` saturates; divided by logical=1 it
+        // stays at u64::MAX.  The important invariant is "does not
+        // panic", not the exact numeric output.
+        assert_eq!(bulkiness_for_record(&rec), u64::MAX);
     }
 
     #[test]

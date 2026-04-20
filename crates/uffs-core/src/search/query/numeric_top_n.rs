@@ -6,7 +6,7 @@
 use alloc::collections::BinaryHeap;
 
 use super::super::backend::{self, DisplayRow, FilterMode};
-use super::super::derived::bulkiness_for_row;
+use super::super::derived::bulkiness_for_record;
 use super::super::field::FieldId;
 use super::super::filters::SearchFilters;
 use super::super::tree::{self, DirCacheExt as _};
@@ -111,25 +111,7 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
                     clippy::cast_possible_wrap,
                     reason = "scaled bulkiness metric is expected within i64 range"
                 )]
-                FieldId::Bulkiness => {
-                    let ri = uffs_mft::len_to_u32(rec_idx);
-                    let row = DisplayRow::new(
-                        ri,
-                        drive.letter,
-                        String::new(),
-                        rec.size,
-                        rec.is_directory(),
-                        rec.modified,
-                        rec.created,
-                        rec.accessed,
-                        rec.flags,
-                        rec.allocated,
-                        rec.descendants,
-                        rec.treesize,
-                        rec.tree_allocated,
-                    );
-                    bulkiness_for_row(&row) as i64
-                }
+                FieldId::Bulkiness => bulkiness_for_record(rec) as i64,
                 FieldId::Extension | FieldId::Type => i64::from(rec.extension_id),
                 FieldId::Name => {
                     let name = rec.name(&drive.names);
