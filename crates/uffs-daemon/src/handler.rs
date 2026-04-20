@@ -183,27 +183,35 @@ impl RequestHandler {
 
     /// Pack a path-only search response into a single UTF-8 buffer.
     ///
-    /// When the client asked for a path-only projection and the row
-    /// count is below the shmem threshold, replace the `SearchRow` list
-    /// with a newline-terminated blob in `paths_blob`.  The CLI then
-    /// writes the entire buffer with a single `write_all`, skipping
-    /// per-row JSON deserialization and format dispatch (both of which
-    /// scale linearly with row count).
+    /// When the client asked for a path-only projection, replace the
+    /// `SearchRow` list with a newline-terminated blob in `paths_blob`.
+    /// The CLI then writes the entire buffer with a single `write_all`,
+    /// skipping per-row JSON deserialization and format dispatch (both
+    /// of which scale linearly with row count).
     ///
     /// This is invisible to the `--out=file` bench (which never
     /// transfers rows), but is a large win for interactive
     /// `uffs *.ext` to stdout or for pipe composition.
     ///
-    /// For row counts above the shmem threshold we leave the response
-    /// untouched and let the existing shmem path handle it — the shmem
-    /// cost is already amortized there, and a multi-megabyte JSON
-    /// string would be the worse choice.
+    /// Previously capped at [`uffs_client::shmem::SHMEM_THRESHOLD`]
+    /// (100 K rows) on the theory that "a multi-megabyte JSON string
+    /// would be the worse choice" above that count, with large
+    /// responses routed through shmem instead.  Measured wrong: on a
+    /// 168 K-row path-only query the shmem path added ~744 ms vs.
+    /// NUL (client-side `write_columnar` re-formatted every row through
+    /// `extract_field` → `String::to_owned` + 4× `write!()` per field),
+    /// while `paths_blob` plus one `write_all` would cost ~145 ms end to
+    /// end.  The JSON-string encode/decode cost (~40 ms for 20 MB of
+    /// ASCII) is dwarfed by the per-row format overhead it replaces.
+    ///
+    /// So: any path-only projection now gets `paths_blob` regardless of
+    /// row count.  The shmem path is still used for multi-column
+    /// responses above the threshold — those genuinely need binary
+    /// `SearchRow` transport because the client still has to format
+    /// columns locally.
     fn try_pack_paths_blob(params: &SearchParams, response: &mut SearchResponse) {
         let row_count = response.rows.len();
-        if row_count == 0
-            || row_count > uffs_client::shmem::SHMEM_THRESHOLD
-            || !Self::is_path_only_projection(params)
-        {
+        if row_count == 0 || !Self::is_path_only_projection(params) {
             return;
         }
         let capacity: usize = response
@@ -521,5 +529,162 @@ impl RequestHandler {
         self.lifecycle.request_shutdown();
         let result = serde_json::json!({"ok": true, "message": "shutting down"});
         serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use uffs_client::protocol::response::{SearchResponse, SearchRow};
+    use uffs_client::protocol::{SearchParams, SearchResponseMode};
+
+    use super::RequestHandler;
+
+    /// Build a `SearchRow` with just a path populated — all other
+    /// fields are irrelevant to [`RequestHandler::try_pack_paths_blob`]
+    /// because the packing loop only reads `row.path`.
+    fn path_only_row(path: String) -> SearchRow {
+        SearchRow {
+            drive: 'C',
+            path,
+            name: String::new(),
+            size: 0,
+            is_directory: false,
+            modified: 0,
+            created: 0,
+            accessed: 0,
+            flags: 0,
+            allocated: 0,
+            descendants: 0,
+            treesize: 0,
+            tree_allocated: 0,
+        }
+    }
+
+    /// Build a minimal `SearchResponse` carrying `rows` and no side-
+    /// channel transports — `shmem_path`, `paths_blob`, and
+    /// `projected_rows` start as `None` so the packer's invariants can
+    /// be asserted precisely after the call.
+    fn bare_response(rows: Vec<SearchRow>) -> SearchResponse {
+        let row_count = rows.len();
+        SearchResponse {
+            rows,
+            total_count: u64::try_from(row_count).unwrap_or(u64::MAX),
+            records_scanned: row_count,
+            duration_ms: 0,
+            truncated: false,
+            shmem_path: None,
+            shmem_count: None,
+            profile: None,
+            applied_sorts: Vec::new(),
+            applied_projection: vec!["path".to_owned()],
+            response_mode: Some(SearchResponseMode::Rows),
+            projected_rows: None,
+            aggregations: Vec::new(),
+            paths_blob: None,
+        }
+    }
+
+    /// Regression: `try_pack_paths_blob` used to bail out for
+    /// path-only projections above
+    /// `uffs_client::shmem::SHMEM_THRESHOLD` (100 000 rows), which
+    /// forced the daemon to fall back to the shmem transport and
+    /// made the client re-run `write_columnar` on every row — a
+    /// ~6× slowdown vs. `paths_blob` + one `write_all` on the
+    /// 168 K-row `C: ext:dll` benchmark.  The cap was removed: any
+    /// path-only projection now packs, regardless of count.
+    #[test]
+    fn try_pack_paths_blob_packs_above_shmem_threshold() {
+        // 150 K rows — comfortably above the old 100 K cap.  Kept at
+        // this size so the test stays sub-millisecond: each row's
+        // path is only ~30 bytes, total blob ~4.5 MB.
+        let row_count: usize = 150_000;
+        let rows: Vec<SearchRow> = (0..row_count)
+            .map(|idx| path_only_row(format!("C:\\dir\\file_{idx}.dll")))
+            .collect();
+        let mut response = bare_response(rows);
+
+        let params = SearchParams {
+            projection: vec!["path".to_owned()],
+            ..SearchParams::default()
+        };
+
+        RequestHandler::try_pack_paths_blob(&params, &mut response);
+
+        // Use `let-else` so a regression of the cap removal fails
+        // with the specific "packed into paths_blob" message rather
+        // than a generic `unwrap` panic — keeps the regression
+        // signal readable without needing a clippy::unwrap_used allow.
+        let Some(blob) = response.paths_blob.as_deref() else {
+            panic!(
+                "path-only projection above SHMEM_THRESHOLD must still \
+                 be packed into paths_blob — regression of the cap \
+                 removal in try_pack_paths_blob"
+            );
+        };
+        assert_eq!(
+            blob.bytes().filter(|byte| *byte == b'\n').count(),
+            row_count,
+            "blob must contain one newline per row so the CLI's single \
+             write_all emits exactly `row_count` lines"
+        );
+        assert!(
+            blob.ends_with('\n'),
+            "blob's last byte must be '\\n' (contract documented on \
+             SearchResponse::paths_blob)"
+        );
+        assert!(
+            response.rows.is_empty(),
+            "rows must be cleared once paths_blob carries the payload \
+             — otherwise the response is doubly-serialised"
+        );
+    }
+
+    /// Multi-column projections (e.g. `--columns Path,Size`) must not
+    /// be packed into `paths_blob`: the client still needs the full
+    /// `SearchRow` data to format the size column.  Pins that the
+    /// path-only guard (`is_path_only_projection`) is the sole
+    /// disqualifier after the cap removal.
+    #[test]
+    fn try_pack_paths_blob_skips_multi_column_projection() {
+        let rows = vec![path_only_row("C:\\a.dll".to_owned())];
+        let mut response = bare_response(rows);
+
+        let params = SearchParams {
+            projection: vec!["path".to_owned(), "size".to_owned()],
+            ..SearchParams::default()
+        };
+
+        RequestHandler::try_pack_paths_blob(&params, &mut response);
+
+        assert!(
+            response.paths_blob.is_none(),
+            "multi-column projection must leave paths_blob unset so \
+             the client receives full SearchRow data"
+        );
+        assert_eq!(
+            response.rows.len(),
+            1,
+            "rows must stay populated for the client-side formatter"
+        );
+    }
+
+    /// Zero-row responses must short-circuit without allocating an
+    /// empty `paths_blob` string — keeps the wire format the same
+    /// as before the cap removal.
+    #[test]
+    fn try_pack_paths_blob_skips_empty_response() {
+        let mut response = bare_response(Vec::new());
+        let params = SearchParams {
+            projection: vec!["path".to_owned()],
+            ..SearchParams::default()
+        };
+
+        RequestHandler::try_pack_paths_blob(&params, &mut response);
+
+        assert!(
+            response.paths_blob.is_none(),
+            "empty response must leave paths_blob unset (no \
+             `Some(String::new())` allocations)"
+        );
     }
 }

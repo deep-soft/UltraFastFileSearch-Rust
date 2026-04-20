@@ -11,7 +11,7 @@
 //! - Header control
 mod column;
 mod config;
-mod display_rows;
+pub mod display_rows;
 
 use uffs_polars::DataFrame;
 
