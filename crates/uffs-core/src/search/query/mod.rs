@@ -65,7 +65,7 @@ impl PartialOrd for HeapEntry {
 /// branches (`Path` and `PathOnly`) emit rows in tree order with no
 /// separate sort or `path_resolve` phase, so they return `None`.
 #[must_use]
-pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
+pub fn collect_global_top_n<D: AsRef<DriveCompactIndex> + Sync>(
     drives: &[D],
     limit: usize,
     sort_column: FieldId,
