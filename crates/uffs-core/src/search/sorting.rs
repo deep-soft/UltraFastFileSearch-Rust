@@ -5,6 +5,15 @@
 //!
 //! Extracted from `backend.rs` for file-size policy compliance.
 //! Re-exported via `pub use` in `backend.rs` — callers see no change.
+//!
+//! Exception: the module hosts two cohesive comparator pipelines — the
+//! general-purpose Schwartzian decorate path (`sort_rows_with_fold`) and
+//! the zero-alloc numeric fast path (`sort_rows_numeric_fast`) — plus the
+//! shared `compare_by_column` / `compare_numeric_column` helpers and the
+//! `field_to_attr_bit` lookup.  Splitting any of these into sibling
+//! files would fragment a single sort semantic across modules; a
+//! targeted ~22 LOC exception preserves one-stop maintenance of all
+//! ordering rules.
 
 use super::backend::{DisplayRow, SortSpec};
 use super::derived::{bulkiness_for_row, semantic_type_for_row, tree_allocated_for_row};
@@ -141,6 +150,184 @@ impl SortKeyNeeds {
     const fn file_type(self) -> bool {
         self.0 & Self::FILE_TYPE != 0
     }
+
+    /// Returns `true` if no folded directional key is needed.  Callers use
+    /// this to gate the zero-alloc fast path in `sort_rows_with_fold`.
+    const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// Returns `true` if the column can be compared purely from the numeric /
+/// flag fields of a `DisplayRow` without touching any `RowSortKey` field.
+///
+/// Strict-numeric columns unlock the zero-alloc fast path: we skip the
+/// whole Schwartzian decorate and sort the `DisplayRow` slice in-place
+/// with a raw-slice name tiebreaker.
+///
+/// Intentionally excludes `FieldId::Name`, `FieldId::Attributes`,
+/// `FieldId::AttributeValue`, and `FieldId::ParityAttributes` even though
+/// they don't set a `SortKeyNeeds` bit — they compare via the always-
+/// populated folded name key and rely on case-insensitive ordering.
+const fn is_strict_numeric(column: FieldId) -> bool {
+    matches!(
+        column,
+        FieldId::Size
+            | FieldId::SizeOnDisk
+            | FieldId::Created
+            | FieldId::Modified
+            | FieldId::Accessed
+            | FieldId::Drive
+            | FieldId::Descendants
+            | FieldId::TreeSize
+            | FieldId::TreeAllocated
+            | FieldId::Bulkiness
+            | FieldId::NameLength
+            | FieldId::PathLength
+            | FieldId::Hidden
+            | FieldId::System
+            | FieldId::Archive
+            | FieldId::ReadOnly
+            | FieldId::Compressed
+            | FieldId::Encrypted
+            | FieldId::Sparse
+            | FieldId::Reparse
+            | FieldId::Offline
+            | FieldId::NotIndexed
+            | FieldId::Temporary
+            | FieldId::Virtual
+            | FieldId::Pinned
+            | FieldId::Unpinned
+            | FieldId::Integrity
+            | FieldId::NoScrub
+            | FieldId::DirectoryFlag
+            | FieldId::RecallOnOpen
+            | FieldId::RecallOnDataAccess
+    )
+}
+
+/// Zero-allocation in-place sort for strict-numeric columns.
+///
+/// Sorts `rows` by `column` (with optional reverse for `descending`), then
+/// by each tier in `extra_tiers`, with a final raw-slice `row.name()`
+/// tiebreaker.  Every comparison is pure numeric / bitmask arithmetic on
+/// the `DisplayRow` fields — no `String` allocation, no decorate vector.
+///
+/// Precondition: callers must verify that `column` and every
+/// `extra_tiers[*]` column satisfy `is_strict_numeric`; otherwise the
+/// comparator would silently fall through to `Ordering::Equal` and
+/// produce an arbitrary order.  The guard in `sort_rows_with_fold`
+/// enforces this precondition.
+fn sort_rows_numeric_fast(
+    rows: &mut [DisplayRow],
+    column: FieldId,
+    descending: bool,
+    extra_tiers: &[SortSpec],
+) {
+    rows.sort_unstable_by(|row_a, row_b| {
+        let mut ord = compare_numeric_column(row_a, row_b, column);
+        if descending {
+            ord = ord.reverse();
+        }
+        for tier in extra_tiers {
+            if ord != core::cmp::Ordering::Equal {
+                break;
+            }
+            ord = compare_numeric_column(row_a, row_b, tier.column);
+            if tier.descending {
+                ord = ord.reverse();
+            }
+        }
+        // Raw-slice name tiebreaker (case-sensitive).  Only hit when every
+        // numeric tier compared equal, which is rare for Modified /
+        // Created / Accessed (100 ns FILETIME resolution) but common for
+        // Size-sorted duplicates.  Raw ordering is deterministic and
+        // matches the Everything baseline behaviour.
+        if ord == core::cmp::Ordering::Equal {
+            ord = row_a.name().cmp(row_b.name());
+        }
+        ord
+    });
+}
+
+/// Compare two `DisplayRow`s by a strict-numeric / flag column.
+///
+/// Mirrors the numeric arms of `compare_by_column` but takes no
+/// `RowSortKey` — it's the zero-alloc comparator used by
+/// `sort_rows_numeric_fast`.  For columns that are *not* strict-numeric
+/// (`Name`, `Path`, `PathOnly`, `Extension`, `Type`, `Attributes`,
+/// `AttributeValue`, `ParityAttributes`) this returns `Ordering::Equal`;
+/// the caller's `is_strict_numeric` guard ensures that never happens in
+/// practice.
+fn compare_numeric_column(
+    row_a: &DisplayRow,
+    row_b: &DisplayRow,
+    column: FieldId,
+) -> core::cmp::Ordering {
+    match column {
+        FieldId::Size => row_a.size.cmp(&row_b.size),
+        FieldId::SizeOnDisk => row_a.allocated.cmp(&row_b.allocated),
+        FieldId::Created => row_a.created.cmp(&row_b.created),
+        FieldId::Modified => row_a.modified.cmp(&row_b.modified),
+        FieldId::Accessed => row_a.accessed.cmp(&row_b.accessed),
+        FieldId::Drive => row_a.drive.cmp(&row_b.drive),
+        FieldId::Descendants => row_a.descendants.cmp(&row_b.descendants),
+        FieldId::TreeSize => row_a.treesize.cmp(&row_b.treesize),
+        FieldId::TreeAllocated => tree_allocated_for_row(row_a).cmp(&tree_allocated_for_row(row_b)),
+        FieldId::Bulkiness => bulkiness_for_row(row_a).cmp(&bulkiness_for_row(row_b)),
+        FieldId::NameLength => row_a
+            .name()
+            .chars()
+            .count()
+            .cmp(&row_b.name().chars().count()),
+        FieldId::PathLength => row_a.path.chars().count().cmp(&row_b.path.chars().count()),
+        // Boolean flag columns include an **inline** raw-slice name
+        // tiebreaker that participates in the outer `descending` reversal.
+        // This matches the documented `compare_by_column` semantics for
+        // flag sorts: `DirectoryFlag desc` puts dirs first *and* sorts
+        // names Z→A within each block (tiebreaker reverses along with
+        // primary), whereas `DirectoryFlag asc` yields A→Z names per
+        // block.  Keeping the tiebreaker inline here preserves that
+        // behaviour on the fast path.
+        FieldId::Hidden
+        | FieldId::System
+        | FieldId::Archive
+        | FieldId::ReadOnly
+        | FieldId::Compressed
+        | FieldId::Encrypted
+        | FieldId::Sparse
+        | FieldId::Reparse
+        | FieldId::Offline
+        | FieldId::NotIndexed
+        | FieldId::Temporary
+        | FieldId::Virtual
+        | FieldId::Pinned
+        | FieldId::Unpinned
+        | FieldId::Integrity
+        | FieldId::NoScrub
+        | FieldId::DirectoryFlag
+        | FieldId::RecallOnOpen
+        | FieldId::RecallOnDataAccess => {
+            let mask = field_to_attr_bit(column);
+            let a_set = row_a.flags & mask != 0;
+            let b_set = row_b.flags & mask != 0;
+            a_set
+                .cmp(&b_set)
+                .then_with(|| row_a.name().cmp(row_b.name()))
+        }
+        // String-based columns never reach this function — the caller's
+        // `is_strict_numeric` guard excludes them.  Return `Equal` as a
+        // defensive default (the name tiebreaker in `sort_rows_numeric_fast`
+        // will then provide the ordering).
+        FieldId::Name
+        | FieldId::Path
+        | FieldId::PathOnly
+        | FieldId::Extension
+        | FieldId::Type
+        | FieldId::Attributes
+        | FieldId::AttributeValue
+        | FieldId::ParityAttributes => core::cmp::Ordering::Equal,
+    }
 }
 
 /// Sort display rows by the given column, then by additional tiers, with a
@@ -180,6 +367,22 @@ pub fn sort_rows_with_fold(
     // directional keys empty, saving 4 heap allocations per row.  The name
     // key is always populated (used as the universal tiebreaker).
     let needs = SortKeyNeeds::analyze(column, extra_tiers);
+
+    // Zero-alloc fast path: the primary column and every tier are strictly
+    // numeric / flag-based (no folded key referenced at all).  Skip the
+    // decorate + undecorate passes entirely and sort the `DisplayRow` slice
+    // in-place with a raw-slice name tiebreaker.  This is the hot path for
+    // the default sort (Modified-DESC) and saves ~1 heap allocation per row
+    // (~30-50 ms at 168 K rows on Windows).
+    if needs.is_empty()
+        && is_strict_numeric(column)
+        && extra_tiers
+            .iter()
+            .all(|tier| is_strict_numeric(tier.column))
+    {
+        sort_rows_numeric_fast(rows, column, descending, extra_tiers);
+        return;
+    }
 
     // Decorate: zip each row with pre-computed folded keys.
     let mut fold_buf: Vec<u8> = Vec::with_capacity(256);

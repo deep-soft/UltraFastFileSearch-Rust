@@ -1977,22 +1977,22 @@ fn sort_rows_directory_flag_multi_row_ascending() {
     );
 }
 
-/// Regression pin for the `SortKeyNeeds` optimisation (v0.5.55).
+/// Regression pin for the zero-alloc numeric fast path (v0.5.55+).
 ///
-/// Numeric sorts (`Modified`, `Size`, `Created`, etc.) skip folding +
-/// allocating the `path`, `path_only`, `ext`, and `file_type` keys when
-/// they are not referenced by the column or any tier.  This test ensures
-/// the *name* tiebreaker still fires correctly for rows that tie on the
-/// primary numeric column — i.e. case-folded name order is preserved
-/// even though only the `name` folded key is populated.
+/// Strict-numeric sorts (`Modified`, `Size`, `Created`, etc.) with no
+/// extra tiers take the `sort_rows_numeric_fast` path, which skips the
+/// Schwartzian decorate entirely and uses a **raw-slice** name tiebreaker
+/// for deterministic ordering on ties.  This is a documented behavior
+/// change from the pre-fast-path Schwartzian sort (which used a folded /
+/// case-insensitive tiebreaker) — uppercase letters now sort before
+/// lowercase letters in the tiebreaker block.  Ties are rare in practice
+/// (100 ns FILETIME resolution for Modified/Created/Accessed) and the
+/// ordering is deterministic and matches the Everything baseline.
 #[test]
-fn sort_rows_numeric_column_uses_folded_name_tiebreaker() {
-    // All three rows share modified=42 → the primary cmp is a tie, and
-    // the tiebreaker must kick in.  Names are mixed-case to exercise the
-    // case-folded tiebreaker (folded: "alpha", "beta", "zeta").  Raw
-    // codepoint order would put "Beta" < "alpha" < "zeta" (uppercase
-    // before lowercase), but the folded tiebreaker must yield
-    // alpha < Beta < zeta.
+fn sort_rows_numeric_fast_path_tiebreaker_is_raw_slice_cmp() {
+    // All three rows share modified=42 → primary cmp is a tie, so the
+    // tiebreaker fires.  Raw codepoint order puts 'B' (0x42) before 'a'
+    // (0x61) before 'z' (0x7A): Beta.dll < alpha.dll < zeta.dll.
     let mut rows = vec![
         row("zeta.dll", 'C', 100, 42, 0),
         row("Beta.dll", 'C', 100, 42, 0),
@@ -2004,8 +2004,37 @@ fn sort_rows_numeric_column_uses_folded_name_tiebreaker() {
 
     assert_eq!(
         names,
-        &["alpha.dll", "Beta.dll", "zeta.dll"],
-        "Modified-DESC with tied primary key must fall back to case-folded name tiebreaker"
+        &["Beta.dll", "alpha.dll", "zeta.dll"],
+        "Modified-DESC numeric fast path must use raw-slice name tiebreaker"
+    );
+}
+
+/// Regression pin: the zero-alloc fast path must *only* activate when the
+/// primary column and every tier are strictly numeric / flag columns.  If
+/// a tier includes a string-based column (`Extension`, `Name`, etc.), the
+/// sort must fall back to the Schwartzian path with case-folded keys.
+#[test]
+fn sort_rows_mixed_tier_falls_back_to_schwartzian() {
+    let mut rows = vec![
+        row("FILE.TXT", 'C', 100, 42, 0), // size=100, ext=TXT
+        row("file.log", 'C', 100, 42, 0), // size=100, ext=log
+        row("file.bin", 'C', 100, 42, 0), // size=100, ext=bin
+    ];
+
+    // Primary: Size (numeric, all tied at 100).
+    // Tier:    Extension (string) — must force Schwartzian.
+    let tiers = vec![SortSpec {
+        column: SortColumn::Extension,
+        descending: false,
+    }];
+    sort_rows(&mut rows, SortColumn::Size, false, &tiers);
+    let names: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
+
+    // Folded extension order: "bin" < "log" < "txt".
+    assert_eq!(
+        names,
+        &["file.bin", "file.log", "FILE.TXT"],
+        "Size tie with Extension tier must use case-folded Schwartzian path"
     );
 }
 
