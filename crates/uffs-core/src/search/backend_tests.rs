@@ -2060,3 +2060,73 @@ fn sort_rows_extension_column_still_folds_ext_key() {
         "Extension sort must use case-folded key order (bin < log < txt)"
     );
 }
+
+/// Regression pin for the v0.5.58 Option C parallel-sort fast path.
+///
+/// `sort_rows_numeric_fast` switches to `par_sort_unstable_by` once the
+/// input exceeds `PARALLEL_SORT_THRESHOLD` (= 16 K rows).  The parallel
+/// comparator path must preserve the same ordering contract as the
+/// sequential path: strict-numeric primary + raw-slice name tiebreaker.
+/// This test feeds 20 K synthetic rows with two distinct modified
+/// timestamps to force the parallel branch, then asserts the output is
+/// monotonically non-increasing in `modified` (DESC) and strictly
+/// ordered by raw name within each tie block.
+#[test]
+fn sort_rows_numeric_fast_parallel_branch_preserves_order() {
+    // 20 K rows: half at modified=1000, half at modified=2000.  Names
+    // are zero-padded so raw-slice order is deterministic regardless
+    // of insertion order.
+    let mut rows: Vec<DisplayRow> = (0..20_000_u32)
+        .map(|idx| {
+            let modified = if idx % 2 == 0 { 2000 } else { 1000 };
+            row(
+                &format!("file_{idx:05}.dll"),
+                'C',
+                u64::from(idx),
+                modified,
+                0,
+            )
+        })
+        .collect();
+
+    sort_rows(&mut rows, SortColumn::Modified, true, &[]);
+
+    // First 10 K rows must all be modified=2000, last 10 K must be
+    // modified=1000 (primary DESC).
+    for row in rows.iter().take(10_000) {
+        assert_eq!(
+            row.modified, 2000,
+            "top 10 K must be modified=2000 under DESC sort"
+        );
+    }
+    for row in rows.iter().skip(10_000) {
+        assert_eq!(
+            row.modified, 1000,
+            "bottom 10 K must be modified=1000 under DESC sort"
+        );
+    }
+
+    // Within each tie block names must be strictly ascending by raw
+    // codepoint order (the fast-path tiebreaker).
+    let (top_half, bottom_half) = rows.split_at(10_000);
+    for pair in top_half.windows(2) {
+        if let [first, second] = pair {
+            assert!(
+                first.name() < second.name(),
+                "tiebreaker must be raw-slice ASC inside tie: {:?} vs {:?}",
+                first.name(),
+                second.name()
+            );
+        }
+    }
+    for pair in bottom_half.windows(2) {
+        if let [first, second] = pair {
+            assert!(
+                first.name() < second.name(),
+                "tiebreaker must be raw-slice ASC inside tie: {:?} vs {:?}",
+                first.name(),
+                second.name()
+            );
+        }
+    }
+}

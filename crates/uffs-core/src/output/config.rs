@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! Output configuration and row formatting helpers.
+//! Output configuration and `DataFrame` formatting helpers.
+//!
+//! The native `DisplayRow` formatter (sequential + rayon-parallel write
+//! branches, the 30-arm column→text dispatch, attribute bit constants,
+//! and the raw-FILETIME → text helper) lives in the sibling
+//! [`super::display_rows`] module so `config.rs` stays under the
+//! 800-LOC file-size policy.  The public entry point
+//! [`OutputConfig::write_display_rows`] delegates to it; callers see
+//! no API change.
 
 use core::fmt::Write as _;
 use std::io::Write;
@@ -301,7 +309,12 @@ impl OutputConfig {
     /// Write `DisplayRow` results directly — **no `DataFrame` involved**.
     ///
     /// Uses the same separator / quote / header / boolean formatting as
-    /// [`write`](Self::write) so output is identical.
+    /// [`write`](Self::write) so output is identical.  The
+    /// implementation (sequential + rayon-parallel write branches, the
+    /// column→text dispatch, attribute bit constants, and the
+    /// FILETIME → text helper) lives in the sibling
+    /// [`super::display_rows`] module to keep this file under the
+    /// 800-LOC file-size policy.
     ///
     /// # Errors
     ///
@@ -309,40 +322,9 @@ impl OutputConfig {
     pub fn write_display_rows<W: Write>(
         &self,
         rows: &[crate::search::backend::DisplayRow],
-        mut writer: W,
+        writer: W,
     ) -> Result<()> {
-        let output_cols: &[OutputColumn] = self
-            .columns
-            .as_ref()
-            .map_or(BASELINE_COLUMN_ORDER, |cols| cols.as_slice());
-
-        // Header
-        if self.header {
-            let mut header = String::with_capacity(output_cols.len() * 24);
-            for (idx, col) in output_cols.iter().enumerate() {
-                if idx > 0 {
-                    header.push_str(&self.separator);
-                }
-                header.push_str(&self.quote);
-                header.push_str(col.display_name());
-                header.push_str(&self.quote);
-            }
-            header.push('\n');
-            header.push('\n');
-            writer.write_all(header.as_bytes())?;
-        }
-
-        // Data rows
-        let mut buf = String::with_capacity(output_cols.len() * 32);
-        let mut itoa_buf = itoa::Buffer::new();
-        for row in rows {
-            buf.clear();
-            write_display_row_columns(&mut buf, &mut itoa_buf, output_cols, self, row);
-            buf.push('\n');
-            writer.write_all(buf.as_bytes())?;
-        }
-
-        Ok(())
+        super::display_rows::write_display_rows(self, rows, writer)
     }
 
     /// Append a single formatted series value to the provided row buffer.
