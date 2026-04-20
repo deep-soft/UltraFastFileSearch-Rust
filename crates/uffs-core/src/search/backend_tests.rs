@@ -1976,3 +1976,58 @@ fn sort_rows_directory_flag_multi_row_ascending() {
         "DirectoryFlag asc: files first, then dirs, alphabetical within each"
     );
 }
+
+/// Regression pin for the `SortKeyNeeds` optimisation (v0.5.55).
+///
+/// Numeric sorts (`Modified`, `Size`, `Created`, etc.) skip folding +
+/// allocating the `path`, `path_only`, `ext`, and `file_type` keys when
+/// they are not referenced by the column or any tier.  This test ensures
+/// the *name* tiebreaker still fires correctly for rows that tie on the
+/// primary numeric column — i.e. case-folded name order is preserved
+/// even though only the `name` folded key is populated.
+#[test]
+fn sort_rows_numeric_column_uses_folded_name_tiebreaker() {
+    // All three rows share modified=42 → the primary cmp is a tie, and
+    // the tiebreaker must kick in.  Names are mixed-case to exercise the
+    // case-folded tiebreaker (folded: "alpha", "beta", "zeta").  Raw
+    // codepoint order would put "Beta" < "alpha" < "zeta" (uppercase
+    // before lowercase), but the folded tiebreaker must yield
+    // alpha < Beta < zeta.
+    let mut rows = vec![
+        row("zeta.dll", 'C', 100, 42, 0),
+        row("Beta.dll", 'C', 100, 42, 0),
+        row("alpha.dll", 'C', 100, 42, 0),
+    ];
+
+    sort_rows(&mut rows, SortColumn::Modified, true, &[]);
+    let names: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
+
+    assert_eq!(
+        names,
+        &["alpha.dll", "Beta.dll", "zeta.dll"],
+        "Modified-DESC with tied primary key must fall back to case-folded name tiebreaker"
+    );
+}
+
+/// Regression pin: the lazy-key optimisation only populates `ext` when
+/// `FieldId::Extension` is the sort column or a tier.  Exercising the
+/// Extension path confirms the needs-analyzer still flags it correctly
+/// and the fold+alloc still happens for this case.
+#[test]
+fn sort_rows_extension_column_still_folds_ext_key() {
+    let mut rows = vec![
+        row("file.TXT", 'C', 1, 0, 0),
+        row("file.log", 'C', 1, 0, 0),
+        row("file.Bin", 'C', 1, 0, 0),
+    ];
+
+    // Sort by extension ascending: folded order is "bin" < "log" < "txt".
+    sort_rows(&mut rows, SortColumn::Extension, false, &[]);
+    let names: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
+
+    assert_eq!(
+        names,
+        &["file.Bin", "file.log", "file.TXT"],
+        "Extension sort must use case-folded key order (bin < log < txt)"
+    );
+}

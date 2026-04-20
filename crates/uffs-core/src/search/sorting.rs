@@ -14,17 +14,133 @@ use super::field::FieldId;
 ///
 /// Stored alongside each `DisplayRow` during sorting (Schwartzian transform)
 /// to avoid allocating inside the O(n·log n) comparator.
+///
+/// Only fields that `SortKeyNeeds::analyze` marks as required for the active
+/// column + tiers are populated; the rest stay as `String::new()` (zero-cost,
+/// no heap allocation because `String` has a null pointer representation
+/// for empty).  This is a major hot-path optimisation: for a typical
+/// numeric sort (Modified-DESC, Size, etc.) only `name` is needed as a
+/// tiebreaker, so we save 4 allocations per row — ~170 ms at 168 K rows
+/// on Windows based on the v0.5.54 deep-profile data.
 struct RowSortKey {
-    /// Folded name.
+    /// Folded name (always populated — used as the universal tiebreaker).
     name: String,
-    /// Folded path.
+    /// Folded path.  Populated only when the column/tiers include
+    /// `FieldId::Path`.
     path: String,
-    /// Folded directory path only.
+    /// Folded directory path only.  Populated only when the column/tiers
+    /// include `FieldId::PathOnly`.
     path_only: String,
-    /// Folded extension.
+    /// Folded extension.  Populated only when the column/tiers include
+    /// `FieldId::Extension`.
     ext: String,
-    /// Folded semantic type/category.
+    /// Folded semantic type/category.  Populated only when the column/tiers
+    /// include `FieldId::Type`.
     file_type: String,
+}
+
+/// Bitmask of which `RowSortKey` fields the active sort needs.
+///
+/// Computed once upfront from the primary column + `extra_tiers`; the
+/// decorate loop then skips folding + allocating keys that no comparator
+/// branch will ever touch.  The name key is always needed because
+/// `sort_rows_with_fold` uses it as a universal tiebreaker across all
+/// numeric / flag columns, so it is not represented here.
+///
+/// Stored as a `u8` bitfield (not four booleans) to satisfy clippy's
+/// `struct_excessive_bools` lint and keep the struct `Copy`-friendly.
+#[derive(Debug, Default, Clone, Copy)]
+struct SortKeyNeeds(u8);
+
+impl SortKeyNeeds {
+    /// Flag bit: the `path` folded key is read by some comparator branch.
+    const PATH: u8 = 0b0001;
+    /// Flag bit: the `path_only` folded key is read.
+    const PATH_ONLY: u8 = 0b0010;
+    /// Flag bit: the `ext` folded key is read.
+    const EXT: u8 = 0b0100;
+    /// Flag bit: the `file_type` folded key is read.
+    const FILE_TYPE: u8 = 0b1000;
+
+    /// Walk the primary column + tiers and flag which string keys the
+    /// comparator will actually read.  Numeric / boolean-flag columns
+    /// never read a folded key, so they contribute no bits.
+    fn analyze(column: FieldId, extra_tiers: &[SortSpec]) -> Self {
+        let mut bits = Self::bit_for(column);
+        for tier in extra_tiers {
+            bits |= Self::bit_for(tier.column);
+        }
+        Self(bits)
+    }
+
+    /// Map a single `FieldId` to the key-needs bit it implies.  `FieldId::Name`
+    /// and every numeric / flag column map to zero because either the
+    /// always-populated `key.name` is sufficient (Name) or no folded key is
+    /// consulted at all (numeric / flag).
+    const fn bit_for(column: FieldId) -> u8 {
+        match column {
+            FieldId::Path => Self::PATH,
+            FieldId::PathOnly => Self::PATH_ONLY,
+            FieldId::Extension => Self::EXT,
+            FieldId::Type => Self::FILE_TYPE,
+            FieldId::Name
+            | FieldId::Size
+            | FieldId::SizeOnDisk
+            | FieldId::Created
+            | FieldId::Modified
+            | FieldId::Accessed
+            | FieldId::Drive
+            | FieldId::Descendants
+            | FieldId::TreeSize
+            | FieldId::TreeAllocated
+            | FieldId::Bulkiness
+            | FieldId::NameLength
+            | FieldId::PathLength
+            | FieldId::Hidden
+            | FieldId::System
+            | FieldId::Archive
+            | FieldId::ReadOnly
+            | FieldId::Compressed
+            | FieldId::Encrypted
+            | FieldId::Sparse
+            | FieldId::Reparse
+            | FieldId::Offline
+            | FieldId::NotIndexed
+            | FieldId::Temporary
+            | FieldId::Virtual
+            | FieldId::Pinned
+            | FieldId::Unpinned
+            | FieldId::Integrity
+            | FieldId::NoScrub
+            | FieldId::DirectoryFlag
+            | FieldId::RecallOnOpen
+            | FieldId::RecallOnDataAccess
+            | FieldId::Attributes
+            | FieldId::AttributeValue
+            | FieldId::ParityAttributes => 0,
+        }
+    }
+
+    /// Returns `true` if the folded `path` key is referenced by any
+    /// comparator branch for the active sort.
+    const fn path(self) -> bool {
+        self.0 & Self::PATH != 0
+    }
+
+    /// Returns `true` if the folded `path_only` key is referenced.
+    const fn path_only(self) -> bool {
+        self.0 & Self::PATH_ONLY != 0
+    }
+
+    /// Returns `true` if the folded `ext` key is referenced.
+    const fn ext(self) -> bool {
+        self.0 & Self::EXT != 0
+    }
+
+    /// Returns `true` if the folded `file_type` key is referenced.
+    const fn file_type(self) -> bool {
+        self.0 & Self::FILE_TYPE != 0
+    }
 }
 
 /// Sort display rows by the given column, then by additional tiers, with a
@@ -59,6 +175,12 @@ pub fn sort_rows_with_fold(
     if rows.len() <= 1 {
         return;
     }
+    // Determine which folded-key fields the active sort column + tiers will
+    // actually read.  For numeric / boolean-flag sorts this leaves the four
+    // directional keys empty, saving 4 heap allocations per row.  The name
+    // key is always populated (used as the universal tiebreaker).
+    let needs = SortKeyNeeds::analyze(column, extra_tiers);
+
     // Decorate: zip each row with pre-computed folded keys.
     let mut fold_buf: Vec<u8> = Vec::with_capacity(256);
     let mut decorated: Vec<(DisplayRow, RowSortKey)> = rows
@@ -66,14 +188,28 @@ pub fn sort_rows_with_fold(
         .map(|row| {
             let key = RowSortKey {
                 name: fold.fold_into(row.name(), &mut fold_buf).to_owned(),
-                path: fold.fold_into(&row.path, &mut fold_buf).to_owned(),
-                path_only: fold.fold_into(row.path_dir(), &mut fold_buf).to_owned(),
-                ext: fold
-                    .fold_into(row.name().rsplit('.').next().unwrap_or(""), &mut fold_buf)
-                    .to_owned(),
-                file_type: fold
-                    .fold_into(semantic_type_for_row(row), &mut fold_buf)
-                    .to_owned(),
+                path: if needs.path() {
+                    fold.fold_into(&row.path, &mut fold_buf).to_owned()
+                } else {
+                    String::new()
+                },
+                path_only: if needs.path_only() {
+                    fold.fold_into(row.path_dir(), &mut fold_buf).to_owned()
+                } else {
+                    String::new()
+                },
+                ext: if needs.ext() {
+                    fold.fold_into(row.name().rsplit('.').next().unwrap_or(""), &mut fold_buf)
+                        .to_owned()
+                } else {
+                    String::new()
+                },
+                file_type: if needs.file_type() {
+                    fold.fold_into(semantic_type_for_row(row), &mut fold_buf)
+                        .to_owned()
+                } else {
+                    String::new()
+                },
             };
             // Take ownership; we'll put it back after sorting.
             (core::mem::take(row), key)
