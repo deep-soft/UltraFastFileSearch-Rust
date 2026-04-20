@@ -5,7 +5,7 @@
 
 use alloc::collections::BinaryHeap;
 
-use super::super::backend::{self, DisplayRow, FilterMode};
+use super::super::backend::{self, DisplayRow, FilterMode, PhaseTimings};
 use super::super::derived::bulkiness_for_record;
 use super::super::field::FieldId;
 use super::super::filters::SearchFilters;
@@ -47,7 +47,7 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
     sort_desc: bool,
     filter_mode: FilterMode,
     search_filters: &mut SearchFilters,
-) -> Vec<DisplayRow> {
+) -> (Vec<DisplayRow>, PhaseTimings) {
     let has_filters = !search_filters.is_empty() || !matches!(filter_mode, FilterMode::All);
     tracing::debug!(
         has_filters,
@@ -352,7 +352,8 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
             "[SCAN] drive scan complete"
         );
     }
-    let scan_ms = t_scan_all.elapsed().as_millis();
+    let scan_ms_u128 = t_scan_all.elapsed().as_millis();
+    let scan_ms = u64::try_from(scan_ms_u128).unwrap_or(u64::MAX);
     tracing::debug!(
         total_records = total_records_scanned,
         total_filtered = total_filtered_out,
@@ -360,6 +361,9 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
         "[SCAN] all drives scanned"
     );
 
+    // ── Sort phase: drain heap / fallback into candidates Vec,
+    //    sort by sort_key, and truncate to `limit`.
+    let t_sort = std::time::Instant::now();
     // Merge into sorted candidates Vec.
     let mut candidates: Vec<(u16, u32, i64)> = if use_heap {
         if sort_desc {
@@ -404,7 +408,14 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
         candidates.sort_unstable_by_key(|entry| entry.2);
     }
     candidates.truncate(limit);
+    let sort_ms = u64::try_from(t_sort.elapsed().as_millis()).unwrap_or(u64::MAX);
 
+    // ── Path-resolve phase: per-candidate parent-chain walk +
+    //    `DisplayRow` materialisation.  This is the dominant cost
+    //    at high row counts — reordering candidates by a numeric
+    //    key (e.g. `Modified`) scrambles MFT locality and collapses
+    //    the `DirCache` hit rate.
+    let t_path_resolve = std::time::Instant::now();
     let mut dir_caches: std::collections::HashMap<u16, tree::DirCache> =
         std::collections::HashMap::new();
     let mut rows: Vec<DisplayRow> = candidates
@@ -427,5 +438,19 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
         .collect();
 
     backend::sort_rows(&mut rows, sort_column, sort_desc, &[]);
-    rows
+    let path_resolve_ms = u64::try_from(t_path_resolve.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    let timings = PhaseTimings {
+        scan_ms,
+        sort_ms,
+        path_resolve_ms,
+    };
+    tracing::debug!(
+        scan_ms,
+        sort_ms,
+        path_resolve_ms,
+        rows = rows.len(),
+        "[PHASE] collect_global_top_n_numeric complete"
+    );
+    (rows, timings)
 }

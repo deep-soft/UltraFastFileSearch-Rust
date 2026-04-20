@@ -218,8 +218,43 @@ pub struct SearchProfile {
     pub row_build_ms: u64,
     /// JSON serialization / shmem write time (ms).
     pub serialize_ms: u64,
+    /// Scan phase of the `collect_global_top_n_numeric` pipeline (ms).
+    ///
+    /// Populated only for `pattern == "*"` / ext-fast-path queries that
+    /// take the numeric-sort branch.  `0` for other dispatch paths
+    /// (regex, trigram, path-sorted tree walk) and for older daemons
+    /// that predate the `PhaseTimings` instrumentation.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub scan_ms: u64,
+    /// Sort phase: heap drain + `sort_unstable_by_key` + truncate (ms).
+    /// Same caveats as `scan_ms`.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub sort_ms: u64,
+    /// Path-resolve phase: per-candidate `resolve_path_cached` +
+    /// `DisplayRow` materialisation (ms).  Typically the dominant
+    /// cost at high row counts when sorting by a non-path field.
+    /// Same caveats as `scan_ms`.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub path_resolve_ms: u64,
+    /// Row-write phase: time the daemon spent streaming
+    /// `SearchRow`s to disk (`write_rows_to_file`) — only populated
+    /// for `--out` / file-sink queries.  `0` for shared-memory and
+    /// in-memory responses.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub write_ms: u64,
     /// Per-drive breakdown.
     pub drives: Vec<DriveProfile>,
+}
+
+/// `serde` helper: omit zero-valued phase timings from the wire
+/// representation to keep CLI JSON output clean when the new fields
+/// aren't populated (regex/trigram paths, old daemons, shmem sink).
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde `skip_serializing_if` requires `&T` signature"
+)]
+const fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Per-drive timing within a search (search + load/startup metrics).

@@ -19,7 +19,9 @@ use uffs_client::protocol::response::{
     DriveInfo, DriveProfile, DrivesResponse, SearchProfile, SearchResponse, SearchRow,
 };
 use uffs_client::protocol::{SearchFilterMode, SearchParams, SearchResponseMode};
-use uffs_core::search::backend::{DisplayRow, FilterMode, SearchRequest, SortSpec, search_index};
+use uffs_core::search::backend::{
+    DisplayRow, FilterMode, PhaseTimings, SearchRequest, SortSpec, search_index,
+};
 use uffs_core::search::field::FieldId;
 use uffs_core::search::filters::{SearchFilterParams, SearchFilters};
 
@@ -265,6 +267,9 @@ impl IndexManager {
         } else {
             0
         };
+        // Capture sub-phase timings before we consume `result.rows`.
+        // `None` for non-match-all paths (regex, trigram, path-sort).
+        let phase_timings = result.phase_timings;
 
         // ── Row building ────────────────────────────────────────────
         let t_rows = profiling.then(Instant::now);
@@ -278,17 +283,38 @@ impl IndexManager {
             filtered_rows.truncate(limit as usize);
         }
 
+        // Per-drive match counts for `--profile`.  Computed once here
+        // so both the file-sink early-return and the regular IPC path
+        // share the same tally without duplicate O(N) scans.
+        let drive_match_counts: Vec<(char, usize)> = if profiling {
+            drive_info
+                .iter()
+                .map(|&(drive, _records)| {
+                    let matches = filtered_rows
+                        .iter()
+                        .filter(|row| row.drive == drive)
+                        .count();
+                    (drive, matches)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         // ── Direct file output (OPT-4) ──────────────────────────────
         // When `output_file` is set, write results directly to file and
         // return metadata-only response.  Skips SearchRow allocation,
         // JSON serialization, and IPC transfer entirely.
         if let Some(output_path) = &effective_params.output_file {
             let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
-
-            // Reconstruct OutputConfig from protocol fields.
             let output_config = build_output_config(&effective_params);
 
-            match Self::write_rows_to_file(&filtered_rows, output_path, &output_config) {
+            let t_write = profiling.then(Instant::now);
+            let write_result =
+                Self::write_rows_to_file(&filtered_rows, output_path, &output_config);
+            let write_us = t_write.map_or(0, |ts| ts.elapsed().as_micros());
+
+            match write_result {
                 Ok(rows_written) => {
                     tracing::info!(
                         output = output_path,
@@ -303,6 +329,27 @@ impl IndexManager {
                         u64::try_from(query_us).unwrap_or(u64::MAX),
                         Ordering::Relaxed,
                     );
+                    // Build profile so `--profile --out` can surface
+                    // scan/sort/path_resolve/write_ms.  Previously this
+                    // branch returned `profile: None`, hiding the new
+                    // `PhaseTimings` instrumentation on the hot file
+                    // benchmark path.
+                    let profile = if profiling {
+                        Some(
+                            self.build_search_profile(
+                                lock_us,
+                                search_us,
+                                0,
+                                write_us,
+                                phase_timings,
+                                &drive_info,
+                                &drive_match_counts,
+                            )
+                            .await,
+                        )
+                    } else {
+                        None
+                    };
                     return SearchResponse {
                         rows: Vec::new(),
                         total_count,
@@ -311,7 +358,7 @@ impl IndexManager {
                         truncated: false,
                         shmem_path: None,
                         shmem_count: None,
-                        profile: None,
+                        profile,
                         applied_sorts: Vec::new(),
                         applied_projection: Vec::new(),
                         response_mode: None,
@@ -339,24 +386,8 @@ impl IndexManager {
         // (already true), also elides ~15 ms of IPC transport for
         // medium result sets.
         //
-        // Per-drive match counts for `--profile` are computed from
-        // `filtered_rows` *before* the row materialisation gate, so the
-        // profile output stays accurate regardless of `include_rows`.
-        let drive_match_counts: Vec<(char, usize)> = if profiling {
-            drive_info
-                .iter()
-                .map(|&(drive, _records)| {
-                    let matches = filtered_rows
-                        .iter()
-                        .filter(|row| row.drive == drive)
-                        .count();
-                    (drive, matches)
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
+        // `drive_match_counts` was computed up-front (see block above)
+        // so both dispatch branches share the same per-drive tally.
         let filtered_len = filtered_rows.len();
         let rows: Vec<SearchRow> = if effective_params.include_rows {
             filtered_rows
@@ -392,6 +423,8 @@ impl IndexManager {
                     lock_us,
                     search_us,
                     row_build_us,
+                    0, // write_us: non-file-sink path, no disk write
+                    phase_timings,
                     &drive_info,
                     &drive_match_counts,
                 )
@@ -474,11 +507,17 @@ impl IndexManager {
     /// stays accurate even when row materialisation was skipped (e.g.
     /// under `--no-output`).  Pairs with `drive_info`: both slices are
     /// keyed by drive letter and have identical lengths.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "per-phase instrumentation payload: lock/search/row_build/write + sub-phase timings + drive slices"
+    )]
     async fn build_search_profile(
         &self,
         lock_us: u128,
         search_us: u128,
         row_build_us: u128,
+        write_us: u128,
+        phase_timings: Option<PhaseTimings>,
         drive_info: &[(char, usize)],
         drive_match_counts: &[(char, usize)],
     ) -> SearchProfile {
@@ -517,6 +556,9 @@ impl IndexManager {
             .collect();
         drive_profiles.sort_by_key(|dp| dp.drive);
 
+        let (scan_ms, sort_ms, path_resolve_ms) =
+            phase_timings.map_or((0, 0, 0), |pt| (pt.scan_ms, pt.sort_ms, pt.path_resolve_ms));
+
         SearchProfile {
             uptime_ms: us_to_ms(self.start_time.elapsed().as_micros()),
             startup_ms: startup_us / 1000,
@@ -524,6 +566,10 @@ impl IndexManager {
             search_ms: us_to_ms(search_us),
             row_build_ms: us_to_ms(row_build_us),
             serialize_ms: 0, // filled in by handler after shmem write
+            scan_ms,
+            sort_ms,
+            path_resolve_ms,
+            write_ms: us_to_ms(write_us),
             drives: drive_profiles,
         }
     }

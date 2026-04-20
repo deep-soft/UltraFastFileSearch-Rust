@@ -26,7 +26,7 @@
 
 use rayon::prelude::*;
 
-use super::backend::{DisplayRow, FilterMode, SortSpec};
+use super::backend::{DisplayRow, FilterMode, PhaseTimings, SortSpec};
 use super::filters::SearchFilters;
 use super::sorting::sort_rows;
 use crate::compact::DriveCompactIndex;
@@ -159,6 +159,13 @@ pub(super) fn apply_dispatch_safety_nets(
 
 /// Dispatch the `pattern == "*"` fast path: global top-N from the ext
 /// and size indices, optionally post-filtered by display-row predicates.
+///
+/// Returns `(rows, phase_timings)`.  `phase_timings` is `Some` when the
+/// numeric-sort branch of `collect_global_top_n` ran (i.e. any sort column
+/// other than `Path` / `PathOnly`) — that branch calls
+/// `collect_global_top_n_numeric`, which populates the scan / sort /
+/// `path_resolve` sub-phase breakdown.  The `PathOnly` tree-walk branch
+/// produces `None`; callers treat that as "no sub-breakdown available".
 pub(super) fn dispatch_match_all(
     active_drives: &[&DriveCompactIndex],
     limit: usize,
@@ -166,9 +173,9 @@ pub(super) fn dispatch_match_all(
     sort_desc: bool,
     filter_mode: FilterMode,
     search_filters: &mut SearchFilters,
-) -> Vec<DisplayRow> {
+) -> (Vec<DisplayRow>, Option<PhaseTimings>) {
     let t_top_n = std::time::Instant::now();
-    let mut rows = super::query::collect_global_top_n(
+    let (mut rows, phase_timings) = super::query::collect_global_top_n(
         active_drives,
         limit,
         sort_column,
@@ -187,7 +194,7 @@ pub(super) fn dispatch_match_all(
             "[3] post-filter done"
         );
     }
-    rows
+    (rows, phase_timings)
 }
 
 /// Dispatch the regex branch (`>pattern`): compile the regex, fan out

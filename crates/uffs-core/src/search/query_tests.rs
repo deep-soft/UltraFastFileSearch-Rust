@@ -565,7 +565,8 @@ fn assert_boolean_sort(field: FieldId, flag_bit: u32) {
     let mut filters = SearchFilters::default();
 
     // Descending: flagged record should come first.
-    let rows_desc = collect_global_top_n(&drives, 10, field, true, FilterMode::All, &mut filters);
+    let (rows_desc, _) =
+        collect_global_top_n(&drives, 10, field, true, FilterMode::All, &mut filters);
     assert!(
         rows_desc.len() >= 2,
         "{field:?} desc: expected ≥2 rows, got {}",
@@ -578,7 +579,8 @@ fn assert_boolean_sort(field: FieldId, flag_bit: u32) {
     );
 
     // Ascending: flagged record should come last.
-    let rows_asc = collect_global_top_n(&drives, 10, field, false, FilterMode::All, &mut filters);
+    let (rows_asc, _) =
+        collect_global_top_n(&drives, 10, field, false, FilterMode::All, &mut filters);
     assert!(
         rows_asc.len() >= 2,
         "{field:?} asc: expected ≥2 rows, got {}",
@@ -630,7 +632,7 @@ fn top_n_sort_by_directory_flag() {
     let mut filters = SearchFilters::default();
 
     // Desc: directory first.
-    let rows = collect_global_top_n(
+    let (rows, _) = collect_global_top_n(
         &drives,
         10,
         FieldId::DirectoryFlag,
@@ -784,7 +786,7 @@ fn heap_eviction_directory_desc_dirs_come_last() {
     let drives = vec![drive];
     let mut filters = SearchFilters::default();
 
-    let rows = collect_global_top_n(
+    let (rows, _) = collect_global_top_n(
         &drives,
         5,
         FieldId::DirectoryFlag,
@@ -809,7 +811,7 @@ fn heap_eviction_directory_asc_files_come_last() {
     let drives = vec![drive];
     let mut filters = SearchFilters::default();
 
-    let rows = collect_global_top_n(
+    let (rows, _) = collect_global_top_n(
         &drives,
         5,
         FieldId::DirectoryFlag,
@@ -875,7 +877,7 @@ fn heap_eviction_hidden_desc() {
     let drives = vec![drive];
     let mut filters = SearchFilters::default();
 
-    let rows = collect_global_top_n(
+    let (rows, _) = collect_global_top_n(
         &drives,
         5,
         FieldId::Hidden,
@@ -1136,7 +1138,7 @@ fn top_n_sort_by_bulkiness_desc_orders_by_ratio() {
     let drives = vec![drive];
     let mut filters = SearchFilters::default();
 
-    let rows = collect_global_top_n(
+    let (rows, _) = collect_global_top_n(
         &drives,
         10,
         FieldId::Bulkiness,
@@ -1173,7 +1175,7 @@ fn top_n_sort_by_bulkiness_asc_orders_by_ratio() {
     let drives = vec![drive];
     let mut filters = SearchFilters::default();
 
-    let rows = collect_global_top_n(
+    let (rows, _) = collect_global_top_n(
         &drives,
         10,
         FieldId::Bulkiness,

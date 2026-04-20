@@ -351,9 +351,7 @@ mod platform_windows {
             // the call.  `&raw mut written` is a valid out-param.
             // `None` for `lpreserved` is the documented value for all
             // current Windows versions.
-            let result = unsafe {
-                WriteConsoleW(handle, chunk, Some(&raw mut written), None)
-            };
+            let result = unsafe { WriteConsoleW(handle, chunk, Some(&raw mut written), None) };
             result.map_err(std::io::Error::other)?;
             if written == 0_u32 {
                 return Err(std::io::Error::new(

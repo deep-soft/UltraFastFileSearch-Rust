@@ -125,6 +125,32 @@ impl DisplayRow {
     }
 }
 
+/// Sub-phase wall-clock breakdown inside the `pattern == "*"` pipeline.
+///
+/// Populated only when the `match_all` dispatch path is taken (via
+/// `collect_global_top_n_numeric`); the regex / trigram paths leave
+/// this `None` on the parent [`SearchResult`].
+///
+/// Units are whole milliseconds (`u64`) to match the rest of the
+/// `SearchProfile` wire type; sub-millisecond phases clamp to 0.
+#[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "`_ms` suffix matches the `SearchProfile` wire type fields"
+)]
+pub struct PhaseTimings {
+    /// Ext-index candidate iteration + inline predicate filter.
+    pub scan_ms: u64,
+    /// `sort_unstable_by_key` on the candidate `(u16, u32, i64)`
+    /// tuples (or heap drain, depending on `use_heap`).
+    pub sort_ms: u64,
+    /// `tree::resolve_path_cached` over every sorted candidate.
+    /// This is the dominant cost at high row counts: reordering
+    /// candidates by a numeric key (e.g. `Modified`) scrambles
+    /// MFT locality and collapses the `DirCache` hit rate.
+    pub path_resolve_ms: u64,
+}
+
 /// Result of a search operation.
 pub struct SearchResult {
     /// Matching rows.
@@ -133,6 +159,11 @@ pub struct SearchResult {
     pub duration: core::time::Duration,
     /// Total records scanned across all drives.
     pub records_scanned: usize,
+    /// Sub-phase breakdown for the `pattern == "*"` fast path
+    /// (scan / sort / `path_resolve`).  `None` for other dispatch
+    /// paths (regex, trigram) and for match-all paths that took
+    /// the `PathOnly` sort branch.
+    pub phase_timings: Option<PhaseTimings>,
 }
 
 /// Legacy type alias — all sort columns are now `FieldId`.
@@ -328,6 +359,7 @@ impl MultiDriveBackend {
 
         let start = Instant::now();
         let mut rows = Vec::new();
+        let mut phase_timings: Option<PhaseTimings> = None;
 
         if pattern.is_empty() {
             self.last_results.clear();
@@ -335,6 +367,7 @@ impl MultiDriveBackend {
                 rows: Vec::new(),
                 duration: start.elapsed(),
                 records_scanned: 0,
+                phase_timings: None,
             };
         }
 
@@ -395,7 +428,7 @@ impl MultiDriveBackend {
         let is_path = !is_match_all && !is_regex && crate::search::tree::is_path_pattern(&needle);
 
         if is_match_all {
-            rows = super::query::collect_global_top_n(
+            let (match_all_rows, match_all_timings) = super::query::collect_global_top_n(
                 &self.drives,
                 limit,
                 self.sort_column,
@@ -403,6 +436,8 @@ impl MultiDriveBackend {
                 filter_mode,
                 search_filters,
             );
+            rows = match_all_rows;
+            phase_timings = match_all_timings;
             // Post-filters that require resolved paths (type, path_contains,
             // bulkiness, path_length) are not applied inside
             // `collect_global_top_n` — they operate on `DisplayRow`, not
@@ -448,6 +483,7 @@ impl MultiDriveBackend {
                         rows: Vec::new(),
                         duration: start.elapsed(),
                         records_scanned: 0,
+                        phase_timings: None,
                     };
                 }
             }
@@ -520,6 +556,7 @@ impl MultiDriveBackend {
             rows: self.last_results.clone(),
             duration: start.elapsed(),
             records_scanned: scanned,
+            phase_timings,
         }
     }
 
@@ -596,6 +633,7 @@ pub fn search_index(
             rows: Vec::new(),
             duration: start.elapsed(),
             records_scanned: 0,
+            phase_timings: None,
         };
     }
 
@@ -661,7 +699,7 @@ pub fn search_index(
         "[1] search_index entry"
     );
 
-    let rows: Vec<DisplayRow> = if is_match_all {
+    let (rows, phase_timings): (Vec<DisplayRow>, Option<PhaseTimings>) = if is_match_all {
         dispatch_match_all(
             &active_drives,
             limit,
@@ -686,23 +724,27 @@ pub fn search_index(
                 rows: Vec::new(),
                 duration: start.elapsed(),
                 records_scanned: 0,
+                phase_timings: None,
             };
         };
-        regex_rows
+        (regex_rows, None)
     } else {
-        dispatch_trigram_or_tree(
-            &active_drives,
-            &needle,
-            is_path,
-            case_sensitive,
-            whole_word,
-            match_path,
-            limit,
-            filter_mode,
-            search_filters,
-            sort_column,
-            sort_desc,
-            extra_sort_tiers,
+        (
+            dispatch_trigram_or_tree(
+                &active_drives,
+                &needle,
+                is_path,
+                case_sensitive,
+                whole_word,
+                match_path,
+                limit,
+                filter_mode,
+                search_filters,
+                sort_column,
+                sort_desc,
+                extra_sort_tiers,
+            ),
+            None,
         )
     };
 
@@ -722,6 +764,7 @@ pub fn search_index(
         rows,
         duration: start.elapsed(),
         records_scanned: scanned,
+        phase_timings,
     }
 }
 

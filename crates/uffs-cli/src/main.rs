@@ -81,6 +81,13 @@ struct ClientProfile<'a> {
     /// Pre-packed `paths_blob` (if the daemon used the path-only
     /// single-buffer fast path).
     paths_blob: Option<&'a str>,
+    /// Daemon-side `profile` object from the response envelope.  When
+    /// populated, its `scan_ms` / `sort_ms` / `path_resolve_ms` /
+    /// `write_ms` fields are rendered as a sub-phase breakdown inside
+    /// the daemon block so the `--profile` output pinpoints where the
+    /// per-query cost sits (scan vs sort vs path resolution vs disk
+    /// write).
+    daemon_profile: Option<&'a serde_json::Value>,
 }
 
 /// Print the `--profile` / `--benchmark` client-side timing block to
@@ -97,6 +104,21 @@ fn print_client_profile(prof: &ClientProfile<'_>) {
         "  Search (IPC):    {:>6} ms  (daemon: {} ms)",
         prof.ipc_ms, prof.duration_ms
     );
+    // Sub-phase breakdown from the daemon profile.  Any non-zero
+    // component is printed; all-zero (regex/trigram paths, legacy
+    // daemons) collapses to a single-line total.
+    if let Some(dp) = prof.daemon_profile {
+        let field = |key: &str| dp.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let scan = field("scan_ms");
+        let sort = field("sort_ms");
+        let resolve = field("path_resolve_ms");
+        let write = field("write_ms");
+        if (scan | sort | resolve | write) > 0 {
+            eprintln!(
+                "    scan={scan} ms  sort={sort} ms  path_resolve={resolve} ms  write={write} ms"
+            );
+        }
+    }
     let row_count = prof.paths_blob.map_or_else(
         || prof.rows.map_or(0, <[serde_json::Value]>::len),
         |blob| blob.bytes().filter(|byte| *byte == b'\n').count(),
@@ -198,6 +220,7 @@ fn run_search(args: &[String]) -> Result<()> {
         .iter()
         .any(|arg| arg == "--profile" || arg == "--benchmark")
     {
+        let daemon_profile = response.get("profile").filter(|val| !val.is_null());
         print_client_profile(&ClientProfile {
             connect_ms,
             ready_ms,
@@ -205,6 +228,7 @@ fn run_search(args: &[String]) -> Result<()> {
             duration_ms,
             rows,
             paths_blob,
+            daemon_profile,
         });
     }
 
