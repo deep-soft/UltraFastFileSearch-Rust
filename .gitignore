@@ -34,16 +34,12 @@ build/
 # Logs, vendor, misc
 # =============================================================================
 /Shell/
-# /LOG/ holds local-only runtime logs (defender ETLs, mental_health,
-# pipeline `ship_run*.log` captures, etc.).  The one exception is
-# `*CHANGELOG_HEALING.md` — per the operating-rules healing-log
-# convention, these document each `just ship` iteration's failures
-# and fixes and MUST ship with the commit that resolved them.  Git
-# cannot re-include files inside an ignored *directory*, so the
-# standard workaround is used: ignore the directory's *contents*
-# (`/LOG/*`) and then un-ignore the healing logs by filename.
-/LOG/*
-!/LOG/*CHANGELOG_HEALING.md
+# /LOG/ is strictly local-only.  Every file under it — runtime logs
+# (defender ETLs, mental_health, `ship_run*.log` captures), per-session
+# notes, healing logs, assessment scratchpads, anything — stays on the
+# developer's machine and NEVER reaches git.  The project-level
+# `CHANGELOG.md` at the repo root is the only changelog that ships.
+/LOG/
 /vendor/
 /missing_paths.txt
 /_trash/
