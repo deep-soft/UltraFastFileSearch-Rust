@@ -1235,3 +1235,83 @@ fn auto_concurrency_target_floor_prevents_zero_permits() {
     assert_eq!(IndexManager::auto_concurrency_target(2, 64), 2);
     assert_eq!(IndexManager::auto_concurrency_target(1, 200), 2);
 }
+
+// ── Phase 3.1 NUL fast path: include_rows gate ──────────────────────
+
+/// Helper: construct a minimal [`IndexManager`] with the synthetic
+/// test drive loaded.  Uses `tokio::test` so the async `add_drive` can
+/// swap the internal snapshot pointer.
+async fn test_manager_with_drive() -> IndexManager {
+    let (tx, _rx) = crate::events::event_channel();
+    let mgr = IndexManager::new(None, tx);
+    mgr.add_drive(build_test_drive()).await;
+    mgr
+}
+
+/// Regression: when `include_rows = false`, [`IndexManager::search`]
+/// must return a response with empty `rows`, empty `projected_rows`,
+/// and `paths_blob = None` — while still populating `total_count` so
+/// callers can display "N results suppressed" if they want to.
+///
+/// This is the daemon-side half of the Phase 3.1 NUL fast path: the
+/// CLI injects `--no-output` when stdout points to the null device,
+/// which sets this flag, and the daemon skips row materialisation +
+/// `paths_blob` packing + IPC transfer.
+#[tokio::test]
+async fn search_with_include_rows_false_suppresses_rows_but_counts() {
+    let mgr = test_manager_with_drive().await;
+
+    let params = uffs_client::protocol::SearchParams {
+        pattern: "*".to_owned(),
+        include_rows: false,
+        ..uffs_client::protocol::SearchParams::default()
+    };
+
+    let response = mgr.search(&params).await;
+
+    assert!(
+        response.rows.is_empty(),
+        "include_rows=false must suppress rows; got {} rows",
+        response.rows.len()
+    );
+    assert!(
+        response.paths_blob.is_none(),
+        "paths_blob must stay None when rows are suppressed"
+    );
+    assert!(
+        response.shmem_path.is_none(),
+        "shmem must be skipped when rows are suppressed"
+    );
+    assert!(
+        response.total_count > 0,
+        "total_count must reflect the matched record count regardless of include_rows; got {}",
+        response.total_count
+    );
+}
+
+/// Control: with `include_rows = true` (the default), the same query
+/// returns non-empty rows.  Pins that the gate in
+/// `IndexManager::search` does not accidentally suppress the
+/// non-suppressed case.
+#[tokio::test]
+async fn search_with_include_rows_true_returns_rows() {
+    let mgr = test_manager_with_drive().await;
+
+    let params = uffs_client::protocol::SearchParams {
+        pattern: "*".to_owned(),
+        include_rows: true,
+        ..uffs_client::protocol::SearchParams::default()
+    };
+
+    let response = mgr.search(&params).await;
+
+    assert!(
+        !response.rows.is_empty(),
+        "include_rows=true must return matched rows; got 0"
+    );
+    assert_eq!(
+        response.rows.len() as u64,
+        response.total_count,
+        "rows.len() must equal total_count when no limit is set and include_rows=true"
+    );
+}

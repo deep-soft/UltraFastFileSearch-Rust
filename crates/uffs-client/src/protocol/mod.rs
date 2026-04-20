@@ -7,6 +7,7 @@
 //! `uffsd` (daemon) and `uffs` (CLI) both depend on this module.
 
 pub mod cli_args;
+mod cli_args_helpers;
 pub mod response;
 pub mod search_params;
 #[cfg(test)]

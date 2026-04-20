@@ -331,10 +331,41 @@ impl IndexManager {
             }
         }
 
-        let rows: Vec<SearchRow> = filtered_rows
-            .iter()
-            .map(Self::display_row_to_search_row)
-            .collect();
+        // Phase 3.1 NUL fast path: skip `SearchRow` materialisation
+        // when the caller explicitly opted out of row inclusion
+        // (aggregate-only queries, `--no-output`, MCP facet_values,
+        // etc.).  Saves an O(N) clone-and-convert pass and, once the
+        // handler skips `try_pack_paths_blob`/shmem on empty rows
+        // (already true), also elides ~15 ms of IPC transport for
+        // medium result sets.
+        //
+        // Per-drive match counts for `--profile` are computed from
+        // `filtered_rows` *before* the row materialisation gate, so the
+        // profile output stays accurate regardless of `include_rows`.
+        let drive_match_counts: Vec<(char, usize)> = if profiling {
+            drive_info
+                .iter()
+                .map(|&(drive, _records)| {
+                    let matches = filtered_rows
+                        .iter()
+                        .filter(|row| row.drive == drive)
+                        .count();
+                    (drive, matches)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let filtered_len = filtered_rows.len();
+        let rows: Vec<SearchRow> = if effective_params.include_rows {
+            filtered_rows
+                .iter()
+                .map(Self::display_row_to_search_row)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let row_build_us = t_rows.map_or(0, |ts| ts.elapsed().as_micros());
 
         // Update perf counters.
@@ -345,16 +376,26 @@ impl IndexManager {
             Ordering::Relaxed,
         );
 
+        // `truncated` reports whether the user's `--limit` cap was
+        // reached.  Keyed off `filtered_len` (the post-filter,
+        // post-truncate row count) rather than `rows.len()` so the flag
+        // stays correct when `include_rows = false`.
         let truncated = effective_params
             .limit
-            .is_some_and(|cap| rows.len() >= cap as usize);
+            .is_some_and(|cap| filtered_len >= cap as usize);
         let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
 
         // Profile (built in a separate method to keep `search` under the line limit).
         let profile = if profiling {
             Some(
-                self.build_search_profile(lock_us, search_us, row_build_us, &drive_info, &rows)
-                    .await,
+                self.build_search_profile(
+                    lock_us,
+                    search_us,
+                    row_build_us,
+                    &drive_info,
+                    &drive_match_counts,
+                )
+                .await,
             )
         } else {
             None
@@ -428,13 +469,18 @@ impl IndexManager {
     }
 
     /// Build the `SearchProfile` for `--profile` output.
+    ///
+    /// `drive_match_counts` is pre-computed by the caller so the profile
+    /// stays accurate even when row materialisation was skipped (e.g.
+    /// under `--no-output`).  Pairs with `drive_info`: both slices are
+    /// keyed by drive letter and have identical lengths.
     async fn build_search_profile(
         &self,
         lock_us: u128,
         search_us: u128,
         row_build_us: u128,
         drive_info: &[(char, usize)],
-        rows: &[SearchRow],
+        drive_match_counts: &[(char, usize)],
     ) -> SearchProfile {
         let timings = self.drive_timings.read().await;
         let startup_us = self.startup_duration_us.load(Ordering::Relaxed);
@@ -445,7 +491,10 @@ impl IndexManager {
         let mut drive_profiles: Vec<DriveProfile> = drive_info
             .iter()
             .map(|&(drive, records)| {
-                let matches = rows.iter().filter(|row| row.drive == drive).count();
+                let matches = drive_match_counts
+                    .iter()
+                    .find_map(|&(letter, count)| (letter == drive).then_some(count))
+                    .unwrap_or(0);
                 let (cache_ms, mft_ms, compact_ms, trigram_ms) =
                     timings.get(&drive).map_or((0, 0, 0, 0), |ts| {
                         (
@@ -670,106 +719,11 @@ fn build_output_config(params: &SearchParams) -> uffs_core::output::OutputConfig
     cfg
 }
 
+// The inline `tests` module lives in a sibling file to keep `search.rs`
+// under the 800-line policy ceiling.  `#[path]` keeps the test module
+// path identical (`crate::index::search::tests`), so `super::*` inside
+// the tests file continues to resolve against the `search` module's
+// private items (`build_output_config`, etc.).
 #[cfg(test)]
-mod tests {
-    use uffs_client::protocol::SearchParams;
-
-    use super::*;
-
-    /// Regression: `build_output_config` must use `OutputConfig` defaults
-    /// (separator = `,`, quote = `"`) when `SearchParams` output fields
-    /// are `None`.
-    ///
-    /// Previously, `from_cli_args` set `output_separator: Some("")` which
-    /// caused `build_output_config` to call `with_separator("")`, wiping
-    /// the comma delimiter and producing concatenated output with no field
-    /// separation.
-    #[test]
-    fn build_output_config_preserves_defaults_when_none() {
-        let params = SearchParams::default();
-        assert!(params.output_separator.is_none());
-        assert!(params.output_quote.is_none());
-        assert!(params.output_pos.is_none());
-        assert!(params.output_neg.is_none());
-
-        let cfg = build_output_config(&params);
-        assert_eq!(cfg.separator, ",", "default separator must be comma");
-        assert_eq!(cfg.quote, "\"", "default quote must be double-quote");
-        assert_eq!(cfg.pos, "1", "default pos must be '1'");
-        assert_eq!(cfg.neg, "0", "default neg must be '0'");
-        assert!(cfg.header, "default header must be true");
-    }
-
-    /// Guard against the exact bug: passing `Some("")` to
-    /// `build_output_config` must NOT wipe the separator/quote.
-    /// The daemon function should skip empty-string overrides.
-    #[test]
-    fn build_output_config_some_empty_string_overrides_defaults() {
-        // This test documents the current behavior: if Some("") is passed,
-        // it DOES override the default.  The fix is in from_cli_args which
-        // must never produce Some("") for unset flags.
-        let params = SearchParams {
-            output_separator: Some(String::new()),
-            output_quote: Some(String::new()),
-            ..Default::default()
-        };
-        let cfg = build_output_config(&params);
-        // Some("") overrides defaults — this is why from_cli_args must
-        // use None, not Some(""), for unset flags.
-        assert_eq!(
-            cfg.separator, "",
-            "Some(\"\") overrides default — from_cli_args must use None"
-        );
-        assert_eq!(
-            cfg.quote, "",
-            "Some(\"\") overrides default — from_cli_args must use None"
-        );
-    }
-
-    /// Explicit separator and quote values must be forwarded.
-    #[test]
-    fn build_output_config_explicit_values_applied() {
-        let params = SearchParams {
-            output_separator: Some(";".to_owned()),
-            output_quote: Some("'".to_owned()),
-            output_pos: Some("+".to_owned()),
-            output_neg: Some("-".to_owned()),
-            output_header: Some(false),
-            output_columns: Some("parity".to_owned()),
-            output_parity_compat: Some(true),
-            output_tz_offset_hours: Some(-7_i32),
-            ..Default::default()
-        };
-        let cfg = build_output_config(&params);
-        assert_eq!(cfg.separator, ";");
-        assert_eq!(cfg.quote, "'");
-        assert_eq!(cfg.pos, "+");
-        assert_eq!(cfg.neg, "-");
-        assert!(!cfg.header);
-        assert!(cfg.columns.is_some(), "parity columns must be set");
-        assert!(cfg.parity_compat, "parity_compat must be true");
-        assert_eq!(cfg.timezone_offset_secs, -7_i32 * 3_600_i32);
-    }
-
-    /// `--parity-compat` without explicit sep/quote must produce a valid
-    /// parity `OutputConfig` with default comma + double-quote delimiters.
-    #[test]
-    fn build_output_config_parity_compat_uses_defaults() {
-        let params = SearchParams {
-            output_columns: Some("parity".to_owned()),
-            output_parity_compat: Some(true),
-            ..Default::default()
-        };
-        let cfg = build_output_config(&params);
-        assert_eq!(
-            cfg.separator, ",",
-            "parity mode must use comma separator by default"
-        );
-        assert_eq!(
-            cfg.quote, "\"",
-            "parity mode must use double-quote by default"
-        );
-        assert!(cfg.parity_compat);
-        assert!(cfg.columns.is_some());
-    }
-}
+#[path = "search_tests.rs"]
+mod tests;

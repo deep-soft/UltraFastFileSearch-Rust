@@ -62,6 +62,51 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+/// Timing + payload summary forwarded to [`print_client_profile`].
+///
+/// Packaging these into a struct keeps `run_search` under the
+/// `clippy::too-many-lines` cap and lets the profile helper take one
+/// argument instead of six.
+struct ClientProfile<'a> {
+    /// Wall-clock time spent in `UffsClientSync::connect_with_args`.
+    connect_ms: u128,
+    /// Wall-clock time spent in `await_ready` (daemon warm-up).
+    ready_ms: u128,
+    /// Wall-clock time spent in the `search_cli` IPC round-trip.
+    ipc_ms: u128,
+    /// Daemon-reported search duration (from the response envelope).
+    duration_ms: u64,
+    /// Inline `rows` slice from the response (if any).
+    rows: Option<&'a [serde_json::Value]>,
+    /// Pre-packed `paths_blob` (if the daemon used the path-only
+    /// single-buffer fast path).
+    paths_blob: Option<&'a str>,
+}
+
+/// Print the `--profile` / `--benchmark` client-side timing block to
+/// stderr (matches the daemon-side profile formatting).
+#[expect(
+    clippy::print_stderr,
+    reason = "intentional --profile output to stderr"
+)]
+fn print_client_profile(prof: &ClientProfile<'_>) {
+    eprintln!("=== PROFILE: Client → Daemon ===");
+    eprintln!("  Connect:         {:>6} ms", prof.connect_ms);
+    eprintln!("  Await ready:     {:>6} ms", prof.ready_ms);
+    eprintln!(
+        "  Search (IPC):    {:>6} ms  (daemon: {} ms)",
+        prof.ipc_ms, prof.duration_ms
+    );
+    let row_count = prof.paths_blob.map_or_else(
+        || prof.rows.map_or(0, <[serde_json::Value]>::len),
+        |blob| blob.bytes().filter(|byte| *byte == b'\n').count(),
+    );
+    eprintln!("  Rows returned:   {row_count:>6}");
+    if prof.paths_blob.is_some() {
+        eprintln!("  Transport:       paths_blob (single write_all)");
+    }
+}
+
 /// Forward raw search args to the daemon via `search_cli` RPC.
 fn run_search(args: &[String]) -> Result<()> {
     if args.is_empty() {
@@ -93,7 +138,13 @@ fn run_search(args: &[String]) -> Result<()> {
     let t_search = std::time::Instant::now();
     // Resolve relative --out paths to absolute using the CLI's cwd, since the
     // daemon process runs in a different working directory.
-    let args_owned: Vec<String> = resolve_out_path(args);
+    // Phase 3.1 NUL fast path: when stdout is redirected to the null
+    // device (e.g. `uffs *.dll > NUL`), inject `--no-output` so the
+    // daemon skips row materialisation + `paths_blob` construction
+    // + IPC row transfer entirely.  Saves ~20-30 ms on medium result
+    // sets that would otherwise push 3.5 MB through the pipe just to
+    // discard the bytes client-side.
+    let args_owned: Vec<String> = inject_no_output_for_null_stdout(resolve_out_path(args));
     let response = client
         .search_cli_raw(&args_owned)
         .with_context(|| "Daemon search_cli failed")?;
@@ -143,28 +194,18 @@ fn run_search(args: &[String]) -> Result<()> {
         .get("paths_blob")
         .and_then(serde_json::Value::as_str);
 
-    let profile = args
+    if args
         .iter()
-        .any(|arg| arg == "--profile" || arg == "--benchmark");
-    if profile {
-        #[expect(
-            clippy::print_stderr,
-            reason = "intentional --profile output to stderr"
-        )]
-        {
-            eprintln!("=== PROFILE: Client → Daemon ===");
-            eprintln!("  Connect:         {connect_ms:>6} ms");
-            eprintln!("  Await ready:     {ready_ms:>6} ms");
-            eprintln!("  Search (IPC):    {ipc_ms:>6} ms  (daemon: {duration_ms} ms)");
-            let row_count = paths_blob.map_or_else(
-                || rows.map_or(0, <[serde_json::Value]>::len),
-                |blob| blob.bytes().filter(|byte| *byte == b'\n').count(),
-            );
-            eprintln!("  Rows returned:   {row_count:>6}");
-            if paths_blob.is_some() {
-                eprintln!("  Transport:       paths_blob (single write_all)");
-            }
-        }
+        .any(|arg| arg == "--profile" || arg == "--benchmark")
+    {
+        print_client_profile(&ClientProfile {
+            connect_ms,
+            ready_ms,
+            ipc_ms,
+            duration_ms,
+            rows,
+            paths_blob,
+        });
     }
 
     // OPT-4: When --out is specified, the daemon writes the file directly
@@ -176,11 +217,14 @@ fn run_search(args: &[String]) -> Result<()> {
     let daemon_wrote_file =
         has_out && rows.is_none_or(<[serde_json::Value]>::is_empty) && paths_blob.is_none();
 
-    if !daemon_wrote_file {
+    // Phase 3.1 NUL fast path: `--no-output` (explicit or auto-injected
+    // for NUL stdout) skips every client-side stdout write.
+    let suppress_stdout = args_owned.iter().any(|arg| arg == "--no-output");
+
+    if !daemon_wrote_file && !suppress_stdout {
         if let Some(blob) = paths_blob {
             // Single write_all to stdout — the whole point of the
-            // paths_blob transport.  A `BufWriter` is unnecessary: the
-            // buffer is already one contiguous slice.
+            // paths_blob transport; the buffer is one contiguous slice.
             let stdout = std::io::stdout();
             let mut handle = stdout.lock();
             std::io::Write::write_all(&mut handle, blob.as_bytes())
@@ -190,8 +234,9 @@ fn run_search(args: &[String]) -> Result<()> {
         }
     }
 
-    // Output aggregations if present.
-    if let Some(agg_arr) = aggregations.filter(|arr| !arr.is_empty()) {
+    if !suppress_stdout
+        && let Some(agg_arr) = aggregations.filter(|arr| !arr.is_empty())
+    {
         commands::search::dispatch::write_aggregations(agg_arr, args)?;
     }
 
@@ -263,6 +308,52 @@ fn resolve_out_path(args: &[String]) -> Vec<String> {
         }
     }
     result
+}
+
+/// Append `--no-output` to `args` when stdout is redirected to the
+/// null device, unless a disqualifying flag is already set.
+///
+/// Thin wrapper around [`maybe_inject_no_output`] that probes the real
+/// stdout via [`uffs_client::stdout_kind::StdoutKind::detect`].  The
+/// decision logic itself is in `maybe_inject_no_output` so it can be
+/// unit-tested without fighting the test harness's stdout wiring.
+fn inject_no_output_for_null_stdout(args: Vec<String>) -> Vec<String> {
+    let stdout_is_null = uffs_client::stdout_kind::StdoutKind::detect().is_null();
+    maybe_inject_no_output(args, stdout_is_null)
+}
+
+/// Pure decision logic for the NUL fast-path injection.
+///
+/// Returns `args` unchanged when `stdout_is_null == false` or when any
+/// disqualifying flag is already present:
+///
+/// - `--no-output` already set: nothing to add.
+/// - `--rows`: the user asked to force rows on even for aggregate queries —
+///   honour that intent regardless of where stdout goes.
+/// - `--out`: stdout is not the result destination; NUL on stdout is a benign
+///   quirk, not the output target.
+/// - `--agg` / `--facet` / `--stats` / `--histogram` / `--count`: any
+///   aggregation flag already controls `include_rows` via its own sugar; adding
+///   `--no-output` would be redundant at best.
+fn maybe_inject_no_output(mut args: Vec<String>, stdout_is_null: bool) -> Vec<String> {
+    if !stdout_is_null {
+        return args;
+    }
+    let is_aggregate_flag = |flag: &str| {
+        matches!(
+            flag,
+            "--agg" | "--facet" | "--stats" | "--histogram" | "--count"
+        )
+    };
+    let disqualified = args.iter().any(|raw| {
+        let flag = raw.split('=').next().unwrap_or(raw.as_str());
+        flag == "--no-output" || flag == "--rows" || flag == "--out" || is_aggregate_flag(flag)
+    });
+    if disqualified {
+        return args;
+    }
+    args.push("--no-output".to_owned());
+    args
 }
 
 /// Resolve a potentially relative path to absolute using `current_dir`.
@@ -470,7 +561,105 @@ mod tests {
     use uffs_client::protocol::SearchParams;
 
     use super::args::parse_drive_letter;
-    use super::{find_needs_elevation, format_elevation_help};
+    use super::{find_needs_elevation, format_elevation_help, maybe_inject_no_output};
+
+    // ── maybe_inject_no_output (Phase 3.1 NUL fast path) ─────────
+
+    /// Helper: run [`maybe_inject_no_output`] with `stdout_is_null = true`
+    /// and return the resulting args.
+    fn inject_null(args: &[&str]) -> Vec<String> {
+        let owned: Vec<String> = args.iter().copied().map(String::from).collect();
+        maybe_inject_no_output(owned, true)
+    }
+
+    /// Baseline: a plain search with NUL stdout gets `--no-output`
+    /// appended.  This is the hot path we want for benchmarks and
+    /// `uffs *.dll > NUL`-style invocations.
+    #[test]
+    fn maybe_inject_no_output_appends_on_null_stdout() {
+        let out = inject_null(&["*.dll", "--drive", "D"]);
+        assert_eq!(out, ["*.dll", "--drive", "D", "--no-output"]);
+    }
+
+    /// Non-null stdout (terminal, pipe, file) must leave args alone,
+    /// otherwise the user would see no output on their terminal.
+    #[test]
+    fn maybe_inject_no_output_unchanged_on_non_null_stdout() {
+        let owned: Vec<String> = ["*.dll", "--drive", "D"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let out = maybe_inject_no_output(owned.clone(), false);
+        assert_eq!(out, owned);
+    }
+
+    /// Explicit `--no-output` already present: do not double up.
+    #[test]
+    fn maybe_inject_no_output_skips_when_already_present() {
+        let out = inject_null(&["*.dll", "--no-output"]);
+        // Exactly one occurrence — no double-injection.
+        let count = out
+            .iter()
+            .filter(|arg| arg.as_str() == "--no-output")
+            .count();
+        assert_eq!(count, 1, "must not double-inject --no-output, got: {out:?}");
+    }
+
+    /// `--rows` forces rows on — auto-injection must not fight it.
+    /// Covers the user who wants `uffs *.rs --rows > NUL` for timing
+    /// the full round-trip including IPC transport.
+    #[test]
+    fn maybe_inject_no_output_respects_rows_flag() {
+        let out = inject_null(&["*.rs", "--rows"]);
+        assert!(
+            !out.iter().any(|arg| arg == "--no-output"),
+            "--rows must prevent --no-output auto-injection, got: {out:?}"
+        );
+    }
+
+    /// `--out file` routes results daemon-direct to disk — NUL on
+    /// stdout is a benign quirk, not the output destination.
+    #[test]
+    fn maybe_inject_no_output_respects_out_flag() {
+        let out = inject_null(&["*.rs", "--out", "results.csv"]);
+        assert!(
+            !out.iter().any(|arg| arg == "--no-output"),
+            "--out must prevent --no-output auto-injection, got: {out:?}"
+        );
+    }
+
+    /// Aggregation flags already control row inclusion through their
+    /// own sugar; auto-injection would be redundant.  Covers `--count`,
+    /// `--agg`, `--facet`, `--stats`, `--histogram`.
+    #[test]
+    fn maybe_inject_no_output_respects_aggregation_flags() {
+        for flag in ["--count", "--agg", "--facet", "--stats", "--histogram"] {
+            // `--agg` and friends take a value; the parse-time check
+            // keys on the flag name only, so a bare `--agg count` suffix
+            // is sufficient to prove the disqualification.
+            let args: Vec<&str> = if flag == "--count" {
+                vec!["*", flag]
+            } else {
+                vec!["*", flag, "count"]
+            };
+            let out = inject_null(&args);
+            assert!(
+                !out.iter().any(|arg| arg == "--no-output"),
+                "{flag} must prevent --no-output auto-injection, got: {out:?}"
+            );
+        }
+    }
+
+    /// `--out=file.csv` (equals form) must also disqualify the
+    /// auto-injection.  The parser keys on the flag name before `=`.
+    #[test]
+    fn maybe_inject_no_output_respects_out_equals_form() {
+        let out = inject_null(&["*", "--out=results.csv"]);
+        assert!(
+            !out.iter().any(|arg| arg == "--no-output"),
+            "--out=<path> must prevent --no-output auto-injection, got: {out:?}"
+        );
+    }
 
     /// The elevation help must name every recovery path the user has,
     /// so a UAC-blocked invocation becomes actionable advice rather

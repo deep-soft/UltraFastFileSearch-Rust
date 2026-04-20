@@ -75,6 +75,7 @@ pub mod format;
 pub mod mcp_pid;
 pub mod protocol;
 pub mod shmem;
+pub mod stdout_kind;
 pub mod types;
 pub mod verify;
 /// Windows-only per-RPC deadline enforcement.

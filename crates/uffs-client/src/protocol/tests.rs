@@ -1421,3 +1421,75 @@ fn from_cli_args_drive_prefix_respects_explicit_drive_flag() {
     assert_eq!(params.pattern, "*");
     assert_eq!(params.ext.as_deref(), Some("dll"));
 }
+
+// ── --no-output precedence tests (Phase 3.1 NUL fast path) ─────────
+//
+// The thin CLI injects `--no-output` when it detects that stdout is
+// redirected to the null device.  The flag sets `include_rows = false`
+// so the daemon skips row materialisation + `paths_blob` construction
+// + shmem offload.  These four tests pin every corner of the
+// precedence table documented above the `include_rows` assignment in
+// `cli_args.rs::into_search_params`.
+
+/// Default: no `--no-output`, no `--agg`, no `--rows` → rows included.
+#[test]
+fn from_cli_args_include_rows_default_is_true() {
+    let params = SearchParams::from_cli_args(&["*".to_owned()]).expect("parse");
+    assert!(
+        params.include_rows,
+        "plain search must include rows by default"
+    );
+}
+
+/// `--no-output` with no aggregation and no `--rows` → rows suppressed.
+/// This is the hot path for the NUL-redirected stdout case.
+#[test]
+fn from_cli_args_no_output_suppresses_rows() {
+    let params =
+        SearchParams::from_cli_args(&["*".to_owned(), "--no-output".to_owned()]).expect("parse");
+    assert!(
+        !params.include_rows,
+        "--no-output must set include_rows = false so the daemon skips materialisation"
+    );
+}
+
+/// `--no-output --rows`: explicit `--rows` is higher precedence.  This
+/// only happens if a user manually invokes both (CLI auto-injection
+/// only adds `--no-output`, never `--rows`), but the precedence must
+/// still be deterministic.
+#[test]
+fn from_cli_args_rows_overrides_no_output() {
+    let params = SearchParams::from_cli_args(&[
+        "*".to_owned(),
+        "--no-output".to_owned(),
+        "--rows".to_owned(),
+    ])
+    .expect("parse");
+    assert!(
+        params.include_rows,
+        "--rows must override --no-output (explicit intent wins over auto-injection)"
+    );
+}
+
+/// `--agg count --no-output`: aggregation alone already forces
+/// `include_rows = false`; adding `--no-output` does not change the
+/// result but also must not flip back to `true`.
+#[test]
+fn from_cli_args_no_output_with_aggregation_stays_false() {
+    let params = SearchParams::from_cli_args(&[
+        "*".to_owned(),
+        "--agg".to_owned(),
+        "count".to_owned(),
+        "--no-output".to_owned(),
+    ])
+    .expect("parse");
+    assert!(
+        !params.include_rows,
+        "aggregate-only query must still suppress rows when --no-output is also set"
+    );
+    assert_eq!(
+        params.aggregations.len(),
+        1,
+        "aggregation must still be forwarded to the daemon"
+    );
+}
