@@ -1157,7 +1157,8 @@ fn top_n_sort_by_bulkiness_desc_orders_by_ratio() {
     // test files must appear in bulkiness order at the top.
     let got_top_three = got.get(..3).expect("asserted ≥3 rows above");
     assert_eq!(
-        got_top_three, &expected_desc[..],
+        got_top_three,
+        &expected_desc[..],
         "bulkiness desc must rank sparse > medium > dense; got {got:?}",
     );
 }

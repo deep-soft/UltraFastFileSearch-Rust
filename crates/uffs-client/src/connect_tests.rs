@@ -15,16 +15,16 @@
 //!
 //! # Scope
 //!
-//! * `deep_health_check` happy path (probe succeeds → `Ok(())`, method
-//!   must be `status`, not the pre-Run-10-B `drives`).
-//! * `deep_health_check` probe-error path (daemon returns a JSON-RPC
-//!   error → `ConnectionFailed` with remediation guidance).
+//! * `deep_health_check` happy path (probe succeeds → `Ok(())`, method must be
+//!   `status`, not the pre-Run-10-B `drives`).
+//! * `deep_health_check` probe-error path (daemon returns a JSON-RPC error →
+//!   `ConnectionFailed` with remediation guidance).
 //! * `deep_health_check` populates `cached_status` so `await_ready`
 //!   short-circuits without a second RPC.
-//! * `deep_health_check` clears `cached_status` on probe failure so a
-//!   stale `Ready` cannot lie.
-//! * `await_ready` short-circuits on a cached `Ready` and falls through
-//!   to polling on any other cached state.
+//! * `deep_health_check` clears `cached_status` on probe failure so a stale
+//!   `Ready` cannot lie.
+//! * `await_ready` short-circuits on a cached `Ready` and falls through to
+//!   polling on any other cached state.
 
 #![cfg(test)]
 #![cfg(feature = "async")]

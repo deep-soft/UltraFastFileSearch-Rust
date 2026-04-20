@@ -645,7 +645,8 @@ impl RawCliArgs {
             // Profiling
             profile: self.profile || self.benchmark,
             aggregations,
-            // Row precedence (high → low): --rows (on) > agg (off) > --no-output (off) > default (on).
+            // Row precedence (high → low): --rows (on) > agg (off) > --no-output (off) > default
+            // (on).
             include_rows: force_rows || (agg_specs.is_empty() && !self.no_output),
             agg_cursor: self.agg_cursor,
             agg_page_size: self.agg_page_size,

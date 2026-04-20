@@ -42,7 +42,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.5.50"
+version = "0.5.51"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
@@ -171,7 +171,7 @@ rayon = "1.12.0"
 crossbeam-channel = "0.5.15"
 
 # ───── Memory ─────
-mimalloc = "0.1.48"
+mimalloc = "0.1.49"
 memmap2 = "0.9.10"
 
 # ───── System ─────

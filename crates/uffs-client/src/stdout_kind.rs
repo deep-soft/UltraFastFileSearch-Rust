@@ -85,15 +85,14 @@ impl StdoutKind {
 ///
 /// * On **Windows**, when stdout is a real console ([`StdoutKind::Terminal`]),
 ///   transcodes `buf` to UTF-16 once and issues one or more `WriteConsoleW`
-///   calls.  This bypasses both Rust stdio's per-chunk UTF-8 validity
-///   prescan *and* the narrow-CRT codepage translation that the legacy
-///   conhost would otherwise apply to `WriteFile` output — `WriteConsoleW`
-///   speaks UTF-16 directly, which is what the console itself uses
-///   internally.
+///   calls.  This bypasses both Rust stdio's per-chunk UTF-8 validity prescan
+///   *and* the narrow-CRT codepage translation that the legacy conhost would
+///   otherwise apply to `WriteFile` output — `WriteConsoleW` speaks UTF-16
+///   directly, which is what the console itself uses internally.
 ///
 /// * Everywhere else — Unix, Windows pipe/file/NUL — falls through to
-///   `stdout.lock().write_all(buf)`, which is already optimal: the
-///   kernel write path doesn't touch the bytes.
+///   `stdout.lock().write_all(buf)`, which is already optimal: the kernel write
+///   path doesn't touch the bytes.
 ///
 /// The caller supplies the complete rendered buffer (typically from the
 /// Phase 3.2 single-buffer render in `uffs-cli`).  Returning
@@ -339,35 +338,21 @@ mod platform_windows {
         // SAFETY: `GetStdHandle` is a documented, read-only API that
         // returns a handle to the process's standard output device.
         // It takes a static enum constant — no pointers, no allocation.
-        let handle =
-            unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }.map_err(std::io::Error::other)?;
+        let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }.map_err(std::io::Error::other)?;
         if handle.is_invalid() {
             return Err(std::io::Error::from_raw_os_error(6_i32)); // ERROR_INVALID_HANDLE
         }
 
         for chunk in utf16.chunks(WRITE_CONSOLE_CHUNK_CHARS) {
-            // `chunk.len()` ≤ `WRITE_CONSOLE_CHUNK_CHARS` ≤ `u32::MAX`,
-            // so `as u32` is lossless.  `try_from` would panic-branch
-            // clippy::unwrap_used pointlessly for the same invariant.
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "bounded by WRITE_CONSOLE_CHUNK_CHARS which fits in u32"
-            )]
-            let count = chunk.len() as u32;
             let mut written: u32 = 0;
             // SAFETY: `chunk` is a shared borrow of a `Vec<u16>` we own,
-            // so `chunk.as_ptr()` is a valid pointer to `count` initialised
-            // u16 values for the duration of the call.  `&mut written`
-            // is a valid out-param.  `None` for the reserved lparam is
-            // the documented value for all current Windows versions.
+            // so the slice reference the `windows` binding derives a
+            // `*const u16` + length from is valid for the duration of
+            // the call.  `&raw mut written` is a valid out-param.
+            // `None` for `lpreserved` is the documented value for all
+            // current Windows versions.
             let result = unsafe {
-                WriteConsoleW(
-                    handle,
-                    chunk.as_ptr().cast(),
-                    count,
-                    Some(&raw mut written),
-                    None,
-                )
+                WriteConsoleW(handle, chunk, Some(&raw mut written), None)
             };
             result.map_err(std::io::Error::other)?;
             if written == 0_u32 {

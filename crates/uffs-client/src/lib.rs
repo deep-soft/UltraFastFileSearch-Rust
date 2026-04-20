@@ -24,15 +24,6 @@ use uffs_security as _;
 /// `ws2_32.dll`) from its binary.
 #[cfg(feature = "async")]
 pub mod connect;
-/// Wire-protocol unit tests for [`connect::UffsClient`].
-///
-/// Exercises the JSON-RPC request/response path via in-memory tokio
-/// `AsyncRead` / `AsyncWrite` halves (no real socket).  `#[cfg(test)]`
-/// keeps it out of release builds entirely; gated on the `async`
-/// feature so it compiles only when [`connect::UffsClient`] itself does.
-#[cfg(test)]
-#[cfg(feature = "async")]
-mod connect_tests;
 /// Background keepalive task + `KeepaliveGuard` for long-lived clients.
 ///
 /// `start_keepalive` is re-attached to `UffsClient` via a split `impl`;
@@ -67,6 +58,15 @@ pub(crate) mod connect_sync_platform;
 /// out of release builds entirely.
 #[cfg(test)]
 mod connect_sync_tests;
+/// Wire-protocol unit tests for [`connect::UffsClient`].
+///
+/// Exercises the JSON-RPC request/response path via in-memory tokio
+/// `AsyncRead` / `AsyncWrite` halves (no real socket).  `#[cfg(test)]`
+/// keeps it out of release builds entirely; gated on the `async`
+/// feature so it compiles only when [`connect::UffsClient`] itself does.
+#[cfg(test)]
+#[cfg(feature = "async")]
+mod connect_tests;
 /// Child-process handle for spawned daemons.
 ///
 /// Exposes `DaemonChildHandle`, `try_wait`, and the platform-specific

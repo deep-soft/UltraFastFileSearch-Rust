@@ -315,7 +315,11 @@ fn choose_console_strategy_small_result_uses_single_buffer() {
 fn choose_console_strategy_benchmark_row_count_uses_single_buffer() {
     // 45_000 × 256 B ≈ 11 MB — still well under 50 MB.
     assert_eq!(
-        choose_console_strategy(45_000, MULTICOL_BUFFER_CAP_BYTES, MULTICOL_AVG_BYTES_PER_ROW),
+        choose_console_strategy(
+            45_000,
+            MULTICOL_BUFFER_CAP_BYTES,
+            MULTICOL_AVG_BYTES_PER_ROW
+        ),
         ConsoleWriteStrategy::SingleBuffer
     );
 }

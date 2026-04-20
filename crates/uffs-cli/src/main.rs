@@ -234,9 +234,7 @@ fn run_search(args: &[String]) -> Result<()> {
         }
     }
 
-    if !suppress_stdout
-        && let Some(agg_arr) = aggregations.filter(|arr| !arr.is_empty())
-    {
+    if !suppress_stdout && let Some(agg_arr) = aggregations.filter(|arr| !arr.is_empty()) {
         commands::search::dispatch::write_aggregations(agg_arr, args)?;
     }
 

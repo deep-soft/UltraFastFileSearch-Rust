@@ -650,9 +650,14 @@ mod tests {
     fn bulkiness_for_record_matches_bulkiness_for_row_file() {
         let rec = compact_record(false, 1_000, 4_096, 0, 0);
         let row = DisplayRow::new(
-            0, 'C', String::new(),
-            rec.size, rec.is_directory(),
-            0, 0, 0,
+            0,
+            'C',
+            String::new(),
+            rec.size,
+            rec.is_directory(),
+            0,
+            0,
+            0,
             rec.flags,
             rec.allocated,
             0,
