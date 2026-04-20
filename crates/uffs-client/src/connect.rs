@@ -74,6 +74,29 @@ impl UffsClient {
         }
     }
 
+    /// Test-only constructor that wires the client to arbitrary in-memory
+    /// `AsyncRead` / `AsyncWrite` halves — no real socket, no daemon.
+    ///
+    /// Mirrors [`crate::connect_sync::UffsClientSync::from_parts_for_test`].
+    /// Gated on `#[cfg(test)]` so it cannot leak into production builds.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_parts_for_test(
+        reader: BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
+        writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+    ) -> Self {
+        Self::from_parts(reader, writer)
+    }
+
+    /// Test-only accessor for seeding `cached_status` without routing
+    /// through the RPC path.  Mirrors the sync sibling and lets the
+    /// Run 10 Part B regression pins verify the short-circuit
+    /// without round-tripping a synthetic response through the mock.
+    #[cfg(test)]
+    pub(crate) fn set_cached_status_for_test(&mut self, status: DaemonStatus) {
+        self.cached_status = Some(status);
+    }
+
     /// Connect to a running daemon, or auto-start one if not running.
     ///
     /// Tries to connect to the socket. If the socket doesn't exist or
@@ -634,7 +657,7 @@ impl UffsClient {
     ///
     /// Returns [`crate::error::ClientError::ConnectionFailed`] wrapping
     /// the underlying probe failure.
-    async fn deep_health_check(&mut self) -> Result<(), crate::error::ClientError> {
+    pub(crate) async fn deep_health_check(&mut self) -> Result<(), crate::error::ClientError> {
         match self.status().await {
             Ok(resp) => {
                 self.cached_status = Some(resp.status);
