@@ -52,6 +52,24 @@
 //!   WizFile: No CLI interface at all — GUI only.  Cannot be benchmarked.
 //!   Windows Search: Content indexer, not MFT-based filename search.
 //!
+//! # Output sinks
+//!
+//!   `--sinks file,stdout,null` selects which output targets HOT runs exercise.
+//!   - `file`   (default) — `--out=uffs_bench_out.csv` / `-export-csv` → disk.
+//!                           Measures the daemon-direct file-write path.
+//!   - `stdout` — drop `--out=`, capture stdout via a Rust pipe.  Measures the
+//!                Phase 3.2 single-buffer multi-column render path.
+//!   - `null`   — spawn via `cmd /C "<tool> ... > NUL"` so the child sees a
+//!                real NUL-device handle.  Measures the Phase 3.1 NUL fast
+//!                path (UFFS short-circuits row materialisation when it
+//!                detects a NUL handle via `GetFileType`).  This matches what
+//!                real CLI users type, and — crucially — exercises the
+//!                detection logic that `Stdio::from(File::create("NUL"))`
+//!                does not.
+//!   COLD / WARM always run in `file` mode (I/O-bound on MFT load, the output
+//!   sink is noise at that scale).  HOT / C++ / Everything loop over the
+//!   requested sinks.
+//!
 //! # Usage
 //!
 //! ```powershell
@@ -60,6 +78,7 @@
 //! rust-script scripts\windows\cross-tool-benchmark.rs --rounds 20
 //! rust-script scripts\windows\cross-tool-benchmark.rs --tools uffs,everything
 //! rust-script scripts\windows\cross-tool-benchmark.rs --skip-cold
+//! rust-script scripts\windows\cross-tool-benchmark.rs --sinks file,stdout,null
 //! rust-script scripts\windows\cross-tool-benchmark.rs --uffs-bin C:\tools\uffs.exe
 //! ```
 //!
@@ -101,14 +120,44 @@ impl Tool { fn label(self) -> &'static str { match self { Self::Uffs=>"UFFS", Se
 #[derive(Clone, Copy, PartialEq, Eq)] enum Phase { Cold, Warm, Hot }
 impl Phase { fn label(self) -> &'static str { match self { Self::Cold=>"COLD", Self::Warm=>"WARM", Self::Hot=>"HOT" } } }
 
+/// Where the tool is asked to emit its rows.  HOT / C++ / Everything loop
+/// across the requested sinks; COLD / WARM always use `File` (see header).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputSink { File, Stdout, Null }
+impl OutputSink {
+    fn label(self) -> &'static str {
+        match self { Self::File=>"file", Self::Stdout=>"stdout", Self::Null=>"null" }
+    }
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "file" | "f"                       => Some(Self::File),
+            "stdout" | "out" | "tty" | "pipe"  => Some(Self::Stdout),
+            "null" | "nul" | "devnull"         => Some(Self::Null),
+            _ => None,
+        }
+    }
+    /// Parse a comma-separated list; unknown tokens are reported and skipped.
+    fn parse_list(s: &str) -> Vec<Self> {
+        let mut out = Vec::new();
+        for part in s.split(',') {
+            match Self::parse(part) {
+                Some(sink) if !out.contains(&sink) => out.push(sink),
+                Some(_)  => {}                           // dedup silently
+                None     => eprintln!("Unknown sink: {part:?}"),
+            }
+        }
+        out
+    }
+}
+
 #[derive(Clone, Default)]
 #[allow(dead_code)] // fields read in summary output and live progress lines
 struct Timing { wall_ms: u64, daemon_ms: u64, rows: u64, bad_rows: u64, ok: bool, dnf: bool, err: String }
 
-struct Row { tool: Tool, phase: Phase, drive: String, pat: String, runs: Vec<Timing> }
+struct Row { tool: Tool, phase: Phase, sink: OutputSink, drive: String, pat: String, runs: Vec<Timing> }
 struct Cfg { uffs: PathBuf, uffs_cpp: Option<PathBuf>, es: Option<PathBuf>,
              drives: Vec<String>, rounds: usize,
-             tools: Vec<Tool>, skip_cold: bool,
+             tools: Vec<Tool>, sinks: Vec<OutputSink>, skip_cold: bool,
              patterns: Option<Vec<String>> }
 impl Cfg {
     fn skip_pattern(&self, label: &str) -> bool {
@@ -246,44 +295,133 @@ fn count_and_validate(path: &str, needle: &str) -> (u64, u64) {
 }
 fn cleanup_bench_file() { let p = bench_out_path(); let _ = std::fs::remove_file(&p); }
 
+/// Count data lines in a captured stdout byte buffer, filtering the same
+/// headers/footers as `count_and_validate` so the two validators stay aligned.
+fn count_and_validate_bytes(bytes: &[u8], needle: &str) -> (u64, u64) {
+    let content = String::from_utf8_lossy(bytes);
+    let data: Vec<&str> = content.lines().filter(|l| !is_header_or_footer(l)).collect();
+    let total = data.len() as u64;
+    if needle.is_empty() || total == 0 { return (total, 0); }
+    let nl = needle.to_lowercase();
+    let bad: Vec<&&str> = data.iter().filter(|l| !l.to_lowercase().contains(&nl)).collect();
+    if !bad.is_empty() {
+        eprintln!("  ⚠ {} stdout rows failed validation (needle={needle:?}):", bad.len());
+        for (i, line) in bad.iter().enumerate().take(5) {
+            let preview: String = line.chars().take(120).collect();
+            eprintln!("    bad[{i}]: {preview:?}");
+        }
+    }
+    (total, bad.len() as u64)
+}
+
+/// One tool's captured run: status + stdout + stderr + wall time.
+struct ToolOutput { wall_ms: u64, ok: bool, exit_code: Option<i32>, stdout: Vec<u8>, stderr: Vec<u8> }
+
+/// Spawn a tool via `cmd /C "<bin> <args...> > NUL"` so the child inherits a
+/// genuine Windows NUL-device handle from the shell.  `Stdio::from(File::create(
+/// "NUL"))` classifies differently under `GetFileType` and would bypass UFFS'
+/// Phase 3.1 NUL fast-path detection, defeating the whole point of NUL mode.
+/// stderr stays piped so we can still parse `--profile` output from UFFS.
+fn spawn_with_nul_redirect(bin: &Path, args: &[String]) -> (Option<i32>, Vec<u8>, u64) {
+    fn quote(a: &str) -> String {
+        if a.chars().any(char::is_whitespace) { format!("\"{a}\"") } else { a.to_string() }
+    }
+    let mut line = quote(&bin.display().to_string());
+    for a in args { line.push(' '); line.push_str(&quote(a)); }
+    line.push_str(" > NUL");
+    let t = Instant::now();
+    let r = Command::new("cmd").args(["/C", &line])
+        .stdout(Stdio::null()).stderr(Stdio::piped())
+        .output();
+    let wall = t.elapsed().as_millis() as u64;
+    match r {
+        Ok(o)  => (o.status.code(), o.stderr, wall),
+        Err(e) => (None, e.to_string().into_bytes(), wall),
+    }
+}
+
+/// Spawn a tool and capture output according to the sink.
+///   - `File` / `Stdout`: direct spawn, stdout+stderr piped via `.output()`.
+///   - `Null`           : wrap in `cmd /C "... > NUL"` via `spawn_with_nul_redirect`.
+///
+/// Callers are responsible for emitting (or suppressing) `--out=` in args;
+/// this function is sink-aware only in its spawning strategy.
+fn run_tool_with_sink(bin: &Path, args: &[String], sink: OutputSink) -> Result<ToolOutput, String> {
+    match sink {
+        OutputSink::File | OutputSink::Stdout => {
+            let t = Instant::now();
+            let r = Command::new(bin).args(args)
+                .stdout(Stdio::piped()).stderr(Stdio::piped())
+                .output();
+            let wall_ms = t.elapsed().as_millis() as u64;
+            match r {
+                Ok(o)  => Ok(ToolOutput {
+                    wall_ms, ok: o.status.success(), exit_code: o.status.code(),
+                    stdout: o.stdout, stderr: o.stderr,
+                }),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        OutputSink::Null => {
+            let (exit_code, stderr, wall_ms) = spawn_with_nul_redirect(bin, args);
+            Ok(ToolOutput {
+                wall_ms, ok: exit_code == Some(0), exit_code,
+                stdout: Vec::new(), stderr,
+            })
+        }
+    }
+}
+
+/// Validate output rows according to the sink.  `File` reads the bench file;
+/// `Stdout` parses captured bytes; `Null` reports `(0, 0)` — correctness on
+/// identical patterns is already covered by the file-mode passes, and there
+/// is nothing left to count once stdout has been redirected to the device.
+fn validate_output(sink: OutputSink, path: &str, stdout: &[u8], needle: &str) -> (u64, u64) {
+    match sink {
+        OutputSink::File   => count_and_validate(path, needle),
+        OutputSink::Stdout => count_and_validate_bytes(stdout, needle),
+        OutputSink::Null   => (0, 0),
+    }
+}
+
 // ── Run: UFFS (Rust) ─────────────────────────────────────────────────────────
-/// uffs.exe pattern --drive X --out=<tmp>/uffs_bench_out.csv --profile
-/// No limit — all results written to file.  Search is the default action.
-fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
+/// uffs.exe pattern --drive X [--out=<file>] --profile ...
+/// `sink` controls whether `--out=` is emitted and how output is captured.
+/// No limit — all results are returned.  Search is the default action.
+fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: OutputSink) -> Timing {
     cleanup_bench_file();
     let bpath = bench_out_path();
-    let out_arg = format!("--out={}", bpath);
     // Path-only output for fair comparison with es.exe (which only outputs Filename).
     // --hide-system + --hide-ads bring UFFS result semantics in line with
     // Everything (which does not index NTFS system files or Alternate Data
     // Streams by default). Without these flags, UFFS returns 30-70% more
     // rows for broad patterns and the timing comparison is meaningless.
-    let args = [
-        pattern, "--drive", drive, &out_arg, "--profile",
-        "--columns", "Path",
-        "--hide-system", "--hide-ads",
+    let mut args: Vec<String> = vec![
+        pattern.into(), "--drive".into(), drive.into(), "--profile".into(),
+        "--columns".into(), "Path".into(),
+        "--hide-system".into(), "--hide-ads".into(),
     ];
-    eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
-    let t = Instant::now();
-    let r = Command::new(bin)
-        .args(args)
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
-        .output();
-    let wall = t.elapsed().as_millis() as u64;
-    match r {
-        Ok(o) if o.status.success() => {
-            let err = String::from_utf8_lossy(&o.stderr);
-            let (rows, bad_rows) = count_and_validate(&bpath, validate);
-            let dms = parse_daemon_ms(&err);
-            cleanup_bench_file();
-            Timing { wall_ms: wall, daemon_ms: dms, rows, bad_rows, ok: true, ..Default::default() }
-        }
-        Ok(o) => {
-            cleanup_bench_file();
-            Timing { wall_ms: wall, err: String::from_utf8_lossy(&o.stderr).into(), ..Default::default() }
-        }
-        Err(e) => Timing { wall_ms: wall, err: e.to_string(), ..Default::default() },
+    if matches!(sink, OutputSink::File) {
+        args.push(format!("--out={bpath}"));
     }
+    eprintln!("      CMD: & '{}' {}  [sink={}]", bin.display(), args.join(" "), sink.label());
+    let out = match run_tool_with_sink(bin, &args, sink) {
+        Ok(o)  => o,
+        Err(e) => return Timing { wall_ms: 0, err: e, ..Default::default() },
+    };
+    let dms = parse_daemon_ms(&String::from_utf8_lossy(&out.stderr));
+    if !out.ok {
+        cleanup_bench_file();
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        return Timing {
+            wall_ms: out.wall_ms,
+            err: format!("exit={:?} {err}", out.exit_code),
+            ..Default::default()
+        };
+    }
+    let (rows, bad_rows) = validate_output(sink, &bpath, &out.stdout, validate);
+    cleanup_bench_file();
+    Timing { wall_ms: out.wall_ms, daemon_ms: dms, rows, bad_rows, ok: true, ..Default::default() }
 }
 fn parse_daemon_ms(s: &str) -> u64 {
     for line in s.lines() {
@@ -298,84 +436,108 @@ fn parse_daemon_ms(s: &str) -> u64 {
 }
 
 // ── Run: Everything (es.exe) ─────────────────────────────────────────────────
-/// es.exe "<D>:\ <pattern>" -export-csv <tmp>/uffs_bench_out.csv
-/// No -n limit — all results written to file.
-fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str) -> Timing {
+/// es.exe "<D>:\" <pattern> [-export-csv <file>]
+/// File sink: `-export-csv <file>`; Stdout sink: default CSV to stdout; Null
+/// sink: default to stdout then redirect via cmd.  No -n limit — all results
+/// are returned.
+fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: OutputSink) -> Timing {
     cleanup_bench_file();
     let bpath = bench_out_path();
     // es.exe expects path filter and search term as SEPARATE arguments:
     //   es.exe "C:\" ext:dll -export-csv file.csv
     // NOT as one combined string.
-    let drive_path = format!("{}:\\", drive);
-    let mut args: Vec<String> = vec![drive_path.clone()];
-    if pattern != "*" {
-        args.push(pattern.to_string());
+    let drive_path = format!("{drive}:\\");
+    let mut args: Vec<String> = vec![drive_path];
+    if pattern != "*" { args.push(pattern.into()); }
+    if matches!(sink, OutputSink::File) {
+        args.push("-export-csv".into());
+        args.push(bpath.clone());
     }
-    args.push("-export-csv".to_string());
-    args.push(bpath.clone());
-    eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
-    let t = Instant::now();
-    let r = Command::new(bin)
-        .args(&args)
-        .stdout(Stdio::inherit()).stderr(Stdio::inherit())
-        .status();
-    let wall = t.elapsed().as_millis() as u64;
-    match r {
-        Ok(s) if s.success() => {
-            let (rows, bad_rows) = count_and_validate(&bpath, validate);
-            cleanup_bench_file();
-            Timing { wall_ms: wall, rows, bad_rows, ok: true, ..Default::default() }
-        }
-        Ok(s) => {
-            cleanup_bench_file();
-            Timing { wall_ms: wall, err: format!("exit {}", s.code().unwrap_or(-1)), ..Default::default() }
-        }
-        Err(e) => Timing { wall_ms: wall, err: e.to_string(), ..Default::default() },
+    eprintln!("      CMD: & '{}' {}  [sink={}]", bin.display(), args.join(" "), sink.label());
+    let out = match run_tool_with_sink(bin, &args, sink) {
+        Ok(o)  => o,
+        Err(e) => return Timing { wall_ms: 0, err: e, ..Default::default() },
+    };
+    if !out.ok {
+        cleanup_bench_file();
+        return Timing {
+            wall_ms: out.wall_ms,
+            err: format!("exit={:?}", out.exit_code),
+            ..Default::default()
+        };
     }
+    let (rows, bad_rows) = validate_output(sink, &bpath, &out.stdout, validate);
+    cleanup_bench_file();
+    Timing { wall_ms: out.wall_ms, rows, bad_rows, ok: true, ..Default::default() }
 }
 
 // ── Run: UFFS C++ (uffs.com) ─────────────────────────────────────────────────
 /// C++ UFFS reads MFT every invocation (no daemon). No --limit flag.
 /// Extension filter uses --ext=<ext> instead of glob *.ext.
 /// Substring match needs *needle* glob wildcards.
-fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate: &str) -> Timing {
+///
+/// # Sink notes
+///
+/// - `File`: emit `--out=<bench>` and use `Stdio::inherit()` on stdout/stderr.
+///   The C++ binary internally `freopen()`s stdout onto the `--out=` file;
+///   pre-redirecting stdout to a Rust pipe or NUL makes freopen fail silently
+///   and the output file comes out empty.  Inherit is the only safe choice here.
+/// - `Stdout` / `Null`: drop `--out=` entirely.  With no `--out=` the freopen
+///   path never fires, so piped-capture (Stdout) and `cmd /C "... > NUL"`
+///   (Null) behave normally.
+fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate: &str, sink: OutputSink) -> Timing {
     cleanup_bench_file();
     let bpath = bench_out_path();
     let mut args: Vec<String> = Vec::new();
     if !cpp_ext.is_empty() {
         args.push("*".into());
-        args.push(format!("--ext={}", cpp_ext));
+        args.push(format!("--ext={cpp_ext}"));
     } else if !pattern.contains('*') && !pattern.contains('?') && pattern != "*" {
-        args.push(format!("*{}*", pattern));
+        args.push(format!("*{pattern}*"));
     } else {
         args.push(pattern.into());
     }
-    args.push(format!("--drives={}", drive));
-    args.push(format!("--out={}", bpath));
+    args.push(format!("--drives={drive}"));
     // Path-only output for fair comparison with es.exe.
     args.push("--columns=path".into());
-    eprintln!("      CMD: & '{}' {}", bin.display(), args.join(" "));
-    let t = Instant::now();
-    let r = Command::new(bin)
-        .args(&args)
-        // MUST use Stdio::inherit() — the C++ UFFS internally does freopen()
-        // on stdout to redirect to the --out= file.  If we pre-redirect stdout
-        // to null/pipe, freopen fails silently → empty output file.
-        .stdout(Stdio::inherit()).stderr(Stdio::inherit())
-        .status();
-    let wall = t.elapsed().as_millis() as u64;
-    match r {
-        Ok(s) if s.success() => {
-            let (rows, bad_rows) = count_and_validate(&bpath, validate);
-            cleanup_bench_file();
-            Timing { wall_ms: wall, rows, bad_rows, ok: true, ..Default::default() }
-        }
-        Ok(s) => {
-            cleanup_bench_file();
-            Timing { wall_ms: wall, err: format!("exit {}", s.code().unwrap_or(-1)), ..Default::default() }
-        }
-        Err(e) => Timing { wall_ms: wall, err: e.to_string(), ..Default::default() },
+    if matches!(sink, OutputSink::File) {
+        args.push(format!("--out={bpath}"));
     }
+    eprintln!("      CMD: & '{}' {}  [sink={}]", bin.display(), args.join(" "), sink.label());
+    let out: ToolOutput = match sink {
+        OutputSink::File => {
+            // freopen on --out= requires inherited stdout.  Inherit both streams
+            // and use .status(); we get no captured bytes back but the file is
+            // what we validate here anyway.
+            let t = Instant::now();
+            let r = Command::new(bin).args(&args)
+                .stdout(Stdio::inherit()).stderr(Stdio::inherit())
+                .status();
+            let wall_ms = t.elapsed().as_millis() as u64;
+            match r {
+                Ok(s)  => ToolOutput {
+                    wall_ms, ok: s.success(), exit_code: s.code(),
+                    stdout: Vec::new(), stderr: Vec::new(),
+                },
+                Err(e) => return Timing { wall_ms, err: e.to_string(), ..Default::default() },
+            }
+        }
+        OutputSink::Stdout | OutputSink::Null => match run_tool_with_sink(bin, &args, sink) {
+            Ok(o)  => o,
+            Err(e) => return Timing { wall_ms: 0, err: e, ..Default::default() },
+        },
+    };
+    if !out.ok {
+        cleanup_bench_file();
+        return Timing {
+            wall_ms: out.wall_ms,
+            err: format!("exit={:?}", out.exit_code),
+            ..Default::default()
+        };
+    }
+    let (rows, bad_rows) = validate_output(sink, &bpath, &out.stdout, validate);
+    cleanup_bench_file();
+    Timing { wall_ms: out.wall_ms, rows, bad_rows, ok: true, ..Default::default() }
 }
 
 fn check_dnf(mut t: Timing) -> Timing {
@@ -389,6 +551,7 @@ fn parse_args() -> Cfg {
     let mut drives: Option<Vec<String>> = None;
     let mut rounds = DEFAULT_ROUNDS;
     let mut tools_str: Option<String> = None;
+    let mut sinks_str: Option<String> = None;
     let mut skip_cold = false;
     let mut uffs_bin: Option<PathBuf> = None;
     let mut patterns_filter: Option<Vec<String>> = None;
@@ -398,6 +561,7 @@ fn parse_args() -> Cfg {
             "--drives" => { i += 1; drives = Some(args[i].split(',').map(|s| s.trim().to_uppercase()).collect()); }
             "--rounds" => { i += 1; rounds = args[i].parse().unwrap_or(DEFAULT_ROUNDS); }
             "--tools"  => { i += 1; tools_str = Some(args[i].clone()); }
+            "--sinks"  => { i += 1; sinks_str = Some(args[i].clone()); }
             "--patterns" => { i += 1; patterns_filter = Some(args[i].split(',').map(|s| s.trim().to_lowercase()).collect()); }
             "--skip-cold" => { skip_cold = true; }
             "--uffs-bin" => { i += 1; uffs_bin = Some(PathBuf::from(&args[i])); }
@@ -425,20 +589,30 @@ fn parse_args() -> Cfg {
         if uffs_cpp.is_some() { tools.push(Tool::UffsCpp); }
         if es.is_some() { tools.push(Tool::Everything); }
     }
-    Cfg { uffs, uffs_cpp, es, drives, rounds, tools, skip_cold, patterns: patterns_filter }
+    let sinks = sinks_str
+        .as_deref()
+        .map(OutputSink::parse_list)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| vec![OutputSink::File]);
+    Cfg { uffs, uffs_cpp, es, drives, rounds, tools, sinks, skip_cold, patterns: patterns_filter }
 }
 
 fn print_help() {
     eprintln!("Cross-Tool Benchmark — UFFS (Rust) vs UFFS (C++) vs Everything");
     eprintln!();
     eprintln!("OPTIONS:");
-    eprintln!("  --drives C,D        Drives to benchmark (default: C,D)");
-    eprintln!("  --rounds 10         Rounds per pattern (default: 10)");
-    eprintln!("  --tools uffs,cpp,es Comma-separated tools (default: all found)");
-    eprintln!("                      Values: uffs, cpp/uffs-cpp, es/everything");
-    eprintln!("  --skip-cold         Skip UFFS COLD and WARM phases");
-    eprintln!("  --uffs-bin <path>   Path to uffs.exe (Rust)");
-    eprintln!("  --help              This message");
+    eprintln!("  --drives C,D          Drives to benchmark (default: C,D)");
+    eprintln!("  --rounds 10           Rounds per pattern (default: 10)");
+    eprintln!("  --tools uffs,cpp,es   Comma-separated tools (default: all found)");
+    eprintln!("                        Values: uffs, cpp/uffs-cpp, es/everything");
+    eprintln!("  --sinks file,stdout,null");
+    eprintln!("                        Comma-separated output sinks for HOT runs");
+    eprintln!("                        (default: file).  COLD/WARM always use file.");
+    eprintln!("  --patterns full_scan,ext_dll,...");
+    eprintln!("                        Comma-separated pattern labels to run");
+    eprintln!("  --skip-cold           Skip UFFS COLD and WARM phases");
+    eprintln!("  --uffs-bin <path>     Path to uffs.exe (Rust)");
+    eprintln!("  --help                This message");
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -460,7 +634,9 @@ fn main() {
         println!("║  Patterns:     {} queries", PATTERNS.len());
     }
     println!("║  Rounds:       {} per pattern per tool", cfg.rounds);
-    println!("║  Output:       file (--out / -export-csv → {})", bench_out_path());
+    let sinks_str: Vec<&'static str> = cfg.sinks.iter().map(|s| s.label()).collect();
+    println!("║  Sinks (HOT):  {}  (COLD/WARM are always file)", sinks_str.join(", "));
+    println!("║  Bench file:   {}", bench_out_path());
     println!("║  Columns:      path-only (fair: all tools write ~same bytes/row)");
     println!("║  Limit:        none (all results, fair for C++)");
     println!("║  Timeout:      {} s → DNF", TIMEOUT.as_secs());
@@ -485,7 +661,7 @@ fn main() {
     for drive in &cfg.drives {
         println!("━━━ Drive {}:  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", drive);
 
-        // ── UFFS COLD ────────────────────────────────────────────────────
+        // ── UFFS COLD (file sink only; MFT load dominates, sink is noise) ─
         if cfg.tools.contains(&Tool::Uffs) && !cfg.skip_cold {
             eprint!("  UFFS COLD: stopping daemon, purging cache...");
             flush();
@@ -499,16 +675,16 @@ fn main() {
                 // COLD: only 1 round (destructive — restarts daemon each time)
                 uffs_stop(&cfg.uffs);
                 uffs_purge_cache();
-                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, validate));
+                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, validate, OutputSink::File));
                 let verdict = if t.dnf { "DNF" } else if t.bad_rows > 0 { "WRONG" } else if t.ok { "PASS" } else { "ERROR" };
                 let bad_str = if t.bad_rows > 0 { format!("  bad={}", t.bad_rows) } else { String::new() };
                 eprintln!("{:>8}  rows={:<8}{} {}", fms(t.wall_ms), t.rows, bad_str, verdict);
-                all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Cold, drive: drive.clone(),
-                    pat: label.into(), runs: vec![t] });
+                all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Cold, sink: OutputSink::File,
+                    drive: drive.clone(), pat: label.into(), runs: vec![t] });
             }
         }
 
-        // ── UFFS WARM ────────────────────────────────────────────────────
+        // ── UFFS WARM (file sink only; same reasoning as COLD) ────────────
         if cfg.tools.contains(&Tool::Uffs) && !cfg.skip_cold {
             eprint!("  UFFS WARM: stopping daemon (cache stays)...");  flush();
             uffs_stop(&cfg.uffs);
@@ -518,96 +694,111 @@ fn main() {
                 if cfg.skip_pattern(label) { continue; }
                 eprint!("    {label:<12} ");  flush();
                 uffs_stop(&cfg.uffs);
-                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, validate));
+                let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, validate, OutputSink::File));
                 let verdict = if t.dnf { "DNF" } else if t.bad_rows > 0 { "WRONG" } else if t.ok { "PASS" } else { "ERROR" };
                 let bad_str = if t.bad_rows > 0 { format!("  bad={}", t.bad_rows) } else { String::new() };
                 eprintln!("{:>8}  rows={:<8}{} {}", fms(t.wall_ms), t.rows, bad_str, verdict);
-                all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Warm, drive: drive.clone(),
-                    pat: label.into(), runs: vec![t] });
+                all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Warm, sink: OutputSink::File,
+                    drive: drive.clone(), pat: label.into(), runs: vec![t] });
             }
         }
 
-        // ── UFFS HOT ────────────────────────────────────────────────────
+        // ── UFFS HOT daemon warmup (once per drive, before the sink loop) ─
         if cfg.tools.contains(&Tool::Uffs) {
-            // Warm up daemon: tiny query just to trigger daemon startup + index load.
-            // Use a pattern that matches nothing, and limit 1 to minimise I/O.
+            // Tiny query just to trigger daemon startup + index load for this
+            // drive.  Use a pattern that matches nothing, and limit 1 to
+            // minimise I/O.  Done once per drive — the daemon stays warm
+            // across every sink iteration below.
             eprint!("  UFFS HOT:  warming up daemon...");  flush();
             let _ = Command::new(&cfg.uffs)
                 .args(["__uffs_warmup_probe__", "--drive", drive, "--limit", "1"])
                 .stdout(Stdio::null()).stderr(Stdio::null())
                 .status();
-            eprintln!(" ready.  {} rounds", cfg.rounds);
-
-            for &(label, pat, _, _, _, validate) in PATTERNS {
-                if cfg.skip_pattern(label) { continue; }
-                eprint!("    {label:<12} ");  flush();
-                let mut runs = Vec::new();
-                for _ in 0..cfg.rounds {
-                    runs.push(check_dnf(run_uffs(&cfg.uffs, drive, pat, validate)));
-                }
-                let s = sw(&runs);
-                let mut dm: Vec<u64> = runs.iter().filter(|r| r.ok && r.daemon_ms > 0).map(|r| r.daemon_ms).collect();
-                dm.sort();
-                let any_bad = runs.iter().any(|r| r.bad_rows > 0);
-                let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else { "PASS" };
-                let daemon_str = if dm.is_empty() { String::new() } else { format!("  daemon_p50={}", fms(p50(&dm))) };
-                let first_ok = runs.iter().find(|r| r.ok);
-                let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
-                eprintln!("p50={:>6}  p95={:>6}{}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), daemon_str, first_ok.map_or(0, |r| r.rows), bad_str, verdict);
-                all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Hot, drive: drive.clone(),
-                    pat: label.into(), runs });
-            }
+            eprintln!(" ready.");
         }
 
-        // ── UFFS C++ (uffs.com) ──────────────────────────────────────────
-        if cfg.tools.contains(&Tool::UffsCpp) {
-            if let Some(ref cpp) = cfg.uffs_cpp {
-                eprintln!("  UFFS C++ (MFT re-read, no --limit):  {} rounds", cfg.rounds);
-                for &(label, pat, _, _, cpp_ext, validate) in PATTERNS {
+        // ── Per-sink HOT rotation (UFFS HOT + UFFS C++ + Everything) ──────
+        for sink in cfg.sinks.iter().copied() {
+            if cfg.sinks.len() > 1 {
+                println!("  ── sink={}  ──────────────────────────────────────────────", sink.label());
+            }
+
+            // ── UFFS HOT ────────────────────────────────────────────────
+            if cfg.tools.contains(&Tool::Uffs) {
+                eprintln!("  UFFS HOT [sink={}]:  {} rounds", sink.label(), cfg.rounds);
+                for &(label, pat, _, _, _, validate) in PATTERNS {
                     if cfg.skip_pattern(label) { continue; }
                     eprint!("    {label:<12} ");  flush();
                     let mut runs = Vec::new();
                     for _ in 0..cfg.rounds {
-                        runs.push(check_dnf(run_uffs_cpp(cpp, drive, pat, cpp_ext, validate)));
+                        runs.push(check_dnf(run_uffs(&cfg.uffs, drive, pat, validate, sink)));
                     }
                     let s = sw(&runs);
-                    let first_ok = runs.iter().find(|r| r.ok);
+                    let mut dm: Vec<u64> = runs.iter().filter(|r| r.ok && r.daemon_ms > 0).map(|r| r.daemon_ms).collect();
+                    dm.sort();
                     let any_bad = runs.iter().any(|r| r.bad_rows > 0);
-                    let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
+                    let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else { "PASS" };
+                    let daemon_str = if dm.is_empty() { String::new() } else { format!("  daemon_p50={}", fms(p50(&dm))) };
+                    let first_ok = runs.iter().find(|r| r.ok);
                     let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
-                    eprintln!("p50={:>6}  p95={:>6}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows), bad_str, verdict);
-                    all_rows.push(Row { tool: Tool::UffsCpp, phase: Phase::Hot, drive: drive.clone(),
-                        pat: label.into(), runs });
+                    eprintln!("p50={:>6}  p95={:>6}{}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), daemon_str, first_ok.map_or(0, |r| r.rows), bad_str, verdict);
+                    all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Hot, sink,
+                        drive: drive.clone(), pat: label.into(), runs });
                 }
             }
-        }
 
-        // ── Everything ──────────────────────────────────────────────────
-        if cfg.tools.contains(&Tool::Everything) {
-            if let Some(ref es) = cfg.es {
-                eprintln!("  Everything HOT:  {} rounds (always-hot, daemon model)", cfg.rounds);
-                for &(label, _, es_pat, _, _, validate) in PATTERNS {
-                    if cfg.skip_pattern(label) { continue; }
-                    // Skip full_scan for Everything — es.exe has a 2GB IPC
-                    // memory limit that crashes on drives with >2M entries.
-                    // See verify_parity.rs and Everything 1.4 known limitation.
-                    if label == "full_scan" {
-                        eprintln!("    {label:<12} SKIP (es.exe 2GB IPC limit)");
-                        continue;
+            // ── UFFS C++ (uffs.com) ─────────────────────────────────────
+            if cfg.tools.contains(&Tool::UffsCpp) {
+                if let Some(ref cpp) = cfg.uffs_cpp {
+                    eprintln!("  UFFS C++ (MFT re-read, no --limit) [sink={}]:  {} rounds",
+                        sink.label(), cfg.rounds);
+                    for &(label, pat, _, _, cpp_ext, validate) in PATTERNS {
+                        if cfg.skip_pattern(label) { continue; }
+                        eprint!("    {label:<12} ");  flush();
+                        let mut runs = Vec::new();
+                        for _ in 0..cfg.rounds {
+                            runs.push(check_dnf(run_uffs_cpp(cpp, drive, pat, cpp_ext, validate, sink)));
+                        }
+                        let s = sw(&runs);
+                        let first_ok = runs.iter().find(|r| r.ok);
+                        let any_bad = runs.iter().any(|r| r.bad_rows > 0);
+                        let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
+                        let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
+                        eprintln!("p50={:>6}  p95={:>6}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows), bad_str, verdict);
+                        all_rows.push(Row { tool: Tool::UffsCpp, phase: Phase::Hot, sink,
+                            drive: drive.clone(), pat: label.into(), runs });
                     }
-                    eprint!("    {label:<12} ");  flush();
-                    let mut runs = Vec::new();
-                    for _ in 0..cfg.rounds {
-                        runs.push(check_dnf(run_es(es, drive, es_pat, validate)));
+                }
+            }
+
+            // ── Everything ──────────────────────────────────────────────
+            if cfg.tools.contains(&Tool::Everything) {
+                if let Some(ref es) = cfg.es {
+                    eprintln!("  Everything HOT [sink={}]:  {} rounds (always-hot, daemon model)",
+                        sink.label(), cfg.rounds);
+                    for &(label, _, es_pat, _, _, validate) in PATTERNS {
+                        if cfg.skip_pattern(label) { continue; }
+                        // Skip full_scan for Everything — es.exe has a 2GB IPC
+                        // memory limit that crashes on drives with >2M entries.
+                        // See verify_parity.rs and Everything 1.4 known limitation.
+                        if label == "full_scan" {
+                            eprintln!("    {label:<12} SKIP (es.exe 2GB IPC limit)");
+                            continue;
+                        }
+                        eprint!("    {label:<12} ");  flush();
+                        let mut runs = Vec::new();
+                        for _ in 0..cfg.rounds {
+                            runs.push(check_dnf(run_es(es, drive, es_pat, validate, sink)));
+                        }
+                        let s = sw(&runs);
+                        let first_ok = runs.iter().find(|r| r.ok);
+                        let any_bad = runs.iter().any(|r| r.bad_rows > 0);
+                        let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
+                        let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
+                        eprintln!("p50={:>6}  p95={:>6}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows), bad_str, verdict);
+                        all_rows.push(Row { tool: Tool::Everything, phase: Phase::Hot, sink,
+                            drive: drive.clone(), pat: label.into(), runs });
                     }
-                    let s = sw(&runs);
-                    let first_ok = runs.iter().find(|r| r.ok);
-                    let any_bad = runs.iter().any(|r| r.bad_rows > 0);
-                    let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
-                    let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
-                    eprintln!("p50={:>6}  p95={:>6}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows), bad_str, verdict);
-                    all_rows.push(Row { tool: Tool::Everything, phase: Phase::Hot, drive: drive.clone(),
-                        pat: label.into(), runs });
                 }
             }
         }
@@ -627,9 +818,10 @@ fn print_summary(cfg: &Cfg, rows: &[Row]) {
     println!("╠══════════════════════════════════════════════════════════════════════════════╣");
     println!();
 
-    // Header
-    println!("| Drive | Tool         | Phase | Pattern      | p50      | p95      | Rows   | Bad  | Verdict |");
-    println!("|-------|--------------|-------|--------------|----------|----------|--------|------|---------|");
+    // Header — Sink column appears left of Verdict so tools at the same
+    // phase/pattern but different sinks sort adjacently in typical viewers.
+    println!("| Drive | Tool         | Phase | Sink   | Pattern      | p50      | p95      | Rows   | Bad  | Verdict |");
+    println!("|-------|--------------|-------|--------|--------------|----------|----------|--------|------|---------|");
 
     for row in rows {
         let s = sw(&row.runs);
@@ -640,59 +832,79 @@ fn print_summary(cfg: &Cfg, rows: &[Row]) {
 
         let p50_str = if s.is_empty() { "—".to_string() } else { fms(p50(&s)) };
         let p95_str = if s.is_empty() { "—".to_string() } else { fms(p95(&s)) };
-        let rows_str = row.runs.iter().find(|r| r.ok).map_or("—".into(), |r| format!("{}", r.rows));
-        let bad_str = row.runs.iter().find(|r| r.ok).map_or("—".into(), |r| {
-            if r.bad_rows == 0 { "0".into() } else { format!("{}", r.bad_rows) }
-        });
+        // Null-sink rows have nothing to count by design; render "—" instead
+        // of a misleading "0" so readers don't mistake it for a failure.
+        let rows_cell = |r: &Timing| -> String {
+            if matches!(row.sink, OutputSink::Null) { "—".into() } else { format!("{}", r.rows) }
+        };
+        let bad_cell = |r: &Timing| -> String {
+            if matches!(row.sink, OutputSink::Null) { "—".into() }
+            else if r.bad_rows == 0 { "0".into() }
+            else { format!("{}", r.bad_rows) }
+        };
+        let rows_str = row.runs.iter().find(|r| r.ok).map_or("—".into(), rows_cell);
+        let bad_str  = row.runs.iter().find(|r| r.ok).map_or("—".into(), bad_cell);
 
         // Print any errors from failed runs
         for r in &row.runs {
             if !r.ok && !r.err.is_empty() {
-                eprintln!("  ⚠ {} {} {}/{}: {}", row.tool.label(), row.phase.label(), row.drive, row.pat, r.err);
+                eprintln!("  ⚠ {} {} [{}] {}/{}: {}", row.tool.label(), row.phase.label(),
+                    row.sink.label(), row.drive, row.pat, r.err);
             }
             if r.bad_rows > 0 {
-                eprintln!("  ⚠ {} {} {}/{}: {} rows failed validation", row.tool.label(), row.phase.label(), row.drive, row.pat, r.bad_rows);
+                eprintln!("  ⚠ {} {} [{}] {}/{}: {} rows failed validation",
+                    row.tool.label(), row.phase.label(), row.sink.label(),
+                    row.drive, row.pat, r.bad_rows);
             }
         }
 
-        println!("| {:<5} | {:<12} | {:<5} | {:<12} | {:>8} | {:>8} | {:>6} | {:>4} | {:<7} |",
+        println!("| {:<5} | {:<12} | {:<5} | {:<6} | {:<12} | {:>8} | {:>8} | {:>6} | {:>4} | {:<7} |",
             format!("{}:", row.drive), row.tool.label(), row.phase.label(),
-            row.pat, p50_str, p95_str, rows_str, bad_str, verdict);
+            row.sink.label(), row.pat, p50_str, p95_str, rows_str, bad_str, verdict);
     }
 
     println!();
 
-    // ── Cross-tool comparison (HOT only) ─────────────────────────────────
+    // ── Cross-tool HOT comparison, one table per sink ────────────────────
+    // Splitting by sink keeps the columns aligned (no sink column on every
+    // row) and makes the sink-to-sink deltas easy to eyeball in one pass.
     println!("╔══════════════════════════════════════════════════════════════════════════════╗");
     println!("║                     HOT COMPARISON (head-to-head)                          ║");
     println!("╚══════════════════════════════════════════════════════════════════════════════╝");
-    println!();
-    println!("| Drive | Pattern      | UFFS HOT p50 | UFFS-C++ p50 | Everything p50 |");
-    println!("|-------|--------------|-------------|--------------|----------------|");
 
-    for drive in &cfg.drives {
-        for &(label, _, _, _, _, _) in PATTERNS {
-            if cfg.skip_pattern(label) { continue; }
-            let uffs_p50 = find_p50(rows, Tool::Uffs, Phase::Hot, drive, label);
-            let cpp_p50 = find_p50(rows, Tool::UffsCpp, Phase::Hot, drive, label);
-            let es_p50 = find_p50(rows, Tool::Everything, Phase::Hot, drive, label);
-            println!("| {:<5} | {:<12} | {:>11} | {:>12} | {:>14} |",
-                format!("{}:", drive), label, uffs_p50, cpp_p50, es_p50);
+    for sink in cfg.sinks.iter().copied() {
+        println!();
+        println!("── sink = {} ────────────────────────────────────────────────", sink.label());
+        println!("| Drive | Pattern      | UFFS HOT p50 | UFFS-C++ p50 | Everything p50 |");
+        println!("|-------|--------------|--------------|--------------|----------------|");
+
+        for drive in &cfg.drives {
+            for &(label, _, _, _, _, _) in PATTERNS {
+                if cfg.skip_pattern(label) { continue; }
+                let uffs_p50 = find_p50(rows, Tool::Uffs,       Phase::Hot, sink, drive, label);
+                let cpp_p50  = find_p50(rows, Tool::UffsCpp,    Phase::Hot, sink, drive, label);
+                let es_p50   = find_p50(rows, Tool::Everything, Phase::Hot, sink, drive, label);
+                println!("| {:<5} | {:<12} | {:>12} | {:>12} | {:>14} |",
+                    format!("{}:", drive), label, uffs_p50, cpp_p50, es_p50);
+            }
         }
     }
 
     println!();
     println!("Legend:  PASS = completed within {}s.  DNF = timed out.  SKIP = tool not found.", TIMEOUT.as_secs());
-    println!("Note:   All tools write ALL results to file (no limit).  Path-only output for fair I/O.");
-    println!("        UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).");
+    println!("Note:   UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).");
     println!("        UFFS (C++) re-reads MFT every invocation (no daemon).");
     println!("        Everything is always-hot (daemon model).");
+    println!("        Sinks: file = --out=/-export-csv → disk; stdout = piped stdout;");
+    println!("               null = child process writes to a real NUL device via cmd /C.");
+    println!("        Null-sink rows show '—' for Rows/Bad (nothing to count after the");
+    println!("        redirect); correctness is verified by the file-mode passes.");
     println!("        UltraSearch excluded — no functional headless CLI (see script header).");
 }
 
-fn find_p50(rows: &[Row], tool: Tool, phase: Phase, drive: &str, pat: &str) -> String {
+fn find_p50(rows: &[Row], tool: Tool, phase: Phase, sink: OutputSink, drive: &str, pat: &str) -> String {
     rows.iter()
-        .find(|r| r.tool == tool && r.phase == phase && r.drive == drive && r.pat == pat)
+        .find(|r| r.tool == tool && r.phase == phase && r.sink == sink && r.drive == drive && r.pat == pat)
         .map(|r| {
             let s = sw(&r.runs);
             if s.is_empty() { "—".to_string() } else { fms(p50(&s)) }
