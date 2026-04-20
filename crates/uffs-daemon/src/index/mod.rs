@@ -1024,7 +1024,9 @@ impl IndexManager {
     /// Returns `Ok(Some(letter))` if loaded, `Ok(None)` if already present.
     #[expect(
         clippy::cognitive_complexity,
-        reason = "multi-drive search with merge and sort"
+        reason = "hot-load orchestration: drive-letter inference, skip-if-present check, \
+                  spawn_blocking dispatch, JoinError/anyhow error fan-out, index version bump, \
+                  cache invalidation, and tracing on every branch"
     )]
     pub(crate) async fn load_single_mft_file(
         &self,
@@ -1276,7 +1278,9 @@ impl IndexManager {
     /// source found).
     #[expect(
         clippy::cognitive_complexity,
-        reason = "tree metrics computation with parent chain traversal"
+        reason = "per-drive fan-out: case-fold, already-loaded short-circuit, \
+                  auto-discovery via `discover_and_load_drive`, and Ok(true)/Ok(false)/Err \
+                  tracing branches — all inside a loop over the caller's drive list"
     )]
     pub(crate) async fn ensure_drives_loaded(&self, drives: &[char], no_cache: bool) -> Vec<char> {
         if drives.is_empty() {
