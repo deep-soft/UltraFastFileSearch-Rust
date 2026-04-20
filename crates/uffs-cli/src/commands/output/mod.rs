@@ -207,10 +207,12 @@ fn write_to_stdout(
             write_formatted(
                 &mut buf, rows, format, columns, separator, quote, header, footer_ctx, parity_ctx,
             )?;
-            let stdout = std::io::stdout();
-            let mut handle = stdout.lock();
-            handle
-                .write_all(&buf)
+            // Phase 3.3: platform-aware write.  On a Windows real
+            // console this dispatches to `WriteConsoleW` (single
+            // UTF-8 → UTF-16 transcode, then one chunked call) to
+            // bypass narrow-CRT codepage translation.  Everywhere else
+            // this collapses to `stdout.lock().write_all(&buf)`.
+            uffs_client::stdout_kind::write_stdout_buffer(&buf)
                 .with_context(|| "Failed to write formatted output to stdout")?;
             Ok(())
         }

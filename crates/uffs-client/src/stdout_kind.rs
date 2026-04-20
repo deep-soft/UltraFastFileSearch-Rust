@@ -79,6 +79,63 @@ impl StdoutKind {
     }
 }
 
+// ── Platform-aware single-buffer write (Phase 3.3) ─────────────────────
+
+/// Write a UTF-8 buffer to stdout via the platform's fastest path.
+///
+/// * On **Windows**, when stdout is a real console ([`StdoutKind::Terminal`]),
+///   transcodes `buf` to UTF-16 once and issues one or more `WriteConsoleW`
+///   calls.  This bypasses both Rust stdio's per-chunk UTF-8 validity
+///   prescan *and* the narrow-CRT codepage translation that the legacy
+///   conhost would otherwise apply to `WriteFile` output — `WriteConsoleW`
+///   speaks UTF-16 directly, which is what the console itself uses
+///   internally.
+///
+/// * Everywhere else — Unix, Windows pipe/file/NUL — falls through to
+///   `stdout.lock().write_all(buf)`, which is already optimal: the
+///   kernel write path doesn't touch the bytes.
+///
+/// The caller supplies the complete rendered buffer (typically from the
+/// Phase 3.2 single-buffer render in `uffs-cli`).  Returning
+/// [`std::io::Result`] keeps this a pure-library surface; callers can
+/// layer `anyhow::Context` on top as needed.
+///
+/// # Errors
+///
+/// Returns any I/O error surfaced by the underlying `write_all` call or
+/// by the Windows `GetStdHandle` / `WriteConsoleW` FFI.
+pub fn write_stdout_buffer(buf: &[u8]) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        if matches!(StdoutKind::detect(), StdoutKind::Terminal) {
+            return platform_windows::write_to_console_w(buf);
+        }
+    }
+    use std::io::Write as _;
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    handle.write_all(buf)
+}
+
+/// Transcode a UTF-8 byte buffer to UTF-16.
+///
+/// Not gated on `#[cfg(windows)]` so the full suite of UTF-8 / UTF-16
+/// edge cases (multibyte sequences, surrogate pairs, invalid bytes) can
+/// be pinned by unit tests on every host OS.  The Windows console path
+/// is the only production consumer today.
+///
+/// # Errors
+///
+/// Returns [`std::io::ErrorKind::InvalidData`] when `buf` is not
+/// well-formed UTF-8.  `WriteConsoleW` cannot represent invalid UTF-8
+/// anyway, so surfacing the error up-front is strictly better than a
+/// mangled console write.
+pub fn utf8_to_utf16(buf: &[u8]) -> std::io::Result<Vec<u16>> {
+    let utf8 = core::str::from_utf8(buf)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    Ok(utf8.encode_utf16().collect())
+}
+
 // ── Unix implementation ────────────────────────────────────────────────
 //
 // Uses `fstat` on fd 1 to read the mode bits.  When stdout is a
@@ -240,7 +297,9 @@ mod platform_windows {
     use windows::Win32::Storage::FileSystem::{
         FILE_TYPE_CHAR, FILE_TYPE_DISK, FILE_TYPE_PIPE, FILE_TYPE_UNKNOWN, GetFileType,
     };
-    use windows::Win32::System::Console::{CONSOLE_MODE, GetConsoleMode};
+    use windows::Win32::System::Console::{
+        CONSOLE_MODE, GetConsoleMode, GetStdHandle, STD_OUTPUT_HANDLE, WriteConsoleW,
+    };
 
     use super::StdoutKind;
 
@@ -248,6 +307,77 @@ mod platform_windows {
     pub(super) fn detect() -> StdoutKind {
         let handle = HANDLE(std::io::stdout().as_raw_handle().cast());
         detect_for_handle(handle)
+    }
+
+    /// Maximum UTF-16 code units per `WriteConsoleW` call.
+    ///
+    /// `WriteConsoleW` accepts a `DWORD` count (up to `u32::MAX`) but
+    /// conhost has historically exhibited write-size-sensitive bugs
+    /// under memory pressure on very large buffers (≥ ~1 MiB).  64 KiB
+    /// chars (128 KiB bytes) is the well-trodden safe ceiling used by
+    /// `termcolor`, `anstream`, and msvcrt's own console path.
+    const WRITE_CONSOLE_CHUNK_CHARS: usize = 64 * 1024;
+
+    /// Write `buf` to the real Windows console via `WriteConsoleW`.
+    ///
+    /// Performs **one** UTF-8 → UTF-16 transcode, then one or more
+    /// chunked `WriteConsoleW` calls (chunked purely as a conhost
+    /// robustness measure — a single call would be legal per the API
+    /// contract).
+    ///
+    /// The caller must have already confirmed that stdout is a real
+    /// console (via [`super::StdoutKind::detect`]); calling this on
+    /// a pipe/file/NUL stdout would fail at `WriteConsoleW` with
+    /// `ERROR_INVALID_HANDLE`.
+    #[expect(unsafe_code, reason = "FFI to GetStdHandle + WriteConsoleW")]
+    pub(super) fn write_to_console_w(buf: &[u8]) -> std::io::Result<()> {
+        let utf16 = super::utf8_to_utf16(buf)?;
+        if utf16.is_empty() {
+            return Ok(());
+        }
+
+        // SAFETY: `GetStdHandle` is a documented, read-only API that
+        // returns a handle to the process's standard output device.
+        // It takes a static enum constant — no pointers, no allocation.
+        let handle =
+            unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }.map_err(std::io::Error::other)?;
+        if handle.is_invalid() {
+            return Err(std::io::Error::from_raw_os_error(6_i32)); // ERROR_INVALID_HANDLE
+        }
+
+        for chunk in utf16.chunks(WRITE_CONSOLE_CHUNK_CHARS) {
+            // `chunk.len()` ≤ `WRITE_CONSOLE_CHUNK_CHARS` ≤ `u32::MAX`,
+            // so `as u32` is lossless.  `try_from` would panic-branch
+            // clippy::unwrap_used pointlessly for the same invariant.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "bounded by WRITE_CONSOLE_CHUNK_CHARS which fits in u32"
+            )]
+            let count = chunk.len() as u32;
+            let mut written: u32 = 0;
+            // SAFETY: `chunk` is a shared borrow of a `Vec<u16>` we own,
+            // so `chunk.as_ptr()` is a valid pointer to `count` initialised
+            // u16 values for the duration of the call.  `&mut written`
+            // is a valid out-param.  `None` for the reserved lparam is
+            // the documented value for all current Windows versions.
+            let result = unsafe {
+                WriteConsoleW(
+                    handle,
+                    chunk.as_ptr().cast(),
+                    count,
+                    Some(&raw mut written),
+                    None,
+                )
+            };
+            result.map_err(std::io::Error::other)?;
+            if written == 0_u32 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "WriteConsoleW reported zero chars written",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Classify a Win32 handle.  Extracted so unit tests can point it
@@ -329,7 +459,7 @@ mod platform_windows {
 
 #[cfg(test)]
 mod shared_tests {
-    use super::StdoutKind;
+    use super::{StdoutKind, utf8_to_utf16};
 
     #[test]
     fn is_null_matches_enum() {
@@ -354,5 +484,65 @@ mod shared_tests {
     #[test]
     fn detect_does_not_panic() {
         let _kind = StdoutKind::detect();
+    }
+
+    // ── Phase 3.3: `utf8_to_utf16` transcode invariants ───────────
+
+    /// Empty input → empty output.  No panic, no spurious BOM.
+    #[test]
+    fn utf8_to_utf16_empty_input_returns_empty() {
+        let out = utf8_to_utf16(b"").expect("empty UTF-8 is valid");
+        assert!(out.is_empty());
+    }
+
+    /// Pure ASCII round-trips as zero-extended 16-bit code units —
+    /// exactly the same bytes the CLI would push to conhost before
+    /// Phase 3.3.
+    #[test]
+    fn utf8_to_utf16_ascii_zero_extends() {
+        let out = utf8_to_utf16(b"hello").expect("ASCII is valid UTF-8");
+        assert_eq!(out, [0x68_u16, 0x65, 0x6C, 0x6C, 0x6F]);
+    }
+
+    /// Multibyte BMP codepoints collapse to a single UTF-16 code unit.
+    /// `é` is `0xC3 0xA9` in UTF-8, `0x00E9` in UTF-16 — confirms the
+    /// narrow-CRT codepage translation bug is gone (it would have
+    /// produced `0x3F ?` on CP437 or garbled on CP1252).
+    #[test]
+    fn utf8_to_utf16_multibyte_bmp_maps_to_single_unit() {
+        let out = utf8_to_utf16("café".as_bytes()).expect("UTF-8");
+        assert_eq!(out, [0x63_u16, 0x61, 0x66, 0x00E9]);
+    }
+
+    /// Astral-plane codepoints (U+1D54F, MATHEMATICAL DOUBLE-STRUCK X)
+    /// must split into a UTF-16 surrogate pair.  `termcolor` and
+    /// `anstream` rely on this exact pairing; a bug here would produce
+    /// two replacement characters on screen.
+    #[test]
+    fn utf8_to_utf16_astral_codepoint_produces_surrogate_pair() {
+        let out = utf8_to_utf16("𝕏".as_bytes()).expect("UTF-8");
+        // U+1D54F → high 0xD835, low 0xDD4F
+        assert_eq!(out, [0xD835_u16, 0xDD4F]);
+    }
+
+    /// Invalid UTF-8 must surface as `InvalidData`, not silently
+    /// produce mojibake on the console.
+    #[test]
+    fn utf8_to_utf16_invalid_utf8_is_invalid_data_error() {
+        // 0xFF is never valid as a standalone UTF-8 byte.
+        let err = utf8_to_utf16(&[0xFF_u8]).expect_err("must reject invalid UTF-8");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// A 128 KiB buffer (twice the `WriteConsoleW` chunk ceiling)
+    /// transcodes cleanly — pins that the transcode itself has no
+    /// hidden chunking assumption.  The chunking lives in the
+    /// Windows-only `write_to_console_w`, not here.
+    #[test]
+    fn utf8_to_utf16_large_input_transcodes_fully() {
+        let input = "a".repeat(128 * 1024);
+        let out = utf8_to_utf16(input.as_bytes()).expect("ASCII");
+        assert_eq!(out.len(), input.len());
+        assert!(out.iter().all(|&code| code == 0x61_u16));
     }
 }
