@@ -24,3 +24,5 @@ crates/uffs-core/src/search/query_tests.rs|PERMANENT: Integration query test sui
 crates/uffs-daemon/src/index/tests.rs|PERMANENT: Aggregation integration test suite; shared drive fixture requires cohesion
 crates/uffs-core/src/aggregate/integration_tests.rs|PERMANENT: Aggregate engine integration test suite; shared synthetic drive fixture requires cohesion
 crates/uffs-mft/src/platform/volume.rs|PERMANENT: Volume handle + write-protect fallback handles; splitting would fragment the handle lifecycle
+crates/uffs-cli/src/main.rs|PERMANENT: CLI entry point with subcommand dispatch, client profile printing, and search-arg forwarding; tightly coupled top-level flow
+crates/uffs-core/src/search/backend.rs|PERMANENT: Search backend facade — DisplayRow, PhaseTimings, SearchResult, FilterMode, MultiDriveBackend orchestrator; cross-cutting types for the whole search pipeline

@@ -242,6 +242,30 @@ pub struct SearchProfile {
     /// in-memory responses.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub write_ms: u64,
+    /// Deep-profile counter: number of candidates that reached
+    /// the path-resolve loop in the numeric-sort branch.  Divide
+    /// `path_resolve_ms` by this to get per-record cost.  `0` for
+    /// other dispatch paths and for daemons that predate the
+    /// deep-profile instrumentation.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub path_candidates: u64,
+    /// Deep-profile counter: total `DirCache` entries across all
+    /// drives at the end of the path-resolve loop.  Because
+    /// `DirCache` is keyed by parent and only grows on misses,
+    /// this equals the miss count.  `path_candidates -
+    /// path_cache_entries = hit count`.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub path_cache_entries: u64,
+    /// Deep-profile counter: cumulative nanoseconds spent inside
+    /// `tree::resolve_path_cached`.  Isolates the path-walk cost
+    /// from the surrounding row-build work; compare against
+    /// `path_build_row_ns`.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub path_resolve_fn_ns: u64,
+    /// Deep-profile counter: cumulative nanoseconds spent in
+    /// `make_display_row` + the subsequent `Vec::push`.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub path_build_row_ns: u64,
     /// Per-drive breakdown.
     pub drives: Vec<DriveProfile>,
 }

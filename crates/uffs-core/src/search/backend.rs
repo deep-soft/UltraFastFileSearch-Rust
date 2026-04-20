@@ -3,6 +3,14 @@
 
 //! Search backend types: display rows, sort columns, filter modes, and
 //! multi-drive search orchestration.
+//!
+//! Exception: `file_size_policy` allows this file to exceed 800 LOC.
+//! Rationale: cross-cutting facade — `DisplayRow`, `PhaseTimings`,
+//! `SearchResult`, `FilterMode`, and `MultiDriveBackend` form a
+//! cohesive contract surface referenced by every dispatch path, the
+//! daemon wire layer, and the test harness.  Splitting would
+//! scatter the type definitions across files and break the
+//! single-import convention downstream crates rely on.
 
 use alloc::sync::Arc;
 use std::time::Instant;
@@ -134,10 +142,6 @@ impl DisplayRow {
 /// Units are whole milliseconds (`u64`) to match the rest of the
 /// `SearchProfile` wire type; sub-millisecond phases clamp to 0.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "`_ms` suffix matches the `SearchProfile` wire type fields"
-)]
 pub struct PhaseTimings {
     /// Ext-index candidate iteration + inline predicate filter.
     pub scan_ms: u64,
@@ -149,6 +153,33 @@ pub struct PhaseTimings {
     /// candidates by a numeric key (e.g. `Modified`) scrambles
     /// MFT locality and collapses the `DirCache` hit rate.
     pub path_resolve_ms: u64,
+    /// Deep-profile counter: number of candidates that reached
+    /// the path-resolve loop (i.e. survived the scan + sort +
+    /// truncate).  Divide `path_resolve_ms` by this to get
+    /// per-record cost; anything over ~500 ns/record points at
+    /// allocation pressure or a pathological parent-walk depth.
+    pub path_candidates: u64,
+    /// Deep-profile counter: total entries across all per-drive
+    /// `DirCache` instances at the end of the path-resolve loop.
+    /// Because `DirCache` is keyed by `parent_frs` and only grows
+    /// on misses, this value is the exact miss count.  Hits =
+    /// `path_candidates - path_cache_entries`.  A very small
+    /// value (< 1 % of candidates) means locality is fine and the
+    /// per-candidate cost is dominated by something else (string
+    /// alloc, row building, etc.).
+    pub path_cache_entries: u64,
+    /// Deep-profile counter: cumulative nanoseconds spent inside
+    /// `tree::resolve_path_cached` across all candidates.  This
+    /// isolates the path-walk + cache-lookup + string-concat
+    /// cost from the surrounding row-building work.  Compare
+    /// against `path_build_row_ns` to see which half dominates.
+    pub path_resolve_fn_ns: u64,
+    /// Deep-profile counter: cumulative nanoseconds spent inside
+    /// `make_display_row` + the subsequent `Vec::push`.  This
+    /// measures the `DisplayRow` struct construction (name slice,
+    /// flags decode, size/time copies) separately from the path
+    /// resolution.
+    pub path_build_row_ns: u64,
 }
 
 /// Result of a search operation.

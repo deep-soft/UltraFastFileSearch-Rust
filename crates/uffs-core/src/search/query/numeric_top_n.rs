@@ -430,27 +430,53 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
     //    `DisplayRow` materialisation.  Candidates are now in MFT
     //    order thanks to the locality re-sort above, so adjacent
     //    path resolutions hit the `DirCache` warm.
+    //
+    // Deep profile: split the cost into the `resolve_path_cached`
+    // fn itself vs. the `make_display_row` + `Vec::push` work so
+    // we can tell whether path-walking or row-building dominates.
+    // The two cumulative `u128` counters add ~50-100 ns of timer
+    // overhead per iteration; at 50 K records that is ~5 ms — big
+    // enough to skew the absolute `path_resolve_ms` measurement
+    // slightly, but small relative to the phase total and
+    // necessary for attribution.
     let t_path_resolve = std::time::Instant::now();
     let mut dir_caches: std::collections::HashMap<u16, tree::DirCache> =
         std::collections::HashMap::new();
-    let mut rows: Vec<DisplayRow> = candidates
-        .iter()
-        .filter_map(|&(drive_idx, rec_idx, _)| {
-            let drive = drives.get(drive_idx as usize)?.as_ref();
-            let rec = drive.records.get(rec_idx as usize)?;
-            let name = rec.name(&drive.names);
-            if name.is_empty() {
-                return None;
-            }
-            let mut vp_buf = [0_u8; 4];
-            let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
-            let cache = dir_caches
-                .entry(drive_idx)
-                .or_insert_with(|| tree::DirCache::with_capacity(256));
-            let path = tree::resolve_path_cached(drive, rec_idx as usize, volume_prefix, cache);
-            Some(make_display_row(rec_idx, drive.letter, rec, name, path))
-        })
-        .collect();
+    let mut path_resolve_fn_ns: u128 = 0;
+    let mut path_build_row_ns: u128 = 0;
+    let mut path_candidates: u64 = 0;
+    let mut rows: Vec<DisplayRow> = Vec::with_capacity(candidates.len());
+    for &(drive_idx, rec_idx, _) in &candidates {
+        let Some(drive_ref) = drives.get(drive_idx as usize) else {
+            continue;
+        };
+        let drive = drive_ref.as_ref();
+        let Some(rec) = drive.records.get(rec_idx as usize) else {
+            continue;
+        };
+        let name = rec.name(&drive.names);
+        if name.is_empty() {
+            continue;
+        }
+        let mut vp_buf = [0_u8; 4];
+        let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
+        let cache = dir_caches
+            .entry(drive_idx)
+            .or_insert_with(|| tree::DirCache::with_capacity(256));
+        let t_resolve = std::time::Instant::now();
+        let path = tree::resolve_path_cached(drive, rec_idx as usize, volume_prefix, cache);
+        path_resolve_fn_ns += t_resolve.elapsed().as_nanos();
+        let t_build = std::time::Instant::now();
+        rows.push(make_display_row(rec_idx, drive.letter, rec, name, path));
+        path_build_row_ns += t_build.elapsed().as_nanos();
+        path_candidates += 1;
+    }
+
+    // Count DirCache entries across all drives *before* the sort
+    // so we capture the steady-state miss count.  Must happen
+    // before `sort_rows` because the caches are no longer touched
+    // past this point.
+    let path_cache_entries: u64 = dir_caches.values().map(|cache| cache.len() as u64).sum();
 
     backend::sort_rows(&mut rows, sort_column, sort_desc, &[]);
     let path_resolve_ms = u64::try_from(t_path_resolve.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -459,11 +485,19 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
         scan_ms,
         sort_ms,
         path_resolve_ms,
+        path_candidates,
+        path_cache_entries,
+        path_resolve_fn_ns: u64::try_from(path_resolve_fn_ns).unwrap_or(u64::MAX),
+        path_build_row_ns: u64::try_from(path_build_row_ns).unwrap_or(u64::MAX),
     };
     tracing::debug!(
         scan_ms,
         sort_ms,
         path_resolve_ms,
+        path_candidates,
+        path_cache_entries,
+        path_resolve_fn_ns = timings.path_resolve_fn_ns,
+        path_build_row_ns = timings.path_build_row_ns,
         rows = rows.len(),
         "[PHASE] collect_global_top_n_numeric complete"
     );

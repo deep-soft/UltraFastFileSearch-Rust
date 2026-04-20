@@ -556,8 +556,25 @@ impl IndexManager {
             .collect();
         drive_profiles.sort_by_key(|dp| dp.drive);
 
-        let (scan_ms, sort_ms, path_resolve_ms) =
-            phase_timings.map_or((0, 0, 0), |pt| (pt.scan_ms, pt.sort_ms, pt.path_resolve_ms));
+        let (
+            scan_ms,
+            sort_ms,
+            path_resolve_ms,
+            path_candidates,
+            path_cache_entries,
+            path_resolve_fn_ns,
+            path_build_row_ns,
+        ) = phase_timings.map_or((0, 0, 0, 0, 0, 0, 0), |pt| {
+            (
+                pt.scan_ms,
+                pt.sort_ms,
+                pt.path_resolve_ms,
+                pt.path_candidates,
+                pt.path_cache_entries,
+                pt.path_resolve_fn_ns,
+                pt.path_build_row_ns,
+            )
+        });
 
         SearchProfile {
             uptime_ms: us_to_ms(self.start_time.elapsed().as_micros()),
@@ -570,6 +587,10 @@ impl IndexManager {
             sort_ms,
             path_resolve_ms,
             write_ms: us_to_ms(write_us),
+            path_candidates,
+            path_cache_entries,
+            path_resolve_fn_ns,
+            path_build_row_ns,
             drives: drive_profiles,
         }
     }

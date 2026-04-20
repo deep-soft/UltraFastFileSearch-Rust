@@ -6,6 +6,11 @@
 //! All heavy lifting (including CLI arg parsing) happens in the daemon.
 //! This binary detects subcommands and forwards raw search args via
 //! `search_cli` RPC.
+//!
+//! Exception: `file_size_policy` allows this file to exceed 800 LOC.
+//! Rationale: CLI entry point cohesion — subcommand dispatch,
+//! client-side profile printing, and raw-arg forwarding form a
+//! single top-level flow that would be fragmented by splitting.
 
 // CLI main module uses single-call functions by design
 #![expect(
@@ -116,6 +121,39 @@ fn print_client_profile(prof: &ClientProfile<'_>) {
         if (scan | sort | resolve | write) > 0 {
             eprintln!(
                 "    scan={scan} ms  sort={sort} ms  path_resolve={resolve} ms  write={write} ms"
+            );
+        }
+        // Deep-profile breakdown: only present when the numeric-sort
+        // branch populated the `path_*` sub-counters.  Prints per-
+        // record averages derived from ns totals so the user can see
+        // immediately whether the bottleneck is path-walking or
+        // row-building, and whether the DirCache hit rate is high
+        // enough to warrant a locality optimisation.
+        let candidates = field("path_candidates");
+        let cache_entries = field("path_cache_entries");
+        let resolve_ns = field("path_resolve_fn_ns");
+        let build_ns = field("path_build_row_ns");
+        if candidates > 0 {
+            let hits = candidates.saturating_sub(cache_entries);
+            // Integer-math hit rate in permille (0–1000) to avoid
+            // float arithmetic — clippy::float_arithmetic is banned
+            // in production lints.  `permille / 10 . permille % 10`
+            // prints as "99.7" for 997.
+            let hit_permille = hits.saturating_mul(1000) / candidates;
+            let hit_whole = hit_permille / 10;
+            let hit_frac = hit_permille % 10;
+            let avg_resolve_ns = resolve_ns / candidates;
+            let avg_build_ns = build_ns / candidates;
+            eprintln!(
+                "    deep: candidates={candidates}  unique_parents={cache_entries}  \
+                 hit_rate={hit_whole}.{hit_frac}%"
+            );
+            eprintln!(
+                "          resolve_fn={} ms ({} ns/rec)  build_row={} ms ({} ns/rec)",
+                resolve_ns / 1_000_000,
+                avg_resolve_ns,
+                build_ns / 1_000_000,
+                avg_build_ns,
             );
         }
     }
