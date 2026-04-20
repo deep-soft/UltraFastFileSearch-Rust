@@ -35,9 +35,15 @@ build/
 # =============================================================================
 /Shell/
 # /LOG/ holds local-only runtime logs (defender ETLs, mental_health,
-# per-iteration `*CHANGELOG_HEALING.md` artefacts, etc.).  Nothing
-# under /LOG/ is tracked in git.
-/LOG/
+# pipeline `ship_run*.log` captures, etc.).  The one exception is
+# `*CHANGELOG_HEALING.md` — per the operating-rules healing-log
+# convention, these document each `just ship` iteration's failures
+# and fixes and MUST ship with the commit that resolved them.  Git
+# cannot re-include files inside an ignored *directory*, so the
+# standard workaround is used: ignore the directory's *contents*
+# (`/LOG/*`) and then un-ignore the healing logs by filename.
+/LOG/*
+!/LOG/*CHANGELOG_HEALING.md
 /vendor/
 /missing_paths.txt
 /_trash/
