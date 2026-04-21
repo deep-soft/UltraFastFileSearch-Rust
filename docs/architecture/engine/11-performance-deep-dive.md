@@ -4,8 +4,10 @@
 
 This document explains why UFFS is a high-performance MFT search engine, the engineering decisions behind it, and real-world benchmark data from a 7-drive, 25.9-million-record production system tested up to **100M records**.
 
-> **See also:** [Performance](../../user-manual/performance.md) for the
-> full benchmark reference with per-drive tables and validation throughput.
+> **See also:**
+> - [`docs/benchmarks/`](../../benchmarks/) — publication-grade competitive-benchmark hub (UFFS vs Everything vs UFFS C++); current canonical report: [`2026-04-v0.5.66-vs-everything-and-cpp.md`](../../benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md).
+> - [User-manual performance page](../../user-manual/performance.md) — full benchmark reference with per-drive tables and validation throughput.
+> - [`docs/research/cross-tool-benchmark-analysis.md`](../../research/cross-tool-benchmark-analysis.md) — engineering-detail source (internal).
 
 ---
 

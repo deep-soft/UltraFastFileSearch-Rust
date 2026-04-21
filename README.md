@@ -12,7 +12,7 @@
 > - **5.7 s WARM CACHE** — restart from serialized cache (v0.5.62/v0.5.66, **−17 %** vs v0.5.4)
 > - **0–3 ms daemon-side** for targeted queries — exact/prefix/ext/substring, unchanged from v0.5.4
 > - **29–32 ms CLI end-to-end** for targeted queries on v0.5.66 (v0.5.4 measured 9–13 ms e2e before the post-Phase-1 thin-client spawn floor settled at ~28 ms)
-> - **vs Everything on v0.5.66**: UFFS wins **12/12 head-to-head cells** at p50 on C+D, median ratio **0.51× (~1.96× faster)** — see [cross-tool benchmark analysis](docs/research/cross-tool-benchmark-analysis.md)
+> - **vs Everything on v0.5.66**: UFFS wins **12/12 head-to-head cells** at p50 on C+D, median ratio **0.51× (~1.96× faster)** — see the [**benchmark hub**](docs/benchmarks/) and the [full v0.5.66 report](docs/benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md)
 
 UFFS is built for **exact filename, path, and metadata search** at scales where directory walking, shell search, and some automation surfaces become the bottleneck. It is open source, written in Rust, and designed first for deterministic local search; CLI, TUI, API, and MCP are all interfaces on top of the same engine.
 
@@ -37,7 +37,7 @@ UFFS is built for **exact filename, path, and metadata search** at scales where 
 
 ## Benchmark snapshot (v0.5.66)
 
-Measured on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2, 7 NTFS volumes totaling 26.1 M records; scaled to 100.4 M with offline MFT clones (v0.5.4 era).  Full capture: `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newer` + `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newest`.
+Measured on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2, 7 NTFS volumes totaling 26.1 M records; scaled to 100.4 M with offline MFT clones (v0.5.4 era). Full capture in [`LOG/Output_cache_newer`](LOG/Output_cache_newer) + [`LOG/Output_cache_newest`](LOG/Output_cache_newest). Publication-grade report: [**docs/benchmarks/**](docs/benchmarks/).
 
 | Phase | What happens | ALL 7 drives (v0.5.66) | Single NVMe (v0.5.4) |
 |-------|--------------|-----------------------:|---------------------:|
@@ -51,12 +51,13 @@ Measured on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2, 7 NTFS volumes t
 Hot-path context (v0.5.66, 30 rounds, p50):
 - **0–3 ms daemon-side** for targeted queries (exact, prefix, ext, substring, combined) — unchanged since v0.5.4
 - **29–32 ms CLI end-to-end** for targeted queries across all 7 drives (~28 ms post-Phase-1 cold-spawn floor + 0–3 ms daemon)
-- **UFFS wins 12/12 cells vs Everything** at p50 on C+D, median ratio **0.51×** — see [cross-tool analysis](docs/research/cross-tool-benchmark-analysis.md)
+- **UFFS wins 12/12 cells vs Everything** at p50 on C+D, median ratio **0.51×** — see the [benchmark hub](docs/benchmarks/)
 - **Direct stdout redirect crossover**: UFFS **0.27×–0.53×** vs ES across 4 size classes (34 K → 167 K rows)
 - **323 k rows/sec** bulk export throughput (CSV, `--out-dir`)
 - **Full-scan export** `*` → CSV at 26 M records: **13.6 s p50** (1.72 M rec/s through the full pipeline)
 - **100.4 M records** tested (v0.5.4 synthetic-clone data; not re-verified on v0.5.66): targeted queries stayed at 11–13 ms e2e
 
+> 📖 **[Benchmark hub](docs/benchmarks/)** — dated competitive-benchmark reports, fairness methodology, archive of prior versions, reproduction scripts.
 > 📖 **[Full benchmark data](docs/user-manual/performance.md)** — methodology, per-drive tables, interactive search percentiles, bulk retrieval, scale ceiling, and caveats.
 
 ---

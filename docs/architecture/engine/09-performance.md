@@ -12,16 +12,20 @@ This document describes the performance characteristics of UFFS, the optimizatio
 
 ## Benchmark Results (current: v0.5.66)
 
-Headline cross-tool result on v0.5.62 (from
-`@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:189-229`, n=30, HOT,
+> **Publication-grade competitive benchmark report:** [`docs/benchmarks/`](../../benchmarks/) — dated snapshots, fairness methodology, archive policy, reproduction scripts. The current canonical report is [`2026-04-v0.5.66-vs-everything-and-cpp.md`](../../benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md).
+>
+> This engineering-reference doc holds the *raw* cross-drive measurements and per-phase diagnostics used internally. For the story-shaped version with fairness rules, competitor positioning, and TL;DR headline numbers, start at the benchmark hub.
+
+Headline cross-tool result on v0.5.66 (from
+[`LOG/Output_cache_newer:580-625`](../../../LOG/Output_cache_newer), n=30, HOT,
 apples-to-apples C+D scope):
 
-**UFFS beats Everything 10/10 at p50**, median ratio **0.48×
-(UFFS 2.07× faster)**.  Full table and analysis in
-`@/Users/rnio/Private/Github/UltraFastFileSearch/docs/research/cross-tool-benchmark-analysis.md` §Current State.
+**UFFS beats Everything 12/12 at p50**, median ratio **0.51×
+(UFFS ~1.96× faster)**.  Full table and analysis in
+[`docs/benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md`](../../benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md) §Head-to-head 1, with the engineering-detail source at [`docs/research/cross-tool-benchmark-analysis.md`](../../research/cross-tool-benchmark-analysis.md) §Current State (internal).
 
 7-drive aggregate numbers on v0.5.62 (from
-`@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:113-479`):
+[`LOG/Output_cache_new:113-479`](../../../LOG/Output_cache_new)):
 
 | Workload                                         | Value       |
 |--------------------------------------------------|------------:|
@@ -73,7 +77,7 @@ cross-tool analysis doc (§7, bounded-heap top-N).
 | size filter | 153 ms | 160 ms | 144 ms | 150 ms |
 | combined | 9 ms | 10 ms | 0 ms | 0 ms |
 
-**v0.5.66 re-bench (30 rounds, `--limit 100`, source `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newest:573-707`):**
+**v0.5.66 re-bench (30 rounds, `--limit 100`, source [`LOG/Output_cache_newest:573-707`](../../../LOG/Output_cache_newest)):**
 
 | Pattern                             | CLI e2e p50 | CLI e2e p95 | daemon p50 |
 |-------------------------------------|------------:|------------:|-----------:|
@@ -123,7 +127,7 @@ fullscan regression is independent and tracked as Phase 5 target #2
 | >100M | 17+ | — | — | ❌ OOM |
 
 **v0.5.66 drive-accumulation sweep (real drives only, no synthetic
-clones — `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newest:933-1044`, n=1 per drive set):**
+clones — [`LOG/Output_cache_newest:933-1044`](../../../LOG/Output_cache_newest), n=1 per drive set):**
 
 | Total Records | Drives      | Daemon RSS | `*` e2e    |
 |--------------:|-------------|-----------:|-----------:|

@@ -5,6 +5,13 @@ documents measured performance across seven NTFS drives totalling
 **25.9 million records**, captured on real hardware with the standard
 benchmark and profiling scripts.
 
+> **Competitive benchmark report:** for the story-shaped, dated
+> head-to-head against Everything and the UFFS C++ reference, see the
+> [**benchmark hub**](../benchmarks/) — specifically the current
+> canonical report
+> [`2026-04-v0.5.66-vs-everything-and-cpp.md`](../benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md).
+> This page focuses on UFFS's own per-drive and per-phase numbers.
+
 > **See also:** [Advanced Diagnostics](advanced-diagnostics.md) ·
 > [Daemon](daemon.md) · [Cache & Data Sources](cache-and-data.md) ·
 > [Concepts](concepts.md)
