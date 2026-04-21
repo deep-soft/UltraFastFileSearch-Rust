@@ -8,6 +8,16 @@
 
 **[2026-04 · v0.5.66 vs Everything and the UFFS C++ reference →](2026-04-v0.5.66-vs-everything-and-cpp.md)**
 
+![UFFS v0.5.66 wins 12 of 12 head-to-head cells against Everything at p50](charts/2026-04-v0.5.66/head-to-head-vs-everything.svg)
+
+![UFFS Rust v0.5.66 cold-start is 2.6× faster than the UFFS C++ reference warm-disk read](charts/2026-04-v0.5.66/cold-parity-vs-cpp.svg)
+
+![Daemon HOT vs per-invocation MFT reread — UFFS 16× faster total](charts/2026-04-v0.5.66/daemon-hot-vs-cpp.svg)
+
+![UFFS daemon memory scales linearly at ~181 MB per million records](charts/2026-04-v0.5.66/memory-scales-linearly.svg)
+
+![Full-scan export: 26 M records to CSV in 13.6 s at 1.72 M records per second](charts/2026-04-v0.5.66/full-scan-throughput.svg)
+
 Four numbers the report establishes, against 26 million live NTFS records on a Ryzen 9 3900XT:
 
 1. **12 / 12 head-to-head cells faster than Everything** at p50 on drives C + D across six pattern classes (exact, prefix, rare-ext, common-ext, regex-alternation, substring). Median ratio **0.51× — UFFS is ~1.96× faster**.

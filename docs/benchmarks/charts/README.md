@@ -1,0 +1,48 @@
+# UFFS benchmark charts
+
+Version-dated, shareable SVG charts generated from the canonical benchmark reports. Designed for:
+
+- **Embedding in the hub + canonical report** (renders natively on GitHub, works in light + dark mode because of the explicit white-card design).
+- **Screenshotting for social posts** (HN, Reddit, Twitter/X, LinkedIn). The white-card design is readable on any platform theme and crops cleanly at 2:1 or 16:9.
+- **Click-through verification** — every chart cites the raw log file in [`../raw/`](../raw/) that produced its numbers, so readers can audit each bar.
+
+## Layout
+
+```
+charts/
+├── README.md                  <- this file
+└── 2026-04-v0.5.66/           <- one directory per canonical report snapshot
+    ├── head-to-head-vs-everything.svg     (§Head-to-head 1: 12/12 vs Everything)
+    ├── cold-parity-vs-cpp.svg             (§Head-to-head 2: cold-start parity)
+    ├── daemon-hot-vs-cpp.svg              (§Head-to-head 2: daemon HOT steady-state)
+    ├── memory-scales-linearly.svg         (§Scale: linear RSS growth)
+    └── full-scan-throughput.svg           (§Scale: 13.6 s / 23.4 M / 1.72 M rec/s)
+```
+
+## Design system
+
+- **White card background** with a subtle `#e2e8f0` 1 px border — readable on any IDE theme, any platform. No `currentColor` / theme-inheritance games; the chart looks identical on dark HN, light Twitter, any IDE preview.
+- **Dark-on-white typography** using a slate palette (`#0f172a` titles, `#475569` subtitles, `#334155` body labels, `#64748b` axes, `#94a3b8` footers).
+- **Accent colors** are fixed per concept across every chart:
+  - UFFS Rust v0.5.66: `#2563eb` (blue-600)
+  - Everything: `#94a3b8` (slate-400)
+  - UFFS C++ reference: `#ea580c` (orange-600)
+  - Winning ratio callouts: `#059669` (emerald-600)
+  - Architectural ceiling warnings: `#dc2626` / `#991b1b` (red-600/800)
+- **Font:** system stack (`-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, ...`) — renders cleanly on macOS, Windows, Linux, and in browsers.
+- **ViewBox-based responsive sizing** so GitHub / Markdown renderers can scale them to any container width without pixelating.
+
+## When to update
+
+When a new canonical benchmark report is cut (e.g. v0.5.70 supersedes v0.5.66):
+
+1. Create a new dated directory: `charts/YYYY-MM-vX.Y.Z/`.
+2. Re-produce the same five charts with the new numbers using the same design system.
+3. Update the hub README and the new canonical report to embed the new chart paths.
+4. Leave the old directory untouched — prior charts live forever, same archive discipline as [`../archive/`](../archive/) and [`../raw/`](../raw/).
+
+## Regeneration
+
+These SVGs are hand-written (explicit `<rect>` / `<text>` / `<line>` / `<circle>` elements with pre-computed pixel positions from the raw data). For a new canonical report, the fastest path is usually: copy the previous directory, then find-and-replace the data values + axis bounds. ~20 minutes per full set.
+
+No external dependencies, no renderer to install, no chart-library version drift. The text of the SVG **is** the source of truth; there's no `.png` fallback to keep in sync.
