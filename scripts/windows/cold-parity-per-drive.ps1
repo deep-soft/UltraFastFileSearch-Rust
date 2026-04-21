@@ -1,21 +1,52 @@
 # =============================================================================
-# Per-drive COLD parity benchmark: UFFS Rust v0.5.66 vs C++ reference
-# Reproduces the v0.4.106 methodology documented in
-#   docs/architecture/engine/11-performance-deep-dive.md
-#   "Parity Comparison (v0.4.106 historical, COLD, 6 drives, sequential per-drive)"
+# Per-drive parity benchmark: UFFS Rust v0.5.66 (daemon HOT) vs C++ (MFT re-read)
 #
-# Sequence per drive (one drive at a time, sequential):
-#   1. Stop daemon, delete that drive's compact + raw cache files
-#   2. Run UFFS Rust COLD (raw MFT read + compact index build + cache write)
-#   3. Run C++ reference on same drive (OS page cache now warm from step 2)
-#   4. Record wall-clock + record count + files/sec
+# Methodology (2026-04-21 revision — see log in repo root):
+#   Both tools are given the SAME corpus (all listed drives) and asked the
+#   SAME question ('*' with path-only output) with output written to a
+#   temporary file per invocation.  The comparison exposes the real-world
+#   asymmetry that the v0.4.106 "warm disk" table papered over:
+#
+#     - UFFS Rust's daemon loads all drives ONCE and serves subsequent
+#       per-drive '*' queries from the in-memory index.  Each round is HOT.
+#     - UFFS C++ (uffs.com) has no daemon.  It re-reads the MFT of every
+#       drive on EVERY invocation regardless of --drives=<X>; the --drives=
+#       flag is an output filter, not a load-time filter (confirmed in
+#       scripts/windows/cross-tool-benchmark.rs:553 header).
+#
+#   So the per-drive table below measures the honest workflow difference:
+#   how fast can each tool answer an interactive '*' query on one drive?
+#
+# File-output parity matches scripts/windows/cross-tool-benchmark.rs:
+#   Rust:  uffs.exe '*' --drive <X> --out <tmpfile> --columns Path \
+#          --hide-system --hide-ads
+#   C++:   uffs.com '*' --drives=<X> --columns=path --out=<tmpfile>
+#
+# The C++ binary internally freopen()'s stdout onto the --out= file, so
+# (unlike the Rust CLI) we must NOT pipe or redirect its stdout/stderr —
+# the invocation inherits both streams, and row-count validation reads
+# the resulting file.
+#
+# Sequence:
+#   1. (Optional) Stop daemon and purge all drive caches with -PurgeCacheFirst.
+#      This re-measures the one-time cold daemon warm-up.  Omit to run
+#      against whatever cache state the daemon already has.
+#   2. Warm-up: start daemon with all drives, force it through a '*'
+#      --limit 1 query so every drive is loaded, record the warm-up
+#      wall-clock (COLD-if-purged / WARM otherwise).
+#   3. For each drive, run N rounds (default 1) of:
+#        - Rust HOT '*' query with file output
+#        - C++ '*' query with file output (MFT re-read on every round)
+#      Capture wall-clock, daemon-side (--profile), and row count per round;
+#      report p50 for each tool per drive.
+#   4. Emit two pre-formatted markdown tables at the end.
 #
 # Usage (from elevated PowerShell, project root):
 #   .\scripts\windows\cold-parity-per-drive.ps1 -Drives C,D,E,F,M,S,G
-#   .\scripts\windows\cold-parity-per-drive.ps1 -Drives C,D -OutputFile LOG\Output_cold_parity.txt
-#   .\scripts\windows\cold-parity-per-drive.ps1 -UffsBin $HOME\bin\uffs.exe -CppBin $HOME\bin\uffs.com
-#   .\scripts\windows\cold-parity-per-drive.ps1 -SkipCpp                # Rust-only run
-#   .\scripts\windows\cold-parity-per-drive.ps1 -DumpRaw                # include full --profile output per drive
+#   .\scripts\windows\cold-parity-per-drive.ps1 -Drives C,D -Rounds 3
+#   .\scripts\windows\cold-parity-per-drive.ps1 -PurgeCacheFirst          # cold daemon warm-up
+#   .\scripts\windows\cold-parity-per-drive.ps1 -SkipCpp                  # Rust-only (fast)
+#   .\scripts\windows\cold-parity-per-drive.ps1 -DumpRaw                  # include per-round profile stderr
 #
 # Binary resolution (auto-fallback when -UffsBin/-CppBin are not passed):
 #   1. Explicit path via -UffsBin / -CppBin
@@ -30,11 +61,13 @@
 
 [CmdletBinding()]
 param(
-    [string[]] $Drives       = @('C','D','E','F','M','S','G'),
-    [string]   $UffsBin      = '',
-    [string]   $CppBin       = '',
-    [string]   $OutputFile   = 'LOG\Output_cold_parity.txt',
-    [int]      $SleepBetween = 2,
+    [string[]] $Drives          = @('C','D','E','F','M','S','G'),
+    [string]   $UffsBin         = '',
+    [string]   $CppBin          = '',
+    [string]   $OutputFile      = 'LOG\Output_per_drive_parity.txt',
+    [int]      $Rounds          = 1,
+    [int]      $SleepBetween    = 1,
+    [switch]   $PurgeCacheFirst,
     [switch]   $SkipCpp,
     [switch]   $DumpRaw
 )
@@ -150,85 +183,146 @@ function Get-DaemonTotalRecords {
     return $null
 }
 
-function Invoke-UffsCold {
-    param([string] $Drive)
-
-    Write-Host "  [Rust COLD] $UffsBin `"*`" --drive $Drive --profile --limit 100" -ForegroundColor Yellow
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    # --profile writes to stderr. Capture both so the transcript shows
-    # the full daemon-side breakdown for post-hoc analysis.
-    $output = & $UffsBin "*" --drive $Drive --profile --limit 100 2>&1 | Out-String
-    $sw.Stop()
-    $elapsed = $sw.Elapsed.TotalSeconds
-
-    # Authoritative record count: ask the daemon how many records it
-    # loaded for this drive. --profile only prints "Rows returned: 100"
-    # (the --limit cap), not the total drive size.
-    $records = Get-DaemonTotalRecords
-    $filesSec = if ($records) { [int]($records / $elapsed) } else { $null }
-
-    # Parse --profile output so we can report both wall-clock
-    # (matches v0.4.106 methodology) and the daemon-internal sub-phases
-    # (useful for root-causing cold-path regressions).
-    #   Connect:         X ms              <- CLI-to-daemon handshake
-    #   Await ready:     X ms              <- daemon spawn + MFT read + index build (THE cold number)
-    #   Search (IPC):    X ms (daemon: Y ms) <- search only, trivial on cold since drive is loaded
-    $connectMs = if ($output -match 'Connect:\s+(\d+)\s+ms')      { [int]$matches[1] } else { $null }
-    $readyMs   = if ($output -match 'Await ready:\s+(\d+)\s+ms')  { [int]$matches[1] } else { $null }
-    $ipcMs     = if ($output -match 'Search \(IPC\):\s+(\d+)\s+ms') { [int]$matches[1] } else { $null }
-    $daemonMs  = if ($output -match 'daemon:\s+(\d+)\s+ms')       { [int]$matches[1] } else { $null }
-
-    [pscustomobject]@{
-        Tool      = 'UFFS-Rust-v0.5.66'
-        Phase     = 'COLD'
-        Drive     = $Drive
-        Seconds   = [math]::Round($elapsed, 2)
-        Records   = $records
-        FilesSec  = $filesSec
-        ConnectMs = $connectMs
-        ReadyMs   = $readyMs
-        IpcMs     = $ipcMs
-        DaemonMs  = $daemonMs
-        RawOut    = $output
+function Get-FileLineCount {
+    param([string] $Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    try {
+        # Count raw lines; large files (~100 MB for multi-million-record
+        # drives) stream through -ReadCount 1000 without buffering the
+        # whole file in memory.
+        return (Get-Content -LiteralPath $Path -ReadCount 1000 | Measure-Object -Line).Lines
+    } catch {
+        return $null
     }
 }
 
-function Invoke-UffsCppWarmDisk {
+function Get-Median {
+    param([double[]] $Values)
+    if (-not $Values -or $Values.Count -eq 0) { return 0 }
+    $sorted = $Values | Sort-Object
+    $mid = [int]([math]::Floor($sorted.Count / 2))
+    if ($sorted.Count % 2 -eq 1) { return $sorted[$mid] }
+    return ($sorted[$mid - 1] + $sorted[$mid]) / 2
+}
+
+function Invoke-UffsHotRound {
+    # One round of the Rust HOT per-drive query: '*' with path-only
+    # output written via --out.  Daemon must already be warm (all
+    # drives loaded) before this is called.  Returns wall-clock ms,
+    # daemon-side ms (from --profile), and row count from the file.
     param([string] $Drive)
 
-    if ($SkipCpp) { return $null }
-    if (-not (Test-Invokable $CppBin)) {
-        Write-Host "  [C++] $CppBin not found — skipping" -ForegroundColor DarkYellow
-        return $null
-    }
-
-    $tmpOut = Join-Path $env:TEMP "cpp_${Drive}_$([guid]::NewGuid().ToString('N')).csv"
-    Write-Host "  [C++ warm-disk] $CppBin `"*`" --drives=$Drive --columns=path > $tmpOut" -ForegroundColor Yellow
+    $tmpOut = Join-Path $env:TEMP "rust_${Drive}_$([guid]::NewGuid().ToString('N')).csv"
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    & $CppBin "*" "--drives=$Drive" "--columns=path" > $tmpOut 2>&1
+    # --profile goes to stderr; capture both for post-hoc analysis but
+    # do NOT redirect the --out= file path — the daemon writes it
+    # directly (OPT-4 daemon-direct file-write path documented in
+    # crates/uffs-cli/src/main.rs around the `has_out` branch).
+    $stderr = & $UffsBin '*' --drive $Drive --out $tmpOut `
+        --columns Path --hide-system --hide-ads --profile 2>&1 | Out-String
     $sw.Stop()
+    $wallMs = [int]$sw.Elapsed.TotalMilliseconds
 
-    # Row count from output file
-    $records = $null
-    if (Test-Path $tmpOut) {
-        try {
-            $records = (Get-Content $tmpOut -ReadCount 1000 | Measure-Object -Line).Lines
-        } catch {}
-        Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue
+    $rows = Get-FileLineCount $tmpOut
+    if (Test-Path -LiteralPath $tmpOut) {
+        Remove-Item -LiteralPath $tmpOut -Force -ErrorAction SilentlyContinue
     }
 
-    $elapsed = $sw.Elapsed.TotalSeconds
-    $filesSec = if ($records) { [int]($records / $elapsed) } else { $null }
+    $daemonMs  = if ($stderr -match 'daemon:\s+(\d+)\s+ms')      { [int]$matches[1] } else { $null }
+    $readyMs   = if ($stderr -match 'Await ready:\s+(\d+)\s+ms') { [int]$matches[1] } else { $null }
+
+    [pscustomobject]@{
+        Tool     = 'UFFS-Rust-v0.5.66'
+        Phase    = 'HOT'
+        Drive    = $Drive
+        WallMs   = $wallMs
+        DaemonMs = $daemonMs
+        ReadyMs  = $readyMs
+        Rows     = $rows
+        RawOut   = $stderr
+    }
+}
+
+function Invoke-UffsCppRound {
+    # One round of the C++ '*' per-drive query.  Each invocation re-
+    # reads all MFTs regardless of --drives=X — that is the cost being
+    # measured.  freopen() requires inherited stdout/stderr so we use
+    # Start-Process with -NoNewWindow -Wait instead of piping.
+    param([string] $Drive)
+
+    if ($SkipCpp -or -not (Test-Invokable $CppBin)) { return $null }
+
+    $tmpOut = Join-Path $env:TEMP "cpp_${Drive}_$([guid]::NewGuid().ToString('N')).csv"
+    $cppArgs = @('*', "--drives=$Drive", '--columns=path', "--out=$tmpOut")
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    # Start-Process -NoNewWindow -Wait keeps stdout/stderr attached to
+    # the current console so the C++ binary's internal freopen() can
+    # retarget onto --out=.  Any pipe or redirect here would silently
+    # empty the output file (documented in cross-tool-benchmark.rs:559).
+    $proc = Start-Process -FilePath $CppBin -ArgumentList $cppArgs `
+        -NoNewWindow -Wait -PassThru
+    $sw.Stop()
+    $wallMs = [int]$sw.Elapsed.TotalMilliseconds
+    $exit = if ($proc) { $proc.ExitCode } else { -1 }
+
+    $rows = Get-FileLineCount $tmpOut
+    if (Test-Path -LiteralPath $tmpOut) {
+        Remove-Item -LiteralPath $tmpOut -Force -ErrorAction SilentlyContinue
+    }
 
     [pscustomobject]@{
         Tool     = 'UFFS-CPP-reference'
-        Phase    = 'WARM-DISK'
+        Phase    = 'MFT-reread'
         Drive    = $Drive
-        Seconds  = [math]::Round($elapsed, 2)
-        Records  = $records
-        FilesSec = $filesSec
+        WallMs   = $wallMs
+        DaemonMs = $null
+        ReadyMs  = $null
+        Rows     = $rows
+        ExitCode = $exit
         RawOut   = ''
+    }
+}
+
+function Remove-AllDriveCaches {
+    # Called by -PurgeCacheFirst so the daemon warm-up runs through
+    # a true COLD MFT read.  Purges only the drives we're about to
+    # benchmark; leaves unrelated cached drives alone.
+    if (-not (Test-Path $CacheDir)) { return }
+    foreach ($d in $Drives) {
+        Remove-DriveCache -Drive $d
+    }
+}
+
+function Start-DaemonAllDrives {
+    # Force the daemon to start and load all drives.  `uffs daemon start`
+    # has no --drive filter (args.rs:109 states daemon auto-discovers
+    # all drives on Windows live mode), so a bare daemon start (no -d)
+    # gets the right behaviour.  Then we issue a trivial `*` --limit 1
+    # query to make the first-use path execute end-to-end (including
+    # trigram index rehydration) and block until a full response lands.
+    Write-Host '  Starting daemon (auto-discover all drives)...' -ForegroundColor Yellow
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    # First `uffs` call auto-spawns the daemon if it is not already
+    # running, with all drives auto-discovered.  --profile prints the
+    # ready_ms + daemon_ms breakdown to stderr.
+    $stderr = & $UffsBin '*' --limit 1 --profile 2>&1 | Out-String
+    $sw.Stop()
+
+    $wallSec   = [math]::Round($sw.Elapsed.TotalSeconds, 2)
+    $readyMs   = if ($stderr -match 'Await ready:\s+(\d+)\s+ms') { [int]$matches[1] } else { $null }
+    $records   = Get-DaemonTotalRecords
+
+    Write-Host ('    -> wall={0}s  await_ready={1}ms  records_loaded={2}' -f `
+        $wallSec, $readyMs, $(if ($records) { '{0:N0}' -f $records } else { 'n/a' })) -ForegroundColor Green
+    if ($DumpRaw) { Write-Host $stderr -ForegroundColor DarkGray }
+
+    [pscustomobject]@{
+        WallSec     = $wallSec
+        ReadyMs     = $readyMs
+        TotalRecords = $records
+        RawOut      = $stderr
     }
 }
 
@@ -241,17 +335,19 @@ if ($outDir -and -not (Test-Path $outDir)) { New-Item -ItemType Directory -Path 
 # Start a transcript so we capture EVERYTHING to the LOG file
 Start-Transcript -Path $OutputFile -Force | Out-Null
 
-Write-Divider "UFFS Cold-parity benchmark — $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')"
-Write-Host "  UffsBin      : $UffsBin"
-Write-Host "  UffsBin src  : $script:UffsBinSource"
-Write-Host "  CppBin       : $(if ($SkipCpp) { '(skipped)' } else { $CppBin })"
+Write-Divider "UFFS Per-drive parity benchmark — $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')"
+Write-Host "  UffsBin         : $UffsBin"
+Write-Host "  UffsBin src     : $script:UffsBinSource"
+Write-Host "  CppBin          : $(if ($SkipCpp) { '(skipped)' } else { $CppBin })"
 if (-not $SkipCpp) {
-    Write-Host "  CppBin src   : $script:CppBinSource"
+    Write-Host "  CppBin src      : $script:CppBinSource"
 }
-Write-Host "  Drives       : $($Drives -join ', ')"
-Write-Host "  CacheDir     : $CacheDir"
-Write-Host "  OutputFile   : $OutputFile"
-Write-Host "  SleepBetween : $SleepBetween s"
+Write-Host "  Drives          : $($Drives -join ', ')"
+Write-Host "  Rounds/drive    : $Rounds"
+Write-Host "  PurgeCacheFirst : $PurgeCacheFirst"
+Write-Host "  CacheDir        : $CacheDir"
+Write-Host "  OutputFile      : $OutputFile"
+Write-Host "  SleepBetween    : $SleepBetween s"
 Write-Host ''
 
 # Verify binaries: the resolver above returned either a full path or a
@@ -278,89 +374,135 @@ if (-not $SkipCpp -and (Test-Invokable $CppBin)) {
     Write-Host "  (C++ reference '$CppBin' not found — will skip C++ column per drive)" -ForegroundColor DarkYellow
 }
 
-# ---------- main loop -------------------------------------------------------
+# ---------- phase 0: optional cache purge + daemon warm-up ------------------
+
+if ($PurgeCacheFirst) {
+    Write-Divider 'Phase 0a: stop daemon + purge all drive caches (true COLD)'
+    Stop-UffsDaemon
+    Remove-AllDriveCaches
+    Start-Sleep -Seconds $SleepBetween
+}
+
+Write-Divider 'Phase 0b: daemon warm-up — load all drives'
+$warmup = Start-DaemonAllDrives
+Start-Sleep -Seconds $SleepBetween
+
+# ---------- phase 1: per-drive HOT Rust vs MFT-reread C++ -------------------
 
 $results = [System.Collections.Generic.List[pscustomobject]]::new()
 
 foreach ($drive in $Drives) {
-    Write-Divider "Drive $drive"
+    Write-Divider "Drive $drive — $Rounds round(s) per tool"
 
-    Write-Host "  [step 1] stop daemon + purge $drive cache files"
-    Stop-UffsDaemon
-    Remove-DriveCache -Drive $drive
-    Start-Sleep -Seconds $SleepBetween
-
-    Write-Host "  [step 2] UFFS Rust COLD"
-    $r = Invoke-UffsCold -Drive $drive
-    $results.Add($r)
-    $recStr = if ($r.Records) { '{0:N0}' -f $r.Records } else { 'n/a' }
-    $fpsStr = if ($r.FilesSec) { '{0:N0}/s' -f $r.FilesSec } else { 'n/a' }
-    Write-Host ('    -> wall={0}s  records={1}  files/sec={2}' -f $r.Seconds, $recStr, $fpsStr) -ForegroundColor Green
-    if ($null -ne $r.ReadyMs) {
-        Write-Host ('       breakdown: connect={0}ms  await_ready={1}ms  ipc={2}ms  daemon_search={3}ms' `
-            -f $r.ConnectMs, $r.ReadyMs, $r.IpcMs, $r.DaemonMs) -ForegroundColor DarkGray
-    }
-    if ($DumpRaw) { Write-Host $r.RawOut -ForegroundColor DarkGray }
-
-    Write-Host ''
-    Write-Host "  [step 3] UFFS C++ reference (warm disk — OS page cache now populated by step 2)"
-    $c = Invoke-UffsCppWarmDisk -Drive $drive
-    if ($c) {
-        $results.Add($c)
-        Write-Host ('    -> {0}s, {1} records, {2}/s' -f $c.Seconds, $c.Records, $c.FilesSec) -ForegroundColor Green
+    # Rust HOT rounds (daemon already warm for all drives).
+    $rustRounds = [System.Collections.Generic.List[pscustomobject]]::new()
+    for ($i = 1; $i -le $Rounds; $i++) {
+        Write-Host ("  [Rust HOT r{0}/{1}] uffs '*' --drive {2} --out <tmp> --columns Path --hide-system --hide-ads" -f $i, $Rounds, $drive) -ForegroundColor Yellow
+        $r = Invoke-UffsHotRound -Drive $drive
+        $rustRounds.Add($r)
+        $rowsStr = if ($r.Rows) { '{0:N0}' -f $r.Rows } else { 'n/a' }
+        $dmsStr  = if ($null -ne $r.DaemonMs) { "{0} ms" -f $r.DaemonMs } else { 'n/a' }
+        Write-Host ('    -> wall={0}ms  daemon={1}  rows={2}' -f $r.WallMs, $dmsStr, $rowsStr) -ForegroundColor Green
+        if ($DumpRaw) { Write-Host $r.RawOut -ForegroundColor DarkGray }
     }
 
+    # C++ rounds (each one re-reads all MFTs).
+    $cppRounds = [System.Collections.Generic.List[pscustomobject]]::new()
+    if (-not $SkipCpp) {
+        for ($i = 1; $i -le $Rounds; $i++) {
+            Write-Host ("  [C++ MFT-reread r{0}/{1}] uffs.com '*' --drives={2} --columns=path --out=<tmp>" -f $i, $Rounds, $drive) -ForegroundColor Yellow
+            $c = Invoke-UffsCppRound -Drive $drive
+            if ($c) {
+                $cppRounds.Add($c)
+                $rowsStr = if ($c.Rows) { '{0:N0}' -f $c.Rows } else { 'n/a' }
+                Write-Host ('    -> wall={0}ms  rows={1}  exit={2}' -f $c.WallMs, $rowsStr, $c.ExitCode) -ForegroundColor Green
+            }
+        }
+    }
+
+    # Aggregate: p50 wall-clock + canonical row count (from round 1).
+    $rustWalls   = @($rustRounds | ForEach-Object { [double]$_.WallMs })
+    $rustMedMs   = [int](Get-Median $rustWalls)
+    $rustRows    = ($rustRounds | Select-Object -First 1).Rows
+    $rustDaemonP50 = [int](Get-Median @($rustRounds | ForEach-Object { if ($null -ne $_.DaemonMs) { [double]$_.DaemonMs } else { 0.0 } }))
+
+    $cppMedMs  = $null
+    $cppRows   = $null
+    if ($cppRounds.Count -gt 0) {
+        $cppWalls  = @($cppRounds | ForEach-Object { [double]$_.WallMs })
+        $cppMedMs  = [int](Get-Median $cppWalls)
+        $cppRows   = ($cppRounds | Select-Object -First 1).Rows
+    }
+
+    $results.Add([pscustomobject]@{
+        Drive         = $drive
+        RustMedMs     = $rustMedMs
+        RustRows      = $rustRows
+        RustDaemonP50 = $rustDaemonP50
+        CppMedMs      = $cppMedMs
+        CppRows       = $cppRows
+    })
     Start-Sleep -Seconds $SleepBetween
 }
 
-# ---------- summary table ---------------------------------------------------
+# ---------- summary tables --------------------------------------------------
 
-Write-Divider 'Summary — table 1: doc-compatible (matches v0.4.106 schema)'
-
-$byDrive = $results | Group-Object Drive
-$totalRustSec = 0.0
-$totalCppSec  = 0.0
-
-Write-Host '| Drive | C++ (warm disk) | Rust (cold) | Ratio | Files/sec (Rust) |'
-Write-Host '|-------|-----------------|-------------|-------|------------------|'
-foreach ($grp in $byDrive) {
-    $rust = $grp.Group | Where-Object Tool -eq 'UFFS-Rust-v0.5.66' | Select-Object -First 1
-    $cpp  = $grp.Group | Where-Object Tool -eq 'UFFS-CPP-reference' | Select-Object -First 1
-    $rustSec = if ($rust) { $rust.Seconds } else { 0 }
-    $cppSec  = if ($cpp)  { $cpp.Seconds  } else { 0 }
-    $totalRustSec += $rustSec
-    $totalCppSec  += $cppSec
-    $ratio = if ($cppSec -gt 0 -and $rustSec -gt 0) { [math]::Round($rustSec / $cppSec, 2) } else { 'n/a' }
-    $cppCell   = if ($cpp)  { "$cppSec s"  } else { '(skipped)' }
-    $rustCell  = if ($rust) { "$rustSec s" } else { 'n/a' }
-    $filesCell = if ($rust.FilesSec) { '{0:N0}/s' -f $rust.FilesSec } else { 'n/a' }
-    Write-Host ('| {0}: | {1} | {2} | {3}x | {4} |' -f $grp.Name, $cppCell, $rustCell, $ratio, $filesCell)
+Write-Divider 'Summary — daemon warm-up (Phase 0b)'
+Write-Host ('  Wall-clock:     {0} s' -f $warmup.WallSec)
+if ($null -ne $warmup.ReadyMs) {
+    Write-Host ('  Await ready:    {0} ms (daemon spawn + MFT load + index build across all drives)' -f $warmup.ReadyMs)
+}
+if ($warmup.TotalRecords) {
+    Write-Host ('  Total records:  {0:N0}' -f $warmup.TotalRecords)
+}
+if ($PurgeCacheFirst) {
+    Write-Host '  Mode:           COLD — cache purged before warm-up' -ForegroundColor DarkYellow
+} else {
+    Write-Host '  Mode:           WARM — pre-existing cache reused (pass -PurgeCacheFirst for COLD)'
 }
 
-$totalRatio = if ($totalCppSec -gt 0) { [math]::Round($totalRustSec / $totalCppSec, 2) } else { 'n/a' }
-Write-Host ('| **TOTAL (sequential)** | **{0:N1} s** | **{1:N1} s** | **{2}x** | — |' -f $totalCppSec, $totalRustSec, $totalRatio)
+Write-Divider "Summary — table 1: per-drive parity (wall-clock p50 over $Rounds round(s))"
 
-Write-Divider 'Summary — table 2: Rust cold-path sub-phase breakdown'
+Write-Host '| Drive | C++ (MFT re-read) | Rust (daemon HOT) | Speedup | Rust rows | C++ rows |'
+Write-Host '|-------|------------------:|------------------:|--------:|----------:|---------:|'
+$totalRustMs = 0
+$totalCppMs  = 0
+foreach ($row in $results) {
+    $totalRustMs += $row.RustMedMs
+    if ($null -ne $row.CppMedMs) { $totalCppMs += $row.CppMedMs }
+    $speedup  = if ($null -ne $row.CppMedMs -and $row.RustMedMs -gt 0) { [math]::Round($row.CppMedMs / $row.RustMedMs, 1) } else { 'n/a' }
+    $cppCell  = if ($null -ne $row.CppMedMs) { '{0:N0} ms' -f $row.CppMedMs } else { '(skipped)' }
+    $rustCell = '{0:N0} ms' -f $row.RustMedMs
+    $rustRowsCell = if ($null -ne $row.RustRows) { '{0:N0}' -f $row.RustRows } else { 'n/a' }
+    $cppRowsCell  = if ($null -ne $row.CppRows)  { '{0:N0}' -f $row.CppRows }  else { 'n/a' }
+    $speedCell = if ($speedup -eq 'n/a') { 'n/a' } else { ('{0}x' -f $speedup) }
+    Write-Host ('| {0}: | {1} | {2} | {3} | {4} | {5} |' -f $row.Drive, $cppCell, $rustCell, $speedCell, $rustRowsCell, $cppRowsCell)
+}
+if ($totalCppMs -gt 0) {
+    $totalSpeedup = [math]::Round($totalCppMs / $totalRustMs, 1)
+    Write-Host ('| **TOTAL (sum of per-drive p50s)** | **{0:N0} ms** | **{1:N0} ms** | **{2}x** | — | — |' -f $totalCppMs, $totalRustMs, $totalSpeedup)
+} else {
+    Write-Host ('| **TOTAL (sum of Rust p50s)** | — | **{0:N0} ms** | — | — | — |' -f $totalRustMs)
+}
 
-Write-Host '| Drive | Records | Wall | AwaitReady | IPC | Daemon | CLI tax | Notes |'
-Write-Host '|-------|--------:|-----:|-----------:|----:|-------:|--------:|-------|'
-foreach ($grp in $byDrive) {
-    $rust = $grp.Group | Where-Object Tool -eq 'UFFS-Rust-v0.5.66' | Select-Object -First 1
-    if (-not $rust) { continue }
-    $cliTax = if ($null -ne $rust.ReadyMs -and $null -ne $rust.ConnectMs -and $null -ne $rust.IpcMs) {
-        [int](($rust.Seconds * 1000) - $rust.ReadyMs - $rust.IpcMs - $rust.ConnectMs)
+Write-Divider 'Summary — table 2: Rust daemon vs CLI breakdown'
+
+Write-Host '| Drive | Rust rows | Rust wall p50 | Rust daemon p50 | CLI overhead |'
+Write-Host '|-------|----------:|--------------:|----------------:|-------------:|'
+foreach ($row in $results) {
+    $overhead = if ($null -ne $row.RustDaemonP50) {
+        '{0:N0} ms' -f ([math]::Max(0, $row.RustMedMs - $row.RustDaemonP50))
     } else { 'n/a' }
-    $recStr = if ($rust.Records) { '{0:N0}' -f $rust.Records } else { 'n/a' }
-    Write-Host ('| {0}: | {1} | {2} s | {3} ms | {4} ms | {5} ms | {6} ms | |' -f `
-        $grp.Name, $recStr, $rust.Seconds, $rust.ReadyMs, $rust.IpcMs, $rust.DaemonMs, $cliTax)
+    $daemonCell = if ($null -ne $row.RustDaemonP50) { '{0:N0} ms' -f $row.RustDaemonP50 } else { 'n/a' }
+    $rowsCell   = if ($null -ne $row.RustRows) { '{0:N0}' -f $row.RustRows } else { 'n/a' }
+    Write-Host ('| {0}: | {1} | {2:N0} ms | {3} | {4} |' -f $row.Drive, $rowsCell, $row.RustMedMs, $daemonCell, $overhead)
 }
 Write-Host ''
 Write-Host '  Legend:'
-Write-Host '    Wall        = Stopwatch-measured wall-clock (matches v0.4.106 methodology)'
-Write-Host '    AwaitReady  = daemon spawn + MFT read + compact index build (the COLD cost)'
-Write-Host '    IPC         = client round-trip for the * --limit 100 search'
-Write-Host '    Daemon      = daemon-side search time (microseconds on cold since drive is already loaded)'
-Write-Host '    CLI tax     = Wall - AwaitReady - IPC - Connect (process startup + output formatting)'
+Write-Host '    Rust wall p50   = Stopwatch-measured PowerShell-to-CLI-to-daemon-to-file round-trip.'
+Write-Host '    Rust daemon p50 = Daemon-reported search duration (from --profile "Search (IPC): ... (daemon: Y ms)").'
+Write-Host '    CLI overhead    = wall - daemon (Windows process-creation + IPC + stderr profile print).'
+Write-Host '    C++ has no daemon — its wall-clock IS its total cost, dominated by full-MFT re-read.'
 
 Write-Divider 'Done'
 Stop-Transcript | Out-Null
