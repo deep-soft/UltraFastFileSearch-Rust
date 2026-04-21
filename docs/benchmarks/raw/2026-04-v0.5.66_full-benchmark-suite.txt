@@ -1,0 +1,1623 @@
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 0 — Setup (paste once per session)
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> function Get-Stats {
+>>     param([Parameter(ValueFromPipeline=$true)][double]$v, [string]$Label="")
+>>     begin { $all = @() }
+>>     process { $all += $v }
+>>     end {
+>>         $sorted = $all | Sort-Object
+>>         $n = $sorted.Count
+>>         function P([int]$pct) {
+>>             $i = [Math]::Ceiling($pct/100.0 * $n) - 1
+>>             if ($i -lt 0) { $i = 0 }
+>>             if ($i -ge $n) { $i = $n - 1 }
+>>             $sorted[$i]
+>>         }
+>>         $mean = ($sorted | Measure-Object -Average).Average
+>>         $var  = ($sorted | ForEach-Object { ($_ - $mean) * ($_ - $mean) } | Measure-Object -Average).Average
+>>         $std  = [Math]::Sqrt($var)
+>>         [pscustomobject]@{
+>>             Label=$Label; N=$n
+>>             Min="{0:N1}" -f $sorted[0]
+>>             p50="{0:N1}" -f (P 50); Mean="{0:N1}" -f $mean
+>>             p95="{0:N1}" -f (P 95); p99="{0:N1}" -f (P 99)
+>>             Max="{0:N1}" -f $sorted[-1]; StdDev="{0:N1}" -f $std
+>>         }
+>>     }
+>> }
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon kill
+Killing daemon (PID 60352)...
+Daemon killed. PID file and socket cleaned up.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon start --drive C,D
+[diag] daemon_start: drives=['C', 'D']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe --version   # expect: uffs 0.5.66
+uffs 0.5.66
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe status
+═══ UFFS System Status ═══
+
+── Daemon ──
+  Status:      running (PID 37756)
+  Uptime:        3 s    0 ms
+  State:       Ready
+  Connections: 1
+  Drives:      2 loaded (10,738,363 records)
+    C:  3,672,348 records
+    D:  7,066,015 records
+  Startup:       3 s   52 ms
+  Queries:     0
+
+── MCP HTTP Gateway ──
+  Status:      running (PID 57524)
+  Uptime:       1h 11m 25s
+  Endpoint:    http://127.0.0.1:8080/mcp
+  Health:      (probe disabled — rebuild with `--features mcp-http-probe` to enable)
+
+── MCP Stdio Sessions ──
+  (none)
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\es.exe -get-everything-drives  # sanity: confirm ES indexes C+D only
+Error 6: Unknown switch.
+ES 1.1.0.30
+ES is a command line interface to search Everything from a command prompt.
+ES uses the Everything search syntax.
+
+Usage: es.exe [options] search text
+Example: ES  Everything ext:exe;ini
+
+
+Search options
+   -r <search>, -regex <search>
+        Search using regular expressions.
+   -i, -case
+        Match case.
+   -w, -ww, -whole-word, -whole-words
+        Match whole words.
+   -p, -match-path
+        Match full path and file name.
+   -a, -diacritics
+        Match diacritical marks.
+
+   -o <offset>, -offset <offset>
+        Show results starting from offset.
+   -n <num>, -max-results <num>
+        Limit the number of results shown to <num>.
+
+   -path <path>
+        Search for subfolders and files in path.
+   -parent-path <path>
+        Search for subfolders and files in the parent of path.
+   -parent <path>
+        Search for files with the specified parent path.
+
+   /ad
+        Folders only.
+   /a-d
+        Files only.
+   /a[RHSDAVNTPLCOIE]
+        DIR style attributes search.
+        R = Read only.
+        H = Hidden.
+        S = System.
+        D = Directory.
+        A = Archive.
+        V = Device.
+        N = Normal.
+        T = Temporary.
+        P = Sparse file.
+        L = Reparse point.
+        C = Compressed.
+        O = Offline.
+        I = Not content indexed.
+        E = Encrypted.
+        - = Prefix a flag with - to exclude.
+
+
+Sort options
+   -s
+        sort by full path.
+   -sort <name[-ascending|-descending]>, -sort-<name>[-ascending|-descending]
+        Set sort
+        name=name|path|size|extension|date-created|date-modified|date-accessed|
+        attributes|file-list-file-name|run-count|date-recently-changed|date-run
+   -sort-ascending, -sort-descending
+        Set sort order
+
+   /on, /o-n, /os, /o-s, /oe, /o-e, /od, /o-d
+        DIR style sorts.
+        N = Name.
+        S = Size.
+        E = Extension.
+        D = Date modified.
+        - = Sort in descending order.
+
+
+Display options
+   -name
+   -path-column
+   -full-path-and-name, -filename-column
+   -extension, -ext
+   -size
+   -date-created, -dc
+   -date-modified, -dm
+   -date-accessed, -da
+   -attributes, -attribs, -attrib
+   -file-list-file-name
+   -run-count
+   -date-run
+   -date-recently-changed, -rc
+        Show the specified column.
+
+   -highlight
+        Highlight results.
+   -highlight-color <color>
+        Highlight color 0-255.
+
+   -csv
+   -efu
+   -txt
+   -m3u
+   -m3u8
+   -tsv
+        Change display format.
+
+   -size-format <format>
+        0=auto, 1=Bytes, 2=KB, 3=MB.
+   -date-format <format>
+        0=auto, 1=ISO-8601, 2=FILETIME, 3=ISO-8601(UTC)
+
+   -filename-color <color>
+   -name-color <color>
+   -path-color <color>
+   -extension-color <color>
+   -size-color <color>
+   -date-created-color <color>, -dc-color <color>
+   -date-modified-color <color>, -dm-color <color>
+   -date-accessed-color <color>, -da-color <color>
+   -attributes-color <color>
+   -file-list-filename-color <color>
+   -run-count-color <color>
+   -date-run-color <color>
+   -date-recently-changed-color <color>, -rc-color <color>
+        Set the column color 0-255.
+
+   -filename-width <width>
+   -name-width <width>
+   -path-width <width>
+   -extension-width <width>
+   -size-width <width>
+   -date-created-width <width>, -dc-width <width>
+   -date-modified-width <width>, -dm-width <width>
+   -date-accessed-width <width>, -da-width <width>
+   -attributes-width <width>
+   -file-list-filename-width <width>
+   -run-count-width <width>
+   -date-run-width <width>
+   -date-recently-changed-width <width>, -rc-width <width>
+        Set the column width 0-200.
+
+   -no-digit-grouping
+        Don't group numbers with commas.
+   -size-leading-zero
+   -run-count-leading-zero
+        Format the number with leading zeros, use with -no-digit-grouping.
+   -double-quote
+        Wrap paths and filenames with double quotes.
+
+
+Export options
+   -export-csv <out.csv>
+   -export-efu <out.efu>
+   -export-txt <out.txt>
+   -export-m3u <out.m3u>
+   -export-m3u8 <out.m3u8>
+   -export-tsv <out.txt>
+        Export to a file using the specified layout.
+   -no-header
+        Do not output a column header for CSV, EFU and TSV files.
+   -utf8-bom
+        Store a UTF-8 byte order mark at the start of the exported file.
+
+
+General options
+   -h, -help
+        Display this help.
+
+   -instance <name>
+        Connect to the unique Everything instance name.
+   -ipc1, -ipc2
+        Use IPC version 1 or 2.
+   -pause, -more
+        Pause after each page of output.
+   -hide-empty-search-results
+        Don't show any results when there is no search.
+   -empty-search-help
+        Show help when no search is specified.
+   -timeout <milliseconds>
+        Timeout after the specified number of milliseconds to wait for
+        the Everything database to load before sending a query.
+
+   -set-run-count <filename> <count>
+        Set the run count for the specified filename.
+   -inc-run-count <filename>
+        Increment the run count for the specified filename by one.
+   -get-run-count <filename>
+        Display the run count for the specified filename.
+   -get-result-count
+        Display the result count for the specified search.
+   -get-total-size
+        Display the total result size for the specified search.
+   -save-settings, -clear-settings
+        Save or clear settings.
+   -version
+        Display ES major.minor.revision.build version and exit.
+   -get-everything-version
+        Display Everything major.minor.revision.build version and exit.
+   -exit
+        Exit Everything.
+        Returns after Everything process closes.
+   -save-db
+        Save the Everything database to disk.
+        Returns after saving completes.
+   -reindex
+        Force Everything to reindex.
+        Returns after indexing completes.
+   -no-result-error
+        Set the error level if no results are found.
+
+
+Notes
+    Internal -'s in options can be omitted, eg: -nodigitgrouping
+    Switches can also start with a /
+    Use double quotes to escape spaces and switches.
+    Switches can be disabled by prefixing them with no-, eg: -no-size.
+    Use a ^ prefix or wrap with double quotes (") to escape \ & | > < ^
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 1 — Prefix forensics (C: + D:, 100 rounds each)
+(production) ~\GitHub\UltraFastFileSearch on main> #   C:win* = 34 273 rows,  D:win* = 8 732 rows  — both safely < 150 K
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 1a — UFFS C:win* × 100 ==='
+=== 1a — UFFS C:win* × 100 ===
+(production) ~\GitHub\UltraFastFileSearch on main> $u_c = 1..100 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\uffs.exe 'win*' --drive C `
+>>           --columns Path --hide-system --hide-ads `
+>>           --out=C:\temp\u_winc.csv | Out-Null
+>>     }).TotalMilliseconds
+>> }
+(production) ~\GitHub\UltraFastFileSearch on main> $u_c | Get-Stats -Label 'UFFS C: win* (n=100)'
+
+Label  : UFFS C: win* (n=100)
+N      : 100
+Min    : 91.1
+p50    : 96.5
+Mean   : 97.5
+p95    : 104.7
+p99    : 111.6
+Max    : 117.7
+StdDev : 4.7
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 1b — Everything C:win* × 100 ==='
+=== 1b — Everything C:win* × 100 ===
+(production) ~\GitHub\UltraFastFileSearch on main> $e_c = 1..100 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\es.exe "C:\" 'win*' -export-csv C:\temp\e_winc.csv
+>>     }).TotalMilliseconds
+>> }
+(production) ~\GitHub\UltraFastFileSearch on main> $e_c | Get-Stats -Label 'ES   C: win* (n=100)'
+
+Label  : ES   C: win* (n=100)
+N      : 100
+Min    : 91.2
+p50    : 99.8
+Mean   : 102.1
+p95    : 118.9
+p99    : 124.7
+Max    : 166.4
+StdDev : 10.0
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 1c — UFFS D:win* × 100 ==='
+=== 1c — UFFS D:win* × 100 ===
+(production) ~\GitHub\UltraFastFileSearch on main> $u_d = 1..100 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\uffs.exe 'win*' --drive D `
+>>           --columns Path --hide-system --hide-ads `
+>>           --out=C:\temp\u_wind.csv | Out-Null
+>>     }).TotalMilliseconds
+>> }
+(production) ~\GitHub\UltraFastFileSearch on main> $u_d | Get-Stats -Label 'UFFS D: win* (n=100)'
+
+Label  : UFFS D: win* (n=100)
+N      : 100
+Min    : 47.8
+p50    : 52.6
+Mean   : 53.0
+p95    : 57.2
+p99    : 57.9
+Max    : 61.5
+StdDev : 2.5
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 1d — Everything D:win* × 100 ==='
+=== 1d — Everything D:win* × 100 ===
+(production) ~\GitHub\UltraFastFileSearch on main> $e_d = 1..100 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\es.exe "D:\" 'win*' -export-csv C:\temp\e_wind.csv
+>>     }).TotalMilliseconds
+>> }
+(production) ~\GitHub\UltraFastFileSearch on main> $e_d | Get-Stats -Label 'ES   D: win* (n=100)'
+
+Label  : ES   D: win* (n=100)
+N      : 100
+Min    : 64.4
+p50    : 68.1
+Mean   : 69.8
+p95    : 77.4
+p99    : 85.8
+Max    : 93.5
+StdDev : 4.7
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 1e — interleaved round-robin on C: (removes drive-busyness drift) ==='
+=== 1e — interleaved round-robin on C: (removes drive-busyness drift) ===
+(production) ~\GitHub\UltraFastFileSearch on main> $u_i = @(); $e_i = @()
+(production) ~\GitHub\UltraFastFileSearch on main> 1..100 | ForEach-Object {
+>>     $u_i += (Measure-Command { & ~\bin\uffs.exe 'win*' --drive C --columns Path --hide-system --hide-ads --out=C:\temp\uf_i.csv | Out-Null }).TotalMilliseconds
+>>     $e_i += (Measure-Command { & ~\bin\es.exe "C:\" 'win*' -export-csv C:\temp\es_i.csv }).TotalMilliseconds
+>> }
+(production) ~\GitHub\UltraFastFileSearch on main> $u_i | Get-Stats -Label 'UFFS C: win* interleaved'
+
+Label  : UFFS C: win* interleaved
+N      : 100
+Min    : 90.3
+p50    : 94.5
+Mean   : 95.1
+p95    : 101.3
+p99    : 102.5
+Max    : 103.9
+StdDev : 3.0
+
+(production) ~\GitHub\UltraFastFileSearch on main> $e_i | Get-Stats -Label 'ES   C: win* interleaved'
+
+Label  : ES   C: win* interleaved
+N      : 100
+Min    : 91.7
+p50    : 95.7
+Mean   : 97.7
+p95    : 108.6
+p99    : 116.9
+Max    : 120.5
+StdDev : 5.8
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 1f — correctness: UFFS and ES row counts must match ==='
+=== 1f — correctness: UFFS and ES row counts must match ===
+(production) ~\GitHub\UltraFastFileSearch on main> "C: UFFS=$((Import-Csv C:\temp\u_winc.csv | Measure-Object).Count)  ES=$((Import-Csv C:\temp\e_winc.csv | Measure-Object).Count)"
+C: UFFS=34273  ES=34268
+(production) ~\GitHub\UltraFastFileSearch on main> "D: UFFS=$((Import-Csv C:\temp\u_wind.csv | Measure-Object).Count)  ES=$((Import-Csv C:\temp\e_wind.csv | Measure-Object).Count)"
+D: UFFS=8732  ES=8732
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 2 — Tier A: --sort path baseline (UFFS-only internal bench)
+(production) ~\GitHub\UltraFastFileSearch on main> #   Pins the 3107 ms C6 outlier before you touch collect_path_sorted_top_n.
+(production) ~\GitHub\UltraFastFileSearch on main> #   NO ES comparison — this is an internal regression target.
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon kill
+Killing daemon (PID 37756)...
+Daemon killed. PID file and socket cleaned up.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon start
+[diag] daemon_start: drives=[]  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = []
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe --version   # expect: uffs 0.5.66
+uffs 0.5.66
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe status
+═══ UFFS System Status ═══
+
+── Daemon ──
+  Status:      running (PID 47312)
+  Uptime:        5 s    0 ms
+  State:       Ready
+  Connections: 1
+  Drives:      7 loaded (26,091,248 records)
+    G:     15,096 records
+    F:  2,221,349 records
+    M:  1,908,810 records
+    C:  3,672,348 records
+    D:  7,066,015 records
+    E:  2,929,524 records
+    S:  8,278,106 records
+  Startup:       4 s  261 ms
+  Queries:     0
+
+── MCP HTTP Gateway ──
+  Status:      running (PID 57524)
+  Uptime:       1h 12m 25s
+  Endpoint:    http://127.0.0.1:8080/mcp
+  Health:      (probe disabled — rebuild with `--features mcp-http-probe` to enable)
+
+── MCP Stdio Sessions ──
+  (none)
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 2a — UFFS C:*.dll --sort path × 30  (the C6 outlier) ==='
+=== 2a — UFFS C:*.dll --sort path × 30  (the C6 outlier) ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\uffs.exe '*.dll' --drive C --sort path `
+>>           --columns Path --hide-system --hide-ads `
+>>           --out=C:\temp\dll_path_c.csv | Out-Null
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'UFFS C:*.dll --sort path (n=30)'
+
+Label  : UFFS C:*.dll --sort path (n=30)
+N      : 30
+Min    : 3,101.4
+p50    : 3,131.3
+Mean   : 3,137.2
+p95    : 3,194.1
+p99    : 3,214.6
+Max    : 3,214.6
+StdDev : 27.6
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 2b — UFFS D:*.dll --sort path × 30  (scale comparison, 44K rows) ==='
+=== 2b — UFFS D:*.dll --sort path × 30  (scale comparison, 44K rows) ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\uffs.exe '*.dll' --drive D --sort path `
+>>           --columns Path --hide-system --hide-ads `
+>>           --out=C:\temp\dll_path_d.csv | Out-Null
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'UFFS D:*.dll --sort path (n=30)'
+
+Label  : UFFS D:*.dll --sort path (n=30)
+N      : 30
+Min    : 5,339.7
+p50    : 5,367.4
+Mean   : 5,388.3
+p95    : 5,500.9
+p99    : 5,524.7
+Max    : 5,524.7
+StdDev : 47.7
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 2c — one-shot --profile to locate the time inside the daemon ==='
+=== 2c — one-shot --profile to locate the time inside the daemon ===
+(production) ~\GitHub\UltraFastFileSearch on main> & ~\bin\uffs.exe '*.dll' --drive C --sort path --profile `
+>>   --columns Path --hide-system --hide-ads `
+>>   --out=C:\temp\dll_path_prof.csv 2>&1 |
+>>   Select-String -Pattern 'scan_ms|sort_ms|path_resolve_ms|path_candidates|Search \(IPC\)|daemon:'
+
+  Search (IPC):      3172 ms  (daemon: 3152 ms)
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 2d — control: default Modified sort on same set (expect ~100 ms) ==='
+=== 2d — control: default Modified sort on same set (expect ~100 ms) ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\uffs.exe '*.dll' --drive C `
+>>           --columns Path --hide-system --hide-ads `
+>>           --out=C:\temp\dll_mod_c.csv | Out-Null
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'UFFS C:*.dll default (n=30)'
+
+Label  : UFFS C:*.dll default (n=30)
+N      : 30
+Min    : 91.9
+p50    : 95.9
+Mean   : 96.8
+p95    : 106.7
+p99    : 107.8
+Max    : 107.8
+StdDev : 4.2
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 2e — correctness: 2a and 2d must return the same row count ==='
+=== 2e — correctness: 2a and 2d must return the same row count ===
+(production) ~\GitHub\UltraFastFileSearch on main> "--sort path rows=$((Import-Csv C:\temp\dll_path_c.csv | Measure-Object).Count)  default rows=$((Import-Csv C:\temp\dll_mod_c.csv | Measure-Object).Count)"
+--sort path rows=167212  default rows=167212
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 3 — Tier B1: --limit 100 interactive latency (UFFS-only, 7 drives)
+(production) ~\GitHub\UltraFastFileSearch on main> #   --limit 100 caps rows at 100, so this is safe regardless of pattern.
+(production) ~\GitHub\UltraFastFileSearch on main> #   Validates docs claim: "9-13 ms targeted, 163 ms *".
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> $patterns = @(
+>>     @{ Name='exact';         Pat='notepad.exe' }
+>>     @{ Name='prefix';        Pat='win*' }
+>>     @{ Name='ext_rare';      Pat='*.dbt' }
+>>     @{ Name='ext_dll';       Pat='*.dll' }
+>>     @{ Name='substring';     Pat='config' }
+>>     @{ Name='regex_alt';     Pat='>.*\.(jpg|png|heic)$' }
+>>     @{ Name='in_path_heavy'; Pat='*system32*' }
+>>     @{ Name='fullscan';      Pat='*' }
+>> )
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 3a — 8 patterns × 30 rounds, --limit 100, all 7 drives ==='
+=== 3a — 8 patterns × 30 rounds, --limit 100, all 7 drives ===
+(production) ~\GitHub\UltraFastFileSearch on main> foreach ($p in $patterns) {
+>>     $times = 1..30 | ForEach-Object {
+>>         (Measure-Command {
+>>             & ~\bin\uffs.exe $p.Pat --limit 100 `
+>>               --columns Path --hide-system --hide-ads `
+>>               --out=C:\temp\lim_$($p.Name).csv | Out-Null
+>>         }).TotalMilliseconds
+>>     }
+>>     $times | Get-Stats -Label "--limit 100  $($p.Name)"
+>> }
+
+Label  : --limit 100  exact
+N      : 30
+Min    : 28.3
+p50    : 29.4
+Mean   : 30.5
+p95    : 34.0
+p99    : 48.7
+Max    : 48.7
+StdDev : 3.6
+
+Label  : --limit 100  prefix
+N      : 30
+Min    : 29.3
+p50    : 30.7
+Mean   : 31.2
+p95    : 33.5
+p99    : 33.7
+Max    : 33.7
+StdDev : 1.4
+
+Label  : --limit 100  ext_rare
+N      : 30
+Min    : 29.2
+p50    : 31.8
+Mean   : 32.1
+p95    : 36.0
+p99    : 36.7
+Max    : 36.7
+StdDev : 2.0
+
+Label  : --limit 100  ext_dll
+N      : 30
+Min    : 66.9
+p50    : 68.6
+Mean   : 69.3
+p95    : 74.8
+p99    : 78.2
+Max    : 78.2
+StdDev : 2.3
+
+Label  : --limit 100  substring
+N      : 30
+Min    : 29.0
+p50    : 30.6
+Mean   : 31.0
+p95    : 33.5
+p99    : 34.2
+Max    : 34.2
+StdDev : 1.4
+
+Label  : --limit 100  regex_alt
+N      : 30
+Min    : 132.3
+p50    : 135.3
+Mean   : 137.4
+p95    : 148.4
+p99    : 155.6
+Max    : 155.6
+StdDev : 5.1
+
+Label  : --limit 100  in_path_heavy
+N      : 30
+Min    : 29.0
+p50    : 30.4
+Mean   : 30.8
+p95    : 33.2
+p99    : 35.3
+Max    : 35.3
+StdDev : 1.5
+
+Label  : --limit 100  fullscan
+N      : 30
+Min    : 1,100.3
+p50    : 1,112.1
+Mean   : 1,120.5
+p95    : 1,162.7
+p99    : 1,177.0
+Max    : 1,177.0
+StdDev : 21.0
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 3b — --profile capture for daemon-side breakdown per pattern ==='
+=== 3b — --profile capture for daemon-side breakdown per pattern ===
+(production) ~\GitHub\UltraFastFileSearch on main> foreach ($p in $patterns) {
+>>     Write-Host "`n--- $($p.Name) : $($p.Pat) ---"
+>>     & ~\bin\uffs.exe $p.Pat --limit 100 --profile `
+>>       --columns Path --hide-system --hide-ads `
+>>       --out=C:\temp\prof_$($p.Name).csv 2>&1 |
+>>       Select-String -Pattern 'Search \(IPC\)|daemon:|scan_ms|sort_ms|path_resolve_ms|Rows returned'
+>> }
+
+--- exact : notepad.exe ---
+
+  Search (IPC):         1 ms  (daemon: 0 ms)
+  Rows returned:        0
+
+--- prefix : win* ---
+  Search (IPC):         2 ms  (daemon: 1 ms)
+  Rows returned:        0
+
+--- ext_rare : *.dbt ---
+  Search (IPC):         1 ms  (daemon: 0 ms)
+  Rows returned:        0
+
+--- ext_dll : *.dll ---
+  Search (IPC):        44 ms  (daemon: 42 ms)
+  Rows returned:        0
+
+--- substring : config ---
+  Search (IPC):         2 ms  (daemon: 1 ms)
+  Rows returned:        0
+
+--- regex_alt : >.*\.(jpg|png|heic)$ ---
+  Search (IPC):       109 ms  (daemon: 108 ms)
+  Rows returned:        0
+
+--- in_path_heavy : *system32* ---
+  Search (IPC):         1 ms  (daemon: 0 ms)
+  Rows returned:        0
+
+--- fullscan : * ---
+  Search (IPC):      1082 ms  (daemon: 1081 ms)
+  Rows returned:        0
+
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 4 — Tier B2: ext_regex_alt coverage
+(production) ~\GitHub\UltraFastFileSearch on main> #   Part A: UFFS-only sweep across all 7 drives (ES can't index E/F/G/M/S)
+(production) ~\GitHub\UltraFastFileSearch on main> #   Part B: UFFS vs ES head-to-head on C+D only (ES's valid drive set)
+(production) ~\GitHub\UltraFastFileSearch on main> #   Harness pattern = >.*\.(wav|idrc|cmake)$  ~15 K / 10 K rows  → safe
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 4a — UFFS-only: ext_regex_alt × 30 across all 7 drives ==='
+=== 4a — UFFS-only: ext_regex_alt × 30 across all 7 drives ===
+(production) ~\GitHub\UltraFastFileSearch on main> foreach ($drv in 'C','D','E','F','G','M','S') {
+>>     $times = 1..30 | ForEach-Object {
+>>         (Measure-Command {
+>>             & ~\bin\uffs.exe '>.*\.(wav|idrc|cmake)$' --drive $drv `
+>>               --columns Path --hide-system --hide-ads `
+>>               --out=C:\temp\ra_$drv.csv | Out-Null
+>>         }).TotalMilliseconds
+>>     }
+>>     $times | Get-Stats -Label "UFFS $drv`: ext_regex_alt"
+>> }
+
+Label  : UFFS C: ext_regex_alt
+N      : 30
+Min    : 37.3
+p50    : 39.0
+Mean   : 39.4
+p95    : 43.0
+p99    : 45.1
+Max    : 45.1
+StdDev : 1.7
+
+Label  : UFFS D: ext_regex_alt
+N      : 30
+Min    : 35.0
+p50    : 36.8
+Mean   : 37.0
+p95    : 39.3
+p99    : 39.9
+Max    : 39.9
+StdDev : 1.2
+
+Label  : UFFS E: ext_regex_alt
+N      : 30
+Min    : 32.1
+p50    : 33.3
+Mean   : 33.9
+p95    : 36.5
+p99    : 36.8
+Max    : 36.8
+StdDev : 1.4
+
+Label  : UFFS F: ext_regex_alt
+N      : 30
+Min    : 34.6
+p50    : 36.7
+Mean   : 36.7
+p95    : 39.9
+p99    : 40.0
+Max    : 40.0
+StdDev : 1.6
+
+Label  : UFFS G: ext_regex_alt
+N      : 30
+Min    : 27.2
+p50    : 28.3
+Mean   : 28.4
+p95    : 30.1
+p99    : 30.2
+Max    : 30.2
+StdDev : 0.8
+
+Label  : UFFS M: ext_regex_alt
+N      : 30
+Min    : 35.4
+p50    : 37.3
+Mean   : 38.4
+p95    : 40.9
+p99    : 66.6
+Max    : 66.6
+StdDev : 5.4
+
+Label  : UFFS S: ext_regex_alt
+N      : 30
+Min    : 53.6
+p50    : 57.5
+Mean   : 58.4
+p95    : 63.9
+p99    : 64.9
+Max    : 64.9
+StdDev : 3.1
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon kill
+Killing daemon (PID 47312)...
+Daemon killed. PID file and socket cleaned up.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon start --drive C,D
+[diag] daemon_start: drives=['C', 'D']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe --version   # expect: uffs 0.5.66
+uffs 0.5.66
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe status
+═══ UFFS System Status ═══
+
+── Daemon ──
+  Status:      running (PID 46696)
+  Uptime:        3 s    0 ms
+  State:       Ready
+  Connections: 1
+  Drives:      2 loaded (10,738,363 records)
+    C:  3,672,348 records
+    D:  7,066,015 records
+  Startup:       3 s    7 ms
+  Queries:     0
+
+── MCP HTTP Gateway ──
+  Status:      running (PID 57524)
+  Uptime:       1h 17m 49s
+  Endpoint:    http://127.0.0.1:8080/mcp
+  Health:      (probe disabled — rebuild with `--features mcp-http-probe` to enable)
+
+── MCP Stdio Sessions ──
+  (none)
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 4b — UFFS vs ES head-to-head on C+D only (harness, 60 rounds) ==='
+=== 4b — UFFS vs ES head-to-head on C+D only (harness, 60 rounds) ===
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts\windows\cross-tool-benchmark.rs `
+>>     --skip-cold --drives C,D --tools uffs,everything `
+>>     --rounds 60 --patterns ext_regex_alt --sinks file `
+>>     --uffs-bin C:\Users\rnio\bin\uffs.exe
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     Cross-Tool Benchmark v1.0                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  UFFS (Rust):  C:\Users\rnio\bin\uffs.exe
+║  UFFS (C++):   C:\Users\rnio\bin\uffs.com
+║  Everything:   C:\Users\rnio\bin\es.exe
+║  Drives:       ["C", "D"]
+║  Patterns:     7 (filtered: ext_regex_alt)
+║  Rounds:       60 per pattern per tool
+║  Sinks (HOT):  file  (COLD/WARM are always file)
+║  Bench file:   uffs_bench_out.csv
+║  Columns:      path-only (fair: all tools write ~same bytes/row)
+║  Limit:        none (all results, fair for C++)
+║  Timeout:      120 s → DNF
+║  Skip COLD:    true
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  Warming up UFFS daemon (all drives)... ready.
+━━━ Drive C:  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  UFFS HOT:  warming up daemon... ready.
+  UFFS HOT [sink=file]:  60 rounds
+    ext_regex_alt       CMD: & 'C:\Users\rnio\bin\uffs.exe' >.*\.(wav|idrc|cmake)$ --drive C --columns Path --hide-system --hide-ads --out=uffs_bench_out.csv  [sink=file]
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                           SUMMARY TABLE                                    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+
+| Drive | Tool         | Phase | Sink   | Pattern      | p50      | p95      | Rows   | Bad  | Verdict |
+|-------|--------------|-------|--------|--------------|----------|----------|--------|------|---------|
+| C:    | UFFS         | HOT   | file   | ext_regex_alt |    40 ms |    44 ms |  15559 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | ext_regex_alt |    78 ms |    90 ms |  15553 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | ext_regex_alt |    37 ms |    40 ms |  10438 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | ext_regex_alt |    74 ms |    92 ms |  10438 |    0 | PASS    |
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     HOT COMPARISON (head-to-head)                          ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+── sink = file ────────────────────────────────────────────────
+| Drive | Pattern      | UFFS HOT p50 | UFFS-C++ p50 | Everything p50 |
+|-------|--------------|--------------|--------------|----------------|
+| C:    | ext_regex_alt |        40 ms |         SKIP |          78 ms |
+| D:    | ext_regex_alt |        37 ms |         SKIP |          74 ms |
+
+Legend:  PASS = completed within 120s.  DNF = timed out.  SKIP = tool not found.
+Note:   UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).
+        UFFS (C++) re-reads MFT every invocation (no daemon).
+        Everything is always-hot (daemon model).
+        Sinks: file = --out=/-export-csv → disk; stdout = piped stdout;
+               null = child process writes to a real NUL device via cmd /C.
+        Null-sink rows show '—' for Rows/Bad (nothing to count after the
+        redirect); correctness is verified by the file-mode passes.
+        UltraSearch excluded — no functional headless CLI (see script header).
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 5 — Tier B3: Scale ceiling (UFFS-only — ES can't participate)
+(production) ~\GitHub\UltraFastFileSearch on main> #   Requires MFT clone tooling.  Check if it exists first.
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 5a — locate clone tooling ==='
+=== 5a — locate clone tooling ===
+(production) ~\GitHub\UltraFastFileSearch on main> ls scripts\dev\*.rs  | Select-String -List -Pattern 'clone|scale|ceiling'
+
+scripts\dev\analyze_missing_frs.rs:66:                frs_numbers.push((frs, path.clone()));
+scripts\dev\analyze_trial_outputs.rs:35:#[derive(Debug, Clone)]
+scripts\dev\build-local.rs:528:            .cloned()
+scripts\dev\cache-check.rs:104:        (vec!["*".into(), flag.into(), ps.clone()], vec!["*".into(), flag.into(), ps, "--no-cache".into()])
+scripts\dev\diagnose_mft_counts.rs:166:    let mut all_drives: std::collections::HashSet<char> = reference_stats.keys().cloned().collect();
+scripts\dev\find_missing_paths.rs:50:                fields.push(current.clone());
+scripts\dev\mcp-readiness.rs:1179:        let first_mft = first_mft.clone();
+scripts\dev\security-audit.rs:26:#[derive(Clone, Copy, PartialEq)]
+scripts\dev\stress-concurrent-queries.rs:78:        if p.exists() { return Some(p.clone()); }
+
+(production) ~\GitHub\UltraFastFileSearch on main> ls scripts\ci\*.rs   | Select-String -List -Pattern 'clone|scale|ceiling'
+
+scripts\ci\build-cross-all.rs:81:#[derive(Debug, Clone, Copy, PartialEq)]
+scripts\ci\ci-pipeline.rs:201:#[derive(Serialize, Deserialize, Debug, Clone)]
+
+(production) ~\GitHub\UltraFastFileSearch on main> ls scripts\tests\*.* | Select-String -List -Pattern 'clone|scale|ceiling'
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 5b — if no clone tooling, do the best we can: add E/F/G/M/S one at a time ==='
+=== 5b — if no clone tooling, do the best we can: add E/F/G/M/S one at a time ===
+(production) ~\GitHub\UltraFastFileSearch on main> foreach ($driveSet in 'C','C,D','C,D,E','C,D,E,F','C,D,E,F,G','C,D,E,F,G,M','C,D,E,F,G,M,S') {
+>>     ~\bin\uffs.exe daemon kill
+>>     ~\bin\uffs.exe daemon start --drive $driveSet
+>>     do { Start-Sleep -Milliseconds 300 } until (
+>>       (~\bin\uffs.exe daemon status | Select-String 'Status:') -match 'Ready'
+>>     )
+>>     $status = (~\bin\uffs.exe daemon status | Out-String)
+>>     $rss = (Get-Process uffsd -ErrorAction SilentlyContinue | Select-Object -First 1).WorkingSet64
+>>     $t = (Measure-Command {
+>>         & ~\bin\uffs.exe '*' --columns Path --hide-system --hide-ads `
+>>           --out=C:\temp\scale_$($driveSet.Replace(',','_')).csv | Out-Null
+>>     }).TotalMilliseconds
+>>     "drives=[$driveSet]  rss=$([Math]::Round($rss/1MB,0)) MB  full_scan=$([Math]::Round($t,0)) ms"
+>> }
+Killing daemon (PID 46696)...
+Daemon killed. PID file and socket cleaned up.
+[diag] daemon_start: drives=['C']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+drives=[C]  rss=777 MB  full_scan=1416 ms
+Killing daemon (PID 59540)...
+Daemon killed. PID file and socket cleaned up.
+[diag] daemon_start: drives=['C', 'D']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+drives=[C,D]  rss=2112 MB  full_scan=3407 ms
+Killing daemon (PID 46732)...
+Daemon killed. PID file and socket cleaned up.
+[diag] daemon_start: drives=['C', 'D', 'E']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D", "--drive", "E"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+drives=[C,D,E]  rss=2587 MB  full_scan=5304 ms
+Killing daemon (PID 57056)...
+Daemon killed. PID file and socket cleaned up.
+[diag] daemon_start: drives=['C', 'D', 'E', 'F']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D", "--drive", "E", "--drive", "F"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+drives=[C,D,E,F]  rss=3059 MB  full_scan=6264 ms
+Killing daemon (PID 50604)...
+Daemon killed. PID file and socket cleaned up.
+[diag] daemon_start: drives=['C', 'D', 'E', 'F', 'G']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D", "--drive", "E", "--drive", "F", "--drive", "G"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+drives=[C,D,E,F,G]  rss=3063 MB  full_scan=6178 ms
+Killing daemon (PID 36212)...
+Daemon killed. PID file and socket cleaned up.
+[diag] daemon_start: drives=['C', 'D', 'E', 'F', 'G', 'M']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D", "--drive", "E", "--drive", "F", "--drive", "G", "--drive", "M"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+drives=[C,D,E,F,G,M]  rss=3351 MB  full_scan=7069 ms
+Killing daemon (PID 46984)...
+Daemon killed. PID file and socket cleaned up.
+[diag] daemon_start: drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D", "--drive", "E", "--drive", "F", "--drive", "G", "--drive", "M", "--drive", "S"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+drives=[C,D,E,F,G,M,S]  rss=4722 MB  full_scan=15176 ms
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # Restore full daemon for subsequent sections
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon kill
+Killing daemon (PID 55704)...
+Daemon killed. PID file and socket cleaned up.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon start --drive C,D,E,F,G,M,S
+[diag] daemon_start: drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D", "--drive", "E", "--drive", "F", "--drive", "G", "--drive", "M", "--drive", "S"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+(production) ~\GitHub\UltraFastFileSearch on main> do { Start-Sleep -Milliseconds 300 } until (
+>>   (~\bin\uffs.exe daemon status | Select-String 'Status:') -match 'Ready'
+>> )
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 6 — Tier C1: COLD start from a truly cold machine
+(production) ~\GitHub\UltraFastFileSearch on main> #   STEP 1 runs NOW; then Restart-Computer; STEP 2 runs after reboot.
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 6a — Step 1: write post-reboot script + clear cache + reboot ==='
+=== 6a — Step 1: write post-reboot script + clear cache + reboot ===
+(production) ~\GitHub\UltraFastFileSearch on main> @'
+>> # COLD start test — run this AS SOON AS the desktop comes up after reboot
+>> $t0 = Get-Date
+>> & "$env:USERPROFILE\bin\uffs.exe" daemon start --drive C,D,E,F,G,M,S
+>> do {
+>>     Start-Sleep -Milliseconds 500
+>>     $status = (& "$env:USERPROFILE\bin\uffs.exe" daemon status 2>$null |
+>>                Select-String 'Status:' -SimpleMatch)
+>> } until ($status -match 'Ready')
+>> $t1 = Get-Date
+>> "COLD start (post-reboot): {0:N0} ms" -f ($t1 - $t0).TotalMilliseconds
+>> & "$env:USERPROFILE\bin\uffs.exe" daemon status
+>> Get-Process uffsd | Select-Object WS, PM, VM
+>> '@ | Set-Content -Path "$env:USERPROFILE\cold_start_test.ps1" -Encoding UTF8
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon kill
+Killing daemon (PID 47080)...
+Daemon killed. PID file and socket cleaned up.
+(production) ~\GitHub\UltraFastFileSearch on main> Remove-Item C:\Users\rnio\AppData\Local\uffs\cache\*.uffs -Force -ErrorAction SilentlyContinue
+(production) ~\GitHub\UltraFastFileSearch on main> # Uncomment to actually reboot:
+(production) ~\GitHub\UltraFastFileSearch on main> # Restart-Computer -Force
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 6b — Step 2: run this line after reboot, as first action ==='
+=== 6b — Step 2: run this line after reboot, as first action ===
+(production) ~\GitHub\UltraFastFileSearch on main> # powershell -File "$env:USERPROFILE\cold_start_test.ps1"
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 7 — Tier C2: MCP tool call end-to-end (UFFS-only)
+(production) ~\GitHub\UltraFastFileSearch on main> #   Option A: per-test timing from the existing validation suite.
+(production) ~\GitHub\UltraFastFileSearch on main> #   Option B: inline PowerShell MCP client for per-call latency.
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 7a — Option A: grep per-test ms from the validation suite ==='
+=== 7a — Option A: grep per-test ms from the validation suite ===
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts\windows\mcp-validation.rs 2>&1 |
+>>     Select-String -Pattern '\[PASS\].*search|\[PASS\].*agg|\[PASS\].*RPC' |
+>>     ForEach-Object { $_.Line.Trim() }
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 7b — Option B: inline MCP client, 30 rounds per RPC ==='
+=== 7b — Option B: inline MCP client, 30 rounds per RPC ===
+(production) ~\GitHub\UltraFastFileSearch on main> $psi = New-Object System.Diagnostics.ProcessStartInfo
+(production) ~\GitHub\UltraFastFileSearch on main> $psi.FileName = "$env:USERPROFILE\bin\uffs.exe"
+(production) ~\GitHub\UltraFastFileSearch on main> $psi.Arguments = 'mcp run'
+(production) ~\GitHub\UltraFastFileSearch on main> $psi.RedirectStandardInput  = $true
+(production) ~\GitHub\UltraFastFileSearch on main> $psi.RedirectStandardOutput = $true
+(production) ~\GitHub\UltraFastFileSearch on main> $psi.RedirectStandardError  = $true
+(production) ~\GitHub\UltraFastFileSearch on main> $psi.UseShellExecute = $false
+(production) ~\GitHub\UltraFastFileSearch on main> $proc = [System.Diagnostics.Process]::Start($psi)
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> function Send-Rpc {
+>>     param($Proc, [int]$Id, [string]$Method, $Params)
+>>     $req = @{ jsonrpc='2.0'; id=$Id; method=$Method; params=$Params } | ConvertTo-Json -Compress -Depth 10
+>>     $t0 = Get-Date
+>>     $Proc.StandardInput.WriteLine($req)
+>>     $line = $Proc.StandardOutput.ReadLine()
+>>     ((Get-Date) - $t0).TotalMilliseconds
+>> }
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> $null = Send-Rpc $proc 1 'initialize' @{
+>>     protocolVersion='2024-11-05'; capabilities=@{}
+>>     clientInfo=@{ name='bench'; version='1' }
+>> }
+(production) ~\GitHub\UltraFastFileSearch on main> $proc.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}')
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # search — small, bounded result (C: only, limit=100)
+(production) ~\GitHub\UltraFastFileSearch on main> $s = 2..31 | ForEach-Object {
+>>     Send-Rpc $proc $_ 'tools/call' @{
+>>         name='search'
+>>         arguments=@{ pattern='*.dll'; drive='C'; limit=100 }
+>>     }
+>> }
+
+====> This got STUCK .... the MCP measures can be found here: LOG/Output_cache
+====> SKIPPING section 7
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 8 — Tier C3: Parallel stress (UFFS-only, 7 drives loaded)
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe status
+═══ UFFS System Status ═══
+
+── Daemon ──
+  Status:      running (PID 23576)
+  Uptime:       10 m   33 s
+  State:       Ready
+  Connections: 1
+  Drives:      7 loaded (26,091,589 records)
+    G:     15,096 records
+    F:  2,221,349 records
+    C:  3,672,689 records
+    M:  1,908,810 records
+    D:  7,066,015 records
+    E:  2,929,524 records
+    S:  8,278,106 records
+  Startup:       1 m    6 s
+  Queries:     312
+  Avg query:   351 ms 326 μs
+  Queries/s:   0.49
+
+── MCP HTTP Gateway ──
+  Status:      running (PID 57524)
+  Uptime:       1h 30m 47s
+  Endpoint:    http://127.0.0.1:8080/mcp
+  Health:      (probe disabled — rebuild with `--features mcp-http-probe` to enable)
+
+── MCP Stdio Sessions ──
+  (none)
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> $patterns14 = @(
+>>     '*.dll', '*.exe', '*.sys',           # code
+>>     '*.jpg', '*.png', '*.heic',          # media
+>>     '*.pdf', '*.docx', '*.txt',          # docs
+>>     '*.mp4', '*.mkv', '*.wav',           # av
+>>     '*.log', '*.zip'                     # misc
+>> )
+(production) ~\GitHub\UltraFastFileSearch on main> $patterns7  = @('*.dll','*.exe','*.jpg','*.log','*.txt','*.pdf','*.zip')
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 8a — 14 patterns × 7 drives × 5 rounds (throttle=14) ==='
+=== 8a — 14 patterns × 7 drives × 5 rounds (throttle=14) ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..5 | ForEach-Object {
+>>     (Measure-Command {
+>>         $patterns14 | ForEach-Object -Parallel {
+>>             & "$env:USERPROFILE\bin\uffs.exe" $_ `
+>>               --columns Path --hide-system `
+>>               --out="C:\temp\p14_$_.csv" | Out-Null
+>>         } -ThrottleLimit 14
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label '14-pattern parallel (7 drives)'
+
+Label  : 14-pattern parallel (7 drives)
+N      : 5
+Min    : 5,580.6
+p50    : 5,751.1
+Mean   : 5,747.9
+p95    : 5,878.7
+p99    : 5,878.7
+Max    : 5,878.7
+StdDev : 104.7
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 8b — 7 patterns × 7 drives × 5 rounds  (Output_cache_new baseline) ==='
+=== 8b — 7 patterns × 7 drives × 5 rounds  (Output_cache_new baseline) ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..5 | ForEach-Object {
+>>     (Measure-Command {
+>>         $patterns7 | ForEach-Object -Parallel {
+>>             & "$env:USERPROFILE\bin\uffs.exe" $_ `
+>>               --columns Path --hide-system `
+>>               --out="C:\temp\p7_$_.csv" | Out-Null
+>>         } -ThrottleLimit 7
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label '7-pattern parallel (baseline)'
+
+Label  : 7-pattern parallel (baseline)
+N      : 5
+Min    : 5,013.9
+p50    : 5,037.0
+Mean   : 5,071.4
+p95    : 5,216.3
+p99    : 5,216.3
+Max    : 5,216.3
+StdDev : 73.8
+
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 9 — Tier D1: Full-scan re-bench on v0.5.66 (UFFS-only)
+(production) ~\GitHub\UltraFastFileSearch on main> #   25.9 M rows — well above ES's 150 K envelope, UFFS-only by construction.
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 9a — * across 7 drives × 10 rounds ==='
+=== 9a — * across 7 drives × 10 rounds ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..10 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\uffs.exe '*' `
+>>           --columns Path --hide-system --hide-ads `
+>>           --out=C:\temp\fullscan_v0566.csv | Out-Null
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'Full scan * (7 drives, 25.9 M rows)'
+
+Label  : Full scan * (7 drives, 25.9 M rows)
+N      : 10
+Min    : 13,125.5
+p50    : 13,615.6
+Mean   : 13,765.4
+p95    : 14,463.6
+p99    : 14,463.6
+Max    : 14,463.6
+StdDev : 369.3
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 9b — throughput ==='
+=== 9b — throughput ===
+(production) ~\GitHub\UltraFastFileSearch on main> $rows = (Import-Csv C:\temp\fullscan_v0566.csv | Measure-Object).Count
+(production) ~\GitHub\UltraFastFileSearch on main> "Rows: $rows"
+Rows: 23408482
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main> # SECTION 10 — Tier D2: Direct-redirect stdout crossover (C+D only, < 150K)
+(production) ~\GitHub\UltraFastFileSearch on main> #   All patterns capped to ES's safe envelope.
+(production) ~\GitHub\UltraFastFileSearch on main> #     small   : C:win*           34 273 rows
+(production) ~\GitHub\UltraFastFileSearch on main> #     medium  : C:config         26 692 rows
+(production) ~\GitHub\UltraFastFileSearch on main> #     medium+ : D:*.dll          44 529 rows
+(production) ~\GitHub\UltraFastFileSearch on main> #     largest : C:*.dll         167 212 rows  (at the edge — ES handled it
+(production) ~\GitHub\UltraFastFileSearch on main> #                                             at 845 ms in Output_cache_new)
+(production) ~\GitHub\UltraFastFileSearch on main> # =======================================================================
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon kill
+Killing daemon (PID 23576)...
+Daemon killed. PID file and socket cleaned up.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon start --drive C,D
+[diag] daemon_start: drives=['C', 'D']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+[uffs] connect attempt 3/20 (socket: missing)
+Daemon started and ready.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe --version   # expect: uffs 0.5.66
+uffs 0.5.66
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe status
+═══ UFFS System Status ═══
+
+── Daemon ──
+  Status:      running (PID 58572)
+  Uptime:        3 s    0 ms
+  State:       Ready
+  Connections: 1
+  Drives:      2 loaded (10,738,704 records)
+    C:  3,672,689 records
+    D:  7,066,015 records
+  Startup:       3 s   81 ms
+  Queries:     0
+
+── MCP HTTP Gateway ──
+  Status:      running (PID 57524)
+  Uptime:       1h 36m 45s
+  Endpoint:    http://127.0.0.1:8080/mcp
+  Health:      (probe disabled — rebuild with `--features mcp-http-probe` to enable)
+
+── MCP Stdio Sessions ──
+  (none)
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # ---- 10a — small (C:win*, 34K) ----
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 10a1 — UFFS C:win* > file × 30 ==='
+=== 10a1 — UFFS C:win* > file × 30 ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\uffs.exe 'win*' --drive C `
+>>           --columns Path --hide-system --hide-ads > C:\temp\u_smC.txt
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'UFFS C:win* > file'
+
+Label  : UFFS C:win* > file
+N      : 30
+Min    : 120.4
+p50    : 130.4
+Mean   : 132.3
+p95    : 150.7
+p99    : 156.6
+Max    : 156.6
+StdDev : 8.0
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 10a2 — ES C:win* > file × 30 ==='
+=== 10a2 — ES C:win* > file × 30 ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\es.exe "C:\" 'win*' > C:\temp\e_smC.txt
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'ES   C:win* > file'
+
+Label  : ES   C:win* > file
+N      : 30
+Min    : 218.7
+p50    : 245.3
+Mean   : 246.5
+p95    : 281.4
+p99    : 286.4
+Max    : 286.4
+StdDev : 16.2
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # ---- 10b — medium (C:config substring, 27K) ----
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 10b1 — UFFS C:config > file × 30 ==='
+=== 10b1 — UFFS C:config > file × 30 ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\uffs.exe 'config' --drive C `
+>>           --columns Path --hide-system --hide-ads > C:\temp\u_mdC.txt
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'UFFS C:config > file'
+
+Label  : UFFS C:config > file
+N      : 30
+Min    : 83.3
+p50    : 93.7
+Mean   : 95.9
+p95    : 116.2
+p99    : 127.4
+Max    : 127.4
+StdDev : 9.5
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 10b2 — ES C:config > file × 30 ==='
+=== 10b2 — ES C:config > file × 30 ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\es.exe "C:\" 'config' > C:\temp\e_mdC.txt
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'ES   C:config > file'
+
+Label  : ES   C:config > file
+N      : 30
+Min    : 199.9
+p50    : 213.7
+Mean   : 242.1
+p95    : 231.4
+p99    : 1,055.8
+Max    : 1,055.8
+StdDev : 151.4
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # ---- 10c — medium+ (D:*.dll, 44K) ----
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 10c1 — UFFS D:*.dll > file × 30 ==='
+=== 10c1 — UFFS D:*.dll > file × 30 ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\uffs.exe '*' --ext dll --drive D `
+>>           --columns Path --hide-system --hide-ads > C:\temp\u_mpD.txt
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'UFFS D:*.dll > file'
+
+Label  : UFFS D:*.dll > file
+N      : 30
+Min    : 79.8
+p50    : 85.7
+Mean   : 86.2
+p95    : 93.3
+p99    : 93.9
+Max    : 93.9
+StdDev : 4.0
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 10c2 — ES D:*.dll > file × 30 ==='
+=== 10c2 — ES D:*.dll > file × 30 ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\es.exe "D:\" ext:dll > C:\temp\e_mpD.txt
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'ES   D:*.dll > file'
+
+Label  : ES   D:*.dll > file
+N      : 30
+Min    : 256.1
+p50    : 272.5
+Mean   : 278.9
+p95    : 315.8
+p99    : 329.5
+Max    : 329.5
+StdDev : 16.3
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # ---- 10d — largest safe (C:*.dll, 167K — at ES's envelope edge) ----
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 10d1 — UFFS C:*.dll > file × 30 ==='
+=== 10d1 — UFFS C:*.dll > file × 30 ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\uffs.exe '*' --ext dll --drive C `
+>>           --columns Path --hide-system --hide-ads > C:\temp\u_lgC.txt
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'UFFS C:*.dll > file'
+
+Label  : UFFS C:*.dll > file
+N      : 30
+Min    : 200.1
+p50    : 228.2
+Mean   : 225.8
+p95    : 261.4
+p99    : 276.9
+Max    : 276.9
+StdDev : 19.8
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 10d2 — ES C:*.dll > file × 30  (edge of ES IPC capacity) ==='
+=== 10d2 — ES C:*.dll > file × 30  (edge of ES IPC capacity) ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..30 | ForEach-Object {
+>>     (Measure-Command {
+>>         & ~\bin\es.exe "C:\" ext:dll > C:\temp\e_lgC.txt
+>>     }).TotalMilliseconds
+>> } | Get-Stats -Label 'ES   C:*.dll > file'
+
+Label  : ES   C:*.dll > file
+N      : 30
+Min    : 809.6
+p50    : 842.2
+Mean   : 847.3
+p95    : 896.8
+p99    : 936.8
+Max    : 936.8
+StdDev : 24.6
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # ---- 10e — correctness across all four size classes ----
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== 10e — row-count parity check ==='
+=== 10e — row-count parity check ===
+(production) ~\GitHub\UltraFastFileSearch on main> foreach ($pair in @(
+>>     @{L='small   C:win*   ';U='C:\temp\u_smC.txt';E='C:\temp\e_smC.txt'},
+>>     @{L='medium  C:config ';U='C:\temp\u_mdC.txt';E='C:\temp\e_mdC.txt'},
+>>     @{L='medium+ D:*.dll  ';U='C:\temp\u_mpD.txt';E='C:\temp\e_mpD.txt'},
+>>     @{L='largest C:*.dll  ';U='C:\temp\u_lgC.txt';E='C:\temp\e_lgC.txt'}
+>> )) {
+>>     $u = (Get-Content $pair.U | Measure-Object -Line).Lines
+>>     $e = (Get-Content $pair.E | Measure-Object -Line).Lines
+>>     "$($pair.L)  UFFS=$u  ES=$e  equal=$($u -eq $e)"
+>> }
+small   C:win*     UFFS=34272  ES=34284  equal=False
+medium  C:config   UFFS=26691  ES=26888  equal=False
+medium+ D:*.dll    UFFS=44529  ES=44528  equal=False
+largest C:*.dll    UFFS=167213  ES=167205  equal=False
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+

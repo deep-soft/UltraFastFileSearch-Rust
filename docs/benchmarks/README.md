@@ -26,7 +26,7 @@ Four principles, documented in full in the canonical report's methodology sectio
 - **Separate cold / warm / hot.** Cold build + warm restart + hot query are three different workloads. We measure and publish them separately instead of averaging them into one "startup time" lie.
 - **Separate interactive from bulk.** Targeted-query latency (`notepad.exe`, `*.dll`) and full-scan export (`*` → CSV for 23 M rows) are different workload classes. Different tools win each. We test both.
 - **Publish the failures.** Two v0.5.66 workloads are currently slower than the v0.5.4 baseline. Both are named, measured, rooted-cause, and tracked in the canonical report's §Known regressions.
-- **Publish the raw data.** Every table above and in the canonical report cites the exact log file and line range. All raw logs live under [`LOG/`](../../LOG/) on the test machine; all benchmark scripts under [`scripts/windows/`](../../scripts/windows/).
+- **Publish the raw data.** Every table above and in the canonical report cites the exact log file and line range. The **curated, verbatim raw captures** live in [`raw/`](raw/) (git-tracked, never edited after commit); all benchmark scripts under [`scripts/windows/`](../../scripts/windows/). Click any citation in the canonical report to land on the actual PowerShell log line that produced the number.
 
 ---
 

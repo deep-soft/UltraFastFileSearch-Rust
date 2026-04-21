@@ -1,0 +1,527 @@
+
+INDIVIDUAL MFTs loaded and measured for RUST ... c++ will oad ALL MFTs at once
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> .\scripts\windows\cold-parity-per-drive.ps1 `
+>>     -Drives   C,D,E,F,M,S,G `
+>>     -OutputFile LOG\Output_cold_parity_v0_5_66.txt
+
+======================================================================================================================
+  UFFS Cold-parity benchmark — 2026-04-21 14:13:20 -07:00
+======================================================================================================================
+
+  UffsBin      : C:\Users\rnio\bin\uffs.exe
+  CppBin       : C:\Users\rnio\bin\uffs.com
+  Drives       : C, D, E, F, M, S, G
+  CacheDir     : C:\Users\rnio\AppData\Local\uffs\cache
+  OutputFile   : LOG\Output_cold_parity_v0_5_66.txt
+  SleepBetween : 2 s
+
+uffs 0.5.66
+
+Ultra Fast File Search   https://github.com/githubrobbi/Ultra-Fast-File-Search
+
+based on SwiftSearch     https://sourceforge.net/projects/swiftsearch/
+
+        UFFS version:   1.0.0
+        Build for:      x86_64-pc-windows-msvc
+
+        Optimized build
+
+
+
+======================================================================================================================
+  Drive C
+======================================================================================================================
+
+  [step 1] stop daemon + purge C cache files
+  [step 2] UFFS Rust COLD
+  [Rust COLD] C:\Users\rnio\bin\uffs.exe "*" --drive C --profile --limit 100
+    -> wall=7.66s  records=3,672,016  files/sec=479,297/s
+       breakdown: connect=504ms  await_ready=7103ms  ipc=26ms  daemon_search=24ms
+
+  [step 3] UFFS C++ reference (warm disk — OS page cache now populated by step 2)
+  [C++ warm-disk] C:\Users\rnio\bin\uffs.com "*" --drives=C --columns=path > C:\Users\rnio\AppData\Local\Temp\cpp_C_19b3c849eb854c198b36f64d73867777.csv
+    -> 49.26s, 3513 records, 71/s
+
+======================================================================================================================
+  Drive D
+======================================================================================================================
+
+  [step 1] stop daemon + purge D cache files
+  [step 2] UFFS Rust COLD
+  [Rust COLD] C:\Users\rnio\bin\uffs.exe "*" --drive D --profile --limit 100
+    -> wall=27.56s  records=7,066,015  files/sec=256,394/s
+       breakdown: connect=381ms  await_ready=27105ms  ipc=45ms  daemon_search=44ms
+
+  [step 3] UFFS C++ reference (warm disk — OS page cache now populated by step 2)
+  [C++ warm-disk] C:\Users\rnio\bin\uffs.com "*" --drives=D --columns=path > C:\Users\rnio\AppData\Local\Temp\cpp_D_1229f5465dd545adaa20c271f9318f06.csv
+    -> 112.69s, 7066 records, 63/s
+
+======================================================================================================================
+  Drive E
+======================================================================================================================
+
+  [step 1] stop daemon + purge E cache files
+  [step 2] UFFS Rust COLD
+  [Rust COLD] C:\Users\rnio\bin\uffs.exe "*" --drive E --profile --limit 100
+    -> wall=41.54s  records=2,929,524  files/sec=70,528/s
+       breakdown: connect=383ms  await_ready=41109ms  ipc=18ms  daemon_search=16ms
+
+  [step 3] UFFS C++ reference (warm disk — OS page cache now populated by step 2)
+  [C++ warm-disk] C:\Users\rnio\bin\uffs.com "*" --drives=E --columns=path > C:\Users\rnio\AppData\Local\Temp\cpp_E_b04f6e2e46c84f23a78ed9d4bf144732.csv
+    -> 74.02s, 2928 records, 40/s
+
+======================================================================================================================
+  Drive F
+======================================================================================================================
+
+  [step 1] stop daemon + purge F cache files
+  [step 2] UFFS Rust COLD
+  [Rust COLD] C:\Users\rnio\bin\uffs.exe "*" --drive F --profile --limit 100
+    -> wall=5.56s  records=2,221,349  files/sec=399,185/s
+       breakdown: connect=386ms  await_ready=5102ms  ipc=43ms  daemon_search=42ms
+
+  [step 3] UFFS C++ reference (warm disk — OS page cache now populated by step 2)
+  [C++ warm-disk] C:\Users\rnio\bin\uffs.com "*" --drives=F --columns=path > C:\Users\rnio\AppData\Local\Temp\cpp_F_b0503ce08bdd44f29c62a330776a11f4.csv
+    -> 28.63s, 2082 records, 73/s
+
+======================================================================================================================
+  Drive M
+======================================================================================================================
+
+  [step 1] stop daemon + purge M cache files
+  [step 2] UFFS Rust COLD
+  [Rust COLD] C:\Users\rnio\bin\uffs.exe "*" --drive M --profile --limit 100
+    -> wall=27.54s  records=1,908,810  files/sec=69,303/s
+       breakdown: connect=382ms  await_ready=27107ms  ipc=27ms  daemon_search=26ms
+
+  [step 3] UFFS C++ reference (warm disk — OS page cache now populated by step 2)
+  [C++ warm-disk] C:\Users\rnio\bin\uffs.com "*" --drives=M --columns=path > C:\Users\rnio\AppData\Local\Temp\cpp_M_df408c0bf6f345bfb01a2639a45748c8.csv
+    -> 44.28s, 1909 records, 43/s
+
+======================================================================================================================
+  Drive S
+======================================================================================================================
+
+  [step 1] stop daemon + purge S cache files
+  [step 2] UFFS Rust COLD
+  [Rust COLD] C:\Users\rnio\bin\uffs.exe "*" --drive S --profile --limit 100
+    -> wall=67.57s  records=8,278,106  files/sec=122,509/s
+       breakdown: connect=381ms  await_ready=67115ms  ipc=49ms  daemon_search=47ms
+
+  [step 3] UFFS C++ reference (warm disk — OS page cache now populated by step 2)
+  [C++ warm-disk] C:\Users\rnio\bin\uffs.com "*" --drives=S --columns=path > C:\Users\rnio\AppData\Local\Temp\cpp_S_4c8a2f21d87a41be830dae068be09b90.csv
+    -> 148.24s, 8278 records, 56/s
+
+======================================================================================================================
+  Drive G
+======================================================================================================================
+
+  [step 1] stop daemon + purge G cache files
+  [step 2] UFFS Rust COLD
+  [Rust COLD] C:\Users\rnio\bin\uffs.exe "*" --drive G --profile --limit 100
+    -> wall=1.11s  records=15,096  files/sec=13,544/s
+       breakdown: connect=383ms  await_ready=701ms  ipc=1ms  daemon_search=0ms
+
+  [step 3] UFFS C++ reference (warm disk — OS page cache now populated by step 2)
+  [C++ warm-disk] C:\Users\rnio\bin\uffs.com "*" --drives=G --columns=path > C:\Users\rnio\AppData\Local\Temp\cpp_G_059fe5c014a548c09db03e198f6172a9.csv
+    -> 0.45s, 16 records, 36/s
+
+======================================================================================================================
+  Summary — table 1: doc-compatible (matches v0.4.106 schema)
+======================================================================================================================
+
+| Drive | C++ (warm disk) | Rust (cold) | Ratio | Files/sec (Rust) |
+|-------|-----------------|-------------|-------|------------------|
+| C: | 49.26 s | 7.66 s | 0.16x | 479,297/s |
+| D: | 112.69 s | 27.56 s | 0.24x | 256,394/s |
+| E: | 74.02 s | 41.54 s | 0.56x | 70,528/s |
+| F: | 28.63 s | 5.56 s | 0.19x | 399,185/s |
+| G: | 0.45 s | 1.11 s | 2.47x | 13,544/s |
+| M: | 44.28 s | 27.54 s | 0.62x | 69,303/s |
+| S: | 148.24 s | 67.57 s | 0.46x | 122,509/s |
+| **TOTAL (sequential)** | **457.6 s** | **178.5 s** | **0.39x** | — |
+
+======================================================================================================================
+  Summary — table 2: Rust cold-path sub-phase breakdown
+======================================================================================================================
+
+| Drive | Records | Wall | AwaitReady | IPC | Daemon | CLI tax | Notes |
+|-------|--------:|-----:|-----------:|----:|-------:|--------:|-------|
+| C: | 3,672,016 | 7.66 s | 7103 ms | 26 ms | 24 ms | 27 ms | |
+| D: | 7,066,015 | 27.56 s | 27105 ms | 45 ms | 44 ms | 29 ms | |
+| E: | 2,929,524 | 41.54 s | 41109 ms | 18 ms | 16 ms | 30 ms | |
+| F: | 2,221,349 | 5.56 s | 5102 ms | 43 ms | 42 ms | 29 ms | |
+| G: | 15,096 | 1.11 s | 701 ms | 1 ms | 0 ms | 25 ms | |
+| M: | 1,908,810 | 27.54 s | 27107 ms | 27 ms | 26 ms | 24 ms | |
+| S: | 8,278,106 | 67.57 s | 67115 ms | 49 ms | 47 ms | 25 ms | |
+
+  Legend:
+    Wall        = Stopwatch-measured wall-clock (matches v0.4.106 methodology)
+    AwaitReady  = daemon spawn + MFT read + compact index build (the COLD cost)
+    IPC         = client round-trip for the * --limit 100 search
+    Daemon      = daemon-side search time (microseconds on cold since drive is already loaded)
+    CLI tax     = Wall - AwaitReady - IPC - Connect (process startup + output formatting)
+
+======================================================================================================================
+  Done
+======================================================================================================================
+
+Full log written to: LOG\Output_cold_parity_v0_5_66.txt
+(production) ~\GitHub\UltraFastFileSearch on main>
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+New methodology:
+
+  Phase 0a (optional, -PurgeCacheFirst): stop daemon, purge all drive
+  caches for a true COLD warm-up measurement.
+
+  Phase 0b: start daemon with all drives auto-discovered, fire a
+  trivial '*' --limit 1 query to block until fully ready.  Record
+  the warm-up wall-clock and await_ready ms.  This is the ONE-TIME
+  cost of 'all drives loaded' regardless of how many drives we then
+  benchmark.
+
+  Phase 1: for each drive, run -Rounds N (default 1) rounds each of:
+    Rust HOT: uffs '*' --drive X --out <tmp> --columns Path \\
+              --hide-system --hide-ads --profile
+    C++:      uffs.com '*' --drives=X --columns=path --out=<tmp>
+              (Start-Process -NoNewWindow -Wait to preserve freopen)
+
+  Both tools write output to a file and we count lines for row
+  parity.  Capture wall-clock p50 plus daemon-side p50 (from
+  --profile stderr) for Rust.
+
+
+
+
+(production) ~\GitHub\UltraFastFileSearch on main> .\scripts\windows\cold-parity-per-drive.ps1 `
+>>     -Drives   C,D,E,F,M,S,G `
+>>     -OutputFile LOG\Output_cold_parity_v0_5_66.txt
+
+======================================================================================================================
+  UFFS Per-drive parity benchmark — 2026-04-21 14:35:58 -07:00
+======================================================================================================================
+
+  UffsBin         : C:\Users\rnio\bin\uffs.exe
+  UffsBin src     : $HOME\\bin (C:\Users\rnio\bin\uffs.exe)
+  CppBin          : C:\Users\rnio\bin\uffs.com
+  CppBin src      : $HOME\\bin (C:\Users\rnio\bin\uffs.com)
+  Drives          : C, D, E, F, M, S, G
+  Rounds/drive    : 1
+  PurgeCacheFirst : False
+  CacheDir        : C:\Users\rnio\AppData\Local\uffs\cache
+  OutputFile      : LOG\Output_cold_parity_v0_5_66.txt
+  SleepBetween    : 1 s
+
+uffs 0.5.66
+
+Ultra Fast File Search   https://github.com/githubrobbi/Ultra-Fast-File-Search
+
+based on SwiftSearch     https://sourceforge.net/projects/swiftsearch/
+
+        UFFS version:   1.0.0
+        Build for:      x86_64-pc-windows-msvc
+
+        Optimized build
+
+
+
+======================================================================================================================
+  Phase 0b: daemon warm-up — load all drives
+======================================================================================================================
+
+  Starting daemon (auto-discover all drives)...
+    -> wall=0.2s  await_ready=0ms  records_loaded=26,090,928
+
+======================================================================================================================
+  Drive C — 1 round(s) per tool
+======================================================================================================================
+
+  [Rust HOT r1/1] uffs '*' --drive C --out <tmp> --columns Path --hide-system --hide-ads
+    -> wall=1531ms  daemon=1013 ms  rows=3,454
+  [C++ MFT-reread r1/1] uffs.com '*' --drives=C --columns=path --out=<tmp>
+
+
+Drives?         1       C:
+
+
+Finished        in 8 s
+
+    -> wall=8621ms  rows=3,513  exit=0
+
+======================================================================================================================
+  Drive D — 1 round(s) per tool
+======================================================================================================================
+
+  [Rust HOT r1/1] uffs '*' --drive D --out <tmp> --columns Path --hide-system --hide-ads
+    -> wall=1955ms  daemon=1349 ms  rows=4,756
+  [C++ MFT-reread r1/1] uffs.com '*' --drives=D --columns=path --out=<tmp>
+
+
+Drives?         1       D:
+
+
+Finished        in 31 s
+
+    -> wall=31668ms  rows=7,066  exit=0
+
+======================================================================================================================
+  Drive E — 1 round(s) per tool
+======================================================================================================================
+
+  [Rust HOT r1/1] uffs '*' --drive E --out <tmp> --columns Path --hide-system --hide-ads
+    -> wall=1242ms  daemon=800 ms  rows=2,914
+  [C++ MFT-reread r1/1] uffs.com '*' --drives=E --columns=path --out=<tmp>
+
+
+Drives?         1       E:
+
+
+Finished        in 42 s
+
+    -> wall=42421ms  rows=2,928  exit=0
+
+======================================================================================================================
+  Drive F — 1 round(s) per tool
+======================================================================================================================
+
+  [Rust HOT r1/1] uffs '*' --drive F --out <tmp> --columns Path --hide-system --hide-ads
+    -> wall=890ms  daemon=561 ms  rows=2,121
+  [C++ MFT-reread r1/1] uffs.com '*' --drives=F --columns=path --out=<tmp>
+
+
+Drives?         1       F:
+
+
+Finished        in 4 s
+
+    -> wall=4495ms  rows=2,082  exit=0
+
+======================================================================================================================
+  Drive M — 1 round(s) per tool
+======================================================================================================================
+
+  [Rust HOT r1/1] uffs '*' --drive M --out <tmp> --columns Path --hide-system --hide-ads
+    -> wall=927ms  daemon=666 ms  rows=1,902
+  [C++ MFT-reread r1/1] uffs.com '*' --drives=M --columns=path --out=<tmp>
+
+
+Drives?         1       M:
+
+
+Finished        in 21 s
+
+    -> wall=21955ms  rows=1,909  exit=0
+
+======================================================================================================================
+  Drive S — 1 round(s) per tool
+======================================================================================================================
+
+  [Rust HOT r1/1] uffs '*' --drive S --out <tmp> --columns Path --hide-system --hide-ads
+    -> wall=3547ms  daemon=2333 ms  rows=8,249
+  [C++ MFT-reread r1/1] uffs.com '*' --drives=S --columns=path --out=<tmp>
+
+
+Drives?         1       S:
+
+
+Finished        in 51 s
+
+    -> wall=51852ms  rows=8,278  exit=0
+
+======================================================================================================================
+  Drive G — 1 round(s) per tool
+======================================================================================================================
+
+  [Rust HOT r1/1] uffs '*' --drive G --out <tmp> --columns Path --hide-system --hide-ads
+    -> wall=40ms  daemon=4 ms  rows=16
+  [C++ MFT-reread r1/1] uffs.com '*' --drives=G --columns=path --out=<tmp>
+
+
+Drives?         1       G:
+
+MMMmmm that was FAST ... maybe your searchstring was wrong?     *
+Search path. E.g. 'C:/' or 'C:\Prog**'
+
+Finished        in 0 s
+
+    -> wall=269ms  rows=16  exit=0
+
+======================================================================================================================
+  Summary — daemon warm-up (Phase 0b)
+======================================================================================================================
+
+  Wall-clock:     0.2 s
+  Await ready:    0 ms (daemon spawn + MFT load + index build across all drives)
+  Total records:  26,090,928
+  Mode:           WARM — pre-existing cache reused (pass -PurgeCacheFirst for COLD)
+
+======================================================================================================================
+  Summary — table 1: per-drive parity (wall-clock p50 over 1 round(s))
+======================================================================================================================
+
+| Drive | C++ (MFT re-read) | Rust (daemon HOT) | Speedup | Rust rows | C++ rows |
+|-------|------------------:|------------------:|--------:|----------:|---------:|
+| C: | 8,621 ms | 1,531 ms | 5.6x | 3,454 | 3,513 |
+| D: | 31,668 ms | 1,955 ms | 16.2x | 4,756 | 7,066 |
+| E: | 42,421 ms | 1,242 ms | 34.2x | 2,914 | 2,928 |
+| F: | 4,495 ms | 890 ms | 5.1x | 2,121 | 2,082 |
+| M: | 21,955 ms | 927 ms | 23.7x | 1,902 | 1,909 |
+| S: | 51,852 ms | 3,547 ms | 14.6x | 8,249 | 8,278 |
+| G: | 269 ms | 40 ms | 6.7x | 16 | 16 |
+| **TOTAL (sum of per-drive p50s)** | **161,281 ms** | **10,132 ms** | **15.9x** | — | — |
+
+======================================================================================================================
+  Summary — table 2: Rust daemon vs CLI breakdown
+======================================================================================================================
+
+| Drive | Rust rows | Rust wall p50 | Rust daemon p50 | CLI overhead |
+|-------|----------:|--------------:|----------------:|-------------:|
+| C: | 3,454 | 1,531 ms | 1,013 ms | 518 ms |
+| D: | 4,756 | 1,955 ms | 1,349 ms | 606 ms |
+| E: | 2,914 | 1,242 ms | 800 ms | 442 ms |
+| F: | 2,121 | 890 ms | 561 ms | 329 ms |
+| M: | 1,902 | 927 ms | 666 ms | 261 ms |
+| S: | 8,249 | 3,547 ms | 2,333 ms | 1,214 ms |
+| G: | 16 | 40 ms | 4 ms | 36 ms |
+
+  Legend:
+    Rust wall p50   = Stopwatch-measured PowerShell-to-CLI-to-daemon-to-file round-trip.
+    Rust daemon p50 = Daemon-reported search duration (from --profile "Search (IPC): ... (daemon: Y ms)").
+    CLI overhead    = wall - daemon (Windows process-creation + IPC + stderr profile print).
+    C++ has no daemon — its wall-clock IS its total cost, dominated by full-MFT re-read.
+
+======================================================================================================================
+  Done
+======================================================================================================================
+
+Full log written to: LOG\Output_cold_parity_v0_5_66.txt
+(production) ~\GitHub\UltraFastFileSearch on main>
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________________________________________________________________________________________
+
+
+
+
+

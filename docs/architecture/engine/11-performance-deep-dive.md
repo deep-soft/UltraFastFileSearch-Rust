@@ -19,7 +19,7 @@ UFFS operates in three performance tiers, each with dramatically different laten
 |-------|-------------|-------------------------------|
 | **COLD** | No daemon, no cache. Raw MFT read from disk, full parse, compact index build, trigram index build, path resolution tree. | 66 s (v0.5.4) → 68.5 s (v0.5.62) — 7 drives parallel |
 | **WARM CACHE** | No daemon, but serialized compact index exists on disk. Daemon starts and deserializes cached index — no MFT read. | 6.9 s (v0.5.4) → **5.7 s (v0.5.62, −17 %)** |
-| **HOT** | Daemon running with in-memory index. Pure search — no I/O, no startup. | v0.5.4: **163 ms** e2e (`*` top-N). v0.5.66 measured (see re-bench § below): `*` with `--limit 100` is **1 112 ms** CLI-e2e (`Output_cache_newest:657`) — the “163 ms” figure was never re-verified after the Phase 2 top-N rewrite and is now superseded.  Targeted queries measure **29–32 ms** CLI-e2e with **0–3 ms daemon-side**. |
+| **HOT** | Daemon running with in-memory index. Pure search — no I/O, no startup. | v0.5.4: **163 ms** e2e (`*` top-N). v0.5.66 measured (see re-bench § below): `*` with `--limit 100` is **1 112 ms** CLI-e2e ([`raw log line 657`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt)) — the “163 ms” figure was never re-verified after the Phase 2 top-N rewrite and is now superseded.  Targeted queries measure **29–32 ms** CLI-e2e with **0–3 ms daemon-side**. |
 
 The HOT path delivers **407× speedup** over COLD.  Targeted queries
 (exact name, prefix, extension, substring, combined) return in
@@ -82,7 +82,7 @@ process-start cost on Windows dominates any targeted query.
 | size filter | 153 ms | 160 ms | 144 ms | 150 ms |
 | combined | 9 ms | 10 ms | 0 ms | 0 ms |
 
-**v0.5.66 re-bench (`@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newest:573-707`, 30 rounds, same hardware, `--limit 100`):**
+**v0.5.66 re-bench ([`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:573-707`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt), 30 rounds, same hardware, `--limit 100`):**
 
 | Pattern                          | CLI e2e p50 | CLI e2e p95 | daemon-side |
 |----------------------------------|------------:|------------:|------------:|
@@ -232,12 +232,12 @@ doing that extra work (see parity table below).
 ### Parity Comparison (v0.5.66 re-run, COLD per-drive, 6 drives, sequential)
 
 > **Re-measured 2026-04-21** against v0.5.66 using
-> `@/Users/rnio/Private/Github/UltraFastFileSearch/scripts/windows/cold-parity-per-drive.ps1`
+> [`scripts/windows/cold-parity-per-drive.ps1`](../../../scripts/windows/cold-parity-per-drive.ps1)
 > (earlier invocation with the per-drive-cold methodology preserved from v0.4.106).
 > Sequence per drive: purge that drive's cache → stop daemon → run Rust COLD
 > (daemon spawns, reads MFT, builds compact + trigram indexes, writes cache)
 > → run C++ on the same drive with OS page cache now warmed by Rust's read.
-> Raw log: `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_latest`.
+> Raw log: [`docs/benchmarks/raw/2026-04-v0.5.66_cold-parity-per-drive.txt`](../../benchmarks/raw/2026-04-v0.5.66_cold-parity-per-drive.txt).
 >
 > **Drive G (15 k-record USB drive) is excluded** from the per-drive tables as it
 > is too small to be representative — its timing is dominated by the ~0.7 s daemon
@@ -247,7 +247,7 @@ doing that extra work (see parity table below).
 >
 > The current v0.5.66 aggregate COLD (all 6 internal drives in parallel, not sequential
 > per-drive) completes in **~68.5 s total** — see the 3-phase table in
-> `@/Users/rnio/Private/Github/UltraFastFileSearch/docs/architecture/engine/09-performance.md`.
+> [`docs/architecture/engine/09-performance.md`](../../architecture/engine/09-performance.md).
 > The per-drive breakdown below is kept for direct apples-to-apples continuity
 > with the historical v0.4.106 snapshot.
 
@@ -298,10 +298,10 @@ each) are invisible at this scale.
 > serves every subsequent query from the compact index + trigram postings. The C++
 > reference has **no daemon** — every invocation re-reads all MFTs regardless of the
 > `--drives=X` filter (that flag is an output filter, not a load-time filter; see
-> `@/Users/rnio/Private/Github/UltraFastFileSearch/scripts/windows/cross-tool-benchmark.rs:553`).
+> [`scripts/windows/cross-tool-benchmark.rs:553`](../../../scripts/windows/cross-tool-benchmark.rs)).
 > This table measures how that architectural difference plays out for interactive
 > `*` queries on one drive at a time, **with both tools writing output to a file**
-> (a scripting-style workflow). Raw log in the same `Output_cache_latest` file.
+> (a scripting-style workflow). Raw log in the same [`docs/benchmarks/raw/2026-04-v0.5.66_cold-parity-per-drive.txt`](../../benchmarks/raw/2026-04-v0.5.66_cold-parity-per-drive.txt) file.
 
 **Methodology.** Daemon pre-loaded with all 7 attached drives (warm-up from existing
 cache: 0.2 s, 26,090,928 records across every drive including USB G). Per drive, one

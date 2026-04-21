@@ -348,7 +348,7 @@ For 2M files: ~448 MB for records + ~46 MB for names ≈ **~500 MB total**.
 | HOT (`*`) | 163 ms | 27 ms | 54 ms |
 | HOT (targeted) | 9–10 ms | 9 ms | 10 ms |
 
-**v0.5.66 current (7-drive ALL; `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newest`):**
+**v0.5.66 current (7-drive ALL; [`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt)):**
 
 | Phase            | ALL drives            | Notes |
 |------------------|----------------------:|-------|
@@ -360,11 +360,11 @@ For 2M files: ~448 MB for records + ~46 MB for names ≈ **~500 MB total**.
 Daemon-side targeted latency is unchanged from v0.5.4 — the CLI e2e
 gap is the Phase 1+ thin-client cold-spawn floor (~28 ms on Windows).
 The `*` fullscan regression is tracked as the top bounded-heap target
-in `@/Users/rnio/Private/Github/UltraFastFileSearch/docs/research/cross-tool-benchmark-analysis.md` §7.
+in [`docs/research/cross-tool-benchmark-analysis.md`](../../research/cross-tool-benchmark-analysis.md) §7 (internal engineering detail) and [`docs/benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md`](../../benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md) §Known regressions (public summary).
 
 HOT in-memory scan throughput: **167 million records/second** when
 not materialising rows.  End-to-end throughput with disk write-out
-at 26 M records is **1.72 M records/second** (`Output_cache_newest:1263-1278`).
+at 26 M records is **1.72 M records/second** ([`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:1263-1278`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt)).
 Targeted queries: **0–3 ms daemon-side** even at 100 M records
 (v0.5.4 synthetic-clone data; not re-verified on v0.5.66).
 

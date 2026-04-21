@@ -148,7 +148,7 @@ over 3 rounds.  Pattern: `*` (full scan), limit: 100 rows.
 | **ALL (v0.5.62)** | **25,931,436** | **5.7 s** | **12.0×** |
 
 Post-Phase-2 the all-drives warm restart dropped 17 % to **5.7 s** (measured
-n=1 on `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:369-391`).  Per-drive warm numbers not re-captured on v0.5.62
+n=1 in [`docs/benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt:369-391`](../benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt)).  Per-drive warm numbers not re-captured on v0.5.62
 yet — they are expected to scale proportionally.
 
 ### Hot (In-Memory Query)
@@ -166,7 +166,7 @@ yet — they are expected to scale proportionally.
 | S: | 8,278,106 | 54 ms | **1236×** |
 | **ALL** | **25,931,436** | **163 ms** | **407×** |
 
-**v0.5.66 current (7-drive daemon, `--limit 100`, 30 rounds, `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newest:573-707`):**
+**v0.5.66 current (7-drive daemon, `--limit 100`, 30 rounds, [`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:573-707`](../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt)):**
 
 | Pattern                                | CLI e2e p50 | Daemon-side |
 |----------------------------------------|------------:|------------:|
@@ -222,7 +222,7 @@ for each drive.  The Cold→Hot ratio is the primary performance metric.
 After Phase 4 (regex-ext + parallel path_only) shipped in v0.5.66,
 UFFS wins **12/12 cells at p50** against Everything on the
 apples-to-apples C+D benchmark — including the new `ext_regex_alt`
-row.  Source: `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newer:580-625` (n=30, HOT, file sink).
+row. Source: [`docs/benchmarks/raw/2026-04-v0.5.66_cross-tool-vs-everything.txt:580-625`](../benchmarks/raw/2026-04-v0.5.66_cross-tool-vs-everything.txt) (n=30, HOT, file sink).
 
 | Drive | Pattern         | UFFS p50 | ES p50 | UFFS/ES | Rows    |
 |-------|-----------------|---------:|-------:|--------:|--------:|
@@ -417,7 +417,7 @@ search latency at each tier.
 | **100.4M** | **16** | **808 ms** | **855 ms** | **11–13 ms** | **✅** |
 | >100M | 17+ | — | — | — | ❌ OOM |
 
-### v0.5.66 drive-accumulation sweep (real drives only, `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newest:933-1044`)
+### v0.5.66 drive-accumulation sweep (real drives only, [`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:933-1044`](../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt))
 
 The v0.5.66 re-bench did **not** use offline MFT clones (that tooling
 has not been re-ported to the new data format).  Instead, drives were
@@ -459,7 +459,7 @@ UFFS ships three validation suites that double as performance
 benchmarks for the query engine under realistic workloads.  All suites
 run against a hot daemon loaded with 25.9M records across 7 drives.
 
-Latest figures from `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache:380-1295` (v0.5.62, hot daemon, 25.9M records across 7 drives).
+Latest figures from the v0.5.62 validation run (hot daemon, 25.9M records across 7 drives; full capture preserved internally in `LOG/Output_cache` on the test machine, not committed due to size).
 
 ### CLI Validation (248 tests, parallel)
 
@@ -507,7 +507,7 @@ Latest figures from `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_
 
 ## 10  Daemon Runtime Statistics
 
-After a v0.5.62 session (from `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:392-410`):
+After a v0.5.62 session (from [`docs/benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt:392-410`](../benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt)):
 
 | Metric | v0.5.4 | v0.5.62 |
 |--------|-------:|--------:|

@@ -17,7 +17,7 @@ This document describes the performance characteristics of UFFS, the optimizatio
 > This engineering-reference doc holds the *raw* cross-drive measurements and per-phase diagnostics used internally. For the story-shaped version with fairness rules, competitor positioning, and TL;DR headline numbers, start at the benchmark hub.
 
 Headline cross-tool result on v0.5.66 (from
-[`LOG/Output_cache_newer:580-625`](../../../LOG/Output_cache_newer), n=30, HOT,
+[`docs/benchmarks/raw/2026-04-v0.5.66_cross-tool-vs-everything.txt:580-625`](../../benchmarks/raw/2026-04-v0.5.66_cross-tool-vs-everything.txt), n=30, HOT,
 apples-to-apples C+D scope):
 
 **UFFS beats Everything 12/12 at p50**, median ratio **0.51×
@@ -25,7 +25,7 @@ apples-to-apples C+D scope):
 [`docs/benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md`](../../benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md) §Head-to-head 1, with the engineering-detail source at [`docs/research/cross-tool-benchmark-analysis.md`](../../research/cross-tool-benchmark-analysis.md) §Current State (internal).
 
 7-drive aggregate numbers on v0.5.62 (from
-[`LOG/Output_cache_new:113-479`](../../../LOG/Output_cache_new)):
+[`docs/benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt:113-479`](../../benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt)):
 
 | Workload                                         | Value       |
 |--------------------------------------------------|------------:|
@@ -58,7 +58,7 @@ measurements.
 
 ² The HOT `*` number is `uffs * --limit 100` CLI end-to-end.  The
 v0.5.4 figure (163 ms) was never re-verified after the Phase 2 top-N
-sort rewrite; the v0.5.66 measurement is 1 112 ms (`Output_cache_newest:657`,
+sort rewrite; the v0.5.66 measurement is 1 112 ms ([`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:657`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt),
 30 rounds, StdDev 21 ms).  Tracked as Phase 5 target #2 in the
 cross-tool analysis doc (§7, bounded-heap top-N).
 
@@ -77,7 +77,7 @@ cross-tool analysis doc (§7, bounded-heap top-N).
 | size filter | 153 ms | 160 ms | 144 ms | 150 ms |
 | combined | 9 ms | 10 ms | 0 ms | 0 ms |
 
-**v0.5.66 re-bench (30 rounds, `--limit 100`, source [`LOG/Output_cache_newest:573-707`](../../../LOG/Output_cache_newest)):**
+**v0.5.66 re-bench (30 rounds, `--limit 100`, source [`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:573-707`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt)):**
 
 | Pattern                             | CLI e2e p50 | CLI e2e p95 | daemon p50 |
 |-------------------------------------|------------:|------------:|-----------:|
@@ -127,7 +127,7 @@ fullscan regression is independent and tracked as Phase 5 target #2
 | >100M | 17+ | — | — | ❌ OOM |
 
 **v0.5.66 drive-accumulation sweep (real drives only, no synthetic
-clones — [`LOG/Output_cache_newest:933-1044`](../../../LOG/Output_cache_newest), n=1 per drive set):**
+clones — [`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:933-1044`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt), n=1 per drive set):**
 
 | Total Records | Drives      | Daemon RSS | `*` e2e    |
 |--------------:|-------------|-----------:|-----------:|
@@ -157,7 +157,7 @@ not yet exist in `scripts/dev/` to re-verify on v0.5.66.
 - **Cold-start time is storage-bound** — NVMe is parse-bound, while HDD cold runs are dominated by seek time and raw MFT I/O.
 - **Warm restart is the operator win** — the full 25.9M-record searchable state returns in **6.9 s** from serialized cache.
 - **Hot queries are media-independent** — once the daemon is warm, single-drive end-to-end queries complete in **6–54 ms** depending on drive size (v0.5.4 per-drive table).  Targeted queries on v0.5.4 returned in **9–13 ms** end-to-end; on v0.5.66 they are **29–32 ms** CLI end-to-end with **0–3 ms daemon-side** — the extra ~20 ms comes from the Phase 1+ thin-client spawn floor on Windows (v0.5.4 predates it).
-- **`*` full-scan top-N has regressed from v0.5.4** — the 163 ms all-drive hot number was never re-verified after the Phase 2 sort rewrite; v0.5.66 measures **1 112 ms** CLI-e2e / 1 081 ms daemon-side on the same hardware (`Output_cache_newest:657`).  Tracked as Phase 5 target #2 (bounded-heap top-N).
+- **`*` full-scan top-N has regressed from v0.5.4** — the 163 ms all-drive hot number was never re-verified after the Phase 2 sort rewrite; v0.5.66 measures **1 112 ms** CLI-e2e / 1 081 ms daemon-side on the same hardware ([`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:657`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt)).  Tracked as Phase 5 target #2 (bounded-heap top-N).
 - **Bulk export peaks at 323k rows/sec** — using direct file output (`--out-dir`), a full 8.3M-record drive exports in ~25 seconds.
 
 > 📖 **Full benchmark data:** [Performance](../../user-manual/performance.md)

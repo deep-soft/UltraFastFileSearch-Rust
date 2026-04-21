@@ -65,7 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   **Projected**: `*.dll --sort path_only` on a 167 K-row C: drive
   drops from 221 ms → ~60 ms daemon-side (closes the 172 ms gap
-  vs the default Modified sort observed in `LOG/Output_cache`).
+  vs the default Modified sort observed during the v0.5.62 validation run; full capture in
+  [`docs/benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt`](docs/benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt) and related internal logs).
 
 ### Fixed
 - **`ext_rare` 543 ms outlier on drives with zero matching extensions**
@@ -375,7 +376,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   search"; `ensure_drives_loaded` as "tree metrics computation").
   Replaced with accurate per-function justifications.
 
-## [0.5.66] - 2026-04-19
+## [0.5.67] - 2026-04-19
 
 ### Added
 - **Phase 2 performance measurement series** (closed): 11 instrumented
@@ -533,8 +534,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.66...HEAD
-[0.5.66]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.0...v0.5.66
+[Unreleased]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.67...HEAD
+[0.5.67]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.0...v0.5.67
 [0.5.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.2.208...v0.3.0

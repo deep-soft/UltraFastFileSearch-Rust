@@ -1,0 +1,673 @@
+
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon kill
+Killing daemon (PID 26220)...
+Daemon killed. PID file and socket cleaned up.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon start --drive C,D,E,F,G,M,S
+[diag] daemon_start: drives=['C', 'D', 'E', 'F', 'G', 'M', 'S']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "C", "--drive", "D", "--drive", "E", "--drive", "F", "--drive", "G", "--drive", "M", "--drive", "S"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+(production) ~\GitHub\UltraFastFileSearch on main> # Wait for Ready
+(production) ~\GitHub\UltraFastFileSearch on main> do { Start-Sleep -Milliseconds 500 } until (
+>>   (~\bin\uffs.exe daemon status | Select-String 'Status:') -match 'Ready'
+>> )
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe --version  # sanity-check it says 0.5.66
+uffs 0.5.66
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== B1: regex alternation (SHOULD hit ext-index, the headline win) ==='
+=== B1: regex alternation (SHOULD hit ext-index, the headline win) ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Pre-v0.5.66: ~298 ms · Post-v0.5.66: expected ~95 ms (matches 7b glob path)
+(production) ~\GitHub\UltraFastFileSearch on main> 1..20 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '>.*\.(jpg|png|heic)$' --drive C `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\img.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 20
+Average           : 97.09461
+Sum               :
+Maximum           : 116.3256
+Minimum           : 91.9053
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== B2: equivalent glob (control — should match B1 post-fix) ==='
+=== B2: equivalent glob (control — should match B1 post-fix) ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..20 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '*' --ext jpg,png,heic --drive C `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\img2.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 20
+Average           : 99.861935
+Sum               :
+Maximum           : 118.3308
+Minimum           : 91.3685
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== B3: single-ext regex (new accepted shape) ==='
+=== B3: single-ext regex (new accepted shape) ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Should match `*.rs --drive C` within noise (both take the ext fast path)
+(production) ~\GitHub\UltraFastFileSearch on main> 1..20 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '>.*\.rs$' --drive C `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\rs.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 20
+Average           : 80.459685
+Sum               :
+Maximum           : 104.8239
+Minimum           : 75.0791
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== B4: case-insensitive regex (accepted — (?i) stripped) ==='
+=== B4: case-insensitive regex (accepted — (?i) stripped) ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Confirms the `(?i)` prefix strip lands; extensions lowercased to jpg,png
+(production) ~\GitHub\UltraFastFileSearch on main> 1..20 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '>(?i).*\.(JPG|PNG)$' --drive C `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\imgci.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 20
+Average           : 89.127835
+Sum               :
+Maximum           : 112.0652
+Minimum           : 83.1743
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== B5: wildcard-in-alt (REJECTED — must stay slow, proves safety) ==='
+=== B5: wildcard-in-alt (REJECTED — must stay slow, proves safety) ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Pre- and post-v0.5.66 should be identical (~223 ms): regex scan path
+(production) ~\GitHub\UltraFastFileSearch on main> 1..20 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '>.*\.j.?g$' --drive C `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\imgwild.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 20
+Average           : 220.7606
+Sum               :
+Maximum           : 236.0483
+Minimum           : 212.4904
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== B6: missing $ anchor (REJECTED — safety net must NOT promote) ==='
+=== B6: missing $ anchor (REJECTED — safety net must NOT promote) ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Must NOT match B1: without $ the regex matches .jpg mid-name (e.g. foo.jpg.txt)
+(production) ~\GitHub\UltraFastFileSearch on main> # Result set size will differ from B1 if the fix accidentally over-promoted
+(production) ~\GitHub\UltraFastFileSearch on main> 1..20 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '>.*\.jpg' --drive C `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\imgnodol.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 20
+Average           : 284.72352
+Sum               :
+Maximum           : 292.5978
+Minimum           : 277.3961
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== B7: --profile capture proves the route flipped to ext fast path ==='
+=== B7: --profile capture proves the route flipped to ext fast path ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Look for "ext_fast_path" in the trace / PhaseTimings block.
+(production) ~\GitHub\UltraFastFileSearch on main> # Pre-fix this logged the trigram/regex scan path.
+(production) ~\GitHub\UltraFastFileSearch on main> & ~\bin\uffs.exe '>.*\.(jpg|png|heic)$' --drive C --profile `
+>>   --columns Path --hide-system --hide-ads --out=C:\temp\img_prof.csv 2>&1 |
+>>   Select-String -Pattern 'ext_fast_path|path_candidates|scan_ms|sort_ms|PhaseTimings'
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== B8: correctness — B1 and B2 must return identical row counts ==='
+=== B8: correctness — B1 and B2 must return identical row counts ===
+(production) ~\GitHub\UltraFastFileSearch on main> $b1 = (Import-Csv C:\temp\img.csv | Measure-Object).Count
+(production) ~\GitHub\UltraFastFileSearch on main> $b2 = (Import-Csv C:\temp\img2.csv | Measure-Object).Count
+(production) ~\GitHub\UltraFastFileSearch on main> "B1 regex rows=$b1   B2 glob rows=$b2   equal=$($b1 -eq $b2)"
+B1 regex rows=190558   B2 glob rows=190558   equal=True
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== C1: path_only on 167K rows (main target, expect ~60 ms daemon-side) ==='
+=== C1: path_only on 167K rows (main target, expect ~60 ms daemon-side) ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Pre-v0.5.66 daemon-side: 221 ms · Post: expected ~60 ms (3.7x win)
+(production) ~\GitHub\UltraFastFileSearch on main> 1..20 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '*.dll' --drive C --sort path_only `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\dll_po.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 20
+Average           : 149.54306
+Sum               :
+Maximum           : 202.6441
+Minimum           : 135.128
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== C2: default Modified sort (control — should be unchanged ~50 ms) ==='
+=== C2: default Modified sort (control — should be unchanged ~50 ms) ===
+(production) ~\GitHub\UltraFastFileSearch on main> 1..20 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '*.dll' --drive C `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\dll_mod.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 20
+Average           : 100.29059
+Sum               :
+Maximum           : 146.8463
+Minimum           : 92.3666
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== C3: --profile shows non-zero PhaseTimings (was all zeros pre-fix) ==='
+=== C3: --profile shows non-zero PhaseTimings (was all zeros pre-fix) ===
+(production) ~\GitHub\UltraFastFileSearch on main> & ~\bin\uffs.exe '*.dll' --drive C --sort path_only --profile `
+>>   --columns Path --hide-system --hide-ads --out=C:\temp\dll_po_prof.csv 2>&1 |
+>>   Select-String -Pattern 'scan_ms|sort_ms|path_resolve_ms|path_candidates|path_cache_entries'
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== C4: multi-ext path_only — exercises the locality re-sort ==='
+=== C4: multi-ext path_only — exercises the locality re-sort ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Multiple ext buckets interleave candidates; the (drive, rec_idx) sort before
+(production) ~\GitHub\UltraFastFileSearch on main> # parallel resolve keeps DirCache warm.  Should scale like a single-ext query.
+(production) ~\GitHub\UltraFastFileSearch on main> 1..20 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '>.*\.(dll|exe|sys)$' --drive C --sort path_only `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\multi_po.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 20
+Average           : 167.918885
+Sum               :
+Maximum           : 202.8913
+Minimum           : 157.8705
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== C5: small result set path_only (<16K rows — sequential sort branch) ==='
+=== C5: small result set path_only (<16K rows — sequential sort branch) ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Must NOT regress — the PARALLEL_SORT_THRESHOLD gate keeps small sorts sequential.
+(production) ~\GitHub\UltraFastFileSearch on main> # Runs a rare extension (expect <2K rows) so rows.len() < 16384.
+(production) ~\GitHub\UltraFastFileSearch on main> 1..20 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '*.md' --drive C --sort path_only `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\md_po.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 20
+Average           : 49.254255
+Sum               :
+Maximum           : 71.2675
+Minimum           : 44.0149
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== C6: --sort path (full-path sort — different code path, unaffected) ==='
+=== C6: --sort path (full-path sort — different code path, unaffected) ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Sanity: FieldId::Path routes to collect_path_sorted_top_n which we did NOT touch.
+(production) ~\GitHub\UltraFastFileSearch on main> 1..10 | ForEach-Object {
+>>   (Measure-Command {
+>>     & ~\bin\uffs.exe '*.dll' --drive C --sort path `
+>>       --columns Path --hide-system --hide-ads --out=C:\temp\dll_path.csv | Out-Null
+>>   }).TotalMilliseconds
+>> } | Measure-Object -Average -Minimum -Maximum
+
+Count             : 10
+Average           : 3107.3124
+Sum               :
+Maximum           : 3203.1281
+Minimum           : 3060.5449
+StandardDeviation :
+Property          :
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== C7: correctness — C1 and C2 must return identical rows, just reordered ==='
+=== C7: correctness — C1 and C2 must return identical rows, just reordered ===
+(production) ~\GitHub\UltraFastFileSearch on main> $c1 = (Import-Csv C:\temp\dll_po.csv | Measure-Object).Count
+(production) ~\GitHub\UltraFastFileSearch on main> $c2 = (Import-Csv C:\temp\dll_mod.csv | Measure-Object).Count
+(production) ~\GitHub\UltraFastFileSearch on main> "C1 path_only rows=$c1   C2 modified rows=$c2   equal=$($c1 -eq $c2)"
+C1 path_only rows=167196   C2 modified rows=167196   equal=True
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== D: cross-tool re-bench with regex patterns added to the pattern set ==='
+=== D: cross-tool re-bench with regex patterns added to the pattern set ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Re-run your block #2 but EXTEND the pattern list to include the regex shapes
+(production) ~\GitHub\UltraFastFileSearch on main> # that now win. The cross-tool-benchmark.rs harness will compare UFFS vs ES
+(production) ~\GitHub\UltraFastFileSearch on main> # head-to-head on the same patterns.
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts\windows\cross-tool-benchmark.rs `
+>>   --skip-cold --drives C,D --tools uffs,everything `
+>>   --rounds 30 --patterns exact,prefix,ext_rare,ext_dll,substring,ext_regex_alt `
+>>   --sinks file --uffs-bin C:\Users\rnio\bin\uffs.exe
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     Cross-Tool Benchmark v1.0                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  UFFS (Rust):  C:\Users\rnio\bin\uffs.exe
+║  UFFS (C++):   C:\Users\rnio\bin\uffs.com
+║  Everything:   C:\Users\rnio\bin\es.exe
+║  Drives:       ["C", "D"]
+║  Patterns:     6 (filtered: exact, prefix, ext_rare, ext_dll, substring, ext_regex_alt)
+║  Rounds:       30 per pattern per tool
+║  Sinks (HOT):  file  (COLD/WARM are always file)
+║  Bench file:   uffs_bench_out.csv
+║  Columns:      path-only (fair: all tools write ~same bytes/row)
+║  Limit:        none (all results, fair for C++)
+║  Timeout:      120 s → DNF
+║  Skip COLD:    true
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  Warming up UFFS daemon (all drives)... ready.
+━━━ Drive C:  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  UFFS HOT:  warming up daemon... ready.
+  UFFS HOT [sink=file]:  30 rounds
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                           SUMMARY TABLE                                    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+
+| Drive | Tool         | Phase | Sink   | Pattern      | p50      | p95      | Rows   | Bad  | Verdict |
+|-------|--------------|-------|--------|--------------|----------|----------|--------|------|---------|
+| C:    | UFFS         | HOT   | file   | exact        |    31 ms |    37 ms |     26 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | prefix       |    97 ms |   104 ms |  34236 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | ext_rare     |    28 ms |    31 ms |      0 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | ext_dll      |    95 ms |   117 ms | 167196 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | substring    |    64 ms |    72 ms |  26690 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | exact        |    73 ms |    86 ms |     26 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | prefix       |    95 ms |   105 ms |  34276 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | ext_rare     |    60 ms |    73 ms |      0 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | ext_dll      |   238 ms |   256 ms | 167196 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | substring    |   105 ms |   113 ms |  26889 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | exact        |    29 ms |    32 ms |      3 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | prefix       |    49 ms |    53 ms |   8732 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | ext_rare     |    29 ms |    32 ms |     11 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | ext_dll      |    46 ms |    51 ms |  44529 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | substring    |    54 ms |    62 ms |  12458 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | exact        |    64 ms |    68 ms |      3 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | prefix       |    69 ms |    84 ms |   8732 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | ext_rare     |    59 ms |    65 ms |     11 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | ext_dll      |   109 ms |   122 ms |  44528 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | substring    |    85 ms |    92 ms |  12458 |    0 | PASS    |
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     HOT COMPARISON (head-to-head)                          ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+── sink = file ────────────────────────────────────────────────
+| Drive | Pattern      | UFFS HOT p50 | UFFS-C++ p50 | Everything p50 |
+|-------|--------------|--------------|--------------|----------------|
+| C:    | exact        |        31 ms |         SKIP |          73 ms |
+| C:    | prefix       |        97 ms |         SKIP |          95 ms |
+| C:    | ext_rare     |        28 ms |         SKIP |          60 ms |
+| C:    | ext_dll      |        95 ms |         SKIP |         238 ms |
+| C:    | substring    |        64 ms |         SKIP |         105 ms |
+| D:    | exact        |        29 ms |         SKIP |          64 ms |
+| D:    | prefix       |        49 ms |         SKIP |          69 ms |
+| D:    | ext_rare     |        29 ms |         SKIP |          59 ms |
+| D:    | ext_dll      |        46 ms |         SKIP |         109 ms |
+| D:    | substring    |        54 ms |         SKIP |          85 ms |
+
+Legend:  PASS = completed within 120s.  DNF = timed out.  SKIP = tool not found.
+Note:   UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).
+        UFFS (C++) re-reads MFT every invocation (no daemon).
+        Everything is always-hot (daemon model).
+        Sinks: file = --out=/-export-csv → disk; stdout = piped stdout;
+               null = child process writes to a real NUL device via cmd /C.
+        Null-sink rows show '—' for Rows/Bad (nothing to count after the
+        redirect); correctness is verified by the file-mode passes.
+        UltraSearch excluded — no functional headless CLI (see script header).
+(production) ~\GitHub\UltraFastFileSearch on main> # If `ext_regex_alt` isn't yet defined in scripts/tests/definitions/test-definitions.toml,
+(production) ~\GitHub\UltraFastFileSearch on main> # add a pattern: { name = "ext_regex_alt", glob = ">.*\\.(jpg|png|heic)$" }
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+___________________________________________________________________________________________________________________________________________________________________
+
+RE-RUN section D: after fixes:
+
+
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon kill
+Killing daemon (PID 59280)...
+Daemon killed. PID file and socket cleaned up.
+(production) ~\GitHub\UltraFastFileSearch on main> ~\bin\uffs.exe daemon start --drive D,C
+[diag] daemon_start: drives=['D', 'C']  log_level="info"  log_file=None
+[diag] env  RUST_LOG    = None
+[diag] env  UFFS_LOG    = None
+[diag] env  UFFS_LOG_DIR= None
+[diag] eff  log_level   = "info"
+[diag] eff  log_file    = None
+[diag] full spawn_args  = ["--drive", "D", "--drive", "C"]
+Starting daemon...
+[uffs] connect attempt 1/20 (socket: missing)
+[uffs] connect attempt 2/20 (socket: missing)
+Daemon started and ready.
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '=== D: cross-tool re-bench with regex patterns added to the pattern set ==='
+=== D: cross-tool re-bench with regex patterns added to the pattern set ===
+(production) ~\GitHub\UltraFastFileSearch on main> # Re-run your block #2 but EXTEND the pattern list to include the regex shapes
+(production) ~\GitHub\UltraFastFileSearch on main> # that now win. The cross-tool-benchmark.rs harness will compare UFFS vs ES
+(production) ~\GitHub\UltraFastFileSearch on main> # head-to-head on the same patterns.
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts\windows\cross-tool-benchmark.rs `
+>>   --skip-cold --drives C,D --tools uffs,everything `
+>>   --rounds 30 --patterns exact,prefix,ext_rare,ext_dll,substring,ext_regex_alt `
+>>   --sinks file --uffs-bin C:\Users\rnio\bin\uffs.exe
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     Cross-Tool Benchmark v1.0                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  UFFS (Rust):  C:\Users\rnio\bin\uffs.exe
+║  UFFS (C++):   C:\Users\rnio\bin\uffs.com
+║  Everything:   C:\Users\rnio\bin\es.exe
+║  Drives:       ["C", "D"]
+║  Patterns:     7 (filtered: exact, prefix, ext_rare, ext_dll, substring, ext_regex_alt)
+║  Rounds:       30 per pattern per tool
+║  Sinks (HOT):  file  (COLD/WARM are always file)
+║  Bench file:   uffs_bench_out.csv
+║  Columns:      path-only (fair: all tools write ~same bytes/row)
+║  Limit:        none (all results, fair for C++)
+║  Timeout:      120 s → DNF
+║  Skip COLD:    true
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  Warming up UFFS daemon (all drives)... ready.
+━━━ Drive C:  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  UFFS HOT:  warming up daemon... ready.
+  UFFS HOT [sink=file]:  30 rounds
+    exact              CMD: & 'C:\Users\rnio\bin\uffs.exe' notepad.exe --drive C --columns Path --hide-system --hide-ads --out=uffs_bench_out.csv  [sink=file]
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                           SUMMARY TABLE                                    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+
+| Drive | Tool         | Phase | Sink   | Pattern      | p50      | p95      | Rows   | Bad  | Verdict |
+|-------|--------------|-------|--------|--------------|----------|----------|--------|------|---------|
+| C:    | UFFS         | HOT   | file   | exact        |    30 ms |    36 ms |     26 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | prefix       |    98 ms |   108 ms |  34273 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | ext_rare     |    30 ms |    33 ms |      0 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | ext_dll      |   101 ms |   116 ms | 167212 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | ext_regex_alt |    41 ms |    46 ms |  15559 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | substring    |    67 ms |    75 ms |  26692 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | exact        |    71 ms |    93 ms |     26 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | prefix       |   105 ms |   144 ms |  34268 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | ext_rare     |    60 ms |    72 ms |      0 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | ext_dll      |   230 ms |   243 ms | 167211 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | ext_regex_alt |    77 ms |    84 ms |  15553 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | substring    |   104 ms |   114 ms |  26889 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | exact        |    31 ms |    34 ms |      3 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | prefix       |    54 ms |    60 ms |   8732 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | ext_rare     |    30 ms |    35 ms |     11 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | ext_dll      |    48 ms |    55 ms |  44529 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | ext_regex_alt |    38 ms |    44 ms |  10438 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | substring    |    56 ms |    63 ms |  12458 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | exact        |    66 ms |    80 ms |      3 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | prefix       |    71 ms |    78 ms |   8732 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | ext_rare     |    60 ms |    71 ms |     11 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | ext_dll      |   110 ms |   119 ms |  44528 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | ext_regex_alt |    76 ms |    80 ms |  10438 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | substring    |    88 ms |    99 ms |  12458 |    0 | PASS    |
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     HOT COMPARISON (head-to-head)                          ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+── sink = file ────────────────────────────────────────────────
+| Drive | Pattern      | UFFS HOT p50 | UFFS-C++ p50 | Everything p50 |
+|-------|--------------|--------------|--------------|----------------|
+| C:    | exact        |        30 ms |         SKIP |          71 ms |
+| C:    | prefix       |        98 ms |         SKIP |         105 ms |
+| C:    | ext_rare     |        30 ms |         SKIP |          60 ms |
+| C:    | ext_dll      |       101 ms |         SKIP |         230 ms |
+| C:    | ext_regex_alt |        41 ms |         SKIP |          77 ms |
+| C:    | substring    |        67 ms |         SKIP |         104 ms |
+| D:    | exact        |        31 ms |         SKIP |          66 ms |
+| D:    | prefix       |        54 ms |         SKIP |          71 ms |
+| D:    | ext_rare     |        30 ms |         SKIP |          60 ms |
+| D:    | ext_dll      |        48 ms |         SKIP |         110 ms |
+| D:    | ext_regex_alt |        38 ms |         SKIP |          76 ms |
+| D:    | substring    |        56 ms |         SKIP |          88 ms |
+
+Legend:  PASS = completed within 120s.  DNF = timed out.  SKIP = tool not found.
+Note:   UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).
+        UFFS (C++) re-reads MFT every invocation (no daemon).
+        Everything is always-hot (daemon model).
+        Sinks: file = --out=/-export-csv → disk; stdout = piped stdout;
+               null = child process writes to a real NUL device via cmd /C.
+        Null-sink rows show '—' for Rows/Bad (nothing to count after the
+        redirect); correctness is verified by the file-mode passes.
+        UltraSearch excluded — no functional headless CLI (see script header).
+(production) ~\GitHub\UltraFastFileSearch on main> # If `ext_regex_alt` isn't yet defined in scripts/tests/definitions/test-definitions.toml,
+(production) ~\GitHub\UltraFastFileSearch on main> # add a pattern: { name = "ext_regex_alt", glob = ">.*\\.(jpg|png|heic)$" }
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> # After rebuilding v0.5.66 and restarting daemon (Section A in my prev msg):
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts\windows\cross-tool-benchmark.rs `
+>>   --skip-cold --drives C,D --tools uffs,everything `
+>>   --rounds 30 --patterns ext_regex_alt --sinks file `
+>>   --uffs-bin C:\Users\rnio\bin\uffs.exe
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     Cross-Tool Benchmark v1.0                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  UFFS (Rust):  C:\Users\rnio\bin\uffs.exe
+║  UFFS (C++):   C:\Users\rnio\bin\uffs.com
+║  Everything:   C:\Users\rnio\bin\es.exe
+║  Drives:       ["C", "D"]
+║  Patterns:     7 (filtered: ext_regex_alt)
+║  Rounds:       30 per pattern per tool
+║  Sinks (HOT):  file  (COLD/WARM are always file)
+║  Bench file:   uffs_bench_out.csv
+║  Columns:      path-only (fair: all tools write ~same bytes/row)
+║  Limit:        none (all results, fair for C++)
+║  Timeout:      120 s → DNF
+║  Skip COLD:    true
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  Warming up UFFS daemon (all drives)... ready.
+━━━ Drive C:  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  UFFS HOT:  warming up daemon... ready.
+  UFFS HOT [sink=file]:  30 rounds
+    ext_regex_alt       CMD: & 'C:\Users\rnio\bin\uffs.exe' >.*\.(wav|idrc|cmake)$ --drive C --columns Path --hide-system --hide-ads --out=uffs_bench_out.csv  [sink=file]
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                           SUMMARY TABLE                                    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+
+| Drive | Tool         | Phase | Sink   | Pattern      | p50      | p95      | Rows   | Bad  | Verdict |
+|-------|--------------|-------|--------|--------------|----------|----------|--------|------|---------|
+| C:    | UFFS         | HOT   | file   | ext_regex_alt |    44 ms |    47 ms |  15559 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | ext_regex_alt |    78 ms |    97 ms |  15553 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | ext_regex_alt |    38 ms |    43 ms |  10438 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | ext_regex_alt |    74 ms |    86 ms |  10438 |    0 | PASS    |
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     HOT COMPARISON (head-to-head)                          ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+── sink = file ────────────────────────────────────────────────
+| Drive | Pattern      | UFFS HOT p50 | UFFS-C++ p50 | Everything p50 |
+|-------|--------------|--------------|--------------|----------------|
+| C:    | ext_regex_alt |        44 ms |         SKIP |          78 ms |
+| D:    | ext_regex_alt |        38 ms |         SKIP |          74 ms |
+
+Legend:  PASS = completed within 120s.  DNF = timed out.  SKIP = tool not found.
+Note:   UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).
+        UFFS (C++) re-reads MFT every invocation (no daemon).
+        Everything is always-hot (daemon model).
+        Sinks: file = --out=/-export-csv → disk; stdout = piped stdout;
+               null = child process writes to a real NUL device via cmd /C.
+        Null-sink rows show '—' for Rows/Bad (nothing to count after the
+        redirect); correctness is verified by the file-mode passes.
+        UltraSearch excluded — no functional headless CLI (see script header).
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> rust-script scripts\windows\cross-tool-benchmark.rs `
+>>   --skip-cold --drives C,D --tools uffs,everything `
+>>   --rounds 30 --patterns exact,prefix,ext_rare,ext_dll,ext_regex_alt,substring `
+>>   --sinks file --uffs-bin C:\Users\rnio\bin\uffs.exe
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     Cross-Tool Benchmark v1.0                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  UFFS (Rust):  C:\Users\rnio\bin\uffs.exe
+║  UFFS (C++):   C:\Users\rnio\bin\uffs.com
+║  Everything:   C:\Users\rnio\bin\es.exe
+║  Drives:       ["C", "D"]
+║  Patterns:     7 (filtered: exact, prefix, ext_rare, ext_dll, ext_regex_alt, substring)
+║  Rounds:       30 per pattern per tool
+║  Sinks (HOT):  file  (COLD/WARM are always file)
+║  Bench file:   uffs_bench_out.csv
+║  Columns:      path-only (fair: all tools write ~same bytes/row)
+║  Limit:        none (all results, fair for C++)
+║  Timeout:      120 s → DNF
+║  Skip COLD:    true
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  Warming up UFFS daemon (all drives)... ready.
+━━━ Drive C:  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  UFFS HOT:  warming up daemon... ready.
+  UFFS HOT [sink=file]:  30 rounds
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                           SUMMARY TABLE                                    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+
+| Drive | Tool         | Phase | Sink   | Pattern      | p50      | p95      | Rows   | Bad  | Verdict |
+|-------|--------------|-------|--------|--------------|----------|----------|--------|------|---------|
+| C:    | UFFS         | HOT   | file   | exact        |    31 ms |    34 ms |     26 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | prefix       |    99 ms |   110 ms |  34273 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | ext_rare     |    29 ms |    32 ms |      0 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | ext_dll      |    97 ms |   111 ms | 167212 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | ext_regex_alt |    40 ms |    47 ms |  15559 |    0 | PASS    |
+| C:    | UFFS         | HOT   | file   | substring    |    67 ms |    77 ms |  26692 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | exact        |    73 ms |    80 ms |     26 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | prefix       |    97 ms |   104 ms |  34268 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | ext_rare     |    59 ms |    63 ms |      0 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | ext_dll      |   229 ms |   244 ms | 167211 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | ext_regex_alt |    76 ms |    93 ms |  15553 |    0 | PASS    |
+| C:    | Everything   | HOT   | file   | substring    |   105 ms |   118 ms |  26889 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | exact        |    30 ms |    36 ms |      3 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | prefix       |    52 ms |    58 ms |   8732 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | ext_rare     |    30 ms |    35 ms |     11 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | ext_dll      |    48 ms |    57 ms |  44529 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | ext_regex_alt |    39 ms |    44 ms |  10438 |    0 | PASS    |
+| D:    | UFFS         | HOT   | file   | substring    |    55 ms |    67 ms |  12458 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | exact        |    65 ms |    83 ms |      3 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | prefix       |    69 ms |    81 ms |   8732 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | ext_rare     |    60 ms |    75 ms |     11 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | ext_dll      |   111 ms |   117 ms |  44528 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | ext_regex_alt |    75 ms |    91 ms |  10438 |    0 | PASS    |
+| D:    | Everything   | HOT   | file   | substring    |    83 ms |   111 ms |  12458 |    0 | PASS    |
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     HOT COMPARISON (head-to-head)                          ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+── sink = file ────────────────────────────────────────────────
+| Drive | Pattern      | UFFS HOT p50 | UFFS-C++ p50 | Everything p50 |
+|-------|--------------|--------------|--------------|----------------|
+| C:    | exact        |        31 ms |         SKIP |          73 ms |
+| C:    | prefix       |        99 ms |         SKIP |          97 ms |
+| C:    | ext_rare     |        29 ms |         SKIP |          59 ms |
+| C:    | ext_dll      |        97 ms |         SKIP |         229 ms |
+| C:    | ext_regex_alt |        40 ms |         SKIP |          76 ms |
+| C:    | substring    |        67 ms |         SKIP |         105 ms |
+| D:    | exact        |        30 ms |         SKIP |          65 ms |
+| D:    | prefix       |        52 ms |         SKIP |          69 ms |
+| D:    | ext_rare     |        30 ms |         SKIP |          60 ms |
+| D:    | ext_dll      |        48 ms |         SKIP |         111 ms |
+| D:    | ext_regex_alt |        39 ms |         SKIP |          75 ms |
+| D:    | substring    |        55 ms |         SKIP |          83 ms |
+
+Legend:  PASS = completed within 120s.  DNF = timed out.  SKIP = tool not found.
+Note:   UFFS (Rust) has three phases: COLD (no cache), WARM (cache), HOT (daemon).
+        UFFS (C++) re-reads MFT every invocation (no daemon).
+        Everything is always-hot (daemon model).
+        Sinks: file = --out=/-export-csv → disk; stdout = piped stdout;
+               null = child process writes to a real NUL device via cmd /C.
+        Null-sink rows show '—' for Rows/Bad (nothing to count after the
+        redirect); correctness is verified by the file-mode passes.
+        UltraSearch excluded — no functional headless CLI (see script header).
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main> echo '_____________________________________________________________________________________________________________________'
+_____________________________________________________________________________________________________________________
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+(production) ~\GitHub\UltraFastFileSearch on main>
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+___________________________________________________________________________________________________________________________________________________________________
+
+
+
