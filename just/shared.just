@@ -68,48 +68,323 @@ toolchain-ensure:
     printf "\033[0;32m✅ Toolchain %s ready\033[0m\n" "$CURRENT"
     rustc --version
 
-# Sync the nightly toolchain to the latest date and update rust-toolchain.toml.
+# Sync the nightly toolchain to the latest WORKING date and update rust-toolchain.toml.
 # Run this MANUALLY when you want to bump the pinned nightly (e.g. before `just go`).
 # Do NOT call from CI — use `toolchain-ensure` instead.
+#
+# Algorithm:
+#   1. Start at today's UTC date (the newest nightly that *could* be published).
+#   2. Try to install that nightly (with one auto-retry after cleaning the
+#      rustup downloads cache, so a stale `.partial` file / transient network
+#      error does not immediately force a step-back).  `no release found`
+#      short-circuits straight to step-back because it is not transient.
+#      Post-install health probe (`rustc +CANDIDATE --version`) catches the
+#      rare "install reported success but toolchain is corrupt" case.
+#   3. If install succeeds, run `cargo check --workspace --all-targets` with
+#      `+TOOLCHAIN` override (so rust-toolchain.toml stays untouched during the
+#      probe).  If check fails — step back one day and retry.
+#   4. Verify every component listed in rust-toolchain.toml installs cleanly on
+#      the candidate.  If a component conflict fires (e.g. the rustup rename
+#      `llvm-tools-preview` → `llvm-tools` tripping a stale bookkeeping entry),
+#      auto-recover by uninstalling the candidate toolchain, cleaning the
+#      rustup downloads cache, and reinstalling fresh.  If the conflict
+#      persists even after recovery — step back one day.
+#   5. Stop at the current pin.  If the current pin itself works: no-op exit 0.
+#      If nothing between today and the current pin works (including the pin):
+#      exit 1 with a clear error — manual intervention required.
+#
+# This makes the recipe robust against:
+#   • today's nightly not being published yet (UTC date vs. rust publish time),
+#   • transient network / rustup-downloads errors (auto-retried once after a
+#     cache wipe before stepping back — handles the common `.partial` rename
+#     failure mode and short network blips without losing a day on the pin),
+#   • corrupt toolchain installs (`rustc --version` health probe),
+#   • upstream nightly regressions (ethnum, rustc ICE, etc.) that break cargo
+#     check on specific dates,
+#   • rustup component-rename bookkeeping conflicts that would otherwise fire
+#     on the *next* rustup invocation (breaking `cargo fmt` / `ship-fresh`
+#     after a successful sync).
 toolchain-sync:
     #!/usr/bin/env bash
-    set -euo pipefail
-    printf "\033[0;34m🔧 Syncing to latest nightly toolchain...\033[0m\n"
+    set -uo pipefail
+    printf "\033[0;34m🔧 Syncing to latest working nightly toolchain...\033[0m\n"
 
-    # Determine today's date for the nightly channel.
-    TODAY=$(date -u +%Y-%m-%d)
-    NEW_CHANNEL="nightly-${TODAY}"
     TOOLCHAIN_FILE="rust-toolchain.toml"
+    MAX_ITERS=21  # safety cap — three weeks of step-back is plenty
 
-    # Read the current channel.
+    # Read the current channel — this is the floor.  Never downgrade below it
+    # silently; that's the user's documented known-good in the file header.
     CURRENT=$(grep '^channel' "$TOOLCHAIN_FILE" | sed 's/.*"\(.*\)".*/\1/')
-    if [ "$CURRENT" = "$NEW_CHANNEL" ]; then
-        printf "\033[0;32m✅ Already on latest nightly (%s)\033[0m\n" "$NEW_CHANNEL"
+    CURRENT_DATE="${CURRENT#nightly-}"
+    if [ "$CURRENT_DATE" = "$CURRENT" ]; then
+        printf "\033[0;31m❌ Current pin %s is not a nightly-YYYY-MM-DD channel — refusing to auto-sync.\033[0m\n" "$CURRENT"
+        exit 1
+    fi
+    printf "\033[0;34m   Current pin: %s (floor — will not step below this)\033[0m\n" "$CURRENT"
+
+    START_DATE=$(date -u +%Y-%m-%d)
+    printf "\033[0;34m   Start date:  nightly-%s (today UTC)\033[0m\n\n" "$START_DATE"
+
+    # Portable one-day-back helper — macOS (BSD date) vs. Linux (GNU date).
+    date_minus_one() {
+        local d="$1"
+        if date -v -1d -j -f "%Y-%m-%d" "$d" "+%Y-%m-%d" 2>/dev/null; then
+            return 0
+        fi
+        date -u -d "$d -1 day" "+%Y-%m-%d"
+    }
+
+    # Portable sed -i — GNU sed wants `-i`, BSD sed wants `-i ''`.  The old
+    # recipe's `sed -i''` pattern parsed as `-i` with extension `-e` on BSD,
+    # which is why `rust-toolchain.toml-e` kept reappearing.
+    sed_inplace() {
+        local script="$1"
+        local file="$2"
+        if sed --version >/dev/null 2>&1; then
+            sed -i -e "$script" "$file"
+        else
+            sed -i '' -e "$script" "$file"
+        fi
+    }
+
+    # Extract the canonical component list from rust-toolchain.toml.
+    # Reads the `components = [...]` block and emits one component name per
+    # line, quote-stripped.  Returns empty on a missing / malformed file.
+    #
+    # awk range `/^components = \[/,/^\]/` selects the block; grep narrows
+    # to the quoted tokens; tr strips the quotes.  Comment lines inside the
+    # block are skipped naturally because `grep -Eo '"[a-z_-]+"'` only
+    # matches bare quoted identifiers.
+    read_components() {
+        awk '/^components = \[/,/^\]/' "$TOOLCHAIN_FILE" \
+            | grep -Eo '"[a-z_-]+"' \
+            | tr -d '"' || true
+    }
+
+    # Add every rust-toolchain.toml component to `$1` (the toolchain name).
+    # Returns:
+    #   0 — all components installed cleanly.
+    #   2 — at least one component failed with a "detected conflict"
+    #       error (stale rustup bookkeeping from the rename of
+    #       `llvm-tools-preview` → `llvm-tools`, etc.).  Caller can
+    #       recover with uninstall + reinstall.
+    #   1 — any other component-install failure.
+    ensure_components() {
+        local toolchain="$1"
+        local comp
+        for comp in $(read_components); do
+            if ! rustup component add "$comp" --toolchain "$toolchain" \
+                    >/tmp/toolchain-sync-component.log 2>&1; then
+                if grep -q 'detected conflict' /tmp/toolchain-sync-component.log; then
+                    return 2
+                fi
+                return 1
+            fi
+        done
+        return 0
+    }
+
+    # Wipe the rustup downloads cache so stale `.partial` files (left
+    # behind by interrupted installs or concurrent rustup invocations)
+    # can't block the next download with `could not rename downloaded
+    # file … No such file or directory (os error 2)`.  Safe no-op if
+    # the directory is empty or missing.
+    clean_rustup_downloads() {
+        rm -rf "${HOME}/.rustup/downloads"/* 2>/dev/null || true
+    }
+
+    # Try `rustup toolchain install $1 --profile default` with
+    # auto-recovery on transient failures.
+    # Returns:
+    #   0   — install succeeded and `rustc +$1 --version` confirms the
+    #         toolchain is usable.
+    #   10  — channel does not exist (`no release found`).  Caller
+    #         should step back; the cache has not been touched.
+    #   1   — install or health check failed after one retry.  Caller
+    #         should step back.
+    #
+    # Recovery flow:
+    #   1. First `rustup toolchain install` attempt.
+    #   2. On failure: if the log reports `no release found`, return
+    #      10 immediately (not a transient error).  Otherwise wipe the
+    #      downloads cache and retry once.
+    #   3. After a successful install, run `rustc +$1 --version` as a
+    #      health probe.  If rustc fails to launch (missing binary,
+    #      corrupt install), treat the install as failed.
+    try_install() {
+        local toolchain="$1"
+        local attempt
+        for attempt in 1 2; do
+            if rustup toolchain install "$toolchain" --profile default \
+                    >/tmp/toolchain-sync-install.log 2>&1; then
+                # Health check — install succeeded, does rustc actually run?
+                if rustc "+$toolchain" --version \
+                        >/tmp/toolchain-sync-health.log 2>&1; then
+                    return 0
+                fi
+                # Install claimed success but rustc is broken.  Clean
+                # and fall through to the retry (or return 1 on
+                # attempt 2).
+                clean_rustup_downloads
+                continue
+            fi
+            if grep -q 'no release found' /tmp/toolchain-sync-install.log; then
+                return 10
+            fi
+            # Some other error (rename / partial / network flake).
+            # Clean the downloads cache before the retry; on the
+            # second attempt there is no retry and we fall out to
+            # return 1 below.
+            if [ "$attempt" = "1" ]; then
+                printf "\033[0;33m   ⚠️  install hit a transient error — cleaning rustup downloads cache and retrying.\033[0m\n"
+                clean_rustup_downloads
+            fi
+        done
+        return 1
+    }
+
+    # Per-candidate scratch target dir so each probe gets a clean artifact
+    # cache.  Sharing the main `target/` dir across candidates fails with
+    # "please recompile that crate using this compiler" errors whenever the
+    # rustc hash differs between the cached artifacts and the current probe
+    # — which is exactly the common case (probing N nightlies in a row).
+    # Trap cleans up on any exit (success, error, or ^C).
+    PROBE_ROOT="${TMPDIR:-/tmp}/uffs-toolchain-probe.$$"
+    mkdir -p "$PROBE_ROOT"
+    trap 'rm -rf "$PROBE_ROOT"' EXIT
+
+    CANDIDATE_DATE="$START_DATE"
+    ITER=0
+    while [ "$ITER" -lt "$MAX_ITERS" ]; do
+        CANDIDATE="nightly-${CANDIDATE_DATE}"
+        printf "\033[0;34m──▶ [%d/%d] Trying %s\033[0m\n" "$((ITER+1))" "$MAX_ITERS" "$CANDIDATE"
+
+        # ── Phase 1: install + health check ─────────────────────
+        # `try_install` already retries once on transient download /
+        # rename failures after cleaning `~/.rustup/downloads`, so
+        # flaky networks or stale `.partial` files from earlier
+        # interrupted installs recover automatically.  A post-install
+        # `rustc +CANDIDATE --version` health probe catches the
+        # "install reported success but the toolchain is broken"
+        # class of corruption.
+        try_install "$CANDIDATE"
+        INSTALL_RC=$?
+        if [ "$INSTALL_RC" = "0" ]; then
+            printf "\033[0;32m   ✅ install ok\033[0m\n"
+        else
+            if [ "$INSTALL_RC" = "10" ]; then
+                printf "\033[0;33m   ⚠️  %s not published yet — stepping back one day.\033[0m\n" "$CANDIDATE"
+            else
+                printf "\033[0;33m   ⚠️  install of %s failed after retry (see /tmp/toolchain-sync-install.log) — stepping back one day.\033[0m\n" "$CANDIDATE"
+            fi
+
+            if [ "$CANDIDATE" = "$CURRENT" ]; then
+                printf "\n\033[0;31m❌ Current pin %s cannot be installed — it may be an invalid or future date.\033[0m\n" "$CURRENT"
+                printf "\033[0;31m   Fix rust-toolchain.toml manually, then rerun.\033[0m\n"
+                exit 1
+            fi
+            CANDIDATE_DATE=$(date_minus_one "$CANDIDATE_DATE")
+            ITER=$((ITER+1))
+            continue
+        fi
+
+        # ── Phase 2: cargo check --workspace --all-targets ─────
+        # `+TOOLCHAIN` override bypasses rust-toolchain.toml, so a failed probe
+        # never mutates the pin.  --all-targets covers tests/benches/examples,
+        # which catch regressions that lib-only check misses (e.g. ethnum-via-
+        # polars-parquet only surfaces under test targets).  CARGO_TARGET_DIR
+        # is scoped per-candidate so cross-toolchain artifact hash mismatches
+        # ("please recompile that crate using this compiler") don't produce
+        # false-negative probe failures.
+        printf "\033[0;34m   Running cargo +%s check --workspace --all-targets...\033[0m\n" "$CANDIDATE"
+        if CARGO_TARGET_DIR="$PROBE_ROOT/$CANDIDATE" \
+            cargo "+$CANDIDATE" check --workspace --all-targets --quiet \
+            >/tmp/toolchain-sync-check.log 2>&1; then
+            printf "\033[0;32m   ✅ cargo check ok\033[0m\n"
+        else
+            printf "\033[0;33m   ⚠️  cargo check failed under %s — stepping back one day.\033[0m\n" "$CANDIDATE"
+            printf "\033[0;33m      (last 3 lines from /tmp/toolchain-sync-check.log:)\033[0m\n"
+            tail -n 3 /tmp/toolchain-sync-check.log | sed 's/^/        /'
+
+            if [ "$CANDIDATE" = "$CURRENT" ]; then
+                printf "\n\033[0;31m❌ Current pin %s installs but no longer compiles the workspace.\033[0m\n" "$CURRENT"
+                printf "\033[0;31m   Full log: /tmp/toolchain-sync-check.log\033[0m\n"
+                printf "\033[0;31m   Manual intervention required — the pinned toolchain is broken.\033[0m\n"
+                exit 1
+            fi
+            CANDIDATE_DATE=$(date_minus_one "$CANDIDATE_DATE")
+            ITER=$((ITER+1))
+            continue
+        fi
+
+        # ── Phase 3: component verification ─────────────────────
+        # Install every component listed in rust-toolchain.toml.  The
+        # `ship-fresh` failure mode this guards against: rustup lazily
+        # tries to add extra components on the *next* invocation after
+        # a `--profile default` install, and a component-rename
+        # bookkeeping conflict (e.g. stale `llvm-tools-preview` vs
+        # current `llvm-tools`) breaks `cargo fmt` / `cargo clippy` /
+        # any subsequent CI step.  Catching this at sync-time lets us
+        # recover with uninstall + reinstall without polluting the
+        # pipeline log with ambiguous failures.
+        printf "\033[0;34m   Adding rust-toolchain.toml components to %s...\033[0m\n" "$CANDIDATE"
+        ensure_components "$CANDIDATE"
+        COMPONENT_RC=$?
+        if [ "$COMPONENT_RC" = "2" ]; then
+            printf "\033[0;33m   ⚠️  Component conflict — reinstalling %s to clear rustup bookkeeping.\033[0m\n" "$CANDIDATE"
+            rustup toolchain uninstall "$CANDIDATE" >/dev/null 2>&1 || true
+            # Clean the downloads cache too — the same run that left
+            # the component-bookkeeping in a bad state likely also
+            # left `.partial` downloads behind.
+            clean_rustup_downloads
+            if try_install "$CANDIDATE" >/dev/null 2>&1; then
+                ensure_components "$CANDIDATE"
+                COMPONENT_RC=$?
+                if [ "$COMPONENT_RC" = "0" ]; then
+                    printf "\033[0;32m   ✅ reinstall recovered the conflict\033[0m\n"
+                fi
+            fi
+        fi
+        if [ "$COMPONENT_RC" != "0" ]; then
+            printf "\033[0;33m   ⚠️  component install failed under %s — stepping back one day.\033[0m\n" "$CANDIDATE"
+            printf "\033[0;33m      (last 3 lines from /tmp/toolchain-sync-component.log:)\033[0m\n"
+            tail -n 3 /tmp/toolchain-sync-component.log | sed 's/^/        /'
+
+            if [ "$CANDIDATE" = "$CURRENT" ]; then
+                printf "\n\033[0;31m❌ Current pin %s cannot install all required components.\033[0m\n" "$CURRENT"
+                printf "\033[0;31m   Full log: /tmp/toolchain-sync-component.log\033[0m\n"
+                printf "\033[0;31m   Manual intervention required.\033[0m\n"
+                exit 1
+            fi
+            CANDIDATE_DATE=$(date_minus_one "$CANDIDATE_DATE")
+            ITER=$((ITER+1))
+            continue
+        fi
+        printf "\033[0;32m   ✅ all components installed\033[0m\n\n"
+
+        # ── Success ────────────────────────────────────────────
+        if [ "$CANDIDATE" = "$CURRENT" ]; then
+            printf "\033[0;32m✅ Current pin %s still works — no bump available.\033[0m\n" "$CURRENT"
+            rustup default "$CURRENT" >/dev/null 2>&1 || true
+            rustc --version
+            exit 0
+        fi
+
+        printf "\033[0;32m🎉 Found newer working nightly: %s\033[0m\n" "$CANDIDATE"
+        printf "\033[0;34m   Updating %s: %s → %s\033[0m\n" "$TOOLCHAIN_FILE" "$CURRENT" "$CANDIDATE"
+        sed_inplace "s|channel = \"${CURRENT}\"|channel = \"${CANDIDATE}\"|" "$TOOLCHAIN_FILE"
+        # Clean up any BSD-sed backup artifact from older broken invocations.
+        rm -f "${TOOLCHAIN_FILE}-e"
+        rustup default "$CANDIDATE"
+        printf "\033[0;32m✅ Toolchain synced to %s\033[0m\n" "$CANDIDATE"
         rustc --version
+        cargo --version
         exit 0
-    fi
+    done
 
-    printf "\033[0;34m   %s → %s\033[0m\n" "$CURRENT" "$NEW_CHANNEL"
-
-    # Update the file.
-    sed -i'' -e "s/channel = \"${CURRENT}\"/channel = \"${NEW_CHANNEL}\"/" "$TOOLCHAIN_FILE"
-    # Update the comment date.
-    sed -i'' -e "s/# Latest nightly — updated .*/# Latest nightly — updated $(date -u +%Y-%m-%d)./" "$TOOLCHAIN_FILE"
-
-    # Install the new toolchain (rustup reads rust-toolchain.toml automatically).
-    # Retry with cache clear on failure (stale .partial files cause rename errors).
-    printf "\033[0;34m   Installing %s...\033[0m\n" "$NEW_CHANNEL"
-    if ! rustup toolchain install "$NEW_CHANNEL" --profile default 2>&1; then
-        printf "\033[0;33m⚠️  Install failed — clearing rustup download cache and retrying...\033[0m\n"
-        rm -rf ~/.rustup/downloads/*
-        rustup toolchain install "$NEW_CHANNEL" --profile default
-    fi
-    rustup default "$NEW_CHANNEL"
-
-    # Verify.
-    printf "\033[0;32m✅ Toolchain synced to %s\033[0m\n" "$NEW_CHANNEL"
-    rustc --version
-    cargo --version
+    printf "\033[0;31m❌ Safety cap of %d iterations reached without finding a working nightly.\033[0m\n" "$MAX_ITERS"
+    printf "\033[0;31m   Last tried: nightly-%s.  Either the cap is too low or your workspace is broken.\033[0m\n" "$CANDIDATE_DATE"
+    exit 1
 
 # First-time development environment setup (install-if-missing only).
 # For updates, use `just update-tools`.

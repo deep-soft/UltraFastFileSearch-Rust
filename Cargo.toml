@@ -25,6 +25,7 @@ members = [
     "crates/uffs-text",     # 📝 Unicode text processing, i18n foundation
     "crates/uffs-time",     # ⏱️ NTFS FILETIME arithmetic (pure, zero deps)
     "crates/uffs-mft",      # 📦 MFT reading → Polars DataFrame
+    "crates/uffs-format",   # 🧾 Shared CSV formatter (daemon + thin CLI)
     "crates/uffs-core",     # 🎯 Query engine + compact search engine
     # ── Daemon Architecture ──
     "crates/uffs-daemon",   # 🛡️ Background service process
@@ -42,7 +43,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.5.60"
+version = "0.5.61"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
@@ -67,6 +68,7 @@ uffs-security = { path = "crates/uffs-security" }
 uffs-text     = { path = "crates/uffs-text" }
 uffs-time     = { path = "crates/uffs-time" }
 uffs-mft      = { path = "crates/uffs-mft", features = ["zstd"] }
+uffs-format   = { path = "crates/uffs-format" }
 uffs-core     = { path = "crates/uffs-core" }
 uffs-client   = { path = "crates/uffs-client" }
 # NOTE: no `uffs-diag` workspace dependency alias on purpose.

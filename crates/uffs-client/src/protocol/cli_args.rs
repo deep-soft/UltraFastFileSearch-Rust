@@ -600,7 +600,7 @@ impl RawCliArgs {
             filter,
             filter_mode,
             predicates: Vec::new(),
-            drives,
+            drives: drives.clone(),
             projection,
             response_mode: Some(SearchResponseMode::Rows),
             // Size
@@ -660,6 +660,21 @@ impl RawCliArgs {
             output_columns: non_empty(columns),
             output_parity_compat: self.parity_compat.then_some(true),
             output_tz_offset_hours: self.tz_offset,
+            // Forward the CLI's `--format` value so the daemon can
+            // gate its `try_pack_csv_blob` pre-format fast path on it.
+            // Phase 3: `"csv"` and `"custom"` both take the fast path;
+            // `"json"` / `"table"` stay on the CLI's local formatter.
+            // See `SearchParams::output_format` for the full
+            // rationale.
+            output_format: non_empty(self.format.clone()),
+            // Drives to echo into the legacy drive footer when
+            // `--format custom`.  Same letters as `drives` above for
+            // the main CLI path (which populates `drives` from
+            // `--drive` / `--drives`); the thin-client passthrough in
+            // `commands::search::dispatch` handles `--mft-file`
+            // separately and overrides this field directly on the
+            // passthrough `SearchParams`.
+            output_drive_targets: drives,
         };
         params.populate_canonical_fields();
         Ok(params)

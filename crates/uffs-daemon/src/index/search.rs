@@ -16,7 +16,8 @@ use std::io::Write;
 use std::time::Instant;
 
 use uffs_client::protocol::response::{
-    DriveInfo, DriveProfile, DrivesResponse, SearchProfile, SearchResponse, SearchRow,
+    DriveInfo, DriveProfile, DrivesResponse, SearchPayload, SearchProfile, SearchResponse,
+    SearchRow,
 };
 use uffs_client::protocol::{SearchFilterMode, SearchParams, SearchResponseMode};
 use uffs_core::search::backend::{
@@ -50,21 +51,22 @@ impl IndexManager {
         // CPU count.  Operators can clamp this down (or raise it) via
         // the `UFFS_SEARCH_MAX_CONCURRENCY` env var.
         let Some(_permit) = self.acquire_search_permit().await else {
+            // Permit acquisition timed out — the global concurrency
+            // cap is saturated.  Return a no-payload response with
+            // the remaining metadata fields at their zero defaults
+            // so the client still sees a valid (if empty) shape.
             return SearchResponse {
-                rows: Vec::new(),
+                payload: SearchPayload::Empty,
                 total_count: 0,
                 records_scanned: 0,
                 duration_ms: 0,
                 truncated: false,
-                shmem_path: None,
-                shmem_count: None,
                 profile: None,
                 applied_sorts: Vec::new(),
                 applied_projection: Vec::new(),
                 response_mode: None,
                 projected_rows: None,
                 aggregations: vec![],
-                paths_blob: None,
             };
         };
 
@@ -223,20 +225,17 @@ impl IndexManager {
             Ok(Err(_join_err)) => {
                 tracing::error!("search task panicked");
                 return SearchResponse {
-                    rows: Vec::new(),
+                    payload: SearchPayload::Empty,
                     total_count: 0,
                     records_scanned: 0,
                     duration_ms: 0,
                     truncated: false,
-                    shmem_path: None,
-                    shmem_count: None,
                     profile: None,
                     applied_sorts: Vec::new(),
                     applied_projection: Vec::new(),
                     response_mode: None,
                     projected_rows: None,
                     aggregations: vec![],
-                    paths_blob: None,
                 };
             }
             Err(_timeout) => {
@@ -245,20 +244,17 @@ impl IndexManager {
                     "search timed out after 30s"
                 );
                 return SearchResponse {
-                    rows: Vec::new(),
+                    payload: SearchPayload::Empty,
                     total_count: 0,
                     records_scanned: 0,
                     duration_ms: 30_000,
                     truncated: false,
-                    shmem_path: None,
-                    shmem_count: None,
                     profile: None,
                     applied_sorts: Vec::new(),
                     applied_projection: Vec::new(),
                     response_mode: None,
                     projected_rows: None,
                     aggregations: vec![],
-                    paths_blob: None,
                 };
             }
         };
@@ -351,20 +347,22 @@ impl IndexManager {
                         None
                     };
                     return SearchResponse {
-                        rows: Vec::new(),
+                        // File-sink path: the daemon already streamed
+                        // the rows to `output_path`, so the response
+                        // carries no payload — only the `rows_written`
+                        // signal (via `total_count`) and timing
+                        // metadata for `--profile --out`.
+                        payload: SearchPayload::Empty,
                         total_count,
                         records_scanned: result.records_scanned,
                         duration_ms,
                         truncated: false,
-                        shmem_path: None,
-                        shmem_count: None,
                         profile,
                         applied_sorts: Vec::new(),
                         applied_projection: Vec::new(),
                         response_mode: None,
                         projected_rows: None,
                         aggregations: vec![],
-                        paths_blob: None,
                     };
                 }
                 Err(err) => {
@@ -476,28 +474,33 @@ impl IndexManager {
             total_count = agg_matched;
         }
 
+        // Pick the payload variant for the normal (non-file-sink)
+        // path.  The search core itself only ever emits `Empty` or
+        // `InlineRows` here — `handle_search` downstream may
+        // re-dispatch the payload to `InlineBlob`, `ShmemBlob`, or
+        // `ShmemRows` based on size + projection.
+        let payload = if projected_rows.is_some() || rows.is_empty() {
+            // JSON-mode callers consume `projected_rows` directly;
+            // `Empty` avoids double-delivering the same data.  Zero
+            // rows also collapse to `Empty` so the client doesn't
+            // pay a JSON serialize of `{"kind":"inline_rows","data":[]}`.
+            SearchPayload::Empty
+        } else {
+            SearchPayload::InlineRows(rows)
+        };
+
         SearchResponse {
-            rows: if projected_rows.is_some() {
-                Vec::new()
-            } else {
-                rows
-            },
+            payload,
             total_count,
             records_scanned: result.records_scanned,
             duration_ms,
             truncated,
-            shmem_path: None,
-            shmem_count: None,
             profile,
             applied_sorts,
             applied_projection,
             response_mode: Some(response_mode),
             projected_rows,
             aggregations: agg_results,
-            // Populated by `handle_search` when projection is path-only
-            // and the row count is below the shmem threshold.  The
-            // search core itself always returns full [`SearchRow`]s.
-            paths_blob: None,
         }
     }
 
@@ -751,40 +754,15 @@ impl IndexManager {
     }
 }
 
-/// Reconstruct an [`OutputConfig`] from protocol fields in [`SearchParams`].
-///
-/// The CLI serialises its `OutputConfig` into individual string fields
-/// (`output_separator`, `output_quote`, etc.) so the daemon can rebuild
-/// an identical config without needing serde on `OutputConfig` itself.
-fn build_output_config(params: &SearchParams) -> uffs_core::output::OutputConfig {
-    let mut cfg = uffs_core::output::OutputConfig::default();
-
-    if let Some(sep) = &params.output_separator {
-        cfg = cfg.with_separator(sep);
-    }
-    if let Some(quote) = &params.output_quote {
-        cfg = cfg.with_quote(quote);
-    }
-    if let Some(header) = params.output_header {
-        cfg = cfg.with_header(header);
-    }
-    if let Some(pos) = &params.output_pos {
-        cfg = cfg.with_pos(pos);
-    }
-    if let Some(neg) = &params.output_neg {
-        cfg = cfg.with_neg(neg);
-    }
-    if let Some(cols_str) = &params.output_columns {
-        cfg = cfg.with_columns(cols_str);
-    }
-    if params.output_parity_compat == Some(true) {
-        cfg = cfg.with_parity_compat(true);
-    }
-    if let Some(tz_hours) = params.output_tz_offset_hours {
-        cfg = cfg.with_tz_offset_hours(tz_hours);
-    }
-    cfg
-}
+// `build_output_config` lives in a sibling file to keep `search.rs`
+// under the 800-line policy ceiling.  Re-exported here so every
+// existing call site (`search()` below, the file-sink path, and
+// `handler::RequestHandler::try_pack_csv_blob`) keeps the same
+// `crate::index::search::build_output_config(...)` path — no
+// call-site rename needed.
+#[path = "search_output_config.rs"]
+mod output_config;
+pub(crate) use output_config::build_output_config;
 
 // The inline `tests` module lives in a sibling file to keep `search.rs`
 // under the 800-line policy ceiling.  `#[path]` keeps the test module

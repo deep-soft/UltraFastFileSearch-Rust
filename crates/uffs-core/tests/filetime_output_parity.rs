@@ -73,6 +73,7 @@ use tokio as _;
 use tracing as _;
 use uffs_core::output::OutputConfig;
 use uffs_core::search::backend::DisplayRow;
+use uffs_format as _;
 use uffs_mft as _;
 use uffs_polars as _;
 use uffs_security as _;

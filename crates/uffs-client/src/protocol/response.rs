@@ -122,28 +122,197 @@ pub struct KeepaliveParams {
 // Method responses
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Delivery channel for search results.
+///
+/// v0.5.62 collapsed the five mutually-exclusive fields
+/// (`rows`, `shmem_path`, `shmem_count`, `paths_blob`,
+/// `paths_blob_shmem`) of the old `SearchResponse` into this single
+/// tagged enum so that:
+///
+/// 1. **Illegal states are unrepresentable.**  The type system enforces exactly
+///    one payload channel per response; no more "inline blob AND shmem rows
+///    both set" correctness hazard.
+/// 2. **The client dispatch is exhaustive.**  A `match` on this enum guarantees
+///    the CLI handles every variant, and adding a new transport (e.g.
+///    `InlineNdjson`, `MsgpackShmem`) is a variant addition caught at compile
+///    time at every call site.
+/// 3. **Format and transport are orthogonal axes.**  Two axes — *Format*
+///    (Structured `SearchRow` list vs. pre-formatted UTF-8 bytes) and
+///    *Transport* (Inline in the RPC envelope vs. Shmem file) — combine into
+///    four natural variants, plus [`Self::Empty`] for the no-payload case.
+///
+/// ## Dispatch priority (daemon side)
+///
+/// 1. Caller opted out of rows or no matches → [`Self::Empty`].
+/// 2. Pre-formattable projection (path-only, or multi-column CSV whose options
+///    match the daemon's formatter):
+///    - blob ≤ [`crate::shmem::PATHS_BLOB_SHMEM_THRESHOLD`] →
+///      [`Self::InlineBlob`]
+///    - blob > threshold → [`Self::ShmemBlob`]
+/// 3. Otherwise (JSON mode, aggregations-only, or format flags the daemon
+///    cannot replicate):
+///    - rows ≤ [`crate::shmem::SHMEM_THRESHOLD`] → [`Self::InlineRows`]
+///    - rows > threshold → [`Self::ShmemRows`]
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum SearchPayload {
+    /// No rows, no blob.  Used for no-match queries, `--no-output`,
+    /// and `--out=file` responses where the daemon streamed directly
+    /// to disk.  Metadata fields (`total_count`, `duration_ms`,
+    /// `aggregations`, …) on the enclosing [`SearchResponse`] may
+    /// still carry useful information.
+    ///
+    /// Marked `#[default]` so [`core::mem::take`] on a payload field
+    /// can swap the owned variant out without requiring a manual
+    /// replacement — the daemon's `try_pack_paths_blob` relies on
+    /// this to consume a `Vec<SearchRow>` without cloning it.
+    #[default]
+    Empty,
+
+    /// Structured [`SearchRow`] list delivered as a JSON array
+    /// inside the RPC envelope.  Used for JSON-mode callers, the
+    /// [`projected_rows`](SearchResponse::projected_rows) direct API
+    /// path, and multi-column CLI responses whose format flags
+    /// (custom separator, quote character, locale-specific date
+    /// format, etc.) would diverge from the daemon's CSV writer
+    /// defaults.
+    InlineRows(Vec<SearchRow>),
+
+    /// Structured rows delivered via a memory-mapped binary file.
+    /// The client reads the file with
+    /// [`crate::shmem::read_search_results`] and must delete it
+    /// afterwards (best-effort — the daemon's GC
+    /// ([`crate::shmem::cleanup_stale_shmem_files`]) sweeps any
+    /// orphans on restart).
+    ShmemRows {
+        /// Absolute path to the mmap'd binary rows file.
+        path: String,
+        /// Number of [`SearchRow`] records the daemon wrote to the
+        /// file.  Lets the client size its destination vec up front
+        /// without re-counting.
+        count: u64,
+    },
+
+    /// Pre-formatted UTF-8 text delivered inline as a JSON string.
+    /// The daemon has already applied the user's `--columns`,
+    /// `--sep`, `--quotes`, `--header`, etc. — the CLI writes the
+    /// bytes straight to stdout with a single `write_all` and
+    /// treats them as opaque output.
+    ///
+    /// The final byte is always `\n` when the blob is non-empty.
+    /// Used when the blob is at most
+    /// [`crate::shmem::PATHS_BLOB_SHMEM_THRESHOLD`] bytes; above
+    /// that, the daemon switches to [`Self::ShmemBlob`] to avoid
+    /// the ~80 ms round-trip JSON escape/unescape cost on
+    /// multi-megabyte backslash-heavy Windows-path blobs.
+    InlineBlob(String),
+
+    /// Pre-formatted UTF-8 text delivered via a memory-mapped
+    /// binary file.  The file carries the raw bytes — no framing,
+    /// no length prefix, no JSON — and the client streams it via
+    /// [`crate::shmem::stream_paths_blob_into`], which mmaps the
+    /// file, runs a single `write_all`, and deletes the file
+    /// afterwards.  No JSON encode on the daemon, no JSON decode on
+    /// the client, no intermediate allocation.
+    ///
+    /// Used when the blob exceeds
+    /// [`crate::shmem::PATHS_BLOB_SHMEM_THRESHOLD`].
+    ShmemBlob(String),
+}
+
+impl SearchPayload {
+    /// Return `true` when no payload is attached.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    /// Return `true` when the payload carries structured
+    /// [`SearchRow`] records (either inline or via shmem).
+    ///
+    /// Useful on the client side to decide between row-walking
+    /// formatters and opaque `write_all` fast paths.
+    #[must_use]
+    pub const fn is_rows(&self) -> bool {
+        matches!(self, Self::InlineRows(_) | Self::ShmemRows { .. })
+    }
+
+    /// Return `true` when the payload carries pre-formatted UTF-8
+    /// bytes (either inline or via shmem).  The client writes these
+    /// straight to stdout without format dispatch.
+    #[must_use]
+    pub const fn is_blob(&self) -> bool {
+        matches!(self, Self::InlineBlob(_) | Self::ShmemBlob(_))
+    }
+
+    /// Best-effort structured row count, when known without
+    /// reading a shmem file.
+    ///
+    /// Returns:
+    /// - `Some(0)` for [`Self::Empty`].
+    /// - `Some(len)` for [`Self::InlineRows`].
+    /// - `Some(count)` for [`Self::ShmemRows`] (the daemon's pre-computed
+    ///   count).
+    /// - `None` for blob variants — counting newlines would require mmapping
+    ///   the file and is usually unnecessary.
+    #[must_use]
+    pub fn row_count_hint(&self) -> Option<usize> {
+        match self {
+            Self::Empty => Some(0),
+            Self::InlineRows(rows) => Some(rows.len()),
+            Self::ShmemRows { count, .. } => Some(usize::try_from(*count).unwrap_or(usize::MAX)),
+            Self::InlineBlob(_) | Self::ShmemBlob(_) => None,
+        }
+    }
+
+    /// Consume the payload and return the inline `SearchRow` list.
+    ///
+    /// Programmatic callers that always request structured rows
+    /// (e.g. the MCP bridge, the `uffs_client::connect::UffsClientSync::search`
+    /// API) use this to unwrap the payload after the transport
+    /// layer has transparently resolved any [`Self::ShmemRows`]
+    /// back to [`Self::InlineRows`].
+    ///
+    /// Returns:
+    /// - `Some(rows)` for [`Self::InlineRows`] (the common case).
+    /// - `Some(Vec::new())` for [`Self::Empty`] — a no-match query is not an
+    ///   error.
+    /// - `None` for every other variant:
+    ///   - [`Self::ShmemRows`] — the caller forgot to run the
+    ///     transparent-resolve step (`connect::search` does this automatically;
+    ///     direct `send_request` users must call
+    ///     [`crate::shmem::read_search_results`] themselves).
+    ///   - [`Self::InlineBlob`] / [`Self::ShmemBlob`] — the daemon
+    ///     pre-formatted the output for stdout, which programmatic callers
+    ///     don't ask for (blobs only fire when the CLI explicitly requests a
+    ///     path-only or multi-column CSV projection that the daemon can fully
+    ///     render server-side).
+    #[must_use]
+    pub fn into_inline_rows(self) -> Option<Vec<SearchRow>> {
+        match self {
+            Self::InlineRows(rows) => Some(rows),
+            Self::Empty => Some(Vec::new()),
+            Self::ShmemRows { .. } | Self::InlineBlob(_) | Self::ShmemBlob(_) => None,
+        }
+    }
+}
+
 /// Response for the `search` method.
 ///
-/// Results are delivered via one of three channels, in priority order:
+/// The payload (matching rows or a pre-formatted output blob)
+/// travels in [`Self::payload`] as a tagged enum — see
+/// [`SearchPayload`] for the full taxonomy of delivery channels and
+/// the dispatch priority the daemon uses to pick between them.
 ///
-/// 1. `paths_blob` — a single UTF-8 buffer of newline-terminated paths. Used
-///    only when the client requested a path-only projection (`--columns path`)
-///    and the row count is below [`crate::shmem::SHMEM_THRESHOLD`].  The CLI
-///    then does one `write_all` to stdout, skipping per-row JSON
-///    deserialization and format dispatch entirely.  Empty when this channel is
-///    not used.
-/// 2. `shmem_path` — shared-memory file with the full [`SearchRow`] list.  Used
-///    for large result sets.  When set, `rows` is empty and the file should be
-///    read with [`crate::shmem::read_search_results`].  The client owns
-///    cleanup.
-/// 3. `rows` — traditional inline [`SearchRow`] vector.  Used for
-///    small-to-medium result sets that do not qualify for the path-only fast
-///    path.
+/// Everything else on this struct is per-response metadata
+/// (timings, aggregations, applied flags) that is independent of
+/// the payload shape.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchResponse {
-    /// Matching result rows (inline delivery — empty when shmem or
-    /// paths blob is used).
-    pub rows: Vec<SearchRow>,
+    /// Payload delivery channel selected by the daemon for this
+    /// response.  See [`SearchPayload`] for the variants + the
+    /// dispatch priority that picks between them.
+    pub payload: SearchPayload,
     /// Total number of matching records (before `limit` truncation).
     ///
     /// When the search uses a `limit`, only a subset of rows is returned
@@ -156,17 +325,6 @@ pub struct SearchResponse {
     pub duration_ms: u64,
     /// Whether results were truncated by limit.
     pub truncated: bool,
-    /// Path to a shared-memory file containing the results (D5.0).
-    ///
-    /// When set, `rows` is empty and the file should be read with
-    /// [`crate::shmem::read_search_results`].  The client is responsible
-    /// for deleting the file after reading.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub shmem_path: Option<String>,
-    /// Number of rows in the shmem file (present only when `shmem_path`
-    /// is set).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub shmem_count: Option<u64>,
     /// Detailed timing breakdown from the daemon (only when
     /// `SearchParams::profile` was `true`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -181,26 +339,18 @@ pub struct SearchResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_mode: Option<SearchResponseMode>,
     /// Projected rows for direct daemon callers.
+    ///
+    /// When the daemon is called via the programmatic (non-CLI) API
+    /// with a custom projection list, each row is reshaped into a
+    /// JSON object keyed by column name and delivered here instead
+    /// of via [`Self::payload`].  The payload is
+    /// [`SearchPayload::Empty`] in that case.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub projected_rows: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
     /// Aggregation results (present when `SearchParams::aggregations` was
     /// non-empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aggregations: Vec<AggregateResultWire>,
-    /// Single-buffer path-only payload.
-    ///
-    /// When the client requests a path-only projection
-    /// (`--columns path`) and the total row count is small enough to
-    /// inline, the daemon builds a newline-terminated UTF-8 buffer of
-    /// paths and delivers it here instead of populating `rows`.  The
-    /// CLI then writes the buffer with a single `write_all` call,
-    /// bypassing per-row JSON deserialization and format dispatch.
-    ///
-    /// When this field is `Some`, `rows` is empty and
-    /// `shmem_path` is `None`.  The final byte is always `\n` when
-    /// the blob is non-empty.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub paths_blob: Option<String>,
 }
 
 /// Daemon-side timing breakdown returned when `SearchParams::profile` is set.
@@ -335,6 +485,74 @@ pub struct SearchRow {
     /// Sum of allocated sizes in entire subtree (directories only).
     #[serde(default)]
     pub tree_allocated: u64,
+}
+
+/// Feed `SearchRow` directly into the shared `uffs-format` writer.
+///
+/// This is the thin-client half of the v0.5.62 formatter unification
+/// — the CLI receives `Vec<SearchRow>` over IPC and streams them
+/// through `uffs_format::write_rows` so its stdout output is
+/// byte-identical to the daemon's `--out=file` path (which feeds
+/// `DisplayRow`s through the same writer).
+///
+/// Every accessor is O(1) and just hands back a struct field,
+/// matching the trait's inlineability requirement.  `SearchRow`
+/// stores `name` separately rather than as a slice into `path` (the
+/// JSON wire format cannot carry `name_start` offsets), so the
+/// filename accessor returns `&self.name` directly.
+impl uffs_format::FormatRow for SearchRow {
+    #[inline]
+    fn drive(&self) -> char {
+        self.drive
+    }
+    #[inline]
+    fn path(&self) -> &str {
+        &self.path
+    }
+    #[inline]
+    fn name(&self) -> &str {
+        &self.name
+    }
+    #[inline]
+    fn size(&self) -> u64 {
+        self.size
+    }
+    #[inline]
+    fn is_directory(&self) -> bool {
+        self.is_directory
+    }
+    #[inline]
+    fn modified(&self) -> i64 {
+        self.modified
+    }
+    #[inline]
+    fn created(&self) -> i64 {
+        self.created
+    }
+    #[inline]
+    fn accessed(&self) -> i64 {
+        self.accessed
+    }
+    #[inline]
+    fn flags(&self) -> u32 {
+        self.flags
+    }
+    #[inline]
+    fn allocated(&self) -> u64 {
+        self.allocated
+    }
+    #[inline]
+    fn descendants(&self) -> u32 {
+        self.descendants
+    }
+    #[inline]
+    fn treesize(&self) -> u64 {
+        self.treesize
+    }
+    #[inline]
+    fn tree_allocated(&self) -> u64 {
+        self.tree_allocated
+    }
 }
 
 /// Response for the `drives` method.

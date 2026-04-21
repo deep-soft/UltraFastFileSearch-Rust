@@ -370,3 +370,67 @@ fn aggregate_non_aggregatable_fields() {
         assert!(!a.bucket_support, "{field:?}");
     }
 }
+
+// ============================================================================
+// uffs-format OutputColumn drift-guard regression tests
+// ============================================================================
+//
+// `uffs-core::FieldId` and `uffs_format::OutputColumn` must stay in
+// 1:1 variant-set correspondence and must expose identical
+// `canonical_name` + `display_name` for each variant.  The output
+// formatter in `uffs-format` uses its own narrow enum to avoid
+// dragging polars / chrono / aggregation metadata into the thin
+// client, and these tests pin that the two enums never drift.
+//
+// If they ever do drift, the symptom is a cross-crate output-format
+// divergence: "uffs search > foo.csv" (CLI / SearchRow) and "uffs
+// search --out=foo.csv" (daemon / DisplayRow) would disagree on a
+// header label or misfile the column.  The byte-parity tests in
+// `uffs-core::output::tests::format_parity_*` would surface the
+// symptom, but this drift guard surfaces the root cause earlier
+// and with a clearer error message.
+
+#[test]
+fn field_id_matches_output_column_canonical_names() {
+    use crate::output::display_rows_format_bridge::field_id_to_format_column;
+
+    for &field in FieldId::ALL {
+        let fmt_col = field_id_to_format_column(field);
+        let field_meta = field.metadata();
+        assert_eq!(
+            field_meta.canonical_name,
+            fmt_col.canonical_name(),
+            "FieldId::{field:?} canonical_name diverged from uffs_format::OutputColumn::{fmt_col:?}"
+        );
+    }
+}
+
+#[test]
+fn field_id_matches_output_column_display_names() {
+    use crate::output::display_rows_format_bridge::field_id_to_format_column;
+
+    for &field in FieldId::ALL {
+        let fmt_col = field_id_to_format_column(field);
+        let field_meta = field.metadata();
+        assert_eq!(
+            field_meta.display_name,
+            fmt_col.display_name(),
+            "FieldId::{field:?} display_name diverged from uffs_format::OutputColumn::{fmt_col:?}"
+        );
+    }
+}
+
+#[test]
+fn field_id_matches_output_column_variant_count() {
+    // Pins that both enums have exactly the same set of variants —
+    // adding a new FieldId variant without adding the matching
+    // uffs_format::OutputColumn variant will fail the const match
+    // in `field_id_to_format_column` at compile time, and adding
+    // a new OutputColumn variant without adding it here will fail
+    // this test at run time.
+    assert_eq!(
+        FieldId::ALL.len(),
+        uffs_format::OutputColumn::ALL.len(),
+        "FieldId::ALL and uffs_format::OutputColumn::ALL must have identical variant counts"
+    );
+}

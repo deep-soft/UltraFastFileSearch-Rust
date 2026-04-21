@@ -10,7 +10,7 @@
 )]
 
 use super::*;
-use crate::protocol::response::{DaemonStatus, SearchResponse, SearchRow};
+use crate::protocol::response::{DaemonStatus, SearchPayload, SearchResponse, SearchRow};
 
 /// D2.2.5: serialize/deserialize round-trip for request.
 #[test]
@@ -176,11 +176,16 @@ fn daemon_status_round_trip() {
     assert_eq!(ready_parsed, ready);
 }
 
-/// D2.2.5: `SearchResponse` with rows.
+/// D2.2.5: `SearchResponse` round-trip with `InlineRows` payload.
+///
+/// Pins the default delivery channel: the daemon returns a
+/// `Vec<SearchRow>` inline as a JSON array inside the RPC envelope.
+/// Verifies that the tagged enum (`{"kind":"inline_rows","data":[…]}`)
+/// serialises cleanly and round-trips without losing fields.
 #[test]
-fn search_response_round_trip() {
+fn search_response_inline_rows_round_trip() {
     let resp = SearchResponse {
-        rows: vec![SearchRow {
+        payload: SearchPayload::InlineRows(vec![SearchRow {
             drive: 'C',
             path: "C:\\test.rs".to_owned(),
             name: "test.rs".to_owned(),
@@ -194,13 +199,11 @@ fn search_response_round_trip() {
             descendants: 0,
             treesize: 0,
             tree_allocated: 0,
-        }],
+        }]),
         total_count: 1,
         records_scanned: 1_000_000,
         duration_ms: 8,
         truncated: false,
-        shmem_path: None,
-        shmem_count: None,
         profile: None,
         applied_sorts: vec![SearchSortSpec {
             field: "modified".to_owned(),
@@ -216,12 +219,21 @@ fn search_response_round_trip() {
             ("size".to_owned(), serde_json::Value::from(1024_u64)),
         ])]),
         aggregations: vec![],
-        paths_blob: None,
     };
     let json = serde_json::to_string(&resp).expect("serialize");
+    // Tagged-enum discriminator must be present on the wire —
+    // without it the client can't dispatch on variant.
+    assert!(
+        json.contains("\"kind\":\"inline_rows\""),
+        "inline_rows variant must be tagged on the wire: {json}"
+    );
+
     let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(parsed.rows.len(), 1);
-    let first_row = parsed.rows.first().expect("at least one row");
+    let SearchPayload::InlineRows(rows) = &parsed.payload else {
+        panic!("expected InlineRows variant, got {:?}", parsed.payload);
+    };
+    assert_eq!(rows.len(), 1);
+    let first_row = rows.first().expect("at least one row");
     assert_eq!(first_row.name, "test.rs");
     assert_eq!(parsed.duration_ms, 8);
     assert_eq!(parsed.applied_sorts.len(), 1);
@@ -229,51 +241,192 @@ fn search_response_round_trip() {
     assert!(parsed.projected_rows.is_some());
 }
 
-/// `SearchResponse` round-trip with the path-only `paths_blob` transport.
+/// `SearchResponse` round-trip with the `ShmemBlob` payload.
 ///
-/// Covers the single-buffer fast path: daemon sets `paths_blob`, leaves
-/// `rows` empty, and the CLI writes the blob directly to stdout with
-/// one `write_all`.  Also checks that an absent blob does not serialise
-/// as `"paths_blob": null` in the JSON (which would waste bytes).
+/// Covers the binary-transport fast path for large path-only
+/// responses: the daemon writes the blob to a shmem file and
+/// returns only the path as `{"kind":"shmem_blob","data":"<path>"}`.
+/// This test verifies:
+///
+/// 1. The tagged-enum discriminator serialises cleanly on the wire.
+/// 2. The path round-trips exactly — critical because the client opens it
+///    verbatim with no quoting or escaping.
+/// 3. Absent payloads default to `Empty` via `SearchPayload::default` when the
+///    `data` key is missing (forward-compat for future daemons that omit the
+///    field for no-match responses).
 #[test]
-fn search_response_paths_blob_round_trip() {
-    let blob = "C:\\Windows\\System32\\a.dll\nC:\\Windows\\System32\\b.dll\n";
+fn search_response_shmem_blob_round_trip() {
+    let shmem_path = "C:\\Users\\rnio\\AppData\\Local\\uffs\\shmem\\search_12345_0.bin";
     let resp = SearchResponse {
-        rows: vec![],
-        total_count: 2,
-        records_scanned: 250_000,
-        duration_ms: 5,
+        payload: SearchPayload::ShmemBlob(shmem_path.to_owned()),
+        total_count: 168_295,
+        records_scanned: 3_571_389,
+        duration_ms: 60,
         truncated: false,
-        shmem_path: None,
-        shmem_count: None,
         profile: None,
         applied_sorts: vec![],
         applied_projection: vec!["path".to_owned()],
         response_mode: Some(SearchResponseMode::Rows),
         projected_rows: None,
         aggregations: vec![],
-        paths_blob: Some(blob.to_owned()),
     };
     let json = serde_json::to_string(&resp).expect("serialize");
     assert!(
-        json.contains("\"paths_blob\""),
-        "paths_blob must be present when Some"
+        json.contains("\"kind\":\"shmem_blob\""),
+        "shmem_blob variant must be tagged on the wire: {json}"
+    );
+    // The path string lives in the `data` field — not as a
+    // separate top-level `paths_blob_shmem` key.  Verifies the
+    // v0.5.62 migration from flat-field layout to tagged enum.
+    assert!(
+        !json.contains("\"paths_blob_shmem\""),
+        "legacy `paths_blob_shmem` field must not appear on the \
+         wire after the SearchPayload migration: {json}"
+    );
+    assert!(
+        !json.contains("\"rows\":[]"),
+        "empty `rows` must not appear on the wire — the payload \
+         carries the shape now: {json}"
     );
 
     let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");
-    assert!(parsed.rows.is_empty(), "rows must be empty in blob mode");
-    assert!(parsed.shmem_path.is_none());
-    assert_eq!(parsed.paths_blob.as_deref(), Some(blob));
+    let SearchPayload::ShmemBlob(path) = &parsed.payload else {
+        panic!("expected ShmemBlob variant, got {:?}", parsed.payload);
+    };
+    assert_eq!(path, shmem_path);
+    assert_eq!(
+        parsed.total_count, 168_295,
+        "total_count must round-trip so the CLI's --profile display \
+         can show the row count without mmapping the shmem file"
+    );
+    assert_eq!(
+        parsed.payload.row_count_hint(),
+        None,
+        "shmem_blob carries raw bytes, not structured rows — \
+         row_count_hint must return None so callers fall back to \
+         total_count"
+    );
+}
 
-    // Empty blob must NOT appear in the JSON at all (skip_serializing_if).
+/// `SearchResponse` round-trip with the `InlineBlob` payload.
+///
+/// Covers the small-payload path-only fast path: the daemon
+/// pre-formats the output and inlines it as a UTF-8 string under
+/// `{"kind":"inline_blob","data":"<bytes>"}`.  The CLI writes the
+/// blob to stdout with a single `write_all`.
+#[test]
+fn search_response_inline_blob_round_trip() {
+    let blob = "C:\\Windows\\System32\\a.dll\nC:\\Windows\\System32\\b.dll\n";
+    let resp = SearchResponse {
+        payload: SearchPayload::InlineBlob(blob.to_owned()),
+        total_count: 2,
+        records_scanned: 250_000,
+        duration_ms: 5,
+        truncated: false,
+        profile: None,
+        applied_sorts: vec![],
+        applied_projection: vec!["path".to_owned()],
+        response_mode: Some(SearchResponseMode::Rows),
+        projected_rows: None,
+        aggregations: vec![],
+    };
+    let json = serde_json::to_string(&resp).expect("serialize");
+    assert!(
+        json.contains("\"kind\":\"inline_blob\""),
+        "inline_blob variant must be tagged on the wire"
+    );
+
+    let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");
+    let SearchPayload::InlineBlob(parsed_blob) = &parsed.payload else {
+        panic!("expected InlineBlob variant, got {:?}", parsed.payload);
+    };
+    assert_eq!(parsed_blob, blob);
+    assert_eq!(
+        parsed.payload.row_count_hint(),
+        None,
+        "inline_blob is opaque bytes — row_count_hint must be None"
+    );
+
+    // Empty variant round-trips as `{"kind":"empty"}` — used by
+    // no-match queries, --no-output, and --out=file responses.
     let empty_resp = SearchResponse {
-        paths_blob: None,
+        payload: SearchPayload::Empty,
         ..resp
     };
     let empty_json = serde_json::to_string(&empty_resp).expect("serialize");
     assert!(
-        !empty_json.contains("paths_blob"),
-        "None paths_blob must not be serialized"
+        empty_json.contains("\"kind\":\"empty\""),
+        "Empty variant must still serialise with its tag — otherwise \
+         the client's deserializer can't distinguish it from a \
+         missing/null payload: {empty_json}"
+    );
+    let empty_parsed: SearchResponse =
+        serde_json::from_str(&empty_json).expect("deserialize empty");
+    assert!(
+        matches!(empty_parsed.payload, SearchPayload::Empty),
+        "Empty payload must round-trip to Empty, not default to \
+         another variant"
+    );
+    assert_eq!(
+        empty_parsed.payload.row_count_hint(),
+        Some(0),
+        "Empty payload's row_count_hint is Some(0) — distinct from \
+         blob variants' None so the CLI can differentiate"
+    );
+}
+
+/// `SearchResponse` round-trip with the `ShmemRows` payload.
+///
+/// Covers the large multi-column response path: full `SearchRow`
+/// records sit in a binary shmem file, and only the path + row
+/// count travel in the RPC envelope.  The client reads the file
+/// with `read_search_results` which returns an `InlineRows`
+/// payload — the transport is invisible to the caller after that
+/// resolution step.
+#[test]
+fn search_response_shmem_rows_round_trip() {
+    let shmem_path = "/tmp/uffs/shmem/search_98765_1.bin";
+    let resp = SearchResponse {
+        payload: SearchPayload::ShmemRows {
+            path: shmem_path.to_owned(),
+            count: 250_000,
+        },
+        total_count: 250_000,
+        records_scanned: 5_000_000,
+        duration_ms: 42,
+        truncated: false,
+        profile: None,
+        applied_sorts: vec![],
+        applied_projection: vec!["path".to_owned(), "size".to_owned()],
+        response_mode: Some(SearchResponseMode::Rows),
+        projected_rows: None,
+        aggregations: vec![],
+    };
+    let json = serde_json::to_string(&resp).expect("serialize");
+    assert!(
+        json.contains("\"kind\":\"shmem_rows\""),
+        "shmem_rows variant must be tagged on the wire: {json}"
+    );
+    // Struct variants carry their fields as nested keys under `data`;
+    // verify both `path` and `count` serialise together so the client
+    // can pre-allocate the receiving Vec without a second RPC.
+    assert!(
+        json.contains("\"path\"") && json.contains("\"count\""),
+        "shmem_rows struct variant must expose path and count \
+         together in data: {json}"
+    );
+
+    let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");
+    let SearchPayload::ShmemRows { path, count } = &parsed.payload else {
+        panic!("expected ShmemRows variant, got {:?}", parsed.payload);
+    };
+    assert_eq!(path, shmem_path);
+    assert_eq!(*count, 250_000);
+    assert_eq!(
+        parsed.payload.row_count_hint(),
+        Some(250_000),
+        "ShmemRows's row_count_hint uses the `count` field directly \
+         — no need to mmap the file just to size a log line"
     );
 }
 
@@ -566,17 +719,23 @@ fn search_params_with_aggregations_round_trip() {
     assert_eq!(parsed.aggregations[1].label.as_deref(), Some("total"));
 }
 
-/// `SearchResponse` round-trip with aggregations and no rows.
+/// `SearchResponse` round-trip with aggregations and an `Empty`
+/// payload.
+///
+/// Aggregate-only queries pass `include_rows: false`, so the daemon
+/// never materialises `SearchRow` records — the payload lands on
+/// [`SearchPayload::Empty`] and the bucket data travels in
+/// [`SearchResponse::aggregations`].  This test pins that split so
+/// a future refactor can't accidentally merge aggregations into
+/// the payload enum.
 #[test]
 fn search_response_with_aggregations_round_trip() {
     let resp = SearchResponse {
-        rows: vec![],
+        payload: SearchPayload::Empty,
         total_count: 0,
         records_scanned: 500_000,
         duration_ms: 12,
         truncated: false,
-        shmem_path: None,
-        shmem_count: None,
         profile: None,
         applied_sorts: vec![],
         applied_projection: vec![],
@@ -618,11 +777,14 @@ fn search_response_with_aggregations_round_trip() {
                 values_complete: None,
             },
         ],
-        paths_blob: None,
     };
     let json = serde_json::to_string(&resp).expect("serialize");
     let parsed: SearchResponse = serde_json::from_str(&json).expect("deserialize");
-    assert!(parsed.rows.is_empty());
+    assert!(
+        matches!(parsed.payload, SearchPayload::Empty),
+        "aggregate-only queries produce Empty payload so the bucket \
+         data is not double-delivered"
+    );
     assert_eq!(parsed.aggregations.len(), 2);
     assert_eq!(parsed.aggregations[0].kind, "count");
     assert_eq!(parsed.aggregations[0].value, Some(500_000));

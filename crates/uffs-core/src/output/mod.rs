@@ -12,6 +12,7 @@
 mod column;
 mod config;
 pub mod display_rows;
+pub mod display_rows_format_bridge;
 
 use uffs_polars::DataFrame;
 
@@ -55,3 +56,9 @@ pub fn add_descendants_column(df: &DataFrame) -> Result<DataFrame> {
 
 #[cfg(test)]
 mod tests;
+
+// Byte-parity regression tests between legacy `write_display_rows`
+// and `uffs_format::write_rows` live in a sibling test module to
+// keep `tests.rs` under the 800-line policy ceiling.
+#[cfg(test)]
+mod tests_format_parity;

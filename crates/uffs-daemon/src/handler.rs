@@ -5,7 +5,7 @@
 
 use uffs_client::protocol::response::{
     FacetValuesParams, FacetValuesResponse, LoadDriveParams, LoadDriveResponse, RefreshParams,
-    SearchResponse,
+    SearchPayload,
 };
 use uffs_client::protocol::{
     AggregateSpecWire, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcErrorResponse, RpcRequest,
@@ -18,6 +18,15 @@ const MAX_PATTERN_LENGTH: usize = 4096;
 use crate::index::IndexManager;
 use crate::lifecycle::LifecycleHandle;
 
+// The blob-fast-path helpers (`try_pack_paths_blob`,
+// `try_pack_csv_blob`, and their sub-dispatchers) live in a sibling
+// file to keep `handler.rs` under the 800-line policy ceiling.
+// `#[path]` keeps them attached to the same `impl RequestHandler`,
+// so every caller (including `handle_search` below and the
+// `handler::tests` suite) uses the normal
+// `Self::try_pack_paths_blob(...)` method syntax — no call-site changes.
+#[path = "handler_blob.rs"]
+mod blob;
 /// Request handler holding shared daemon state.
 pub(crate) struct RequestHandler {
     /// Shared index manager.
@@ -110,26 +119,43 @@ impl RequestHandler {
         }
 
         let mut response = self.index.search(&search_params).await;
-        let row_count = response.rows.len();
+        // Row count captured up-front for logging and threshold
+        // dispatch: both blob-packing and shmem-rows routing may
+        // replace the payload variant in-place, at which point
+        // `response.payload.row_count_hint()` returns `None` (for
+        // blob variants) or a stale value (for consumed rows).
+        let row_count = response.payload.row_count_hint().unwrap_or(0);
 
         // Path-only single-buffer fast path (see `try_pack_paths_blob`).
+        // May replace `response.payload` with `InlineBlob` or `ShmemBlob`.
         Self::try_pack_paths_blob(&search_params, &mut response);
 
-        // D5.1: adaptive routing — use shmem for large result sets.
-        // Only fires when the path-only fast path did not already
-        // claim the payload.
+        // Multi-column CSV pre-format fast path (see `try_pack_csv_blob`).
+        // Runs after `try_pack_paths_blob` so the path-only check gets
+        // first crack at the rows; when it consumes the payload this
+        // method short-circuits on the non-`InlineRows` guard.
+        Self::try_pack_csv_blob(&search_params, &mut response);
+
+        // D5.1: adaptive routing — use shmem rows for large multi-column
+        // result sets that did NOT qualify for the blob fast path.
+        // Only fires when the payload is still `InlineRows` above the
+        // shmem threshold — blob variants already consumed the rows,
+        // so taking the `ShmemRows` branch there would write an empty
+        // row table and waste the file-creation syscall.
         let mut shmem_ms: u128 = 0;
-        if response.paths_blob.is_none() && row_count > uffs_client::shmem::SHMEM_THRESHOLD {
+        if let SearchPayload::InlineRows(rows) = &response.payload
+            && rows.len() > uffs_client::shmem::SHMEM_THRESHOLD
+        {
             let t_shmem = std::time::Instant::now();
             match uffs_client::shmem::write_search_results(
-                &response.rows,
+                rows,
                 response.duration_ms,
                 response.records_scanned as u64,
                 response.truncated,
             ) {
                 Ok(path) => {
                     shmem_ms = t_shmem.elapsed().as_millis();
-                    let count = row_count as u64;
+                    let count = rows.len() as u64;
                     let path_str = path.to_string_lossy().into_owned();
                     tracing::info!(
                         rows = row_count,
@@ -137,10 +163,12 @@ impl RequestHandler {
                         path = %path_str,
                         "🗂️ shmem: wrote bulk results"
                     );
-                    response.shmem_path = Some(path_str);
-                    response.shmem_count = Some(count);
-                    // Clear inline rows — data is in shmem now.
-                    response.rows = Vec::new();
+                    // Swap the payload to `ShmemRows` — consumes the
+                    // inline `Vec<SearchRow>` so no double delivery.
+                    response.payload = SearchPayload::ShmemRows {
+                        path: path_str,
+                        count,
+                    };
                 }
                 Err(shmem_err) => {
                     shmem_ms = t_shmem.elapsed().as_millis();
@@ -157,8 +185,8 @@ impl RequestHandler {
         }
 
         // Back-patch serialize_ms into the profile with shmem write time
-        // (the dominant cost). JSON serialization time is measured below
-        // but can't be included in the JSON itself (chicken-and-egg).
+        // (the dominant cost).  JSON serialization time is measured
+        // below but can't be included in the JSON itself (chicken-and-egg).
         if let Some(ref mut prof) = response.profile {
             prof.serialize_ms = u64::try_from(shmem_ms).unwrap_or(u64::MAX);
         }
@@ -173,7 +201,7 @@ impl RequestHandler {
                 rows = row_count,
                 serialize_ms = ser_ms,
                 json_bytes = json.len(),
-                shmem = response.shmem_path.is_some(),
+                payload_kind = Self::payload_kind_name(&response.payload),
                 "🔌 search response serialized"
             );
         }
@@ -181,78 +209,19 @@ impl RequestHandler {
         json
     }
 
-    /// Pack a path-only search response into a single UTF-8 buffer.
+    /// Short human-readable name for the payload variant.
     ///
-    /// When the client asked for a path-only projection, replace the
-    /// `SearchRow` list with a newline-terminated blob in `paths_blob`.
-    /// The CLI then writes the entire buffer with a single `write_all`,
-    /// skipping per-row JSON deserialization and format dispatch (both
-    /// of which scale linearly with row count).
-    ///
-    /// This is invisible to the `--out=file` bench (which never
-    /// transfers rows), but is a large win for interactive
-    /// `uffs *.ext` to stdout or for pipe composition.
-    ///
-    /// Previously capped at [`uffs_client::shmem::SHMEM_THRESHOLD`]
-    /// (100 K rows) on the theory that "a multi-megabyte JSON string
-    /// would be the worse choice" above that count, with large
-    /// responses routed through shmem instead.  Measured wrong: on a
-    /// 168 K-row path-only query the shmem path added ~744 ms vs.
-    /// NUL (client-side `write_columnar` re-formatted every row through
-    /// `extract_field` → `String::to_owned` + 4× `write!()` per field),
-    /// while `paths_blob` plus one `write_all` would cost ~145 ms end to
-    /// end.  The JSON-string encode/decode cost (~40 ms for 20 MB of
-    /// ASCII) is dwarfed by the per-row format overhead it replaces.
-    ///
-    /// So: any path-only projection now gets `paths_blob` regardless of
-    /// row count.  The shmem path is still used for multi-column
-    /// responses above the threshold — those genuinely need binary
-    /// `SearchRow` transport because the client still has to format
-    /// columns locally.
-    fn try_pack_paths_blob(params: &SearchParams, response: &mut SearchResponse) {
-        let row_count = response.rows.len();
-        if row_count == 0 || !Self::is_path_only_projection(params) {
-            return;
+    /// Used by the serialised-response log line to replace the old
+    /// boolean `shmem = …` field: the new enum has five variants, so
+    /// a single `kind` string is more informative than any one bool.
+    const fn payload_kind_name(payload: &SearchPayload) -> &'static str {
+        match payload {
+            SearchPayload::Empty => "empty",
+            SearchPayload::InlineRows(_) => "inline_rows",
+            SearchPayload::ShmemRows { .. } => "shmem_rows",
+            SearchPayload::InlineBlob(_) => "inline_blob",
+            SearchPayload::ShmemBlob(_) => "shmem_blob",
         }
-        let capacity: usize = response
-            .rows
-            .iter()
-            .map(|row| row.path.len().saturating_add(1))
-            .sum();
-        let mut blob = String::with_capacity(capacity);
-        for row in &response.rows {
-            blob.push_str(&row.path);
-            blob.push('\n');
-        }
-        response.paths_blob = Some(blob);
-        response.rows = Vec::new();
-    }
-
-    /// Return true when the client asked for a single path column.
-    ///
-    /// Matches the user-facing column aliases `"path"` and `"full path"`
-    /// case-insensitively.  Multi-column projections, aggregation
-    /// requests, projected-JSON mode, and custom sort clauses all
-    /// disqualify the fast path — the response must still carry the
-    /// full [`SearchRow`] data for the CLI's row-based formatters.
-    fn is_path_only_projection(params: &SearchParams) -> bool {
-        if params.projection.len() != 1 {
-            return false;
-        }
-        if !params.aggregations.is_empty() {
-            return false;
-        }
-        if matches!(
-            params.response_mode,
-            Some(uffs_client::protocol::SearchResponseMode::Json)
-        ) {
-            return false;
-        }
-        let Some(col) = params.projection.first() else {
-            return false;
-        };
-        let trimmed = col.trim();
-        trimmed.eq_ignore_ascii_case("path") || trimmed.eq_ignore_ascii_case("full path")
     }
 
     /// Handle `search_cli` method — parse raw CLI args into [`SearchParams`]
@@ -532,159 +501,19 @@ impl RequestHandler {
     }
 }
 
+// Tests live in two sibling files so neither exceeds the 800-line
+// policy ceiling: `handler_paths_blob_tests.rs` covers the path-only
+// fast path (`try_pack_paths_blob`), and `handler_csv_blob_tests.rs`
+// covers the multi-column / parity / `--format custom` fast path
+// (`try_pack_csv_blob`).  `#[path]` keeps each attached as a child
+// of `handler` so `super::` from within the tests still resolves
+// against `handler`'s scope, including private items like
+// `RequestHandler::core_config_to_format` the shmem byte-parity
+// test calls into.
 #[cfg(test)]
-mod tests {
-    use uffs_client::protocol::response::{SearchResponse, SearchRow};
-    use uffs_client::protocol::{SearchParams, SearchResponseMode};
+#[path = "handler_paths_blob_tests.rs"]
+mod paths_blob_tests;
 
-    use super::RequestHandler;
-
-    /// Build a `SearchRow` with just a path populated — all other
-    /// fields are irrelevant to [`RequestHandler::try_pack_paths_blob`]
-    /// because the packing loop only reads `row.path`.
-    fn path_only_row(path: String) -> SearchRow {
-        SearchRow {
-            drive: 'C',
-            path,
-            name: String::new(),
-            size: 0,
-            is_directory: false,
-            modified: 0,
-            created: 0,
-            accessed: 0,
-            flags: 0,
-            allocated: 0,
-            descendants: 0,
-            treesize: 0,
-            tree_allocated: 0,
-        }
-    }
-
-    /// Build a minimal `SearchResponse` carrying `rows` and no side-
-    /// channel transports — `shmem_path`, `paths_blob`, and
-    /// `projected_rows` start as `None` so the packer's invariants can
-    /// be asserted precisely after the call.
-    fn bare_response(rows: Vec<SearchRow>) -> SearchResponse {
-        let row_count = rows.len();
-        SearchResponse {
-            rows,
-            total_count: u64::try_from(row_count).unwrap_or(u64::MAX),
-            records_scanned: row_count,
-            duration_ms: 0,
-            truncated: false,
-            shmem_path: None,
-            shmem_count: None,
-            profile: None,
-            applied_sorts: Vec::new(),
-            applied_projection: vec!["path".to_owned()],
-            response_mode: Some(SearchResponseMode::Rows),
-            projected_rows: None,
-            aggregations: Vec::new(),
-            paths_blob: None,
-        }
-    }
-
-    /// Regression: `try_pack_paths_blob` used to bail out for
-    /// path-only projections above
-    /// `uffs_client::shmem::SHMEM_THRESHOLD` (100 000 rows), which
-    /// forced the daemon to fall back to the shmem transport and
-    /// made the client re-run `write_columnar` on every row — a
-    /// ~6× slowdown vs. `paths_blob` + one `write_all` on the
-    /// 168 K-row `C: ext:dll` benchmark.  The cap was removed: any
-    /// path-only projection now packs, regardless of count.
-    #[test]
-    fn try_pack_paths_blob_packs_above_shmem_threshold() {
-        // 150 K rows — comfortably above the old 100 K cap.  Kept at
-        // this size so the test stays sub-millisecond: each row's
-        // path is only ~30 bytes, total blob ~4.5 MB.
-        let row_count: usize = 150_000;
-        let rows: Vec<SearchRow> = (0..row_count)
-            .map(|idx| path_only_row(format!("C:\\dir\\file_{idx}.dll")))
-            .collect();
-        let mut response = bare_response(rows);
-
-        let params = SearchParams {
-            projection: vec!["path".to_owned()],
-            ..SearchParams::default()
-        };
-
-        RequestHandler::try_pack_paths_blob(&params, &mut response);
-
-        // Use `let-else` so a regression of the cap removal fails
-        // with the specific "packed into paths_blob" message rather
-        // than a generic `unwrap` panic — keeps the regression
-        // signal readable without needing a clippy::unwrap_used allow.
-        let Some(blob) = response.paths_blob.as_deref() else {
-            panic!(
-                "path-only projection above SHMEM_THRESHOLD must still \
-                 be packed into paths_blob — regression of the cap \
-                 removal in try_pack_paths_blob"
-            );
-        };
-        assert_eq!(
-            blob.bytes().filter(|byte| *byte == b'\n').count(),
-            row_count,
-            "blob must contain one newline per row so the CLI's single \
-             write_all emits exactly `row_count` lines"
-        );
-        assert!(
-            blob.ends_with('\n'),
-            "blob's last byte must be '\\n' (contract documented on \
-             SearchResponse::paths_blob)"
-        );
-        assert!(
-            response.rows.is_empty(),
-            "rows must be cleared once paths_blob carries the payload \
-             — otherwise the response is doubly-serialised"
-        );
-    }
-
-    /// Multi-column projections (e.g. `--columns Path,Size`) must not
-    /// be packed into `paths_blob`: the client still needs the full
-    /// `SearchRow` data to format the size column.  Pins that the
-    /// path-only guard (`is_path_only_projection`) is the sole
-    /// disqualifier after the cap removal.
-    #[test]
-    fn try_pack_paths_blob_skips_multi_column_projection() {
-        let rows = vec![path_only_row("C:\\a.dll".to_owned())];
-        let mut response = bare_response(rows);
-
-        let params = SearchParams {
-            projection: vec!["path".to_owned(), "size".to_owned()],
-            ..SearchParams::default()
-        };
-
-        RequestHandler::try_pack_paths_blob(&params, &mut response);
-
-        assert!(
-            response.paths_blob.is_none(),
-            "multi-column projection must leave paths_blob unset so \
-             the client receives full SearchRow data"
-        );
-        assert_eq!(
-            response.rows.len(),
-            1,
-            "rows must stay populated for the client-side formatter"
-        );
-    }
-
-    /// Zero-row responses must short-circuit without allocating an
-    /// empty `paths_blob` string — keeps the wire format the same
-    /// as before the cap removal.
-    #[test]
-    fn try_pack_paths_blob_skips_empty_response() {
-        let mut response = bare_response(Vec::new());
-        let params = SearchParams {
-            projection: vec!["path".to_owned()],
-            ..SearchParams::default()
-        };
-
-        RequestHandler::try_pack_paths_blob(&params, &mut response);
-
-        assert!(
-            response.paths_blob.is_none(),
-            "empty response must leave paths_blob unset (no \
-             `Some(String::new())` allocations)"
-        );
-    }
-}
+#[cfg(test)]
+#[path = "handler_csv_blob_tests.rs"]
+mod csv_blob_tests;

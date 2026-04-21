@@ -29,6 +29,30 @@ use crate::protocol::response::{SearchResponse, SearchRow};
 /// Result sets larger than this are written to shared memory.
 pub const SHMEM_THRESHOLD: usize = 100_000;
 
+/// `paths_blob` payloads larger than this bypass the JSON-RPC string
+/// channel and travel through a raw-bytes shmem file instead.
+///
+/// ## Why a byte threshold instead of a row count
+///
+/// The cost of the JSON string channel scales with blob **bytes**, not
+/// rows: `serde_json` must walk every byte to escape `\`, `"`, and
+/// control characters during encode, and walk every byte again to
+/// unescape + UTF-8 validate during decode.  At ~4.5 MB of paths on
+/// the `C: ext:dll` benchmark this measured at ~80 ms round-trip
+/// (~40 ms encode on the daemon + ~40 ms decode on the client), which
+/// is roughly 50 % of the observed 209 ms stdout latency.
+///
+/// Shmem setup is a fixed ~1-2 ms (open + `set_len` + mmap), so the
+/// crossover where shmem beats JSON is ~256 KB.  We round up to
+/// 512 KB to keep small payloads (e.g. `--limit 10000`) on the inline
+/// path and avoid a file-creation syscall for sub-millisecond blobs.
+///
+/// The constant is in **bytes** — callers compare `blob.len()`
+/// directly, not the row count.  See
+/// `uffs_daemon::handler::RequestHandler::try_pack_paths_blob` for the
+/// dispatch site.
+pub const PATHS_BLOB_SHMEM_THRESHOLD: usize = 512 * 1024;
+
 /// Magic bytes identifying a UFFS shmem file (`"UFFS"` as `u32` LE).
 const MAGIC: u32 = 0x5346_4655; // b"UFFS" LE
 
@@ -372,23 +396,140 @@ pub fn read_search_results(path: &Path) -> io::Result<SearchResponse> {
     drop(std::fs::remove_file(path));
 
     Ok(SearchResponse {
-        rows,
+        // The shmem file always carries full SearchRow records, so
+        // the decoded payload lands on the `InlineRows` variant —
+        // the caller typically treats this `SearchResponse` as if
+        // the daemon had returned the rows inline all along.
+        payload: crate::protocol::response::SearchPayload::InlineRows(rows),
         total_count: header.row_count,
         records_scanned: usize::try_from(header.records_scanned)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?,
         duration_ms: header.duration_ms,
         truncated: header.truncated != 0,
-        shmem_path: None,
-        shmem_count: None,
         profile: None,
         applied_sorts: Vec::new(),
         applied_projection: Vec::new(),
         response_mode: None,
         projected_rows: None,
         aggregations: vec![],
-        // Shmem always carries full SearchRow records, never a blob.
-        paths_blob: None,
     })
+}
+
+/// Write a raw UTF-8 `paths_blob` to a shmem file for binary transport.
+///
+/// Unlike [`write_search_results`], which packs `SearchRow` records
+/// with a structured header + string table, this function writes
+/// `blob.as_bytes()` verbatim to a freshly-created mmap region — the
+/// file IS the blob, no framing.  The client then streams it back out
+/// with one `write_all` (see [`stream_paths_blob_into`]).
+///
+/// ## Why the raw-bytes format
+///
+/// The daemon has already built a newline-terminated UTF-8 buffer in
+/// `try_pack_paths_blob`.  Re-serialising it as JSON (4.5 MB of
+/// backslash-heavy Windows paths becomes ~9 MB of escaped JSON) and
+/// then parsing it back costs ~80 ms on the `C: ext:dll` benchmark.
+/// Shmem bypasses both the encode and decode: ~1 ms mmap + ~5 ms
+/// `copy_from_slice` on the daemon side, and a zero-copy
+/// `write_all(&mmap[..])` on the client side.
+///
+/// ## Layout
+///
+/// ```text
+/// [blob.len() bytes of UTF-8]
+/// ```
+///
+/// No header, no magic, no version — the byte count is implicit in
+/// the file size (`metadata().len()`).  The response envelope already
+/// carries the path, so there is no in-band framing that would force
+/// a re-read of the bytes to discover structure.
+///
+/// # Errors
+///
+/// Returns `io::Error` on directory-create, file-create, `set_len`,
+/// mmap, or `flush` failure.  The caller should fall back to inline
+/// JSON transport on error rather than failing the response.
+#[expect(
+    unsafe_code,
+    reason = "memmap2::MmapMut::map_mut requires unsafe — mmap is a kernel-level operation"
+)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "mmap is sized to blob.len(); the single slice is within bounds by construction"
+)]
+pub fn write_paths_blob(blob: &str) -> io::Result<PathBuf> {
+    let path = unique_shmem_path()?;
+    let bytes = blob.as_bytes();
+    let total_size = bytes.len();
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)?;
+    file.set_len(total_size as u64)?;
+
+    if total_size > 0 {
+        // Safety: file is freshly created, exclusively owned, and
+        // sized to `total_size`.  The mmap does not escape this
+        // function scope — we flush and drop before returning the
+        // path to the reader.
+        let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
+        mmap[..total_size].copy_from_slice(bytes);
+        mmap.flush()?;
+    }
+
+    Ok(path)
+}
+
+/// Stream a raw `paths_blob` shmem file into `writer` with one
+/// `write_all` call, then delete the file.
+///
+/// Uses a read-only mmap so the kernel page-cache backs the copy
+/// directly — there is no intermediate `Vec<u8>` allocation and no
+/// UTF-8 re-validation.  The daemon wrote valid UTF-8, and stdout
+/// does not care about encoding (it takes bytes).
+///
+/// The file is deleted best-effort after the write succeeds.  A
+/// delete failure is swallowed: the blob has already reached the
+/// client, and stale shmem files are reaped by
+/// [`cleanup_stale_shmem_files`] at daemon startup.
+///
+/// # Errors
+///
+/// Returns `io::Error` on `File::open`, mmap, or `write_all` failure.
+/// Unlike [`read_search_results`], there is no format validation —
+/// the file is raw bytes.
+#[expect(
+    unsafe_code,
+    reason = "memmap2::Mmap::map requires unsafe — mmap is a kernel-level operation"
+)]
+pub fn stream_paths_blob_into<W: io::Write>(path: &Path, writer: &mut W) -> io::Result<()> {
+    let file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    if len == 0 {
+        // Zero-sized mmap is an error on some platforms; short-circuit.
+        drop(file);
+        drop(std::fs::remove_file(path));
+        return Ok(());
+    }
+
+    // Safety: the file was written by our daemon via `write_paths_blob`.
+    // We only read from the mmap (no writes), and the file size is
+    // non-zero (guarded above).
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+    // `&mmap` coerces to `&[u8]` via `Mmap: Deref<Target=[u8]>` —
+    // the compiler's auto-deref handles the slicing, so neither
+    // `&mmap[..]` (deref_by_slicing) nor `&*mmap` (explicit_auto_deref)
+    // is needed.
+    writer.write_all(&mmap)?;
+
+    drop(mmap);
+    drop(file);
+    // Best-effort cleanup — the blob was delivered even if delete fails.
+    drop(std::fs::remove_file(path));
+    Ok(())
 }
 
 /// Remove any leftover shmem files (GC).
@@ -407,211 +548,9 @@ pub fn cleanup_stale_shmem_files() {
     }
 }
 
+// Tests live in a sibling file to keep this file under the
+// 800-line policy ceiling.  `#[path]` keeps the tests attached
+// as `shmem::tests`, so `super::*` still resolves against `shmem`.
 #[cfg(test)]
-mod tests {
-    extern crate alloc;
-
-    use std::sync::{Mutex, MutexGuard};
-
-    use super::*;
-    use crate::protocol::response::SearchRow;
-
-    /// Shared-directory serialisation lock for tests that touch the
-    /// global shmem directory.
-    ///
-    /// `cleanup_stale_shmem_files` (invoked by `gc_cleans_*`) sweeps
-    /// every `.bin` under `shmem_dir()`, which would otherwise race
-    /// with `concurrent_writes_*`'s in-flight files when the cargo
-    /// test harness schedules both on parallel threads.  Production
-    /// cannot hit this: GC only runs at daemon startup, guarded by
-    /// the PID file, so a write and a sweep never overlap in real
-    /// usage.  The lock here exists purely to model that invariant
-    /// inside `cargo test`.
-    ///
-    /// Poisoning is intentionally ignored — a panicking test should
-    /// not block the rest of the suite from running.
-    static SHMEM_DIR_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Acquire the shmem-directory lock for the duration of a test.
-    fn lock_shmem_dir() -> MutexGuard<'static, ()> {
-        SHMEM_DIR_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Helper: build a minimal `SearchRow` for testing.
-    fn sample_row(name: &str) -> SearchRow {
-        SearchRow {
-            drive: 'C',
-            path: format!("C:\\test\\{name}"),
-            name: name.to_owned(),
-            size: 1024,
-            is_directory: false,
-            modified: 1_700_000_000_000_000,
-            created: 1_700_000_000_000_000,
-            accessed: 1_700_000_000_000_000,
-            flags: 32,
-            allocated: 4096,
-            descendants: 0,
-            treesize: 1024,
-            tree_allocated: 0,
-        }
-    }
-
-    #[test]
-    fn shmem_round_trip_deletes_file() {
-        // Write a shmem file and verify it exists.
-        let rows = vec![sample_row("a.txt"), sample_row("b.txt")];
-        let path = write_search_results(&rows, 42, 100, false).expect("write should succeed");
-
-        // Read immediately — avoid race with parallel GC test.
-        let resp = read_search_results(&path).expect("read should succeed");
-        assert_eq!(resp.rows.len(), 2);
-        let first = resp.rows.first().expect("expected at least 1 row");
-        let second = resp.rows.get(1).expect("expected at least 2 rows");
-        assert_eq!(first.name, "a.txt");
-        assert_eq!(second.name, "b.txt");
-        assert_eq!(resp.duration_ms, 42);
-        assert_eq!(resp.records_scanned, 100);
-
-        // The file must be gone now.
-        assert!(
-            !path.exists(),
-            "shmem file must be deleted after read: {}",
-            path.display()
-        );
-    }
-
-    #[test]
-    fn shmem_empty_round_trip_deletes_file() {
-        // Edge case: zero rows.  Read immediately after write to avoid
-        // races with the parallel GC test that sweeps all .bin files.
-        let path = write_search_results(&[], 0, 0, false).expect("write should succeed");
-        let resp = read_search_results(&path).expect("read should succeed");
-        assert!(resp.rows.is_empty());
-        assert!(
-            !path.exists(),
-            "empty shmem file must be deleted after read"
-        );
-    }
-
-    #[test]
-    fn shmem_used_for_large_result_sets() {
-        // D5.1.6: Verify that a result set exceeding SHMEM_THRESHOLD
-        // can be written to shmem and read back correctly.
-        let rows: Vec<SearchRow> = (0..=SHMEM_THRESHOLD)
-            .map(|idx| sample_row(&format!("file_{idx}.txt")))
-            .collect();
-        assert!(
-            rows.len() > SHMEM_THRESHOLD,
-            "test set must exceed threshold"
-        );
-
-        let path =
-            write_search_results(&rows, 99, rows.len() as u64, false).expect("write should work");
-
-        // Read immediately — avoid race with parallel GC test.
-        let resp = read_search_results(&path).expect("read should work");
-        assert_eq!(resp.rows.len(), SHMEM_THRESHOLD + 1);
-        assert_eq!(resp.duration_ms, 99);
-        assert_eq!(resp.records_scanned, SHMEM_THRESHOLD + 1);
-        let first = resp.rows.first().expect("expected at least 1 row");
-        assert_eq!(first.name, "file_0.txt");
-        let last = resp.rows.get(SHMEM_THRESHOLD).expect("expected last row");
-        assert_eq!(last.name, format!("file_{SHMEM_THRESHOLD}.txt"));
-        assert!(!path.exists(), "shmem file must be deleted after read");
-    }
-
-    #[test]
-    fn gc_cleans_orphaned_bins_and_preserves_non_bins() {
-        // D5.3.6: Combined GC test — runs as a single test to avoid
-        // races with other shmem tests (GC sweeps ALL .bin files).
-        // Serialised with `concurrent_writes_*` via `SHMEM_DIR_LOCK`
-        // so the sweep can never overlap with in-flight writes.
-        let _guard = lock_shmem_dir();
-        let dir = shmem_dir().expect("shmem_dir should work");
-
-        // 1. Simulate CLI crash: write shmem but never read it.
-        let rows = vec![sample_row("orphan.txt")];
-        let orphan = write_search_results(&rows, 1, 1, false).expect("write should work");
-
-        // 2. Create extra stale .bin files (simulating older crashes).
-        let stale1 = dir.join("gc_stale_1.bin");
-        let stale2 = dir.join("gc_stale_2.bin");
-        std::fs::write(&stale1, b"stale").expect("write stale1");
-        std::fs::write(&stale2, b"stale").expect("write stale2");
-
-        // 3. Create a non-.bin file that must survive.
-        let keep = dir.join("gc_keep_me.txt");
-        std::fs::write(&keep, b"preserve").expect("write non-bin");
-
-        // GC sweep — should remove all .bin, preserve .txt.
-        cleanup_stale_shmem_files();
-
-        assert!(!orphan.exists(), "orphan must be removed by GC");
-        assert!(!stale1.exists(), "stale .bin must be removed by GC");
-        assert!(!stale2.exists(), "stale .bin must be removed by GC");
-        assert!(keep.exists(), "non-.bin must survive GC");
-
-        // Clean up our test file.
-        drop(std::fs::remove_file(&keep));
-    }
-
-    #[test]
-    fn concurrent_writes_get_unique_paths() {
-        // Simulate concurrent shmem usage: 8 threads each write a shmem
-        // file and immediately read it back (mimicking 8 parallel CLI
-        // processes).  Verifies path uniqueness, data isolation, and
-        // cleanup.  Serialised with `gc_cleans_*` via `SHMEM_DIR_LOCK`
-        // so a concurrent GC sweep cannot wipe the files before the
-        // reader threads open them.
-        use alloc::sync::Arc;
-        use std::sync::Barrier;
-        use std::thread;
-
-        const THREADS: usize = 8;
-
-        let _guard = lock_shmem_dir();
-        let barrier = Arc::new(Barrier::new(THREADS));
-        // Spawn all threads first, then join in a separate loop. The barrier
-        // requires all THREADS to reach `wait()` before any can proceed, so
-        // joining inside the spawn iterator would deadlock (lazy evaluation:
-        // spawn → join → spawn …, only 1 thread ever alive).
-        let mut handles = Vec::with_capacity(THREADS);
-        for idx in 0..THREADS {
-            let bar = Arc::clone(&barrier);
-            handles.push(thread::spawn(move || {
-                let row = sample_row(&format!("concurrent_{idx}.txt"));
-                // Synchronise so all threads call write at roughly the same time.
-                bar.wait();
-                let path = write_search_results(&[row], idx as u64, 1, false)
-                    .expect("concurrent write should succeed");
-                // Read+delete immediately (same as real CLI does).
-                let resp = read_search_results(&path).expect("read should succeed");
-                assert_eq!(resp.rows.len(), 1);
-                let first = resp.rows.first().expect("expected 1 row");
-                assert_eq!(first.name, format!("concurrent_{idx}.txt"));
-                assert!(!path.exists(), "shmem file must be deleted after read");
-                path
-            }));
-        }
-        let mut paths = Vec::with_capacity(THREADS);
-        for handle in handles {
-            paths.push(handle.join().unwrap());
-        }
-
-        // All paths must be unique (atomic counter guarantees this).
-        let mut sorted = paths
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(
-            sorted.len(),
-            THREADS,
-            "expected {THREADS} unique shmem paths, got {}",
-            sorted.len()
-        );
-    }
-}
+#[path = "shmem_tests.rs"]
+mod tests;

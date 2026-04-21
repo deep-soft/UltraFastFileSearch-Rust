@@ -266,7 +266,7 @@ fn write_formatted<W: Write>(
             if is_parity {
                 write_parity(writer, rows, separator, quote, parity_ctx)?;
             } else {
-                write_columnar(writer, rows, columns, separator, quote, header)?;
+                write_columnar(writer, rows, columns, separator, quote, header, parity_ctx)?;
             }
             write_legacy_drive_footer(writer, footer_ctx)
         }
@@ -275,7 +275,7 @@ fn write_formatted<W: Write>(
             if is_parity {
                 write_parity(writer, rows, separator, quote, parity_ctx)
             } else {
-                write_columnar(writer, rows, columns, separator, quote, header)
+                write_columnar(writer, rows, columns, separator, quote, header, parity_ctx)
             }
         }
     }
@@ -466,11 +466,37 @@ fn resolve_columns(columns: &str) -> Vec<&'static str> {
     }
 }
 
+/// Columns that `uffs_format::write_rows` quote-wraps in its CSV
+/// output.  Everything else (numeric, datetime, boolean-flag) is
+/// emitted raw.  Keep in sync with the match arms in
+/// `uffs_format::writer::write_row` — any new quoted column there
+/// must be added here so the CLI's `write_columnar` stays
+/// byte-identical to the daemon's `try_pack_csv_blob` output.
+fn is_quoted_column(canonical: &str) -> bool {
+    matches!(
+        canonical,
+        "path" | "name" | "path_only" | "type" | "extension"
+    )
+}
+
 /// Write columnar (CSV-style) output from `SearchRow` fields.
 ///
 /// Columns are resolved through the inline column table so display
 /// names, flag decomposition, and derived columns (Path Only, Bulkiness,
 /// etc.) work correctly.
+///
+/// Quoting policy mirrors `uffs_format::writer::write_row`: only
+/// string-shaped columns (Path / Name / `PathOnly` / Type / Extension)
+/// are wrapped in the configured quote character.  Numeric, datetime,
+/// and boolean-flag columns are emitted raw.  This keeps the CLI's
+/// fallback output byte-identical to the daemon's pre-formatted blob
+/// on every column set.
+///
+/// Datetime formatting honours the timezone offset carried on
+/// `parity_ctx` (matching `uffs_format::append_datetime_native`),
+/// not the host's local offset.  The caller drives the offset via
+/// `--tz-offset`; when absent, `dispatch::write_rows` feeds the
+/// host-local value into `parity_ctx.tz_offset_secs`.
 fn write_columnar<W: Write>(
     writer: &mut W,
     rows: &[Value],
@@ -478,10 +504,18 @@ fn write_columnar<W: Write>(
     separator: &str,
     quote: &str,
     header: bool,
+    parity_ctx: &ParityContext<'_>,
 ) -> Result<()> {
     let fields = resolve_columns(columns);
 
     // Header row — use display_name() for Title-Case headers.
+    //
+    // The header is terminated by `\n\n` (header line + blank
+    // separator line) to match `uffs_format::write_rows`, so the
+    // CLI fallback path and the daemon's pre-formatted blob produce
+    // byte-identical output.  The blank line is the legacy baseline
+    // the `uffs-core::output::tests::format_parity_*` regression
+    // tests pin.
     if header {
         for (idx, field) in fields.iter().enumerate() {
             if idx > 0 {
@@ -494,7 +528,7 @@ fn write_columnar<W: Write>(
                 write!(writer, "{quote}{name}{quote}")?;
             }
         }
-        writeln!(writer)?;
+        writer.write_all(b"\n\n")?;
     }
 
     for row in rows {
@@ -502,11 +536,11 @@ fn write_columnar<W: Write>(
             if idx > 0 {
                 write!(writer, "{separator}")?;
             }
-            let value = extract_field(row, field);
-            if quote.is_empty() {
-                write!(writer, "{value}")?;
-            } else {
+            let value = extract_field(row, field, parity_ctx.tz_offset_secs);
+            if !quote.is_empty() && is_quoted_column(field) {
                 write!(writer, "{quote}{value}{quote}")?;
+            } else {
+                write!(writer, "{value}")?;
             }
         }
         writeln!(writer)?;
@@ -517,7 +551,13 @@ fn write_columnar<W: Write>(
 /// Extract a field value from a JSON row by canonical column name.
 ///
 /// Handles flag decomposition, path derivation, and computed columns.
-fn extract_field(row: &Value, field: &str) -> String {
+///
+/// `tz_offset_secs` drives the `Created` / `Modified` / `Accessed`
+/// column formatting — matches
+/// `uffs_format::append_datetime_native` so
+/// `RequestHandler::try_pack_csv_blob`'s pre-formatted bytes stay
+/// byte-identical with this fallback path.
+fn extract_field(row: &Value, field: &str, tz_offset_secs: i32) -> String {
     let flags = vu32(row, "flags");
     match field {
         "name" => vs(row, "name"),
@@ -534,9 +574,9 @@ fn extract_field(row: &Value, field: &str) -> String {
         }
         "size" => vu(row, "size").to_string(),
         "size_on_disk" => vu(row, "allocated").to_string(),
-        "created" => format_filetime_local(vi(row, "created")),
-        "modified" => format_filetime_local(vi(row, "modified")),
-        "accessed" => format_filetime_local(vi(row, "accessed")),
+        "created" => format_filetime_with_tz(vi(row, "created"), tz_offset_secs),
+        "modified" => format_filetime_with_tz(vi(row, "modified"), tz_offset_secs),
+        "accessed" => format_filetime_with_tz(vi(row, "accessed"), tz_offset_secs),
         "extension" => extract_extension(&vs(row, "name")),
         "drive" => vs(row, "drive"),
         "type" => if vb(row, "is_directory") {
@@ -662,18 +702,35 @@ mod parity_flags {
 static LOCAL_TZ_OFFSET_SECS: std::sync::LazyLock<i32> =
     std::sync::LazyLock::new(uffs_client::format::local_utc_offset_secs);
 
-/// Format a raw FILETIME into `YYYY-MM-DD HH:MM:SS` local time.
+/// Format a raw FILETIME into `YYYY-MM-DD HH:MM:SS` with the supplied
+/// timezone offset.
 ///
-/// Applies the fixed timezone bias directly in FILETIME ticks (matching
-/// C++ `FileTimeToLocalFileTime`), then decomposes via `filetime_to_calendar`.
-fn format_filetime_local(filetime: i64) -> String {
-    let local_ft = uffs_time::filetime_with_tz_bias(filetime, *LOCAL_TZ_OFFSET_SECS);
+/// Mirrors `uffs_format::append_datetime_native` exactly, including
+/// the `"0000-00-00 00:00:00"` sentinel for a zero FILETIME (which
+/// `filetime_to_calendar` returns `None` for).  `write_columnar`
+/// calls this via `extract_field` with the config-supplied TZ so the
+/// CLI's fallback path and the daemon's `try_pack_csv_blob`
+/// pre-formatted blob produce byte-identical output.
+fn format_filetime_with_tz(filetime: i64, tz_offset_secs: i32) -> String {
+    let local_ft = uffs_time::filetime_with_tz_bias(filetime, tz_offset_secs);
     match uffs_time::filetime_to_calendar(local_ft) {
         Some((year, month, day, hour, minute, second)) => {
             format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
         }
-        None => String::new(),
+        None => "0000-00-00 00:00:00".to_owned(),
     }
+}
+
+/// Format a raw FILETIME into `YYYY-MM-DD HH:MM:SS` using the host's
+/// local timezone.
+///
+/// Used by [`write_table`] for human-facing display where the user
+/// expects their own wall-clock time regardless of how the CSV
+/// fallback path was configured.  CSV / parity / custom formatters
+/// take their offset from the config (`--tz-offset`) via
+/// [`format_filetime_with_tz`] instead.
+fn format_filetime_local(filetime: i64) -> String {
+    format_filetime_with_tz(filetime, *LOCAL_TZ_OFFSET_SECS)
 }
 
 #[cfg(test)]

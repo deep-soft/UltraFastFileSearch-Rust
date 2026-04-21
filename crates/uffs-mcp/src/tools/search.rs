@@ -352,7 +352,7 @@ pub async fn run(
         .map_err(|err| BridgeError::Daemon(format!("Search failed: {err}")))?;
 
     tracing::info!(
-        rows = response.rows.len(),
+        rows = response.payload.row_count_hint().unwrap_or(0),
         records_scanned = response.records_scanned,
         daemon_ms = response.duration_ms,
         ipc_ms = u64::try_from(t_daemon.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -360,15 +360,28 @@ pub async fn run(
         "uffs_search: daemon response received"
     );
 
+    let total_count = response.total_count;
+    // MCP search always requests a structured `SearchRow` projection;
+    // the async client's `search()` transparently resolves any
+    // `ShmemRows` payload to `InlineRows`, and blob variants never
+    // fire for MCP callers (they only activate for path-only or
+    // multi-column CSV stdout on the CLI path).  If something
+    // upstream ever breaks these invariants we fail fast with an
+    // explicit Daemon error rather than silently hiding rows.
+    let rows = response.payload.into_inline_rows().ok_or_else(|| {
+        BridgeError::Daemon(
+            "unexpected non-rows payload from daemon search — \
+             MCP always requests structured rows"
+                .into(),
+        )
+    })?;
+
     // Slice to the current page (skip `offset` rows).
-    let page_rows: Vec<_> = response
-        .rows
+    let page_rows: Vec<_> = rows
         .into_iter()
         .skip(offset as usize) // u32→usize lossless on 64-bit
         .take(effective_limit as usize) // u32→usize lossless on 64-bit
         .collect();
-
-    let total_count = response.total_count;
     // page_rows.len() is bounded by HARD_CAP (100) which fits in u32.
     let page_len = u32::try_from(page_rows.len()).unwrap_or(u32::MAX);
     let end_offset = offset.saturating_add(page_len);

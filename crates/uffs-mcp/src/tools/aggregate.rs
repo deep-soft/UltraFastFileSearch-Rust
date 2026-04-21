@@ -142,7 +142,11 @@ pub async fn run(
         records_scanned = response.records_scanned,
         duration_ms = response.duration_ms,
         agg_count = response.aggregations.len(),
-        row_count = response.rows.len(),
+        // Aggregate requests pass `include_rows: false`, so the
+        // payload is almost always `Empty` (row_count_hint() == Some(0)).
+        // Still use `row_count_hint` for correctness — a legacy caller
+        // that leaves `include_rows: true` will see the actual count.
+        row_count = response.payload.row_count_hint().unwrap_or(0),
         "uffs_aggregate: daemon response received"
     );
 

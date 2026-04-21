@@ -115,8 +115,19 @@ impl DisplayRow {
     /// Filename portion of the path (e.g., `file.txt`).
     ///
     /// Zero-cost: returns a `&str` slice into the owned `path`.
+    ///
+    /// The `uffs_format::FormatRow::name` trait method forwards to
+    /// this inherent method — keeping the inherent impl named `name`
+    /// (rather than e.g. `file_name`) preserves the accessor's
+    /// ergonomics across the many `uffs-core` call sites that
+    /// predate the trait.  The intentional collision with the trait
+    /// method silences `clippy::same_name_method` here.
     #[must_use]
     #[inline]
+    #[expect(
+        clippy::same_name_method,
+        reason = "shared name with the FormatRow trait impl is intentional — see method-level doc"
+    )]
     pub fn name(&self) -> &str {
         self.path.get(self.name_start as usize..).unwrap_or("")
     }
@@ -130,6 +141,74 @@ impl DisplayRow {
         self.path
             .get(..self.name_start as usize)
             .unwrap_or(&self.path)
+    }
+}
+
+/// Feed `DisplayRow` straight into the shared `uffs-format` writer.
+///
+/// The daemon holds `DisplayRow` directly on the search hot path, so
+/// this impl lets `uffs_format::write_rows::<DisplayRow, _>` run
+/// without an intermediate copy.  Every accessor is O(1) and just
+/// hands back a struct field (or the pre-computed filename slice),
+/// matching the trait's inlineability requirement.
+///
+/// The trait method `name()` collides with `DisplayRow::name()` (the
+/// inherent accessor that pre-dates the trait); the trait impl
+/// delegates to the inherent impl so the behaviour is identical.
+/// The `clippy::same_name_method` lint is silenced on the inherent
+/// method above — see its `#[expect]` attribute.
+impl uffs_format::FormatRow for DisplayRow {
+    #[inline]
+    fn drive(&self) -> char {
+        self.drive
+    }
+    #[inline]
+    fn path(&self) -> &str {
+        &self.path
+    }
+    #[inline]
+    fn name(&self) -> &str {
+        Self::name(self)
+    }
+    #[inline]
+    fn size(&self) -> u64 {
+        self.size
+    }
+    #[inline]
+    fn is_directory(&self) -> bool {
+        self.is_directory
+    }
+    #[inline]
+    fn modified(&self) -> i64 {
+        self.modified
+    }
+    #[inline]
+    fn created(&self) -> i64 {
+        self.created
+    }
+    #[inline]
+    fn accessed(&self) -> i64 {
+        self.accessed
+    }
+    #[inline]
+    fn flags(&self) -> u32 {
+        self.flags
+    }
+    #[inline]
+    fn allocated(&self) -> u64 {
+        self.allocated
+    }
+    #[inline]
+    fn descendants(&self) -> u32 {
+        self.descendants
+    }
+    #[inline]
+    fn treesize(&self) -> u64 {
+        self.treesize
+    }
+    #[inline]
+    fn tree_allocated(&self) -> u64 {
+        self.tree_allocated
     }
 }
 

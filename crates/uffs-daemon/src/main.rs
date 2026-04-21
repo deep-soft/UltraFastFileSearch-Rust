@@ -48,6 +48,7 @@ use tracing_subscriber as _;
 use uffs_client::connect_sync::UffsClientSync;
 use uffs_client::protocol::response::LoadDriveResponse;
 use uffs_core as _;
+use uffs_format as _;
 use uffs_mft as _;
 use uffs_security as _;
 #[cfg(windows)]

@@ -81,18 +81,23 @@ struct ClientProfile<'a> {
     ipc_ms: u128,
     /// Daemon-reported search duration (from the response envelope).
     duration_ms: u64,
-    /// Inline `rows` slice from the response (if any).
-    rows: Option<&'a [serde_json::Value]>,
-    /// Pre-packed `paths_blob` (if the daemon used the path-only
-    /// single-buffer fast path).
-    paths_blob: Option<&'a str>,
+    /// Payload delivery channel the daemon picked for this response.
+    /// Used by [`print_client_profile`] to show the transport name
+    /// and to pick the cheapest authoritative row-count source.
+    payload: &'a uffs_client::protocol::response::SearchPayload,
+    /// Total row count reported by the daemon, independent of which
+    /// transport carries the payload.  Used to display the "Rows
+    /// returned:" line when the transport is a shmem blob — counting
+    /// newlines in the mmap would consume the file before the stdout
+    /// write and double the syscall cost.
+    total_count: u64,
     /// Daemon-side `profile` object from the response envelope.  When
     /// populated, its `scan_ms` / `sort_ms` / `path_resolve_ms` /
     /// `write_ms` fields are rendered as a sub-phase breakdown inside
     /// the daemon block so the `--profile` output pinpoints where the
     /// per-query cost sits (scan vs sort vs path resolution vs disk
     /// write).
-    daemon_profile: Option<&'a serde_json::Value>,
+    daemon_profile: Option<&'a uffs_client::protocol::response::SearchProfile>,
 }
 
 /// Print the `--profile` / `--benchmark` client-side timing block to
@@ -102,6 +107,8 @@ struct ClientProfile<'a> {
     reason = "intentional --profile output to stderr"
 )]
 fn print_client_profile(prof: &ClientProfile<'_>) {
+    use uffs_client::protocol::response::SearchPayload;
+
     eprintln!("=== PROFILE: Client → Daemon ===");
     eprintln!("  Connect:         {:>6} ms", prof.connect_ms);
     eprintln!("  Await ready:     {:>6} ms", prof.ready_ms);
@@ -113,11 +120,10 @@ fn print_client_profile(prof: &ClientProfile<'_>) {
     // component is printed; all-zero (regex/trigram paths, legacy
     // daemons) collapses to a single-line total.
     if let Some(dp) = prof.daemon_profile {
-        let field = |key: &str| dp.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
-        let scan = field("scan_ms");
-        let sort = field("sort_ms");
-        let resolve = field("path_resolve_ms");
-        let write = field("write_ms");
+        let scan = dp.scan_ms;
+        let sort = dp.sort_ms;
+        let resolve = dp.path_resolve_ms;
+        let write = dp.write_ms;
         if (scan | sort | resolve | write) > 0 {
             eprintln!(
                 "    scan={scan} ms  sort={sort} ms  path_resolve={resolve} ms  write={write} ms"
@@ -129,10 +135,10 @@ fn print_client_profile(prof: &ClientProfile<'_>) {
         // immediately whether the bottleneck is path-walking or
         // row-building, and whether the DirCache hit rate is high
         // enough to warrant a locality optimisation.
-        let candidates = field("path_candidates");
-        let cache_entries = field("path_cache_entries");
-        let resolve_ns = field("path_resolve_fn_ns");
-        let build_ns = field("path_build_row_ns");
+        let candidates = dp.path_candidates;
+        let cache_entries = dp.path_cache_entries;
+        let resolve_ns = dp.path_resolve_fn_ns;
+        let build_ns = dp.path_build_row_ns;
         if candidates > 0 {
             let hits = candidates.saturating_sub(cache_entries);
             // Integer-math hit rate in permille (0–1000) to avoid
@@ -157,13 +163,44 @@ fn print_client_profile(prof: &ClientProfile<'_>) {
             );
         }
     }
-    let row_count = prof.paths_blob.map_or_else(
-        || prof.rows.map_or(0, <[serde_json::Value]>::len),
-        |blob| blob.bytes().filter(|byte| *byte == b'\n').count(),
-    );
+    // Row count resolution — pick the cheapest authoritative source
+    // depending on which payload variant the daemon used:
+    // 1. `ShmemBlob` → mmap'd file; counting newlines would read every page just to
+    //    discard the count, so use the daemon's pre- computed `total_count`
+    //    instead.
+    // 2. `InlineBlob` → inline string already in memory; scanning for `\n` is ~5
+    //    GB/s, cheap.
+    // 3. Rows variants (`InlineRows`, `ShmemRows`) → `row_count_hint()` is O(1) —
+    //    `Vec::len` or the daemon's pre-computed count.
+    // 4. `Empty` → zero rows, nothing to count.
+    let row_count = match prof.payload {
+        SearchPayload::ShmemBlob(_) => {
+            // `try_from` instead of `as` to preserve correctness on
+            // hypothetical 32-bit targets where `u64` would truncate
+            // (clippy::cast_possible_truncation).  `u64::MAX` is a
+            // strictly larger fallback than any realistic row count.
+            usize::try_from(prof.total_count).unwrap_or(usize::MAX)
+        }
+        SearchPayload::InlineBlob(blob) => blob.bytes().filter(|byte| *byte == b'\n').count(),
+        SearchPayload::InlineRows(_) | SearchPayload::ShmemRows { .. } | SearchPayload::Empty => {
+            prof.payload.row_count_hint().unwrap_or(0)
+        }
+    };
     eprintln!("  Rows returned:   {row_count:>6}");
-    if prof.paths_blob.is_some() {
-        eprintln!("  Transport:       paths_blob (single write_all)");
+    match prof.payload {
+        SearchPayload::ShmemBlob(_) => {
+            eprintln!("  Transport:       shmem_blob (mmap + write_all, binary)");
+        }
+        SearchPayload::InlineBlob(_) => {
+            eprintln!("  Transport:       inline_blob (single write_all)");
+        }
+        SearchPayload::ShmemRows { .. } => {
+            eprintln!("  Transport:       shmem_rows (mmap + per-row format)");
+        }
+        SearchPayload::InlineRows(_) | SearchPayload::Empty => {
+            // inline_rows is the default — no extra line needed.
+            // empty responses skip the transport line entirely.
+        }
     }
 }
 
@@ -205,101 +242,167 @@ fn run_search(args: &[String]) -> Result<()> {
     // sets that would otherwise push 3.5 MB through the pipe just to
     // discard the bytes client-side.
     let args_owned: Vec<String> = inject_no_output_for_null_stdout(resolve_out_path(args));
-    let response = client
+    let raw_response = client
         .search_cli_raw(&args_owned)
         .with_context(|| "Daemon search_cli failed")?;
     let ipc_ms = t_search.elapsed().as_millis();
 
-    let aggregations = response
-        .get("aggregations")
-        .and_then(serde_json::Value::as_array);
-    let duration_ms = response
-        .get("duration_ms")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0_u64);
-
-    // D5.1: When the daemon used shmem for large result sets, read from
-    // the shmem file instead of the (empty) inline `rows` array.
-    let shmem_rows: Option<Vec<serde_json::Value>> = response
-        .get("shmem_path")
-        .and_then(serde_json::Value::as_str)
-        .map(|path_str| {
-            let shmem_path = std::path::Path::new(path_str);
-            let shmem_resp = uffs_client::shmem::read_search_results(shmem_path)
-                .with_context(|| format!("Failed to read shmem results from {path_str}"))
-                .ok();
-            // Best-effort cleanup of the shmem file.
-            let _ignored = std::fs::remove_file(shmem_path);
-            shmem_resp
-                .map(|resp| {
-                    resp.rows
-                        .iter()
-                        .filter_map(|row| serde_json::to_value(row).ok())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        });
-
-    let inline_rows = response.get("rows").and_then(serde_json::Value::as_array);
-    let rows: Option<&[serde_json::Value]> = shmem_rows
-        .as_deref()
-        .or_else(|| inline_rows.map(Vec::as_slice));
-
-    // Path-only single-buffer fast path.  When the daemon decides the
-    // projection is path-only and the row count is small enough to
-    // inline, it packs every path into `paths_blob` as a newline-
-    // terminated UTF-8 buffer.  Writing it to stdout is then a single
-    // syscall instead of N per-row format + write calls.
-    let paths_blob: Option<&str> = response
-        .get("paths_blob")
-        .and_then(serde_json::Value::as_str);
+    // v0.5.62: deserialise the daemon response into the typed
+    // `SearchResponse` struct.  The `SearchPayload` enum is
+    // self-describing (serde tag = "kind", content = "data") so the
+    // CLI no longer needs to probe individual fields like
+    // `paths_blob`, `paths_blob_shmem`, `shmem_path`, etc. — the
+    // enum's variant is the single source of truth for which
+    // transport the daemon picked.
+    //
+    // Unknown fields on the wire are silently ignored (serde default),
+    // so newer daemons that add optional response fields are still
+    // forward-compatible with this CLI.
+    let response: uffs_client::protocol::response::SearchResponse =
+        serde_json::from_value(raw_response)
+            .with_context(|| "Failed to deserialize search response from daemon")?;
 
     if args
         .iter()
         .any(|arg| arg == "--profile" || arg == "--benchmark")
     {
-        let daemon_profile = response.get("profile").filter(|val| !val.is_null());
         print_client_profile(&ClientProfile {
             connect_ms,
             ready_ms,
             ipc_ms,
-            duration_ms,
-            rows,
-            paths_blob,
-            daemon_profile,
+            duration_ms: response.duration_ms,
+            payload: &response.payload,
+            total_count: response.total_count,
+            daemon_profile: response.profile.as_ref(),
         });
     }
 
     // OPT-4: When --out is specified, the daemon writes the file directly
-    // and returns an empty `rows` array.  Don't overwrite the file.
+    // and returns `SearchPayload::Empty`.  Don't overwrite the file.
     // Handles both `--out foo.csv` (separate arg) and `--out=foo.csv` (= form).
     let has_out = args
         .iter()
         .any(|arg| arg == "--out" || arg.starts_with("--out="));
-    let daemon_wrote_file =
-        has_out && rows.is_none_or(<[serde_json::Value]>::is_empty) && paths_blob.is_none();
+    let daemon_wrote_file = has_out && response.payload.is_empty();
 
     // Phase 3.1 NUL fast path: `--no-output` (explicit or auto-injected
     // for NUL stdout) skips every client-side stdout write.
     let suppress_stdout = args_owned.iter().any(|arg| arg == "--no-output");
 
     if !daemon_wrote_file && !suppress_stdout {
-        if let Some(blob) = paths_blob {
-            // Single write_all to stdout — the whole point of the
-            // paths_blob transport; the buffer is one contiguous slice.
+        write_search_payload_to_stdout(response.payload, args)?;
+    }
+
+    if !suppress_stdout && !response.aggregations.is_empty() {
+        // `write_aggregations` still consumes `&[serde_json::Value]`
+        // for format flexibility — re-serialise the typed
+        // `AggregateResultWire` list via `to_value` once up front
+        // and pass the slice to the helper.  Allocation is one per
+        // aggregation bucket, which is trivial compared to the
+        // aggregation itself.
+        let agg_values: Vec<serde_json::Value> = response
+            .aggregations
+            .iter()
+            .filter_map(|agg| serde_json::to_value(agg).ok())
+            .collect();
+        commands::search::dispatch::write_aggregations(&agg_values, args)?;
+    }
+
+    Ok(())
+}
+
+/// Write the daemon's search payload to stdout, picking the fastest
+/// transport the daemon selected for this response.
+///
+/// Priority order matches the [`SearchPayload`] variant dispatch:
+///
+/// 1. [`SearchPayload::ShmemBlob`] → mmap the raw-bytes file and stream
+///    directly to stdout via [`uffs_client::shmem::stream_paths_blob_into`].
+///    Zero-copy, zero JSON decode, zero UTF-8 re-validation.  Used for blobs
+///    above [`uffs_client::shmem::PATHS_BLOB_SHMEM_THRESHOLD`].
+/// 2. [`SearchPayload::InlineBlob`] → single `write_all` of the inline UTF-8
+///    buffer.  Skips per-row formatting but still paid ~40 ms of JSON decode on
+///    the way in.
+/// 3. [`SearchPayload::ShmemRows`] → read the shmem file into a
+///    `Vec<SearchRow>` (client's `connect_sync` shim doesn't do transparent
+///    resolution for `search_cli`), then fall through to per-row format
+///    dispatch.
+/// 4. [`SearchPayload::InlineRows`] → traditional per-row format + write
+///    dispatch in [`commands::search::dispatch::write_rows`].
+/// 5. [`SearchPayload::Empty`] → nothing to write.
+///
+/// Extracted from `run_search` to keep that function under the
+/// `clippy::too_many_lines` cap.
+///
+/// [`SearchPayload`]: uffs_client::protocol::response::SearchPayload
+/// [`SearchPayload::ShmemBlob`]: uffs_client::protocol::response::SearchPayload::ShmemBlob
+/// [`SearchPayload::InlineBlob`]: uffs_client::protocol::response::SearchPayload::InlineBlob
+/// [`SearchPayload::ShmemRows`]: uffs_client::protocol::response::SearchPayload::ShmemRows
+/// [`SearchPayload::InlineRows`]: uffs_client::protocol::response::SearchPayload::InlineRows
+/// [`SearchPayload::Empty`]: uffs_client::protocol::response::SearchPayload::Empty
+fn write_search_payload_to_stdout(
+    payload: uffs_client::protocol::response::SearchPayload,
+    args: &[String],
+) -> Result<()> {
+    use uffs_client::protocol::response::SearchPayload;
+    match payload {
+        SearchPayload::Empty => {
+            // Nothing to write — no-match query, `--no-output`
+            // injection, or `--out=file` (daemon already wrote to
+            // disk).  The earlier `daemon_wrote_file` guard also
+            // handles the latter case at the call site.
+        }
+        SearchPayload::ShmemBlob(shmem_path_str) => {
+            // Binary shmem transport: mmap the file and write bytes
+            // directly to stdout with one syscall, then delete the
+            // file.  No JSON decode, no intermediate allocation, no
+            // UTF-8 re-validation — stdout takes bytes.
+            let shmem_path = std::path::Path::new(&shmem_path_str);
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            uffs_client::shmem::stream_paths_blob_into(shmem_path, &mut handle)
+                .with_context(|| format!("Failed to stream shmem_blob from {shmem_path_str}"))?;
+        }
+        SearchPayload::InlineBlob(blob) => {
+            // Single write_all to stdout — the buffer is one
+            // contiguous slice; the whole point of the blob
+            // inline transport.
             let stdout = std::io::stdout();
             let mut handle = stdout.lock();
             std::io::Write::write_all(&mut handle, blob.as_bytes())
-                .with_context(|| "Failed to write paths_blob to stdout")?;
-        } else if let Some(row_slice) = rows {
-            commands::search::dispatch::write_rows(row_slice, args)?;
+                .with_context(|| "Failed to write inline_blob to stdout")?;
+        }
+        SearchPayload::ShmemRows { path, .. } => {
+            // Shmem rows variant: read the file (returns a
+            // `SearchResponse` with `InlineRows`) and dispatch to
+            // the per-row writer.  Re-encode rows to `Value` so the
+            // existing `write_rows` path (which handles `--format`,
+            // `--sep`, `--header`, column resolution, etc.) stays
+            // untouched — one Vec allocation scales O(N) but beats
+            // duplicating the column-resolution logic.
+            let shmem_resp = uffs_client::shmem::read_search_results(std::path::Path::new(&path))
+                .with_context(|| format!("Failed to read shmem_rows from {path}"))?;
+            let row_values: Vec<serde_json::Value> = shmem_resp
+                .payload
+                .into_inline_rows()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|row| serde_json::to_value(row).ok())
+                .collect();
+            commands::search::dispatch::write_rows(&row_values, args)?;
+        }
+        SearchPayload::InlineRows(rows) => {
+            // Traditional per-row format dispatch.  `write_rows`
+            // accepts `&[serde_json::Value]` for format flexibility
+            // (extract_field, parity-compat, drilldown), so re-
+            // serialise the typed rows once up front.
+            let row_values: Vec<serde_json::Value> = rows
+                .iter()
+                .filter_map(|row| serde_json::to_value(row).ok())
+                .collect();
+            commands::search::dispatch::write_rows(&row_values, args)?;
         }
     }
-
-    if !suppress_stdout && let Some(agg_arr) = aggregations.filter(|arr| !arr.is_empty()) {
-        commands::search::dispatch::write_aggregations(agg_arr, args)?;
-    }
-
     Ok(())
 }
 

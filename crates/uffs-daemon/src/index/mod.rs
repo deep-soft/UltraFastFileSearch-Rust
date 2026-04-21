@@ -12,7 +12,7 @@
 mod aggregation;
 mod predicates;
 mod projection;
-mod search;
+pub(crate) mod search;
 #[cfg(test)]
 mod tests;
 

@@ -436,20 +436,27 @@ impl UffsClient {
         let response: SearchResponse = serde_json::from_value(result)
             .map_err(|err| crate::error::ClientError::Protocol(err.to_string()))?;
 
-        // D5.1: transparent shmem reading — if the daemon used shmem,
-        // read the file and return a response with inline rows.
-        if let Some(path_str) = &response.shmem_path {
+        // D5.1: transparent shmem reading — if the daemon delivered
+        // structured rows via a shmem file, materialise them into the
+        // returned `SearchResponse` so programmatic callers see an
+        // `InlineRows` payload and never have to know about the
+        // transport.  Blob variants (`InlineBlob` / `ShmemBlob`) are
+        // raw bytes destined for stdout and are opaque here — the
+        // async `search()` API returns them as-is; only the CLI path
+        // interprets them via `stream_paths_blob_into`.
+        if let crate::protocol::response::SearchPayload::ShmemRows { path, .. } = &response.payload
+        {
             let t_shmem = std::time::Instant::now();
-            let path = std::path::Path::new(path_str);
-            let shmem_response = crate::shmem::read_search_results(path).map_err(|err| {
+            let shmem_path = std::path::Path::new(path);
+            let shmem_response = crate::shmem::read_search_results(shmem_path).map_err(|err| {
                 crate::error::ClientError::Protocol(format!("shmem read failed: {err}"))
             })?;
             let shmem_read_ms = t_shmem.elapsed().as_millis();
-            let row_count = shmem_response.rows.len();
+            let row_count = shmem_response.payload.row_count_hint().unwrap_or(0);
             tracing::info!(
                 rows = row_count,
                 shmem_read_ms = shmem_read_ms,
-                path = %path_str,
+                path = %path,
                 "🗂️ shmem: read bulk results"
             );
             tracing::debug!(

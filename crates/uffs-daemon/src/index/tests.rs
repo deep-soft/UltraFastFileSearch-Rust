@@ -1259,6 +1259,8 @@ async fn test_manager_with_drive() -> IndexManager {
 /// `paths_blob` packing + IPC transfer.
 #[tokio::test]
 async fn search_with_include_rows_false_suppresses_rows_but_counts() {
+    use uffs_client::protocol::response::SearchPayload;
+
     let mgr = test_manager_with_drive().await;
 
     let params = uffs_client::protocol::SearchParams {
@@ -1269,18 +1271,14 @@ async fn search_with_include_rows_false_suppresses_rows_but_counts() {
 
     let response = mgr.search(&params).await;
 
+    // `include_rows = false` must leave the payload as `Empty` —
+    // any other variant (InlineRows, blob, shmem) would mean the
+    // daemon allocated and populated rows despite the caller opting
+    // out, which is the exact overhead the flag is meant to skip.
     assert!(
-        response.rows.is_empty(),
-        "include_rows=false must suppress rows; got {} rows",
-        response.rows.len()
-    );
-    assert!(
-        response.paths_blob.is_none(),
-        "paths_blob must stay None when rows are suppressed"
-    );
-    assert!(
-        response.shmem_path.is_none(),
-        "shmem must be skipped when rows are suppressed"
+        matches!(response.payload, SearchPayload::Empty),
+        "include_rows=false must produce SearchPayload::Empty; got {:?}",
+        response.payload
     );
     assert!(
         response.total_count > 0,
@@ -1295,6 +1293,8 @@ async fn search_with_include_rows_false_suppresses_rows_but_counts() {
 /// non-suppressed case.
 #[tokio::test]
 async fn search_with_include_rows_true_returns_rows() {
+    use uffs_client::protocol::response::SearchPayload;
+
     let mgr = test_manager_with_drive().await;
 
     let params = uffs_client::protocol::SearchParams {
@@ -1305,13 +1305,25 @@ async fn search_with_include_rows_true_returns_rows() {
 
     let response = mgr.search(&params).await;
 
+    // The happy path delivers `InlineRows` — the small-manager
+    // fixture never breaches the `SHMEM_THRESHOLD` (100 K rows) or
+    // `PATHS_BLOB_SHMEM_THRESHOLD` (512 KB) boundaries, and the `*`
+    // pattern with default projection is not path-only so no
+    // `InlineBlob` fast-path fires either.
+    let total_count = response.total_count;
+    let SearchPayload::InlineRows(rows) = response.payload else {
+        panic!(
+            "include_rows=true on a small fixture must deliver \
+             InlineRows; got a non-rows payload variant"
+        );
+    };
     assert!(
-        !response.rows.is_empty(),
+        !rows.is_empty(),
         "include_rows=true must return matched rows; got 0"
     );
     assert_eq!(
-        response.rows.len() as u64,
-        response.total_count,
+        rows.len() as u64,
+        total_count,
         "rows.len() must equal total_count when no limit is set and include_rows=true"
     );
 }
