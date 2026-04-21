@@ -45,8 +45,8 @@
 //! - `null`    — redirect stdout to `/dev/null` / `NUL` (`WriteFile` on a device handle).
 //! - `pipe`    — pipe stdout into a byte-counting child process (`WriteFile` on a pipe).
 //! - `console` — inherit parent stdout so the write hits `WriteConsoleW` directly.
-//!               Implicitly skipped above `--console-limit` (default 100 000 rows)
-//!               because larger blobs overwhelm any interactive terminal.
+//!               Runs every tier by default; pass `--console-limit N` to skip
+//!               huge dumps in CI where an interactive terminal is not available.
 
 use std::fs::File;
 use std::io::Read;
@@ -75,9 +75,15 @@ const DEFAULT_LIMITS: &[u64] = &[
 ];
 
 /// Default row-count ceiling above which the `console` sink is
-/// skipped — interactive terminals cannot reasonably absorb a
-/// hundred-million-line dump even when the API is not the bug.
-const DEFAULT_CONSOLE_LIMIT: u64 = 100_000;
+/// skipped.
+///
+/// Set to [`u64::MAX`] so the sweep runs every configured tier
+/// against the interactive terminal by default — the whole point
+/// of the `console` sink is to reproduce the `uffs "*"` PowerShell
+/// failure on the exact write path the user hits.  Callers who
+/// *want* to short-circuit huge console dumps (e.g. CI, headless
+/// regression jobs) still opt in explicitly via `--console-limit N`.
+const DEFAULT_CONSOLE_LIMIT: u64 = u64::MAX;
 
 /// Per-invocation timeout.  Streaming the full MFT on Windows can
 /// take minutes; this cap stops a hung run from blocking the whole
@@ -292,12 +298,12 @@ fn print_usage() {
            --limits N,N,...      explicit row-count tiers (overrides defaults)\n\
            --start-limit N       drop tiers below N (keeps defaults otherwise)\n\
            --sinks file,null,pipe,console   sinks to exercise (default: all)\n\
-           --console-limit N     skip console sink above N rows (default {})\n\
+           --console-limit N     skip console sink above N rows (default: no cap)\n\
            --timeout-secs N      per-run timeout (default {})\n\
            --stop-on-fail        abort the matrix on the first failing (tier, sink)\n\
            --keep-artifacts      retain per-run stdout files under --out-dir\n\
            --out-dir PATH        artifact directory (default: $TMPDIR/uffs-stream-stress)\n",
-        DEFAULT_CONSOLE_LIMIT, DEFAULT_TIMEOUT_SECS
+        DEFAULT_TIMEOUT_SECS
     );
 }
 
@@ -734,6 +740,11 @@ fn main() -> Result<()> {
             .collect::<Vec<_>>()
             .join(",")
     );
+    let console_limit_display = if args.console_limit == u64::MAX {
+        "unlimited".to_string()
+    } else {
+        args.console_limit.to_string()
+    };
     println!(
         "  limits=[{}]  timeout={}s  console_limit={}",
         args.limits
@@ -742,7 +753,7 @@ fn main() -> Result<()> {
             .collect::<Vec<_>>()
             .join(", "),
         args.timeout.as_secs(),
-        args.console_limit
+        console_limit_display
     );
     if let Some(d) = &args.data_dir {
         println!("  data_dir={}", d.display());
