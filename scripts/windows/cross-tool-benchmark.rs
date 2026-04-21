@@ -123,17 +123,30 @@ fn bench_out_path() -> String {
 /// promotion (`extract_extensions_from_regex`).  UFFS takes the regex form
 /// so the promotion has to fire at dispatch / parse time; Everything and
 /// C++ UFFS take their native multi-ext filter form for a fair head-to-head
-/// (identical result sets, different syntax).  Validation is disabled
-/// (empty string) because the result set spans multiple extensions and the
-/// current tuple shape only supports a single substring check.
+/// (identical result sets, different syntax).
+///
+/// The Everything query uses **OR-alternation glob syntax** (`*.jpg|*.png|*.heic`)
+/// rather than the `ext:jpg;png;heic` filter-list form.  Both are documented at
+/// <https://www.voidtools.com/support/everything/searching/>, but the `;`
+/// inside `ext:` is a 1.4.1+ feature and parses as implicit-AND in older
+/// builds — which on a drive with many matching files manifests as an
+/// IPC-overflow crash ("too many results") because the miscasted query
+/// balloons the result set to drive-wide substring matches on `png` / `heic`.
+/// The `|` top-level OR operator has worked cleanly since Everything 1.3
+/// and costs nothing extra to use.
+///
+/// Validation is disabled (empty string) because the result set spans
+/// multiple extensions and the current tuple shape only supports a single
+/// substring check; row-count parity between UFFS and Everything remains
+/// the correctness signal in the summary table.
 const PATTERNS: &[(&str, &str, &str, &str, &str, &str)] = &[
-    ("full_scan",     "*",                        "*",                "*",           "",             ""),
-    ("exact",         "notepad.exe",              "notepad.exe",      "notepad.exe", "",             "notepad"),
-    ("prefix",        "win*",                     "win*",             "win*",        "",             "win"),
-    ("ext_rare",      "*.dbt",                    "ext:dbt",          "*.dbt",       "dbt",          ".dbt"),
-    ("ext_dll",       "*.dll",                    "ext:dll",          "*.dll",       "dll",          ".dll"),
-    ("ext_regex_alt", ">.*\\.(jpg|png|heic)$",    "ext:jpg;png;heic", "*",           "jpg,png,heic", ""),
-    ("substring",     "config",                   "config",           "config",      "",             "config"),
+    ("full_scan",     "*",                        "*",                  "*",           "",             ""),
+    ("exact",         "notepad.exe",              "notepad.exe",        "notepad.exe", "",             "notepad"),
+    ("prefix",        "win*",                     "win*",               "win*",        "",             "win"),
+    ("ext_rare",      "*.dbt",                    "ext:dbt",            "*.dbt",       "dbt",          ".dbt"),
+    ("ext_dll",       "*.dll",                    "ext:dll",            "*.dll",       "dll",          ".dll"),
+    ("ext_regex_alt", ">.*\\.(jpg|png|heic)$",    "*.jpg|*.png|*.heic", "*",           "jpg,png,heic", ""),
+    ("substring",     "config",                   "config",             "config",      "",             "config"),
 ];
 
 // ── Types ────────────────────────────────────────────────────────────────────
