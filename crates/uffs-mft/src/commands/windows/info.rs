@@ -11,7 +11,7 @@ use super::shared::drive_type_label;
 use crate::display::{format_bytes, format_duration, format_number_commas, truncate_string};
 
 #[cfg(windows)]
-pub async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: bool) -> Result<()> {
+pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: bool) -> Result<()> {
     use std::time::Instant;
 
     use tracing::debug;
@@ -514,7 +514,7 @@ pub async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: bool) ->
 }
 
 #[cfg(windows)]
-pub async fn cmd_drives() -> Result<()> {
+pub(crate) async fn cmd_drives() -> Result<()> {
     use tracing::debug;
     use uffs_mft::platform::{VolumeHandle, detect_drive_type, detect_ntfs_drives, is_boot_drive};
 

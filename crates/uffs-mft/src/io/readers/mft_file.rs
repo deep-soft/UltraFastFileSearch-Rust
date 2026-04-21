@@ -9,12 +9,12 @@
 #![cfg(windows)]
 
 use tracing::{debug, info, warn};
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{FILE_BEGIN, ReadFile, SetFilePointerEx};
 
 use crate::error::Result;
 use crate::io::AlignedBuffer;
-use crate::parse::{MftRecordMerger, ParseResult, ParsedRecord, apply_fixup, parse_record_full};
+use crate::parse::{MftRecordMerger, ParsedRecord, apply_fixup, parse_record_full};
 
 /// Default chunk size for streaming reads through the `$MFT` file handle.
 const MFT_FILE_CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4 MB
@@ -39,7 +39,7 @@ const MFT_FILE_CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4 MB
     unsafe_code,
     reason = "FFI: SetFilePointerEx and ReadFile for $MFT file-based reading"
 )]
-pub fn read_mft_from_file_handle(
+pub(crate) fn read_mft_from_file_handle(
     mft_handle: HANDLE,
     record_size: u32,
     total_records: u64,

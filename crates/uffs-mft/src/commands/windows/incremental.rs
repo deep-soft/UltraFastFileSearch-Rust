@@ -15,7 +15,7 @@ use crate::display::{format_number, format_usn_reason};
 
 /// Query USN Journal information for a drive.
 #[cfg(windows)]
-pub async fn cmd_usn_info(drive: char) -> Result<()> {
+pub(crate) async fn cmd_usn_info(drive: char) -> Result<()> {
     use uffs_mft::usn::query_usn_journal;
 
     println!("🔍 Querying USN Journal for {}:...", drive);
@@ -59,7 +59,7 @@ pub async fn cmd_usn_info(drive: char) -> Result<()> {
 
 /// Read recent USN Journal changes for a drive.
 #[cfg(windows)]
-pub async fn cmd_usn_read(drive: char, start_usn: Option<i64>, limit: usize) -> Result<()> {
+pub(crate) async fn cmd_usn_read(drive: char, start_usn: Option<i64>, limit: usize) -> Result<()> {
     use uffs_mft::usn::{query_usn_journal, read_usn_journal};
 
     println!("🔍 Reading USN Journal for {}:...", drive);
@@ -121,7 +121,7 @@ pub async fn cmd_usn_read(drive: char, start_usn: Option<i64>, limit: usize) -> 
 
 /// Save index to disk for incremental updates.
 #[cfg(windows)]
-pub async fn cmd_index_save(drive: char, output: &Path) -> Result<()> {
+pub(crate) async fn cmd_index_save(drive: char, output: &Path) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::usn::query_usn_journal;
@@ -183,7 +183,7 @@ pub async fn cmd_index_save(drive: char, output: &Path) -> Result<()> {
 
 /// Load index from disk and show info.
 #[cfg(windows)]
-pub async fn cmd_index_load(input: &Path) -> Result<()> {
+pub(crate) async fn cmd_index_load(input: &Path) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::index::MftIndex;
@@ -235,7 +235,7 @@ pub async fn cmd_index_load(input: &Path) -> Result<()> {
 
 /// Show cache status and optionally clean up.
 #[cfg(windows)]
-pub async fn cmd_cache_status(clean: bool, purge: bool) -> Result<()> {
+pub(crate) async fn cmd_cache_status(clean: bool, purge: bool) -> Result<()> {
     use uffs_mft::cache::{
         INDEX_TTL_SECONDS, cache_age_seconds, cache_dir, cleanup_expired_cache, list_cached_drives,
         remove_all_cached_indices,
@@ -295,7 +295,7 @@ pub async fn cmd_cache_status(clean: bool, purge: bool) -> Result<()> {
 
 /// Get or refresh a cached index for a drive.
 #[cfg(windows)]
-pub async fn cmd_cache_get(drive: char, force: bool, ttl: Option<u64>) -> Result<()> {
+pub(crate) async fn cmd_cache_get(drive: char, force: bool, ttl: Option<u64>) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::cache::{CacheStatus, INDEX_TTL_SECONDS, check_cache_status, save_to_cache};
@@ -392,7 +392,7 @@ pub async fn cmd_cache_get(drive: char, force: bool, ttl: Option<u64>) -> Result
 
 /// Clear cached indices.
 #[cfg(windows)]
-pub async fn cmd_cache_clear(drive: Option<char>, all: bool) -> Result<()> {
+pub(crate) async fn cmd_cache_clear(drive: Option<char>, all: bool) -> Result<()> {
     use uffs_mft::cache::{
         cache_dir, cache_file_path, list_cached_drives, remove_all_cached_indices,
         remove_cached_index,
@@ -430,7 +430,7 @@ pub async fn cmd_cache_clear(drive: Option<char>, all: bool) -> Result<()> {
 
 /// Incremental index update using USN Journal.
 #[cfg(windows)]
-pub async fn cmd_index_update(drive: char, force_full: bool, ttl: Option<u64>) -> Result<()> {
+pub(crate) async fn cmd_index_update(drive: char, force_full: bool, ttl: Option<u64>) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::VolumeHandle;
@@ -691,7 +691,7 @@ async fn do_full_index_build(drive: char) -> Result<()> {
 
 /// Index ALL NTFS drives in parallel using the optimized lean index path.
 #[cfg(windows)]
-pub async fn cmd_index_all(drives: Option<Vec<char>>, no_cache: bool, ttl: u64) -> Result<()> {
+pub(crate) async fn cmd_index_all(drives: Option<Vec<char>>, no_cache: bool, ttl: u64) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::{MultiDriveMftReader, detect_ntfs_drives};

@@ -18,7 +18,7 @@ use crate::display::{clean_path_for_display, format_bytes, format_duration, form
 /// Save MFT bytes (or `$UpCase` table) to a file for offline analysis.
 #[cfg(windows)]
 #[expect(clippy::too_many_arguments, reason = "CLI command with many options")]
-pub async fn cmd_save(
+pub(crate) async fn cmd_save(
     drive: char,
     output: &Path,
     compress: bool,

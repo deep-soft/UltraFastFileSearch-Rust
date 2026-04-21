@@ -19,7 +19,7 @@ use crate::display::{format_bytes, format_number_commas};
 /// # Errors
 ///
 /// Returns an error if the file cannot be loaded or stdout write fails.
-pub fn cmd_inspect(path: &Path) -> Result<()> {
+pub(crate) fn cmd_inspect(path: &Path) -> Result<()> {
     let df = MftReader::load_parquet(path)
         .with_context(|| format!("Failed to load parquet: {}", path.display()))?;
 

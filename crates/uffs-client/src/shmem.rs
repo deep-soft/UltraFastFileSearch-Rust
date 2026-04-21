@@ -505,13 +505,21 @@ pub fn write_paths_blob(blob: &str) -> io::Result<PathBuf> {
 ///    `write_all`, and a touched page-fault that races with the daemon's shmem
 ///    cleanup manifests as an opaque I/O error.
 ///
-/// 1 MiB chunks give us:
-/// - A single `WriteFile` well under any observed pipe ceiling.
-/// - ~100 progress points per 100 MB blob for tracing / pin-pointing which byte
-///   range failed on Windows regression reports.
-/// - Effectively zero overhead on Linux/macOS (the syscall cost of 100 extra
+/// 4 MiB chunks give us:
+/// - A single `WriteFile` well under any observed pipe ceiling (the 10 M-row /
+///   3.5 GiB stress run proved 1 MiB is safe; 4 MiB keeps the same headroom
+///   while cutting the syscall count 4×).
+/// - ~25 progress points per 100 MB blob for tracing / pin-pointing which byte
+///   range failed on Windows regression reports — still plenty of granularity.
+/// - Effectively zero overhead on Linux/macOS (the syscall cost of 25 extra
 ///   `write`s on a 100 MB payload is sub-millisecond).
-pub const STREAM_CHUNK_BYTES: usize = 1024 * 1024;
+///
+/// We deliberately stay at 4 MiB instead of going bigger (e.g. 16 MiB)
+/// because on Windows `WriteConsoleW` internally re-chunks at ~8 K
+/// UTF-16 chars — larger user-facing chunks do not reduce its syscall
+/// count, they just increase the per-call UTF-8 → UTF-16 transcode
+/// work and the blast radius of a cumulative console failure.
+pub const STREAM_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
 /// Stream a raw `paths_blob` shmem file into `writer` with a chunked
 /// `write_all` loop, then delete the file.
@@ -593,6 +601,19 @@ pub fn stream_paths_blob_into<W: io::Write>(path: &Path, writer: &mut W) -> io::
             format!("mmap shmem blob file {path_display} ({len} bytes): {err}"),
         )
     })?;
+
+    // Tell the kernel we will read the mapping strictly front-to-back
+    // so it can prefetch pages ahead of the write cursor.  On Linux
+    // this maps to `madvise(MADV_SEQUENTIAL)`, on macOS to
+    // `madvise(POSIX_MADV_SEQUENTIAL)`.  memmap2 only exposes
+    // `Advice` under `#[cfg(unix)]` (Windows has
+    // `PrefetchVirtualMemory` but memmap2 does not wire it up), so
+    // we gate the call identically — on Windows the compiler simply
+    // omits it, matching memmap2's own feature surface.  The result
+    // is intentionally swallowed: even if the OS refuses the advice,
+    // the stream still works, just without the prefetch optimisation.
+    #[cfg(unix)]
+    drop(mmap.advise(memmap2::Advice::Sequential));
 
     // `&mmap` coerces to `&[u8]` via `Mmap: Deref<Target=[u8]>`.  We
     // walk the slice in [`STREAM_CHUNK_BYTES`]-sized strides so each
