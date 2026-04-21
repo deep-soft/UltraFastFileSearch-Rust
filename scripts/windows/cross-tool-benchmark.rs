@@ -118,13 +118,22 @@ fn bench_out_path() -> String {
 /// cpp_ext: if non-empty, C++ UFFS uses `* --ext=<val>` instead of glob
 /// validate: case-insensitive substring that every result line must contain
 ///           (empty = skip validation, e.g. full_scan)
+///
+/// `ext_regex_alt` exercises the v0.5.66 regex-alternation → ExtensionIndex
+/// promotion (`extract_extensions_from_regex`).  UFFS takes the regex form
+/// so the promotion has to fire at dispatch / parse time; Everything and
+/// C++ UFFS take their native multi-ext filter form for a fair head-to-head
+/// (identical result sets, different syntax).  Validation is disabled
+/// (empty string) because the result set spans multiple extensions and the
+/// current tuple shape only supports a single substring check.
 const PATTERNS: &[(&str, &str, &str, &str, &str, &str)] = &[
-    ("full_scan",  "*",           "*",           "*",           "",    ""),
-    ("exact",      "notepad.exe", "notepad.exe", "notepad.exe", "",    "notepad"),
-    ("prefix",     "win*",        "win*",        "win*",        "",    "win"),
-    ("ext_rare",   "*.dbt",       "ext:dbt",     "*.dbt",       "dbt", ".dbt"),
-    ("ext_dll",    "*.dll",       "ext:dll",     "*.dll",       "dll", ".dll"),
-    ("substring",  "config",      "config",      "config",      "",    "config"),
+    ("full_scan",     "*",                        "*",                "*",           "",             ""),
+    ("exact",         "notepad.exe",              "notepad.exe",      "notepad.exe", "",             "notepad"),
+    ("prefix",        "win*",                     "win*",             "win*",        "",             "win"),
+    ("ext_rare",      "*.dbt",                    "ext:dbt",          "*.dbt",       "dbt",          ".dbt"),
+    ("ext_dll",       "*.dll",                    "ext:dll",          "*.dll",       "dll",          ".dll"),
+    ("ext_regex_alt", ">.*\\.(jpg|png|heic)$",    "ext:jpg;png;heic", "*",           "jpg,png,heic", ""),
+    ("substring",     "config",                   "config",           "config",      "",             "config"),
 ];
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -654,8 +663,10 @@ fn print_help() {
     eprintln!("  --sinks file,stdout,null");
     eprintln!("                        Comma-separated output sinks for HOT runs");
     eprintln!("                        (default: file).  COLD/WARM always use file.");
-    eprintln!("  --patterns full_scan,ext_dll,...");
-    eprintln!("                        Comma-separated pattern labels to run");
+    eprintln!("  --patterns full_scan,ext_dll,ext_regex_alt,...");
+    eprintln!("                        Comma-separated pattern labels to run.");
+    eprintln!("                        Known labels: full_scan, exact, prefix,");
+    eprintln!("                        ext_rare, ext_dll, ext_regex_alt, substring");
     eprintln!("  --skip-cold           Skip UFFS COLD and WARM phases");
     eprintln!("  --uffs-bin <path>     Path to uffs.exe (Rust)");
     eprintln!("  --help                This message");
