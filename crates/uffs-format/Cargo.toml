@@ -1,0 +1,55 @@
+# ============================================================================
+# uffs-format: Unified CSV/columnar formatter
+# ============================================================================
+# Layer 1 shared crate.  Holds the single canonical CSV output formatter
+# that both `uffs-core` (daemon-side `--out=file`) and `uffs-client` (CLI
+# stdout path) delegate to, so `uffs search --out=file foo.csv` and
+# `uffs search > foo.csv` produce **byte-identical output**.
+#
+# Before v0.5.62 the daemon had its own `DisplayRow` formatter in
+# `uffs_core::output::display_rows` and the CLI had a duplicate
+# `write_columnar` walking `serde_json::Value`.  The two diverged over
+# time (header newlines, quoting rules, `--pos`/`--neg` handling,
+# `--tz-offset` respect).  This crate is the source of truth for the
+# shared byte format.
+#
+# Thin-client invariant: zero polars, tokio, or reqwest dependencies.
+# The `FormatRow` trait lets the crate stay agnostic about whether its
+# caller holds `DisplayRow` (core) or `SearchRow` (client).
+# ============================================================================
+
+[package]
+name = "uffs-format"
+description = "Unified CSV/columnar formatter for UFFS (shared by daemon + thin CLI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# Foundation crates — FILETIME arithmetic and len-to-u32 helpers.
+uffs-time.workspace = true
+uffs-mft.workspace = true
+
+# No-alloc integer-to-string formatter for the per-row hot path.
+itoa.workspace = true
+
+# Parallel row rendering above `PARALLEL_WRITE_THRESHOLD`.
+rayon.workspace = true
+
+# Serde for `OutputColumn` (de)serialisation through the wire protocol.
+serde.workspace = true
+
+# Chrono: `OutputConfig::default()` picks up the host's local TZ offset.
+# Kept optional and narrow — only `Local::now().offset().local_minus_utc()`
+# from the `clock` feature.  Every other chrono code path stays in
+# `uffs-core`.
+chrono.workspace = true
+
+[lints]
+workspace = true

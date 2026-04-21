@@ -33,6 +33,10 @@ uffs-security.workspace = true
 uffs-mft.workspace = true
 uffs-core.workspace = true
 uffs-client.workspace = true
+# Shared CSV formatter — the daemon's `try_pack_csv_blob` feeds
+# `SearchRow`s through `uffs_format::write_rows` so pre-formatted
+# blobs are byte-identical to the CLI's local formatter.
+uffs-format.workspace = true
 
 # Async — `net` re-enabled here because the daemon's IPC server uses
 # `tokio::net::UnixListener` (unix) / `NamedPipeServer` (windows).

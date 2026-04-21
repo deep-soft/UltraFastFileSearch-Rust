@@ -48,6 +48,19 @@ env:
   CARGO_INCREMENTAL: 0
   # Override codegen-units for test profile (belt-and-suspenders with Cargo.toml)
   CARGO_PROFILE_TEST_CODEGEN_UNITS: 16
+  # Stable CPU baseline for ALL jobs that compile code in CI.  Overrides the
+  # `target-cpu=native` flag baked into .cargo/config.toml's Linux section,
+  # which is great for local dev but dangerous on GitHub-hosted runners:
+  # LLVM reads /proc/cpuinfo at compile time and on the Azure/KVM fleet
+  # sometimes over-reports instruction sets (AVX-512 etc.) that the runtime
+  # VM cannot actually execute.  The resulting proc-macro dylibs then crash
+  # with SIGILL when rustc loads them to expand derives (observed:
+  # `thiserror-impl` → `object_store` under nightly-2026-04-21).
+  # `x86-64-v3` = Haswell+ / Zen+ (AVX2 + BMI2 + FMA) which every GitHub-
+  # hosted Linux runner supports, and the ISA is a fixed subset so LLVM
+  # cannot mis-detect.  Jobs that need additional flags (e.g. debuginfo=1
+  # for test backtraces) override this at the job level.
+  RUSTFLAGS: "-C target-cpu=x86-64-v3 -C link-arg=-Wl,--gc-sections"
 
 jobs:
   format-check:
@@ -112,10 +125,12 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
-      # CI-only: replicate .cargo/config.toml [target.x86_64-unknown-linux-gnu]
-      # rustflags PLUS reduce debuginfo. RUSTFLAGS env overrides config.toml,
-      # so we must include the full set here.
-      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C link-arg=-Wl,--gc-sections"
+      # Mirrors the workflow-level RUSTFLAGS (x86-64-v3 baseline, avoids
+      # the CI SIGILL class discussed above) and adds `debuginfo=1` so
+      # failing tests produce useful stack traces without paying the full
+      # debuginfo=2 cost.  RUSTFLAGS env overrides both config.toml AND
+      # the workflow-level env, so the full set must be repeated here.
+      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=x86-64-v3 -C link-arg=-Wl,--gc-sections"
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -154,7 +169,9 @@ jobs:
     needs: test-build
     timeout-minutes: 30
     env:
-      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C link-arg=-Wl,--gc-sections"
+      # Must match test-build exactly so the cargo fingerprint lines up
+      # and the cached test binaries are reused rather than rebuilt.
+      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=x86-64-v3 -C link-arg=-Wl,--gc-sections"
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -188,7 +205,8 @@ jobs:
     needs: test-build
     timeout-minutes: 15
     env:
-      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C link-arg=-Wl,--gc-sections"
+      # Match test-build / tests for shared artifact cache reuse.
+      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=x86-64-v3 -C link-arg=-Wl,--gc-sections"
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

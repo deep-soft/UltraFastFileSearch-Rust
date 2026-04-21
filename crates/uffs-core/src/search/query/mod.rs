@@ -15,7 +15,7 @@ use std::sync::LazyLock;
 use numeric_top_n::{collect_global_top_n_numeric, sort_indices_by_name};
 use path_only_top_n::collect_path_only_sorted_top_n;
 
-use super::backend::{DisplayRow, FilterMode};
+use super::backend::{DisplayRow, FilterMode, PhaseTimings};
 use super::field::FieldId;
 use super::filters::SearchFilters;
 use crate::compact::{CompactRecord, DriveCompactIndex};
@@ -55,18 +55,24 @@ impl PartialOrd for HeapEntry {
 
 /// Collect the global top-N records across ALL drives for `*` match-all.
 ///
-/// Dispatches to either tree-walk (Path sort) or numeric sort based on
-/// `sort_column`. The exhaustive match contributes most of the line count; no
-/// logic to extract.
+/// Dispatches to either tree-walk (`Path` / `PathOnly` sort) or numeric sort
+/// based on `sort_column`.  The exhaustive match contributes most of the
+/// line count; no logic to extract.
+///
+/// Returns `(rows, phase_timings)`.  `phase_timings` is `Some` only for the
+/// numeric branch (`collect_global_top_n_numeric`), which reports the
+/// scan / sort / `path_resolve` sub-phase wall times.  The two tree-walk
+/// branches (`Path` and `PathOnly`) emit rows in tree order with no
+/// separate sort or `path_resolve` phase, so they return `None`.
 #[must_use]
-pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
+pub fn collect_global_top_n<D: AsRef<DriveCompactIndex> + Sync>(
     drives: &[D],
     limit: usize,
     sort_column: FieldId,
     sort_desc: bool,
     filter_mode: FilterMode,
     search_filters: &mut SearchFilters,
-) -> Vec<DisplayRow> {
+) -> (Vec<DisplayRow>, Option<PhaseTimings>) {
     tracing::debug!(
         sort_column = ?sort_column,
         sort_desc,
@@ -80,14 +86,18 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
         // name-sorted siblings, which is exactly lexicographic full-path
         // ASC (and DESC when the drive+child orders are reversed).  No
         // post-sort needed.
-        FieldId::Path => {
-            collect_path_sorted_top_n(drives, limit, sort_desc, filter_mode, search_filters)
-        }
+        FieldId::Path => (
+            collect_path_sorted_top_n(drives, limit, sort_desc, filter_mode, search_filters),
+            None,
+        ),
         // Parent-directory sort: the `path_only_top_n` submodule
         // implements a two-phase tree walk that produces rows in
         // `path_only`-sorted order directly, with early termination
         // at `limit` and a name-ASC tiebreaker matching `sort_rows`.
-        // No post-sort or truncate required.
+        // No post-sort or truncate required.  The ext-index fast
+        // path populates `PhaseTimings` (scan / sort / path_resolve);
+        // the tree-walk branch returns `None` because its single
+        // traversal interleaves every phase.
         FieldId::PathOnly => {
             collect_path_only_sorted_top_n(drives, limit, sort_desc, filter_mode, search_filters)
         }
@@ -129,14 +139,17 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex>>(
         | FieldId::RecallOnDataAccess
         | FieldId::ParityAttributes
         | FieldId::NameLength
-        | FieldId::PathLength => collect_global_top_n_numeric(
-            drives,
-            limit,
-            sort_column,
-            sort_desc,
-            filter_mode,
-            search_filters,
-        ),
+        | FieldId::PathLength => {
+            let (rows, timings) = collect_global_top_n_numeric(
+                drives,
+                limit,
+                sort_column,
+                sort_desc,
+                filter_mode,
+                search_filters,
+            );
+            (rows, Some(timings))
+        }
     }
 }
 

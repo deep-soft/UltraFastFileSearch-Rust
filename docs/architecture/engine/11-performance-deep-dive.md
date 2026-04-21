@@ -4,8 +4,10 @@
 
 This document explains why UFFS is a high-performance MFT search engine, the engineering decisions behind it, and real-world benchmark data from a 7-drive, 25.9-million-record production system tested up to **100M records**.
 
-> **See also:** [Performance](../../user-manual/performance.md) for the
-> full benchmark reference with per-drive tables and validation throughput.
+> **See also:**
+> - [`docs/benchmarks/`](../../benchmarks/) — publication-grade competitive-benchmark hub (UFFS vs Everything vs UFFS C++); current canonical report: [`2026-04-v0.5.66-vs-everything-and-cpp.md`](../../benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md).
+> - [User-manual performance page](../../user-manual/performance.md) — full benchmark reference with per-drive tables and validation throughput.
+> - [`docs/research/cross-tool-benchmark-analysis.md`](../../research/cross-tool-benchmark-analysis.md) — engineering-detail source (internal).
 
 ---
 
@@ -15,15 +17,33 @@ UFFS operates in three performance tiers, each with dramatically different laten
 
 | Level | What Happens | Typical Latency (25.9M records) |
 |-------|-------------|-------------------------------|
-| **COLD** | No daemon, no cache. Raw MFT read from disk, full parse, compact index build, trigram index build, path resolution tree. | 66 s (7 drives parallel) |
-| **WARM CACHE** | No daemon, but serialized compact index exists on disk. Daemon starts and deserializes cached index — no MFT read. | 6.9 s |
-| **HOT** | Daemon running with in-memory index. Pure search — no I/O, no startup. | **163 ms** e2e (`*`), **9–10 ms** e2e (targeted) |
+| **COLD** | No daemon, no cache. Raw MFT read from disk, full parse, compact index build, trigram index build, path resolution tree. | 66 s (v0.5.4) → 68.5 s (v0.5.62) — 7 drives parallel |
+| **WARM CACHE** | No daemon, but serialized compact index exists on disk. Daemon starts and deserializes cached index — no MFT read. | 6.9 s (v0.5.4) → **5.7 s (v0.5.62, −17 %)** |
+| **HOT** | Daemon running with in-memory index. Pure search — no I/O, no startup. | v0.5.4: **163 ms** e2e (`*` top-N). v0.5.66 measured (see re-bench § below): `*` with `--limit 100` is **1 112 ms** CLI-e2e ([`raw log line 657`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt)) — the “163 ms” figure was never re-verified after the Phase 2 top-N rewrite and is now superseded.  Targeted queries measure **29–32 ms** CLI-e2e with **0–3 ms daemon-side**. |
 
-The HOT path delivers **407× speedup** over COLD.  Targeted queries (exact name, prefix, extension, substring, combined) return in **9–13 ms** end-to-end with **0–3 ms daemon-side** — even at **100M records**.
+The HOT path delivers **407× speedup** over COLD.  Targeted queries
+(exact name, prefix, extension, substring, combined) return in
+**0–3 ms daemon-side** — even at **100 M records**.  **CLI end-to-end
+on v0.5.66 is 29–32 ms** (28 ms cold-spawn tax + 0–3 ms daemon).
+The “9–13 ms e2e” number shipped in v0.5.4 docs was measured before
+the Phase 1 thin-client landed; since then the per-invocation
+process-start cost on Windows dominates any targeted query.
 
 ---
 
-## Real-World Benchmarks (v0.5.4)
+## Real-World Benchmarks (v0.5.62 / v0.5.64)
+
+> **Latest numbers:** cross-tool head-to-head vs Everything, 7-drive full
+> scan at 13.5 s (25.9 M records), aggregations at ~180 ms, 5.7 s WARM
+> restart, 4.99 GB settled RSS.  Full current-state table in
+> `@/Users/rnio/Private/Github/UltraFastFileSearch/docs/research/cross-tool-benchmark-analysis.md` §Current State.
+>
+> The v0.5.4 per-drive tables below are **retained for historical
+> context** — they were captured before Phase 1, Phase 2, and Phase 3
+> shipped.  The HOT interactive-search shape (`*` with `--limit 100`,
+> 8 patterns) has not been re-run on v0.5.62 yet; that re-bench is
+> listed in the "Benchmarks still worth running" table of the cross-tool
+> analysis doc.
 
 ### Test Environment
 
@@ -31,6 +51,7 @@ The HOT path delivers **407× speedup** over COLD.  Targeted queries (exact name
 **Drives**: 7 NTFS volumes (2× NVMe Samsung 990 PRO, 2× SATA Samsung 980 PRO, 2× SATA WD 8 TB HDD, 1× USB stick)
 **Total records**: 25,931,436 across all drives (live), scaled up to 100.4M with offline MFT clones
 **Binary**: v0.5.4 release build (LTO=fat, codegen-units=1, cross-compiled from macOS via `cargo xwin`)
+**Latest bench binary**: v0.5.62 (774 KB, Phase 2+3 closed, Run 12 shipped in v0.5.64)
 **Protocol**: Per-drive profile (COLD → WARM → HOT) + interactive search (30 rounds, 8 patterns) + bulk retrieval
 
 ### Per-Drive 3-Phase Results (`*` pattern)
@@ -46,7 +67,9 @@ The HOT path delivers **407× speedup** over COLD.  Targeted queries (exact name
 | S: | SATA HDD | 8,278,106 | 67 s | 4.8 s | **54 ms** | **1236×** |
 | **ALL** | **Mixed** | **25,931,436** | **66 s** | **6.9 s** | **163 ms** | **407×** |
 
-### HOT Interactive Search Percentile Latency (ALL drives, 25.9M records, 30 rounds)
+### HOT Interactive Search Percentile Latency (ALL drives, 25.9 M records)
+
+**v0.5.4 historical (30 rounds, same hardware):**
 
 | Pattern | e2e p50 | e2e p95 | daemon p50 | daemon p95 |
 |---------|--------:|--------:|-----------:|-----------:|
@@ -59,8 +82,30 @@ The HOT path delivers **407× speedup** over COLD.  Targeted queries (exact name
 | size filter | 153 ms | 160 ms | 144 ms | 150 ms |
 | combined | 9 ms | 10 ms | 0 ms | 0 ms |
 
-At 25.9M records, targeted queries complete in **0–1 ms daemon-side**.
-Full scans sustain **167 million records/second**.
+**v0.5.66 re-bench ([`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:573-707`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt), 30 rounds, same hardware, `--limit 100`):**
+
+| Pattern                          | CLI e2e p50 | CLI e2e p95 | daemon-side |
+|----------------------------------|------------:|------------:|------------:|
+| `*` (full scan, top-100)         | **1 112 ms**|   1 163 ms  |    1 081 ms |
+| `notepad.exe` (exact)            |     29.4 ms |     34.0 ms |         0 ms |
+| `win*` (prefix)                  |     30.7 ms |     33.5 ms |         1 ms |
+| `*.dbt` (ext_rare)               |     31.8 ms |     36.0 ms |         0 ms |
+| `*.dll` (extension, 167 K match) |     68.6 ms |     74.8 ms |        42 ms |
+| `config` (substring)             |     30.6 ms |     33.5 ms |         1 ms |
+| `>.*\.(jpg\|png\|heic)$` (regex) |    135.3 ms |    148.4 ms |       108 ms |
+| `*system32*` (in-path heavy)     |     30.4 ms |     33.2 ms |         0 ms |
+
+**Daemon-side has barely moved (0–3 ms for targeted queries — same
+as v0.5.4).**  What changed is the CLI cold-spawn floor: Phase 1's
+thin-client shaved it from ~50 ms to ~28 ms, but per-process startup
+now dominates.  The `*` fullscan at 1.1 s is a separate regression
+from the v0.5.4 163 ms number and is tracked as Phase 5 target #2 in
+`@/Users/rnio/Private/Github/UltraFastFileSearch/docs/research/cross-tool-benchmark-analysis.md` §7 (bounded-heap top-N).
+
+Full scans still sustain ~1.72 M records/second end-to-end (not
+167 M/sec — that was an in-memory scan rate without output
+materialisation; see § Full-scan at scale in the cross-tool doc for
+the disk-write-inclusive number).
 
 ### Bulk Retrieval (CSV, `--out-dir`, per-drive)
 
@@ -136,7 +181,7 @@ Read chunks sorted by physical disk offset (LCN order) to minimize head movement
 
 ### 11. Daemon Architecture with Compact Cache
 
-The daemon holds the full index in memory. First search auto-starts the daemon, which persists a serialized compact cache to disk. Subsequent daemon starts deserialize the cache (~6.9 s for 25.9M records) instead of re-reading the MFT (~66 s). Once hot, targeted searches return in **9–13 ms** end-to-end; full scans in **163 ms** across all 7 drives.
+The daemon holds the full index in memory. First search auto-starts the daemon, which persists a serialized compact cache to disk. Subsequent daemon starts deserialize the cache (~5.7 s for 25.9 M records on v0.5.66, was 6.9 s on v0.5.4) instead of re-reading the MFT (~68.5 s on v0.5.66).  Once hot, **targeted searches return in 0–3 ms daemon-side / 29–32 ms CLI end-to-end** across all 7 drives on v0.5.66 (was 9–13 ms e2e on v0.5.4 before the Phase 1+ thin-client spawn floor settled at ~28 ms); unfiltered `*` with `--limit 100` is **1 112 ms** CLI e2e on v0.5.66 (was 163 ms on v0.5.4 — tracked as Phase 5 target #2 bounded-heap top-N fix).
 
 ### 12. Trigram Index for Substring Queries
 
@@ -144,7 +189,16 @@ Three-character trigram index built during startup. Substring queries intersect 
 
 ---
 
-## C++ Reference Baseline (engineering validation, not public market benchmark)
+## C++ Reference Baseline (v0.4.106 historical — engineering validation, not public market benchmark)
+
+This section captures a one-shot parity measurement from **v0.4.106**
+between the legacy C++ implementation and the then-current Rust
+engine.  It is **not** re-run per release: it was a correctness-and-
+cold-path validation artefact, not a headline metric.  Per-drive
+COLD on v0.5.66 has not been re-captured — the only current COLD
+number is the **68.5 s aggregate for all 7 drives in parallel**
+(`@/Users/rnio/Private/Github/UltraFastFileSearch/docs/architecture/engine/09-performance.md#per-drive-3-phase-results`,
+flat ± 4 % vs the v0.5.4 66 s baseline).
 
 UFFS keeps the earlier C++ implementation as a parity and regression baseline. This comparison is useful for validating parser correctness and understanding cold-path trade-offs, but it is not the headline market benchmark for the Rust engine.
 
@@ -169,21 +223,144 @@ When comparing COLD timings, the comparison is **not apples-to-apples**:
 | Tree metrics (descendants, treesize) | ✅ | ❌ |
 | Extension interning + inverted index | ✅ | ❌ |
 
-UFFS does **significantly more work** during COLD startup (~1.29× slower than C++) because it builds persistent data structures that make every subsequent search instant. The C++ tool re-reads the MFT on every invocation.
+UFFS does **significantly more work** during COLD startup because it builds persistent data
+structures that make every subsequent search instant. The C++ tool re-reads the MFT on every
+invocation. On v0.4.106 the extra Rust work made it 1.29× slower on cold total; on v0.5.66
+the same methodology shows Rust now **2.6× faster** than C++ warm-disk total even while
+doing that extra work (see parity table below).
 
-### Parity Comparison (v0.4.106, COLD, 6 drives)
+### Parity Comparison (v0.5.66 re-run, COLD per-drive, 6 drives, sequential)
 
-| Drive | C++ (warm disk) | Rust (cold) | Ratio | Files/sec (Rust) |
-|-------|-----------------|-------------|-------|------------------|
-| C: | 12.4 s | 17.4 s | 1.40× | 201,658/s |
-| D: | 39.8 s | 47.1 s | 1.18× | 150,015/s |
-| E: | 43.6 s | 48.8 s | 1.12× | 59,998/s |
-| F: | 7.0 s | 11.0 s | 1.57× | 202,343/s |
-| M: | 24.1 s | 31.7 s | 1.31× | 60,160/s |
-| S: | 1m 1.6 s | 1m 26.8 s | 1.41× | 95,326/s |
-| **TOTAL** | **3m 8.6 s** | **4m 2.9 s** | **1.29×** | **106,695/s** |
+> **Re-measured 2026-04-21** against v0.5.66 using
+> [`scripts/windows/cold-parity-per-drive.ps1`](../../../scripts/windows/cold-parity-per-drive.ps1)
+> (earlier invocation with the per-drive-cold methodology preserved from v0.4.106).
+> Sequence per drive: purge that drive's cache → stop daemon → run Rust COLD
+> (daemon spawns, reads MFT, builds compact + trigram indexes, writes cache)
+> → run C++ on the same drive with OS page cache now warmed by Rust's read.
+> Raw log: [`docs/benchmarks/raw/2026-04-v0.5.66_cold-parity-per-drive.txt`](../../benchmarks/raw/2026-04-v0.5.66_cold-parity-per-drive.txt).
+>
+> **Drive G (15 k-record USB drive) is excluded** from the per-drive tables as it
+> is too small to be representative — its timing is dominated by the ~0.7 s daemon
+> cold-spawn floor and Windows USB device-open latency, not by MFT-read or index-build
+> work. Included in the daemon warm-up record count below (which loads all attached
+> drives) but not in the comparison numbers.
+>
+> The current v0.5.66 aggregate COLD (all 6 internal drives in parallel, not sequential
+> per-drive) completes in **~68.5 s total** — see the 3-phase table in
+> [`docs/architecture/engine/09-performance.md`](../../architecture/engine/09-performance.md).
+> The per-drive breakdown below is kept for direct apples-to-apples continuity
+> with the historical v0.4.106 snapshot.
 
-After COLD, UFFS never needs to re-read the MFT — the daemon serves all subsequent queries from memory in **9–163 ms** end-to-end.
+| Drive | Records | C++ (warm disk) | Rust v0.5.66 (cold) | Ratio | Files/sec (Rust) |
+|-------|--------:|----------------:|--------------------:|------:|-----------------:|
+| C: | 3,672,016 | 49.26 s | 7.66 s | **0.16×** | 479,297/s |
+| D: | 7,066,015 | 112.69 s | 27.56 s | **0.24×** | 256,394/s |
+| E: | 2,929,524 | 74.02 s | 41.54 s | **0.56×** | 70,528/s |
+| F: | 2,221,349 | 28.63 s | 5.56 s | **0.19×** | 399,185/s |
+| M: | 1,908,810 | 44.28 s | 27.54 s | **0.62×** | 69,303/s |
+| S: | 8,278,106 | 148.24 s | 67.57 s | **0.46×** | 122,509/s |
+| **TOTAL (sequential)** | **26,075,820** | **457.15 s** | **177.39 s** | **0.39×** | **147,000/s** |
+
+**v0.5.66 is 2.6× FASTER than the C++ reference on cold total wall-clock** despite doing
+substantially more work per drive (compact-index build, trigram index, cache serialization,
+daemon startup). This reverses the v0.4.106 historical snapshot where Rust was 1.29× slower
+than C++ on the same methodology — the persistent data structures Rust builds during COLD
+are now amortised fast enough that Rust wins outright even before counting any downstream
+HOT queries.
+
+#### Rust cold-path sub-phase breakdown (from `--profile` stderr)
+
+| Drive | Records | Wall | AwaitReady | IPC | Daemon | CLI tax |
+|-------|--------:|-----:|-----------:|----:|-------:|--------:|
+| C: | 3,672,016 | 7.66 s | 7,103 ms | 26 ms | 24 ms | 27 ms |
+| D: | 7,066,015 | 27.56 s | 27,105 ms | 45 ms | 44 ms | 29 ms |
+| E: | 2,929,524 | 41.54 s | 41,109 ms | 18 ms | 16 ms | 30 ms |
+| F: | 2,221,349 | 5.56 s | 5,102 ms | 43 ms | 42 ms | 29 ms |
+| M: | 1,908,810 | 27.54 s | 27,107 ms | 27 ms | 26 ms | 24 ms |
+| S: | 8,278,106 | 67.57 s | 67,115 ms | 49 ms | 47 ms | 25 ms |
+
+Legend:
+
+- **Wall** — `Stopwatch`-measured PowerShell-to-CLI-to-daemon round-trip (matches the v0.4.106 methodology).
+- **AwaitReady** — daemon spawn + MFT read + compact index build + trigram index build + cache write. This is the true cold-path cost.
+- **IPC** — client round-trip for the `*` `--limit 100` search.
+- **Daemon** — daemon-side search duration (microseconds on cold, since the drive is already loaded before the search starts).
+- **CLI tax** — `Wall - AwaitReady - IPC - Connect` (process spawn + output formatting).
+
+On multi-million-record drives, **AwaitReady dominates 97-99% of wall-clock** — which is
+exactly the point of the compact + trigram indexes: pay once up front, then serve every
+subsequent query in ~1 ms daemon-side. The constant-cost IPC/CLI overheads (~25-30 ms
+each) are invisible at this scale.
+
+### Daemon-HOT steady-state comparison (v0.5.66)
+
+> After the initial cold load above, the Rust daemon holds all drives in memory and
+> serves every subsequent query from the compact index + trigram postings. The C++
+> reference has **no daemon** — every invocation re-reads all MFTs regardless of the
+> `--drives=X` filter (that flag is an output filter, not a load-time filter; see
+> [`scripts/windows/cross-tool-benchmark.rs:553`](../../../scripts/windows/cross-tool-benchmark.rs)).
+> This table measures how that architectural difference plays out for interactive
+> `*` queries on one drive at a time, **with both tools writing output to a file**
+> (a scripting-style workflow). Raw log in the same [`docs/benchmarks/raw/2026-04-v0.5.66_cold-parity-per-drive.txt`](../../benchmarks/raw/2026-04-v0.5.66_cold-parity-per-drive.txt) file.
+
+**Methodology.** Daemon pre-loaded with all 7 attached drives (warm-up from existing
+cache: 0.2 s, 26,090,928 records across every drive including USB G). Per drive, one
+round each of:
+
+- Rust: `uffs.exe '*' --drive <X> --out <tmp> --columns Path --hide-system --hide-ads --profile`
+- C++:  `uffs.com '*' --drives=<X> --columns=path --out=<tmp>` (re-reads all MFTs every invocation)
+
+Both write to a temp file; row counts are read post-run from the file. Drive G (USB, 15 k
+records) is excluded from the comparison for the same reason as above.
+
+| Drive | C++ (MFT re-read + filter) | Rust (daemon HOT) | Speedup | Rust rows | C++ rows |
+|-------|---------------------------:|------------------:|--------:|----------:|---------:|
+| C: | 8,621 ms | 1,531 ms | **5.6×** | 3,454 | 3,513 |
+| D: | 31,668 ms | 1,955 ms | **16.2×** | 4,756 | 7,066 |
+| E: | 42,421 ms | 1,242 ms | **34.2×** | 2,914 | 2,928 |
+| F: | 4,495 ms | 890 ms | **5.1×** | 2,121 | 2,082 |
+| M: | 21,955 ms | 927 ms | **23.7×** | 1,902 | 1,909 |
+| S: | 51,852 ms | 3,547 ms | **14.6×** | 8,249 | 8,278 |
+| **TOTAL (sum of per-drive p50s)** | **161,012 ms** | **10,092 ms** | **16.0×** | — | — |
+
+**C++ is 16.0× slower in the honest workflow comparison.** Every user-issued query
+forces a full-MFT re-read of every drive because there is no persistent daemon. Rust's
+daemon pays the cold cost *once* (the 177.4 s total above) and then serves every
+subsequent query in ~1-4 s per drive regardless of query frequency. For interactive
+use and scripting — the two dominant real-world workloads — this is the number that
+actually matters.
+
+> **Row-count caveat.** Rust and C++ do not interpret `*` identically — most visibly on
+> drive D (4,756 vs 7,066 rows). The Rust invocation adds `--hide-system --hide-ads` to
+> match Everything's default result-set semantics; C++ has no equivalent flag. Both tools
+> are faithfully doing their default "find everything on drive X" workflow and writing it
+> out; the timing comparison holds, but the row-count columns should not be read as
+> cross-tool result-set equivalence validation. On the drives where both tools are
+> closer to the same semantics (C, E, F, M, S), the row counts agree to within 1-2%.
+
+#### Rust daemon-side vs CLI overhead breakdown
+
+| Drive | Rust rows | Rust wall p50 | Rust daemon p50 | CLI overhead |
+|-------|----------:|--------------:|----------------:|-------------:|
+| C: | 3,454 | 1,531 ms | 1,013 ms | 518 ms |
+| D: | 4,756 | 1,955 ms | 1,349 ms | 606 ms |
+| E: | 2,914 | 1,242 ms | 800 ms | 442 ms |
+| F: | 2,121 | 890 ms | 561 ms | 329 ms |
+| M: | 1,902 | 927 ms | 666 ms | 261 ms |
+| S: | 8,249 | 3,547 ms | 2,333 ms | 1,214 ms |
+
+The daemon serves most drives' `*` queries in well under a second (≤ 1.4 s for ≤ 5 M
+records matched). **CLI overhead accounts for 20-40% of wall-clock per invocation**
+(~0.3-1.2 s for process spawn + IPC round-trip + stderr profile print), which matters
+for scripting against thousands of queries: use the library crate or connect directly
+to the daemon RPC socket to skip the Windows process-creation tax. For a human typing
+a single interactive query, wall-clock ≤ 4 s is the relevant number.
+
+After COLD, UFFS never needs to re-read the MFT — the daemon serves all subsequent
+queries from memory in **0-3 ms daemon-side for targeted queries** (29-32 ms CLI
+end-to-end on v0.5.66, was 9-13 ms on v0.5.4 before the post-Phase-1 ~28 ms cold-spawn
+floor), and **1,112 ms CLI e2e** for unfiltered `*` with `--limit 100` (regressed from
+163 ms v0.5.4; Phase 5 fix pending).
 
 ---
 
@@ -205,5 +382,5 @@ Use `--profile` for full per-phase timing breakdown (client connect, daemon star
 
 ---
 
-*Last Updated: 2026-04-14*
-*UFFS Version: 0.5.4*
+*Last Updated: 2026-04-21*
+*UFFS Version: 0.5.66*

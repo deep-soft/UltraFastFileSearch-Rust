@@ -40,7 +40,7 @@ use crate::display::char_or_dot;
     unsafe_code,
     reason = "FFI: SetFilePointerEx, ReadFile for raw volume I/O"
 )]
-pub async fn cmd_benchmark_mft(drive: char) -> Result<()> {
+pub(crate) async fn cmd_benchmark_mft(drive: char) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::io::AlignedBuffer;

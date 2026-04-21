@@ -466,10 +466,118 @@ fn rpc_call_impl(
 
 // ── Response Helpers ─────────────────────────────────────────────────────────
 
+/// Extract the row list from a `SearchResponse` JSON value, handling
+/// both the legacy flat `rows` field and the v0.5.62+ tagged
+/// `payload` enum.
+///
+/// # Wire shapes handled
+///
+/// - **Legacy (pre-v0.5.62):** `{ "rows": [...] }` — a flat array on
+///   the result root.  Kept for forward-compat with any snapshot
+///   replayers.
+/// - **Current (tagged enum):** `{ "payload": { "kind": "inline_rows",
+///   "data": [...] } }` — the unified `SearchPayload` channel.
+///   Returns the inline row list verbatim.
+/// - **Empty / blob / shmem payload:** returns `vec![]`.  The harness
+///   treats these as "zero rows" which is correct for
+///   `expect_min_rows` assertions (blob variants never reach API
+///   callers because MCP-style requests leave `output_format = None`,
+///   keeping the payload as `inline_rows`).
+/// - **Projected-JSON mode:** `{ "projected_rows": [...] }` — each row
+///   is a `{column: value}` map.  Returned as-is since the column
+///   checks only inspect named fields.
 fn get_rows(result: &Value) -> Vec<&Value> {
-    result.get("rows").and_then(|v| v.as_array())
-        .map(|a| a.iter().collect())
-        .unwrap_or_default()
+    if let Some(rows) = result.get("rows").and_then(|v| v.as_array()) {
+        return rows.iter().collect();
+    }
+    if let Some(payload) = result.get("payload") {
+        let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind == "inline_rows" {
+            if let Some(data) = payload.get("data").and_then(|v| v.as_array()) {
+                return data.iter().collect();
+            }
+        }
+    }
+    if let Some(proj) = result.get("projected_rows").and_then(|v| v.as_array()) {
+        return proj.iter().collect();
+    }
+    Vec::new()
+}
+
+/// Return the `SearchPayload` kind string (`"empty"`, `"inline_rows"`,
+/// `"shmem_rows"`, `"inline_blob"`, `"shmem_blob"`) or `""` when the
+/// result predates the v0.5.62 payload unification.
+fn payload_kind(result: &Value) -> &str {
+    result
+        .get("payload")
+        .and_then(|p| p.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+/// `result.shmem_path` equivalent for the post-unification wire shape.
+///
+/// - Legacy flat field `shmem_path` → returned verbatim.
+/// - Payload kind `shmem_rows`   → `payload.data.path`.
+/// - Payload kind `shmem_blob`   → `payload.data` (string).
+/// - Anything else              → `None`.
+fn payload_shmem_path(result: &Value) -> Option<&str> {
+    if let Some(s) = result.get("shmem_path").and_then(Value::as_str) {
+        return Some(s);
+    }
+    let payload = result.get("payload")?;
+    match payload_kind(result) {
+        "shmem_rows" => payload
+            .get("data")
+            .and_then(|d| d.get("path"))
+            .and_then(Value::as_str),
+        "shmem_blob" => payload.get("data").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// `result.shmem_count` equivalent for the post-unification wire shape.
+///
+/// Only the `shmem_rows` variant carries a count; `shmem_blob` is a
+/// pre-formatted byte buffer with no row granularity.
+fn payload_shmem_count(result: &Value) -> Option<u64> {
+    if let Some(n) = result.get("shmem_count").and_then(Value::as_u64) {
+        return Some(n);
+    }
+    if payload_kind(result) == "shmem_rows" {
+        return result
+            .get("payload")
+            .and_then(|p| p.get("data"))
+            .and_then(|d| d.get("count"))
+            .and_then(Value::as_u64);
+    }
+    None
+}
+
+/// Virtualise legacy top-level SearchResponse keys against the
+/// v0.5.62+ `payload` enum.
+///
+/// Lets TOML test specs keep using human-readable
+/// `result_has_key = ["rows"]` / `["shmem_path"]` assertions without
+/// every TOML file needing to be rewritten to the new enum shape.
+/// The mapping enumerated here must stay in lock-step with the
+/// [`SearchPayload`] variants in
+/// `crates/uffs-client/src/protocol/response.rs`.
+fn result_has_virtual_key(result: &Value, key: &str) -> bool {
+    if result.get(key).is_some() {
+        return true;
+    }
+    let kind = payload_kind(result);
+    match key {
+        // "rows" is the row list; empty / inline_rows / shmem_rows
+        // all expose row data (empty may legitimately mean zero
+        // rows — `T40 no results` sets `total_count_min = 0`).
+        "rows" => matches!(kind, "empty" | "inline_rows" | "shmem_rows"),
+        // shmem transport surfaces as either variant.
+        "shmem_path" => matches!(kind, "shmem_rows" | "shmem_blob"),
+        "shmem_count" => kind == "shmem_rows",
+        _ => false,
+    }
 }
 
 
@@ -1852,7 +1960,7 @@ fn run_rpc_custom_validator(name: &str, result: &Value) -> Result<String> {
         }
 
         "no_shmem" => {
-            if result.get("shmem_path").is_some() {
+            if payload_shmem_path(result).is_some() {
                 bail!("Expected inline rows (no shmem) but response has shmem_path");
             }
             let rows = get_rows(result);
@@ -2074,8 +2182,11 @@ fn build_rpc_validator(def: &TestDef) -> CheckFn {
         }
 
         // api_checks.result_has_key: validate top-level keys exist.
+        // Delegates to `result_has_virtual_key` so legacy keys like
+        // `rows` / `shmem_path` remain valid assertions after the
+        // v0.5.62 `SearchPayload` unification.
         for key in &def.api_checks.result_has_key {
-            if result.get(key.as_str()).is_none() {
+            if !result_has_virtual_key(result, key.as_str()) {
                 bail!("result missing expected key: {key}");
             }
         }
@@ -2199,9 +2310,12 @@ fn build_rpc_validator(def: &TestDef) -> CheckFn {
 
         // api_checks.shmem_count_min — verify shmem transfer was used and
         // cross-check the on-disk row count against the JSON `shmem_count`.
+        // Both accessors route through the `payload` enum for
+        // post-v0.5.62 shapes while still accepting the legacy flat
+        // fields.
         if let Some(min_sc) = def.api_checks.shmem_count_min {
-            let shmem_path = result.get("shmem_path").and_then(|v| v.as_str());
-            let shmem_count = result.get("shmem_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let shmem_path = payload_shmem_path(result);
+            let shmem_count = payload_shmem_count(result).unwrap_or(0);
             if shmem_path.is_none() {
                 bail!("Expected shmem_path in response (shmem_count_min={min_sc}) but not present — \
                        daemon returned inline rows instead of shmem");
@@ -2387,13 +2501,20 @@ fn ensure_daemon_ready(args: &ScriptArgs) -> bool {
                 for line in combined.lines() {
                     eprintln!("    {line}");
                 }
-                // Stop the stale daemon so we can restart with the data source.
-                eprintln!("  Stopping stale daemon...");
+                // Use `daemon kill` (synchronous PID kill + PID file + socket
+                // cleanup) instead of `daemon stop` (fire-and-forget shutdown
+                // RPC).  The stop RPC returns immediately while the daemon is
+                // still shutting down; a follow-up `daemon start` races the
+                // stop and often sees "already running" because `connect_raw`
+                // succeeds against the still-alive socket.  `kill` is
+                // synchronous by design and always leaves a clean slate.
+                eprintln!("  Killing stale daemon...");
                 let _ = Command::new(bin)
-                    .args(["daemon", "stop"])
+                    .args(["daemon", "kill"])
                     .output();
-                // Brief pause to let the socket close.
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                // Brief pause to let the socket slot fully release on macOS
+                // (Darwin retains the inode ~50 ms after the process exits).
+                std::thread::sleep(std::time::Duration::from_millis(250));
             } else if lower.contains("not running") {
                 eprintln!("  Daemon is not running, starting...");
             } else {

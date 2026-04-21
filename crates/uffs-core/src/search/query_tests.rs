@@ -565,7 +565,8 @@ fn assert_boolean_sort(field: FieldId, flag_bit: u32) {
     let mut filters = SearchFilters::default();
 
     // Descending: flagged record should come first.
-    let rows_desc = collect_global_top_n(&drives, 10, field, true, FilterMode::All, &mut filters);
+    let (rows_desc, _) =
+        collect_global_top_n(&drives, 10, field, true, FilterMode::All, &mut filters);
     assert!(
         rows_desc.len() >= 2,
         "{field:?} desc: expected ≥2 rows, got {}",
@@ -578,7 +579,8 @@ fn assert_boolean_sort(field: FieldId, flag_bit: u32) {
     );
 
     // Ascending: flagged record should come last.
-    let rows_asc = collect_global_top_n(&drives, 10, field, false, FilterMode::All, &mut filters);
+    let (rows_asc, _) =
+        collect_global_top_n(&drives, 10, field, false, FilterMode::All, &mut filters);
     assert!(
         rows_asc.len() >= 2,
         "{field:?} asc: expected ≥2 rows, got {}",
@@ -630,7 +632,7 @@ fn top_n_sort_by_directory_flag() {
     let mut filters = SearchFilters::default();
 
     // Desc: directory first.
-    let rows = collect_global_top_n(
+    let (rows, _) = collect_global_top_n(
         &drives,
         10,
         FieldId::DirectoryFlag,
@@ -784,7 +786,7 @@ fn heap_eviction_directory_desc_dirs_come_last() {
     let drives = vec![drive];
     let mut filters = SearchFilters::default();
 
-    let rows = collect_global_top_n(
+    let (rows, _) = collect_global_top_n(
         &drives,
         5,
         FieldId::DirectoryFlag,
@@ -809,7 +811,7 @@ fn heap_eviction_directory_asc_files_come_last() {
     let drives = vec![drive];
     let mut filters = SearchFilters::default();
 
-    let rows = collect_global_top_n(
+    let (rows, _) = collect_global_top_n(
         &drives,
         5,
         FieldId::DirectoryFlag,
@@ -875,7 +877,7 @@ fn heap_eviction_hidden_desc() {
     let drives = vec![drive];
     let mut filters = SearchFilters::default();
 
-    let rows = collect_global_top_n(
+    let (rows, _) = collect_global_top_n(
         &drives,
         5,
         FieldId::Hidden,
@@ -1059,4 +1061,140 @@ fn search_index_star_sort_hidden_desc() {
             row.flags
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// collect_global_top_n — `FieldId::Bulkiness` integration pins
+// ═══════════════════════════════════════════════════════════════════════
+//
+// `bulkiness_for_row` vs `bulkiness_for_record` equivalence is pinned
+// by the unit tests in `search/derived.rs`.  These tests pin the
+// *integration* — i.e. that `numeric_top_n.rs::push_record` reaches
+// the right function with the right argument, casts cleanly to the
+// heap's i64 sort key, and produces a stable high-to-low ordering.
+// A regression in any of those links (wrong cast, wrong type passed,
+// DisplayRow dance silently reintroduced) fails these.
+
+/// Build a drive with three files whose `bulkiness_for_record` values
+/// are distinct and easy to rank: 1.0×, 2.0×, and 4.0× the logical
+/// size.  Returns (drive, expected descending order by name).
+fn build_bulkiness_test_drive() -> (DriveCompactIndex, [&'static str; 3]) {
+    let mut idx = MftIndex::new('C');
+
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // (name, frs, size, allocated) — all three files share the same
+    // `modified` so a regression that falls back to `rec.modified`
+    // (the pre-Run-10 default) would produce an unstable order.
+    let files: &[(&str, u64, u64, u64)] = &[
+        // bulkiness = 1.0 × SCALE = 1_000_000
+        ("dense.dat", 100, 1_000, 1_000),
+        // bulkiness = 2.0 × SCALE = 2_000_000
+        ("medium.dat", 101, 1_000, 2_000),
+        // bulkiness = 4.0 × SCALE = 4_000_000 (bulkiest)
+        ("sparse.dat", 102, 1_000, 4_000),
+    ];
+
+    for &(name, frs, size, allocated) in files {
+        let off = idx.add_name(name);
+        let ext = idx.intern_extension(name);
+        let rec = idx.get_or_create(frs);
+        rec.first_name.name = IndexNameRef::new(
+            off,
+            u16::try_from(name.len()).expect("name too long"),
+            true,
+            ext,
+        );
+        rec.first_name.parent_frs = ROOT_FRS;
+        rec.first_stream.size = SizeInfo {
+            length: size,
+            allocated,
+        };
+        rec.stdinfo.flags = 0x20; // archive, not a directory
+        rec.stdinfo.modified = 7_000_000; // deliberately identical
+        rec.stdinfo.created = 7_000_000;
+    }
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    // Expected order when sorted by bulkiness DESC.
+    (drive, ["sparse.dat", "medium.dat", "dense.dat"])
+}
+
+/// Desc sort by `FieldId::Bulkiness` must produce bulkiest-first.
+///
+/// Exercises the exact hot-path arm at
+/// `numeric_top_n.rs::push_record::FieldId::Bulkiness` — the one
+/// that was collapsed from an 18-line `DisplayRow::new(...)` dance
+/// into a single `bulkiness_for_record(rec) as i64` call.  A future
+/// regression there (wrong argument, forgotten cast, accidental
+/// re-introduction of the allocation) fails this test.
+#[test]
+fn top_n_sort_by_bulkiness_desc_orders_by_ratio() {
+    let (drive, expected_desc) = build_bulkiness_test_drive();
+    let drives = vec![drive];
+    let mut filters = SearchFilters::default();
+
+    let (rows, _) = collect_global_top_n(
+        &drives,
+        10,
+        FieldId::Bulkiness,
+        true,
+        FilterMode::All,
+        &mut filters,
+    );
+
+    let got: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
+    assert!(
+        got.len() >= expected_desc.len(),
+        "expected ≥{} rows, got {}: {got:?}",
+        expected_desc.len(),
+        got.len()
+    );
+    // Compare only the first three — the root entry may or may not
+    // appear below these depending on filter mode, but the three
+    // test files must appear in bulkiness order at the top.
+    let got_top_three = got.get(..3).expect("asserted ≥3 rows above");
+    assert_eq!(
+        got_top_three,
+        &expected_desc[..],
+        "bulkiness desc must rank sparse > medium > dense; got {got:?}",
+    );
+}
+
+/// Asc sort is the mirror image — least bulky first.  Pins that the
+/// heap's inversion flag is threaded correctly through the
+/// `FieldId::Bulkiness` arm (same sort-key computation, opposite
+/// ordering).
+#[test]
+fn top_n_sort_by_bulkiness_asc_orders_by_ratio() {
+    let (drive, expected_desc) = build_bulkiness_test_drive();
+    let drives = vec![drive];
+    let mut filters = SearchFilters::default();
+
+    let (rows, _) = collect_global_top_n(
+        &drives,
+        10,
+        FieldId::Bulkiness,
+        false,
+        FilterMode::All,
+        &mut filters,
+    );
+
+    let got: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
+    // The three test files must appear in *reverse* bulkiness order
+    // among the last three positions.  Use `rev()` on the expected
+    // list for the assertion.
+    let expected_last_three: Vec<&str> = expected_desc.iter().rev().copied().collect();
+    let got_last_three: Vec<&str> = got.iter().rev().take(3).copied().collect();
+    // `got_last_three` is in reverse-iteration order; flip it so the
+    // comparison matches `expected_last_three` (dense → medium → sparse).
+    let got_last_three_forward: Vec<&str> = got_last_three.iter().rev().copied().collect();
+    assert_eq!(
+        got_last_three_forward, expected_last_three,
+        "bulkiness asc must rank dense < medium < sparse at the tail; got {got:?}",
+    );
 }

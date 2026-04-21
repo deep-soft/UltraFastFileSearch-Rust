@@ -7,6 +7,7 @@
 //! `uffsd` (daemon) and `uffs` (CLI) both depend on this module.
 
 pub mod cli_args;
+mod cli_args_helpers;
 pub mod response;
 pub mod search_params;
 #[cfg(test)]
@@ -455,6 +456,48 @@ pub struct SearchParams {
     /// formatting (overrides auto-detected local timezone).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tz_offset_hours: Option<i32>,
+    /// Output config: CLI-layer `--format` value (e.g. `"csv"`, `"json"`,
+    /// `"custom"`, `"table"`).
+    ///
+    /// The daemon uses this field to decide how to pre-format rows
+    /// server-side into a
+    /// [`SearchPayload::InlineBlob`](crate::protocol::response::SearchPayload::InlineBlob)
+    /// / [`SearchPayload::ShmemBlob`](crate::protocol::response::SearchPayload::ShmemBlob).
+    /// As of Phase 3:
+    ///
+    /// - `Some("csv")` (or absent — CLI default is `csv`) → pre-format through
+    ///   [`uffs_format::write_rows`], emitting the canonical CSV bytes.
+    /// - `Some("custom")` → pre-format the CSV body, then append the legacy
+    ///   `Drives? … / MMMmmm …` footer via
+    ///   [`uffs_format::write_legacy_drive_footer`] (gated on
+    ///   `output_drive_targets` being non-empty).
+    /// - `Some("json")` / `Some("table")` → skip pre-format.  The CLI keeps
+    ///   ownership of those structural formats.
+    ///
+    /// Byte-parity between the CLI slow path and the daemon fast path
+    /// is pinned by
+    /// `uffs_cli::commands::output::tests::{parity_byte_parity_*,
+    /// columnar_byte_parity_*}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+
+    /// Drive letters the search targeted, echoed back into the legacy
+    /// drive footer when `output_format == Some("custom")`.
+    ///
+    /// Matches the CLI's local `targets` computation: populated from
+    /// `--drive` / `--drives` (and, in the thin-client passthrough
+    /// path, `--mft-file` by extracting drive letters from the file
+    /// paths).  Empty → footer omitted entirely, matching
+    /// `uffs_format::write_legacy_drive_footer`'s "no drives, no
+    /// footer" rule.
+    ///
+    /// The field is intentionally separate from [`Self::drives`]
+    /// because "which drives to search" and "which drives to show in
+    /// the footer" are semantically different — e.g.  `--mft-file
+    /// C.mft` targets drive C for the footer but leaves `drives`
+    /// empty because the MFT path is a separate wire selector.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_drive_targets: Vec<char>,
 }
 
 /// Default-true helper for serde.
@@ -523,6 +566,8 @@ impl Default for SearchParams {
             output_columns: None,
             output_parity_compat: None,
             output_tz_offset_hours: None,
+            output_format: None,
+            output_drive_targets: Vec::new(),
         }
     }
 }

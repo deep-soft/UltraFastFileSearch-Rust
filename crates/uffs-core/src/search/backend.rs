@@ -3,6 +3,14 @@
 
 //! Search backend types: display rows, sort columns, filter modes, and
 //! multi-drive search orchestration.
+//!
+//! Exception: `file_size_policy` allows this file to exceed 800 LOC.
+//! Rationale: cross-cutting facade — `DisplayRow`, `PhaseTimings`,
+//! `SearchResult`, `FilterMode`, and `MultiDriveBackend` form a
+//! cohesive contract surface referenced by every dispatch path, the
+//! daemon wire layer, and the test harness.  Splitting would
+//! scatter the type definitions across files and break the
+//! single-import convention downstream crates rely on.
 
 use alloc::sync::Arc;
 use std::time::Instant;
@@ -107,8 +115,19 @@ impl DisplayRow {
     /// Filename portion of the path (e.g., `file.txt`).
     ///
     /// Zero-cost: returns a `&str` slice into the owned `path`.
+    ///
+    /// The `uffs_format::FormatRow::name` trait method forwards to
+    /// this inherent method — keeping the inherent impl named `name`
+    /// (rather than e.g. `file_name`) preserves the accessor's
+    /// ergonomics across the many `uffs-core` call sites that
+    /// predate the trait.  The intentional collision with the trait
+    /// method silences `clippy::same_name_method` here.
     #[must_use]
     #[inline]
+    #[expect(
+        clippy::same_name_method,
+        reason = "shared name with the FormatRow trait impl is intentional — see method-level doc"
+    )]
     pub fn name(&self) -> &str {
         self.path.get(self.name_start as usize..).unwrap_or("")
     }
@@ -125,6 +144,123 @@ impl DisplayRow {
     }
 }
 
+/// Feed `DisplayRow` straight into the shared `uffs-format` writer.
+///
+/// The daemon holds `DisplayRow` directly on the search hot path, so
+/// this impl lets `uffs_format::write_rows::<DisplayRow, _>` run
+/// without an intermediate copy.  Every accessor is O(1) and just
+/// hands back a struct field (or the pre-computed filename slice),
+/// matching the trait's inlineability requirement.
+///
+/// The trait method `name()` collides with `DisplayRow::name()` (the
+/// inherent accessor that pre-dates the trait); the trait impl
+/// delegates to the inherent impl so the behaviour is identical.
+/// The `clippy::same_name_method` lint is silenced on the inherent
+/// method above — see its `#[expect]` attribute.
+impl uffs_format::FormatRow for DisplayRow {
+    #[inline]
+    fn drive(&self) -> char {
+        self.drive
+    }
+    #[inline]
+    fn path(&self) -> &str {
+        &self.path
+    }
+    #[inline]
+    fn name(&self) -> &str {
+        Self::name(self)
+    }
+    #[inline]
+    fn size(&self) -> u64 {
+        self.size
+    }
+    #[inline]
+    fn is_directory(&self) -> bool {
+        self.is_directory
+    }
+    #[inline]
+    fn modified(&self) -> i64 {
+        self.modified
+    }
+    #[inline]
+    fn created(&self) -> i64 {
+        self.created
+    }
+    #[inline]
+    fn accessed(&self) -> i64 {
+        self.accessed
+    }
+    #[inline]
+    fn flags(&self) -> u32 {
+        self.flags
+    }
+    #[inline]
+    fn allocated(&self) -> u64 {
+        self.allocated
+    }
+    #[inline]
+    fn descendants(&self) -> u32 {
+        self.descendants
+    }
+    #[inline]
+    fn treesize(&self) -> u64 {
+        self.treesize
+    }
+    #[inline]
+    fn tree_allocated(&self) -> u64 {
+        self.tree_allocated
+    }
+}
+
+/// Sub-phase wall-clock breakdown inside the `pattern == "*"` pipeline.
+///
+/// Populated only when the `match_all` dispatch path is taken (via
+/// `collect_global_top_n_numeric`); the regex / trigram paths leave
+/// this `None` on the parent [`SearchResult`].
+///
+/// Units are whole milliseconds (`u64`) to match the rest of the
+/// `SearchProfile` wire type; sub-millisecond phases clamp to 0.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PhaseTimings {
+    /// Ext-index candidate iteration + inline predicate filter.
+    pub scan_ms: u64,
+    /// `sort_unstable_by_key` on the candidate `(u16, u32, i64)`
+    /// tuples (or heap drain, depending on `use_heap`).
+    pub sort_ms: u64,
+    /// `tree::resolve_path_cached` over every sorted candidate.
+    /// This is the dominant cost at high row counts: reordering
+    /// candidates by a numeric key (e.g. `Modified`) scrambles
+    /// MFT locality and collapses the `DirCache` hit rate.
+    pub path_resolve_ms: u64,
+    /// Deep-profile counter: number of candidates that reached
+    /// the path-resolve loop (i.e. survived the scan + sort +
+    /// truncate).  Divide `path_resolve_ms` by this to get
+    /// per-record cost; anything over ~500 ns/record points at
+    /// allocation pressure or a pathological parent-walk depth.
+    pub path_candidates: u64,
+    /// Deep-profile counter: total entries across all per-drive
+    /// `DirCache` instances at the end of the path-resolve loop.
+    /// Because `DirCache` is keyed by `parent_frs` and only grows
+    /// on misses, this value is the exact miss count.  Hits =
+    /// `path_candidates - path_cache_entries`.  A very small
+    /// value (< 1 % of candidates) means locality is fine and the
+    /// per-candidate cost is dominated by something else (string
+    /// alloc, row building, etc.).
+    pub path_cache_entries: u64,
+    /// Deep-profile counter: cumulative nanoseconds spent inside
+    /// `tree::resolve_path_cached` across all candidates.  This
+    /// isolates the path-walk + cache-lookup + string-concat
+    /// cost from the surrounding row-building work.  Compare
+    /// against `path_build_row_ns` to see which half dominates.
+    pub path_resolve_fn_ns: u64,
+    /// Deep-profile counter: cumulative nanoseconds spent inside
+    /// `make_display_row` + the subsequent `Vec::push`.  This
+    /// measures the `DisplayRow` struct construction (name slice,
+    /// flags decode, size/time copies) separately from the path
+    /// resolution.
+    pub path_build_row_ns: u64,
+}
+
 /// Result of a search operation.
 pub struct SearchResult {
     /// Matching rows.
@@ -133,6 +269,11 @@ pub struct SearchResult {
     pub duration: core::time::Duration,
     /// Total records scanned across all drives.
     pub records_scanned: usize,
+    /// Sub-phase breakdown for the `pattern == "*"` fast path
+    /// (scan / sort / `path_resolve`).  `None` for other dispatch
+    /// paths (regex, trigram) and for match-all paths that took
+    /// the `PathOnly` sort branch.
+    pub phase_timings: Option<PhaseTimings>,
 }
 
 /// Legacy type alias — all sort columns are now `FieldId`.
@@ -328,6 +469,7 @@ impl MultiDriveBackend {
 
         let start = Instant::now();
         let mut rows = Vec::new();
+        let mut phase_timings: Option<PhaseTimings> = None;
 
         if pattern.is_empty() {
             self.last_results.clear();
@@ -335,6 +477,7 @@ impl MultiDriveBackend {
                 rows: Vec::new(),
                 duration: start.elapsed(),
                 records_scanned: 0,
+                phase_timings: None,
             };
         }
 
@@ -395,7 +538,7 @@ impl MultiDriveBackend {
         let is_path = !is_match_all && !is_regex && crate::search::tree::is_path_pattern(&needle);
 
         if is_match_all {
-            rows = super::query::collect_global_top_n(
+            let (match_all_rows, match_all_timings) = super::query::collect_global_top_n(
                 &self.drives,
                 limit,
                 self.sort_column,
@@ -403,6 +546,8 @@ impl MultiDriveBackend {
                 filter_mode,
                 search_filters,
             );
+            rows = match_all_rows;
+            phase_timings = match_all_timings;
             // Post-filters that require resolved paths (type, path_contains,
             // bulkiness, path_length) are not applied inside
             // `collect_global_top_n` — they operate on `DisplayRow`, not
@@ -448,6 +593,7 @@ impl MultiDriveBackend {
                         rows: Vec::new(),
                         duration: start.elapsed(),
                         records_scanned: 0,
+                        phase_timings: None,
                     };
                 }
             }
@@ -520,6 +666,7 @@ impl MultiDriveBackend {
             rows: self.last_results.clone(),
             duration: start.elapsed(),
             records_scanned: scanned,
+            phase_timings,
         }
     }
 
@@ -596,6 +743,7 @@ pub fn search_index(
             rows: Vec::new(),
             duration: start.elapsed(),
             records_scanned: 0,
+            phase_timings: None,
         };
     }
 
@@ -661,7 +809,7 @@ pub fn search_index(
         "[1] search_index entry"
     );
 
-    let rows: Vec<DisplayRow> = if is_match_all {
+    let (rows, phase_timings): (Vec<DisplayRow>, Option<PhaseTimings>) = if is_match_all {
         dispatch_match_all(
             &active_drives,
             limit,
@@ -686,23 +834,27 @@ pub fn search_index(
                 rows: Vec::new(),
                 duration: start.elapsed(),
                 records_scanned: 0,
+                phase_timings: None,
             };
         };
-        regex_rows
+        (regex_rows, None)
     } else {
-        dispatch_trigram_or_tree(
-            &active_drives,
-            &needle,
-            is_path,
-            case_sensitive,
-            whole_word,
-            match_path,
-            limit,
-            filter_mode,
-            search_filters,
-            sort_column,
-            sort_desc,
-            extra_sort_tiers,
+        (
+            dispatch_trigram_or_tree(
+                &active_drives,
+                &needle,
+                is_path,
+                case_sensitive,
+                whole_word,
+                match_path,
+                limit,
+                filter_mode,
+                search_filters,
+                sort_column,
+                sort_desc,
+                extra_sort_tiers,
+            ),
+            None,
         )
     };
 
@@ -722,6 +874,7 @@ pub fn search_index(
         rows,
         duration: start.elapsed(),
         records_scanned: scanned,
+        phase_timings,
     }
 }
 

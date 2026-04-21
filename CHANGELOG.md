@@ -15,13 +15,501 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Modernization documentation and tracking (Wave 1-6 guides)
-- UFFS-specific modernization plan for 2026
-- Mandatory wave completion flow documentation
+- **Regex alternation → ExtensionIndex fast path** (Phase 4, 2026-04-21 —
+  `crates/uffs-core/src/search/dispatch.rs`,
+  `crates/uffs-client/src/protocol/cli_args_helpers.rs`,
+  `crates/uffs-client/src/protocol/cli_args.rs`).  New
+  `extract_extensions_from_regex` helper recognises the narrow regex
+  shape `>^?(?i)?.*?\.(e1|e2|...)$` and rewrites it to
+  `pattern="*" + extensions=[e1, e2, ...]` so the query routes through
+  the same `ExtensionIndex` CSR fast path that `--ext e1,e2,e3` uses.
+  Requires a trailing `$` anchor so the rewrite is semantically
+  lossless (without `$` the regex matches `.ext` anywhere in the
+  name, which the ext-index cannot replicate).  Rejects multi-segment
+  extensions, wildcards, character classes, and literal-prefixed
+  regex (so path-anchored forms stay on the regex scan path).
+  Added as dispatch-time safety net #3 in `apply_dispatch_safety_nets`
+  and as parse-time sugar in `RawCliArgs::into_search_params`.
+  **Projected**: `>.*\.(jpg|png|heic)$` on a 3.5 M-record C: drive
+  drops from 298 ms → ~95 ms (matches the equivalent
+  `--ext jpg,png,heic` glob path).  **28 new regression tests** pin
+  the accepted / rejected shapes across both layers.
 
 ### Changed
-- Cleaned up all TTAPI references from justfile and build scripts
-- Updated justfile header and recipes for UFFS
+- **`--sort path_only` parallelised on the ext-index fast path**
+  (Phase 4, 2026-04-21 —
+  `crates/uffs-core/src/search/query/path_only_top_n.rs`,
+  `crates/uffs-core/src/search/sorting.rs`).  Three targeted changes
+  in the daemon's path_only pipeline:
+  - **`collect_path_only_via_ext_index`** — per-candidate path
+    resolution rewritten from a single-threaded `for` loop to
+    `par_chunks(4096)` with per-worker `DirCache`, mirroring the
+    pattern already used in
+    `numeric_top_n::collect_global_top_n_numeric`.  Includes an
+    explicit `(drive_idx, rec_idx)` locality re-sort upfront so
+    multi-extension queries (e.g.
+    `>.*\.(jpg|png|heic)$`) preserve MFT-adjacent DirCache hits.
+  - **`sort_rows_with_fold`** — the Schwartzian decorate pass
+    (`String`-alloc-per-row for each needed folded key) now runs on
+    `into_par_iter` with a per-worker `fold_buf`, and the resulting
+    sort uses `par_sort_unstable_by` when `rows.len() >= 16_384`
+    (same threshold as the numeric fast path).
+  - **`PhaseTimings` instrumentation** — the path_only fast path
+    now populates `scan_ms`, `sort_ms`, `path_resolve_ms`,
+    `path_candidates`, and `path_cache_entries`, so `--profile` no
+    longer reports `scan=0 sort=0 path_resolve=0` on
+    `--sort path_only` queries.  `collect_path_only_sorted_top_n`
+    now returns `(Vec<DisplayRow>, Option<PhaseTimings>)` — the
+    tree-walk branch still returns `None` because its single
+    traversal interleaves every phase.
+
+  **Projected**: `*.dll --sort path_only` on a 167 K-row C: drive
+  drops from 221 ms → ~60 ms daemon-side (closes the 172 ms gap
+  vs the default Modified sort observed during the v0.5.62 validation run; full capture in
+  [`docs/benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt`](docs/benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt) and related internal logs).
+
+### Fixed
+- **`ext_rare` 543 ms outlier on drives with zero matching extensions**
+  (Run 12, 2026-04-21 — `crates/uffs-core/src/search/query/numeric_top_n.rs`,
+  `crates/uffs-core/src/search/filters/mod.rs`,
+  `crates/uffs-core/src/search/filters/apply.rs`,
+  `crates/uffs-core/src/search/sorting.rs`).  Two compounding bugs
+  in the `*.<extension>` pipeline:
+  - **Bug A (perf)** — `numeric_top_n::search_index` fell through to
+    a full-drive scan when `resolve_ext_ids_for_drive` produced an
+    empty ID set.  On a 3.5 M-record drive with zero `.dbt` files,
+    `C:*.dbt --hide-system --hide-ads` cost 543 ms of pure scan
+    plus a spurious row from Bug B.  **Fixed** by adding an explicit
+    short-circuit arm that skips the drive entirely when the
+    resolved-ID set is empty.
+  - **Bug B (correctness)** — the `matches_record` /
+    `row_passes_filters` fallback extracted extensions via
+    `name.rsplit('.').next().unwrap_or("")`, which returns the
+    whole name for dotless inputs.  A directory literally named
+    `dbt` therefore matched `--ext dbt` even though the MFT
+    indexer's `intern_extension` had already assigned it
+    `extension_id = 0` (no extension bucket).  **Fixed** by adding
+    a shared `extract_extension_after_dot` helper that matches
+    `intern_extension` semantics exactly (dotless, dotfile, and
+    trailing-dot names all return `""`), and replacing the buggy
+    extraction in `matches_record`, `row_passes_filters`, and the
+    `search::sorting` sort-key builder.  The sort-key fix closes
+    a latent data-leak where dotless names leaked between
+    extension groups on extension-sorted result sets.
+  - **11 new regression tests** pin the fixes:
+    `search::filters::tests::extract_extension_after_dot_*` (5 —
+    helper semantics), `filter_extension_fallback_*` (4 —
+    end-to-end `matches_record` fallback), and
+    `search::backend::tests::search_index_ext_rare_*` (2 —
+    end-to-end `*.dbt` on a drive with zero `.dbt` files).
+- **`--profile` per-drive match counts rewritten O(rows×drives) →
+  O(rows)** (`crates/uffs-daemon/src/index/search.rs:282-310`).
+  The previous implementation nested `filter(|row| row.drive == D)
+  .count()` inside a per-drive loop, producing quadratic work in
+  the result cross product.  Single-pass `HashMap<char, usize>` tally
+  then projects back over `drive_info` to preserve the existing
+  (drive, count) ordering contract.  Cuts `--profile` overhead on
+  wide result sets (e.g. 100 K rows × 4 drives) from ~400 K
+  predicate evaluations to ~100 K hash inserts.
+
+### Changed
+- **`scripts/windows/cross-tool-benchmark.rs` no longer hard-codes
+  `--profile`** in the default UFFS invocation (Run 12, 2026-04-21).
+  The bench now measures the exact command shape a normal user
+  types; `daemon_ms` is still captured on an opt-in basis via
+  `UFFS_EXTRA_ARGS="--profile"` (environment variable).  Previous
+  runs paid <0.2% overhead from `--profile`, so summary numbers
+  remain comparable — change is primarily methodological
+  cleanliness for public-facing benchmarks.
+
+### Added
+- **Phase 3 — `--columns parity` / `--parity-compat` and `--format custom`
+  now take the daemon pre-format fast path**
+  (`crates/uffs-daemon/src/handler.rs::RequestHandler::try_pack_csv_blob`).
+  Both exclusions from Phase 2 are lifted; the daemon now produces the
+  full 25-column legacy parity layout and the `Drives? … / MMMmmm …`
+  drive footer server-side, leaving the CLI a pure `write_all` on
+  the received blob.  Specifically:
+  - `--columns parity` and `--parity-compat` both route through
+    `uffs_format::write_rows` with `parity_compat=true` — the new
+    behaviour that `build_output_config` auto-promotes `columns ==
+    "parity"` into `parity_compat = true` keeps the CLI's
+    `write_parity` (always rewrites dir rows) and the daemon's
+    `write_rows` (rewrites only when flag is set) emitting
+    byte-identical output even for `--columns parity` queries that
+    omit `--parity-compat`.
+  - `--format custom` accepts the CSV body through the shared
+    writer, then appends the legacy footer via
+    `uffs_format::write_legacy_drive_footer`.  The drive letters
+    come from the new `SearchParams::output_drive_targets` wire
+    field; empty targets skip the footer entirely, matching the
+    CLI's baseline behaviour.
+  - Parity always emits the 25-column header even when
+    `output_header=false`: the daemon explicitly overrides
+    `cfg.header=true` when `parity_compat` is active so the CLI's
+    hand-rolled `write_parity` (which ignores the header flag) and
+    the daemon fast path stay byte-identical on
+    `--parity-compat --noheader` queries.
+- **`uffs-format::footer` module — canonical legacy drive footer writer**
+  (`crates/uffs-format/src/footer.rs`).  Carves the
+  `write_legacy_drive_footer` + `DriveFooterContext` +
+  `is_full_scan_pattern` helpers out of the CLI-private `parity.rs`
+  into the shared crate so the CLI slow path
+  (`write_native_results("custom", …)`) and the daemon fast path
+  (`try_pack_csv_blob` with `output_format == "custom"`) share a
+  single implementation.  Includes a self-test suite
+  (`uffs_format::footer::tests::*`) that pins the CRLF shape, the
+  `"MMMmmm that was FAST"` heuristic, the row-count threshold
+  (`FAST_SCAN_ROW_LIMIT = 20 000`), the pipe-joined drive-letter
+  formatting, and the full-scan pattern classifier.  Re-exported
+  from `uffs-client::output` so the CLI preserves its thin-client
+  invariant of depending only on `uffs-client`.
+- **`SearchParams::output_drive_targets` wire field**
+  (`crates/uffs-client/src/protocol/mod.rs`).  Carries the CLI's
+  local `targets: Vec<char>` computation (from `--drive`,
+  `--drives`, and the thin-client passthrough `--mft-file` path) to
+  the daemon so `try_pack_csv_blob` can reproduce the footer
+  exactly.  Intentionally separate from `SearchParams::drives`
+  because "drives to search" and "drives to show in footer" are
+  semantically distinct — e.g. `--mft-file D.mft` targets D for the
+  footer but leaves `drives` empty.  Absent / empty → footer
+  omitted (matches `uffs_format::write_legacy_drive_footer`'s
+  empty-targets short-circuit).
+- **CLI `write_columnar` now emits canonical byte-parity output**
+  (`crates/uffs-cli/src/commands/output/mod.rs`).  The slow path
+  that runs when the daemon returns `InlineRows` has been aligned
+  with `uffs_format::write_rows` in three places so the CLI
+  fallback and the daemon fast path cannot drift:
+  - **Quote policy:** only string-shaped columns (`Path` / `Name` /
+    `PathOnly` / `Type` / `Extension`) get quote-wrapped; numeric,
+    datetime, and boolean-flag columns emit raw.  Matches the match
+    arms in `uffs_format::writer::write_row` — the new helper
+    `is_quoted_column` is the single authority both sites check.
+  - **Timezone:** `extract_field` now takes a `tz_offset_secs`
+    parameter fed from the parity context, and
+    `format_filetime_with_tz` mirrors
+    `uffs_format::append_datetime_native` exactly.  The older
+    `format_filetime_local` is retained for the `--format table`
+    human-display path (intentionally host-local for that surface).
+  - **Header terminator:** the header row is now closed with
+    `\n\n` (header + blank separator line) instead of a single
+    `\n`, matching `uffs_format::write_rows` and the legacy
+    baseline that `uffs-core::output::tests::format_parity_*`
+    already pin.
+- **Datetime zero-sentinel alignment across CLI and daemon**
+  (`crates/uffs-cli/src/commands/output/{mod.rs,parity.rs}`).  Both
+  `format_filetime_local` and `append_datetime_tz` now emit
+  `"0000-00-00 00:00:00"` on an unset FILETIME (zero ticks, for
+  which `uffs_time::filetime_to_calendar` returns `None`).  The
+  previous empty-string behaviour diverged from
+  `uffs_format::append_datetime_native` and silently produced
+  different bytes between the CLI slow path and the daemon fast
+  path on rows with zero Created/Modified/Accessed values — a
+  latent Phase 2 inconsistency.
+- **Six new byte-parity regression tests across CLI writers**
+  (`crates/uffs-cli/src/commands/output/output_tests.rs`).  Pin
+  every axis the Phase 3 lift depends on:
+  - `parity_byte_parity_basic_file_zero_filetime` — datetime
+    sentinel agreement.
+  - `parity_byte_parity_directory_rewrite` — Path / Name /
+    `PathOnly` / Size / `SizeOnDisk` parity-dir rewrite for
+    directory rows.
+  - `parity_byte_parity_all_flag_bits` — 15-column flag dispatch
+    and `ParityAttributes` final column agree for every
+    `PARITY_MASK` bit.
+  - `parity_byte_parity_multi_row` — row ordering and header /
+    blank-separator structure.
+  - `columnar_byte_parity_zero_filetime_date_columns` +
+    `columnar_byte_parity_nonzero_filetime` — pins the
+    `write_columnar` ↔ `uffs_format::write_rows` alignment
+    (quote policy, TZ, `\n\n` header) end-to-end.
+- **Six new daemon regression tests for the Phase 3 gate lift**
+  (`crates/uffs-daemon/src/handler.rs::tests`).  Replace the
+  Phase 2 `skips_columns_parity` / `skips_parity_compat_flag`
+  tests (which pinned the old exclusions) with positive-assertion
+  coverage of the new behaviour:
+  - `accepts_columns_parity` — `--columns parity` lands on
+    `InlineBlob`, header matches the canonical 25-column legacy
+    layout + `\n\n`, and the sample directory row gets the
+    parity-dir rewrite (`\"C:\\\\Program Files\\\\app\\\\\",\"\",`).
+  - `accepts_parity_compat_flag` — `--parity-compat` on a
+    non-parity projection still rewrites dir rows (Path gets
+    trailing `\`, Size swapped to `treesize`).
+  - `parity_forces_header_when_disabled` — parity overrides
+    `output_header=false` so the fast/slow paths agree on
+    `--parity-compat --noheader`.
+  - `custom_appends_footer_when_drives_set` — `--format custom`
+    with non-empty `output_drive_targets` produces a blob whose
+    tail contains the CRLF `Drives? \t1\tC:\r\n` footer and the
+    `MMMmmm that was FAST` warning for a full-scan pattern under
+    the row threshold.
+  - `custom_omits_footer_when_no_drives` — empty
+    `output_drive_targets` skips the footer entirely (matches the
+    CLI's baseline).
+  - `skips_non_csv_format` (updated) — `"json"` / `"table"` /
+    `"CSV "` (trailing-space garbage) still skip; the old
+    `"custom"` entry is removed because it is now accepted.
+- **Daemon-side multi-column CSV pre-format fast path**
+  (`crates/uffs-daemon/src/handler.rs::RequestHandler::try_pack_csv_blob`).
+  Extends the existing path-only blob fast path (`try_pack_paths_blob`)
+  to every multi-column CSV projection the daemon's formatter can
+  reproduce byte-for-byte.  When the gate accepts the request, the
+  handler consumes the inline `Vec<SearchRow>`, feeds it through
+  `uffs_format::write_rows` with the same `OutputConfig` the
+  `--out=file` path uses (via the newly `pub(crate)`
+  `uffs_daemon::index::search::build_output_config`), and replaces
+  `SearchResponse::payload` with `SearchPayload::InlineBlob` for
+  payloads ≤ 512 KB or `SearchPayload::ShmemBlob` above that
+  threshold.  The CLI then writes the buffer verbatim with a single
+  `write_all`, skipping per-row JSON deserialisation, the
+  client-side `extract_field` dispatch, and the `write_columnar`
+  per-column render loop on the medium-to-large result sets where
+  that dispatch dominates end-to-end latency.
+- **New `SearchParams::output_format` wire field**
+  (`crates/uffs-client/src/protocol/mod.rs`).  Carries the CLI's
+  `--format` value (`"csv"`, `"json"`, `"custom"`, `"table"`) to
+  the daemon so `try_pack_csv_blob` can gate correctly — the
+  pre-format path only runs when the CLI will actually consume CSV
+  output, and defers to the local formatter for JSON / table /
+  `custom` (which appends a legacy drive footer the daemon does not
+  emit).  Filled from `CliArgs::format` in `from_cli_args` and
+  handled everywhere else by serde defaults — the field is optional
+  and absent means "CLI default (csv)".
+- **Nine new regression tests for `try_pack_csv_blob`**
+  (`crates/uffs-daemon/src/handler.rs::tests::try_pack_csv_blob_*`).
+  Mirror the path-only test layout:
+  - **`happy_path_multi_column`** — pins the default CSV projection
+    case (`output_format: None`, multi-column projection) lands on
+    `InlineBlob` with the expected header + separator + row
+    structure.
+  - **`accepts_explicit_csv_format`** — `output_format =
+    Some("csv")` in every case combination (lowercase, uppercase,
+    mixed) is accepted.
+  - **`skips_json_response_mode`**, **`skips_non_csv_format`**,
+    **`skips_aggregations`**, **`skips_when_output_file_set`**,
+    **`skips_columns_parity`**, **`skips_parity_compat_flag`**,
+    **`skips_empty_response`** — each gate bullet in the method
+    docstring has a dedicated test that keeps the payload as
+    `InlineRows` instead of pre-formatting.
+  - **`offloads_large_blob_to_shmem`** — 5 000-row fixture with
+    padded paths produces a >512 KB blob, verifies the handler
+    lands on `ShmemBlob`, streams the file back via
+    `stream_paths_blob_into`, and compares the streamed bytes
+    against a fresh in-memory `uffs_format::write_rows` reference
+    call.  The file is deleted after the stream, mirroring the
+    `try_pack_paths_blob` shmem test's lifecycle check.
+- **`uffs-format` crate — unified CSV/columnar output formatter**
+  (`crates/uffs-format/`).  Carves the shared CSV writer that both the
+  daemon's `--out=file` path (`DisplayRow`) and the thin CLI's stdout
+  path (`SearchRow`) now delegate to, so the two sites are byte-identical
+  by construction rather than by accident.  The crate is polars-free,
+  tokio-free, and depends only on `uffs-time` + `uffs-mft` + `itoa` +
+  `rayon` + `serde` + the narrow `chrono` `clock` feature, preserving
+  the thin-client binary-size invariant.  The public surface is
+  `FormatRow` (trait abstracting over `DisplayRow` / `SearchRow`),
+  `OutputConfig` (builder), `OutputColumn` (narrow enum mirroring the
+  subset of `FieldId` the formatter needs), and `write_rows` (the
+  entry point).  `uffs-client::output::write_search_rows` is a thin
+  re-export used by CLI consumers that already depend on `uffs-client`.
+- **Byte-parity regression tests for the formatter unification**
+  (`crates/uffs-core/src/output/tests.rs::format_parity_*`).  Four
+  tests — basic file row, parity-compat directory row, `--columns all`
+  baseline, and 20 000-row parallel branch — pin that
+  `uffs_format::write_rows(&[DisplayRow], …)` emits byte-identical
+  output to the legacy `OutputConfig::write_display_rows(&[DisplayRow], …)`.
+  Any future drift in either implementation trips at least one test
+  before it reaches end-to-end parity suites.
+- **`FieldId` ↔ `OutputColumn` drift-guard tests**
+  (`crates/uffs-core/src/search/field/field_tests.rs::field_id_matches_output_column_*`).
+  Three tests pin that every `FieldId` variant has a matching
+  `uffs_format::OutputColumn` variant with identical `canonical_name`
+  and `display_name`.  The `field_id_to_format_column` bridge in
+  `uffs_core::output::display_rows_format_bridge` is an exhaustive
+  `const fn` match, so variant-set drift trips at compile time; these
+  tests cover the remaining metadata-drift surface at run time.
+- **Phase 3 output-path optimization** (`docs/research/perf-phase3-output-optimization.md`)
+  - **3.1 NUL fast path** — CLI detects `> NUL` / `> /dev/null` via the new
+    `uffs_client::stdout_kind` module (Unix `fstat` + `/dev/null` device-id
+    match; Windows `GetFileType` + `GetConsoleMode`) and auto-injects
+    `--no-output`.  The daemon gates `SearchRow` materialisation on
+    `include_rows`, so `paths_blob` packing, shmem offload, and IPC row
+    transfer all no-op on suppressed queries.  Expected saving: 20–30 ms
+    on medium result sets piped to NUL.
+  - **3.2 Single-buffer multi-column console render** — the console branch
+    of `write_native_results` now renders CSV / JSON / table / parity output
+    into a `Vec<u8>` and issues one `stdout.lock().write_all`, replacing the
+    previous `BufWriter<StdoutLock>` + per-row `writeln!` pattern.  Guarded
+    by a 50 MiB cap via the pure `choose_console_strategy(row_count, cap,
+    est)` helper — falls back to streaming on pathological result sets.
+  - **3.3 Windows `WriteConsoleW` direct path** — when stdout is a real
+    console on Windows, `uffs_client::stdout_kind::write_stdout_buffer`
+    transcodes the rendered buffer to UTF-16 once and issues chunked
+    `WriteConsoleW` calls, bypassing the narrow-CRT codepage translation
+    that otherwise mangles non-ASCII output on legacy conhost.
+- **Async `UffsClient` wire-protocol test coverage**
+  (`crates/uffs-client/src/connect_tests.rs`) — six behavioural regression
+  pins mirroring the sync suite (`status`-method contract,
+  `ConnectionFailed` remediation text, `cached_status` short-circuit in
+  both directions).  Drives the client through in-memory tokio
+  `AsyncRead`/`AsyncWrite` doubles — no real socket, no daemon.
+
+### Changed
+- **Bulkiness sort-key eliminates per-candidate `DisplayRow` allocation**
+  (`crates/uffs-core/src/search/query/numeric_top_n.rs`).  Added
+  `bulkiness_for_record(&CompactRecord)` as a sibling of `bulkiness_for_row`;
+  both forward to a shared private `bulkiness_from_sizes` so they cannot
+  drift.  On the numeric top-N hot path this shaves an 18-line
+  `DisplayRow::new(..., String::new(), ...)` dance — ~μs per candidate —
+  measured impact ≈ 45 ms on a 45K-row `--sort bulkiness *.dll` query.
+
+### Fixed
+- **`shmem::tests` race** — `concurrent_writes_get_unique_paths` and
+  `gc_cleans_orphaned_bins_and_preserves_non_bins` shared the global
+  `shmem_dir()`; the GC test's `cleanup_stale_shmem_files()` sweep could
+  wipe in-flight files written by the concurrent-writes test when cargo's
+  threadpool scheduled both in parallel.  Serialised via a file-local
+  `Mutex<()>`.  Production never hit this — GC only runs at daemon
+  startup, and the PID file prevents overlap in real usage.
+- **Two miswritten `#[expect(clippy::cognitive_complexity)]` reason strings**
+  in `crates/uffs-daemon/src/index/mod.rs` had been copy-pasted from
+  unrelated functions (`load_single_mft_file` tagged as "multi-drive
+  search"; `ensure_drives_loaded` as "tree metrics computation").
+  Replaced with accurate per-function justifications.
+
+## [0.5.67] - 2026-04-19
+
+### Added
+- **Phase 2 performance measurement series** (closed): 11 instrumented
+  runs comparing UFFS to Everything / UltraSearch / ES across cold-warm-hot
+  phases.  Shipped `docs/research/perf-phase2-measurement-plan.md` as
+  the permanent record.
+- **`paths_blob` single-buffer fast path (v0.5.35)** — daemon packs
+  path-only projections into a newline-terminated UTF-8 buffer; CLI
+  writes with one `write_all`, skipping per-row JSON deserialisation.
+  Inline for ≤ `SHMEM_THRESHOLD` rows; large results fall back to the
+  shmem transport.
+- **UAC refactor (v0.5.36)** — `ElevationPolicy::RequireExistingElevation`
+  default, `--elevate` opt-in, `UFFS_ELEVATE=1` session override, plus an
+  actionable error surface listing all three recovery paths (elevated
+  shell, explicit UAC, broker install).
+- **Deep health check (Run 10 Part B)** — `UffsClientSync` /
+  `UffsClient` consolidate the connect-time liveness probe and
+  pre-search readiness poll into a single `status` RPC, with a
+  `cached_status` short-circuit in `await_ready`.  ~5–10 ms saved per
+  CLI invocation on Windows named pipes.
+- **Shared-memory transport for bulk results** (`uffs-client::shmem`) —
+  results beyond `SHMEM_THRESHOLD` bypass JSON and memory-map a temp
+  file.  Includes format v2 binary header, best-effort GC of stale
+  `.bin` files on daemon startup.
+- **Cross-tool benchmark harness**
+  (`scripts/windows/cross-tool-benchmark.rs`) — drives UFFS, Everything,
+  UltraSearch, and the legacy `uffs.com` C++ build through an
+  apples-to-apples workload with cold/warm/hot phases and per-drive
+  isolation.
+
+### Changed
+- **`cli_args.rs` refactored** — 11 stateless parsers extracted to
+  `cli_args_helpers.rs`; `search.rs` tests moved to `search_tests.rs`
+  via `#[path]` module re-attach.  Keeps both files under the 800-LOC
+  file-size policy with no suppression.
+- **Startup profiling** — `UFFS_PROFILE_STARTUP=1` prints per-phase
+  wall-clock from `main()` through first `write_all`, driving the
+  Phase 2 + Phase 3 measurement work.
+
+### Fixed
+- **`*.<ext>` and `<letter>:*` CLI sugar** — parse-time promotion to
+  `pattern="*" + ext=<ext>` (and drive-prefix extraction) was briefly
+  regressed during the fat→thin CLI split; restored plus a dispatch-time
+  safety net in `uffs_core::search::backend::search_index` for direct
+  JSON-RPC callers.
+- **PathOnly sort** — now matches Windows Folder-column semantics
+  (directories compare before files at equal path prefix; case-folded
+  via the drive's upcase table).
+- **Lifecycle / PID file** — stale-PID detection, `--no-retire` flag
+  for long-running CI sessions, and session-tier upgrades (TUI / GUI /
+  MCP at tier 1 get 3× the idle timeout of CLI at tier 0).
+
+## [0.5.0] - 2026-03-15
+
+Major architectural milestone — daemon-first CLI, MCP adapter, and
+aggregate engine all ship together.
+
+### Added
+- **Aggregate engine** (`uffs_core::aggregate`) — Stages 0-5 complete:
+  scaffolding + `AggregateMeta`; protocol + daemon + CLI integration;
+  rollup, duplicates, parser, presets; pagination + CSV/TSV export;
+  cache; `--agg` flag surface; MCP aggregation tools; 10-test
+  validation suite (T119–T128).
+- **MCP (Model Context Protocol) gateway** (`uffs-mcp`) — stdio adapter
+  that bridges Claude, Cursor, Windsurf, and other AI agents to the
+  daemon via JSON-RPC.  D3.4.5 notifications, D4.3 E2E tests, MCP
+  resources + prompts.
+- **Security hardening** — S1 cache DACL / file permissions, S2.2.2
+  Windows DPAPI keystore, S4 daemon IPC hardening (peer credentials,
+  input validation, limit caps), S4.3 client-side daemon identity
+  verification (macOS codesign / Windows Authenticode), S4.4 rate
+  limiting + idle timeout + shutdown nonce, S5 Access Broker hardening.
+- **`uffs-broker`** — optional Windows service providing elevated MFT
+  handles so the daemon itself can run `asInvoker` with no UAC prompt.
+- **Scenario M** — incremental MFT hot-load validation scenario; exercises
+  the daemon's `load_drive` + `info` + `refresh` paths against live
+  drives.
+
+### Changed
+- **`--parity-compat` mode** — `CPP_COLUMN_ORDER` for exact C++-binary
+  output shape, `parity_attributes()` mask for the 15 baseline NTFS
+  flag bits.  Lets the Rust daemon drop into legacy automation with
+  zero ini changes.
+
+## [0.4.0] - 2026-02-12
+
+Daemon-first architecture lands — CLI / TUI / GUI / MCP are now all
+thin clients over a unified `uffsd` process.
+
+### Added
+- **Daemon foundation (D2)** — `IndexManager` holds the compact index +
+  trigrams; `IpcServer` over Unix domain socket (macOS/Linux) or named
+  pipe (Windows); RPC handler; lifecycle manager with idle auto-retire.
+- **Client library (D3)** — `UffsClient` (async, tokio) and
+  `UffsClientSync` (blocking, tokio-free) with auto-start, keepalive,
+  reconnect, structured error types.
+- **MCP adapter scaffolding (D4)** — stdio bridge, initial tool
+  definitions, handler dispatch.
+- **Windows Access Broker scaffold (D7)** — `uffs-broker` service,
+  client, shared handle passing via Win32 named pipes; unblocks the
+  "no UAC prompt for search" target posture.
+- **Thin-client CLI / TUI / GUI** — `uffs`, `uffs_tui`, `uffs_gui` now
+  delegate all heavy lifting to the daemon.  TUI drops from ~7 GiB
+  peak RSS to < 50 MB.
+
+## [0.3.0] - 2026-02-01
+
+### Added
+- **Compact index** — 72 bytes/record `CompactRecord` (`repr(C)`,
+  `bytemuck::Pod/Zeroable`) replaces the full `MftIndex` after cache
+  build.  ~72% memory reduction (7.5 GB → 2.1 GB for 25.9M records
+  across 7 drives).
+- **TUI** (`uffs_tui`) with ratatui — search box, paginated table,
+  multi-tier sort (seven columns), file/dir/all filter, drive colour
+  palette.  Wave 1 (trigram index, textarea, devicons) and Wave 2
+  (table, sort, filter) complete.
+- **Tree-based path search** — children index + segment decomposition
+  for `C:\foo\bar`-style queries; glob matching with `*`, `?`, `**`.
+- **On-demand full record lookup** — 25-column max view via seek+read
+  from the `.uffs` cache, no need to keep full records in memory.
+- **`.uffs` cache on macOS** — mirrors the Windows cache flow so MFT
+  files captured on Windows can be searched on macOS.
+- **Persistent search history** (`Ctrl+P` / `Ctrl+N`) — platform
+  config dir, deduplicated, survives restarts.
+- **Keymap system** — `~/.config/uffs/keys.toml`, embedded
+  `PRESET_WINDOWS` and `PRESET_EMACS`, `--keys emacs` CLI override.
+
+### Fixed
+- **NTFS flags refactor** — `StandardInfo.flags` now stores raw
+  `FILE_ATTRIBUTE_*` bits matching Windows semantics (`IS_READONLY=0x0001`,
+  `IS_HIDDEN=0x0002`, etc.) instead of an internal remapping.  Cache
+  format v9 (v8 auto-converts via `v8_flags_to_raw_ntfs()`).  Unblocks
+  downstream parity work.
 
 ## [0.2.208] - 2026-01-27
 
@@ -46,7 +534,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.2.208...HEAD
+[Unreleased]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.67...HEAD
+[0.5.67]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.0...v0.5.67
+[0.5.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.2.208...v0.3.0
 [0.2.208]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.2.114...v0.2.208
 [0.2.114]: https://github.com/githubrobbi/UltraFastFileSearch/releases/tag/v0.2.114
 

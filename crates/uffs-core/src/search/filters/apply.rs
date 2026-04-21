@@ -5,7 +5,10 @@
 
 use super::super::backend::DisplayRow;
 use super::super::tree::name_matches;
-use super::{SearchFilters, extension_matches_filter, lowercase_into, month_from_unix_micros};
+use super::{
+    SearchFilters, extension_matches_filter, extract_extension_after_dot, lowercase_into,
+    month_from_unix_micros,
+};
 
 impl SearchFilters {
     /// Returns `true` if any filter requires a resolved `DisplayRow`
@@ -97,7 +100,13 @@ pub fn row_passes_filters(
         return false;
     }
     if !filters.extensions.is_empty() {
-        let ext = row.name().rsplit('.').next().unwrap_or("");
+        // Same dot-gated extraction as the compact-path fallback in
+        // `SearchFilters::matches_record` — a dotless name (e.g. the
+        // directory `dbt`) must not match `--ext dbt`.
+        let ext = extract_extension_after_dot(row.name());
+        if ext.is_empty() {
+            return false;
+        }
         let normalized_ext = lowercase_into(ext, fold_buf);
         if !filters
             .extensions

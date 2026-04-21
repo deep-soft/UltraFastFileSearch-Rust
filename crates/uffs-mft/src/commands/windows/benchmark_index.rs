@@ -9,7 +9,7 @@ use uffs_mft::MftReader;
 
 /// Converts a byte to a printable ASCII character or '.' for non-printable.
 #[cfg(windows)]
-pub async fn cmd_benchmark_index(drive: char) -> Result<()> {
+pub(crate) async fn cmd_benchmark_index(drive: char) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::platform::VolumeHandle;
@@ -144,7 +144,7 @@ pub async fn cmd_benchmark_index(drive: char) -> Result<()> {
 /// This measures the UFFS indexing pipeline without DataFrame building
 /// overhead. Should be ~2x faster than `benchmark-index` on large drives.
 #[cfg(windows)]
-pub async fn cmd_benchmark_index_lean(
+pub(crate) async fn cmd_benchmark_index_lean(
     drive: char,
     mode_str: &str,
     no_bitmap: bool,
@@ -420,7 +420,11 @@ pub async fn cmd_benchmark_index_lean(
 /// Use this for direct apples-to-apples comparison of tree algorithm
 /// performance.
 #[cfg(windows)]
-pub async fn cmd_benchmark_tree(drive: char, iterations: usize, no_cache: bool) -> Result<()> {
+pub(crate) async fn cmd_benchmark_tree(
+    drive: char,
+    iterations: usize,
+    no_cache: bool,
+) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::cache::{INDEX_TTL_SECONDS, load_cached_index};
@@ -556,7 +560,7 @@ pub async fn cmd_benchmark_tree(drive: char, iterations: usize, no_cache: bool) 
 
 /// Benchmark multi-volume indexing using single IOCP (M4 optimization).
 #[cfg(windows)]
-pub async fn cmd_benchmark_multi_volume(drives: Vec<char>) -> Result<()> {
+pub(crate) async fn cmd_benchmark_multi_volume(drives: Vec<char>) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::io::{MultiVolumeIocpReader, prepare_volume_state};

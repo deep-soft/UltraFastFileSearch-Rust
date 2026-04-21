@@ -12,7 +12,7 @@ use uffs_mft::MftReader;
 use crate::display::{format_bytes, format_duration, format_number_commas};
 use crate::progress::spinner;
 
-pub async fn cmd_read(
+pub(crate) async fn cmd_read(
     drive: char,
     output: PathBuf,
     mode_str: &str,

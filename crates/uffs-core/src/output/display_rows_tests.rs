@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! Unit tests for the private helpers in `config.rs`.
+//! Unit tests for the private helpers in `display_rows.rs`.
 //!
-//! Extracted from an inline `#[cfg(test)] mod tests { ... }` block to
-//! keep `config.rs` under the 800-LOC file-size policy.  The
-//! corresponding stub in `config.rs` is:
-//!
-//! ```ignore
-//! #[cfg(test)]
-//! #[path = "config_tests.rs"]
-//! mod tests;
-//! ```
-//!
-//! so `super::<private_item>` still resolves against the `config`
-//! module and keeps tests out of the public API surface.
+//! Co-located with the module under test (the FILETIME → text formatter
+//! and the `attr` bit constants) rather than with the parent
+//! `OutputConfig` tests, so the regression anchor lives next to the
+//! code it pins.  Declared via `#[path = "display_rows_tests.rs"] mod
+//! tests;` inside `display_rows.rs` so `super::<private_item>` still
+//! resolves against the `display_rows` module and keeps tests out of
+//! the public API surface.
 
 use super::append_datetime_native;
 

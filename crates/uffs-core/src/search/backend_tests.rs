@@ -1062,6 +1062,158 @@ fn search_index_ext_fast_path_hide_ads_only_excludes_colon_names() {
     );
 }
 
+// ── ext_rare fast-path short-circuit + dotless fallback tests ─────
+//
+// Regression pins — 2026-04-21.  Two compounding bugs were observed
+// on `*.dbt` against a C: drive that does not index any `.dbt` file
+// (benchmark `ext_rare` on the cross-tool harness, see
+// `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:323,
+// 785`):
+//
+// Bug A (perf):   the numeric top-N fast path still ran a full scan
+//                 even though `resolve_ext_ids_for_drive` resolved to
+//                 the empty set, producing ≥ 500 ms of wasted work.
+// Bug B (correct): the `matches_record` fallback (exercised by the
+//                 scan path when resolved IDs are unpopulated) used
+//                 `rsplit('.').next()` which returned the whole name
+//                 for dotless inputs, so a directory literally named
+//                 `dbt` matched `--ext dbt` and was emitted as a
+//                 spurious row.
+//
+// The fixture below plants a dotless directory called `dbt` next to a
+// `notes.txt` file.  Post-fix, `*.dbt` must return zero rows on this
+// drive; pre-fix it returned the `dbt` directory.
+
+/// Build a drive that contains NO `.dbt` files — only a dotless
+/// directory called `dbt` and a `notes.txt` file.  Used by the
+/// extension short-circuit / fallback regression tests.
+fn build_no_dbt_fixture() -> DriveIndex {
+    use alloc::sync::Arc;
+
+    use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS};
+
+    use crate::compact::build_compact_index;
+
+    let mut idx = MftIndex::new('C');
+
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // Dotless directory literally named `dbt`.  `intern_extension`
+    // assigns this `extension_id = 0` (no dot), so the resolved-ID
+    // fast path must NOT find it under the `dbt` bucket.  Pre-Bug-B
+    // fix the fallback incorrectly extracted `"dbt"` from the name
+    // and matched it anyway.
+    let dbt_name = "dbt";
+    let dbt_off = idx.add_name(dbt_name);
+    let dbt_ext = idx.intern_extension(dbt_name);
+    let dbt_rec = idx.get_or_create(300);
+    dbt_rec.first_name.name = IndexNameRef::new(
+        dbt_off,
+        u16::try_from(dbt_name.len()).expect("name too long"),
+        true,
+        dbt_ext,
+    );
+    dbt_rec.first_name.parent_frs = ROOT_FRS;
+    dbt_rec.stdinfo.flags = 0x10; // DIRECTORY
+    dbt_rec.stdinfo.set_directory(true);
+
+    // A regular `.txt` file so the drive isn't empty; its presence
+    // also guarantees the scan-path code is reachable.
+    let txt_name = "notes.txt";
+    let txt_off = idx.add_name(txt_name);
+    let txt_ext = idx.intern_extension(txt_name);
+    let txt_rec = idx.get_or_create(301);
+    txt_rec.first_name.name = IndexNameRef::new(
+        txt_off,
+        u16::try_from(txt_name.len()).expect("name too long"),
+        true,
+        txt_ext,
+    );
+    txt_rec.first_name.parent_frs = ROOT_FRS;
+    txt_rec.stdinfo.flags = 0x20;
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    DriveIndex {
+        drives: vec![Arc::new(drive)],
+    }
+}
+
+/// Bug A + B end-to-end: `*.dbt` on a drive with NO `.dbt` files
+/// (only a dotless `dbt` directory) must return zero rows.  Pre-fix
+/// this returned the `dbt` directory via the fallback extraction
+/// bug, and also ran a full scan before filtering (the perf half of
+/// the regression).
+#[test]
+fn search_index_ext_rare_zero_results_when_drive_lacks_extension() {
+    let index = build_no_dbt_fixture();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest::new("*.dbt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+
+    assert_eq!(
+        filters.extensions,
+        vec!["dbt".to_owned()],
+        "ext-glob safety net must promote *.dbt → extensions=[dbt]"
+    );
+    assert!(
+        result.rows.is_empty(),
+        "no rows may survive *.dbt on a drive without any .dbt extension; \
+         got {:?}",
+        result
+            .rows
+            .iter()
+            .map(|row| row.name().to_owned())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Bug B companion: even with the extension bucket populated by the
+/// resolve step, a dotless name that *happens* to equal the ext token
+/// must never slip through.  This pins the resolved-ID path (the fast
+/// path under Bug A's short-circuit) by asking for `*.txt` on the
+/// same fixture — the `dbt` directory must stay excluded and only
+/// `notes.txt` should be returned.
+#[test]
+fn search_index_ext_rare_dotless_dir_does_not_leak_into_other_extension() {
+    let index = build_no_dbt_fixture();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest::new("*.txt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+
+    let names: std::collections::HashSet<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert_eq!(
+        names.len(),
+        1,
+        "only the one .txt file may match *.txt on this drive; got {names:?}"
+    );
+    assert!(
+        names.contains("notes.txt"),
+        "expected notes.txt, got {names:?}"
+    );
+    assert!(
+        !names.contains("dbt"),
+        "dotless directory 'dbt' must never match *.txt"
+    );
+}
+
 // ── <letter>: → drive-filter promotion safety-net tests ────────────
 //
 // These pin the dispatch-time rewrite in `search_index` that promotes
@@ -1341,6 +1493,59 @@ fn search_index_path_only_sort_name_asc_within_same_folder() {
         ],
         "files in same folder must sort name-ASC after path_only \
          (Windows Folder-column convention)"
+    );
+}
+
+/// Regression pin — 2026-04-20: `PathOnly` sort + `--ext <target>`
+/// must go through the ext-index fast path
+/// (`path_only_top_n::collect_path_only_via_ext_index`), which
+/// short-circuits the full-tree walk entirely.  That fast path must
+/// still preserve the same name-ASC tiebreaker semantics as the
+/// tree-walk variant: all three siblings share `path_only="C:\"`
+/// so output order is determined purely by the Name tiebreaker.
+///
+/// Before the fast path existed, the tree walk achieved this by
+/// `sort_indices_by_name` on each directory's children.  The fast
+/// path achieves it by calling `backend::sort_rows(.., PathOnly, ..)`
+/// on the materialised `DisplayRow`s, which encodes the same
+/// name-ASC tiebreaker contract.  This test pins the parity.
+///
+/// If a future refactor of the fast path drops the final
+/// `sort_rows` call (or swaps it for a bare `path_only` compare that
+/// omits the Name tiebreaker) this assertion will fail
+/// deterministically.
+#[test]
+fn search_index_path_only_ext_fast_path_preserves_name_asc_tiebreaker() {
+    let index = build_siblings_fixture();
+    let mut filters = super::super::filters::SearchFilters {
+        extensions: vec!["txt".to_owned()],
+        ..super::super::filters::SearchFilters::default()
+    };
+    let result = search_index(
+        &index,
+        SearchRequest {
+            result_limit: Some(100),
+            filter_mode: FilterMode::FilesOnly,
+            ..SearchRequest::new("*", &mut filters)
+        },
+        FieldId::PathOnly,
+        false, // ASC
+        &[],
+    );
+    let file_names: Vec<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert_eq!(
+        file_names,
+        vec![
+            "alpha.txt".to_owned(),
+            "beta.txt".to_owned(),
+            "gamma.txt".to_owned(),
+        ],
+        "ext-fast-path output must still honour the name-ASC tiebreaker \
+         (intra-folder order = Windows Explorer Folder column convention)"
     );
 }
 
@@ -1922,4 +2127,158 @@ fn sort_rows_directory_flag_multi_row_ascending() {
         &["delta.txt", "gamma.txt", "alpha_dir", "beta_dir",],
         "DirectoryFlag asc: files first, then dirs, alphabetical within each"
     );
+}
+
+/// Regression pin for the zero-alloc numeric fast path (v0.5.55+).
+///
+/// Strict-numeric sorts (`Modified`, `Size`, `Created`, etc.) with no
+/// extra tiers take the `sort_rows_numeric_fast` path, which skips the
+/// Schwartzian decorate entirely and uses a **raw-slice** name tiebreaker
+/// for deterministic ordering on ties.  This is a documented behavior
+/// change from the pre-fast-path Schwartzian sort (which used a folded /
+/// case-insensitive tiebreaker) — uppercase letters now sort before
+/// lowercase letters in the tiebreaker block.  Ties are rare in practice
+/// (100 ns FILETIME resolution for Modified/Created/Accessed) and the
+/// ordering is deterministic and matches the Everything baseline.
+#[test]
+fn sort_rows_numeric_fast_path_tiebreaker_is_raw_slice_cmp() {
+    // All three rows share modified=42 → primary cmp is a tie, so the
+    // tiebreaker fires.  Raw codepoint order puts 'B' (0x42) before 'a'
+    // (0x61) before 'z' (0x7A): Beta.dll < alpha.dll < zeta.dll.
+    let mut rows = vec![
+        row("zeta.dll", 'C', 100, 42, 0),
+        row("Beta.dll", 'C', 100, 42, 0),
+        row("alpha.dll", 'C', 100, 42, 0),
+    ];
+
+    sort_rows(&mut rows, SortColumn::Modified, true, &[]);
+    let names: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
+
+    assert_eq!(
+        names,
+        &["Beta.dll", "alpha.dll", "zeta.dll"],
+        "Modified-DESC numeric fast path must use raw-slice name tiebreaker"
+    );
+}
+
+/// Regression pin: the zero-alloc fast path must *only* activate when the
+/// primary column and every tier are strictly numeric / flag columns.  If
+/// a tier includes a string-based column (`Extension`, `Name`, etc.), the
+/// sort must fall back to the Schwartzian path with case-folded keys.
+#[test]
+fn sort_rows_mixed_tier_falls_back_to_schwartzian() {
+    let mut rows = vec![
+        row("FILE.TXT", 'C', 100, 42, 0), // size=100, ext=TXT
+        row("file.log", 'C', 100, 42, 0), // size=100, ext=log
+        row("file.bin", 'C', 100, 42, 0), // size=100, ext=bin
+    ];
+
+    // Primary: Size (numeric, all tied at 100).
+    // Tier:    Extension (string) — must force Schwartzian.
+    let tiers = vec![SortSpec {
+        column: SortColumn::Extension,
+        descending: false,
+    }];
+    sort_rows(&mut rows, SortColumn::Size, false, &tiers);
+    let names: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
+
+    // Folded extension order: "bin" < "log" < "txt".
+    assert_eq!(
+        names,
+        &["file.bin", "file.log", "FILE.TXT"],
+        "Size tie with Extension tier must use case-folded Schwartzian path"
+    );
+}
+
+/// Regression pin: the lazy-key optimisation only populates `ext` when
+/// `FieldId::Extension` is the sort column or a tier.  Exercising the
+/// Extension path confirms the needs-analyzer still flags it correctly
+/// and the fold+alloc still happens for this case.
+#[test]
+fn sort_rows_extension_column_still_folds_ext_key() {
+    let mut rows = vec![
+        row("file.TXT", 'C', 1, 0, 0),
+        row("file.log", 'C', 1, 0, 0),
+        row("file.Bin", 'C', 1, 0, 0),
+    ];
+
+    // Sort by extension ascending: folded order is "bin" < "log" < "txt".
+    sort_rows(&mut rows, SortColumn::Extension, false, &[]);
+    let names: Vec<&str> = rows.iter().map(DisplayRow::name).collect();
+
+    assert_eq!(
+        names,
+        &["file.Bin", "file.log", "file.TXT"],
+        "Extension sort must use case-folded key order (bin < log < txt)"
+    );
+}
+
+/// Regression pin for the v0.5.58 Option C parallel-sort fast path.
+///
+/// `sort_rows_numeric_fast` switches to `par_sort_unstable_by` once the
+/// input exceeds `PARALLEL_SORT_THRESHOLD` (= 16 K rows).  The parallel
+/// comparator path must preserve the same ordering contract as the
+/// sequential path: strict-numeric primary + raw-slice name tiebreaker.
+/// This test feeds 20 K synthetic rows with two distinct modified
+/// timestamps to force the parallel branch, then asserts the output is
+/// monotonically non-increasing in `modified` (DESC) and strictly
+/// ordered by raw name within each tie block.
+#[test]
+fn sort_rows_numeric_fast_parallel_branch_preserves_order() {
+    // 20 K rows: half at modified=1000, half at modified=2000.  Names
+    // are zero-padded so raw-slice order is deterministic regardless
+    // of insertion order.
+    let mut rows: Vec<DisplayRow> = (0..20_000_u32)
+        .map(|idx| {
+            let modified = if idx % 2 == 0 { 2000 } else { 1000 };
+            row(
+                &format!("file_{idx:05}.dll"),
+                'C',
+                u64::from(idx),
+                modified,
+                0,
+            )
+        })
+        .collect();
+
+    sort_rows(&mut rows, SortColumn::Modified, true, &[]);
+
+    // First 10 K rows must all be modified=2000, last 10 K must be
+    // modified=1000 (primary DESC).
+    for row in rows.iter().take(10_000) {
+        assert_eq!(
+            row.modified, 2000,
+            "top 10 K must be modified=2000 under DESC sort"
+        );
+    }
+    for row in rows.iter().skip(10_000) {
+        assert_eq!(
+            row.modified, 1000,
+            "bottom 10 K must be modified=1000 under DESC sort"
+        );
+    }
+
+    // Within each tie block names must be strictly ascending by raw
+    // codepoint order (the fast-path tiebreaker).
+    let (top_half, bottom_half) = rows.split_at(10_000);
+    for pair in top_half.windows(2) {
+        if let [first, second] = pair {
+            assert!(
+                first.name() < second.name(),
+                "tiebreaker must be raw-slice ASC inside tie: {:?} vs {:?}",
+                first.name(),
+                second.name()
+            );
+        }
+    }
+    for pair in bottom_half.windows(2) {
+        if let [first, second] = pair {
+            assert!(
+                first.name() < second.name(),
+                "tiebreaker must be raw-slice ASC inside tie: {:?} vs {:?}",
+                first.name(),
+                second.name()
+            );
+        }
+    }
 }

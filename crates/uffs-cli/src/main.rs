@@ -6,6 +6,11 @@
 //! All heavy lifting (including CLI arg parsing) happens in the daemon.
 //! This binary detects subcommands and forwards raw search args via
 //! `search_cli` RPC.
+//!
+//! Exception: `file_size_policy` allows this file to exceed 800 LOC.
+//! Rationale: CLI entry point cohesion — subcommand dispatch,
+//! client-side profile printing, and raw-arg forwarding form a
+//! single top-level flow that would be fragmented by splitting.
 
 // CLI main module uses single-call functions by design
 #![expect(
@@ -62,6 +67,143 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+/// Timing + payload summary forwarded to [`print_client_profile`].
+///
+/// Packaging these into a struct keeps `run_search` under the
+/// `clippy::too-many-lines` cap and lets the profile helper take one
+/// argument instead of six.
+struct ClientProfile<'a> {
+    /// Wall-clock time spent in `UffsClientSync::connect_with_args`.
+    connect_ms: u128,
+    /// Wall-clock time spent in `await_ready` (daemon warm-up).
+    ready_ms: u128,
+    /// Wall-clock time spent in the `search_cli` IPC round-trip.
+    ipc_ms: u128,
+    /// Daemon-reported search duration (from the response envelope).
+    duration_ms: u64,
+    /// Payload delivery channel the daemon picked for this response.
+    /// Used by [`print_client_profile`] to show the transport name
+    /// and to pick the cheapest authoritative row-count source.
+    payload: &'a uffs_client::protocol::response::SearchPayload,
+    /// Total row count reported by the daemon, independent of which
+    /// transport carries the payload.  Used to display the "Rows
+    /// returned:" line when the transport is a shmem blob — counting
+    /// newlines in the mmap would consume the file before the stdout
+    /// write and double the syscall cost.
+    total_count: u64,
+    /// Daemon-side `profile` object from the response envelope.  When
+    /// populated, its `scan_ms` / `sort_ms` / `path_resolve_ms` /
+    /// `write_ms` fields are rendered as a sub-phase breakdown inside
+    /// the daemon block so the `--profile` output pinpoints where the
+    /// per-query cost sits (scan vs sort vs path resolution vs disk
+    /// write).
+    daemon_profile: Option<&'a uffs_client::protocol::response::SearchProfile>,
+}
+
+/// Print the `--profile` / `--benchmark` client-side timing block to
+/// stderr (matches the daemon-side profile formatting).
+#[expect(
+    clippy::print_stderr,
+    reason = "intentional --profile output to stderr"
+)]
+fn print_client_profile(prof: &ClientProfile<'_>) {
+    use uffs_client::protocol::response::SearchPayload;
+
+    eprintln!("=== PROFILE: Client → Daemon ===");
+    eprintln!("  Connect:         {:>6} ms", prof.connect_ms);
+    eprintln!("  Await ready:     {:>6} ms", prof.ready_ms);
+    eprintln!(
+        "  Search (IPC):    {:>6} ms  (daemon: {} ms)",
+        prof.ipc_ms, prof.duration_ms
+    );
+    // Sub-phase breakdown from the daemon profile.  Any non-zero
+    // component is printed; all-zero (regex/trigram paths, legacy
+    // daemons) collapses to a single-line total.
+    if let Some(dp) = prof.daemon_profile {
+        let scan = dp.scan_ms;
+        let sort = dp.sort_ms;
+        let resolve = dp.path_resolve_ms;
+        let write = dp.write_ms;
+        if (scan | sort | resolve | write) > 0 {
+            eprintln!(
+                "    scan={scan} ms  sort={sort} ms  path_resolve={resolve} ms  write={write} ms"
+            );
+        }
+        // Deep-profile breakdown: only present when the numeric-sort
+        // branch populated the `path_*` sub-counters.  Prints per-
+        // record averages derived from ns totals so the user can see
+        // immediately whether the bottleneck is path-walking or
+        // row-building, and whether the DirCache hit rate is high
+        // enough to warrant a locality optimisation.
+        let candidates = dp.path_candidates;
+        let cache_entries = dp.path_cache_entries;
+        let resolve_ns = dp.path_resolve_fn_ns;
+        let build_ns = dp.path_build_row_ns;
+        if candidates > 0 {
+            let hits = candidates.saturating_sub(cache_entries);
+            // Integer-math hit rate in permille (0–1000) to avoid
+            // float arithmetic — clippy::float_arithmetic is banned
+            // in production lints.  `permille / 10 . permille % 10`
+            // prints as "99.7" for 997.
+            let hit_permille = hits.saturating_mul(1000) / candidates;
+            let hit_whole = hit_permille / 10;
+            let hit_frac = hit_permille % 10;
+            let avg_resolve_ns = resolve_ns / candidates;
+            let avg_build_ns = build_ns / candidates;
+            eprintln!(
+                "    deep: candidates={candidates}  unique_parents={cache_entries}  \
+                 hit_rate={hit_whole}.{hit_frac}%"
+            );
+            eprintln!(
+                "          resolve_fn={} ms ({} ns/rec)  build_row={} ms ({} ns/rec)",
+                resolve_ns / 1_000_000,
+                avg_resolve_ns,
+                build_ns / 1_000_000,
+                avg_build_ns,
+            );
+        }
+    }
+    // Row count resolution — pick the cheapest authoritative source
+    // depending on which payload variant the daemon used:
+    // 1. `ShmemBlob` → mmap'd file; counting newlines would read every page just to
+    //    discard the count, so use the daemon's pre- computed `total_count`
+    //    instead.
+    // 2. `InlineBlob` → inline string already in memory; scanning for `\n` is ~5
+    //    GB/s, cheap.
+    // 3. Rows variants (`InlineRows`, `ShmemRows`) → `row_count_hint()` is O(1) —
+    //    `Vec::len` or the daemon's pre-computed count.
+    // 4. `Empty` → zero rows, nothing to count.
+    let row_count = match prof.payload {
+        SearchPayload::ShmemBlob(_) => {
+            // `try_from` instead of `as` to preserve correctness on
+            // hypothetical 32-bit targets where `u64` would truncate
+            // (clippy::cast_possible_truncation).  `u64::MAX` is a
+            // strictly larger fallback than any realistic row count.
+            usize::try_from(prof.total_count).unwrap_or(usize::MAX)
+        }
+        SearchPayload::InlineBlob(blob) => blob.bytes().filter(|byte| *byte == b'\n').count(),
+        SearchPayload::InlineRows(_) | SearchPayload::ShmemRows { .. } | SearchPayload::Empty => {
+            prof.payload.row_count_hint().unwrap_or(0)
+        }
+    };
+    eprintln!("  Rows returned:   {row_count:>6}");
+    match prof.payload {
+        SearchPayload::ShmemBlob(_) => {
+            eprintln!("  Transport:       shmem_blob (mmap + write_all, binary)");
+        }
+        SearchPayload::InlineBlob(_) => {
+            eprintln!("  Transport:       inline_blob (single write_all)");
+        }
+        SearchPayload::ShmemRows { .. } => {
+            eprintln!("  Transport:       shmem_rows (mmap + per-row format)");
+        }
+        SearchPayload::InlineRows(_) | SearchPayload::Empty => {
+            // inline_rows is the default — no extra line needed.
+            // empty responses skip the transport line entirely.
+        }
+    }
+}
+
 /// Forward raw search args to the daemon via `search_cli` RPC.
 fn run_search(args: &[String]) -> Result<()> {
     if args.is_empty() {
@@ -93,108 +235,174 @@ fn run_search(args: &[String]) -> Result<()> {
     let t_search = std::time::Instant::now();
     // Resolve relative --out paths to absolute using the CLI's cwd, since the
     // daemon process runs in a different working directory.
-    let args_owned: Vec<String> = resolve_out_path(args);
-    let response = client
+    // Phase 3.1 NUL fast path: when stdout is redirected to the null
+    // device (e.g. `uffs *.dll > NUL`), inject `--no-output` so the
+    // daemon skips row materialisation + `paths_blob` construction
+    // + IPC row transfer entirely.  Saves ~20-30 ms on medium result
+    // sets that would otherwise push 3.5 MB through the pipe just to
+    // discard the bytes client-side.
+    let args_owned: Vec<String> = inject_no_output_for_null_stdout(resolve_out_path(args));
+    let raw_response = client
         .search_cli_raw(&args_owned)
         .with_context(|| "Daemon search_cli failed")?;
     let ipc_ms = t_search.elapsed().as_millis();
 
-    let aggregations = response
-        .get("aggregations")
-        .and_then(serde_json::Value::as_array);
-    let duration_ms = response
-        .get("duration_ms")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0_u64);
+    // v0.5.62: deserialise the daemon response into the typed
+    // `SearchResponse` struct.  The `SearchPayload` enum is
+    // self-describing (serde tag = "kind", content = "data") so the
+    // CLI no longer needs to probe individual fields like
+    // `paths_blob`, `paths_blob_shmem`, `shmem_path`, etc. — the
+    // enum's variant is the single source of truth for which
+    // transport the daemon picked.
+    //
+    // Unknown fields on the wire are silently ignored (serde default),
+    // so newer daemons that add optional response fields are still
+    // forward-compatible with this CLI.
+    let response: uffs_client::protocol::response::SearchResponse =
+        serde_json::from_value(raw_response)
+            .with_context(|| "Failed to deserialize search response from daemon")?;
 
-    // D5.1: When the daemon used shmem for large result sets, read from
-    // the shmem file instead of the (empty) inline `rows` array.
-    let shmem_rows: Option<Vec<serde_json::Value>> = response
-        .get("shmem_path")
-        .and_then(serde_json::Value::as_str)
-        .map(|path_str| {
-            let shmem_path = std::path::Path::new(path_str);
-            let shmem_resp = uffs_client::shmem::read_search_results(shmem_path)
-                .with_context(|| format!("Failed to read shmem results from {path_str}"))
-                .ok();
-            // Best-effort cleanup of the shmem file.
-            let _ignored = std::fs::remove_file(shmem_path);
-            shmem_resp
-                .map(|resp| {
-                    resp.rows
-                        .iter()
-                        .filter_map(|row| serde_json::to_value(row).ok())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        });
-
-    let inline_rows = response.get("rows").and_then(serde_json::Value::as_array);
-    let rows: Option<&[serde_json::Value]> = shmem_rows
-        .as_deref()
-        .or_else(|| inline_rows.map(Vec::as_slice));
-
-    // Path-only single-buffer fast path.  When the daemon decides the
-    // projection is path-only and the row count is small enough to
-    // inline, it packs every path into `paths_blob` as a newline-
-    // terminated UTF-8 buffer.  Writing it to stdout is then a single
-    // syscall instead of N per-row format + write calls.
-    let paths_blob: Option<&str> = response
-        .get("paths_blob")
-        .and_then(serde_json::Value::as_str);
-
-    let profile = args
+    if args
         .iter()
-        .any(|arg| arg == "--profile" || arg == "--benchmark");
-    if profile {
-        #[expect(
-            clippy::print_stderr,
-            reason = "intentional --profile output to stderr"
-        )]
-        {
-            eprintln!("=== PROFILE: Client → Daemon ===");
-            eprintln!("  Connect:         {connect_ms:>6} ms");
-            eprintln!("  Await ready:     {ready_ms:>6} ms");
-            eprintln!("  Search (IPC):    {ipc_ms:>6} ms  (daemon: {duration_ms} ms)");
-            let row_count = paths_blob.map_or_else(
-                || rows.map_or(0, <[serde_json::Value]>::len),
-                |blob| blob.bytes().filter(|byte| *byte == b'\n').count(),
-            );
-            eprintln!("  Rows returned:   {row_count:>6}");
-            if paths_blob.is_some() {
-                eprintln!("  Transport:       paths_blob (single write_all)");
-            }
-        }
+        .any(|arg| arg == "--profile" || arg == "--benchmark")
+    {
+        print_client_profile(&ClientProfile {
+            connect_ms,
+            ready_ms,
+            ipc_ms,
+            duration_ms: response.duration_ms,
+            payload: &response.payload,
+            total_count: response.total_count,
+            daemon_profile: response.profile.as_ref(),
+        });
     }
 
     // OPT-4: When --out is specified, the daemon writes the file directly
-    // and returns an empty `rows` array.  Don't overwrite the file.
+    // and returns `SearchPayload::Empty`.  Don't overwrite the file.
     // Handles both `--out foo.csv` (separate arg) and `--out=foo.csv` (= form).
     let has_out = args
         .iter()
         .any(|arg| arg == "--out" || arg.starts_with("--out="));
-    let daemon_wrote_file =
-        has_out && rows.is_none_or(<[serde_json::Value]>::is_empty) && paths_blob.is_none();
+    let daemon_wrote_file = has_out && response.payload.is_empty();
 
-    if !daemon_wrote_file {
-        if let Some(blob) = paths_blob {
-            // Single write_all to stdout — the whole point of the
-            // paths_blob transport.  A `BufWriter` is unnecessary: the
-            // buffer is already one contiguous slice.
+    // Phase 3.1 NUL fast path: `--no-output` (explicit or auto-injected
+    // for NUL stdout) skips every client-side stdout write.
+    let suppress_stdout = args_owned.iter().any(|arg| arg == "--no-output");
+
+    if !daemon_wrote_file && !suppress_stdout {
+        write_search_payload_to_stdout(response.payload, args)?;
+    }
+
+    if !suppress_stdout && !response.aggregations.is_empty() {
+        // `write_aggregations` still consumes `&[serde_json::Value]`
+        // for format flexibility — re-serialise the typed
+        // `AggregateResultWire` list via `to_value` once up front
+        // and pass the slice to the helper.  Allocation is one per
+        // aggregation bucket, which is trivial compared to the
+        // aggregation itself.
+        let agg_values: Vec<serde_json::Value> = response
+            .aggregations
+            .iter()
+            .filter_map(|agg| serde_json::to_value(agg).ok())
+            .collect();
+        commands::search::dispatch::write_aggregations(&agg_values, args)?;
+    }
+
+    Ok(())
+}
+
+/// Write the daemon's search payload to stdout, picking the fastest
+/// transport the daemon selected for this response.
+///
+/// Priority order matches the [`SearchPayload`] variant dispatch:
+///
+/// 1. [`SearchPayload::ShmemBlob`] → mmap the raw-bytes file and stream
+///    directly to stdout via [`uffs_client::shmem::stream_paths_blob_into`].
+///    Zero-copy, zero JSON decode, zero UTF-8 re-validation.  Used for blobs
+///    above [`uffs_client::shmem::PATHS_BLOB_SHMEM_THRESHOLD`].
+/// 2. [`SearchPayload::InlineBlob`] → single `write_all` of the inline UTF-8
+///    buffer.  Skips per-row formatting but still paid ~40 ms of JSON decode on
+///    the way in.
+/// 3. [`SearchPayload::ShmemRows`] → read the shmem file into a
+///    `Vec<SearchRow>` (client's `connect_sync` shim doesn't do transparent
+///    resolution for `search_cli`), then fall through to per-row format
+///    dispatch.
+/// 4. [`SearchPayload::InlineRows`] → traditional per-row format + write
+///    dispatch in [`commands::search::dispatch::write_rows`].
+/// 5. [`SearchPayload::Empty`] → nothing to write.
+///
+/// Extracted from `run_search` to keep that function under the
+/// `clippy::too_many_lines` cap.
+///
+/// [`SearchPayload`]: uffs_client::protocol::response::SearchPayload
+/// [`SearchPayload::ShmemBlob`]: uffs_client::protocol::response::SearchPayload::ShmemBlob
+/// [`SearchPayload::InlineBlob`]: uffs_client::protocol::response::SearchPayload::InlineBlob
+/// [`SearchPayload::ShmemRows`]: uffs_client::protocol::response::SearchPayload::ShmemRows
+/// [`SearchPayload::InlineRows`]: uffs_client::protocol::response::SearchPayload::InlineRows
+/// [`SearchPayload::Empty`]: uffs_client::protocol::response::SearchPayload::Empty
+fn write_search_payload_to_stdout(
+    payload: uffs_client::protocol::response::SearchPayload,
+    args: &[String],
+) -> Result<()> {
+    use uffs_client::protocol::response::SearchPayload;
+    match payload {
+        SearchPayload::Empty => {
+            // Nothing to write — no-match query, `--no-output`
+            // injection, or `--out=file` (daemon already wrote to
+            // disk).  The earlier `daemon_wrote_file` guard also
+            // handles the latter case at the call site.
+        }
+        SearchPayload::ShmemBlob(shmem_path_str) => {
+            // Binary shmem transport: mmap the file and write bytes
+            // directly to stdout with one syscall, then delete the
+            // file.  No JSON decode, no intermediate allocation, no
+            // UTF-8 re-validation — stdout takes bytes.
+            let shmem_path = std::path::Path::new(&shmem_path_str);
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            uffs_client::shmem::stream_paths_blob_into(shmem_path, &mut handle)
+                .with_context(|| format!("Failed to stream shmem_blob from {shmem_path_str}"))?;
+        }
+        SearchPayload::InlineBlob(blob) => {
+            // Single write_all to stdout — the buffer is one
+            // contiguous slice; the whole point of the blob
+            // inline transport.
             let stdout = std::io::stdout();
             let mut handle = stdout.lock();
             std::io::Write::write_all(&mut handle, blob.as_bytes())
-                .with_context(|| "Failed to write paths_blob to stdout")?;
-        } else if let Some(row_slice) = rows {
-            commands::search::dispatch::write_rows(row_slice, args)?;
+                .with_context(|| "Failed to write inline_blob to stdout")?;
+        }
+        SearchPayload::ShmemRows { path, .. } => {
+            // Shmem rows variant: read the file (returns a
+            // `SearchResponse` with `InlineRows`) and dispatch to
+            // the per-row writer.  Re-encode rows to `Value` so the
+            // existing `write_rows` path (which handles `--format`,
+            // `--sep`, `--header`, column resolution, etc.) stays
+            // untouched — one Vec allocation scales O(N) but beats
+            // duplicating the column-resolution logic.
+            let shmem_resp = uffs_client::shmem::read_search_results(std::path::Path::new(&path))
+                .with_context(|| format!("Failed to read shmem_rows from {path}"))?;
+            let row_values: Vec<serde_json::Value> = shmem_resp
+                .payload
+                .into_inline_rows()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|row| serde_json::to_value(row).ok())
+                .collect();
+            commands::search::dispatch::write_rows(&row_values, args)?;
+        }
+        SearchPayload::InlineRows(rows) => {
+            // Traditional per-row format dispatch.  `write_rows`
+            // accepts `&[serde_json::Value]` for format flexibility
+            // (extract_field, parity-compat, drilldown), so re-
+            // serialise the typed rows once up front.
+            let row_values: Vec<serde_json::Value> = rows
+                .iter()
+                .filter_map(|row| serde_json::to_value(row).ok())
+                .collect();
+            commands::search::dispatch::write_rows(&row_values, args)?;
         }
     }
-
-    // Output aggregations if present.
-    if let Some(agg_arr) = aggregations.filter(|arr| !arr.is_empty()) {
-        commands::search::dispatch::write_aggregations(agg_arr, args)?;
-    }
-
     Ok(())
 }
 
@@ -263,6 +471,52 @@ fn resolve_out_path(args: &[String]) -> Vec<String> {
         }
     }
     result
+}
+
+/// Append `--no-output` to `args` when stdout is redirected to the
+/// null device, unless a disqualifying flag is already set.
+///
+/// Thin wrapper around [`maybe_inject_no_output`] that probes the real
+/// stdout via [`uffs_client::stdout_kind::StdoutKind::detect`].  The
+/// decision logic itself is in `maybe_inject_no_output` so it can be
+/// unit-tested without fighting the test harness's stdout wiring.
+fn inject_no_output_for_null_stdout(args: Vec<String>) -> Vec<String> {
+    let stdout_is_null = uffs_client::stdout_kind::StdoutKind::detect().is_null();
+    maybe_inject_no_output(args, stdout_is_null)
+}
+
+/// Pure decision logic for the NUL fast-path injection.
+///
+/// Returns `args` unchanged when `stdout_is_null == false` or when any
+/// disqualifying flag is already present:
+///
+/// - `--no-output` already set: nothing to add.
+/// - `--rows`: the user asked to force rows on even for aggregate queries —
+///   honour that intent regardless of where stdout goes.
+/// - `--out`: stdout is not the result destination; NUL on stdout is a benign
+///   quirk, not the output target.
+/// - `--agg` / `--facet` / `--stats` / `--histogram` / `--count`: any
+///   aggregation flag already controls `include_rows` via its own sugar; adding
+///   `--no-output` would be redundant at best.
+fn maybe_inject_no_output(mut args: Vec<String>, stdout_is_null: bool) -> Vec<String> {
+    if !stdout_is_null {
+        return args;
+    }
+    let is_aggregate_flag = |flag: &str| {
+        matches!(
+            flag,
+            "--agg" | "--facet" | "--stats" | "--histogram" | "--count"
+        )
+    };
+    let disqualified = args.iter().any(|raw| {
+        let flag = raw.split('=').next().unwrap_or(raw.as_str());
+        flag == "--no-output" || flag == "--rows" || flag == "--out" || is_aggregate_flag(flag)
+    });
+    if disqualified {
+        return args;
+    }
+    args.push("--no-output".to_owned());
+    args
 }
 
 /// Resolve a potentially relative path to absolute using `current_dir`.
@@ -470,7 +724,105 @@ mod tests {
     use uffs_client::protocol::SearchParams;
 
     use super::args::parse_drive_letter;
-    use super::{find_needs_elevation, format_elevation_help};
+    use super::{find_needs_elevation, format_elevation_help, maybe_inject_no_output};
+
+    // ── maybe_inject_no_output (Phase 3.1 NUL fast path) ─────────
+
+    /// Helper: run [`maybe_inject_no_output`] with `stdout_is_null = true`
+    /// and return the resulting args.
+    fn inject_null(args: &[&str]) -> Vec<String> {
+        let owned: Vec<String> = args.iter().copied().map(String::from).collect();
+        maybe_inject_no_output(owned, true)
+    }
+
+    /// Baseline: a plain search with NUL stdout gets `--no-output`
+    /// appended.  This is the hot path we want for benchmarks and
+    /// `uffs *.dll > NUL`-style invocations.
+    #[test]
+    fn maybe_inject_no_output_appends_on_null_stdout() {
+        let out = inject_null(&["*.dll", "--drive", "D"]);
+        assert_eq!(out, ["*.dll", "--drive", "D", "--no-output"]);
+    }
+
+    /// Non-null stdout (terminal, pipe, file) must leave args alone,
+    /// otherwise the user would see no output on their terminal.
+    #[test]
+    fn maybe_inject_no_output_unchanged_on_non_null_stdout() {
+        let owned: Vec<String> = ["*.dll", "--drive", "D"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let out = maybe_inject_no_output(owned.clone(), false);
+        assert_eq!(out, owned);
+    }
+
+    /// Explicit `--no-output` already present: do not double up.
+    #[test]
+    fn maybe_inject_no_output_skips_when_already_present() {
+        let out = inject_null(&["*.dll", "--no-output"]);
+        // Exactly one occurrence — no double-injection.
+        let count = out
+            .iter()
+            .filter(|arg| arg.as_str() == "--no-output")
+            .count();
+        assert_eq!(count, 1, "must not double-inject --no-output, got: {out:?}");
+    }
+
+    /// `--rows` forces rows on — auto-injection must not fight it.
+    /// Covers the user who wants `uffs *.rs --rows > NUL` for timing
+    /// the full round-trip including IPC transport.
+    #[test]
+    fn maybe_inject_no_output_respects_rows_flag() {
+        let out = inject_null(&["*.rs", "--rows"]);
+        assert!(
+            !out.iter().any(|arg| arg == "--no-output"),
+            "--rows must prevent --no-output auto-injection, got: {out:?}"
+        );
+    }
+
+    /// `--out file` routes results daemon-direct to disk — NUL on
+    /// stdout is a benign quirk, not the output destination.
+    #[test]
+    fn maybe_inject_no_output_respects_out_flag() {
+        let out = inject_null(&["*.rs", "--out", "results.csv"]);
+        assert!(
+            !out.iter().any(|arg| arg == "--no-output"),
+            "--out must prevent --no-output auto-injection, got: {out:?}"
+        );
+    }
+
+    /// Aggregation flags already control row inclusion through their
+    /// own sugar; auto-injection would be redundant.  Covers `--count`,
+    /// `--agg`, `--facet`, `--stats`, `--histogram`.
+    #[test]
+    fn maybe_inject_no_output_respects_aggregation_flags() {
+        for flag in ["--count", "--agg", "--facet", "--stats", "--histogram"] {
+            // `--agg` and friends take a value; the parse-time check
+            // keys on the flag name only, so a bare `--agg count` suffix
+            // is sufficient to prove the disqualification.
+            let args: Vec<&str> = if flag == "--count" {
+                vec!["*", flag]
+            } else {
+                vec!["*", flag, "count"]
+            };
+            let out = inject_null(&args);
+            assert!(
+                !out.iter().any(|arg| arg == "--no-output"),
+                "{flag} must prevent --no-output auto-injection, got: {out:?}"
+            );
+        }
+    }
+
+    /// `--out=file.csv` (equals form) must also disqualify the
+    /// auto-injection.  The parser keys on the flag name before `=`.
+    #[test]
+    fn maybe_inject_no_output_respects_out_equals_form() {
+        let out = inject_null(&["*", "--out=results.csv"]);
+        assert!(
+            !out.iter().any(|arg| arg == "--no-output"),
+            "--out=<path> must prevent --no-output auto-injection, got: {out:?}"
+        );
+    }
 
     /// The elevation help must name every recovery path the user has,
     /// so a UAC-blocked invocation becomes actionable advice rather

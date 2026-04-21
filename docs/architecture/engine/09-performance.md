@@ -10,12 +10,38 @@ This document describes the performance characteristics of UFFS, the optimizatio
 
 ---
 
-## Benchmark Results (v0.5.4)
+## Benchmark Results (current: v0.5.66)
 
-### Three-Phase Results — 7 Drives, 25.9M Records
+> **Publication-grade competitive benchmark report:** [`docs/benchmarks/`](../../benchmarks/) — dated snapshots, fairness methodology, archive policy, reproduction scripts. The current canonical report is [`2026-04-v0.5.66-vs-everything-and-cpp.md`](../../benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md).
+>
+> This engineering-reference doc holds the *raw* cross-drive measurements and per-phase diagnostics used internally. For the story-shaped version with fairness rules, competitor positioning, and TL;DR headline numbers, start at the benchmark hub.
+
+Headline cross-tool result on v0.5.66 (from
+[`docs/benchmarks/raw/2026-04-v0.5.66_cross-tool-vs-everything.txt:580-625`](../../benchmarks/raw/2026-04-v0.5.66_cross-tool-vs-everything.txt), n=30, HOT,
+apples-to-apples C+D scope):
+
+**UFFS beats Everything 12/12 at p50**, median ratio **0.51×
+(UFFS ~1.96× faster)**.  Full table and analysis in
+[`docs/benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md`](../../benchmarks/2026-04-v0.5.66-vs-everything-and-cpp.md) §Head-to-head 1, with the engineering-detail source at [`docs/research/cross-tool-benchmark-analysis.md`](../../research/cross-tool-benchmark-analysis.md) §Current State (internal).
+
+7-drive aggregate numbers on v0.5.62 (from
+[`docs/benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt:113-479`](../../benchmarks/raw/2026-04-v0.5.62_aggregate-baseline.txt)):
+
+| Workload                                         | Value       |
+|--------------------------------------------------|------------:|
+| COLD start (cache deleted, 25.9 M records)       | 68.5 s      |
+| WARM cache restart (25.9 M records)              | **5.7 s**   |
+| Full-scan export `*` → CSV file                  | 13.5 s      |
+| Aggregation throughput (`by_extension` etc.)     | ~180 ms     |
+| Daemon RSS                                       | 4.99 GB     |
+| Index heap                                       | 4.66 GB     |
+
+### Three-Phase Results — v0.5.4 per-drive table (historical)
 
 Tested on AMD Ryzen 9 3900XT (12c/24t), 64 GB DDR4.  Pattern: `*`,
-limit: 100, per-drive profile.
+limit: 100, per-drive profile.  Per-drive re-bench on v0.5.62 not
+yet performed; aggregate numbers above are the latest production
+measurements.
 
 | Drive | Type | Records | COLD | WARM | HOT | Cold→Hot |
 |-------|------|--------:|-----:|-----:|----:|---------:|
@@ -26,9 +52,19 @@ limit: 100, per-drive profile.
 | G: | USB stick | 15K | 1.3 s | 572 ms | 6 ms | **219×** |
 | M: | SATA HDD | 1.9M | 26.4 s | 1.4 s | 18 ms | **1469×** |
 | S: | SATA HDD | 8.3M | 67 s | 4.8 s | 54 ms | **1236×** |
-| **ALL** | **Mixed** | **25.9M** | **66 s** | **6.9 s** | **163 ms** | **407×** |
+| **ALL (v0.5.4)** | **Mixed** | **25.9M** | **66 s** | **6.9 s** | **163 ms**² | **407×** |
+| **ALL (v0.5.62)** | **Mixed** | **25.9M** | **68.5 s** | **5.7 s** | *see v0.5.66 re-bench below* | — |
+| **ALL (v0.5.66)** | **Mixed** | **25.9M** | 68.5 s | **5.7 s** | **1 112 ms**² | — |
 
-### Interactive Search Percentile Latency (HOT, 25.9M records, 30 rounds)
+² The HOT `*` number is `uffs * --limit 100` CLI end-to-end.  The
+v0.5.4 figure (163 ms) was never re-verified after the Phase 2 top-N
+sort rewrite; the v0.5.66 measurement is 1 112 ms ([`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:657`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt),
+30 rounds, StdDev 21 ms).  Tracked as Phase 5 target #2 in the
+cross-tool analysis doc (§7, bounded-heap top-N).
+
+### Interactive Search Percentile Latency (HOT, 25.9M records)
+
+**v0.5.4 historical (30 rounds):**
 
 | Pattern | e2e p50 | e2e p95 | daemon p50 | daemon p95 |
 |---------|--------:|--------:|-----------:|-----------:|
@@ -40,6 +76,27 @@ limit: 100, per-drive profile.
 | date filter | 152 ms | 156 ms | 143 ms | 147 ms |
 | size filter | 153 ms | 160 ms | 144 ms | 150 ms |
 | combined | 9 ms | 10 ms | 0 ms | 0 ms |
+
+**v0.5.66 re-bench (30 rounds, `--limit 100`, source [`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:573-707`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt)):**
+
+| Pattern                             | CLI e2e p50 | CLI e2e p95 | daemon p50 |
+|-------------------------------------|------------:|------------:|-----------:|
+| `*` (full scan, top-100)            | **1 112 ms**|  1 163 ms   | 1 081 ms   |
+| `notepad.exe` (exact)               |      29 ms  |     34 ms   |      0 ms  |
+| `win*` (prefix)                     |      31 ms  |     34 ms   |      1 ms  |
+| `*.dbt` (ext_rare)                  |      32 ms  |     36 ms   |      0 ms  |
+| `*.dll` (extension, 167 K match)    |      69 ms  |     75 ms   |     42 ms  |
+| `config` (substring)                |      31 ms  |     34 ms   |      1 ms  |
+| `>.*\.(jpg\|png\|heic)$` (regex)    |     135 ms  |    148 ms   |    108 ms  |
+| `*system32*` (in-path heavy)        |      30 ms  |     33 ms   |      0 ms  |
+
+**Daemon-side latency is unchanged vs v0.5.4** (0–3 ms for targeted
+queries, same as before).  What shifted is the CLI’s per-invocation
+floor: the post-Phase-1 thin-client spawn is ~28 ms on Windows, so
+any `Measure-Command { & uffs.exe ... }` measurement now includes
+that 28 ms tax even when the daemon answers in 0–1 ms.  The `*`
+fullscan regression is independent and tracked as Phase 5 target #2
+(bounded-heap top-N).
 
 ### Bulk Retrieval Throughput (7 drives, 25.9M records, `--out-dir`, CSV)
 
@@ -57,6 +114,8 @@ limit: 100, per-drive profile.
 
 ### Scale Ceiling (interactive search, `--limit 100`, 30 rounds)
 
+**v0.5.4 historical (with offline MFT clones up to 100.4 M records):**
+
 | Total Records | Drives | `*` p50 (e2e) | targeted p50 | Status |
 |--------------:|-------:|--------------:|-------------:|--------|
 | 25.9M | 7 | 161 ms | 9–10 ms | ✅ PASS |
@@ -67,17 +126,38 @@ limit: 100, per-drive profile.
 | **100.4M** | **16** | **808 ms** | **11–13 ms** | **✅ PASS** |
 | >100M | 17+ | — | — | ❌ OOM |
 
-> Targeted queries (exact name, prefix, extension, substring, combined)
-> stay at **0–3 ms daemon-side** regardless of corpus size.  Only
-> unfiltered `*` scans scale linearly with total records.
+**v0.5.66 drive-accumulation sweep (real drives only, no synthetic
+clones — [`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:933-1044`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt), n=1 per drive set):**
+
+| Total Records | Drives      | Daemon RSS | `*` e2e    |
+|--------------:|-------------|-----------:|-----------:|
+|  3.67 M       | C           |   777 MB   |   1 416 ms |
+| 10.74 M       | C,D         | 2 112 MB   |   3 407 ms |
+| 13.67 M       | C,D,E       | 2 587 MB   |   5 304 ms |
+| 15.89 M       | C,D,E,F     | 3 059 MB   |   6 264 ms |
+| 15.91 M       | C,D,E,F,G   | 3 063 MB   |   6 178 ms |
+| 17.81 M       | C,D,E,F,G,M | 3 351 MB   |   7 069 ms |
+| **26.09 M**   | **All 7**   | **4 722 MB**| **15 176 ms** |
+
+**Memory scales linearly at ~180 MB per million records** (ranges
+192–212 MB/M-rec across the sweep).  The drive-scale sweep is a
+stand-in for a proper synthetic-clone re-bench — the 42.5 M /
+75.6 M / 100.4 M v0.5.4 rows still need MFT clone tooling that does
+not yet exist in `scripts/dev/` to re-verify on v0.5.66.
+
+> Targeted queries stay at **0–3 ms daemon-side** regardless of
+> corpus size (confirmed on v0.5.66, see Interactive Search table
+> above).  Only unfiltered `*` scans scale linearly with total
+> records; that path is also the one tracked as Phase 5 target #2
+> (bounded-heap top-N).
 
 ### What the benchmark shows
 
 - **Scale is the headline** — UFFS keeps **100M+ records across 16 drives** searchable from one daemon.
 - **Cold-start time is storage-bound** — NVMe is parse-bound, while HDD cold runs are dominated by seek time and raw MFT I/O.
 - **Warm restart is the operator win** — the full 25.9M-record searchable state returns in **6.9 s** from serialized cache.
-- **Hot queries are media-independent** — once the daemon is warm, single-drive end-to-end queries complete in **6–54 ms** depending on drive size. Targeted queries return in **9–13 ms** end-to-end.
-- **Daemon throughput is higher than CLI wall time** — the **163 ms** all-drive hot number includes process spawn, IPC, and formatting; the actual daemon-side scan is **155 ms**.
+- **Hot queries are media-independent** — once the daemon is warm, single-drive end-to-end queries complete in **6–54 ms** depending on drive size (v0.5.4 per-drive table).  Targeted queries on v0.5.4 returned in **9–13 ms** end-to-end; on v0.5.66 they are **29–32 ms** CLI end-to-end with **0–3 ms daemon-side** — the extra ~20 ms comes from the Phase 1+ thin-client spawn floor on Windows (v0.5.4 predates it).
+- **`*` full-scan top-N has regressed from v0.5.4** — the 163 ms all-drive hot number was never re-verified after the Phase 2 sort rewrite; v0.5.66 measures **1 112 ms** CLI-e2e / 1 081 ms daemon-side on the same hardware ([`docs/benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt:657`](../../benchmarks/raw/2026-04-v0.5.66_full-benchmark-suite.txt)).  Tracked as Phase 5 target #2 (bounded-heap top-N).
 - **Bulk export peaks at 323k rows/sec** — using direct file output (`--out-dir`), a full 8.3M-record drive exports in ~25 seconds.
 
 > 📖 **Full benchmark data:** [Performance](../../user-manual/performance.md)
@@ -280,10 +360,14 @@ The dominant performance advantages come from architectural decisions in the Rus
 
 ### Multi-Drive Filtered Scan (`*.ext`)
 
-Filtered multi-drive parallel scans are dramatically faster than full scans.
-Targeted patterns (`*.dll`, `config`, `notepad.exe`) return in **9–13 ms e2e**
-vs **161 ms** for `*` on all 7 drives.  At 100M records the gap widens:
-`*` takes 808 ms but targeted queries stay at **11–13 ms**.
+Filtered multi-drive parallel scans are dramatically faster than full
+scans.  On v0.5.4 targeted patterns (`*.dll`, `config`, `notepad.exe`)
+returned in **9–13 ms e2e** vs **161 ms** for `*` on all 7 drives; on
+v0.5.66 the same targeted patterns measure **29–69 ms e2e** (28 ms
+CLI spawn tax + 0–42 ms daemon) while `*` is now **1 112 ms** (see
+§Interactive Search above for the full v0.5.66 table).  At 100 M
+records (v0.5.4 only, not re-verified on v0.5.66) `*` took 808 ms
+but targeted queries stayed at **11–13 ms** daemon-side.
 
 ---
 

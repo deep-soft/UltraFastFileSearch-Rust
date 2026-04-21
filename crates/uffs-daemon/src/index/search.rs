@@ -16,10 +16,13 @@ use std::io::Write;
 use std::time::Instant;
 
 use uffs_client::protocol::response::{
-    DriveInfo, DriveProfile, DrivesResponse, SearchProfile, SearchResponse, SearchRow,
+    DriveInfo, DriveProfile, DrivesResponse, SearchPayload, SearchProfile, SearchResponse,
+    SearchRow,
 };
 use uffs_client::protocol::{SearchFilterMode, SearchParams, SearchResponseMode};
-use uffs_core::search::backend::{DisplayRow, FilterMode, SearchRequest, SortSpec, search_index};
+use uffs_core::search::backend::{
+    DisplayRow, FilterMode, PhaseTimings, SearchRequest, SortSpec, search_index,
+};
 use uffs_core::search::field::FieldId;
 use uffs_core::search::filters::{SearchFilterParams, SearchFilters};
 
@@ -48,21 +51,22 @@ impl IndexManager {
         // CPU count.  Operators can clamp this down (or raise it) via
         // the `UFFS_SEARCH_MAX_CONCURRENCY` env var.
         let Some(_permit) = self.acquire_search_permit().await else {
+            // Permit acquisition timed out — the global concurrency
+            // cap is saturated.  Return a no-payload response with
+            // the remaining metadata fields at their zero defaults
+            // so the client still sees a valid (if empty) shape.
             return SearchResponse {
-                rows: Vec::new(),
+                payload: SearchPayload::Empty,
                 total_count: 0,
                 records_scanned: 0,
                 duration_ms: 0,
                 truncated: false,
-                shmem_path: None,
-                shmem_count: None,
                 profile: None,
                 applied_sorts: Vec::new(),
                 applied_projection: Vec::new(),
                 response_mode: None,
                 projected_rows: None,
                 aggregations: vec![],
-                paths_blob: None,
             };
         };
 
@@ -221,20 +225,17 @@ impl IndexManager {
             Ok(Err(_join_err)) => {
                 tracing::error!("search task panicked");
                 return SearchResponse {
-                    rows: Vec::new(),
+                    payload: SearchPayload::Empty,
                     total_count: 0,
                     records_scanned: 0,
                     duration_ms: 0,
                     truncated: false,
-                    shmem_path: None,
-                    shmem_count: None,
                     profile: None,
                     applied_sorts: Vec::new(),
                     applied_projection: Vec::new(),
                     response_mode: None,
                     projected_rows: None,
                     aggregations: vec![],
-                    paths_blob: None,
                 };
             }
             Err(_timeout) => {
@@ -243,20 +244,17 @@ impl IndexManager {
                     "search timed out after 30s"
                 );
                 return SearchResponse {
-                    rows: Vec::new(),
+                    payload: SearchPayload::Empty,
                     total_count: 0,
                     records_scanned: 0,
                     duration_ms: 30_000,
                     truncated: false,
-                    shmem_path: None,
-                    shmem_count: None,
                     profile: None,
                     applied_sorts: Vec::new(),
                     applied_projection: Vec::new(),
                     response_mode: None,
                     projected_rows: None,
                     aggregations: vec![],
-                    paths_blob: None,
                 };
             }
         };
@@ -265,6 +263,9 @@ impl IndexManager {
         } else {
             0
         };
+        // Capture sub-phase timings before we consume `result.rows`.
+        // `None` for non-match-all paths (regex, trigram, path-sort).
+        let phase_timings = result.phase_timings;
 
         // ── Row building ────────────────────────────────────────────
         let t_rows = profiling.then(Instant::now);
@@ -278,17 +279,50 @@ impl IndexManager {
             filtered_rows.truncate(limit as usize);
         }
 
+        // Per-drive match counts for `--profile`.  Computed once here
+        // so both the file-sink early-return and the regular IPC path
+        // share the same tally without duplicate O(N) scans.
+        //
+        // Single-pass map: previously this was O(rows × drives) via
+        // `filter(|row| row.drive == drive).count()` inside a per-drive
+        // loop.  With 4-letter drive fans and result sets in the 10⁵
+        // range on validation-suite queries, the old shape
+        // materialised 400 K predicate evaluations purely for
+        // profiling — enough to show up in `--profile` overhead
+        // measurements.  One pass over `filtered_rows` with a
+        // pre-sized hash map keeps the complexity at O(rows) and
+        // makes the profiling cost independent of drive count.
+        let drive_match_counts: Vec<(char, usize)> = if profiling {
+            let mut tally: std::collections::HashMap<char, usize> =
+                std::collections::HashMap::with_capacity(drive_info.len().max(1));
+            for row in &filtered_rows {
+                *tally.entry(row.drive).or_insert(0) += 1;
+            }
+            // Project back to the `drive_info` ordering so callers see
+            // an entry for every mounted drive (0 counts included),
+            // preserving the existing contract with `SearchProfile`.
+            drive_info
+                .iter()
+                .map(|&(drive, _records)| (drive, tally.get(&drive).copied().unwrap_or(0)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         // ── Direct file output (OPT-4) ──────────────────────────────
         // When `output_file` is set, write results directly to file and
         // return metadata-only response.  Skips SearchRow allocation,
         // JSON serialization, and IPC transfer entirely.
         if let Some(output_path) = &effective_params.output_file {
             let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
-
-            // Reconstruct OutputConfig from protocol fields.
             let output_config = build_output_config(&effective_params);
 
-            match Self::write_rows_to_file(&filtered_rows, output_path, &output_config) {
+            let t_write = profiling.then(Instant::now);
+            let write_result =
+                Self::write_rows_to_file(&filtered_rows, output_path, &output_config);
+            let write_us = t_write.map_or(0, |ts| ts.elapsed().as_micros());
+
+            match write_result {
                 Ok(rows_written) => {
                     tracing::info!(
                         output = output_path,
@@ -303,21 +337,44 @@ impl IndexManager {
                         u64::try_from(query_us).unwrap_or(u64::MAX),
                         Ordering::Relaxed,
                     );
+                    // Build profile so `--profile --out` can surface
+                    // scan/sort/path_resolve/write_ms.  Previously this
+                    // branch returned `profile: None`, hiding the new
+                    // `PhaseTimings` instrumentation on the hot file
+                    // benchmark path.
+                    let profile = if profiling {
+                        Some(
+                            self.build_search_profile(
+                                lock_us,
+                                search_us,
+                                0,
+                                write_us,
+                                phase_timings,
+                                &drive_info,
+                                &drive_match_counts,
+                            )
+                            .await,
+                        )
+                    } else {
+                        None
+                    };
                     return SearchResponse {
-                        rows: Vec::new(),
+                        // File-sink path: the daemon already streamed
+                        // the rows to `output_path`, so the response
+                        // carries no payload — only the `rows_written`
+                        // signal (via `total_count`) and timing
+                        // metadata for `--profile --out`.
+                        payload: SearchPayload::Empty,
                         total_count,
                         records_scanned: result.records_scanned,
                         duration_ms,
                         truncated: false,
-                        shmem_path: None,
-                        shmem_count: None,
-                        profile: None,
+                        profile,
                         applied_sorts: Vec::new(),
                         applied_projection: Vec::new(),
                         response_mode: None,
                         projected_rows: None,
                         aggregations: vec![],
-                        paths_blob: None,
                     };
                 }
                 Err(err) => {
@@ -331,10 +388,25 @@ impl IndexManager {
             }
         }
 
-        let rows: Vec<SearchRow> = filtered_rows
-            .iter()
-            .map(Self::display_row_to_search_row)
-            .collect();
+        // Phase 3.1 NUL fast path: skip `SearchRow` materialisation
+        // when the caller explicitly opted out of row inclusion
+        // (aggregate-only queries, `--no-output`, MCP facet_values,
+        // etc.).  Saves an O(N) clone-and-convert pass and, once the
+        // handler skips `try_pack_paths_blob`/shmem on empty rows
+        // (already true), also elides ~15 ms of IPC transport for
+        // medium result sets.
+        //
+        // `drive_match_counts` was computed up-front (see block above)
+        // so both dispatch branches share the same per-drive tally.
+        let filtered_len = filtered_rows.len();
+        let rows: Vec<SearchRow> = if effective_params.include_rows {
+            filtered_rows
+                .iter()
+                .map(Self::display_row_to_search_row)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let row_build_us = t_rows.map_or(0, |ts| ts.elapsed().as_micros());
 
         // Update perf counters.
@@ -345,16 +417,28 @@ impl IndexManager {
             Ordering::Relaxed,
         );
 
+        // `truncated` reports whether the user's `--limit` cap was
+        // reached.  Keyed off `filtered_len` (the post-filter,
+        // post-truncate row count) rather than `rows.len()` so the flag
+        // stays correct when `include_rows = false`.
         let truncated = effective_params
             .limit
-            .is_some_and(|cap| rows.len() >= cap as usize);
+            .is_some_and(|cap| filtered_len >= cap as usize);
         let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
 
         // Profile (built in a separate method to keep `search` under the line limit).
         let profile = if profiling {
             Some(
-                self.build_search_profile(lock_us, search_us, row_build_us, &drive_info, &rows)
-                    .await,
+                self.build_search_profile(
+                    lock_us,
+                    search_us,
+                    row_build_us,
+                    0, // write_us: non-file-sink path, no disk write
+                    phase_timings,
+                    &drive_info,
+                    &drive_match_counts,
+                )
+                .await,
             )
         } else {
             None
@@ -402,39 +486,55 @@ impl IndexManager {
             total_count = agg_matched;
         }
 
+        // Pick the payload variant for the normal (non-file-sink)
+        // path.  The search core itself only ever emits `Empty` or
+        // `InlineRows` here — `handle_search` downstream may
+        // re-dispatch the payload to `InlineBlob`, `ShmemBlob`, or
+        // `ShmemRows` based on size + projection.
+        let payload = if projected_rows.is_some() || rows.is_empty() {
+            // JSON-mode callers consume `projected_rows` directly;
+            // `Empty` avoids double-delivering the same data.  Zero
+            // rows also collapse to `Empty` so the client doesn't
+            // pay a JSON serialize of `{"kind":"inline_rows","data":[]}`.
+            SearchPayload::Empty
+        } else {
+            SearchPayload::InlineRows(rows)
+        };
+
         SearchResponse {
-            rows: if projected_rows.is_some() {
-                Vec::new()
-            } else {
-                rows
-            },
+            payload,
             total_count,
             records_scanned: result.records_scanned,
             duration_ms,
             truncated,
-            shmem_path: None,
-            shmem_count: None,
             profile,
             applied_sorts,
             applied_projection,
             response_mode: Some(response_mode),
             projected_rows,
             aggregations: agg_results,
-            // Populated by `handle_search` when projection is path-only
-            // and the row count is below the shmem threshold.  The
-            // search core itself always returns full [`SearchRow`]s.
-            paths_blob: None,
         }
     }
 
     /// Build the `SearchProfile` for `--profile` output.
+    ///
+    /// `drive_match_counts` is pre-computed by the caller so the profile
+    /// stays accurate even when row materialisation was skipped (e.g.
+    /// under `--no-output`).  Pairs with `drive_info`: both slices are
+    /// keyed by drive letter and have identical lengths.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "per-phase instrumentation payload: lock/search/row_build/write + sub-phase timings + drive slices"
+    )]
     async fn build_search_profile(
         &self,
         lock_us: u128,
         search_us: u128,
         row_build_us: u128,
+        write_us: u128,
+        phase_timings: Option<PhaseTimings>,
         drive_info: &[(char, usize)],
-        rows: &[SearchRow],
+        drive_match_counts: &[(char, usize)],
     ) -> SearchProfile {
         let timings = self.drive_timings.read().await;
         let startup_us = self.startup_duration_us.load(Ordering::Relaxed);
@@ -445,7 +545,10 @@ impl IndexManager {
         let mut drive_profiles: Vec<DriveProfile> = drive_info
             .iter()
             .map(|&(drive, records)| {
-                let matches = rows.iter().filter(|row| row.drive == drive).count();
+                let matches = drive_match_counts
+                    .iter()
+                    .find_map(|&(letter, count)| (letter == drive).then_some(count))
+                    .unwrap_or(0);
                 let (cache_ms, mft_ms, compact_ms, trigram_ms) =
                     timings.get(&drive).map_or((0, 0, 0, 0), |ts| {
                         (
@@ -468,6 +571,26 @@ impl IndexManager {
             .collect();
         drive_profiles.sort_by_key(|dp| dp.drive);
 
+        let (
+            scan_ms,
+            sort_ms,
+            path_resolve_ms,
+            path_candidates,
+            path_cache_entries,
+            path_resolve_fn_ns,
+            path_build_row_ns,
+        ) = phase_timings.map_or((0, 0, 0, 0, 0, 0, 0), |pt| {
+            (
+                pt.scan_ms,
+                pt.sort_ms,
+                pt.path_resolve_ms,
+                pt.path_candidates,
+                pt.path_cache_entries,
+                pt.path_resolve_fn_ns,
+                pt.path_build_row_ns,
+            )
+        });
+
         SearchProfile {
             uptime_ms: us_to_ms(self.start_time.elapsed().as_micros()),
             startup_ms: startup_us / 1000,
@@ -475,6 +598,14 @@ impl IndexManager {
             search_ms: us_to_ms(search_us),
             row_build_ms: us_to_ms(row_build_us),
             serialize_ms: 0, // filled in by handler after shmem write
+            scan_ms,
+            sort_ms,
+            path_resolve_ms,
+            write_ms: us_to_ms(write_us),
+            path_candidates,
+            path_cache_entries,
+            path_resolve_fn_ns,
+            path_build_row_ns,
             drives: drive_profiles,
         }
     }
@@ -635,141 +766,21 @@ impl IndexManager {
     }
 }
 
-/// Reconstruct an [`OutputConfig`] from protocol fields in [`SearchParams`].
-///
-/// The CLI serialises its `OutputConfig` into individual string fields
-/// (`output_separator`, `output_quote`, etc.) so the daemon can rebuild
-/// an identical config without needing serde on `OutputConfig` itself.
-fn build_output_config(params: &SearchParams) -> uffs_core::output::OutputConfig {
-    let mut cfg = uffs_core::output::OutputConfig::default();
+// `build_output_config` lives in a sibling file to keep `search.rs`
+// under the 800-line policy ceiling.  Re-exported here so every
+// existing call site (`search()` below, the file-sink path, and
+// `handler::RequestHandler::try_pack_csv_blob`) keeps the same
+// `crate::index::search::build_output_config(...)` path — no
+// call-site rename needed.
+#[path = "search_output_config.rs"]
+mod output_config;
+pub(crate) use output_config::build_output_config;
 
-    if let Some(sep) = &params.output_separator {
-        cfg = cfg.with_separator(sep);
-    }
-    if let Some(quote) = &params.output_quote {
-        cfg = cfg.with_quote(quote);
-    }
-    if let Some(header) = params.output_header {
-        cfg = cfg.with_header(header);
-    }
-    if let Some(pos) = &params.output_pos {
-        cfg = cfg.with_pos(pos);
-    }
-    if let Some(neg) = &params.output_neg {
-        cfg = cfg.with_neg(neg);
-    }
-    if let Some(cols_str) = &params.output_columns {
-        cfg = cfg.with_columns(cols_str);
-    }
-    if params.output_parity_compat == Some(true) {
-        cfg = cfg.with_parity_compat(true);
-    }
-    if let Some(tz_hours) = params.output_tz_offset_hours {
-        cfg = cfg.with_tz_offset_hours(tz_hours);
-    }
-    cfg
-}
-
+// The inline `tests` module lives in a sibling file to keep `search.rs`
+// under the 800-line policy ceiling.  `#[path]` keeps the test module
+// path identical (`crate::index::search::tests`), so `super::*` inside
+// the tests file continues to resolve against the `search` module's
+// private items (`build_output_config`, etc.).
 #[cfg(test)]
-mod tests {
-    use uffs_client::protocol::SearchParams;
-
-    use super::*;
-
-    /// Regression: `build_output_config` must use `OutputConfig` defaults
-    /// (separator = `,`, quote = `"`) when `SearchParams` output fields
-    /// are `None`.
-    ///
-    /// Previously, `from_cli_args` set `output_separator: Some("")` which
-    /// caused `build_output_config` to call `with_separator("")`, wiping
-    /// the comma delimiter and producing concatenated output with no field
-    /// separation.
-    #[test]
-    fn build_output_config_preserves_defaults_when_none() {
-        let params = SearchParams::default();
-        assert!(params.output_separator.is_none());
-        assert!(params.output_quote.is_none());
-        assert!(params.output_pos.is_none());
-        assert!(params.output_neg.is_none());
-
-        let cfg = build_output_config(&params);
-        assert_eq!(cfg.separator, ",", "default separator must be comma");
-        assert_eq!(cfg.quote, "\"", "default quote must be double-quote");
-        assert_eq!(cfg.pos, "1", "default pos must be '1'");
-        assert_eq!(cfg.neg, "0", "default neg must be '0'");
-        assert!(cfg.header, "default header must be true");
-    }
-
-    /// Guard against the exact bug: passing `Some("")` to
-    /// `build_output_config` must NOT wipe the separator/quote.
-    /// The daemon function should skip empty-string overrides.
-    #[test]
-    fn build_output_config_some_empty_string_overrides_defaults() {
-        // This test documents the current behavior: if Some("") is passed,
-        // it DOES override the default.  The fix is in from_cli_args which
-        // must never produce Some("") for unset flags.
-        let params = SearchParams {
-            output_separator: Some(String::new()),
-            output_quote: Some(String::new()),
-            ..Default::default()
-        };
-        let cfg = build_output_config(&params);
-        // Some("") overrides defaults — this is why from_cli_args must
-        // use None, not Some(""), for unset flags.
-        assert_eq!(
-            cfg.separator, "",
-            "Some(\"\") overrides default — from_cli_args must use None"
-        );
-        assert_eq!(
-            cfg.quote, "",
-            "Some(\"\") overrides default — from_cli_args must use None"
-        );
-    }
-
-    /// Explicit separator and quote values must be forwarded.
-    #[test]
-    fn build_output_config_explicit_values_applied() {
-        let params = SearchParams {
-            output_separator: Some(";".to_owned()),
-            output_quote: Some("'".to_owned()),
-            output_pos: Some("+".to_owned()),
-            output_neg: Some("-".to_owned()),
-            output_header: Some(false),
-            output_columns: Some("parity".to_owned()),
-            output_parity_compat: Some(true),
-            output_tz_offset_hours: Some(-7_i32),
-            ..Default::default()
-        };
-        let cfg = build_output_config(&params);
-        assert_eq!(cfg.separator, ";");
-        assert_eq!(cfg.quote, "'");
-        assert_eq!(cfg.pos, "+");
-        assert_eq!(cfg.neg, "-");
-        assert!(!cfg.header);
-        assert!(cfg.columns.is_some(), "parity columns must be set");
-        assert!(cfg.parity_compat, "parity_compat must be true");
-        assert_eq!(cfg.timezone_offset_secs, -7_i32 * 3_600_i32);
-    }
-
-    /// `--parity-compat` without explicit sep/quote must produce a valid
-    /// parity `OutputConfig` with default comma + double-quote delimiters.
-    #[test]
-    fn build_output_config_parity_compat_uses_defaults() {
-        let params = SearchParams {
-            output_columns: Some("parity".to_owned()),
-            output_parity_compat: Some(true),
-            ..Default::default()
-        };
-        let cfg = build_output_config(&params);
-        assert_eq!(
-            cfg.separator, ",",
-            "parity mode must use comma separator by default"
-        );
-        assert_eq!(
-            cfg.quote, "\"",
-            "parity mode must use double-quote by default"
-        );
-        assert!(cfg.parity_compat);
-        assert!(cfg.columns.is_some());
-    }
-}
+#[path = "search_tests.rs"]
+mod tests;

@@ -34,9 +34,11 @@ build/
 # Logs, vendor, misc
 # =============================================================================
 /Shell/
-# /LOG/ holds local-only runtime logs (defender ETLs, mental_health,
-# per-iteration `*CHANGELOG_HEALING.md` artefacts, etc.).  Nothing
-# under /LOG/ is tracked in git.
+# /LOG/ is strictly local-only.  Every file under it — runtime logs
+# (defender ETLs, mental_health, `ship_run*.log` captures), per-session
+# notes, healing logs, assessment scratchpads, anything — stays on the
+# developer's machine and NEVER reaches git.  The project-level
+# `CHANGELOG.md` at the repo root is the only changelog that ships.
 /LOG/
 /vendor/
 /missing_paths.txt
@@ -99,6 +101,17 @@ metadata.json
 /docs/dev/
 /docs/research/
 /docs/refactor/
+
+# =============================================================================
+# Explicit public-docs guard
+# =============================================================================
+# /docs/benchmarks/ is the public-facing competitive-benchmark hub — dated
+# canonical reports, archive, hub README, reproduction scripts. This
+# directory MUST stay tracked. The negation below is defensive: if a future
+# gitignore rule ever matches /docs/benchmarks/* (e.g. someone adds
+# /docs/*/ or a broader pattern), this keeps the hub checked in.
+!/docs/benchmarks/
+!/docs/benchmarks/**
 
 # =============================================================================
 # Local-only spec/prompt files

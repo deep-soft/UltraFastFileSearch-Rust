@@ -188,6 +188,14 @@ fn push_u64(buf: &mut String, value: u64) {
 ///
 /// Mirrors C++ `RtlTimeToTimeFields` — applies TZ bias in FILETIME ticks,
 /// then decomposes.  No intermediate Unix conversion.
+///
+/// When `filetime` is `0` (the "unset / null" sentinel that
+/// `filetime_to_calendar` returns `None` for), emits
+/// `"0000-00-00 00:00:00"` — matches `uffs_format::append_datetime_native`
+/// so the CLI's `write_parity` output stays byte-identical with the
+/// daemon's `uffs_format::write_rows` for the `ParityCompat +
+/// Created/Modified/Accessed` combination that
+/// `RequestHandler::try_pack_csv_blob` now pre-formats (v0.5.64+).
 fn append_datetime_tz(buf: &mut String, filetime: i64, tz_offset_secs: i32) {
     use core::fmt::Write;
     let local_ft = uffs_time::filetime_with_tz_bias(filetime, tz_offset_secs);
@@ -198,52 +206,31 @@ fn append_datetime_tz(buf: &mut String, filetime: i64, tz_offset_secs: i32) {
             buf,
             "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
         );
+    } else {
+        buf.push_str("0000-00-00 00:00:00");
     }
 }
 
 /// Append the legacy drive footer for baseline-compatible custom output.
 ///
-/// Uses CRLF line endings (`\r\n`) to match legacy baseline behavior.
+/// Thin shim over [`uffs_format::write_legacy_drive_footer`] — the
+/// canonical implementation lives in `uffs-format` so the daemon's
+/// `RequestHandler::try_pack_csv_blob` fast path and this CLI slow
+/// path emit byte-identical footer bytes.  Any change to the footer
+/// shape (CRLF, fast-scan heuristic, drive-letter formatting) MUST
+/// go through [`uffs_format::footer`] so both sites pick it up.
+///
+/// # Errors
+///
+/// Propagates any I/O error the underlying writer returns.
 pub(super) fn write_legacy_drive_footer<W: Write + ?Sized>(
     writer: &mut W,
     ctx: &CppFooterContext<'_>,
 ) -> Result<()> {
-    if ctx.output_targets.is_empty() {
-        return Ok(());
-    }
-
-    write!(writer, "\r\n\r\n")?;
-    write!(
-        writer,
-        "Drives? \t{}\t{}\r\n",
-        ctx.output_targets.len(),
-        format_legacy_drive_letters(ctx.output_targets)
-    )?;
-    write!(writer, "\r\n")?;
-
-    let is_full_scan = matches!(ctx.pattern, "" | "*" | "**" | "**/*")
-        || ctx.pattern.strip_prefix('>').is_some_and(|rest| {
-            rest.split('|')
-                .all(|seg| seg.ends_with(".*") && seg.len() <= 4)
-        });
-    if ctx.row_count < 20_000 && is_full_scan {
-        write!(
-            writer,
-            "MMMmmm that was FAST ... maybe your searchstring was wrong?\t{pattern}\r\n",
-            pattern = ctx.pattern
-        )?;
-        write!(writer, "Search path. E.g. 'C:/' or 'C:\\Prog**' \r\n")?;
-    }
-
-    Ok(())
-}
-
-/// Format drive letters using the legacy footer style.
-#[must_use]
-fn format_legacy_drive_letters(output_targets: &[char]) -> String {
-    output_targets
-        .iter()
-        .map(|drive| format!("{}:", drive.to_ascii_uppercase()))
-        .collect::<Vec<_>>()
-        .join("|")
+    let fmt_ctx = uffs_format::DriveFooterContext {
+        output_targets: ctx.output_targets,
+        pattern: ctx.pattern,
+        row_count: ctx.row_count,
+    };
+    uffs_format::write_legacy_drive_footer(writer, &fmt_ctx).map_err(Into::into)
 }

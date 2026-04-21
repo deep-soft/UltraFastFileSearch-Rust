@@ -636,6 +636,11 @@ mod windows_impl {
 ///
 /// Always returns an error on non-Windows platforms.
 #[cfg(not(windows))]
+#[expect(
+    clippy::std_instead_of_core,
+    reason = "core::io::Error is not yet stable — see rust-lang/rust#103765. \
+              Remove this expect once `error_in_core` stabilises."
+)]
 pub fn query_usn_journal(_volume: char) -> Result<UsnJournalInfo, std::io::Error> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -649,6 +654,11 @@ pub fn query_usn_journal(_volume: char) -> Result<UsnJournalInfo, std::io::Error
 ///
 /// Always returns an error on non-Windows platforms.
 #[cfg(not(windows))]
+#[expect(
+    clippy::std_instead_of_core,
+    reason = "core::io::Error is not yet stable — see rust-lang/rust#103765. \
+              Remove this expect once `error_in_core` stabilises."
+)]
 pub fn read_usn_journal(
     _volume: char,
     _journal_id: u64,

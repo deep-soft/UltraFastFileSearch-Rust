@@ -13,7 +13,7 @@ mod windows;
 
 /// Dispatches parsed CLI commands to their handlers.
 #[cfg(windows)]
-pub async fn dispatch_command(command: Commands) -> Result<()> {
+pub(crate) async fn dispatch_command(command: Commands) -> Result<()> {
     match command {
         Commands::Read {
             drive,

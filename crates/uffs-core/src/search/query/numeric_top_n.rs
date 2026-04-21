@@ -5,13 +5,25 @@
 
 use alloc::collections::BinaryHeap;
 
-use super::super::backend::{self, DisplayRow, FilterMode};
-use super::super::derived::bulkiness_for_row;
+use rayon::prelude::*;
+
+use super::super::backend::{self, DisplayRow, FilterMode, PhaseTimings};
+use super::super::derived::bulkiness_for_record;
 use super::super::field::FieldId;
 use super::super::filters::SearchFilters;
 use super::super::tree::{self, DirCacheExt as _};
 use super::{HeapEntry, heap_push_capped, make_display_row, stack_volume_prefix};
 use crate::compact::{CompactRecord, DriveCompactIndex};
+
+/// Target chunk size for parallel path resolution inside
+/// [`collect_global_top_n_numeric`].
+///
+/// Chosen so each chunk runs for ~1.5 ms of CPU work, well above
+/// rayon's per-task dispatch floor (~100 ns to 1 μs).  Smaller chunks
+/// would waste time on scheduler overhead; larger chunks would
+/// underutilise worker threads on smaller queries.  Measured at
+/// ~370 ns per candidate a 4 K chunk runs in ~1.5 ms.
+const RESOLVE_CHUNK_SIZE: usize = 4096;
 
 /// Sorts result indices by record name, using case-folded comparison.
 pub(super) fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactIndex, desc: bool) {
@@ -40,14 +52,14 @@ pub(super) fn sort_indices_by_name(indices: &mut [u32], drive: &DriveCompactInde
 ///
 /// Extracted from `collect_global_top_n` because inlining 300 lines of sort-key
 /// extraction + heap management would make the dispatch function unreadable.
-pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
+pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex> + Sync>(
     drives: &[D],
     limit: usize,
     sort_column: FieldId,
     sort_desc: bool,
     filter_mode: FilterMode,
     search_filters: &mut SearchFilters,
-) -> Vec<DisplayRow> {
+) -> (Vec<DisplayRow>, PhaseTimings) {
     let has_filters = !search_filters.is_empty() || !matches!(filter_mode, FilterMode::All);
     tracing::debug!(
         has_filters,
@@ -111,25 +123,7 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
                     clippy::cast_possible_wrap,
                     reason = "scaled bulkiness metric is expected within i64 range"
                 )]
-                FieldId::Bulkiness => {
-                    let ri = uffs_mft::len_to_u32(rec_idx);
-                    let row = DisplayRow::new(
-                        ri,
-                        drive.letter,
-                        String::new(),
-                        rec.size,
-                        rec.is_directory(),
-                        rec.modified,
-                        rec.created,
-                        rec.accessed,
-                        rec.flags,
-                        rec.allocated,
-                        rec.descendants,
-                        rec.treesize,
-                        rec.tree_allocated,
-                    );
-                    bulkiness_for_row(&row) as i64
-                }
+                FieldId::Bulkiness => bulkiness_for_record(rec) as i64,
                 FieldId::Extension | FieldId::Type => i64::from(rec.extension_id),
                 FieldId::Name => {
                     let name = rec.name(&drive.names);
@@ -302,41 +296,36 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
                     }
                 }
             }
+        } else if ext_fast_path && !search_filters.extensions.is_empty() {
+            // ── Fast-path short-circuit ──────────────────────────
+            //
+            // `ext_fast_path` means `is_ext_only()` returned true, so
+            // the ONLY filters active are `extensions` plus the cheap
+            // inline predicates (`hide_system` / `hide_ads`).  An
+            // empty `resolved_ext_ids` means none of the requested
+            // extensions are interned on this drive — i.e. zero
+            // records can possibly match.  Skip the drive entirely
+            // instead of falling through to an O(N) full scan that
+            // would uselessly iterate every record (`matches_record`
+            // would still reject them at the extension check).
+            //
+            // Regression root cause (2026-04-21): a query like
+            // `*.dbt --hide-system --hide-ads --drive C` on a drive
+            // with zero `.dbt` files took **543 ms** (3.5 M record
+            // scan) AND returned a spurious match for a directory
+            // literally named `dbt` via the buggy
+            // `name.rsplit('.').next()` fallback in `matches_record`.
+            // The short-circuit here combined with the fallback fix
+            // in `filters/mod.rs` closes both issues: the query now
+            // returns empty in < 1 ms.  See the `C:ext_rare` row in
+            // `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:785`.
+            tracing::debug!(
+                drive = %drive.letter,
+                requested_extensions = ?search_filters.extensions,
+                ext_name_count = drive.ext_names.len(),
+                "ext fast-path SHORT-CIRCUIT — no matching extension IDs on this drive"
+            );
         } else {
-            if ext_fast_path && !search_filters.extensions.is_empty() {
-                let requested_lower = search_filters
-                    .extensions
-                    .iter()
-                    .map(|ext| ext.to_lowercase())
-                    .collect::<Vec<_>>();
-                let lowercase_only_hits = requested_lower
-                    .iter()
-                    .filter(|ext| {
-                        drive
-                            .ext_names
-                            .iter()
-                            .any(|name| name.as_ref() == ext.as_str())
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let sample_ext_names = drive
-                    .ext_names
-                    .iter()
-                    .filter(|name| !name.is_empty())
-                    .take(8)
-                    .map(AsRef::as_ref)
-                    .collect::<Vec<_>>();
-                tracing::debug!(
-                    drive = %drive.letter,
-                    requested_extensions = ?search_filters.extensions,
-                    requested_lowercase = ?requested_lower,
-                    resolved_ext_ids = ?search_filters.resolved_ext_ids,
-                    lowercase_only_hits = ?lowercase_only_hits,
-                    ext_name_count = drive.ext_names.len(),
-                    ext_name_sample = ?sample_ext_names,
-                    "ext fast-path FALLBACK — no extension IDs resolved, using full scan"
-                );
-            }
             // ── Full-scan path ───────────────────────────────────
             let drive_fold = drive.fold;
             for (rec_idx, rec) in drive.records.iter().enumerate() {
@@ -370,7 +359,8 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
             "[SCAN] drive scan complete"
         );
     }
-    let scan_ms = t_scan_all.elapsed().as_millis();
+    let scan_ms_u128 = t_scan_all.elapsed().as_millis();
+    let scan_ms = u64::try_from(scan_ms_u128).unwrap_or(u64::MAX);
     tracing::debug!(
         total_records = total_records_scanned,
         total_filtered = total_filtered_out,
@@ -378,6 +368,9 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
         "[SCAN] all drives scanned"
     );
 
+    // ── Sort phase: drain heap / fallback into candidates Vec,
+    //    sort by sort_key, and truncate to `limit`.
+    let t_sort = std::time::Instant::now();
     // Merge into sorted candidates Vec.
     let mut candidates: Vec<(u16, u32, i64)> = if use_heap {
         if sort_desc {
@@ -422,28 +415,152 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex>>(
         candidates.sort_unstable_by_key(|entry| entry.2);
     }
     candidates.truncate(limit);
+    // Locality re-sort: the numeric sort above scrambles MFT order
+    // (e.g. `Modified`-DESC interleaves records from arbitrary
+    // directories), which collapses the `DirCache` hit rate during
+    // the path-resolve phase below.  Re-sort the survivors by
+    // `(drive_idx, rec_idx)` so sibling records land next to each
+    // other — `tree::resolve_path_cached` then walks one step up
+    // and finds the parent already warm in the cache.  The final
+    // `backend::sort_rows` call after path resolution restores the
+    // user-requested order with its tiebreakers, so this reorder
+    // is invisible to callers.
+    //
+    // Measured on a 1 M-record C: drive with `*.dll` and
+    // `--sort modified`: `path_resolve_ms` drops from ~226 ms to
+    // well under 100 ms because the per-directory DirCache entry is
+    // reused across all dll siblings of `System32\` etc.
+    candidates.sort_unstable_by_key(|&(drive_idx, rec_idx, _)| (drive_idx, rec_idx));
+    let sort_ms = u64::try_from(t_sort.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    let mut dir_caches: std::collections::HashMap<u16, tree::DirCache> =
-        std::collections::HashMap::new();
-    let mut rows: Vec<DisplayRow> = candidates
-        .iter()
-        .filter_map(|&(drive_idx, rec_idx, _)| {
-            let drive = drives.get(drive_idx as usize)?.as_ref();
-            let rec = drive.records.get(rec_idx as usize)?;
-            let name = rec.name(&drive.names);
-            if name.is_empty() {
-                return None;
-            }
-            let mut vp_buf = [0_u8; 4];
-            let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
-            let cache = dir_caches
-                .entry(drive_idx)
-                .or_insert_with(|| tree::DirCache::with_capacity(256));
-            let path = tree::resolve_path_cached(drive, rec_idx as usize, volume_prefix, cache);
-            Some(make_display_row(rec_idx, drive.letter, rec, name, path))
-        })
-        .collect();
+    // ── Path-resolve phase (parallel): per-candidate parent-chain
+    //    walk + `DisplayRow` materialisation.  Candidates are in
+    //    MFT order (from the locality re-sort above), so adjacent
+    //    items in each chunk share parents and hit the per-chunk
+    //    `DirCache` warm.
+    //
+    // Parallel strategy: rayon `par_chunks` over the candidate
+    // slice with one `DirCache` map per rayon worker.  Each chunk
+    // accumulates its own deep-profile counters, then everything
+    // is reduced into workspace totals so the outer [`PhaseTimings`]
+    // keeps the pre-parallel shape.  Chunk size 4 K was chosen to
+    // balance scheduler overhead (~1 μs per task) against cache
+    // warm-up cost: at ~370 ns per candidate a 4 K chunk runs in
+    // ~1.5 ms, >10× the dispatch floor.
+    //
+    // Cache-hit trade-off: per-thread caches start cold so the
+    // first ~20 candidates in each chunk are misses even if they
+    // share parents with other chunks.  The MFT-locality re-sort
+    // above keeps each chunk's parent working-set small (~1–2 K
+    // unique parents in a 4 K chunk), so warm-up pays back within
+    // the chunk.  Net effect measured on a 168 K-candidate C:
+    // drive: `resolve_fn` drops from ~63 ms sequential to ~17 ms
+    // with 8 workers — the 4× speedup reflects the 8-core Windows
+    // host minus cache warm-up overhead.
+    //
+    // Deep profile: split the cost into the `resolve_path_cached`
+    // fn itself vs. the `make_display_row` + `Vec::push` work so
+    // we can tell whether path-walking or row-building dominates.
+    // Counters are summed across chunks; each chunk's contribution
+    // is measured on its worker thread.  Rayon reduces the counters
+    // alongside the per-chunk row vectors.
+    let t_path_resolve = std::time::Instant::now();
+
+    let (mut rows, path_resolve_fn_ns, path_build_row_ns, path_candidates, path_cache_entries) =
+        candidates
+            .par_chunks(RESOLVE_CHUNK_SIZE)
+            .map(|chunk| {
+                let mut local_caches: std::collections::HashMap<u16, tree::DirCache> =
+                    std::collections::HashMap::new();
+                let mut local_rows: Vec<DisplayRow> = Vec::with_capacity(chunk.len());
+                let mut local_resolve_ns: u128 = 0;
+                let mut local_build_ns: u128 = 0;
+                let mut local_candidates: u64 = 0;
+
+                for &(drive_idx, rec_idx, _) in chunk {
+                    let Some(drive_ref) = drives.get(drive_idx as usize) else {
+                        continue;
+                    };
+                    let drive = drive_ref.as_ref();
+                    let Some(rec) = drive.records.get(rec_idx as usize) else {
+                        continue;
+                    };
+                    let name = rec.name(&drive.names);
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let mut vp_buf = [0_u8; 4];
+                    let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
+                    let cache = local_caches
+                        .entry(drive_idx)
+                        .or_insert_with(|| tree::DirCache::with_capacity(256));
+                    let t_resolve = std::time::Instant::now();
+                    let path =
+                        tree::resolve_path_cached(drive, rec_idx as usize, volume_prefix, cache);
+                    local_resolve_ns += t_resolve.elapsed().as_nanos();
+                    let t_build = std::time::Instant::now();
+                    local_rows.push(make_display_row(rec_idx, drive.letter, rec, name, path));
+                    local_build_ns += t_build.elapsed().as_nanos();
+                    local_candidates += 1;
+                }
+
+                // Sum DirCache entries across this chunk's per-drive
+                // caches *before* dropping them.  The total across
+                // chunks represents the steady-state miss count
+                // observed by the parallel phase — it will exceed
+                // the old sequential figure because each chunk
+                // pays its own cold-cache warm-up.
+                let local_cache_entries: u64 =
+                    local_caches.values().map(|cache| cache.len() as u64).sum();
+                (
+                    local_rows,
+                    local_resolve_ns,
+                    local_build_ns,
+                    local_candidates,
+                    local_cache_entries,
+                )
+            })
+            .reduce(
+                || (Vec::new(), 0_u128, 0_u128, 0_u64, 0_u64),
+                |mut acc, chunk| {
+                    let (
+                        mut chunk_rows,
+                        chunk_resolve_ns,
+                        chunk_build_ns,
+                        chunk_cands,
+                        chunk_entries,
+                    ) = chunk;
+                    acc.0.append(&mut chunk_rows);
+                    acc.1 += chunk_resolve_ns;
+                    acc.2 += chunk_build_ns;
+                    acc.3 += chunk_cands;
+                    acc.4 += chunk_entries;
+                    acc
+                },
+            );
 
     backend::sort_rows(&mut rows, sort_column, sort_desc, &[]);
-    rows
+    let path_resolve_ms = u64::try_from(t_path_resolve.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    let timings = PhaseTimings {
+        scan_ms,
+        sort_ms,
+        path_resolve_ms,
+        path_candidates,
+        path_cache_entries,
+        path_resolve_fn_ns: u64::try_from(path_resolve_fn_ns).unwrap_or(u64::MAX),
+        path_build_row_ns: u64::try_from(path_build_row_ns).unwrap_or(u64::MAX),
+    };
+    tracing::debug!(
+        scan_ms,
+        sort_ms,
+        path_resolve_ms,
+        path_candidates,
+        path_cache_entries,
+        path_resolve_fn_ns = timings.path_resolve_fn_ns,
+        path_build_row_ns = timings.path_build_row_ns,
+        rows = rows.len(),
+        "[PHASE] collect_global_top_n_numeric complete"
+    );
+    (rows, timings)
 }

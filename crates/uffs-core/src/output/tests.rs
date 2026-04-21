@@ -601,6 +601,74 @@ fn test_write_datetime_column_formats_filetime_as_2026() {
     );
 }
 
+/// Regression: parallel write path (>= `PARALLEL_WRITE_THRESHOLD` rows)
+/// must emit byte-identical output to the sequential path.
+///
+/// Pins the v0.5.58 Option D refactor that split `write_display_rows`
+/// into a sequential branch (< 16 K rows) and a rayon `par_chunks`
+/// branch (>= 16 K).  If a future refactor reintroduces the sequential
+/// path for all sizes, or changes the chunk-merge order, this test
+/// catches the drift.  Uses 20 K synthetic rows to force the parallel
+/// branch (threshold is 16 384) and diffs the bytes against a loop
+/// that mirrors the old sequential formatter exactly.
+#[test]
+fn write_display_rows_parallel_matches_sequential() {
+    use crate::search::backend::DisplayRow;
+
+    let rows: Vec<DisplayRow> = (0..20_000_u32)
+        .map(|idx| {
+            DisplayRow::new(
+                idx,
+                'C',
+                format!("C:\\tmp\\file_{idx:05}.dll"),
+                u64::from(idx) * 1024,
+                false,
+                i64::from(idx),
+                i64::from(idx) + 1,
+                i64::from(idx) + 2,
+                0x20,
+                (u64::from(idx) * 1024).next_multiple_of(4096),
+                0,
+                0,
+                0,
+            )
+        })
+        .collect();
+
+    let config = OutputConfig::new()
+        .with_columns("path,size,modified")
+        .with_header(false)
+        .with_quote("\"")
+        .with_tz_offset_hours(0_i32);
+
+    // Parallel branch (>= 16 K rows hits `PARALLEL_WRITE_THRESHOLD`).
+    let mut parallel_out = Vec::new();
+    config
+        .write_display_rows(&rows, &mut parallel_out)
+        .expect("parallel write should succeed");
+
+    // Sequential branch: format half the rows twice (two <16 K
+    // writes) so the sequential code path runs for every row.
+    let mut sequential_out = Vec::new();
+    let (half_a, half_b) = rows.split_at(rows.len() / 2);
+    config
+        .write_display_rows(half_a, &mut sequential_out)
+        .expect("sequential write half A should succeed");
+    config
+        .write_display_rows(half_b, &mut sequential_out)
+        .expect("sequential write half B should succeed");
+
+    assert_eq!(
+        parallel_out.len(),
+        sequential_out.len(),
+        "parallel byte length must match sequential",
+    );
+    assert_eq!(
+        parallel_out, sequential_out,
+        "parallel bytes must match sequential exactly",
+    );
+}
+
 /// Zero FILETIME is the NTFS sentinel for "unset" — the formatter must
 /// emit an empty field, never decompose to `1601-01-01`.
 #[test]

@@ -39,6 +39,11 @@ path = "src/main.rs"
 # version is pinned by the workspace via path dependency resolution.
 uffs-client = { path = "../uffs-client", default-features = false }
 
+# Canonical CSV / parity / legacy-footer writer.  Direct dep (not a
+# re-export chain through `uffs-client`) so the CLI and the daemon
+# hit the same `uffs_format::*` symbols without an indirection layer.
+uffs-format = { path = "../uffs-format" }
+
 # Error handling
 anyhow.workspace = true
 

@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 
 /// Diagnose MFT bitmap to investigate why records aren't being skipped.
 #[cfg(windows)]
-pub async fn cmd_bitmap_diag(drive: char, show_samples: bool) -> Result<()> {
+pub(crate) async fn cmd_bitmap_diag(drive: char, show_samples: bool) -> Result<()> {
     use uffs_mft::VolumeHandle;
 
     let drive_upper = drive.to_ascii_uppercase();

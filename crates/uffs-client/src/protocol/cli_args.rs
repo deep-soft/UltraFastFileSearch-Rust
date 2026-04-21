@@ -9,147 +9,11 @@
 //! (`--begins-with`, `--between`, `--exact-size`, `--word`, etc.)
 //! happens here.
 
+use super::cli_args_helpers::{
+    drives_csv, extract_extensions_from_regex, flag_val, is_pure_ext_glob, non_empty,
+    parse_bare_drive_prefix, parse_bool, parse_i32, parse_size, parse_u16, parse_u32, parse_u64,
+};
 use super::{SearchFilterMode, SearchParams, SearchResponseMode};
-use crate::format::parse_size;
-
-// ── tiny helpers ───────────────────────────────────────────────────────
-
-/// Returns `Some(val)` if `val` is non-empty, otherwise `None`.
-/// Used for optional output-config fields that should fall back to
-/// `OutputConfig` defaults when the user did not supply them.
-fn non_empty(val: String) -> Option<String> {
-    if val.is_empty() { None } else { Some(val) }
-}
-
-/// Consume next token or report missing value.
-fn take_next(flag: &str, iter: &mut impl Iterator<Item = String>) -> Result<String, String> {
-    iter.next()
-        .ok_or_else(|| format!("Missing value for {flag}"))
-}
-
-/// Handle `--flag=val` or `--flag <val>`.
-fn flag_val(
-    cur: &str,
-    flag: &str,
-    iter: &mut impl Iterator<Item = String>,
-) -> Result<String, String> {
-    cur.strip_prefix(&format!("{flag}="))
-        .map_or_else(|| take_next(flag, iter), |rest| Ok(rest.to_owned()))
-}
-
-/// Parse comma-separated drive letters.
-fn drives_csv(input: &str) -> Result<Vec<char>, String> {
-    input
-        .split(',')
-        .map(|part| {
-            let stripped = part.trim();
-            let trimmed = stripped.strip_suffix(':').unwrap_or(stripped);
-            let ch = trimmed
-                .chars()
-                .next()
-                .ok_or_else(|| "empty drive".to_owned())?;
-            if trimmed.len() != 1 || !ch.is_ascii_alphabetic() {
-                return Err(format!("Bad drive: '{part}'"));
-            }
-            Ok(ch.to_ascii_uppercase())
-        })
-        .collect()
-}
-
-/// Parse string to `u16`.
-fn parse_u16(flag: &str, text: &str) -> Result<u16, String> {
-    text.parse().map_err(|err| format!("Bad {flag}: {err}"))
-}
-/// Parse string to `u32`.
-fn parse_u32(flag: &str, text: &str) -> Result<u32, String> {
-    text.parse().map_err(|err| format!("Bad {flag}: {err}"))
-}
-/// Parse string to `u64`.
-fn parse_u64(flag: &str, text: &str) -> Result<u64, String> {
-    text.parse().map_err(|err| format!("Bad {flag}: {err}"))
-}
-/// Parse string to `i32`.
-fn parse_i32(flag: &str, text: &str) -> Result<i32, String> {
-    text.parse().map_err(|err| format!("Bad {flag}: {err}"))
-}
-
-/// Parse boolean value.
-fn parse_bool(flag: &str, text: &str) -> Result<bool, String> {
-    match text {
-        "true" | "1" | "yes" => Ok(true),
-        "false" | "0" | "no" => Ok(false),
-        _ => Err(format!("Bad bool for {flag}: '{text}'")),
-    }
-}
-
-/// Return `true` when `s` is exactly `*.<alnum+underscore>+` — a pure
-/// extension glob that can be safely promoted to an `ExtensionIndex` lookup.
-///
-/// Examples that return `true`:  `*.dll`, `*.rs`, `*.tar_gz`, `*.7z`, `*.1`.
-///
-/// Examples that return `false` (must stay on the trigram path):
-/// - `*.*`      — rest `*` is not alnum (matches ANY extension).
-/// - `*.d??`    — question-mark not alnum.
-/// - `*.[ch]`   — character class not alnum.
-/// - `*.tar.gz` — dot in rest (multi-segment).
-/// - `*.dll*`   — trailing star not alnum.
-/// - `**/*.dll` — leading doublestar not `*.` prefix.
-/// - `*.`       — empty extension.
-///
-/// Mirrored by `uffs_core::search::backend::is_pure_ext_glob` (the
-/// daemon's belt-and-suspenders safety net at dispatch time).  Keep the
-/// two definitions in sync.
-fn is_pure_ext_glob(pattern: &str) -> bool {
-    pattern.strip_prefix("*.").is_some_and(|rest| {
-        !rest.is_empty()
-            && rest
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    })
-}
-
-/// Parse a bare drive-letter prefix from a pattern.
-///
-/// Returns `Some((letter_upper, rest))` when `pattern` matches exactly:
-/// - a single ASCII alphabetic character (the drive letter), followed by
-/// - a literal `:`, followed by
-/// - a non-empty `rest` that does **not** start with `\` or `/` (if it does,
-///   the pattern is path-anchored and must route through the tree walker in
-///   `uffs_core::search::tree`, which already scopes its walk to the drive
-///   root).
-///
-/// Examples that parse:
-/// - `C:*.dll`       → `('C', "*.dll")`
-/// - `D:notepad.exe` → `('D', "notepad.exe")`
-/// - `c:*.log`       → `('C', "*.log")` — letter is uppercased
-///
-/// Examples that return `None`:
-/// - `C:\*.dll`      — rest starts with `\` (path pattern, tree walker).
-/// - `C:/home/*.dll` — rest starts with `/` (path pattern).
-/// - `C:`            — empty rest.
-/// - `C`             — no colon.
-/// - `*.dll`         — no drive prefix.
-/// - `12:34`         — letter is not alphabetic.
-///
-/// Mirrored by `uffs_core::search::backend::parse_bare_drive_prefix`
-/// (the daemon's belt-and-suspenders safety net at dispatch time).
-/// Keep the two definitions in sync.
-fn parse_bare_drive_prefix(pattern: &str) -> Option<(char, &str)> {
-    let bytes = pattern.as_bytes();
-    let letter = *bytes.first()?;
-    if !letter.is_ascii_alphabetic() {
-        return None;
-    }
-    if *bytes.get(1)? != b':' {
-        return None;
-    }
-    // Drive-letter + ':' are both ASCII → the byte offset to `rest` is 2.
-    let rest = pattern.get(2..)?;
-    if rest.is_empty() || rest.starts_with(['\\', '/']) {
-        return None;
-    }
-    Some((letter.to_ascii_uppercase() as char, rest))
-}
 
 // ── Public entry point ─────────────────────────────────────────────────
 
@@ -190,6 +54,7 @@ impl SearchParams {
                 "--parity-compat" => raw.parity_compat = true,
                 "--count" => raw.count = true,
                 "--rows" => raw.rows = true,
+                "--no-output" => raw.no_output = true,
                 "--drive" | "-d" => {
                     let dv = flag_val(&arg, flag, &mut iter)?;
                     raw.drive = drives_csv(&dv)?.into_iter().next();
@@ -250,7 +115,20 @@ impl SearchParams {
                 "--sep" => raw.sep = flag_val(&arg, "--sep", &mut iter)?,
                 "--quotes" => raw.quotes = flag_val(&arg, "--quotes", &mut iter)?,
                 "--header" => {
-                    raw.header = parse_bool("--header", &flag_val(&arg, "--header", &mut iter)?)?;
+                    // Store as `Some(parsed)` so the assembly step
+                    // can distinguish "user explicitly set the flag"
+                    // from "user did not mention --header at all".
+                    // An absent `--header` must leave
+                    // `SearchParams::output_header` as `None` so the
+                    // daemon's `uffs_format::OutputConfig` default
+                    // (`header = true`) takes effect — otherwise the
+                    // CSV blob fast path would ship without a header
+                    // line, silently regressing the CLI's long-
+                    // standing "header by default" contract.
+                    raw.header = Some(parse_bool(
+                        "--header",
+                        &flag_val(&arg, "--header", &mut iter)?,
+                    )?);
                 }
                 "--pos" => raw.pos = flag_val(&arg, "--pos", &mut iter)?,
                 "--neg" => raw.neg = flag_val(&arg, "--neg", &mut iter)?,
@@ -420,6 +298,7 @@ struct RawCliArgs {
     parity_compat: bool,
     count: bool,
     rows: bool,
+    no_output: bool,
     sort: Option<String>,
     ext: Option<String>,
     attr: Option<String>,
@@ -463,7 +342,7 @@ struct RawCliArgs {
     columns: String,
     sep: String,
     quotes: String,
-    header: bool,
+    header: Option<bool>,
     pos: String,
     neg: String,
     query_mode: String,
@@ -482,6 +361,10 @@ impl RawCliArgs {
     /// Convert raw CLI values into a fully-populated [`SearchParams`],
     /// performing all sugar expansion.
     #[expect(clippy::too_many_lines, reason = "sugar expansion for 60+ flags")]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "three composable sugar rewrites (drive-prefix, ext-glob, regex-ext) plus filter normalisation; splitting further would fragment the parse pipeline"
+    )]
     fn into_search_params(mut self) -> Result<SearchParams, String> {
         // ── Pattern sugar: --begins-with / --ends-with / --contains ─
         let raw_pattern = self
@@ -610,6 +493,39 @@ impl RawCliArgs {
             pattern.push('*');
         }
 
+        // ── Regex ext-alternation sugar: `>.*\.(a|b|c)$` → `*` + ext=a,b,c ─
+        //
+        // Mirror of the ext-glob promotion above for the regex shape.
+        // Routes patterns like `>.*\.(jpg|png|heic)$` through the
+        // `ExtensionIndex` fast path instead of a full-scan regex
+        // compile → per-record match.  On a 3.5 M-record C: drive
+        // this drops `>.*\.(jpg|png|heic)$` from ~298 ms to ~95 ms —
+        // matching the equivalent `--ext jpg,png,heic` glob path.
+        //
+        // Guards match the ext-glob rule: not `match_path`, not
+        // `case_sensitive`, and `--ext` not set by the user.  See
+        // `extract_extensions_from_regex` for the acceptance matrix —
+        // it **requires** a trailing `$` anchor so the rewrite is
+        // semantically lossless (without `$` the regex matches
+        // `.jpg` anywhere in the name, which the ext-index cannot
+        // replicate).
+        //
+        // Mirrored at dispatch time by
+        // `uffs_core::search::dispatch::apply_dispatch_safety_nets`
+        // (rewrite #3) as a safety net for direct JSON-RPC `search`
+        // callers that skip this parser.
+        if !match_path
+            && !case_sensitive
+            && self.ext.is_none()
+            && let Some(exts) = extract_extensions_from_regex(&pattern)
+        {
+            // `--ext` takes the normalised CSV form expected by
+            // `SearchFilters::from_params` (see `ext_filter.split(',')`).
+            self.ext = Some(exts.join(","));
+            pattern.clear();
+            pattern.push('*');
+        }
+
         // ── Aggregate sugar ────────────────────────────────────────
         let mut agg_specs = self.agg;
         if self.count && !agg_specs.iter().any(|spec| spec == "count") {
@@ -734,7 +650,7 @@ impl RawCliArgs {
             filter,
             filter_mode,
             predicates: Vec::new(),
-            drives,
+            drives: drives.clone(),
             projection,
             response_mode: Some(SearchResponseMode::Rows),
             // Size
@@ -778,21 +694,50 @@ impl RawCliArgs {
             hide_ads: self.hide_ads,
             // Profiling
             profile: self.profile || self.benchmark,
-            // Aggregation
             aggregations,
-            include_rows: agg_specs.is_empty() || force_rows,
+            // Row precedence (high → low): --rows (on) > agg (off) > --no-output (off) > default
+            // (on).
+            include_rows: force_rows || (agg_specs.is_empty() && !self.no_output),
             agg_cursor: self.agg_cursor,
             agg_page_size: self.agg_page_size,
             // Direct file output
             output_file,
             output_separator: non_empty(self.sep),
             output_quote: non_empty(self.quotes),
-            output_header: Some(self.header),
+            // Forward `None` when the user did not pass `--header` so
+            // the daemon's `uffs_format::OutputConfig` default
+            // (`header = true`) wins.  Passing `Some(false)` here
+            // unconditionally (as we used to) stripped the header
+            // line from every default CSV query — see the comment
+            // on the `"--header" =>` arm above.
+            output_header: self.header,
             output_pos: non_empty(self.pos),
             output_neg: non_empty(self.neg),
             output_columns: non_empty(columns),
             output_parity_compat: self.parity_compat.then_some(true),
             output_tz_offset_hours: self.tz_offset,
+            // Forward the CLI's `--format` value so the daemon can
+            // gate its `try_pack_csv_blob` pre-format fast path on it.
+            // Phase 3: `"csv"` and `"custom"` both take the fast path;
+            // `"json"` / `"table"` stay on the CLI's local formatter.
+            // See `SearchParams::output_format` for the full rationale.
+            //
+            // Always populated (defaulting to `"csv"` when the user did
+            // not pass `--format`) so the daemon's blob fast paths can
+            // treat an absent `output_format` as an *explicit* opt-out,
+            // which is how non-CLI callers (e.g. `uffs-mcp`) signal
+            // that they want structured `InlineRows` back, not a
+            // pre-rendered CSV blob they can't re-parse.  See the gate
+            // in `uffs_daemon::handler::RequestHandler::is_csv_blob_eligible`.
+            output_format: Some(non_empty(self.format.clone()).unwrap_or_else(|| "csv".to_owned())),
+            // Drives to echo into the legacy drive footer when
+            // `--format custom`.  Same letters as `drives` above for
+            // the main CLI path (which populates `drives` from
+            // `--drive` / `--drives`); the thin-client passthrough in
+            // `commands::search::dispatch` handles `--mft-file`
+            // separately and overrides this field directly on the
+            // passthrough `SearchParams`.
+            output_drive_targets: drives,
         };
         params.populate_canonical_fields();
         Ok(params)

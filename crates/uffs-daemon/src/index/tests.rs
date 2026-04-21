@@ -1235,3 +1235,122 @@ fn auto_concurrency_target_floor_prevents_zero_permits() {
     assert_eq!(IndexManager::auto_concurrency_target(2, 64), 2);
     assert_eq!(IndexManager::auto_concurrency_target(1, 200), 2);
 }
+
+// ── Phase 3.1 NUL fast path: include_rows gate ──────────────────────
+
+/// Helper: construct a minimal [`IndexManager`] with the synthetic
+/// test drive loaded.  Uses `tokio::test` so the async `add_drive` can
+/// swap the internal snapshot pointer.
+async fn test_manager_with_drive() -> IndexManager {
+    let (tx, _rx) = crate::events::event_channel();
+    let mgr = IndexManager::new(None, tx);
+    mgr.add_drive(build_test_drive()).await;
+    mgr
+}
+
+/// Regression: when `include_rows = false`, [`IndexManager::search`]
+/// must return a response with empty `rows`, empty `projected_rows`,
+/// and `paths_blob = None` — while still populating `total_count` so
+/// callers can display "N results suppressed" if they want to.
+///
+/// This is the daemon-side half of the Phase 3.1 NUL fast path: the
+/// CLI injects `--no-output` when stdout points to the null device,
+/// which sets this flag, and the daemon skips row materialisation +
+/// `paths_blob` packing + IPC transfer.
+#[tokio::test]
+async fn search_with_include_rows_false_suppresses_rows_but_counts() {
+    use uffs_client::protocol::response::SearchPayload;
+
+    let mgr = test_manager_with_drive().await;
+
+    let params = uffs_client::protocol::SearchParams {
+        pattern: "*".to_owned(),
+        include_rows: false,
+        ..uffs_client::protocol::SearchParams::default()
+    };
+
+    let response = mgr.search(&params).await;
+
+    // `include_rows = false` must leave the payload as `Empty` —
+    // any other variant (InlineRows, blob, shmem) would mean the
+    // daemon allocated and populated rows despite the caller opting
+    // out, which is the exact overhead the flag is meant to skip.
+    assert!(
+        matches!(response.payload, SearchPayload::Empty),
+        "include_rows=false must produce SearchPayload::Empty; got {:?}",
+        response.payload
+    );
+    assert!(
+        response.total_count > 0,
+        "total_count must reflect the matched record count regardless of include_rows; got {}",
+        response.total_count
+    );
+}
+
+/// Control: with `include_rows = true` (the default), the same query
+/// returns non-empty rows.  Pins that the gate in
+/// `IndexManager::search` does not accidentally suppress the
+/// non-suppressed case.
+#[tokio::test]
+async fn search_with_include_rows_true_returns_rows() {
+    use uffs_client::protocol::response::SearchPayload;
+
+    let mgr = test_manager_with_drive().await;
+
+    let params = uffs_client::protocol::SearchParams {
+        pattern: "*".to_owned(),
+        include_rows: true,
+        ..uffs_client::protocol::SearchParams::default()
+    };
+
+    let response = mgr.search(&params).await;
+
+    // The happy path delivers `InlineRows` — the small-manager
+    // fixture never breaches the `SHMEM_THRESHOLD` (100 K rows) or
+    // `PATHS_BLOB_SHMEM_THRESHOLD` (512 KB) boundaries, and the `*`
+    // pattern with default projection is not path-only so no
+    // `InlineBlob` fast-path fires either.
+    let total_count = response.total_count;
+    let SearchPayload::InlineRows(rows) = response.payload else {
+        panic!(
+            "include_rows=true on a small fixture must deliver \
+             InlineRows; got a non-rows payload variant"
+        );
+    };
+    assert!(
+        !rows.is_empty(),
+        "include_rows=true must return matched rows; got 0"
+    );
+    assert_eq!(
+        rows.len() as u64,
+        total_count,
+        "rows.len() must equal total_count when no limit is set and include_rows=true"
+    );
+}
+
+// ── Zero-drive shutdown guard (prevents the Ready-with-no-data zombie) ──
+
+/// Regression pin for the zero-drive guard in
+/// `crate::run_daemon`'s `load_task`.  The guard keys off
+/// `IndexManager::loaded_drive_letters().await.is_empty()` — if that
+/// signal ever started reporting a non-empty vec for a fresh manager
+/// (e.g. by accidentally seeding a placeholder drive), the guard
+/// would silently stop firing and the zombie-daemon bug would
+/// reappear.  This test pins the invariant the guard relies on.
+///
+/// The end-to-end check — that `run_daemon` actually calls
+/// `request_shutdown` when every MFT parse fails — is covered by
+/// `scripts/windows/api-validation.rs` which spins up a real daemon
+/// with an empty `data_dir` and now observes it exit cleanly on
+/// macOS/Linux instead of lingering in `Ready` with zero drives.
+#[tokio::test]
+async fn fresh_index_manager_reports_no_loaded_drives() {
+    let (tx, _rx) = crate::events::event_channel();
+    let mgr = IndexManager::new(None, tx);
+    let letters = mgr.loaded_drive_letters().await;
+    assert!(
+        letters.is_empty(),
+        "a fresh IndexManager must report zero loaded drives — the run_daemon \
+         zero-drive shutdown guard relies on this signal.  got: {letters:?}",
+    );
+}

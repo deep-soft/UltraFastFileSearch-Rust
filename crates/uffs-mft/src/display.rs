@@ -103,7 +103,7 @@ pub(crate) fn clean_path_for_display(path: &Path) -> PathBuf {
 
 /// Truncates a string to a maximum length, adding "..." if truncated.
 #[cfg(windows)]
-pub fn truncate_string(text: &str, max_len: usize) -> String {
+pub(crate) fn truncate_string(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         text.to_owned()
     } else if max_len <= 3 {
@@ -126,7 +126,7 @@ pub fn truncate_string(text: &str, max_len: usize) -> String {
 
 /// Converts a byte to a printable ASCII character or '.' for non-printable.
 #[cfg(windows)]
-pub const fn char_or_dot(byte: u8) -> char {
+pub(crate) const fn char_or_dot(byte: u8) -> char {
     if byte.is_ascii_graphic() || byte == b' ' {
         byte as char
     } else {
@@ -141,7 +141,7 @@ pub const fn char_or_dot(byte: u8) -> char {
 
 /// Format USN reason flags as a short string.
 #[cfg(windows)]
-pub fn format_usn_reason(reason: u32) -> String {
+pub(crate) fn format_usn_reason(reason: u32) -> String {
     use uffs_mft::usn::reason;
 
     let mut parts = Vec::new();
@@ -173,7 +173,7 @@ pub fn format_usn_reason(reason: u32) -> String {
 
 /// Format a number with thousands separators.
 #[cfg(windows)]
-pub fn format_number(n: u64) -> String {
+pub(crate) fn format_number(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::new();
     for (i, c) in s.chars().rev().enumerate() {

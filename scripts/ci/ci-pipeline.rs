@@ -424,6 +424,18 @@ struct Cli {
     /// Use this to start the pipeline from scratch.
     #[arg(long, global = true)]
     fresh: bool,
+
+    /// Skip the nightly toolchain bump even on `--fresh` runs.
+    ///
+    /// By default `ship --fresh` invokes `just toolchain-sync` (bumps
+    /// `rust-toolchain.toml` to today's nightly).  Pass this flag when
+    /// the latest nightly is known-broken and you want to keep the
+    /// currently pinned one — the pipeline will fall back to
+    /// `just toolchain-ensure` (install-the-pinned-one).  Non-fresh
+    /// `ship` runs always use `toolchain-ensure` regardless of this
+    /// flag; the sync only happens on `--fresh`.
+    #[arg(long, global = true)]
+    skip_toolchain_sync: bool,
 }
 
 #[derive(Subcommand)]
@@ -474,6 +486,8 @@ struct PipelineContext {
     log_file: Option<PathBuf>,
     /// Force a fresh run, ignoring any previously completed steps.
     fresh: bool,
+    /// Skip `toolchain-sync` on `--fresh` runs (keep the currently pinned nightly).
+    skip_toolchain_sync: bool,
 }
 
 impl PipelineContext {
@@ -489,6 +503,7 @@ impl PipelineContext {
         parallel_jobs: Option<usize>,
         no_sccache: bool,
         fresh: bool,
+        skip_toolchain_sync: bool,
     ) -> Self {
         let max_jobs = jobs.unwrap_or_else(|| num_cpus::get().min(16));
         let par_jobs = parallel_jobs.unwrap_or_else(|| (max_jobs / 2).max(2));
@@ -535,6 +550,7 @@ impl PipelineContext {
             global_env,
             log_file,
             fresh,
+            skip_toolchain_sync,
         }
     }
 }
@@ -1088,9 +1104,18 @@ async fn run_enhanced_phase1(state: &mut WorkflowState, ctx: &PipelineContext) -
     println!("ℹ️  Running all validation with CURRENT version - version increment happens AFTER validation passes");
     println!("🚀 Using safe parallel optimization: format → compile → parallel(doc tests + linting)");
 
-    // Step 0: Ensure pinned nightly toolchain is installed
+    // Step 0: Toolchain — on `--fresh` runs, bump to today's nightly via
+    // `toolchain-sync` (unless `--skip-toolchain-sync` is set, used when
+    // the latest nightly is known-broken).  On resumable runs we only
+    // ensure the currently pinned one is installed, so repeat ship
+    // invocations don't churn `rust-toolchain.toml`.
+    let (step_label, step_recipe) = if ctx.fresh && !ctx.skip_toolchain_sync {
+        ("Toolchain sync (fresh bump to latest nightly)", "toolchain-sync")
+    } else {
+        ("Toolchain ensure (pinned nightly)", "toolchain-ensure")
+    };
     execute_step_with_tracking(state, STEP_TOOLCHAIN_SYNC, || async {
-        execute_command("Toolchain ensure", "just", &["toolchain-ensure"], ctx).await
+        execute_command(step_label, "just", &[step_recipe], ctx).await
     }).await?;
 
     // Step 1: Update Polars git lock to latest commit on main
@@ -1416,6 +1441,7 @@ async fn main() -> Result<()> {
         cli.parallel_jobs,
         cli.no_sccache || validation_command,
         cli.fresh,
+        cli.skip_toolchain_sync,
     );
 
     if ctx.verbose {

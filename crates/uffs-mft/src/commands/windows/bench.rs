@@ -13,7 +13,7 @@ use crate::display::format_number_commas;
 
 /// Truncates a string to a maximum length, adding "..." if truncated.
 #[cfg(windows)]
-pub async fn cmd_bench(
+pub(crate) async fn cmd_bench(
     drive: char,
     json: bool,
     no_df: bool,
@@ -292,7 +292,7 @@ impl FullBenchmarkReport {
 }
 
 #[cfg(windows)]
-pub async fn cmd_bench_all(
+pub(crate) async fn cmd_bench_all(
     output: Option<PathBuf>,
     no_df: bool,
     runs: u32,

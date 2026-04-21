@@ -29,6 +29,11 @@ async = ["dep:tokio"]
 [dependencies]
 # Internal
 uffs-security.workspace = true
+# Shared CSV formatter — the thin-client path feeds its `SearchRow`s
+# through `uffs_format::write_rows`, giving byte-identical stdout
+# output with the daemon's `--out=file` path.  Zero polars, zero
+# tokio — preserves the thin-client binary-size invariant.
+uffs-format.workspace = true
 
 # Async — optional; only pulled when the `async` feature is enabled.
 # The sync `UffsClientSync` used by the CLI does not depend on tokio.

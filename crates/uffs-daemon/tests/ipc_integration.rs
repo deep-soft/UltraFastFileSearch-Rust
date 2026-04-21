@@ -31,6 +31,7 @@ use tracing_subscriber as _;
 use uffs_client as _;
 use uffs_core as _;
 use uffs_daemon as _;
+use uffs_format as _;
 use uffs_mft as _;
 use uffs_security as _;
 
