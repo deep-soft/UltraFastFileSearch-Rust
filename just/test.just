@@ -63,9 +63,48 @@ lint-tests:
     cargo clippy --workspace --tests --all-features --no-deps -- {{ test_flags }}
 
 # Gate residual lints in CI (deny all warnings).
+# MUST mirror .github/workflows/ci.yml `Run nightly clippy gate` exactly so
+# local runs catch everything CI catches.  Keep the two commands in lockstep.
 lint-ci:
     @printf "\033[0;34m🚨 CI lint gating (FAST-FAIL)...\033[0m\n"
-    cargo clippy --workspace --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features --no-deps -- -D warnings
+
+# Cross-platform CI lint gate via Docker (Linux target).
+# Catches Linux-only clippy drift that the local host (macOS) cannot reproduce
+# — e.g. platform-dependent type aliases like `libc::time_t` where nightly
+# clippy's `cast_possible_wrap` behaviour differs between targets.
+#
+# Uses a named Docker volume for `target/` so repeated runs reuse the Linux
+# artifact cache (first run is cold, subsequent runs are incremental).
+# The workspace nightly pin in `rust-toolchain.toml` is honoured via rustup.
+#
+# Requires: Docker (or compatible runtime such as colima, OrbStack, Podman).
+lint-ci-linux:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf "\033[0;34m🐧 Cross-platform CI lint gate (Linux x86_64 via Docker)...\033[0m\n"
+    if ! command -v docker >/dev/null 2>&1; then
+        printf "\033[0;31m❌ docker not found — install Docker Desktop / colima / OrbStack to use this recipe.\033[0m\n"
+        exit 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        printf "\033[0;31m❌ docker daemon unreachable — start your container runtime first.\033[0m\n"
+        exit 1
+    fi
+    docker volume create uffs-linux-target >/dev/null
+    docker volume create uffs-linux-cargo-registry >/dev/null
+    docker volume create uffs-linux-cargo-git >/dev/null
+    docker run --rm \
+        --platform linux/amd64 \
+        -v "$PWD:/workspace" \
+        -v uffs-linux-target:/workspace/target \
+        -v uffs-linux-cargo-registry:/usr/local/cargo/registry \
+        -v uffs-linux-cargo-git:/usr/local/cargo/git \
+        -w /workspace \
+        -e CARGO_TERM_COLOR=always \
+        rust:latest \
+        bash -lc "rustup show >/dev/null && cargo clippy --workspace --all-targets --all-features --no-deps -- -D warnings"
+    printf "\033[0;32m✅ Linux CI lint gate passed\033[0m\n"
 
 # Full lint sweep: production + tests + CI gate + formatting.
 lint-all:
@@ -75,6 +114,25 @@ lint-all:
     just lint-ci
     just fmt-check
     @printf "\033[0;32m✅ All lint checks passed\033[0m\n"
+
+# Install the tracked git hooks (pre-push lint gate).
+# Idempotent — safe to re-run.  Sets `git config core.hooksPath` to the
+# tracked `scripts/hooks/` directory so the hook survives `git clone` and
+# cannot be accidentally deleted from `.git/hooks/`.
+install-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf "\033[0;34m🪝 Installing tracked git hooks...\033[0m\n"
+    git config core.hooksPath scripts/hooks
+    chmod +x scripts/hooks/pre-push
+    printf "\033[0;32m✅ Git hooks installed — pre-push will run 'just lint-ci' before each push.\033[0m\n"
+    printf "\033[0;36m   Bypass with 'git push --no-verify' when you need to.\033[0m\n"
+
+# Uninstall the tracked git hooks (resets to .git/hooks/ default).
+uninstall-hooks:
+    @printf "\033[0;34m🪝 Uninstalling tracked git hooks...\033[0m\n"
+    git config --unset core.hooksPath || true
+    @printf "\033[0;32m✅ Git hooks uninstalled — pushes are no longer gated.\033[0m\n"
 
 # Validate rustdoc links and warnings (catches private-intra-doc-links etc.).
 rustdoc:

@@ -154,11 +154,14 @@ mod platform_tz {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |dur| dur.as_secs());
 
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "current Unix epoch (u64) fits i64 time_t for centuries"
-        )]
-        let epoch = secs as libc::time_t;
+        // Use `try_from` instead of `as` so we neither trigger nor need to
+        // suppress `clippy::cast_possible_wrap`.  Nightly clippy's handling
+        // of `u64 as libc::time_t` differs between macOS (`time_t = c_long`,
+        // lint fires) and Linux (`time_t = i64`, lint no longer fires),
+        // which made a static `#[expect(cast_possible_wrap)]` platform-
+        // dependently stale.  `try_from` is portable and the saturating
+        // fallback is unreachable for any realistic Unix epoch.
+        let epoch = libc::time_t::try_from(secs).unwrap_or(libc::time_t::MAX);
 
         // Safety: `core::mem::zeroed()` produces a valid `libc::tm` —
         // it is a plain-old-data struct with no invariants.
