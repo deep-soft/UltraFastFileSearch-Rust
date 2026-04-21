@@ -180,13 +180,18 @@ impl Args {
             i += 1;
         }
 
-        let resolved_bin = bin.unwrap_or_else(default_bin_path);
-        if !resolved_bin.exists() {
-            bail!(
-                "uffs binary not found at {}. Build with `cargo build --release` or pass --bin.",
-                resolved_bin.display()
-            );
-        }
+        let resolved_bin = match bin {
+            Some(explicit) => {
+                if !explicit.exists() {
+                    bail!(
+                        "uffs binary not found at {} (from --bin)",
+                        explicit.display()
+                    );
+                }
+                explicit
+            }
+            None => resolve_default_bin()?,
+        };
 
         let mut final_limits = limits.unwrap_or_else(|| DEFAULT_LIMITS.to_vec());
         if let Some(start) = start_limit {
@@ -219,9 +224,57 @@ impl Args {
     }
 }
 
-fn default_bin_path() -> PathBuf {
+/// Locate the `uffs` binary used for the stress matrix.
+///
+/// Probes, in order:
+///
+/// 1. `target/release/uffs[.exe]` relative to the current workspace
+///    (the cargo-built artefact; preferred because it always reflects
+///    the local source tree).
+/// 2. `$HOME/bin/uffs[.exe]` on Unix, `%USERPROFILE%\bin\uffs.exe`
+///    on Windows — the install location used by the project's own
+///    `install` recipe and by `just phase2-ship`.
+/// 3. `PATH` lookup via `which`-style iteration over `PATH` entries.
+///
+/// The candidate list matches [`api-validation::default_binary`] so
+/// both scripts behave identically on a fresh Windows box.  An
+/// explicit `--bin` always wins and bypasses this probe entirely.
+fn resolve_default_bin() -> Result<PathBuf> {
     let name = if cfg!(windows) { "uffs.exe" } else { "uffs" };
-    PathBuf::from("target").join("release").join(name)
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    candidates.push(PathBuf::from("target").join("release").join(name));
+
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    if let Ok(home) = std::env::var(home_var) {
+        candidates.push(PathBuf::from(&home).join("bin").join(name));
+    }
+
+    if let Ok(path_var) = std::env::var("PATH") {
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        for dir in path_var.split(sep).filter(|s| !s.is_empty()) {
+            candidates.push(PathBuf::from(dir).join(name));
+        }
+    }
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            return Ok(candidate.clone());
+        }
+    }
+
+    let preview: Vec<String> = candidates
+        .iter()
+        .take(4)
+        .map(|p| p.display().to_string())
+        .collect();
+    bail!(
+        "uffs binary not found. Searched (first 4 of {}):\n  - {}\n\
+         Pass --bin <path> or build it with `cargo build --release`.",
+        candidates.len(),
+        preview.join("\n  - ")
+    )
 }
 
 fn print_usage() {
