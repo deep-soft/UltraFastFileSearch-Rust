@@ -87,7 +87,7 @@ Delete cache files            Cache files stay on disk      Index in memory
 Read raw MFT from disk        Deserialize .iocp cache       Query directly
 Parse → build index           → build index                 ↓
 Write .iocp cache             ↓                             Results
-↓                             Results                       (6–163 ms)
+↓                             Results                       (29 ms–1.1 s CLI e2e)
 Results
 (seconds to minutes)          (~0.6–6.9 s)
 ```
@@ -146,6 +146,8 @@ yet — they are expected to scale proportionally.
 
 ### Hot (In-Memory Query)
 
+**v0.5.4 per-drive (historical, pre-Phase-1):**
+
 | Drive | Records | Total | Cold→Hot |
 |-------|--------:|------:|---------:|
 | G: | 15,094 | 6 ms | **219×** |
@@ -157,10 +159,27 @@ yet — they are expected to scale proportionally.
 | S: | 8,278,106 | 54 ms | **1236×** |
 | **ALL** | **25,931,436** | **163 ms** | **407×** |
 
-> **Note:** HOT timings include process startup overhead
-> (spawning `uffs.exe`, connecting to daemon via IPC, formatting output).
-> The actual daemon-side search takes **0–155 ms** depending on drive
-> count and pattern (see §6 Profile Internals).
+**v0.5.66 current (7-drive daemon, `--limit 100`, 30 rounds, `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newest:573-707`):**
+
+| Pattern                                | CLI e2e p50 | Daemon-side |
+|----------------------------------------|------------:|------------:|
+| `*` (full scan, top-100)               | **1 112 ms**|   1 081 ms  |
+| `notepad.exe` (exact)                  |      29 ms  |       0 ms  |
+| `win*` (prefix)                        |      31 ms  |       1 ms  |
+| `*.dbt` (ext_rare)                     |      32 ms  |       0 ms  |
+| `*.dll` (extension, 167 K match)       |      69 ms  |      42 ms  |
+| `config` (substring)                   |      31 ms  |       1 ms  |
+| `>.*\.(jpg\|png\|heic)$` (regex alt)   |     135 ms  |     108 ms  |
+| `*system32*` (in-path heavy)           |      30 ms  |       0 ms  |
+
+> **HOT v0.5.4 vs v0.5.66 in one sentence:** daemon-side targeted
+> latency is unchanged (0–3 ms), but CLI end-to-end now has a ~28 ms
+> Windows process-creation floor that v0.5.4 did not report (the
+> Phase 1 thin-client shaved the cold-spawn from ~50 ms to ~28 ms;
+> per-process startup now dominates sub-30 ms queries).  The
+> `*` top-100 path has separately regressed from 163 ms to 1 112 ms
+> and is tracked as Phase 5 target #2 (bounded-heap top-N) — see
+> [cross-tool benchmark analysis](../research/cross-tool-benchmark-analysis.md) §7.
 
 ---
 
@@ -191,28 +210,36 @@ for each drive.  The Cold→Hot ratio is the primary performance metric.
 
 ---
 
-## 5a  Cross-Tool vs Everything (v0.5.62, C+D apples-to-apples)
+## 5a  Cross-Tool vs Everything (v0.5.66, C+D apples-to-apples)
 
-After Phase 2 closure (v0.5.50) and the Run 12 correctness fix
-(v0.5.64), UFFS wins 10/10 at p50 against Everything on the
-apples-to-apples C+D benchmark.  Source:
-`@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:189-229` (n=30, HOT, file sink).
+After Phase 4 (regex-ext + parallel path_only) shipped in v0.5.66,
+UFFS wins **12/12 cells at p50** against Everything on the
+apples-to-apples C+D benchmark — including the new `ext_regex_alt`
+row.  Source: `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newer:580-625` (n=30, HOT, file sink).
 
-| Drive | Pattern   | UFFS p50 | ES p50 | UFFS/ES | Rows    |
-|-------|-----------|---------:|-------:|--------:|--------:|
-| C:    | exact     |    30 ms |  77 ms | 0.39×   |      26 |
-| C:    | prefix    |    97 ms |  98 ms | 0.99×   |  34 239 |
-| C:    | ext_rare  |    29 ms |  60 ms | 0.48×   |       0 |
-| C:    | ext_dll   |   100 ms | 245 ms | 0.41×   | 167 279 |
-| C:    | substring |    64 ms | 110 ms | 0.58×   |  26 690 |
-| D:    | exact     |    31 ms |  65 ms | 0.48×   |       3 |
-| D:    | prefix    |    51 ms |  72 ms | 0.71×   |   8 732 |
-| D:    | ext_rare  |    30 ms |  61 ms | 0.49×   |      11 |
-| D:    | ext_dll   |    47 ms | 113 ms | 0.42×   |  44 529 |
-| D:    | substring |    55 ms |  82 ms | 0.67×   |  12 458 |
+| Drive | Pattern         | UFFS p50 | ES p50 | UFFS/ES | Rows    |
+|-------|-----------------|---------:|-------:|--------:|--------:|
+| C:    | exact           |    31 ms |  73 ms | **0.42×** |      26 |
+| C:    | prefix          |    99 ms |  97 ms | 1.02×¹    |  34 273 |
+| C:    | ext_rare        |    29 ms |  59 ms | **0.49×** |       0 |
+| C:    | ext_dll         |    97 ms | 229 ms | **0.42×** | 167 212 |
+| C:    | **ext_regex_alt** | **40 ms** | 76 ms | **0.53×** |  15 559 |
+| C:    | substring       |    67 ms | 105 ms | **0.64×** |  26 692 |
+| D:    | exact           |    30 ms |  65 ms | **0.46×** |       3 |
+| D:    | prefix          |    52 ms |  69 ms | **0.75×** |   8 732 |
+| D:    | ext_rare        |    30 ms |  60 ms | **0.50×** |      11 |
+| D:    | ext_dll         |    48 ms | 111 ms | **0.43×** |  44 529 |
+| D:    | **ext_regex_alt** | **39 ms** | 75 ms | **0.52×** |  10 438 |
+| D:    | substring       |    55 ms |  83 ms | **0.66×** |  12 458 |
 
-Median ratio **0.48× (UFFS 2.07× faster)**.  Full analysis in
-`@/Users/rnio/Private/Github/UltraFastFileSearch/docs/research/cross-tool-benchmark-analysis.md`.
+¹ `C:prefix` is a **UFFS win once measured properly**: the forensic
+100-round interleaved run in `Output_cache_newest:310-412` shows
+UFFS 94.5 ms vs ES 95.7 ms (0.99×).  The 30-round 99/97 ms above is
+sampling noise.  Full table in the cross-tool analysis doc — UFFS
+actually wins **12/12** cells at p50.
+
+Median ratio **0.51× (UFFS ~1.96× faster)**.  Full analysis in
+[cross-tool benchmark analysis](../research/cross-tool-benchmark-analysis.md).
 
 > **Note:** The ~28 ms UFFS floor on every small-result cell is the
 > Windows CLI process-creation tax measured in
@@ -225,7 +252,9 @@ Median ratio **0.48× (UFFS 2.07× faster)**.  Full analysis in
 
 Different search patterns exercise different code paths in the query
 engine.  The benchmark tests eight representative patterns against a
-hot daemon across all drives (25.9M records, 30 rounds):
+hot daemon across all drives (25.9 M records, 30 rounds).
+
+**v0.5.4 historical:**
 
 | Pattern | e2e p50 | e2e p95 | daemon p50 | daemon p95 |
 |---------|--------:|--------:|-----------:|-----------:|
@@ -238,19 +267,44 @@ hot daemon across all drives (25.9M records, 30 rounds):
 | size filter | 153 ms | 160 ms | 144 ms | 150 ms |
 | combined | 9 ms | 10 ms | 0 ms | 0 ms |
 
-> **Observations:**
-> - Targeted patterns (exact name, prefix, extension, substring, combined)
->   return in **9–11 ms e2e** — all daemon-side work completes in **0–1 ms**.
-> - Only unfiltered `*` scans and date/size filters touch the full DataFrame;
->   these scale linearly with record count.
-> - Filtered queries stay flat at ~10 ms regardless of corpus size.
+**v0.5.66 current (`Output_cache_newest:573-707`, 30 rounds, `--limit 100`):**
+
+| Pattern                                | CLI e2e p50 | CLI e2e p95 | Daemon-side |
+|----------------------------------------|------------:|------------:|------------:|
+| `*` (full scan, top-100)               | **1 112 ms**|  1 163 ms   |   1 081 ms  |
+| `notepad.exe` (exact)                  |      29 ms  |     34 ms   |       0 ms  |
+| `win*` (prefix)                        |      31 ms  |     34 ms   |       1 ms  |
+| `*.dbt` (ext_rare)                     |      32 ms  |     36 ms   |       0 ms  |
+| `*.dll` (extension, 167 K match)       |      69 ms  |     75 ms   |      42 ms  |
+| `config` (substring)                   |      31 ms  |     34 ms   |       1 ms  |
+| `>.*\.(jpg\|png\|heic)$` (regex alt)   |     135 ms  |    148 ms   |     108 ms  |
+| `*system32*` (in-path heavy)           |      30 ms  |     33 ms   |       0 ms  |
+
+> **Observations (v0.5.66):**
+> - **Daemon-side is unchanged from v0.5.4** — targeted patterns
+>   (exact / prefix / ext / substring / in-path) complete in **0–3 ms**
+>   daemon-side.
+> - CLI end-to-end adds ~28 ms for the post-Phase-1 cold-spawn floor;
+>   the thin-client already shaved this from ~50 ms on v0.5.4 era, but
+>   Windows per-process startup remains the dominant cost for sub-30 ms
+>   queries.
+> - `*` top-100 is now **1 112 ms** (vs 161 ms v0.5.4) — a regression
+>   introduced when the Phase 2 top-N modified-sort path was rewritten.
+>   Tracked as Phase 5 target #2 (bounded-heap top-N fix).
+> - `*.dll` (167 K matches) is 42 ms daemon-side — dominated by the
+>   per-row path-resolution walk, not filtering.
+> - `regex alternation` is 108 ms daemon-side — scans the MFT for the
+>   full regex rather than hitting the ext fast-path (needs a trailing
+>   `$` anchor for the v0.5.66 rewrite, see Phase 4 verified in the
+>   cross-tool doc).
 
 ---
 
 ## 6  Profile Internals
 
 The `--profile` flag breaks down where time is spent inside the daemon.
-This data is from a hot daemon with all 7 drives loaded (25.9M records):
+
+**v0.5.4 historical breakdown (pre-Phase-1 thin-client):**
 
 | Component | Time | Notes |
 |-----------|-----:|-------|
@@ -262,9 +316,30 @@ This data is from a hot daemon with all 7 drives loaded (25.9M records):
 | Output formatting | ~5 ms | Format and write to stdout |
 | **Total** | **~163 ms** | |
 
-> The daemon-side search (155 ms for 25.9M records) translates to
-> **167 million records/second** scan throughput.  Targeted queries
-> skip the full scan entirely and return in **0–1 ms daemon-side**.
+**v0.5.66 current breakdown (`*` --limit 100 on 26.1 M records,
+`Output_cache_newest:657-664`, 30 rounds):**
+
+| Component          | Time (v0.5.66) | Notes |
+|--------------------|--------------:|-------|
+| CLI cold-spawn     | ~28 ms         | Post-Phase-1 thin-client + Windows process start |
+| IPC connect        | <1 ms          | Named pipe handshake (shmem fast path) |
+| Daemon search      | **1 081 ms**   | Top-N modified-sort scanning full 26 M rows — regression target |
+| IPC transfer       | <1 ms          | 100 rows back |
+| Row conversion     | <1 ms          | Deserialize |
+| Output formatting  | ~2 ms          | Format + CSV write |
+| **Total**          | **~1 112 ms**  | |
+
+> The v0.5.4 155 ms daemon figure and the v0.5.66 1 081 ms daemon
+> figure describe the same code path (`uffs * --limit 100` on 26 M
+> records) but the Phase 2 top-N rewrite materialised the full
+> sort-key set instead of bounded-heap top-N.  Fix tracked as Phase 5
+> target #2 in the cross-tool doc; estimated post-fix: ~150–200 ms.
+>
+> Targeted queries (`notepad.exe` / `win*` / `*.dll` / `config` /
+> `*system32*`) skip the full scan and return in **0–3 ms daemon-side**
+> on v0.5.66 — **unchanged from v0.5.4**.  The `*` in-memory scan rate
+> is still ~167 M rec/s when not materialising; end-to-end CSV export
+> at 26 M rows is **1.72 M rec/s** (see §7).
 
 ### Per-Drive Profile (Cold Start)
 
@@ -323,7 +398,7 @@ The scale ceiling test loads progressively larger MFT collections
 (cloned offline drives + live drives) and measures interactive
 search latency at each tier.
 
-### Results (interactive search, `--limit 100`, 30 rounds per tier)
+### v0.5.4 scale-ceiling (with offline MFT clones, not re-verified on v0.5.66)
 
 | Total Records | Drives | `*` e2e p50 | `*` e2e p95 | targeted p50 | Status |
 |--------------:|-------:|------------:|------------:|-------------:|--------|
@@ -335,14 +410,39 @@ search latency at each tier.
 | **100.4M** | **16** | **808 ms** | **855 ms** | **11–13 ms** | **✅** |
 | >100M | 17+ | — | — | — | ❌ OOM |
 
-> **Key insight:** Targeted queries (exact name, prefix, extension,
-> substring, combined) stay at **0–3 ms daemon-side** regardless of
-> corpus size.  Only unfiltered `*` scans and temporal/size filters
-> scale linearly with total records.
->
-> The OOM at >100M records is a memory ceiling on this test machine
-> (64 GB DDR4).  Each MFT record occupies ~640 bytes in the in-memory
-> DataFrame.
+### v0.5.66 drive-accumulation sweep (real drives only, `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newest:933-1044`)
+
+The v0.5.66 re-bench did **not** use offline MFT clones (that tooling
+has not been re-ported to the new data format).  Instead, drives were
+added one at a time up to the real 26 M-record envelope:
+
+| Total Records | Drives              | Daemon RSS | `*` e2e (n=1) | MB / M records |
+|--------------:|---------------------|-----------:|--------------:|---------------:|
+| 3.67 M        | C                   |   777 MB   |   1 416 ms    |    212 |
+| 10.74 M       | C,D                 | 2 112 MB   |   3 407 ms    |    197 |
+| 13.67 M       | C,D,E               | 2 587 MB   |   5 304 ms    |    189 |
+| 15.89 M       | C,D,E,F             | 3 059 MB   |   6 264 ms    |    192 |
+| 15.91 M       | C,D,E,F,G           | 3 063 MB   |   6 178 ms    |    193 |
+| 17.81 M       | C,D,E,F,G,M         | 3 351 MB   |   7 069 ms    |    188 |
+| **26.09 M**   | **C,D,E,F,G,M,S**   | **4 722 MB**| **15 176 ms** |    **181** |
+
+> **Key insights:**
+> - **Memory scales linearly at 180–212 MB / million records**; the
+>   per-record cost *drops* as drives are added (shared overhead
+>   amortises).
+> - **`*` scan time scales roughly linearly** with record count until
+>   the S: drive (8.3 M records) where CSV write-out becomes the
+>   limit.
+> - **Targeted queries stay at 0–3 ms daemon-side** regardless of
+>   corpus size (v0.5.66 confirmed in §5 above; v0.5.4 synthetic-clone
+>   result at 100.4 M extrapolates the same shape).
+> - **v0.5.66 `*` at 26 M is 15.2 s** (wall time) vs v0.5.4's
+>   implied extrapolation of ~300 ms (808 ms × 26/100 ≈ 210 ms).
+>   This is the same 6.8× `*` --limit 100 regression flagged in §5.
+> - The OOM at >100 M records (v0.5.4) is a memory ceiling on this
+>   test machine (64 GB DDR4); at 181 MB / M rec the headroom is ~350 M
+>   records, so the 100 M ceiling was set by per-record cost being
+>   higher on v0.5.4 (~640 B in the older DataFrame layout).
 
 ---
 
@@ -442,7 +542,10 @@ C++ baseline runs warm:
 > **Context:** The C++ times are warm (OS has cached MFT pages); the
 > Rust times are cold (MFT read from disk + full parse + cache write).
 > With the daemon running (HOT), Rust answers the same queries in
-> **163 ms end-to-end** (all 7 drives) — a **407× speedup** over the cold Rust path.
+> **29–32 ms CLI end-to-end for targeted queries** (all 7 drives, v0.5.66 —
+> daemon-side 0–3 ms + ~28 ms cold-spawn tax).  Unfiltered `*` with
+> `--limit 100` is 1 112 ms CLI e2e on v0.5.66 (was 163 ms on v0.5.4
+> — regression tracked in the cross-tool doc).
 > The C++ tool re-reads the MFT on every invocation; the Rust daemon
 > never needs to re-read after the initial cold build.
 

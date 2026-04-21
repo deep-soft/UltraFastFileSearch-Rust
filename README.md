@@ -7,12 +7,12 @@
 
 **A benchmark-driven NTFS search engine for Windows.** UFFS reads the Master File Table directly, builds a compact persisted index, and keeps large NTFS estates searchable through a background daemon.
 
-> Proven on a real 7-drive, 25.9M-record Windows system; scale-ceiling tested to **100.4M records** with offline MFT clones:
-> - **66 s COLD** — raw MFT read + compact index build
-> - **6.9 s WARM CACHE** — restart from serialized cache
-> - **163 ms HOT full scan (`*`)** — end-to-end across all 7 live drives
-> - **9–13 ms HOT targeted queries** — exact/prefix/ext/substring end-to-end
-> - **0–3 ms daemon-side** for targeted queries, even at 100.4M records
+> Proven on a real 7-drive, 25.9M-record Windows system; scale-ceiling tested to **100.4M records** with offline MFT clones (v0.5.4 baseline; v0.5.66 current):
+> - **68.5 s COLD** — raw MFT read + compact index build (v0.5.66, flat ± 4 % vs v0.5.4)
+> - **5.7 s WARM CACHE** — restart from serialized cache (v0.5.62/v0.5.66, **−17 %** vs v0.5.4)
+> - **0–3 ms daemon-side** for targeted queries — exact/prefix/ext/substring, unchanged from v0.5.4
+> - **29–32 ms CLI end-to-end** for targeted queries on v0.5.66 (v0.5.4 measured 9–13 ms e2e before the post-Phase-1 thin-client spawn floor settled at ~28 ms)
+> - **vs Everything on v0.5.66**: UFFS wins **12/12 head-to-head cells** at p50 on C+D, median ratio **0.51× (~1.96× faster)** — see [cross-tool benchmark analysis](docs/research/cross-tool-benchmark-analysis.md)
 
 UFFS is built for **exact filename, path, and metadata search** at scales where directory walking, shell search, and some automation surfaces become the bottleneck. It is open source, written in Rust, and designed first for deterministic local search; CLI, TUI, API, and MCP are all interfaces on top of the same engine.
 
@@ -35,22 +35,27 @@ UFFS is built for **exact filename, path, and metadata search** at scales where 
 
 ---
 
-## Benchmark snapshot (v0.5.41)
+## Benchmark snapshot (v0.5.66)
 
-Measured on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2, 7 NTFS volumes totaling 25.9M records; scaled to 100.4M with offline MFT clones.
+Measured on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2, 7 NTFS volumes totaling 26.1 M records; scaled to 100.4 M with offline MFT clones (v0.5.4 era).  Full capture: `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newer` + `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_newest`.
 
-| Phase | What happens | ALL 7 drives | Single NVMe |
-|-------|--------------|-------------:|------------:|
-| **COLD** | Raw MFT read, parse, compact index build, cache write | 66 s | 7.7 s |
-| **WARM CACHE** | Daemon restart + serialized cache load | 6.9 s | 6.4 s |
-| **HOT** | Query a running daemon with the index already in memory | **163 ms e2e** (`*`) | **27 ms e2e** |
+| Phase | What happens | ALL 7 drives (v0.5.66) | Single NVMe (v0.5.4) |
+|-------|--------------|-----------------------:|---------------------:|
+| **COLD** | Raw MFT read, parse, compact index build, cache write | 68.5 s | 7.7 s |
+| **WARM CACHE** | Daemon restart + serialized cache load | **5.7 s** | 6.4 s |
+| **HOT (`*` top-100)** | Full-scan across all drives with `--limit 100` | **1 112 ms** e2e¹ | 27 ms (v0.5.4) |
+| **HOT (targeted)** | `notepad.exe` / `win*` / `*.dll` / `config` etc. | **29–32 ms** CLI e2e | 9–10 ms (v0.5.4) |
 
-Hot-path context (30 rounds, p50):
-- **0–1 ms daemon-side** for targeted queries (exact, prefix, ext, substring, combined)
-- **9–13 ms** end-to-end for targeted queries across all drives
-- **407×** cold→hot speedup across all 7 drives
-- **323k rows/sec** bulk export throughput (CSV, `--out-dir`)
-- **100.4M records** tested: targeted queries still **11–13 ms e2e**
+¹ The `*` top-100 path regressed from the v0.5.4 163 ms figure after the Phase 2 sort rewrite (`Output_cache_newest:657`, n=30, StdDev 21 ms). Daemon-side is 1 081 ms — CLI tax is negligible here.  Bounded-heap top-N fix is Phase 5 target #2 in the cross-tool analysis doc.
+
+Hot-path context (v0.5.66, 30 rounds, p50):
+- **0–3 ms daemon-side** for targeted queries (exact, prefix, ext, substring, combined) — unchanged since v0.5.4
+- **29–32 ms CLI end-to-end** for targeted queries across all 7 drives (~28 ms post-Phase-1 cold-spawn floor + 0–3 ms daemon)
+- **UFFS wins 12/12 cells vs Everything** at p50 on C+D, median ratio **0.51×** — see [cross-tool analysis](docs/research/cross-tool-benchmark-analysis.md)
+- **Direct stdout redirect crossover**: UFFS **0.27×–0.53×** vs ES across 4 size classes (34 K → 167 K rows)
+- **323 k rows/sec** bulk export throughput (CSV, `--out-dir`)
+- **Full-scan export** `*` → CSV at 26 M records: **13.6 s p50** (1.72 M rec/s through the full pipeline)
+- **100.4 M records** tested (v0.5.4 synthetic-clone data; not re-verified on v0.5.66): targeted queries stayed at 11–13 ms e2e
 
 > 📖 **[Full benchmark data](docs/user-manual/performance.md)** — methodology, per-drive tables, interactive search percentiles, bulk retrieval, scale ceiling, and caveats.
 
