@@ -103,6 +103,17 @@ metadata.json
 /docs/refactor/
 
 # =============================================================================
+# Explicit public-docs guard
+# =============================================================================
+# /docs/benchmarks/ is the public-facing competitive-benchmark hub — dated
+# canonical reports, archive, hub README, reproduction scripts. This
+# directory MUST stay tracked. The negation below is defensive: if a future
+# gitignore rule ever matches /docs/benchmarks/* (e.g. someone adds
+# /docs/*/ or a broader pattern), this keeps the hub checked in.
+!/docs/benchmarks/
+!/docs/benchmarks/**
+
+# =============================================================================
 # Local-only spec/prompt files
 # =============================================================================
 /prompts/
