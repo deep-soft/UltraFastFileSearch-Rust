@@ -75,6 +75,13 @@ jobs:
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6
         with:
           files: lcov.info
+          # Explicit slug so the uploader doesn't have to infer the repo
+          # from GitHub Actions env vars (more robust on fork PRs, workflow
+          # renames, etc.).  Recommended by the Codecov setup wizard.
+          slug: githubrobbi/UltraFastFileSearch
+          # Token is optional: the Codecov org currently allows tokenless
+          # uploads.  If `CODECOV_TOKEN` is ever added as a repo secret,
+          # this reference picks it up automatically without a YAML edit.
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
           verbose: true
