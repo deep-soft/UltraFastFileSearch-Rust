@@ -483,31 +483,102 @@ pub fn write_paths_blob(blob: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Stream a raw `paths_blob` shmem file into `writer` with one
-/// `write_all` call, then delete the file.
+/// Maximum bytes per `write_all` call when streaming a shmem blob to
+/// the writer.
+///
+/// ## Why chunk at all
+///
+/// A single `write_all` against an mmap view of a multi-hundred-MB
+/// file is fine on Linux/macOS (the kernel just walks the pages),
+/// but on Windows it hits three concrete caps:
+///
+/// 1. **`WriteFile` on a pipe** (stdout redirected to `|`, `>`, or
+///    captured by a parent like PowerShell ISE) has an undocumented
+///    kernel buffer ceiling where huge single writes fail with
+///    `ERROR_INSUFFICIENT_BUFFER` / `ERROR_NOT_ENOUGH_MEMORY` or
+///    return the non-descriptive OS error 16388 that surfaces as
+///    "FormatMessageW returned 317".
+/// 2. **`WriteConsoleW`** (stdout is an interactive console) takes
+///    UTF-16 and internally caps per-call length.  Rust's stdlib
+///    already chunks this path, but only at ~8 K characters which
+///    means a 100 MB ASCII blob translates to ~12 M WriteConsoleW
+///    calls and can appear to hang.
+/// 3. **The userland mmap view** can be paged out during a long
+///    single `write_all`, and a touched page-fault that races with
+///    the daemon's shmem cleanup manifests as an opaque I/O error.
+///
+/// 1 MiB chunks give us:
+/// - A single `WriteFile` well under any observed pipe ceiling.
+/// - ~100 progress points per 100 MB blob for tracing / pin-pointing
+///   which byte range failed on Windows regression reports.
+/// - Effectively zero overhead on Linux/macOS (the syscall cost of
+///   100 extra `write`s on a 100 MB payload is sub-millisecond).
+const STREAM_CHUNK_BYTES: usize = 1024 * 1024;
+
+/// Stream a raw `paths_blob` shmem file into `writer` with a chunked
+/// `write_all` loop, then delete the file.
 ///
 /// Uses a read-only mmap so the kernel page-cache backs the copy
 /// directly — there is no intermediate `Vec<u8>` allocation and no
 /// UTF-8 re-validation.  The daemon wrote valid UTF-8, and stdout
 /// does not care about encoding (it takes bytes).
 ///
+/// The write loop issues at most [`STREAM_CHUNK_BYTES`] per
+/// `writer.write_all` call.  That bounds each underlying syscall
+/// (`write(2)` on Unix, `WriteFile` / `WriteConsoleW` on Windows) to
+/// a size every tested OS and shell handles cleanly — see the
+/// constant docs for the Windows failure modes that motivate it.
+///
 /// The file is deleted best-effort after the write succeeds.  A
 /// delete failure is swallowed: the blob has already reached the
 /// client, and stale shmem files are reaped by
 /// [`cleanup_stale_shmem_files`] at daemon startup.
 ///
+/// ## Error pinpointing
+///
+/// Every failure path attaches a step-specific [`io::Error`] kind +
+/// message identifying which stage broke (`open`, `metadata`,
+/// `mmap`, `write_all`) together with the blob byte size and, for
+/// write failures, the byte offset reached.  This converts opaque
+/// Windows error codes (e.g. OS 16388) into actionable regression
+/// reports.
+///
 /// # Errors
 ///
-/// Returns `io::Error` on `File::open`, mmap, or `write_all` failure.
-/// Unlike [`read_search_results`], there is no format validation —
-/// the file is raw bytes.
+/// Returns `io::Error` on `File::open`, `metadata`, mmap, or any
+/// intermediate `write_all` failure.  Unlike [`read_search_results`],
+/// there is no format validation — the file is raw bytes.
 #[expect(
     unsafe_code,
     reason = "memmap2::Mmap::map requires unsafe — mmap is a kernel-level operation"
 )]
 pub fn stream_paths_blob_into<W: io::Write>(path: &Path, writer: &mut W) -> io::Result<()> {
-    let file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
+    let path_display = path.display();
+
+    let file = std::fs::File::open(path).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("open shmem blob file {path_display}: {err}"),
+        )
+    })?;
+
+    let len = file
+        .metadata()
+        .map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("stat shmem blob file {path_display}: {err}"),
+            )
+        })?
+        .len();
+
+    tracing::debug!(
+        path = %path_display,
+        len,
+        chunk = STREAM_CHUNK_BYTES,
+        "stream_paths_blob_into: opened shmem blob"
+    );
+
     if len == 0 {
         // Zero-sized mmap is an error on some platforms; short-circuit.
         drop(file);
@@ -518,12 +589,36 @@ pub fn stream_paths_blob_into<W: io::Write>(path: &Path, writer: &mut W) -> io::
     // Safety: the file was written by our daemon via `write_paths_blob`.
     // We only read from the mmap (no writes), and the file size is
     // non-zero (guarded above).
-    let mmap = unsafe { memmap2::Mmap::map(&file)? };
-    // `&mmap` coerces to `&[u8]` via `Mmap: Deref<Target=[u8]>` —
-    // the compiler's auto-deref handles the slicing, so neither
-    // `&mmap[..]` (deref_by_slicing) nor `&*mmap` (explicit_auto_deref)
-    // is needed.
-    writer.write_all(&mmap)?;
+    let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("mmap shmem blob file {path_display} ({len} bytes): {err}"),
+        )
+    })?;
+
+    // `&mmap` coerces to `&[u8]` via `Mmap: Deref<Target=[u8]>`.  We
+    // walk the slice in [`STREAM_CHUNK_BYTES`]-sized strides so each
+    // `write_all` call fits comfortably in every pipe/console write
+    // ceiling we've observed (see the constant's doc-comment).
+    let bytes: &[u8] = &mmap;
+    let mut offset: usize = 0;
+    while offset < bytes.len() {
+        let end = offset.saturating_add(STREAM_CHUNK_BYTES).min(bytes.len());
+        let chunk = &bytes[offset..end];
+        writer.write_all(chunk).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "write shmem blob to stdout (offset {offset}, chunk {} bytes, total {} bytes, \
+                     os_error {:?}): {err}",
+                    chunk.len(),
+                    bytes.len(),
+                    err.raw_os_error(),
+                ),
+            )
+        })?;
+        offset = end;
+    }
 
     drop(mmap);
     drop(file);
