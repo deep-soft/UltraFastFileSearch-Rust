@@ -125,28 +125,38 @@ fn bench_out_path() -> String {
 /// C++ UFFS take their native multi-ext filter form for a fair head-to-head
 /// (identical result sets, different syntax).
 ///
-/// The Everything query uses **OR-alternation glob syntax** (`*.jpg|*.png|*.heic`)
-/// rather than the `ext:jpg;png;heic` filter-list form.  Both are documented at
+/// # Extension triple choice (`wav`, `idrc`, `cmake`)
+///
+/// Chosen empirically on the reference AMD 3900XT workstation to land near
+/// **~149 K combined rows** across the 7-drive corpus — comfortably under
+/// Everything's `~150 K-row` `es.exe -export-csv` IPC buffer ceiling so the
+/// head-to-head run completes cleanly on both tools.  Broader triples that
+/// exceed this cap (e.g. `jpg|png|heic` → 882 K rows on a media drive)
+/// trigger `es.exe` to abort in ~50 ms with a non-zero exit code — visible
+/// in the `is_fast_deterministic_fail` short-circuit below.  UFFS itself
+/// has no such ceiling (882 K rows takes ~325 ms), so larger triples are
+/// still perfectly valid for UFFS-only benches — just not for the cross-tool
+/// comparison.
+///
+/// The Everything query uses **OR-alternation glob syntax** (`*.wav|*.idrc|*.cmake`)
+/// rather than `ext:wav;idrc;cmake`.  Both are documented at
 /// <https://www.voidtools.com/support/everything/searching/>, but the `;`
 /// inside `ext:` is a 1.4.1+ feature and parses as implicit-AND in older
-/// builds — which on a drive with many matching files manifests as an
-/// IPC-overflow crash ("too many results") because the miscasted query
-/// balloons the result set to drive-wide substring matches on `png` / `heic`.
-/// The `|` top-level OR operator has worked cleanly since Everything 1.3
-/// and costs nothing extra to use.
+/// builds.  The `|` top-level OR operator has worked cleanly since
+/// Everything 1.3 and costs nothing extra to use.
 ///
 /// Validation is disabled (empty string) because the result set spans
 /// multiple extensions and the current tuple shape only supports a single
 /// substring check; row-count parity between UFFS and Everything remains
 /// the correctness signal in the summary table.
 const PATTERNS: &[(&str, &str, &str, &str, &str, &str)] = &[
-    ("full_scan",     "*",                        "*",                  "*",           "",             ""),
-    ("exact",         "notepad.exe",              "notepad.exe",        "notepad.exe", "",             "notepad"),
-    ("prefix",        "win*",                     "win*",               "win*",        "",             "win"),
-    ("ext_rare",      "*.dbt",                    "ext:dbt",            "*.dbt",       "dbt",          ".dbt"),
-    ("ext_dll",       "*.dll",                    "ext:dll",            "*.dll",       "dll",          ".dll"),
-    ("ext_regex_alt", ">.*\\.(jpg|png|heic)$",    "*.jpg|*.png|*.heic", "*",           "jpg,png,heic", ""),
-    ("substring",     "config",                   "config",             "config",      "",             "config"),
+    ("full_scan",     "*",                         "*",                    "*",           "",              ""),
+    ("exact",         "notepad.exe",               "notepad.exe",          "notepad.exe", "",              "notepad"),
+    ("prefix",        "win*",                      "win*",                 "win*",        "",              "win"),
+    ("ext_rare",      "*.dbt",                     "ext:dbt",              "*.dbt",       "dbt",           ".dbt"),
+    ("ext_dll",       "*.dll",                     "ext:dll",              "*.dll",       "dll",           ".dll"),
+    ("ext_regex_alt", ">.*\\.(wav|idrc|cmake)$",   "*.wav|*.idrc|*.cmake", "*",           "wav,idrc,cmake", ""),
+    ("substring",     "config",                    "config",               "config",      "",              "config"),
 ];
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -613,6 +623,24 @@ fn check_dnf(mut t: Timing) -> Timing {
     t
 }
 
+/// True when a tool invocation is a **deterministic** fast failure (exited
+/// non-zero in under a second without hitting the DNF timeout).
+///
+/// Used by the HOT-phase loops to short-circuit the remaining rounds when
+/// the first invocation errors in a way that won't improve with retries.
+/// The canonical trigger is `es.exe -export-csv` on drives where the
+/// combined result set overflows Everything's IPC buffer (e.g. on a media
+/// drive, `>.*\.(jpg|png|heic)$` matches ~880 K files → buffer overflow →
+/// `es.exe` exits in ~50 ms with a non-zero code).  Retrying the same query
+/// 29 more times just wastes wall time, so we bail after the first failure.
+///
+/// The `< 1_000` threshold keeps slow-but-recoverable errors (long blocking
+/// timeouts, partial reads) in the 30-round loop where the p95 tail might
+/// still tell us something useful.
+fn is_fast_deterministic_fail(t: &Timing) -> bool {
+    !t.ok && !t.dnf && t.wall_ms < 1_000
+}
+
 // ── Arg parsing ──────────────────────────────────────────────────────────────
 fn parse_args() -> Cfg {
     let args: Vec<String> = env::args().collect();
@@ -857,15 +885,34 @@ fn main() {
                         }
                         eprint!("    {label:<12} ");  flush();
                         let mut runs = Vec::new();
-                        for _ in 0..cfg.rounds {
-                            runs.push(check_dnf(run_es(es, drive, es_pat, validate, sink)));
+                        let mut aborted_early = false;
+                        for round in 0..cfg.rounds {
+                            let t = check_dnf(run_es(es, drive, es_pat, validate, sink));
+                            // If round 0 is a fast deterministic failure (e.g.
+                            // es.exe -export-csv IPC buffer overflow on result
+                            // sets past the ~150 K-row ceiling), the next 29
+                            // rounds will repeat the same exit code in the same
+                            // ~50 ms.  Short-circuit and mark the verdict as
+                            // ERROR; the summary table will still show the
+                            // observed (failing) run with rows=0.
+                            let abort = round == 0 && is_fast_deterministic_fail(&t);
+                            runs.push(t);
+                            if abort {
+                                aborted_early = true;
+                                break;
+                            }
                         }
                         let s = sw(&runs);
                         let first_ok = runs.iter().find(|r| r.ok);
                         let any_bad = runs.iter().any(|r| r.bad_rows > 0);
                         let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
                         let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
-                        eprintln!("p50={:>6}  p95={:>6}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows), bad_str, verdict);
+                        let abort_str = if aborted_early {
+                            format!("  (fast-fail, skipped {} rounds)", cfg.rounds - 1)
+                        } else { String::new() };
+                        eprintln!("p50={:>6}  p95={:>6}  rows={}{}  {}{}",
+                            fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows),
+                            bad_str, verdict, abort_str);
                         all_rows.push(Row { tool: Tool::Everything, phase: Phase::Hot, sink,
                             drive: drive.clone(), pat: label.into(), runs });
                     }
