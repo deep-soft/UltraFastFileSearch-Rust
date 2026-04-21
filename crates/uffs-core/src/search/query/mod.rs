@@ -94,11 +94,13 @@ pub fn collect_global_top_n<D: AsRef<DriveCompactIndex> + Sync>(
         // implements a two-phase tree walk that produces rows in
         // `path_only`-sorted order directly, with early termination
         // at `limit` and a name-ASC tiebreaker matching `sort_rows`.
-        // No post-sort or truncate required.
-        FieldId::PathOnly => (
-            collect_path_only_sorted_top_n(drives, limit, sort_desc, filter_mode, search_filters),
-            None,
-        ),
+        // No post-sort or truncate required.  The ext-index fast
+        // path populates `PhaseTimings` (scan / sort / path_resolve);
+        // the tree-walk branch returns `None` because its single
+        // traversal interleaves every phase.
+        FieldId::PathOnly => {
+            collect_path_only_sorted_top_n(drives, limit, sort_desc, filter_mode, search_filters)
+        }
         // All other fields (Size, Name, Extension, Created, Modified, etc.)
         // use the generic numeric sort/collect path.
         FieldId::Size

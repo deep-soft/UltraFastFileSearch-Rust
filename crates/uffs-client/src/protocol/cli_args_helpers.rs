@@ -111,6 +111,70 @@ pub(super) fn is_pure_ext_glob(pattern: &str) -> bool {
     })
 }
 
+/// Extract a pure trailing-extension alternation from a regex pattern.
+///
+/// Returns `Some(exts)` when `pattern` matches a narrow shape that is
+/// semantically equivalent to `.*\.(e1|e2|...)$` — i.e. the extensions
+/// can be routed through the `ExtensionIndex` fast path without
+/// changing the result set.  Returns `None` for any more complex shape
+/// so the regex stays on the full-scan path.
+///
+/// All accepted forms **require a trailing `$` anchor**: without it,
+/// `\.jpg` matches `.jpg` anywhere in the name (e.g. `foo.jpg.txt`),
+/// which the ext-index cannot replicate — it matches by the
+/// `extension_id` on the trailing dot-segment only.  Requiring `$`
+/// keeps the rewrite semantically lossless.
+///
+/// Examples that parse:
+/// - `>.*\.(jpg|png|heic)$` → `Some(["jpg", "png", "heic"])`
+/// - `>\.rs$`                → `Some(["rs"])`
+/// - `>^\.(a|b)$`            → `Some(["a", "b"])`
+/// - `>(?i).*\.(DLL|EXE)$`   → `Some(["dll", "exe"])` (lower-cased)
+///
+/// Examples that return `None`:
+/// - `>.*\.jpg`              — missing `$`
+/// - `>.*\.(tar\.gz|zip)$`   — dot inside alternation
+/// - `>.*\.(jp.?)$`          — wildcard inside alternation
+/// - `>C:\\Users\\.*\.dll$`  — literal prefix (must keep path-anchor semantics)
+///
+/// Mirrored by `uffs_core::search::dispatch::extract_extensions_from_regex`
+/// (the daemon's belt-and-suspenders safety net at dispatch time).
+/// Keep the two definitions in sync.
+pub(super) fn extract_extensions_from_regex(pattern: &str) -> Option<Vec<String>> {
+    let mut body = pattern.strip_prefix('>')?;
+    if body.is_empty() {
+        return None;
+    }
+
+    // Strip optional inline case-insensitive flag group.
+    body = body.strip_prefix("(?i)").unwrap_or(body);
+    // Strip optional start-of-string anchor.
+    body = body.strip_prefix('^').unwrap_or(body);
+    // Strip optional `.*` prefix (match-any-prefix).
+    body = body.strip_prefix(".*").unwrap_or(body);
+    // Must start with a literal dot `\.`.
+    body = body.strip_prefix("\\.")?;
+    // Required trailing `$` anchor.
+    body = body.strip_suffix('$')?;
+
+    let exts: Vec<String> = body
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+        .map_or_else(
+            || vec![body.to_ascii_lowercase()],
+            |group| group.split('|').map(str::to_ascii_lowercase).collect(),
+        );
+
+    exts.iter()
+        .all(|ext| {
+            !ext.is_empty()
+                && ext
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+        .then_some(exts)
+}
+
 /// Parse a bare drive-letter prefix from a pattern.
 ///
 /// Returns `Some((letter_upper, rest))` when `pattern` matches exactly:

@@ -1584,6 +1584,132 @@ fn from_cli_args_drive_prefix_respects_explicit_drive_flag() {
     assert_eq!(params.ext.as_deref(), Some("dll"));
 }
 
+// ── Regex alternation → ext-filter promotion regression tests ───────
+//
+// These tests pin the parse-time rewrite that promotes pure trailing
+// extension alternations in regex patterns (`>.*\.(a|b|c)$`) to the
+// match-all + `--ext a,b,c` shape.  Paired with the dispatch-time
+// safety net in
+// `uffs_core::search::dispatch::apply_dispatch_safety_nets` rewrite #3.
+
+/// Baseline: `>.*\.(jpg|png|heic)$` is promoted to `pattern="*"` +
+/// `ext=Some("jpg,png,heic")` so the daemon routes through
+/// `numeric_top_n::ext_fast_path` instead of compiling a regex and
+/// scanning every record.
+#[test]
+fn from_cli_args_regex_alternation_promoted() {
+    let args: Vec<String> = vec![">.*\\.(jpg|png|heic)$".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.pattern, "*",
+        "regex alternation must be rewritten to match-all for ext_fast_path"
+    );
+    assert_eq!(
+        params.ext.as_deref(),
+        Some("jpg,png,heic"),
+        "extensions must be extracted and joined in CSV form"
+    );
+}
+
+/// Single-extension anchored regex `>.*\.rs$` is equivalent to `*.rs`
+/// — both must land on the same `(pattern=*, ext=rs)` shape.
+#[test]
+fn from_cli_args_regex_single_ext_promoted() {
+    let args: Vec<String> = vec![">.*\\.rs$".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.pattern, "*");
+    assert_eq!(params.ext.as_deref(), Some("rs"));
+}
+
+/// Parity: `>.*\.(jpg|png)$` and `* --ext jpg,png` produce identical
+/// `SearchParams` after parsing.  Guarantees the rewrite is lossless.
+#[test]
+fn from_cli_args_regex_alternation_equivalent_to_explicit_ext_flag() {
+    let regex_args: Vec<String> = vec![">.*\\.(jpg|png)$".into()];
+    let regex = SearchParams::from_cli_args(&regex_args).expect("parse");
+
+    let explicit_args: Vec<String> = vec!["*".into(), "--ext".into(), "jpg,png".into()];
+    let explicit = SearchParams::from_cli_args(&explicit_args).expect("parse");
+
+    assert_eq!(regex.pattern, explicit.pattern, "pattern parity");
+    assert_eq!(regex.ext, explicit.ext, "ext parity");
+    assert_eq!(
+        regex.case_sensitive, explicit.case_sensitive,
+        "case_sensitive parity"
+    );
+    assert_eq!(regex.match_path, explicit.match_path, "match_path parity");
+}
+
+/// Uppercase extensions in the regex must be lowercased before going
+/// into the CSV filter — the `ExtensionIndex` is case-folded.
+#[test]
+fn from_cli_args_regex_alternation_lowercases_extensions() {
+    let args: Vec<String> = vec![">.*\\.(JPG|PNG)$".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.pattern, "*");
+    assert_eq!(
+        params.ext.as_deref(),
+        Some("jpg,png"),
+        "uppercase regex extensions must be lowercased in the CSV"
+    );
+}
+
+/// Missing `$` anchor: `>.*\.jpg` matches `.jpg` **anywhere** in the
+/// name, which the ext-index cannot replicate.  Must stay on the
+/// regex scan path.
+#[test]
+fn from_cli_args_regex_without_dollar_not_promoted() {
+    let args: Vec<String> = vec![">.*\\.jpg".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(
+        params.pattern, ">.*\\.jpg",
+        "regex without $ anchor must stay on the regex path"
+    );
+    assert!(params.ext.is_none());
+}
+
+/// Multi-segment extension via escaped dot: `>.*\.(tar\.gz|zip)$` has
+/// a literal dot inside the alternation — reject the promotion because
+/// the ext-index only matches the trailing segment.
+#[test]
+fn from_cli_args_regex_multi_segment_alternation_not_promoted() {
+    let args: Vec<String> = vec![">.*\\.(tar\\.gz|zip)$".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.pattern, ">.*\\.(tar\\.gz|zip)$");
+    assert!(params.ext.is_none());
+}
+
+/// Wildcard inside alternation: `>.*\.(jp.?|png)$` has `.?` inside
+/// the alternation — reject the promotion.
+#[test]
+fn from_cli_args_regex_alternation_with_wildcard_not_promoted() {
+    let args: Vec<String> = vec![">.*\\.(jp.?|png)$".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.pattern, ">.*\\.(jp.?|png)$");
+    assert!(params.ext.is_none());
+}
+
+/// Case-sensitive mode (`--case >.*\.(JPG|PNG)$`) must NOT promote —
+/// the `ExtensionIndex` is case-folded and would match `.jpg` too.
+#[test]
+fn from_cli_args_regex_case_sensitive_not_promoted() {
+    let args: Vec<String> = vec![">.*\\.(JPG|PNG)$".into(), "--case".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.pattern, ">.*\\.(JPG|PNG)$");
+    assert!(params.ext.is_none());
+    assert!(params.case_sensitive);
+}
+
+/// Explicit `--ext` must not be clobbered.  The regex alternation
+/// is left intact so the user's explicit filter controls the result.
+#[test]
+fn from_cli_args_regex_explicit_ext_preserved() {
+    let args: Vec<String> = vec![">.*\\.(jpg|png)$".into(), "--ext".into(), "exe".into()];
+    let params = SearchParams::from_cli_args(&args).expect("parse");
+    assert_eq!(params.ext.as_deref(), Some("exe"));
+    assert_eq!(params.pattern, ">.*\\.(jpg|png)$");
+}
+
 // ── --no-output precedence tests (Phase 3.1 NUL fast path) ─────────
 //
 // The thin CLI injects `--no-output` when it detects that stdout is

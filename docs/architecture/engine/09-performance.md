@@ -10,12 +10,34 @@ This document describes the performance characteristics of UFFS, the optimizatio
 
 ---
 
-## Benchmark Results (v0.5.4)
+## Benchmark Results (current: v0.5.62 / v0.5.64)
 
-### Three-Phase Results — 7 Drives, 25.9M Records
+Headline cross-tool result on v0.5.62 (from
+`@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:189-229`, n=30, HOT,
+apples-to-apples C+D scope):
+
+**UFFS beats Everything 10/10 at p50**, median ratio **0.48×
+(UFFS 2.07× faster)**.  Full table and analysis in
+`@/Users/rnio/Private/Github/UltraFastFileSearch/docs/research/cross-tool-benchmark-analysis.md` §Current State.
+
+7-drive aggregate numbers on v0.5.62 (from
+`@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:113-479`):
+
+| Workload                                         | Value       |
+|--------------------------------------------------|------------:|
+| COLD start (cache deleted, 25.9 M records)       | 68.5 s      |
+| WARM cache restart (25.9 M records)              | **5.7 s**   |
+| Full-scan export `*` → CSV file                  | 13.5 s      |
+| Aggregation throughput (`by_extension` etc.)     | ~180 ms     |
+| Daemon RSS                                       | 4.99 GB     |
+| Index heap                                       | 4.66 GB     |
+
+### Three-Phase Results — v0.5.4 per-drive table (historical)
 
 Tested on AMD Ryzen 9 3900XT (12c/24t), 64 GB DDR4.  Pattern: `*`,
-limit: 100, per-drive profile.
+limit: 100, per-drive profile.  Per-drive re-bench on v0.5.62 not
+yet performed; aggregate numbers above are the latest production
+measurements.
 
 | Drive | Type | Records | COLD | WARM | HOT | Cold→Hot |
 |-------|------|--------:|-----:|-----:|----:|---------:|
@@ -26,7 +48,8 @@ limit: 100, per-drive profile.
 | G: | USB stick | 15K | 1.3 s | 572 ms | 6 ms | **219×** |
 | M: | SATA HDD | 1.9M | 26.4 s | 1.4 s | 18 ms | **1469×** |
 | S: | SATA HDD | 8.3M | 67 s | 4.8 s | 54 ms | **1236×** |
-| **ALL** | **Mixed** | **25.9M** | **66 s** | **6.9 s** | **163 ms** | **407×** |
+| **ALL (v0.5.4)** | **Mixed** | **25.9M** | **66 s** | **6.9 s** | **163 ms** | **407×** |
+| **ALL (v0.5.62)** | **Mixed** | **25.9M** | **68.5 s** | **5.7 s** | *see below* | — |
 
 ### Interactive Search Percentile Latency (HOT, 25.9M records, 30 rounds)
 

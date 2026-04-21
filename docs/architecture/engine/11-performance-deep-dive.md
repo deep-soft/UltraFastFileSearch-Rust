@@ -15,15 +15,27 @@ UFFS operates in three performance tiers, each with dramatically different laten
 
 | Level | What Happens | Typical Latency (25.9M records) |
 |-------|-------------|-------------------------------|
-| **COLD** | No daemon, no cache. Raw MFT read from disk, full parse, compact index build, trigram index build, path resolution tree. | 66 s (7 drives parallel) |
-| **WARM CACHE** | No daemon, but serialized compact index exists on disk. Daemon starts and deserializes cached index — no MFT read. | 6.9 s |
-| **HOT** | Daemon running with in-memory index. Pure search — no I/O, no startup. | **163 ms** e2e (`*`), **9–10 ms** e2e (targeted) |
+| **COLD** | No daemon, no cache. Raw MFT read from disk, full parse, compact index build, trigram index build, path resolution tree. | 66 s (v0.5.4) → 68.5 s (v0.5.62) — 7 drives parallel |
+| **WARM CACHE** | No daemon, but serialized compact index exists on disk. Daemon starts and deserializes cached index — no MFT read. | 6.9 s (v0.5.4) → **5.7 s (v0.5.62, −17 %)** |
+| **HOT** | Daemon running with in-memory index. Pure search — no I/O, no startup. | **163 ms** e2e (`*` top-N, v0.5.4); on v0.5.62 targeted queries vs Everything range **29–100 ms** (C+D bench) with **0–3 ms daemon-side** |
 
 The HOT path delivers **407× speedup** over COLD.  Targeted queries (exact name, prefix, extension, substring, combined) return in **9–13 ms** end-to-end with **0–3 ms daemon-side** — even at **100M records**.
 
 ---
 
-## Real-World Benchmarks (v0.5.4)
+## Real-World Benchmarks (v0.5.62 / v0.5.64)
+
+> **Latest numbers:** cross-tool head-to-head vs Everything, 7-drive full
+> scan at 13.5 s (25.9 M records), aggregations at ~180 ms, 5.7 s WARM
+> restart, 4.99 GB settled RSS.  Full current-state table in
+> `@/Users/rnio/Private/Github/UltraFastFileSearch/docs/research/cross-tool-benchmark-analysis.md` §Current State.
+>
+> The v0.5.4 per-drive tables below are **retained for historical
+> context** — they were captured before Phase 1, Phase 2, and Phase 3
+> shipped.  The HOT interactive-search shape (`*` with `--limit 100`,
+> 8 patterns) has not been re-run on v0.5.62 yet; that re-bench is
+> listed in the "Benchmarks still worth running" table of the cross-tool
+> analysis doc.
 
 ### Test Environment
 
@@ -31,6 +43,7 @@ The HOT path delivers **407× speedup** over COLD.  Targeted queries (exact name
 **Drives**: 7 NTFS volumes (2× NVMe Samsung 990 PRO, 2× SATA Samsung 980 PRO, 2× SATA WD 8 TB HDD, 1× USB stick)
 **Total records**: 25,931,436 across all drives (live), scaled up to 100.4M with offline MFT clones
 **Binary**: v0.5.4 release build (LTO=fat, codegen-units=1, cross-compiled from macOS via `cargo xwin`)
+**Latest bench binary**: v0.5.62 (774 KB, Phase 2+3 closed, Run 12 shipped in v0.5.64)
 **Protocol**: Per-drive profile (COLD → WARM → HOT) + interactive search (30 rounds, 8 patterns) + bulk retrieval
 
 ### Per-Drive 3-Phase Results (`*` pattern)

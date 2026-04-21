@@ -54,6 +54,89 @@ fn is_pure_ext_glob(pattern: &str) -> bool {
     })
 }
 
+/// Extract a pure trailing-extension alternation from a regex pattern.
+///
+/// Returns `Some(exts)` when `pattern` matches a narrow shape that is
+/// semantically equivalent to `.*\.(e1|e2|...)$` — i.e. the extensions
+/// can be routed through the `ExtensionIndex` fast path without
+/// changing the result set.  Returns `None` for any more complex shape
+/// so the regex stays on the full-scan path.
+///
+/// # Accepted shapes
+///
+/// All forms **require a trailing `$` anchor**: without it, `\.jpg` (for
+/// example) matches `.jpg` anywhere in the name, which the ext-index
+/// cannot replicate (it matches by the `extension_id` on the trailing
+/// dot-segment only).  Requiring `$` keeps the rewrite semantically
+/// lossless.
+///
+/// - `>\.(a|b|c)$`                  — alternation, anchored
+/// - `>.*\.(a|b|c)$`                — optional `.*` prefix
+/// - `>^\.(a|b|c)$`                 — redundant `^` prefix accepted
+/// - `>^.*\.(a|b|c)$`               — both anchors
+/// - `>(?i).*\.(a|b|c)$`            — optional `(?i)` case-insensitive flag
+/// - `>.*\.a$`                      — single extension, no alternation
+/// - `>\.a$`                        — single extension, no `.*`
+///
+/// Each extension must match `is_pure_ext_glob`'s acceptance: non-empty,
+/// pure ASCII alphanumeric + underscore.  The returned vec is
+/// lower-cased so callers can push straight into
+/// `SearchFilters::extensions`.
+///
+/// # Rejected shapes (stay on the regex full-scan path)
+///
+/// - `>.*\.jpg`                     — missing `$` anchor (would widen match)
+/// - `>.*\.(tar\.gz|zip)$`          — dot inside alternation (multi-segment)
+/// - `>.*\.(jp.?)$`                 — wildcard inside alternation
+/// - `>.*\.[ch]$`                   — character class not alnum
+/// - `>C:\\Users\\.*\.(a|b)$`       — literal prefix other than `.*` / `^` /
+///   `(?i)` (route through regex scan so the path-anchor constraint is
+///   honoured)
+///
+/// Mirror of
+/// `uffs_client::protocol::cli_args_helpers::extract_extensions_from_regex`
+/// — keep the two in sync.
+fn extract_extensions_from_regex(pattern: &str) -> Option<Vec<String>> {
+    // Pattern must start with the `>` regex sentinel.  Downstream
+    // callers pass the raw pattern including the `>`.
+    let mut body = pattern.strip_prefix('>')?;
+    if body.is_empty() {
+        return None;
+    }
+
+    // Strip optional inline case-insensitive flag group.
+    body = body.strip_prefix("(?i)").unwrap_or(body);
+    // Strip optional start-of-string anchor.
+    body = body.strip_prefix('^').unwrap_or(body);
+    // Strip optional `.*` prefix (match-any-prefix).
+    body = body.strip_prefix(".*").unwrap_or(body);
+    // Must now start with a literal dot `\.`.
+    body = body.strip_prefix("\\.")?;
+    // **Required** trailing `$` — see doc for semantic rationale.
+    body = body.strip_suffix('$')?;
+
+    // `body` is now either `"ext"` or `"(e1|e2|...)"`.
+    let exts: Vec<String> = body
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+        .map_or_else(
+            || vec![body.to_ascii_lowercase()],
+            |group| group.split('|').map(str::to_ascii_lowercase).collect(),
+        );
+
+    // Each extension must be pure alnum + underscore, matching
+    // `is_pure_ext_glob`'s acceptance.  Reject any pattern with regex
+    // metacharacters, nested groups, or multi-segment extensions.
+    exts.iter()
+        .all(|ext| {
+            !ext.is_empty()
+                && ext
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+        .then_some(exts)
+}
+
 /// Parse a bare drive-letter prefix from a pattern.
 ///
 /// Returns `Some((letter_upper, rest))` when the pattern matches
@@ -91,7 +174,7 @@ fn parse_bare_drive_prefix(pattern: &str) -> Option<(char, &str)> {
 /// Mirrors the parse-time rewrites in
 /// `uffs_client::protocol::cli_args::into_search_params`.  Direct
 /// JSON-RPC `search` callers or library users that build `SearchParams`
-/// manually skip the parse-time layer; this function catches the two
+/// manually skip the parse-time layer; this function catches the three
 /// rewrites at dispatch time so both entry points land on the same hot
 /// paths.
 ///
@@ -109,11 +192,25 @@ fn parse_bare_drive_prefix(pattern: &str) -> Option<(char, &str)> {
 ///    `search_filters.extensions` is empty.  Uses `is_pure_ext_glob` to reject
 ///    multi-segment / wildcard / path-anchored shapes.
 ///
-/// The two rewrites **compose**: `C:*.dll` is first stripped to
+/// 3. `>.*\.(e1|e2|...)$` → `pattern = "*"`, `extensions += [e1, e2, ...]`.
+///    Only fires when not `match_path`, not `case_sensitive`, and
+///    `search_filters.extensions` is empty.  Uses
+///    `extract_extensions_from_regex` which **requires** a trailing `$` anchor
+///    so the rewrite is semantically lossless.  Saves ~200 ms on
+///    `>.*\.(jpg|png|heic)$` over C: (3.5 M records) — 298 ms full-scan regex
+///    drops to ~95 ms ext-index lookup, matching the equivalent `--ext
+///    jpg,png,heic` glob path.
+///
+/// Rewrites #1 and #2 **compose**: `C:*.dll` is first stripped to
 /// `*.dll` by rewrite #1, and rewrite #2 then promotes it to
 /// `pattern="*"` + `extensions=["dll"]`, so the caller ends up with
 /// `drive=C` + `ext=dll` + match-all — exactly the shape the
-/// `numeric_top_n::ext_fast_path` expects.
+/// `numeric_top_n::ext_fast_path` expects.  Rewrite #3 does not
+/// compose with rewrite #1 because regex patterns start with `>` (not
+/// a drive letter), so `parse_bare_drive_prefix` rejects them; path
+/// anchors inside the regex (`>C:\\Users\\.*\.dll$`) stay on the regex
+/// scan path by design — the ext-index would widen the match to all
+/// `.dll` files drive-wide.
 pub(super) fn apply_dispatch_safety_nets(
     pattern: &mut &str,
     match_path: bool,
@@ -151,6 +248,26 @@ pub(super) fn apply_dispatch_safety_nets(
             "promoted *.<ext> to ext filter (dispatch-time safety net)"
         );
         search_filters.extensions.push(ext_lower);
+        *pattern = "*";
+    }
+
+    // Rewrite #3: regex alternation → ext-index.  Independent of
+    // rewrite #2 because that one already returned if it fired
+    // (overwriting `pattern` to `"*"` which fails the `>` prefix
+    // check below).  See `extract_extensions_from_regex` docs for the
+    // acceptance matrix and the Phase 4 roadmap in
+    // `docs/research/cross-tool-benchmark-analysis.md` §7.
+    if !match_path
+        && !case_sensitive
+        && search_filters.extensions.is_empty()
+        && let Some(exts) = extract_extensions_from_regex(pattern)
+    {
+        tracing::debug!(
+            original_pattern = *pattern,
+            promoted_exts = ?exts,
+            "promoted regex alternation to ext filter (dispatch-time safety net)"
+        );
+        search_filters.extensions.extend(exts);
         *pattern = "*";
     }
 }
@@ -292,5 +409,197 @@ pub(super) const fn pick_mode_label(
         "tree"
     } else {
         "trigram"
+    }
+}
+
+// ─── Tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::filters::SearchFilters;
+
+    // ── extract_extensions_from_regex ──────────────────────────────
+
+    #[test]
+    fn regex_alternation_anchored() {
+        assert_eq!(
+            extract_extensions_from_regex(">.*\\.(jpg|png|heic)$"),
+            Some(vec!["jpg".into(), "png".into(), "heic".into()]),
+        );
+    }
+
+    #[test]
+    fn regex_single_ext_anchored() {
+        assert_eq!(
+            extract_extensions_from_regex(">.*\\.dll$"),
+            Some(vec!["dll".into()]),
+        );
+    }
+
+    #[test]
+    fn regex_alternation_no_star_prefix() {
+        assert_eq!(
+            extract_extensions_from_regex(">\\.(a|b|c)$"),
+            Some(vec!["a".into(), "b".into(), "c".into()]),
+        );
+    }
+
+    #[test]
+    fn regex_start_anchor_accepted() {
+        assert_eq!(
+            extract_extensions_from_regex(">^.*\\.(rs)$"),
+            Some(vec!["rs".into()]),
+        );
+        assert_eq!(
+            extract_extensions_from_regex(">^\\.rs$"),
+            Some(vec!["rs".into()]),
+        );
+    }
+
+    #[test]
+    fn regex_case_insensitive_flag_accepted() {
+        assert_eq!(
+            extract_extensions_from_regex(">(?i).*\\.(JPG|PNG)$"),
+            Some(vec!["jpg".into(), "png".into()]),
+        );
+    }
+
+    #[test]
+    fn regex_uppercase_extensions_lowercased() {
+        assert_eq!(
+            extract_extensions_from_regex(">\\.(Dll|EXE)$"),
+            Some(vec!["dll".into(), "exe".into()]),
+        );
+    }
+
+    #[test]
+    fn regex_missing_dollar_anchor_rejected() {
+        // Without `$` the regex matches `.jpg` anywhere in the name
+        // (e.g. `foo.jpg.txt`), which the ext-index cannot replicate.
+        assert_eq!(extract_extensions_from_regex(">.*\\.jpg"), None);
+        assert_eq!(extract_extensions_from_regex(">.*\\.(jpg|png)"), None);
+        assert_eq!(extract_extensions_from_regex(">\\.rs"), None);
+    }
+
+    #[test]
+    fn regex_multisegment_extension_rejected() {
+        // `tar.gz` contains a literal dot inside the alternation — this
+        // is NOT a single NTFS extension (the ext-index would only
+        // match `gz`), so the full regex path stays.
+        assert_eq!(extract_extensions_from_regex(">.*\\.(tar\\.gz|zip)$"), None,);
+    }
+
+    #[test]
+    fn regex_wildcard_inside_alternation_rejected() {
+        assert_eq!(extract_extensions_from_regex(">.*\\.(jp.?)$"), None);
+        assert_eq!(extract_extensions_from_regex(">.*\\.(j.g|png)$"), None);
+    }
+
+    #[test]
+    fn regex_character_class_rejected() {
+        assert_eq!(extract_extensions_from_regex(">.*\\.[ch]$"), None);
+    }
+
+    #[test]
+    fn regex_literal_prefix_rejected() {
+        // A path-anchored regex like `>C:\Users\...\.dll$` must stay on
+        // the regex scan path so the path-anchor constraint is honoured.
+        // The ext-index rewrite would widen to all `.dll` files.
+        assert_eq!(
+            extract_extensions_from_regex(">C:\\\\Users\\\\.*\\.(jpg|png)$"),
+            None,
+        );
+        assert_eq!(extract_extensions_from_regex(">foo.*\\.dll$"), None);
+    }
+
+    #[test]
+    fn regex_empty_body_rejected() {
+        assert_eq!(extract_extensions_from_regex(">"), None);
+    }
+
+    #[test]
+    fn regex_without_leading_sentinel_rejected() {
+        // No `>` prefix — this is not a regex pattern in UFFS parlance.
+        assert_eq!(extract_extensions_from_regex(".*\\.jpg$"), None);
+        assert_eq!(extract_extensions_from_regex("\\.dll$"), None);
+    }
+
+    #[test]
+    fn regex_empty_extension_in_alternation_rejected() {
+        // Empty extension via trailing `|` or `||` means "any file
+        // with a trailing dot" — reject to avoid surprising matches.
+        assert_eq!(extract_extensions_from_regex(">.*\\.(jpg|)$"), None);
+        assert_eq!(extract_extensions_from_regex(">.*\\.(||)$"), None);
+    }
+
+    // ── apply_dispatch_safety_nets (regex branch) ──────────────────
+
+    fn run_safety_nets<'a>(pattern: &'a str, filters: &mut SearchFilters) -> (&'a str, Vec<char>) {
+        let mut pat: &str = pattern;
+        let mut drive_buf: Vec<char> = Vec::new();
+        apply_dispatch_safety_nets(
+            &mut pat,
+            false, // match_path
+            false, // case_sensitive
+            true,  // drives_filter_empty
+            filters,
+            &mut drive_buf,
+        );
+        (pat, drive_buf)
+    }
+
+    #[test]
+    fn safety_net_promotes_regex_alternation() {
+        let mut filters = SearchFilters::default();
+        let (pat, _) = run_safety_nets(">.*\\.(jpg|png|heic)$", &mut filters);
+        assert_eq!(pat, "*", "pattern must be rewritten to match-all");
+        assert_eq!(
+            filters.extensions,
+            vec!["jpg".to_owned(), "png".to_owned(), "heic".to_owned(),],
+            "extensions must be extracted from the alternation"
+        );
+    }
+
+    #[test]
+    fn safety_net_promotes_regex_single_ext() {
+        let mut filters = SearchFilters::default();
+        let (pat, _) = run_safety_nets(">.*\\.rs$", &mut filters);
+        assert_eq!(pat, "*");
+        assert_eq!(filters.extensions, vec!["rs".to_owned()]);
+    }
+
+    #[test]
+    fn safety_net_leaves_regex_without_dollar_alone() {
+        let mut filters = SearchFilters::default();
+        let (pat, _) = run_safety_nets(">.*\\.jpg", &mut filters);
+        assert_eq!(pat, ">.*\\.jpg", "no $ anchor — pattern must stay");
+        assert!(filters.extensions.is_empty());
+    }
+
+    #[test]
+    fn safety_net_leaves_regex_with_wildcard_alone() {
+        let mut filters = SearchFilters::default();
+        let (pat, _) = run_safety_nets(">.*\\.(jp.?|png)$", &mut filters);
+        assert_eq!(pat, ">.*\\.(jp.?|png)$");
+        assert!(filters.extensions.is_empty());
+    }
+
+    #[test]
+    fn safety_net_does_not_clobber_explicit_extensions() {
+        let mut filters = SearchFilters {
+            extensions: vec!["exe".to_owned()],
+            ..Default::default()
+        };
+        let (pat, _) = run_safety_nets(">.*\\.dll$", &mut filters);
+        assert_eq!(
+            pat, ">.*\\.dll$",
+            "existing --ext filter must block the rewrite"
+        );
+        assert_eq!(
+            filters.extensions,
+            vec!["exe".to_owned()],
+            "explicit --ext filter must stay untouched"
+        );
     }
 }

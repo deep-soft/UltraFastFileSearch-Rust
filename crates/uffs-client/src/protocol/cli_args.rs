@@ -10,8 +10,8 @@
 //! happens here.
 
 use super::cli_args_helpers::{
-    drives_csv, flag_val, is_pure_ext_glob, non_empty, parse_bare_drive_prefix, parse_bool,
-    parse_i32, parse_size, parse_u16, parse_u32, parse_u64,
+    drives_csv, extract_extensions_from_regex, flag_val, is_pure_ext_glob, non_empty,
+    parse_bare_drive_prefix, parse_bool, parse_i32, parse_size, parse_u16, parse_u32, parse_u64,
 };
 use super::{SearchFilterMode, SearchParams, SearchResponseMode};
 
@@ -361,6 +361,10 @@ impl RawCliArgs {
     /// Convert raw CLI values into a fully-populated [`SearchParams`],
     /// performing all sugar expansion.
     #[expect(clippy::too_many_lines, reason = "sugar expansion for 60+ flags")]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "three composable sugar rewrites (drive-prefix, ext-glob, regex-ext) plus filter normalisation; splitting further would fragment the parse pipeline"
+    )]
     fn into_search_params(mut self) -> Result<SearchParams, String> {
         // ── Pattern sugar: --begins-with / --ends-with / --contains ─
         let raw_pattern = self
@@ -485,6 +489,39 @@ impl RawCliArgs {
             // Reuse the existing `String` allocation instead of
             // `pattern = "*".to_owned()` (which would heap-allocate a
             // fresh `String`).  Satisfies `clippy::assigning_clones`.
+            pattern.clear();
+            pattern.push('*');
+        }
+
+        // ── Regex ext-alternation sugar: `>.*\.(a|b|c)$` → `*` + ext=a,b,c ─
+        //
+        // Mirror of the ext-glob promotion above for the regex shape.
+        // Routes patterns like `>.*\.(jpg|png|heic)$` through the
+        // `ExtensionIndex` fast path instead of a full-scan regex
+        // compile → per-record match.  On a 3.5 M-record C: drive
+        // this drops `>.*\.(jpg|png|heic)$` from ~298 ms to ~95 ms —
+        // matching the equivalent `--ext jpg,png,heic` glob path.
+        //
+        // Guards match the ext-glob rule: not `match_path`, not
+        // `case_sensitive`, and `--ext` not set by the user.  See
+        // `extract_extensions_from_regex` for the acceptance matrix —
+        // it **requires** a trailing `$` anchor so the rewrite is
+        // semantically lossless (without `$` the regex matches
+        // `.jpg` anywhere in the name, which the ext-index cannot
+        // replicate).
+        //
+        // Mirrored at dispatch time by
+        // `uffs_core::search::dispatch::apply_dispatch_safety_nets`
+        // (rewrite #3) as a safety net for direct JSON-RPC `search`
+        // callers that skip this parser.
+        if !match_path
+            && !case_sensitive
+            && self.ext.is_none()
+            && let Some(exts) = extract_extensions_from_regex(&pattern)
+        {
+            // `--ext` takes the normalised CSV form expected by
+            // `SearchFilters::from_params` (see `ext_filter.split(',')`).
+            self.ext = Some(exts.join(","));
             pattern.clear();
             pattern.push('*');
         }

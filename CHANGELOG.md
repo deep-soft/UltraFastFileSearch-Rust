@@ -14,6 +14,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Regex alternation → ExtensionIndex fast path** (Phase 4, 2026-04-21 —
+  `crates/uffs-core/src/search/dispatch.rs`,
+  `crates/uffs-client/src/protocol/cli_args_helpers.rs`,
+  `crates/uffs-client/src/protocol/cli_args.rs`).  New
+  `extract_extensions_from_regex` helper recognises the narrow regex
+  shape `>^?(?i)?.*?\.(e1|e2|...)$` and rewrites it to
+  `pattern="*" + extensions=[e1, e2, ...]` so the query routes through
+  the same `ExtensionIndex` CSR fast path that `--ext e1,e2,e3` uses.
+  Requires a trailing `$` anchor so the rewrite is semantically
+  lossless (without `$` the regex matches `.ext` anywhere in the
+  name, which the ext-index cannot replicate).  Rejects multi-segment
+  extensions, wildcards, character classes, and literal-prefixed
+  regex (so path-anchored forms stay on the regex scan path).
+  Added as dispatch-time safety net #3 in `apply_dispatch_safety_nets`
+  and as parse-time sugar in `RawCliArgs::into_search_params`.
+  **Projected**: `>.*\.(jpg|png|heic)$` on a 3.5 M-record C: drive
+  drops from 298 ms → ~95 ms (matches the equivalent
+  `--ext jpg,png,heic` glob path).  **28 new regression tests** pin
+  the accepted / rejected shapes across both layers.
+
+### Changed
+- **`--sort path_only` parallelised on the ext-index fast path**
+  (Phase 4, 2026-04-21 —
+  `crates/uffs-core/src/search/query/path_only_top_n.rs`,
+  `crates/uffs-core/src/search/sorting.rs`).  Three targeted changes
+  in the daemon's path_only pipeline:
+  - **`collect_path_only_via_ext_index`** — per-candidate path
+    resolution rewritten from a single-threaded `for` loop to
+    `par_chunks(4096)` with per-worker `DirCache`, mirroring the
+    pattern already used in
+    `numeric_top_n::collect_global_top_n_numeric`.  Includes an
+    explicit `(drive_idx, rec_idx)` locality re-sort upfront so
+    multi-extension queries (e.g.
+    `>.*\.(jpg|png|heic)$`) preserve MFT-adjacent DirCache hits.
+  - **`sort_rows_with_fold`** — the Schwartzian decorate pass
+    (`String`-alloc-per-row for each needed folded key) now runs on
+    `into_par_iter` with a per-worker `fold_buf`, and the resulting
+    sort uses `par_sort_unstable_by` when `rows.len() >= 16_384`
+    (same threshold as the numeric fast path).
+  - **`PhaseTimings` instrumentation** — the path_only fast path
+    now populates `scan_ms`, `sort_ms`, `path_resolve_ms`,
+    `path_candidates`, and `path_cache_entries`, so `--profile` no
+    longer reports `scan=0 sort=0 path_resolve=0` on
+    `--sort path_only` queries.  `collect_path_only_sorted_top_n`
+    now returns `(Vec<DisplayRow>, Option<PhaseTimings>)` — the
+    tree-walk branch still returns `None` because its single
+    traversal interleaves every phase.
+
+  **Projected**: `*.dll --sort path_only` on a 167 K-row C: drive
+  drops from 221 ms → ~60 ms daemon-side (closes the 172 ms gap
+  vs the default Modified sort observed in `LOG/Output_cache`).
+
 ### Fixed
 - **`ext_rare` 543 ms outlier on drives with zero matching extensions**
   (Run 12, 2026-04-21 — `crates/uffs-core/src/search/query/numeric_top_n.rs`,
@@ -322,7 +375,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   search"; `ensure_drives_loaded` as "tree metrics computation").
   Replaced with accurate per-function justifications.
 
-## [0.5.65] - 2026-04-19
+## [0.5.66] - 2026-04-19
 
 ### Added
 - **Phase 2 performance measurement series** (closed): 11 instrumented
@@ -480,8 +533,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.65...HEAD
-[0.5.65]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.0...v0.5.65
+[Unreleased]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.66...HEAD
+[0.5.66]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.0...v0.5.66
 [0.5.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.2.208...v0.3.0

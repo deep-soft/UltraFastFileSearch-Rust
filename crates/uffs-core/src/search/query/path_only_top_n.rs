@@ -58,13 +58,26 @@
 //! can stop as soon as `limit` rows are collected and no post-sort is
 //! required.
 
-use super::super::backend::{self, DisplayRow, FilterMode};
+use rayon::prelude::*;
+
+use super::super::backend::{self, DisplayRow, FilterMode, PhaseTimings};
 use super::super::field::FieldId;
 use super::super::filters::{SearchFilters, row_passes_filters};
 use super::super::tree::{self, DirCache, DirCacheExt as _};
 use super::numeric_top_n::sort_indices_by_name;
 use super::{make_display_row, passes_filter_mode, stack_volume_prefix};
 use crate::compact::DriveCompactIndex;
+
+/// Target chunk size for parallel path resolution inside
+/// [`collect_path_only_via_ext_index`].
+///
+/// Matches the constant of the same name in
+/// `numeric_top_n::collect_global_top_n_numeric` — at ~370 ns per
+/// candidate a 4 K chunk runs for ~1.5 ms, well above rayon's task
+/// dispatch floor (~1 μs).  Defined locally (rather than re-exporting
+/// from `numeric_top_n`) so either path can re-tune independently if
+/// its per-candidate cost changes.
+const RESOLVE_CHUNK_SIZE: usize = 4096;
 
 /// Collect up to `limit` display rows in `path_only`-sorted order.
 ///
@@ -84,15 +97,15 @@ use crate::compact::DriveCompactIndex;
 /// The tree walk visits every record and resolves every path before
 /// applying the extension filter; the ext-index path visits only the
 /// ~`N_ext` candidates already bucketed by `ExtensionIndex`.
-pub(super) fn collect_path_only_sorted_top_n<D: AsRef<DriveCompactIndex>>(
+pub(super) fn collect_path_only_sorted_top_n<D: AsRef<DriveCompactIndex> + Sync>(
     drives: &[D],
     limit: usize,
     sort_desc: bool,
     filter_mode: FilterMode,
     search_filters: &mut SearchFilters,
-) -> Vec<DisplayRow> {
+) -> (Vec<DisplayRow>, Option<PhaseTimings>) {
     if limit == 0 {
-        return Vec::new();
+        return (Vec::new(), None);
     }
 
     // Fast path: ext-only filter + FilesOnly-or-All mode → skip the
@@ -100,16 +113,18 @@ pub(super) fn collect_path_only_sorted_top_n<D: AsRef<DriveCompactIndex>>(
     // drive record count; the ext-index path is O(N_ext) in the
     // per-extension bucket size.  Empirically ~10× speedup on a
     // 1 M-record C: drive for `*.dll --sort path_only`.
+    //
+    // The fast path reports scan / sort / path_resolve phase timings
+    // so `--profile` output reflects its internal cost breakdown.
+    // The tree walk below does not decompose cleanly into those
+    // phases (its single traversal interleaves candidate selection,
+    // path resolution, and emission), so it returns `None`.
     if search_filters.is_ext_only()
         && matches!(filter_mode, FilterMode::All | FilterMode::FilesOnly)
     {
-        return collect_path_only_via_ext_index(
-            drives,
-            limit,
-            sort_desc,
-            filter_mode,
-            search_filters,
-        );
+        let (rows, timings) =
+            collect_path_only_via_ext_index(drives, limit, sort_desc, filter_mode, search_filters);
+        return (rows, Some(timings));
     }
 
     let mut output: Vec<DisplayRow> = Vec::new();
@@ -188,7 +203,7 @@ pub(super) fn collect_path_only_sorted_top_n<D: AsRef<DriveCompactIndex>>(
         }
     }
 
-    output
+    (output, None)
 }
 
 /// ASC walk: emit each directory's children (name-ASC), then recurse
@@ -461,13 +476,17 @@ fn is_dir(drive: &DriveCompactIndex, idx: u32) -> bool {
 /// non-matching files) and resolve every path before the extension
 /// filter has a chance to reject it.  For `*.dll` on a 1 M-record
 /// C: drive the tree walk costs ~3 s versus ~250 ms here.
-fn collect_path_only_via_ext_index<D: AsRef<DriveCompactIndex>>(
+#[expect(
+    clippy::too_many_lines,
+    reason = "scan + locality re-sort + parallel resolve + sort + timing assembly; splitting would fragment the phase-timings contract"
+)]
+fn collect_path_only_via_ext_index<D: AsRef<DriveCompactIndex> + Sync>(
     drives: &[D],
     limit: usize,
     sort_desc: bool,
     filter_mode: FilterMode,
     search_filters: &mut SearchFilters,
-) -> Vec<DisplayRow> {
+) -> (Vec<DisplayRow>, PhaseTimings) {
     // `hide_system` / `hide_ads` are captured once — the rest of the
     // filter set is guaranteed empty by the `is_ext_only()` caller
     // gate (min/max size, date, attribute, type, path filters all
@@ -482,6 +501,7 @@ fn collect_path_only_via_ext_index<D: AsRef<DriveCompactIndex>>(
     // would be wrong.  The candidate set size is bounded by the
     // per-extension bucket, not by drive cardinality, so carrying
     // all ~N_ext survivors is cheap.
+    let t_scan = std::time::Instant::now();
     let mut candidates: Vec<(u16, u32)> = Vec::new();
     for (drive_idx, drive_ref) in drives.iter().enumerate() {
         let drive = drive_ref.as_ref();
@@ -518,38 +538,101 @@ fn collect_path_only_via_ext_index<D: AsRef<DriveCompactIndex>>(
             }
         }
     }
+    let scan_ms = u64::try_from(t_scan.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    // Path-resolve every survivor.  Candidates arrive in ext-bucket
-    // order (FRN-ascending per drive), so adjacent `resolve_path_cached`
-    // calls share parent directories and the `DirCache` stays warm.
-    // A per-drive cache map keeps the invariant that `DirCache` only
-    // contains entries from the same drive.
-    let mut dir_caches: std::collections::HashMap<u16, DirCache> = std::collections::HashMap::new();
-    let mut rows: Vec<DisplayRow> = Vec::with_capacity(candidates.len());
-    for &(drive_idx, rec_idx) in &candidates {
-        let Some(drive_ref) = drives.get(drive_idx as usize) else {
-            continue;
-        };
-        let drive = drive_ref.as_ref();
-        let Some(rec) = drive.records.get(rec_idx as usize) else {
-            continue;
-        };
-        let name = rec.name(&drive.names);
-        if name.is_empty() {
-            continue;
-        }
-        let mut vp_buf = [0_u8; 4];
-        let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
-        let cache = dir_caches
-            .entry(drive_idx)
-            .or_insert_with(|| DirCache::with_capacity(256));
-        let path = tree::resolve_path_cached(drive, rec_idx as usize, volume_prefix, cache);
-        rows.push(make_display_row(rec_idx, drive.letter, rec, name, path));
-    }
+    // Locality re-sort: for multi-extension queries (e.g.
+    // `>.*\.(jpg|png|heic)$`) candidates from different ext buckets
+    // are interleaved in the order they were emitted.  Sorting by
+    // `(drive_idx, rec_idx)` restores MFT-locality so adjacent
+    // `resolve_path_cached` calls share parent directories and the
+    // per-chunk `DirCache` stays warm.  For single-extension queries
+    // the order is already MFT-ascending, so this sort is a no-op
+    // (~2 ms for 167 K u48 keys).  The final `backend::sort_rows`
+    // after resolution restores the user-requested `PathOnly` order.
+    candidates.sort_unstable_by_key(|&(drive_idx, rec_idx)| (drive_idx, rec_idx));
+
+    // Path-resolve every survivor in parallel chunks.  Mirrors
+    // `numeric_top_n::collect_global_top_n_numeric` — one `DirCache`
+    // per rayon worker, chunk-local row vectors concatenated via
+    // `reduce`.  Measured on 167 K-candidate C: drive for
+    // `*.dll --sort path_only`: daemon-side resolve drops from
+    // ~172 ms sequential to ~25 ms parallel (8-worker host), closing
+    // the 3× gap vs the default Modified-sort path.
+    let t_path_resolve = std::time::Instant::now();
+    let (mut rows, path_candidates, path_cache_entries) = candidates
+        .par_chunks(RESOLVE_CHUNK_SIZE)
+        .map(|chunk| {
+            let mut local_caches: std::collections::HashMap<u16, DirCache> =
+                std::collections::HashMap::new();
+            let mut local_rows: Vec<DisplayRow> = Vec::with_capacity(chunk.len());
+            let mut local_candidates: u64 = 0;
+            for &(drive_idx, rec_idx) in chunk {
+                let Some(drive_ref) = drives.get(drive_idx as usize) else {
+                    continue;
+                };
+                let drive = drive_ref.as_ref();
+                let Some(rec) = drive.records.get(rec_idx as usize) else {
+                    continue;
+                };
+                let name = rec.name(&drive.names);
+                if name.is_empty() {
+                    continue;
+                }
+                let mut vp_buf = [0_u8; 4];
+                let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
+                let cache = local_caches
+                    .entry(drive_idx)
+                    .or_insert_with(|| DirCache::with_capacity(256));
+                let path = tree::resolve_path_cached(drive, rec_idx as usize, volume_prefix, cache);
+                local_rows.push(make_display_row(rec_idx, drive.letter, rec, name, path));
+                local_candidates += 1;
+            }
+            let local_cache_entries: u64 =
+                local_caches.values().map(|cache| cache.len() as u64).sum();
+            (local_rows, local_candidates, local_cache_entries)
+        })
+        .reduce(
+            || (Vec::new(), 0_u64, 0_u64),
+            |mut acc, chunk| {
+                let (mut chunk_rows, chunk_cands, chunk_entries) = chunk;
+                acc.0.append(&mut chunk_rows);
+                acc.1 += chunk_cands;
+                acc.2 += chunk_entries;
+                acc
+            },
+        );
+    let path_resolve_ms = u64::try_from(t_path_resolve.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     // Sort by `PathOnly` with the name-ASC tiebreaker (matches the
     // tree walk's intra-folder order convention), then truncate.
+    let t_sort = std::time::Instant::now();
     backend::sort_rows(&mut rows, FieldId::PathOnly, sort_desc, &[]);
     rows.truncate(limit);
-    rows
+    let sort_ms = u64::try_from(t_sort.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    let timings = PhaseTimings {
+        scan_ms,
+        sort_ms,
+        path_resolve_ms,
+        path_candidates,
+        path_cache_entries,
+        // Deep-profile nanosecond counters are not measured per-call in
+        // the path_only fast path (unlike the numeric branch which
+        // already uses them to trace chunk-level worker time).  Leave
+        // them zero — `--profile` will simply omit the deep section
+        // for this branch, which is documented in
+        // `docs/research/perf-phase2-measurement-plan.md`.
+        path_resolve_fn_ns: 0,
+        path_build_row_ns: 0,
+    };
+    tracing::debug!(
+        scan_ms,
+        sort_ms,
+        path_resolve_ms,
+        path_candidates,
+        path_cache_entries,
+        rows = rows.len(),
+        "[PHASE] collect_path_only_via_ext_index complete"
+    );
+    (rows, timings)
 }

@@ -52,7 +52,7 @@ A benchmark is only useful if readers can see both the fastest successful run an
 | SATA HDD | WD 8 TB × 2 (WDC WD82PURZ, M: and S:) |
 | USB storage | SanDisk Extreme 58 GB USB stick (G:) |
 | Power profile | AMD Ryzen High Performance |
-| UFFS version | 0.5.4 |
+| UFFS version | 0.5.62 / 0.5.64 (documented tables pinned to v0.5.4 until a re-bench refreshes them — see §5a for current cross-tool numbers) |
 
 ### Drives Under Test
 
@@ -124,7 +124,9 @@ over 3 rounds.  Pattern: `*` (full scan), limit: 100 rows.
 > The ALL-drives cold start runs all drives in parallel, so total time
 > ≈ slowest individual drive.
 
-### Warm Cache (Serialized .iocp Load)
+### Warm Cache (Serialized .iocp / .uffs Load)
+
+**v0.5.4 per-drive table (historical):**
 
 | Drive | Records | Total | Speedup vs Cold |
 |-------|--------:|------:|----------------:|
@@ -135,7 +137,12 @@ over 3 rounds.  Pattern: `*` (full scan), limit: 100 rows.
 | C: | 3,512,541 | 6.4 s | 1.2× |
 | D: | 7,066,020 | 6.4 s | 4.4× |
 | S: | 8,278,106 | 4.8 s | 14.0× |
-| **ALL** | **25,931,436** | **6.9 s** | **9.6×** |
+| **ALL (v0.5.4)** | **25,931,436** | **6.9 s** | **9.6×** |
+| **ALL (v0.5.62)** | **25,931,436** | **5.7 s** | **12.0×** |
+
+Post-Phase-2 the all-drives warm restart dropped 17 % to **5.7 s** (measured
+n=1 on `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:369-391`).  Per-drive warm numbers not re-captured on v0.5.62
+yet — they are expected to scale proportionally.
 
 ### Hot (In-Memory Query)
 
@@ -163,6 +170,8 @@ over 3 rounds.  Pattern: `*` (full scan), limit: 100 rows.
 The table below shows end-to-end speedup from cold start to hot query
 for each drive.  The Cold→Hot ratio is the primary performance metric.
 
+**v0.5.4 per-drive table (historical, `--limit 100` interactive workload):**
+
 | Drive | Cold | Warm | Hot | Cold→Hot | Cold→Warm |
 |-------|-----:|-----:|----:|---------:|----------:|
 | C: | 7.7 s | 6.4 s | 27 ms | **284×** | 1.2× |
@@ -172,12 +181,43 @@ for each drive.  The Cold→Hot ratio is the primary performance metric.
 | G: | 1.3 s | 572 ms | 6 ms | **219×** | 2.3× |
 | M: | 26.4 s | 1.4 s | 18 ms | **1469×** | 19.5× |
 | S: | 67 s | 4.8 s | 54 ms | **1236×** | 14.0× |
-| **ALL** | **66 s** | **6.9 s** | **163 ms** | **407×** | **9.6×** |
+| **ALL (v0.5.4)** | **66 s** | **6.9 s** | **163 ms** | **407×** | **9.6×** |
+| **ALL (v0.5.62)** | **68.5 s** | **5.7 s** | see §5 / §5a | — | **12.0×** |
 
 > On spinning disks (M:, S:) the cold-start penalty is extreme —
 > reading raw MFT from a HDD is 10–60× slower than NVMe.
 > The daemon eliminates this entirely: once loaded, every drive
 > responds in **6–54 ms** regardless of media type.
+
+---
+
+## 5a  Cross-Tool vs Everything (v0.5.62, C+D apples-to-apples)
+
+After Phase 2 closure (v0.5.50) and the Run 12 correctness fix
+(v0.5.64), UFFS wins 10/10 at p50 against Everything on the
+apples-to-apples C+D benchmark.  Source:
+`@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:189-229` (n=30, HOT, file sink).
+
+| Drive | Pattern   | UFFS p50 | ES p50 | UFFS/ES | Rows    |
+|-------|-----------|---------:|-------:|--------:|--------:|
+| C:    | exact     |    30 ms |  77 ms | 0.39×   |      26 |
+| C:    | prefix    |    97 ms |  98 ms | 0.99×   |  34 239 |
+| C:    | ext_rare  |    29 ms |  60 ms | 0.48×   |       0 |
+| C:    | ext_dll   |   100 ms | 245 ms | 0.41×   | 167 279 |
+| C:    | substring |    64 ms | 110 ms | 0.58×   |  26 690 |
+| D:    | exact     |    31 ms |  65 ms | 0.48×   |       3 |
+| D:    | prefix    |    51 ms |  72 ms | 0.71×   |   8 732 |
+| D:    | ext_rare  |    30 ms |  61 ms | 0.49×   |      11 |
+| D:    | ext_dll   |    47 ms | 113 ms | 0.42×   |  44 529 |
+| D:    | substring |    55 ms |  82 ms | 0.67×   |  12 458 |
+
+Median ratio **0.48× (UFFS 2.07× faster)**.  Full analysis in
+`@/Users/rnio/Private/Github/UltraFastFileSearch/docs/research/cross-tool-benchmark-analysis.md`.
+
+> **Note:** The ~28 ms UFFS floor on every small-result cell is the
+> Windows CLI process-creation tax measured in
+> `@/Users/rnio/Private/Github/UltraFastFileSearch/docs/research/perf-phase2-measurement-plan.md` (Null-binary matrix
+> refresh).  The daemon itself responds in 0–3 ms on targeted queries.
 
 ---
 
@@ -312,59 +352,73 @@ UFFS ships three validation suites that double as performance
 benchmarks for the query engine under realistic workloads.  All suites
 run against a hot daemon loaded with 25.9M records across 7 drives.
 
-### CLI Validation (240 tests, parallel)
+Latest figures from `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache:380-1295` (v0.5.62, hot daemon, 25.9M records across 7 drives).
+
+### CLI Validation (248 tests, parallel)
 
 | Metric | Value |
 |--------|------:|
 | Parallelism | 24 concurrent |
-| Wall time | 65.7 s |
-| Sum CPU time | 818.2 s |
-| Avg per test | 3,409 ms |
-| Slowest | 8,803 ms (duplicates verify=hash) |
-| Fastest | 47 ms (simple search) |
+| Wall time | **16.3 s** |
+| Sum CPU time | 176.2 s |
+| Avg per test | **710 ms** |
+| Slowest | 3,603 ms (duplicates verify=hash) |
+| Fastest | 64 ms (simple search) |
+| Pass rate | **248/248 (100%)** |
 
-### API Validation (225 tests, parallel)
+### API Validation (227 tests, parallel)
 
 | Metric | Value |
 |--------|------:|
-| Parallelism | 8 concurrent |
-| Wall time | 48.7 s |
-| Sum CPU time | 177.9 s |
-| Avg per test | 790 ms |
-| Slowest | 4,844 ms (duplicates JSON) |
+| Parallelism | 24 concurrent |
+| Wall time | **12.2 s** |
+| Sum CPU time | 143.3 s |
+| Avg per test | **631 ms** |
+| Slowest | 1,598 ms (`--attr !system`) |
 | Fastest | <1 ms (status RPC) |
+| Pass rate | **227/227 (100%)** |
 
-### MCP Validation (253 tests, sequential)
+### MCP Validation (254 tests, parallel)
 
 | Metric | Value |
 |--------|------:|
-| Parallelism | Sequential (MCP session) |
-| Wall time | 96.2 s |
-| Avg per test | 379 ms |
-| Slowest | 5,244 ms (agent flow: overview → facet → drill-down) |
-| Fastest | <1 ms (drive selection) |
+| Parallelism | 24 concurrent (over one MCP session) |
+| Wall time | **11.3 s** |
+| Sum CPU time | 257.6 s |
+| Avg per test | **1,014 ms** |
+| Slowest | 2,137 ms (`--min-name-length 50`) |
+| Fastest | <1 ms (protocol version) |
+| Pass rate | **254/254 (100%)** |
 
-> **Total:** 718 tests across CLI, API, and MCP — all pass, all
-> exercising the same hot daemon with 25.9M records.
+> **Total:** 729 tests across CLI, API, and MCP — all pass, all
+> exercising the same hot daemon with 25.9M records.  Post-Phase-2,
+> CLI wall time dropped from 65.7 s to **16.3 s** (−75 %) — largely
+> because the per-test CLI tax fell from ~160 ms to ~28 ms after
+> the Run 10/11 RPC-consolidation and watchdog fixes.
 
 ---
 
 ## 10  Daemon Runtime Statistics
 
-After a full session (43 minutes uptime, validation + profiling + benchmark):
+After a v0.5.62 session (from `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:392-410`):
 
-| Metric | Value |
-|--------|------:|
-| Uptime | 43 min 31 s |
-| Startup duration | 3.7 s (warm cache, all 7 drives) |
-| Total records | 25,922,252 |
-| Queries served | 922 |
-| Avg query time | 180 ms |
-| Total query time | 2 min 46 s |
-| Queries/second | 0.35 (reflects pauses between test runs) |
+| Metric | v0.5.4 | v0.5.62 |
+|--------|-------:|--------:|
+| Startup (warm cache, all 7 drives) | 3.7 s | **5.7 s** |
+| Total records | 25,922,252 | 25,991,693 |
+| Index heap (sum of drives) | — | **4,662 MB** |
+| Working set (RSS) | — | **4.99 GB** |
+| Private memory | — | 5.10 GB |
+| Virtual memory | — | 19.52 GB |
+| Cache deserialization throughput | 7.0 M rec/s | **4.6 M rec/s** |
 
-> Startup of 3.7 s for 25.9M records (warm cache) translates to
-> **7.0 million records/second** cache deserialization throughput.
+> Warm-start on v0.5.62 is **5.7 s** for all 7 drives (25.9 M records).
+> That's an improvement vs the §3 v0.5.4 number of 6.9 s (−1.2 s / −17 %);
+> the earlier §10 v0.5.4 figure of 3.7 s was a best-case measurement on a
+> pre-warmed OS page cache and should not be compared directly against
+> the v0.5.62 cold-OS-cache measurement.  Settled memory footprint
+> dropped from ~6 GB to **4.99 GB (−17 %)** thanks to mimalloc +
+> `mi_collect(true)` (OPT-6) and trigram pruning (OPT-7).
 
 ---
 
