@@ -14,6 +14,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`ext_rare` 543 ms outlier on drives with zero matching extensions**
+  (Run 12, 2026-04-21 — `crates/uffs-core/src/search/query/numeric_top_n.rs`,
+  `crates/uffs-core/src/search/filters/mod.rs`,
+  `crates/uffs-core/src/search/filters/apply.rs`,
+  `crates/uffs-core/src/search/sorting.rs`).  Two compounding bugs
+  in the `*.<extension>` pipeline:
+  - **Bug A (perf)** — `numeric_top_n::search_index` fell through to
+    a full-drive scan when `resolve_ext_ids_for_drive` produced an
+    empty ID set.  On a 3.5 M-record drive with zero `.dbt` files,
+    `C:*.dbt --hide-system --hide-ads` cost 543 ms of pure scan
+    plus a spurious row from Bug B.  **Fixed** by adding an explicit
+    short-circuit arm that skips the drive entirely when the
+    resolved-ID set is empty.
+  - **Bug B (correctness)** — the `matches_record` /
+    `row_passes_filters` fallback extracted extensions via
+    `name.rsplit('.').next().unwrap_or("")`, which returns the
+    whole name for dotless inputs.  A directory literally named
+    `dbt` therefore matched `--ext dbt` even though the MFT
+    indexer's `intern_extension` had already assigned it
+    `extension_id = 0` (no extension bucket).  **Fixed** by adding
+    a shared `extract_extension_after_dot` helper that matches
+    `intern_extension` semantics exactly (dotless, dotfile, and
+    trailing-dot names all return `""`), and replacing the buggy
+    extraction in `matches_record`, `row_passes_filters`, and the
+    `search::sorting` sort-key builder.  The sort-key fix closes
+    a latent data-leak where dotless names leaked between
+    extension groups on extension-sorted result sets.
+  - **11 new regression tests** pin the fixes:
+    `search::filters::tests::extract_extension_after_dot_*` (5 —
+    helper semantics), `filter_extension_fallback_*` (4 —
+    end-to-end `matches_record` fallback), and
+    `search::backend::tests::search_index_ext_rare_*` (2 —
+    end-to-end `*.dbt` on a drive with zero `.dbt` files).
+- **`--profile` per-drive match counts rewritten O(rows×drives) →
+  O(rows)** (`crates/uffs-daemon/src/index/search.rs:282-310`).
+  The previous implementation nested `filter(|row| row.drive == D)
+  .count()` inside a per-drive loop, producing quadratic work in
+  the result cross product.  Single-pass `HashMap<char, usize>` tally
+  then projects back over `drive_info` to preserve the existing
+  (drive, count) ordering contract.  Cuts `--profile` overhead on
+  wide result sets (e.g. 100 K rows × 4 drives) from ~400 K
+  predicate evaluations to ~100 K hash inserts.
+
+### Changed
+- **`scripts/windows/cross-tool-benchmark.rs` no longer hard-codes
+  `--profile`** in the default UFFS invocation (Run 12, 2026-04-21).
+  The bench now measures the exact command shape a normal user
+  types; `daemon_ms` is still captured on an opt-in basis via
+  `UFFS_EXTRA_ARGS="--profile"` (environment variable).  Previous
+  runs paid <0.2% overhead from `--profile`, so summary numbers
+  remain comparable — change is primarily methodological
+  cleanliness for public-facing benchmarks.
+
 ### Added
 - **Phase 3 — `--columns parity` / `--parity-compat` and `--format custom`
   now take the daemon pre-format fast path**
@@ -268,7 +322,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   search"; `ensure_drives_loaded` as "tree metrics computation").
   Replaced with accurate per-function justifications.
 
-## [0.5.64] - 2026-04-19
+## [0.5.65] - 2026-04-19
 
 ### Added
 - **Phase 2 performance measurement series** (closed): 11 instrumented
@@ -426,8 +480,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.64...HEAD
-[0.5.64]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.0...v0.5.64
+[Unreleased]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.65...HEAD
+[0.5.65]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.5.0...v0.5.65
 [0.5.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/githubrobbi/UltraFastFileSearch/compare/v0.2.208...v0.3.0

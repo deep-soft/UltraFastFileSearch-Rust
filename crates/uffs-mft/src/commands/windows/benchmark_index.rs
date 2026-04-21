@@ -420,7 +420,11 @@ pub(crate) async fn cmd_benchmark_index_lean(
 /// Use this for direct apples-to-apples comparison of tree algorithm
 /// performance.
 #[cfg(windows)]
-pub(crate) async fn cmd_benchmark_tree(drive: char, iterations: usize, no_cache: bool) -> Result<()> {
+pub(crate) async fn cmd_benchmark_tree(
+    drive: char,
+    iterations: usize,
+    no_cache: bool,
+) -> Result<()> {
     use std::time::Instant;
 
     use uffs_mft::cache::{INDEX_TTL_SECONDS, load_cached_index};

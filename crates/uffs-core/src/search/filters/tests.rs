@@ -264,6 +264,129 @@ fn resolve_ext_ids_for_drive_is_robust_to_manual_uppercase_filters() {
     assert_eq!(resolved_name.map(AsRef::as_ref), Some("rs"));
 }
 
+// ── extract_extension_after_dot (regression pin 2026-04-21) ──────
+//
+// Pin the shared extension-extraction helper used by both the
+// `matches_record` fallback and the sort-key builder.  It must match
+// the semantics of `uffs_mft::index::base::MftIndex::intern_extension`:
+// dotless/hidden/trailing-dot names report `extension_id = 0` in the
+// compact index, so this helper must return `""` for them.  The
+// previous `name.rsplit('.').next().unwrap_or("")` used for the
+// fallback returned the whole name for dotless inputs, which let a
+// directory literally named `dbt` match `--ext dbt` on drives that did
+// not populate the resolved-ID fast-path bucket.
+
+#[test]
+fn extract_extension_after_dot_returns_empty_for_dotless_names() {
+    assert_eq!(extract_extension_after_dot("dbt"), "");
+    assert_eq!(extract_extension_after_dot("README"), "");
+    assert_eq!(extract_extension_after_dot(""), "");
+}
+
+#[test]
+fn extract_extension_after_dot_returns_empty_for_dotfiles() {
+    // Hidden dotfiles have dot_pos == 0 → no extension bucket.
+    assert_eq!(extract_extension_after_dot(".gitignore"), "");
+    assert_eq!(extract_extension_after_dot(".env"), "");
+}
+
+#[test]
+fn extract_extension_after_dot_returns_empty_for_trailing_dot() {
+    // Trailing-dot names have dot_pos == len-1 → no extension bucket.
+    assert_eq!(extract_extension_after_dot("foo."), "");
+    assert_eq!(extract_extension_after_dot("archive.tar."), "");
+}
+
+#[test]
+fn extract_extension_after_dot_returns_last_segment() {
+    assert_eq!(extract_extension_after_dot("report.txt"), "txt");
+    assert_eq!(extract_extension_after_dot("archive.tar.gz"), "gz");
+    assert_eq!(extract_extension_after_dot("a.b"), "b");
+}
+
+#[test]
+fn extract_extension_after_dot_preserves_case() {
+    // Case normalisation is the caller's responsibility (e.g.
+    // `lowercase_into`).  The helper must NOT fold case itself so it
+    // can be used for sort-key material that honours case-sensitive
+    // sort contracts.
+    assert_eq!(extract_extension_after_dot("PHOTO.JPG"), "JPG");
+    assert_eq!(extract_extension_after_dot("Mixed.Ext"), "Ext");
+}
+
+// ── Fallback-path extension filter (regression pin 2026-04-21) ───
+//
+// These pin the `matches_record` fallback branch that fires when a
+// caller populated `extensions` but never called
+// `resolve_ext_ids_for_drive`.  The pre-fix code used
+// `rsplit('.').next().unwrap_or("")` which returned the whole name
+// for dotless inputs, so a directory literally named `dbt` (no dot)
+// matched `--ext dbt` and was emitted as a spurious row on drives
+// where `.dbt` is otherwise absent.
+
+#[test]
+fn filter_extension_fallback_rejects_dotless_name() {
+    let mut names = Vec::new();
+    // `test_record` leaves `extension_id = 0`, matching what the MFT
+    // indexer assigns to a dotless name.  With no resolved IDs we
+    // take the fallback branch.
+    let rec = test_record("dbt", &mut names);
+    let filters = SearchFilters {
+        extensions: vec!["dbt".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        filters.resolved_ext_ids.is_empty(),
+        "precondition: fallback branch under test"
+    );
+    assert!(
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
+        "dotless name 'dbt' must NOT match --ext dbt via the fallback"
+    );
+}
+
+#[test]
+fn filter_extension_fallback_rejects_dotfile() {
+    let mut names = Vec::new();
+    let rec = test_record(".gitignore", &mut names);
+    let filters = SearchFilters {
+        extensions: vec!["gitignore".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
+        "dotfile '.gitignore' must NOT match --ext gitignore via the fallback"
+    );
+}
+
+#[test]
+fn filter_extension_fallback_rejects_trailing_dot() {
+    let mut names = Vec::new();
+    let rec = test_record("foo.", &mut names);
+    let filters = SearchFilters {
+        extensions: vec!["foo".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        !filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
+        "trailing-dot 'foo.' must NOT match --ext foo via the fallback"
+    );
+}
+
+#[test]
+fn filter_extension_fallback_accepts_real_extension_case_insensitively() {
+    let mut names = Vec::new();
+    let rec = test_record("REPORT.TXT", &mut names);
+    let filters = SearchFilters {
+        extensions: vec!["txt".to_owned()],
+        ..Default::default()
+    };
+    assert!(
+        filters.matches_record(&rec, &names, &mut Vec::new(), CaseFold::default_table()),
+        "real .TXT extension must match --ext txt via the fallback (case-insensitive)"
+    );
+}
+
 // ── Exclude pattern ───────────────────────────────────────────────
 
 #[test]

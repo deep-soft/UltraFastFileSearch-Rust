@@ -19,10 +19,20 @@
 //! # Tool CLI references
 //!
 //!   UFFS (Rust): uffs.exe "<pattern>" --drive <X> --out=bench_out.csv \
-//!                --columns Path --profile --hide-system --hide-ads
+//!                --columns Path --hide-system --hide-ads
 //!     - Search is the default action (no "search" subcommand).
 //!     - No limit — all results written to file.  Path-only for fair I/O.
 //!     - Daemon model: COLD/WARM/HOT phases.
+//!     - `--profile` is intentionally OFF by default: a normal user does
+//!       not pass it, so the bench should measure the exact command shape
+//!       a user actually types.  Previous runs (pre-2026-04-21) hard-
+//!       coded `--profile` to capture `daemon_ms` via stderr parsing —
+//!       overhead is <0.2% on warm queries but the flag itself is a
+//!       non-default codepath (enables the full `SearchProfile` payload
+//!       on the wire), which we want out of the apples-to-apples wall-
+//!       clock comparison.  `daemon_ms` remains parseable if a user
+//!       manually appends `--profile` to `UFFS_EXTRA_ARGS`, but the
+//!       summary tables rely on `wall_ms` only.
 //!     - `--hide-system` + `--hide-ads` are PARITY filters: Everything does
 //!       not index NTFS system files (`$MFT`, `$Bitmap`, …) or Alternate
 //!       Data Streams by default, while UFFS does. Without these flags, UFFS
@@ -80,6 +90,10 @@
 //! rust-script scripts\windows\cross-tool-benchmark.rs --skip-cold
 //! rust-script scripts\windows\cross-tool-benchmark.rs --sinks file,stdout,null
 //! rust-script scripts\windows\cross-tool-benchmark.rs --uffs-bin C:\tools\uffs.exe
+//!
+//! # Opt-in: capture daemon_ms via --profile (otherwise `wall_ms` only).
+//! $env:UFFS_EXTRA_ARGS = "--profile"
+//! rust-script scripts\windows\cross-tool-benchmark.rs
 //! ```
 //!
 //! ```cargo
@@ -385,9 +399,16 @@ fn validate_output(sink: OutputSink, path: &str, stdout: &[u8], needle: &str) ->
 }
 
 // ── Run: UFFS (Rust) ─────────────────────────────────────────────────────────
-/// uffs.exe pattern --drive X [--out=<file>] --profile ...
+/// uffs.exe pattern --drive X [--out=<file>] ...
 /// `sink` controls whether `--out=` is emitted and how output is captured.
 /// No limit — all results are returned.  Search is the default action.
+///
+/// `--profile` is intentionally NOT included in the default arg list so
+/// the bench measures the exact command shape a normal user would type
+/// (see the module-level header note).  If `UFFS_EXTRA_ARGS` is set in
+/// the environment, its whitespace-separated tokens are appended to
+/// every UFFS invocation — useful for one-off profile captures without
+/// having to patch this script.
 fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: OutputSink) -> Timing {
     cleanup_bench_file();
     let bpath = bench_out_path();
@@ -397,18 +418,32 @@ fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: Output
     // Streams by default). Without these flags, UFFS returns 30-70% more
     // rows for broad patterns and the timing comparison is meaningless.
     let mut args: Vec<String> = vec![
-        pattern.into(), "--drive".into(), drive.into(), "--profile".into(),
+        pattern.into(), "--drive".into(), drive.into(),
         "--columns".into(), "Path".into(),
         "--hide-system".into(), "--hide-ads".into(),
     ];
     if matches!(sink, OutputSink::File) {
         args.push(format!("--out={bpath}"));
     }
+    // Opt-in extras (e.g. `UFFS_EXTRA_ARGS="--profile"`).  Still lets
+    // the daemon-timing column populate for anyone who wants it, but
+    // without imposing `--profile` on every user of the bench harness.
+    if let Ok(extra) = env::var("UFFS_EXTRA_ARGS")
+        && !extra.trim().is_empty()
+    {
+        for tok in extra.split_whitespace() {
+            args.push(tok.to_string());
+        }
+    }
     eprintln!("      CMD: & '{}' {}  [sink={}]", bin.display(), args.join(" "), sink.label());
     let out = match run_tool_with_sink(bin, &args, sink) {
         Ok(o)  => o,
         Err(e) => return Timing { wall_ms: 0, err: e, ..Default::default() },
     };
+    // `parse_daemon_ms` returns 0 when the profile block is absent
+    // (i.e. the default path).  The summary tables key off `wall_ms`
+    // so the missing column is cosmetic and the progress line just
+    // drops the `daemon_p50=` suffix.
     let dms = parse_daemon_ms(&String::from_utf8_lossy(&out.stderr));
     if !out.ok {
         cleanup_bench_file();
@@ -423,6 +458,10 @@ fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: Output
     cleanup_bench_file();
     Timing { wall_ms: out.wall_ms, daemon_ms: dms, rows, bad_rows, ok: true, ..Default::default() }
 }
+/// Parse the `daemon: N ms` tail of the `--profile` `Search (IPC): X ms  (daemon: Y ms)`
+/// line.  Returns 0 when the profile block is absent — the bench
+/// defaults (post-2026-04-21) omit `--profile` so this is the common
+/// path, and callers fall back to `wall_ms` accordingly.
 fn parse_daemon_ms(s: &str) -> u64 {
     for line in s.lines() {
         if (line.contains("Search") || line.contains("search")) && line.contains("ms") {

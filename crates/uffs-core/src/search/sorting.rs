@@ -20,6 +20,7 @@ use rayon::prelude::*;
 use super::backend::{DisplayRow, SortSpec};
 use super::derived::{bulkiness_for_row, semantic_type_for_row, tree_allocated_for_row};
 use super::field::FieldId;
+use super::filters::extract_extension_after_dot;
 
 /// Minimum row count at which `sort_rows_numeric_fast` switches from
 /// sequential `sort_unstable_by` to `par_sort_unstable_by`.
@@ -429,7 +430,12 @@ pub fn sort_rows_with_fold(
                     String::new()
                 },
                 ext: if needs.ext() {
-                    fold.fold_into(row.name().rsplit('.').next().unwrap_or(""), &mut fold_buf)
+                    // Dot-gated extraction so dotless names sort with the
+                    // empty-extension group (matching the indexer's
+                    // `extension_id = 0` assignment) instead of with
+                    // whatever alphabetic group their name happens to
+                    // start with.
+                    fold.fold_into(extract_extension_after_dot(row.name()), &mut fold_buf)
                         .to_owned()
                 } else {
                     String::new()
@@ -513,8 +519,8 @@ fn compare_by_column(
             .then_with(|| row_a.path_dir().cmp(row_b.path_dir())),
         FieldId::Drive => row_a.drive.cmp(&row_b.drive),
         FieldId::Extension => key_a.ext.cmp(&key_b.ext).then_with(|| {
-            let ext_a = row_a.name().rsplit('.').next().unwrap_or("");
-            let ext_b = row_b.name().rsplit('.').next().unwrap_or("");
+            let ext_a = extract_extension_after_dot(row_a.name());
+            let ext_b = extract_extension_after_dot(row_b.name());
             ext_a.cmp(ext_b)
         }),
         FieldId::Type => key_a

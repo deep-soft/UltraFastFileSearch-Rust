@@ -296,41 +296,36 @@ pub(super) fn collect_global_top_n_numeric<D: AsRef<DriveCompactIndex> + Sync>(
                     }
                 }
             }
+        } else if ext_fast_path && !search_filters.extensions.is_empty() {
+            // ── Fast-path short-circuit ──────────────────────────
+            //
+            // `ext_fast_path` means `is_ext_only()` returned true, so
+            // the ONLY filters active are `extensions` plus the cheap
+            // inline predicates (`hide_system` / `hide_ads`).  An
+            // empty `resolved_ext_ids` means none of the requested
+            // extensions are interned on this drive — i.e. zero
+            // records can possibly match.  Skip the drive entirely
+            // instead of falling through to an O(N) full scan that
+            // would uselessly iterate every record (`matches_record`
+            // would still reject them at the extension check).
+            //
+            // Regression root cause (2026-04-21): a query like
+            // `*.dbt --hide-system --hide-ads --drive C` on a drive
+            // with zero `.dbt` files took **543 ms** (3.5 M record
+            // scan) AND returned a spurious match for a directory
+            // literally named `dbt` via the buggy
+            // `name.rsplit('.').next()` fallback in `matches_record`.
+            // The short-circuit here combined with the fallback fix
+            // in `filters/mod.rs` closes both issues: the query now
+            // returns empty in < 1 ms.  See the `C:ext_rare` row in
+            // `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:785`.
+            tracing::debug!(
+                drive = %drive.letter,
+                requested_extensions = ?search_filters.extensions,
+                ext_name_count = drive.ext_names.len(),
+                "ext fast-path SHORT-CIRCUIT — no matching extension IDs on this drive"
+            );
         } else {
-            if ext_fast_path && !search_filters.extensions.is_empty() {
-                let requested_lower = search_filters
-                    .extensions
-                    .iter()
-                    .map(|ext| ext.to_lowercase())
-                    .collect::<Vec<_>>();
-                let lowercase_only_hits = requested_lower
-                    .iter()
-                    .filter(|ext| {
-                        drive
-                            .ext_names
-                            .iter()
-                            .any(|name| name.as_ref() == ext.as_str())
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let sample_ext_names = drive
-                    .ext_names
-                    .iter()
-                    .filter(|name| !name.is_empty())
-                    .take(8)
-                    .map(AsRef::as_ref)
-                    .collect::<Vec<_>>();
-                tracing::debug!(
-                    drive = %drive.letter,
-                    requested_extensions = ?search_filters.extensions,
-                    requested_lowercase = ?requested_lower,
-                    resolved_ext_ids = ?search_filters.resolved_ext_ids,
-                    lowercase_only_hits = ?lowercase_only_hits,
-                    ext_name_count = drive.ext_names.len(),
-                    ext_name_sample = ?sample_ext_names,
-                    "ext fast-path FALLBACK — no extension IDs resolved, using full scan"
-                );
-            }
             // ── Full-scan path ───────────────────────────────────
             let drive_fold = drive.fold;
             for (rec_idx, rec) in drive.records.iter().enumerate() {

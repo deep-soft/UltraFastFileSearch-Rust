@@ -282,16 +282,28 @@ impl IndexManager {
         // Per-drive match counts for `--profile`.  Computed once here
         // so both the file-sink early-return and the regular IPC path
         // share the same tally without duplicate O(N) scans.
+        //
+        // Single-pass map: previously this was O(rows × drives) via
+        // `filter(|row| row.drive == drive).count()` inside a per-drive
+        // loop.  With 4-letter drive fans and result sets in the 10⁵
+        // range on validation-suite queries, the old shape
+        // materialised 400 K predicate evaluations purely for
+        // profiling — enough to show up in `--profile` overhead
+        // measurements.  One pass over `filtered_rows` with a
+        // pre-sized hash map keeps the complexity at O(rows) and
+        // makes the profiling cost independent of drive count.
         let drive_match_counts: Vec<(char, usize)> = if profiling {
+            let mut tally: std::collections::HashMap<char, usize> =
+                std::collections::HashMap::with_capacity(drive_info.len().max(1));
+            for row in &filtered_rows {
+                *tally.entry(row.drive).or_insert(0) += 1;
+            }
+            // Project back to the `drive_info` ordering so callers see
+            // an entry for every mounted drive (0 counts included),
+            // preserving the existing contract with `SearchProfile`.
             drive_info
                 .iter()
-                .map(|&(drive, _records)| {
-                    let matches = filtered_rows
-                        .iter()
-                        .filter(|row| row.drive == drive)
-                        .count();
-                    (drive, matches)
-                })
+                .map(|&(drive, _records)| (drive, tally.get(&drive).copied().unwrap_or(0)))
                 .collect()
         } else {
             Vec::new()

@@ -9,39 +9,20 @@
 
 mod apply;
 mod attr_parsing;
+mod ext_match;
+mod path_normalize;
 mod time_parsing;
 
 pub use apply::*;
 pub use attr_parsing::*;
+pub(crate) use ext_match::extract_extension_after_dot;
+pub(super) use ext_match::{extension_matches_filter, lowercase_into};
+pub(super) use path_normalize::normalize_path_separators;
 pub use time_parsing::*;
 
 use super::backend::{DisplayRow, FilterMode};
 use crate::compact::CompactRecord;
 use crate::search::tree::name_matches;
-
-/// Lowercase a string into a reusable UTF-8 buffer and return the borrowed
-/// string view.
-pub(super) fn lowercase_into<'a>(input: &str, buf: &'a mut Vec<u8>) -> &'a str {
-    buf.clear();
-    for ch in input.chars() {
-        for lower in ch.to_lowercase() {
-            let mut char_buf = [0_u8; 4];
-            let encoded = lower.encode_utf8(&mut char_buf);
-            buf.extend_from_slice(encoded.as_bytes());
-        }
-    }
-    core::str::from_utf8(buf.as_slice()).map_or("", |lowered| lowered)
-}
-
-/// Return `true` if a normalized extension matches an allowed filter token.
-///
-/// The fast/common path compares already-lowercased strings directly. The
-/// fallback branch keeps manual test fixtures and any direct struct
-/// construction robust if a caller supplied mixed-case extension tokens.
-#[must_use]
-pub(super) fn extension_matches_filter(allowed: &str, normalized_extension: &str) -> bool {
-    allowed == normalized_extension || allowed.to_lowercase() == normalized_extension
-}
 
 /// Apply filter mode to a set of display rows.
 pub fn apply_filter(rows: &mut Vec<DisplayRow>, filter: FilterMode) {
@@ -603,8 +584,16 @@ impl SearchFilters {
             }
         } else if !self.extensions.is_empty() {
             // Fallback for callers that did not call resolve_ext_ids_for_drive.
+            // Uses the same dot-gated extraction as `intern_extension` so a
+            // dotless record (extension_id = 0 in the compact index) never
+            // matches an `--ext foo` filter just because its name happens to
+            // equal `foo`.  See `extract_extension_after_dot` for the
+            // regression pin covering this behaviour.
             let name = rec.name(names);
-            let ext = name.rsplit('.').next().unwrap_or("");
+            let ext = extract_extension_after_dot(name);
+            if ext.is_empty() {
+                return false;
+            }
             let normalized_ext = lowercase_into(ext, fold_buf);
             if !self
                 .extensions
@@ -755,31 +744,6 @@ impl SearchFilters {
             && self.max_tree_allocated.is_none()
             && self.allowed_months.is_empty()
     }
-}
-
-/// Normalize path separators for `path_contains` matching.
-///
-/// 1. Replaces `/` with `\` so users can use either separator.
-/// 2. Collapses runs of consecutive `\` into a single `\` — this handles
-///    transport layers that double-encode backslashes (JSON `\\` → `\\\\`),
-///    producing literal `\\` in the pattern that wouldn't match the single `\`
-///    in stored NTFS paths.
-fn normalize_path_separators(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut prev_was_sep = false;
-    for ch in input.chars() {
-        let is_sep = ch == '\\' || ch == '/';
-        if is_sep {
-            if !prev_was_sep {
-                result.push('\\');
-            }
-            prev_was_sep = true;
-        } else {
-            result.push(ch);
-            prev_was_sep = false;
-        }
-    }
-    result
 }
 
 #[cfg(test)]

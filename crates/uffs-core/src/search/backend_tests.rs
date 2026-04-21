@@ -1062,6 +1062,158 @@ fn search_index_ext_fast_path_hide_ads_only_excludes_colon_names() {
     );
 }
 
+// ── ext_rare fast-path short-circuit + dotless fallback tests ─────
+//
+// Regression pins — 2026-04-21.  Two compounding bugs were observed
+// on `*.dbt` against a C: drive that does not index any `.dbt` file
+// (benchmark `ext_rare` on the cross-tool harness, see
+// `@/Users/rnio/Private/Github/UltraFastFileSearch/LOG/Output_cache_new:323,
+// 785`):
+//
+// Bug A (perf):   the numeric top-N fast path still ran a full scan
+//                 even though `resolve_ext_ids_for_drive` resolved to
+//                 the empty set, producing ≥ 500 ms of wasted work.
+// Bug B (correct): the `matches_record` fallback (exercised by the
+//                 scan path when resolved IDs are unpopulated) used
+//                 `rsplit('.').next()` which returned the whole name
+//                 for dotless inputs, so a directory literally named
+//                 `dbt` matched `--ext dbt` and was emitted as a
+//                 spurious row.
+//
+// The fixture below plants a dotless directory called `dbt` next to a
+// `notes.txt` file.  Post-fix, `*.dbt` must return zero rows on this
+// drive; pre-fix it returned the `dbt` directory.
+
+/// Build a drive that contains NO `.dbt` files — only a dotless
+/// directory called `dbt` and a `notes.txt` file.  Used by the
+/// extension short-circuit / fallback regression tests.
+fn build_no_dbt_fixture() -> DriveIndex {
+    use alloc::sync::Arc;
+
+    use uffs_mft::index::{IndexNameRef, MftIndex, ROOT_FRS};
+
+    use crate::compact::build_compact_index;
+
+    let mut idx = MftIndex::new('C');
+
+    let root_off = idx.add_name(".");
+    let root = idx.get_or_create(ROOT_FRS);
+    root.stdinfo.set_directory(true);
+    root.first_name.name = IndexNameRef::new(root_off, 1, true, IndexNameRef::NO_EXTENSION);
+    root.first_name.parent_frs = ROOT_FRS;
+
+    // Dotless directory literally named `dbt`.  `intern_extension`
+    // assigns this `extension_id = 0` (no dot), so the resolved-ID
+    // fast path must NOT find it under the `dbt` bucket.  Pre-Bug-B
+    // fix the fallback incorrectly extracted `"dbt"` from the name
+    // and matched it anyway.
+    let dbt_name = "dbt";
+    let dbt_off = idx.add_name(dbt_name);
+    let dbt_ext = idx.intern_extension(dbt_name);
+    let dbt_rec = idx.get_or_create(300);
+    dbt_rec.first_name.name = IndexNameRef::new(
+        dbt_off,
+        u16::try_from(dbt_name.len()).expect("name too long"),
+        true,
+        dbt_ext,
+    );
+    dbt_rec.first_name.parent_frs = ROOT_FRS;
+    dbt_rec.stdinfo.flags = 0x10; // DIRECTORY
+    dbt_rec.stdinfo.set_directory(true);
+
+    // A regular `.txt` file so the drive isn't empty; its presence
+    // also guarantees the scan-path code is reachable.
+    let txt_name = "notes.txt";
+    let txt_off = idx.add_name(txt_name);
+    let txt_ext = idx.intern_extension(txt_name);
+    let txt_rec = idx.get_or_create(301);
+    txt_rec.first_name.name = IndexNameRef::new(
+        txt_off,
+        u16::try_from(txt_name.len()).expect("name too long"),
+        true,
+        txt_ext,
+    );
+    txt_rec.first_name.parent_frs = ROOT_FRS;
+    txt_rec.stdinfo.flags = 0x20;
+
+    let (drive, _, _) = build_compact_index('C', &idx);
+    DriveIndex {
+        drives: vec![Arc::new(drive)],
+    }
+}
+
+/// Bug A + B end-to-end: `*.dbt` on a drive with NO `.dbt` files
+/// (only a dotless `dbt` directory) must return zero rows.  Pre-fix
+/// this returned the `dbt` directory via the fallback extraction
+/// bug, and also ran a full scan before filtering (the perf half of
+/// the regression).
+#[test]
+fn search_index_ext_rare_zero_results_when_drive_lacks_extension() {
+    let index = build_no_dbt_fixture();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest::new("*.dbt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+
+    assert_eq!(
+        filters.extensions,
+        vec!["dbt".to_owned()],
+        "ext-glob safety net must promote *.dbt → extensions=[dbt]"
+    );
+    assert!(
+        result.rows.is_empty(),
+        "no rows may survive *.dbt on a drive without any .dbt extension; \
+         got {:?}",
+        result
+            .rows
+            .iter()
+            .map(|row| row.name().to_owned())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Bug B companion: even with the extension bucket populated by the
+/// resolve step, a dotless name that *happens* to equal the ext token
+/// must never slip through.  This pins the resolved-ID path (the fast
+/// path under Bug A's short-circuit) by asking for `*.txt` on the
+/// same fixture — the `dbt` directory must stay excluded and only
+/// `notes.txt` should be returned.
+#[test]
+fn search_index_ext_rare_dotless_dir_does_not_leak_into_other_extension() {
+    let index = build_no_dbt_fixture();
+    let mut filters = super::super::filters::SearchFilters::default();
+    let result = search_index(
+        &index,
+        SearchRequest::new("*.txt", &mut filters),
+        FieldId::Modified,
+        true,
+        &[],
+    );
+
+    let names: std::collections::HashSet<String> = result
+        .rows
+        .iter()
+        .map(|row| row.name().to_owned())
+        .collect();
+    assert_eq!(
+        names.len(),
+        1,
+        "only the one .txt file may match *.txt on this drive; got {names:?}"
+    );
+    assert!(
+        names.contains("notes.txt"),
+        "expected notes.txt, got {names:?}"
+    );
+    assert!(
+        !names.contains("dbt"),
+        "dotless directory 'dbt' must never match *.txt"
+    );
+}
+
 // ── <letter>: → drive-filter promotion safety-net tests ────────────
 //
 // These pin the dispatch-time rewrite in `search_index` that promotes
