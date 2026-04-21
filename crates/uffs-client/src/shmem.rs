@@ -492,28 +492,26 @@ pub fn write_paths_blob(blob: &str) -> io::Result<PathBuf> {
 /// file is fine on Linux/macOS (the kernel just walks the pages),
 /// but on Windows it hits three concrete caps:
 ///
-/// 1. **`WriteFile` on a pipe** (stdout redirected to `|`, `>`, or
-///    captured by a parent like PowerShell ISE) has an undocumented
-///    kernel buffer ceiling where huge single writes fail with
-///    `ERROR_INSUFFICIENT_BUFFER` / `ERROR_NOT_ENOUGH_MEMORY` or
-///    return the non-descriptive OS error 16388 that surfaces as
-///    "FormatMessageW returned 317".
-/// 2. **`WriteConsoleW`** (stdout is an interactive console) takes
-///    UTF-16 and internally caps per-call length.  Rust's stdlib
-///    already chunks this path, but only at ~8 K characters which
-///    means a 100 MB ASCII blob translates to ~12 M WriteConsoleW
-///    calls and can appear to hang.
-/// 3. **The userland mmap view** can be paged out during a long
-///    single `write_all`, and a touched page-fault that races with
-///    the daemon's shmem cleanup manifests as an opaque I/O error.
+/// 1. **`WriteFile` on a pipe** (stdout redirected to `|`, `>`, or captured by
+///    a parent like PowerShell ISE) has an undocumented kernel buffer ceiling
+///    where huge single writes fail with `ERROR_INSUFFICIENT_BUFFER` /
+///    `ERROR_NOT_ENOUGH_MEMORY` or return the non-descriptive OS error 16388
+///    that surfaces as "`FormatMessageW` returned 317".
+/// 2. **`WriteConsoleW`** (stdout is an interactive console) takes UTF-16 and
+///    internally caps per-call length.  Rust's stdlib already chunks this path,
+///    but only at ~8 K characters which means a 100 MB ASCII blob translates to
+///    ~12 M `WriteConsoleW` calls and can appear to hang.
+/// 3. **The userland mmap view** can be paged out during a long single
+///    `write_all`, and a touched page-fault that races with the daemon's shmem
+///    cleanup manifests as an opaque I/O error.
 ///
 /// 1 MiB chunks give us:
 /// - A single `WriteFile` well under any observed pipe ceiling.
-/// - ~100 progress points per 100 MB blob for tracing / pin-pointing
-///   which byte range failed on Windows regression reports.
-/// - Effectively zero overhead on Linux/macOS (the syscall cost of
-///   100 extra `write`s on a 100 MB payload is sub-millisecond).
-const STREAM_CHUNK_BYTES: usize = 1024 * 1024;
+/// - ~100 progress points per 100 MB blob for tracing / pin-pointing which byte
+///   range failed on Windows regression reports.
+/// - Effectively zero overhead on Linux/macOS (the syscall cost of 100 extra
+///   `write`s on a 100 MB payload is sub-millisecond).
+pub const STREAM_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Stream a raw `paths_blob` shmem file into `writer` with a chunked
 /// `write_all` loop, then delete the file.
@@ -601,18 +599,26 @@ pub fn stream_paths_blob_into<W: io::Write>(path: &Path, writer: &mut W) -> io::
     // `write_all` call fits comfortably in every pipe/console write
     // ceiling we've observed (see the constant's doc-comment).
     let bytes: &[u8] = &mmap;
+    let total = bytes.len();
     let mut offset: usize = 0;
-    while offset < bytes.len() {
-        let end = offset.saturating_add(STREAM_CHUNK_BYTES).min(bytes.len());
-        let chunk = &bytes[offset..end];
+    while offset < total {
+        let end = offset.saturating_add(STREAM_CHUNK_BYTES).min(total);
+        // `offset < total` and `end <= total` with `end > offset`, so
+        // this range is always in-bounds; use `.get()` to avoid the
+        // clippy::indexing_slicing lint while preserving the invariant.
+        let chunk = bytes.get(offset..end).ok_or_else(|| {
+            io::Error::other(format!(
+                "internal: shmem chunk slice {offset}..{end} out of bounds for \
+                 total {total} bytes (should be unreachable)"
+            ))
+        })?;
         writer.write_all(chunk).map_err(|err| {
             io::Error::new(
                 err.kind(),
                 format!(
-                    "write shmem blob to stdout (offset {offset}, chunk {} bytes, total {} bytes, \
+                    "write shmem blob to stdout (offset {offset}, chunk {} bytes, total {total} bytes, \
                      os_error {:?}): {err}",
                     chunk.len(),
-                    bytes.len(),
                     err.raw_os_error(),
                 ),
             )
