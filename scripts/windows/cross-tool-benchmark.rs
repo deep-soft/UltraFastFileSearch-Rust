@@ -428,11 +428,18 @@ fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: Output
     // Opt-in extras (e.g. `UFFS_EXTRA_ARGS="--profile"`).  Still lets
     // the daemon-timing column populate for anyone who wants it, but
     // without imposing `--profile` on every user of the bench harness.
-    if let Ok(extra) = env::var("UFFS_EXTRA_ARGS")
-        && !extra.trim().is_empty()
-    {
-        for tok in extra.split_whitespace() {
-            args.push(tok.to_string());
+    //
+    // NOTE: written as a nested `if let` rather than a let-chain
+    // (`if let ... && ...`) because `rust-script` drives this file
+    // through cargo's default edition (currently Rust 2021), which
+    // does not stabilise let-chains.  Upgrading to edition 2024 here
+    // would mean pinning an `//! ```cargo` manifest in the doc header
+    // just for this single site; the explicit nested form is cheaper.
+    if let Ok(extra) = env::var("UFFS_EXTRA_ARGS") {
+        if !extra.trim().is_empty() {
+            for tok in extra.split_whitespace() {
+                args.push(tok.to_string());
+            }
         }
     }
     eprintln!("      CMD: & '{}' {}  [sink={}]", bin.display(), args.join(" "), sink.label());
