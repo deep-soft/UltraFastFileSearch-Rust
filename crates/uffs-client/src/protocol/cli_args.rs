@@ -115,7 +115,20 @@ impl SearchParams {
                 "--sep" => raw.sep = flag_val(&arg, "--sep", &mut iter)?,
                 "--quotes" => raw.quotes = flag_val(&arg, "--quotes", &mut iter)?,
                 "--header" => {
-                    raw.header = parse_bool("--header", &flag_val(&arg, "--header", &mut iter)?)?;
+                    // Store as `Some(parsed)` so the assembly step
+                    // can distinguish "user explicitly set the flag"
+                    // from "user did not mention --header at all".
+                    // An absent `--header` must leave
+                    // `SearchParams::output_header` as `None` so the
+                    // daemon's `uffs_format::OutputConfig` default
+                    // (`header = true`) takes effect — otherwise the
+                    // CSV blob fast path would ship without a header
+                    // line, silently regressing the CLI's long-
+                    // standing "header by default" contract.
+                    raw.header = Some(parse_bool(
+                        "--header",
+                        &flag_val(&arg, "--header", &mut iter)?,
+                    )?);
                 }
                 "--pos" => raw.pos = flag_val(&arg, "--pos", &mut iter)?,
                 "--neg" => raw.neg = flag_val(&arg, "--neg", &mut iter)?,
@@ -329,7 +342,7 @@ struct RawCliArgs {
     columns: String,
     sep: String,
     quotes: String,
-    header: bool,
+    header: Option<bool>,
     pos: String,
     neg: String,
     query_mode: String,
@@ -654,7 +667,13 @@ impl RawCliArgs {
             output_file,
             output_separator: non_empty(self.sep),
             output_quote: non_empty(self.quotes),
-            output_header: Some(self.header),
+            // Forward `None` when the user did not pass `--header` so
+            // the daemon's `uffs_format::OutputConfig` default
+            // (`header = true`) wins.  Passing `Some(false)` here
+            // unconditionally (as we used to) stripped the header
+            // line from every default CSV query — see the comment
+            // on the `"--header" =>` arm above.
+            output_header: self.header,
             output_pos: non_empty(self.pos),
             output_neg: non_empty(self.neg),
             output_columns: non_empty(columns),
@@ -664,9 +683,16 @@ impl RawCliArgs {
             // gate its `try_pack_csv_blob` pre-format fast path on it.
             // Phase 3: `"csv"` and `"custom"` both take the fast path;
             // `"json"` / `"table"` stay on the CLI's local formatter.
-            // See `SearchParams::output_format` for the full
-            // rationale.
-            output_format: non_empty(self.format.clone()),
+            // See `SearchParams::output_format` for the full rationale.
+            //
+            // Always populated (defaulting to `"csv"` when the user did
+            // not pass `--format`) so the daemon's blob fast paths can
+            // treat an absent `output_format` as an *explicit* opt-out,
+            // which is how non-CLI callers (e.g. `uffs-mcp`) signal
+            // that they want structured `InlineRows` back, not a
+            // pre-rendered CSV blob they can't re-parse.  See the gate
+            // in `uffs_daemon::handler::RequestHandler::is_csv_blob_eligible`.
+            output_format: Some(non_empty(self.format.clone()).unwrap_or_else(|| "csv".to_owned())),
             // Drives to echo into the legacy drive footer when
             // `--format custom`.  Same letters as `drives` above for
             // the main CLI path (which populates `drives` from

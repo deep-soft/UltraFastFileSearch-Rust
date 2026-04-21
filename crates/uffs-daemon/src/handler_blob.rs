@@ -169,6 +169,14 @@ impl RequestHandler {
     /// requests, projected-JSON mode, and custom sort clauses all
     /// disqualify the fast path — the response must still carry the
     /// full [`SearchRow`] data for the CLI's row-based formatters.
+    ///
+    /// Also requires the caller to have explicitly opted into a
+    /// text-shaped payload via [`Self::caller_opted_into_blob_payload`]
+    /// (i.e. `output_format` is `Some("csv" | "custom")`).  Non-CLI
+    /// callers (`uffs-mcp`, programmatic API consumers) leave
+    /// `output_format` as `None` to signal they want structured
+    /// [`uffs_client::protocol::response::SearchRow`]s back, not a
+    /// newline-separated UTF-8 blob they would have to re-parse.
     pub(crate) fn is_path_only_projection(params: &SearchParams) -> bool {
         if params.projection.len() != 1 {
             return false;
@@ -176,10 +184,7 @@ impl RequestHandler {
         if !params.aggregations.is_empty() {
             return false;
         }
-        if matches!(
-            params.response_mode,
-            Some(uffs_client::protocol::SearchResponseMode::Json)
-        ) {
+        if !Self::caller_opted_into_blob_payload(params) {
             return false;
         }
         let Some(col) = params.projection.first() else {
@@ -422,14 +427,42 @@ impl RequestHandler {
         // structural formats owned by the CLI; pre-format would drift.
         // `custom` is accepted from Phase 3 onward — the legacy drive
         // footer is emitted by [`Self::render_csv_blob_payload`] via
-        // `uffs_format::write_legacy_drive_footer`.
-        if let Some(fmt) = params.output_format.as_deref()
-            && !fmt.eq_ignore_ascii_case("csv")
-            && !fmt.eq_ignore_ascii_case("custom")
-        {
-            return false;
-        }
-        true
+        // `uffs_format::write_legacy_drive_footer`.  An absent
+        // `output_format` is treated as "caller did not opt in" and
+        // rejected here — see [`Self::caller_opted_into_blob_payload`]
+        // for the full rationale.
+        Self::caller_opted_into_blob_payload(params)
+    }
+
+    /// Return `true` when the caller explicitly opted into receiving a
+    /// pre-rendered text blob payload instead of structured
+    /// [`uffs_client::protocol::response::SearchRow`]s.
+    ///
+    /// Both fast paths ([`Self::try_pack_paths_blob`] and
+    /// [`Self::try_pack_csv_blob`]) irreversibly consume the inline
+    /// row list and replace it with a UTF-8 blob variant
+    /// ([`SearchPayload::InlineBlob`] or
+    /// [`SearchPayload::ShmemBlob`]).  Callers that can't re-parse
+    /// that blob (e.g. `uffs-mcp`, which feeds
+    /// [`uffs_client::protocol::response::SearchRow`]s into its
+    /// tool-result JSON envelope) would see an "unexpected non-rows
+    /// payload" error as a result.
+    ///
+    /// The opt-in signal is
+    /// [`SearchParams::output_format`](uffs_client::protocol::SearchParams::output_format):
+    /// the CLI always populates it (defaulting to `"csv"` when the
+    /// user omits `--format`; see `SearchParams::from_cli_args` in
+    /// `uffs-client`), while non-CLI callers leave it `None`.  The
+    /// blob fast paths are therefore eligible only when
+    /// `output_format == Some("csv" | "custom")` — the two formats
+    /// the shared [`uffs_format::write_rows`] writer can reproduce
+    /// byte-for-byte.  `"json"` / `"table"` stay on the CLI's local
+    /// formatter (structural formats the daemon does not emit) and
+    /// `None` stays on structured rows (non-CLI callers).
+    pub(crate) fn caller_opted_into_blob_payload(params: &SearchParams) -> bool {
+        params.output_format.as_deref().is_some_and(|fmt| {
+            fmt.eq_ignore_ascii_case("csv") || fmt.eq_ignore_ascii_case("custom")
+        })
     }
 
     /// Return `true` when the caller's `output_format` requests the

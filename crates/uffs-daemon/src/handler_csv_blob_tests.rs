@@ -97,10 +97,14 @@ fn sample_dir_row(
     row
 }
 
-/// Happy path: a multi-column CSV request with default format
-/// (no `--format` override → treated as `csv`) must pre-format
-/// the rows into a [`SearchPayload::InlineBlob`] and consume the
-/// original `InlineRows`.
+/// Happy path: a multi-column CSV request from the CLI (with its
+/// default `output_format = Some("csv")`) must pre-format the rows
+/// into a [`SearchPayload::InlineBlob`] and consume the original
+/// `InlineRows`.
+///
+/// Non-CLI callers (`uffs-mcp` et al) leave `output_format = None`
+/// and are covered by
+/// [`try_pack_csv_blob_skips_when_output_format_none`] below.
 #[test]
 fn try_pack_csv_blob_happy_path_multi_column() {
     let rows = vec![
@@ -115,8 +119,12 @@ fn try_pack_csv_blob_happy_path_multi_column() {
         // trigger, so the CSV dispatcher gets the rows.
         projection: vec!["path".to_owned(), "name".to_owned(), "size".to_owned()],
         output_columns: Some("path,name,size".to_owned()),
-        // `output_format: None` means the CLI is using its
-        // default `csv` — the gate accepts this as eligible.
+        // CLI-shape opt-in: `SearchParams::from_cli_args` always
+        // populates `output_format`, defaulting to `"csv"` when the
+        // user omits `--format`.  Mirror that here so the test
+        // exercises the fast path the CLI actually hits in
+        // production.
+        output_format: Some("csv".to_owned()),
         ..SearchParams::default()
     };
 
@@ -264,6 +272,10 @@ fn try_pack_csv_blob_skips_aggregations() {
             kind: "count".to_owned(),
             ..Default::default()
         }],
+        // Still exercise the CLI opt-in so this test pins the
+        // aggregation-specific branch rather than incidentally
+        // tripping the `output_format.is_none()` reject.
+        output_format: Some("csv".to_owned()),
         ..SearchParams::default()
     };
 
@@ -293,6 +305,10 @@ fn try_pack_csv_blob_skips_when_output_file_set() {
     let params = SearchParams {
         projection: vec!["path".to_owned(), "size".to_owned()],
         output_file: Some("/tmp/dummy.csv".to_owned()),
+        // Opt into the CLI blob path so this test pins the
+        // `output_file`-specific branch rather than incidentally
+        // tripping the `output_format.is_none()` reject.
+        output_format: Some("csv".to_owned()),
         ..SearchParams::default()
     };
 
@@ -329,6 +345,8 @@ fn try_pack_csv_blob_accepts_columns_parity() {
     let params = SearchParams {
         projection: vec!["path".to_owned()],
         output_columns: Some("parity".to_owned()),
+        // CLI opt-in — mirrors `from_cli_args` default.
+        output_format: Some("csv".to_owned()),
         ..SearchParams::default()
     };
 
@@ -385,6 +403,8 @@ fn try_pack_csv_blob_accepts_parity_compat_flag() {
         projection: vec!["path".to_owned(), "size".to_owned()],
         output_columns: Some("path,size".to_owned()),
         output_parity_compat: Some(true),
+        // CLI opt-in — mirrors `from_cli_args` default.
+        output_format: Some("csv".to_owned()),
         ..SearchParams::default()
     };
 
@@ -424,6 +444,8 @@ fn try_pack_csv_blob_parity_forces_header_when_disabled() {
         projection: vec!["path".to_owned()],
         output_columns: Some("parity".to_owned()),
         output_header: Some(false),
+        // CLI opt-in — mirrors `from_cli_args` default.
+        output_format: Some("csv".to_owned()),
         ..SearchParams::default()
     };
 
@@ -579,6 +601,8 @@ fn try_pack_csv_blob_offloads_large_blob_to_shmem() {
     let params = SearchParams {
         projection: vec!["path".to_owned(), "name".to_owned(), "size".to_owned()],
         output_columns: Some("path,name,size".to_owned()),
+        // CLI opt-in — mirrors `from_cli_args` default.
+        output_format: Some("csv".to_owned()),
         ..SearchParams::default()
     };
     let cfg_core = crate::index::search::build_output_config(&params);
@@ -621,5 +645,60 @@ fn try_pack_csv_blob_offloads_large_blob_to_shmem() {
         !shmem_path.exists(),
         "stream_paths_blob_into must delete the file after \
          copying"
+    );
+}
+
+/// Regression test for the MCP "unexpected non-rows payload"
+/// failure: when `output_format` is `None` (the shape non-CLI
+/// callers like `uffs-mcp` produce — they never set a rendered
+/// format since they consume structured
+/// [`uffs_client::protocol::response::SearchRow`]s directly), the
+/// fast path MUST leave the payload as `InlineRows`.
+///
+/// Before the Phase 3.1 opt-in tightening, an absent
+/// `output_format` was silently treated as "default csv", which
+/// caused the daemon to pre-format an MCP search response into
+/// an `InlineBlob` and triggered the
+/// `into_inline_rows().ok_or(...)` guard in
+/// `uffs_mcp::tools::search` to fail with "unexpected non-rows
+/// payload from daemon search — MCP always requests structured
+/// rows".  See the healing changelog in
+/// `LOG/2026_04_20_20_23_CHANGELOG_HEALING.md` for the full
+/// incident timeline.
+#[test]
+fn try_pack_csv_blob_skips_when_output_format_none() {
+    let mut response = bare_response(vec![
+        sample_row('C', "C:\\a\\f1.dll".to_owned(), "f1.dll".to_owned(), 1024),
+        sample_row('C', "C:\\a\\f2.dll".to_owned(), "f2.dll".to_owned(), 2048),
+    ]);
+    let params = SearchParams {
+        // Multi-column projection typical of MCP search
+        // (`uffs_mcp::tools::search` defaults to
+        // name,ext,type,size,modified,path).
+        projection: vec![
+            "name".to_owned(),
+            "size".to_owned(),
+            "modified".to_owned(),
+            "path".to_owned(),
+        ],
+        // `response_mode = Some(Rows)` is what MCP ends up with
+        // after `populate_canonical_fields` fills the default.
+        response_mode: Some(SearchResponseMode::Rows),
+        // ❗ `output_format = None` is the MCP shape — never set
+        // by `uffs-mcp` because MCP doesn't render to stdout.
+        output_format: None,
+        ..SearchParams::default()
+    };
+
+    RequestHandler::try_pack_csv_blob(&params, &mut response);
+
+    assert!(
+        matches!(response.payload, SearchPayload::InlineRows(_)),
+        "MCP-shape request (output_format=None) must leave payload \
+         as InlineRows so `uffs_mcp::tools::search` can consume \
+         the structured rows; got {:?} — regression of the \
+         opt-in fast-path gate (see \
+         `RequestHandler::caller_opted_into_blob_payload`)",
+        response.payload
     );
 }

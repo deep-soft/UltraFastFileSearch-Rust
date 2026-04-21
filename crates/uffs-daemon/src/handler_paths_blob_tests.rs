@@ -86,6 +86,11 @@ fn try_pack_paths_blob_inlines_below_shmem_threshold() {
     let mut response = bare_response(rows);
     let params = SearchParams {
         projection: vec!["path".to_owned()],
+        // CLI-shape opt-in: `SearchParams::from_cli_args` always
+        // populates `output_format`, defaulting to `"csv"` when
+        // the user omits `--format`.  See the doc comment on
+        // `RequestHandler::caller_opted_into_blob_payload`.
+        output_format: Some("csv".to_owned()),
         ..SearchParams::default()
     };
 
@@ -156,6 +161,8 @@ fn try_pack_paths_blob_offloads_large_blob_to_shmem() {
     let mut response = bare_response(rows);
     let params = SearchParams {
         projection: vec!["path".to_owned()],
+        // CLI opt-in — mirrors `from_cli_args` default.
+        output_format: Some("csv".to_owned()),
         ..SearchParams::default()
     };
 
@@ -213,6 +220,11 @@ fn try_pack_paths_blob_skips_multi_column_projection() {
 
     let params = SearchParams {
         projection: vec!["path".to_owned(), "size".to_owned()],
+        // Exercise the CLI opt-in so this test pins the
+        // multi-column-specific branch rather than incidentally
+        // tripping the `caller_opted_into_blob_payload` reject
+        // that would fire on an absent `output_format`.
+        output_format: Some("csv".to_owned()),
         ..SearchParams::default()
     };
 
@@ -262,5 +274,46 @@ fn try_pack_paths_blob_skips_empty_response() {
     assert!(
         rows.is_empty(),
         "bare_response(Vec::new()) must produce an empty row list"
+    );
+}
+
+/// Regression test for the MCP "unexpected non-rows payload"
+/// failure on path-only projections.
+///
+/// A non-CLI caller (e.g. `uffs-mcp` with `projection: ["path"]`)
+/// leaves `output_format = None` because it does not render to
+/// stdout — it feeds structured
+/// [`uffs_client::protocol::response::SearchRow`]s into its
+/// tool-result envelope.  The fast path MUST therefore leave the
+/// payload as `InlineRows`; packing the rows into a newline-only
+/// blob the MCP layer cannot re-parse would surface as the
+/// "unexpected non-rows payload from daemon search" error.
+///
+/// Sister test of
+/// `try_pack_csv_blob_skips_when_output_format_none` in
+/// `handler_csv_blob_tests.rs`.
+#[test]
+fn try_pack_paths_blob_skips_when_output_format_none() {
+    let mut response = bare_response(vec![
+        path_only_row("C:\\a\\f1.dll".to_owned()),
+        path_only_row("C:\\a\\f2.dll".to_owned()),
+    ]);
+    let params = SearchParams {
+        projection: vec!["path".to_owned()],
+        response_mode: Some(SearchResponseMode::Rows),
+        // ❗ MCP shape: `output_format` intentionally absent.
+        output_format: None,
+        ..SearchParams::default()
+    };
+
+    RequestHandler::try_pack_paths_blob(&params, &mut response);
+
+    assert!(
+        matches!(response.payload, SearchPayload::InlineRows(_)),
+        "MCP-shape request (output_format=None) must leave payload \
+         as InlineRows so non-CLI callers receive structured \
+         rows; got {:?} — regression of the opt-in fast-path \
+         gate (see `RequestHandler::caller_opted_into_blob_payload`)",
+        response.payload
     );
 }
