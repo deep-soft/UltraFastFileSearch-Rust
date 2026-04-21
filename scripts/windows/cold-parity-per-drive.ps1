@@ -44,32 +44,53 @@ $CacheDir = Join-Path $env:LOCALAPPDATA 'uffs\cache'
 
 # ---------- binary resolution ------------------------------------------------
 
+# Track the resolution source so the preflight error can say exactly
+# where it looked instead of claiming it tried all three paths when
+# an explicit -UffsBin was passed.
+$script:UffsBinSource = 'unresolved'
+$script:CppBinSource  = 'unresolved'
+
 function Resolve-UffsBinary {
     param(
         [string] $Explicit,
         [string] $HomeBinName,
-        [string] $PathName
+        [string] $PathName,
+        [ref]    $SourceRef
     )
-    # 1. Explicit -UffsBin / -CppBin wins if provided.
+    # 1. Explicit -UffsBin / -CppBin wins if provided.  We still try to
+    #    canonicalise to a full path via Resolve-Path when it exists, so
+    #    the preflight shows something like
+    #    'C:\Users\rnio\GitHub\...\uffs.exe' instead of '.\target\release\...'.
     if ($Explicit) {
-        if (Test-Path -LiteralPath $Explicit) { return (Resolve-Path -LiteralPath $Explicit).Path }
-        # Still honour the explicit path even if not-yet-present — error
-        # surfaces later during invocation, which is clearer than silently
-        # swapping to a different binary.
+        $SourceRef.Value = "explicit -UffsBin/-CppBin ($Explicit)"
+        if (Test-Path -LiteralPath $Explicit) {
+            return (Resolve-Path -LiteralPath $Explicit).Path
+        }
+        # Honour the explicit path even if missing — the preflight error
+        # then reports it verbatim instead of silently swapping to a
+        # different binary.
         return $Explicit
     }
     # 2. $HOME\bin\<name> (user's local install).
     $homeBin = Join-Path $HOME "bin\$HomeBinName"
-    if (Test-Path -LiteralPath $homeBin) { return $homeBin }
+    if (Test-Path -LiteralPath $homeBin) {
+        $SourceRef.Value = "`$HOME\\bin ($homeBin)"
+        return $homeBin
+    }
     # 3. PATH lookup.
     $cmd = Get-Command $PathName -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    # 4. Fall back to bare name — invocation will fail with a clear error.
+    if ($cmd) {
+        $SourceRef.Value = "PATH ($($cmd.Source))"
+        return $cmd.Source
+    }
+    # 4. Nothing resolved — return the bare name so the preflight can
+    #    report all three candidates that were checked.
+    $SourceRef.Value = "unresolved (tried: explicit, `$HOME\\bin\\$HomeBinName, PATH)"
     return $PathName
 }
 
-$UffsBin = Resolve-UffsBinary -Explicit $UffsBin -HomeBinName 'uffs.exe' -PathName 'uffs.exe'
-$CppBin  = Resolve-UffsBinary -Explicit $CppBin  -HomeBinName 'uffs.com' -PathName 'uffs.com'
+$UffsBin = Resolve-UffsBinary -Explicit $UffsBin -HomeBinName 'uffs.exe' -PathName 'uffs.exe' -SourceRef ([ref] $script:UffsBinSource)
+$CppBin  = Resolve-UffsBinary -Explicit $CppBin  -HomeBinName 'uffs.com' -PathName 'uffs.com' -SourceRef ([ref] $script:CppBinSource)
 
 function Test-Invokable {
     param([string] $Target)
@@ -222,7 +243,11 @@ Start-Transcript -Path $OutputFile -Force | Out-Null
 
 Write-Divider "UFFS Cold-parity benchmark — $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')"
 Write-Host "  UffsBin      : $UffsBin"
+Write-Host "  UffsBin src  : $script:UffsBinSource"
 Write-Host "  CppBin       : $(if ($SkipCpp) { '(skipped)' } else { $CppBin })"
+if (-not $SkipCpp) {
+    Write-Host "  CppBin src   : $script:CppBinSource"
+}
 Write-Host "  Drives       : $($Drives -join ', ')"
 Write-Host "  CacheDir     : $CacheDir"
 Write-Host "  OutputFile   : $OutputFile"
@@ -233,8 +258,15 @@ Write-Host ''
 # bare name; Test-Invokable (defined near the top) handles both.
 if (-not (Test-Invokable $UffsBin)) {
     Write-Host "ERROR: UFFS Rust binary '$UffsBin' not found." -ForegroundColor Red
-    Write-Host "       Looked in (in order): explicit -UffsBin, $HOME\bin\uffs.exe, PATH." -ForegroundColor Red
-    Write-Host "       Pass -UffsBin <full-path> or add the binary to one of those locations." -ForegroundColor Red
+    Write-Host "       Source: $script:UffsBinSource" -ForegroundColor Red
+    if ($script:UffsBinSource -like 'explicit*') {
+        Write-Host "       You passed -UffsBin explicitly; the file at that path does not exist." -ForegroundColor Red
+        Write-Host "       Hint: drop -UffsBin to auto-resolve to $HOME\bin\uffs.exe or PATH," -ForegroundColor Red
+        Write-Host "             or use an absolute path like `$HOME\GitHub\UltraFastFileSearch\target\release\uffs.exe" -ForegroundColor Red
+    } else {
+        Write-Host "       Looked in (in order): explicit -UffsBin, $HOME\bin\uffs.exe, PATH." -ForegroundColor Red
+        Write-Host "       Pass -UffsBin <full-path> or add the binary to one of those locations." -ForegroundColor Red
+    }
     Stop-Transcript | Out-Null
     exit 1
 }
