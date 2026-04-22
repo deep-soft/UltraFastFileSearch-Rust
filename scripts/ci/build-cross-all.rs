@@ -6,27 +6,57 @@
 //! sha2 = "0.10"
 //! ```
 // =============================================================================
-// scripts/ci/build-cross-all.rs - UFFS Cross-Platform Build (Windows Only)
+// scripts/ci/build-cross-all.rs - UFFS Local Cross-Platform Build Helper
 // =============================================================================
 //
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 //
 // UFFS - UltraFastFileSearch: High-Performance File Search Tool
-//! Cross-compile UFFS binaries for Windows
+//! Local cross-compile + publish helper for UFFS binaries.
 //!
-//! **IMPORTANT**: UFFS is a Windows-only tool. It reads the NTFS Master File
-//! Table (MFT) directly using Windows kernel APIs. macOS and Linux binaries
-//! would only return "PlatformNotSupported" errors.
+//! ## Role in the release architecture
 //!
-//! This script cross-compiles Windows binaries from macOS/Linux hosts:
-//! - x86_64-pc-windows-msvc via cargo-xwin
+//! UFFS has **two distinct build paths**, intentionally separated:
 //!
-//! Prerequisites:
+//! ### 1. Local iteration (this script)
+//! Fast, developer-friendly builds used for `just q` / `just ship` and
+//! day-to-day deploy-to-Windows-test-box loops.  Uses `cargo-xwin` to
+//! cross-compile the MSVC target from macOS/Linux and (by default) uploads
+//! the shipping binaries to the GitHub Release matching the current
+//! workspace version via `gh release create` / `gh release upload`.
+//!
+//! ### 2. Official releases (`.github/workflows/release.yml`)
+//! Tag-triggered clean-room builds.  Each target is built natively on its
+//! own GitHub-hosted runner (windows-latest, macos-latest, ubuntu-22.04)
+//! with stable CPU baselines (`x86-64-v3` / `apple-m1`) and the full
+//! `[profile.release]` (LTO=fat, codegen-units=1, strip=symbols).  These
+//! are the authoritative binaries users download from GitHub Releases.
+//!
+//! **Prefer the tag-triggered `release.yml` path for real releases**:
+//! `git tag vX.Y.Z && git push origin vX.Y.Z` → CI builds and publishes.
+//! Keep this script for dev iteration and pre-release smoke tests.
+//!
+//! ## Platform support reality
+//!
+//! UFFS's **live** indexing (reading a mounted NTFS volume's Master File
+//! Table via Windows kernel APIs) is Windows-only.  The engine core is
+//! cross-platform, so macOS and Linux binaries are useful for **offline
+//! MFT analysis** — loading a captured `.mft` / `.bin` snapshot via
+//! `--mft-file`.  The shipping matrix in `release.yml` reflects this:
+//! Windows x86_64 as primary, macOS ARM64 + Linux x86_64 for offline.
+//!
+//! This script currently cross-compiles *only* the MSVC target; macOS and
+//! Linux binaries come from `release.yml`.  Future enhancement: teach
+//! this script to also build the native-host target for local smoke tests.
+//!
+//! ## Prerequisites (local use)
+//!
 //! - macOS or Linux host (for cross-compilation)
 //! - rustup target: rustup target add x86_64-pc-windows-msvc
 //! - cargo-xwin: cargo install cargo-xwin
 //! - LLVM/clang: brew install llvm (macOS) or apt install clang (Linux)
+//! - `gh` CLI authenticated, if uploading to a GitHub Release
 
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
