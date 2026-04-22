@@ -38,6 +38,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  RUSTC_WRAPPER: ""
   # NOTE: no workflow-level RUSTFLAGS here.  Each matrix row carries its own
   # `rustflags` field so every target gets a stable CPU baseline appropriate
   # for its ISA — never `target-cpu=native`, because a release binary built
