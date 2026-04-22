@@ -21,6 +21,11 @@ on:
         description: 'Commit SHA to release'
         required: false
         type: string
+      uffs_exe_only:
+        description: copy only uffs.exe (windows)
+        type: boolean
+        default: true
+        required: true
       patch_1:
         description: patch 1
         type: boolean
@@ -248,12 +253,15 @@ jobs:
           # scripts/ci/build-cross-all.rs.  Diagnostic binaries are NOT
           # shipped; they live in uffs-diag and stay workspace-only.
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            # for binary in uffs.exe uffsd.exe uffsmcp.exe uffs_mft.exe; do
-            for binary in *.exe; do
-              if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
-                cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
-              fi
-            done
+            if [[ "${{ inputs.uffs_exe_only }}" == "true" ]]; then
+              for binary in uffs.exe uffsd.exe uffsmcp.exe uffs_mft.exe; do
+                if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
+                  cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
+                fi
+              done
+            else
+              find target/${{ matrix.target }}/release -name "*.exe" -type f -exec cp {} release-artifacts/ \;
+            fi
           else
             for binary in uffs uffsd uffsmcp uffs_mft; do
               if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
