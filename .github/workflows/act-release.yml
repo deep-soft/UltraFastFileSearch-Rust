@@ -111,7 +111,7 @@ jobs:
     name: 🔨 Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     needs: release-preparation
-    timeout-minutes: ${{ matrix.timeout }}
+    # timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -120,22 +120,22 @@ jobs:
             os: ubuntu-latest
             artifact-name: uffs-linux-x64
             binary-suffix: ""
-            timeout: 20
+            timeout: 60
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact-name: uffs-windows-x64
             binary-suffix: ".exe"
-            timeout: 50
+            timeout: 120
           - target: x86_64-apple-darwin
             os: macos-latest
             artifact-name: uffs-macos-x64
             binary-suffix: ""
-            timeout: 20
+            timeout: 60
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact-name: uffs-macos-arm64
             binary-suffix: ""
-            timeout: 20
+            timeout: 60
 
     steps:
       - name: Checkout repository
@@ -206,7 +206,7 @@ jobs:
             #     cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
             #   fi
             # done
-            find target/${{ matrix.target }}/release -name "uffs*.exe" -type f -exec cp {} release-artifacts/ \;
+            find target/${{ matrix.target }}/release -name "*.exe" -type f -exec cp {} release-artifacts/ \;
           else
             # macOS (Intel & Apple Silicon) and Linux: copy known binary names
             for binary in uffs uffsd uffs_mft; do
