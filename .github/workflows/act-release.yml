@@ -256,9 +256,9 @@ jobs:
           # Create checksums
           cd release-artifacts
           if command -v sha256sum >/dev/null; then
-            sha256sum * > checksums.txt
+            sha256sum * > checksums.txt || true;
           else
-            shasum -a 256 * > checksums.txt
+            shasum -a 256 * > checksums.txt || true;
           fi
 
           echo "📦 Packaged binaries:"
