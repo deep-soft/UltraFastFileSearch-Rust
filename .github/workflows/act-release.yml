@@ -247,13 +247,14 @@ jobs:
       - name: Package binaries
         shell: bash
         run: |
+          uffs_exe_only=${{ inputs.uffs_exe_only }};
           mkdir -p release-artifacts
 
           # Shipping set — kept in lockstep with `RELEASE_BINARIES` in
           # scripts/ci/build-cross-all.rs.  Diagnostic binaries are NOT
           # shipped; they live in uffs-diag and stay workspace-only.
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            if [[ "${{ inputs.uffs_exe_only }}" == "true" ]]; then
+            if [[ "$uffs_exe_only" == "true" ]]; then
               for binary in uffs.exe uffsd.exe uffsmcp.exe uffs_mft.exe; do
                 if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
                   cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
@@ -286,6 +287,7 @@ jobs:
         run: |
           echo "🎁 Staging release bundle for ${{ matrix.target }}..."
 
+          uffs_exe_only=${{ inputs.uffs_exe_only }};
           STAGE_DIR="release-staging/${{ matrix.artifact-name }}"
           mkdir -p "$STAGE_DIR/assets"
 
@@ -294,11 +296,19 @@ jobs:
           # binaries (uffs-diag) stay workspace-only and are not shipped.
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             # for bin in uffs.exe uffsd.exe uffsmcp.exe uffs_mft.exe; do
-            for bin in *.exe; do
-              if [[ -f "target/${{ matrix.target }}/release/$bin" ]]; then
-                cp "target/${{ matrix.target }}/release/$bin" "$STAGE_DIR/"
-              fi
-            done
+            #  if [[ -f "target/${{ matrix.target }}/release/$bin" ]]; then
+            #    cp "target/${{ matrix.target }}/release/$bin" "$STAGE_DIR/"
+            #  fi
+            # done
+            if [[ "$uffs_exe_only" == "true" ]]; then
+              for binary in uffs.exe uffsd.exe uffsmcp.exe uffs_mft.exe; do
+                if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
+                  cp "target/${{ matrix.target }}/release/$binary" "$STAGE_DIR/"
+                fi
+              done
+            else
+              find target/${{ matrix.target }}/release -name "*.exe" -type f -exec cp {} $STAGE_DIR/ \;
+            fi
           else
             for bin in uffs uffsd uffsmcp uffs_mft; do
               if [[ -f "target/${{ matrix.target }}/release/$bin" ]]; then
