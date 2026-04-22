@@ -15,6 +15,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Brand identity pass** (chore, 2026-04-21) — publishing-grade brand
+  and trademark layer:
+  - `assets/brand/` with logos (ICO, ICNS, 7 hicolor PNG sizes),
+    wordmark, hero mark, web assets (favicons, Apple / Android touch
+    icons, Safari pinned-tab SVG, web manifest), and source SVGs —
+    23 files, ~600 KB.
+  - `LICENSES/LicenseRef-UFFS-Brand.txt` and a second `REUSE.toml`
+    annotation block carving `assets/brand/**` out of the MPL-2.0
+    default under `LicenseRef-UFFS-Brand`. Trademark and copyright
+    stay cleanly separated and machine-readable for REUSE lint.
+  - `TRADEMARK.md` at the repo root — canonical policy separating the
+    UFFS name and logo from the MPL-2.0-licensed source, modeled on
+    the Rust Foundation and CNCF trademark policies.
+  - README hero banner, centered header + 5-badge row, new
+    "License & Trademarks" section, and new "Maintainership &
+    Commercial" section crediting [Sky, LLC](https://github.com/skyllc-ai)
+    as the maintaining organization and outlining commercial UFFS
+    frontends currently in development.
+  - `CONTRIBUTING.md` gets a one-line contribution-agreement note
+    covering MPL-2.0 and TRADEMARK.md, plus a Contact section so
+    `TRADEMARK.md`'s "contact in CONTRIBUTING.md" pointer resolves.
+  - **Windows binary icon + `app.manifest`** (Phase 2 —
+    `crates/uffs-cli/build.rs`, `crates/uffs-cli/Cargo.toml`,
+    `crates/uffs-cli/app.manifest`).  The existing MSVC `/DELAYLOAD`
+    build-script block is now augmented with a `winresource` resource
+    embed on the same MSVC gate: icon from
+    `assets/brand/icons/uffs.ico`, plus `ProductName` /
+    `FileDescription` / `CompanyName` / `LegalCopyright` /
+    `OriginalFilename` version-info fields.  The manifest declares
+    `asInvoker`, `PerMonitorV2` DPI awareness, and long-path support.
+    Critical: the manifest stays `asInvoker` — elevation policy lives
+    in `uffs_client::daemon_ctl::ElevationPolicy` (v0.5.36 refactor);
+    a `requireAdministrator` manifest would pop UAC on every
+    `uffs <pattern>` invocation and defeat that work.  `winresource`
+    added as a build-dep (MSVC-only effect; compiles inertly on
+    other targets).  New `cargo:rerun-if-changed=app.manifest` +
+    `cargo:rerun-if-changed=../../assets/brand/icons/uffs.ico` so
+    edits retrigger the resource embed.  Clippy lint gate satisfied
+    with `#![allow(clippy::expect_used, reason = "…")]` scoped to the
+    build script — runtime code stays panic-free.
+  - **UFFS wordmark on user manual landing** (Phase 6 —
+    `docs/user-manual/index.md`).  Centred `uffs-wordmark.png` at
+    560 px above the H1 so the published docs carry the brand
+    consistently with the README.
+  - **macOS `.app` bundle layout** (Phase 3 —
+    `packaging/macos/Info.plist.in`,
+    `packaging/macos/bundle.sh`, `just/packaging.just`,
+    `justfile`).  New `just dist-macos` recipe: builds the release
+    binary and wraps it in `dist/UFFS.app` with the UFFS icns,
+    `LSUIElement` CLI-mode plist, and `CFBundleIdentifier =
+    com.skyllc.uffs`.  `Info.plist.in` carries a `@@VERSION@@`
+    placeholder that `bundle.sh` sed-substitutes from
+    `cargo pkgid -p uffs-cli`, so the bundle version can never drift
+    from `Cargo.toml`.  Output goes to the gitignored `dist/` tree;
+    packaging configuration lives under the tracked `packaging/`
+    root (new top-level folder).  End-to-end verified on macOS:
+    `dist/UFFS.app/Contents/MacOS/uffs --version` returns
+    `uffs 0.5.67` with the plist version fields templated correctly.
+  - **Linux `.desktop` + installer** (Phase 4 —
+    `packaging/linux/uffs.desktop`,
+    `packaging/linux/install.sh`, `just/packaging.just`).  New
+    `just install-linux` recipe (wraps `sudo
+    packaging/linux/install.sh`): builds the release binary,
+    drops it at `$PREFIX/bin/uffs` (default `/usr/local`), installs
+    the freedesktop entry under
+    `$PREFIX/share/applications/uffs.desktop`, and lays out the
+    full hicolor icon tree under
+    `$PREFIX/share/icons/hicolor/{16..512}/apps/uffs.png`.  `install.sh`
+    uses a portable `mkdir -p` + `install -m` helper (GNU `install
+    -D` is a GNU-only extension; the helper also works with BSD
+    `install` on macOS, which lets the script smoke-test from a mac
+    dev box).  `gtk-update-icon-cache` and `update-desktop-database`
+    run best-effort; absent tools fail silently.  End-to-end smoke-
+    tested from macOS against `PREFIX=/tmp/uffs-linux-install-test`:
+    9 files installed, binary runs, `.desktop` fields correct.
+  - **`just/packaging.just`** — new module imported from the root
+    `justfile` alongside the existing `build` / `bench_ci` /
+    `analysis` modules.  Keeps packaging concerns isolated so
+    `just --list` groups them and `build.just` stays focused on
+    compilation rather than distribution.
+  - **Release workflow bundles brand assets with every tag** (Phase 8
+    — `.github/workflows/release.yml`).  New `Stage release bundle`
+    step runs per matrix target after the existing binary build,
+    staging binaries + `README` / `LICENSE` / `TRADEMARK.md` /
+    `CHANGELOG.md` + platform-specific brand assets + packaging
+    helpers into `release-staging/<artifact-name>/`, then zipping
+    into `release-artifacts/<artifact-name>.zip` (7z on Windows,
+    `zip` on macOS / Linux).  macOS additionally runs
+    `packaging/macos/bundle.sh` so the ZIP ships a ready-to-run
+    `UFFS.app` — end users don't need to run the bundler themselves.
+    Linux ZIP embeds the full `assets/brand/icons/hicolor/` tree and
+    `packaging/linux/install.sh` so `sudo
+    packaging/linux/install.sh` works from the unzipped directory
+    with no extra downloads.  `Organize release assets` step updated
+    to copy per-platform ZIPs into `final-release/` as-is (the
+    platform suffix is already baked into
+    `matrix.artifact-name`); raw-binary platform-suffix loop kept
+    intact so existing automation that `wget`s a single binary keeps
+    working.  `CHECKSUMS.txt` covers every asset (ZIPs + raw
+    binaries).  Release notes rewritten to front the ZIP bundles as
+    the recommended path with raw-binary URLs documented as the
+    automation alternative.
+
 - **Regex alternation → ExtensionIndex fast path** (Phase 4, 2026-04-21 —
   `crates/uffs-core/src/search/dispatch.rs`,
   `crates/uffs-client/src/protocol/cli_args_helpers.rs`,
