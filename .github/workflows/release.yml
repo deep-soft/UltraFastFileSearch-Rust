@@ -33,6 +33,15 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Override `.cargo/config.toml`'s `rustc-wrapper = "sccache"` setting.
+  # sccache is a developer-machine convenience (`cargo install sccache`);
+  # GitHub-hosted runners don't have it pre-installed, so every `cargo`
+  # invocation fails immediately with `could not execute process sccache …`
+  # (see fork test run #24777036796 where all three build targets hit
+  # exit code 101 on this).  An empty `RUSTC_WRAPPER` disables the wrapper
+  # without touching config.toml (which would hurt local dev UX).
+  # ci.yml carries the same override (line 46 there).
+  RUSTC_WRAPPER: ""
   # NOTE: no workflow-level RUSTFLAGS here.  Each matrix row carries its own
   # `rustflags` field so every target gets a stable CPU baseline appropriate
   # for its ISA — never `target-cpu=native`, because a release binary built
@@ -345,7 +354,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b04936ee2ba37f5960c29b0ffda4e1e04f # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: release-artifacts
 
