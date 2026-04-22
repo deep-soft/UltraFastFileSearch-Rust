@@ -21,6 +21,11 @@ on:
         description: 'Commit SHA to release'
         required: false
         type: string
+      patch_1:
+        description: patch 1
+        type: boolean
+        default: true
+        required: true
   push:
     tags:
       - 'v*'
@@ -168,6 +173,21 @@ jobs:
         uses: actions/checkout@v6.0.2 # v6.0.2
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: patch .cargo/config.toml
+        # if: ${{ github.event.inputs.patch_1 == 'true' }}
+        # if: ${{ github.event == 'push' || (github.event == 'workflow_dispatch' && inputs.patch_1) }}
+        # test does not work for push
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.patch_1) }}
+        shell: bash
+        run: |
+          echo "github.event_name = [${{ github.event_name }}]";
+          echo "inputs.patch_1    = [${{ inputs.patch_1    }}]";
+          echo ".cargo/config.toml";
+          sed -ibak 's|rustc-wrapper|# rustc-wrapper|' .cargo/config.toml || true;
+          cat .cargo/config.toml | grep rustc-wrapper || true;
+          # cat .cargo/config.toml || true;
+          echo "done.";
 
       - name: Free up disk space (Linux only)
         if: runner.os == 'Linux'
