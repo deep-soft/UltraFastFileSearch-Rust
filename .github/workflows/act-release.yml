@@ -1,0 +1,599 @@
+# SPDX-FileCopyright (c) 2025-2026 SKY, LLC.
+# SPDX-License-Identifier: MPL-2.0
+# act-release.yml
+name: act - 🚀 UFFS Release Pipeline
+
+run-name: act - 🚀 UFFS Release ${{ inputs.version || github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v0.1.192)'
+        required: true
+        type: string
+      triggered_by:
+        description: 'Workflow that triggered this release'
+        required: false
+        default: 'manual'
+        type: string
+      commit_sha:
+        description: 'Commit SHA to release'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  actions: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # NOTE: no workflow-level RUSTFLAGS here.  Each matrix row carries its own
+  # `rustflags` field so every target gets a stable CPU baseline appropriate
+  # for its ISA — never `target-cpu=native`, because a release binary built
+  # on today's GitHub runner would SIGILL on any end-user CPU missing the
+  # runner's detected feature set (observed previously with `target-cpu=native`
+  # → proc-macro dylib SIGILL on nightly-2026-04-21; see ci.yml comment).
+  # Baselines used below:
+  #   x86_64 Linux / Windows   : x86-64-v3 (Haswell+/Zen+, AVX2+BMI2+FMA)
+  #   aarch64-apple-darwin     : apple-m1  (M1+, forward-compatible with M2/M3/M4)
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 1: Release Preparation & Validation
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  release-preparation:
+    name: 📋 Release Preparation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      tag: ${{ steps.validate.outputs.tag }}
+      release-name: ${{ steps.validate.outputs.release-name }}
+    steps:
+      - name: Checkout repository
+        # uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v6.0.2 # v6.0.2
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Validate release inputs
+        id: validate
+        shell: bash
+        run: |
+          # Handle both workflow_dispatch and tag push
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${{ github.ref_name }}"
+          fi
+
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            echo "Expected format: v0.1.192"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+          echo "release-name=UFFS $VERSION" >> $GITHUB_OUTPUT
+
+          echo "✅ Release validation passed"
+          echo "📦 Version: $VERSION"
+          echo "🏷️ Tag: $VERSION"
+          echo "🚀 Triggered by: ${{ inputs.triggered_by || 'tag-push' }}"
+
+      - name: Check if tag already exists (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          if git tag -l | grep -q "^${{ steps.validate.outputs.tag }}$"; then
+            echo "❌ Tag ${{ steps.validate.outputs.tag }} already exists"
+            exit 1
+          fi
+          echo "✅ Tag is available"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 2: Cross-Platform Binary Builds
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Target matrix
+  #
+  # Three targets, each earning its slot:
+  #   - x86_64-pc-windows-msvc   — primary product: live NTFS MFT indexing
+  #   - aarch64-apple-darwin     — offline MFT analysis on Apple Silicon
+  #   - x86_64-unknown-linux-gnu — offline MFT analysis on Linux (servers,
+  #                                forensics VMs, Docker, CI harnesses)
+  #
+  # Dropped vs previous iterations:
+  #   - x86_64-apple-darwin (Intel Mac) — Apple deprecated the platform;
+  #     Apple Silicon ARM64 build runs under Rosetta 2 if absolutely needed.
+  #
+  # Per-target `rustflags` (stable baselines, never `native`):
+  #   - x86_64 Linux/Windows: `target-cpu=x86-64-v3` — Haswell+/Zen+ ISA.
+  #   - aarch64 macOS:         `target-cpu=apple-m1` — M1 baseline forwards-
+  #     compatible with M2/M3/M4 while avoiding config.toml's `native`
+  #     override which would bake in runner-specific chip detection.
+  # ─────────────────────────────────────────────────────────────────────────
+  build-release-binaries:
+    name: 🔨 Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    needs: release-preparation
+    timeout-minutes: ${{ matrix.timeout }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Timeouts are sized for a COLD build (empty rust-cache).
+          # LTO=fat + codegen-units=1 + Polars-heavy workspace is slow on
+          # 2-core GitHub-hosted runners — especially ubuntu-22.04.  Warm
+          # subsequent runs are roughly 1/3 of these numbers.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact-name: uffs-windows-x64
+            binary-suffix: ".exe"
+            rustflags: "-C target-cpu=x86-64-v3"
+            timeout: 120
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact-name: uffs-macos-x64
+            binary-suffix: ""
+            timeout: 60
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact-name: uffs-macos-arm64
+            binary-suffix: ""
+            rustflags: "-C target-cpu=apple-m1 -C link-arg=-Wl,-dead_strip"
+            timeout: 60
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            artifact-name: uffs-linux-x64
+            binary-suffix: ""
+            rustflags: "-C target-cpu=x86-64-v3 -C link-arg=-Wl,--gc-sections"
+            timeout: 60
+
+    steps:
+      - name: Checkout repository
+        # uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v6.0.2 # v6.0.2
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Free up disk space (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          # Polars + ring + LTO=fat combined consume significant disk on
+          # ubuntu-22.04's default 14GB free budget.  Reclaim ~20GB from
+          # preinstalled SDKs we do not use for a release build.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          sudo rm -rf /usr/local/share/boost /usr/local/graalvm
+          df -h /
+
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
+
+      - name: Cache dependencies
+        # uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@v2 # v2
+        with:
+          key: release-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build optimized release binaries
+        shell: bash
+        run: |
+          echo "🔨 Building optimized release binaries for ${{ matrix.target }}"
+          echo "   RUSTFLAGS=$RUSTFLAGS"
+
+          # Build all workspace binaries for the target.  Profile settings
+          # (LTO=fat, codegen-units=1, strip=symbols, panic=abort) come from
+          # [profile.release] in Cargo.toml — do NOT override them here.
+          # The previous `CARGO_PROFILE_RELEASE_LTO=false` override silently
+          # disabled LTO in release artifacts; removed so users get the
+          # perf the profile was designed for.
+          cargo build --release --target ${{ matrix.target }} --workspace --bins
+
+          echo "✅ Build completed for ${{ matrix.target }}"
+
+      - name: Show binary sizes
+        shell: bash
+        run: |
+          echo "📐 Release binary sizes:"
+          ls -lh target/${{ matrix.target }}/release/ 2>/dev/null | grep -E 'uffs|uffsd|uffsmcp|uffs_mft' || true
+
+      - name: Package binaries
+        shell: bash
+        run: |
+          mkdir -p release-artifacts
+
+          # Shipping set — kept in lockstep with `RELEASE_BINARIES` in
+          # scripts/ci/build-cross-all.rs.  Diagnostic binaries are NOT
+          # shipped; they live in uffs-diag and stay workspace-only.
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            # for binary in uffs.exe uffsd.exe uffsmcp.exe uffs_mft.exe; do
+            for binary in *.exe; do
+              if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
+                cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
+              fi
+            done
+          else
+            for binary in uffs uffsd uffsmcp uffs_mft; do
+              if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
+                cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
+              fi
+            done
+          fi
+
+          # Create checksums
+          cd release-artifacts
+          if command -v sha256sum >/dev/null; then
+            sha256sum * > checksums.txt
+          else
+            shasum -a 256 * > checksums.txt
+          fi
+
+          echo "📦 Packaged binaries:"
+          ls -la
+
+      - name: Stage release bundle
+        shell: bash
+        run: |
+          echo "🎁 Staging release bundle for ${{ matrix.target }}..."
+
+          STAGE_DIR="release-staging/${{ matrix.artifact-name }}"
+          mkdir -p "$STAGE_DIR/assets"
+
+          # ── Binaries ───────────────────────────────────────────────────────
+          # Same shipping set as `Package binaries` above.  Diagnostic
+          # binaries (uffs-diag) stay workspace-only and are not shipped.
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            # for bin in uffs.exe uffsd.exe uffsmcp.exe uffs_mft.exe; do
+            for bin in *.exe; do
+              if [[ -f "target/${{ matrix.target }}/release/$bin" ]]; then
+                cp "target/${{ matrix.target }}/release/$bin" "$STAGE_DIR/"
+              fi
+            done
+          else
+            for bin in uffs uffsd uffsmcp uffs_mft; do
+              if [[ -f "target/${{ matrix.target }}/release/$bin" ]]; then
+                cp "target/${{ matrix.target }}/release/$bin" "$STAGE_DIR/"
+              fi
+            done
+          fi
+
+          # ── Documentation (common across every platform) ─────────────────────
+          cp README.md LICENSE TRADEMARK.md CHANGELOG.md "$STAGE_DIR/"
+
+          # ── Platform-specific brand assets + packaging helpers ──────────────
+          case "${{ matrix.target }}" in
+            *-windows-*)
+              cp assets/brand/icons/uffs.ico     "$STAGE_DIR/assets/"
+              cp assets/brand/uffs-hero-1024.png "$STAGE_DIR/assets/"
+              ;;
+            *-apple-*)
+              cp assets/brand/icons/uffs.icns    "$STAGE_DIR/assets/"
+              cp assets/brand/uffs-hero-1024.png "$STAGE_DIR/assets/"
+              mkdir -p "$STAGE_DIR/packaging/macos"
+              cp packaging/macos/Info.plist.in   "$STAGE_DIR/packaging/macos/"
+              cp packaging/macos/bundle.sh       "$STAGE_DIR/packaging/macos/"
+              chmod +x "$STAGE_DIR/packaging/macos/bundle.sh"
+
+              # Pre-build a ready-to-run UFFS.app inside the bundle so
+              # end users don't need to run bundle.sh themselves.  Runs
+              # the committed script from the repo root (not the staged
+              # copy) since bundle.sh expects repo-root-relative paths.
+              chmod +x packaging/macos/bundle.sh
+              packaging/macos/bundle.sh \
+                "target/${{ matrix.target }}/release/uffs" \
+                "$STAGE_DIR/UFFS.app"
+              ;;
+            *-linux-*)
+              cp -r assets/brand/icons/hicolor   "$STAGE_DIR/assets/"
+              cp assets/brand/uffs-hero-1024.png "$STAGE_DIR/assets/"
+              mkdir -p "$STAGE_DIR/packaging/linux"
+              cp packaging/linux/install.sh      "$STAGE_DIR/packaging/linux/"
+              cp packaging/linux/uffs.desktop    "$STAGE_DIR/packaging/linux/"
+              chmod +x "$STAGE_DIR/packaging/linux/install.sh"
+              ;;
+          esac
+
+          echo "📂 Staging tree:"
+          find "$STAGE_DIR" -maxdepth 4 -type f | sort
+
+          # ── ZIP the bundle ─────────────────────────────────────────────────
+          # 7z on Windows (pre-installed, no Git-Bash zip dependency);
+          # `zip` on macOS/Linux.  The ZIP goes straight into
+          # release-artifacts/ so the existing Upload step picks it up
+          # alongside the raw binaries.
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a -tzip \
+              "release-artifacts/${{ matrix.artifact-name }}.zip" \
+              "$STAGE_DIR/*" > /dev/null
+          else
+            (cd release-staging && \
+             zip -rq "../release-artifacts/${{ matrix.artifact-name }}.zip" \
+                     "${{ matrix.artifact-name }}")
+          fi
+
+          echo "📦 Bundle ZIP:"
+          ls -la "release-artifacts/${{ matrix.artifact-name }}.zip"
+
+          # Clean up staging; only the ZIP needs to survive into the
+          # uploaded artifact.
+          rm -rf release-staging
+
+      - name: Upload release artifacts
+        # uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@v7 # v7
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: release-artifacts/
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 3: Create GitHub Release
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  create-github-release:
+    name: 📦 Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [release-preparation, build-release-binaries]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        # uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v6.0.2 # v6.0.2
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        # uses: actions/download-artifact@3e5f45b04936ee2ba37f5960c29b0ffda4e1e04f # v8
+        uses: actions/download-artifact@v8 # v8
+        with:
+          path: release-artifacts
+
+      - name: Organize release assets
+        shell: bash
+        run: |
+          mkdir -p final-release
+
+          # Organize artifacts by platform.  Two shipping formats:
+          #   - Per-platform ZIP bundle (everything: binaries + brand +
+          #     docs + packaging helpers; the recommended download).
+          #   - Individual raw binaries with platform suffix
+          #     (backwards-compat URLs for users automating \`wget\` of
+          #     a single binary).
+          for artifact_dir in release-artifacts/*/; do
+            artifact_name=$(basename "$artifact_dir")
+            echo "Processing $artifact_name..."
+
+            for file in "$artifact_dir"*; do
+              if [[ -f "$file" && "$file" != *"checksums.txt" ]]; then
+                filename=$(basename "$file")
+                # ZIP bundles keep their original name (the platform
+                # suffix is already baked into matrix.artifact-name).
+                if [[ "$filename" == *.zip ]]; then
+                  cp "$file" "final-release/$filename"
+                  continue
+                fi
+                # Raw binaries get a platform suffix appended.
+                if [[ "$artifact_name" == *"linux"* ]]; then
+                  cp "$file" "final-release/${filename}-linux-x64"
+                elif [[ "$artifact_name" == *"windows"* ]]; then
+                  # $filename already ends in .exe from the windows build
+                  base="${filename%.exe}"
+                  cp "$file" "final-release/${base}-windows-x64.exe"
+                elif [[ "$artifact_name" == *"macos-arm64"* ]]; then
+                  cp "$file" "final-release/${filename}-macos-arm64"
+                fi
+              fi
+            done
+          done
+
+          # Create combined checksums across every release asset
+          # (both the ZIP bundles and the raw binaries).
+          cd final-release
+          sha256sum * > CHECKSUMS.txt
+
+          echo "📦 Final release assets:"
+          ls -la
+
+      - name: Generate release notes
+        id: release-notes
+        shell: bash
+        run: |
+          cat > release-notes.md << 'EOF'
+          # UFFS ${{ needs.release-preparation.outputs.version }}
+
+          ## 🚀 What's New
+
+          See the [full changelog](https://github.com/${{ github.repository }}/commits/${{ needs.release-preparation.outputs.version }})
+          and `CHANGELOG.md` in the repository for details.
+
+          ## 📦 Downloads
+
+          UFFS is a **Windows-native NTFS search engine** — live indexing of
+          the Master File Table requires Windows.  The engine core is
+          cross-platform, so macOS and Linux builds are shipped for
+          **offline MFT analysis** from captured `.mft` / `.bin` snapshots.
+
+          Each platform ships as a **one-download ZIP bundle** with the
+          binaries, the UFFS brand assets, the full documentation set
+          (`README.md`, `LICENSE`, `TRADEMARK.md`, `CHANGELOG.md`), and
+          the platform's packaging helper.  Individual binaries are also
+          attached for automation that `wget`s a single file.
+
+          ### 🟦 Windows x86_64 — primary live-indexing target
+          - **`uffs-windows-x64.zip`** — recommended: CLI + daemon + MCP
+            + MFT tooling + icon + docs.  The `.exe`s ship with the UFFS
+            icon and `asInvoker` manifest embedded.
+          - Raw binaries: `uffs-windows-x64.exe`, `uffsd-windows-x64.exe`,
+            `uffsmcp-windows-x64.exe`, `uffs_mft-windows-x64.exe`.
+
+          ### 🍏 macOS Apple Silicon — offline MFT analysis
+          - **`uffs-macos-arm64.zip`** — recommended: raw binaries + a
+            ready-to-run `UFFS.app` bundle + icns + docs +
+            `packaging/macos/bundle.sh` for rebuilding.
+          - Raw binaries: `uffs-macos-arm64`, `uffsd-macos-arm64`,
+            `uffsmcp-macos-arm64`, `uffs_mft-macos-arm64`.
+          - Intel Macs: run the arm64 build under Rosetta 2.
+
+          ### 🐧 Linux x86_64 — offline MFT analysis
+          - **`uffs-linux-x64.zip`** — recommended: binaries + full
+            hicolor icon tree + `packaging/linux/install.sh` (drops the
+            `.desktop` entry and icons under `/usr/local` with one
+            `sudo` invocation) + docs.
+          - Raw binaries: `uffs-linux-x64`, `uffsd-linux-x64`,
+            `uffsmcp-linux-x64`, `uffs_mft-linux-x64`.
+          - Use with `--mft-file` to analyse captured MFT snapshots on servers, forensics VMs, or in Docker.
+
+          ## 🔐 Verification
+
+          All binaries are accompanied by SHA256 checksums in `CHECKSUMS.txt`.
+          Verify with:
+          ```bash
+          sha256sum -c CHECKSUMS.txt
+          ```
+
+          ## 📋 Installation
+
+          ### Recommended: ZIP bundle
+          1. Download `uffs-<platform>.zip` for your platform.
+          2. Unzip anywhere.
+          3. **Windows**: the `.exe`s are ready to run; place them on `PATH`.  Icon + `asInvoker` manifest are already baked into the PE.
+          4. **macOS**: double-click `UFFS.app`, or move the raw `uffs` binary into `/usr/local/bin/`.  First launch: Gatekeeper warns because the bundle is unsigned — right-click → Open to confirm, or run `xattr -dr com.apple.quarantine UFFS.app`.
+          5. **Linux**: run `sudo packaging/linux/install.sh` from the unzipped directory — installs the binary, the `.desktop` entry, and the full hicolor icon set.  Override prefix with `sudo PREFIX=/opt/uffs packaging/linux/install.sh`.
+
+          ### Raw-binary path (automation)
+          - Download the individual binary, e.g. `uffs-linux-x64`.
+          - macOS / Linux: `chmod +x uffs-*` then optionally `mv uffs-* /usr/local/bin/uffs`.
+          - Windows: the `.exe` is ready to run; place it on `PATH`.
+
+          ## 🛠️ Build Information
+
+          - **Triggered by**: ${{ inputs.triggered_by || 'tag-push' }}
+          - **Commit**: ${{ inputs.commit_sha || github.sha }}
+          - **Toolchain**: pinned nightly from `rust-toolchain.toml`
+          - **Profile**: `[profile.release]` — LTO=fat, codegen-units=1, strip=symbols
+          - **CPU baselines**: x86_64 = `x86-64-v3` (Haswell+/Zen+); macOS ARM64 = `apple-m1` (M1+)
+
+          ---
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/commits/${{ needs.release-preparation.outputs.version }}
+          EOF
+
+      - name: Create Git tag (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "${{ needs.release-preparation.outputs.tag }}" -m "Release ${{ needs.release-preparation.outputs.version }}"
+          git push origin "${{ needs.release-preparation.outputs.tag }}"
+
+      - name: Create GitHub Release
+        # uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        uses: softprops/action-gh-release@v3 # v3
+        with:
+          tag_name: ${{ needs.release-preparation.outputs.tag }}
+          name: ${{ needs.release-preparation.outputs.release-name }}
+          body_path: release-notes.md
+          files: final-release/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release summary
+        shell: bash
+        run: |
+          echo "## 🎉 Release ${{ needs.release-preparation.outputs.version }} Created!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Release Details:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ needs.release-preparation.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ needs.release-preparation.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: ${{ inputs.triggered_by || 'tag-push' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ inputs.commit_sha || github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🚀 Artifacts Built:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Windows x86_64 (primary — live NTFS MFT)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ macOS ARM64 (offline MFT analysis)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Linux x86_64 (offline MFT analysis)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Links:" >> $GITHUB_STEP_SUMMARY
+          echo "- [📦 Release Page](https://github.com/${{ github.repository }}/releases/tag/${{ needs.release-preparation.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [📋 Full Changelog](https://github.com/${{ github.repository }}/commits/${{ needs.release-preparation.outputs.version }})" >> $GITHUB_STEP_SUMMARY
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Failure Notification — opens a GitHub Issue on release failure
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  notify-failure:
+    name: 🔔 Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [release-preparation, build-release-binaries, create-github-release]
+    if: failure()
+    permissions:
+      issues: write
+    steps:
+      - name: Create failure issue
+        # uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        uses: actions/github-script@v9 # v9
+        with:
+          script: |
+            const title = `🔴 Release Pipeline Failed — ${context.sha.substring(0, 7)}`;
+            const body = [
+              `## Release Pipeline Failed`,
+              ``,
+              `| Field | Value |`,
+              `|-------|-------|`,
+              `| **Workflow** | \`${context.workflow}\` |`,
+              `| **Run** | [#${context.runNumber}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) |`,
+              `| **Branch** | \`${context.ref}\` |`,
+              `| **Commit** | [\`${context.sha.substring(0, 7)}\`](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}) |`,
+              `| **Triggered by** | @${context.actor} |`,
+              ``,
+              `⚠️ **This is a release pipeline failure — immediate attention required.**`,
+              ``,
+              `📧 Notification sent`,
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'ci-failure',
+              per_page: 1,
+            });
+
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body: body,
+              });
+              core.info(`Updated existing issue #${existing.data[0].number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['ci-failure'],
+                assignees: ['githubrobbi'],
+              });
+              core.info('Created new failure issue');
+            }
