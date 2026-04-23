@@ -63,8 +63,12 @@ const STEP_COVERAGE_TESTS: &str = "04-coverage-tests";
 const STEP_PARALLEL_VALIDATION: &str = "05-parallel-validation";
 const STEP_FORMAT_CHECK: &str = "06-format-check";
 const STEP_VERSION_INCREMENT: &str = "07-version-increment";
-const STEP_BUILD_RELEASE: &str = "08-build-release";
-const STEP_DEPLOY_BINARY: &str = "09-deploy-binary"; // Upload to GitHub Release
+// Steps 08 (build-release) and 09 (deploy-binary) were removed: `just ship`
+// no longer produces binaries locally.  The release branch PR (step 11)
+// lands the version bump on main; `auto-tag-release.yml` then tags the
+// commit and invokes `release.yml`, which builds + publishes from GitHub
+// Actions.  Step numbering is preserved to keep in-flight resumable-ship
+// state files compatible with older pipeline runs.
 const STEP_GIT_COMMIT: &str = "10-git-commit";
 const STEP_GIT_PUSH: &str = "11-git-push";
 
@@ -76,8 +80,6 @@ const ALL_STEPS: &[&str] = &[
     STEP_PARALLEL_VALIDATION,
     STEP_FORMAT_CHECK,
     STEP_VERSION_INCREMENT,
-    STEP_BUILD_RELEASE,
-    STEP_DEPLOY_BINARY,
     STEP_GIT_COMMIT,
     STEP_GIT_PUSH,
 ];
@@ -520,9 +522,31 @@ impl PipelineContext {
         ));
 
         // Optional sccache integration (massive win in CI and on developer machines).
+        //
+        // sccache refuses to wrap rustc when CARGO_INCREMENTAL=1 because
+        // incremental builds produce non-cacheable artifacts (sccache bails
+        // out at `sccache rustc -vV` with
+        // "incremental compilation is prohibited").  `just/shared.just`
+        // exports CARGO_INCREMENTAL=1 for local dev UX, so whenever we enable
+        // sccache for the pipeline we must pair it with CARGO_INCREMENTAL=0
+        // at the SAME scope.  Previously the unset lived in a per-command
+        // guard further down — which caught `cargo` and `rust-script` but
+        // not `git` (whose pre-push hook shells out to cargo internally and
+        // inherits this env).  Keeping the pair in the global env is the
+        // only scope that covers every subprocess the pipeline spawns.
         let sccache_available = !no_sccache && command_exists("sccache");
         if sccache_available {
             global_env.push(("RUSTC_WRAPPER".into(), "sccache".into()));
+            global_env.push(("CARGO_INCREMENTAL".into(), "0".into()));
+            // Diagnostic marker — presence of this line in the pipeline
+            // output proves the fresh binary (post-`fix(ci): pair
+            // CARGO_INCREMENTAL=0 with RUSTC_WRAPPER=sccache`) is the
+            // one being executed, not a stale rust-script cache entry.
+            if verbose {
+                eprintln!(
+                    "[ci-pipeline][sccache-fix] global_env: RUSTC_WRAPPER=sccache + CARGO_INCREMENTAL=0 paired"
+                );
+            }
         }
 
         // Create log file for non-verbose mode
@@ -611,12 +635,13 @@ async fn execute_command_with_env(
         command.env(key, value);
     }
 
-    // sccache prohibits incremental compilation - it conflicts with its caching model.
-    // Force CARGO_INCREMENTAL=0 for cargo and rust-script (which runs cargo internally).
-    // This overrides the `incremental = true` in profile.dev from Cargo.toml.
-    if ctx.sccache_enabled && (cmd == "cargo" || cmd == "rust-script") {
-        command.env("CARGO_INCREMENTAL", "0");
-    }
+    // NOTE: the sccache/`CARGO_INCREMENTAL=0` pairing is enforced in the
+    // global env at context-construction time (see `ContextBuilder`),
+    // which correctly covers every subprocess the pipeline spawns —
+    // including `git`, whose pre-push hook shells out to cargo.  A
+    // per-command guard here would only have caught `cargo` /
+    // `rust-script`, leaving hook-invoked cargo processes to fail with
+    // "incremental compilation is prohibited".
 
     // In verbose mode, inherit stdio; otherwise capture to log file
     if ctx.verbose {
@@ -792,19 +817,18 @@ async fn phase2_optimized(ctx: &PipelineContext) -> Result<()> {
     state.save().context("Failed to save workflow state")?;
     println!("✅ Workflow state updated with new version: {}", state.current_version);
 
-    // Step 2: Build release binary
-    build_release(ctx).await?;
-
-    // Step 3: Deploy binary
-    deploy_binary(ctx).await?;
-
-    // Step 4: Git commit
+    // Step 2: Git commit (signed version-bump commit on the working branch).
     git_commit(ctx).await?;
 
-    // Step 5: Git push
+    // Step 3: Git push -- opens release/vX.Y.Z PR with auto-merge queued.
+    //
+    // Binaries are NOT built here.  Once the PR merges to main,
+    // `auto-tag-release.yml` tags the commit and invokes `release.yml`,
+    // which produces the reproducible cross-platform binaries on
+    // GitHub-hosted runners.
     git_push(ctx).await?;
 
-    println!("{}", "✅ PHASE 2 COMPLETE: Versioned, deployed, committed, and pushed!".green().bold());
+    println!("{}", "✅ PHASE 2 COMPLETE: Versioned, committed, and release PR opened!".green().bold());
     Ok(())
 }
 
@@ -824,70 +848,16 @@ async fn version_bump(ctx: &PipelineContext) -> Result<()> {
     Ok(())
 }
 
-/// Check if release build mode is explicitly disabled via UFFS_DEV_BUILD env var.
-/// Default is RELEASE mode for the ship lane (phase2).
-/// Set UFFS_DEV_BUILD=1 to force dev mode in ship lane (not recommended).
-fn is_release_build() -> bool {
-    // Only build dev if explicitly requested via UFFS_DEV_BUILD=1
-    let force_dev = std::env::var("UFFS_DEV_BUILD")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    !force_dev
-}
-
-async fn build_release(ctx: &PipelineContext) -> Result<()> {
-    let release_build = is_release_build();
-    let build_type = if release_build { "release" } else { "dev" };
-    println!("{}", format!("🔨 Building {} binary...", build_type).blue());
-
-    let args: Vec<&str> = if release_build {
-        vec!["build", "--release", "--workspace"]
-    } else {
-        vec!["build", "--workspace"]
-    };
-
-    execute_command(
-        &format!("Build {}", build_type),
-        "cargo",
-        &args,
-        ctx,
-    ).await?;
-    println!("{} {} binary built successfully", "✅".green(), build_type);
-    Ok(())
-}
-
-/// Deploy binary: cross-compile and upload to GitHub Release.
-/// On macOS ARM64, runs cross-compilation for Windows and uploads to GitHub Release.
-/// On other platforms, runs local build only.
-async fn deploy_binary(ctx: &PipelineContext) -> Result<()> {
-    println!("{}", "📦 Building and uploading to GitHub Release...".blue());
-
-    // Detect if we're on macOS ARM64 for cross-compilation
-    let is_macos_arm64 = std::env::consts::OS == "macos" && std::env::consts::ARCH == "aarch64";
-
-    if is_macos_arm64 {
-        // Cross-compile for Windows from macOS
-        // Note: The xwin-dev profile handles COFF archive size limits for polars crates
-        println!("{} Running cross-platform build...", "🌍".blue());
-        execute_command(
-            "Cross-platform build",
-            "rust-script",
-            &["scripts/ci/build-cross-all.rs"],
-            ctx,
-        ).await?;
-    } else {
-        println!("{} Running local build...", "🖥️".blue());
-        execute_command(
-            "Local build & install",
-            "rust-script",
-            &["scripts/dev/build-local.rs"],
-            ctx,
-        ).await?;
-    }
-
-    println!("{} Binary built and uploaded to GitHub Release", "✅".green());
-    Ok(())
-}
+// `build_release` + `deploy_binary` + `is_release_build` were removed in the
+// "GitHub builds the binaries" hardening pass.  Binaries are now produced
+// exclusively by `.github/workflows/release.yml` on GitHub-hosted runners
+// (triggered by `auto-tag-release.yml` on version-bump merge to main), so
+// the developer's laptop is no longer the trust root for shipped bytes.
+//
+// For a local dev build, run `just use-local` (renamed from `just use` in
+// the same refactor).  For release-parity smoke testing run
+// `gh workflow run release.yml --ref main -f version=vX.Y.Z` against a
+// throwaway version and clean up with `gh release delete vX.Y.Z --cleanup-tag --yes`.
 
 async fn git_commit(ctx: &PipelineContext) -> Result<()> {
     println!("{}", "📝 Creating auto-generated commit...".blue());
@@ -972,12 +942,17 @@ async fn git_push(ctx: &PipelineContext) -> Result<()> {
              GitHub Release v{version} are already live (step 09).  This PR \
              routes the corresponding commit through branch-protection rules.\n\n\
              ## Auto-merge\n\n\
-             `--auto --rebase` is queued — GitHub will merge as soon as the \
-             required status checks pass.  Rebase preserves the GPG signature \
-             on single-commit release PRs.\n\n\
+             `--auto --squash` is queued — GitHub will merge as soon as the \
+             required status checks pass.  Squash is required because \
+             `main-protection` mandates signed commits, and GitHub's \
+             rebase-auto-merge cannot sign the rebased commit; the \
+             squash-merge commit is signed by GitHub's own key, which \
+             satisfies `required_signatures: true`.  The original author's \
+             signed commit remains verifiable in the PR branch history.\n\n\
              ## After merge\n\n\
-             Local `{current_branch}` already contains this commit; \
-             `git pull` will fast-forward cleanly once CI merges the PR."
+             Local `{current_branch}` had this commit with a different SHA \
+             before squash rewrote it onto main; recover with \
+             `git fetch origin && git reset --hard origin/{current_branch}`."
         );
 
         println!("📬 Opening release PR");
@@ -1006,12 +981,22 @@ async fn git_push(ctx: &PipelineContext) -> Result<()> {
         );
     }
 
-    // Enable auto-merge (rebase).  If the 6 required status checks are already
-    // green by this point, GitHub merges immediately.  Rebase-merging a
-    // single-commit release PR preserves the author's GPG signature on the
-    // commit that lands on `main` — matching the pre-refactor semantics where
-    // the pipeline pushed the signed commit directly.
-    println!("⚡ Ensuring auto-merge is enabled (rebase strategy)");
+    // Enable auto-merge (squash).  Squash is mandatory on this repo because:
+    //
+    //   1. `main-protection` ruleset requires `required_signatures: true`
+    //      (every commit on main must be signed).
+    //   2. GitHub's rebase-auto-merge cannot sign the rebased commit; it
+    //      fails with `GraphQL: Base branch requires signed commits.
+    //      Rebase merges cannot be automatically signed by GitHub`
+    //      (observed on PR #36, the first real `just ship` for v0.5.69).
+    //   3. GitHub signs the squash-merge commit with its own key, which
+    //      satisfies `required_signatures: true` on main.
+    //
+    // Trust trade-off: the author's GPG signature is lost on the commit
+    // that lands on main (it becomes a GitHub-signed squash).  The
+    // original signed commit remains verifiable in the PR branch history,
+    // and every prior merged PR on this repo uses the same pattern.
+    println!("⚡ Ensuring auto-merge is enabled (squash strategy)");
     execute_command(
         "Enable auto-merge",
         "gh",
@@ -1020,7 +1005,7 @@ async fn git_push(ctx: &PipelineContext) -> Result<()> {
             "merge",
             &release_branch,
             "--auto",
-            "--rebase",
+            "--squash",
         ],
         ctx,
     )
@@ -1037,7 +1022,11 @@ async fn git_push(ctx: &PipelineContext) -> Result<()> {
     );
     println!(
         "   💡 After merge:  {}",
-        format!("git pull origin {} --rebase", current_branch).cyan()
+        format!(
+            "git fetch origin && git reset --hard origin/{} (squash rewrites commit SHA)",
+            current_branch
+        )
+        .cyan()
     );
 
     Ok(())
@@ -1341,9 +1330,9 @@ async fn run_enhanced_phase1(state: &mut WorkflowState, ctx: &PipelineContext) -
 }
 
 async fn run_enhanced_phase2(state: &mut WorkflowState, ctx: &PipelineContext) -> Result<()> {
-    println!("{}", "📦 PHASE 2: Version Increment, Build & Deploy".blue().bold());
+    println!("{}", "📦 PHASE 2: Version Increment + Release PR".blue().bold());
 
-    // Step 6: Version increment
+    // Step 07: Version increment
     execute_step_with_tracking(state, STEP_VERSION_INCREMENT, || async {
         increment_version().await
     }).await?;
@@ -1355,23 +1344,18 @@ async fn run_enhanced_phase2(state: &mut WorkflowState, ctx: &PipelineContext) -
         state.save()?;
     }
 
-    // Step 7: Build release
-    execute_step_with_tracking(state, STEP_BUILD_RELEASE, || async {
-        build_release(ctx).await
-    }).await?;
-
-    // Step 8: Deploy binary (upload to GitHub Release)
-    execute_step_with_tracking(state, STEP_DEPLOY_BINARY, || async {
-        deploy_binary(ctx).await
-    }).await?;
-
-    // Step 9: Git commit
+    // Step 10: Git commit (signed version-bump commit on the working branch).
     execute_step_with_tracking(state, STEP_GIT_COMMIT, || async { git_commit(ctx).await }).await?;
 
-    // Step 10: Git push
+    // Step 11: Git push -- opens release/vX.Y.Z PR with auto-merge queued.
+    //
+    // Binaries are NOT built here.  Once the PR merges to main,
+    // `auto-tag-release.yml` tags the commit and invokes `release.yml`,
+    // which produces the reproducible cross-platform binaries on
+    // GitHub-hosted runners.
     execute_step_with_tracking(state, STEP_GIT_PUSH, || async { git_push(ctx).await }).await?;
 
-    println!("{}", "✅ PHASE 2 COMPLETE - Build and deploy successful!".green().bold());
+    println!("{}", "✅ PHASE 2 COMPLETE - Release PR opened; GitHub Actions will produce binaries.".green().bold());
     Ok(())
 }
 
@@ -1422,9 +1406,10 @@ async fn run_ship_pipeline(ctx: &PipelineContext) -> Result<()> {
     println!("{}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".dimmed());
     run_enhanced_phase1(&mut state, ctx).await.context("Phase 1 (validation) failed")?;
 
-    // Run Phase 2: Deploy
+    // Run Phase 2: Version bump + release PR open (GitHub Actions takes
+    // over from there via `auto-tag-release.yml` -> `release.yml`).
     println!("{}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".dimmed());
-    run_enhanced_phase2(&mut state, ctx).await.context("Phase 2 (deploy) failed")?;
+    run_enhanced_phase2(&mut state, ctx).await.context("Phase 2 (release PR) failed")?;
 
     // Mark workflow as completed
     state.advance_phase(WorkflowPhase::Completed)?;
@@ -1465,8 +1450,11 @@ async fn run_ship_pipeline(ctx: &PipelineContext) -> Result<()> {
     }
 
     println!();
-    println!("{} Binary uploaded to GitHub Release", "📦".green());
-    println!("{} Changes committed and pushed", "📤".green());
+    println!("{} Release PR opened; auto-merge queued", "📤".green());
+    println!("{} GitHub Actions will build + publish v{} on merge",
+        "👷".green(), state.current_version);
+    println!("   💡 Watch: {}",
+        "gh run list --repo <owner>/<repo> --workflow=release.yml --limit 5".cyan());
 
     Ok(())
 }
@@ -1576,10 +1564,6 @@ async fn main() -> Result<()> {
     if let Some(log_path) = &ctx.log_file {
         println!("{} Log file: {}", "📝".blue(), log_path.display());
     }
-
-    // Show build mode (RELEASE is default for ship lane, set UFFS_DEV_BUILD=1 to force dev)
-    let build_mode = if is_release_build() { "RELEASE (default for ship)" } else { "DEV (forced via UFFS_DEV_BUILD=1)" };
-    println!("{} Build mode: {}", "🔧".blue(), build_mode);
 
     // Start sccache server early (no-op if already running). This is safe and fast.
     if ctx.sccache_enabled {

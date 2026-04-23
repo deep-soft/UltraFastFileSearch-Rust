@@ -20,6 +20,13 @@ on:
       - 'scripts/ci/check_file_size_policy.sh'
       - 'scripts/ci/file_size_exceptions.txt'
       - 'scripts/ci/ci-pipeline.rs'
+      # Doc-only changes must still trigger Tier 1 because
+      # `main-protection` has `bypass_actors: []` (no admin bypass) and
+      # requires 6 Tier 1 status checks.  Without docs in paths, a
+      # pure-doc PR (e.g. PR #35) would deadlock: paths filter skips
+      # CI → required checks never report → branch protection blocks
+      # merge indefinitely.  Cost is ~2 min of cached CI runs.
+      - '**/*.md'
   pull_request:
     branches: [ main ]
     paths:
@@ -35,11 +42,29 @@ on:
       - 'scripts/ci/check_file_size_policy.sh'
       - 'scripts/ci/file_size_exceptions.txt'
       - 'scripts/ci/ci-pipeline.rs'
+      # Doc-only changes must still trigger Tier 1 because
+      # `main-protection` has `bypass_actors: []` (no admin bypass) and
+      # requires 6 Tier 1 status checks.  Without docs in paths, a
+      # pure-doc PR (e.g. PR #35) would deadlock: paths filter skips
+      # CI → required checks never report → branch protection blocks
+      # merge indefinitely.  Cost is ~2 min of cached CI runs.
+      - '**/*.md'
   workflow_dispatch:
 
 permissions:
   contents: read
   issues: write
+
+# Cancel superseded CI runs on a PR branch (new push supersedes the
+# previous), but do NOT cancel in-progress runs on `main` / `develop`
+# pushes — those feed into required checks and cancelling them can
+# deadlock branch protection on a fast-follow merge.  Same keying
+# scheme as the other workflows in this repo (auto-tag-release,
+# dependabot-review, cargo-vet-refresh) so GitHub's cross-workflow
+# concurrency display stays consistent.
+concurrency:
+  group: tier-1-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -85,6 +110,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Free up disk space
+        # `--all-targets --all-features` on a Polars-heavy workspace consumes
+        # significant disk on ubuntu-22.04's default ~14 GB free budget.
+        # Reclaim ~20 GB from preinstalled SDKs we do not use in CI so that
+        # future dep-tree growth does not push the job over the edge.  Same
+        # block as test-build / rustdoc / tests / doc-tests.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          sudo rm -rf /usr/local/share/boost /usr/local/graalvm
+          df -h /
 
       - name: Install pinned nightly (from rust-toolchain.toml)
         run: rustup show
@@ -253,6 +289,47 @@ jobs:
       - name: Run dependency & license check
         run: cargo deny check
 
+      # ─── cargo-vet: audit trail for every resolved crate ──────────────
+      #
+      # What this enforces:
+      #
+      #   Every crate-version in the resolved dep graph must be covered
+      #   by either (a) an imported audit from a trusted upstream
+      #   (Mozilla, Google, Bytecode Alliance, ISRG, Zcash), (b) an
+      #   entry in our own `supply-chain/audits.toml`, or (c) a
+      #   time-limited exemption in `supply-chain/config.toml`.
+      #
+      # When this fails:
+      #
+      #   A Dependabot PR (or any PR) bumping to a version the imports
+      #   don't cover will fail here.  The fix is one of:
+      #
+      #     1. `cargo vet regenerate imports` — pulls the latest
+      #        upstream audits; most bumps become covered this way
+      #        because Mozilla/Google are fast to re-audit.
+      #     2. `cargo vet regenerate exemptions` — grandfathers the
+      #        new version in.  Acceptable for incidental bumps
+      #        (pragmatic trade-off for a small team).
+      #     3. `cargo vet certify <crate> <version>` — do the audit
+      #        yourself; highest value but highest cost.
+      #
+      # The scheduled `cargo-vet-refresh.yml` workflow runs option 1
+      # weekly, so in practice most Dependabot PRs sail through
+      # without intervention.
+      - name: Install cargo-vet
+        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        with:
+          tool: cargo-vet
+
+      - name: Run cargo-vet check
+        # `--locked` forbids fetching new imports at check time — the
+        # dev (or the scheduled refresh) is responsible for keeping
+        # imports.lock current.  This prevents a silent upstream
+        # compromise from slipping through CI just because a fresh
+        # audit record was added between the PR being opened and
+        # the check running.
+        run: cargo vet check --locked
+
   file-size-policy:
     name: Tier 1 / File Size Policy
     runs-on: ubuntu-22.04
@@ -295,12 +372,19 @@ jobs:
               `📧 Notification sent to: githubrobbi@nios.net`,
             ].join('\n');
 
+            // Per-workflow label so Tier 1 / Tier 2 / Release failures
+            // triage to distinct issues.  Previously all three workflows
+            // deduped onto a single `ci-failure` label, which meant a
+            // release failure could end up buried as a comment on an
+            // old Tier 2 flake issue.
+            const label = 'ci-failure-tier-1';
+
             // Check for existing open issue to avoid duplicates
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              labels: 'ci-failure',
+              labels: label,
               per_page: 1,
             });
 
@@ -319,7 +403,7 @@ jobs:
                 repo: context.repo.repo,
                 title: title,
                 body: body,
-                labels: ['ci-failure'],
+                labels: [label, 'ci-failure'],
                 assignees: ['githubrobbi'],
               });
               core.info('Created new failure issue');
