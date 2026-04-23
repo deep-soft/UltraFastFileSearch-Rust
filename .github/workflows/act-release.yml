@@ -194,13 +194,19 @@ jobs:
             artifact-name: uffs-windows-x64
             binary-suffix: ".exe"
             rustflags: "-C target-cpu=x86-64-v3"
-            timeout: 75
+            timeout: 120
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact-name: uffs-macos-x64
+            binary-suffix: ""
+            rustflags: "-C target-cpu=x86-64-v3 -C link-arg=-Wl,-dead_strip"
+            timeout: 60
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact-name: uffs-macos-arm64
             binary-suffix: ""
             rustflags: "-C target-cpu=apple-m1 -C link-arg=-Wl,-dead_strip"
-            timeout: 45
+            timeout: 60
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             artifact-name: uffs-linux-x64
