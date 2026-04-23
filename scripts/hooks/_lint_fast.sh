@@ -10,11 +10,15 @@
 #
 # Budget:
 #   * docs / config-only commits:        sub-2 s
-#   * Rust commits (warm sccache):       ~15–25 s (three clippy passes +
-#                                        xwin Windows check)
-#   * Rust commits (cold xwin / cache):  ~40–90 s on first run after
-#                                        `cargo-xwin` downloads the MSVC
-#                                        SDK into `~/Library/Caches/xwin/`
+#   * Rust commits (warm sccache):       ~8–15 s (three clippy passes;
+#                                        cargo's target-dir lock serialises
+#                                        them so the 2nd and 3rd are
+#                                        incremental-cheap)
+#
+# Windows xwin check was removed from this gate in Phase 2 of
+# dev-flow-implementation-plan.md § 2.4 because its 40-90 s cold cost
+# violated the T1 budget.  xwin lives at pre-push (advisory) and
+# `pr-fast.yml` (authoritative native `windows-check` job).
 #
 # Soft-skips missing optional tools (typos, taplo, reuse) with a
 # one-line install hint so new contributors are not blocked before
@@ -36,11 +40,6 @@
 #                                  unwrap/expect allowed in tests)
 #                              + `just lint-ci`     (CI-mirror
 #                                  `--all-targets -D warnings`)
-#                              + `just check-windows` (cargo-xwin cross-
-#                                  check of `#[cfg(windows)]` paths; CI
-#                                  only runs Ubuntu so this is the ONLY
-#                                  pre-PR gate that exercises Windows-
-#                                  specific code)
 #                              Same lint stack CI and `just ship` Phase 1
 #                              enforce — nothing dirty gets committed.
 #      * TOML changes staged  → `taplo fmt --check` (if installed)
@@ -49,9 +48,8 @@
 #      * Always-on            → `file-size-policy`
 #    When invoked without a staged set (e.g. `just lint-fast` on a clean
 #    worktree) we still run the always-on gates plus an fmt-check so
-#    the recipe is useful as a "quick sanity" pass.  Clippy passes and
-#    the Windows cross-check are skipped on the no-staged path to keep
-#    manual invocations snappy.
+#    the recipe is useful as a "quick sanity" pass.  Clippy passes are
+#    skipped on the no-staged path to keep manual invocations snappy.
 # 3. Per-job output is captured to a tmpdir and only dumped on failure so
 #    the success path stays uncluttered.
 
@@ -62,19 +60,37 @@ if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
     C_BLUE=$'\033[0;34m'
     C_CYAN=$'\033[0;36m'
     C_GREEN=$'\033[0;32m'
-    C_YELLOW=$'\033[1;33m'
     C_RED=$'\033[0;31m'
     C_RESET=$'\033[0m'
 else
-    C_BLUE= C_CYAN= C_GREEN= C_YELLOW= C_RED= C_RESET=
+    # Explicit empty-string form.  The `VAR=` shorthand works but
+    # trips SC1007 because a stray trailing space would turn it into
+    # `VAR= other_cmd` (a single-line env override in front of a
+    # command invocation).  Using `VAR=''` makes the intent
+    # unambiguous and keeps the linter quiet.
+    C_BLUE=''
+    C_CYAN=''
+    C_GREEN=''
+    C_RED=''
+    C_RESET=''
 fi
 
 # ── Staged-file inventory ──────────────────────────────────────────────
+# Tool-routing rationale (see also .taplo.toml):
+# `supply-chain/*.toml` is cargo-vet's data store, formatted by
+# `cargo vet fmt` (which has opinions taplo does not share — e.g.
+# column-aligned trailing comments).  Two formatters fighting over the
+# same file is a pre-push dead-end, so we split ownership at the
+# pre-commit hook: taplo handles every other TOML; cargo-vet handles
+# the store.
 STAGED_ALL=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
 STAGED_TOML=$(printf '%s\n' "$STAGED_ALL" | grep '\.toml$' || true)
-has_staged_rs()   { printf '%s\n' "$STAGED_ALL" | grep -q '\.rs$';   }
-has_staged_toml() { [[ -n "${STAGED_TOML//[[:space:]]/}" ]]; }
-has_any_staged()  { [[ -n "${STAGED_ALL//[[:space:]]/}" ]]; }
+STAGED_TOML_NONVET=$(printf '%s\n' "$STAGED_TOML" | grep -v '^supply-chain/' || true)
+STAGED_VET=$(printf '%s\n' "$STAGED_TOML" | grep '^supply-chain/' || true)
+has_staged_rs()          { printf '%s\n' "$STAGED_ALL" | grep -q '\.rs$';   }
+has_staged_toml_nonvet() { [[ -n "${STAGED_TOML_NONVET//[[:space:]]/}" ]]; }
+has_staged_vet()         { [[ -n "${STAGED_VET//[[:space:]]/}" ]]; }
+has_any_staged()         { [[ -n "${STAGED_ALL//[[:space:]]/}" ]]; }
 
 printf '%s🚦 lint-fast — staged-scoped parallel gate%s\n' "$C_BLUE" "$C_RESET"
 START=$(date +%s)
@@ -103,30 +119,35 @@ if has_staged_rs || ! has_any_staged; then
 fi
 
 # Rust changes → full ultra-strict clippy trio (same lints `just ship`
-# Phase 1 runs) PLUS Windows cross-check (catches `#[cfg(windows)]`
-# drift CI can't see — GitHub Actions only runs Ubuntu).  Skipped on
-# no-staged invocations so manual `just lint-fast` stays snappy;
-# `just lint-pre-push` or `just lint-all` cover the clippy passes on a
-# clean worktree.
+# Phase 1 runs).  Skipped on no-staged invocations so manual
+# `just lint-fast` stays snappy; `just lint-pre-push` or `just lint-all`
+# cover the clippy passes on a clean worktree.
 #
-# `check-windows` is soft-skipped when `cargo-xwin` is missing so first-
-# time contributors aren't blocked before running
-# `just install-dev-tools`.
+# Windows cross-check (cargo-xwin) was REMOVED from pre-commit in
+# Phase 2 of dev-flow-implementation-plan.md § 2.4 because its 40-90 s
+# cold cost violates the < 15 s T1 budget.  xwin lives at pre-push
+# (advisory) and `pr-fast.yml` (authoritative native `windows-check`).
 if has_staged_rs; then
     spawn "lint-prod"    just lint-prod
     spawn "lint-tests"   just lint-tests
     spawn "lint-ci"      just lint-ci
-    if command -v cargo-xwin >/dev/null 2>&1; then
-        spawn "check-windows" just check-windows
-    fi
 fi
 
-# TOML changes → taplo fmt --check on staged files only.  Checking the
-# whole workspace would drive-by-flag unrelated TOML drift (test
-# definitions, historical configs) that is out of scope for this commit.
-if has_staged_toml && command -v taplo >/dev/null 2>&1; then
+# TOML changes (non-supply-chain) → taplo fmt --check on staged files
+# only.  Checking the whole workspace would drive-by-flag unrelated
+# TOML drift (test definitions, historical configs) that is out of
+# scope for this commit.
+if has_staged_toml_nonvet && command -v taplo >/dev/null 2>&1; then
     # shellcheck disable=SC2086
-    spawn "taplo" bash -c "taplo fmt --check $(printf '%s ' $STAGED_TOML)"
+    spawn "taplo" bash -c "taplo fmt --check $(printf '%s ' $STAGED_TOML_NONVET)"
+fi
+
+# Supply-chain TOML changes → format-drift detector for cargo-vet's
+# store.  Logic lives in `scripts/hooks/_check_vet_fmt.sh`; the hook
+# just wires it into the parallel scheduler.  See that script's
+# header for the cargo-vet-owns-supply-chain rationale.
+if has_staged_vet && command -v cargo-vet >/dev/null 2>&1; then
+    spawn "vet-fmt" bash scripts/hooks/_check_vet_fmt.sh
 fi
 
 # Any staged text → typos (optional).  Runs against the full workspace
@@ -168,7 +189,12 @@ command -v typos >/dev/null 2>&1 || missing+=("typos-cli")
 command -v taplo >/dev/null 2>&1 || missing+=("taplo-cli")
 command -v reuse >/dev/null 2>&1 || missing+=("reuse (pipx install reuse)")
 if (( ${#missing[@]} > 0 )); then
-    printf '  %s💡%s optional tools missing: %s — run %s`just install-dev-tools`%s\n' \
+    # NOTE: no backticks around `just install-dev-tools` — the cyan
+    # ANSI codes already emphasise the command, and literal backticks
+    # inside a single-quoted printf format string trip shellcheck
+    # SC2016 ("expressions don't expand in single quotes") even
+    # though they are harmless literal bytes in this context.
+    printf '  %s💡%s optional tools missing: %s — run %sjust install-dev-tools%s\n' \
         "$C_CYAN" "$C_RESET" "${missing[*]}" "$C_CYAN" "$C_RESET"
 fi
 
