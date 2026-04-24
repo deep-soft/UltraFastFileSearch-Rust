@@ -18,14 +18,14 @@
 #     is typo-squatted / malicious) surfaces as a PR annotation for
 #     the reviewer to investigate before merge.
 #
-# Rationale — why a dedicated workflow and not a step in `ci.yml`:
+# Rationale — why a dedicated workflow and not a step in `pr-fast.yml`:
 #
 #   Security policy is strongest when it's legible in one file.  A
 #   separate workflow lets a future maintainer find every
 #   Dependabot-specific guard in one place without sifting through the
-#   full Tier 1 pipeline.  Zero runtime cost on human PRs (guard
+#   full PR-blocking pipeline.  Zero runtime cost on human PRs (guard
 #   short-circuits via the `actor` filter), and the output surfaces as
-#   a PR-level annotation / check, not buried in a Tier 1 log.
+#   a PR-level annotation / check, not buried in a pr-fast log.
 #
 # What this does NOT do:
 #
@@ -81,9 +81,16 @@ jobs:
         # resolved dependency graph between the pre-bump state and the
         # post-bump state.  Dependabot PRs are single-commit by
         # default, so HEAD~1 is always main's tip at branch-open time.
+        #
+        # §2.8: pin `ref:` to the PR head SHA (Dependabot's actual
+        # bump commit) instead of the synthetic merge commit that
+        # `actions/checkout` defaults to for `pull_request` events.
+        # That way `HEAD~1:Cargo.lock` is deterministically the
+        # pre-bump lockfile, not a merge-specific artifact.
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 2
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Count Cargo.lock crate-count delta
         shell: bash
