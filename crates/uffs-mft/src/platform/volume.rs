@@ -6,8 +6,8 @@
 //! Exception: Volume handle + write-protect fallback handles; splitting would
 //! fragment the handle lifecycle.
 
-use std::mem::size_of;
-use std::time::Duration;
+use core::mem::size_of;
+use core::time::Duration;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{
@@ -25,7 +25,7 @@ use super::extents::{MftExtent, get_retrieval_pointers};
 use crate::error::{MftError, Result};
 use crate::ntfs::NtfsBootSector;
 
-/// FILE_READ_DATA access right (0x0001) - required to read data from a
+/// `FILE_READ_DATA` access right (0x0001) - required to read data from a
 /// file/volume.
 const FILE_READ_DATA: u32 = 0x0001;
 
@@ -48,16 +48,16 @@ pub(crate) fn classify_wait_error_code(
     error_code: u32,
     detail: impl Into<String>,
 ) -> MftError {
-    let detail = detail.into();
+    let detail_str: String = detail.into();
 
     match error_code {
         ERROR_OPERATION_ABORTED_CODE => MftError::Cancelled {
             operation,
-            reason: format!("{detail} (Win32 error {error_code})"),
+            reason: format!("{detail_str} (Win32 error {error_code})"),
         },
         _ => MftError::WaitFailed {
             operation,
-            reason: format!("{detail} (Win32 error {error_code})"),
+            reason: format!("{detail_str} (Win32 error {error_code})"),
         },
     }
 }
@@ -70,12 +70,12 @@ pub(crate) fn wait_deadline_exceeded(
     waited: Duration,
     detail: impl Into<String>,
 ) -> MftError {
-    let detail = detail.into();
+    let detail_str: String = detail.into();
 
     MftError::Timeout {
         operation,
         reason: format!(
-            "{detail} after {} ms without observing a completion",
+            "{detail_str} after {} ms without observing a completion",
             waited.as_millis()
         ),
     }
@@ -95,25 +95,25 @@ pub struct VolumeHandle {
     volume_data: NtfsVolumeData,
 }
 
+#[expect(
+    unsafe_code,
+    reason = "windows file handles are thread-safe kernel objects"
+)]
 // SAFETY: `VolumeHandle` owns a Windows `HANDLE` to a kernel-managed file
 // object plus immutable metadata (`volume` and `volume_data`). It contains no
 // Rust references or unsynchronized interior mutability, so moving ownership
 // to another thread does not invalidate any aliasing assumptions. Handle
 // cleanup remains centralized in `Drop`.
+unsafe impl Send for VolumeHandle {}
+
 #[expect(
     unsafe_code,
     reason = "windows file handles are thread-safe kernel objects"
 )]
-unsafe impl Send for VolumeHandle {}
-
 // SAFETY: Shared references to `VolumeHandle` only expose immutable metadata or
 // copy the raw `HANDLE`. The wrapper itself performs no unsynchronized mutable
 // access, and Windows file handles are designed to be used from multiple
 // threads.
-#[expect(
-    unsafe_code,
-    reason = "windows file handles are thread-safe kernel objects"
-)]
 unsafe impl Sync for VolumeHandle {}
 
 /// NTFS volume data retrieved from `FSCTL_GET_NTFS_VOLUME_DATA`.
@@ -159,7 +159,7 @@ impl NtfsVolumeData {
     /// NTFS formula: `TotalReserved * BytesPerCluster`.
     ///
     /// The MFT zone contribution is suppressed by setting
-    /// `mft_zone_end = mft_zone_start` before computing reserved_clusters
+    /// `mft_zone_end = mft_zone_start` before computing `reserved_clusters`
     /// (see `mft_reader_init.hpp` lines 166-171).  So the effective formula
     /// is just `TotalReserved * BytesPerCluster`.
     #[must_use]
@@ -170,13 +170,20 @@ impl NtfsVolumeData {
 
 impl VolumeHandle {
     /// Opens a volume for direct MFT reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError::Io`] if `CreateFileW` on the `\\.\<letter>:`
+    /// path fails (typically `ERROR_ACCESS_DENIED` when the caller is not
+    /// elevated), or if `FSCTL_GET_NTFS_VOLUME_DATA` cannot read the volume
+    /// descriptor for the opened handle.
     #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
     pub fn open(volume: char) -> Result<Self> {
-        let volume = volume.to_ascii_uppercase();
+        let normalized_volume = volume.to_ascii_uppercase();
 
-        if !volume.is_ascii_alphabetic() {
+        if !normalized_volume.is_ascii_alphabetic() {
             return Err(MftError::VolumeOpen {
-                volume,
+                volume: normalized_volume,
                 source: std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "Invalid volume letter",
@@ -184,7 +191,7 @@ impl VolumeHandle {
             });
         }
 
-        let volume_path: Vec<u16> = format!("\\\\.\\{}:", volume)
+        let volume_path: Vec<u16> = format!("\\\\.\\{normalized_volume}:")
             .encode_utf16()
             .chain(core::iter::once(0))
             .collect();
@@ -192,7 +199,7 @@ impl VolumeHandle {
         // SAFETY: `volume_path` is UTF-16 and NUL-terminated for the duration of
         // the call, optional pointers are passed as `None`, and on success the
         // returned handle is owned by this function.
-        let handle = unsafe {
+        let create_result = unsafe {
             CreateFileW(
                 PCWSTR::from_raw(volume_path.as_ptr()),
                 FILE_READ_DATA | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
@@ -204,24 +211,31 @@ impl VolumeHandle {
             )
         };
 
-        let handle = match handle {
-            Ok(h) => h,
+        let handle = match create_result {
+            Ok(handle) => handle,
             Err(err) => {
-                if err.code().0 as u32 == 0x8007_0005 {
+                // err.code().0 is an i32 holding an HRESULT; reinterpret as u32
+                // to compare against Win32 error codes (documented as u32).
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "HRESULT bit-pattern reinterpret for documented u32 error constants"
+                )]
+                let code_unsigned = err.code().0 as u32;
+                if code_unsigned == 0x8007_0005 {
                     return Err(MftError::InsufficientPrivileges);
                 }
                 return Err(MftError::VolumeOpen {
-                    volume,
-                    source: std::io::Error::from_raw_os_error(err.code().0 as i32),
+                    volume: normalized_volume,
+                    source: std::io::Error::from_raw_os_error(err.code().0),
                 });
             }
         };
 
-        let volume_data = Self::get_ntfs_volume_data(handle, volume)?;
+        let volume_data = Self::get_ntfs_volume_data(handle, normalized_volume)?;
 
         Ok(Self {
             handle,
-            volume,
+            volume: normalized_volume,
             volume_data,
         })
     }
@@ -234,6 +248,10 @@ impl VolumeHandle {
         let mut buffer = NTFS_VOLUME_DATA_BUFFER::default();
         let mut bytes_returned: u32 = 0;
 
+        // `size_of::<NTFS_VOLUME_DATA_BUFFER>()` is ~96 bytes — always fits u32.
+        let ntfs_volume_data_buffer_size =
+            u32::try_from(size_of::<NTFS_VOLUME_DATA_BUFFER>()).unwrap_or(u32::MAX);
+
         // SAFETY: `handle` is an open volume handle, `buffer` points to valid
         // writable storage for `NTFS_VOLUME_DATA_BUFFER`, and
         // `bytes_returned` is a valid out-parameter for the duration of the
@@ -245,8 +263,8 @@ impl VolumeHandle {
                 None,
                 0,
                 Some(core::ptr::from_mut(&mut buffer).cast()),
-                size_of::<NTFS_VOLUME_DATA_BUFFER>() as u32,
-                Some(&mut bytes_returned),
+                ntfs_volume_data_buffer_size,
+                Some(&raw mut bytes_returned),
                 None,
             )
         };
@@ -258,7 +276,17 @@ impl VolumeHandle {
         // Note: NTFS major/minor version requires NTFS_EXTENDED_VOLUME_DATA
         // (not available in NTFS_VOLUME_DATA_BUFFER).  Default to 0; callers
         // should use `query_ntfs_version()` if they need the actual version.
-        Ok(NtfsVolumeData {
+        //
+        // Every `i64 -> u64` cast below reinterprets an on-disk NTFS count
+        // (sector / cluster / LCN / length).  These fields are documented
+        // non-negative by the NTFS on-disk format and Microsoft's
+        // NTFS_VOLUME_DATA_BUFFER MSDN page, so the bit-level reinterpret is
+        // the correct and lossless conversion.
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "NTFS_VOLUME_DATA_BUFFER LARGE_INTEGER fields are non-negative by on-disk format spec"
+        )]
+        let volume_data = NtfsVolumeData {
             volume_serial_number: buffer.VolumeSerialNumber as u64,
             ntfs_major_version: 0,
             ntfs_minor_version: 0,
@@ -275,7 +303,8 @@ impl VolumeHandle {
             mft2_start_lcn: buffer.Mft2StartLcn as u64,
             mft_zone_start: buffer.MftZoneStart as u64,
             mft_zone_end: buffer.MftZoneEnd as u64,
-        })
+        };
+        Ok(volume_data)
     }
 
     /// Returns the volume letter.
@@ -297,9 +326,14 @@ impl VolumeHandle {
     }
 
     /// Opens a new handle to the same volume with `FILE_FLAG_OVERLAPPED`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MftError::VolumeOpen` if `CreateFileW` fails.
     #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
     pub fn open_overlapped_handle(&self) -> Result<HANDLE> {
-        let volume_path: Vec<u16> = format!("\\\\.\\{}:", self.volume)
+        let volume = self.volume;
+        let volume_path: Vec<u16> = format!("\\\\.\\{volume}:")
             .encode_utf16()
             .chain(core::iter::once(0))
             .collect();
@@ -319,13 +353,10 @@ impl VolumeHandle {
             )
         };
 
-        match handle {
-            Ok(h) => Ok(h),
-            Err(err) => Err(MftError::VolumeOpen {
-                volume: self.volume,
-                source: std::io::Error::from_raw_os_error(err.code().0 as i32),
-            }),
-        }
+        handle.map_err(|err| MftError::VolumeOpen {
+            volume,
+            source: std::io::Error::from_raw_os_error(err.code().0),
+        })
     }
 
     /// Opens a read handle to `X:\$MFT` for direct file-based MFT reading.
@@ -337,12 +368,17 @@ impl VolumeHandle {
     ///
     /// Automatically enables `SeBackupPrivilege` in the process token before
     /// opening — required for `FILE_FLAG_BACKUP_SEMANTICS` on NTFS metafiles.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MftError::VolumeOpen` if `CreateFileW` fails.
     #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
     pub fn open_mft_read_handle(&self) -> Result<HANDLE> {
         // Enable SeBackupPrivilege — required for $MFT access even as admin
         enable_backup_privilege();
 
-        let mft_path: Vec<u16> = format!("{}:\\$MFT", self.volume)
+        let volume = self.volume;
+        let mft_path: Vec<u16> = format!("{volume}:\\$MFT")
             .encode_utf16()
             .chain(core::iter::once(0))
             .collect();
@@ -362,13 +398,10 @@ impl VolumeHandle {
             )
         };
 
-        match handle {
-            Ok(h) => Ok(h),
-            Err(err) => Err(MftError::VolumeOpen {
-                volume: self.volume,
-                source: std::io::Error::from_raw_os_error(err.code().0 as i32),
-            }),
-        }
+        handle.map_err(|err| MftError::VolumeOpen {
+            volume,
+            source: std::io::Error::from_raw_os_error(err.code().0),
+        })
     }
 
     /// Opens an unbuffered volume handle for direct I/O.
@@ -381,9 +414,14 @@ impl VolumeHandle {
     /// [`AlignedBuffer`]).
     ///
     /// The caller is responsible for closing the returned handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MftError::VolumeOpen` if `CreateFileW` fails.
     #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
     pub fn open_unbuffered_handle(&self) -> Result<HANDLE> {
-        let volume_path: Vec<u16> = format!("\\\\.\\{}:", self.volume)
+        let volume = self.volume;
+        let volume_path: Vec<u16> = format!("\\\\.\\{volume}:")
             .encode_utf16()
             .chain(core::iter::once(0))
             .collect();
@@ -403,13 +441,10 @@ impl VolumeHandle {
             )
         };
 
-        match handle {
-            Ok(h) => Ok(h),
-            Err(err) => Err(MftError::VolumeOpen {
-                volume: self.volume,
-                source: std::io::Error::from_raw_os_error(err.code().0 as i32),
-            }),
-        }
+        handle.map_err(|err| MftError::VolumeOpen {
+            volume,
+            source: std::io::Error::from_raw_os_error(err.code().0),
+        })
     }
 
     /// Returns the byte offset of the MFT on the volume.
@@ -432,6 +467,13 @@ impl VolumeHandle {
     }
 
     /// Reads the boot sector from the volume.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError::Io`] if `SetFilePointerEx`/`ReadFile` on the
+    /// volume handle fails, and [`MftError::InvalidData`] if the sector
+    /// returns fewer bytes than `size_of::<NtfsBootSector>()` or decoding
+    /// the boot-sector layout fails.
     #[expect(unsafe_code, reason = "FFI: windows API to read the boot sector")]
     pub fn read_boot_sector(&self) -> Result<NtfsBootSector> {
         use windows::Win32::Storage::FileSystem::{FILE_BEGIN, ReadFile, SetFilePointerEx};
@@ -439,9 +481,7 @@ impl VolumeHandle {
         let mut new_position = 0_i64;
         // SAFETY: `self.handle` is a live volume handle and `new_position`
         // points to writable stack storage for the duration of the call.
-        unsafe {
-            SetFilePointerEx(self.handle, 0, Some(&mut new_position), FILE_BEGIN)?;
-        }
+        unsafe { SetFilePointerEx(self.handle, 0, Some(&raw mut new_position), FILE_BEGIN) }?;
 
         let mut buffer = [0_u8; 512];
         let mut bytes_read = 0_u32;
@@ -449,23 +489,24 @@ impl VolumeHandle {
         // SAFETY: `self.handle` is a live volume handle, `buffer` is a writable
         // 512-byte stack array, and `bytes_read` is a valid out-parameter.
         unsafe {
-            ReadFile(self.handle, Some(&mut buffer), Some(&mut bytes_read), None)?;
-        }
+            ReadFile(
+                self.handle,
+                Some(&mut buffer),
+                Some(&raw mut bytes_read),
+                None,
+            )
+        }?;
 
         if bytes_read != 512 {
             return Err(MftError::BootSectorRead(format!(
-                "Expected 512 bytes, got {}",
-                bytes_read
+                "Expected 512 bytes, got {bytes_read}"
             )));
         }
 
-        let boot_sector = match NtfsBootSector::read_from_prefix(&buffer) {
-            Ok((boot_sector, _)) => boot_sector,
-            Err(_) => {
-                return Err(MftError::InvalidBootSector(
-                    "Unable to decode NTFS boot sector layout".to_owned(),
-                ));
-            }
+        let Ok((boot_sector, _)) = NtfsBootSector::read_from_prefix(&buffer) else {
+            return Err(MftError::InvalidBootSector(
+                "Unable to decode NTFS boot sector layout".to_owned(),
+            ));
         };
 
         if !boot_sector.is_valid() {
@@ -478,6 +519,11 @@ impl VolumeHandle {
     }
 
     /// Gets the MFT extents (data runs) using `FSCTL_GET_RETRIEVAL_POINTERS`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError::Io`] if `CreateFileW` on `\\.\<letter>:\$MFT`
+    /// or `DeviceIoControl(FSCTL_GET_RETRIEVAL_POINTERS, ..)` fails.
     #[expect(
         unsafe_code,
         reason = "FFI: windows API (CreateFileW, DeviceIoControl, CloseHandle)"
@@ -491,7 +537,7 @@ impl VolumeHandle {
         // SAFETY: `mft_path` is UTF-16 and NUL-terminated for the duration of
         // the call, optional pointers are `None`, and any returned handle is
         // wrapped in `HandleGuard` before use.
-        let mft_handle = unsafe {
+        let Ok(mft_handle) = (unsafe {
             CreateFileW(
                 PCWSTR::from_raw(mft_path.as_ptr()),
                 0,
@@ -501,18 +547,13 @@ impl VolumeHandle {
                 FILE_FLAGS_AND_ATTRIBUTES(0),
                 None,
             )
-        };
-
-        let mft_handle = match mft_handle {
-            Ok(h) => h,
-            Err(_err) => {
-                return Ok(vec![MftExtent {
-                    vcn: 0,
-                    cluster_count: self.volume_data.mft_valid_data_length
-                        / u64::from(self.volume_data.bytes_per_cluster),
-                    lcn: self.volume_data.mft_start_lcn as i64,
-                }]);
-            }
+        }) else {
+            return Ok(vec![MftExtent {
+                vcn: 0,
+                cluster_count: self.volume_data.mft_valid_data_length
+                    / u64::from(self.volume_data.bytes_per_cluster),
+                lcn: self.volume_data.mft_start_lcn.cast_signed(),
+            }]);
         };
 
         let _guard = HandleGuard(mft_handle);
@@ -520,18 +561,55 @@ impl VolumeHandle {
     }
 
     /// Gets the MFT bitmap which indicates which records are in use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError::Io`] if opening `\\.\<letter>:\$MFT::$BITMAP`,
+    /// seeking to its extents, or reading bitmap bytes via `ReadFile` fails.
     pub fn get_mft_bitmap(&self) -> Result<MftBitmap> {
         self.get_mft_bitmap_internal(false)
     }
 
     /// Gets the MFT bitmap with optional verbose diagnostic output.
+    ///
+    /// # Errors
+    ///
+    /// Same failure modes as [`Self::get_mft_bitmap`]; additionally emits
+    /// diagnostic tracing for partial reads before falling back to an
+    /// all-valid bitmap.
     pub fn get_mft_bitmap_verbose(&self) -> Result<MftBitmap> {
         self.get_mft_bitmap_internal(true)
     }
 
+    /// Open `$MFT::$BITMAP` and read the entire bitmap stream into memory.
+    ///
+    /// `verbose` controls whether progress is logged at `info!` (caller-driven
+    /// telemetry) or `trace!` (silent path).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError::Io`] if `CreateFileW`, `GetFileSizeEx`, or
+    /// `ReadFile` fail, or if the bitmap is empty / mis-sized.
     #[expect(
         unsafe_code,
         reason = "FFI: windows API (CreateFileW, GetFileSizeEx, ReadFile)"
+    )]
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "open + size + retrieval-pointers + per-extent read + verbose-logging branches form a single bitmap-load operation; splitting them adds plumbing without simplifying control flow"
+    )]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "every failure branch returns `Ok(MftBitmap::new_all_valid(...))` (graceful fallback); the `Result<_>` signature documents the fallible Win32 call surface and aligns with `get_mft_bitmap` / `get_mft_bitmap_verbose` callers"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "buffer / file-size arithmetic targets x86_64 Windows where `usize == u64`; bitmap is bounded by NTFS cluster_count * bytes_per_cluster which never exceeds `usize::MAX` on 64-bit pointers"
+    )]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "`file_size` and `bytes_read` are returned by `GetFileSizeEx` / `ReadFile` and are never negative for the bitmap MFT record; the cast is documented at each use"
     )]
     fn get_mft_bitmap_internal(&self, verbose: bool) -> Result<MftBitmap> {
         use windows::Win32::Storage::FileSystem::{
@@ -551,7 +629,7 @@ impl VolumeHandle {
         // SAFETY: `bitmap_path` is UTF-16 and NUL-terminated for the duration of
         // the call, optional pointers are `None`, and any returned handle is
         // wrapped in `HandleGuard` before use.
-        let bitmap_handle = unsafe {
+        let bitmap_handle = match unsafe {
             CreateFileW(
                 PCWSTR::from_raw(bitmap_path.as_ptr()),
                 FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
@@ -561,20 +639,18 @@ impl VolumeHandle {
                 FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_NO_BUFFERING,
                 None,
             )
-        };
-
-        let bitmap_handle = match bitmap_handle {
-            Ok(h) => {
+        } {
+            Ok(handle) => {
                 if verbose {
-                    tracing::info!(volume = %self.volume, handle = ?h, "CreateFileW for MFT bitmap succeeded");
+                    tracing::info!(volume = %self.volume, handle = ?handle, "CreateFileW for MFT bitmap succeeded");
                 }
-                h
+                handle
             }
-            Err(e) => {
+            Err(err) => {
                 if verbose {
                     tracing::warn!(
                         volume = %self.volume,
-                        error = ?e,
+                        error = ?err,
                         "CreateFileW for MFT bitmap failed; falling back to all-valid bitmap"
                     );
                 }
@@ -590,11 +666,11 @@ impl VolumeHandle {
         // SAFETY: `bitmap_handle` is a live file handle and `file_size` points
         // to writable stack storage for the duration of the call.
         unsafe {
-            if let Err(e) = GetFileSizeEx(bitmap_handle, &mut file_size) {
+            if let Err(err) = GetFileSizeEx(bitmap_handle, &raw mut file_size) {
                 if verbose {
                     tracing::warn!(
                         volume = %self.volume,
-                        error = ?e,
+                        error = ?err,
                         "GetFileSizeEx for MFT bitmap failed; falling back to all-valid bitmap"
                     );
                 }
@@ -609,10 +685,10 @@ impl VolumeHandle {
         }
 
         let extents = match get_retrieval_pointers(bitmap_handle) {
-            Ok(e) if !e.is_empty() => {
+            Ok(extents) if !extents.is_empty() => {
                 if verbose {
-                    tracing::info!(volume = %self.volume, extent_count = e.len(), "Retrieved MFT bitmap extents");
-                    for (i, ext) in e.iter().enumerate().take(5) {
+                    tracing::info!(volume = %self.volume, extent_count = extents.len(), "Retrieved MFT bitmap extents");
+                    for (i, ext) in extents.iter().enumerate().take(5) {
                         tracing::info!(
                             volume = %self.volume,
                             extent_index = i,
@@ -622,15 +698,15 @@ impl VolumeHandle {
                             "MFT bitmap extent sample"
                         );
                     }
-                    if e.len() > 5 {
+                    if extents.len() > 5 {
                         tracing::info!(
                             volume = %self.volume,
-                            additional_extent_count = e.len() - 5,
+                            additional_extent_count = extents.len() - 5,
                             "Additional MFT bitmap extents omitted from verbose sample"
                         );
                     }
                 }
-                e
+                extents
             }
             Ok(_) => {
                 if verbose {
@@ -643,11 +719,11 @@ impl VolumeHandle {
                     self.estimated_record_count() as usize
                 ));
             }
-            Err(e) => {
+            Err(err) => {
                 if verbose {
                     tracing::warn!(
                         volume = %self.volume,
-                        error = ?e,
+                        error = ?err,
                         "get_retrieval_pointers for MFT bitmap failed; falling back to all-valid bitmap"
                     );
                 }
@@ -658,7 +734,7 @@ impl VolumeHandle {
         };
 
         let bytes_per_cluster = self.volume_data.bytes_per_cluster;
-        let total_clusters: u64 = extents.iter().map(|e| e.cluster_count).sum();
+        let total_clusters: u64 = extents.iter().map(|ext| ext.cluster_count).sum();
         let aligned_size = (total_clusters * u64::from(bytes_per_cluster)) as usize;
         let mut buffer = vec![0_u8; aligned_size];
         let mut buffer_offset = 0_usize;
@@ -695,10 +771,10 @@ impl VolumeHandle {
             // SAFETY: `self.handle` is a live volume handle and `new_position`
             // is valid writable storage for the duration of the seek call.
             unsafe {
-                if let Err(e) = SetFilePointerEx(
+                if let Err(err) = SetFilePointerEx(
                     self.handle,
                     byte_offset,
-                    Some(&mut new_position),
+                    Some(&raw mut new_position),
                     FILE_BEGIN,
                 ) {
                     if verbose {
@@ -706,7 +782,7 @@ impl VolumeHandle {
                             volume = %self.volume,
                             extent_index = i,
                             byte_offset,
-                            error = ?e,
+                            error = ?err,
                             "SetFilePointerEx for MFT bitmap extent failed; falling back to all-valid bitmap"
                         );
                     }
@@ -717,14 +793,30 @@ impl VolumeHandle {
             }
 
             let mut bytes_read: u32 = 0;
+            let Some(extent_window) = buffer.get_mut(buffer_offset..buffer_offset + extent_bytes)
+            else {
+                if verbose {
+                    tracing::warn!(
+                        volume = %self.volume,
+                        extent_index = i,
+                        buffer_offset,
+                        extent_bytes,
+                        buffer_len = buffer.len(),
+                        "MFT bitmap extent exceeds buffer size; falling back to all-valid bitmap"
+                    );
+                }
+                return Ok(MftBitmap::new_all_valid(
+                    self.estimated_record_count() as usize
+                ));
+            };
             // SAFETY: `self.handle` is a live volume handle, the slice points to
             // a contiguous writable region of `extent_bytes`, and `bytes_read`
             // is a valid out-parameter for the duration of the read.
             unsafe {
-                if let Err(e) = ReadFile(
+                if let Err(err) = ReadFile(
                     self.handle,
-                    Some(&mut buffer[buffer_offset..buffer_offset + extent_bytes]),
-                    Some(&mut bytes_read),
+                    Some(extent_window),
+                    Some(&raw mut bytes_read),
                     None,
                 ) {
                     if verbose {
@@ -732,7 +824,7 @@ impl VolumeHandle {
                             volume = %self.volume,
                             extent_index = i,
                             extent_bytes,
-                            error = ?e,
+                            error = ?err,
                             "ReadFile for MFT bitmap extent failed; falling back to all-valid bitmap"
                         );
                     }
@@ -745,10 +837,12 @@ impl VolumeHandle {
             if verbose && i < 3 {
                 tracing::info!(volume = %self.volume, extent_index = i, bytes_read, "Read MFT bitmap extent bytes");
                 if i == 0 && bytes_read > 0 {
+                    let sample_end = buffer_offset + 32.min(bytes_read as usize);
                     let sample: Vec<String> = buffer
-                        [buffer_offset..buffer_offset + 32.min(bytes_read as usize)]
+                        .get(buffer_offset..sample_end)
+                        .unwrap_or(&[])
                         .iter()
-                        .map(|b| format!("{:02X}", b))
+                        .map(|byte| format!("{byte:02X}"))
                         .collect();
                     tracing::info!(
                         volume = %self.volume,
@@ -769,8 +863,14 @@ impl VolumeHandle {
                 file_size,
                 "Completed MFT bitmap read; truncating to reported file size"
             );
-            let all_ff = buffer.iter().take(file_size as usize).all(|&b| b == 0xFF);
-            let all_00 = buffer.iter().take(file_size as usize).all(|&b| b == 0x00);
+            let all_ff = buffer
+                .iter()
+                .take(file_size as usize)
+                .all(|&byte| byte == 0xFF);
+            let all_00 = buffer
+                .iter()
+                .take(file_size as usize)
+                .all(|&byte| byte == 0x00);
             tracing::info!(volume = %self.volume, all_ff, all_00, "Computed MFT bitmap byte-pattern summary");
         }
 
@@ -785,9 +885,7 @@ impl Drop for VolumeHandle {
         if !self.handle.is_invalid() {
             // SAFETY: `VolumeHandle` owns this valid handle and closes it once
             // during drop after all safe borrows have ended.
-            unsafe {
-                let _ = CloseHandle(self.handle);
-            }
+            unsafe { CloseHandle(self.handle) }.ok();
         }
     }
 }
@@ -801,11 +899,117 @@ impl Drop for HandleGuard {
         if !self.0.is_invalid() {
             // SAFETY: `HandleGuard` exclusively owns this valid handle and drops
             // it exactly once when the guard is destroyed.
-            unsafe {
-                let _ = CloseHandle(self.0);
-            }
+            unsafe { CloseHandle(self.0) }.ok();
         }
     }
+}
+
+/// Enables `SeBackupPrivilege` in the current process token.
+///
+/// `FILE_FLAG_BACKUP_SEMANTICS` only bypasses NTFS security checks when the
+/// calling thread's token has `SeBackupPrivilege` **enabled** (not just
+/// present).  Administrator tokens include it but it's disabled by default.
+///
+/// This is required to open `$MFT` for reading on write-protected volumes.
+/// The privilege is process-wide and persists for the lifetime of the process,
+/// so calling this multiple times is harmless.
+fn enable_backup_privilege() {
+    let Some(token) = open_current_process_token() else {
+        return;
+    };
+    let Some(luid) = lookup_backup_privilege_luid() else {
+        unsafe_close_token(token);
+        return;
+    };
+
+    enable_privilege_with_token(token, luid);
+}
+
+/// Open the current process's token with `TOKEN_ADJUST_PRIVILEGES` rights.
+///
+/// Returns `None` (and logs a debug line) when the underlying Win32 call
+/// fails — the only legitimate cause is non-elevated callers, which is
+/// expected for the `MftReader::new` fast path.
+#[expect(unsafe_code, reason = "FFI: GetCurrentProcess + OpenProcessToken")]
+fn open_current_process_token() -> Option<HANDLE> {
+    use windows::Win32::Security::TOKEN_ADJUST_PRIVILEGES;
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = HANDLE::default();
+    // SAFETY: `GetCurrentProcess()` returns a constant pseudo-handle and has
+    // no preconditions.
+    let current_process = unsafe { GetCurrentProcess() };
+    // SAFETY: `current_process` is a valid pseudo-handle and `token` is
+    // valid writable stack storage for the call duration.
+    if unsafe { OpenProcessToken(current_process, TOKEN_ADJUST_PRIVILEGES, &raw mut token) }
+        .is_err()
+    {
+        tracing::debug!("Could not open process token for privilege adjustment");
+        return None;
+    }
+    Some(token)
+}
+
+/// Look up the LUID for `SeBackupPrivilege`.  Returns `None` when the call
+/// fails (extremely rare; would indicate a missing privilege constant).
+#[expect(
+    unsafe_code,
+    reason = "FFI: LookupPrivilegeValueW with caller-owned LUID storage"
+)]
+fn lookup_backup_privilege_luid() -> Option<windows::Win32::Foundation::LUID> {
+    use windows::Win32::Foundation::LUID;
+    use windows::Win32::Security::{LookupPrivilegeValueW, SE_BACKUP_NAME};
+
+    let mut luid = LUID::default();
+    // SAFETY: `SE_BACKUP_NAME` is a static wide string constant and `luid`
+    // is valid writable stack storage for the call duration.
+    if unsafe { LookupPrivilegeValueW(None, SE_BACKUP_NAME, &raw mut luid) }.is_err() {
+        tracing::debug!("Could not look up SeBackupPrivilege LUID");
+        return None;
+    }
+    Some(luid)
+}
+
+/// Adjust `token` so `luid` is enabled, then close `token`.  Logs the
+/// outcome at info / debug level — this function is best-effort and never
+/// returns an error to the caller.
+#[expect(unsafe_code, reason = "FFI: AdjustTokenPrivileges + CloseHandle")]
+fn enable_privilege_with_token(token: HANDLE, luid: windows::Win32::Foundation::LUID) {
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, TOKEN_PRIVILEGES,
+    };
+
+    let tp = TOKEN_PRIVILEGES {
+        PrivilegeCount: 1,
+        Privileges: [LUID_AND_ATTRIBUTES {
+            Luid: luid,
+            Attributes: SE_PRIVILEGE_ENABLED,
+        }],
+    };
+
+    // SAFETY: `token` was opened with `TOKEN_ADJUST_PRIVILEGES`, `tp` is a
+    // valid `TOKEN_PRIVILEGES` struct, and no previous-state buffer is
+    // requested.
+    let result = unsafe { AdjustTokenPrivileges(token, false, Some(&raw const tp), 0, None, None) };
+
+    // SAFETY: `token` was opened by the caller and is closed exactly once.
+    unsafe { CloseHandle(token) }.ok();
+
+    match result {
+        Ok(()) => tracing::info!("✅ SeBackupPrivilege enabled"),
+        Err(err) => tracing::debug!(error = %err, "Could not enable SeBackupPrivilege"),
+    }
+}
+
+/// Close a privilege-helper token, logging but not propagating any failure.
+#[expect(
+    unsafe_code,
+    reason = "FFI: CloseHandle on a token opened by open_current_process_token"
+)]
+fn unsafe_close_token(token: HANDLE) {
+    // SAFETY: caller passes a token returned from
+    // `open_current_process_token` that has not yet been closed.
+    unsafe { CloseHandle(token) }.ok();
 }
 
 #[cfg(test)]
@@ -844,68 +1048,5 @@ mod tests {
             operation: "read_all_index",
             ..
         }));
-    }
-}
-
-/// Enables `SeBackupPrivilege` in the current process token.
-///
-/// `FILE_FLAG_BACKUP_SEMANTICS` only bypasses NTFS security checks when the
-/// calling thread's token has `SeBackupPrivilege` **enabled** (not just
-/// present).  Administrator tokens include it but it's disabled by default.
-///
-/// This is required to open `$MFT` for reading on write-protected volumes.
-/// The privilege is process-wide and persists for the lifetime of the process,
-/// so calling this multiple times is harmless.
-#[expect(
-    unsafe_code,
-    reason = "FFI: OpenProcessToken, LookupPrivilegeValueW, AdjustTokenPrivileges"
-)]
-fn enable_backup_privilege() {
-    use windows::Win32::Foundation::LUID;
-    use windows::Win32::Security::{
-        AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_BACKUP_NAME,
-        SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES,
-    };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-    // SAFETY: `GetCurrentProcess()` returns the current pseudo-handle.
-    // `OpenProcessToken` writes to `token`, which is valid stack storage.
-    let mut token = HANDLE::default();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &mut token) }
-        .is_err()
-    {
-        tracing::debug!("Could not open process token for privilege adjustment");
-        return;
-    }
-
-    let mut luid = LUID::default();
-    // SAFETY: `SE_BACKUP_NAME` is a static wide string and `luid` is valid
-    // writable storage.
-    if unsafe { LookupPrivilegeValueW(None, SE_BACKUP_NAME, &mut luid) }.is_err() {
-        // SAFETY: `token` was opened above and is closed exactly once.
-        unsafe { CloseHandle(token) }.ok();
-        tracing::debug!("Could not look up SeBackupPrivilege LUID");
-        return;
-    }
-
-    let tp = TOKEN_PRIVILEGES {
-        PrivilegeCount: 1,
-        Privileges: [LUID_AND_ATTRIBUTES {
-            Luid: luid,
-            Attributes: SE_PRIVILEGE_ENABLED,
-        }],
-    };
-
-    // SAFETY: `token` is a valid process token opened with
-    // `TOKEN_ADJUST_PRIVILEGES`, `tp` is a valid `TOKEN_PRIVILEGES` struct,
-    // and no previous-state buffer is requested.
-    let result = unsafe { AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None) };
-
-    // SAFETY: `token` was opened above and is closed exactly once.
-    unsafe { CloseHandle(token) }.ok();
-
-    match result {
-        Ok(()) => tracing::info!("✅ SeBackupPrivilege enabled"),
-        Err(e) => tracing::debug!(error = %e, "Could not enable SeBackupPrivilege"),
     }
 }

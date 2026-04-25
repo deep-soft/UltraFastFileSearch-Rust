@@ -2,9 +2,17 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Pipelined reader implementation.
+//!
+//! **Module-scoped cast justification:** `as usize` casts here convert NTFS
+//! disk offsets / read sizes (`u64`) and record sizes (`u32`) into `usize` for
+//! buffer slicing.  `usize` is ≥ 32 bits on every supported target; the u64
+//! values are physically bounded by the volume size (≤ 2⁶⁴ bytes).
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "NTFS disk-offset / record-size casts are lossless on supported 32/64-bit targets"
+)]
 
-use super::zero_copy::parse_buffer_zero_copy_inner;
-use super::*;
+use super::prelude::*;
 
 /// Message sent from reader thread to parser thread.
 struct ReadBuffer {
@@ -60,7 +68,7 @@ impl PipelinedMftReader {
     /// * `bitmap` - Optional MFT bitmap for skipping unused records
     /// * `drive_type` - Drive type for chunk size tuning
     #[must_use]
-    pub fn new(
+    pub const fn new(
         extent_map: MftExtentMap,
         bitmap: Option<crate::platform::MftBitmap>,
         drive_type: crate::platform::DriveType,
@@ -88,6 +96,13 @@ impl PipelinedMftReader {
     /// possible, sending them through a bounded channel to the main thread
     /// for parsing. The bounded channel provides backpressure to prevent
     /// memory explosion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError::Io`] if a chunk read fails, if the reader thread
+    /// terminates early, or if the bounded channel is closed before all
+    /// chunks have been processed. Any platform syscall failure surfaces the
+    /// underlying Win32 error code.
     pub fn read_all_pipelined<F>(
         &self,
         handle: HANDLE,
@@ -97,10 +112,6 @@ impl PipelinedMftReader {
     where
         F: FnMut(u64, u64),
     {
-        use std::thread;
-
-        use crossbeam_channel::{Receiver, Sender, bounded};
-
         let chunks = generate_read_chunks(&self.extent_map, self.bitmap.as_ref(), self.chunk_size);
         let record_size = self.extent_map.bytes_per_record;
         let num_chunks = chunks.len();
@@ -109,18 +120,15 @@ impl PipelinedMftReader {
             return Ok(Vec::new());
         }
 
-        // Calculate total bytes for progress
         let total_bytes: u64 = chunks
             .iter()
-            .map(|c| c.record_count * u64::from(record_size))
+            .map(|chunk| chunk.record_count * u64::from(record_size))
             .sum();
 
-        // Estimate capacity
-        let estimated_records = if let Some(ref bm) = self.bitmap {
-            bm.count_in_use()
-        } else {
-            self.extent_map.total_records() as usize
-        };
+        let estimated_records = self.bitmap.as_ref().map_or_else(
+            || self.extent_map.total_records() as usize,
+            crate::platform::MftBitmap::count_in_use,
+        );
 
         info!(
             chunks = num_chunks,
@@ -130,120 +138,56 @@ impl PipelinedMftReader {
             "🚀 Starting pipelined read with I/O+CPU overlap"
         );
 
-        // Create bounded channel for backpressure
-        let (tx, rx): (Sender<ReadBuffer>, Receiver<ReadBuffer>) = bounded(self.pipeline_depth);
-
-        // Pre-allocate buffer pool for the reader thread
         let max_chunk_size = chunks
             .iter()
-            .map(|c| c.record_count * u64::from(record_size))
+            .map(|chunk| chunk.record_count * u64::from(record_size))
             .max()
             .unwrap_or(self.chunk_size as u64) as usize;
 
-        // Clone data needed by reader thread
-        let chunks_for_reader = chunks;
-        let handle_raw = handle.0 as usize; // Convert to usize for Send
+        let (reader_handle, rx) = spawn_pipelined_reader(
+            handle,
+            chunks,
+            record_size,
+            max_chunk_size,
+            self.pipeline_depth,
+        );
 
-        // Spawn reader thread
-        let reader_handle = thread::spawn(move || {
-            // Reconstruct HANDLE in reader thread
-            let handle = HANDLE(handle_raw as *mut std::ffi::c_void);
-
-            // Create buffer pool
-            let mut buffer_pool: Vec<AlignedBuffer> = Vec::new();
-
-            for chunk in chunks_for_reader {
-                // Get or create a buffer
-                let mut buffer = buffer_pool
-                    .pop()
-                    .unwrap_or_else(|| AlignedBuffer::new(max_chunk_size + SECTOR_SIZE));
-
-                // Read chunk into buffer
-                match read_chunk_into_buffer_static(handle, &chunk, record_size, &mut buffer) {
-                    Ok(bytes_read) => {
-                        let read_buffer = ReadBuffer {
-                            buffer,
-                            bytes_read,
-                            chunk,
-                            record_size,
-                        };
-
-                        // Send to parser (blocks if channel is full - backpressure)
-                        if tx.send(read_buffer).is_err() {
-                            // Receiver dropped, stop reading
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to read chunk, skipping");
-                        // Return buffer to pool
-                        buffer_pool.push(buffer);
-                    }
-                }
-            }
-            // tx is dropped here, signaling end of stream
-        });
-
-        // Parse records in main thread
         let mut merger = MftRecordMerger::with_capacity(estimated_records);
         let mut bytes_read_total: u64 = 0;
 
-        // Receive and parse buffers
-        while let Ok(read_buffer) = rx.recv() {
+        while let Ok(result) = rx.recv() {
+            // Propagate any reader-thread I/O failure to the caller — this
+            // makes the function's `Result` wrapper meaningful and prevents
+            // the previous behaviour of silently returning a partial result
+            // (clippy::unnecessary_wraps).
+            let read_buffer = result?;
             let ReadBuffer {
                 mut buffer,
                 bytes_read,
                 chunk,
-                record_size,
+                record_size: chunk_record_size,
             } = read_buffer;
 
             bytes_read_total += bytes_read as u64;
+            parse_buffer_into_merger(
+                buffer.as_mut_slice(),
+                bytes_read,
+                &chunk,
+                chunk_record_size,
+                merge_extensions,
+                &mut merger,
+            );
 
-            // Parse records from buffer using zero-copy in-place fixup
-            let skip_begin = chunk.skip_begin as usize;
-            let effective_count = chunk.effective_record_count() as usize;
-            let record_size_usize = record_size as usize;
-            let buffer_slice = buffer.as_mut_slice();
-
-            for i in 0..effective_count {
-                let offset = (skip_begin + i) * record_size_usize;
-                if offset + record_size_usize > bytes_read {
-                    break;
-                }
-
-                let frs = chunk.start_frs + skip_begin as u64 + i as u64;
-
-                // Apply fixup in-place on the shared buffer (zero-copy)
-                let record_slice = &mut buffer_slice[offset..offset + record_size_usize];
-                if !apply_fixup(record_slice) {
-                    continue;
-                }
-
-                // Parse record from the fixed-up slice (no copy needed)
-                if merge_extensions {
-                    merger.add_result(parse_record_full(record_slice, frs));
-                } else if let Some(rec) = parse_record(record_slice, frs) {
-                    merger.add_result(ParseResult::Base(rec));
-                }
-            }
-
-            // Report progress
             if let Some(ref mut cb) = progress_callback {
                 cb(bytes_read_total, total_bytes);
             }
-
-            // Note: buffer is dropped here, but we could return it to a pool
-            // for even better performance
         }
 
-        // Wait for reader thread to finish
-        if let Err(e) = reader_handle.join() {
-            warn!("Reader thread panicked: {:?}", e);
+        if let Err(join_err) = reader_handle.join() {
+            warn!("Reader thread panicked: {:?}", join_err);
         }
 
-        // Merge extensions and get final results
         let all_results = merger.merge();
-
         info!(
             records = all_results.len(),
             bytes_mb = bytes_read_total / (1024 * 1024),
@@ -270,39 +214,82 @@ impl PipelinedMftReader {
     ///   Read chunks                                 Parse records in
     ///   from disk                                   parallel batches
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError::Io`] if a chunk read fails or the reader thread
+    /// terminates early, or [`MftError::RecordRead`] for record-level
+    /// fixup/parse failures surfaced by the parallel parsing stage.
     pub fn read_all_pipelined_parallel<F>(
         &self,
         handle: HANDLE,
         merge_extensions: bool,
-        mut progress_callback: Option<F>,
+        progress_callback: Option<F>,
     ) -> Result<Vec<ParsedRecord>>
     where
         F: FnMut(u64, u64),
     {
-        use std::thread;
+        let Some(plan) = self.plan_pipelined_read() else {
+            return Ok(Vec::new());
+        };
 
-        use crossbeam_channel::{Receiver, Sender, bounded};
+        let (reader_handle, rx) = spawn_pipelined_reader(
+            handle,
+            plan.chunks,
+            plan.record_size,
+            plan.max_chunk_size,
+            self.pipeline_depth * 2,
+        );
 
+        let (all_buffers, bytes_read_total) =
+            drain_pipelined_reader(&rx, plan.num_chunks, plan.total_bytes, progress_callback)?;
+
+        if let Err(join_err) = reader_handle.join() {
+            warn!("Reader thread panicked: {:?}", join_err);
+        }
+
+        info!(
+            buffers = all_buffers.len(),
+            bytes_mb = bytes_read_total / (1024 * 1024),
+            "📦 All buffers collected, starting parallel parsing"
+        );
+
+        let all_results = parse_and_merge_pipelined_buffers(
+            all_buffers,
+            merge_extensions,
+            plan.estimated_records,
+        );
+
+        info!(
+            records = all_results.len(),
+            bytes_mb = bytes_read_total / (1024 * 1024),
+            "✅ Pipelined-parallel read complete"
+        );
+
+        Ok(all_results)
+    }
+
+    /// Build the chunk plan, byte totals, and estimated record count for a
+    /// pipelined-parallel read.  Returns `None` when the volume produces no
+    /// chunks (caller should yield an empty `Vec`).
+    fn plan_pipelined_read(&self) -> Option<PipelinedReadPlan> {
         let chunks = generate_read_chunks(&self.extent_map, self.bitmap.as_ref(), self.chunk_size);
         let record_size = self.extent_map.bytes_per_record;
         let num_chunks = chunks.len();
 
         if num_chunks == 0 {
-            return Ok(Vec::new());
+            return None;
         }
 
-        // Calculate total bytes for progress
         let total_bytes: u64 = chunks
             .iter()
-            .map(|c| c.record_count * u64::from(record_size))
+            .map(|chunk| chunk.record_count * u64::from(record_size))
             .sum();
 
-        // Estimate capacity
-        let estimated_records = if let Some(ref bm) = self.bitmap {
-            bm.count_in_use()
-        } else {
-            self.extent_map.total_records() as usize
-        };
+        let estimated_records = self.bitmap.as_ref().map_or_else(
+            || self.extent_map.total_records() as usize,
+            crate::platform::MftBitmap::count_in_use,
+        );
 
         info!(
             chunks = num_chunks,
@@ -313,129 +300,117 @@ impl PipelinedMftReader {
             "🚀 Starting pipelined-parallel read with I/O+CPU overlap and multi-core parsing"
         );
 
-        // Create bounded channel for backpressure
-        // Use larger depth for parallel mode to keep Rayon workers fed
-        let parallel_depth = self.pipeline_depth * 2;
-        let (tx, rx): (Sender<ReadBuffer>, Receiver<ReadBuffer>) = bounded(parallel_depth);
-
-        // Pre-allocate buffer pool for the reader thread
         let max_chunk_size = chunks
             .iter()
-            .map(|c| c.record_count * u64::from(record_size))
+            .map(|chunk| chunk.record_count * u64::from(record_size))
             .max()
             .unwrap_or(self.chunk_size as u64) as usize;
 
-        // Clone data needed by reader thread
-        let chunks_for_reader = chunks;
-        let handle_raw = handle.0 as usize; // Convert to usize for Send
-
-        // Spawn reader thread
-        let reader_handle = thread::spawn(move || {
-            // Reconstruct HANDLE in reader thread
-            let handle = HANDLE(handle_raw as *mut std::ffi::c_void);
-
-            // Create buffer pool
-            let mut buffer_pool: Vec<AlignedBuffer> = Vec::new();
-
-            for chunk in chunks_for_reader {
-                // Get or create a buffer
-                let mut buffer = buffer_pool
-                    .pop()
-                    .unwrap_or_else(|| AlignedBuffer::new(max_chunk_size + SECTOR_SIZE));
-
-                // Read chunk into buffer
-                match read_chunk_into_buffer_static(handle, &chunk, record_size, &mut buffer) {
-                    Ok(bytes_read) => {
-                        let read_buffer = ReadBuffer {
-                            buffer,
-                            bytes_read,
-                            chunk,
-                            record_size,
-                        };
-
-                        // Send to parser (blocks if channel is full - backpressure)
-                        if tx.send(read_buffer).is_err() {
-                            // Receiver dropped, stop reading
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to read chunk, skipping");
-                        // Return buffer to pool
-                        buffer_pool.push(buffer);
-                    }
-                }
-            }
-            // tx is dropped here, signaling end of stream
-        });
-
-        // Collect all buffers first, then parse in parallel with Rayon
-        // This allows Rayon to efficiently distribute work across cores
-        let mut all_buffers: Vec<ReadBuffer> = Vec::with_capacity(num_chunks);
-        let mut bytes_read_total: u64 = 0;
-
-        while let Ok(read_buffer) = rx.recv() {
-            bytes_read_total += read_buffer.bytes_read as u64;
-            all_buffers.push(read_buffer);
-
-            // Report progress during collection phase
-            if let Some(ref mut cb) = progress_callback {
-                cb(bytes_read_total, total_bytes);
-            }
-        }
-
-        // Wait for reader thread to finish
-        if let Err(e) = reader_handle.join() {
-            warn!("Reader thread panicked: {:?}", e);
-        }
-
-        info!(
-            buffers = all_buffers.len(),
-            bytes_mb = bytes_read_total / (1024 * 1024),
-            "📦 All buffers collected, starting parallel parsing"
-        );
-
-        // Parse all buffers in parallel using Rayon with zero-copy in-place fixup
-        let parse_results: Vec<ParseResult> = all_buffers
-            .par_iter_mut()
-            .flat_map(|read_buffer| {
-                parse_buffer_zero_copy_inner(
-                    read_buffer.buffer.as_mut_slice(),
-                    read_buffer.bytes_read,
-                    &read_buffer.chunk,
-                    read_buffer.record_size,
-                    merge_extensions,
-                )
-            })
-            .collect();
-
-        info!(
-            parse_results = parse_results.len(),
-            "✅ Parallel parsing complete"
-        );
-
-        // Merge results using MftRecordMerger (single-threaded, as designed)
-        let mut merger = MftRecordMerger::with_capacity(estimated_records);
-        for result in parse_results {
-            merger.add_result(result);
-        }
-
-        let all_results = merger.merge();
-
-        info!(
-            records = all_results.len(),
-            bytes_mb = bytes_read_total / (1024 * 1024),
-            "✅ Pipelined-parallel read complete"
-        );
-
-        Ok(all_results)
+        Some(PipelinedReadPlan {
+            chunks,
+            record_size,
+            num_chunks,
+            total_bytes,
+            estimated_records,
+            max_chunk_size,
+        })
     }
+}
+
+/// Pre-computed plan for a single pipelined-parallel read.
+///
+/// Bundled into a struct so [`read_all_pipelined_parallel`] can hand the
+/// fields off to its sub-helpers without exceeding clippy's
+/// `too_many_arguments` threshold.
+struct PipelinedReadPlan {
+    /// Bitmap-aware [`ReadChunk`] schedule (in disk order) handed to the
+    /// pipelined reader thread.
+    chunks: Vec<ReadChunk>,
+    /// `bytes_per_record` from the [`MftExtentMap`], cached so consumers
+    /// don't re-read the extent map.
+    record_size: u32,
+    /// Number of entries in `chunks`; used to size the buffer
+    /// pre-allocation in [`drain_pipelined_reader`].
+    num_chunks: usize,
+    /// Total bytes the reader will deliver (post-skip on bitmap-aware
+    /// runs); fed to the progress callback as the denominator.
+    total_bytes: u64,
+    /// Conservative record-count estimate for pre-allocating the
+    /// `MftRecordMerger` (uses bitmap when present, else extent total).
+    estimated_records: usize,
+    /// Largest single chunk in bytes — used to size the per-chunk
+    /// `AlignedBuffer` allocations.
+    max_chunk_size: usize,
+}
+
+/// Drain `rx` until the reader thread closes the channel, accumulating
+/// `ReadBuffer`s and updating `progress_callback` after each delivery.
+///
+/// Reader-thread errors are propagated via `?` so callers can distinguish
+/// a complete pipeline run from a truncated one.  Returns the collected
+/// buffers together with the running byte total.
+fn drain_pipelined_reader<F>(
+    rx: &crossbeam_channel::Receiver<Result<ReadBuffer>>,
+    capacity: usize,
+    total_bytes: u64,
+    mut progress_callback: Option<F>,
+) -> Result<(Vec<ReadBuffer>, u64)>
+where
+    F: FnMut(u64, u64),
+{
+    let mut all_buffers: Vec<ReadBuffer> = Vec::with_capacity(capacity);
+    let mut bytes_read_total: u64 = 0;
+
+    while let Ok(result) = rx.recv() {
+        let read_buffer = result?;
+        bytes_read_total += read_buffer.bytes_read as u64;
+        all_buffers.push(read_buffer);
+
+        if let Some(ref mut cb) = progress_callback {
+            cb(bytes_read_total, total_bytes);
+        }
+    }
+
+    Ok((all_buffers, bytes_read_total))
+}
+
+/// Parse every buffer in parallel via Rayon (zero-copy in-place fixup) and
+/// fold the per-buffer results through [`MftRecordMerger`] to produce the
+/// final `Vec<ParsedRecord>`.
+fn parse_and_merge_pipelined_buffers(
+    mut all_buffers: Vec<ReadBuffer>,
+    merge_extensions: bool,
+    estimated_records: usize,
+) -> Vec<ParsedRecord> {
+    let parse_results: Vec<ParseResult> = all_buffers
+        .par_iter_mut()
+        .flat_map(|read_buffer| {
+            parse_buffer_zero_copy_inner(
+                read_buffer.buffer.as_mut_slice(),
+                read_buffer.bytes_read,
+                &read_buffer.chunk,
+                read_buffer.record_size,
+                merge_extensions,
+            )
+        })
+        .collect();
+
+    info!(
+        parse_results = parse_results.len(),
+        "✅ Parallel parsing complete"
+    );
+
+    let mut merger = MftRecordMerger::with_capacity(estimated_records);
+    for result in parse_results {
+        merger.add_result(result);
+    }
+    merger.merge()
 }
 
 /// Static helper to read a chunk into a buffer (for use in reader thread).
 #[expect(
     unsafe_code,
-    reason = "FFI: SetFilePointerEx and ReadFile for static chunk reader helper"
+    reason = "FFI: SetFilePointerEx and ReadFile for pipelined reader thread"
 )]
 fn read_chunk_into_buffer_static(
     handle: HANDLE,
@@ -448,8 +423,7 @@ fn read_chunk_into_buffer_static(
     // Align to sector boundary
     let aligned_offset = (chunk.disk_offset / SECTOR_SIZE as u64) * SECTOR_SIZE as u64;
     let offset_adjustment = (chunk.disk_offset - aligned_offset) as usize;
-    let aligned_size =
-        ((read_size as usize + offset_adjustment + SECTOR_SIZE - 1) / SECTOR_SIZE) * SECTOR_SIZE;
+    let aligned_size = (read_size as usize + offset_adjustment).div_ceil(SECTOR_SIZE) * SECTOR_SIZE;
 
     // Resize buffer if needed
     if buffer.len() < aligned_size {
@@ -463,8 +437,8 @@ fn read_chunk_into_buffer_static(
     let seek_result = unsafe {
         SetFilePointerEx(
             handle,
-            aligned_offset as i64,
-            Some(&mut new_pos),
+            aligned_offset.cast_signed(),
+            Some(&raw mut new_pos),
             FILE_BEGIN,
         )
     };
@@ -475,22 +449,129 @@ fn read_chunk_into_buffer_static(
 
     // Read data
     let mut bytes_read: u32 = 0;
+    let Some(read_slice) = buffer.as_mut_slice().get_mut(..aligned_size) else {
+        // Unreachable: buffer was allocated to ≥ aligned_size by the caller.
+        return Err(MftError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "aligned buffer shorter than aligned_size",
+        )));
+    };
     // SAFETY: `handle` is live, the aligned buffer slice spans `aligned_size`
     // writable bytes, and `bytes_read` is a valid out-parameter.
-    let read_result = unsafe {
-        ReadFile(
-            handle,
-            Some(&mut buffer.as_mut_slice()[..aligned_size]),
-            Some(&mut bytes_read),
-            None,
-        )
-    };
+    let read_result =
+        unsafe { ReadFile(handle, Some(read_slice), Some(&raw mut bytes_read), None) };
 
     if read_result.is_err() {
         return Err(MftError::Io(std::io::Error::last_os_error()));
     }
 
     Ok(bytes_read as usize)
+}
+
+/// Spawn the pipelined reader thread.
+///
+/// The reader runs `read_chunk_into_buffer_static` for each chunk and forwards
+/// the result through the bounded channel.  Both successful reads and errors
+/// are propagated via `Result<ReadBuffer, MftError>`; the consumer threads
+/// decide whether to short-circuit (typically via `?`) or continue.
+fn spawn_pipelined_reader(
+    handle: HANDLE,
+    chunks: Vec<ReadChunk>,
+    record_size: u32,
+    max_chunk_size: usize,
+    pipeline_depth: usize,
+) -> (
+    std::thread::JoinHandle<()>,
+    crossbeam_channel::Receiver<Result<ReadBuffer>>,
+) {
+    use std::thread;
+
+    use crossbeam_channel::{Receiver, Sender, bounded};
+
+    let (tx, rx): (Sender<Result<ReadBuffer>>, Receiver<Result<ReadBuffer>>) =
+        bounded(pipeline_depth);
+
+    // `HANDLE` is not `Send`; ferry the raw pointer as `usize` and rebuild on
+    // the worker side.  The pointer remains valid because the orchestrator
+    // owns the underlying `VolumeHandle` for the duration of this call.
+    let handle_raw = handle.0 as usize;
+
+    let join = thread::spawn(move || {
+        let thread_handle = HANDLE(handle_raw as *mut core::ffi::c_void);
+        let mut buffer_pool: Vec<AlignedBuffer> = Vec::new();
+
+        for chunk in chunks {
+            let mut buffer = buffer_pool
+                .pop()
+                .unwrap_or_else(|| AlignedBuffer::new(max_chunk_size + SECTOR_SIZE));
+
+            match read_chunk_into_buffer_static(thread_handle, &chunk, record_size, &mut buffer) {
+                Ok(bytes_read) => {
+                    let read_buffer = ReadBuffer {
+                        buffer,
+                        bytes_read,
+                        chunk,
+                        record_size,
+                    };
+                    if tx.send(Ok(read_buffer)).is_err() {
+                        // Receiver dropped — abandon the read pipeline.
+                        break;
+                    }
+                }
+                Err(err) => {
+                    warn!(error = %err, "Pipelined reader: chunk read failed");
+                    // Forward the error and terminate; the consumer will
+                    // surface it via `?` and the orchestrator returns Err.
+                    // `.ok()` discards the must_use Result without losing
+                    // the annotation if a receiver-disconnect happens here.
+                    tx.send(Err(err)).ok();
+                    break;
+                }
+            }
+        }
+        // tx is dropped here, signaling end-of-stream to the consumer.
+    });
+
+    (join, rx)
+}
+
+/// Parse every effective record in `buffer` (zero-copy, in-place fixup) into
+/// the supplied merger.  Extracted from the pipelined orchestrators so each
+/// caller stays under the function-length limit.
+fn parse_buffer_into_merger(
+    buffer_slice: &mut [u8],
+    bytes_read: usize,
+    chunk: &ReadChunk,
+    chunk_record_size: u32,
+    merge_extensions: bool,
+    merger: &mut MftRecordMerger,
+) {
+    let skip_begin = chunk.skip_begin as usize;
+    let effective_count = chunk.effective_record_count() as usize;
+    let record_size_usize = chunk_record_size as usize;
+
+    for i in 0..effective_count {
+        let offset = (skip_begin + i) * record_size_usize;
+        let Some(record_slice) = buffer_slice.get_mut(offset..offset + record_size_usize) else {
+            // Short-read: buffer contained fewer bytes than expected.
+            break;
+        };
+        if offset + record_size_usize > bytes_read {
+            break;
+        }
+
+        let frs = chunk.start_frs + skip_begin as u64 + i as u64;
+
+        if !apply_fixup(record_slice) {
+            continue;
+        }
+
+        if merge_extensions {
+            merger.add_result(parse_record_full(record_slice, frs));
+        } else if let Some(rec) = parse_record(record_slice, frs) {
+            merger.add_result(ParseResult::Base(rec));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -512,15 +593,18 @@ mod tests {
 
         let extent_map = MftExtentMap::contiguous(100, 1024 * 1024, 4096, 1024);
 
-        let reader = PipelinedMftReader::new(extent_map.clone(), None, DriveType::Ssd);
-        assert_eq!(reader.chunk_size, DriveType::Ssd.optimal_chunk_size());
-        assert_eq!(reader.pipeline_depth, 3);
+        let reader_ssd = PipelinedMftReader::new(extent_map.clone(), None, DriveType::Ssd);
+        assert_eq!(reader_ssd.chunk_size, DriveType::Ssd.optimal_chunk_size());
+        assert_eq!(reader_ssd.pipeline_depth, 3);
 
-        let reader = PipelinedMftReader::new(extent_map.clone(), None, DriveType::Hdd);
-        assert_eq!(reader.chunk_size, DriveType::Hdd.optimal_chunk_size());
-        assert_eq!(reader.pipeline_depth, 3);
+        let reader_hdd = PipelinedMftReader::new(extent_map.clone(), None, DriveType::Hdd);
+        assert_eq!(reader_hdd.chunk_size, DriveType::Hdd.optimal_chunk_size());
+        assert_eq!(reader_hdd.pipeline_depth, 3);
 
-        let reader = PipelinedMftReader::new(extent_map, None, DriveType::Unknown);
-        assert_eq!(reader.chunk_size, DriveType::Unknown.optimal_chunk_size());
+        let reader_unknown = PipelinedMftReader::new(extent_map, None, DriveType::Unknown);
+        assert_eq!(
+            reader_unknown.chunk_size,
+            DriveType::Unknown.optimal_chunk_size()
+        );
     }
 }

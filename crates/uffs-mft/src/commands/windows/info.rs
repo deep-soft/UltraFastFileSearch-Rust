@@ -2,6 +2,31 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Volume information and discovery command handlers.
+//!
+//! These commands print human-readable volume / drive metadata to stdout,
+//! convert byte counters into KB/MB/percent for display, and use `Debug`
+//! formatting for opaque diagnostic enums.  The lint exemptions below capture
+//! those CLI-specific patterns; library code never inherits them.
+#![expect(
+    clippy::print_stdout,
+    reason = "intentional user-facing CLI volume info output"
+)]
+#![expect(
+    clippy::float_arithmetic,
+    clippy::cast_precision_loss,
+    clippy::default_numeric_fallback,
+    reason = "byte/percent calculations convert integer counters into f64 for human-readable display"
+)]
+#![expect(
+    clippy::min_ident_chars,
+    clippy::shadow_unrelated,
+    reason = "short identifiers and sequential rebinding aid readability in CLI driver code"
+)]
+#![expect(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    reason = "info commands run a configure -> query -> format -> print pipeline that is most readable inline"
+)]
 
 use anyhow::{Context, Result};
 use tracing::info;
@@ -10,6 +35,11 @@ use uffs_mft::MftReader;
 use super::shared::drive_type_label;
 use crate::display::{format_bytes, format_duration, format_number_commas, truncate_string};
 
+/// `info` CLI command — print MFT and volume diagnostics for `drive`.
+///
+/// `deep` enables full-MFT scans (slower, more accurate counts), `no_bitmap`
+/// disables the `$Bitmap`-driven skip optimisation, and `unique` reports
+/// unique-FRS counts in addition to total parse counts.
 #[cfg(windows)]
 pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: bool) -> Result<()> {
     use std::time::Instant;
@@ -31,7 +61,7 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
     );
 
     debug!(drive = %drive_upper, "🔓 Opening volume handle");
-    let handle = VolumeHandle::open(drive).with_context(|| format!("Failed to open {}:", drive))?;
+    let handle = VolumeHandle::open(drive).with_context(|| format!("Failed to open {drive}:"))?;
 
     // Detect drive type for display
     let drive_type = detect_drive_type(drive_upper);
@@ -42,11 +72,11 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
 
     // Calculate derived metrics
     let record_count =
-        vol_data.mft_valid_data_length / vol_data.bytes_per_file_record_segment as u64;
+        vol_data.mft_valid_data_length / u64::from(vol_data.bytes_per_file_record_segment);
     let mft_size_mb = vol_data.mft_valid_data_length as f64 / (1024.0 * 1024.0);
-    let volume_size_bytes = vol_data.total_clusters * vol_data.bytes_per_cluster as u64;
+    let volume_size_bytes = vol_data.total_clusters * u64::from(vol_data.bytes_per_cluster);
     let volume_size_gb = volume_size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    let free_space_bytes = vol_data.free_clusters * vol_data.bytes_per_cluster as u64;
+    let free_space_bytes = vol_data.free_clusters * u64::from(vol_data.bytes_per_cluster);
     let used_space_bytes = volume_size_bytes.saturating_sub(free_space_bytes);
     let free_percentage = if volume_size_bytes > 0 {
         (free_space_bytes as f64 / volume_size_bytes as f64) * 100.0
@@ -117,9 +147,9 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
     }
 
     // Bitmap analysis
-    let mut in_use_records = 0u64;
-    let mut free_records = 0u64;
-    let mut utilization = 0.0f64;
+    let mut in_use_records = 0_u64;
+    let mut free_records = 0_u64;
+    let mut utilization = 0.0_f64;
     if let Ok(bitmap) = handle.get_mft_bitmap() {
         in_use_records = bitmap.count_in_use() as u64;
         free_records = record_count.saturating_sub(in_use_records);
@@ -138,15 +168,11 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
     let mut warnings = Vec::new();
     if is_fragmented && extent_count > 10 {
         warnings.push(format!(
-            "MFT is heavily fragmented ({} extents)",
-            extent_count
+            "MFT is heavily fragmented ({extent_count} extents)"
         ));
     }
     if utilization > 95.0 {
-        warnings.push(format!(
-            "MFT utilization is very high ({:.1}%)",
-            utilization
-        ));
+        warnings.push(format!("MFT utilization is very high ({utilization:.1}%)"));
     }
 
     let elapsed = start_time.elapsed();
@@ -158,14 +184,11 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
     } else {
         println!("                    MFT INFO (Lightweight)");
     }
-    println!(
-        "                    Drive: {}: ({})",
-        drive_upper, drive_type_str
-    );
+    println!("                    Drive: {drive_upper}: ({drive_type_str})");
     println!("═══════════════════════════════════════════════════════════════");
     println!();
     println!("📐 VOLUME GEOMETRY");
-    println!("  Drive type:           {}", drive_type_str);
+    println!("  Drive type:           {drive_type_str}");
     println!(
         "  Bytes per sector:     {}",
         format_number_commas(vol_data.bytes_per_sector.into())
@@ -199,7 +222,7 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
         "  MFT size:            {}",
         format_bytes(vol_data.mft_valid_data_length)
     );
-    println!("  MFT % of volume:      {:.3}%", mft_percentage);
+    println!("  MFT % of volume:      {mft_percentage:.3}%");
     println!(
         "  Total records:        {}",
         format_number_commas(record_count)
@@ -212,7 +235,7 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
         "  Free records:         {}",
         format_number_commas(free_records)
     );
-    println!("  Utilization:          {:.1}%", utilization);
+    println!("  Utilization:          {utilization:.1}%");
     println!(
         "  Fragmentation:        {} extent(s) {}",
         extent_count,
@@ -220,16 +243,15 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
     );
     println!();
 
-    if !warnings.is_empty() {
+    if warnings.is_empty() {
+        println!("✅ HEALTH STATUS: Good (based on metadata)");
+    } else {
         println!("⚠️  HEALTH WARNINGS");
         for warning in &warnings {
-            println!("  • {}", warning);
+            println!("  • {warning}");
         }
-        println!();
-    } else {
-        println!("✅ HEALTH STATUS: Good (based on metadata)");
-        println!();
     }
+    println!();
 
     // Deep scan: read all MFT records for detailed statistics
     if deep {
@@ -245,7 +267,7 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
         println!();
 
         let reader = MftReader::open(drive)
-            .with_context(|| format!("Failed to open drive {}:", drive))?
+            .with_context(|| format!("Failed to open drive {drive}:"))?
             .with_use_bitmap(!no_bitmap)
             .with_expand_links(!unique); // unique=true means don't expand
 
@@ -258,8 +280,7 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
             .column("is_directory")
             .ok()
             .and_then(|c| c.bool().ok())
-            .map(|b| b.sum().unwrap_or(0) as u64)
-            .unwrap_or(0);
+            .map_or(0, |b| u64::from(b.sum().unwrap_or(0)));
         let file_count = total_parsed as u64 - dir_count;
 
         // Helper closure to count bool columns
@@ -267,8 +288,7 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
             df.column(name)
                 .ok()
                 .and_then(|c| c.bool().ok())
-                .map(|b| b.sum().unwrap_or(0) as u64)
-                .unwrap_or(0)
+                .map_or(0, |b| u64::from(b.sum().unwrap_or(0)))
         };
 
         let hidden_count = count_bool("is_hidden");
@@ -285,34 +305,32 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
             .column("stream_count")
             .ok()
             .and_then(|c| c.u16().ok())
-            .map(|s| {
-                let mut multi = 0u64;
-                let mut total = 0u64;
+            .map_or((0, 0), |s| {
+                let mut multi = 0_u64;
+                let mut total = 0_u64;
                 for v in s.iter().flatten() {
-                    total += v as u64;
+                    total += u64::from(v);
                     if v > 1 {
                         multi += 1;
                     }
                 }
                 (multi, total)
-            })
-            .unwrap_or((0, 0));
+            });
         let (multi_name_count, total_name_count) = df
             .column("name_count")
             .ok()
             .and_then(|c| c.u16().ok())
-            .map(|s| {
-                let mut multi = 0u64;
-                let mut total = 0u64;
+            .map_or((0, 0), |s| {
+                let mut multi = 0_u64;
+                let mut total = 0_u64;
                 for v in s.iter().flatten() {
-                    total += v as u64;
+                    total += u64::from(v);
                     if v > 1 {
                         multi += 1;
                     }
                 }
                 (multi, total)
-            })
-            .unwrap_or((0, 0));
+            });
 
         // Calculate the expanded-row estimate (names × streams per record).
         // The reference output expands each record into one row per
@@ -329,9 +347,13 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
                         names
                             .iter()
                             .zip(streams.iter())
-                            .filter_map(|(n, s)| match (n, s) {
-                                (Some(n), Some(s)) => Some(n as u64 * s as u64),
-                                _ => None,
+                            .filter_map(|(name_count, stream_count)| {
+                                match (name_count, stream_count) {
+                                    (Some(names), Some(streams)) => {
+                                        Some(u64::from(names) * u64::from(streams))
+                                    }
+                                    _ => None,
+                                }
                             })
                             .sum::<u64>()
                     })
@@ -343,14 +365,12 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
             .column("size")
             .ok()
             .and_then(|c| c.u64().ok())
-            .map(|s| s.iter().flatten().sum::<u64>())
-            .unwrap_or(0);
+            .map_or(0, |s| s.iter().flatten().sum::<u64>());
         let total_allocated_size: u64 = df
             .column("allocated_size")
             .ok()
             .and_then(|c| c.u64().ok())
-            .map(|s| s.iter().flatten().sum::<u64>())
-            .unwrap_or(0);
+            .map_or(0, |s| s.iter().flatten().sum::<u64>());
 
         let slack_space = total_allocated_size.saturating_sub(total_file_size);
         let slack_percentage = if total_allocated_size > 0 {
@@ -513,6 +533,33 @@ pub(crate) async fn cmd_info(drive: char, deep: bool, no_bitmap: bool, unique: b
     Ok(())
 }
 
+/// Per-drive summary used by [`cmd_drives`] to lay out the per-drive table.
+#[cfg(windows)]
+struct DriveInfo {
+    /// Drive letter (e.g. `C`, `D`).
+    letter: char,
+    /// `true` when this drive hosts the running OS.
+    is_boot: bool,
+    /// Volume label as reported by `GetVolumeInformationW`.
+    label: String,
+    /// Human-readable drive type (`SSD`, `HDD`, `NVMe`, ...).
+    drive_type: String,
+    /// Total volume capacity in bytes.
+    total_size: u64,
+    /// Free space in bytes (per Win32 disk-free-space query).
+    free_space: u64,
+    /// Used space in bytes (`total_size - free_space`).
+    used_space: u64,
+    /// Used capacity percentage in `[0.0, 100.0]`.
+    used_pct: f64,
+    /// Size of the `$MFT` file in bytes.
+    mft_size: u64,
+    /// Number of allocated MFT records on this volume.
+    mft_records: u64,
+}
+
+/// `drives` CLI command — list every NTFS drive on this system with its
+/// label, size, free space, and `$MFT` statistics.
 #[cfg(windows)]
 pub(crate) async fn cmd_drives() -> Result<()> {
     use tracing::debug;
@@ -532,20 +579,6 @@ pub(crate) async fn cmd_drives() -> Result<()> {
             drives.len()
         );
 
-        // Collect drive info
-        struct DriveInfo {
-            letter: char,
-            is_boot: bool,
-            label: String,
-            drive_type: String,
-            total_size: u64,
-            free_space: u64,
-            used_space: u64,
-            used_pct: f64,
-            mft_size: u64,
-            mft_records: u64,
-        }
-
         let mut drive_infos: Vec<DriveInfo> = Vec::new();
 
         for drive in &drives {
@@ -559,8 +592,8 @@ pub(crate) async fn cmd_drives() -> Result<()> {
             // Try to get volume info for each drive
             if let Ok(handle) = VolumeHandle::open(*drive) {
                 let vol_data = handle.volume_data();
-                let total_size = vol_data.total_clusters as u64 * vol_data.bytes_per_cluster as u64;
-                let free_space = vol_data.free_clusters as u64 * vol_data.bytes_per_cluster as u64;
+                let total_size = vol_data.total_clusters * u64::from(vol_data.bytes_per_cluster);
+                let free_space = vol_data.free_clusters * u64::from(vol_data.bytes_per_cluster);
                 let used_space = total_size.saturating_sub(free_space);
                 let used_pct = if total_size > 0 {
                     (used_space as f64 / total_size as f64) * 100.0
@@ -568,7 +601,7 @@ pub(crate) async fn cmd_drives() -> Result<()> {
                     0.0
                 };
                 let mft_size = vol_data.mft_valid_data_length;
-                let mft_records = mft_size / vol_data.bytes_per_file_record_segment as u64;
+                let mft_records = mft_size / u64::from(vol_data.bytes_per_file_record_segment);
 
                 debug!(
                     drive = %drive,
@@ -584,7 +617,7 @@ pub(crate) async fn cmd_drives() -> Result<()> {
                     letter: *drive,
                     is_boot: is_boot_drive(*drive),
                     label,
-                    drive_type: drive_type_str.to_string(),
+                    drive_type: drive_type_str.to_owned(),
                     total_size,
                     free_space,
                     used_space,
@@ -671,7 +704,9 @@ pub(crate) async fn cmd_drives() -> Result<()> {
     Ok(())
 }
 
-/// Gets the volume label for a drive letter.
+/// Look up the volume label for `drive` via `GetVolumeInformationW`.
+///
+/// Returns `None` if the call fails or the volume has no label set.
 #[cfg(windows)]
 #[expect(
     unsafe_code,
@@ -684,13 +719,17 @@ fn get_volume_label(drive: char) -> Option<String> {
     use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
     use windows::core::PCWSTR;
 
-    let root_path: Vec<u16> = format!("{}:\\", drive)
+    let root_path: Vec<u16> = format!("{drive}:\\")
         .encode_utf16()
-        .chain(std::iter::once(0))
+        .chain(core::iter::once(0))
         .collect();
 
-    let mut volume_name_buf = [0u16; 261];
+    let mut volume_name_buf = [0_u16; 261];
 
+    // SAFETY: `root_path` is a NUL-terminated UTF-16 buffer kept alive for the
+    // call duration; `volume_name_buf` is a writable 261-element stack buffer
+    // matching the Win32 maximum volume-name length; the remaining four
+    // optional out-parameters are documented as accepting `None`.
     let result = unsafe {
         GetVolumeInformationW(
             PCWSTR::from_raw(root_path.as_ptr()),
@@ -702,11 +741,10 @@ fn get_volume_label(drive: char) -> Option<String> {
         )
     };
 
-    if result.is_ok() {
+    result.is_ok().then(|| {
         let len = volume_name_buf.iter().position(|&c| c == 0).unwrap_or(0);
-        let label = OsString::from_wide(&volume_name_buf[..len]);
-        Some(label.to_string_lossy().to_string())
-    } else {
-        None
-    }
+        let name_slice = volume_name_buf.get(..len).unwrap_or(&[]);
+        let label = OsString::from_wide(name_slice);
+        label.to_string_lossy().to_string()
+    })
 }

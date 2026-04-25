@@ -10,8 +10,17 @@
 //! `parse_record_full` pipeline.
 
 #![cfg(windows)]
+#![expect(
+    clippy::print_stdout,
+    clippy::use_debug,
+    reason = "diagnostic helper — stdout / Debug formatting is intentional"
+)]
+#![expect(
+    clippy::let_underscore_must_use,
+    reason = "writeln! into a heap String never fails; ignoring its result is safe"
+)]
 
-use std::fmt::Write as _;
+use core::fmt::Write as _;
 
 use uffs_mft::RawMftData;
 use uffs_mft::io::{apply_fixup, parse_record_full};

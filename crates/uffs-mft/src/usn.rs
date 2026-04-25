@@ -207,6 +207,12 @@ pub fn aggregate_changes(records: &[UsnRecord]) -> HashMap<u64, FileChange> {
 #[cfg(windows)]
 pub use windows_impl::{query_usn_journal, read_targeted_frs_records, read_usn_journal};
 
+/// Windows-specific USN journal helpers backed by `FSCTL_QUERY_USN_JOURNAL`,
+/// `FSCTL_READ_USN_JOURNAL`, and targeted FRS reads via `CreateFileW` /
+/// `DeviceIoControl`.
+///
+/// All entries here are re-exported by the parent module under platform gating;
+/// non-Windows targets see the no-op fallbacks in `usn::*` instead.
 #[cfg(windows)]
 #[expect(
     unsafe_code,
@@ -228,53 +234,100 @@ mod windows_impl {
     use windows::core::PCWSTR;
     use zerocopy::{FromBytes, Immutable, KnownLayout};
 
-    use super::*;
+    use super::{UsnJournalInfo, UsnRecord};
 
+    /// Mirror of the Win32 `USN_JOURNAL_DATA_V0` struct populated by
+    /// `FSCTL_QUERY_USN_JOURNAL`.  Field order and layout match the
+    /// `winioctl.h` definition.
     #[repr(C)]
     #[derive(Default)]
     struct UsnJournalDataV0 {
+        /// Unique journal-instance identifier.
         usn_journal_id: u64,
+        /// First valid USN in the journal.
         first_usn: i64,
+        /// Next USN that will be assigned to a new record.
         next_usn: i64,
+        /// Lowest USN still readable from the journal.
         lowest_valid_usn: i64,
+        /// Largest USN the journal will accept before wrapping.
         max_usn: i64,
+        /// Configured maximum journal size in bytes.
         maximum_size: u64,
+        /// Allocation-growth quantum for the journal.
         allocation_delta: u64,
     }
 
+    /// Mirror of the Win32 `READ_USN_JOURNAL_DATA_V0` input struct for
+    /// `FSCTL_READ_USN_JOURNAL`.
     #[repr(C)]
     struct ReadUsnJournalDataV0 {
+        /// USN to start reading from.
         start_usn: i64,
+        /// Bitmask of `USN_REASON_*` flags to filter on.
         reason_mask: u32,
+        /// Non-zero: return records only once their file is closed.
         return_only_on_close: u32,
+        /// Wait timeout in 100ns units (0 = don't block).
         timeout: u64,
+        /// Minimum bytes to wait for before returning (0 = return any).
         bytes_to_wait_for: u64,
+        /// Journal identifier (must match `usn_journal_id` from query).
         usn_journal_id: u64,
     }
 
+    /// Mirror of the Win32 `USN_RECORD_V2` fixed-size header.  The filename
+    /// follows the header starting at `file_name_offset`.
     #[repr(C, packed)]
     #[derive(Clone, Copy, FromBytes, Immutable, KnownLayout)]
     struct UsnRecordV2Header {
+        /// Total record length including trailing filename (bytes).
         record_length: u32,
+        /// Major version of this record format.
         major_version: u16,
+        /// Minor version of this record format.
         minor_version: u16,
+        /// MFT file reference number (FRN) of the target file.
         file_reference_number: u64,
+        /// FRN of the parent directory.
         parent_file_reference_number: u64,
+        /// USN of this record.
         usn: i64,
+        /// FILETIME of the change (100ns ticks since 1601-01-01 UTC).
         time_stamp: i64,
+        /// Bitmask of `USN_REASON_*` flags describing the change.
         reason: u32,
+        /// Bitmask of `USN_SOURCE_*` flags (e.g. replication-driven edits).
         source_info: u32,
+        /// Security-descriptor id (unused on most filesystems).
         security_id: u32,
+        /// Windows file attributes (`FILE_ATTRIBUTE_*`).
         file_attributes: u32,
+        /// Length of the trailing filename in bytes (UTF-16 LE).
         file_name_length: u16,
+        /// Offset from the start of this record to the trailing filename.
         file_name_offset: u16,
     }
 
+    /// Size of a `UsnJournalDataV0` in bytes — always fits in `u32`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "`UsnJournalDataV0` is a fixed-layout C struct of 56 bytes; the cast is compile-time bounded and required for the Win32 ioctl size argument"
+    )]
+    const USN_JOURNAL_DATA_V0_SIZE: u32 = size_of::<UsnJournalDataV0>() as u32;
+    /// Size of a `ReadUsnJournalDataV0` in bytes — always fits in `u32`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "`ReadUsnJournalDataV0` is a fixed-layout C struct of 40 bytes; the cast is compile-time bounded and required for the Win32 ioctl size argument"
+    )]
+    const READ_USN_JOURNAL_DATA_V0_SIZE: u32 = size_of::<ReadUsnJournalDataV0>() as u32;
+
+    /// Open a `\\.\X:` volume handle with read access for USN-journal ioctls.
     fn open_volume_handle(volume: char) -> Result<HANDLE, std::io::Error> {
-        let path = format!("\\\\.\\{}:", volume);
+        let path = format!("\\\\.\\{volume}:");
         let wide: Vec<u16> = OsStr::new(&path)
             .encode_wide()
-            .chain(std::iter::once(0))
+            .chain(core::iter::once(0))
             .collect();
         // USN Journal operations require GENERIC_READ access
         // SAFETY: `wide` is a NUL-terminated UTF-16 path buffer that lives for the
@@ -283,7 +336,7 @@ mod windows_impl {
         let handle = unsafe {
             CreateFileW(
                 PCWSTR::from_raw(wide.as_ptr()),
-                GENERIC_READ.0.into(),
+                GENERIC_READ.0,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 None,
                 OPEN_EXISTING,
@@ -292,13 +345,35 @@ mod windows_impl {
             )
         };
         match handle {
-            Ok(h) if h != INVALID_HANDLE_VALUE => Ok(h),
+            Ok(raw) if raw != INVALID_HANDLE_VALUE => Ok(raw),
             Ok(_) => Err(std::io::Error::last_os_error()),
             Err(err) => Err(std::io::Error::from_raw_os_error(err.code().0)),
         }
     }
 
+    /// Close a USN-journal volume handle, logging (but not propagating) any
+    /// failure from the Win32 `CloseHandle` call.  The handle is treated as
+    /// consumed on return regardless of outcome.
+    #[expect(
+        unsafe_code,
+        reason = "CloseHandle is an FFI call; caller guarantees handle validity"
+    )]
+    fn close_volume_handle(handle: HANDLE) {
+        // SAFETY: caller passed a HANDLE returned from `open_volume_handle`
+        // which has not yet been closed.
+        if let Err(err) = unsafe { CloseHandle(handle) } {
+            tracing::debug!(err = ?err, "CloseHandle failed in USN journal path");
+        }
+    }
+
     /// Queries the USN Journal for a volume.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`std::io::Error`] if opening the volume handle or issuing
+    /// `FSCTL_QUERY_USN_JOURNAL` fails — typically `ERROR_JOURNAL_NOT_ACTIVE`
+    /// when the NTFS USN journal has not been enabled for the volume, or
+    /// `ERROR_ACCESS_DENIED` when the caller is not elevated.
     pub fn query_usn_journal(volume: char) -> Result<UsnJournalInfo, std::io::Error> {
         let handle = open_volume_handle(volume)?;
         let mut journal_data = UsnJournalDataV0::default();
@@ -313,14 +388,12 @@ mod windows_impl {
                 None,                                          // Input buffer
                 0,                                             // Input buffer size
                 Some(ptr::from_mut(&mut journal_data).cast()), // Output buffer
-                size_of::<UsnJournalDataV0>() as u32,          // Output buffer size
-                Some(&mut bytes_returned),                     // Bytes returned
+                USN_JOURNAL_DATA_V0_SIZE,                      // Output buffer size
+                Some(&raw mut bytes_returned),                 // Bytes returned
                 None,                                          // Overlapped
             )
         };
-        // SAFETY: `handle` was returned by `open_volume_handle` and is closed once
-        // after the ioctl completes.
-        let _ = unsafe { CloseHandle(handle) };
+        close_volume_handle(handle);
         if result.is_err() {
             return Err(std::io::Error::last_os_error());
         }
@@ -340,13 +413,20 @@ mod windows_impl {
     /// Loops the `FSCTL_READ_USN_JOURNAL` ioctl until all changes are consumed,
     /// preventing data loss on busy volumes where a single 64KB buffer would
     /// only return a subset of changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`std::io::Error`] if the volume handle cannot be opened or
+    /// `FSCTL_READ_USN_JOURNAL` fails for any iteration of the
+    /// read-loop. `ERROR_JOURNAL_ENTRY_DELETED` is surfaced unchanged so
+    /// callers can decide whether to rebuild their checkpoint.
     pub fn read_usn_journal(
         volume: char,
         journal_id: u64,
         start_usn: i64,
     ) -> Result<(Vec<UsnRecord>, i64), std::io::Error> {
         let handle = open_volume_handle(volume)?;
-        let mut buffer = vec![0u8; 64 * 1024];
+        let mut buffer = vec![0_u8; 64 * 1024];
         let mut all_records = Vec::new();
         let mut current_usn = start_usn;
 
@@ -360,6 +440,9 @@ mod windows_impl {
                 usn_journal_id: journal_id,
             };
             let mut bytes_returned: u32 = 0;
+            // u32 truncation is safe: buffer is a fixed 64 KiB allocation
+            // (`6_4 * 1024`), well under u32::MAX.
+            let buffer_size = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
             // SAFETY: `handle` is a live volume handle, `read_data` and `buffer`
             // provide valid input/output storage for the advertised byte counts,
             // and `bytes_returned` is a valid out-parameter for the call.
@@ -368,22 +451,20 @@ mod windows_impl {
                     handle,
                     FSCTL_READ_USN_JOURNAL,
                     Some(ptr::from_ref(&read_data).cast()),
-                    size_of::<ReadUsnJournalDataV0>() as u32,
+                    READ_USN_JOURNAL_DATA_V0_SIZE,
                     Some(buffer.as_mut_ptr().cast()),
-                    buffer.len() as u32,
-                    Some(&mut bytes_returned),
+                    buffer_size,
+                    Some(&raw mut bytes_returned),
                     None,
                 )
             };
             if result.is_err() {
-                // SAFETY: `handle` was returned by `open_volume_handle` and is
-                // closed exactly once.
-                let _ = unsafe { CloseHandle(handle) };
+                close_volume_handle(handle);
                 return Err(std::io::Error::last_os_error());
             }
-            if bytes_returned < size_of::<i64>() as u32 {
-                // SAFETY: same as above.
-                let _ = unsafe { CloseHandle(handle) };
+            // `size_of::<i64>()` is 8, hard-coded as a `u32` literal here.
+            if bytes_returned < 8_u32 {
+                close_volume_handle(handle);
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "FSCTL_READ_USN_JOURNAL returned fewer than 8 bytes",
@@ -391,35 +472,47 @@ mod windows_impl {
             }
 
             // First 8 bytes of output = next USN to continue from
+            let bytes_returned_usize = bytes_returned as usize; // u32→usize is lossless
+            let next_usn_slice = buffer.get(..8).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "USN journal buffer shorter than 8 bytes",
+                )
+            })?;
             let mut next_usn_bytes = [0_u8; 8];
-            next_usn_bytes.copy_from_slice(&buffer[..8]);
+            next_usn_bytes.copy_from_slice(next_usn_slice);
             let next_usn = i64::from_le_bytes(next_usn_bytes);
 
             // Parse records from this batch
             let mut offset = 8_usize;
             let mut batch_count = 0_usize;
-            while offset + size_of::<UsnRecordV2Header>() <= bytes_returned as usize {
-                let header = match UsnRecordV2Header::read_from_prefix(
-                    &buffer[offset..bytes_returned as usize],
-                ) {
-                    Ok((header, _)) => header,
-                    Err(_) => break,
+            while offset + size_of::<UsnRecordV2Header>() <= bytes_returned_usize {
+                let Some(record_slice) = buffer.get(offset..bytes_returned_usize) else {
+                    break;
+                };
+                let Ok((header, _)) = UsnRecordV2Header::read_from_prefix(record_slice) else {
+                    break;
                 };
                 if header.record_length == 0 {
                     break;
                 }
                 let name_start = offset + header.file_name_offset as usize;
                 let name_end = name_start + header.file_name_length as usize;
-                let filename = if name_end <= bytes_returned as usize {
-                    let name_bytes = &buffer[name_start..name_end];
-                    let name_u16: Vec<u16> = name_bytes
-                        .chunks_exact(2)
-                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                        .collect();
-                    String::from_utf16_lossy(&name_u16)
-                } else {
-                    String::new()
-                };
+                let filename = buffer
+                    .get(name_start..name_end)
+                    .filter(|_| name_end <= bytes_returned_usize)
+                    .map_or_else(String::new, |name_bytes| {
+                        let name_u16: Vec<u16> = name_bytes
+                            .chunks_exact(2)
+                            .map(|pair| {
+                                u16::from_le_bytes([
+                                    *pair.first().unwrap_or(&0),
+                                    *pair.get(1).unwrap_or(&0),
+                                ])
+                            })
+                            .collect();
+                        String::from_utf16_lossy(&name_u16)
+                    });
                 all_records.push(UsnRecord {
                     frs: header.file_reference_number & 0x0000_FFFF_FFFF_FFFF,
                     parent_frs: header.parent_file_reference_number & 0x0000_FFFF_FFFF_FFFF,
@@ -441,9 +534,7 @@ mod windows_impl {
             current_usn = next_usn;
         }
 
-        // SAFETY: `handle` was returned by `open_volume_handle` and is closed
-        // exactly once after all ioctl calls complete.
-        let _ = unsafe { CloseHandle(handle) };
+        close_volume_handle(handle);
         Ok((all_records, current_usn))
     }
 
@@ -469,13 +560,7 @@ mod windows_impl {
         index: &mut crate::index::MftIndex,
         frs_list: &[u64],
     ) -> Result<usize, crate::MftError> {
-        use core::mem::size_of;
-
-        use zerocopy::FromBytes;
-
         use crate::io::MftRecordReader;
-        use crate::ntfs::{AttributeListEntry, AttributeRecordHeader, AttributeType};
-        use crate::parse::{apply_fixup, parse_record_to_index};
 
         if frs_list.is_empty() {
             return Ok(0);
@@ -498,32 +583,8 @@ mod windows_impl {
         let mut extension_frs: Vec<u64> = Vec::new();
 
         for &frs in frs_list {
-            match reader.read_record(handle, frs) {
-                Ok(raw_data) => {
-                    let mut buf = vec![0_u8; raw_data.len()];
-                    buf.copy_from_slice(raw_data);
-
-                    if apply_fixup(&mut buf) {
-                        // Scan for $ATTRIBUTE_LIST to discover extension records
-                        extract_extension_frs(&buf, frs, &mut extension_frs);
-
-                        // Parse the base record into the index.
-                        // `parse_record_to_index` uses `ExtensionSnapshot`
-                        // to preserve existing extension-chain data while
-                        // overwriting base-record fields with fresh data.
-                        if parse_record_to_index(&buf, frs, index) {
-                            success_count += 1;
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::trace!(
-                        frs,
-                        error = %e,
-                        "⚠️ Targeted MFT read failed for FRS (skipping)"
-                    );
-                }
-            }
+            success_count +=
+                read_one_targeted_record(&mut reader, handle, index, frs, Some(&mut extension_frs));
         }
 
         // Second pass: read extension records discovered from $ATTRIBUTE_LIST.
@@ -538,95 +599,127 @@ mod windows_impl {
             );
         }
         for ext_frs in &extension_frs {
-            match reader.read_record(handle, *ext_frs) {
-                Ok(raw_data) => {
-                    let mut buf = vec![0_u8; raw_data.len()];
-                    buf.copy_from_slice(raw_data);
-
-                    if apply_fixup(&mut buf) && parse_record_to_index(&buf, *ext_frs, index) {
-                        success_count += 1;
-                    }
-                }
-                Err(e) => {
-                    tracing::trace!(
-                        frs = *ext_frs,
-                        error = %e,
-                        "⚠️ Extension MFT record read failed (skipping)"
-                    );
-                }
-            }
-        }
-
-        /// Scans a base record's attributes for `$ATTRIBUTE_LIST` (type 0x20)
-        /// and extracts the FRS numbers of extension records.
-        fn extract_extension_frs(data: &[u8], base_frs: u64, out: &mut Vec<u64>) {
-            use crate::ntfs::FileRecordSegmentHeader;
-
-            if data.len() < size_of::<FileRecordSegmentHeader>() {
-                return;
-            }
-            let header = match FileRecordSegmentHeader::read_from_prefix(data) {
-                Ok((h, _)) => h,
-                Err(_) => return,
-            };
-
-            let mut offset = header.first_attribute_offset as usize;
-            let max_offset = core::cmp::min(header.bytes_in_use as usize, data.len());
-
-            while offset + size_of::<AttributeRecordHeader>() <= max_offset {
-                let attr = match AttributeRecordHeader::read_from_prefix(&data[offset..]) {
-                    Ok((a, _)) => a,
-                    Err(_) => break,
-                };
-                if attr.type_code == AttributeType::End as u32 {
-                    break;
-                }
-                if attr.length == 0 || offset + attr.length as usize > max_offset {
-                    break;
-                }
-
-                if attr.type_code == AttributeType::AttributeList as u32
-                    && attr.is_non_resident == 0
-                {
-                    // Resident $ATTRIBUTE_LIST — parse entries
-                    let val_offset_raw = data
-                        .get(offset + 20..offset + 22)
-                        .and_then(|b| <[u8; 2]>::try_from(b).ok())
-                        .map(u16::from_le_bytes)
-                        .unwrap_or(0) as usize;
-                    let val_length = data
-                        .get(offset + 16..offset + 20)
-                        .and_then(|b| <[u8; 4]>::try_from(b).ok())
-                        .map(u32::from_le_bytes)
-                        .unwrap_or(0) as usize;
-
-                    let list_start = offset + val_offset_raw;
-                    let list_end =
-                        core::cmp::min(list_start.saturating_add(val_length), data.len());
-
-                    let mut pos = list_start;
-                    while pos + size_of::<AttributeListEntry>() <= list_end {
-                        let entry = match AttributeListEntry::read_from_prefix(&data[pos..list_end])
-                        {
-                            Ok((e, _)) => e,
-                            Err(_) => break,
-                        };
-                        if entry.length < size_of::<AttributeListEntry>() as u16 {
-                            break;
-                        }
-                        let target = entry.target_frs();
-                        if target != base_frs && target != 0 {
-                            out.push(target);
-                        }
-                        pos += entry.length as usize;
-                    }
-                }
-
-                offset += attr.length as usize;
-            }
+            success_count += read_one_targeted_record(&mut reader, handle, index, *ext_frs, None);
         }
 
         Ok(success_count)
+    }
+
+    /// Read one MFT record by FRS, apply fixup, optionally scan
+    /// `$ATTRIBUTE_LIST` for extension FRSes, and parse the result into
+    /// `index`.
+    ///
+    /// `extension_frs_out` is `Some(_)` for the base-record pass (so
+    /// extensions are discovered) and `None` for the extension-record pass
+    /// (where extension scanning is unnecessary).
+    ///
+    /// Returns `1` on a successful parse, `0` on any read / fixup / parse
+    /// failure (failures are logged at trace level and skipped to keep the
+    /// caller's loop simple).
+    fn read_one_targeted_record(
+        reader: &mut crate::io::MftRecordReader,
+        handle: HANDLE,
+        index: &mut crate::index::MftIndex,
+        frs: u64,
+        extension_frs_out: Option<&mut Vec<u64>>,
+    ) -> usize {
+        use crate::parse::{apply_fixup, parse_record_to_index};
+
+        match reader.read_record(handle, frs) {
+            Ok(raw_data) => {
+                let mut buf = raw_data.to_vec();
+                if !apply_fixup(&mut buf) {
+                    return 0;
+                }
+                if let Some(out) = extension_frs_out {
+                    scan_attribute_list_extensions(&buf, frs, out);
+                }
+                usize::from(parse_record_to_index(&buf, frs, index))
+            }
+            Err(err) => {
+                tracing::trace!(
+                    frs,
+                    error = %err,
+                    "⚠️ Targeted MFT read failed for FRS (skipping)"
+                );
+                0
+            }
+        }
+    }
+
+    /// Scans a base MFT record's attributes for `$ATTRIBUTE_LIST` (type 0x20)
+    /// and extracts the FRS numbers of any extension records it references.
+    ///
+    /// Hoisted to module scope (instead of being nested inside
+    /// [`read_targeted_frs_records`]) so the function item is not declared
+    /// after statements in the caller — required by
+    /// `clippy::items_after_statements`.
+    fn scan_attribute_list_extensions(data: &[u8], base_frs: u64, out: &mut Vec<u64>) {
+        use zerocopy::FromBytes;
+
+        use crate::ntfs::{
+            AttributeListEntry, AttributeRecordHeader, AttributeType, FileRecordSegmentHeader,
+        };
+
+        if data.len() < size_of::<FileRecordSegmentHeader>() {
+            return;
+        }
+        let Ok((header, _)) = FileRecordSegmentHeader::read_from_prefix(data) else {
+            return;
+        };
+
+        let mut offset = header.first_attribute_offset as usize;
+        let max_offset = core::cmp::min(header.bytes_in_use as usize, data.len());
+
+        while offset + size_of::<AttributeRecordHeader>() <= max_offset {
+            let Some(attr_bytes) = data.get(offset..) else {
+                break;
+            };
+            let Ok((attr, _)) = AttributeRecordHeader::read_from_prefix(attr_bytes) else {
+                break;
+            };
+            if attr.type_code == AttributeType::End as u32 {
+                break;
+            }
+            if attr.length == 0 || offset + attr.length as usize > max_offset {
+                break;
+            }
+
+            if attr.type_code == AttributeType::AttributeList as u32 && attr.is_non_resident == 0 {
+                // Resident $ATTRIBUTE_LIST — parse entries
+                let val_offset_raw = data
+                    .get(offset + 20..offset + 22)
+                    .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
+                    .map_or(0, u16::from_le_bytes) as usize;
+                let val_length = data
+                    .get(offset + 16..offset + 20)
+                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                    .map_or(0, u32::from_le_bytes) as usize;
+
+                let list_start = offset + val_offset_raw;
+                let list_end = core::cmp::min(list_start.saturating_add(val_length), data.len());
+
+                let mut pos = list_start;
+                while pos + size_of::<AttributeListEntry>() <= list_end {
+                    let Some(entry_bytes) = data.get(pos..list_end) else {
+                        break;
+                    };
+                    let Ok((entry, _)) = AttributeListEntry::read_from_prefix(entry_bytes) else {
+                        break;
+                    };
+                    if usize::from(entry.length) < size_of::<AttributeListEntry>() {
+                        break;
+                    }
+                    let target = entry.target_frs();
+                    if target != base_frs && target != 0 {
+                        out.push(target);
+                    }
+                    pos += entry.length as usize;
+                }
+            }
+
+            offset += attr.length as usize;
+        }
     }
 }
 

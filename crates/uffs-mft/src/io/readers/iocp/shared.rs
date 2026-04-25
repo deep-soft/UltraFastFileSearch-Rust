@@ -2,8 +2,16 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Shared IOCP primitives.
+//!
+//! **Module-scoped cast justification:** `as u32` cast here converts the
+//! u64 overlapped offset low bits to u32 per Win32 OVERLAPPED struct layout;
+//! the high 32 bits are stored separately in `OffsetHigh`.
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "Win32 OVERLAPPED low-32 / high-32 offset split is the documented struct layout"
+)]
 
-use super::*;
+use super::super::prelude::{AlignedBuffer, HANDLE, MftError, ReadChunk, Result};
 
 /// I/O Completion Port wrapper for Windows async I/O.
 ///
@@ -32,13 +40,18 @@ impl IoCompletionPort {
         // handle yet; the call takes no borrowed pointers.
         let handle = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, None, 0, concurrency) };
 
-        match handle {
-            Ok(h) => Ok(Self { handle: h }),
-            Err(e) => Err(MftError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to create IOCP: {e}"),
-            ))),
-        }
+        handle.map_or_else(
+            |err| {
+                Err(MftError::Io(std::io::Error::other(format!(
+                    "Failed to create IOCP: {err}"
+                ))))
+            },
+            |iocp_handle| {
+                Ok(Self {
+                    handle: iocp_handle,
+                })
+            },
+        )
     }
 
     /// Associates a file handle with this IOCP.
@@ -58,16 +71,15 @@ impl IoCompletionPort {
 
         match result {
             Ok(_) => Ok(()),
-            Err(e) => Err(MftError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to associate handle with IOCP: {e}"),
-            ))),
+            Err(err) => Err(MftError::Io(std::io::Error::other(format!(
+                "Failed to associate handle with IOCP: {err}"
+            )))),
         }
     }
 
     /// Gets the raw IOCP handle.
     #[must_use]
-    pub fn raw_handle(&self) -> HANDLE {
+    pub const fn raw_handle(&self) -> HANDLE {
         self.handle
     }
 }
@@ -80,9 +92,9 @@ impl Drop for IoCompletionPort {
     fn drop(&mut self) {
         use windows::Win32::Foundation::CloseHandle;
         if !self.handle.is_invalid() {
-            // SAFETY: CloseHandle is safe to call on a valid handle.
-            // We check is_invalid() first to ensure the handle is valid.
-            let _ = unsafe { CloseHandle(self.handle) };
+            // SAFETY: `self.handle` was created by `CreateIoCompletionPort` and is
+            // closed exactly once during drop after `is_invalid()` checked validity.
+            unsafe { CloseHandle(self.handle) }.ok();
         }
     }
 }
@@ -95,7 +107,7 @@ impl Drop for IoCompletionPort {
 pub struct OverlappedRead {
     /// The Windows OVERLAPPED structure (must be first field for pointer
     /// casting).
-    overlapped: windows::Win32::System::IO::OVERLAPPED,
+    pub overlapped: windows::Win32::System::IO::OVERLAPPED,
     /// The aligned buffer for read data.
     pub buffer: AlignedBuffer,
     /// The chunk being read.
@@ -128,17 +140,16 @@ impl OverlappedRead {
     }
 
     /// Sets the file offset for the overlapped read.
-    pub fn set_offset(&mut self, offset: u64) {
+    pub const fn set_offset(&mut self, offset: u64) {
         self.overlapped.Anonymous.Anonymous.Offset = offset as u32;
-        self.overlapped.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
+        self.overlapped.Anonymous.Anonymous.OffsetHigh = (offset >> 32_u32) as u32;
     }
 
     /// Gets a mutable pointer to the OVERLAPPED structure.
     ///
-    /// # Safety
-    /// The returned pointer is valid as long as self is pinned and alive.
-    /// Note: Creating raw pointers is safe; only dereferencing requires unsafe.
-    pub fn as_overlapped_ptr(&mut self) -> *mut windows::Win32::System::IO::OVERLAPPED {
-        &mut self.overlapped as *mut _
+    /// The returned pointer is valid as long as `self` is pinned and alive.
+    /// Creating the raw pointer is safe; dereferencing it requires `unsafe`.
+    pub const fn as_overlapped_ptr(&mut self) -> *mut windows::Win32::System::IO::OVERLAPPED {
+        &raw mut self.overlapped
     }
 }

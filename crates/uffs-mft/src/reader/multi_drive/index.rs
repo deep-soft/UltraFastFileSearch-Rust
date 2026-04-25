@@ -3,7 +3,7 @@
 
 //! Lean-index multi-drive reader helpers.
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
@@ -13,9 +13,11 @@ use crate::cache::{CacheStatus, check_cache_status, save_to_cache};
 use crate::error::{MftError, Result};
 use crate::index::{IndexHeader, MftIndex};
 use crate::platform::VolumeHandle;
+use crate::reader::usn_apply::{
+    UsnDecision, apply_targeted_usn_reads, classify_usn_state as classify_with_journal_info,
+    persist_usn_checkpoint, rebuild_derived_after_usn,
+};
 use crate::reader::{MftProgress, MftReader};
-#[cfg(windows)]
-use crate::usn::read_targeted_frs_records;
 use crate::usn::{aggregate_changes, query_usn_journal, read_usn_journal};
 
 impl MultiDriveMftReader {
@@ -163,11 +165,10 @@ impl MultiDriveMftReader {
         }
 
         if indices.is_empty() {
-            return Err(errors
-                .into_iter()
-                .next()
-                .map(|(_, error)| error)
-                .unwrap_or(MftError::InvalidInput("No drives could be read".into())));
+            return Err(errors.into_iter().next().map_or_else(
+                || MftError::InvalidInput("No drives could be read".into()),
+                |(_, error)| error,
+            ));
         }
 
         Ok(indices)
@@ -182,14 +183,14 @@ impl MultiDriveMftReader {
             return Err(MftError::InvalidInput("No drives specified".into()));
         }
 
-        let callback = callback.map(Arc::new);
+        let shared_callback = callback.map(Arc::new);
         let budget = drive_reader_budget(self.drives.len());
         let mut join_set = JoinSet::new();
         let mut pending_drives = self.drives.iter().copied();
 
         for _ in 0..budget {
             if let Some(drive) = pending_drives.next() {
-                let cb = callback.clone();
+                let cb = shared_callback.clone();
                 join_set.spawn(async move { Self::read_single_drive_index(drive, cb).await });
             }
         }
@@ -210,17 +211,16 @@ impl MultiDriveMftReader {
             }
 
             if let Some(drive) = pending_drives.next() {
-                let cb = callback.clone();
+                let cb = shared_callback.clone();
                 join_set.spawn(async move { Self::read_single_drive_index(drive, cb).await });
             }
         }
 
         if indices.is_empty() {
-            return Err(errors
-                .into_iter()
-                .next()
-                .map(|(_, error)| error)
-                .unwrap_or(MftError::InvalidInput("No drives could be read".into())));
+            return Err(errors.into_iter().next().map_or_else(
+                || MftError::InvalidInput("No drives could be read".into()),
+                |(_, error)| error,
+            ));
         }
 
         Ok(indices)
@@ -234,13 +234,14 @@ impl MultiDriveMftReader {
         tokio::task::spawn_blocking(move || {
             let reader = MftReader::open(drive)?;
 
-            if let Some(cb) = callback {
-                reader.read_index_with_progress_sync(move |progress| {
-                    cb(drive, progress);
-                })
-            } else {
-                reader.read_all_index_sync()
-            }
+            callback.map_or_else(
+                || reader.read_all_index_sync(),
+                |cb| {
+                    reader.read_index_with_progress_sync(move |progress| {
+                        cb(drive, progress);
+                    })
+                },
+            )
         })
         .await
         .map_err(|error| MftError::InvalidInput(format!("Task join error: {error}")))?
@@ -262,10 +263,8 @@ impl MultiDriveMftReader {
         let volume_data = handle.volume_data();
         let volume_serial = volume_data.volume_serial_number;
 
-        let (usn_journal_id, next_usn) = match query_usn_journal(drive) {
-            Ok(info) => (info.journal_id, info.next_usn),
-            Err(_) => (0, 0),
-        };
+        let (usn_journal_id, next_usn) =
+            query_usn_journal(drive).map_or((0, 0), |info| (info.journal_id, info.next_usn));
 
         if let Err(error) = save_to_cache(&index, drive, volume_serial, usn_journal_id, next_usn) {
             info!(drive = %drive, error = %error, "⚠️ Failed to save to cache");
@@ -289,7 +288,7 @@ impl MultiDriveMftReader {
         header: IndexHeader,
     ) -> Result<MftIndex> {
         tokio::task::spawn_blocking(move || {
-            Self::apply_usn_updates_to_cached_index_sync(drive, index, header)
+            Self::apply_usn_updates_to_cached_index_sync(drive, index, &header)
         })
         .await
         .map_err(|error| MftError::InvalidInput(format!("Task join error: {error}")))?
@@ -298,49 +297,56 @@ impl MultiDriveMftReader {
     /// Synchronous implementation of `apply_usn_updates_to_cached_index`.
     fn apply_usn_updates_to_cached_index_sync(
         drive: char,
-        mut index: MftIndex,
-        header: IndexHeader,
+        index: MftIndex,
+        header: &IndexHeader,
     ) -> Result<MftIndex> {
-        let current_info = match query_usn_journal(drive) {
-            Ok(info) => info,
+        match Self::classify_usn_state(drive, header) {
+            UsnDecision::UseCached => Ok(index),
+            UsnDecision::Rebuild => Self::read_and_cache_single_drive_sync(drive),
+            UsnDecision::Apply {
+                journal_id,
+                start_usn,
+            } => Ok(Self::apply_or_skip_usn_changes(
+                drive, index, journal_id, start_usn,
+            )),
+        }
+    }
+
+    /// Classify what to do with the cached `index` for `drive` based on the
+    /// USN-journal state at the moment of inspection.
+    ///
+    /// Thin adapter over [`crate::reader::usn_apply::classify_usn_state`]
+    /// that handles the `query_usn_journal` failure path here: when the
+    /// journal is unavailable we fall back to [`UsnDecision::UseCached`]
+    /// so the cached index is still served instead of erroring out.
+    fn classify_usn_state(drive: char, header: &IndexHeader) -> UsnDecision {
+        match query_usn_journal(drive) {
+            Ok(info) => classify_with_journal_info(drive, header, &info),
             Err(error) => {
                 warn!(
                     drive = %drive,
                     error = %error,
                     "⚠️ USN Journal unavailable - using cached index as-is"
                 );
-                return Ok(index);
+                UsnDecision::UseCached
             }
-        };
-
-        if header.usn_journal_id != 0 && current_info.journal_id != header.usn_journal_id {
-            info!(
-                drive = %drive,
-                cached_journal_id = header.usn_journal_id,
-                current_journal_id = current_info.journal_id,
-                "🔄 USN Journal ID changed - rebuilding index"
-            );
-            return Self::read_and_cache_single_drive_sync(drive);
         }
+    }
 
-        let start_usn = header.next_usn;
-        if start_usn < current_info.first_usn {
-            info!(
-                drive = %drive,
-                cached_usn = start_usn,
-                first_usn = current_info.first_usn,
-                "🔄 USN Journal wrapped - rebuilding index"
-            );
-            return Self::read_and_cache_single_drive_sync(drive);
-        }
-
-        if start_usn >= current_info.next_usn {
-            debug!(drive = %drive, usn = start_usn, "✅ Index is already up to date");
-            return Ok(index);
-        }
-
-        let (records, next_usn) = match read_usn_journal(drive, current_info.journal_id, start_usn)
-        {
+    /// Read the USN journal from `start_usn` and either apply the resulting
+    /// changes (and persist the index back to cache) or return the index
+    /// unchanged when there is nothing to apply.
+    ///
+    /// All failure paths (USN read errors, no records) gracefully fall back
+    /// to returning the original cached `index`; there is no fallible
+    /// outcome to surface, so this returns `MftIndex` directly.
+    fn apply_or_skip_usn_changes(
+        drive: char,
+        index: MftIndex,
+        journal_id: u64,
+        start_usn: i64,
+    ) -> MftIndex {
+        let (records, next_usn) = match read_usn_journal(drive, journal_id, start_usn) {
             Ok(result) => result,
             Err(error) => {
                 warn!(
@@ -348,16 +354,34 @@ impl MultiDriveMftReader {
                     error = %error,
                     "⚠️ Failed to read USN Journal - using cached index as-is"
                 );
-                return Ok(index);
+                return index;
             }
         };
 
         if records.is_empty() {
             debug!(drive = %drive, "✅ No USN changes since last cache");
-            return Ok(index);
+            return index;
         }
 
-        let changes_map = aggregate_changes(&records);
+        Self::apply_usn_changes_and_save(drive, index, &records, journal_id, start_usn, next_usn)
+    }
+
+    /// Apply aggregated USN changes to `index` and persist the result.
+    ///
+    /// Splits into three phases:
+    /// 1. Apply deletes (and collect FRSes needing a re-read on Windows).
+    /// 2. Targeted MFT reads for non-delete changes.
+    /// 3. Rebuild extension index + tree metrics if anything changed, then save
+    ///    the updated index back to cache.
+    fn apply_usn_changes_and_save(
+        drive: char,
+        mut index: MftIndex,
+        records: &[crate::usn::UsnRecord],
+        journal_id: u64,
+        start_usn: i64,
+        next_usn: i64,
+    ) -> MftIndex {
+        let changes_map = aggregate_changes(records);
         let changes: Vec<_> = changes_map.into_values().collect();
         info!(
             drive = %drive,
@@ -367,10 +391,14 @@ impl MultiDriveMftReader {
             "🔧 Applying USN changes"
         );
 
-        // Phase 1: apply deletes and collect FRS values for targeted reads
-        let (mut stats, _frs_to_read) = index.apply_usn_deletes(&changes);
+        // Phase 1: apply deletes and collect FRS values for targeted reads.
+        // `frs_to_read` is only consumed on Windows (Phase 2 below); discard
+        // it on non-Windows builds so the binding stays referenced exactly
+        // when it is needed.
         #[cfg(windows)]
-        let frs_to_read = _frs_to_read;
+        let (mut stats, frs_to_read) = index.apply_usn_deletes(&changes);
+        #[cfg(not(windows))]
+        let (mut stats, _) = index.apply_usn_deletes(&changes);
 
         let handle = match VolumeHandle::open(drive) {
             Ok(handle) => handle,
@@ -380,68 +408,18 @@ impl MultiDriveMftReader {
                     error = %error,
                     "⚠️ Failed to open volume for cache update"
                 );
-                return Ok(index);
+                return index;
             }
         };
 
         // Phase 2: targeted MFT reads for non-delete changes (Windows only)
         #[cfg(windows)]
-        if !frs_to_read.is_empty() {
-            debug!(
-                drive = %drive,
-                count = frs_to_read.len(),
-                "🎯 Reading targeted MFT records for USN changes"
-            );
-            match read_targeted_frs_records(&handle, &mut index, &frs_to_read) {
-                Ok(count) => {
-                    stats.targeted_reads = count;
-                }
-                Err(error) => {
-                    warn!(
-                        drive = %drive,
-                        error = %error,
-                        "⚠️ Targeted MFT reads failed"
-                    );
-                }
-            }
-        }
+        apply_targeted_usn_reads(drive, &handle, &mut index, &frs_to_read, &mut stats);
 
-        // Phase 3: rebuild derived structures
-        let had_changes = stats.deleted > 0 || stats.targeted_reads > 0;
-        if had_changes {
-            debug!(drive = %drive, "🔨 Rebuilding extension index after USN updates");
-            index.build_extension_index();
-            debug!(drive = %drive, "🔨 Recomputing tree metrics after USN updates");
-            index.compute_tree_metrics();
-        }
+        // Phase 3: rebuild derived structures + persist
+        rebuild_derived_after_usn(drive, &mut index, &stats);
+        persist_usn_checkpoint(drive, &handle, &index, journal_id, next_usn);
 
-        debug!(
-            drive = %drive,
-            targeted_reads = stats.targeted_reads,
-            deleted = stats.deleted,
-            skipped = stats.skipped,
-            "📊 USN changes applied"
-        );
-
-        let volume_data = handle.volume_data();
-        let volume_serial = volume_data.volume_serial_number;
-
-        if let Err(error) = save_to_cache(
-            &index,
-            drive,
-            volume_serial,
-            current_info.journal_id,
-            next_usn,
-        ) {
-            warn!(drive = %drive, error = %error, "⚠️ Failed to update cache");
-        } else {
-            debug!(
-                drive = %drive,
-                next_usn,
-                "💾 Cache updated with new USN checkpoint"
-            );
-        }
-
-        Ok(index)
+        index
     }
 }

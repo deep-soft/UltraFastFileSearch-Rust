@@ -2,8 +2,17 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Streaming reader implementation.
+//!
+//! **Module-scoped cast justification:** `as usize` casts here convert NTFS
+//! disk offsets / read sizes (`u64`) and record sizes (`u32`) into `usize` for
+//! buffer slicing.  `usize` is ≥ 32 bits on every supported target; the u64
+//! values are physically bounded by the volume size (≤ 2⁶⁴ bytes).
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "NTFS disk-offset / record-size casts are lossless on supported 32/64-bit targets"
+)]
 
-use super::*;
+use super::prelude::*;
 
 /// Ultra-fast MFT reader with streaming processing.
 ///
@@ -52,6 +61,11 @@ impl StreamingMftReader {
     ///
     /// This method reads chunks and processes them immediately, reducing
     /// memory pressure compared to buffering the entire MFT.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MftError::Io`] if any streaming `ReadFile`/`SetFilePointerEx`
+    /// call fails mid-enumeration.
     pub fn read_all_streaming<F>(
         &mut self,
         handle: HANDLE,
@@ -67,15 +81,14 @@ impl StreamingMftReader {
         // Calculate total bytes for progress
         let total_bytes: u64 = chunks
             .iter()
-            .map(|c| c.record_count * u64::from(record_size))
+            .map(|chunk| chunk.record_count * u64::from(record_size))
             .sum();
 
         // Estimate capacity
-        let estimated_records = if let Some(ref bm) = self.bitmap {
-            bm.count_in_use()
-        } else {
-            self.extent_map.total_records() as usize
-        };
+        let estimated_records = self.bitmap.as_ref().map_or_else(
+            || self.extent_map.total_records() as usize,
+            crate::platform::MftBitmap::count_in_use,
+        );
 
         let mut merger = MftRecordMerger::with_capacity(estimated_records);
         let mut bytes_read_total: u64 = 0;
@@ -103,11 +116,15 @@ impl StreamingMftReader {
                 if offset + record_size_usize > bytes_read {
                     break;
                 }
+                let Some(record_slice) = buffer_slice.get_mut(offset..offset + record_size_usize)
+                else {
+                    // Short-read: buffer contained fewer bytes than expected.
+                    break;
+                };
 
                 let frs = chunk.start_frs + skip_begin as u64 + i as u64;
 
                 // Apply fixup in-place on the shared buffer (zero-copy)
-                let record_slice = &mut buffer_slice[offset..offset + record_size_usize];
                 if !apply_fixup(record_slice) {
                     continue;
                 }
@@ -126,12 +143,11 @@ impl StreamingMftReader {
             }
         }
 
-        // Merge extensions and get final results
-        let all_results = if merge_extensions {
-            merger.merge()
-        } else {
-            merger.merge()
-        };
+        // Merge extensions and get final results.  The `merge_extensions`
+        // branching already happened per-record above (the legacy path skips
+        // extension records at parse time), so by here both modes collapse to
+        // the same `merge()` call.
+        let all_results = merger.merge();
 
         info!(
             records = all_results.len(),
@@ -158,9 +174,8 @@ impl StreamingMftReader {
         // Align to sector boundary
         let aligned_offset = (chunk.disk_offset / SECTOR_SIZE as u64) * SECTOR_SIZE as u64;
         let offset_adjustment = (chunk.disk_offset - aligned_offset) as usize;
-        let aligned_size = ((read_size as usize + offset_adjustment + SECTOR_SIZE - 1)
-            / SECTOR_SIZE)
-            * SECTOR_SIZE;
+        let aligned_size =
+            (read_size as usize + offset_adjustment).div_ceil(SECTOR_SIZE) * SECTOR_SIZE;
 
         // Resize buffer if needed
         if self.buffer.len() < aligned_size {
@@ -174,24 +189,24 @@ impl StreamingMftReader {
         unsafe {
             SetFilePointerEx(
                 handle,
-                aligned_offset as i64,
-                Some(&mut new_position),
+                aligned_offset.cast_signed(),
+                Some(&raw mut new_position),
                 FILE_BEGIN,
-            )?;
-        }
+            )
+        }?;
 
         let mut bytes_read = 0_u32;
+        let Some(read_slice) = self.buffer.as_mut_slice().get_mut(..aligned_size) else {
+            // Unreachable: streaming buffer was sized to ≥ aligned_size upfront.
+            return Err(MftError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "streaming buffer shorter than aligned_size",
+            )));
+        };
         // SAFETY: `handle` is live, the aligned buffer slice spans
         // `aligned_size` writable bytes, and `bytes_read` is a valid
         // out-parameter.
-        unsafe {
-            ReadFile(
-                handle,
-                Some(&mut self.buffer.as_mut_slice()[..aligned_size]),
-                Some(&mut bytes_read),
-                None,
-            )?;
-        }
+        unsafe { ReadFile(handle, Some(read_slice), Some(&raw mut bytes_read), None) }?;
 
         Ok(bytes_read as usize)
     }

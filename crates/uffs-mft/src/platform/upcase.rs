@@ -280,16 +280,15 @@ struct UpcaseDataRuns {
 fn parse_data_runs(record_bytes: &[u8]) -> Result<UpcaseDataRuns> {
     use crate::ntfs::{AttributeIterator, AttributeType};
 
-    let attrs = AttributeIterator::new(record_bytes)
+    let mut attrs = AttributeIterator::new(record_bytes)
         .ok_or_else(|| MftError::InvalidData("FRS 10 ($UpCase): invalid record header".into()))?;
 
     let data_attr = attrs
-        .filter(|a| {
-            a.attribute_type() == Some(AttributeType::Data)
-                && a.is_non_resident()
-                && a.header.name_length == 0
+        .find(|attr| {
+            attr.attribute_type() == Some(AttributeType::Data)
+                && attr.is_non_resident()
+                && attr.header.name_length == 0
         })
-        .next()
         .ok_or_else(|| {
             MftError::InvalidData("FRS 10 ($UpCase): no non-resident unnamed DATA attribute".into())
         })?;
@@ -307,7 +306,7 @@ fn parse_data_runs(record_bytes: &[u8]) -> Result<UpcaseDataRuns> {
 
     Ok(UpcaseDataRuns {
         runs,
-        data_size: nr.data_size as u64,
+        data_size: nr.data_size.cast_unsigned(),
     })
 }
 
@@ -325,6 +324,13 @@ pub const fn read_upcase_table(_drive: char) -> Result<Box<[u16; 65_536]>> {
 }
 
 /// Read the `$UpCase` table from a live NTFS volume (Windows).
+///
+/// # Errors
+///
+/// Returns [`MftError::Io`] if opening the volume, locating `$UpCase`, or
+/// reading its data runs via `ReadFile`/`SetFilePointerEx` fails, and
+/// [`MftError::InvalidData`] if the assembled table is shorter than the
+/// expected 128 KiB (65 536 code-point entries).
 #[cfg(windows)]
 pub fn read_upcase_table(drive: char) -> Result<Box<[u16; 65_536]>> {
     use crate::parse::apply_fixup;
@@ -337,13 +343,16 @@ pub fn read_upcase_table(drive: char) -> Result<Box<[u16; 65_536]>> {
     let frs10_offset = mft_offset + UPCASE_FRS * rs as u64;
 
     // Read FRS 10 from the MFT on disk.
-    let mut record = vec![0u8; rs];
+    let mut record = vec![0_u8; rs];
     volume_read_at(handle.raw_handle(), frs10_offset, &mut record)?;
     apply_fixup(&mut record);
 
     // Parse data runs.
     let info = parse_data_runs(&record)?;
-    if info.data_size as usize != UPCASE_SIZE_BYTES {
+    if usize::try_from(info.data_size)
+        .map_err(|_err| MftError::InvalidData("$UpCase data_size exceeds usize::MAX".to_owned()))?
+        != UPCASE_SIZE_BYTES
+    {
         return Err(MftError::InvalidData(format!(
             "$UpCase data_size {} != expected {UPCASE_SIZE_BYTES}",
             info.data_size
@@ -359,9 +368,20 @@ pub fn read_upcase_table(drive: char) -> Result<Box<[u16; 65_536]>> {
     // Read clusters.
     let buf = read_clusters(handle.raw_handle(), &info.runs, vol.bytes_per_cluster)?;
 
-    // Reinterpret as [u16; 65_536].
+    // Reinterpret as [u16; 65_536].  Allocate directly on the heap via
+    // `vec! -> Box<[u16]> -> Box<[u16; N]>` to avoid the 128 KiB stack array
+    // that `Box::new([0_u16; 65_536])` would materialize before moving.
     let u16_slice: &[u16] = bytemuck::cast_slice(&buf);
-    let mut table = Box::new([0u16; 65_536]);
+    let mut table: Box<[u16; 65_536]> =
+        vec![0_u16; 65_536]
+            .into_boxed_slice()
+            .try_into()
+            .map_err(|_boxed: Box<[u16]>| {
+                MftError::InvalidData(
+                    "internal: 65_536-element vec<u16> failed conversion to fixed-size array"
+                        .to_owned(),
+                )
+            })?;
     table.copy_from_slice(u16_slice);
 
     tracing::info!(
@@ -382,25 +402,26 @@ fn volume_read_at(
 ) -> Result<()> {
     use windows::Win32::Storage::FileSystem::{FILE_BEGIN, ReadFile, SetFilePointerEx};
 
-    let seek_pos = i64::try_from(offset)
-        .map_err(|_| MftError::InvalidData(format!("$UpCase: offset {offset} exceeds i64::MAX")))?;
+    let seek_pos = i64::try_from(offset).map_err(|err| {
+        MftError::InvalidData(format!("$UpCase: offset {offset} exceeds i64::MAX ({err})"))
+    })?;
 
     // SAFETY: SetFilePointerEx is a well-defined Win32 API.
     #[expect(unsafe_code, reason = "FFI: SetFilePointerEx")]
     unsafe {
-        SetFilePointerEx(handle, seek_pos, None, FILE_BEGIN).map_err(|e| {
-            MftError::InvalidData(format!("$UpCase: seek to offset {offset} failed: {e}"))
-        })?;
-    }
+        SetFilePointerEx(handle, seek_pos, None, FILE_BEGIN).map_err(|err| {
+            MftError::InvalidData(format!("$UpCase: seek to offset {offset} failed: {err}"))
+        })
+    }?;
 
-    let mut bytes_read = 0u32;
+    let mut bytes_read = 0_u32;
     // SAFETY: ReadFile writes into valid writable `buf`.
     #[expect(unsafe_code, reason = "FFI: ReadFile")]
     unsafe {
-        ReadFile(handle, Some(buf), Some(&mut bytes_read), None).map_err(|e| {
-            MftError::InvalidData(format!("$UpCase: read {} bytes failed: {e}", buf.len()))
-        })?;
-    }
+        ReadFile(handle, Some(buf), Some(&raw mut bytes_read), None).map_err(|err| {
+            MftError::InvalidData(format!("$UpCase: read {} bytes failed: {err}", buf.len()))
+        })
+    }?;
 
     if (bytes_read as usize) < buf.len() {
         return Err(MftError::InvalidData(format!(
@@ -418,23 +439,38 @@ fn read_clusters(
     runs: &[DataRun],
     bytes_per_cluster: u32,
 ) -> Result<Vec<u8>> {
-    let bpc = bytes_per_cluster as u64;
-    let mut buf = vec![0u8; UPCASE_SIZE_BYTES];
+    let bpc = u64::from(bytes_per_cluster);
+    let mut buf = vec![0_u8; UPCASE_SIZE_BYTES];
     let mut offset: usize = 0;
 
     for run in runs {
+        let run_byte_len = usize::try_from(run.cluster_count * bpc).map_err(|err| {
+            MftError::InvalidData(format!(
+                "$UpCase run byte count {} (cluster_count={}, bytes_per_cluster={bpc}) \
+                 exceeds usize::MAX ({err})",
+                run.cluster_count * bpc,
+                run.cluster_count,
+            ))
+        })?;
+
         if run.lcn == 0 {
             // Sparse — already zeroed.
-            offset += (run.cluster_count * bpc) as usize;
+            offset += run_byte_len;
             continue;
         }
 
-        let disk_byte = run.lcn * bpc as i64;
-        let run_bytes = (run.cluster_count * bpc) as usize;
+        let disk_byte = run.lcn * bpc.cast_signed();
+        let run_bytes = run_byte_len;
         let read_len = run_bytes.min(UPCASE_SIZE_BYTES - offset);
 
         let disk_offset = crate::index::nonneg_to_u64(disk_byte);
-        volume_read_at(handle, disk_offset, &mut buf[offset..offset + read_len])?;
+        let Some(read_window) = buf.get_mut(offset..offset + read_len) else {
+            return Err(MftError::InvalidData(format!(
+                "$UpCase: run at offset {offset} length {read_len} exceeds buffer size \
+                 {UPCASE_SIZE_BYTES}"
+            )));
+        };
+        volume_read_at(handle, disk_offset, read_window)?;
         offset += read_len;
     }
 
