@@ -60,14 +60,15 @@ env:
   # (see fork test run #24777036796 where all three build targets hit
   # exit code 101 on this).  An empty `RUSTC_WRAPPER` disables the wrapper
   # without touching config.toml (which would hurt local dev UX).
-  # ci.yml carries the same override (line 46 there).
+  # `pr-fast.yml` carries the same override for the same reason.
   RUSTC_WRAPPER: ""
   # NOTE: no workflow-level RUSTFLAGS here.  Each matrix row carries its own
   # `rustflags` field so every target gets a stable CPU baseline appropriate
   # for its ISA — never `target-cpu=native`, because a release binary built
   # on today's GitHub runner would SIGILL on any end-user CPU missing the
   # runner's detected feature set (observed previously with `target-cpu=native`
-  # → proc-macro dylib SIGILL on nightly-2026-04-21; see ci.yml comment).
+  # → proc-macro dylib SIGILL on nightly-2026-04-21; same rationale noted
+  # in `pr-fast.yml`'s top-level env block).
   # Baselines used below:
   #   x86_64 Linux / Windows   : x86-64-v3 (Haswell+/Zen+, AVX2+BMI2+FMA)
   #   aarch64-apple-darwin     : apple-m1  (M1+, forward-compatible with M2/M3/M4)
@@ -250,9 +251,46 @@ jobs:
           # The previous `CARGO_PROFILE_RELEASE_LTO=false` override silently
           # disabled LTO in release artifacts; removed so users get the
           # perf the profile was designed for.
-          cargo build --release --target ${{ matrix.target }} --workspace --bins
+          #
+          # --locked per §2.8 policy.  Release builds MUST resolve
+          # through the committed Cargo.lock or the binaries we ship
+          # may differ from what the tests validated — worst-case a
+          # silent dep drift ships to end-users.  CI fails loudly
+          # instead.
+          cargo build --locked --release --target ${{ matrix.target }} --workspace --bins
 
           echo "✅ Build completed for ${{ matrix.target }}"
+
+      - name: Re-codesign macOS binaries (post-strip)
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: |
+          # `[profile.release].strip = "symbols"` in Cargo.toml strips the
+          # Mach-O symbol table AFTER the linker has emitted an ad-hoc
+          # (linker-signed) CodeDirectory.  Strip changes the on-disk hash
+          # the CodeDirectory was computed over, leaving the signature
+          # internally inconsistent.  macOS 26+'s taskgated then refuses
+          # to launch the binary with `SIGKILL (Code Signature Invalid)`
+          # / namespace=CODESIGNING / "Taskgated Invalid Signature".
+          #
+          # Re-stamping the ad-hoc signature with `codesign --force
+          # --sign -` recomputes the CodeDirectory over the post-strip
+          # bytes so the in-memory hash matches the on-disk file again.
+          # We deliberately stay ad-hoc: we don't have an Apple Developer
+          # ID; the resulting binaries are still unnotarized and users
+          # see the standard "open anyway" Gatekeeper prompt on first
+          # launch.  But they no longer get killed at exec time.
+          #
+          # Gated on `apple-darwin` so Windows / Linux artifact paths
+          # stay untouched.
+          set -euo pipefail
+          for bin in uffs uffsd uffsmcp uffs_mft; do
+            path="target/${{ matrix.target }}/release/$bin"
+            if [[ -f "$path" ]]; then
+              codesign --force --sign - "$path"
+              codesign --verify --verbose=2 "$path"
+            fi
+          done
 
       - name: Show binary sizes
         shell: bash
@@ -363,14 +401,13 @@ jobs:
           # release-artifacts/ so the existing Upload step picks it up
           # alongside the raw binaries.
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cd release-staging && \
             7z a -tzip \
-                "release-artifacts/${{ matrix.artifact-name }}.zip" \
-                "$STAGE_DIR/*" > /dev/null
+              "release-artifacts/${{ matrix.artifact-name }}.zip" \
+              "$STAGE_DIR/*" > /dev/null
           else
-             cd release-staging && \
+            (cd release-staging && \
              zip -rq "../release-artifacts/${{ matrix.artifact-name }}.zip" \
-                 "${{ matrix.artifact-name }}"
+                     "${{ matrix.artifact-name }}")
           fi
 
           echo "📦 Bundle ZIP:"
