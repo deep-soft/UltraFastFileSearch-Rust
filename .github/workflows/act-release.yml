@@ -294,7 +294,7 @@ jobs:
           done
 
       - name: Show binary sizes
-        shell: bashk
+        shell: bash
         run: |
           echo "📐 Release binary sizes:"
           ls -lh target/${{ matrix.target }}/release/ 2>/dev/null | grep -E 'uffs|uffsd|uffsmcp|uffs_mft' || true
