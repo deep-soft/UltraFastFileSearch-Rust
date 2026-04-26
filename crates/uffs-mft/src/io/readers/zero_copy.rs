@@ -2,8 +2,16 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Shared zero-copy buffer parsing helpers.
+//!
+//! **Module-scoped cast justification:** `as usize` casts here convert NTFS
+//! on-disk record sizes (`u32`) into `usize` for buffer slicing.  `usize` is
+//! ≥ 32 bits on every supported target.
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "NTFS record-size (u32 -> usize) casts are lossless on supported 32/64-bit targets"
+)]
 
-use super::*;
+use super::prelude::*;
 
 /// Inner zero-copy parsing function that works with raw parameters.
 ///
@@ -30,8 +38,11 @@ pub(super) fn parse_buffer_zero_copy_inner(
 
         let frs = start_frs + skip_begin as u64 + i as u64;
 
+        let Some(record_slice) = buffer_slice.get_mut(offset..offset + record_size_usize) else {
+            break;
+        };
+
         // Apply fixup in-place on the shared buffer (zero-copy)
-        let record_slice = &mut buffer_slice[offset..offset + record_size_usize];
         if !apply_fixup(record_slice) {
             continue;
         }

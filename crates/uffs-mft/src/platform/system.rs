@@ -4,7 +4,29 @@
 //! Windows privilege, path, and drive-classification helpers.
 
 #[cfg(windows)]
-use std::mem::size_of;
+use core::mem::size_of;
+
+/// Narrow u32 size-of helper for Win32 FFI sizing parameters.
+///
+/// Every struct passed here is a small fixed-size Win32 type
+/// (`TOKEN_ELEVATION`, `MEMORYSTATUSEX`, `StoragePropertyQuery`, etc.) whose
+/// size is provably well under `u32::MAX`.  A saturating cast keeps the
+/// function total without introducing an `#[expect]` per call site.
+#[cfg(windows)]
+const fn u32_size_of<T>() -> u32 {
+    // Saturating truncation: Win32 structs are always < u32::MAX bytes, so this
+    // branch is unreachable in practice.
+    if size_of::<T>() > u32::MAX as usize {
+        u32::MAX
+    } else {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "size_of<T>() is bounded above by the branch guard; cast is lossless"
+        )]
+        let size = size_of::<T>() as u32;
+        size
+    }
+}
 #[cfg(windows)]
 use std::path::{Path, PathBuf};
 
@@ -34,9 +56,12 @@ pub fn is_elevated() -> bool {
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     let mut token_handle = HANDLE::default();
-    // SAFETY: `GetCurrentProcess()` returns the current pseudo-handle, and
-    // `token_handle` points to writable storage for the returned token handle.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle) }.is_err() {
+    // SAFETY: `GetCurrentProcess()` returns a constant pseudo-handle and has
+    // no preconditions.
+    let current_process = unsafe { GetCurrentProcess() };
+    // SAFETY: `current_process` is a valid pseudo-handle and `token_handle`
+    // points to writable storage for the returned token handle.
+    if unsafe { OpenProcessToken(current_process, TOKEN_QUERY, &raw mut token_handle) }.is_err() {
         return false;
     }
 
@@ -52,8 +77,8 @@ pub fn is_elevated() -> bool {
             token_handle,
             TokenElevation,
             Some(core::ptr::from_mut(&mut elevation).cast()),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut return_length,
+            u32_size_of::<TOKEN_ELEVATION>(),
+            &raw mut return_length,
         )
     };
 
@@ -73,23 +98,17 @@ pub fn volume_root_path(volume: char) -> PathBuf {
 pub fn infer_drive_from_path(path: &Path) -> Option<char> {
     use std::path::{Component, Prefix};
 
-    if let Some(Component::Prefix(prefix)) = path.components().next() {
-        match prefix.kind() {
-            Prefix::Disk(drive_byte) | Prefix::VerbatimDisk(drive_byte) => {
-                return Some((drive_byte as char).to_ascii_uppercase());
-            }
-            _ => {}
-        }
+    if let Some(Component::Prefix(prefix)) = path.components().next()
+        && let Prefix::Disk(drive_byte) | Prefix::VerbatimDisk(drive_byte) = prefix.kind()
+    {
+        return Some((drive_byte as char).to_ascii_uppercase());
     }
 
     std::env::current_dir().ok().and_then(|cwd| {
-        if let Some(Component::Prefix(prefix)) = cwd.components().next() {
-            match prefix.kind() {
-                Prefix::Disk(drive_byte) | Prefix::VerbatimDisk(drive_byte) => {
-                    Some((drive_byte as char).to_ascii_uppercase())
-                }
-                _ => None,
-            }
+        if let Some(Component::Prefix(prefix)) = cwd.components().next()
+            && let Prefix::Disk(drive_byte) | Prefix::VerbatimDisk(drive_byte) = prefix.kind()
+        {
+            Some((drive_byte as char).to_ascii_uppercase())
         } else {
             None
         }
@@ -104,9 +123,9 @@ pub fn infer_drive_from_path(path: &Path) -> Option<char> {
 pub fn detect_boot_drive() -> char {
     std::env::var("SystemDrive")
         .ok()
-        .and_then(|s| s.chars().next())
+        .and_then(|drive| drive.chars().next())
         .map(|ch| ch.to_ascii_uppercase())
-        .filter(|ch| ch.is_ascii_uppercase())
+        .filter(char::is_ascii_uppercase)
         .unwrap_or('C')
 }
 
@@ -134,9 +153,9 @@ pub fn detect_ntfs_drives() -> Vec<char> {
         return ntfs_drives;
     }
 
-    for i in 0..26_u32 {
-        if (drive_mask & (1 << i)) != 0 {
-            let drive_letter = char::from(b'A' + i as u8);
+    for i in 0_u8..26 {
+        if (drive_mask & (1_u32 << i)) != 0 {
+            let drive_letter = char::from(b'A' + i);
 
             if is_ntfs_volume(drive_letter) {
                 ntfs_drives.push(drive_letter);
@@ -158,7 +177,7 @@ fn is_ntfs_volume(drive_letter: char) -> bool {
 
     let root_path: Vec<u16> = format!("{}:\\", drive_letter.to_ascii_uppercase())
         .encode_utf16()
-        .chain(std::iter::once(0))
+        .chain(core::iter::once(0))
         .collect();
 
     // SAFETY: `root_path` is UTF-16 and NUL-terminated for the duration of the
@@ -205,7 +224,7 @@ pub fn is_volume_read_only(drive_letter: char) -> bool {
 
     let root_path: Vec<u16> = format!("{}:\\", drive_letter.to_ascii_uppercase())
         .encode_utf16()
-        .chain(std::iter::once(0))
+        .chain(core::iter::once(0))
         .collect();
 
     let mut fs_flags: u32 = 0;
@@ -218,7 +237,7 @@ pub fn is_volume_read_only(drive_letter: char) -> bool {
             None,
             None,
             None,
-            Some(&mut fs_flags),
+            Some(&raw mut fs_flags),
             None,
         )
     };
@@ -317,12 +336,16 @@ impl DriveType {
     }
 }
 
-/// Detects whether a drive is NVMe, SSD, or HDD.
+/// Detects whether a drive is `NVMe`, SSD, or HDD.
 #[cfg(windows)]
 #[must_use]
 #[expect(
     unsafe_code,
     reason = "FFI: windows API (CreateFileW, DeviceIoControl) for drive classification"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "drive-type detection ladder: opens a single physical-drive handle then runs a fall-through sequence of IOCTL probes (storage descriptor for NVMe → seek-penalty for SSD/HDD → TRIM-support fallback). Splitting would either replicate the FFI handle/struct setup per-probe or hide the ordered fall-through behind helper indirection"
 )]
 pub fn detect_drive_type(drive_letter: char) -> DriveType {
     use windows::Win32::Storage::FileSystem::{
@@ -355,13 +378,13 @@ pub fn detect_drive_type(drive_letter: char) -> DriveType {
 
     let drive_path: Vec<u16> = format!("\\\\.\\{}:", drive_letter.to_ascii_uppercase())
         .encode_utf16()
-        .chain(std::iter::once(0))
+        .chain(core::iter::once(0))
         .collect();
 
     // SAFETY: `drive_path` is UTF-16 and NUL-terminated for the duration of the
     // call, optional pointers are `None`, and any returned handle is wrapped in
     // `HandleGuard` before use.
-    let handle = unsafe {
+    let handle_result = unsafe {
         CreateFileW(
             PCWSTR(drive_path.as_ptr()),
             0,
@@ -373,13 +396,12 @@ pub fn detect_drive_type(drive_letter: char) -> DriveType {
         )
     };
 
-    let handle = match handle {
-        Ok(h) => h,
-        Err(_) => return DriveType::Unknown,
+    let Ok(drive_handle) = handle_result else {
+        return DriveType::Unknown;
     };
 
     let drive_classification = {
-        let _handle_guard = HandleGuard(handle);
+        let _handle_guard = HandleGuard(drive_handle);
 
         let is_nvme = {
             let query = StoragePropertyQuery {
@@ -391,24 +413,31 @@ pub fn detect_drive_type(drive_letter: char) -> DriveType {
             let mut buffer = [0_u8; 1024];
             let mut bytes_returned: u32 = 0;
 
-            // SAFETY: `handle` is a live device handle, `query` contains the
+            // `buffer` is a fixed-size 1024-byte stack array; len is compile-time
+            // known and always fits in u32.
+            let buffer_len_u32 = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
+
+            // SAFETY: `drive_handle` is a live device handle, `query` contains the
             // exact input bytes Windows expects for this IOCTL, `buffer` is a
             // writable output buffer of the advertised length, and
             // `bytes_returned` is a valid out-parameter.
             let result = unsafe {
                 DeviceIoControl(
-                    handle,
+                    drive_handle,
                     IOCTL_STORAGE_QUERY_PROPERTY,
-                    Some(&query as *const _ as *const std::ffi::c_void),
-                    size_of::<StoragePropertyQuery>() as u32,
-                    Some(buffer.as_mut_ptr() as *mut std::ffi::c_void),
-                    buffer.len() as u32,
-                    Some(&mut bytes_returned),
+                    Some((&raw const query).cast::<core::ffi::c_void>()),
+                    u32_size_of::<StoragePropertyQuery>(),
+                    Some(buffer.as_mut_ptr().cast::<core::ffi::c_void>()),
+                    buffer_len_u32,
+                    Some(&raw mut bytes_returned),
                     None,
                 )
             };
 
-            if result.is_ok() && bytes_returned >= STORAGE_DEVICE_DESCRIPTOR_BUS_TYPE_END as u32 {
+            // Compare in usize space to avoid truncating the compile-time
+            // constant offset into u32.
+            if result.is_ok() && (bytes_returned as usize) >= STORAGE_DEVICE_DESCRIPTOR_BUS_TYPE_END
+            {
                 buffer
                     .get(
                         STORAGE_DEVICE_DESCRIPTOR_BUS_TYPE_OFFSET
@@ -440,31 +469,30 @@ pub fn detect_drive_type(drive_letter: char) -> DriveType {
 
         let mut bytes_returned: u32 = 0;
 
-        // SAFETY: `handle` is a live device handle, `query` and `descriptor`
+        // SAFETY: `drive_handle` is a live device handle, `query` and `descriptor`
         // point to initialized storage matching the advertised sizes, and
         // `bytes_returned` is a valid out-parameter.
         let result = unsafe {
             DeviceIoControl(
-                handle,
+                drive_handle,
                 IOCTL_STORAGE_QUERY_PROPERTY,
-                Some(&query as *const _ as *const std::ffi::c_void),
-                size_of::<StoragePropertyQuery>() as u32,
-                Some(&mut descriptor as *mut _ as *mut std::ffi::c_void),
-                size_of::<DeviceSeekPenaltyDescriptor>() as u32,
-                Some(&mut bytes_returned),
+                Some((&raw const query).cast::<core::ffi::c_void>()),
+                u32_size_of::<StoragePropertyQuery>(),
+                Some((&raw mut descriptor).cast::<core::ffi::c_void>()),
+                u32_size_of::<DeviceSeekPenaltyDescriptor>(),
+                Some(&raw mut bytes_returned),
                 None,
             )
         };
 
-        if result.is_ok() && bytes_returned >= size_of::<DeviceSeekPenaltyDescriptor>() as u32 {
-            Some(if descriptor.incurs_seek_penalty == 0 {
-                DriveType::Ssd
-            } else {
-                DriveType::Hdd
-            })
+        let big_enough =
+            result.is_ok() && (bytes_returned as usize) >= size_of::<DeviceSeekPenaltyDescriptor>();
+        let drive_type = if descriptor.incurs_seek_penalty == 0 {
+            DriveType::Ssd
         } else {
-            None
-        }
+            DriveType::Hdd
+        };
+        big_enough.then_some(drive_type)
     };
 
     let result = drive_classification.unwrap_or_else(|| detect_drive_type_via_trim(drive_letter));
@@ -509,13 +537,13 @@ fn detect_drive_type_via_trim(drive_letter: char) -> DriveType {
 
     let drive_path: Vec<u16> = format!("\\\\.\\{}:", drive_letter.to_ascii_uppercase())
         .encode_utf16()
-        .chain(std::iter::once(0))
+        .chain(core::iter::once(0))
         .collect();
 
     // SAFETY: `drive_path` is UTF-16 and NUL-terminated for the duration of the
     // call, optional pointers are `None`, and any returned handle is wrapped in
     // `HandleGuard` before use.
-    let handle = unsafe {
+    let handle_result = unsafe {
         CreateFileW(
             PCWSTR(drive_path.as_ptr()),
             0,
@@ -527,12 +555,11 @@ fn detect_drive_type_via_trim(drive_letter: char) -> DriveType {
         )
     };
 
-    let handle = match handle {
-        Ok(h) => h,
-        Err(_) => return DriveType::Unknown,
+    let Ok(drive_handle) = handle_result else {
+        return DriveType::Unknown;
     };
 
-    let _handle_guard = HandleGuard(handle);
+    let _handle_guard = HandleGuard(drive_handle);
 
     let query = StoragePropertyQuery {
         property_id: STORAGE_DEVICE_TRIM_PROPERTY,
@@ -548,23 +575,23 @@ fn detect_drive_type_via_trim(drive_letter: char) -> DriveType {
 
     let mut bytes_returned: u32 = 0;
 
-    // SAFETY: `handle` is a live device handle, `query` and `descriptor`
+    // SAFETY: `drive_handle` is a live device handle, `query` and `descriptor`
     // point to initialized storage matching the advertised sizes, and
     // `bytes_returned` is a valid out-parameter.
     let result = unsafe {
         DeviceIoControl(
-            handle,
+            drive_handle,
             IOCTL_STORAGE_QUERY_PROPERTY,
-            Some(&query as *const _ as *const std::ffi::c_void),
-            size_of::<StoragePropertyQuery>() as u32,
-            Some(&mut descriptor as *mut _ as *mut std::ffi::c_void),
-            size_of::<DeviceTrimDescriptor>() as u32,
-            Some(&mut bytes_returned),
+            Some((&raw const query).cast::<core::ffi::c_void>()),
+            u32_size_of::<StoragePropertyQuery>(),
+            Some((&raw mut descriptor).cast::<core::ffi::c_void>()),
+            u32_size_of::<DeviceTrimDescriptor>(),
+            Some(&raw mut bytes_returned),
             None,
         )
     };
 
-    if result.is_ok() && bytes_returned >= size_of::<DeviceTrimDescriptor>() as u32 {
+    if result.is_ok() && (bytes_returned as usize) >= size_of::<DeviceTrimDescriptor>() {
         if descriptor.trim_enabled != 0 {
             DriveType::Ssd
         } else {
@@ -647,14 +674,12 @@ fn query_memory_windows() -> Option<SystemMemory> {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
     let mut status = MEMORYSTATUSEX {
-        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        dwLength: u32_size_of::<MEMORYSTATUSEX>(),
         ..MEMORYSTATUSEX::default()
     };
     // SAFETY: `status` is a properly sized, initialised MEMORYSTATUSEX with
     // `dwLength` set.  The pointer is valid for the duration of the call.
-    unsafe {
-        GlobalMemoryStatusEx(&mut status).ok()?;
-    }
+    unsafe { GlobalMemoryStatusEx(&raw mut status).ok() }?;
     Some(SystemMemory {
         total_bytes: status.ullTotalPhys,
         available_bytes: status.ullAvailPhys,

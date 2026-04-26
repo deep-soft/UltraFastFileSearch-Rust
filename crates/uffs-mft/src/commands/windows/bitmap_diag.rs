@@ -2,6 +2,33 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Bitmap diagnostic command handlers.
+//!
+//! These commands print human-readable bitmap statistics to stdout and convert
+//! `usize` populations into `f64` percentages for display.  The lint
+//! exemptions below capture those CLI-specific patterns; library code never
+//! inherits them.
+#![expect(
+    clippy::print_stdout,
+    reason = "intentional user-facing CLI bitmap diagnostic output"
+)]
+#![expect(
+    clippy::float_arithmetic,
+    clippy::cast_precision_loss,
+    clippy::default_numeric_fallback,
+    reason = "percent / fraction calculations convert integer counters into f64 for human-readable display"
+)]
+#![expect(
+    clippy::min_ident_chars,
+    reason = "short identifiers used for printf-style indices in CLI output"
+)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "diagnostic command runs a configure -> sample -> count -> print pipeline; extracting helpers fragments the readable narrative"
+)]
+#![expect(
+    clippy::naive_bytecount,
+    reason = "small one-shot CLI bitmap summary; SIMD-accelerated `bytecount` would be overkill for an interactive diagnostic and would add a dependency"
+)]
 
 use anyhow::{Context, Result};
 
@@ -17,20 +44,17 @@ pub(crate) async fn cmd_bitmap_diag(drive: char, show_samples: bool) -> Result<(
     let drive_upper = drive.to_ascii_uppercase();
 
     println!("═══════════════════════════════════════════════════════════════");
-    println!(
-        "              MFT BITMAP DIAGNOSTIC - Drive {}:",
-        drive_upper
-    );
+    println!("              MFT BITMAP DIAGNOSTIC - Drive {drive_upper}:");
     println!("═══════════════════════════════════════════════════════════════");
     println!();
 
     // Open volume
     let handle = VolumeHandle::open(drive_upper)
-        .with_context(|| format!("Failed to open volume {}:", drive_upper))?;
+        .with_context(|| format!("Failed to open volume {drive_upper}:"))?;
 
     let volume_data = handle.volume_data();
-    let record_size = volume_data.bytes_per_file_record_segment as u32;
-    let mft_size = volume_data.mft_valid_data_length as u64;
+    let record_size = volume_data.bytes_per_file_record_segment;
+    let mft_size = volume_data.mft_valid_data_length;
     let total_records_from_size = mft_size / u64::from(record_size);
 
     println!("📊 VOLUME DATA");
@@ -39,8 +63,8 @@ pub(crate) async fn cmd_bitmap_diag(drive: char, show_samples: bool) -> Result<(
         mft_size,
         mft_size as f64 / 1024.0 / 1024.0
     );
-    println!("   Bytes per record: {}", record_size);
-    println!("   Total records (from size): {}", total_records_from_size);
+    println!("   Bytes per record: {record_size}");
+    println!("   Total records (from size): {total_records_from_size}");
     println!();
 
     // Try to get bitmap with verbose output
@@ -55,11 +79,11 @@ pub(crate) async fn cmd_bitmap_diag(drive: char, show_samples: bool) -> Result<(
             let utilization = (in_use_count as f64 / bitmap_record_count as f64) * 100.0;
 
             println!("   ✅ Bitmap retrieved successfully");
-            println!("   Bitmap size: {} bytes", bitmap_bytes);
-            println!("   Records covered: {}", bitmap_record_count);
-            println!("   In-use records: {}", in_use_count);
-            println!("   Free records: {}", free_count);
-            println!("   Utilization: {:.2}%", utilization);
+            println!("   Bitmap size: {bitmap_bytes} bytes");
+            println!("   Records covered: {bitmap_record_count}");
+            println!("   In-use records: {in_use_count}");
+            println!("   Free records: {free_count}");
+            println!("   Utilization: {utilization:.2}%");
             println!();
 
             // Check for anomalies
@@ -108,7 +132,7 @@ pub(crate) async fn cmd_bitmap_diag(drive: char, show_samples: bool) -> Result<(
             let sample_bytes: Vec<_> = bitmap.as_bytes().iter().take(32).collect();
             print!("   ");
             for (i, &byte) in sample_bytes.iter().enumerate() {
-                print!("{:02X} ", byte);
+                print!("{byte:02X} ");
                 if (i + 1) % 16 == 0 {
                     println!();
                     if i < 31 {
@@ -127,7 +151,7 @@ pub(crate) async fn cmd_bitmap_diag(drive: char, show_samples: bool) -> Result<(
                 let last_bytes: Vec<_> = bitmap.as_bytes().iter().rev().take(32).collect();
                 print!("   ");
                 for (i, &byte) in last_bytes.iter().rev().enumerate() {
-                    print!("{:02X} ", byte);
+                    print!("{byte:02X} ");
                     if (i + 1) % 16 == 0 {
                         println!();
                         if i < 31 {
@@ -146,7 +170,7 @@ pub(crate) async fn cmd_bitmap_diag(drive: char, show_samples: bool) -> Result<(
                 println!("📝 INDIVIDUAL RECORD SAMPLES");
                 println!("   Checking records 0-15:");
                 print!("   ");
-                for frs in 0..16u64 {
+                for frs in 0..16_u64 {
                     let in_use = bitmap.is_record_in_use(frs);
                     print!("{}: {} ", frs, if in_use { "✓" } else { "✗" });
                 }
@@ -181,7 +205,7 @@ pub(crate) async fn cmd_bitmap_diag(drive: char, show_samples: bool) -> Result<(
             // Test calculate_skip_range
             println!("📝 SKIP RANGE CALCULATION TEST");
             let test_ranges = [
-                (0u64, 1000u64),
+                (0_u64, 1000_u64),
                 (1000, 2000),
                 (
                     total_records_from_size.saturating_sub(1000),
@@ -206,7 +230,7 @@ pub(crate) async fn cmd_bitmap_diag(drive: char, show_samples: bool) -> Result<(
             println!();
         }
         Err(e) => {
-            println!("   ❌ Failed to retrieve bitmap: {}", e);
+            println!("   ❌ Failed to retrieve bitmap: {e}");
             println!("   This means the fallback (all records valid) would be used.");
             println!();
         }

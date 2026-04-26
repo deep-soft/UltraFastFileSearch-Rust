@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! DataFrame-backed multi-drive reader helpers.
+//! `DataFrame`-backed multi-drive reader helpers.
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use tokio::task::JoinSet;
 use uffs_polars::{DataFrame, IntoLazy, col, lit};
@@ -15,7 +15,7 @@ use crate::reader::{MftProgress, MftReader};
 impl MultiDriveMftReader {
     /// Read MFTs from all drives concurrently.
     ///
-    /// Returns a merged DataFrame with a `drive` column (e.g., "C:", "D:").
+    /// Returns a merged `DataFrame` with a `drive` column (e.g., "C:", "D:").
     /// If some drives fail, the successful ones are still returned.
     /// Only fails if ALL drives fail.
     ///
@@ -53,14 +53,14 @@ impl MultiDriveMftReader {
             return Err(MftError::InvalidInput("No drives specified".into()));
         }
 
-        let callback = callback.map(Arc::new);
+        let shared_callback = callback.map(Arc::new);
         let budget = drive_reader_budget(self.drives.len());
         let mut join_set = JoinSet::new();
         let mut pending_drives = self.drives.iter().copied();
 
         for _ in 0..budget {
             if let Some(drive) = pending_drives.next() {
-                let cb = callback.clone();
+                let cb = shared_callback.clone();
 
                 join_set.spawn(async move {
                     let result = Self::read_single_drive(drive, cb).await;
@@ -100,25 +100,24 @@ impl MultiDriveMftReader {
             }
 
             if let Some(drive) = pending_drives.next() {
-                let cb = callback.clone();
+                let cb = shared_callback.clone();
 
                 join_set.spawn(async move {
-                    let result = Self::read_single_drive(drive, cb).await;
+                    let read_result = Self::read_single_drive(drive, cb).await;
                     DriveReadResult {
                         drive,
-                        dataframe: result.as_ref().ok().cloned(),
-                        error: result.err(),
+                        dataframe: read_result.as_ref().ok().cloned(),
+                        error: read_result.err(),
                     }
                 });
             }
         }
 
         if dataframes.is_empty() {
-            return Err(errors
-                .into_iter()
-                .next()
-                .map(|(_, error)| error)
-                .unwrap_or(MftError::InvalidInput("No drives could be read".into())));
+            return Err(errors.into_iter().next().map_or_else(
+                || MftError::InvalidInput("No drives could be read".into()),
+                |(_, error)| error,
+            ));
         }
 
         let mut result = dataframes.remove(0);
@@ -130,9 +129,9 @@ impl MultiDriveMftReader {
             .get_column_names()
             .into_iter()
             .filter(|name| name.as_str() != "drive")
-            .map(|name| name.to_string())
+            .map(uffs_polars::PlSmallStr::to_string)
             .collect();
-        let columns: Vec<_> = std::iter::once("drive".to_string())
+        let columns: Vec<_> = core::iter::once("drive".to_owned())
             .chain(column_names)
             .map(|name| col(&name))
             .collect();
@@ -155,13 +154,14 @@ impl MultiDriveMftReader {
         tokio::task::spawn_blocking(move || {
             let reader = MftReader::open(drive)?;
 
-            if let Some(cb) = callback {
-                reader.read_with_progress(move |progress| {
-                    cb(drive, progress);
-                })
-            } else {
-                reader.read_all()
-            }
+            callback.map_or_else(
+                || reader.read_all(),
+                |cb| {
+                    reader.read_with_progress(move |progress| {
+                        cb(drive, progress);
+                    })
+                },
+            )
         })
         .await
         .map_err(|error| MftError::InvalidInput(format!("Task join error: {error}")))?
@@ -189,12 +189,12 @@ impl MultiDriveMftReader {
         for _ in 0..budget {
             if let Some(drive) = pending_drives.next() {
                 join_set.spawn(async move {
-                    let result =
+                    let read_result =
                         Self::read_single_drive::<fn(char, MftProgress)>(drive, None).await;
                     DriveReadResult {
                         drive,
-                        dataframe: result.as_ref().ok().cloned(),
-                        error: result.err(),
+                        dataframe: read_result.as_ref().ok().cloned(),
+                        error: read_result.err(),
                     }
                 });
             }
@@ -215,12 +215,12 @@ impl MultiDriveMftReader {
 
             if let Some(drive) = pending_drives.next() {
                 join_set.spawn(async move {
-                    let result =
+                    let read_result =
                         Self::read_single_drive::<fn(char, MftProgress)>(drive, None).await;
                     DriveReadResult {
                         drive,
-                        dataframe: result.as_ref().ok().cloned(),
-                        error: result.err(),
+                        dataframe: read_result.as_ref().ok().cloned(),
+                        error: read_result.err(),
                     }
                 });
             }

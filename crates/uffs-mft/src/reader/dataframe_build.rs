@@ -13,10 +13,10 @@ use crate::error::{MftError, Result};
 use crate::ntfs::StreamInfo;
 
 impl MftReader {
-    /// Helper to build DataFrame from parsed records (legacy AoS path).
+    /// Helper to build `DataFrame` from parsed records (legacy `AoS` path).
     ///
     /// NOTE: This function is superseded by `build_dataframe_from_columns`
-    /// which uses the SoA path and avoids the AoS→SoA transpose. Kept for
+    /// which uses the `SoA` path and avoids the `AoS`→`SoA` transpose. Kept for
     /// reference and potential fallback use.
     #[cfg(windows)]
     #[expect(
@@ -261,7 +261,7 @@ impl MftReader {
 
     /// Builds a `DataFrame` directly from `ParsedColumns` (`SoA` layout).
     ///
-    /// This is the optimized path that avoids the AoS→SoA transpose.
+    /// This is the optimized path that avoids the `AoS`→`SoA` transpose.
     /// The columns are already in the correct format, so we just wrap them
     /// in Polars Series.
     ///
@@ -341,8 +341,12 @@ impl MftReader {
         expand_links: bool,
     ) -> Result<DataFrame> {
         let base_capacity = parsed_records.len();
+        // 20 % headroom for hard-link expansion, computed in integer space to
+        // avoid an f64 round-trip and the associated `cast_possible_truncation`
+        // / `cast_precision_loss` lints.  `base_capacity / 5` is exact for any
+        // `usize` and saturates safely on add (the result feeds `Vec::with_capacity`).
         let capacity = if expand_links {
-            (base_capacity as f64 * 1.2) as usize
+            base_capacity.saturating_add(base_capacity / 5)
         } else {
             base_capacity
         };
@@ -572,10 +576,10 @@ impl MftReader {
         DataFrame::new_infer_height(schema_columns).map_err(MftError::from)
     }
 
-    /// Convert parsed records to DataFrame (legacy AoS path).
+    /// Convert parsed records to `DataFrame` (legacy `AoS` path).
     ///
     /// NOTE: This function is superseded by `build_dataframe_from_columns`
-    /// which uses the SoA path and avoids the AoS→SoA transpose. Kept for
+    /// which uses the `SoA` path and avoids the `AoS`→`SoA` transpose. Kept for
     /// reference.
     #[cfg(windows)]
     #[expect(

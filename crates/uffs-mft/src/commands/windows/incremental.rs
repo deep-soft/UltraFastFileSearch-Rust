@@ -7,6 +7,34 @@
 //! sibling `usn.rs` module in 2026-04-21.  This file now covers
 //! index save/load, cache management (status/get/clear), and the
 //! USN-checkpointed incremental update / all-drive index path.
+//!
+//! These commands print human-readable progress to stdout, build size/rate
+//! summaries from `u64` counters into `f64` for KB/MB conversion, and use
+//! `Debug` formatting for opaque diagnostic enums.  The lint exemptions
+//! below capture those CLI-specific patterns; library code never inherits
+//! them.
+#![expect(
+    clippy::print_stdout,
+    reason = "intentional user-facing CLI status / progress output"
+)]
+#![expect(
+    clippy::use_debug,
+    reason = "Debug formatting is the canonical display for opaque diagnostic enums in CLI tools"
+)]
+#![expect(
+    clippy::float_arithmetic,
+    clippy::cast_precision_loss,
+    clippy::default_numeric_fallback,
+    reason = "byte/rate calculations convert integer counters into f64 for human-readable display"
+)]
+#![expect(
+    clippy::min_ident_chars,
+    reason = "short identifiers (e, a) used for printf-style error / accessor bindings in CLI output"
+)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "incremental index commands run a configure → execute → format → print pipeline that is most readable inline"
+)]
 
 use std::path::Path;
 
@@ -22,7 +50,7 @@ pub(crate) async fn cmd_index_save(drive: char, output: &Path) -> Result<()> {
     use uffs_mft::usn::query_usn_journal;
     use uffs_mft::{MftReader, VolumeHandle};
 
-    println!("📦 Building and saving index for {}:...", drive);
+    println!("📦 Building and saving index for {drive}:...");
     println!();
 
     let start = Instant::now();
@@ -43,13 +71,13 @@ pub(crate) async fn cmd_index_save(drive: char, output: &Path) -> Result<()> {
     let volume_data = handle.volume_data();
     let volume_serial = volume_data.volume_serial_number;
 
-    let (usn_journal_id, next_usn) = match query_usn_journal(drive) {
-        Ok(info) => (info.journal_id, info.next_usn),
-        Err(_) => {
+    let (usn_journal_id, next_usn) = query_usn_journal(drive).map_or_else(
+        |_| {
             println!("⚠️  USN Journal not available, saving without checkpoint");
             (0, 0)
-        }
-    };
+        },
+        |info| (info.journal_id, info.next_usn),
+    );
 
     // Save to file
     let save_start = Instant::now();
@@ -66,10 +94,7 @@ pub(crate) async fn cmd_index_save(drive: char, output: &Path) -> Result<()> {
 
     if usn_journal_id != 0 {
         println!();
-        println!(
-            "📍 USN Checkpoint: {} (Journal ID: 0x{:016X})",
-            next_usn, usn_journal_id
-        );
+        println!("📍 USN Checkpoint: {next_usn} (Journal ID: 0x{usn_journal_id:016X})");
         println!("   Use this to apply incremental updates later.");
     }
 
@@ -87,7 +112,7 @@ pub(crate) async fn cmd_index_load(input: &Path) -> Result<()> {
     println!();
 
     let start = Instant::now();
-    let (index, header) = MftIndex::load_from_file(input).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let (index, header) = MftIndex::load_from_file(input).map_err(|e| anyhow::anyhow!("{e}"))?;
     let load_time = start.elapsed();
 
     let file_size = std::fs::metadata(input)?.len();
@@ -122,8 +147,8 @@ pub(crate) async fn cmd_index_load(input: &Path) -> Result<()> {
     let dirs = index.records.iter().filter(|r| r.is_directory()).count();
     println!();
     println!("=== Content ===");
-    println!("  Files:            {}", files);
-    println!("  Directories:      {}", dirs);
+    println!("  Files:            {files}");
+    println!("  Directories:      {dirs}");
 
     Ok(())
 }
@@ -174,13 +199,10 @@ pub(crate) async fn cmd_cache_status(clean: bool, purge: bool) -> Result<()> {
         let (age_str, status) = match age {
             Some(secs) if secs < INDEX_TTL_SECONDS => {
                 let remaining = INDEX_TTL_SECONDS - secs;
-                (
-                    format!("{}s", secs),
-                    format!("✅ Fresh ({}s left)", remaining),
-                )
+                (format!("{secs}s"), format!("✅ Fresh ({remaining}s left)"))
             }
-            Some(secs) => (format!("{}s", secs), "⚠️  Expired".to_string()),
-            None => ("?".to_string(), "❓ Unknown".to_string()),
+            Some(secs) => (format!("{secs}s"), "⚠️  Expired".to_owned()),
+            None => ("?".to_owned(), "❓ Unknown".to_owned()),
         };
         println!("{:<8} {:<12} {}", format!("{}:", drive), age_str, status);
     }
@@ -198,19 +220,21 @@ pub(crate) async fn cmd_cache_get(drive: char, force: bool, ttl: Option<u64>) ->
     use uffs_mft::{MftReader, VolumeHandle};
 
     let ttl_seconds = ttl.unwrap_or(INDEX_TTL_SECONDS);
-    println!("🔍 Checking cache for {}:...", drive);
-    println!("⏱️  TTL: {} seconds", ttl_seconds);
+    println!("🔍 Checking cache for {drive}:...");
+    println!("⏱️  TTL: {ttl_seconds} seconds");
     println!();
 
     // Check cache status (unless force rebuild)
-    if !force {
+    if force {
+        println!("🔄 Force rebuild requested");
+    } else {
         match check_cache_status(drive, ttl_seconds) {
             CacheStatus::Fresh {
                 index,
                 header,
                 age_seconds,
             } => {
-                println!("✅ Cache HIT! Index is fresh ({} seconds old)", age_seconds);
+                println!("✅ Cache HIT! Index is fresh ({age_seconds} seconds old)");
                 println!();
                 println!("=== Cached Index ===");
                 println!("  Records:     {}", index.len());
@@ -219,14 +243,14 @@ pub(crate) async fn cmd_cache_get(drive: char, force: bool, ttl: Option<u64>) ->
 
                 let files = index.records.iter().filter(|r| !r.is_directory()).count();
                 let dirs = index.records.iter().filter(|r| r.is_directory()).count();
-                println!("  Files:       {}", files);
-                println!("  Directories: {}", dirs);
+                println!("  Files:       {files}");
+                println!("  Directories: {dirs}");
                 return Ok(());
             }
             CacheStatus::Stale { age_seconds } => {
                 println!(
                     "⚠️  Cache STALE (age: {}s, TTL: {}s)",
-                    age_seconds.map_or("?".to_string(), |a| a.to_string()),
+                    age_seconds.map_or_else(|| "?".to_owned(), |secs| secs.to_string()),
                     ttl_seconds
                 );
             }
@@ -234,8 +258,6 @@ pub(crate) async fn cmd_cache_get(drive: char, force: bool, ttl: Option<u64>) ->
                 println!("📭 Cache MISS - no cached index found");
             }
         }
-    } else {
-        println!("🔄 Force rebuild requested");
     }
 
     println!();
@@ -257,13 +279,13 @@ pub(crate) async fn cmd_cache_get(drive: char, force: bool, ttl: Option<u64>) ->
     let volume_data = handle.volume_data();
     let volume_serial = volume_data.volume_serial_number;
 
-    let (usn_journal_id, next_usn) = match query_usn_journal(drive) {
-        Ok(info) => (info.journal_id, info.next_usn),
-        Err(_) => {
+    let (usn_journal_id, next_usn) = query_usn_journal(drive).map_or_else(
+        |_| {
             println!("⚠️  USN Journal not available");
             (0, 0)
-        }
-    };
+        },
+        |info| (info.journal_id, info.next_usn),
+    );
 
     // Save to cache
     let cache_path = save_to_cache(&index, drive, volume_serial, usn_journal_id, next_usn)?;
@@ -276,10 +298,7 @@ pub(crate) async fn cmd_cache_get(drive: char, force: bool, ttl: Option<u64>) ->
     );
 
     if usn_journal_id != 0 {
-        println!(
-            "📍 USN Checkpoint: {} (Journal ID: 0x{:016X})",
-            next_usn, usn_journal_id
-        );
+        println!("📍 USN Checkpoint: {next_usn} (Journal ID: 0x{usn_journal_id:016X})");
     }
 
     Ok(())
@@ -307,10 +326,10 @@ pub(crate) async fn cmd_cache_clear(drive: Option<char>, all: bool) -> Result<()
         let path = cache_file_path(d);
         if path.exists() {
             remove_cached_index(d);
-            println!("✅ Cleared cache for {}:", d);
+            println!("✅ Cleared cache for {d}:");
             println!("   {}", path.display());
         } else {
-            println!("📭 No cached index found for {}:", d);
+            println!("📭 No cached index found for {d}:");
         }
     } else {
         println!("❌ Please specify --drive C or --all");
@@ -340,7 +359,7 @@ pub(crate) async fn cmd_index_update(
     let ttl_seconds = ttl.unwrap_or(INDEX_TTL_SECONDS);
     let start = Instant::now();
 
-    println!("🔄 Incremental index update for {}:...", drive);
+    println!("🔄 Incremental index update for {drive}:...");
     println!();
 
     // If force_full, skip cache and do full scan
@@ -358,7 +377,7 @@ pub(crate) async fn cmd_index_update(
             header,
             age_seconds,
         } => {
-            println!("📦 Found cached index ({} seconds old)", age_seconds);
+            println!("📦 Found cached index ({age_seconds} seconds old)");
             println!(
                 "   Records: {}, USN checkpoint: {}",
                 index.len(),
@@ -380,7 +399,7 @@ pub(crate) async fn cmd_index_update(
             let current_info = match query_usn_journal(drive) {
                 Ok(info) => info,
                 Err(e) => {
-                    println!("⚠️  USN Journal not available: {}", e);
+                    println!("⚠️  USN Journal not available: {e}");
                     println!("   Falling back to full scan...");
                     return do_full_index_build(drive).await;
                 }
@@ -412,7 +431,7 @@ pub(crate) async fn cmd_index_update(
                 match read_usn_journal(drive, current_info.journal_id, header.next_usn) {
                     Ok(r) => r,
                     Err(e) => {
-                        println!("⚠️  Failed to read USN Journal: {}", e);
+                        println!("⚠️  Failed to read USN Journal: {e}");
                         println!("   Falling back to full scan...");
                         return do_full_index_build(drive).await;
                     }
@@ -504,14 +523,14 @@ pub(crate) async fn cmd_index_update(
             println!();
             println!("✅ Incremental update complete!");
             println!("   Records: {}", updated_index.len());
-            println!("   New USN checkpoint: {}", next_usn);
+            println!("   New USN checkpoint: {next_usn}");
             println!("   Saved to: {}", cache_path.display());
             println!("⏱️  Total time: {:.3}s", elapsed.as_secs_f64());
         }
         CacheStatus::Stale { age_seconds } => {
             println!(
                 "⚠️  Cache is stale (age: {}s, TTL: {}s)",
-                age_seconds.map_or("?".to_string(), |a| a.to_string()),
+                age_seconds.map_or_else(|| "?".to_owned(), |secs| secs.to_string()),
                 ttl_seconds
             );
             println!("   Performing full scan...");
@@ -539,7 +558,7 @@ async fn do_full_index_build(drive: char) -> Result<()> {
     let start = Instant::now();
 
     println!();
-    println!("🔨 Building full index for {}:...", drive);
+    println!("🔨 Building full index for {drive}:...");
 
     let reader = MftReader::open(drive)?;
     let index = reader.read_all_index().await?;
@@ -556,13 +575,13 @@ async fn do_full_index_build(drive: char) -> Result<()> {
     let volume_data = handle.volume_data();
     let volume_serial = volume_data.volume_serial_number;
 
-    let (usn_journal_id, next_usn) = match query_usn_journal(drive) {
-        Ok(info) => (info.journal_id, info.next_usn),
-        Err(_) => {
+    let (usn_journal_id, next_usn) = query_usn_journal(drive).map_or_else(
+        |_| {
             println!("⚠️  USN Journal not available");
             (0, 0)
-        }
-    };
+        },
+        |info| (info.journal_id, info.next_usn),
+    );
 
     // Save to cache
     let cache_path = save_to_cache(&index, drive, volume_serial, usn_journal_id, next_usn)?;
@@ -575,10 +594,7 @@ async fn do_full_index_build(drive: char) -> Result<()> {
     );
 
     if usn_journal_id != 0 {
-        println!(
-            "📍 USN Checkpoint: {} (Journal ID: 0x{:016X})",
-            next_usn, usn_journal_id
-        );
+        println!("📍 USN Checkpoint: {next_usn} (Journal ID: 0x{usn_journal_id:016X})");
     }
 
     let total_time = start.elapsed();
@@ -621,7 +637,7 @@ pub(crate) async fn cmd_index_all(
         "Drives: {}",
         drive_list
             .iter()
-            .map(|c| format!("{}:", c))
+            .map(|c| format!("{c}:"))
             .collect::<Vec<_>>()
             .join(", ")
     );
@@ -634,7 +650,7 @@ pub(crate) async fn cmd_index_all(
         }
     );
     if !no_cache {
-        println!("TTL: {} seconds", ttl);
+        println!("TTL: {ttl} seconds");
     }
     println!();
 
@@ -658,9 +674,9 @@ pub(crate) async fn cmd_index_all(
     println!("=== Index Summary ===");
     println!();
 
-    let mut total_files = 0u64;
-    let mut total_dirs = 0u64;
-    let mut total_entries = 0u64;
+    let mut total_files = 0_u64;
+    let mut total_dirs = 0_u64;
+    let mut total_entries = 0_u64;
 
     for index in &indices {
         let files = index.file_count() as u64;
@@ -693,8 +709,8 @@ pub(crate) async fn cmd_index_all(
     let entries_per_sec = total_entries as f64 / elapsed_secs;
 
     println!("=== Performance ===");
-    println!("Time: {:.3}s", elapsed_secs);
-    println!("Throughput: {:.0} entries/sec", entries_per_sec);
+    println!("Time: {elapsed_secs:.3}s");
+    println!("Throughput: {entries_per_sec:.0} entries/sec");
     println!();
 
     Ok(())

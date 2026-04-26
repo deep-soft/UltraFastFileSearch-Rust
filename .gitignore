@@ -34,9 +34,36 @@ target/
 # =============================================================================
 # Build artifacts & generated binaries
 # =============================================================================
-build/
+# `build/` holds generated artifacts (workflow state, logs) that must stay
+# out of git, EXCEPT the bespoke version-bump rust-script which is invoked
+# by `just ship` (see `just/build.just`, `just/dev.just`,
+# `scripts/ci-pipeline/src/version.rs`).  That script is the single source of
+# truth for workspace version bumps until release-plz takes over in Phase R5
+# of `docs/architecture/release-automation-plan.md` — at which point the
+# script is deleted and this exception line goes with it.
+build/*
+!build/update_all_versions.rs
 *.rlib
 *.bin
+# `*.bin` is meant to keep transient generated blobs out of git, but the
+# workspace contains three INTENTIONAL committed binary assets that must
+# remain tracked.  Without these carve-outs, release-plz aborts with
+# "the working directory has uncommitted changes" because it sees these
+# files as both committed AND gitignored — the same R0-pattern issue
+# the `!build/update_all_versions.rs` exception above resolves.  Found
+# during R3 release-plz shadow-mode validation; see
+# `docs/architecture/release-automation-plan.md` Phase R3.
+#
+# Upcase tables: `upcase_default.bin` is embedded via `include_bytes!`
+# in `crates/uffs-text/src/case_fold.rs` (compile-time dependency).
+# `upcase_windows_c.bin` is the Windows-captured reference fixture
+# consumed by the `upcase` parity test in `crates/uffs-mft`.
+!crates/uffs-text/src/*.bin
+# MFT capture fixtures for integration tests; documented in
+# `tests/fixtures/README.md`.  Without this carve-out the
+# `ipc_integration::real_mft_search` test in `uffs-daemon` cannot find
+# its fixture and silently no-ops.
+!tests/fixtures/**/*.bin
 /test_scf
 
 # =============================================================================
