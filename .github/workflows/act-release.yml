@@ -293,7 +293,7 @@ jobs:
           done
 
       - name: Show binary sizes
-        shell: bash
+        shell: bashk
         run: |
           echo "📐 Release binary sizes:"
           ls -lh target/${{ matrix.target }}/release/ 2>/dev/null | grep -E 'uffs|uffsd|uffsmcp|uffs_mft' || true
@@ -330,6 +330,39 @@ jobs:
 
           echo "📦 Packaged binaries:"
           ls -la
+
+          # Diagnostic binaries are NOT shipped; they live in uffs-diag and stay workspace-only.
+          # copy them
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cd ..;
+            echo "📦 Current folder";
+            pwd;
+            STAGE_DIR_WIN_ADD=release-artifacts-windows;
+            mkdir -p $STAGE_DIR_WIN_ADD;
+            find target/${{ matrix.target }}/release -name "*.exe" \
+              ! -name 'uffs.exe'
+              ! -name 'uffsd.exe' \
+              ! -name 'uffsmcp.exe' \
+              ! -name 'uffs_mft.exe' \
+              -type f -exec cp {} $STAGE_DIR_WIN_ADD/ \;
+            # Create checksums
+            cd $STAGE_DIR_WIN_ADD;
+            if command -v sha256sum >/dev/null; then
+              sha256sum * > checksums-add.txt;
+            else
+              shasum -a 256 * > checksums-add.txt;
+            fi
+            echo "📦 Packaged binaries (add):";
+            ls -la;
+            # zip them;
+            7z a -tzip \
+              "../release-artifacts/${{ matrix.artifact-name }}-add.zip";
+            echo "📦 Packaged binaries (add) zip:";
+            ls -la "../release-artifacts/${{ matrix.artifact-name }}-add.zip" || true;
+            cd ..;
+            echo "📦 Release Artifacts :"
+            ls -la "release-artifacts" || true;
+          fi
 
       - name: Stage release bundle
         shell: bash
@@ -401,13 +434,15 @@ jobs:
           # release-artifacts/ so the existing Upload step picks it up
           # alongside the raw binaries.
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            (cd release-staging && \
             7z a -tzip \
-              "release-artifacts/${{ matrix.artifact-name }}.zip" \
-              "$STAGE_DIR/*" > /dev/null
+              "../release-artifacts/${{ matrix.artifact-name }}.zip" \
+              "${{ matrix.artifact-name }}")
           else
             (cd release-staging && \
-             zip -rq "../release-artifacts/${{ matrix.artifact-name }}.zip" \
-                     "${{ matrix.artifact-name }}")
+             zip -rq \
+              "../release-artifacts/${{ matrix.artifact-name }}.zip" \
+              "${{ matrix.artifact-name }}")
           fi
 
           echo "📦 Bundle ZIP:"
