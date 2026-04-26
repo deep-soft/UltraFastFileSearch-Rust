@@ -362,14 +362,15 @@ jobs:
           # `zip` on macOS/Linux.  The ZIP goes straight into
           # release-artifacts/ so the existing Upload step picks it up
           # alongside the raw binaries.
-          (cd release-staging && \
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cd release-staging && \
             7z a -tzip \
-              "release-artifacts/${{ matrix.artifact-name }}.zip" \
-              "$STAGE_DIR/*" > /dev/null
+                "release-artifacts/${{ matrix.artifact-name }}.zip" \
+                "$STAGE_DIR/*" > /dev/null
           else
+             cd release-staging && \
              zip -rq "../release-artifacts/${{ matrix.artifact-name }}.zip" \
-                     "${{ matrix.artifact-name }}")
+                 "${{ matrix.artifact-name }}"
           fi
 
           echo "📦 Bundle ZIP:"
