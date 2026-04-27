@@ -36,10 +36,16 @@ env:
   # Disable sccache in CI - it's configured in .cargo/config.toml for local dev
   # but not installed on GitHub Actions runners
   RUSTC_WRAPPER: ""
-  # Limit parallel jobs to reduce memory pressure during Polars compilation
-  # GitHub Actions runners have limited RAM; too many parallel rustc processes
-  # can trigger OOM killer or runner preemption (exit code 143)
-  CARGO_BUILD_JOBS: 2
+  # Limit parallel jobs to reduce memory pressure during Polars compilation.
+  # GitHub Actions ubuntu-latest runners (16 GB / 4 vCPU) cannot host parallel
+  # link-stages of every workspace binary — each pulls polars + axum + rmcp +
+  # mimalloc + ring through its dep graph and consumes multiple GB during `ld`.
+  # The previous cap of 2 was still being pre-empted with exit 143 / SIGTERM
+  # mid-link of the workspace bins (issue #83, runs 24984887285 attempts 1+2),
+  # so this drops to 1 — fully serialised compile/link.  Wall time goes up
+  # modestly (≈10 → ≈14 min on warm cache) but stays well within the
+  # 60-min step budget; correctness > speed for a once-weekly cron.
+  CARGO_BUILD_JOBS: 1
 
 jobs:
   file-size-policy:
@@ -74,7 +80,10 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: tier-2-coverage
+          cache-on-failure: 'true'
 
       - name: Install tools
         uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
@@ -135,13 +144,18 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           # Dedicated cache key — the Linux Tier 2 jobs below have fragments
           # that make the default key hash to something different on Windows
           # anyway, but be explicit so a future refactor does not cross the
           # streams.
           shared-key: tier-2-windows-check
+          # Persist a partial cache even if the job fails — runner
+          # pre-emption (SIGTERM) mid-compile is the most common Tier 2
+          # failure mode (issue #83), so the next attempt should resume
+          # from the partially-built compile graph.
+          cache-on-failure: 'true'
 
       - name: cargo check --workspace --all-features
         # --all-features to exercise every feature-gated path that only
@@ -168,12 +182,28 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: tier-2-build-validation
+          cache-on-failure: 'true'
 
       - name: Run build validation
         # --locked per §2.8 — validation builds must resolve through
         # the committed Cargo.lock, otherwise a broken lockfile wouldn't
         # surface here.
+        #
+        # CARGO_BUILD_JOBS=1: workflow-level env already sets this; the
+        # step-level override is kept in lockstep so a future split
+        # of the workflow-level cap doesn't silently re-introduce
+        # parallel linking.  GitHub Actions step-env > workflow-env,
+        # so divergence here would defeat the fix.  Background:
+        # ubuntu-latest's 16 GB / 4 vCPU pre-empted the runner mid-link
+        # of the workspace binaries even at parallelism 2 (issue #83,
+        # run 24984887285 attempts 1+2 — both died ~60 s after the
+        # last `Compiling …` line, mid-`ld`).  Serialised link is
+        # ~+2-4 min wall time on warm cache, well inside budget.
+        env:
+          CARGO_BUILD_JOBS: '1'
         run: cargo build --locked --workspace --all-features --bins
 
   udeps:
@@ -193,7 +223,10 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: tier-2-udeps
+          cache-on-failure: 'true'
 
       - name: Install cargo-udeps
         uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
@@ -222,7 +255,10 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: tier-2-miri
+          cache-on-failure: 'true'
 
       - name: Run focused Miri coverage
         env:

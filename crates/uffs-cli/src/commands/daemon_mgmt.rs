@@ -198,6 +198,10 @@ fn daemon_status() -> Result<()> {
     };
 
     let uptime = core::time::Duration::from_secs(status.uptime_secs);
+    println!(
+        "Version:       {}",
+        crate::commands::version_summary(&status.version)
+    );
     println!("Daemon PID:    {}", status.pid);
     println!(
         "Uptime:        {}",
@@ -224,9 +228,21 @@ fn daemon_status() -> Result<()> {
     }
     println!("Connections:   {}", status.connections);
 
-    // Memory info.
+    // Memory info.  Three numbers, in increasing order of "what the OS
+    // sees": logical heap (sum of per-drive `heap_size_bytes`), then
+    // mimalloc's committed pages, then the OS-reported RSS.  All three
+    // come from the same `status` payload so they are consistent.
     if let Some(heap) = status.index_heap_bytes {
         println!("Index heap:    {} MB", heap / (1024 * 1024));
+    }
+    if let Some(committed) = status.mimalloc_committed_bytes {
+        println!(
+            "Mimalloc:      {} MB (committed)",
+            committed / (1024 * 1024)
+        );
+    }
+    if let Some(rss) = status.rss_bytes {
+        println!("RSS:           {} MB", rss / (1024 * 1024));
     }
 
     // Also show loaded drives.
@@ -291,6 +307,10 @@ fn daemon_stats() -> Result<()> {
         let total_query = core::time::Duration::from_micros(stats.total_query_time_us);
 
         println!("═══ Daemon Performance Stats ═══");
+        println!(
+            "Version:           {}",
+            crate::commands::version_summary(&stats.version)
+        );
         println!("Uptime:            {}", fmt(uptime));
         println!("Startup duration:  {}", fmt(startup));
         println!(
