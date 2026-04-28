@@ -1,10 +1,10 @@
-# sign-windows-files.yml
-      - name: Sign windows files
-        continue-on-error: true
-        uses: deep-soft/code-sign-action@v10
-        with:
-          certificate: '${{ secrets.WINDOWS_PFX_BASE64 }}'
-          password: '${{ secrets.WINDOWS_PFX_PASSWORD }}'
-          certificatesha1: '${{ secrets.WINDOWS_PFX_SHA1_THUMBPRINT }}'
-          # certificatename: '${{ secrets.CERTNAME }}'
-          recursive: true
+# # sign-windows-files.yml
+#       - name: Sign windows files
+#         continue-on-error: true
+#         uses: deep-soft/code-sign-action@v10
+#         with:
+#           certificate: '${{ secrets.WINDOWS_PFX_BASE64 }}'
+#           password: '${{ secrets.WINDOWS_PFX_PASSWORD }}'
+#           certificatesha1: '${{ secrets.WINDOWS_PFX_SHA1_THUMBPRINT }}'
+#           # certificatename: '${{ secrets.CERTNAME }}'
+#           recursive: true
