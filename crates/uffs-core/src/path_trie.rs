@@ -751,4 +751,48 @@ mod tests {
         // Two children of C.
         assert_eq!(trie.child_indices().len(), 2);
     }
+
+    /// Plan task **4.12** — trie build budget at 1 M directories.
+    ///
+    /// Pre-build records + names outside the timed region; time only
+    /// `PathTrie::build`.  Budget ≤ 100 ms in release mode (debug
+    /// runs 10–100× slower; gated `release-only` so default
+    /// `cargo test` skips it; run with `cargo test --release ... --
+    /// --include-ignored`).
+    ///
+    /// Synthetic topology: root + `999_999` children all parented to
+    /// root.  Build cost is dominated by O(N) record iteration +
+    /// hashmap inserts + parent lookups; topology is irrelevant.
+    /// Names share a 3-byte buffer ("dir") so fixture-build is
+    /// negligible vs the timed region.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "release-only")]
+    fn plan_4_12_path_trie_build_under_one_hundred_ms_at_one_million_directories() {
+        use alloc::vec::Vec;
+        use core::time::Duration;
+        use std::time::Instant;
+
+        const DIRS: u32 = 1_000_000;
+        let names = b"dir".to_vec();
+        let mut records: Vec<CompactRecord> = Vec::with_capacity(DIRS as usize);
+        records.push(make_record(0, 3, u32::MAX, true));
+        for _ in 1..DIRS {
+            records.push(make_record(0, 3, 0, true));
+        }
+
+        let start = Instant::now();
+        let trie = PathTrie::build(&records, &names);
+        let elapsed = start.elapsed();
+
+        let budget = Duration::from_millis(100);
+        assert!(
+            elapsed <= budget,
+            "path_trie build at {DIRS} directories took {elapsed:?} (budget {budget:?})"
+        );
+        assert_eq!(
+            u32::try_from(trie.len()).expect("len fits u32"),
+            DIRS,
+            "every directory record must land in the trie"
+        );
+    }
 }
