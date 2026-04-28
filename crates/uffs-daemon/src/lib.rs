@@ -25,7 +25,6 @@ use thiserror as _;
 use tracing_appender as _;
 use tracing_subscriber as _;
 use uffs_mft as _;
-use uffs_security as _;
 
 /// Broker client — volume handle requests (Windows) / stubs (other).
 mod broker_client;
@@ -46,6 +45,8 @@ mod ipc;
 mod lifecycle;
 /// JSON-RPC protocol types.
 mod protocol;
+/// Phase 2b memory-tiering: runtime-tempfile orphan cleanup at boot.
+mod runtime_orphans;
 /// Process-level memory and runtime telemetry.
 pub(crate) mod telemetry;
 
@@ -224,6 +225,13 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     // D5.0: clean up stale shmem files from previous daemon sessions.
     uffs_client::shmem::cleanup_stale_shmem_files();
 
+    // Phase 2b: wipe runtime-tempfile leftovers from dead daemon PIDs
+    // before our own PID-scoped subdir gets created by the first
+    // `load_compact_cache` call.  The cross-platform `cleanup_orphans`
+    // contract makes this safe even when other live daemons share the
+    // root directory.
+    runtime_orphans::sweep_runtime_tempfile_orphans();
+
     // Create index manager — uses the user-supplied --data-dir for offline MFT
     // discovery and hot-loading (not the lifecycle directory).
     let idx = Arc::new(index::IndexManager::new(config.data_dir.clone(), event_tx));
@@ -251,6 +259,8 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
         Arc::clone(&idx),
         telemetry::DEFAULT_MEM_SNAPSHOT_INTERVAL,
     );
+    // Phase 3 Commit D — periodic shard idle-demote sweep.
+    let _idle_demote_task = spawn_idle_demote_controller(Arc::clone(&idx));
 
     // Run idle timer (blocks until shutdown or timeout) then tear
     // everything down.  Returns `!` so `force_exit_with_watchdog`
@@ -613,6 +623,34 @@ fn spawn_stats_heartbeat(
     })
 }
 
+/// Spawn the Phase 3 idle-demote controller — every 30 s, ask
+/// `IndexManager::demote_idle_shards` to walk the registry and
+/// demote any shard whose idle time exceeds its tier's TTL (see
+/// `cache::policy`).
+///
+/// The 30 s cadence is shorter than the shortest TTL (300 s
+/// Hot→Warm) by an order of magnitude, so a freshly idle Hot
+/// shard demotes within at most one tick of crossing its
+/// boundary.  Sampling `unix_now_ms()` once at the top of each
+/// tick (and threading it into the manager) keeps every shard's
+/// idle-secs computation referenced to the same baseline — a
+/// slow read-lock acquisition can't push later shards in the
+/// same batch over a TTL boundary mid-walk.
+fn spawn_idle_demote_controller(idx: Arc<index::IndexManager>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(core::time::Duration::from_secs(30));
+        // Skip the first tick (fires immediately at task spawn).
+        // We want the controller to take its first reading 30 s
+        // after startup, not at t=0 when no shard could possibly
+        // be idle yet.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            idx.demote_idle_shards(cache::unix_now_ms()).await;
+        }
+    })
+}
+
 /// Final shutdown: spawn a 5 s watchdog thread that calls
 /// [`std::process::abort`] if `process::exit` itself hangs (kernel
 /// I/O can wedge atexit handlers), then force-exit.
@@ -659,63 +697,4 @@ fn force_exit_with_watchdog() -> ! {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::drive_letter_matches;
-
-    /// `drive_letter_matches` keys discovered MFT files to the
-    /// `--drive` filter by walking `path.parent().file_name()` and
-    /// matching the `drive_<letter>` prefix case-insensitively.  The
-    /// contract is regression-pinned here so a future strip / split
-    /// rewrite can't silently change the prefix shape.
-    #[test]
-    fn drive_letter_matches_accepts_canonical_prefix() {
-        // Standard discovery layout: `<data_dir>/drive_<letter>/<letter>_mft.iocp`.
-        assert!(drive_letter_matches(
-            Path::new("/data/drive_c/C_mft.iocp"),
-            &['C']
-        ));
-        // Case-insensitive match: filter is uppercase, dir is lowercase.
-        assert!(drive_letter_matches(
-            Path::new("/data/drive_d/D_mft.iocp"),
-            &['d']
-        ));
-        // Multi-letter filter: any match in `wanted` succeeds.
-        assert!(drive_letter_matches(
-            Path::new("/data/drive_e/E_mft.iocp"),
-            &['C', 'D', 'E']
-        ));
-    }
-
-    #[test]
-    fn drive_letter_matches_rejects_non_matching_prefix() {
-        // Different drive letter.
-        assert!(!drive_letter_matches(
-            Path::new("/data/drive_c/C_mft.iocp"),
-            &['D']
-        ));
-        // Empty `wanted` slice rejects everything (caller must
-        // gate on `is_empty()` for the "all drives" case).
-        assert!(!drive_letter_matches(
-            Path::new("/data/drive_c/C_mft.iocp"),
-            &[]
-        ));
-    }
-
-    #[test]
-    fn drive_letter_matches_rejects_unknown_layout() {
-        // Parent dir doesn't carry the `drive_` prefix.
-        assert!(!drive_letter_matches(
-            Path::new("/data/snapshot/C_mft.iocp"),
-            &['C']
-        ));
-        // No parent at all — root file.
-        assert!(!drive_letter_matches(Path::new("C_mft.iocp"), &['C']));
-        // `drive_` prefix with no letter after (suffix.chars().next() = None).
-        assert!(!drive_letter_matches(
-            Path::new("/data/drive_/C_mft.iocp"),
-            &['C']
-        ));
-    }
-}
+mod tests;

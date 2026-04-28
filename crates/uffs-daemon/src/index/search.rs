@@ -84,17 +84,12 @@ impl IndexManager {
         let requires_post_filter =
             Self::predicates_require_post_filter(&effective_params.predicates);
 
-        // ── Snapshot the index (< 1 μs) ────────────────────────────
-        let t_lock = profiling.then(Instant::now);
-        let snapshot = self.snapshot().await;
-        // Phase 1 of memory-tiering: record this dispatch on every
-        // active shard so `DriveStats::decay_ema` (consumed by Phase 6
-        // adaptive-TTL) accumulates a real signal.  See
-        // `crate::cache::DriveStats` and the `record_search_dispatch`
-        // doc comment.
-        self.record_search_dispatch().await;
-        let lock_us = t_lock.map_or(0, |ts| ts.elapsed().as_micros());
-
+        // Resolve sort + filter mode + filters BEFORE the promote
+        // pass so Phase 4 Commit F can hand the resolved ext-term
+        // list to `ensure_warm_for_dispatch` for its bloom
+        // pre-check.  None of the work between here and the
+        // ensure-warm call depends on the registry's tier state, so
+        // the reordering is invariant-preserving.
         let (sort_column, sort_desc, extra_sort_tiers) =
             applied_sorts
                 .first()
@@ -153,6 +148,35 @@ impl IndexManager {
         // Overlay canonical predicates that can be compiled into the hot
         // path (size / descendant bounds).
         Self::compile_predicates_into_filters(&mut filters, &effective_params.predicates);
+
+        // Phase 3 Commit C — promote any Parked/Cold shards in the
+        // touched set before we snapshot the active subset.  Fast
+        // path (single read-lock acquisition, no work) when every
+        // touched shard is already Warm/Hot, which is the common
+        // case in steady state.  See
+        // `IndexManager::ensure_warm_for_dispatch` doc for the
+        // three-phase orchestration and the
+        // conservative-on-under-promote contract.
+        //
+        // Phase 4 Commit F — `ext_terms` enables the bloom-skip
+        // pre-check: if the user filtered by `--ext toml` and a
+        // Parked shard's bloom proves it has no `.toml` records,
+        // skip the promote (zero-RAM-touch contract).  Empty
+        // `ext_terms` short-circuits to the Phase-3 always-promote
+        // behaviour.
+        self.ensure_warm_for_dispatch(&effective_params.drives, &filters.extensions)
+            .await;
+
+        // ── Snapshot the index (< 1 μs) ────────────────────────────
+        let t_lock = profiling.then(Instant::now);
+        let snapshot = self.snapshot().await;
+        // Phase 1 of memory-tiering: record this dispatch on every
+        // active shard so `DriveStats::decay_ema` (consumed by Phase 6
+        // adaptive-TTL) accumulates a real signal.  See
+        // `crate::cache::DriveStats` and the `record_search_dispatch`
+        // doc comment.
+        self.record_search_dispatch().await;
+        let lock_us = t_lock.map_or(0, |ts| ts.elapsed().as_micros());
 
         // Snapshot per-drive info (only when profiling).
         let drive_info: Vec<(char, usize)> = if profiling {
@@ -460,7 +484,7 @@ impl IndexManager {
 
         // ── Aggregation (if requested) ─────────────────────────────
         let (agg_results, agg_matched) = if !effective_params.aggregations.is_empty() {
-            let predicates = Self::build_query_predicates(&effective_params);
+            let predicates = build_query_predicates(&effective_params);
 
             // Pass the pattern if it's non-trivial (not just `*`).
             let agg_pattern =
@@ -642,64 +666,6 @@ impl IndexManager {
         }
     }
 
-    /// Convert search-request filters into drill-down predicates.
-    ///
-    /// These are prepended to each bucket's drill-down list so that a
-    /// follow-up query reproduces the original scope plus the bucket key.
-    fn build_query_predicates(
-        params: &SearchParams,
-    ) -> Vec<uffs_core::aggregate::finalize::DrilldownPredicate> {
-        use uffs_core::aggregate::finalize::{DrilldownPredicate, DrilldownValue};
-        let mut preds = Vec::new();
-
-        // Pattern
-        if !params.pattern.is_empty() && params.pattern != "*" {
-            preds.push(DrilldownPredicate {
-                field: "name".to_owned(),
-                op: "glob".to_owned(),
-                value: DrilldownValue::String(params.pattern.clone()),
-            });
-        }
-
-        // Filter mode (files / dirs)
-        if let Some(filter) = &params.filter
-            && filter != "all"
-        {
-            preds.push(DrilldownPredicate {
-                field: "type".to_owned(),
-                op: "eq".to_owned(),
-                value: DrilldownValue::String(filter.clone()),
-            });
-        }
-
-        // Size range
-        if let Some(min) = params.min_size {
-            preds.push(DrilldownPredicate {
-                field: "size".to_owned(),
-                op: "gte".to_owned(),
-                value: DrilldownValue::U64(min),
-            });
-        }
-        if let Some(max) = params.max_size {
-            preds.push(DrilldownPredicate {
-                field: "size".to_owned(),
-                op: "lte".to_owned(),
-                value: DrilldownValue::U64(max),
-            });
-        }
-
-        // Drives
-        for &drive in &params.drives {
-            preds.push(DrilldownPredicate {
-                field: "drive".to_owned(),
-                op: "eq".to_owned(),
-                value: DrilldownValue::String(drive.to_string()),
-            });
-        }
-
-        preds
-    }
-
     // ── Direct file output (OPT-4) ──────────────────────────────────
 
     /// Write `DisplayRow`s directly to a file, bypassing `SearchRow` and IPC.
@@ -783,6 +749,14 @@ impl IndexManager {
 #[path = "search_output_config.rs"]
 mod output_config;
 pub(crate) use output_config::build_output_config;
+
+// `build_query_predicates` lives in a sibling file to keep `search.rs`
+// under the 800-line policy ceiling.  Single call site (the
+// aggregation block in `search()` above), so the function stays
+// `pub(super)` — not re-exported beyond the `search` module.
+#[path = "search_predicates.rs"]
+mod predicates;
+use predicates::build_query_predicates;
 
 // The inline `tests` module lives in a sibling file to keep `search.rs`
 // under the 800-line policy ceiling.  `#[path]` keeps the test module
