@@ -305,11 +305,22 @@ jobs:
             fi
           done
 
+#      - name: Sign windows files
+#        if: contains(matrix.target, 'windows')
+#        uses: ./.github/workflows/sign-windows-files.yml
+#        with:
+#          folder: 'target/${{ matrix.target }}/release'
+
       - name: Sign windows files
-        if: contains(matrix.target, 'windows')
-        uses: ./.github/workflows/sign-windows-files.yml
+        continue-on-error: true
+        uses: deep-soft/code-sign-action@v10
         with:
           folder: 'target/${{ matrix.target }}/release'
+          certificate: '${{ secrets.WINDOWS_PFX_BASE64 }}'
+          password: '${{ secrets.WINDOWS_PFX_PASSWORD }}'
+          certificatesha1: '${{ secrets.WINDOWS_PFX_SHA1_THUMBPRINT }}'
+          # certificatename: '${{ secrets.CERTNAME }}'
+          recursive: false
 
       - name: Show binary sizes
         shell: bash
