@@ -57,8 +57,10 @@ use tokio as _;
 // ============================================================================
 
 pub mod aggregate;
+pub mod bloom;
 pub mod compact;
 pub mod compact_cache;
+pub mod compact_filters;
 pub mod compact_loader;
 pub mod compact_mmap;
 pub mod compact_reader;
@@ -72,6 +74,7 @@ pub mod glob;
 pub mod index_search;
 pub mod output;
 mod path_resolver;
+pub mod path_trie;
 pub mod pattern;
 mod query;
 pub mod search;
@@ -110,3 +113,7 @@ pub use tree::{TreeColumn, add_tree_columns, apply_directory_treesize};
 // Re-export commonly used types
 pub use uffs_mft::FileFlags;
 pub use uffs_polars::{DataFrame, IntoLazy, LazyFrame, col, columns, lit};
+// `CaseFold` lives on `ParkedBody.fold` and `DriveCompactIndex.fold` —
+// re-exported here so downstream crates (uffs-daemon, uffs-cli, tests)
+// that touch those types don't need a direct `uffs-text` dependency.
+pub use uffs_text::case_fold::CaseFold;
