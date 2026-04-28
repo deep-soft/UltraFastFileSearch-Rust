@@ -1,0 +1,868 @@
+# SPDX-FileCopyright (c) 2025-2026 SKY, LLC.
+# SPDX-License-Identifier: MPL-2.0
+# act-release.yml
+name: act - 🚀 UFFS Release Pipeline
+
+run-name: act - 🚀 UFFS Release ${{ inputs.version || github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v0.1.192)'
+        required: true
+        type: string
+      triggered_by:
+        description: 'Workflow that triggered this release'
+        required: false
+        default: 'manual'
+        type: string
+      commit_sha:
+        description: 'Commit SHA to release'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+# Serialise release dispatches so two version bumps landing in quick
+# succession (or a tag-push colliding with an auto-tag-release dispatch)
+# queue cleanly.  `cancel-in-progress: false` because a half-finished
+# release must either complete or fail with an attestation — never be
+# killed mid-upload — so the SLSA provenance in the Attestations API
+# can never claim an artifact that was not actually published.
+concurrency:
+  group: release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+  issues: write
+  # SLSA build-provenance attestation flow (P1 hardening):
+  #   - `id-token: write` lets the runner mint an OIDC token
+  #     identifying this workflow run to the Sigstore Fulcio CA.
+  #   - `attestations: write` lets `actions/attest-build-provenance`
+  #     post the resulting attestation to this repository via the
+  #     GitHub Attestations API.
+  # Both scopes are idle unless the attest step actually runs, so
+  # there is no exposure outside the create-github-release job.
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Override `.cargo/config.toml`'s `rustc-wrapper = "sccache"` setting.
+  # sccache is a developer-machine convenience (`cargo install sccache`);
+  # GitHub-hosted runners don't have it pre-installed, so every `cargo`
+  # invocation fails immediately with `could not execute process sccache …`
+  # (see fork test run #24777036796 where all three build targets hit
+  # exit code 101 on this).  An empty `RUSTC_WRAPPER` disables the wrapper
+  # without touching config.toml (which would hurt local dev UX).
+  # `pr-fast.yml` carries the same override for the same reason.
+  RUSTC_WRAPPER: ""
+  # NOTE: no workflow-level RUSTFLAGS here.  Each matrix row carries its own
+  # `rustflags` field so every target gets a stable CPU baseline appropriate
+  # for its ISA — never `target-cpu=native`, because a release binary built
+  # on today's GitHub runner would SIGILL on any end-user CPU missing the
+  # runner's detected feature set (observed previously with `target-cpu=native`
+  # → proc-macro dylib SIGILL on nightly-2026-04-21; same rationale noted
+  # in `pr-fast.yml`'s top-level env block).
+  # Baselines used below:
+  #   x86_64 Linux / Windows / Apple   : x86-64-v3 (Haswell+/Zen+, AVX2+BMI2+FMA)
+  #   aarch64-apple-darwin             : apple-m1  (M1+, forward-compatible with M2/M3/M4)
+  
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 1: Release Preparation & Validation
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  release-preparation:
+    name: 📋 Release Preparation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      tag: ${{ steps.validate.outputs.tag }}
+      release-name: ${{ steps.validate.outputs.release-name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Validate release inputs
+        id: validate
+        shell: bash
+        run: |
+          # Handle both workflow_dispatch and tag push
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${{ github.ref_name }}"
+          fi
+
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            echo "Expected format: v0.1.192"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+          echo "release-name=UFFS $VERSION" >> $GITHUB_OUTPUT
+
+          echo "✅ Release validation passed"
+          echo "📦 Version: $VERSION"
+          echo "🏷️ Tag: $VERSION"
+          echo "🚀 Triggered by: ${{ inputs.triggered_by || 'tag-push' }}"
+
+      - name: Check if tag already exists (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          if git tag -l | grep -q "^${{ steps.validate.outputs.tag }}$"; then
+            echo "❌ Tag ${{ steps.validate.outputs.tag }} already exists"
+            exit 1
+          fi
+          echo "✅ Tag is available"
+
+      - name: Validate commit_sha is ancestor of main (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch' && inputs.commit_sha != ''
+        shell: bash
+        run: |
+          # Rollback-attack guard.  An attacker with `actions: write`
+          # (e.g. a compromised bot token) could otherwise invoke this
+          # workflow with a `commit_sha` pointing at an ARBITRARY
+          # commit — including one from an unreviewed feature branch,
+          # or a commit prior to a security fix — and have the
+          # release assets built from that code.  This step rejects
+          # any commit_sha that isn't on main's history.
+          #
+          # `git merge-base --is-ancestor A B` exits 0 iff A is an
+          # ancestor of B (commits equal count as ancestor).
+          git fetch origin main:refs/remotes/origin/main --quiet
+          if ! git merge-base --is-ancestor "${{ inputs.commit_sha }}" origin/main; then
+            echo "::error::commit_sha ${{ inputs.commit_sha }} is not an ancestor of origin/main."
+            echo "  Only commits that have already landed on main can be released."
+            echo "  If this commit is legitimate, merge it to main first."
+            exit 1
+          fi
+          echo "✅ commit_sha ${{ inputs.commit_sha }} is on main's history"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 2: Cross-Platform Binary Builds
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Target matrix
+  #
+  # Three targets, each earning its slot:
+  #   - x86_64-pc-windows-msvc   — primary product: live NTFS MFT indexing
+  #   - aarch64-apple-darwin     — offline MFT analysis on Apple Silicon
+  #   - x86_64-unknown-linux-gnu — offline MFT analysis on Linux (servers,
+  #                                forensics VMs, Docker, CI harnesses)
+  #
+  # Dropped vs previous iterations:
+  #   - x86_64-apple-darwin (Intel Mac) — Apple deprecated the platform;
+  #     Apple Silicon ARM64 build runs under Rosetta 2 if absolutely needed.
+  #
+  # Per-target `rustflags` (stable baselines, never `native`):
+  #   - x86_64 Linux/Windows: `target-cpu=x86-64-v3` — Haswell+/Zen+ ISA.
+  #   - aarch64 macOS:         `target-cpu=apple-m1` — M1 baseline forwards-
+  #     compatible with M2/M3/M4 while avoiding config.toml's `native`
+  #     override which would bake in runner-specific chip detection.
+  # ─────────────────────────────────────────────────────────────────────────
+  build-release-binaries:
+    name: 🔨 Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    needs: release-preparation
+    timeout-minutes: ${{ matrix.timeout }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Timeouts are sized for a COLD build (empty rust-cache).
+          # LTO=fat + codegen-units=1 + Polars-heavy workspace is slow on
+          # 2-core GitHub-hosted runners — especially ubuntu-22.04.  Warm
+          # subsequent runs are roughly 1/3 of these numbers.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact-name: uffs-windows-x64
+            binary-suffix: ".exe"
+            rustflags: "-C target-cpu=x86-64-v3"
+            timeout: 120
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact-name: uffs-macos-x64
+            binary-suffix: ""
+            rustflags: "-C target-cpu=x86-64-v3 -C link-arg=-Wl,-dead_strip"
+            timeout: 60
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact-name: uffs-macos-arm64
+            binary-suffix: ""
+            rustflags: "-C target-cpu=apple-m1 -C link-arg=-Wl,-dead_strip"
+            timeout: 60
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            artifact-name: uffs-linux-x64
+            binary-suffix: ""
+            rustflags: "-C target-cpu=x86-64-v3 -C link-arg=-Wl,--gc-sections"
+            timeout: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+
+      - name: Free up disk space (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          # Polars + ring + LTO=fat combined consume significant disk on
+          # ubuntu-22.04's default 14GB free budget.  Reclaim ~20GB from
+          # preinstalled SDKs we do not use for a release build.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          sudo rm -rf /usr/local/share/boost /usr/local/graalvm
+          df -h /
+
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # `shared-key:` (not `key:`) so the action's built-in fallback
+          # restores partial matches when `Cargo.lock` shifts between
+          # releases.  `just ship` runs `cargo update` on every release,
+          # which changes the `Cargo.lock` hash and would force an exact
+          # `key:` to miss every single time (issue #80).  `shared-key:`
+          # gives us the same cache-key prefix on every release-${target}
+          # invocation and lets the action recover ~80-90 % of the
+          # previous compile graph; only crates whose sources actually
+          # changed need recompilation.  `pr-fast.yml` uses the same
+          # pattern; the divergence here was unintentional.
+          shared-key: release-${{ matrix.target }}
+          cache-on-failure: 'true'
+
+      - name: Build optimized release binaries
+        shell: bash
+        run: |
+          echo "🔨 Building optimized release binaries for ${{ matrix.target }}"
+          echo "   RUSTFLAGS=$RUSTFLAGS"
+
+          # Build all workspace binaries for the target.  Profile settings
+          # (LTO=fat, codegen-units=1, strip=symbols, panic=abort) come from
+          # [profile.release] in Cargo.toml — do NOT override them here.
+          # The previous `CARGO_PROFILE_RELEASE_LTO=false` override silently
+          # disabled LTO in release artifacts; removed so users get the
+          # perf the profile was designed for.
+          #
+          # --locked per §2.8 policy.  Release builds MUST resolve
+          # through the committed Cargo.lock or the binaries we ship
+          # may differ from what the tests validated — worst-case a
+          # silent dep drift ships to end-users.  CI fails loudly
+          # instead.
+          cargo build --locked --release --target ${{ matrix.target }} --workspace --bins
+
+          echo "✅ Build completed for ${{ matrix.target }}"
+
+      - name: Re-codesign macOS binaries (post-strip)
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: |
+          # `[profile.release].strip = "symbols"` in Cargo.toml strips the
+          # Mach-O symbol table AFTER the linker has emitted an ad-hoc
+          # (linker-signed) CodeDirectory.  Strip changes the on-disk hash
+          # the CodeDirectory was computed over, leaving the signature
+          # internally inconsistent.  macOS 26+'s taskgated then refuses
+          # to launch the binary with `SIGKILL (Code Signature Invalid)`
+          # / namespace=CODESIGNING / "Taskgated Invalid Signature".
+          #
+          # Re-stamping the ad-hoc signature with `codesign --force
+          # --sign -` recomputes the CodeDirectory over the post-strip
+          # bytes so the in-memory hash matches the on-disk file again.
+          # We deliberately stay ad-hoc: we don't have an Apple Developer
+          # ID; the resulting binaries are still unnotarized and users
+          # see the standard "open anyway" Gatekeeper prompt on first
+          # launch.  But they no longer get killed at exec time.
+          #
+          # Gated on `apple-darwin` so Windows / Linux artifact paths
+          # stay untouched.
+          set -euo pipefail
+          for bin in uffs uffsd uffsmcp uffs_mft; do
+            path="target/${{ matrix.target }}/release/$bin"
+            if [[ -f "$path" ]]; then
+              codesign --force --sign - "$path"
+              codesign --verify --verbose=2 "$path"
+            fi
+          done
+
+      - name: Show binary sizes
+        shell: bash
+        run: |
+          echo "📐 Release binary sizes:"
+          ls -lh target/${{ matrix.target }}/release/ 2>/dev/null | grep -E 'uffs|uffsd|uffsmcp|uffs_mft' || true
+
+      - name: Package binaries
+        shell: bash
+        run: |
+          mkdir -p release-artifacts
+
+          # Shipping set — kept in lockstep with `RELEASE_BINARIES` in
+          # scripts/ci/build-cross-all.rs.  Diagnostic binaries are NOT
+          # shipped; they live in uffs-diag and stay workspace-only.
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            for binary in uffs.exe uffsd.exe uffsmcp.exe uffs_mft.exe; do
+              if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
+                cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
+              fi
+            done
+          else
+            for binary in uffs uffsd uffsmcp uffs_mft; do
+              if [[ -f "target/${{ matrix.target }}/release/$binary" ]]; then
+                cp "target/${{ matrix.target }}/release/$binary" release-artifacts/
+              fi
+            done
+          fi
+
+          # Create checksums
+          cd release-artifacts
+          if command -v sha256sum >/dev/null; then
+            sha256sum * > checksums.txt
+          else
+            shasum -a 256 * > checksums.txt
+          fi
+
+          echo "📦 Packaged binaries:"
+          ls -la
+
+      - name: Package binaries (Windows add)
+        shell: bash
+        run: |
+          # Diagnostic binaries are NOT shipped; they live in uffs-diag and stay workspace-only.
+          # copy them
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cd ..;
+            echo "📦 Current folder";
+            pwd;
+            STAGE_DIR_WIN_ADD=release-artifacts-windows;
+            mkdir -p $STAGE_DIR_WIN_ADD;
+            find target/${{ matrix.target }}/release -name "*.exe" \
+              ! -name 'uffs.exe' \
+              ! -name 'uffsd.exe' \
+              ! -name 'uffsmcp.exe' \
+              ! -name 'uffs_mft.exe' \
+              -type f -exec cp {} $STAGE_DIR_WIN_ADD/ \;
+            # Create checksums
+            cd $STAGE_DIR_WIN_ADD;
+            if command -v sha256sum >/dev/null; then
+              sha256sum * > checksums-add.txt || true;
+            else
+              shasum -a 256 * > checksums-add.txt || true;
+            fi
+            echo "📦 Packaged binaries (add):";
+            ls -la;
+            # zip them;
+            7z a -tzip \
+              "../release-artifacts/${{ matrix.artifact-name }}-add.zip" || true;
+            echo "📦 Packaged binaries (add) zip:";
+            ls -la "../release-artifacts/${{ matrix.artifact-name }}-add.zip" || true;
+            cd ..;
+            echo "📦 Release Artifacts :"
+            ls -la "release-artifacts" || true;
+          fi
+
+      - name: Stage release bundle
+        shell: bash
+        run: |
+          echo "🎁 Staging release bundle for ${{ matrix.target }}..."
+
+          STAGE_DIR="release-staging/${{ matrix.artifact-name }}"
+          mkdir -p "$STAGE_DIR/assets"
+
+          # ── Binaries ───────────────────────────────────────────────────────
+          # Same shipping set as `Package binaries` above.  Diagnostic
+          # binaries (uffs-diag) stay workspace-only and are not shipped.
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            for bin in uffs.exe uffsd.exe uffsmcp.exe uffs_mft.exe; do
+              if [[ -f "target/${{ matrix.target }}/release/$bin" ]]; then
+                cp "target/${{ matrix.target }}/release/$bin" "$STAGE_DIR/"
+              fi
+            done
+          else
+            for bin in uffs uffsd uffsmcp uffs_mft; do
+              if [[ -f "target/${{ matrix.target }}/release/$bin" ]]; then
+                cp "target/${{ matrix.target }}/release/$bin" "$STAGE_DIR/"
+              fi
+            done
+          fi
+
+          # ── Documentation (common across every platform) ─────────────────────
+          cp README.md LICENSE TRADEMARK.md CHANGELOG.md "$STAGE_DIR/"
+
+          # ── Platform-specific brand assets + packaging helpers ──────────────
+          case "${{ matrix.target }}" in
+            *-windows-*)
+              cp assets/brand/icons/uffs.ico     "$STAGE_DIR/assets/"
+              cp assets/brand/uffs-hero-1024.png "$STAGE_DIR/assets/"
+              ;;
+            *-apple-*)
+              cp assets/brand/icons/uffs.icns    "$STAGE_DIR/assets/"
+              cp assets/brand/uffs-hero-1024.png "$STAGE_DIR/assets/"
+              mkdir -p "$STAGE_DIR/packaging/macos"
+              cp packaging/macos/Info.plist.in   "$STAGE_DIR/packaging/macos/"
+              cp packaging/macos/bundle.sh       "$STAGE_DIR/packaging/macos/"
+              chmod +x "$STAGE_DIR/packaging/macos/bundle.sh"
+
+              # Pre-build a ready-to-run UFFS.app inside the bundle so
+              # end users don't need to run bundle.sh themselves.  Runs
+              # the committed script from the repo root (not the staged
+              # copy) since bundle.sh expects repo-root-relative paths.
+              chmod +x packaging/macos/bundle.sh
+              packaging/macos/bundle.sh \
+                "target/${{ matrix.target }}/release/uffs" \
+                "$STAGE_DIR/UFFS.app"
+              ;;
+            *-linux-*)
+              cp -r assets/brand/icons/hicolor   "$STAGE_DIR/assets/"
+              cp assets/brand/uffs-hero-1024.png "$STAGE_DIR/assets/"
+              mkdir -p "$STAGE_DIR/packaging/linux"
+              cp packaging/linux/install.sh      "$STAGE_DIR/packaging/linux/"
+              cp packaging/linux/uffs.desktop    "$STAGE_DIR/packaging/linux/"
+              chmod +x "$STAGE_DIR/packaging/linux/install.sh"
+              ;;
+          esac
+
+          echo "📂 Staging tree:"
+          find "$STAGE_DIR" -maxdepth 4 -type f | sort
+
+          # ── ZIP the bundle ─────────────────────────────────────────────────
+          # 7z on Windows (pre-installed, no Git-Bash zip dependency);
+          # `zip` on macOS/Linux.  The ZIP goes straight into
+          # release-artifacts/ so the existing Upload step picks it up
+          # alongside the raw binaries.
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            (cd release-staging && \
+            7z a -tzip \
+              "../release-artifacts/${{ matrix.artifact-name }}.zip" \
+              "${{ matrix.artifact-name }}")
+          else
+            (cd release-staging && \
+             zip -rq \
+              "../release-artifacts/${{ matrix.artifact-name }}.zip" \
+              "${{ matrix.artifact-name }}")
+          fi
+
+          echo "📦 Bundle ZIP:"
+          ls -la "release-artifacts/${{ matrix.artifact-name }}.zip"
+
+          # Clean up staging; only the ZIP needs to survive into the
+          # uploaded artifact.
+          rm -rf release-staging
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: release-artifacts/
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 3: Create GitHub Release
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  create-github-release:
+    name: 📦 Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [release-preparation, build-release-binaries]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release-artifacts
+
+      - name: Organize release assets
+        shell: bash
+        run: |
+          mkdir -p final-release
+
+          # Organize artifacts by platform.  Two shipping formats:
+          #   - Per-platform ZIP bundle (everything: binaries + brand +
+          #     docs + packaging helpers; the recommended download).
+          #   - Individual raw binaries with platform suffix
+          #     (backwards-compat URLs for users automating \`wget\` of
+          #     a single binary).
+          for artifact_dir in release-artifacts/*/; do
+            artifact_name=$(basename "$artifact_dir")
+            echo "Processing $artifact_name..."
+
+            for file in "$artifact_dir"*; do
+              if [[ -f "$file" && "$file" != *"checksums.txt" ]]; then
+                filename=$(basename "$file")
+                # ZIP bundles keep their original name (the platform
+                # suffix is already baked into matrix.artifact-name).
+                if [[ "$filename" == *.zip ]]; then
+                  cp "$file" "final-release/$filename"
+                  continue
+                fi
+                # Raw binaries get a platform suffix appended.
+                if [[ "$artifact_name" == *"linux"* ]]; then
+                  cp "$file" "final-release/${filename}-linux-x64"
+                elif [[ "$artifact_name" == *"windows"* ]]; then
+                  # $filename already ends in .exe from the windows build
+                  base="${filename%.exe}"
+                  cp "$file" "final-release/${base}-windows-x64.exe"
+                elif [[ "$artifact_name" == *"macos-arm64"* ]]; then
+                  cp "$file" "final-release/${filename}-macos-arm64"
+                fi
+              fi
+            done
+          done
+
+          echo "📦 Staged release assets (pre-SBOM, pre-checksum):"
+          ls -la final-release/
+
+      # ─── CycloneDX SBOM ──────────────────────────────────────────────────
+      #
+      # Emits one `sbom-<crate>.cdx.json` per workspace crate into
+      # `final-release/` so every shipped binary has a machine-readable
+      # inventory of its resolved transitive dependencies.  cargo-cyclonedx
+      # reads `Cargo.lock` — which is committed — so the SBOMs are
+      # deterministic for (commit, features) and bit-identical across
+      # re-runs.
+      #
+      # The SBOMs are produced BEFORE `CHECKSUMS.txt` is written and
+      # BEFORE the SLSA attestation step so that:
+      #
+      #   1. `CHECKSUMS.txt` lists them, giving downloaders a single
+      #      sha256-verifiable manifest.
+      #   2. The SLSA attestation (`subject-path: final-release/*`) covers
+      #      the SBOM bytes too, so a downstream consumer can:
+      #
+      #        gh attestation verify sbom-uffs-cli.cdx.json \
+          #          --owner ${{ github.repository_owner }}
+      #
+      #      and prove the SBOM came from this exact workflow run.
+      - name: Install cargo-cyclonedx
+        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        with:
+          tool: cargo-cyclonedx
+
+      - name: Install pinned nightly (needed by cargo-cyclonedx to read workspace)
+        # cargo-cyclonedx shells out to `cargo metadata`, which requires
+        # the workspace's pinned toolchain to be resolvable (rust-toolchain.toml).
+        # `rustup show` installs & activates it in one step.
+        run: rustup show
+
+      - name: Generate CycloneDX SBOMs for every workspace crate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "📋 Generating CycloneDX 1.5 SBOMs for workspace..."
+          # --format json           : machine-readable
+          # --all-features          : match the release-build feature set
+          # --spec-version 1.5      : newest stable CycloneDX schema
+          # default --describe=crate: one SBOM per crate, Cargo targets as subcomponents
+          #
+          # Output goes adjacent to each `Cargo.toml` as `<crate>.cdx.json`.
+          cargo cyclonedx \
+            --format json \
+            --all-features \
+            --spec-version 1.5
+
+          # Collect the per-crate SBOMs into final-release/ with a uniform
+          # `sbom-<crate>.cdx.json` prefix so downloaders can tell at a
+          # glance which files are SBOMs.  `find` is used instead of a
+          # glob because crates live one level down under crates/<crate>/.
+          count=0
+          while IFS= read -r sbom; do
+            crate=$(basename "$(dirname "$sbom")")
+            dest="final-release/sbom-${crate}.cdx.json"
+            cp "$sbom" "$dest"
+            count=$((count + 1))
+          done < <(find crates -name '*.cdx.json' -type f)
+
+          if (( count == 0 )); then
+            echo "::error::cargo-cyclonedx produced no SBOMs — investigate the log above"
+            exit 1
+          fi
+
+          echo "✅ Emitted $count SBOM(s):"
+          ls -lh final-release/sbom-*.cdx.json
+
+      - name: Finalize CHECKSUMS.txt (covers binaries, ZIP bundles, and SBOMs)
+        shell: bash
+        run: |
+          cd final-release
+          # Regenerate AFTER SBOMs are placed so the manifest is complete.
+          # The SLSA attestation runs next and covers every file in this
+          # directory, so there is no window where CHECKSUMS.txt is stale
+          # relative to what ships.
+          sha256sum * > CHECKSUMS.txt
+
+          echo "📦 Final release assets (SBOMs + checksums included):"
+          ls -la
+
+      - name: Generate SLSA build-provenance attestation
+        # Signs every file in `final-release/` with the workflow's
+        # Sigstore OIDC identity, producing a SLSA Level 3 build-
+        # provenance claim bound to (this workflow run, this commit,
+        # this set of inputs).  Consumers then verify with:
+        #
+        #   gh attestation verify <asset> \
+        #     --owner ${{ github.repository_owner }}
+        #
+        # Attestation is stored in the repo's attestations API, so it
+        # survives independently of the GitHub Release asset (even if
+        # someone with `contents: write` silently swaps a binary, the
+        # SHA256 in the attestation won't match and `gh attestation
+        # verify` fails).
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: "final-release/*"
+
+      - name: Generate release notes
+        id: release-notes
+        shell: bash
+        run: |
+          cat > release-notes.md << 'EOF'
+          # UFFS ${{ needs.release-preparation.outputs.version }}
+
+          ## 🚀 What's New
+
+          See the [full changelog](https://github.com/${{ github.repository }}/commits/${{ needs.release-preparation.outputs.version }})
+          and `CHANGELOG.md` in the repository for details.
+
+          ## 📦 Downloads
+
+          UFFS is a **Windows-native NTFS search engine** — live indexing of
+          the Master File Table requires Windows.  The engine core is
+          cross-platform, so macOS and Linux builds are shipped for
+          **offline MFT analysis** from captured `.mft` / `.bin` snapshots.
+
+          Each platform ships as a **one-download ZIP bundle** with the
+          binaries, the UFFS brand assets, the full documentation set
+          (`README.md`, `LICENSE`, `TRADEMARK.md`, `CHANGELOG.md`), and
+          the platform's packaging helper.  Individual binaries are also
+          attached for automation that `wget`s a single file.
+
+          ### 🟦 Windows x86_64 — primary live-indexing target
+          - **`uffs-windows-x64.zip`** — recommended: CLI + daemon + MCP
+            + MFT tooling + icon + docs.  The `.exe`s ship with the UFFS
+            icon and `asInvoker` manifest embedded.
+          - Raw binaries: `uffs-windows-x64.exe`, `uffsd-windows-x64.exe`,
+            `uffsmcp-windows-x64.exe`, `uffs_mft-windows-x64.exe`.
+
+          ### 🍏 macOS Apple Silicon — offline MFT analysis
+          - **`uffs-macos-arm64.zip`** — recommended: raw binaries + a
+            ready-to-run `UFFS.app` bundle + icns + docs +
+            `packaging/macos/bundle.sh` for rebuilding.
+          - Raw binaries: `uffs-macos-arm64`, `uffsd-macos-arm64`,
+            `uffsmcp-macos-arm64`, `uffs_mft-macos-arm64`.
+          - Intel Macs: run the arm64 build under Rosetta 2.
+
+          ### 🐧 Linux x86_64 — offline MFT analysis
+          - **`uffs-linux-x64.zip`** — recommended: binaries + full
+            hicolor icon tree + `packaging/linux/install.sh` (drops the
+            `.desktop` entry and icons under `/usr/local` with one
+            `sudo` invocation) + docs.
+          - Raw binaries: `uffs-linux-x64`, `uffsd-linux-x64`,
+            `uffsmcp-linux-x64`, `uffs_mft-linux-x64`.
+          - Use with `--mft-file` to analyse captured MFT snapshots on servers, forensics VMs, or in Docker.
+
+          ## 🔐 Verification
+
+          All binaries are accompanied by SHA256 checksums in `CHECKSUMS.txt`.
+          Verify with:
+          ```bash
+          sha256sum -c CHECKSUMS.txt
+          ```
+
+          Additionally, every release asset carries a **SLSA build-
+          provenance attestation** signed with the workflow's Sigstore
+          OIDC identity.  Verify with GitHub CLI:
+          ```bash
+          gh attestation verify <file> --owner ${{ github.repository_owner }}
+          ```
+          A successful verification proves the bytes were produced by
+          this exact workflow run on this exact commit.
+
+          ### 📋 SBOM (Software Bill of Materials)
+
+          Each workspace crate ships a CycloneDX 1.5 SBOM alongside the
+          binaries: `sbom-<crate>.cdx.json`.  The SBOMs are covered by
+          the same SLSA attestation as the binaries, so you can verify
+          the inventory with the same command above.  Inspect with any
+          CycloneDX-aware tool, e.g.:
+          ```bash
+          jq '.components[] | {name, version, purl}' sbom-uffs-cli.cdx.json
+          ```
+
+          ## 📋 Installation
+
+          ### Recommended: ZIP bundle
+          1. Download `uffs-<platform>.zip` for your platform.
+          2. Unzip anywhere.
+          3. **Windows**: the `.exe`s are ready to run; place them on `PATH`.  Icon + `asInvoker` manifest are already baked into the PE.
+          4. **macOS**: double-click `UFFS.app`, or move the raw `uffs` binary into `/usr/local/bin/`.  First launch: Gatekeeper warns because the bundle is unsigned — right-click → Open to confirm, or run `xattr -dr com.apple.quarantine UFFS.app`.
+          5. **Linux**: run `sudo packaging/linux/install.sh` from the unzipped directory — installs the binary, the `.desktop` entry, and the full hicolor icon set.  Override prefix with `sudo PREFIX=/opt/uffs packaging/linux/install.sh`.
+
+          ### Raw-binary path (automation)
+          - Download the individual binary, e.g. `uffs-linux-x64`.
+          - macOS / Linux: `chmod +x uffs-*` then optionally `mv uffs-* /usr/local/bin/uffs`.
+          - Windows: the `.exe` is ready to run; place it on `PATH`.
+
+          ## 🛠️ Build Information
+
+          - **Triggered by**: ${{ inputs.triggered_by || 'tag-push' }}
+          - **Commit**: ${{ inputs.commit_sha || github.sha }}
+          - **Toolchain**: pinned nightly from `rust-toolchain.toml`
+          - **Profile**: `[profile.release]` — LTO=fat, codegen-units=1, strip=symbols
+          - **CPU baselines**: x86_64 = `x86-64-v3` (Haswell+/Zen+); macOS ARM64 = `apple-m1` (M1+)
+
+          ---
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/commits/${{ needs.release-preparation.outputs.version }}
+          EOF
+
+      - name: Create GitHub Release (creates tag via REST API)
+        # Tag creation is handled by action-gh-release's built-in
+        # logic rather than an explicit `git push origin $TAG`.
+        # Rationale — avoid GitHub's workflow-file protection:
+        #
+        # The git protocol-level tag push is rejected by GitHub's
+        # server-side check whenever the tag's target commit has
+        # different workflow files than the default branch's current
+        # HEAD.  That race fires whenever any PR touching
+        # `.github/workflows/*` merges while a release.yml run is
+        # in flight.  Observed with run #24795626228 (v99.98.99)
+        # where PR #31's merge at 19:00:55Z made the 19:01:37Z tag
+        # push fail with:
+        #
+        #   remote rejected: refusing to allow a GitHub App to
+        #   create or update workflow `.github/workflows/
+        #   auto-tag-release.yml` without `workflows` permission
+        #
+        # The REST API path (creating a `refs/tags/*` via
+        # `POST /repos/:owner/:repo/git/refs`, which action-gh-
+        # release uses internally when `tag_name` is set and the
+        # tag does not yet exist) is not subject to the same
+        # server-side guard, so it succeeds with just the default
+        # `contents: write` permission.
+        #
+        # `target_commitish` pins the tag to the specific commit
+        # we built from, not whatever main's HEAD happens to be at
+        # action runtime.  Falls back to `github.sha` when
+        # invoked via `push: tags: v*` (where `inputs.commit_sha`
+        # is unset — the tag already exists so this field is
+        # ignored anyway).
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        with:
+          tag_name: ${{ needs.release-preparation.outputs.tag }}
+          target_commitish: ${{ inputs.commit_sha || github.sha }}
+          name: ${{ needs.release-preparation.outputs.release-name }}
+          body_path: release-notes.md
+          files: final-release/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release summary
+        shell: bash
+        run: |
+          echo "## 🎉 Release ${{ needs.release-preparation.outputs.version }} Created!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Release Details:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ needs.release-preparation.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ needs.release-preparation.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: ${{ inputs.triggered_by || 'tag-push' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ inputs.commit_sha || github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🚀 Artifacts Built:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Windows x86_64 (primary — live NTFS MFT)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ macOS ARM64 (offline MFT analysis)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Linux x86_64 (offline MFT analysis)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Links:" >> $GITHUB_STEP_SUMMARY
+          echo "- [📦 Release Page](https://github.com/${{ github.repository }}/releases/tag/${{ needs.release-preparation.outputs.tag }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [📋 Full Changelog](https://github.com/${{ github.repository }}/commits/${{ needs.release-preparation.outputs.version }})" >> $GITHUB_STEP_SUMMARY
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Failure Notification — opens a GitHub Issue on release failure
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  notify-failure:
+    name: 🔔 Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [release-preparation, build-release-binaries, create-github-release]
+    if: failure()
+    permissions:
+      issues: write
+    steps:
+      - name: Create failure issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            // Per-workflow label so Release / Tier 1 / Tier 2 failures
+            // triage to distinct issues instead of piling onto one.
+            const label = 'ci-failure-release';
+            const title = `🔴 Release Pipeline Failed — ${context.sha.substring(0, 7)}`;
+            const body = [
+              `## Release Pipeline Failed`,
+              ``,
+              `| Field | Value |`,
+              `|-------|-------|`,
+              `| **Workflow** | \`${context.workflow}\` |`,
+              `| **Run** | [#${context.runNumber}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) |`,
+              `| **Branch** | \`${context.ref}\` |`,
+              `| **Commit** | [\`${context.sha.substring(0, 7)}\`](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}) |`,
+              `| **Triggered by** | @${context.actor} |`,
+              ``,
+              `⚠️ **This is a release pipeline failure — immediate attention required.**`,
+              ``,
+              `📧 Notification sent to: githubrobbi@nios.net`,
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label,
+              per_page: 1,
+            });
+
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body: body,
+              });
+              core.info(`Updated existing issue #${existing.data[0].number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: [label, 'ci-failure'],
+                assignees: ['githubrobbi'],
+              });
+              core.info('Created new failure issue');
+            }
