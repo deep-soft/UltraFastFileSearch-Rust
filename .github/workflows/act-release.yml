@@ -313,7 +313,7 @@ jobs:
 
       - name: Sign windows files
         continue-on-error: true
-        uses: deep-soft/code-sign-action@v10
+        uses: deep-soft/code-sign-action@v11
         with:
           folder: 'target/${{ matrix.target }}/release'
           certificate: '${{ secrets.WINDOWS_PFX_BASE64 }}'
