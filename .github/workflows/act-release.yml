@@ -312,6 +312,7 @@ jobs:
 #          folder: 'target/${{ matrix.target }}/release'
 
       - name: Sign windows files
+        if: contains(matrix.target, 'windows')
         continue-on-error: true
         uses: deep-soft/code-sign-action@v11
         with:
