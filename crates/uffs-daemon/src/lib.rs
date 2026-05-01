@@ -6,6 +6,16 @@
 //! This crate exposes [`run_daemon`] so the daemon logic can be invoked
 //! both from the standalone `uffs-daemon` binary and from the embedded
 //! `uffs daemon run` subcommand in the CLI.
+//!
+//! Exception: `file_size_policy` allows this file to exceed 800 LOC.
+//! Rationale: `run_daemon` plus the cohesive cluster of background-
+//! task spawners (`spawn_load_task`, `spawn_ipc_servers`,
+//! `spawn_stats_heartbeat`, `spawn_idle_demote_controller`,
+//! `spawn_usn_refresh_controller`, `spawn_pressure_subscriber`)
+//! form the daemon's startup graph; splitting the controllers
+//! across sibling modules fragments the shared `DaemonConfig` /
+//! `EventSender` wiring and obscures the parent-task lifetime
+//! relationships between them.
 
 // Enable unstable Windows Unix domain socket support (Windows 10 1803+).
 #![cfg_attr(windows, feature(windows_unix_domain_sockets))]
@@ -268,6 +278,12 @@ pub async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     // `UFFS_USN_REFRESH_INTERVAL_SECS`-overridable
     // `cache::policy::USN_REFRESH_INTERVAL_SECS` (5 min default).
     let _usn_refresh_task = spawn_usn_refresh_controller(Arc::clone(&idx));
+
+    // Phase 5 task 5.6 — memory-pressure subscriber.  Cascade-
+    // demotes LRU Warm shards on `Low` transitions until pressure
+    // clears (`High`) or no Warm shards remain.  No-op on Mac/Linux
+    // (the platform `PressureSignal` never fires).
+    let _pressure_task = spawn_pressure_subscriber(Arc::clone(&idx));
 
     // Run idle timer (blocks until shutdown or timeout) then tear
     // everything down.  Returns `!` so `force_exit_with_watchdog`
@@ -686,6 +702,93 @@ fn spawn_usn_refresh_controller(idx: Arc<index::IndexManager>) -> tokio::task::J
         loop {
             interval.tick().await;
             idx.refresh_usn_for_warm_shards().await;
+        }
+    })
+}
+
+/// Spawn the Phase 5 task 5.6 memory-pressure subscriber.
+///
+/// Subscribes to [`IndexManager::subscribe_pressure`] and reacts to
+/// transitions:
+///
+/// * `Low` — enters cascade mode: calls
+///   [`IndexManager::cascade_demote_one_step`] in a loop until either no Warm
+///   shards remain (the `None` return) or a `High` / `Normal` transition
+///   arrives.  After every step we `tokio::task::yield_now` and check
+///   `rx.has_changed()` so a `High` transition can preempt promptly without
+///   waiting for the next demote to finish.
+/// * `High` / `Normal` — no-op; the loop returns to `rx.changed().await` for
+///   the next transition.
+///
+/// The cascade decision is made via
+/// [`PressureLevel::requires_cascade_demote`] rather than direct pattern
+/// matching on `PressureLevel::Low`, because the `Low` and `High` variants
+/// are platform-conditional — they only exist on Windows and under
+/// `cfg(test)` (the targets where the watcher / test fake actually
+/// constructs them).  The method ships a `false` branch on Mac/Linux
+/// production builds so this loop body compiles cleanly on every host.
+///
+/// On Mac/Linux the platform [`PressureSignal`] never fires, so this
+/// task blocks on `rx.changed().await` forever — TTL-driven demotion
+/// via `spawn_idle_demote_controller` is the only demote driver on
+/// those targets by design.
+///
+/// Returns the [`tokio::task::JoinHandle`] so the caller can `.abort()`
+/// it during graceful shutdown.  When the [`watch::Sender`] inside
+/// `IndexManager::pressure` is dropped the receiver's `changed()`
+/// returns `Err`; the loop breaks cleanly without any extra signal.
+///
+/// [`PressureLevel::requires_cascade_demote`]: crate::cache::pressure::PressureLevel::requires_cascade_demote
+/// [`PressureSignal`]: crate::cache::pressure::PressureSignal
+/// [`IndexManager::subscribe_pressure`]: crate::index::IndexManager::subscribe_pressure
+/// [`IndexManager::cascade_demote_one_step`]: crate::index::IndexManager::cascade_demote_one_step
+/// [`watch::Sender`]: tokio::sync::watch::Sender
+fn spawn_pressure_subscriber(idx: Arc<index::IndexManager>) -> tokio::task::JoinHandle<()> {
+    let mut rx = idx.subscribe_pressure();
+    tokio::spawn(async move {
+        loop {
+            // Wait for a pressure transition.  `changed()` returns
+            // `Err` when the watch sender is dropped, which happens
+            // when `IndexManager` (the only owner) is dropped at
+            // daemon shutdown.
+            if rx.changed().await.is_err() {
+                tracing::debug!(
+                    target: "cache.pressure",
+                    "Pressure-signal sender dropped; subscriber loop exiting",
+                );
+                break;
+            }
+            let level = *rx.borrow_and_update();
+            tracing::info!(
+                target: "cache.pressure",
+                ?level,
+                "Pressure transition observed",
+            );
+            if !level.requires_cascade_demote() {
+                continue;
+            }
+            // Cascade-demote until we run out of Warm shards or
+            // pressure clears.  `cascade_demote_one_step` returns
+            // `None` when no Warm shards remain.
+            loop {
+                let Some(_demoted) = idx.cascade_demote_one_step().await else {
+                    break; // no more Warm shards; cascade exhausted
+                };
+                // Yield so the runtime can deliver a pending
+                // pressure-clearing transition before we loop.
+                tokio::task::yield_now().await;
+                if rx.has_changed().unwrap_or(false) {
+                    let new_level = *rx.borrow_and_update();
+                    if !new_level.requires_cascade_demote() {
+                        tracing::info!(
+                            target: "cache.pressure",
+                            ?new_level,
+                            "Cascade preempted by transition out of Low",
+                        );
+                        break;
+                    }
+                }
+            }
         }
     })
 }
