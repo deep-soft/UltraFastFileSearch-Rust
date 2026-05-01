@@ -372,6 +372,8 @@ jobs:
             pwd;
             STAGE_DIR_WIN_ADD=release-artifacts-windows;
             mkdir -p $STAGE_DIR_WIN_ADD;
+            echo "ls -la target/${{ matrix.target }}/release";
+            ls -la target/${{ matrix.target }}/release;
             find target/${{ matrix.target }}/release -name "*.exe" \
               ! -name 'uffs.exe' \
               ! -name 'uffsd.exe' \
@@ -395,6 +397,8 @@ jobs:
             cd ..;
             echo "📦 Release Artifacts :"
             ls -la "release-artifacts" || true;
+            echo "📦 Release Artifacts Add:"
+            ls -la "$STAGE_DIR_WIN_ADD" || true;
           fi
 
       - name: Stage release bundle
