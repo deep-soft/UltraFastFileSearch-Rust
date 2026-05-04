@@ -37,6 +37,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 use anyhow as _;
 use clap::Parser;
 use dirs_next as _;
+use futures as _;
 #[cfg(unix)]
 use libc as _;
 use libmimalloc_sys as _;
@@ -49,6 +50,12 @@ use serde_json as _;
 use tempfile as _;
 use thiserror as _;
 use tokio as _;
+// Phase 6 of memory-tiering: `toml` is consumed by the library
+// crate's `daemon.toml` parser (`crate::config`).  The binary
+// (this file) is a thin wrapper around `run_daemon`, so we suppress
+// the `-W unused-crate-dependencies` warning here in line with the
+// other library-only deps above.
+use toml as _;
 use tracing as _;
 use tracing_appender as _;
 use tracing_subscriber as _;

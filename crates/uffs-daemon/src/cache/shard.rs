@@ -300,16 +300,6 @@ impl DriveStats {
     ///
     /// Half-life is 60 s, chosen so a burst of activity is "forgotten"
     /// within ~5 minutes (5 half-lives → 1/32 of the original).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Phase 6 consumer (adaptive-TTL controller reads the EMA \
-                      to size the demote/promote thresholds); exercised by \
-                      the `drivestats_decay_is_non_increasing` proptest in \
-                      this module under `cfg(test)`."
-        )
-    )]
     #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -340,6 +330,30 @@ impl DriveStats {
         self.rate_ema_micro_per_s
             .store((new_ema * 1.0e6) as u64, Ordering::Relaxed);
         new_ema
+    }
+
+    /// Decay the EMA to `now_ms` and return it as **queries per
+    /// minute** (the unit consumed by the Phase 6 adaptive TTL
+    /// formulas in [`crate::cache::policy::hot_ttl`] /
+    /// [`crate::cache::policy::warm_ttl`]).
+    ///
+    /// `decay_ema` returns queries-per-second (the storage unit);
+    /// this thin wrapper does the `× 60` conversion at the
+    /// controller boundary so the policy layer stays in its
+    /// canonical queries/min unit (matches the plan §5.2 formulas
+    /// and the unit tests in [`crate::cache::policy::tests`]).
+    ///
+    /// Side-effect: same as [`Self::decay_ema`] — the stored EMA
+    /// is mutated in place to reflect the elapsed-time decay.
+    /// Callers should sample once per controller tick rather than
+    /// per shard if they want a coherent batch view.
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "single multiply-by-60 to convert q/s to q/min — same \
+                  precision posture as `decay_ema` itself."
+    )]
+    pub(crate) fn decay_ema_qpm(&self, now_ms: u64) -> f64 {
+        self.decay_ema(now_ms) * 60.0
     }
 }
 
@@ -597,6 +611,63 @@ impl ShardEntry {
                 return Ok(prev);
             }
         }
+    }
+
+    /// Apply USN journal deltas off this shard's in-memory body.
+    ///
+    /// Phase 7 task 7.1 — the surgical method-on-`ShardEntry` form of
+    /// the platform-agnostic patcher
+    /// [`uffs_core::compact_loader::apply_usn_patch`].  Clones the
+    /// inner [`DriveCompactIndex`] (cheap: `ColumnStorage::clone`
+    /// always promotes mmap-backed columns to heap-resident `Vec`s
+    /// per the invariant in `compact_storage.rs:480-482`), invokes
+    /// the in-place patcher on the clone, and returns the new
+    /// `Arc<DriveCompactIndex>` for the caller to swap into the
+    /// registry via [`crate::cache::ShardRegistry::replace_warm_body`].
+    /// Concurrent readers continue to see the previous body until
+    /// that swap.
+    ///
+    /// **Returns** `Some((new_body, stats))` on `Warm` / `Hot` shards.
+    ///
+    /// **Returns** `None` on `Parked` / `Cold` / `Unknown` /
+    /// `Evicting` shards (no in-memory body to patch); the caller
+    /// should re-promote first via
+    /// [`crate::index::IndexManager::ensure_warm_for_dispatch`]
+    /// before attempting incremental patching.
+    ///
+    /// The `frs_to_compact` slice is a `frs → compact_idx` mapping
+    /// produced by the caller from the same `DriveCompactIndex` the
+    /// `body` Arc points at; mismatched slices produce all-skipped
+    /// `PatchStats` rather than corrupting the index.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Phase 7 task 7.1 surface; production caller \
+                      (per-shard journal loop) lands in Phase 7 task 7.2. \
+                      Exercised by `cache::shard::tests::\
+                      apply_usn_patch_to_body_returns_new_arc_on_warm` \
+                      and the matching `_returns_none_on_parked` companion."
+        )
+    )]
+    #[must_use]
+    pub(crate) fn apply_usn_patch_to_body(
+        &self,
+        changes: &[uffs_mft::usn::FileChange],
+        frs_to_compact: &[u32],
+    ) -> Option<(
+        Arc<DriveCompactIndex>,
+        uffs_core::compact_loader::PatchStats,
+    )> {
+        let body_arc = self.body.as_ref()?;
+        // Deep-clone the inner DriveCompactIndex so the patch loop
+        // mutates the clone — never the live Arc that concurrent
+        // readers are observing.  ColumnStorage::clone() promotes
+        // mmap-backed columns to heap-resident Vec, so the cloned
+        // body is fully mutable without remap ceremony.
+        let mut owned: DriveCompactIndex = (**body_arc).clone();
+        let stats = uffs_core::compact_loader::apply_usn_patch(&mut owned, changes, frs_to_compact);
+        Some((Arc::new(owned), stats))
     }
 }
 

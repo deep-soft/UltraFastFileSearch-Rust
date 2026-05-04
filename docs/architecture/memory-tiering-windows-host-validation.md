@@ -1,0 +1,843 @@
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Copyright (c) 2025-2026 SKY, LLC. -->
+
+# Memory-tiering Windows-host validation runbook
+
+**Audience:** operator with shell access to a Windows box that has the
+target dataset loaded under the daemon (the 7-drive reference box, or
+any equivalent machine with at least 4 indexed NTFS volumes).
+**Source-of-truth tracker:** the live progress doc lives in
+`docs/refactor/memory-tiering-implementation-plan.md` (gitignored —
+local working copy on the implementer's machine).  Use this runbook
+when you want the **what to run on Windows** without the
+implementation-side context.
+
+The four Phase 5 operator gates that the all-Mac unit-test suite cannot
+exercise are listed in §1 below.  §2 covers the deferred Phase 6
+gate (24-h `min_tier = "Warm"` soak) since it shares the same
+operator workflow and the same `uffsd.exe` process.  §3 is the
+"what to capture" checklist for the PR description.
+
+---
+
+## 0. Prerequisites
+
+* Windows 10 1709+ or Windows 11 (the `MEMORY_RESOURCE_NOTIFICATION`
+  API has been stable since 1709; older Windows editions degrade to
+  the never-fires path documented in `crate::cache::pressure`).
+* The daemon binary built from the branch under test, copied to the
+  host (or built locally with `cargo build --release -p uffs-daemon`).
+* The seven NTFS volumes loaded against the daemon — confirm with:
+  ```powershell
+  uffs status --drives
+  ```
+  Expect `Ready` plus a per-drive table showing `[Hot]` / `[Warm]`
+  markers.  If any drive shows `[Parked]` / `[Cold]` from the start
+  the gate setup is wrong; bounce the daemon (`uffs daemon stop` →
+  `uffs daemon start --drives C,D,E,F,G,M,S`).
+* Task Manager → **Details** tab → enable the **I/O priority** column
+  via column-header → *Select columns…* → check `I/O priority`.  This
+  is required for gate **G3** (USN catch-up I/O priority capture).
+* PowerShell 5.1 or PowerShell 7 — the snippets below use
+  `Start-Process` / `Get-Counter` / `Wait-Event` which exist in both.
+
+---
+
+## 1. Phase 5 operator gates — 4 captures, ~75 minutes wall-clock
+
+### G1 — Low-pressure stress: kernel notification → cache.pressure → cascade demote
+
+**Duration:** ~5 min wall-clock.
+**Plan reference:** `docs/refactor/memory-tiering-implementation-plan.md` §3 Phase 5 line "Stress test: spawn allocator that drains free RAM."
+
+#### Setup
+
+Open two terminals on the same Windows host.  In terminal A start the
+daemon with structured logging:
+
+```powershell
+$env:RUST_LOG = "uffs_daemon=info,cache.pressure=info,shard.transition=info"
+uffs daemon start --drives C,D,E,F,G,M,S 2>&1 | Tee-Object -FilePath C:\Temp\uffsd-G1.log
+```
+
+Wait until `uffs status` reports `Ready` for every drive.
+
+#### Drive
+
+In terminal B, allocate memory until the kernel publishes
+`LowMemoryResourceNotification`.  The simplest portable driver is a
+`testlimit64`-style PowerShell loop (no separate binary required).
+
+> **Critical: pages must be touched, not just reserved.**  `New-Object
+> byte[] 1073741824` on its own only commits virtual address space
+> (Private Bytes climbs) but leaves the pages non-resident (Working Set
+> flat), because Windows backs zero-filled pages on first write via the
+> demand-zero handler.  The kernel's `LowMemoryResourceNotification`
+> fires on **physical-RAM pressure**, not commit-charge pressure, so a
+> reserve-only allocator never trips the cascade.  Force commit by
+> writing a non-zero byte to every page — `[Array]::Fill($arr, [byte]1)`
+> is the fastest portable way (CLR-native; fills 1 GiB in milliseconds).
+> If you have Sysinternals installed, `testlimit.exe -d 1024 -c N`
+> bypasses .NET entirely and is the canonical tool for this.
+
+```powershell
+# Allocate 1 GiB chunks AND commit by touching every page; auto-break on Low.
+$alloc = New-Object System.Collections.Generic.List[byte[]]
+try {
+  while ($true) {
+    $arr = New-Object byte[] 1073741824
+    [Array]::Fill($arr, [byte]1)            # ← commits every page; the line above only reserves
+    $alloc.Add($arr)
+    $free = (Get-Counter '\Memory\Available MBytes').CounterSamples[0].CookedValue
+    Write-Host ("allocated {0} GiB; free = {1:N0} MiB" -f $alloc.Count, $free)
+    if ($free -lt 512) {
+      Write-Host "Low-memory zone reached — holding 10 s for the cascade to drain, then releasing."
+      Start-Sleep -Seconds 10
+      break
+    }
+    Start-Sleep -Milliseconds 500
+  }
+} finally {
+  $alloc.Clear()
+  [GC]::Collect()
+  Write-Host "released"
+}
+```
+
+The kernel typically fires `LowMemoryResourceNotification` once
+**Available MBytes** drops below ~256 MB on a 16 GB box (Windows
+auto-tunes the threshold to ~32 MB on the lower end and
+`PhysicalMemory / 64` on the upper end — see Microsoft Learn's
+[CreateMemoryResourceNotification][win32-mem]).
+
+#### Capture (this is what you paste into the PR)
+
+The daemon log (`C:\Temp\uffsd-G1.log`) must show (note: tracing
+target names like `cache.pressure` and `shard.transition` set the
+filter routing but are **not** rendered in the log message text under
+the default formatter — grep on the message text and field names
+shown below):
+
+```text
+INFO Pressure transition observed level=Low
+INFO letter=C from=warm to=parked freed_mb=… last_query_at_ms=… reason="pressure-cascade"
+INFO letter=G from=warm to=parked freed_mb=… last_query_at_ms=… reason="pressure-cascade"
+…
+```
+
+Grep cheat-sheet:
+
+```powershell
+Select-String -Path C:\Temp\uffsd-G1.log -Pattern 'Pressure transition|reason="pressure-cascade"' |
+    Select-Object -ExpandProperty Line
+```
+
+— one cascade line per Warm shard.  The `letter` field's order must
+follow oldest-`last_query_at_ms`-first (LRU contract pinned by
+`crate::index::tests::lifecycle_hooks::cascade_demote_one_step_picks_lru_warm_and_drains_in_order`
++ `pressure_subscriber_drains_warm_cascade_on_low_and_no_ops_on_high`).
+
+> **Format note** (G4 follow-up, 2026-05-02): the cascade demote
+> event was previously emitted twice per shard — once from the
+> registry primitive (`reason="demote"`, `letter=` field) and a
+> second time from `cascade_demote_one_step` itself (`reason=
+> "pressure-cascade"`, `drive=` field, with the "Pressure cascade
+> demoted one LRU Warm shard" message text).  The second event was
+> redundant and the gap between the two confused log analysis, so
+> the discriminator is now in the registry primitive's `reason`
+> field directly and the second event is gone.  Old runbooks that
+> grepped for `Pressure cascade demoted` will see zero matches —
+> use `reason="pressure-cascade"` instead.
+
+When you Ctrl-C the allocator the kernel fires
+`HighMemoryResourceNotification`.  The log must show:
+
+```text
+INFO Pressure transition observed level=High
+```
+
+— and **no further** cascade lines after that timestamp.
+
+[win32-mem]: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-creatememoryresourcenotification
+
+---
+
+### G2 — Working set drops in Task Manager within 5 s of demote
+
+**Duration:** ~3 min wall-clock (re-uses the G1 terminal A log).
+**Plan reference:** §3 Phase 5 line "Working set drops in Task Manager within 5 s of demote."
+
+#### Drive
+
+Re-run the G1 allocator loop with Task Manager → *Details* visible.
+
+* Note `uffsd.exe` **Working Set (Memory)** before the allocator starts (`baseline_ws`).
+* Press the kernel into firing `Low` (allocator runs).
+* Within 5 s of the first `shard.transition` cascade line in
+  `uffsd-G1.log`, `uffsd.exe` **Working Set** must drop below
+  `baseline_ws / 2` (typical observation: 5341 MB → ~1 200 MB on the
+  7-drive reference box).
+
+#### Capture
+
+Two screenshots in the PR description, both with
+`Get-Date | Out-Host` visible at the top:
+
+1. Task Manager → *Details* showing `uffsd.exe` `WorkingSet` at the
+   peak (just before `Low` fires).
+2. Task Manager → *Details* showing `uffsd.exe` `WorkingSet` ≤ 5 s
+   after the first cascade line.
+
+The drop is caused by the per-batch `EmptyWorkingSet` call wired in
+Phase 5 task 5.4 (`crate::index::transitions::IndexManager::demote_idle_shards`
+→ `WorkingSetTrim::trim`).  Mac/Linux ship a no-op stub.
+
+---
+
+### G3 — Background-IO priority during USN catch-up
+
+**Duration:** ~6 min wall-clock (the USN refresh runs every 5 min by default).
+**Plan reference:** §3 Phase 5 line "During USN catch-up, Task Manager I/O priority on `uffsd.exe` shows 'Low'."
+
+#### Setup
+
+Force a USN catch-up by reducing the cadence — easier than waiting
+the default 5 min between ticks.  In terminal A:
+
+```powershell
+$env:UFFS_USN_REFRESH_INTERVAL_SECS = "30"
+$env:RUST_LOG = "uffs_daemon=info,shard.refresh=info"
+uffs daemon stop
+uffs daemon start --drives C,D,E,F,G,M,S 2>&1 | Tee-Object -FilePath C:\Temp\uffsd-G3.log
+```
+
+The 30-second cadence guarantees a refresh tick within ~1 minute of
+each Warm shard becoming visible to the controller.
+
+#### Capture
+
+> **Per-thread, not per-process.**  `BackgroundIoScope` calls
+> `SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN)`
+> on the **calling thread only** — specifically, on the
+> `tokio::task::spawn_blocking` worker that runs the refresh closure
+> for one drive.  Windows lowers that thread's **I/O priority** to
+> `IoPriorityVeryLow` and **memory priority** to lowest; scheduling
+> priority is left unchanged at Normal (Base Priority = 8) by
+> design.  The **process-level** I/O priority (the column shown in
+> PE's main window or Task Manager Details) stays **Normal**,
+> because the daemon's main thread + IPC accept loop are not in
+> background mode.  **Do not look at the process-row I/O Priority
+> column — it will (correctly) always show Normal.**
+
+Three capture paths, in increasing operator effort:
+
+> **What changes when `THREAD_MODE_BACKGROUND_BEGIN` fires.**  The
+> Win32 documentation says "the system lowers the resource scheduling
+> priorities of the thread", but the **only** properties that actually
+> change in observable Windows APIs are:
+>
+> * **I/O priority** — drops from `IoPriorityNormal` to
+>   `IoPriorityVeryLow`.  Read via
+>   `NtQueryInformationThread(ThreadIoPriority)` or PE's I/O Priority
+>   column.
+> * **Memory priority** — drops to `MEMORY_PRIORITY_LOWEST`.  Read
+>   via `GetThreadInformation(ThreadMemoryPriority)`.
+>
+> The thread's **scheduling priority** (`GetThreadPriority`, the
+> `THREAD_PRIORITY_*` enum) **stays at `THREAD_PRIORITY_NORMAL` /
+> Base Priority = 8**, by design — background mode is meant to
+> deprioritise I/O and memory without slowing CPU work when the
+> system is idle.  This means **`.NET ProcessThread.PriorityLevel`
+> and `Get-CimInstance Win32_Thread` will NOT show any change
+> during a tick** (verified empirically: 60 s of 10 Hz polling
+> across two ticks captured zero threads at lowered scheduling
+> priority).  Only the I/O Priority column or the
+> `NtQueryInformationThread` syscall surface the actual change.
+
+**(a) Debug-log grep — text-only, definitive (preferred for PR
+evidence):**
+
+Clear the `RUST_LOG` env var (it overrides `--log-level`), restart
+with `--log-level debug`, wait 2-3 ticks, then grep for
+`BackgroundIoPriority`.  Empty grep = `SetThreadPriority` succeeded
+on every per-drive worker; the wiring + the unit test
+(`refresh_usn_for_warm_shards_wraps_each_closure_in_background_io_scope`)
+complete the proof:
+
+```powershell
+uffs daemon stop
+Remove-Item Env:\RUST_LOG -ErrorAction SilentlyContinue
+$env:UFFS_USN_REFRESH_INTERVAL_SECS = "30"
+uffs daemon start --log-level debug --log-file C:\Temp\uffsd-G3-debug.log
+
+# Re-warm so refresh has work to do.
+uffs "*" --ext rs --drive C --limit 5 > $null
+
+Start-Sleep -Seconds 90
+
+# Empty grep = success (begin() returned Ok on every closure).
+"=== BackgroundIoPriority diagnostic (empty = good) ==="
+Select-String -Path C:\Temp\uffsd-G3-debug.log -Pattern 'BackgroundIoPriority' |
+    Select-Object -ExpandProperty Line
+
+# Tick lines confirm the controller fired during the same window.
+"=== Tick lines ==="
+Select-String -Path C:\Temp\uffsd-G3-debug.log -Pattern 'USN refresh tick' |
+    Select-Object -ExpandProperty Line
+```
+
+If the `BackgroundIoPriority` grep prints any `begin failed` lines,
+that's a real bug — file a follow-up issue with the error string and
+stop.  G3 stays 🟡 in that case.
+
+**(b) Process Explorer Threads tab (GUI screenshot, redundant
+verification):**
+
+1. Right-click `uffsd.exe` → **Properties** → **Threads** tab.
+2. Right-click any column header → **Select Columns** → **Threads**
+   sub-tab → enable **I/O Priority**.  (Base Priority is *not*
+   useful here — it stays at 8 in background mode.)
+3. During a tick window (between the
+   `USN refresh tick starting count=N` and
+   `USN refresh tick complete refreshed=N` log lines), screenshot.
+   Expect ≥ 1 thread with **I/O Priority = Very Low**.  Outside the
+   tick, all threads show `I/O Priority = Normal`.
+
+**(c) Sysinternals `accesschk.exe -p -t <pid>`** (if installed):
+Dumps per-thread info including I/O priority — grep the output for
+`I/O Priority: VeryLow` during a tick window.
+
+> **What does NOT work for this gate:**
+>
+> * `Get-CimInstance Win32_Thread` — the WMI provider returns NULL
+>   for `PriorityCurrent` / `BasePriority` on modern Windows.
+> * `(Get-Process uffsd).Threads | Where PriorityLevel -in 'Idle',
+>   'Lowest', 'BelowNormal'` — reads scheduling priority via
+>   `GetThreadPriority`, which doesn't change in background mode.
+> * Task Manager "Details" tab I/O Priority column — process-level
+>   only; the daemon's main thread is at Normal so this column
+>   stays Normal.
+
+Grep the log for the matching tick window:
+
+```powershell
+Select-String -Path C:\Temp\uffsd-G3.log -Pattern 'USN refresh tick' |
+    Select-Object -ExpandProperty Line
+```
+
+The transition is driven by `crate::cache::background_io::BackgroundIoScope`
+RAII guards wrapped around each per-letter `tokio::task::spawn_blocking`
+closure in `crate::index::transitions::IndexManager::refresh_usn_for_warm_shards`
+(Phase 5 task 5.7).  Mac/Linux: no-op (the trait stub returns
+`Ok(())`).  Windows: `SetThreadPriority(GetCurrentThread(),
+THREAD_MODE_BACKGROUND_BEGIN)` on enter,
+`THREAD_MODE_BACKGROUND_END` on drop.
+
+##### Diagnostic if priority is not dropping
+
+`BackgroundIoScope::begin()` failures are logged at **debug** level
+under target `shard.refresh` and otherwise swallowed.  If `(b)` or
+`(c)` show the threads stuck at Normal priority during a tick,
+restart the daemon with `RUST_LOG=...,shard.refresh=debug` and
+grep:
+
+```powershell
+Select-String -Path C:\Temp\uffsd-G3.log -Pattern 'BackgroundIoPriority' |
+    Select-Object -ExpandProperty Line
+```
+
+A non-empty match on `begin failed` indicates a real bug (e.g., the
+process token is missing `SeIncreaseBasePriorityPrivilege`, or an AV
+product is intercepting `SetThreadPriority`); empty grep + threads
+at Normal would mean the scope guard is not actually running.
+
+#### Capture for the PR
+
+**Preferred (path (a) above):** the empty `BackgroundIoPriority`
+grep + populated `USN refresh tick` grep from a `--log-level debug`
+run.  Two short text blocks, no GUI required.  This is sufficient
+proof because:
+
+1. The unit test
+   `refresh_usn_for_warm_shards_wraps_each_closure_in_background_io_scope`
+   in `crates/uffs-daemon/src/index/tests/usn_refresh.rs` already pins
+   that `begin()` and `end()` are called exactly once per Warm shard
+   per refresh tick.
+2. The empty debug grep proves `SetThreadPriority` returned `Ok` for
+   every per-drive worker (the only failure path is `tracing::debug!`
+   target `shard.refresh` line `BackgroundIoPriority::begin failed`).
+3. The populated tick grep proves the controller fired during the
+   same observation window.
+
+**Optional (path (b) above):** screenshot of PE Threads tab with the
+**I/O Priority** column showing `Very Low` on a worker thread
+during a tick.  Useful if a reviewer wants visual confirmation but
+not required for sign-off.
+
+Reset before moving on:
+
+```powershell
+Remove-Item Env:\UFFS_USN_REFRESH_INTERVAL_SECS
+uffs daemon stop
+```
+
+---
+
+### G4 — 1-hour sustained-pressure soak: no OOM
+
+**Duration:** 60 min wall-clock (one operator-attended setup; runs unattended).
+**Plan reference:** §3 Phase 5 line "1-hour sustained-pressure test: no OOM."
+
+#### Drive
+
+Run an **adaptive** allocator continuously for 60 min.  The kernel's
+`LowMemoryResourceNotification` threshold scales with physical RAM
+(roughly 1.5% of total — ~1 GB on 64 GB hosts, ~512 MB on 32 GB), so
+the allocator must drive sysAvailable down to that threshold to fire
+Low; the only correct stop condition is "sysAvailable about to hit a
+safety floor", **not** a hardcoded GiB cap based on guessed reserves
+(an empirical lesson: a `TotalRAM − 26 GiB` cap stopped the allocator
+at 38 GiB on a 64 GB host with sysAvailable still at 7 GB, never
+firing Low).  The version below has only one stop condition — the
+256 MB safety floor — so it grows as much as the host has headroom
+for, then holds at the target while the daemon cascades:
+
+```powershell
+# Set up daemon log routing FIRST (before allocator), in a fresh
+# shell so RUST_LOG doesn't carry over from a previous gate.
+Remove-Item Env:\RUST_LOG -ErrorAction SilentlyContinue
+$env:RUST_LOG = "uffs_daemon=info,cache.pressure=info,shard.transition=info"
+uffs daemon stop
+uffs daemon start --log-file C:\Temp\uffsd-G4.log
+
+# In a second shell, run the adaptive allocator.
+$targetAvailMB = 1024  # squeeze sysAvailable down to ~1 GB to fire Low
+$safetyAvailMB = 256   # NEVER drop below this — allocator pauses growth
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+
+$start = Get-Date
+$end   = $start.AddMinutes(60)
+$alloc = New-Object System.Collections.Generic.List[byte[]]
+
+Write-Host "Adaptive allocator (incompressible random fill; safety floor only)."
+Write-Host "  target=$targetAvailMB MB  safety floor=$safetyAvailMB MB"
+Write-Host "  start=$($start.ToString('HH:mm:ss'))  end=$($end.ToString('HH:mm:ss'))"
+
+while ((Get-Date) -lt $end) {
+    $avail = [math]::Round((Get-Counter '\Memory\Available MBytes').CounterSamples[0].CookedValue)
+    $action = if ($avail -lt $safetyAvailMB) {
+        "hold(safety)"
+    } elseif ($avail -gt $targetAvailMB) {
+        $arr = New-Object byte[] 1073741824
+        $rng.GetBytes($arr)                  # incompressible — defeats Memory Compression
+        $alloc.Add($arr)
+        "+1 GiB"
+    } else {
+        "hold(target)"
+    }
+    Write-Host "$(Get-Date -Format 'HH:mm:ss')  $($action.PadRight(13))  alloc=$($alloc.Count) GiB  sysAvailable=$avail MB"
+    Start-Sleep -Seconds 5
+}
+
+$alloc.Clear()
+[GC]::Collect()
+[GC]::WaitForPendingFinalizers()
+```
+
+> **Why cryptographic random bytes, not `[Array]::Fill($arr, [byte]1)`.**
+> Windows 10/11 enables **Memory Compression** by default: pages
+> with low entropy (uniform fill, mostly-zeros, repetitive patterns)
+> are compressed in-place to a small fraction of their size and
+> held in the **Compression Store** under the System process.
+> Verified empirically: a `byte 1` fill on a 64 GB host let the
+> allocator reach 70 GiB held while `sysAvailable` stayed at 4-7 GB
+> the whole time — the OS had compressed ~50 GiB into ~10 GiB of
+> physical memory, so kernel-Low never fired.  `RandomNumberGenerator.GetBytes`
+> produces ~8 bits/byte entropy which the compressor cannot shrink,
+> so each +1 GiB allocation drops `sysAvailable` by ~1 GiB linearly
+> as expected.  The crypto RNG path is slower (~150 MB/s vs ~3 GB/s
+> for the uniform fill) so each chunk takes ~7 s instead of <1 s,
+> but the kernel-Low signal arrives reliably.
+
+State machine (only three states, no GiB cap):
+
+* **Climb:** `sysAvailable > target` → add 1 GiB of random bytes.
+* **Hold(target):** `safety <= sysAvailable <= target` → hold steady.
+  The daemon's cascade runs here; as it frees memory, sysAvailable
+  rises above target and the allocator climbs again, driving the
+  next Low event.
+* **Hold(safety):** `sysAvailable < safety` → stop adding.  Prevents
+  OOM-killing other apps when the daemon hasn't cascaded fast enough.
+
+The allocator will grow to whatever GiB count is required to push
+sysAvailable down to the target on this specific host.  With
+incompressible fill that's typically (TotalRAM − DaemonRSS − ~6 GB
+OS overhead): on a 64 GB box with the daemon at ~16 GiB, expect
+the allocator to reach ~42-46 GiB held when `sysAvailable` first
+crosses the target.  Each `hold(target)` window is the daemon's
+chance to cascade; each return to `+1 GiB` is the next Low trigger.
+Over 60 min you should see the daemon log emit a
+`level=Low ... level=High` pair every 30-90 s.
+
+#### Capture
+
+Acceptance criteria:
+
+* `uffsd.exe` is still running (`Get-Process uffsd | Select Id, WS`).
+* No `OutOfMemoryError` lines in `uffsd-G4.log`.
+* No `panic` lines.
+* `uffs status --drives` returns within 1 s after the soak completes;
+  the per-drive tier markers reflect a coherent state (some `[Parked]`,
+  some `[Hot]`/`[Warm]` where the operator drove queries).
+
+#### Capture for the PR
+
+* `Get-Process uffsd | Select Id, WS, PM, NPM, VM, CPU, StartTime`
+  output captured at 0 min, 30 min, and 60 min.
+* The tail of `uffsd-G4.log` (last 200 lines) — should show
+  alternating `level=Low` / `level=High` transitions and no fatal
+  errors.
+
+> **Distinguishing pressure-cascade from TTL idle-demote.**
+> Every demote — whether TTL-driven (`demote_idle_shards`) or
+> pressure-driven (`cascade_demote_one_step`) — flows through the
+> low-level `Registry::demote_letter_with_reason` primitive in
+> `cache/registry.rs`, which emits **exactly one** canonical
+> `INFO`-level `shard.transition` event per shard.  The
+> discriminator is in the `reason` field:
+>
+> * `reason="demote"` — TTL-driven idle demote (the
+>   `DemoteReason::IdleTtl` default).
+> * `reason="pressure-cascade"` — kernel-Low pressure cascade
+>   demote (`DemoteReason::PressureCascade`, used only by
+>   `cascade_demote_one_step`).
+>
+> Both events also carry `letter`, `from`, `to`, `freed_mb`, and
+> `last_query_at_ms` fields (the latter was promoted from a
+> cascade-only field to a uniform schema during the G4 follow-up
+> refactor).  Operator runbooks can therefore count each path
+> independently with a single grep:
+>
+> ```powershell
+> # Cascade-demote events (the goal during a memory-pressure soak):
+> $cascade = (Select-String -Path C:\Temp\uffsd-G4.log -Pattern 'reason="pressure-cascade"').Count
+> "Cascade-demote events:  $cascade"
+>
+> # TRUE TTL-driven idle demotes (should be 0 on a clean G4 run
+> # with `UFFS_WARM_TO_PARKED_IDLE_SECS=3600`):
+> $ttl = (Select-String -Path C:\Temp\uffsd-G4.log -Pattern 'reason="demote"').Count
+> "TTL idle-demote events: $ttl"
+> ```
+>
+> No pair-match is required — the `reason` field is authoritative.
+> Pinned in `crates/uffs-daemon/src/index/tests/idle_demote.rs::cascade_demote_emits_single_event_with_pressure_cascade_reason`
+> so a future refactor can't reintroduce the prior dual-event
+> pattern.
+
+---
+
+## 2. Phase 6 operator gate — 24-hour `min_tier = "Warm"` soak
+
+**Duration:** 24 h wall-clock (set up and walk away).
+**Plan reference:** `docs/refactor/memory-tiering-implementation-plan.md` §3 Phase 6 Windows gate.
+
+#### Setup
+
+Write a `daemon.toml` to the platform-default path
+(`%LOCALAPPDATA%\uffs\daemon.toml`) with `min_tier = "Warm"` for `C:`:
+
+```powershell
+$cfgPath = "$env:LOCALAPPDATA\uffs\daemon.toml"
+@'
+[shards.per_drive."C:"]
+min_tier = "WARM"
+'@ | Set-Content -Encoding UTF8 -Path $cfgPath
+uffs daemon stop
+$env:RUST_LOG = "uffs_daemon=info,shard.ttl=debug,shard.transition=info"
+uffs daemon start --drives C,D,E,F,G,M,S 2>&1 | Tee-Object -FilePath C:\Temp\uffsd-phase6-soak.log
+```
+
+#### Drive
+
+**Do nothing for 24 h.**  No queries against any drive; let the
+adaptive-TTL ladder drive demotions naturally.
+
+#### Capture
+
+Acceptance criteria (the Phase 6 contract under `[shards.per_drive]`):
+
+**Note on grep patterns**: tracing target names (`shard.transition`,
+`shard.ttl`) are NOT rendered in the log line text under the default
+formatter.  In addition, two different conventions coexist in the
+source:
+
+* `cache/registry.rs` demote / promote / usn-refresh events
+  (the canonical `shard.transition` info events, including the
+  cascade path's `reason="pressure-cascade"` after the G4
+  follow-up refactor) use field name `letter=` and lowercase
+  state names (`to=parked`).
+* `index/transitions.rs` `shard.ttl` debug / trace events
+  (idle-demote evaluation diagnostics) and `shard.refresh`
+  events (USN refresh tick) use field name `drive=` and the
+  `TierLevel` `Debug` formatter (`to=Parked`, capitalized,
+  unquoted).
+
+The patterns below handle both.  Future operators: if you change the
+daemon's tracing fields, update these patterns in the same commit.
+
+1. **C never demotes below `Warm`.**  Grep the soak log:
+   ```powershell
+   Select-String -Path C:\Temp\uffsd-phase6-soak.log -Pattern '(letter|drive)=C\b.*to="?[Pp]arked"?' -List
+   ```
+   Expect **zero matches**.  Every `min-tier-clamp` event for C is
+   logged at debug-level via `shard.ttl` with the descriptive
+   message `"Demote target clamped by per-drive min_tier"`:
+   ```powershell
+   Select-String -Path C:\Temp\uffsd-phase6-soak.log -Pattern 'Demote target clamped.*drive=C' -Context 0,0 |
+       Select-Object -First 5
+   ```
+
+2. **Other drives demote normally** (Warm → Parked at the configured
+   `warm_ttl_base_secs`):
+   ```powershell
+   Select-String -Path C:\Temp\uffsd-phase6-soak.log -Pattern '(letter|drive)=[DEFGMS]\b.*from="?[Ww]arm"?.*to="?[Pp]arked"?' -List
+   ```
+   Expect at least one match per drive (D, E, F, G, M, S).
+
+3. **Different TTLs for high-rate vs low-rate drives.**  After the
+   soak, drive a synthetic 5-min load against C, leave the others
+   idle, and grep for the per-drive `chosen_ttl_sec` field on the
+   `shard.ttl` debug events (descriptive message text
+   `"Adaptive idle-demote evaluation produced demote target"`):
+   ```powershell
+   Select-String -Path C:\Temp\uffsd-phase6-soak.log -Pattern 'chosen_ttl_sec' |
+       Select-Object -Last 30 -ExpandProperty Line
+   ```
+   The C row's `chosen_ttl_sec` should exceed the others' by the
+   `60·log2(rate)` bonus from the §5.2 formula
+   (`crate::cache::policy::hot_ttl`).
+
+#### Reset
+
+```powershell
+Remove-Item $cfgPath
+uffs daemon stop
+```
+
+---
+
+## 3. PR-attachment checklist
+
+Before opening the Phase 5 / Phase 6 acceptance PR, paste the
+following into the description so the reviewer can sign off without
+re-running the soak:
+
+* **G1** capture — log excerpt showing `Low` → cascade chain →
+  `High` with the LRU-ordered `drive=` field.
+* **G2** capture — pair of Task Manager screenshots (peak / +5 s).
+* **G3** capture — Task Manager screenshot showing
+  `I/O priority = Low` during a `shard.refresh` tick window;
+  matching log line.
+* **G4** capture — `Get-Process uffsd` table at 0 / 30 / 60 min plus
+  the soak-log tail.
+* **Phase 6 24-h soak** capture — three grep results from §2 above
+  (`drive=C…to=Parked` empty, peer-drive demotes present, different
+  `chosen_ttl_sec` after synthetic load).
+
+After all five captures land, update the implementation-plan §5.1
+row for the corresponding phase to 🟢 with the date the PR landed.
+
+---
+
+## 4. Reference captures (2026-05-02 v0.5.86 — Phase 5 G1-G4 baseline)
+
+This section documents the first end-to-end Phase 5 Windows-host
+capture pass against the 7-drive reference box, run on 2026-05-02
+with the v0.5.86 dev binary (the **pre-canonical-event-refactor**
+build — the dual-logging pattern visible in the G4 excerpts below
+is the very gap that the same-day refactor commit `4a627246d`
+closes; future capture passes against v0.5.87+ binaries will
+produce one INFO `shard.transition` event per cascade step
+instead of two).  Operators running a future capture pass have a
+known-good baseline to compare against.
+
+Cross-reference: implementation-plan
+[`docs/refactor/memory-tiering-implementation-plan.md`](../refactor/memory-tiering-implementation-plan.md)
+§3 Phase 5 "Phase 5 Windows-host validation findings (2026-05-02
+capture pass, v0.5.86)" carries the per-gate analysis and the
+end-to-end contract claims (LRU cascade ordering, watcher
+`Cascade preempted by transition out of Low` mid-cascade abort,
+sustained 2 h 11 min soak with no OOM).
+
+### 4.1 Artefact index
+
+| Gate | Artefact path (under repo root) | Wall duration | What it pins |
+|---|---|---|---|
+| **G1** kernel notification → cascade | `LOG/WINDOWS uffsd-G1G2.log` (706 lines) | ~32 min (20:55 → 21:30) | Win32 watcher thread translates `MEMORY_RESOURCE_NOTIFICATION` Low/High into `PressureSignal::Low/High` events |
+| **G2** working-set drop ≤ 5 s | TaskMgr screenshots in PR + `LOG/WINDOWS uffsd-G1G2.log` lines 374-380 | TTL idle-demote at 21:00:41 freed 4592 MB across 7 drives in 27 ms wall | Demote → `EmptyWorkingSet` syscall returns memory to OS within the 5 s acceptance window |
+| **G3** background-IO priority during USN catch-up | `LOG/G3/g3-acceptance-greps.txt` + `LOG/G3/uffsd-G3-debug.log` (1527 lines) | ~3 min 30 s (22:17:38 → 22:21:08) | `BackgroundIoScope::begin()` returned `Err` zero times across 7 successive `USN refresh tick` cadences (preferred capture path (a) — empty diagnostic + populated tick) |
+| **G4** sustained-pressure soak, no OOM | `LOG/uffsd-G4.log` (33 min, 116 lines) + `LOG/uffsd-G4-bonus.log` (2 h 11 min, 110 lines) | combined 2 h 44 min (**2.7× the 60-min G4 acceptance bar**) | Daemon survives ~30 `level=Low ↔ level=High` cycle pairs at 30-90 s intervals; cascade preempts on transition-out-of-Low (4× during 7-drive drain); no panic, no `JoinError`, no shard transition fault |
+
+### 4.2 G1 — Low-pressure stress (kernel → cascade)
+
+Source: `LOG/WINDOWS uffsd-G1G2.log` lines 383-411 (12 paired
+kernel/watcher events in a 24 s window) + lines 524, 529 (first
+two cascade demotes).
+
+```text
+2026-05-02T21:28:21.134825Z  INFO Pressure transition observed level=Low
+2026-05-02T21:28:21.134793Z  INFO Memory resource notification fired level=Low
+2026-05-02T21:28:21.134912Z  INFO Memory resource notification fired level=High
+2026-05-02T21:28:21.134936Z  INFO Pressure transition observed level=High
+…
+2026-05-02T21:29:47.655430Z  INFO Pressure cascade demoted one LRU Warm shard \
+    drive=C from="Warm" to="Parked" reason="pressure-cascade" \
+    last_query_at_ms=1777757366606
+2026-05-02T21:29:49.277114Z  INFO Pressure cascade demoted one LRU Warm shard \
+    drive=G from="Warm" to="Parked" reason="pressure-cascade" \
+    last_query_at_ms=1777757385120
+```
+
+The kernel-side `Memory resource notification fired` event (target
+`cache.pressure`) and the watcher-side `Pressure transition observed`
+event arrive within 1 ms of each other — `PlatformPressureSignal::watcher`
+emits the second event right after `WaitForMultipleObjects` returns
+and the `watch::Sender::send_replace` publishes the new level.  This
+end-to-end matches the deterministic Mac unit-test contract pinned
+by `pressure_subscriber_drains_warm_cascade_on_low_and_no_ops_on_high`.
+
+> **v0.5.86-pre-refactor shape.**  The two cascade-demote lines
+> shown above are the **OLD** dual-logging format — note the
+> `drive="Warm"` (quoted-string field) in the cascade event vs the
+> `letter=C` (bare-char) field on the registry primitive.  Future
+> v0.5.87+ captures will show **one** event per cascade step with
+> the uniform `letter=` field name and `reason="pressure-cascade"`.
+
+### 4.3 G2 — Working set drop (TTL-driven baseline)
+
+Source: `LOG/WINDOWS uffsd-G1G2.log` lines 374-380 (TTL
+idle-demote at 21:00:41, ~5 min after daemon start).
+
+```text
+2026-05-02T21:00:41.838723Z  INFO letter=G from=warm to=parked freed_mb=1     reason="demote"
+2026-05-02T21:00:41.842359Z  INFO letter=M from=warm to=parked freed_mb=301   reason="demote"
+2026-05-02T21:00:41.845280Z  INFO letter=F from=warm to=parked freed_mb=448   reason="demote"
+2026-05-02T21:00:41.850675Z  INFO letter=E from=warm to=parked freed_mb=474   reason="demote"
+2026-05-02T21:00:41.853916Z  INFO letter=C from=warm to=parked freed_mb=687   reason="demote"
+2026-05-02T21:00:41.858904Z  INFO letter=D from=warm to=parked freed_mb=1318  reason="demote"
+2026-05-02T21:00:41.866166Z  INFO letter=S from=warm to=parked freed_mb=1363  reason="demote"
+```
+
+All 7 drives demoted from Warm to Parked in 27 ms wall, releasing
+**4592 MB** of body Arc state cumulatively.  `EmptyWorkingSet`
+fires once per batch (Phase 5 task 5.4 `applied > 0` gate).
+TaskMgr screenshots in the PR description show the corresponding
+`uffsd.exe` Working Set drop within the 5 s acceptance window.
+
+### 4.4 G3 — Background-IO priority during USN catch-up
+
+Source: `LOG/G3/g3-acceptance-greps.txt` (the runbook's preferred
+capture path (a) — empty `BackgroundIoPriority` debug-log grep +
+populated `USN refresh tick` cadence).
+
+```text
+=== BackgroundIoPriority diagnostic lines (empty = success) ===
+
+=== USN refresh tick lines ===
+2026-05-02T22:26:35.723436Z  INFO USN refresh tick starting count=7 interval_secs=30
+2026-05-02T22:26:49.360505Z  INFO USN refresh tick complete refreshed=7 failed=0 total=7 total_ms=13637
+2026-05-02T22:27:05.714331Z  INFO USN refresh tick starting count=7 interval_secs=30
+2026-05-02T22:27:17.389393Z  INFO USN refresh tick complete refreshed=7 failed=0 total=7 total_ms=11675
+…
+```
+
+Empty diagnostic = `BackgroundIoScope::begin()` returned `Ok`
+on every per-letter `spawn_blocking` worker across 7 successive
+30 s refresh ticks (each ~11-13 s wall for 7 drives totalling
+25.7 M records).  No leaked thread-priority elevations
+(`Drop::drop` paired `THREAD_MODE_BACKGROUND_END` correctly via
+the RAII guard).  Full debug log: `LOG/G3/uffsd-G3-debug.log`.
+
+### 4.5 G4 — 1-hour sustained-pressure soak (dual log)
+
+Source: `LOG/uffsd-G4.log` (33 min, daemon-restart phase) +
+`LOG/uffsd-G4-bonus.log` (2 h 11 min, sustained pressure).
+Combined wall **2 h 44 min, 2.7× the runbook's 60-min G4 bar**.
+
+`uffsd-G4-bonus.log` lines 38-69 capture a 7-step LRU cascade
+under sustained kernel-Low pressure (excerpted):
+
+```text
+2026-05-02T23:08:11.134135Z  INFO Memory resource notification fired level=Low
+2026-05-02T23:08:11.134161Z  INFO Pressure transition observed level=Low
+2026-05-02T23:08:11.134631Z  INFO letter=G from=warm to=parked freed_mb=1 reason="demote"
+2026-05-02T23:08:11.145475Z  INFO Memory resource notification fired level=High
+2026-05-02T23:08:11.970112Z  INFO Pressure cascade demoted one LRU Warm shard \
+    drive=G from="Warm" to="Parked" reason="pressure-cascade" \
+    last_query_at_ms=1777763174381
+2026-05-02T23:08:11.970271Z  INFO Cascade preempted by transition out of Low new_level=High
+…
+```
+
+Three end-to-end contracts demonstrated in this excerpt:
+
+1. **LRU cascade ordering under fully-tied input.**  All 7
+   cascade-demote events carry the **same** `last_query_at_ms=1777763174381`
+   because the operator drove zero queries before the soak — the
+   in-memory clock skew between `DriveStats::last_query_at_ms` of
+   different shards collapsed to a single sample.  The
+   `cascade_demote_one_step` per-call iteration through the
+   `oldest-last_query_at_ms` heuristic still drained one shard per
+   cascade tick (vs dumping all 7 at once) per the Phase 5 task
+   5.10 contract.
+
+2. **Cascade-preempt-on-High via `rx.has_changed()`.**  Lines 43,
+   49, 55, 65 (4 of 7 cascade steps) show
+   `Cascade preempted by transition out of Low new_level=High`
+   — the kernel briefly recovered headroom mid-soak, the watcher
+   thread translated the recovery to a `PressureSignal::High` send,
+   and the cascade subscriber's `rx.has_changed()` poll between
+   iterations caught it before over-shedding remaining shards.
+
+3. **Dual-logging in the wild (now fixed at the source).**  Each
+   cascade step in this excerpt emits **two** INFO events: the
+   registry primitive's `letter=G from=warm to=parked
+   freed_mb=1 reason="demote"` (line 40) **followed by** the
+   cascade's redundant `Pressure cascade demoted one LRU Warm
+   shard drive=G ... reason="pressure-cascade"` (line 42),
+   separated by 1339 ms (the `EmptyWorkingSet` syscall on the
+   first cascade demote, dropping to ~6 ms on subsequent ones).
+   Operator counting cascade demotes by grepping
+   `reason="pressure-cascade"` would see 7 events; counting by
+   `letter=` field would see 14 (each cascade step
+   double-counted).  Commit `4a627246d` (same-day refactor)
+   collapses these into one event with
+   `reason="pressure-cascade"`; future capture passes will not
+   exhibit this pattern.
+
+### 4.6 Lifecycle load-stall force-retire at 2 h 11 min (Phase 7 scope)
+
+Source: `LOG/uffsd-G4-bonus.log` line 104 — at 01:17:15 (2 h 11 min
+after daemon start), the lifecycle controller logged:
+
+```text
+2026-05-03T01:17:15.019200Z ERROR Load stalled — no drive progress, \
+    force-retiring stall_secs=300 heartbeat_age_secs=7864
+2026-05-03T01:17:15.019985Z  INFO Daemon shutting down
+```
+
+Root cause: `LifecycleManager::run_idle_timer` interprets "no
+drive-loading progress" as a stall, but a daemon serving zero
+queries against 7 fully-Parked drives **has** no drive-loading
+progress to make — the heartbeat hasn't ticked because there's
+nothing to do.  This is a **Phase 7 / lifecycle-controller scope
+item**, not a Phase 5 regression: the load-stall semantics need
+to distinguish "load incomplete, no progress" (legitimate stall)
+from "load complete, no demand" (legitimately idle).  Tracked in
+[`crates/uffs-daemon/src/lifecycle.rs`][lifecycle-rs] (file-size
+permanent-exception, see `scripts/ci/file_size_exceptions.txt`).
+G4 acceptance bar (no OOM through 60 min) was met independently
+of this — the 01:17 force-retire happened at the 2 h 11 min mark,
+well past the gate window.
+
+[lifecycle-rs]: ../../crates/uffs-daemon/src/lifecycle.rs

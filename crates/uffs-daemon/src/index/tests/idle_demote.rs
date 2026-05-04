@@ -10,9 +10,14 @@
 //!   round-trip query stats.
 //! * Plan tasks 3.7 / 3.8 — virtual-time multi-drive demote tests.
 //! * Plan task 3.9 — `shard.transition` tracing events with the `letter` /
-//!   `from` / `to` / `reason` / `freed_mb` / `restored_mb` field contract; the
-//!   `EventLog` / `CapturedEvent` / `FieldCapture` capture scaffold lives at
-//!   the bottom of this file.
+//!   `from` / `to` / `reason` / `freed_mb` / `restored_mb` / `last_query_at_ms`
+//!   field contract.
+//! * Phase 5 G4 follow-up — single-canonical-event regression for the
+//!   pressure-cascade demote path.
+//!
+//! The shared `tracing::Subscriber` capture scaffold (`EventLog` /
+//! `CapturedEvent` / `FieldCapture`) lives in the sibling
+//! [`super::tracing_capture`] module.
 
 #![expect(
     clippy::indexing_slicing,
@@ -25,6 +30,7 @@
 
 use std::sync::Arc;
 
+use super::tracing_capture::{CapturedEvent, EventLog};
 use super::{
     FixedBodyLoader, IndexManager, build_test_drive, build_test_drive_d, build_test_drive_e,
 };
@@ -41,7 +47,7 @@ use super::{
 #[tokio::test]
 async fn mark_loaded_at_seeds_freshly_added_drive() {
     let (tx, _rx) = crate::events::event_channel();
-    let mgr = IndexManager::new(None, tx);
+    let mgr = IndexManager::new(None, tx, Arc::new(crate::config::Config::default()));
     mgr.add_drive(build_test_drive()).await;
 
     // Read the shard's last_query_at_ms via a search-ish path; we
@@ -82,7 +88,7 @@ async fn demote_idle_shards_no_op_when_all_fresh() {
     use crate::cache::ShardState;
 
     let (tx, _rx) = crate::events::event_channel();
-    let mgr = IndexManager::new(None, tx);
+    let mgr = IndexManager::new(None, tx, Arc::new(crate::config::Config::default()));
     mgr.add_drive(build_test_drive()).await;
     mgr.add_drive(build_test_drive_d()).await;
 
@@ -108,7 +114,7 @@ async fn demote_idle_shards_warm_to_parked_at_ttl() {
     use crate::cache::policy::WARM_TO_PARKED_IDLE_SECS;
 
     let (tx, _rx) = crate::events::event_channel();
-    let mgr = IndexManager::new(None, tx);
+    let mgr = IndexManager::new(None, tx, Arc::new(crate::config::Config::default()));
     mgr.add_drive(build_test_drive()).await;
 
     // Backdate C's last_query_at_ms to t=1_000_000_000 ms.
@@ -134,7 +140,7 @@ async fn demote_idle_shards_below_ttl_keeps_warm() {
     use crate::cache::policy::WARM_TO_PARKED_IDLE_SECS;
 
     let (tx, _rx) = crate::events::event_channel();
-    let mgr = IndexManager::new(None, tx);
+    let mgr = IndexManager::new(None, tx, Arc::new(crate::config::Config::default()));
     mgr.add_drive(build_test_drive()).await;
 
     let last_query_ms = 1_000_000_000_u64;
@@ -168,7 +174,7 @@ async fn demote_idle_shards_parked_to_cold_at_ttl() {
     use crate::cache::policy::PARKED_TO_COLD_IDLE_SECS;
 
     let (tx, _rx) = crate::events::event_channel();
-    let mgr = IndexManager::new(None, tx);
+    let mgr = IndexManager::new(None, tx, Arc::new(crate::config::Config::default()));
     mgr.add_drive(build_test_drive()).await;
 
     // Seed C as Parked via the test escape hatch.
@@ -197,7 +203,7 @@ async fn demote_idle_shards_batches_multiple_demotes() {
     use crate::cache::policy::WARM_TO_PARKED_IDLE_SECS;
 
     let (tx, _rx) = crate::events::event_channel();
-    let mgr = IndexManager::new(None, tx);
+    let mgr = IndexManager::new(None, tx, Arc::new(crate::config::Config::default()));
     mgr.add_drive(build_test_drive()).await;
     mgr.add_drive(build_test_drive_d()).await;
 
@@ -291,7 +297,7 @@ async fn demote_idle_shards_warm_only_for_unqueried_drives() {
     use crate::cache::policy::WARM_TO_PARKED_IDLE_SECS;
 
     let (tx, _rx) = crate::events::event_channel();
-    let mgr = IndexManager::new(None, tx);
+    let mgr = IndexManager::new(None, tx, Arc::new(crate::config::Config::default()));
     mgr.add_drive(build_test_drive()).await;
     mgr.add_drive(build_test_drive_d()).await;
     mgr.add_drive(build_test_drive_e()).await;
@@ -351,7 +357,7 @@ async fn demote_idle_shards_parked_drives_demote_to_cold_past_threshold() {
     use crate::cache::policy::PARKED_TO_COLD_IDLE_SECS;
 
     let (tx, _rx) = crate::events::event_channel();
-    let mgr = IndexManager::new(None, tx);
+    let mgr = IndexManager::new(None, tx, Arc::new(crate::config::Config::default()));
     mgr.add_drive(build_test_drive()).await;
     mgr.add_drive(build_test_drive_d()).await;
     mgr.add_drive(build_test_drive_e()).await;
@@ -463,15 +469,40 @@ async fn shard_transition_events_emitted_on_demote_and_promote() {
     mgr.ensure_warm_for_dispatch(&['C'], &[]).await;
 
     let events = log.events();
+    // Filter to the operator-facing observability contract: the
+    // INFO-level `shard.transition` events with a tier-transition
+    // `reason` (`demote`, `promote`, `usn-refresh`).  Other levels
+    // on this target are best-effort observability noise that may
+    // legitimately fire on a tier transition without violating the
+    // contract — e.g. the Phase 5 `Prefetch::hint failed` warn,
+    // which can fire on Linux for synthetic small heap regions
+    // even when the promote itself succeeds (and is documented at
+    // `crates/uffs-daemon/src/cache/prefetch.rs` to be best-effort
+    // with warn-level logging on failure).  Pinning by level +
+    // reason makes this test robust to the runtime-topology
+    // detail of *which thread* the prefetch hint runs on (the
+    // PR-e refactor moved the hint from a `spawn_blocking` closure
+    // into the surrounding async task — both paths are observably
+    // correct, but only the latter is captured by the
+    // `set_default` thread-local subscriber on a `current_thread`
+    // runtime).
     let transitions: Vec<&CapturedEvent> = events
         .iter()
-        .filter(|event| event.target == "shard.transition")
+        .filter(|event| {
+            event.target == "shard.transition"
+                && event.level == tracing::Level::INFO
+                && matches!(
+                    event.field("reason"),
+                    Some("demote" | "promote" | "usn-refresh")
+                )
+        })
         .collect();
 
     assert_eq!(
         transitions.len(),
         2,
-        "expected exactly two shard.transition events (one demote + one promote), got {}: {:#?}",
+        "expected exactly two INFO `shard.transition` events with reason in \
+         {{demote, promote, usn-refresh}} (one demote + one promote), got {}: {:#?}",
         transitions.len(),
         transitions
     );
@@ -490,6 +521,14 @@ async fn shard_transition_events_emitted_on_demote_and_promote() {
         demote.has_field("freed_mb"),
         "demote event must carry freed_mb field for resident-delta accounting"
     );
+    // G4 follow-up: `last_query_at_ms` is now part of the canonical
+    // demote event (used to be cascade-only).  Pinning its presence
+    // here so a future refactor can't drop the field and silently
+    // break operator runbooks that grep for it.
+    assert!(
+        demote.has_field("last_query_at_ms"),
+        "demote event must carry last_query_at_ms field (G4 follow-up)",
+    );
 
     let promote = transitions[1];
     assert_eq!(promote.level, tracing::Level::INFO);
@@ -503,157 +542,237 @@ async fn shard_transition_events_emitted_on_demote_and_promote() {
     );
 }
 
-// ── Tracing-event capture helpers ──────────────────────────────────
-//
-// Mini scaffold for the Commit E tracing contract test.  Implements
-// `tracing_subscriber::Layer` so a registry-based subscriber can
-// push every event into a thread-safe `Vec<CapturedEvent>`.  The
-// helpers are intentionally minimal — only the fields and methods
-// the contract test asserts on are surfaced.
-
-/// One captured tracing event.
-#[derive(Debug, Clone)]
-struct CapturedEvent {
-    target: String,
-    level: tracing::Level,
-    /// `(field_name, stringified_value)` pairs.
-    fields: Vec<(String, String)>,
-}
-
-impl CapturedEvent {
-    /// String value of `field_name`, or `None` when the field was
-    /// not present on this event.  Returns `&str` (not owned) so the
-    /// test's `assert_eq!` reads naturally.
-    fn field(&self, field_name: &str) -> Option<&str> {
-        self.fields
-            .iter()
-            .find(|(name, _)| name == field_name)
-            .map(|(_, value)| value.as_str())
-    }
-
-    /// `true` iff the event carries a field named `field_name`,
-    /// regardless of its value.  Used for fields whose value is
-    /// dynamic (e.g. `freed_mb` / `restored_mb`) and the test only
-    /// pins the *presence*, not the magnitude.
-    fn has_field(&self, field_name: &str) -> bool {
-        self.fields.iter().any(|(name, _)| name == field_name)
-    }
-}
-
-/// Thread-safe in-memory event log.  Cloned into the
-/// `tracing_subscriber::Layer` and the test asserts against the
-/// shared `Arc<Mutex<...>>`.
-#[derive(Default, Clone)]
-struct EventLog(Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
-
-impl EventLog {
-    fn events(&self) -> Vec<CapturedEvent> {
-        self.0.lock().unwrap().clone()
-    }
-}
-
-/// Implements [`tracing::Subscriber`] *directly* (no
-/// `tracing-subscriber::Layer` wrapping) so the parallel-test interaction with
-/// `tracing`'s global callsite-interest cache is deterministic:
+/// Phase 5 G4 follow-up — the pressure-cascade demote path must
+/// emit exactly **one** `INFO`-level `shard.transition` event per
+/// shard, with `reason="pressure-cascade"` and `last_query_at_ms`
+/// in the field set.
 ///
-/// * `register_callsite` returns `Interest::always` so the cache pins the
-///   callsite as "always interested" once we've registered it.
-/// * `enabled` returns `true` for every metadata so no filtering happens below
-///   the macro level (the `Interest::always` already implies this).
-/// * `max_level_hint` returns `LevelFilter::TRACE` so the static
-///   `LevelFilter::current()` consulted at the macro level *before* dispatch
-///   can never be lower than `TRACE` while this subscriber is the thread-local
-///   default — preventing another subscriber's lower hint from silently
-///   dropping `INFO`-level events.
+/// Pre-refactor, every cascade demote produced **two** events: the
+/// registry primitive's generic `reason="demote"` event followed by
+/// a second `reason="pressure-cascade"` event from
+/// `cascade_demote_one_step` itself.  The two were separated by the
+/// `WorkingSetTrim::trim` syscall duration (6-22 ms typically; up
+/// to ~1 s on the first cascade demote when the daemon's working
+/// set was still large) which confused operator log analysis.
 ///
-/// The previous `tracing_subscriber::Layered<EventLog, Registry>`
-/// implementation hit a race in parallel test runs: the inner
-/// `Registry::register_callsite` returned `Interest::sometimes()`,
-/// the outer `Layer::register_callsite` override didn't propagate
-/// (`Layered` AND-combines them as `sometimes`), and sibling tests on
-/// other threads racing through `tracing::info!` callsites pinned the
-/// global per-callsite cache to `never` before we could rebuild it.
-/// The direct `Subscriber` impl plus the dummy second `Dispatch` held
-/// in the test body together pin the cache to `always` deterministically.
-impl tracing::Subscriber for EventLog {
-    fn register_callsite(
-        &self,
-        _metadata: &'static tracing::Metadata<'static>,
-    ) -> tracing::subscriber::Interest {
-        tracing::subscriber::Interest::always()
-    }
+/// This test pins the single-event contract so a future refactor
+/// can't reintroduce the dual-event pattern.  It also pins the
+/// presence of `last_query_at_ms` (formerly cascade-only, now part
+/// of the canonical demote event for both TTL and pressure paths).
+///
+/// Test topology: 1 Warm drive (`C`) with a known
+/// `last_query_at_ms = 1_234` so the assertion can use a literal
+/// value instead of `has_field`.  `ControllablePressureSignal` is
+/// injected for completeness but never driven — the test calls
+/// `cascade_demote_one_step` directly, mirroring the contract of
+/// the existing
+/// `cascade_demote_one_step_picks_lru_warm_and_drains_in_order`
+/// test in `lifecycle_hooks.rs` (which pins the demote ordering
+/// and trim-call counts but doesn't capture tracing events).
+#[tokio::test]
+async fn cascade_demote_emits_single_event_with_pressure_cascade_reason() {
+    use crate::cache::ShardState;
+    use crate::cache::pressure::tests::ControllablePressureSignal;
+    use crate::cache::working_set::tests::CountingWorkingSetTrim;
 
-    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-        true
-    }
+    // Same dummy-Dispatch + thread-local-default + interest-rebuild
+    // dance as `shard_transition_events_emitted_on_demote_and_promote`
+    // — see that test's docstring for the rationale.  Without this,
+    // a sibling test on a different thread can pin the
+    // `shard.transition` callsite's `Interest` cache to `never`
+    // before our subscriber gets a chance to vote, and the cascade
+    // event silently disappears.
+    let log = EventLog::default();
+    let _interest_rebuild_dummy =
+        tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let _guard = tracing::subscriber::set_default(log.clone());
+    tracing::callsite::rebuild_interest_cache();
 
-    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
-        Some(tracing::level_filters::LevelFilter::TRACE)
-    }
+    let (tx, _rx) = crate::events::event_channel();
+    let counting_trim = Arc::new(CountingWorkingSetTrim::new());
+    let pressure_fake = Arc::new(ControllablePressureSignal::new());
+    let hooks = crate::index::constructors::LifecycleHooks {
+        working_set_trim: Arc::clone(&counting_trim)
+            as Arc<dyn crate::cache::working_set::WorkingSetTrim>,
+        pressure: Arc::clone(&pressure_fake) as Arc<dyn crate::cache::pressure::PressureSignal>,
+        ..crate::index::constructors::LifecycleHooks::production()
+    };
+    let mgr = IndexManager::with_lifecycle_hooks_for_test(
+        None,
+        tx,
+        hooks,
+        Arc::new(crate::config::Config::default()),
+    );
+    mgr.add_drive(build_test_drive()).await;
 
-    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
-        // Span IDs are not inspected by the test; return a stable
-        // non-zero placeholder so `tracing` is happy.
-        tracing::Id::from_u64(1)
-    }
+    // Backdate to a known timestamp so the assertion can use a
+    // literal value below.  `add_drive` already stamped
+    // `mark_loaded_at(unix_now_ms())`, which would make the assertion
+    // wall-clock-dependent.
+    assert!(mgr.backdate_last_query_at_ms_for_test('C', 1_234).await);
 
-    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+    // Drive the cascade once.  With one Warm shard, the LRU pick is
+    // unambiguous and the call returns `Some(('C', Parked))`.
+    let result = mgr.cascade_demote_one_step().await;
+    assert_eq!(
+        result,
+        Some(('C', ShardState::Parked)),
+        "single-shard cascade demotes C and returns Some",
+    );
 
-    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+    // Filter to INFO-level `shard.transition` events whose `reason`
+    // is in the demote vocabulary.  We accept both `"demote"` (the
+    // legacy generic value) and `"pressure-cascade"` (the new
+    // discriminator) so this test would still catch a regression
+    // that flipped the cascade path back to emitting `"demote"`
+    // — the assertion below pins the EXACT value.
+    let events = log.events();
+    let demotes: Vec<&CapturedEvent> = events
+        .iter()
+        .filter(|event| {
+            event.target == "shard.transition"
+                && event.level == tracing::Level::INFO
+                && matches!(event.field("reason"), Some("demote" | "pressure-cascade"))
+        })
+        .collect();
 
-    fn event(&self, event: &tracing::Event<'_>) {
-        let metadata = event.metadata();
-        let mut visitor = FieldCapture::default();
-        event.record(&mut visitor);
-        self.0.lock().unwrap().push(CapturedEvent {
-            target: metadata.target().to_owned(),
-            level: *metadata.level(),
-            fields: visitor.fields,
-        });
-    }
+    assert_eq!(
+        demotes.len(),
+        1,
+        "G4 follow-up: cascade demote must emit exactly ONE info \
+         `shard.transition` event (the registry primitive's canonical \
+         event with reason=\"pressure-cascade\"); the legacy second \
+         event from `cascade_demote_one_step` is gone.  got {}: {:#?}",
+        demotes.len(),
+        demotes,
+    );
 
-    fn enter(&self, _span: &tracing::Id) {}
+    let cascade = demotes[0];
+    assert_eq!(cascade.field("reason"), Some("pressure-cascade"));
+    assert_eq!(cascade.field("from"), Some("warm"));
+    assert_eq!(cascade.field("to"), Some("parked"));
+    assert_eq!(cascade.field("letter"), Some("C"));
+    assert!(
+        cascade.has_field("freed_mb"),
+        "cascade demote event must carry freed_mb field",
+    );
+    assert_eq!(
+        cascade.field("last_query_at_ms"),
+        Some("1234"),
+        "cascade demote event must carry last_query_at_ms (formerly \
+         cascade-only; now part of the canonical demote event)",
+    );
 
-    fn exit(&self, _span: &tracing::Id) {}
+    // Sanity: trim fired exactly once for the single cascade step.
+    assert_eq!(
+        counting_trim.calls(),
+        1,
+        "single cascade step → single trim call",
+    );
 }
 
-/// `tracing::field::Visit` impl that converts every recorded field
-/// into a `(name, stringified_value)` pair.
-#[derive(Default)]
-struct FieldCapture {
-    fields: Vec<(String, String)>,
-}
+// ── PR-f — promote-side `mark_loaded_at` regression test ──────────
 
-impl tracing::field::Visit for FieldCapture {
-    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.fields
-            .push((field.name().to_owned(), value.to_owned()));
-    }
-    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        self.fields
-            .push((field.name().to_owned(), value.to_string()));
-    }
-    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        self.fields
-            .push((field.name().to_owned(), value.to_string()));
-    }
-    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        self.fields
-            .push((field.name().to_owned(), value.to_string()));
-    }
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn core::fmt::Debug) {
-        // The `tracing::info!(letter = %x.to_ascii_uppercase(), ...)`
-        // form goes through `record_debug` because `%` selects the
-        // `Display` adapter and the underlying `Field` is recorded
-        // via `Debug`.  We strip the surrounding quotes that
-        // `Debug` adds for strings so the test asserts read
-        // naturally.
-        let raw = format!("{value:?}");
-        let stripped = raw
-            .strip_prefix('"')
-            .and_then(|tail| tail.strip_suffix('"'))
-            .map(str::to_owned)
-            .unwrap_or(raw);
-        self.fields.push((field.name().to_owned(), stripped));
-    }
+/// Pin the PR-f fix at
+/// `@/Users/rnio/Private/Github/UltraFastFileSearch/crates/uffs-daemon/src/
+/// index/mod.rs:1208` — promoting a Parked shard whose `last_query_at_ms` is
+/// older than `WARM_TO_PARKED_IDLE_SECS` must NOT cause an
+/// immediate-re-demote on the very next idle tick.
+///
+/// **Background:** the v0.5.85 Windows soak captured a clear
+/// promote-then-immediate-demote thrash in the daemon log (lines
+/// 5540 → 5733 of `LOG/windows 0.5.85`):
+///
+/// ```text
+/// 21:46:59.819  letter=G from=parked to=warm restored_mb=1
+/// 21:47:04.754  letter=G from=warm   to=parked freed_mb=1
+///                              ↑ only 4.9 s of "warm" life
+/// 21:47:11      letter=G from=parked to=warm restored_mb=1   ← thrash
+/// ```
+///
+/// Three drives (G/F/M) were re-demoted within 0.5 – 5 s of their
+/// promotes, then re-promoted seconds later when the search
+/// finally completed `ensure_warm_for_dispatch` and ran
+/// `record_search_dispatch`.
+///
+/// **Root cause:** `IndexManager::ensure_warm_for_dispatch`'s
+/// per-letter promote loop did the registry write-swap but did
+/// not stamp `last_query_at_ms` on the freshly-promoted shard.
+/// The shard inherited its pre-park value from the previous
+/// `Arc<DriveStats>` (preserved by `new_warm_with_stats`).  When
+/// the shard had been Parked for > 5 min, that inherited value
+/// was already past `WARM_TO_PARKED_IDLE_SECS`, so the very next
+/// 30-s `demote_idle_shards` tick (firing while the search was
+/// still awaiting other concurrent loads) re-demoted the shard
+/// before the eventual `record_search_dispatch` could refresh it.
+///
+/// **Fix:** call `shard.stats.mark_loaded_at(now_ms)` right after
+/// the promote write-swap, mirroring the seed in
+/// `Self::add_drive` and `Self::replace_drive`.
+///
+/// **Test sequence:**
+///
+/// 1. Add C with a fresh load timestamp (Phase-3 default).
+/// 2. Park C, then backdate `last_query_at_ms` to a deep-past value (year 2001,
+///    ≪ `WARM_TO_PARKED_IDLE_SECS` ago by any real wall clock).  This
+///    faithfully reproduces the v0.5.85 state: a parked shard whose timestamp
+///    is from a long time ago.
+/// 3. Promote C via `ensure_warm_for_dispatch`.
+/// 4. Immediately fire one `demote_idle_shards(unix_now_ms())` tick — the same
+///    race-window the Windows soak hit.
+/// 5. Assert C is still Warm.  Without PR-f, `idle_secs` would be
+///    `(unix_now_ms() - 1_000_000_000) / 1000 ≫ 300`, so the shard would
+///    re-demote.  With PR-f, `last_query_at_ms ≈ unix_now_ms()` after the
+///    promote, so `idle_secs ≈ 0` and the shard stays Warm.
+#[tokio::test]
+async fn promote_resets_idle_clock_against_thrash() {
+    use crate::cache::ShardState;
+
+    let (tx, _rx) = crate::events::event_channel();
+    let body = Arc::new(build_test_drive());
+    let loader = Arc::new(FixedBodyLoader {
+        body: Arc::clone(&body),
+    });
+    let mgr = IndexManager::with_body_loader_for_test(None, tx, loader);
+    mgr.add_drive(build_test_drive()).await;
+
+    // ── Step 1–2: Park C and backdate `last_query_at_ms` to
+    // simulate a shard that has been Parked for a very long time
+    // (the production thrash precondition).
+    assert!(mgr.demote_letter_for_test('C', ShardState::Parked).await);
+    let ancient_ts_ms = 1_000_000_000_u64; // 2001-09-09T01:46:40Z
+    assert!(
+        mgr.backdate_last_query_at_ms_for_test('C', ancient_ts_ms)
+            .await,
+        "test fixture must be able to backdate last_query_at_ms",
+    );
+
+    // ── Step 3: Promote.  PR-f bumps `last_query_at_ms` to
+    // ~`unix_now_ms()` inside the registry write-swap.
+    mgr.ensure_warm_for_dispatch(&['C'], &[]).await;
+    assert_eq!(
+        mgr.shard_states_for_test().await,
+        vec![('C', ShardState::Warm)],
+        "ensure_warm_for_dispatch must promote Parked → Warm",
+    );
+
+    // ── Step 4: Idle tick at "real now".  Without PR-f the demote
+    // controller sees the still-stale ancient_ts_ms → idle_secs
+    // ~25 years → re-demote.  With PR-f the promote refreshed the
+    // timestamp → idle_secs ≈ 0 → no demote.
+    let now_ms = crate::cache::unix_now_ms();
+    mgr.demote_idle_shards(now_ms).await;
+
+    // ── Step 5: Assert no re-demote.  Pre-PR-f this assertion
+    // fails: states_post_tick == [('C', Parked)].  Post-PR-f the
+    // shard stays Warm.
+    assert_eq!(
+        mgr.shard_states_for_test().await,
+        vec![('C', ShardState::Warm)],
+        "promote must refresh `last_query_at_ms` so the next idle \
+         tick sees a fresh idle clock; without the PR-f \
+         `mark_loaded_at(now_ms)` bump, this re-demotes immediately \
+         (the v0.5.85 Windows soak thrash captured at \
+         `LOG/windows 0.5.85` lines 5540 → 5733)",
+    );
 }

@@ -41,10 +41,21 @@ uffs-format.workspace = true
 # Async — `net` re-enabled here because the daemon's IPC server uses
 # `tokio::net::UnixListener` (unix) / `NamedPipeServer` (windows).
 tokio = { workspace = true, features = ["net"] }
+# `futures::future::Shared` + `BoxFuture` + `FuturesUnordered` for the
+# per-letter single-flight dedup in
+# `IndexManager::ensure_warm_for_dispatch`'s
+# `load_or_join_in_flight` helper (PR-e: thundering-herd promote
+# fix — see `docs/refactor/promote-thundering-herd-fix.md`).
+futures = { workspace = true }
 
 # Serialization (JSON-RPC)
 serde.workspace = true
 serde_json.workspace = true
+# Phase 6 of memory-tiering: `daemon.toml` parser in
+# `crate::config` (DaemonConfig with [memory] / [tiers] / [shards] /
+# [shards.per_drive] sections; per-drive tier overrides feed the
+# adaptive-TTL controller).
+toml.workspace = true
 
 # Error handling
 thiserror.workspace = true
@@ -82,6 +93,11 @@ proptest.workspace = true
 # Phase 2b of memory-tiering: scoped tempdirs for the runtime-orphan-sweep
 # test in `src/lib.rs::tests`.
 tempfile.workspace = true
+# Phase 7 task 7.2 of memory-tiering: `tokio::test(start_paused = true)` +
+# `tokio::time::advance` for deterministic time-based assertions on the
+# per-shard USN journal loop in `src/cache/journal_loop/tests.rs`.  Matches
+# the pattern already used by `uffs-core`, `uffs-mft`, and `uffs-mcp`.
+tokio = { workspace = true, features = ["test-util", "macros"] }
 
 [lints]
 workspace = true
