@@ -15,6 +15,24 @@ use serde::{Deserialize, Serialize};
 use uffs_core::compact::DriveCompactIndex;
 use uffs_core::compact_cache::ParkedBody;
 
+mod drive_stats;
+
+// Re-export the moved types at the historical `crate::cache::shard`
+// path so existing call sites (`crate::cache::shard::DriveStats`,
+// `crate::cache::shard::DriveStatsSnapshot`) keep resolving without
+// edits — the split is a mechanical decomposition to keep this
+// file under the workspace 800-LOC ceiling, not a public-API
+// change.  See `cache/shard/drive_stats.rs` for the live
+// definitions.
+pub(crate) use drive_stats::DriveStats;
+// `DriveStatsSnapshot` + `drive_stats_ema_value` are only referenced
+// from `cache/shard/tests.rs`; re-exporting them unconditionally
+// trips the `unused_imports` warning under non-test builds.  Gate
+// to `#[cfg(test)]` so the production re-export surface stays
+// minimal — matching the existing test-only-helper pattern.
+#[cfg(test)]
+pub(crate) use drive_stats::{DriveStatsSnapshot, drive_stats_ema_value};
+
 /// Lifecycle state of a single drive's shard inside the daemon's
 /// in-memory cache.
 ///
@@ -164,258 +182,6 @@ impl fmt::Display for IllegalTransition {
 
 impl StdError for IllegalTransition {}
 
-/// Per-drive query rate stats.
-///
-/// Counters use atomics so [`Self::record_query`] and
-/// [`Self::mark_query_at`] stay lock-free on the search hot path.
-/// [`Self::decay_ema`] reads + writes are not strictly atomic
-/// together, but the EMA tolerates skew (it is a rate estimator, not
-/// a hard counter).
-///
-/// Half-life of the EMA is fixed at 60 s in Phase 1; Phase 6 makes it
-/// configurable via `daemon.toml`.
-///
-/// Phase 3 wraps the live `DriveStats` in `Arc<DriveStats>` on the
-/// owning [`ShardEntry`] so the per-drive counters survive intact
-/// when the registry rebuilds a `ShardEntry` for a tier transition
-/// — the new entry shares the same `Arc<DriveStats>` and concurrent
-/// `mark_query_at` writes from in-flight searches still land on the
-/// canonical counters.
-#[derive(Debug, Default)]
-pub(crate) struct DriveStats {
-    /// Total queries served against this shard.
-    queries_total: AtomicU64,
-    /// EMA of the per-second query rate, stored as fixed-point `× 1e6`
-    /// so it round-trips through the `AtomicU64`.
-    rate_ema_micro_per_s: AtomicU64,
-    /// Unix-millis timestamp of the last [`Self::decay_ema`] call.
-    /// Zero means "never decayed" — first call short-circuits the
-    /// decay arithmetic to avoid a huge-elapsed spike from epoch 0.
-    last_decay_ms: AtomicU64,
-    /// Unix-millis timestamp of the last [`Self::mark_query_at`] call.
-    /// Zero means "never queried" — the Phase-3 demote controller in
-    /// `crate::cache::registry::ShardRegistry::demote_idle_shards`
-    /// treats a zero value as "as old as the daemon" so freshly-loaded
-    /// shards aren't immediately demoted on the first 30 s tick.
-    last_query_at_ms: AtomicU64,
-}
-
-impl DriveStats {
-    /// Construct a fresh, all-zero stats record.
-    #[must_use]
-    pub(crate) const fn new() -> Self {
-        Self {
-            queries_total: AtomicU64::new(0),
-            rate_ema_micro_per_s: AtomicU64::new(0),
-            last_decay_ms: AtomicU64::new(0),
-            last_query_at_ms: AtomicU64::new(0),
-        }
-    }
-
-    /// Lock-free increment of the total query counter.
-    ///
-    /// Phase 3 prefer [`Self::mark_query_at`] which also bumps
-    /// `last_query_at_ms` so the demote controller has a fresh idle
-    /// timestamp.  This bare counter remains for callers that have no
-    /// clock available (e.g. legacy tests).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Phase 3 migrated production `record_search_dispatch` to \
-                      `mark_query_at(now_ms)`; this clock-free entry point is \
-                      retained for tests that don't need timestamp wiring."
-        )
-    )]
-    pub(crate) fn record_query(&self) {
-        self.queries_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Lock-free increment of the total query counter that **also**
-    /// stores `now_ms` in [`Self::last_query_at_ms`].
-    ///
-    /// Two relaxed atomics; not synchronised together — the demote
-    /// controller tolerates a one-tick (30 s) lag on a shard whose
-    /// `last_query_at_ms` write was reordered after the
-    /// `queries_total` increment.
-    pub(crate) fn mark_query_at(&self, now_ms: u64) {
-        self.queries_total.fetch_add(1, Ordering::Relaxed);
-        self.last_query_at_ms.store(now_ms, Ordering::Relaxed);
-    }
-
-    /// Set [`Self::last_query_at_ms`] to `now_ms` **without** bumping
-    /// the query counter.
-    ///
-    /// Phase 3 Commit D — called by `IndexManager::add_drive` and
-    /// `IndexManager::replace_drive` once per shard the moment the
-    /// drive is mounted, so the demote-controller's idle clock
-    /// starts ticking from the load time rather than from epoch zero.
-    /// Without this seed, a freshly loaded shard's
-    /// `last_query_at_ms == 0` would compute `idle_secs ≈ now_ms /
-    /// 1000` and trigger an immediate demote on the first 30 s tick.
-    ///
-    /// Distinct from `mark_query_at` so the per-shard `queries_total`
-    /// metric stays a clean count of actual searches dispatched, not
-    /// "searches plus one extra at load".
-    pub(crate) fn mark_loaded_at(&self, now_ms: u64) {
-        self.last_query_at_ms.store(now_ms, Ordering::Relaxed);
-    }
-
-    /// Read the last activity timestamp (Unix millis).
-    ///
-    /// Updated by [`Self::mark_query_at`] (search dispatch) and
-    /// [`Self::mark_loaded_at`] (drive load).  Returns `0` only on
-    /// the snapshot-deserialisation / test paths that go through
-    /// the legacy [`Self::new`] constructor without ever calling a
-    /// setter.
-    ///
-    /// Read by [`crate::index::IndexManager::demote_idle_shards`]
-    /// (Phase 3 Commit D) to compute `idle_secs` against the
-    /// per-tier TTL ladder.
-    #[must_use]
-    pub(crate) fn last_query_at_ms(&self) -> u64 {
-        self.last_query_at_ms.load(Ordering::Relaxed)
-    }
-
-    /// Total queries served against this shard since construction.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Phase 6 consumer (status renderer / Prometheus telemetry); \
-                      read by `IndexManager::shard_query_totals_for_test` \
-                      under `cfg(test)`."
-        )
-    )]
-    #[must_use]
-    pub(crate) fn queries_total(&self) -> u64 {
-        self.queries_total.load(Ordering::Relaxed)
-    }
-
-    /// Apply exponential decay to the EMA based on elapsed time since
-    /// the last call and return the new EMA in queries/sec.
-    ///
-    /// First call after construction returns the stored value as-is
-    /// (no elapsed-time signal to decay against).
-    ///
-    /// Half-life is 60 s, chosen so a burst of activity is "forgotten"
-    /// within ~5 minutes (5 half-lives → 1/32 of the original).
-    #[expect(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::float_arithmetic,
-        clippy::default_numeric_fallback,
-        reason = "EMA arithmetic; precision loss is tolerated by the \
-                  rate-estimator semantics and bounded by the 60 s half-life. \
-                  Float arithmetic and the `1.0e6` literal are core to the \
-                  decay formula; suffixing or changing types would obscure \
-                  intent without changing behavior."
-    )]
-    pub(crate) fn decay_ema(&self, now_ms: u64) -> f64 {
-        const HALF_LIFE_MS: u64 = 60_000;
-        let prev_ms = self.last_decay_ms.swap(now_ms, Ordering::Relaxed);
-        let prev_ema_fixed = self.rate_ema_micro_per_s.load(Ordering::Relaxed);
-        let prev_ema = prev_ema_fixed as f64 / 1.0e6;
-        if prev_ms == 0 {
-            return prev_ema;
-        }
-        let elapsed_ms = now_ms.saturating_sub(prev_ms);
-        if elapsed_ms == 0 {
-            return prev_ema;
-        }
-        let decay_factor =
-            (-(elapsed_ms as f64) * core::f64::consts::LN_2 / HALF_LIFE_MS as f64).exp();
-        let new_ema = prev_ema * decay_factor;
-        self.rate_ema_micro_per_s
-            .store((new_ema * 1.0e6) as u64, Ordering::Relaxed);
-        new_ema
-    }
-
-    /// Decay the EMA to `now_ms` and return it as **queries per
-    /// minute** (the unit consumed by the Phase 6 adaptive TTL
-    /// formulas in [`crate::cache::policy::hot_ttl`] /
-    /// [`crate::cache::policy::warm_ttl`]).
-    ///
-    /// `decay_ema` returns queries-per-second (the storage unit);
-    /// this thin wrapper does the `× 60` conversion at the
-    /// controller boundary so the policy layer stays in its
-    /// canonical queries/min unit (matches the plan §5.2 formulas
-    /// and the unit tests in [`crate::cache::policy::tests`]).
-    ///
-    /// Side-effect: same as [`Self::decay_ema`] — the stored EMA
-    /// is mutated in place to reflect the elapsed-time decay.
-    /// Callers should sample once per controller tick rather than
-    /// per shard if they want a coherent batch view.
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "single multiply-by-60 to convert q/s to q/min — same \
-                  precision posture as `decay_ema` itself."
-    )]
-    pub(crate) fn decay_ema_qpm(&self, now_ms: u64) -> f64 {
-        self.decay_ema(now_ms) * 60.0
-    }
-}
-
-/// Test-only direct EMA read for `DriveStats`.
-///
-/// Free function (rather than a `#[cfg(test)]` method on
-/// `impl DriveStats`) so the production block carries no test-only
-/// methods.  All test-specific lint ceremony stays attached to this
-/// helper.
-#[cfg(test)]
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::float_arithmetic,
-    reason = "test-only EMA read: float divide on a fixed-point store; \
-              the precision loss is tolerated by the rate-estimator \
-              semantics."
-)]
-fn drive_stats_ema_value(stats: &DriveStats) -> f64 {
-    stats.rate_ema_micro_per_s.load(Ordering::Relaxed) as f64 / 1.0e6
-}
-
-/// Serializable snapshot of a [`DriveStats`].
-///
-/// `AtomicU64` doesn't derive `Serialize`/`Deserialize` so persistence
-/// goes through this plain-`u64` mirror.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DriveStatsSnapshot {
-    /// Total queries served. See [`DriveStats::queries_total`].
-    pub queries_total: u64,
-    /// EMA fixed-point. See [`DriveStats::rate_ema_micro_per_s`].
-    pub rate_ema_micro_per_s: u64,
-    /// Last decay timestamp. See [`DriveStats::last_decay_ms`].
-    pub last_decay_ms: u64,
-    /// Last query timestamp. See [`DriveStats::last_query_at_ms`].
-    /// Defaults to `0` so legacy snapshots without this field
-    /// deserialise as "never queried" rather than rejecting.
-    #[serde(default)]
-    pub last_query_at_ms: u64,
-}
-
-impl From<&DriveStats> for DriveStatsSnapshot {
-    fn from(stats: &DriveStats) -> Self {
-        Self {
-            queries_total: stats.queries_total.load(Ordering::Relaxed),
-            rate_ema_micro_per_s: stats.rate_ema_micro_per_s.load(Ordering::Relaxed),
-            last_decay_ms: stats.last_decay_ms.load(Ordering::Relaxed),
-            last_query_at_ms: stats.last_query_at_ms.load(Ordering::Relaxed),
-        }
-    }
-}
-
-impl From<DriveStatsSnapshot> for DriveStats {
-    fn from(snap: DriveStatsSnapshot) -> Self {
-        Self {
-            queries_total: AtomicU64::new(snap.queries_total),
-            rate_ema_micro_per_s: AtomicU64::new(snap.rate_ema_micro_per_s),
-            last_decay_ms: AtomicU64::new(snap.last_decay_ms),
-            last_query_at_ms: AtomicU64::new(snap.last_query_at_ms),
-        }
-    }
-}
-
 /// One shard's runtime state + stats + body.
 ///
 /// Phase 1 held the body unconditionally as `Arc<DriveCompactIndex>`.
@@ -457,6 +223,24 @@ pub(crate) struct ShardEntry {
     /// entirely (zero-RAM-touch contract).  See
     /// [`crate::index::IndexManager::ensure_warm_for_dispatch`].
     parked_body: Option<Arc<ParkedBody>>,
+    /// Tier-pin expiry as Unix-millis.
+    ///
+    /// `0` means "not pinned" (the demote controllers may demote on
+    /// idle / pressure cascade).  Non-zero means "do not demote
+    /// before this Unix-millis timestamp" — the idle-demote tick
+    /// (`@/Users/.../uffs-daemon/src/index/transitions.rs::demote_idle_shards`)
+    /// and the pressure-cascade loop
+    /// (`@/Users/.../uffs-daemon/src/index/transitions.
+    /// rs::cascade_demote_one_step`) both consult [`Self::is_pinned`]
+    /// before taking action. Hibernate (Phase 8-B) explicitly clears the
+    /// pin by virtue of rebuilding the shard as `Cold` (the new
+    /// `ShardEntry` starts with `pin_until_ms = 0`).
+    ///
+    /// Phase 8-C — operator-driven `preload <drive>` arms this
+    /// timestamp via [`Self::pin_until`] after the Cold → Warm → Hot
+    /// promote sequence completes.  Atomic so the pressure-cascade
+    /// subscriber can read it without holding the registry lock.
+    pin_until_ms: AtomicU64,
 }
 
 impl ShardEntry {
@@ -475,6 +259,7 @@ impl ShardEntry {
             stats: Arc::new(DriveStats::new()),
             body: Some(body),
             parked_body: None,
+            pin_until_ms: AtomicU64::new(0),
         }
     }
 
@@ -495,6 +280,36 @@ impl ShardEntry {
             stats,
             body: Some(body),
             parked_body: None,
+            pin_until_ms: AtomicU64::new(0),
+        }
+    }
+
+    /// Construct a `Hot` shard wrapping `body` and sharing an existing
+    /// `Arc<DriveCompactIndex>` as well as an `Arc<DriveStats>`.
+    ///
+    /// Phase 8-C — operator-driven `preload <drive>` flows through
+    /// this constructor after the body has been pre-faulted via
+    /// [`crate::cache::prefetch::Prefetch::hint`].  The pin is left
+    /// at `0`; the caller arms it via [`Self::pin_until`] once the
+    /// new entry is installed in the registry.
+    ///
+    /// Mirrors [`Self::new_warm_with_stats`]: the per-drive
+    /// [`Arc<DriveStats>`] is lifted from the previous shard so
+    /// query counters and `last_query_at_ms` survive the round-trip
+    /// through Cold/Parked → Warm → Hot.
+    #[must_use]
+    pub(crate) const fn new_hot_with_stats(
+        drive: char,
+        body: Arc<DriveCompactIndex>,
+        stats: Arc<DriveStats>,
+    ) -> Self {
+        Self {
+            drive,
+            state: AtomicU8::new(ShardState::Hot as u8),
+            stats,
+            body: Some(body),
+            parked_body: None,
+            pin_until_ms: AtomicU64::new(0),
         }
     }
 
@@ -522,6 +337,7 @@ impl ShardEntry {
             stats,
             body: None,
             parked_body: Some(parked_body),
+            pin_until_ms: AtomicU64::new(0),
         }
     }
 
@@ -543,6 +359,7 @@ impl ShardEntry {
             stats,
             body: None,
             parked_body: None,
+            pin_until_ms: AtomicU64::new(0),
         }
     }
 
@@ -550,6 +367,52 @@ impl ShardEntry {
     #[must_use]
     pub(crate) fn state(&self) -> ShardState {
         ShardState::from_repr(self.state.load(Ordering::Acquire))
+    }
+
+    /// Whether this shard is currently pinned against demote.
+    ///
+    /// `now_ms` is the caller's view of the wall clock (Unix-millis);
+    /// passing it as a parameter keeps the demote controllers'
+    /// per-tick "now" snapshot consistent across every shard the
+    /// tick examines (mirrors the
+    /// [`crate::index::IndexManager::demote_idle_shards`] convention).
+    ///
+    /// Returns `false` for unpinned shards (`pin_until_ms = 0`) and
+    /// for shards whose pin has already elapsed (`pin_until_ms <= now_ms`).
+    #[must_use]
+    pub(crate) fn is_pinned(&self, now_ms: u64) -> bool {
+        let until = self.pin_until_ms.load(Ordering::Acquire);
+        until > now_ms
+    }
+
+    /// Arm or extend the tier pin to expire at `pin_until_ms`
+    /// (Unix-millis).
+    ///
+    /// Atomic store — no registry rebuild required, so a
+    /// `preload C:` against an already-Hot drive can extend the
+    /// pin window without producing a `shard.transition` event.
+    /// Pass `0` to clear the pin (used by the 8-D `forget --force`
+    /// path; hibernate clears the pin implicitly by rebuilding the
+    /// shard as `Cold`).
+    pub(crate) fn pin_until(&self, pin_until_ms: u64) {
+        self.pin_until_ms.store(pin_until_ms, Ordering::Release);
+    }
+
+    /// Read the absolute pin-expiry timestamp (Unix-millis).
+    ///
+    /// Returns `0` when the shard has never been pinned (the
+    /// constructors initialise [`Self::pin_until_ms`] to `0`); the
+    /// "pin elapsed" case is indistinguishable from "never pinned"
+    /// here — callers that need the live distinction use
+    /// [`Self::is_pinned`] which folds the `now_ms` comparison in.
+    ///
+    /// Phase 8-E `status_drives` surfaces this raw value so the
+    /// operator-facing CLI table can render either "pinned until
+    /// HH:MM" or a hyphen ("-") depending on whether the value
+    /// has elapsed against the operator's local clock.
+    #[must_use]
+    pub(crate) fn pin_until_ms_value(&self) -> u64 {
+        self.pin_until_ms.load(Ordering::Acquire)
     }
 
     /// Cheap clone of the in-memory body, present only for
@@ -635,26 +498,24 @@ impl ShardEntry {
     /// [`crate::index::IndexManager::ensure_warm_for_dispatch`]
     /// before attempting incremental patching.
     ///
-    /// The `frs_to_compact` slice is a `frs → compact_idx` mapping
-    /// produced by the caller from the same `DriveCompactIndex` the
-    /// `body` Arc points at; mismatched slices produce all-skipped
-    /// `PatchStats` rather than corrupting the index.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Phase 7 task 7.1 surface; production caller \
-                      (per-shard journal loop) lands in Phase 7 task 7.2. \
-                      Exercised by `cache::shard::tests::\
-                      apply_usn_patch_to_body_returns_new_arc_on_warm` \
-                      and the matching `_returns_none_on_parked` companion."
-        )
-    )]
+    /// **Phase 8.** The FRS → `compact_idx` mapping is read from
+    /// the cloned body's [`DriveCompactIndex::frs_to_compact`]
+    /// field (no longer a separate parameter) and updated in-place
+    /// by [`uffs_core::compact_loader::apply_usn_patch`] across
+    /// the create / delete / rename batch.  Pre-v10 caches are
+    /// rejected at the cache-format header check (forcing a fresh
+    /// MFT rebuild that emits a v10 cache with the mapping
+    /// populated), so the empty-mapping fallback in
+    /// `apply_usn_patch` is purely defensive — covers test
+    /// fixtures that build the body by struct literal without
+    /// populating the field, plus any future cache format that
+    /// revisits the layout.
+    ///
+    /// [`DriveCompactIndex::frs_to_compact`]: uffs_core::compact::DriveCompactIndex::frs_to_compact
     #[must_use]
     pub(crate) fn apply_usn_patch_to_body(
         &self,
         changes: &[uffs_mft::usn::FileChange],
-        frs_to_compact: &[u32],
     ) -> Option<(
         Arc<DriveCompactIndex>,
         uffs_core::compact_loader::PatchStats,
@@ -664,9 +525,12 @@ impl ShardEntry {
         // mutates the clone — never the live Arc that concurrent
         // readers are observing.  ColumnStorage::clone() promotes
         // mmap-backed columns to heap-resident Vec, so the cloned
-        // body is fully mutable without remap ceremony.
+        // body is fully mutable without remap ceremony.  The
+        // `frs_to_compact` mapping rides along on the clone so
+        // `apply_usn_patch` can patch it in lock-step with the
+        // records.
         let mut owned: DriveCompactIndex = (**body_arc).clone();
-        let stats = uffs_core::compact_loader::apply_usn_patch(&mut owned, changes, frs_to_compact);
+        let stats = uffs_core::compact_loader::apply_usn_patch(&mut owned, changes);
         Some((Arc::new(owned), stats))
     }
 }

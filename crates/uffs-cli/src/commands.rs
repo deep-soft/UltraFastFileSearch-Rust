@@ -8,8 +8,20 @@
 
 /// Aggregate analytics subcommand.
 pub mod aggregate;
+/// `uffs daemon load` — hot-load MFT file(s) into a running daemon.
+///
+/// Split off `daemon_mgmt` so the lifecycle file stays under the
+/// 800-LOC policy ceiling without a file-size exception (mirrors
+/// the `daemon_tiering` decomposition for the Phase 8 commands).
+pub mod daemon_load;
 /// Daemon management subcommands.
 pub mod daemon_mgmt;
+/// Memory-tiering operator commands (`hibernate` / `preload`).
+///
+/// Phase 8-B / 8-C — split off `daemon_mgmt` so each cluster stays
+/// under the 800-LOC policy ceiling.  Forward-looking: 8-D `forget`
+/// and 8-E `status_drives` will land their shims here as well.
+pub mod daemon_tiering;
 // Index and info subcommands were merged into other modules.
 /// MCP server management subcommands.
 pub mod mcp_mgmt;

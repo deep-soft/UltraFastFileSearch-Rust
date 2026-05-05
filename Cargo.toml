@@ -44,7 +44,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.5.89"
+version = "0.5.90"
 edition = "2024"
 # MSRV: Pure Rust code compiles on stable 1.91+ (Duration::from_mins),
 # but Polars is built with features = ["nightly", "simd"] which requires
@@ -84,7 +84,7 @@ uffs-client = { path = "crates/uffs-client" }
 # via `tokio::net`.  Crates that actually use `tokio::net` (uffs-daemon,
 # uffs-mcp, and the `async` feature of uffs-client) re-enable `net`
 # explicitly in their own Cargo.toml via `features = ["net"]`.
-tokio = { version = "1.52.1", default-features = false, features = [
+tokio = { version = "1.52.2", default-features = false, features = [
   "io-util",
   "macros",
   "rt",
@@ -150,7 +150,7 @@ thiserror = "2.0.18"
 anyhow = "1.0.102"
 
 # ───── MCP (Model Context Protocol) ─────
-rmcp = { version = "1.5.0", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "1.6.0", features = ["server", "transport-io", "macros"] }
 schemars = "1.2.1"
 
 # ───── HTTP / Tower (for MCP Streamable HTTP gateway) ─────

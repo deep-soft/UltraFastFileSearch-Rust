@@ -47,6 +47,14 @@ pub(crate) enum DemoteReason {
     /// loop is draining LRU `Warm` shards.  Emitted by
     /// [`crate::index::IndexManager::cascade_demote_one_step`].
     PressureCascade,
+    /// Operator-driven `hibernate` RPC.  Emitted once per shard
+    /// inside the
+    /// [`crate::index::IndexManager::hibernate_shards`] write-lock
+    /// batch (Phase 8-B).  Distinguishable from the controller-
+    /// driven [`Self::IdleTtl`] / [`Self::PressureCascade`] paths
+    /// by `reason="operator-hibernate"`, so operator audit logs can
+    /// separate manual hibernation from automatic demote activity.
+    OperatorHibernate,
 }
 
 impl DemoteReason {
@@ -66,6 +74,7 @@ impl DemoteReason {
         match self {
             Self::IdleTtl => "demote",
             Self::PressureCascade => "pressure-cascade",
+            Self::OperatorHibernate => "operator-hibernate",
         }
     }
 }
@@ -212,15 +221,10 @@ impl ShardRegistry {
     ///
     /// Match is case-insensitive — see [`Self::replace`] for the
     /// rationale.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Phase 3 consumer (tier-transition cleanup); exercised \
-                      by `cache::registry::tests::remove_missing_is_noop` \
-                      under `cfg(test)`."
-        )
-    )]
+    ///
+    /// Phase 8-D `forget` activates this as a production consumer:
+    /// [`crate::index::IndexManager::forget_drives`] calls `remove`
+    /// after the eviction guard checks pass.
     #[must_use]
     pub(crate) fn remove(&self, drive: char) -> Self {
         let shards: Vec<Arc<ShardEntry>> = self
@@ -460,6 +464,89 @@ impl ShardRegistry {
             to = %ShardState::Warm,
             restored_mb,
             reason = "promote",
+        );
+        Some(Self::from_shards(shards))
+    }
+
+    /// Promote the shard for `letter` to `Hot`, attaching `body`
+    /// and emitting a single `shard.transition` tracing event.
+    /// Returns the rebuilt registry, or `None` when:
+    ///
+    /// * `letter` is not registered;
+    /// * the existing shard's state is `Hot` (caller must extend the pin via
+    ///   [`crate::cache::shard::ShardEntry::pin_until`] on the live
+    ///   `Arc<ShardEntry>` instead of rebuilding);
+    /// * the existing shard's state is `Unknown` or `Evicting` (controller-only
+    ///   states that the operator-driven preload path must not pre-empt).
+    ///
+    /// Phase 8-C — paired with
+    /// [`crate::index::IndexManager::preload_drive`].  The caller
+    /// has already loaded `body` (Cold/Parked source state) or
+    /// cloned the existing one (Warm source state), and pre-faulted
+    /// it via [`crate::cache::prefetch::Prefetch::hint`].  The pin
+    /// timestamp lives on the new `ShardEntry`'s atomic
+    /// `pin_until_ms`; arming it after the registry swap avoids
+    /// surfacing a half-pinned intermediate state to concurrent
+    /// readers.
+    ///
+    /// The per-drive `Arc<DriveStats>` from the previous shard is
+    /// shared with the new `Hot` entry so the round-trip
+    /// Cold/Parked/Warm → Hot preserves query counters and
+    /// `last_query_at_ms`.
+    #[must_use]
+    pub(crate) fn promote_letter_to_hot(
+        &self,
+        letter: char,
+        body: Arc<DriveCompactIndex>,
+    ) -> Option<Self> {
+        let (pos, old_arc) = self
+            .shards
+            .iter()
+            .enumerate()
+            .find(|(_, shard)| shard.drive.eq_ignore_ascii_case(&letter))?;
+        let from_state = old_arc.state();
+        if !matches!(
+            from_state,
+            ShardState::Parked | ShardState::Cold | ShardState::Warm
+        ) {
+            return None;
+        }
+        let restored_mb = (body.heap_size_bytes().total / 1_048_576) as u64;
+        let stats = Arc::clone(&old_arc.stats);
+        let drive = old_arc.drive;
+        // Phase 9: bump the Cold → Hot promotion counter only when
+        // the source tier was actually Cold.  Already-Warm preload
+        // calls (where the body is in RAM and only the tier marker
+        // flips Warm → Hot) are not "Cold → Hot" — we want the
+        // wire field to count expensive re-decrypts, not cheap
+        // tier-marker flips.  Parked → Hot is also excluded (the
+        // body is constructed from the existing parked_body bloom
+        // + trie, NOT from a re-decrypt of the on-disk encrypted
+        // cache); the wire docstring explicitly scopes
+        // `promotions_total` to Cold → Hot only.
+        if from_state == ShardState::Cold {
+            stats.record_cold_to_hot_promote();
+        }
+        let new_arc = Arc::new(ShardEntry::new_hot_with_stats(drive, body, stats));
+        let shards: Vec<Arc<ShardEntry>> = self
+            .shards
+            .iter()
+            .enumerate()
+            .map(|(i, existing)| {
+                if i == pos {
+                    Arc::clone(&new_arc)
+                } else {
+                    Arc::clone(existing)
+                }
+            })
+            .collect();
+        tracing::info!(
+            target: "shard.transition",
+            letter = %letter.to_ascii_uppercase(),
+            from = %from_state,
+            to = %ShardState::Hot,
+            restored_mb,
+            reason = "preload",
         );
         Some(Self::from_shards(shards))
     }

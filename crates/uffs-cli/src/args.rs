@@ -102,6 +102,44 @@ pub enum DaemonAction {
         /// Skip cache when loading.
         no_cache: bool,
     },
+    /// Demote loaded shards to `Cold` (Phase 8-B).
+    ///
+    /// Empty `drives` means every loaded drive.  See `uffs daemon
+    /// hibernate --help`.
+    Hibernate {
+        /// Drive letter(s) to hibernate; empty = all loaded drives.
+        drives: Vec<char>,
+    },
+    /// Promote drive(s) to `Hot` and pin the tier (Phase 8-C).
+    ///
+    /// Pin window defaults to 30 minutes when `pin_minutes` is `None`
+    /// (matches the daemon's `DEFAULT_PRELOAD_PIN_MINUTES`).
+    Preload {
+        /// Drive letter(s) to preload (must be non-empty).
+        drives: Vec<char>,
+        /// Override the default 30-min pin window.
+        pin_minutes: Option<u32>,
+    },
+    /// Evict drive(s) from the registry and delete their on-disk
+    /// caches (Phase 8-D).
+    ///
+    /// Refuses non-`Cold` drives unless `force = true`; with
+    /// `force` the daemon auto-hibernates each drive first
+    /// (clearing pins) before unlinking the cache files.
+    Forget {
+        /// Drive letter(s) to forget (must be non-empty).
+        drives: Vec<char>,
+        /// Force-forget non-`Cold` drives by auto-hibernating first.
+        force: bool,
+    },
+    /// Per-drive tier + telemetry table (Phase 8-E).
+    ///
+    /// Operator-facing companion to `daemon status`: surfaces tier,
+    /// pin expiry, query rate (EWMA), resident bytes, and last-query
+    /// timestamps for every drive the registry knows about — Cold
+    /// shards included so `forget` candidates are visible without
+    /// cross-referencing tracing logs.
+    StatusDrives,
 }
 
 /// Parse `uffs daemon <action> [flags...]` from raw args.
@@ -120,8 +158,13 @@ pub fn parse_daemon_action(args: &[String]) -> Result<DaemonAction, anyhow::Erro
         "kill" => Ok(DaemonAction::Kill),
         "restart" => Ok(DaemonAction::Restart),
         "load" => Ok(parse_daemon_load(rest)),
+        "hibernate" => Ok(parse_daemon_hibernate(rest)),
+        "preload" => parse_daemon_preload(rest),
+        "forget" => parse_daemon_forget(rest),
+        "status_drives" | "status-drives" => Ok(DaemonAction::StatusDrives),
         other => anyhow::bail!(
-            "Unknown daemon action: '{other}'. Use: start, status, stats, stop, kill, restart, load"
+            "Unknown daemon action: '{other}'. Use: start, status, stats, stop, kill, \
+             restart, load, hibernate, preload, forget, status_drives"
         ),
     }
 }
@@ -228,6 +271,130 @@ fn parse_daemon_load(rest: &[String]) -> DaemonAction {
     }
 }
 
+/// Parse `uffs daemon hibernate [DRIVE...]` / `[--drive D]` /
+/// `[--drives A,B,...]`.
+///
+/// Empty drive list means hibernate all loaded drives (the daemon
+/// expands the empty `drives` vector under its registry view).
+fn parse_daemon_hibernate(rest: &[String]) -> DaemonAction {
+    let mut drives = Vec::new();
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--drive" | "-d" | "--drives" => {
+                if let Some(val) = iter.next() {
+                    extend_drives_from_csv(&mut drives, val);
+                }
+            }
+            other => {
+                // Bare positional drive letter: `uffs daemon hibernate C D`
+                // or `uffs daemon hibernate C,D`.
+                extend_drives_from_csv(&mut drives, other);
+            }
+        }
+    }
+    DaemonAction::Hibernate { drives }
+}
+
+/// Parse `uffs daemon preload [DRIVE...]` / `--drive D` /
+/// `--drives A,B,...` / `--pin-minutes N`.
+///
+/// # Errors
+///
+/// Returns an error when the resulting drive list is empty (the
+/// daemon would reject it with `ERR_INVALID_PARAMS`; surface the
+/// failure CLI-side so the user gets a faster, more actionable
+/// error).
+fn parse_daemon_preload(rest: &[String]) -> Result<DaemonAction, anyhow::Error> {
+    let mut drives = Vec::new();
+    let mut pin_minutes: Option<u32> = None;
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--drive" | "-d" | "--drives" => {
+                if let Some(val) = iter.next() {
+                    extend_drives_from_csv(&mut drives, val);
+                }
+            }
+            "--pin-minutes" | "--pin" => {
+                if let Some(val) = iter.next() {
+                    pin_minutes = val.parse::<u32>().ok();
+                }
+            }
+            other => {
+                // Bare positional drive letter.
+                extend_drives_from_csv(&mut drives, other);
+            }
+        }
+    }
+    if drives.is_empty() {
+        anyhow::bail!(
+            "`uffs daemon preload` requires at least one drive letter; \
+             see `uffs daemon preload --help`"
+        );
+    }
+    Ok(DaemonAction::Preload {
+        drives,
+        pin_minutes,
+    })
+}
+
+/// Parse `uffs daemon forget <DRIVES...> [--force]` /
+/// `[--drive D]` / `[--drives A,B]`.
+///
+/// Empty drive list is rejected — the daemon would reply with
+/// `ERR_INVALID_PARAMS`, but a CLI-side error is faster and more
+/// actionable.
+///
+/// `--force` (also `-f`) flips the auto-hibernate-then-evict path on,
+/// matching the wire-level
+/// [`uffs_client::protocol::response::ForgetParams::force`] field.  Without
+/// `--force`, the daemon refuses non-`Cold` drives with `ERR_DRIVE_BUSY` and
+/// the CLI surfaces the listing.
+///
+/// # Errors
+///
+/// Returns an error when the resulting drive list is empty.
+fn parse_daemon_forget(rest: &[String]) -> Result<DaemonAction, anyhow::Error> {
+    let mut drives = Vec::new();
+    let mut force = false;
+    let mut iter = rest.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--drive" | "-d" | "--drives" => {
+                if let Some(val) = iter.next() {
+                    extend_drives_from_csv(&mut drives, val);
+                }
+            }
+            "--force" | "-f" => force = true,
+            other => {
+                // Bare positional drive letter.
+                extend_drives_from_csv(&mut drives, other);
+            }
+        }
+    }
+    if drives.is_empty() {
+        anyhow::bail!(
+            "`uffs daemon forget` requires at least one drive letter; \
+             see `uffs daemon forget --help`"
+        );
+    }
+    Ok(DaemonAction::Forget { drives, force })
+}
+
+/// Append every drive letter parsed from a comma-separated value to
+/// `drives`.  Tolerates `"C,D"`, `"c,d"`, `"C:,D:"`, single-letter
+/// values, and whitespace.  Silently skips entries that don't parse
+/// as ASCII letters - mirrors the lenient parsing already used by
+/// `parse_daemon_load`.
+fn extend_drives_from_csv(drives: &mut Vec<char>, value: &str) {
+    for part in value.split(',') {
+        if let Ok(letter) = parse_drive_letter(part) {
+            drives.push(letter);
+        }
+    }
+}
+
 // ── Help & version ─────────────────────────────────────────────────────
 
 /// Short help text.
@@ -315,6 +482,18 @@ ACTIONS:
     --data-dir PATH    Data directory with drive_* subdirs
     --drive LETTER     Drive letter(s) to load from data-dir
     --no-cache         Skip cache when loading
+  hibernate          Demote shards to Cold (free RAM, encrypted cache stays)
+    [DRIVE...]         Drive letter(s); omit to hibernate all loaded drives
+    --drives A,B       Drive letter(s) as comma-separated list
+  preload            Promote shard(s) to Hot and pin the tier
+    [DRIVE...]         Drive letter(s); at least one required
+    --drives A,B       Drive letter(s) as comma-separated list
+    --pin-minutes N    Pin window in minutes (default: 30)
+  forget             Evict drive(s) from registry and delete on-disk caches
+    [DRIVE...]         Drive letter(s); at least one required
+    --drives A,B       Drive letter(s) as comma-separated list
+    --force            Auto-hibernate non-Cold drives first (default: refuse)
+  status_drives      Per-drive tier + telemetry table (Hot/Warm/Parked/Cold)
 ";
 
 /// Print daemon help.

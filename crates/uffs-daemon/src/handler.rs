@@ -4,12 +4,13 @@
 //! JSON-RPC request handler: dispatches methods to [`IndexManager`].
 
 use uffs_client::protocol::response::{
-    FacetValuesParams, FacetValuesResponse, LoadDriveParams, LoadDriveResponse, RefreshParams,
-    SearchPayload,
+    DEFAULT_PRELOAD_PIN_MINUTES, FacetValuesParams, FacetValuesResponse, ForgetParams,
+    ForgetResponse, HibernateParams, HibernateResponse, LoadDriveParams, LoadDriveResponse,
+    PreloadParams, PreloadResponse, RefreshParams, SearchPayload, StatusDrivesResponse,
 };
 use uffs_client::protocol::{
-    AggregateSpecWire, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcErrorResponse, RpcRequest,
-    RpcResponse, SearchParams,
+    AggregateSpecWire, ERR_DRIVE_BUSY, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcErrorResponse,
+    RpcRequest, RpcResponse, SearchParams,
 };
 
 /// Maximum pattern length to prevent regex `DoS` (`S4.4.3`).
@@ -60,6 +61,15 @@ impl RequestHandler {
             "facet_values" => self.handle_facet_values(id, req).await,
             "keepalive" => self.handle_keepalive(id, req),
             "shutdown" => self.handle_shutdown(id, req),
+            // Phase 8-B … 8-E — operator-driven memory tiering.
+            // Phase 8-A scaffolded these arms with NotImplemented
+            // stubs; sub-phases 8-B / 8-C / 8-D / 8-E filled in
+            // `hibernate`, `preload`, `forget`, and `status_drives`
+            // respectively.
+            "hibernate" => self.handle_hibernate(id, req).await,
+            "preload" => self.handle_preload(id, req).await,
+            "forget" => self.handle_forget(id, req).await,
+            "status_drives" => self.handle_status_drives(id).await,
             _ => serde_json::to_string(&RpcErrorResponse::error(
                 Some(id),
                 ERR_METHOD_NOT_FOUND,
@@ -494,6 +504,187 @@ impl RequestHandler {
         }
 
         let result = serde_json::json!({"ok": true});
+        serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
+    }
+
+    /// Handle `hibernate` method (Phase 8-B).
+    ///
+    /// Parses [`HibernateParams`] from the JSON-RPC envelope, walks
+    /// the registry via [`IndexManager::hibernate_shards`], and
+    /// returns the structured [`HibernateResponse`] reporting
+    /// drives demoted from each pre-call tier plus drives that were
+    /// already at the bottom.
+    ///
+    /// Empty `drives` in the params means "every loaded drive";
+    /// non-matching letters in a non-empty `drives` filter are
+    /// silently dropped (the operator audit lives on the
+    /// `already_cold` field of the response, which lists only
+    /// drives the daemon actually knows about).
+    ///
+    /// Malformed params (anything that fails to deserialise as
+    /// [`HibernateParams`]) fall back to the empty-default
+    /// (hibernate every drive); the wire contract is "best-effort
+    /// match" rather than "strict reject" because the all-loaded
+    /// path is always safe and an over-strict reject would surprise
+    /// scripts that send slightly-non-canonical JSON.
+    async fn handle_hibernate(&self, id: u64, req: &RpcRequest) -> String {
+        let params: HibernateParams = req
+            .params
+            .as_ref()
+            .and_then(|val| serde_json::from_value(val.clone()).ok())
+            .unwrap_or_default();
+        let outcome = self.index.hibernate_shards(&params.drives).await;
+        let response = HibernateResponse {
+            hot_demoted: outcome.hot_demoted,
+            warm_demoted: outcome.warm_demoted,
+            parked_demoted: outcome.parked_demoted,
+            already_cold: outcome.already_cold,
+        };
+        let result = serde_json::to_value(&response).unwrap_or_default();
+        serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
+    }
+
+    /// Handle `preload` method (Phase 8-C).
+    ///
+    /// Parses [`PreloadParams`] from the JSON-RPC envelope, loops
+    /// over the requested drives calling
+    /// [`IndexManager::preload_drive`] for each, and aggregates the
+    /// per-drive [`crate::index::tiering_ops::PreloadOutcome`]s into
+    /// a single [`PreloadResponse`].
+    ///
+    /// Validates that the params include at least one drive — an
+    /// empty `drives` vector returns [`ERR_INVALID_PARAMS`] so a
+    /// caller's mistyped script doesn't silently succeed.  The pin
+    /// duration defaults to [`DEFAULT_PRELOAD_PIN_MINUTES`] when
+    /// the params omit `pin_minutes`.
+    async fn handle_preload(&self, id: u64, req: &RpcRequest) -> String {
+        let params: PreloadParams = req
+            .params
+            .as_ref()
+            .and_then(|val| serde_json::from_value(val.clone()).ok())
+            .unwrap_or_default();
+        if params.drives.is_empty() {
+            return serde_json::to_string(&RpcErrorResponse::error(
+                Some(id),
+                ERR_INVALID_PARAMS,
+                "preload: `drives` must contain at least one drive letter",
+            ))
+            .unwrap_or_default();
+        }
+        let pin_minutes = params.pin_minutes.unwrap_or(DEFAULT_PRELOAD_PIN_MINUTES);
+
+        let mut promoted: Vec<char> = Vec::new();
+        let mut already_hot: Vec<char> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+        let mut latest_pin_until_ms: i64 = 0;
+
+        for &letter in &params.drives {
+            use crate::index::tiering_ops::PreloadOutcome;
+            match self.index.preload_drive(letter, pin_minutes).await {
+                PreloadOutcome::Promoted { pin_until_ms, .. } => {
+                    promoted.push(letter.to_ascii_uppercase());
+                    latest_pin_until_ms = i64::try_from(pin_until_ms).unwrap_or(i64::MAX);
+                }
+                PreloadOutcome::AlreadyHot { pin_until_ms } => {
+                    already_hot.push(letter.to_ascii_uppercase());
+                    latest_pin_until_ms = i64::try_from(pin_until_ms).unwrap_or(i64::MAX);
+                }
+                PreloadOutcome::UnknownDrive => {
+                    errors.push(format!("{letter}: drive not loaded"));
+                }
+                PreloadOutcome::LoadFailed => {
+                    errors.push(format!("{letter}: body load failed"));
+                }
+                PreloadOutcome::Busy { from_state } => {
+                    errors.push(format!(
+                        "{letter}: drive busy in transient state ({from_state})"
+                    ));
+                }
+            }
+        }
+
+        let response = PreloadResponse {
+            promoted,
+            already_hot,
+            errors,
+            pin_until_unix_ms: latest_pin_until_ms,
+        };
+        let result = serde_json::to_value(&response).unwrap_or_default();
+        serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
+    }
+
+    /// Handle `forget` method (Phase 8-D).
+    ///
+    /// Parses [`ForgetParams`] from the JSON-RPC envelope and
+    /// dispatches to [`IndexManager::forget_drives`].  Empty
+    /// `drives` is rejected up-front with [`ERR_INVALID_PARAMS`];
+    /// non-`Cold` drives without `force = true` produce a
+    /// top-level [`ERR_DRIVE_BUSY`] refusal listing the busy
+    /// drives.  Successful runs return [`ForgetResponse`] populated
+    /// from [`crate::index::forget_drive::ForgetOutcome`].
+    async fn handle_forget(&self, id: u64, req: &RpcRequest) -> String {
+        use crate::index::forget_drive::ForgetOutcomeOrBusy;
+
+        let params: ForgetParams = req
+            .params
+            .as_ref()
+            .and_then(|val| serde_json::from_value(val.clone()).ok())
+            .unwrap_or_default();
+        if params.drives.is_empty() {
+            return serde_json::to_string(&RpcErrorResponse::error(
+                Some(id),
+                ERR_INVALID_PARAMS,
+                "forget: `drives` must contain at least one drive letter",
+            ))
+            .unwrap_or_default();
+        }
+
+        match self.index.forget_drives(&params.drives, params.force).await {
+            ForgetOutcomeOrBusy::Busy(busy) => {
+                let listing = busy
+                    .iter()
+                    .map(|(letter, state)| format!("{letter} ({state})"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let message = format!(
+                    "forget refused: drive(s) busy: {listing}. \
+                     Pass `force = true` to auto-hibernate first."
+                );
+                serde_json::to_string(&RpcErrorResponse::error(Some(id), ERR_DRIVE_BUSY, &message))
+                    .unwrap_or_default()
+            }
+            ForgetOutcomeOrBusy::Ok(outcome) => {
+                let response = ForgetResponse {
+                    forgotten: outcome
+                        .forgotten
+                        .into_iter()
+                        .map(|letter| letter.to_ascii_uppercase())
+                        .collect(),
+                    already_absent: outcome
+                        .already_absent
+                        .into_iter()
+                        .map(|letter| letter.to_ascii_uppercase())
+                        .collect(),
+                    freed_bytes: outcome.freed_bytes,
+                    errors: outcome.errors,
+                };
+                let result = serde_json::to_value(&response).unwrap_or_default();
+                serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
+            }
+        }
+    }
+
+    /// Handle `status_drives` method (Phase 8-E).
+    ///
+    /// No params — the unit-struct
+    /// [`uffs_client::protocol::response::StatusDrivesParams`]
+    /// serialises as `{}` so callers omitting the envelope flow
+    /// through unchanged.  Dispatches to
+    /// [`IndexManager::status_drives`] and returns the per-drive
+    /// tier + telemetry snapshot directly.
+    async fn handle_status_drives(&self, id: u64) -> String {
+        let response: StatusDrivesResponse = self.index.status_drives().await;
+        let result = serde_json::to_value(&response).unwrap_or_default();
         serde_json::to_string(&RpcResponse::success(id, result)).unwrap_or_default()
     }
 
