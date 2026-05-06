@@ -80,25 +80,32 @@
 #                 that drives change-classification (see below).
 #
 # Cross-platform coverage (soft-skipped when tool missing):
-#   * check-windows — `cargo xwin check --workspace --all-targets
-#                     --all-features --target x86_64-pc-windows-msvc`.
-#                     CI today only runs `ubuntu-22.04`, so this gate is
-#                     the only pre-PR check that exercises Windows-only
-#                     code (`#[cfg(windows)]` tests, benches, and
-#                     `std::os::windows::*` usage).  Catches type drift
-#                     between platforms in ~2–5 s warm.  Requires
-#                     `cargo-xwin` (installed by `just install-dev-tools`).
+#   * lint-ci-windows — `cargo xwin clippy --workspace --all-targets
+#                     --all-features --target x86_64-pc-windows-msvc
+#                     --no-deps -- -D warnings`.  Phase W5.6 of
+#                     `docs/architecture/windows-clippy-and-linux-cross-plan.md`
+#                     upgraded this from the type-only `cargo xwin check`
+#                     to the strict clippy stack so new Windows-gated
+#                     code is gated on the same surface that the
+#                     `pr-fast.yml::windows-lint` job enforces natively
+#                     on `windows-latest`.  Catches lint drift between
+#                     platforms in ~6 s warm (W1.4 measurement).
+#                     Requires `cargo-xwin` (installed by
+#                     `just install-dev-tools`).
 #
 # Optional jobs (soft-skipped when tool missing):
 #   * typos     — cheap spell-check across the repo.
 #   * reuse     — SPDX / licence-header compliance.
 #
-# The Linux-only lint drift gate (`just lint-ci-linux` via Docker) is NOT
-# run here — it is a minutes-scale cross-platform check best left to CI
-# or a conscious manual invocation.  Run `just check-all-targets` for a
-# full sweep across macOS + Linux (Docker) + Windows (xwin).  The full
-# runtime test suite (`cargo nextest run` without `--no-run`) and doc
-# tests are likewise deferred to `just phase1-test` or CI.
+# The Linux-only lint drift gate is NOT run here — it is best left to CI
+# or a conscious manual invocation.  Two local options exist: Docker
+# (`just lint-ci-linux`, authoritative — mirrors CI's `rust:latest`
+# image; minutes-scale) or cargo-zigbuild (`just lint-ci-linux-zig`,
+# Phase L1, accelerator — ~50 s cold / sub-second warm; needs zig 0.14.1
+# pinned via `just install-dev-tools`).  Run `just check-all-targets` for
+# a full sweep across macOS + Linux (zigbuild-or-Docker) + Windows (xwin).
+# The full runtime test suite (`cargo nextest run` without `--no-run`)
+# and doc tests are likewise deferred to `just phase1-test` or CI.
 
 set -euo pipefail
 
@@ -303,11 +310,14 @@ if (( CODE_CHANGED )); then
     if (( DEP_CHANGED )); then
         run_seq "deny"    cargo deny check --hide-inclusion-graph
     fi
-    # Windows xwin is ADVISORY locally (see dev-flow-implementation-plan.md
-    # § 1.3.3) — PR-fast's native `windows-check` job is the authoritative
-    # gate.  Soft-skip with install hint when `cargo-xwin` is missing.
+    # Windows xwin clippy is ADVISORY locally (see dev-flow-implementation-plan.md
+    # § 1.3.3) — PR-fast's native `windows-lint` job on `windows-latest` is the
+    # authoritative gate.  Phase W5.6 upgraded this from `check-windows`
+    # (type-only) to `lint-ci-windows` (strict clippy with `-D warnings`)
+    # so new Windows-gated regressions surface locally before push.
+    # Soft-skip with install hint when `cargo-xwin` is missing.
     if command -v cargo-xwin >/dev/null 2>&1; then
-        run_seq "check-windows" just check-windows
+        run_seq "lint-ci-windows" just lint-ci-windows
     fi
 fi
 
