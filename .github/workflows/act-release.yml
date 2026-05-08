@@ -235,8 +235,8 @@ jobs:
         run: rustup show
 
       - name: Cache dependencies
-        # uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        # uses: Swatinem/rust-cache@v2
         with:
           # `shared-key:` (not `key:`) so the action's built-in fallback
           # restores partial matches when `Cargo.lock` shifts between
@@ -261,7 +261,6 @@ jobs:
           # bit-compatible with what this job needs.
           shared-key: release-${{ matrix.target }}
           cache-on-failure: 'true'
-          add-job-id-key: 'false'
 
       - name: Build optimized release binaries
         shell: bash
