@@ -175,13 +175,22 @@ check-windows:
 
 # Cross-platform compile check across all three supported targets.
 #
-# Runs native (host) + Linux (via Docker, through `lint-ci-linux`) +
-# Windows (via xwin, through `check-windows`).  Intended as a manual
-# "pre-PR sweep"; the pre-push hook runs the host + Windows subset only
-# (Linux-in-Docker is too slow for a commit-time gate — CI covers it).
+# Runs native (host) + Linux (via cargo-zigbuild when `zig` is on PATH,
+# else Docker `lint-ci-linux`) + Windows (via xwin, through
+# `check-windows`).  Intended as a manual "pre-PR sweep"; the pre-push
+# hook runs the host + Windows subset only (Linux is too slow for a
+# commit-time gate — CI covers it).
 #
-# Skips silently if a prerequisite tool (cargo-xwin, docker) is missing,
-# but reports which targets were exercised so you know the coverage.
+# Linux path order (Phase L1.4 of windows-clippy-and-linux-cross-plan.md):
+#   1. Prefer `just lint-ci-linux-zig` (native, ~10–20 s warm) when
+#      `zig` and `cargo-zigbuild` are both available.
+#   2. Fall back to `just lint-ci-linux` (Docker, authoritative —
+#      mirrors CI's `rust:latest` image exactly).
+#   3. Skip with a hint when neither is available.
+#
+# Skips silently if a prerequisite tool (cargo-xwin, zig, docker) is
+# missing, but reports which targets were exercised so you know the
+# coverage.
 check-all-targets:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -196,11 +205,15 @@ check-all-targets:
     else
         printf "\033[1;33m   ⚠  cargo-xwin not installed — skipping; install with: \033[0;36mcargo install cargo-xwin\033[0m\n\n"
     fi
-    printf "\033[0;36m   ── Linux x86_64-unknown-linux-gnu (Docker) ──\033[0m\n"
-    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    printf "\033[0;36m   ── Linux x86_64-unknown-linux-gnu ──\033[0m\n"
+    if command -v zig >/dev/null 2>&1 && command -v cargo-zigbuild >/dev/null 2>&1; then
+        printf "\033[0;36m   · using cargo-zigbuild (native, no Docker)\033[0m\n"
+        just lint-ci-linux-zig
+    elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        printf "\033[0;36m   · using Docker (authoritative; install \033[0;36mzig\033[0m + \033[0;36mcargo-zigbuild\033[0m for the faster path)\033[0m\n"
         just lint-ci-linux
     else
-        printf "\033[1;33m   ⚠  Docker not available — skipping; start Docker Desktop / colima / OrbStack\033[0m\n"
+        printf "\033[1;33m   ⚠  Neither zigbuild nor Docker available — skipping; install one via \033[0;36mjust install-dev-tools\033[0m\n"
     fi
     printf "\033[0;32m✅ Cross-platform check complete\033[0m\n"
 
@@ -325,8 +338,12 @@ update-tools:
 
 
 
-# Quick deploy to Windows: version bump → xcompile → commit → push.
+# Quick deploy to Windows: xcompile → commit → push.
 # Skips tests, lint, coverage, and macOS native builds. For debug iteration only.
+# Phase R5 (2026-05-08) removed the version-bump step from this recipe;
+# it now overwrites assets on the current `[workspace.package].version`
+# (whatever release-plz last bumped it to or whatever the in-flight
+# release-PR targets).  See `release-automation-plan.md` §R5.
 # Alias: just q
 [unix]
 q: quick-deploy
@@ -340,34 +357,29 @@ quick-deploy:
     printf "\033[1;33m⚠️  No tests, no linting — debug iteration only!\033[0m\n"
     echo "========================================================"
 
-    # 1. Version bump
-    printf "\n\033[0;34m📈 Step 1/4: Version bump...\033[0m\n"
-    if [ -f "./build/update_all_versions.rs" ]; then
-        ./build/update_all_versions.rs patch
-    else
-        printf "\033[1;31m❌ Version script not found\033[0m\n"
-        exit 1
-    fi
-    NEW_VERSION=$(awk '/^\[workspace\.package\]/{flag=1; next} flag && /^version/{print $3; exit}' Cargo.toml | tr -d '"')
-    printf "\033[0;32m  → v%s\033[0m\n" "$NEW_VERSION"
+    # 1. Read current workspace version (no bump post-R5; release-plz
+    # owns version bumps now — see `release-automation-plan.md` §R5).
+    printf "\n\033[0;34m📋 Step 1/3: Reading current version...\033[0m\n"
+    CURRENT_VERSION=$(awk '/^\[workspace\.package\]/{flag=1; next} flag && /^version/{print $3; exit}' Cargo.toml | tr -d '"')
+    printf "\033[0;32m  → v%s (uses current workspace version; no bump)\033[0m\n" "$CURRENT_VERSION"
 
     # Sync workflow state so build-cross-all.rs uses the correct version
     STATE_FILE="build/.uffs-workflow-state.json"
     if [ -f "$STATE_FILE" ]; then
         # Update current_version in-place using portable sed
-        sed -i.bak "s/\"current_version\": *\"[^\"]*\"/\"current_version\": \"${NEW_VERSION}\"/" "$STATE_FILE"
+        sed -i.bak "s/\"current_version\": *\"[^\"]*\"/\"current_version\": \"${CURRENT_VERSION}\"/" "$STATE_FILE"
         rm -f "${STATE_FILE}.bak"
-        printf "\033[0;36m  → Synced workflow state to v%s\033[0m\n" "$NEW_VERSION"
+        printf "\033[0;36m  → Synced workflow state to v%s\033[0m\n" "$CURRENT_VERSION"
     fi
 
     # 2. Cross-compile for Windows (build-cross-all.rs uploads to GitHub Release)
-    printf "\n\033[0;34m🔨 Step 2/4: Cross-compile for Windows...\033[0m\n"
+    printf "\n\033[0;34m🔨 Step 2/3: Cross-compile for Windows...\033[0m\n"
     START=$(date +%s)
     rust-script scripts/ci/build-cross-all.rs
     END=$(date +%s)
     printf "\033[0;32m  → Build completed in %ds\033[0m\n" $((END - START))
 
-    # 3. Git commit
+    # 3. Git commit + push
     #
     # Uses `git commit -S` (force-sign) because this commit is
     # pushed directly to `main`, which has the GitHub branch-
@@ -377,13 +389,10 @@ quick-deploy:
     # the user's `user.signingkey`; fails loudly if no key is
     # configured (correct: the commit cannot land on `main`
     # without one).
-    printf "\n\033[0;34m📝 Step 3/4: Git commit...\033[0m\n"
+    printf "\n\033[0;34m📝 Step 3/3: Git commit + push...\033[0m\n"
     git add .
-    git commit -S -m "debug: quick-deploy v${NEW_VERSION} [skip ci]"
+    git commit -S -m "debug: quick-deploy v${CURRENT_VERSION} [skip ci]"
     printf "\033[0;32m  → Committed\033[0m\n"
-
-    # 4. Git push
-    printf "\n\033[0;34m🚀 Step 4/4: Git push...\033[0m\n"
     git pull origin main --rebase
     git push origin main
     printf "\033[0;32m  → Pushed\033[0m\n"
@@ -392,5 +401,5 @@ quick-deploy:
     ELAPSED=$((TOTAL_END - TOTAL_START))
     MINS=$((ELAPSED / 60))
     SECS=$((ELAPSED % 60))
-    printf "\n\033[1;32m⚡ Quick deploy complete: v%s in %dm %ds\033[0m\n" "$NEW_VERSION" "$MINS" "$SECS"
+    printf "\n\033[1;32m⚡ Quick deploy complete: v%s in %dm %ds\033[0m\n" "$CURRENT_VERSION" "$MINS" "$SECS"
     printf "\033[0;34m💡 On Windows: git pull && just use\033[0m\n"

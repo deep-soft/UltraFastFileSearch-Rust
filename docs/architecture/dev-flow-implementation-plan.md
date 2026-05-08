@@ -117,7 +117,7 @@ Cargo.toml or lockfile bump can break any of those.  Infra-only PRs
 | `cargo check --locked` | `code_changed` | T2 | always present |
 | test-compile (`nextest --no-run --locked`) | `code_changed` | T2 | `cargo-nextest` required; hard-fail on missing (pinned in `.config/nextest.toml`) |
 | **nextest `pre-push-smoke` profile** | `code_changed` | **T2 (new)** | same; hard-fail on missing |
-| **Windows xwin check (local)** | `code_changed` | T2 | **advisory locally**: soft-skip with install hint when `cargo-xwin` missing.  Hard-gated at T3 by native `windows-check` job. |
+| **Windows xwin clippy (local)** | `code_changed` | T2 | **advisory locally**: soft-skip with install hint when `cargo-xwin` missing.  Hard-gated at T3 by native `windows-lint` job (Phase W5.5 of `windows-clippy-and-linux-cross-plan.md` flipped this from `cargo check` to `cargo clippy -- -D warnings`). |
 | pr-fast required aggregate | always | T3 | n/a |
 
 ### 1.3.2 Advisory gates (soft-skip; install hint printed on miss)
@@ -139,7 +139,8 @@ is the exact bug that caused the v0.5.71 four-round-trip incident.
 **Windows xwin is deliberately split** between advisory-local and
 hard-required-remote.  Rationale: `cargo-xwin` downloads the MSVC SDK on
 first run (~400 MB) and not all contributors want that footprint.  The
-PR-fast native `windows-check` job is the authoritative gate; the local
+PR-fast native `windows-lint` job (Phase W5.5; runs `cargo clippy -- -D
+warnings` on `windows-latest`) is the authoritative gate; the local
 xwin step is an ergonomics win for contributors who already have it
 installed.  This is **not** a regression of the v1 "hard xwin" position
 — the feedback correctly flagged that treating a 400 MB download as a
@@ -180,7 +181,7 @@ where supported):**
 7. `cargo deny check` — runs when `dep_changed`, advisory otherwise
 8. `cargo nextest run --no-run --workspace --all-targets --all-features --locked` (test compile)
 9. `cargo nextest run --profile pre-push-smoke --locked` (new)
-10. `cargo xwin check --workspace --all-targets --all-features --target x86_64-pc-windows-msvc --locked` — **advisory locally** (soft-skip with install hint if `cargo-xwin` missing; authoritative gate is PR-fast native `windows-check`)
+10. `cargo xwin clippy --workspace --all-targets --all-features --target x86_64-pc-windows-msvc --no-deps -- -D warnings` (`just lint-ci-windows`, Phase W5.6) — **advisory locally** (soft-skip with install hint if `cargo-xwin` missing; authoritative gate is PR-fast native `windows-lint` on `windows-latest`)
 
 The first red in Bucket 2 aborts the rest (fail-fast).  Bucket 1
 continues to completion so the user sees all cheap-check results in
@@ -678,6 +679,14 @@ jobs:
       - run: cargo deny check --locked
       - run: cargo vet check --locked
 
+  # NOTE: This sample shows the original Phase 4 `windows-check`
+  # job (cargo check).  Phase W5.5 of
+  # `windows-clippy-and-linux-cross-plan.md` renamed it to
+  # `windows-lint` and switched the command to
+  # `cargo clippy --workspace --all-targets --all-features --locked
+  # --no-deps -- -D warnings`.  The live workflow at
+  # `.github/workflows/pr-fast.yml::windows-lint` is the source of
+  # truth; this snippet is preserved for historical context only.
   windows-check:
     name: Windows compile check
     runs-on: windows-latest
@@ -1030,7 +1039,10 @@ jobs:
   `PR Fast CI / required` aggregate.
 - `tier-2.yml` → **keep as-is** except: drop `windows-check` job
   (now in `pr-fast.yml`).  Tier 2 stays the deep-assurance lane
-  (coverage, miri, udeps).
+  (coverage, miri, udeps).  **DONE** in PR #138 (W5 follow-on) once
+  `pr-fast.yml::windows-lint` flipped to strict clippy and strictly
+  subsumed Tier 2's weekly compile-check; tombstone comment in
+  `tier-2.yml` documents the removal.
 
 ### 2.6 `scripts/ci/ci-pipeline.rs` → workspace binary `scripts/ci-pipeline/`
 
@@ -1046,6 +1058,43 @@ Long-term direction: replace the hand-maintained correspondence between
 `_lint_pre_push.sh`, `ci.yml`, and this doc with a single file consumed
 by all three.  Deferred — documented here so future-us knows the target
 shape.
+
+> **2026-05-07 update**: §2.7's executable contract is shipped.
+> The gates-manifest plan
+> ([`docs/architecture/gates-manifest-plan.md`](gates-manifest-plan.md))
+> landed in five phases:
+>
+> | Phase | What | PR |
+> |---|---|---|
+> | 0 | Plan + schema design | #139 |
+> | 1 | Manifest + drift detector (no consumer changes) | #140 |
+> | 2 | `_lint_pre_push.sh` codegen | #141 |
+> | 3 | `pr-fast.yml` **structural validator** (revised from "codegen" — see plan §4.2 pivot rationale) | #143 (plan-pivot in #142) |
+> | 3a | `_lint_fast.sh` codegen | #144 |
+>
+> Four drift detectors now run side-by-side in pre-push Bucket 1 +
+> pr-fast CI, covering four orthogonal drift axes:
+>
+> - `gates-drift`    — gate-set mismatch (Phase 1)
+> - `hooks-drift`    — pre-push hook content (Phase 2)
+> - `workflow-drift` — `pr-fast.yml` structural (Phase 3)
+> - `fast-drift`     — pre-commit hook content (Phase 3a)
+>
+> Adding, renaming, or removing a gate is now a single edit to
+> `scripts/ci/gates.toml` followed by `just gen-hooks` /
+> `just gen-fast`; the workflow YAML still hand-owns its bespoke
+> per-job shape (eleven distinct shapes for ~thirteen pr-fast-tier
+> gates) but `workflow-drift` enforces structural alignment with
+> the manifest.
+>
+> **Phase 3c (`gen-docs`, prose tables in this doc + CONTRIBUTING.md)
+> remains deferred** per plan §4.3 rationale — the four executable
+> drift detectors above already catch every dangerous failure
+> mode; what remains is low-stakes editorial drift in prose
+> tables, which the plan judges as not worth the codegen
+> infrastructure.
+>
+> The sketch below is preserved as the original problem statement.
 
 ```toml
 # gates.toml (proposed, not yet implemented)
@@ -1218,7 +1267,7 @@ green**.
 - Create `preview-artifacts.yml` (stub, artifact build only, no smoke
   runner yet — that's Phase 5).
 - Keep `ci.yml` intact; both workflows run in parallel for one week.
-- Update `tier-2.yml` — drop `windows-check` job (now in `pr-fast.yml`).
+- Update `tier-2.yml` — drop `windows-check` job (now in `pr-fast.yml`).  **DONE** in PR #138 (W5 follow-on, see above).
 - Confirm `.github/dependabot.yml` tracks both new workflows.
 
 **Validation** (each item MUST pass before Phase 4 cutover):
@@ -1328,7 +1377,11 @@ update `just/workflow.just` to `cargo run -p ci-pipeline --release --`.
 
 ### Phase 8 (stretch, optional) — Machine-readable gate manifest (Commit 8)
 
-Deferred to a future session.  See §2.7 for target shape.
+Deferred to a future session.  See §2.7 for the original sketch and
+[`docs/architecture/gates-manifest-plan.md`](gates-manifest-plan.md)
+for the full implementation plan (schema, generator interface,
+3-phase migration order, golden-file verification strategy, risk
+analysis).
 
 ---
 
@@ -1492,7 +1545,7 @@ Measured against current `v0.5.71` baseline:
 |---|---|---|
 | Median time to first actionable failure after `git push` | CI (~5 min to first red) | T2 pre-push (&lt; 30 s) |
 | PR-blocking full-pipeline wall time | 8-15 min (ci.yml) | &lt; 8 min (pr-fast) |
-| Windows regression detection latency | release-time (~15 min into `just ship`) | PR-time (pr-fast windows-check) |
+| Windows regression detection latency | release-time (~15 min into `just ship`) | PR-time (pr-fast `windows-lint`, post-W5.5: clippy `-D warnings` not just compile-check) |
 | Cargo-vet round-trip incidents per release | 1-3 today | 0 (hard-gated at T1) |
 | Ship resumable state bugs per month | ≥1 (v0.5.71) | 0 after Phase 6 |
 
@@ -1850,9 +1903,14 @@ the `uffs-client` package.  Runtime remains within budget.
   external observers (branch protection, GitHub search for "vet")
   expect a distinct `Security` check in the check-runs list.  Cost
   is ~10 s on warm cache.
-- `windows-check` uses `cargo check` (not `build`) — the PR-fast lane
-  only needs compile-confidence.  Full release-shaped builds move to
-  `preview-artifacts.yml` where they belong.
+- `windows-check` originally used `cargo check` (not `build`) — the
+  PR-fast lane only needs compile-confidence.  Full release-shaped
+  builds live in `preview-artifacts.yml` where they belong.  **Phase
+  W5.5 update**: `windows-check` was renamed to `windows-lint` and the
+  command flipped to `cargo clippy --workspace --all-targets
+  --all-features --locked --no-deps -- -D warnings` once the Windows
+  clippy backlog hit zero (PR #62 cleared 1346 errors → 0).  PR-fast
+  Windows now catches both compile errors AND lint regressions.
 
 #### Phase 4b — Actions hardening retrofit
 
@@ -2112,9 +2170,16 @@ Post-retrofit verification (2026-04-23):
       (49 lines) that prints a deprecation notice and re-execs
       `cargo run -q --release -p uffs-ci-pipeline -- "$@"`.  Verified
       executable via `rust-script scripts/ci/ci-pipeline.rs --help`.
-      Marked `REMOVE-AFTER: v0.5.73` in the header.
-- [ ] Real-world bake-in on a live `just ship` run.  Deferred to
-      the next release cycle.
+      Marked `REMOVE-AFTER: v0.5.73` in the header.  **Retired in
+      Phase R5 of `release-automation-plan.md`** (2026-05-08); the
+      `REMOVE-AFTER` marker was satisfied at v0.5.92.
+- [x] Real-world bake-in on a live `just ship` run.  Met by the
+      v0.5.85 → v0.5.92 release sequence (every release after the
+      Phase 7 promotion shipped through the new
+      `cargo run -q --release -p uffs-ci-pipeline -- ship` invocation
+      in `just/workflow.just`).  Documented here for completeness;
+      the Phase 7 dashboard section ticks fully closed alongside the
+      R5 retirement of the deprecation shim.
 
 **Notes**:
 - The new crate intentionally does **not** opt into

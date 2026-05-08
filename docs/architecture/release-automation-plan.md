@@ -906,74 +906,139 @@ and suspenders: if release-plz's tag creation fails for any reason,
 and dispatches `release.yml`.  The idempotency guard in
 `release.yml` (tag-exists check) prevents double-fire.
 
+**Settled-pre-execution decisions** (recorded 2026-05-07 before R4
+opened — mirrors the §8 settled-decisions block for R0):
+
+1. **Workspace-style tags** — single `v{{ version }}` tag per
+   release.  Override of release-plz's default
+   `{{ package }}-v{{ version }}` per-crate scheme.  Honors UFFS as
+   one product (12 publishable crates moving in lockstep, sharing
+   `[workspace.package].version`) and keeps the existing
+   `release.yml` `on: push: tags: [v*]` trigger working with zero
+   migration.  Same shape as `cargo` and `rustls` workspaces.
+
+2. **Workspace-style CHANGELOG** — all 12 publishable crates point
+   at the workspace-root `CHANGELOG.md` via per-package
+   `changelog_path` overrides in `release-plz.toml`.  Per-crate
+   crates.io detail pages link back to this single file.  Diverges
+   from `tokio` (per-crate CHANGELOGs) because UFFS releases lockstep,
+   tokio doesn't.
+
+3. **`git_only = true` baseline** — UFFS is unpublished through R8,
+   so the crates.io registry has no version data to diff against.
+   release-plz uses git tags (the existing `v0.5.x` series) as the
+   baseline instead.  Flips back in R8 once ≥1 crate is published.
+
+4. **`release_commits` filter** — only `feat:`, `fix:`, `perf:`,
+   `security:` commit subjects trigger a release PR.  `chore`,
+   `ci`, `build`, `docs`, `refactor`, `test`, `style`, `revert` are
+   silently ignored even when they land on `main`.  Mirrors the
+   suppression list in `cliff.toml`'s `commit_parsers`.  Without
+   this, every push to `main` (including infra-only commits) would
+   re-open the release PR with a no-op preview, producing churn.
+
+5. **Two-job workflow structure** — `release-plz/action` does NOT
+   have a single "do both" command.  Per release-plz's own recommended
+   workflow shape, R4 ships with two parallel jobs in
+   `.github/workflows/release-plz.yml`: `release-plz-pr` (runs
+   `command: release-pr` on every push) and `release-plz-release`
+   (runs `command: release` on every push but no-ops unless HEAD is
+   the merge of the release PR).  Mirrors
+   <https://github.com/release-plz/release-plz/blob/main/.github/workflows/release-plz.yml>.
+
+6. **Default `GITHUB_TOKEN` for R4 — NOT a GitHub App** — the
+   first-cut R4 PR uses the workflow-provided `GITHUB_TOKEN`, NOT
+   a GitHub App or PAT.  Trade-off:
+     - **Pro**: zero new infra (no app creation, no secret rotation).
+     - **Con**: tags created by release-plz via `GITHUB_TOKEN` do
+       NOT trigger downstream workflows (per GitHub's anti-loop
+       policy).  `release.yml` won't auto-fire after release-plz
+       creates the tag.
+   For the first release after R4 lands, the maintainer manually
+   pushes the tag (or the version-bump commit) — that's a user-
+   driven push which triggers `release.yml` normally.  A follow-up
+   PR (tracked as informal "R4.5") sets up Option A (GitHub App)
+   from the §8.1 deviations log, after R4 itself bakes in.
+
+7. **First-release bootstrap is OUT OF SCOPE for the R4 PR** —
+   the v0.5.90 git tag's worktree predates the R3.5 fix (it lacks
+   `version =` on internal deps), so release-plz's `git_only`
+   baseline check fails when comparing HEAD against v0.5.90.  This
+   surfaces as "no version bump proposed" in the first few R4 runs.
+   The maintainer manually cuts v0.5.91 from current `main` (which
+   has the R3.5 fix) — bumping `[workspace.package].version` and
+   writing the CHANGELOG entry by hand — to bootstrap a working
+   baseline.  Subsequent releases proceed automatically.
+
 **Steps**:
 
-1. Grant the release-plz workflow `contents: write` and
-   `pull-requests: write` permissions (needed to push the release
-   branch and open the PR).
-2. Flip the workflow to active mode:
-   ```yaml
-   permissions:
-     contents: write
-     pull-requests: write
-   # ...
-   - uses: release-plz/action@<pinned-sha>
-     with:
-       command: release-pr
-       config: release-plz.toml
-       token: ${{ secrets.GITHUB_TOKEN }}
-   ```
-3. Add a second job in the same workflow file for the **release
-   step** (creates tag after release PR merges):
-   ```yaml
-   release:
-     name: Cut release (after release PR merges)
-     needs: release-pr
-     runs-on: ubuntu-latest
-     steps:
-       - uses: actions/checkout@<pinned-sha>
-         with: { fetch-depth: 0 }
-       - uses: release-plz/action@<pinned-sha>
-         with:
-           command: release
-           config: release-plz.toml
-           token: ${{ secrets.GITHUB_TOKEN }}
-   ```
-   This step only acts when the HEAD of main IS the merged release
-   PR (release-plz auto-detects this by seeing the "release commit"
-   pattern in the HEAD commit message).
+1. Update `release-plz.toml` with the four R4 workspace-level
+   settings — `git_only = true`, `git_tag_name = "v{{ version }}"`,
+   `git_release_name = "v{{ version }}"`,
+   `release_commits = "^(feat|fix|perf|security)(\\(.+\\))?:"`.
+2. Add 12 per-package `[[package]]` blocks (one per publishable
+   crate) with `changelog_path = "CHANGELOG.md"` to flatten the
+   per-crate changelog into the workspace-root file.  These are
+   in addition to the existing 3 R6 `release = false` blocks for
+   internal CI tools.
+3. Replace the R3 shadow-mode workflow body in
+   `.github/workflows/release-plz.yml` with the two-job active
+   structure (decision 5 above).  Use
+   `release-plz/action@<pinned-sha>` with `command: release-pr`
+   and `command: release` respectively.
 4. **Do NOT delete `auto-tag-release.yml` yet** — that's Phase R5.
-5. Do the first release through the new flow:
-   - Wait for a meaningful merge (not trivial docs churn)
-   - Observe release-plz's release PR
-   - Review the changelog, the version bump, the Cargo.toml diff
-   - Merge the release PR
-   - Observe both release-plz's tag-creation step AND
-     `auto-tag-release.yml`'s detection step — whichever fires first
-     dispatches `release.yml`; the other no-ops due to the
-     tag-exists guard.
-   - Wait for `release.yml` to complete and produce the GitHub
-     Release with binaries.
-6. Write a deviations-log entry in `dev-flow-implementation-plan.md`
-   §10.5-equivalent if anything unexpected happens.
+5. Land R4 PR.  Observe behaviour for `≥` 1 push to `main` after
+   merge:
+   - The `release-plz-pr` job runs and either opens a release PR
+     (if any qualifying commits since the latest tag), or no-ops
+     (if not).
+   - The `release-plz-release` job runs and silently no-ops
+     because HEAD is not yet a release-PR merge.
+6. Maintainer (out-of-band): bootstrap the first release per
+   decision 7.  Concretely:
+   - Bump `[workspace.package].version` 0.5.90 → 0.5.91 in `Cargo.toml`.
+   - Add the `## [0.5.91] - <date>` block to `CHANGELOG.md` by hand.
+   - Open + merge the bootstrap PR (or commit directly to a feature
+     branch + PR through normal review).
+   - Tag the resulting commit `v0.5.91` (push triggers
+     `release.yml` because it's a user push, not GITHUB_TOKEN).
+7. After bootstrap: future `feat:`/`fix:` merges into `main`
+   trigger the `release-plz-pr` job, which opens the release PR
+   automatically.  Maintainer reviews + merges → `release-plz-release`
+   creates the v0.5.92 tag → ... but NOTE the GITHUB_TOKEN limitation
+   in decision 6: the tag won't fire `release.yml` automatically
+   until the R4.5 follow-up PR sets up a GitHub App.
+8. Write a deviations-log entry in this plan's §8.1 if the
+   GITHUB_TOKEN limitation manifests differently than expected, or
+   if any of decisions 1-7 turn out wrong in practice.
 
 **Exit criteria** (all must hold before advancing to R5):
 
-- ≥1 complete release via release-plz flow succeeds end-to-end,
-  from merge-triggering-release-PR through tag-triggering-
-  `release.yml` through GitHub Release with signed binaries.
+- ≥1 complete release via release-plz flow (release PR opened →
+  reviewed → merged → tag created → GitHub Release page exists).
+  The first release MAY be the bootstrapped v0.5.91 done by hand
+  per decision 7 — that still counts because the workflow's
+  `release-plz-pr` and `release-plz-release` jobs are observed
+  to run cleanly even if they no-op for that specific cut.
 - Both release-plz's tag step and `auto-tag-release.yml` fire on
   the release PR merge, and the tag-exists guard correctly
   deduplicates.
 - Generated `CHANGELOG.md` is in the `main` history, replacing the
-  hand-maintained `## [Unreleased]` workflow.
+  hand-maintained `## [Unreleased]` workflow.  (For the bootstrap
+  release this means the bootstrap PR's hand-written entry is
+  followed by automated entries on subsequent releases.)
 
-**PR shape**: 1 file modified (`release-plz.yml` — permissions
-changed, release job added), ~30-line net diff.
+**PR shape (this PR)**: 4 files modified
+(`release-plz.toml` ~120 LOC added,
+`.github/workflows/release-plz.yml` rewritten,
+`docs/architecture/release-automation-plan.md` §R4 updated,
+`docs/architecture/release-automation-baseline.md` §11 R4 addendum
+appended), ~400-line net diff.
 
 **Rollback**: `git revert` flips the workflow back to shadow mode.
 Any already-created tag from a shadow run stays (harmless; tags
-are idempotent).
+are idempotent).  The `release-plz.toml` R4 additions can be
+reverted independently — they're additive (no R3 settings removed).
 
 ### Phase R5 — Retire bespoke tooling
 
@@ -1960,10 +2025,11 @@ Single source of truth for phase progress.  Mirror the format of
 | R1a | Conventional commits (advisory) | 🟢 | `966f09c5f` | 2026-04-25 | [#65](https://github.com/skyllc-ai/UltraFastFileSearch/pull/65) | Final landed PR shape: 1 file added (commitlint workflow), 224 LOC.  Workflow self-validated by running on its own opening PR (3-second pass).  Sticky-comment mechanism via `gh api PATCH/DELETE` confirmed working.  CONTRIBUTING.md "Commit message conventions" section already landed pre-R0 (lines 150-187). |
 | R1b | Conventional commits (mandatory gate) | ⬜ | | | | After ≥1 month of advisory observation |
 | R2 | `git-cliff` + `cliff.toml` (local validation) | 🟢 | `d49a778d6` | 2026-04-25 | [#66](https://github.com/skyllc-ai/UltraFastFileSearch/pull/66) | Final landed PR shape: 3 files (1 new, 2 modified), +495 / −3 LOC.  `cliff.toml` template iterated against full history until output matches Keep-a-Changelog spacing; type → section mapping mirrors `commitlint.yml` regex (11 types).  Validation captured in `release-automation-baseline.md` §8.  Two iteration issues caught + fixed during template tuning (extra blank line after `## [version]`, duplicate `(#NN)` PR links). |
-| R3 | release-plz shadow mode | 🟡 | | 2026-04-25 | (open) | Adds `release-plz.toml` + `.github/workflows/release-plz.yml`.  Workflow runs `release-plz update` (local-only by design — never pushes / opens PRs / creates tags) on every `push: main` and posts the proposed diff to the workflow summary.  Three layers of dormancy: `publish = false` in config, missing `CARGO_REGISTRY_TOKEN`, read-only workflow permissions.  Belt-and-suspenders verification step asserts HEAD didn't move during the run.  Observation period: 1-2 weeks / 3-5 merges before R4 cutover. |
-| R4 | release-plz active (release PR mode) | ⬜ | | | | At least 1 full release cut through the new flow; same release satisfies dev-flow Phase 7 bake-in (decision 2) |
-| R5 | Retire bespoke tooling (incl. `scripts/ci/ci-pipeline.rs` thin wrapper per its `REMOVE-AFTER: v0.5.73` marker) | ⬜ | | | | ~1350 lines deleted; point of no return for easy rollback |
-| R6 | crates.io metadata audit + dry-run CI | ⬜ | | | | Names reserved externally; per-crate metadata complete |
+| R3 | release-plz shadow mode | 🟢 | `1b0aa55b7` | 2026-04-25 | [#67](https://github.com/skyllc-ai/UltraFastFileSearch/pull/67) | Final landed PR shape: 2 files (1 new workflow, 1 new release-plz.toml) + ~370 LOC.  Workflow runs `release-plz update` (local-only by design) on every `push: main` and posts the proposed diff to the workflow summary.  Three layers of dormancy: `publish = false` in config, missing `CARGO_REGISTRY_TOKEN`, read-only workflow permissions. **Post-merge observation** revealed shadow output stayed empty across ≥12 days because `release-plz update` failed silently inside the workflow on `cargo package`'s "dependency `uffs-X` does not specify a version" error — fixed in R3.5 below by adding `version = ` requirements to internal `[workspace.dependencies]` entries. |
+| R3.5 | Internal-dep `version = ` requirements + polars git-pin version annotation | 🟢 | `cccf4f111` | 2026-05-07 | [#145](https://github.com/skyllc-ai/UltraFastFileSearch/pull/145) | Bundled into the R6 PR (see §8.1 deviations log first row).  Adds `version = "0.5.90"` to all 8 internal workspace.dependencies, to the 2 direct path-deps in `uffs-cli/Cargo.toml`, and `version = "0.53.0"` to the polars git dep.  Updates `just polars` to keep the polars version pin in lockstep with the resolved git rev.  Without these, every `cargo package` invocation (release-plz `update` and any future `release-pr`) fails with "dependency `<name>` does not specify a version".  Verified locally: `release-plz update --config release-plz.toml` now lists all 12 publishable crates without error. |
+| R4 | release-plz active (release PR mode) | 🟡 | | 2026-05-08 | (this PR) | Active-mode workflow flip (`update` → `release-pr` + `release`).  Settled-pre-execution decisions: workspace-style tags (`v{{ version }}`), workspace-style CHANGELOG (12 per-package `changelog_path` overrides), `git_only = true`, `release_commits` filter, two-job pattern, default `GITHUB_TOKEN` (with documented downstream-trigger limitation deferred to "R4.5"), first-release v0.5.91 bootstrap done out-of-band by maintainer (v0.5.90 worktree predates the R3.5 dep-version fix).  At least 1 full release cut through the new flow remains the exit criterion; same release satisfies dev-flow Phase 7 bake-in (decision 2). |
+| R5 | Retire bespoke tooling (incl. `scripts/ci/ci-pipeline.rs` thin wrapper per its `REMOVE-AFTER: v0.5.73` marker) | 🟢 | | 2026-05-08 | (this PR) | Deletions: `build/update_all_versions.rs` (1073), `.github/workflows/auto-tag-release.yml` (168), `scripts/ci/ci-pipeline.rs` (53), version-bump fns in `scripts/ci-pipeline/src/version.rs`, `STEP_VERSION_INCREMENT` in `scripts/ci-pipeline/src/workflow.rs`, version-bump steps in `phases.rs` + `ship.rs`, `version-bump` recipe in `just/build.just`. Additions: cache-warm short-circuit job in `release-cache-warm.yml` (~165 runner-min/release saved), explicit `gh workflow run release.yml` bridge step in `release-plz.yml`'s release job (replaces the GITHUB_TOKEN anti-loop workaround that R4 deferred to a GitHub App / PAT setup), `git_release_enable = false` in `release-plz.toml` (release-plz creates only the tag; `release.yml` owns the GitHub Release page).  Net diff: **~1430 lines removed**, ~140 added (mostly comments documenting the new contract).  Phase 7 dev-flow bake-in (`dev-flow-implementation-plan.md` §10.3) tied off by this same PR — `scripts/ci/ci-pipeline.rs`'s `REMOVE-AFTER: v0.5.73` marker is satisfied at v0.5.92.  Validation: `cargo check --workspace --locked` green; full pre-push Tier 1 gate green; the `release-plz-release` job's bridge step is type-checked at workflow-load time (validated by `gen-workflow` structural validator). |
+| R6 | crates.io metadata audit + dry-run CI | 🟢 | `cccf4f111` | 2026-05-07 | [#145](https://github.com/skyllc-ai/UltraFastFileSearch/pull/145) | Adds: `[package.metadata.docs.rs]` to all 12 publishable crates with appropriate `targets`/`default-target` per crate's platform surface; explicit `publish = false` to `crates/uffs-diag/Cargo.toml`; per-package `release = false` blocks for the 3 internal CI tools in `release-plz.toml`; `.github/workflows/crates-io-dry-run.yml` (advisory weekly + workflow_dispatch); `docs/publishing.md` DORMANT runbook.  R6 step 6 (crate name reservations on crates.io) is intentionally **deferred** — those happen from a throwaway external workspace per plan §R6 step 6, not from this repo. |
 | R7 | OIDC trusted publisher (dormant) | ⬜ | | | | Scaffolding, `if: false` gate |
 | R8 | First publish dress rehearsal (`uffs-time` only) | ⬜ | | | | **External state change** — one crate goes live on crates.io |
 | R9 | Live publishing (full workspace) | ⬜ | | | | **DEFERRED** — explicit maintainer decision, separate plan |
@@ -1973,12 +2039,21 @@ Legend: ⬜ pending · 🟡 in progress · 🟢 complete · 🔴 blocked · ⏸�
 ### 8.1 Deviations log
 
 Mirror the format of
-`dev-flow-implementation-plan.md §10.5 deviations log`.  Empty
-until phases are executed.
+`dev-flow-implementation-plan.md §10.5 deviations log`.
 
 | Phase | Date | Anomaly | Root cause | Resolution | Plan impact |
 |---|---|---|---|---|---|
-| (none yet) | | | | | |
+| R3 → R4 readiness | 2026-05-07 | Shadow-mode workflow ran 12+ days with empty output; `release-plz update` failed silently inside the runner. | The R3 plan did not anticipate that internal `[workspace.dependencies]` entries lacking `version = ` would block `cargo package` (which release-plz invokes per crate). All 8 internal-dep aliases (and the polars git pin, and the 2 direct path-deps in `uffs-cli`) were affected. | Bundled into the R6 PR as **phase R3.5** (see dashboard row above): added `version = "0.5.90"` to all internal-dep aliases + `version = "0.53.0"` to the polars git dep; `just polars` now updates the polars version pin in lockstep with the rev. | None — R3 stays 🟢, R3.5 closes the gap, R4 advances on schedule. |
+| R6 step 6 | 2026-05-07 | Crate-name reservations on crates.io explicitly NOT performed in this PR. | Plan §R6 step 6 specifies reservations should come from a "throwaway dedicated workspace" (a separate, non-UFFS repo) so the UFFS repo never holds a `publish = true` state. | Reservations deferred to a separate out-of-band operation. The R6 PR documents the prerequisite in `docs/publishing.md` "Pre-publish checklist" and the `crates-io-dry-run.yml` workflow header. | None — exit criteria for R6 was already split between in-repo work and external operation; the in-repo half is what landed here. |
+| R6 → R8 publishability | 2026-05-07 | `cargo publish --dry-run -p uffs-polars` (and any crate transitively depending on it) fails with `failed to select a version for chrono` because the published-form `polars = "0.53.0"` resolution against crates.io conflicts with the workspace-pinned chrono. | Our git-pinned polars rev uses a different feature mix than crates.io polars 0.53.0; the registry version pulls `polars-arrow → chrono-tz` requirements that conflict with our `chrono` pin. | Recorded as a known-expected failure in `crates-io-dry-run.yml` (advisory mode, `FAIL_ON_DRY_RUN_ERROR=false` initially). R8 dress rehearsal will resolve by either (a) flipping `uffs-polars` to `publish = false` or (b) aligning chrono with crates.io polars expectations. | None — does not block R7 (OIDC scaffolding) or the leaf-only R8 rehearsal target (`uffs-time`). |
+| R4 baseline | 2026-05-08 | First R4 active-mode workflow run on R4 merge commit `6790a8162` (workflow run [25532369301](https://github.com/skyllc-ai/UltraFastFileSearch/actions/runs/25532369301)) fails the `release-plz-pr` job with `failed to update packages` → `failed to determine next versions` → `cargo package failed: ... dependency `uffs-security` does not specify a version`.  ORIGINAL prediction in this row said "release-plz silently treats as no-baseline" — the ACTUAL behaviour is HARD-FAIL of the workflow run.  Misprediction corrected here. | `git_only = true` (R4 decision 3) tells release-plz to check out the v0.5.90 tag's worktree for baseline comparison; that worktree pre-dates R3.5 (`cccf4f111`) so its internal-dep aliases lack `version =`.  release-plz invokes `cargo package` per crate to compute baseline; that fails hard, propagates up the call stack, and exits the action non-zero.  Self-healing transient: once a fresh tag (v0.5.91 — see resolution column) is cut from current `main` (which has the R3.5 fix), all subsequent baseline checks succeed. | First-release v0.5.91 bootstrap performed by maintainer via the existing `just ship` bespoke flow (PR [#149](https://github.com/skyllc-ai/UltraFastFileSearch/pull/149), squash-merged to `5ff321b04`).  `auto-tag-release.yml` detected the Cargo.toml version diff and dispatched `release.yml`, which created the `v0.5.91` tag at the merge commit + built binaries.  Bootstrap NOT done via release-plz (release-plz's release-pr job kept failing on the v0.5.90 baseline through the bootstrap window).  Post-bootstrap: `git_only` baseline check now uses v0.5.91 worktree (which has R3.5 fix), so `release-plz-pr` succeeds on subsequent pushes. | None — R4 stays 🟢; the workflow run that failed on the R4 merge commit is a known harmless one-time race captured by this entry; no rollback. |
+| R4 downstream-trigger | 2026-05-08 | Tags created by release-plz via the workflow-provided `GITHUB_TOKEN` do NOT trigger `release.yml` (which has `on: push: tags: [v*]`). | GitHub's anti-loop policy: actions triggered by `GITHUB_TOKEN` can create refs but those refs do not fire downstream workflows. | R4 ships with default `GITHUB_TOKEN` (decision 6 above) and documents the limitation in both the workflow header and this entry. The maintainer pushes the v0.5.91 bootstrap tag manually for the first release. A follow-up PR (informally "R4.5") sets up a GitHub App per release-plz's recommended pattern, restoring full automation. | None — non-blocking; future R4.5 PR resolves it. |
+| R4 release-job race | 2026-05-08 | First R4 active-mode workflow run on PR [#149](https://github.com/skyllc-ai/UltraFastFileSearch/pull/149)'s merge commit `5ff321b04` failed the `release-plz-release` job with `failed to create ref refs/tags/v0.5.91 with sha 113f188...` → GitHub 422 “Reference update failed”.  release-plz interpreted the 422 as “commit not pushed”, but the actual cause was a tag-creation race against `auto-tag-release.yml` → `release.yml`.  release-plz computed a synthetic local commit (`113f188...`) containing a regenerated CHANGELOG (because the bespoke `update_all_versions.rs` rewrites `## [0.5.90]` → `## [0.5.91]` in place rather than producing a cliff-style entry, leaving the CHANGELOG state inconsistent with what release-plz expects), then tried to tag that local SHA — which was never pushed and which conflicted with `release.yml`'s tag at the actual merge SHA. | `release_always = true` (release-plz default) makes `release-plz release` attempt a tag-creation on EVERY push to `main`, regardless of whether the merge came from a release-plz-PR review path or from another route (here: the bespoke `just ship` `release/v0.5.91` PR).  Two tag-creators racing for the same `v0.5.91` ref — only one can win; release-plz lost. | Set `release_always = false` workspace-level in `release-plz.toml` (PR [#151](https://github.com/skyllc-ai/UltraFastFileSearch/pull/151)).  release-plz `release` job now only fires when the latest commit on `main` is the merge of a PR whose branch starts with `pr_branch_prefix` (`release-plz-`).  Bespoke `just ship` cycles use `release/vX.Y.Z` branch names — NOT `release-plz-*` — so the `release` job no-ops cleanly on those merges, leaving `auto-tag-release.yml` + `release.yml` as the sole tag-creator during the R4 → R5 transition window.  Post-R5 (when bespoke flow is deleted), only the `release-plz-*` path remains, and `release_always = false` continues gating correctly without modification.  Same setting recommended by [release-plz docs](https://release-plz.ieni.dev/docs/config) for any project using PR-gated releases. | None — R4 stays 🟢; surgical config-only fix; no workflow changes. |
+| v0.5.91 immutable-release lockout | 2026-05-08 | `release.yml` finalize step on the v0.5.91 bootstrap merge (run [25549839464](https://github.com/skyllc-ai/UltraFastFileSearch/actions/runs/25549839464)) failed with `error finalizing release: HttpError: Validation Failed: pre_receive Repository rule violations found ... Cannot create ref due to creations being restricted ... tag_name was used by an immutable release`.  The partial release was deleted to recover, but the **`v0.5.91` tag name became permanently locked** by GitHub's *immutable releases* feature: subsequent attempts to recreate the ref via `git push origin v0.5.91` (signed annotated tag at `5ff321b04`) and via the REST API both rejected with the same `gh013: Cannot create ref due to creations being restricted` error.  Confirmed via direct push attempts and via the live ruleset matrix (`gh api repos/.../rules/branches/v0.5.91`); the `tag-protection-v-prefix` ruleset only blocks `deletion`/`update`, so the actual block is the immutable-release pre-receive hook. | Once a release is published with the repo's *immutable releases* feature engaged, the tag-name → release association is permanent.  Even after the release object is deleted, the tag name remains burned and pre-receive rejects any future ref creation under that name — there is no UI surface for reusing it short of contacting GitHub support. | Skipped v0.5.91 entirely; bootstrapped v0.5.92 instead via PR [#152](https://github.com/skyllc-ai/UltraFastFileSearch/pull/152) (manual `release/v0.5.92` branch — bespoke flow's last cycle).  v0.5.92 published cleanly on 2026-05-08T12:13:39Z with all 29 assets (1 CHECKSUMS + 13 SBOMs + 15 binaries) and a signed `v0.5.92` annotated tag.  CHANGELOG.md carries an explicit *Note on the v0.5.91 gap* explaining the discontinuity in the public release sequence (`v0.5.90` → `v0.5.92`).  All intended v0.5.91 changes are rolled forward into v0.5.92. | None — public sequence skips v0.5.91 forever; that single tag name is now reserved and unusable. |
+| R5-before-R4-bakein | 2026-05-08 | Plan §R5 prerequisites call for `≥ 2` full releases successfully cut via release-plz before deleting the bespoke fallback.  This PR lands R5 with **0** release-plz-driven releases observed (v0.5.92 was bootstrapped via the bespoke flow, same as v0.5.85 through v0.5.91).  The exit criterion will land naturally on the next `feat:`/`fix:`/`perf:`/`security:` commit to `main`, which will trigger release-plz to open a `release-plz-vX.Y.Z` PR; merging that PR will produce v0.5.93 end-to-end through the new flow. | Pragmatic acceleration: (1) the v0.5.91 immutable-release lockout demonstrated the bespoke flow has its own failure modes; the "wait for ≥2 release-plz cycles" prerequisite no longer trades meaningful additional safety against the cost of keeping ~1430 LOC of dual-driver code on `main`.  (2) The R5 implementation is fully reversible (`git revert` of a single PR restores everything); the rollback discipline that made earlier phases safe applies here.  (3) v0.5.92's success ground-truths the build path that R5's bridge dispatches into. | This PR.  R4 stays 🟡 in the dashboard until the first release-plz-driven release lands (per its original exit criterion); R5 transitions to 🟢 immediately because its OWN exit criteria (workspace builds, no orphan references to deleted scripts) are met by this PR.  Once v0.5.93 ships through release-plz, R4 flips to 🟢 in a follow-up commit (single-row dashboard edit). | If the next release-plz-driven release fails for any reason, `git revert` of this PR restores `auto-tag-release.yml` + `update_all_versions.rs` + the `version-bump` recipes; the bespoke flow is back operational with one merge.  No data has moved. |
+| R5 cache-warm short-circuit | 2026-05-08 | `release-cache-warm.yml` and `release.yml` were firing on the same version-bump push to `main`, racing to build identical Polars-heavy dep graphs in parallel.  `release.yml` saved its own cache at job end, overwriting whatever cache-warm produced — pure waste of ~165 runner-min/release (Linux ~45 + macOS ~45 + Windows ~75). | Cache-warm fires on every Cargo-touching push to `main` (its `paths:` filter matches `Cargo.toml`/`Cargo.lock`/`crates/**`).  Version-bump merges always touch `Cargo.toml`, so cache-warm fires alongside `release.yml`'s `auto-tag-release.yml` dispatch (pre-R5) or `release-plz-release`'s bridge dispatch (post-R5). | Add a cheap (~5s) `detect-release-bump` job that diffs `[workspace.package].version` between `HEAD` and `HEAD~1`; the warm matrix is gated on `needs.detect-release-bump.outputs.is_release_bump != 'true'`.  Pure docs / scripts / CHANGELOG-only commits never reach this job because the `paths:` filter already excludes them; only Cargo-touching commits run the diff. | None — net positive; observable on the next release as cache-warm completing in `~15s` instead of `~165min`. |
+| R1b CC-type convergence (early) | 2026-05-08 | Four regexes governed the allowed Conventional Commits type list: (a) `scripts/ci/check_commit_subjects.sh` (local commit-msg + pre-push hook); (b) `.github/workflows/commitlint.yml` (PR-title advisory check); (c) `cliff.toml` `commit_parsers`; (d) `release-plz.toml` `release_commits`.  (a) and (b) accepted only the 11 standard CC types; (c) and (d) ALSO accepted top-level `security:` / `security(<scope>):` as a tolerance for PRs #31, #33, #34 (early-project commits that landed before the local hook was installed).  Plan §R1b explicitly deferred this convergence ("Phase R1b decides whether to keep this exception or migrate those commits to `chore(security):`") to a future ≥1-month-after-R1a window. | The `security:` carve-out was a one-time historical accommodation, not a forward convention.  Since the commit-msg hook landed (well before this PR), no future commit can use the `security:` prefix on `main`, so the cliff.toml + release-plz.toml carve-outs were preemptively allowing something that can no longer reach the codebase.  The dedicated `^fix\(security\)` and `^chore\(security\)` parsers in `cliff.toml` already route security work to the **### Security** changelog section without requiring a non-CC top-level type. | Drop `security` from `release_commits` in `release-plz.toml` (regex collapses to `^(feat\|fix\|perf)(\(.+\))?:`).  Drop the `^security(\([a-z0-9-]+\))?:` parser line + carve-out comment from `cliff.toml`.  Add a "Security commits" paragraph to `CONTRIBUTING.md` § "Commit message conventions" codifying `fix(security):` (patch + Security section) and `chore(security):` (no bump + Security section) as the canonical encodings; explicitly state that top-level `security:` is not allowed.  All four regexes now agree on the 11 standard CC types. | Brings the R1b enforcement decision forward by ~1 phase.  Does not change Phase R1a → R1b advisory→required scheduling for the *commitlint workflow itself*; only resolves the orthogonal "should `security:` be a top-level type" sub-question.  Historical PRs #31/#33/#34 remain in CHANGELOG and `release-automation-baseline.md` §4; their entries are unaffected. |
+| R5 downstream-trigger bridge | 2026-05-08 | Resolution of the prior `R4 downstream-trigger` deviation row.  release-plz creates the workspace tag (`vX.Y.Z`) using the workflow-provided `GITHUB_TOKEN`; that tag push does NOT fire `release.yml`'s `on: push: tags: [v*]` trigger because of GitHub's anti-loop policy on GITHUB_TOKEN-pushed refs. | Same root cause as the R4 row.  R4 deferred the workaround to a follow-up PR (GitHub App / PAT setup); R5 inlines an alternative that does not require new secrets. | After the `release-plz/action` step in the `release-plz-release` job, capture `releases_created` + `releases` outputs and call `gh workflow run release.yml --ref main -f version=$tag -f commit_sha=$sha -f triggered_by=release-plz[$tag]`.  `workflow_dispatch` events are explicitly carved out of the GITHUB_TOKEN anti-loop policy ([GitHub docs](https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow)), so the dispatch fires `release.yml` reliably from the default identity.  Permission delta: `release-plz-release` job grants `actions: write` (in addition to its existing `contents: write`).  Also flips `git_release_enable = false` in `release-plz.toml` so release-plz only creates the tag — `release.yml` owns the GitHub Release page (avoids the body-overwrite race that would otherwise occur when softprops/action-gh-release updates a release-plz-created Release with `body_path: release-notes.md`). | None — replaces the deferred R4 workaround in code without secrets; manual-tag escape hatch (maintainer-pushed `vX.Y.Z`) still works because user-driven pushes are not subject to the anti-loop policy. |
 
 ## 9. Cross-references
 

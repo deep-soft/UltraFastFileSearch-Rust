@@ -127,6 +127,441 @@ for the operator-facing validation flow.
   the on-disk cleanup logic is exercised without ever touching the
   host's cache directory.
 
+### Added — Gates manifest Phase 3a: `_lint_fast.sh` codegen + `fast-drift` gate (PR #144)
+
+Phase 3a of [`docs/architecture/gates-manifest-plan.md`](docs/architecture/gates-manifest-plan.md).
+The pre-commit hook (`scripts/hooks/_lint_fast.sh`) is now generated
+from the canonical manifest by the same `gen-hooks` binary that
+already owned `_lint_pre_push.sh`; manual edits to the hook are
+caught by a paired drift detector that hard-blocks merge.
+
+- **EXTENDED `scripts/ci/gen-hooks/`** — `EmitTarget::PreCommit`
+  variant added alongside the existing `PrePush`.  One binary now
+  owns both hook files.  Modules:
+  * `src/emit.rs` — `render_dispatch_fast()` + four per-gate emit
+    shapes:
+    1. **always-on hard** (`file-size`) — unconditional `spawn`.
+    2. **always-on soft-skip** (`typos`, `reuse`) — `if command -v
+       $tool >/dev/null 2>&1; then spawn ...`.
+    3. **rust-or-no-staged** (`fmt`) — special predicate
+       `if has_staged_rs || ! has_any_staged; then` so manual `just
+       lint-fast` runs on a clean worktree are still useful as a
+       sanity pass.
+    4. **rust-staged group** (`lint-prod` / `lint-tests` / `lint-ci`)
+       — collapsed into a single `if has_staged_rs; then ... fi`
+       block (3 spawns instead of 3 separate guard blocks).
+    5. **bespoke `taplo`** — `if has_staged_toml_nonvet && command
+       -v taplo; then`, with a `bash -c` invocation rewritten from
+       the manifest's `{{STAGED_TOML}}` placeholder into a literal
+       command-substitution over `$STAGED_TOML_NONVET`.
+    6. **bespoke `vet-fmt`** — `if has_staged_vet && command -v
+       cargo-vet; then` (the `command -v cargo-vet` guard is at the
+       dispatch level because at pre-commit a missing `cargo-vet` is
+       a soft-skip; the upstream pre-push `vet` gate is the hard
+       backstop).
+  * `src/main.rs` — new `--target {pre-push,pre-commit}` flag
+    (default `pre-push` for back-compat with the existing
+    `hooks-drift` gate).  `--check` failure messages name the right
+    `just` recipe per target.
+  * `templates/preamble_fast.sh` + `templates/footer_fast.sh` —
+    embedded scaffolding for `_lint_fast.sh`: colors, staged-file
+    inventory, `has_staged_*` helpers, `spawn` helper, wait loop,
+    per-job report, optional-tool hint, failure dump.  Pure bash;
+    no per-gate knowledge.
+- **NEW manifest gate `fast-drift`** — self-referential gate at
+  `tiers = ["pre-push", "pr-fast"]`, `bucket = "bg"`, `gate_when =
+  "always"`, `hard = true`, order 28 (next to `workflow-drift`'s 27
+  in Bucket 1).  Sibling of `hooks-drift` for the pre-commit tier
+  — same binary, different `--target`.  Lives in pre-push + pr-fast
+  (NOT pre-commit) so the validator's compile cost doesn't break
+  the T1 sub-2 s budget; pre-push catches the drift before it
+  reaches the remote.
+- **NEW `pr-fast.yml::fast-drift` job** — mirror of `hooks-drift`'s
+  shape (cache shared with `sanity`).  Wired into `required.needs:`,
+  the bash R=() aggregator, AND `notify-failure.needs:` (otherwise
+  it would itself fail Property 3 of `workflow-drift` on first run).
+- **NEW `just gen-fast`** + **`just fast-drift`** recipes — manual
+  entry points for the pre-commit hook generator and its drift
+  detector.  Mirrors the `just gen-hooks` / `just hooks-drift` /
+  `just gen-workflow` / `just workflow-drift` recipe shape.
+- **REGENERATED `scripts/hooks/_lint_fast.sh`** — first-time
+  `gen-hooks --target pre-commit` output.  AUTO-GENERATED banner +
+  embedded preamble + manifest-driven dispatch + embedded footer.
+  The legacy hand-written inline dispatch comments are now stored
+  in `gates.toml` `notes` (single source of truth, surfaced by
+  `gen-hooks --verbose`).  Behavior is preserved at the spawn level:
+  every gate fires on the same predicate as before, in the same
+  parallel-fan-out shape.
+- **REGENERATED `scripts/hooks/_lint_pre_push.sh`** — picks up the
+  new `fast-drift` gate as a Bucket-1 entry alongside `gates-drift`,
+  `hooks-drift`, `workflow-drift` (4 drift detectors covering 4
+  orthogonal drift axes: gate-set / pre-push-hook-content /
+  workflow-structural / pre-commit-hook-content).
+- **MODIFIED `docs/architecture/gates-manifest-plan.md`** — Status
+  table updated (Phase 3a ✅ landed); §9 action log entry appended.
+
+Tests (32 total in `gen-hooks`, 10 new):
+- **All four `emit_fast` shapes** — `fast_dispatch_emits_all_six_shapes`
+  asserts every gate (file-size, fmt, typos, reuse, taplo, vet-fmt,
+  lint-ci/prod/tests) renders with the right predicate + spawn label
+  + manifest-order sort within the rust-staged block.
+- **Single rust-staged block** — `fast_dispatch_emits_exactly_one_rust_staged_block`
+  guards against a buggy refactor that loses the `emitted_rust_block`
+  flag (would emit three separate `if has_staged_rs; then` blocks
+  instead of one).
+- **Consumer-name override** — `fast_dispatch_honours_pre_commit_consumer_override`
+  asserts the `fmt` → `fmt-check` legacy rename is preserved at
+  emit time.
+- **Fmt's wider predicate** — `fast_emit_fmt_spans_no_staged_branch`
+  verifies the `|| ! has_any_staged` clause survives any future
+  refactor of the fmt special case.
+- **Empty rust-staged group** — `fast_emit_rust_staged_block_is_empty_when_no_rust_gates`
+  edge case: a manifest with `fmt` but no other `rust_changed`
+  gates must NOT emit a dangling `if has_staged_rs; then ... fi`
+  block.
+- **Idempotency** — `pre_commit_render_is_idempotent` asserts two
+  consecutive `EmitTarget::PreCommit.render(&m)` calls return
+  byte-identical strings (plan §4.4 contract).
+- **Render distinctness** — `pre_commit_and_pre_push_render_distinct_files`
+  asserts the same manifest emits two materially different bash
+  files (no template leak between targets).
+- **Default output paths + tier strings** — `emit_target_default_output_paths_are_distinct`
+  guards against a refactor that aliases the two targets' output
+  paths or tier names.
+- **`{{STAGED_TOML}}` placeholder is rewritten** — covered inside
+  `fast_dispatch_emits_all_six_shapes`; a leak would be caught by
+  the assertion that the literal placeholder string is absent from
+  the emitted dispatch.
+
+Verification:
+- `cargo test -p uffs-gen-hooks` — 32 / 32 unit tests pass.
+- `cargo clippy -p uffs-gen-hooks --bins --tests -- -D pedantic -D
+  nursery -D cargo -W unwrap_used -W expect_used -W
+  missing_docs_in_private_items -D warnings` — exit 0, **zero
+  per-item suppressions in non-test code**.
+- `cargo run -q --release -p uffs-gen-hooks -- --target pre-commit
+  --check` — exit 0 against the regenerated `_lint_fast.sh`.
+- `cargo run -q --release -p uffs-gen-hooks -- --check` — exit 0
+  against the regenerated `_lint_pre_push.sh`.
+- `bash scripts/ci/check_gates_drift.sh` — 23 gates matched.
+- `cargo run -q --release -p uffs-gen-workflow -- --check` —
+  exit 0 (workflow-drift sees the new `fast-drift` job).
+- `actionlint .github/workflows/pr-fast.yml` — exit 0.
+- `bash -n scripts/hooks/_lint_fast.sh` + `shellcheck
+  scripts/hooks/_lint_fast.sh` — both exit 0.
+- `just lint-pre-push` — full 23-gate sweep green.
+
+### Added — Gates manifest Phase 3: `gen-workflow` structural validator + `workflow-drift` gate (PR #143)
+
+Phase 3 of [`docs/architecture/gates-manifest-plan.md`](docs/architecture/gates-manifest-plan.md).
+Pivoted from the originally-planned YAML emitter design (see PR #142
+for the plan revision) to a `--check`-only structural validator that
+catches every drift class the codegen design promised, at the same
+risk profile as Phase 1's `gates-drift` — the tool only reads files;
+it cannot break the workflow.
+
+- **NEW `scripts/ci/gen-workflow/`** — Rust workspace member.  Reads
+  `scripts/ci/gates.toml` AND `.github/workflows/pr-fast.yml`,
+  validates four structural properties per plan §4.2:
+  1. **Job presence** — every manifest gate with `tier="pr-fast"`
+     has a corresponding job in the workflow (resolved via
+     `consumer_names["pr-fast"]` if present, else gate id).  Multiple
+     gates may fold into one job (e.g. `rustdoc` + `doc-tests` →
+     `docs`); the validator handles many-to-one correctly.
+  2. **`if:` predicate alignment** — for each pr-fast job, the job's
+     `if:` predicate must accept every change class the folded
+     gates' `gate_when` values require.  Implemented as a
+     `PermissiveSet` u8 bitset lattice (rust / dep / infra / always)
+     with `union` and `contains` operations.  Wider predicates pass
+     (over-runs are fine); narrower ones fail (drift would block a
+     gate from running on its trigger).
+  3. **Aggregator coverage** — every gate's resolved job-id must
+     appear in `required.needs:`, the bash `declare -A R=(...)`
+     aggregator inside the `required` job, AND `notify-failure.needs:`.
+     This is the exact rename-bookkeeping failure mode (PR #138's
+     windows-check → windows-lint rename touching 6 files) that
+     motivated the whole gate-manifest plan.
+  4. **Branch-protection guard** — the `required` job's `name:`
+     field is exactly `PR Fast CI / required` — the literal string
+     in the repo's branch-protection rule.  A future refactor that
+     renamed it would silently break merge for every PR; the
+     validator now hard-fails before that lands.
+- **Hand-rolled minimal YAML extractor** — instead of pulling in
+  `serde_yml` (archived 2024, active `RustSec` advisory in its
+  `Serializer.emitter`), `serde_yaml_ng` / `serde_norway` (both
+  depend on `unsafe-libyaml` C code), or one of the not-yet-
+  battle-tested pure-Rust forks, the crate parses just the four
+  fields it needs (`jobs:` keys, per-job `name:` / `if:` / `needs:`)
+  with ~120 lines of focused string-matching Rust.  Zero new
+  dependencies, zero advisory exposure, zero cargo-vet exemptions
+  added.  All three `needs:` shapes (single string, flow-style
+  list, block-style list) are handled correctly.
+- **NEW manifest gate `workflow-drift`** — self-referential gate at
+  `tiers = ["pre-push", "pr-fast"]`, `bucket = "bg"`, `gate_when =
+  "always"`, `hard = true`.  Order 27 (next to `hooks-drift`'s 26
+  in Bucket 1).  Pairs with Phase 1's `gates-drift` (gate-set
+  drift) and Phase 2's `hooks-drift` (hook-content drift) to cover
+  three orthogonal drift axes.
+- **NEW `pr-fast.yml::workflow-drift` job** — same shape as
+  `hooks-drift` (cache shared with `sanity` so the gen-workflow
+  binary build piggybacks on the existing rust-cache).  Always-on,
+  added to `required.needs:`, the bash R=() aggregator, AND
+  `notify-failure.needs:` (otherwise it would itself fail Property 3
+  on first run — a satisfying recursive consistency check).
+- **NEW `just workflow-drift`** + **`just gen-workflow`** recipes —
+  manual entry points for the validator.
+- **MODIFIED `Cargo.toml`** — `scripts/ci/gen-workflow` added as a
+  workspace member alongside `scripts/ci-pipeline` and
+  `scripts/ci/gen-hooks`.
+- **MODIFIED `scripts/hooks/_lint_pre_push.sh`** — regenerated by
+  `gen-hooks` to pick up the new `workflow-drift` gate (Bucket 1,
+  `cargo run -q --release -p uffs-gen-workflow -- --check`).
+- **MODIFIED `docs/architecture/gates-manifest-plan.md`** — Status
+  table updated (Phase 3 ✅ landed); §9 action log entry appended.
+
+Tests (33 total in `uffs-gen-workflow`):
+- **Manifest module** (7) — minimal-subset parsing, `pr_fast_gates`
+  filtering, `consumer_names` override resolution, `gate_when` ⇄
+  `when` rename round-trip, unknown-fields-ignored design choice
+  (regression-guards the schema-drift safety net), missing-required-
+  field-fails-noisily.
+- **Workflow extractor** (12) — all three `needs:` shapes, quoted /
+  unquoted field values, nested `with:` / `env:` / `run: |` blocks
+  ignored cleanly, missing `jobs:` key fails with context, empty
+  `jobs:` block fails, malformed flow list fails with helpful
+  message, block-list with blank-line terminator, `job_key_at`
+  rejects inline values + accepts trailing comments, `unquote`
+  handles single/double/bare/whitespace/comment cases.
+- **Validator** (14) — `PermissiveSet` lattice unit tests
+  (gate_when→set, if_expr→set, mixed-class union semantics), happy-
+  path consistent-fixture assertion, plus seven mutation tests:
+  one per property × failure mode (P1 missing job, P2 too narrow,
+  P2 wider predicates pass, P3 missing-from-required-needs, P3
+  missing-from-aggregator, P3 missing-from-notify-needs, P4
+  renamed required, P4 missing required job).  Aggregator-extraction
+  helper tested on a realistic-shape table and confirmed to ignore
+  unrelated brackets (`${{ matrix.os }}` substitutions, mid-line
+  `[other-bracket]=` lines outside the table).
+
+Verification:
+- `cargo test -p uffs-gen-workflow` — 33 / 33 unit tests pass.
+- `cargo clippy -p uffs-gen-workflow -- -D pedantic -D nursery -D
+  cargo -W unwrap_used -W expect_used -W
+  missing_docs_in_private_items -D warnings` — exit 0, **zero
+  per-item suppressions**.
+- `cargo run -q --release -p uffs-gen-workflow -- --check` — exit 0
+  against the current `pr-fast.yml`.
+- `bash scripts/ci/check_gates_drift.sh` — 22 gates matched
+  (Phase 1 detector, +1 from Phase 2's 21).
+- `cargo run -q --release -p uffs-gen-hooks -- --check` — exit 0
+  (Phase 2 detector, regenerated hook in lockstep).
+- `just lint-pre-push` — full 22-gate sweep green in 53 s warm
+  (matches pre-Phase-3 budget; no regression from the +1 Bucket 1
+  gate).
+- `actionlint .github/workflows/pr-fast.yml` — exit 0.
+- `cargo deny check` — exit 0 (no advisories from the `serde_yml`
+  pivot since the dep was never added).
+
+### Added — Gates manifest Phase 2: `gen-hooks` Rust generator + auto-generated pre-push hook (PR #141)
+
+Phase 2 of [`docs/architecture/gates-manifest-plan.md`](docs/architecture/gates-manifest-plan.md).
+The pre-push hook (`scripts/hooks/_lint_pre_push.sh`) is now
+generated from the canonical manifest by a new Rust binary; manual
+edits to the hook are caught by a paired drift detector that hard-
+blocks merge.
+
+- **NEW `scripts/ci/gen-hooks/`** — Rust workspace member implementing
+  the `gen-hooks` binary per plan §4.1.  Modules:
+  - `manifest.rs` — serde model + lightweight invariant validation
+    (no duplicate ids, valid bucket per pre-push tier, valid
+    `gate_when`, valid tier names).  The TOML-side `gate_when` field
+    is bridged to the Rust-side `when` via `serde(rename)` so the
+    schema stays unchanged while the Rust struct stays clean.
+  - `emit.rs` — banner + dispatch generation.  Per-gate special cases
+    are dispatched explicitly (no generic-template engine):
+    `commit-subjects` (multi-line `bash -c` reading `COMMIT_RANGES`),
+    `cargo-vet` (DEP_CHANGED + missing-tool hard-fail with install
+    hint, closes the PR #43 loophole), soft-skip-with-`command -v`
+    for any non-assumed tool, `dep_changed` inner guard for Bucket 2
+    gates that need it.
+  - `templates/preamble.sh` + `templates/footer.sh` — embedded bash
+    scaffolding (colors, change-classification, `spawn_bg` /
+    `run_seq` helpers, bucket reaping, optional-tool hint, failure
+    dump).
+  - 24 unit tests covering schema parsing, validation invariants,
+    `gate_when` ⇄ `when` rename round-trip, `consumer_names` per-tier
+    label override (regression-guards the `test-build` ⇄ `tests`
+    legacy mapping), pr-fast-only gates legitimately omitting
+    `bucket`, every special-case emission pattern, and the §4.4
+    idempotency contract.
+- **MODIFIED `scripts/hooks/_lint_pre_push.sh`** — now generated.
+  Header carries the `AUTO-GENERATED by ... MANUAL EDITS WILL BE
+  OVERWRITTEN` banner + a quick-link to the manifest and the regen
+  recipe.  Total file shrinks from 406 to 322 lines because the
+  per-gate documentation comments now live in the manifest's
+  `notes` fields (single source of truth).
+- **NEW manifest gate `hooks-drift`** — self-referential gate that
+  runs `gen-hooks --check` to verify the on-disk hook is byte-for-
+  byte equal to what the generator would emit.  Pairs with Phase
+  1's `gates-drift`: the latter ensures the gate-set matches across
+  consumers; this one ensures the emitted hook matches what the
+  manifest would produce.  Both run as Bucket 1 spawn_bg jobs in
+  the pre-push hook and as always-on jobs in `pr-fast.yml`.
+- **NEW `pr-fast.yml::hooks-drift` job** — runs `cargo run -q
+  --release -p uffs-gen-hooks -- --check` on every PR.  Cache key
+  shared with `sanity` so the gen-hooks binary build piggybacks on
+  the existing rust-cache.  Added to `required.needs:`,
+  success-conditional aggregation, and `notify-failure.needs:`.
+- **NEW `just gen-hooks`** recipe — manual regen entry point.
+- **NEW `just hooks-drift`** recipe — manual drift-check entry
+  point.
+- **MODIFIED `Cargo.toml`** — `scripts/ci/gen-hooks` added as a
+  workspace member alongside `scripts/ci-pipeline`.
+- **MODIFIED `docs/architecture/gates-manifest-plan.md`** — Status
+  table updated (Phase 1 ✅ landed, Phase 2 🟡 in flight); §9 action
+  log appended.
+
+Verification:
+- `cargo test -p uffs-gen-hooks` — 24 / 24 unit tests pass.
+- `cargo clippy -p uffs-gen-hooks -- -D clippy::pedantic -D
+  clippy::nursery -D clippy::cargo -W clippy::unwrap_used -W
+  clippy::expect_used -W clippy::missing_docs_in_private_items -D
+  warnings` — exit 0, no per-item suppressions in non-test code.
+- `bash scripts/ci/check_gates_drift.sh` — 21 gates correctly
+  matched against the regenerated hook.
+- `just hooks-drift` — exit 0 (idempotent regen).
+- `just lint-pre-push` — full 21-gate sweep green in 53 s warm
+  (matches pre-Phase-2 budget).
+- `bash -n scripts/hooks/_lint_pre_push.sh` — syntax OK.
+- `actionlint .github/workflows/pr-fast.yml` — exit 0.
+
+### Added — Gates manifest Phase 1: source-of-truth + drift detector (PR #140)
+
+Phase 1 of [`docs/architecture/gates-manifest-plan.md`](docs/architecture/gates-manifest-plan.md)
+(itself the implementation companion to
+[`docs/architecture/dev-flow-implementation-plan.md` §2.7](docs/architecture/dev-flow-implementation-plan.md)).
+Closes the "documented but not implemented" status of §2.7 with the
+foundation for the upcoming Phase 2 + Phase 3 codegen work.
+
+- **NEW `scripts/ci/gates.toml`** — declarative source-of-truth for
+  the workspace's PR-time gate set (20 entries covering pre-commit /
+  pre-push / pr-fast tiers).  Each `[[gate]]` entry carries id,
+  label, command, tier membership, change-classification trigger,
+  hard/soft semantics, missing-tool detection key, expected runtime,
+  pre-push bucket assignment, and free-form notes.  Per-tier
+  consumer-name overrides via `consumer_names` table cover the few
+  gates whose hook id differs from their pr-fast.yml job name (e.g.
+  manifest `lint-ci` ⇄ pr-fast `clippy`, manifest `cargo-check` ⇄
+  pr-fast `sanity`, manifest `vet` + `deny` ⇄ pr-fast `security`).
+- **NEW `scripts/ci/check_gates_drift.sh`** — bidirectional drift
+  detector.  Forward direction: every manifest `[[gate]]` entry must
+  appear in its declared tiers' consumer files (pre-commit hook,
+  pre-push hook, pr-fast.yml).  Reverse direction: every gate
+  defined in a consumer (via `spawn`/`spawn_bg`/`run_seq` in the
+  hooks, or top-level YAML job under `jobs:` in pr-fast.yml) must
+  have a matching manifest entry — except for orchestration-only
+  jobs (`classify`, `required`, `notify-failure`).  Bash-only;
+  awk-based TOML parsing (no extra runtime deps).  Bypass once via
+  `BYPASS_GATES_DRIFT=1 git push` for emergency landings; CI has no
+  bypass — drift on `main` is a deliberate "fix-me-now" signal.
+- **MODIFIED `scripts/hooks/_lint_pre_push.sh`** — drift check
+  added as a new Bucket 1 step (cheap, parallel, fire-and-forget;
+  same tier as `fmt` / `file-size`).
+- **MODIFIED `.github/workflows/pr-fast.yml`** — NEW `gates-drift`
+  job (always-on, no classify gating; sub-second; modeled after
+  `file-size`).  Added to the `required` aggregator's `needs:`
+  list, success-conditional declare-A array, and `notify-failure`'s
+  `needs:` list so a manifest mismatch hard-blocks merge.
+- **NEW `just gates-drift`** recipe — manual invocation surface.
+- **MODIFIED docs/architecture/gates-manifest-plan.md** — Status
+  table updated (Phase 0 ✅, Phase 1 🟡 in flight); §9 action log
+  updated.
+
+Verification:
+- `bash scripts/ci/check_gates_drift.sh` — exit 0 against current
+  `main` (20 gates correctly matched).
+- Mutation tests: injecting a fake gate into the manifest fires the
+  forward-direction error; injecting a `spawn_bg "ghost-gate"` into
+  the pre-push hook fires the reverse-direction error; restoring
+  the original state returns to clean.
+- `BYPASS_GATES_DRIFT=1` exits 0 immediately with a tombstone log
+  line.
+- `actionlint` exit 0 on the modified `pr-fast.yml`.
+- `shellcheck scripts/ci/check_gates_drift.sh` exit 0 (3 SC2016
+  false-positive backtick warnings explicitly disabled with
+  inline directives).
+
+### Changed — Windows clippy CI/pre-push flip + Linux zigbuild accelerator (PR #138)
+
+Closes Phases **W5** and **L1** of
+[`docs/architecture/windows-clippy-and-linux-cross-plan.md`](docs/architecture/windows-clippy-and-linux-cross-plan.md).
+Every plan phase (W0 baseline, W1 recipes, W2 prod, W3-W5 tests, W5.5
+CI flip, W5.6 pre-push flip, W5 follow-on Tier-2 redundancy cleanup,
+L1 zigbuild) now ✅; §8 acceptance items all checked.
+
+- **`pr-fast.yml::windows-check` → `windows-lint`** (Phase W5.5).
+  Renamed the job and switched the command from `cargo check` to
+  `cargo clippy --workspace --all-targets --all-features --locked
+  --no-deps -- -D warnings` natively on `windows-latest`.  PR #62
+  cleared the Windows clippy backlog (W0 baseline: 1346 errors → 0)
+  so the strict-clippy stack now exits 0.  Aggregator (`required`)
+  + `notify-failure` `needs:` lists updated; `preview-artifacts.yml`
+  comment refreshed.
+- **`scripts/hooks/_lint_pre_push.sh`** dispatches `just lint-ci-windows`
+  (cargo xwin clippy with the same `-D warnings` stack) instead of
+  `just check-windows` (compile-only) (Phase W5.6).  W1.4 measurement
+  pegs the upgrade at ~6 s warm; pre-push budget unchanged at
+  ~25–60 s warm.  Net: a Windows-only `unwrap_used` /
+  `cast_possible_truncation` regression now hard-fails BOTH the local
+  pre-push hook AND the authoritative PR Fast CI job, on the same
+  surface and flag stack.
+- **NEW `just lint-ci-linux-zig` recipe** (Phase L1.2): native
+  macOS → Linux clippy via `cargo-zigbuild` (no Docker required).
+  ~50 s cold, sub-second warm.  Docker `lint-ci-linux` remains the
+  authoritative gate (mirrors CI's `rust:latest` image exactly);
+  zigbuild is a developer-loop accelerator for fast inner-loop sweeps.
+  `check-all-targets` prefers zigbuild when `zig` + `cargo-zigbuild`
+  are both on PATH, falls back to Docker, soft-skips when neither.
+- **`install-dev-tools`** extended (macOS hosts only) to install
+  `zig 0.14.1` from the official `ziglang.org` tarball into
+  `~/.local/zig/0.14.1/`, symlink it into `~/.cargo/bin/zig`, install
+  `cargo-zigbuild`, and add the `x86_64-unknown-linux-gnu` rustup
+  target.  Pinned to 0.14.1 because Homebrew's `zig` formula tracks
+  latest (currently 0.16.x) which has unrelated incompat issues with
+  `psm`'s `src/arch/x86_64.s` ATT-syntax assembly.
+- **Two non-obvious gotchas baked into the L1 recipe** (surfaced
+  during empirical L1.3 verification):
+  1. Recipe overrides `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS`
+     to pin `target-cpu=x86-64-v3` (matches `release.yml`'s Linux
+     baseline) for the cross-compile only.  `.cargo/config.toml`'s
+     default `target-cpu=native` resolves to `apple-m4` on macOS,
+     which `cargo-zigbuild` propagates to `zig cc -mcpu=native`,
+     which corrupts zig's integrated-assembler dialect detection
+     for hand-written x86_64 SIMD asm in `psm` and `blake3`.
+  2. Recipe invokes `cargo-zigbuild clippy` directly (the binary
+     exposes `clippy` / `check` / `test` as proper subcommands)
+     rather than `cargo zigbuild clippy` (cargo plugin form), which
+     always routes into the `zigbuild` build subcommand.
+- **`tier-2.yml::windows-check` REMOVED** (W5 follow-on, plan §5).
+  Pre-W5.5 it ran `cargo check --workspace --all-features
+  --all-targets` weekly on `windows-latest` as the backstop catching
+  Windows-only regressions before `just ship`.  With `windows-lint`
+  now running strict clippy on every PR (which does a full
+  type-check + executes every dep's `build.rs`), the weekly job
+  became strictly redundant.  Tombstoned with an inline comment in
+  `tier-2.yml` explaining the removal; references in the
+  `tier-2-summary` and `notify-failure` `needs:` lists + the success
+  conditional + the summary-table line all dropped.  Tier 2 stays
+  the deep-assurance lane (coverage, miri, udeps).
+- **Docs**: `CONTRIBUTING.md` four-layer table + cross-platform
+  section refreshed for the new gate names + flag stack;
+  `windows-clippy-and-linux-cross-plan.md` gets a `Status (2026-05-06)`
+  header with every phase ✅ (including the Tier 2 follow-on),
+  both L1 gotchas documented, §8 acceptance criteria all checked,
+  §9 cross-references refreshed; `dev-flow-implementation-plan.md`
+  + `dev-flow.md` + `supply-chain-posture.md` updated for the
+  post-W5 job names and the Tier 2 removal.
+
 ### Fixed — Dependabot pipeline (PR #126)
 
 - **`dependabot.yml` cargo-ecosystem prefix** flipped from `deps` to
@@ -143,9 +578,32 @@ for the operator-facing validation flow.
   into a red required check rather than the documented advisory
   warning.
 
-## [0.5.90] - 2026-04-25
+## [0.5.92] - 2026-05-08
+
+> **Note on the v0.5.91 gap.**  v0.5.91 was prepared and tagged but never
+> reached a published GitHub Release: the `release.yml` finalize step hit
+> a server-side `pre_receive Repository rule violations found ... Cannot
+> create ref due to creations being restricted` rejection, and after the
+> partial release was deleted, the tag name became permanently locked by
+> GitHub's *immutable releases* feature (the pre-receive hook refuses any
+> future ref creation under that name even after a clean delete).  The
+> public release sequence therefore jumps `v0.5.90 → v0.5.92`; all
+> intended v0.5.91 changes are rolled forward into this release.
 
 ### Fixed
+- **release-plz active-mode race with the bespoke `auto-tag-release.yml`
+  flow.**  Without `release_always = false`, the `release-plz release`
+  job ran on every push to `main` and competed with `auto-tag-release.yml`
+  to create the same `v*` tag, producing duplicate workflow runs and
+  occasional failed tag pushes during the R4 transition.  Setting
+  `release_always = false` in `release-plz.toml` gates tag creation
+  through `release-plz-*` PR merges only, so the bespoke flow remains
+  the sole tag source until R5 retires it.  See
+  `docs/architecture/release-automation-plan.md §R4` for the full
+  rationale and the deviations log entry "R4 release-job race".
+  (R4 active mode, PR #151)
+
+### Carried over from the unreleased v0.5.91
 - **macOS arm64 release binaries SIGKILLed at launch** under macOS 26+
   (`SIGKILL (Code Signature Invalid)` / `namespace=CODESIGNING` /
   `"Taskgated Invalid Signature"`).  `[profile.release].strip = "symbols"`
