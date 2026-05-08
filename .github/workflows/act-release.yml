@@ -869,7 +869,7 @@ jobs:
               ``,
               `⚠️ **This is a release pipeline failure — immediate attention required.**`,
               ``,
-              `📧 Notification sent to: githubrobbi@nios.net`,
+              `📧 Notification,
             ].join('\n');
 
             const existing = await github.rest.issues.listForRepo({
@@ -895,7 +895,7 @@ jobs:
                 title: title,
                 body: body,
                 labels: [label, 'ci-failure'],
-                assignees: ['githubrobbi'],
+                assignees: ['deep-soft'],
               });
               core.info('Created new failure issue');
             }
