@@ -116,7 +116,7 @@ uffs-client = { path = "crates/uffs-client", version = "0.5.94" }
 # via `tokio::net`.  Crates that actually use `tokio::net` (uffs-daemon,
 # uffs-mcp, and the `async` feature of uffs-client) re-enable `net`
 # explicitly in their own Cargo.toml via `features = ["net"]`.
-tokio = { version = "1.52.2", default-features = false, features = [
+tokio = { version = "1.52.3", default-features = false, features = [
   "io-util",
   "macros",
   "rt",
@@ -270,7 +270,7 @@ zstd = { version = "0.13.3", features = ["zstdmt"] }
 # ───── Testing & Benchmarking ─────
 criterion = "0.8.2"
 proptest = "1.11.0"
-assert_cmd = "2.2.1"
+assert_cmd = "2.2.2"
 tempfile = "3.27.0"
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -306,9 +306,9 @@ unnecessary_safety_comment = "deny"    # Accurate safety comments
 missing_errors_doc = "deny"                        # Document error conditions
 missing_panics_doc = "deny"                        # Document panic conditions
 missing_safety_doc = "deny"                        # Document safety requirements
-cognitive_complexity = "deny"                      # Keep functions simple (threshold=30 in clippy.toml)
-too_many_lines = "deny"                            # Keep functions short (threshold=150 in clippy.toml)
-type_complexity = "deny"                           # Keep types simple (threshold=300 in clippy.toml)
+cognitive_complexity = "deny"                      # Keep functions simple (default threshold=25; violations get scoped #[expect])
+too_many_lines = "deny"                            # Keep functions short (default threshold=100; violations get scoped #[expect])
+type_complexity = "deny"                           # Keep types simple (default threshold=250; violations get scoped #[expect])
 large_enum_variant = "deny"                        # Optimize enum memory usage
 large_stack_arrays = "deny"                        # Avoid large stack allocations
 large_types_passed_by_value = "deny"               # Pass large types by reference
@@ -417,6 +417,7 @@ mem_forget = "deny"                   # Avoid mem::forget
 missing_assert_message = "deny"       # Add messages to assertions
 missing_asserts_for_indexing = "deny" # Assert before indexing
 try_err = "deny"                      # Use ? instead of try!
+unused_result_ok = "deny"             # Don't call .ok() just to discard — use `_ = expr;`
 unwrap_in_result = "deny"             # No unwrap/expect inside Result-returning fns
 
 # ───── Memory & allocation ─────
@@ -457,6 +458,7 @@ unreadable_literal = "deny"         # Use underscores in large literals
 equatable_if_let = "deny"       # Use == instead of if let for equality
 if_then_some_else_none = "deny" # Use bool::then instead
 manual_assert = "deny"          # Use assert! macro
+non_zero_suggestions = "deny"   # Prefer NonZeroXX::new(x)? over .unwrap() — composes with unwrap_used
 manual_instant_elapsed = "deny" # Use Instant::elapsed()
 manual_is_ascii_check = "deny"  # Use is_ascii methods
 manual_let_else = "deny"        # Use let-else syntax
@@ -493,6 +495,7 @@ unneeded_field_pattern = "deny"            # Remove unneeded field patterns
 # ───── Filesystem ─────
 doc_include_without_cfg = "deny" # Wrap doc includes in #[cfg(doc)] to avoid wasting compile time
 filetype_is_file = "deny"        # Detect is_file() misuse — returns false for symlinks
+large_include_file = "deny"      # Cap accidental megabyte-sized include_bytes!/include_str! sites (see clippy.toml `max-include-file-size`)
 
 # ───── Output discipline ─────
 print_stderr = "deny" # Use proper logging instead (clippy.toml allows in tests)
@@ -500,16 +503,19 @@ print_stdout = "deny" # Use proper logging instead (clippy.toml allows in tests)
 use_debug = "deny"    # Avoid Debug in production
 
 # ───── Portability ─────
+host_endian_bytes = "deny"    # Forbid to_ne_bytes/from_ne_bytes — UFFS reads little-endian NTFS on hosts of varying endianness
 std_instead_of_alloc = "deny" # Use alloc when std not needed
 std_instead_of_core = "deny"  # Use core when std not needed
 
 # ───── Testing hygiene ─────
 tests_outside_test_module = "deny" # Keep tests in test modules
+redundant_test_prefix = "deny"     # `fn test_foo` redundant inside `mod tests` — bare `fn foo`
 
 # ───── Unused / dead code ─────
-unused_async = "deny"    # Remove unused async
-unused_peekable = "deny" # Remove unused peekable
-unused_rounding = "deny" # Remove unused rounding
+unused_async = "deny"       # Remove unused async
+unused_peekable = "deny"    # Remove unused peekable
+unused_rounding = "deny"    # Remove unused rounding
+unused_trait_names = "deny" # Drop `use Trait;` imports whose methods are never used through that import
 
 # ───── Exceptions ─────
 # External deps (polars, tokio ecosystem) pull transitive version conflicts
@@ -535,6 +541,7 @@ unused_qualifications = "deny"     # Remove unnecessary path qualifications — 
 # ───── Code hygiene ─────
 elided_lifetimes_in_paths = "warn"      # Make lifetime annotations explicit in type paths
 explicit_outlives_requirements = "warn" # Remove redundant where T: 'a bounds
+single_use_lifetimes = "warn"           # Detect `fn foo<'a>(x: &'a T)` where 'a is used exactly once — sibling of already-deny unused_lifetimes
 unreachable_pub = "warn"                # Catch pub items not reachable from crate root
 variant_size_differences = "warn"       # Warn about enum variant size differences
 
@@ -547,6 +554,8 @@ invalid_codeblock_attributes = "warn" # Valid code block attributes
 invalid_html_tags = "warn"            # Valid HTML in docs
 invalid_rust_codeblocks = "warn"      # Valid Rust in doc code blocks
 bare_urls = "warn"                    # Use proper markdown links
+unescaped_backticks = "warn"          # Catch `…` backtick mismatch in doc comments (stable since 1.78)
+redundant_explicit_links = "warn"     # Detect `[Foo](Foo)`-style links where intra-doc link suffices
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cargo Profiles

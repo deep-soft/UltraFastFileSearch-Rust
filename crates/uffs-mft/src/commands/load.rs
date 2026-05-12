@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 
 use crate::display::{clean_path_for_display, format_bytes, format_duration, format_number_commas};
 
@@ -468,7 +468,7 @@ pub(crate) fn cmd_load(
         "csv" => {
             use std::fs::File;
 
-            use uffs_polars::{CsvWriter, SerWriter};
+            use uffs_polars::{CsvWriter, SerWriter as _};
 
             let file = File::create(output)?;
             CsvWriter::new(file).finish(&mut df)?;
@@ -693,7 +693,7 @@ fn cmd_load_iocp(
                     MftReader::save_parquet(&mut df, output).context("Failed to save Parquet")?;
                 }
                 "csv" => {
-                    use uffs_polars::{CsvWriter, SerWriter};
+                    use uffs_polars::{CsvWriter, SerWriter as _};
                     let file = std::fs::File::create(output)?;
                     CsvWriter::new(file)
                         .finish(&mut df)
@@ -732,13 +732,13 @@ mod tests {
     use super::required_output_path;
 
     #[test]
-    fn test_required_output_path_accepts_validated_path() {
+    fn required_output_path_accepts_validated_path() {
         let path = Path::new("out.parquet");
         assert_eq!(required_output_path(Some(path)).ok(), Some(path));
     }
 
     #[test]
-    fn test_required_output_path_rejects_missing_output() {
+    fn required_output_path_rejects_missing_output() {
         let missing_output_error = required_output_path(None).err();
         assert!(matches!(
             missing_output_error,

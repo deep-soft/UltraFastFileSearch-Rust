@@ -370,7 +370,7 @@ fn sorted_sha256(lines: &[String]) -> String {
 /// This matches `scripts/verify_parity.rs:1229-1236` exactly.
 #[cfg(test)]
 fn sha256_for_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
-    use sha2::{Digest, Sha256};
+    use sha2::{Digest as _, Sha256};
     let mut hasher = Sha256::new();
     for line in lines {
         hasher.update(line.as_bytes());
@@ -444,9 +444,9 @@ mod chaos_integration_tests {
         reason = "end-to-end chaos determinism test: load MFT, run 5 chaos iterations, \
                   hash sorted output, compare SHA — must remain a single cohesive test"
     )]
-    fn test_chaos_order_d_drive() {
+    fn chaos_order_d_drive() {
         use std::fs::File;
-        use std::io::{BufRead, BufReader};
+        use std::io::{BufRead as _, BufReader};
         const EXPECTED_SORTED_SHA: &str =
             "028356d4c9298ca8ef790229f4d4270ea29827ad155051e01181181fa34a531e";
 
@@ -616,7 +616,7 @@ mod chaos_integration_tests {
     /// Tests reverse-order parsing (simpler chaos strategy).
     #[test]
     #[ignore = "requires offline MFT (set UFFS_MFT_TEST_FILE or UFFS_MFT_TEST_DIR)"]
-    fn test_reverse_order_d_drive() {
+    fn reverse_order_d_drive() {
         let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
             .with_test_writer()
@@ -650,7 +650,7 @@ mod chaos_integration_tests {
     /// Tests interleaved chunk order (controlled chaos).
     #[test]
     #[ignore = "requires offline MFT (set UFFS_MFT_TEST_FILE or UFFS_MFT_TEST_DIR)"]
-    fn test_interleaved_order_d_drive() {
+    fn interleaved_order_d_drive() {
         let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
             .with_test_writer()

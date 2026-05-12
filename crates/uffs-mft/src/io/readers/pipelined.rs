@@ -522,9 +522,9 @@ fn spawn_pipelined_reader(
                     warn!(error = %err, "Pipelined reader: chunk read failed");
                     // Forward the error and terminate; the consumer will
                     // surface it via `?` and the orchestrator returns Err.
-                    // `.ok()` discards the must_use Result without losing
-                    // the annotation if a receiver-disconnect happens here.
-                    tx.send(Err(err)).ok();
+                    // Discard the must_use Result if the receiver has already
+                    // disconnected — the error path is already terminal.
+                    _ = tx.send(Err(err));
                     break;
                 }
             }
@@ -579,7 +579,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pipelined_reader_creation() {
+    fn pipelined_reader_creation() {
         // Expected chunk sizes must track `DriveType::optimal_chunk_size`
         // in `crates/uffs-mft/src/platform/system.rs`.  The previous
         // hardcoded `64 * 1024` was stale from an early prototype; the

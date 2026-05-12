@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use uffs_polars::{DataFrame, SerWriter};
+use uffs_polars::{DataFrame, SerWriter as _};
 
 use crate::error::{CoreError, Result};
 
@@ -64,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn test_export_table() -> TestResult {
+    fn export_table_works() -> TestResult {
         let df = create_test_df()?;
         let mut output = Vec::new();
         export_table(&df, &mut output)?;
@@ -75,7 +75,7 @@ mod tests {
     }
 
     #[test]
-    fn test_export_json() -> TestResult {
+    fn export_json_works() -> TestResult {
         let df = create_test_df()?;
         let mut output = Vec::new();
         export_json(&df, &mut output)?;
@@ -85,7 +85,7 @@ mod tests {
     }
 
     #[test]
-    fn test_export_csv() -> TestResult {
+    fn export_csv_works() -> TestResult {
         let df = create_test_df()?;
         let mut output = Vec::new();
         export_csv(&df, &mut output)?;
