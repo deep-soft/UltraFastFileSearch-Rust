@@ -150,6 +150,7 @@ and `.github/workflows/tier-2.yml` (all as of commit `185ed8825`).
 | rustdoc `-Dwarnings` | — | ✅ | ✅ | — |
 | `cargo deny check` | — | ✅ | ✅ | — |
 | **`cargo vet check --locked`** | — | **❌** | ✅ | — |
+| `cargo machete` (unused-dep static check) | — | ✅ | ✅ | — |
 | test COMPILE (`nextest --no-run`) | — | ✅ | ✅ (test-build) | — |
 | test EXECUTE (`nextest run`) | — | **❌** | ✅ | via coverage |
 | **`cargo test --doc`** | — | **❌** | ✅ | — |
@@ -160,7 +161,12 @@ and `.github/workflows/tier-2.yml` (all as of commit `185ed8825`).
 | CodeQL Rust SAST | — | — | `codeql.yml` on PR | — |
 | `cargo llvm-cov` | — | — | — | ✅ |
 | `cargo udeps` | — | — | — | ✅ |
-| `miri` (UB check) | — | — | — | ✅ (4 tests) |
+| `cargo hack --each-feature` (feature matrix) | — | — | — | ✅ |
+| `miri` (UB check, narrow deep-dive) | — | — | — | ✅ (4 tests) |
+| `cargo careful` (UB check, broad std-debug-asserts) | — | — | — | ✅ (`uffs-security` + `uffs-mft`) |
+| `cargo mutants` (test-quality, advisory) | — | — | — | ✅ (`uffs-security`, ~198 mutations) |
+| `cargo +1.91 check` (MSRV verification) | — | — | — | ✅ (`--all-features` + `--no-default-features`) |
+| `cargo fuzz` (advers-input parsers, advisory) | — | — | — | ✅ (`uffs-mft`, 15 min/target) |
 | cargo-vet imports refresh | — | — | — | weekly PR |
 
 **Key**: ✅ = gate runs here; — = not in this tier; **❌ bold** = gap where
@@ -184,77 +190,116 @@ CI catches something local never runs.
 
 ## 4. Gap Analysis — What CI Catches That Local Doesn't
 
-### 4.1 GAP 1 — `cargo vet check --locked` is CI-only (🔴 HIGH IMPACT)
+### 4.1 GAP 1 — `cargo vet check --locked` is CI-only (✅ CLOSED 2026-04-23)
 
-**Evidence**: PR #43 (v0.5.71) failed CI's `Tier 1 / Security` job three
-times with `pastey:0.2.2 missing ["safe-to-deploy"]` and
-`rustls:0.23.39 missing ["safe-to-deploy"]`.  Local pre-push never flagged
-either — by design: `cargo vet` is only invoked in `.github/workflows/ci.yml`
-at line 331.
+**Original evidence**: PR #43 (v0.5.71) failed CI's `Tier 1 / Security`
+job three times with `pastey:0.2.2 missing ["safe-to-deploy"]` and
+`rustls:0.23.39 missing ["safe-to-deploy"]`.  Local pre-push never
+flagged either — `cargo vet` was only invoked in
+`.github/workflows/ci.yml`.
 
-**Why it's a shift-left candidate**:
+**Original shift-left rationale**:
 
-- Cost to run locally: **1–2 s** (no compile; walks the dep graph against
-  `supply-chain/audits.toml` + `imports.lock`).
-- Inputs are 100% local: `Cargo.lock`, `supply-chain/*.toml`.  No network,
-  no compile, no cache.
-- The tool is already in `just/dev.just:118`'s `update-tools` list — any
-  maintainer running `just update-tools` has it.
+- Cost to run locally: **1–2 s** (no compile; walks the dep graph
+  against `supply-chain/audits.toml` + `imports.lock`).
+- Inputs are 100% local: `Cargo.lock`, `supply-chain/*.toml`.  No
+  network, no compile, no cache.
+- The tool was already in `just/dev.just`'s `update-tools` list — any
+  maintainer running `just update-tools` had it.
 
-**Why it wasn't there**: Historical artifact — `cargo-vet` was added to CI
-in PR #33b (2026-04-22) as a supply-chain hardening measure; the hook
-scripts existed before that and weren't updated.
+**Resolution**: Closed 2026-04-23 via PR #45 ("feat: shift-left dev-flow
+rollout (phases 1-7)") — Phase 1 of §6 below.  `scripts/hooks/_lint_pre_push.sh:224`
+now runs `cargo vet check --locked` at pre-push, dep-gated on
+`Cargo.{toml,lock}` or `supply-chain/` changes so the cost is paid only
+on PRs that could possibly fail it.  Formalised on 2026-05-06 via PR
+#140 / PR #141 (gates manifest Phases 1–2): the gate now appears as
+`[[gate]] id = "vet"` in `scripts/ci/gates.toml` and is regenerated
+into the pre-push hook by `just gen-hooks`.  An adjacent
+`vet-audit-discipline` gate (PR #172, 2026-05-12) enforces that every
+`[[exemptions.<crate>]]` version-bump carries a matching
+`[[audits.<crate>]]` delta + `Vet-Reviewed-Diff:` commit trailer.
 
-**Expected savings**: Each supply-chain-blocked PR costs ~8 min (CI round-trip
-+ diagnose + fix).  At roughly one Dependabot bump per week that trips
-`cargo vet`, that's ~6 hours/year reclaimed from mechanical CI waits.
+### 4.2 GAP 2 — pre-push compiles tests but never runs them (✅ CLOSED 2026-04-23)
 
-### 4.2 GAP 2 — pre-push compiles tests but never runs them (🟠 MEDIUM)
-
-**Evidence**: `scripts/hooks/_lint_pre_push.sh:101` is
+**Original evidence**: `scripts/hooks/_lint_pre_push.sh` ran
 `cargo nextest run --workspace --all-targets --all-features --no-run`.
 The `--no-run` means "link all test binaries, then exit".  CI's
-`Tier 1 / Tests` job at `ci.yml:238` is `cargo nextest run ... --profile ci`
-(without `--no-run`), which actually executes them.
+`Tier 1 / Tests` job ran `cargo nextest run ... --profile ci` (without
+`--no-run`), which actually executed them.
 
-**Class of bugs this misses locally**:
+**Class of bugs this missed locally**:
 
 - Flaky tests with a timing dependency.
-- Tests that depend on environment (tmpdir perms, `/tmp` being writable,
-  localhost DNS).
+- Tests that depend on environment (tmpdir perms, `/tmp` being
+  writable, localhost DNS).
 - Assertions that are correct at compile time but wrong at runtime
-  (e.g. a `assert_eq!(computed, constant)` where `constant` went stale).
+  (e.g. `assert_eq!(computed, constant)` where `constant` went stale).
 
-**Why `--no-run` is currently correct**: Running the full suite warm is
-~2–3 min on this workspace.  That blows the 60 s pre-push budget and
-destroys developer flow.
+**Why `--no-run` was originally correct**: Running the full suite warm
+is ~2–3 min on this workspace.  That blows the 60 s pre-push budget
+and destroys developer flow.
 
-**Mitigation path**: Offer a fast test subset via `cargo nextest run -E`
-(nextest's expression filters let us run only `unit` tests and skip any
-`@marked_slow` tag).  Add a new `just lint-pre-push-with-tests` recipe as
-opt-in; keep the default pre-push as-is.
+**Resolution**: Closed 2026-04-23 via PR #45 — Phase 2 of §6 below.
+Added a `pre-push-smoke` nextest profile in `.config/nextest.toml`
+(test-threads = -2, retries = 0, fail-fast = true, 30 s slow-timeout)
+that denylists the heavy integration suite (`validate_*`) and the
+`uffs-client` shmem tests (which serialise globally via
+`threads-required = num-cpus`).  Everything else — unit tests across
+all remaining crates — *does* run at pre-push.  Wall-time: 10–20 s
+warm on a developer laptop.
 
-### 4.3 GAP 3 — doc tests are pre-push's blind spot (🟠 MEDIUM)
+`scripts/hooks/_lint_pre_push.sh:241–242` now runs **both** the
+`--no-run` test-compile *and* the `pre-push-smoke` execution:
 
-**Evidence**: pre-push runs `cargo doc -Dwarnings` which only checks that
-docs *compile*.  The `cargo test --doc` step (runs the `/// ```rust` blocks
-as actual tests) is CI-only at `ci.yml:268`.
+```sh
+run_seq "tests" cargo nextest run --workspace --all-targets --all-features --no-run --locked --hide-progress-bar
+run_seq "smoke" cargo nextest run --workspace --profile pre-push-smoke --locked
+```
 
-**Cost locally**: 10–30 s warm.  Most workspace crates have &lt;20 doctests.
+The full-suite execution stays at PR-time (`pr-fast.yml::tests`) as
+the authoritative gate, with the smoke profile as the inner-loop
+backstop.  Long-term plan (per the nextest config docstring):
+replace the package-level denylist with per-test `slow` attributes
+so the filter becomes `not attr(slow)` instead of an opaque list.
 
-**Fix**: Add a mandatory gate `doc-tests` alongside `rustdoc`.
+### 4.3 GAP 3 — doc tests are pre-push's blind spot (✅ CLOSED 2026-04-23)
 
-### 4.4 GAP 4 — unused-dependency detection is weekly-only (🟢 LOW)
+**Original evidence**: pre-push ran `cargo doc -Dwarnings` which only
+checked that docs *compile*.  The `cargo test --doc` step (which runs
+the `/// ```rust` blocks as actual tests) was CI-only.
 
-**Evidence**: `cargo udeps` runs only in `tier-2.yml:166-191`.  A PR that
-removes the last use of a workspace dep accumulates cruft until the next
-Monday's Tier 2 run.
+**Original cost-locally**: 10–30 s warm.  Most workspace crates have
+&lt;20 doctests.
 
-**Fast alternative**: `cargo machete` is 5–10× faster than `cargo-udeps`
-(static analysis vs rebuild-with-RUSTC_WRAPPER).  Already in
-`dev.just:118`'s `update-tools` tool list.
+**Resolution**: Closed 2026-04-23 via PR #45 — Phase 2 of §6 below.
+`scripts/hooks/_lint_pre_push.sh:240` now runs
+`RUSTDOCFLAGS=-Dwarnings cargo test --doc --workspace --all-features
+--locked` at pre-push.  Codified into the gates manifest on
+2026-05-06 via PR #141 as `[[gate]] id = "doc-tests"` in
+`scripts/ci/gates.toml`; the gate is regenerated into the hook by
+`just gen-hooks`.
 
-**Recommendation**: Add `cargo machete` as an optional pre-push gate.
+### 4.4 GAP 4 — unused-dependency detection is weekly-only (✅ CLOSED 2026-05-12)
+
+**Original evidence**: `cargo udeps` runs only in `tier-2.yml:166-191`.
+A PR that removes the last use of a workspace dep accumulated cruft
+until the next Monday's Tier 2 run.
+
+**Resolution**: `cargo machete` (sub-second AST-based unused-dep
+detector — static-analysis sibling of `cargo-udeps`, no nightly
+required) promoted to a **hard gate at pre-push + pr-fast** via
+`scripts/ci/gates.toml [[gate]] id = "machete"` and the
+`pr-fast.yml::security` job's step list.  Added to
+`just install-dev-tools` so contributors onboard with the binary
+required by the gate.  See
+[the §12 Decisions Log entry for 2026-05-12 `cargo-machete` in `code-quality/lint-posture.md`](code-quality/lint-posture.md#12--decisions-log)
+for the full decision-log record.
+
+`cargo-udeps` stays at Tier 2 weekly as the authoritative
+compile-driven check — it catches deps used only behind `#[cfg]`
+gates that machete's static grep misses.  The two are complementary,
+not redundant: machete is the fast inner-loop check, udeps is the
+thorough weekly sweep.
 
 ### 4.5 GAP 5 — CodeQL is intentionally CI-only (🟢 LEAVE)
 
@@ -263,11 +308,229 @@ downloading the CodeQL CLI + the Rust extractor (~400 MB).  Not worth it
 — clippy (`--pedantic --nursery --cargo`) plus weekly miri covers ~80% of
 what CodeQL would catch for this codebase.  This gate stays where it is.
 
+### 4.6 GAP 6 — Transient infra failures had no recovery path (✅ CLOSED 2026-05-12)
+
+**Original evidence**: GitHub Actions' "Set up job" phase downloads
+every `uses: <action>@<sha>` tarball from `codeload.github.com`
+before any of our YAML steps run.  When `codeload.github.com` rate-
+limits the runner's IP (HTTP 429 / `Too Many Requests`), the runner
+exhausts its 3 built-in retries (with 10 s and 12 s exponential
+backoff) and then fails the entire job.  No per-step retry action
+(`nick-fields/retry@v3` or similar) can help — the failure happens
+*before* any step gets a chance to execute.
+
+Observed on PR #175 (zstd retire-vestige) and PR #174 (cargo-machete)
+on 2026-05-12: CodeQL's "Set up job" 429'd while downloading the
+`github/codeql-action` tarball; the analyse job died.  Same
+infrastructure issue could hit pr-fast.yml or tier-2.yml and would
+appear as a "real" CI failure, blocking merge until a maintainer
+manually clicked "Re-run failed jobs".
+
+**Resolution**: Two-layer hardening landed in this PR:
+
+- **Layer A** — `continue-on-error: true` on `codeql.yml::analyze`.
+  Codifies the workflow's own docstring (which already said *"the
+  check is NOT wired into branch protection"*) at the workflow-
+  engine level.  CodeQL job failures still show as ❌ in the PR's
+  check-runs panel, but the workflow conclusion is `success` so
+  branch protection / auto-merge are not affected.
+
+- **Layer B** — new `auto-rerun-transient.yml` watcher.  Triggers
+  on `workflow_run` completion of the three main workflows
+  (`PR Fast CI`, `🔍 CodeQL (Rust SAST)`, `🌙 UFFS Tier 2 Nightly
+  CI`).  For each completed run with `run_attempt < 2` (loop
+  prevention), it inspects the logs of every failed job; if any
+  log matches a transient-infra regex (`429` / `ECONNRESET` /
+  `EAI_AGAIN` / `runner has lost contact` / `No space left on
+  device` / etc.) it calls `POST /actions/runs/<id>/rerun-failed-
+  jobs` to re-execute exactly the failed jobs once.  Persistent
+  failures (real compile / test errors) do not match the regex and
+  stay red.
+
+**Bounded retry**: `run_attempt < 2` enforces *exactly one*
+auto-rerun per run.  If the rerun also fails with a transient
+signature, the second attempt (`run_attempt = 2`) is *not*
+re-retried — a human investigates.  Worst-case overhead: ~30 s per
+transient failure, single-digit per week.
+
+**Policy classification** added by this PR:
+
+| Job kind | Branch protection | Failure visibility | Auto-rerun? |
+|---|---|---|---|
+| Required (pr-fast.yml `required` aggregator) | blocks merge | red ❌ until fixed | yes if transient |
+| Advisory (`continue-on-error: true`) | does not block | red ❌ on job, ✅ workflow | yes if transient |
+| Tier 2 weekly | does not block PRs | `ci-failure-tier-2` issue auto-opened | yes if transient |
+
+### 4.7 GAP 7 — MSRV is declared but never verified (✅ CLOSED 2026-05-12)
+
+**Evidence**: The workspace declares `rust-version = "1.91"` in
+`Cargo.toml` and `msrv = "1.91"` in `clippy.toml`, and the
+`clippy::incompatible_msrv` lint is denied via the workspace-wide
+`pedantic` group.  But `rust-toolchain.toml` pins **nightly**, not
+1.91 stable, and there is no `cargo +1.91 check` job in any tier.
+Every dev build and every CI build runs against the pinned nightly.
+
+**Class of bugs this misses**: `clippy::incompatible_msrv` only fires
+for APIs explicitly attributed with `#[stable(since = ...)]` after
+1.91.  It is known to under-cover:
+
+- New trait impls on existing types (the trait was added pre-1.91 but
+  the impl is post-1.91).
+- Deref coercion / lifetime elision rule changes that affect
+  borrow-check behaviour without changing API signatures.
+- New `const fn` qualifications on previously non-const APIs.
+- Inference / specialisation improvements that compile pre-1.91 code
+  differently on a newer toolchain.
+
+A PR can introduce code that compiles cleanly on the pinned nightly,
+passes every gate in every tier, and silently fails for any
+downstream consumer on the claimed MSRV.  Pre-publish this is
+theoretical (no published version yet); post-R8 it becomes a
+direct SemVer breach for any patch / minor release that lands such
+code.
+
+**Why this gap exists**: The R3-Q2 round of CI hardening focused on
+supply-chain (vet, machete) and runtime correctness (miri, careful,
+mutants).  MSRV verification was on the candidate list but was
+deprioritised because no first-publish baseline existed yet to
+protect.  The cost-benefit was understood but the work was deferred.
+
+**Resolution**: Closed 2026-05-12 via R3-06 (PR landing this entry).
+The weekly `msrv` job sits in `tier-2.yml` between `mutants` and
+`tier-2-summary`:
+
+```yaml
+msrv:
+  name: Tier 2 / MSRV (1.91 stable)
+  runs-on: ubuntu-latest
+  timeout-minutes: 15
+  steps:
+    - uses: actions/checkout@<sha>
+    - run: |
+        rustup toolchain install 1.91 --profile minimal --no-self-update
+        rustup default 1.91
+    - uses: Swatinem/rust-cache@<sha>
+      with: { shared-key: tier-2-msrv, cache-on-failure: 'true' }
+    - run: cargo +1.91 check --workspace --locked --all-features
+    - run: cargo +1.91 check --workspace --locked --no-default-features
+```
+
+Wired into `tier-2-summary.needs` and the success-check as a **hard
+gate** (not advisory like `mutants`) since MSRV regressions have a
+binary correctness signal: either the 1.91 compiler accepts the
+workspace or it doesn't.  Also added to `notify-failure.needs` so a
+regression opens the rolling `ci-failure-tier-2` issue.  Promote to
+a hard pre-publish gate (release-time, alongside
+`cargo-semver-checks`) once R8 lands the first crates.io publish.
+
+### 4.8 GAP 8 — Fuzz harness exists but never runs (✅ CLOSED 2026-05-12)
+
+**Evidence**: `crates/uffs-mft/fuzz/fuzz_targets/` carries two
+real libfuzzer-sys harnesses:
+
+- `fuzz_apply_fixup.rs` — fuzzes `uffs_mft::parse::apply_fixup`,
+  which handles untrusted NTFS Update Sequence Array bytes and is
+  security-relevant (malformed fixup data could cause buffer
+  overflows in a less-safe implementation).
+- `fuzz_parse_record.rs` — fuzzes `uffs_mft::parse::parse_record`,
+  the entry point for raw MFT record deserialisation.
+
+Both harnesses are real (not skeletons): they target real public APIs
+that process untrusted on-disk bytes.  Both were committed during
+the shift-left rollout (mtime 2026-04-24).  But:
+
+- Zero references to `cargo fuzz run` exist in any workflow,
+  pre-push hook, or justfile recipe.
+- The harnesses produce no corpus, no coverage signal, and no
+  artifact stream.
+- `§2.2 Four tiers` explicitly lists "fuzz" as a T4 candidate.
+  Mutation testing landed in PR #180 (R3-04); fuzz was not
+  scheduled and was forgotten.
+
+This is orphaned security-relevant infrastructure: code exists and
+compiles, but rots silently with every change to the underlying APIs.
+
+**Class of bugs this misses**: Bytes-in-buffer panics, integer
+overflows on malformed metadata fields, slice-bounds violations on
+truncated records, infinite loops on cyclical record references.
+Exactly the bug classes Miri and cargo-careful *can't* catch —
+those tools harden the *known* test inputs; fuzz harnesses
+generate adversarial *unknown* inputs.
+
+**Why this gap exists**: Same answer as GAP 7 — the harnesses
+were built during the security hardening sprint but the recurring-
+schedule work was deprioritised.  The audit trail in the harnesses
+themselves (`// Run with: cargo +nightly fuzz run fuzz_apply_fixup`)
+suggests they were intended to be run manually, then evolve into
+automation.  The manual-run phase never produced a corpus seed
+commit, so any new contributor opening the repo today wouldn't
+know the harnesses were ever exercised.
+
+**Resolution**: Closed 2026-05-12 via R3-07 (PR landing this entry).
+The weekly `fuzz` job sits in `tier-2.yml` between `msrv` and
+`tier-2-summary`:
+
+```yaml
+fuzz:
+  name: Tier 2 / cargo-fuzz (uffs-mft)
+  runs-on: ubuntu-latest
+  timeout-minutes: 60
+  continue-on-error: true   # advisory rollout, same posture as mutants
+  steps:
+    - uses: actions/checkout@<sha>
+    - run: rustup show          # pinned nightly from rust-toolchain.toml
+    - uses: Swatinem/rust-cache@<sha>
+      with:
+        shared-key: tier-2-fuzz
+        workspaces: "crates/uffs-mft/fuzz -> target"
+    - uses: taiki-e/install-action@<sha>
+      with: { tool: cargo-fuzz }
+    - run: |
+        cd crates/uffs-mft
+        cargo +nightly fuzz run fuzz_parse_record -- -max_total_time=900
+    - if: always()
+      run: |
+        cd crates/uffs-mft
+        cargo +nightly fuzz run fuzz_apply_fixup -- -max_total_time=900
+    - uses: actions/upload-artifact@<sha>
+      if: always()
+      with:
+        name: cargo-fuzz-output-${{ github.run_id }}
+        path: |
+          crates/uffs-mft/fuzz/artifacts/
+          crates/uffs-mft/fuzz/corpus/
+        retention-days: 90
+```
+
+**Advisory rollout** (same posture as `cargo-mutants`): the
+harnesses have been committed since 2026-04-24 but have never run.
+No corpus seed exists, so the first run starts from zero coverage
+and may find immediate crashes from uninitialised edge cases the
+existing test suite doesn't reach.  `continue-on-error: true` plus
+deliberate omission from `tier-2-summary`'s required-set check and
+from `notify-failure.needs` mean those crashes surface in the
+weekly summary + artifact upload without blocking the workflow.
+Once a corpus baseline is established and known crashes are triaged
+(either fixed or marked as expected via `crashes/` filtering), a
+follow-up PR can promote to hard-fail-on-regression.
+
+**Time-budget choice**: `-max_total_time=900` (15 min per target)
+keeps the wall-clock predictable.  A run-count budget (`-runs=N`)
+would vary wildly based on how quickly libfuzzer finds new
+coverage — fast on day 1 (no corpus), slow on day 30 (saturated
+corpus).
+
+**Long-term**: persist the corpus across runs via `actions/cache`
+with a corpus-versioned key so each weekly run builds on the last
+instead of restarting from zero coverage.  GitHub OSS-Fuzz
+integration is the next tier beyond that if the project scales to
+that point.
+
 ---
 
 ## 5. Known Bugs in the Current Flow
 
-### 5.1 BUG A — `just ship` resumable state skips `git push` after success (🔴)
+### 5.1 BUG A — `just ship` resumable state skips `git push` after success (✅ CLOSED 2026-04-23)
 
 **Observed**: 2026-04-22, during v0.5.71 release.
 
@@ -303,7 +566,19 @@ if n > 0 {
 }
 ```
 
-### 5.2 BUG B — `CARGO_INCREMENTAL` vs sccache drift (🟠)
+**Resolution**: Closed 2026-04-23 via PR #45 — Phase 3 of §6 below.
+Implemented as `count_unpushed_commits` in
+`scripts/ci-pipeline/src/git_ops.rs:71–86`, invoked by
+`scripts/ci-pipeline/src/ship.rs:346–355` immediately before the
+resumable-state machinery picks up step 11.  Source comments at
+both sites cite `dev-flow-implementation-plan.md § 6.3` (the
+implementation-plan companion to this doc's §6.3) so the fix is
+self-referencing and bisection-friendly.  Handles the first-push
+edge case (`origin/<branch>` does not yet exist) as the proposed
+fix specified: `git rev-list` fails, the helper folds that into
+`Ok(1)`, and the push runs.
+
+### 5.2 BUG B — `CARGO_INCREMENTAL` vs sccache drift (✅ CLOSED 2026-04-24)
 
 **Observed**: same release, same day.  pre-push hook failed with
 `sccache: incremental compilation is prohibited: Unset CARGO_INCREMENTAL
@@ -321,14 +596,28 @@ incremental artifacts are non-cacheable (sccache source:
 pre-push hook inherited `CARGO_INCREMENTAL=1` from the just env, and
 every cargo-invoking gate (rustdoc, deny, nextest) died.
 
-**Status**: Worked around in commit `420e82387` by explicitly pairing
-`CARGO_INCREMENTAL=0` with `RUSTC_WRAPPER=sccache` in the pipeline's
-`global_env` so every subprocess (including `git`) inherits the correct
-setting.  The underlying drift between `shared.just` and
-`.cargo/config.toml` is **not yet root-caused** — see Proposed Refactor
-§ 6.4.
+**Resolution**: Closed 2026-04-24 via PR #52 ("fix(preview): complete
+Phase 5 re-bake — windows-latest move + RC_PATH fix") — Phase 4 of
+§6 below.  The drift between `shared.just` and `.cargo/config.toml`
+is now eliminated at the root by pairing both settings in one place:
 
-### 5.3 BUG C — `rust-script` serves stale binary cache (🟡)
+- `.cargo/config.toml::[build]` carries both `rustc-wrapper =
+  "sccache"` *and* `incremental = false` together, with a comment
+  explicitly referencing "Bug B in docs/architecture/dev-flow.md
+  § 5.2" so any future contributor reading the config sees the
+  history.
+- `just/shared.just` line 15 region carries a `# CARGO_INCREMENTAL is
+  deliberately NOT exported here` comment that points at the same
+  config-owns-cache-policy invariant, again citing Bug B and the
+  implementation-plan § 2.1.
+
+Result: every cargo invocation — from `just`, from `git` hooks, from
+`rust-script`, from IDE plugins — inherits both settings as one
+atomic config.  The workaround in the pipeline's `global_env`
+(commit `420e82387`) was kept as defence-in-depth but is no longer
+the load-bearing fix.
+
+### 5.3 BUG C — `rust-script` serves stale binary cache (✅ CLOSED 2026-04-23)
 
 **Observed**: same release.  My ci-pipeline.rs fix appeared to have no
 effect through several attempts because rust-script's binary cache under
@@ -341,9 +630,42 @@ line appeared in output, the binary was fresh.  If absent, stale cache.
 
 **Fix**: Two options documented under § 6.5.
 
+**Resolution**: Closed 2026-04-23 via PR #45 — Phase 5B of §6 below.
+`scripts/ci/ci-pipeline.rs` was promoted to a real cargo binary at
+`scripts/ci-pipeline/Cargo.toml` + `scripts/ci-pipeline/src/main.rs`.
+The rust-script execution path is gone; `just` recipes that used to
+`rust-script scripts/ci/ci-pipeline.rs` now invoke `cargo run -q
+--release -p uffs-ci-pipeline -- <command>` (see
+`just/workflow.just::workflow-resume`).  Heisenbug class eliminated:
+there is no longer a per-script binary cache to go stale.  Phase 5A
+(`rust-script --clear-cache` band-aid) was deliberately *not*
+adopted in favour of the structural fix.
+
 ---
 
 ## 6. Proposed Refactor — Detailed
+
+> **Status: ✅ LANDED 2026-04-23 / 2026-04-24.**  All five phases of
+> this refactor have shipped.  Each per-phase write-up below is
+> preserved verbatim as historical context (what was proposed, why,
+> and what the diff looked like at the time).  Cross-references:
+>
+> | Phase | Closes | Landed via | Closure note |
+> |---|---|---|---|
+> | Phase 1 — vet shift-left | GAP 1 | PR #45 (2026-04-23), formalised by PR #140/#141 (2026-05-06) | §4.1 |
+> | Phase 2 — doc tests at pre-push | GAP 3 | PR #45 (2026-04-23), formalised by PR #141 | §4.3 |
+> | Phase 3 — ship resumable push fix | BUG A | PR #45 (2026-04-23) | §5.1 |
+> | Phase 4 — CARGO_INCREMENTAL root-cause | BUG B | PR #52 (2026-04-24) | §5.2 |
+> | Phase 5A — `rust-script --clear-cache` | BUG C | **NOT ADOPTED** (5B chosen) | §5.3 |
+> | Phase 5B — promote `ci-pipeline.rs` to cargo binary | BUG C | PR #45 (2026-04-23) | §5.3 |
+>
+> An adjacent refactor not anticipated in this §6 also landed:
+> **Gates manifest** (PRs #140 → #144, 2026-05-06 → 2026-05-07).
+> The pre-push hook (`scripts/hooks/_lint_pre_push.sh`) and the
+> fast-lint hook (`scripts/hooks/_lint_fast.sh`) are now generated
+> by `just gen-hooks` from a single source of truth
+> (`scripts/ci/gates.toml`).  PR CI carries matching drift-detection
+> jobs so the manifest stays authoritative.
 
 Five phases, ordered by risk × reward.  Each phase is a single atomic
 commit.

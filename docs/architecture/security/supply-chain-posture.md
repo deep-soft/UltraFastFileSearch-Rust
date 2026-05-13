@@ -3,9 +3,48 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 <!-- Copyright (c) 2025-2026 SKY, LLC. -->
 
-Status as of **2026-04-22** · Maintainer: `@githubrobbi` · Review cadence: monthly
+Status as of **2026-05-12** · Maintainer: `@githubrobbi` · Review cadence: monthly
 
 **Changelog**:
+- 2026-05-12 — **`cargo-machete` promoted to pre-push + pr-fast hard gate**.
+  Sub-second AST-based unused-dependency detector, complementary to the
+  existing weekly `cargo-udeps` check (compile-driven, nightly-only,
+  multi-minute).  Closes `dev-flow.md §4.4 GAP 4` — unused-dep
+  detection was previously weekly-only.  Wired via `[[gate]] id =
+  "machete"` in `scripts/ci/gates.toml`, regenerated `_lint_pre_push.sh`,
+  and bundled into `pr-fast.yml`'s existing `security` job step list
+  (display name kept stable to preserve check-run history).  Added to
+  `just install-dev-tools` so contributors onboard with the binary
+  required by the gate.  Workspace was clean against `cargo machete
+  --skip-target-dir` at adoption.  See
+  [`../code-quality/lint-posture.md` §12 entry for 2026-05-12
+  `cargo-machete`](../code-quality/lint-posture.md#12--decisions-log)
+  for the full decision-log record.
+- 2026-05-12 — **Four-layer cargo-vet audit-discipline policy** (PR #172).
+  Closes the lazy-bump anti-pattern PR #166 introduced and PR #170
+  manually undid.  Four defenses now compose to make `cargo vet
+  regenerate exemptions` the wrong-by-default answer to a patch-bump
+  breaking `cargo vet check`:
+  1. **CI gate**: `scripts/ci/check_vet_audit_discipline.sh` runs at
+     pre-push and in `pr-fast.yml::security`.  Every
+     `[[exemptions.<crate>]]` version-change in the diff must be
+     paired with both (A) a matching `[[audits.<crate>]]` delta block
+     in `audits.toml` AND (B) a `Vet-Reviewed-Diff: <crate>@<old>-><new>`
+     trailer on a commit in the same range.
+  2. **`just vet-bump <crate>`**: guided audit driver that prints the
+     exact `cargo vet diff` / `cargo vet certify` / `git commit
+     --trailer` recipe.  Cuts the audit workflow from "remember the
+     four cargo-vet subcommands" to one `just` invocation.
+  3. **CODEOWNERS**: `supply-chain/` requires explicit @githubrobbi
+     review on every PR, regardless of which other CODEOWNERS line
+     it matches.
+  4. **Commit-trailer**: the `Vet-Reviewed-Diff:` trailer is the
+     reviewer's signature in the git log, anchored to the signed-
+     commit branch-protection rule on `main`.  Same shape as
+     `Signed-off-by:` from the kernel workflow.
+  Bypass for emergencies only: `BYPASS_VET_AUDIT_DISCIPLINE=1 git
+  push`.  CI has no bypass.  See §"Mandating audits over blanket
+  bumps" below for the full posture.
 - 2026-04-22 — Initial baseline (PR #33a).  Added `cargo-geiger`
   on-demand, `dependabot-review.yml` dep-tree-growth annotation.
 - 2026-04-22 — Added cargo-vet audit trail (PR #33b): 5 upstream
@@ -67,6 +106,15 @@ control lands or a deferred item is promoted.
 | Dep-tree growth | `dependabot-review.yml` | Cargo.lock crate-count delta on Dependabot PRs | Every Dependabot PR | Annotation only |
 | Lockfile pinning | Committed `Cargo.lock` | Every resolved crate-version frozen across devs / CI / releases | Always | **Yes** — `cargo vet check --locked` would fail any drift |
 | Audit trail | `cargo-vet check --locked` | Every resolved crate-version must have import / own audit / exemption | Every PR | **Yes** — `pr-fast.yml` security job |
+| Audit discipline | `scripts/ci/check_vet_audit_discipline.sh` | Every exemption version-bump must have a matching delta audit AND a `Vet-Reviewed-Diff:` commit trailer | Every push touching `supply-chain/config.toml` | **Yes** — pre-push hook + `pr-fast.yml::security` |
+| Unused-dep hygiene (static) | `cargo-machete` | Every `[dependencies]` / `[dev-dependencies]` / `[build-dependencies]` entry must be `use`d somewhere in the workspace | Every code-changed push / PR | **Yes** — pre-push hook + `pr-fast.yml::security` (Tier R3-01, landed 2026-05-12) |
+| Unused-dep hygiene (compiled) | `cargo-udeps` | Same scope as machete but compiles to detect — catches `#[cfg]`-gated false-negatives machete's grep misses | Weekly | **Yes** (advisory) — `tier-2.yml::udeps` |
+| Broad UB / std-debug coverage | `cargo-careful` | Rebuilds `std` with extra debug assertions (slice / iterator bounds, integer overflow, RefCell borrow violations) and runs scoped tests against the augmented `std`.  Complements Miri's narrow deep-dive (4 specific raw-persistence tests) with broad coverage of the two unsafe-density hotspots: `uffs-security` (crypto / keystore) and `uffs-mft` (raw NTFS parsing) | Weekly | **Yes** (advisory) — `tier-2.yml::careful` (Tier R3-03, landed 2026-05-12) |
+| Test-suite quality (mutation) | `cargo-mutants` | For every reachable function in `uffs-security`, generate small source mutations (operator swaps, return-value flips, etc.) and run the test suite against each.  Missed mutations indicate test gaps in safety-critical paths (crypto, keystore, runtime-dir privileges).  Output uploaded as `cargo-mutants-output-*` artifact (30-day retention) for offline triage | Weekly | **Yes** (advisory; informational baseline rollout) — `tier-2.yml::mutants` (Tier R3-04, landed 2026-05-12) |
+| Feature-matrix compile coverage | `cargo-hack --each-feature` | For every workspace crate with a `[features]` block, type-check each feature in isolation plus `--no-default-features`.  Catches `use <crate-behind-feature>` added without `#[cfg(feature = "...")]` gating — invisible to `--all-features` builds | Weekly | **Yes** (advisory) — `tier-2.yml::hack` (Tier R3-02, landed 2026-05-12) |
+| SemVer compliance | `cargo-semver-checks check-release` | For every publishable crate, diff the current rustdoc JSON against the latest version on crates.io.  Catches SemVer-breaking API changes (removed pub items, signature changes, new required generic params, etc.) shipped under a non-major version bump.  Informational pre-R8 (no crates.io baseline yet); becomes the canonical correctness check once the first publish lands | Weekly | **Yes** (advisory pre-R8, then GATE) — `crates-io-dry-run.yml` (Tier R3-05, landed 2026-05-12) |
+| MSRV verification | `cargo +1.91 check --locked` (`--all-features` + `--no-default-features`) | Independently verifies the workspace builds on the claimed MSRV (`Cargo.toml::rust-version = "1.91"`) against the **stable** 1.91 toolchain. `rust-toolchain.toml` pins nightly so every other gate runs there; this is the only gate that exercises the contract surface downstream consumers see. Catches MSRV regressions that `clippy::incompatible_msrv` misses (new trait impls, deref coercion changes, new `const fn` qualifications, inference improvements). Hard gate \u2014 a failure means the rust-version claim is lying to crates.io consumers | Weekly | **Yes** (hard gate) \u2014 `tier-2.yml::msrv` (Tier R3-06, landed 2026-05-12) |
+| Adversarial-input fuzzing | `cargo-fuzz` (libfuzzer-sys) | Runs libfuzzer-sys harnesses against the workspace's primary untrusted-byte attack surface: `uffs_mft::parse::{parse_record,parse_record_full,parse_record_zero_alloc,apply_fixup}`.  Every NTFS MFT record we parse came from an external filesystem image — fuzz tests robustness to malformed bytes (truncated records, cyclic FRS references, integer overflows in metadata fields, slice-bounds violations in the fixup application).  Complements Miri / cargo-careful (UB on *known* inputs) and cargo-mutants (test-suite quality on *known* inputs) by generating *unknown* adversarial inputs.  Time-bounded (`-max_total_time=900` per target, 30 min total).  Artifacts (`crashes/` + `corpus/`) uploaded for 90 days for offline triage and seed carry-over | Weekly | **Yes** (advisory; informational baseline rollout) — `tier-2.yml::fuzz` (Tier R3-07, landed 2026-05-12) |
 | Import refresh | `cargo-vet-refresh.yml` | Weekly `cargo vet regenerate imports` → PR | Mondays 08:00 UTC | GitHub schedules |
 | Structural audit | `cargo-geiger` via `just geiger` | unsafe / build.rs / proc-macro footprint | On-demand (monthly) | No |
 | Semantic SAST | `codeql.yml` (Rust, public preview) | Dataflow-based bug patterns (path / SQL / regex injection, crypto misuse, unvalidated redirects) | PR + Tuesdays 06:30 UTC | Informational (not a required gate yet) |
@@ -116,6 +164,143 @@ SmartScreen / Gatekeeper reputation signal rather than
 attestation covers the technical threat for the audience who
 verifies; deferring the UX-layer signing until there's enterprise
 demand.
+
+## Mandating audits over blanket bumps
+
+**Origin story**: PR #166 (a routine Dependabot patch-bump roll-up)
+broke `cargo vet check` because `assert_cmd 2.2.1 -> 2.2.2` and
+`tokio 1.52.2 -> 1.52.3` were neither imported via Mozilla/Google nor
+locally audited.  The path-of-least-resistance fix was to bump the
+existing `[[exemptions.<crate>]]` `version =` line so vet would
+re-pass — and that's exactly what PR #166 merged.  PR #170 reversed
+the silent rubber-stamp manually: it anchored each exemption back at
+the pre-bump version and added a proper `[[audits.<crate>]]` `delta`
+block reviewing the actual upstream changes.
+
+The lesson: **every exemption bump is a future audit-debt entry, and
+the cargo-vet workflow is biased toward the bump over the audit**.
+Without explicit guard-rails, the audit ledger silently grows shallower
+with every dependabot run.
+
+This section documents the four-layer policy that makes the audit the
+default and the bump the exception.
+
+### Layer 1 — CI gate (`check_vet_audit_discipline.sh`)
+
+The script `scripts/ci/check_vet_audit_discipline.sh` parses the
+`[[exemptions.*]]` blocks in `supply-chain/config.toml` at both the
+diff base and HEAD, identifies every `(crate, version)` pair that is
+new in HEAD but had a different prior version at base (a "bump"), and
+verifies for each bump that:
+
+- **(A)** `supply-chain/audits.toml` contains a `[[audits.<crate>]]`
+  block with `delta = "<OLD> -> <NEW>"` (or the reverse — the gate is
+  direction-insensitive so that "anchor-restoration" bumps like
+  PR #170's `2.2.2 -> 2.2.1` are accepted when the matching forward
+  delta exists).
+- **(B)** at least one commit in the push range carries a
+  `Vet-Reviewed-Diff: <crate>@<OLD>-><NEW>` trailer (or the reverse).
+
+Both checks must pass.  A passing audit without a trailer means the
+record predates this push (potentially stale); a passing trailer
+without an audit means the reviewer skipped the formal `cargo vet
+certify` step.
+
+**Scope**: only **BUMPs** (existing crate, version change) are gated.
+**ADDs** (brand-new exemption for a crate that wasn't previously
+exempt) are skipped to keep `cargo vet regenerate exemptions` working
+when a new transitive dep appears — those are caught by Layer 3
+(CODEOWNERS).  **REMOVEs** are always good (audit-debt going down).
+
+**Tiers**: pre-push (`scripts/hooks/_lint_pre_push.sh`, `spawn_bg`
+bucket, runs concurrently with `cargo vet check`) + `pr-fast.yml`'s
+`security` job (folded in with `cargo deny` and `cargo vet check`).
+Both consult the same script for byte-identical semantics.
+
+**Bypass**: `BYPASS_VET_AUDIT_DISCIPLINE=1 git push` at pre-push only
+(prints a yellow `[WARN]` banner to stderr; the operator's intent is
+visible in the push log).  CI has no bypass — the gate is hard on
+`main`.
+
+### Layer 2 — `just vet-bump <crate>` driver
+
+The `just vet-bump <crate>` recipe (`just/security.just`, backed by
+`scripts/ci/vet_bump.sh`) is the operator's easy button.  It detects
+the current exemption version, the version Cargo.lock now wants, and
+the criteria level the exemption holds, then prints the exact
+four-step recipe to perform the audit cleanly:
+
+1. `cargo vet diff <crate> <OLD> <NEW>` — manual diff review.
+2. `cargo vet certify <crate> <OLD> <NEW> --criteria <X>` — record
+   the audit with notes (cargo-vet opens `$EDITOR`).
+3. `git commit -S --trailer 'Vet-Reviewed-Diff: <crate>@<OLD>-><NEW>'
+   -m '…'` — commit with the required trailer.
+4. `cargo vet check --locked` + `just vet-discipline` — local CI
+   parity check.
+
+The recipe deliberately **does not** mutate any file or run cargo
+subcommands on its own — every step is operator-visible.  This keeps
+the audit narrative in the operator's head (and in the commit `notes`
+field), which is the whole point of mandating audits over rubber
+stamps.
+
+### Layer 3 — CODEOWNERS on `supply-chain/`
+
+A single `supply-chain/                       @githubrobbi` line in
+`.github/CODEOWNERS` ensures that **every** PR touching the directory
+(exemption add, exemption bump, audit add, imports refresh — every
+case the previous layers may or may not gate) routes to maintainer
+review.  This is the human backstop for cases the script misses (new
+exemption ADDs, audit `notes` quality, semantic correctness of the
+`safe-to-*` criteria chosen).
+
+### Layer 4 — `Vet-Reviewed-Diff:` commit trailer
+
+The trailer's syntactic shape (`<crate>@<OLD>-><NEW>`, no quoting, no
+nesting) matches the kernel-style `Signed-off-by:` workflow that
+`git commit --trailer` already understands.  Branch protection on
+`main` requires signed commits, so the trailer is implicitly attached
+to the operator's commit-signing key.  The gate parses trailers via
+`git log --format=%B` + grep (portable across git ≥ 1.x), so it
+works on every supported runner.
+
+### How the four layers compose
+
+```
+   PR opens with exemption bump
+            │
+            ▼
+   ┌────────────────────┐
+   │ Layer 1: CI gate   │  audit + trailer both present?   ── no ──► RED check, no merge
+   └────────┬───────────┘
+            │ yes
+            ▼
+   ┌────────────────────┐
+   │ Layer 3: CODEOWNERS│  maintainer review required      ── no ──► no approval, no merge
+   └────────┬───────────┘
+            │ yes
+            ▼
+   ┌────────────────────┐
+   │ Branch protection  │  signed commits + required reviews
+   └────────┬───────────┘
+            │ yes
+            ▼
+         merge to main
+```
+
+Layer 2 makes the `yes` paths cheap (1 minute, not 15).  Layer 4 is
+the audit trail that future incident-response reviewers will read.
+
+### What if I really need to skip?
+
+The pre-push escape hatch (`BYPASS_VET_AUDIT_DISCIPLINE=1`) exists for
+emergencies: on-call hot-fix where the operator is at an airport
+without `cargo vet` installed.  Its use is visible in the operator's
+shell history and in the pre-push stderr, but **not** in the commit
+itself — meaning the bypass cannot bridge to a merge unless the
+operator also opens a follow-up PR landing the audit.  CI does not
+honour the bypass: any merge to `main` must satisfy the discipline
+gate.
 
 ## Lockfile pinning (`Cargo.lock`)
 
@@ -312,15 +497,26 @@ on `main` at branch-open time.
 2. Check the `dep-tree-growth` annotation — if flagged, inspect the
    "Newly-resolved crate names" summary.
 3. Check the `cargo vet check` CI status — if red, the bump isn't
-   covered by any imported audit.  Fix locally:
+   covered by any imported audit.  Fix locally with the **audit-first**
+   recipe (the lazy `cargo vet regenerate exemptions` fallback is now
+   blocked by `check_vet_audit_discipline.sh` — see §"Mandating audits
+   over blanket bumps" below):
    ```bash
    gh pr checkout <N>
    cargo vet regenerate imports     # try upstream first
    cargo vet check                  # still red?
-   cargo vet regenerate exemptions  # grandfather in
-   git commit -S -am "chore: refresh cargo-vet imports/exemptions"
+   just vet-bump <crate>            # guided audit (Layer 2)
+   # ...edit cargo vet certify notes, then commit with trailer:
+   git commit -S \
+       --trailer 'Vet-Reviewed-Diff: <crate>@<old>-><new>' \
+       -am 'chore(security): audit <crate> <old> -> <new>'
    git push
    ```
+   The legacy `cargo vet regenerate exemptions` shortcut is only
+   appropriate when a brand-new transitive crate appears with no
+   prior exemption — the new gate skips ADDs by design (Layer 3 is
+   the CODEOWNERS review for those cases).  For any version-bump of
+   an *existing* exemption, the audit-first recipe is mandatory.
 4. `gh pr diff <N>` and scan `Cargo.lock` for unexpected additions.
 5. If the bump is a known crate and the diff looks clean, merge.
 6. If anything looks off — typo-squat, sudden fan-out, unexplained
@@ -354,6 +550,9 @@ on `main` at branch-open time.
 - `supply-chain/config.toml` — `cargo-vet` imports + exemptions
 - `supply-chain/audits.toml` — our local audit records (starts empty)
 - `supply-chain/imports.lock` — pinned upstream audit snapshots
+- `scripts/ci/check_vet_audit_discipline.sh` — Layer 1 + Layer 4 of the four-layer audit-discipline policy
+- `scripts/ci/vet_bump.sh` + `just vet-bump` — Layer 2 guided audit driver
+- `.github/CODEOWNERS` (`supply-chain/` line) — Layer 3 mandatory human review
 - `.github/workflows/pr-fast.yml` — required per-PR gate (fmt, clippy, docs, tests, **windows-lint** [native `cargo clippy -- -D warnings` on `windows-latest` post-W5.5], `cargo-deny` + `cargo-vet check` in `security` job) (Tier 1)
 - `.github/workflows/tier-2.yml` — weekly coverage / udeps / Miri (Windows compile check removed in PR #138 — superseded by `pr-fast.yml::windows-lint`'s per-PR strict clippy)
 - `.github/workflows/release.yml` — SLSA attestation + ancestor check + CycloneDX SBOM

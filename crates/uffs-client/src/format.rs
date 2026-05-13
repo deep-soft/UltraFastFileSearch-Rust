@@ -34,26 +34,23 @@ pub fn format_number_commas(num: u64) -> String {
 /// - >= 1 TB: `123.45 TB`
 #[must_use]
 #[expect(
-    clippy::cast_precision_loss,
-    reason = "precision loss acceptable for display"
-)]
-#[expect(
     clippy::float_arithmetic,
     reason = "floating-point arithmetic required for human-readable byte formatting"
 )]
 pub fn format_bytes(bytes: u64) -> String {
+    let bytes_f64 = u64_to_f64(bytes);
     if bytes < 1024 {
         format!("{bytes:>4} B")
     } else if bytes < 1024 * 1024 {
-        format!("{:>7.2} KB", bytes as f64 / 1024.0)
+        format!("{:>7.2} KB", bytes_f64 / 1024.0)
     } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:>7.2} MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:>7.2} MB", bytes_f64 / (1024.0 * 1024.0))
     } else if bytes < 1024 * 1024 * 1024 * 1024 {
-        format!("{:>7.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        format!("{:>7.2} GB", bytes_f64 / (1024.0 * 1024.0 * 1024.0))
     } else {
         format!(
             "{:>7.2} TB",
-            bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
+            bytes_f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
         )
     }
 }
@@ -173,13 +170,10 @@ mod platform_tz {
             return 0; // fallback to UTC
         }
 
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "tm_gmtoff is at most ±50400 (±14h), fits i32"
-        )]
-        {
-            tm_buf.tm_gmtoff as i32
-        }
+        // `tm_gmtoff` is at most ±50400 (±14h) by POSIX timezone spec,
+        // so the saturating `try_from` fallbacks are unreachable.  This
+        // replaces the previous truncating `as i32` cast.
+        i32::try_from(tm_buf.tm_gmtoff).unwrap_or(0)
     }
 }
 

@@ -200,6 +200,77 @@ jobs:
         # lockfile as the rest of the workspace.
         run: cargo udeps --locked --workspace --all-targets --all-features
 
+  # ══════════════════════════════════════════════════════════════════════════
+  # Tier 2 / cargo-hack feature matrix (R3-02, landed 2026-05-12)
+  #
+  # Iterates every feature-bearing crate's `[features]` permutations and
+  # runs `cargo check --all-targets --locked` for each one.  Catches the
+  # class of bug where new code adds `use <crate-behind-feature>` without
+  # `#[cfg(feature = "...")]` gating — `--all-features` is blind to it
+  # because the feature is always on in that mode; cargo-hack is the
+  # static guarantee that single-feature builds still compile.
+  #
+  # Excludes `uffs-polars` for the same reason the R6 → R8 publishability
+  # deviation row in `docs/architecture/release-automation-plan.md` §8.1
+  # excludes it from `cargo publish --dry-run --workspace`: the git-pinned
+  # polars rev carries patches the published 0.53.0 release lacks, and
+  # cargo-hack's per-crate `cargo metadata` walk trips the same chrono
+  # ≤0.4.41 vs workspace 0.4.44 conflict.  Re-enable when polars
+  # upstream ships a chrono-compat release.
+  #
+  # `--keep-going` reports every failing permutation in one run so a
+  # single fix-pass catches every gap, instead of having to re-run
+  # cargo-hack N times to discover them one at a time.
+  hack:
+    name: Tier 2 / cargo-hack feature matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: tier-2-hack
+          cache-on-failure: 'true'
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        with:
+          tool: cargo-hack
+
+      - name: Run cargo-hack --each-feature
+        # --locked per §2.8 so the matrix resolves through the same
+        # lockfile as the rest of the workspace.
+        # --workspace iterates every member.
+        # --exclude uffs-polars: see job-header comment for chrono pin
+        #   rationale.
+        # --each-feature: for each member with a [features] block, run
+        #   the command once per feature in isolation (plus once with
+        #   --no-default-features and once with default features).
+        # --keep-going: report every failing permutation, not just the
+        #   first — needed for actionable fix-passes.
+        # check --all-targets: type-check including tests / benches /
+        #   examples.  Faster than clippy and sufficient to catch the
+        #   class of feature-flag bug this gate exists for; strict
+        #   clippy runs separately under --all-features in pr-fast.
+        run: |
+          cargo hack \
+            --workspace \
+            --exclude uffs-polars \
+            --each-feature \
+            --keep-going \
+            check --all-targets --locked
+
   miri:
     name: Tier 2 / Miri
     runs-on: ubuntu-latest
@@ -236,20 +307,472 @@ jobs:
           cargo miri test --locked -p uffs-mft raw::tests::save_load_uncompressed -- --exact
           cargo miri test --locked -p uffs-mft raw::tests::raw_compat_mode -- --exact
 
+  # ───────────────────────────────────────────────────────────────────
+  # cargo-careful — broad std-debug-assertion coverage that complements
+  # Miri's narrow deep-dive
+  #
+  # `cargo-careful` rebuilds the standard library with extra debug
+  # assertions enabled (slice / iterator / integer-overflow checks that
+  # the regular debug build glosses over) and runs the workspace tests
+  # against that augmented std.  Catches UB in std-using code paths
+  # that Miri can't reach because Miri is too slow for the broad test
+  # surface — Miri stays focused on the four raw-persistence tests
+  # above; `careful` widens the lens to every test in
+  # `uffs-security` + `uffs-mft`, the two crates whose unsafe-density
+  # makes them the highest-value UB-detection targets in the
+  # workspace.
+  #
+  # Why scoped to those two crates (not `--workspace`):
+  #
+  #   * `uffs-security` — cryptography, keystore, keying material
+  #     handling.  Any UB here is a security-critical defect; cargo-
+  #     careful's overflow / bounds checks are exactly the right
+  #     instrument.
+  #   * `uffs-mft` — raw NTFS Master File Table parsing, byte-slice
+  #     reinterpretation, FFI-shaped struct layout.  The crate is
+  #     deliberately `unsafe`-heavy (alignment-sensitive structural
+  #     deserialisation) and the highest-risk UB target in the
+  #     codebase.
+  #   * Other crates — `uffs-core`, `uffs-daemon`, `uffs-cli`,
+  #     `uffs-mcp`, etc. — are mostly safe Rust with minimal raw
+  #     pointer / byte-slice manipulation.  Pre-push clippy +
+  #     pr-fast tests already provide adequate coverage for them;
+  #     adding them to cargo-careful would inflate runtime ~3x for
+  #     marginal added signal.  Extend the `-p <crate>` list below
+  #     if a future crate gains substantial `unsafe` density.
+  #
+  # Why `--all-features` is OMITTED:
+  #
+  #   The default feature set is what production binaries ship; that
+  #   is what we want to harden.  Non-default features (e.g.
+  #   `uffs-cli::mcp-http-probe`) are exercised by `tier-2.yml::hack`
+  #   under cargo-hack and don't need duplicate UB-detection coverage
+  #   here.
+  #
+  # Tier R3-03 of `docs/architecture/code-quality/lint-posture.md`.
+  careful:
+    name: Tier 2 / cargo-careful
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Free up disk space
+        # Same prelude as miri — std rebuild plus per-crate test
+        # compile produces several GB of artifacts and the
+        # ubuntu-latest runner image ships with only ~14 GB free
+        # after the default toolchain install.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        # `rust-toolchain.toml` already pins a known-good nightly
+        # plus `rust-src` (needed for `-Zbuild-std` which cargo-
+        # careful uses internally).  `rustup show` installs the
+        # pinned channel + components.
+        run: rustup show
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Dedicated cache key — cargo-careful's `-Zbuild-std`
+          # rebuild produces a distinct sysroot / target-dir layout
+          # from the regular workspace build, so sharing miri's
+          # cache key would invalidate one or both on each run.
+          shared-key: tier-2-careful
+          cache-on-failure: 'true'
+
+      - name: Install cargo-careful
+        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        with:
+          tool: cargo-careful
+
+      - name: Run cargo-careful test (uffs-security, uffs-mft)
+        # `cargo careful test` internally invokes `cargo +nightly
+        # test -Zbuild-std=std,panic_abort
+        #   -Zbuild-std-features=debug-refcell,debug-assertions,...`
+        # producing a std with substantially more runtime checks.
+        # The augmented std catches:
+        #   - slice/iterator bounds violations (Vec::get_unchecked
+        #     misuse, etc.)
+        #   - integer overflow on operations the regular debug build
+        #     glosses over (mostly Pow* / shr / cast paths)
+        #   - misuse of `RefCell` borrow rules in cases regular
+        #     `RefCell::borrow*` panics miss
+        #   - some `slice::from_raw_parts` invariant violations
+        # — none of which a regular `cargo test` will flag, and many
+        # of which Miri can't reach because Miri's interpretation
+        # cost limits it to narrow test scopes (see the four-test
+        # miri job above).
+        #
+        # `--locked` per §2.8 so the same resolved crate graph as the
+        # rest of the workspace is used.
+        run: |
+          cargo careful test --locked -p uffs-security
+          cargo careful test --locked -p uffs-mft
+
+  # ───────────────────────────────────────────────────────────────────
+  # cargo-mutants — test-suite quality measurement on safety-critical
+  # paths
+  #
+  # `cargo-mutants` programmatically generates small source-code
+  # mutations (operator swaps, value flips, return-value substitutions,
+  # etc.) and runs the full test suite against each mutant.  The
+  # signal is:
+  #
+  #   * **caught** — at least one test failed with the mutation in
+  #     place → the test suite genuinely exercises the mutated code
+  #     path.  Good.
+  #   * **missed** — all tests still passed with the mutation in
+  #     place → either the mutated code is dead, or there's a test
+  #     gap.  Bad (or at least: worth a human look).
+  #   * **timeout** — the mutated program looped forever; the
+  #     per-mutant timeout (configured in `mutants.toml` at repo
+  #     root) bounded the runtime.  Treated like "caught" since the
+  #     mutation produced a behaviour the tests rejected.
+  #
+  # Why scoped to `uffs-security` (and not `--workspace`):
+  #
+  #   `cargo-mutants` is O(mutations × test-suite-runtime).  At ~198
+  #   generated mutations for `uffs-security` × ~5 s baseline tests,
+  #   the warm-cache full run lands at 10-15 min with `--jobs 4` on
+  #   `ubuntu-latest` (4 cores).  Extending to `uffs-mft` would add
+  #   ~600 mutations × ~30 s tests ≈ another 60-90 min — beyond a
+  #   reasonable Tier 2 weekly budget without batching across days.
+  #
+  #   `uffs-security` is also the highest-value mutation-testing
+  #   target in the workspace: any UB / wrong-branch / off-by-one
+  #   in cryptography, keystore, or runtime-dir privilege handling
+  #   is a security-critical defect.  cargo-mutants gives us a
+  #   measurable test-quality signal there that no other tool in
+  #   this pipeline produces.
+  #
+  # Why advisory (job allowed to fail without breaking the workflow):
+  #
+  #   We have NO baseline of "expected missed mutations" yet — this
+  #   is the first run.  The initial post-merge run will produce a
+  #   numerical baseline (e.g. "12 missed out of 198"); a follow-up
+  #   PR can then promote the gate to hard-fail-on-regression once
+  #   that baseline is recorded in `mutants.out/`.
+  #
+  # Tier R3-04 of `docs/dev/architecture/code_clean/CLIPPY_POSTURE.md`.
+  mutants:
+    name: Tier 2 / cargo-mutants (uffs-security)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Advisory in the initial rollout — see header comment.  Promote
+    # to a hard gate via a follow-up PR once we have a baseline of
+    # "expected missed mutations" and can fail on regression.
+    continue-on-error: true
+    steps:
+      - name: Free up disk space
+        # cargo-mutants copies the workspace into a temp dir for
+        # each mutant test run, so disk usage spikes briefly.  Same
+        # prelude as miri / careful for consistency.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        run: rustup show
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Dedicated cache key — cargo-mutants does many short
+          # per-mutant rebuilds and benefits from its own cache so
+          # the regular workspace builds don't evict mutation-test
+          # artifacts (and vice-versa).
+          shared-key: tier-2-mutants
+          cache-on-failure: 'true'
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        with:
+          tool: cargo-mutants
+
+      - name: Run cargo-mutants on uffs-security
+        # `--jobs 4` matches `ubuntu-latest`'s 4-core capacity.
+        # `--no-shuffle` gives deterministic mutant ordering, which
+        # is useful when comparing successive runs.
+        # `mutants.toml` at repo root supplies `additional_cargo_args
+        # = ["--locked"]`, `timeout_multiplier = 2.0`, and exclusion
+        # globs / regexes — see that file for justification of each.
+        run: |
+          cargo mutants \
+            --package uffs-security \
+            --jobs 4 \
+            --no-shuffle
+
+      - name: Upload mutants.out artifact
+        # Keep the directory for 30 days so triage on missed
+        # mutations can happen offline.  `mutants.out/` contains a
+        # per-mutant diff, log, and overall summary in
+        # `outcomes.json`.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cargo-mutants-output-${{ github.run_id }}
+          path: mutants.out/
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ───────────────────────────────────────────────────────────────────
+  # MSRV verification — the workspace's `rust-version = "1.91"` claim
+  # is independently checked against the stable 1.91 toolchain
+  #
+  # The workspace declares MSRV in three places:
+  #   * `Cargo.toml::workspace.package.rust-version = "1.91"` — the
+  #     contract surface (what downstream consumers see).
+  #   * `clippy.toml::msrv = "1.91"` — activates ~80 MSRV-aware Clippy
+  #     lints including `clippy::incompatible_msrv`.
+  #   * `rust-toolchain.toml` — pins **nightly**, not 1.91 stable.
+  #     Every dev build and every other CI build runs against nightly.
+  #
+  # `clippy::incompatible_msrv` only fires for APIs explicitly attributed
+  # with `#[stable(since = ...)]` after 1.91.  It is known to under-cover:
+  #
+  #   * New trait impls on existing types (the trait was added pre-1.91
+  #     but the impl is post-1.91).
+  #   * Deref coercion / lifetime elision rule changes that affect
+  #     borrow-check behaviour without changing API signatures.
+  #   * New `const fn` qualifications on previously non-const APIs.
+  #   * Inference / specialisation improvements that compile pre-1.91
+  #     code differently on a newer toolchain.
+  #
+  # Without this job a PR can introduce code that compiles cleanly on
+  # the pinned nightly, passes every gate in every tier, and silently
+  # fails for any downstream consumer on the claimed MSRV.  Theoretical
+  # pre-publish; direct SemVer breach for any patch / minor release
+  # post-R8.
+  #
+  # Why this is a **hard** gate (not advisory like mutants):
+  #
+  #   MSRV regressions have a binary correctness signal — either the
+  #   1.91 compiler accepts the workspace or it doesn't.  No
+  #   triage-required "missed mutations" baseline.  Any failure here
+  #   means the rust-version claim in Cargo.toml is lying to crates.io
+  #   consumers, which is a SemVer issue worth blocking the weekly
+  #   summary on.
+  #
+  # Why both `--all-features` and `--no-default-features`:
+  #
+  #   `--all-features` catches MSRV violations in optional code paths
+  #   (e.g. `uffs-client::async`, `uffs-mcp::streamable-http`).
+  #   `--no-default-features` catches accidental MSRV reliance on a
+  #   default-feature crate's pre-1.91 polyfill.  Together they bound
+  #   the feature combination space without running `cargo-hack`'s
+  #   full N² matrix (that's `tier-2.yml::hack`'s job).
+  #
+  # Tier R3-06 of `docs/architecture/code-quality/lint-posture.md`.
+  msrv:
+    name: Tier 2 / MSRV (1.91 stable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install stable 1.91 toolchain (NOT the pinned nightly)
+        # `--profile minimal` installs rustc + cargo + rust-std without
+        # rustfmt / clippy / rust-docs / etc. — we only need the
+        # compile-only `cargo check` capability here.  `--no-self-update`
+        # avoids rustup's own update churn on cached runners.
+        run: |
+          rustup toolchain install 1.91 --profile minimal --no-self-update
+          rustup default 1.91
+          rustc --version
+          cargo --version
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Dedicated cache key — the 1.91 stable target-dir layout is
+          # binary-incompatible with the nightly-pinned target-dir
+          # every other Tier 2 job uses, so a shared cache would
+          # invalidate one or the other on each run.
+          shared-key: tier-2-msrv
+          cache-on-failure: 'true'
+
+      - name: Check workspace with --all-features (MSRV)
+        # `--locked` per §2.8 so we evaluate the same resolved crate
+        # graph as the rest of the workspace.  `cargo check` is enough
+        # to catch MSRV violations — we don't need the full compile
+        # since any MSRV breach surfaces during type-checking.
+        run: cargo +1.91 check --workspace --locked --all-features
+
+      - name: Check workspace with --no-default-features (MSRV)
+        # The complementary case: catches accidental MSRV reliance on
+        # a default-feature crate's pre-1.91 polyfill that would mask
+        # the regression in the `--all-features` run.
+        run: cargo +1.91 check --workspace --locked --no-default-features
+
+  # ───────────────────────────────────────────────────────────────────
+  # cargo-fuzz — adversarial-input testing for security-relevant
+  # untrusted-byte parsers in `uffs-mft`
+  #
+  # `cargo fuzz` generates random / mutated byte sequences and feeds
+  # them to libfuzzer-sys harnesses that exercise public APIs.  This
+  # is the complement to Miri (UB on known inputs), cargo-careful
+  # (broad UB coverage on known inputs), and cargo-mutants (test-
+  # suite quality on known inputs) — fuzz generates *unknown*
+  # adversarial inputs that test the parser's robustness to
+  # malformed on-disk data.
+  #
+  # Harnesses live in `crates/uffs-mft/fuzz/fuzz_targets/`:
+  #
+  #   * `fuzz_parse_record` — fuzzes `uffs_mft::parse::parse_record`,
+  #     `parse_record_full`, and `parse_record_zero_alloc` with
+  #     various FRS values.  The entry point for raw MFT record
+  #     deserialisation.
+  #   * `fuzz_apply_fixup` — fuzzes `uffs_mft::parse::apply_fixup`,
+  #     which handles untrusted NTFS Update Sequence Array bytes
+  #     (security-critical: malformed fixup data could cause buffer
+  #     overflows in a less-safe implementation).
+  #
+  # Why scoped to `uffs-mft` (and not `uffs-security` / others):
+  #
+  #   `uffs-mft` is the workspace's primary attack surface for
+  #   untrusted on-disk bytes — every NTFS MFT record we parse came
+  #   from an external filesystem image.  `uffs-security` doesn't
+  #   parse untrusted external bytes; its inputs are bounded by the
+  #   keystore / runtime-dir privilege APIs (covered by cargo-mutants
+  #   for test-suite quality).  Other workspace crates either
+  #   consume already-parsed values (`uffs-core`) or wrap I/O around
+  #   `uffs-mft` (`uffs-daemon`, `uffs-cli`).
+  #
+  # Why advisory (job allowed to fail without breaking the workflow):
+  #
+  #   The harnesses have been committed since 2026-04-24 but have
+  #   never run.  No corpus seed exists — the first run starts from
+  #   zero coverage and may find immediate crashes (uninitialised
+  #   edge cases that exercise behaviour the existing test suite
+  #   doesn't reach).  Advisory rollout means those crashes surface
+  #   in the weekly summary + artifact upload without blocking the
+  #   workflow conclusion.  Once a corpus baseline is established
+  #   and known crashes are triaged (either fixed or marked as
+  #   expected via `crashes/` filtering), a follow-up PR can
+  #   promote the gate to hard-fail-on-regression.
+  #
+  # Why time-budget (not run-count budget):
+  #
+  #   `cargo fuzz run -- -max_total_time=900` (15 min per target) is
+  #   deterministic about wall-clock cost (30 min for both targets,
+  #   well under the 60-min job timeout).  A run-count budget
+  #   (`-runs=N`) would vary wildly depending on how quickly
+  #   libfuzzer finds new coverage — fast on day 1 (no corpus), slow
+  #   on day 30 (saturated corpus).  Time-budget keeps the Tier 2
+  #   wall-clock predictable.
+  #
+  # Long-term: persist the corpus across runs via
+  # `actions/cache@<sha>` with a corpus-versioned key, so each
+  # weekly run builds on the last instead of restarting from zero
+  # coverage.  OSS-Fuzz integration is the next tier beyond that
+  # if the project scales there.
+  #
+  # Tier R3-07 of `docs/architecture/code-quality/lint-posture.md`.
+  fuzz:
+    name: Tier 2 / cargo-fuzz (uffs-mft)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Advisory in the initial rollout — see header comment.  Promote
+    # to a hard gate via a follow-up PR once a corpus baseline is
+    # established and known crashes are triaged.
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pinned nightly (from rust-toolchain.toml)
+        # `cargo-fuzz` requires nightly because `libfuzzer-sys` uses
+        # unstable features.  `rust-toolchain.toml` already pins a
+        # known-good nightly; `rustup show` installs the pinned
+        # channel + components without overriding it.
+        run: rustup show
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Dedicated cache key — the fuzz crate has its own
+          # `[workspace] members = ["."]` and a separate target-dir
+          # layout (libfuzzer-sys instrumentation + sanitizer
+          # builds), so sharing keys with miri / careful / msrv would
+          # invalidate one or both on each run.  The cwd hint
+          # ensures the cache scopes to the fuzz subdirectory.
+          shared-key: tier-2-fuzz
+          workspaces: "crates/uffs-mft/fuzz -> target"
+          cache-on-failure: 'true'
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@dfc84ffb7254b048a0a843316ff5a2714dcdc7bd # v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Run cargo-fuzz fuzz_parse_record (15 min budget)
+        # `-max_total_time=900` caps each target at 15 min wall-
+        # clock.  Both targets together fit comfortably in the
+        # 60-min job timeout.  No corpus seed yet — the very first
+        # run starts from random bytes and discovers coverage
+        # organically.
+        run: |
+          cd crates/uffs-mft
+          cargo +nightly fuzz run fuzz_parse_record -- -max_total_time=900
+
+      - name: Run cargo-fuzz fuzz_apply_fixup (15 min budget)
+        # Same shape as above.  `if: always()` so a crash in the
+        # first target still lets the second target run — advisory
+        # rollout values coverage over fail-fast.
+        if: always()
+        run: |
+          cd crates/uffs-mft
+          cargo +nightly fuzz run fuzz_apply_fixup -- -max_total_time=900
+
+      - name: Upload fuzz artifacts (crashes + corpus)
+        # Keep both `crashes/` (any reproducer libfuzzer found) and
+        # `corpus/` (the inputs that built coverage) for 90 days.
+        # `corpus/` is the seed for subsequent runs — once we
+        # promote to a hard gate we'll switch this to
+        # `actions/cache` so each run builds on the last.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cargo-fuzz-output-${{ github.run_id }}
+          path: |
+            crates/uffs-mft/fuzz/artifacts/
+            crates/uffs-mft/fuzz/corpus/
+          retention-days: 90
+          if-no-files-found: warn
+
   tier-2-summary:
     name: Tier 2 / Summary
     runs-on: ubuntu-latest
-    needs: [file-size-policy, coverage, build-validation, udeps, miri]
+    needs: [file-size-policy, coverage, build-validation, udeps, hack, miri, careful, mutants, msrv, fuzz]
     if: always()
     timeout-minutes: 5
     steps:
       - name: Check pipeline success
+        # NOTE: `mutants` is intentionally NOT in this required-set
+        # check.  The mutants job carries `continue-on-error: true`
+        # (advisory initial rollout; see header comment in the job
+        # definition).  Gating the summary on its result would
+        # promote the advisory nature into a hard gate, defeating
+        # the rollout phasing.  Once a baseline of "expected
+        # missed mutations" is recorded in `mutants.out/` and the
+        # gate is promoted via a follow-up PR, add it here.
         run: |
           if [[ "${{ needs.file-size-policy.result }}" == "success" && \
                 "${{ needs.coverage.result }}" == "success" && \
                 "${{ needs.build-validation.result }}" == "success" && \
                 "${{ needs.udeps.result }}" == "success" && \
-                "${{ needs.miri.result }}" == "success" ]]; then
+                "${{ needs.hack.result }}" == "success" && \
+                "${{ needs.miri.result }}" == "success" && \
+                "${{ needs.careful.result }}" == "success" && \
+                "${{ needs.msrv.result }}" == "success" ]]; then
             echo "✅ All Tier 2 nightly checks passed!"
           else
             echo "❌ Some Tier 2 nightly checks failed - review above"
@@ -263,7 +786,25 @@ jobs:
         # safe against word-splitting if `$GITHUB_STEP_SUMMARY` ever
         # contains a space (it doesn't on hosted runners today, but
         # quoting is the defensible default).
+        #
+        # `cargo-mutants` row uses `${{ needs.mutants.result }}` (an
+        # actual variable, not a hard-coded ✅) so the summary
+        # accurately reflects the advisory job's underlying state —
+        # green when it caught all mutations, red when at least one
+        # was missed (so triage happens against `mutants.out/`).
         run: |
+          mutants_status="${{ needs.mutants.result }}"
+          if [[ "$mutants_status" == "success" ]]; then
+            mutants_cell="✅"
+          else
+            mutants_cell="⚠️ ${mutants_status} (advisory)"
+          fi
+          fuzz_status="${{ needs.fuzz.result }}"
+          if [[ "$fuzz_status" == "success" ]]; then
+            fuzz_cell="✅"
+          else
+            fuzz_cell="⚠️ ${fuzz_status} (advisory)"
+          fi
           {
               echo "## ✅ UFFS Tier 2 Nightly CI Passed"
               echo ""
@@ -273,7 +814,12 @@ jobs:
               echo "| Coverage | ✅ |"
               echo "| Build validation | ✅ |"
               echo "| cargo-udeps | ✅ |"
+              echo "| cargo-hack feature matrix | ✅ |"
               echo "| Miri | ✅ |"
+              echo "| cargo-careful | ✅ |"
+              echo "| cargo-mutants (uffs-security) | ${mutants_cell} |"
+              echo "| MSRV (1.91 stable) | ✅ |"
+              echo "| cargo-fuzz (uffs-mft) | ${fuzz_cell} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -283,7 +829,14 @@ jobs:
   notify-failure:
     name: 🔔 Notify on Failure
     runs-on: ubuntu-latest
-    needs: [file-size-policy, coverage, build-validation, udeps, miri]
+    # `mutants` and `fuzz` intentionally OMITTED from this needs-list
+    # so an advisory cargo-mutants miss or cargo-fuzz crash does NOT
+    # open a Tier 2 failure issue.  Both jobs carry `continue-on-
+    # error: true` (advisory initial rollout; see header comments in
+    # each job definition).  Once either is promoted from advisory
+    # to a hard gate (see the `Check pipeline success` step's comment
+    # in the tier-2-summary job), add it here too.
+    needs: [file-size-policy, coverage, build-validation, udeps, hack, miri, careful, msrv]
     if: failure()
     # §2.8: every job caps its runtime.  Cheap notifier — 2 min is
     # generous for a single API call round-trip + JSON formatting.
