@@ -254,17 +254,6 @@ pub fn is_volume_read_only(drive_letter: char) -> bool {
     (fs_flags & FILE_READ_ONLY_VOLUME) != 0
 }
 
-/// Stub for non-Windows platforms - always returns false.
-///
-/// This function exists to provide a cross-platform API surface.
-/// On non-Windows platforms, we cannot determine volume read-only status,
-/// so we conservatively return `false` (assume writable).
-#[cfg(not(windows))]
-#[must_use]
-pub const fn is_volume_read_only(_drive_letter: char) -> bool {
-    false
-}
-
 /// Represents the type of storage device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriveType {

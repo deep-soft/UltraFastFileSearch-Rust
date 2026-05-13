@@ -13,8 +13,8 @@
 //! | Module                         | Responsibility                                                        |
 //! |--------------------------------|-----------------------------------------------------------------------|
 //! | `daemon_ctl` (this)            | paths, identity verify, keepalive, exe discovery, health-check toggle |
-//! | [`crate::daemon_spawn`]        | `ElevationPolicy`, `spawn_daemon`, arg quoting, Windows UAC helpers   |
-//! | [`crate::daemon_child`]        | `DaemonChildHandle` and the cross-platform `try_wait` poll            |
+//! | `crate::daemon_spawn`          | `ElevationPolicy`, `spawn_daemon`, arg quoting, Windows UAC helpers   |
+//! | `crate::daemon_child`          | `DaemonChildHandle` and the cross-platform `try_wait` poll            |
 
 use std::path::PathBuf;
 
@@ -73,7 +73,7 @@ pub fn pipe_name() -> std::io::Result<String> {
 /// daemon is known to be misbehaving and you want to inspect it
 /// manually.
 #[must_use]
-pub fn deep_health_check_enabled() -> bool {
+pub(crate) fn deep_health_check_enabled() -> bool {
     let Ok(val) = std::env::var("UFFS_CLIENT_SKIP_HEALTH_CHECK") else {
         return true;
     };
@@ -86,7 +86,7 @@ pub fn deep_health_check_enabled() -> bool {
 /// **Legacy variant kept for backward compatibility** — if identity
 /// verification fails, this only logs a `tracing::warn!` and returns,
 /// leaving the caller with an untrusted connection.  New call sites
-/// should prefer [`verify_daemon_after_connect_strict`], which refuses
+/// should prefer `verify_daemon_after_connect_strict`, which refuses
 /// to continue on mismatch.
 pub fn verify_daemon_after_connect() {
     let pid_path = pid_file_path();
@@ -134,7 +134,7 @@ pub fn verify_daemon_after_connect() {
 /// PID file exists and its embedded exe-path hash does not match the
 /// peer's actual exe path.  The error message includes the PID file
 /// location so callers can report it verbatim.
-pub fn verify_daemon_after_connect_strict() -> Result<(), crate::error::ClientError> {
+pub(crate) fn verify_daemon_after_connect_strict() -> Result<(), crate::error::ClientError> {
     verify_daemon_after_connect_strict_at(&pid_file_path())
 }
 
@@ -155,7 +155,7 @@ pub fn verify_daemon_after_connect_strict() -> Result<(), crate::error::ClientEr
 /// does not match the peer's actual exe path.  Returns `Ok(())`
 /// when the file is missing, unparseable, or the hashes match.
 #[doc(hidden)]
-pub fn verify_daemon_after_connect_strict_at(
+pub(crate) fn verify_daemon_after_connect_strict_at(
     pid_path: &std::path::Path,
 ) -> Result<(), crate::error::ClientError> {
     if !pid_path.exists() {
@@ -183,7 +183,7 @@ pub fn verify_daemon_after_connect_strict_at(
 /// On Unix, opens the `AF_UNIX` socket at `sock_path`.
 /// On Windows, opens the named pipe (no `ws2_32` cost) — `sock_path` is
 /// unused but kept for API stability.
-pub fn keepalive_send_blocking(sock_path: &std::path::Path) {
+pub(crate) fn keepalive_send_blocking(sock_path: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::io::Write as _;
@@ -263,7 +263,7 @@ pub fn find_uffs_exe() -> PathBuf {
 /// 2. Look for `uffsd` / `uffsd.exe` next to the current binary.
 /// 3. Fall back to bare `uffsd` (rely on `$PATH`).
 #[must_use]
-pub fn find_daemon_exe() -> PathBuf {
+pub(crate) fn find_daemon_exe() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         let name = exe.file_stem().and_then(|stem| stem.to_str()).unwrap_or("");
         if name == "uffsd" {

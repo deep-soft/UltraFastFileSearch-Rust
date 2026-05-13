@@ -21,7 +21,7 @@
 //!
 //! Mutation-side:  callers that need `Vec`-specific methods (`push`,
 //! `extend_from_slice`, `shrink_to_fit`, `reserve`) call
-//! [`ColumnStorage::as_mut_vec`].  For [`ColumnStorage::Vec`] this is
+//! `ColumnStorage::as_mut_vec`.  For [`ColumnStorage::Vec`] this is
 //! a cheap reference; for [`ColumnStorage::Mmap`] it triggers a
 //! one-time copy into a fresh `Vec<T>` and replaces the variant.  All
 //! mutating accessors funnel through the private
@@ -42,7 +42,7 @@
 //!
 //! ## Mmap-variant invariants
 //!
-//! Construction goes through [`ColumnStorage::from_mmap_region`] which
+//! Construction goes through `ColumnStorage::from_mmap_region` which
 //! validates:
 //!
 //! 1. `byte_offset + len * size_of::<T>()` does not exceed the mmap.
@@ -72,7 +72,7 @@ use memmap2::Mmap;
 /// `compact_cache::deserialize_compact` errors) so future callers can
 /// match on them in `Result` chains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MmapRegionError {
+pub(crate) enum MmapRegionError {
     /// `byte_offset + len * size_of::<T>()` overflows `usize`.
     Overflow,
     /// `byte_offset + len * size_of::<T>()` exceeds `mmap.len()`.
@@ -152,7 +152,7 @@ pub enum ColumnStorage<T: bytemuck::Pod> {
     Vec(Vec<T>),
     /// Read-only typed view onto a region of an mmap'd file.
     ///
-    /// Constructed via [`ColumnStorage::from_mmap_region`].  Mutating
+    /// Constructed via `ColumnStorage::from_mmap_region`.  Mutating
     /// operations — `as_mut_slice`, `as_mut_vec`, [`IndexMut`],
     /// [`DerefMut`] — transparently allocate a fresh [`Vec<T>`] and
     /// `*self = Self::Vec(...)`, after which the column behaves as
@@ -199,7 +199,7 @@ impl<T: bytemuck::Pod> ColumnStorage<T> {
     /// Production callers (`crate::compact_mmap::load_from_runtime`)
     /// receive a layout that page-aligns every column header, which
     /// satisfies any `T: Pod` alignment up to the page size.
-    pub fn from_mmap_region(
+    pub(crate) fn from_mmap_region(
         mmap: Arc<Mmap>,
         byte_offset: usize,
         len: usize,
@@ -252,11 +252,11 @@ impl<T: bytemuck::Pod> ColumnStorage<T> {
     ///
     /// For the [`ColumnStorage::Mmap`] variant this slices the mmap
     /// directly via [`bytemuck::cast_slice`].  Soundness rests on the
-    /// invariants validated by [`Self::from_mmap_region`].
+    /// invariants validated by `Self::from_mmap_region`.
     ///
     /// # Panics
     ///
-    /// Cannot panic in practice: [`Self::from_mmap_region`] verifies
+    /// Cannot panic in practice: `Self::from_mmap_region` verifies
     /// at construction time that `byte_offset + len * size_of::<T>()`
     /// fits in `mmap.len()` and that the base address is
     /// `align_of::<T>()`-aligned.  Reaching the panic paths in either
@@ -307,7 +307,7 @@ impl<T: bytemuck::Pod> ColumnStorage<T> {
     ///
     /// Triggers a one-time `mmap → Vec` copy on the first call against
     /// an `Mmap`-backed column.  Subsequent calls are cheap.
-    pub fn as_mut_vec(&mut self) -> &mut Vec<T> {
+    pub(crate) fn as_mut_vec(&mut self) -> &mut Vec<T> {
         self.materialise_to_vec()
     }
 
