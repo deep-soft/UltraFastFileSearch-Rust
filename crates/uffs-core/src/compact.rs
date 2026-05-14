@@ -19,9 +19,6 @@ use uffs_mft::index::MftIndex;
 
 use crate::bloom::Bloom;
 pub use crate::compact_loader::apply_usn_patch;
-#[cfg(windows)]
-#[expect(deprecated, reason = "re-export kept for backward compatibility")]
-pub use crate::compact_loader::load_live_drive;
 // Re-export loader types and functions so callers can still use `compact::*`.
 #[expect(deprecated, reason = "re-export kept for backward compatibility")]
 pub use crate::compact_loader::{
@@ -203,7 +200,7 @@ impl ChildrenIndex {
 
     /// Borrow the CSR components for serialization.
     #[must_use]
-    pub fn as_csr(&self) -> (&[u32], &[u32]) {
+    pub(crate) fn as_csr(&self) -> (&[u32], &[u32]) {
         (&self.offsets, &self.values)
     }
 
@@ -343,7 +340,7 @@ pub struct DriveCompactIndex {
     /// swap the heap-resident `Vec` for a memory-mapped runtime
     /// tempfile.  Read-side call sites use [`Deref<[T]>`]; mutating
     /// callers (Windows USN-patch path) go through
-    /// [`ColumnStorage::as_mut_vec`].
+    /// `ColumnStorage::as_mut_vec` (internal helper).
     pub records: ColumnStorage<CompactRecord>,
     /// All filenames concatenated (UTF-8 bytes, original case).
     ///
@@ -507,7 +504,7 @@ impl DriveCompactIndex {
     /// which takes < 1 µs.  This runs **once per search per drive**, not per
     /// record.
     #[must_use]
-    pub fn resolve_ext_ids(&self, extensions: &[String]) -> Vec<u16> {
+    pub(crate) fn resolve_ext_ids(&self, extensions: &[String]) -> Vec<u16> {
         let mut ids = Vec::with_capacity(extensions.len());
         for ext in extensions {
             let normalized = ext.trim().trim_start_matches('.').to_lowercase();
@@ -674,7 +671,11 @@ fn expand_links_and_ads(
 ///
 /// Character counting matches `str::chars().count()` so the precomputed
 /// value agrees with the display-row path-length filter.
-pub fn compute_path_lengths(records: &mut [CompactRecord], names: &[u8], drive_letter: char) {
+pub(crate) fn compute_path_lengths(
+    records: &mut [CompactRecord],
+    names: &[u8],
+    drive_letter: char,
+) {
     // Drive prefix in characters: the letter (1 char) + colon (1 char) = 2.
     // A `char` is always exactly one Unicode scalar value, so the letter
     // always contributes 1 to the char count regardless of its UTF-8

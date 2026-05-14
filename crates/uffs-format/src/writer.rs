@@ -27,12 +27,34 @@ use crate::row::FormatRow;
 /// allocation + channel overhead of rayon outweighs the formatting
 /// cost.  Above it, the 8-core parallel writer roughly halves the
 /// wall-clock (~24 ms → ~10 ms).
-pub const PARALLEL_WRITE_THRESHOLD: usize = 16_384;
+pub(crate) const PARALLEL_WRITE_THRESHOLD: usize = 16_384;
+
+/// Convert a `Vec::len()` (`usize`) to a `u16` count, saturating on overflow.
+///
+/// Used by the `NameLength` and `PathLength` output columns where the
+/// CSV writer needs a fixed-width integer rendering.  In practice the
+/// inputs are NTFS filename / path lengths (max 255 chars for a single
+/// name; up to 32 KB for a full path under Unicode long-path support),
+/// well below the `u16::MAX` saturation point.
+///
+/// This is a 3-line duplicate of `uffs_mft::len_to_u16` (see
+/// `crates/uffs-mft/src/index/types.rs:51-61`).  The duplication is
+/// deliberate (Option B from issue #216): it eliminates the
+/// `uffs-format → uffs-mft` Cargo dep edge that previously existed
+/// solely for this one utility, removing the architectural smell of
+/// "single function across multiple homes".  If a future refactor
+/// extracts utilities into a Layer-0 shared crate (e.g. `uffs-text`
+/// or a new `uffs-numerics`), both call-sites should migrate to the
+/// shared definition.
+#[inline]
+fn len_to_u16(len: usize) -> u16 {
+    u16::try_from(len).unwrap_or(u16::MAX)
+}
 
 /// Rows per parallel chunk.  Sized for ~4096 rows × ~128 bytes/row =
 /// ~512 KB — large enough to amortise the per-chunk fixed cost,
 /// small enough that 8 workers get at least a few chunks each.
-pub const PARALLEL_WRITE_CHUNK: usize = 4096;
+pub(crate) const PARALLEL_WRITE_CHUNK: usize = 4096;
 
 /// Write `rows` through `writer` using the columns + formatting
 /// specified by `cfg`.
@@ -113,7 +135,7 @@ where
     clippy::too_many_lines,
     reason = "exhaustive match over ~38 OutputColumn variants; the table is its own readability"
 )]
-pub fn write_row<R: FormatRow>(
+pub(crate) fn write_row<R: FormatRow>(
     buf: &mut String,
     itoa_buf: &mut itoa::Buffer,
     output_cols: &[OutputColumn],
@@ -245,11 +267,11 @@ pub fn write_row<R: FormatRow>(
                 buf.push_str(&cfg.quote);
             }
             OutputColumn::NameLength => {
-                let len = uffs_mft::len_to_u16(row.name().chars().count());
+                let len = len_to_u16(row.name().chars().count());
                 buf.push_str(itoa_buf.format(len));
             }
             OutputColumn::PathLength => {
-                let len = uffs_mft::len_to_u16(path.chars().count());
+                let len = len_to_u16(path.chars().count());
                 buf.push_str(itoa_buf.format(len));
             }
         }

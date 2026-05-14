@@ -110,27 +110,34 @@ fn default_mcp_log_file() -> std::path::PathBuf {
         .join("uffs_mcp.log")
 }
 
+// Phase 3 module-layout: most submodules are crate-internal. Only
+// `http` (bin/http_gateway.rs + main.rs `--gateway`) and `text`
+// (main_tests.rs format_aggregate_summary) need cross-bin visibility.
+// All other submodules are reachable only via internal `crate::*` paths.
 /// Agent cookbook — curated example queries (backing `uffs://cookbook`).
-pub mod cookbook;
+pub(crate) mod cookbook;
 /// MCP bridge error types.
-pub mod error;
+pub(crate) mod error;
 /// MCP [`ServerHandler`](rmcp::ServerHandler) implementation.
+///
+/// Kept `pub` because `tests/mcp_protocol.rs` (integration test,
+/// separate compilation unit) imports `uffs_mcp::handler::UffsMcpServer`.
 pub mod handler;
 /// Streamable HTTP gateway (feature-gated).
 #[cfg(feature = "streamable-http")]
 pub mod http;
 /// Static and live MCP resource implementations.
-pub mod resources;
+pub(crate) mod resources;
 /// MCP roots mapping policy.
-pub mod roots;
+pub(crate) mod roots;
 /// Output schema types for `outputSchema` / `structuredContent`.
-pub mod schemas;
+pub(crate) mod schemas;
 /// MCP server runtime statistics (lock-free counters).
-pub mod stats;
+pub(crate) mod stats;
 /// Human-readable text formatting for tool responses.
 pub mod text;
 /// Individual MCP tool handlers.
-pub mod tools;
+pub(crate) mod tools;
 
 // tower-service is used by http::tests — suppress unused-crate-dep warning.
 use core::sync::atomic::Ordering;
@@ -145,6 +152,23 @@ use tracing::info;
 // ── Configuration ───────────────────────────────────────────────────
 
 /// Configuration for the MCP server.
+///
+/// # Field discipline (Phase 3b §3.4)
+///
+/// Both fields are `pub` because this is a **configuration DTO**.
+/// `daemon_spawn_args` is a forwarded `Vec<String>` (no invariants to
+/// protect); `idle_timeout_secs == 0` is the documented sentinel for
+/// "no timeout" and is validated at the call site, not in a setter.
+///
+/// # `#[non_exhaustive]` decision (Phase 3b §3.6)
+///
+/// **Kept exhaustive.**  `uffs-mcp` is a bin-dominant internal app
+/// (Layer 4 in `docs/architecture/crate-graph.md`), not externally
+/// consumed; the only struct-literal construction lives in this
+/// crate's own bin (`src/main.rs`) and tests.  If `uffs-mcp` ever
+/// publishes a library facade for embedding the MCP server in
+/// external apps, revisit and add `#[non_exhaustive]` plus an
+/// `McpConfigBuilder`.
 #[derive(Debug, Clone)]
 pub struct McpConfig {
     /// Extra CLI args forwarded to `uffs daemon run` when auto-starting

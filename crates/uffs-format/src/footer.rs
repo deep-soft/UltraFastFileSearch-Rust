@@ -24,7 +24,7 @@
 //! ```
 //!
 //! The fast-scan block is suppressed for result sets of 20 000 rows or
-//! more and for any pattern the [`is_full_scan_pattern`] heuristic
+//! more and for any pattern the `is_full_scan_pattern` heuristic
 //! does not classify as a full scan.
 
 use std::io::{self, Write};
@@ -35,6 +35,22 @@ use std::io::{self, Write};
 /// `uffs-daemon::handler` (fast path) can share the exact same struct.
 /// Borrowed slices / strs keep the type free of allocations — the
 /// footer writer only reads, never takes ownership.
+///
+/// # Field discipline (Phase 3b §3.4)
+///
+/// All three fields are `pub` because they are **required positional
+/// inputs** to [`write_legacy_drive_footer`].  A builder pattern would
+/// add lifetime-parameter friction (`DriveFooterContextBuilder<'a>`)
+/// without changing the required-vs-optional nature of any field.
+///
+/// # `#[non_exhaustive]` decision (Phase 3b §3.6)
+///
+/// **Kept exhaustive.**  This is a borrowed-data DTO whose three
+/// fields are all required arguments to the writer; future growth
+/// would mean a new required argument (which is a breaking change
+/// regardless of `#[non_exhaustive]`).  Both call sites
+/// (`uffs_cli::commands::output::parity::write_legacy_drive_footer`
+/// and `uffs_daemon::handler_blob`) live in the same workspace.
 #[derive(Debug, Clone, Copy)]
 pub struct DriveFooterContext<'a> {
     /// Drive letters the search targeted (e.g. `['C', 'D']`).  When
@@ -55,7 +71,7 @@ pub struct DriveFooterContext<'a> {
 
 /// Row-count threshold below which a full-scan pattern triggers the
 /// `MMMmmm that was FAST` warning line.  Matches the baseline CLI.
-pub const FAST_SCAN_ROW_LIMIT: usize = 20_000;
+pub(crate) const FAST_SCAN_ROW_LIMIT: usize = 20_000;
 
 /// Append the legacy drive footer to `writer`.
 ///
@@ -120,7 +136,7 @@ fn format_legacy_drive_letters(output_targets: &[char]) -> String {
 /// so the regression test below can pin every accepted / rejected
 /// shape without running the full footer writer.
 #[must_use]
-pub fn is_full_scan_pattern(pattern: &str) -> bool {
+pub(crate) fn is_full_scan_pattern(pattern: &str) -> bool {
     matches!(pattern, "" | "*" | "**" | "**/*")
         || pattern.strip_prefix('>').is_some_and(|rest| {
             rest.split('|')

@@ -72,7 +72,7 @@ use crate::compact::CompactRecord;
 ///
 /// Mirrors the `u32::MAX` convention [`CompactRecord::parent_idx`]
 /// already uses on the records side.
-pub const NO_PARENT: u32 = u32::MAX;
+pub(crate) const NO_PARENT: u32 = u32::MAX;
 
 /// One node in the [`PathTrie`].
 ///
@@ -82,7 +82,7 @@ pub const NO_PARENT: u32 = u32::MAX;
 #[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct TrieNode {
-    /// Trie-index of this node's parent, or [`NO_PARENT`] for root /
+    /// Trie-index of this node's parent, or `NO_PARENT` for root /
     /// orphan.
     pub parent_idx: u32,
     /// Byte offset into [`PathTrie::names`] where this node's
@@ -369,7 +369,7 @@ impl PathTrie {
 
     /// Borrow the CSR child-offsets slice.
     #[must_use]
-    pub fn child_offsets(&self) -> &[u32] {
+    pub(crate) fn child_offsets(&self) -> &[u32] {
         &self.child_offsets
     }
 

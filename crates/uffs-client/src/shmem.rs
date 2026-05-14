@@ -17,7 +17,7 @@
 //! ```
 //!
 //! The string table holds all `path` and `name` values back-to-back.
-//! Each [`ShmemRecord`] stores an offset + length pair pointing into the
+//! Each `ShmemRecord` stores an offset + length pair pointing into the
 //! table.
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -86,7 +86,7 @@ struct ShmemHeader {
 /// Per-row fixed-size record — 88 bytes, naturally aligned.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ShmemRecord {
+pub(crate) struct ShmemRecord {
     /// Drive letter as ASCII byte.
     drive: u8,
     /// 1 = directory, 0 = file.
@@ -519,7 +519,7 @@ pub fn write_paths_blob(blob: &str) -> io::Result<PathBuf> {
 /// UTF-16 chars — larger user-facing chunks do not reduce its syscall
 /// count, they just increase the per-call UTF-8 → UTF-16 transcode
 /// work and the blast radius of a cumulative console failure.
-pub const STREAM_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const STREAM_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
 /// Stream a raw `paths_blob` shmem file into `writer` with a chunked
 /// `write_all` loop, then delete the file.
@@ -529,7 +529,7 @@ pub const STREAM_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 /// UTF-8 re-validation.  The daemon wrote valid UTF-8, and stdout
 /// does not care about encoding (it takes bytes).
 ///
-/// The write loop issues at most [`STREAM_CHUNK_BYTES`] per
+/// The write loop issues at most `STREAM_CHUNK_BYTES` per
 /// `writer.write_all` call.  That bounds each underlying syscall
 /// (`write(2)` on Unix, `WriteFile` / `WriteConsoleW` on Windows) to
 /// a size every tested OS and shell handles cleanly — see the

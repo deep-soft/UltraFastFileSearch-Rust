@@ -27,7 +27,7 @@ impl AggregateSpec {
 
     /// Create a new aggregate spec with a label.
     #[must_use]
-    pub fn with_label(kind: AggregateKind, label: impl Into<String>) -> Self {
+    pub(crate) fn with_label(kind: AggregateKind, label: impl Into<String>) -> Self {
         Self {
             kind,
             label: Some(label.into()),
@@ -173,11 +173,11 @@ pub enum DuplicateVerify {
 
 /// Maximum allowed sample rows per bucket.
 /// Maximum number of sample rows per bucket.
-pub const MAX_SAMPLE_COUNT: u8 = 5;
+pub(crate) const MAX_SAMPLE_COUNT: u8 = 5;
 
 /// Default sample projection: the fields returned for each sample row
 /// when the caller doesn't specify a custom projection.
-pub const DEFAULT_PROJECTION: &[FieldId] = &[
+pub(crate) const DEFAULT_PROJECTION: &[FieldId] = &[
     FieldId::Name,
     FieldId::Size,
     FieldId::Modified,
@@ -204,7 +204,7 @@ pub const DEFAULT_PROJECTION: &[FieldId] = &[
 /// | `projection` | name, size, modified, path, type, ext |
 #[derive(Debug, Clone, Hash)]
 pub struct TopHitsSpec {
-    /// Number of sample rows per bucket (1–[`MAX_SAMPLE_COUNT`]).
+    /// Number of sample rows per bucket (1–`MAX_SAMPLE_COUNT`).
     pub count: u8,
     /// Sort sample rows by this field.
     pub sort_field: FieldId,
@@ -212,7 +212,7 @@ pub struct TopHitsSpec {
     pub sort_desc: bool,
     /// Fields to include in each sample row.
     ///
-    /// When empty, [`DEFAULT_PROJECTION`] is used during finalization.
+    /// When empty, `DEFAULT_PROJECTION` is used during finalization.
     pub projection: Vec<FieldId>,
 }
 
@@ -230,7 +230,7 @@ impl Default for TopHitsSpec {
 impl TopHitsSpec {
     /// Create a spec with just a sample count (all other fields default).
     ///
-    /// `count` is clamped to 1–[`MAX_SAMPLE_COUNT`].
+    /// `count` is clamped to 1–`MAX_SAMPLE_COUNT`.
     #[must_use]
     pub fn with_count(count: u8) -> Self {
         Self {
@@ -241,7 +241,7 @@ impl TopHitsSpec {
 
     /// Create a fully specified `TopHitsSpec`.
     ///
-    /// `count` is clamped to 1–[`MAX_SAMPLE_COUNT`].
+    /// `count` is clamped to 1–`MAX_SAMPLE_COUNT`.
     #[must_use]
     pub fn new(count: u8, sort_field: FieldId, sort_desc: bool, projection: Vec<FieldId>) -> Self {
         Self {
@@ -255,7 +255,7 @@ impl TopHitsSpec {
     /// Return the effective projection — custom if non-empty, otherwise
     /// the default compact set.
     #[must_use]
-    pub fn effective_projection(&self) -> &[FieldId] {
+    pub(crate) fn effective_projection(&self) -> &[FieldId] {
         if self.projection.is_empty() {
             DEFAULT_PROJECTION
         } else {
@@ -360,8 +360,8 @@ impl CalendarInterval {
     ///
     /// Returns `None` if the string is not a recognized interval.
     #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.to_ascii_lowercase().as_str() {
             "hour" | "h" | "hourly" => Some(Self::Hour),
             "day" | "d" | "daily" => Some(Self::Day),
             "week" | "w" | "weekly" => Some(Self::Week),
@@ -374,6 +374,10 @@ impl CalendarInterval {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "tests assert against fixtures with known shape; indexing panic = test failure"
+)]
 mod tests {
     use super::*;
 
@@ -453,9 +457,9 @@ mod tests {
             ScalarMetric::ValueCount,
             ScalarMetric::MissingCount,
         ];
-        for (i, a) in all.iter().enumerate() {
-            for (j, b) in all.iter().enumerate() {
-                assert_eq!(i == j, a == b);
+        for (i, lhs) in all.iter().enumerate() {
+            for (j, rhs) in all.iter().enumerate() {
+                assert_eq!(i == j, lhs == rhs);
             }
         }
     }
@@ -474,9 +478,9 @@ mod tests {
             BucketMetric::ShareOfTotalCount,
             BucketMetric::ShareOfTotalBytes,
         ];
-        for (i, a) in all.iter().enumerate() {
-            for (j, b) in all.iter().enumerate() {
-                assert_eq!(i == j, a == b);
+        for (i, lhs) in all.iter().enumerate() {
+            for (j, rhs) in all.iter().enumerate() {
+                assert_eq!(i == j, lhs == rhs);
             }
         }
     }
@@ -589,9 +593,9 @@ mod tests {
             sample: Some(TopHitsSpec::with_count(3)),
         });
         if let AggregateKind::Terms { sample, .. } = &spec.kind {
-            let s = sample.as_ref().expect("sample should be Some");
-            assert_eq!(s.count, 3);
-            assert_eq!(s.sort_field, FieldId::Size);
+            let sample_spec = sample.as_ref().expect("sample should be Some");
+            assert_eq!(sample_spec.count, 3);
+            assert_eq!(sample_spec.sort_field, FieldId::Size);
         } else {
             panic!("expected Terms");
         }
@@ -607,10 +611,10 @@ mod tests {
             max_groups: 100_000,
         });
         if let AggregateKind::Duplicates { sample, .. } = &spec.kind {
-            let s = sample.as_ref().expect("sample should be Some");
-            assert_eq!(s.count, 2);
-            assert_eq!(s.sort_field, FieldId::Modified);
-            assert!(!s.sort_desc);
+            let sample_spec = sample.as_ref().expect("sample should be Some");
+            assert_eq!(sample_spec.count, 2);
+            assert_eq!(sample_spec.sort_field, FieldId::Modified);
+            assert!(!sample_spec.sort_desc);
         } else {
             panic!("expected Duplicates");
         }

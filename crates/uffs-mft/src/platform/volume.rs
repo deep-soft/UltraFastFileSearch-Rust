@@ -370,7 +370,7 @@ impl VolumeHandle {
     ///
     /// Returns `MftError::VolumeOpen` if `CreateFileW` fails.
     #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
-    pub fn open_mft_read_handle(&self) -> Result<HANDLE> {
+    pub(crate) fn open_mft_read_handle(&self) -> Result<HANDLE> {
         // Enable SeBackupPrivilege — required for $MFT access even as admin
         enable_backup_privilege();
 
@@ -416,7 +416,7 @@ impl VolumeHandle {
     ///
     /// Returns `MftError::VolumeOpen` if `CreateFileW` fails.
     #[expect(unsafe_code, reason = "FFI: windows API (CreateFileW)")]
-    pub fn open_unbuffered_handle(&self) -> Result<HANDLE> {
+    pub(crate) fn open_unbuffered_handle(&self) -> Result<HANDLE> {
         let volume = self.volume;
         let volume_path: Vec<u16> = format!("\\\\.\\{volume}:")
             .encode_utf16()
@@ -458,7 +458,7 @@ impl VolumeHandle {
 
     /// Returns the estimated number of MFT records.
     #[must_use]
-    pub fn estimated_record_count(&self) -> u64 {
+    pub(crate) fn estimated_record_count(&self) -> u64 {
         self.volume_data.mft_valid_data_length
             / u64::from(self.volume_data.bytes_per_file_record_segment)
     }

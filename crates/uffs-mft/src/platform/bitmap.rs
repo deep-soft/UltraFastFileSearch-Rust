@@ -167,7 +167,7 @@ impl MftBitmap {
 
     /// Checks if an entire cluster range has any in-use records.
     #[must_use]
-    pub fn cluster_has_in_use(&self, start_frs: u64, records_per_cluster: u32) -> bool {
+    pub(crate) fn cluster_has_in_use(&self, start_frs: u64, records_per_cluster: u32) -> bool {
         let start = frs_to_index(start_frs);
         let end = (start + records_per_cluster as usize).min(self.record_count);
 
@@ -197,7 +197,7 @@ impl MftBitmap {
     }
 
     /// Returns ranges of clusters that contain in-use records.
-    pub fn in_use_cluster_ranges(
+    pub(crate) fn in_use_cluster_ranges(
         &self,
         records_per_cluster: u32,
     ) -> impl Iterator<Item = (u64, u64)> + '_ {

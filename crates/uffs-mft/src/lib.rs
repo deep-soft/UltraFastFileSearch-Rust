@@ -46,6 +46,49 @@
 //! | `modified`   | `Datetime[μs]` | Modification timestamp         |
 //! | `accessed`   | `Datetime[μs]` | Access timestamp               |
 //! | `flags`      | `UInt16`       | Bit-packed attributes          |
+//!
+//! ## API hygiene policy (Phase 3b §3.4 / §3.6 / §3.7)
+//!
+//! The vast majority of `pub struct` declarations in this crate fall
+//! into one of three categories, each with a **uniform decision**:
+//!
+//! 1. **NTFS on-disk zerocopy types** (`#[repr(C, packed)]` +
+//!    `#[derive(FromBytes, Immutable, KnownLayout)]`): `MultiSectorHeader`,
+//!    `AttributeRecordHeader`, `ResidentAttributeData`,
+//!    `NonResidentAttributeData`, `FileRecordSegmentHeader`, `IndexHeader`,
+//!    `IndexRoot`, `StandardInformation`, `FileNameAttribute`,
+//!    `ExtendedStandardInfo`, `AttributeListEntry`, `ReparsePointHeader`,
+//!    `ReparseMountPointBuffer`, `NtfsBootSector`, IOCP capture headers, etc.
+//!    The field layout **is** the NTFS specification (or the IOCP capture file
+//!    contract); `pub` fields are non-negotiable.  `#[non_exhaustive]` would
+//!    forbid the very `MyHeader { … }` literals that the zerocopy decoder
+//!    helpers build by hand.  **Kept exhaustive.**
+//!
+//! 2. **Index / record DTOs** (`MftIndex`, `FileRecord`, `ChildInfo`,
+//!    `LinkInfo`, `SizeInfo`, `StandardInfo`, `IndexStreamInfo`,
+//!    `IndexNameRef`, `UsnApplyStats`, `IndexBuildTiming`, `ParseResult`,
+//!    `ParsedColumns`, `ParsedRecord`, `ReadChunk`, `RawMftHeader`,
+//!    `RawMftData`, etc.):  read-mostly value types consumed by `uffs-core` and
+//!    `uffs-daemon`.  Hundreds of struct-literal construction sites;
+//!    `#[non_exhaustive]` would require migrating each to a builder for
+//!    marginal benefit while the crate is Polars-blocked from publishing.
+//!    **Kept exhaustive.**
+//!
+//! 3. **Configuration option structs** (`LoadRawOptions`, `SaveRawOptions`,
+//!    `IocpCaptureOptions`):  `pub` fields are config knobs with
+//!    `Default::default()`; struct-literal construction is the natural API.
+//!    **Kept exhaustive** for the same migration-cost reason; revisit when the
+//!    crate publishes.
+//!
+//! The few `pub enum` declarations (`AttributeType`, `ReparseTag`,
+//! `DriveType`, `FileFlags`, etc.) are **closed type-code enums**
+//! defined by the NTFS specification — new variants only appear when
+//! Microsoft extends NTFS — and **state-machine / dispatch enums**
+//! that consumers exhaustively match.  Either category falls under
+//! the playbook §3.6 "keep exhaustive" rule.  **Kept exhaustive.**
+//!
+//! No `pub trait` declarations live in this crate, so the
+//! sealed-trait decision (§3.7) is **N/A**.
 
 #![warn(clippy::all, clippy::pedantic)]
 #![expect(
@@ -74,7 +117,7 @@ use anyhow as _;
 // ============================================================================
 // Suppress unused crate warnings
 // ============================================================================
-// These dependencies are used by the uffs_mft binary (src/main.rs), not the
+// These dependencies are used by the uffs-mft binary (src/main.rs), not the
 // library. Cargo doesn't support per-binary dependencies, so we suppress the
 // warnings here. The binary uses these for CLI, logging, and async runtime.
 // Platform-specific dependencies (used on Windows only)
@@ -124,15 +167,18 @@ use windows as _;
 // ============================================================================
 
 pub mod discovery;
-pub mod error;
-pub mod flags;
+// Phase 3: error, flags, ntfs have zero external module-path use;
+// downstream callers go through the flat `uffs_mft::{MftError, Result,
+// FileFlags, SECTOR_SIZE, AttributeIterator, ...}` re-exports below.
+pub(crate) mod error;
+pub(crate) mod flags;
 pub mod index;
 pub mod raw;
 pub mod raw_iocp;
-pub mod tree_metrics;
+pub(crate) mod tree_metrics;
 
 // Cross-platform modules (NTFS structures and parsing)
-pub mod ntfs; // NTFS structure definitions - cross-platform
+pub(crate) mod ntfs; // NTFS structure definitions - cross-platform
 pub mod parse; // MFT record parsing - cross-platform
 
 // I/O operations module
@@ -155,7 +201,8 @@ mod reader;
 // Public API re-exports
 // ============================================================================
 
-// Re-export cache types
+// Re-export cache types.  `load_or_build_dataframe_cached` is Windows-only
+// (depends on the `uffs_polars::DataFrame` build) and gated below.
 #[cfg(windows)]
 pub use cache::load_or_build_dataframe_cached;
 pub use cache::{
@@ -175,33 +222,39 @@ pub use index::{
     f64_to_usize, frs_to_usize, len_to_u16, len_to_u32, micros_to_i64, millis_to_u64, nanos_to_u64,
     nonneg_to_u64, u32_as_usize, u32_to_f64, u64_to_f64, usize_to_f64, usize_to_u64,
 };
-// Re-export I/O types for advanced usage
+// Re-export I/O types for advanced usage.  Public-API anchors that have
+// no current external consumers but are part of the documented surface are
+// kept pub.  The Windows-only reader structs are pub(crate) at their
+// definition site and have no `crate::<reader>` consumers (only
+// `crate::io::readers::<reader>` paths), so no crate-root re-export is
+// needed for them.
 #[cfg(windows)]
 pub use io::{
-    AlignedBuffer, BatchMftReader, ExtensionAttributes, MftExtentMap, MftRecordMerger,
-    MftRecordReader, ParallelMftReader, ParseResult, ParsedColumns, ParsedRecord,
-    PipelinedMftReader, PrefetchMftReader, ReadChunk, ReadParseTiming, StreamingMftReader,
-    apply_fixup, generate_read_chunks, parse_record_full, parse_record_zero_alloc,
+    AlignedBuffer, ExtensionAttributes, MftExtentMap, MftRecordMerger, ParseResult, ParsedColumns,
+    ParsedRecord, ReadChunk, apply_fixup, generate_read_chunks, parse_record_full,
+    parse_record_zero_alloc,
 };
 // Re-export NTFS constants and types (pure Rust data structures, cross-platform)
 pub use ntfs::SECTOR_SIZE;
 pub use ntfs::{
     AttributeIterator, AttributeListEntry, AttributeRecordHeader, AttributeRef, AttributeType,
     DataRun, ExtendedStandardInfo, FileNameAttribute, FileRecordSegmentHeader, IndexHeader,
-    IndexRoot, NameInfo, NonResidentAttributeData, NtfsBootSector, ReparseMountPointBuffer,
-    ReparsePointHeader, ReparseTag, ResidentAttributeData, StandardInformation, StreamInfo,
-    apply_usa_fixup, extract_data_runs_from_attribute, fixup_file_record, parse_data_runs,
+    IndexRoot, MultiSectorHeader, NameInfo, NonResidentAttributeData, NtfsBootSector,
+    ReparseMountPointBuffer, ReparsePointHeader, ReparseTag, ResidentAttributeData,
+    StandardInformation, StreamInfo, apply_usa_fixup, extract_data_runs_from_attribute,
+    fixup_file_record, parse_data_runs,
 };
 // Re-export platform types
 // Core types (DriveType, MftBitmap, MftExtent) are pure data — available on all platforms
 // Windows-specific types and functions (VolumeHandle, detect_ntfs_drives, etc.) only on
 // Windows
 pub use platform::{DriveType, MftBitmap, MftExtent, SystemMemory, query_system_memory};
+// External-API anchors with cross-crate consumers.  Other Windows-only
+// platform items (NtfsVolumeData, detect_drive_type, infer_drive_from_path,
+// is_volume_read_only) are pub(crate) and consumed only via
+// `crate::platform::*` paths, so no crate-root re-export is needed.
 #[cfg(windows)]
-pub use platform::{
-    NtfsVolumeData, VolumeHandle, detect_drive_type, detect_ntfs_drives, infer_drive_from_path,
-    is_elevated, is_volume_read_only,
-};
+pub use platform::{VolumeHandle, detect_ntfs_drives, is_elevated};
 pub use raw::{
     LoadRawOptions, RawMftData, RawMftHeader, SaveRawOptions, load_raw_mft, load_raw_mft_header,
     save_raw_mft,

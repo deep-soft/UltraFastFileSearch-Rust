@@ -44,7 +44,7 @@ const AGGREGATE_HINT_FACTOR: u64 = 5;
     reason = "MCP schema mirrors SearchParams which has many boolean filter flags"
 )]
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct SearchArgs {
+pub(crate) struct SearchArgs {
     // ── Core search ───────────────────────────────────────────────
     /// Search pattern (glob, regex with `>` prefix, or substring).
     pub pattern: String,
@@ -256,7 +256,7 @@ fn encode_cursor(offset: u32) -> String {
     clippy::too_many_lines,
     reason = "param mapping from MCP to SearchParams — mirrors CLI arg processing"
 )]
-pub async fn run(
+pub(crate) async fn run(
     client: &mut UffsClient,
     args: SearchArgs,
     roots_state: &RootsState,
@@ -613,7 +613,7 @@ fn col_value(col: &str, row: &uffs_client::protocol::response::SearchRow) -> Str
 /// Encodes backslashes, spaces, and other URI-unsafe characters while keeping
 /// drive letters and forward slashes readable.
 #[must_use]
-pub fn percent_encode_path(path: &str) -> String {
+pub(crate) fn percent_encode_path(path: &str) -> String {
     // Normalize backslashes to forward slashes for URI compatibility.
     let normalized = path.replace('\\', "/");
     // Percent-encode characters that aren't URI-safe path characters.

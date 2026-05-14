@@ -203,7 +203,9 @@ pub fn aggregate_changes(records: &[UsnRecord]) -> HashMap<u64, FileChange> {
     changes
 }
 
-// Re-export platform-specific functions
+// Re-export platform-specific functions.  All three are consumed by the
+// uffs-mft bin (commands/windows/*) via the external-style `uffs_mft::usn::*`
+// path and so must be pub.
 #[cfg(windows)]
 pub use windows_impl::{query_usn_journal, read_targeted_frs_records, read_usn_journal};
 

@@ -38,7 +38,7 @@ use crate::stats::McpStats;
 
 /// Shared state for the axum application.
 #[derive(Clone)]
-pub struct AppState {
+pub(crate) struct AppState {
     /// Bearer token required for `/mcp` — `None` means no auth.
     auth_token: Option<Arc<str>>,
     /// Server boot time (for uptime reporting).
@@ -51,6 +51,21 @@ pub struct AppState {
 }
 
 /// Configuration for the HTTP gateway.
+///
+/// # Field discipline (Phase 3b §3.4)
+///
+/// All three fields are `pub` because this is a **configuration DTO**.
+/// `bind_addr` is a required parameter (no default that makes sense);
+/// `auth_token` is genuinely optional; `daemon_spawn_args` is a
+/// forwarded vector with no invariants to protect.
+///
+/// # `#[non_exhaustive]` decision (Phase 3b §3.6)
+///
+/// **Kept exhaustive.**  Same rationale as [`crate::McpConfig`] —
+/// `uffs-mcp` is a bin-dominant internal app and the construction
+/// sites all live in this crate's bins (`src/main.rs`,
+/// `src/bin/http_gateway.rs`) plus the test module below.  Revisit
+/// when / if `uffs-mcp` exposes an embedding API.
 pub struct HttpGatewayConfig {
     /// TCP bind address (e.g. `127.0.0.1:8080`).
     pub bind_addr: core::net::SocketAddr,
@@ -63,7 +78,7 @@ pub struct HttpGatewayConfig {
 /// Build the axum [`Router`] with MCP, health, and status endpoints.
 ///
 /// The router is returned without binding — call [`run_gateway`] to serve.
-pub fn build_router(config: &HttpGatewayConfig) -> Router {
+pub(crate) fn build_router(config: &HttpGatewayConfig) -> Router {
     let spawn_args: Arc<[String]> = config.daemon_spawn_args.clone().into();
     let spawn_args_clone = Arc::clone(&spawn_args);
     let stats = Arc::new(McpStats::default());

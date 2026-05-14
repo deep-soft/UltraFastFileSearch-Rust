@@ -50,7 +50,7 @@
 //! `records` starts at offset 0 (trivially page-aligned).  `names`
 //! starts at the next 4 KiB boundary after the records section.
 //! Both are page-aligned, satisfying the `align_of::<T>() <= page_size`
-//! requirement of [`ColumnStorage::from_mmap_region`] for any `T: Pod`.
+//! requirement of `ColumnStorage::from_mmap_region` for any `T: Pod`.
 
 use alloc::sync::Arc;
 use core::mem::{align_of, size_of};
@@ -95,7 +95,7 @@ const _: () = assert!(
 /// `deserialize` boundaries (e.g. embedding it in a `manifest.json`
 /// next to the runtime file) is straightforward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuntimeLayout {
+pub(crate) struct RuntimeLayout {
     /// Byte offset of the records column in the runtime file.  Always
     /// `0` in the current layout, but kept explicit so a future
     /// layout (e.g. a small fixed header) can shift it without
@@ -116,8 +116,13 @@ pub struct RuntimeLayout {
 
 impl RuntimeLayout {
     /// Byte length of the records column.
+    ///
+    /// Used by unit tests to verify layout arithmetic; not needed in the
+    /// production hot path because `materialise_columns` computes lengths
+    /// inline.
+    #[cfg(test)]
     #[must_use]
-    pub const fn records_bytes_len(&self) -> usize {
+    pub(crate) const fn records_bytes_len(&self) -> usize {
         self.records_count
             .saturating_mul(size_of::<CompactRecord>())
     }
@@ -166,7 +171,7 @@ impl RuntimeLayout {
 /// # Ok(())
 /// # }
 /// ```
-pub fn write_runtime_layout(
+pub(crate) fn write_runtime_layout(
     records_bytes: &[u8],
     names_bytes: &[u8],
     file: &mut File,
@@ -224,7 +229,7 @@ pub fn write_runtime_layout(
 /// [`write_runtime_layout`]'s page-alignment math (or a corrupted
 /// runtime file from a different daemon version) rather than user
 /// error, so the variant carries enough context to surface in logs.
-pub fn load_from_runtime(
+pub(crate) fn load_from_runtime(
     layout: RuntimeLayout,
     mmap: Arc<Mmap>,
 ) -> Result<(ColumnStorage<CompactRecord>, ColumnStorage<u8>), MmapRegionError> {

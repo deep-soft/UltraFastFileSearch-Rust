@@ -13,6 +13,26 @@
 //! let results = client.search("*.rs").await?;
 //! let drives = client.drives().await?;
 //! ```
+//!
+//! ## API hygiene policy (Phase 3b §3.4 / §3.6 / §3.7)
+//!
+//! - **`protocol::*` wire DTOs / wire enums** — `pub` fields **are** the
+//!   contract (`serde` JSON keys 1:1; §3.4).  Kept exhaustive (§3.6): monorepo
+//!   deploys daemon + client together (no skew scenario), hundreds of
+//!   struct-literal construction sites, and the wire enums
+//!   (`SearchPredicateOp`, `SearchPayload`, `DaemonStatus`, …) are dispatch
+//!   enums where exhaustive `match` is the compile-time safety net.  Revisit
+//!   when this crate publishes externally.
+//! - **`schema::*` field-metadata DTOs / enums** — same field-discipline
+//!   reasoning as `protocol`; closed type-code enums by definition.
+//! - **`UffsClient` / `UffsClientSync`** — fields private, smart constructors
+//!   protect reader/writer pairing and `next_id` monotonicity invariants; sync
+//!   sibling adds the Windows `deadline_guard` watchdog-already-spawned
+//!   invariant.  See the focused decision record on `connect::UffsClient`.
+//! - **`ClientError`** — `#[non_exhaustive]` applied (the lone API attribute
+//!   change in Phase 3b); safe under both external usage patterns in
+//!   `uffs-cli`.
+//! - **§3.7** N/A — no `pub trait` declarations in this crate.
 
 // Suppress unused crate warnings for deps used in sub-modules
 use serde as _;
@@ -30,7 +50,7 @@ pub mod connect;
 /// external callers import `KeepaliveGuard` directly from this module
 /// (no cascade through `connect`).
 #[cfg(feature = "async")]
-pub mod connect_keepalive;
+pub(crate) mod connect_keepalive;
 /// Tracing helpers used only by [`connect`].  Private; sibling file
 /// to keep `connect.rs` under the 800-LOC file-size policy after the
 /// v0.5.36 UAC work expanded its public entry points.
@@ -45,6 +65,10 @@ mod connect_logging;
 #[cfg(feature = "async")]
 mod connect_platform;
 pub mod connect_sync;
+/// Auto-start daemon helpers (`auto_start_daemon`, `is_process_alive`,
+/// `is_daemon_process`) — split off `connect_sync` to keep that file
+/// under the 800-LOC policy ceiling.
+pub(crate) mod connect_sync_autostart;
 /// Platform-specific `platform_connect` impls and the `rpc_deadline` helper.
 ///
 /// Split `impl` blocks live on [`connect_sync::UffsClientSync`];
@@ -64,7 +88,7 @@ mod connect_sync_tests;
 /// stays under the 800-LOC policy ceiling without a file-size
 /// exception.  Same precedent as the daemon-state types in
 /// [`protocol::response_status`].
-pub mod connect_sync_tiering;
+pub(crate) mod connect_sync_tiering;
 /// Wire-protocol unit tests for [`connect::UffsClient`].
 ///
 /// Exercises the JSON-RPC request/response path via in-memory tokio
@@ -78,22 +102,23 @@ mod connect_tests;
 ///
 /// Exposes `DaemonChildHandle`, `try_wait`, and the platform-specific
 /// cleanup logic.  Canonical home — no cascade through `daemon_ctl`.
-pub mod daemon_child;
+pub(crate) mod daemon_child;
 pub mod daemon_ctl;
 /// Daemon spawn implementation.
 ///
 /// Exposes `spawn_daemon`, `ElevationPolicy`, the MSVCRT-compatible
 /// arg quoter, and the Windows UAC helpers.  Canonical home — no
 /// cascade through `daemon_ctl`.
-pub mod daemon_spawn;
+pub(crate) mod daemon_spawn;
 pub mod error;
 pub mod format;
 pub mod mcp_pid;
 pub mod protocol;
 pub mod shmem;
 pub mod stdout_kind;
-pub mod types;
-pub mod verify;
+// Phase 3: types and verify have zero external module-path use.
+pub(crate) mod types;
+pub(crate) mod verify;
 /// Windows-only per-RPC deadline enforcement.
 ///
 /// Background watchdog thread that cancels synchronous I/O on the
