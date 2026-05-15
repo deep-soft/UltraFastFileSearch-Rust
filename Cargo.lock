@@ -3342,9 +3342,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "1.6.0"
+version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e12ca9067b5ebfbd5b3fcdc4acfceb81aa7d5ab2a879dff7cb75d22434276aad"
+checksum = "0810a9f717d9828f475fe1f629f4c305c8464b7f496c3a854b58d29e65f4058e"
 dependencies = [
  "async-trait",
  "base64",
@@ -3373,9 +3373,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "1.6.0"
+version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7caa6743cc0888e433105fe1bc551a7f607940b126a37bc97b478e86064627eb"
+checksum = "6aefac48c364756e97f04c0401ba3231e8607882c7c1d92da0437dc16307904d"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -4335,7 +4335,7 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
 name = "uffs-broker"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "anyhow",
  "tracing",
@@ -4346,14 +4346,14 @@ dependencies = [
 
 [[package]]
 name = "uffs-broker-protocol"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "uffs-ci-pipeline"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4370,13 +4370,14 @@ dependencies = [
 
 [[package]]
 name = "uffs-cli"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "serde_json",
  "uffs-client",
  "uffs-format",
+ "uffs-mft",
  "uffs-time",
  "which",
  "winresource",
@@ -4384,7 +4385,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-client"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "dirs-next",
  "libc",
@@ -4396,13 +4397,14 @@ dependencies = [
  "tokio",
  "tracing",
  "uffs-format",
+ "uffs-mft",
  "uffs-security",
  "windows 0.62.2",
 ]
 
 [[package]]
 name = "uffs-core"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -4434,7 +4436,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-daemon"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "anyhow",
  "clap",
@@ -4465,7 +4467,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-diag"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4478,7 +4480,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-format"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "chrono",
  "itoa",
@@ -4489,7 +4491,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-gen-hooks"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "anyhow",
  "clap",
@@ -4499,7 +4501,7 @@ dependencies = [
 
 [[package]]
 name = "uffs-gen-workflow"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "anyhow",
  "clap",
@@ -4509,8 +4511,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "uffs-manifest-audit"
+version = "0.5.96"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "uffs-mcp"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "anyhow",
  "axum",
@@ -4527,11 +4539,12 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uffs-client",
+ "uffs-mft",
 ]
 
 [[package]]
 name = "uffs-mft"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -4549,6 +4562,7 @@ dependencies = [
  "rand_chacha 0.10.0",
  "rayon",
  "rustc-hash",
+ "serde",
  "sha2 0.11.0",
  "smallvec",
  "tempfile",
@@ -4567,14 +4581,14 @@ dependencies = [
 
 [[package]]
 name = "uffs-polars"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "polars",
 ]
 
 [[package]]
 name = "uffs-security"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "aes-gcm",
  "dirs-next",
@@ -4589,14 +4603,14 @@ dependencies = [
 
 [[package]]
 name = "uffs-text"
-version = "0.5.95"
+version = "0.5.96"
 dependencies = [
  "bytemuck",
 ]
 
 [[package]]
 name = "uffs-time"
-version = "0.5.95"
+version = "0.5.96"
 
 [[package]]
 name = "unarray"

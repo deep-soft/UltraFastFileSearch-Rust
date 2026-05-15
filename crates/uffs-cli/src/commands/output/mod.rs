@@ -51,8 +51,9 @@ fn vb(row: &Value, key: &str) -> bool {
 
 /// Context for legacy baseline-compatible footer formatting.
 pub(crate) struct CppFooterContext<'a> {
-    /// Drive letters to include in the footer (e.g., `['C', 'D']`).
-    pub output_targets: &'a [char],
+    /// Drive letters to include in the footer (e.g.
+    /// `[DriveLetter::C, DriveLetter::D]`).
+    pub output_targets: &'a [uffs_mft::platform::DriveLetter],
     /// Original search pattern string.
     pub pattern: &'a str,
     /// Total result row count for fast-scan heuristic.
@@ -80,7 +81,7 @@ pub fn write_native_results(
     pos: &str,
     neg: &str,
     tz_offset: Option<i32>,
-    output_targets: &[char],
+    output_targets: &[uffs_mft::platform::DriveLetter],
     _elapsed: Duration,
     pattern: &str,
 ) -> Result<()> {
@@ -715,9 +716,14 @@ static LOCAL_TZ_OFFSET_SECS: std::sync::LazyLock<i32> =
 fn format_filetime_with_tz(filetime: i64, tz_offset_secs: i32) -> String {
     let local_ft = uffs_time::filetime_with_tz_bias(filetime, tz_offset_secs);
     match uffs_time::filetime_to_calendar(local_ft) {
-        Some((year, month, day, hour, minute, second)) => {
-            format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
-        }
+        Some(uffs_time::CalendarParts {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        }) => format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"),
         None => "0000-00-00 00:00:00".to_owned(),
     }
 }

@@ -199,8 +199,14 @@ fn push_u64(buf: &mut String, value: u64) {
 fn append_datetime_tz(buf: &mut String, filetime: i64, tz_offset_secs: i32) {
     use core::fmt::Write as _;
     let local_ft = uffs_time::filetime_with_tz_bias(filetime, tz_offset_secs);
-    if let Some((year, month, day, hour, minute, second)) =
-        uffs_time::filetime_to_calendar(local_ft)
+    if let Some(uffs_time::CalendarParts {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+    }) = uffs_time::filetime_to_calendar(local_ft)
     {
         let _ok = write!(
             buf,
@@ -229,8 +235,12 @@ pub(super) fn write_legacy_drive_footer<W: Write + ?Sized>(
     writer: &mut W,
     ctx: &CppFooterContext<'_>,
 ) -> Result<()> {
+    // `uffs-format` deliberately does not depend on `uffs-mft` (issue
+    // #216); convert at the crate boundary so the format crate keeps
+    // its narrow char-only API.
+    let chars: Vec<char> = ctx.output_targets.iter().map(|dl| dl.as_char()).collect();
     let fmt_ctx = uffs_format::DriveFooterContext {
-        output_targets: ctx.output_targets,
+        output_targets: &chars,
         pattern: ctx.pattern,
         row_count: ctx.row_count,
     };
