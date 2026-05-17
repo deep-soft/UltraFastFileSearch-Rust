@@ -2,6 +2,22 @@
 // Copyright (c) 2025-2026 SKY, LLC.
 
 //! Column-oriented accumulation helpers for parsed MFT records.
+//!
+//! # FRS wire-boundary policy (Phase 4 sub-phase 5d.4)
+//!
+//! The `frs: Vec<u64>` / `parent_frs: Vec<u64>` fields are the
+//! columnar staging buffers that feed
+//! [`crate::reader::dataframe_build`] and ultimately become
+//! `polars::Series::new("frs", _)` columns.  They are deliberately
+//! raw `u64` because the polars column type is the FRS wire boundary
+//! by Phase-4 doctrine — every typed [`crate::Frs`] / [`crate::ParentFrs`]
+//! value in the workspace demotes to raw `u64` at the polars / CSV /
+//! JSON edge.
+//!
+//! Callers with typed FRS values demote via `frs.raw()` /
+//! `u64::from(frs)` once per record before pushing into the column
+//! vectors; see [`ParsedColumns::push_record`] for the canonical
+//! lift site (`self.frs.push(record.frs.raw())`).
 
 use tracing::{debug, info, warn};
 
@@ -161,8 +177,10 @@ impl ParsedColumns {
     /// This is the hot path for accumulation - keep it fast!
     #[inline]
     pub fn push_record(&mut self, record: &ParsedRecord) {
-        self.frs.push(record.frs);
-        self.parent_frs.push(record.parent_frs);
+        // Columnar storage is `Vec<u64>` — it backs the Polars dataframe
+        // surface whose schema is u64.  Downcast at the push boundary.
+        self.frs.push(record.frs.raw());
+        self.parent_frs.push(record.parent_frs.raw());
         // legacy-output parity: directories have empty name
         if record.is_directory {
             self.name.push(String::new());
@@ -250,8 +268,9 @@ impl ParsedColumns {
                 if crate::ntfs::is_internal_windows_stream(&stream_info.name) {
                     continue;
                 }
-                self.frs.push(record.frs);
-                self.parent_frs.push(name_info.parent_frs);
+                // Polars-bound `Vec<u64>` columns — downcast at the push boundary.
+                self.frs.push(record.frs.raw());
+                self.parent_frs.push(name_info.parent_frs.raw());
                 // legacy-output parity: directories have empty name
                 if record.is_directory {
                     self.name.push(String::new());

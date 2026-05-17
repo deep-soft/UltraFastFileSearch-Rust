@@ -321,8 +321,10 @@ fn test_merge(raw_path: &str, base_frs: u64, ext_frs: u64) -> Result<()> {
     let merged_records = record_merger.merge();
     println!("  merged.len(): {}", merged_records.len());
 
-    // Find the base record in merged results
-    if let Some(record) = merged_records.iter().find(|rec| rec.frs == base_frs) {
+    // Find the base record in merged results.  `base_frs` is the
+    // CLI-parsed `u64`; lift to the typed `Frs` for the equality check.
+    let base_frs_typed = uffs_mft::Frs::new(base_frs);
+    if let Some(record) = merged_records.iter().find(|rec| rec.frs == base_frs_typed) {
         println!("\n=== FRS {base_frs} after merge ===");
         println!("  name: {:?}", record.name);
         println!("  parent_frs: {}", record.parent_frs);
@@ -356,8 +358,9 @@ fn test_merge(raw_path: &str, base_frs: u64, ext_frs: u64) -> Result<()> {
     println!("  records.len(): {}", index.records.len());
     println!("  children.len(): {}", index.children_count());
 
-    // Find the record in the index
-    if let Some(record) = index.find(base_frs) {
+    // Find the record in the index. Lift the CLI-parsed raw `u64` to
+    // a typed `Frs` at the typed-API boundary.
+    if let Some(record) = index.find(uffs_mft::Frs::new(base_frs)) {
         println!("\n=== FRS {base_frs} in MftIndex ===");
         println!("  frs: {}", record.frs);
         println!("  name: {:?}", index.get_name(record.first_name.name));
