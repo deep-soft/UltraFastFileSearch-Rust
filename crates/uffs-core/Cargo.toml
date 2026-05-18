@@ -16,7 +16,6 @@ name = "uffs-core"
 description = "Query engine for UFFS (Ultra Fast File Search) using Polars"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -67,10 +66,9 @@ chrono.workspace = true
 # Hashing (FxHashMap — fast, non-crypto hash for internal tables)
 rustc-hash.workspace = true
 
-# String matching (SIMD-optimized for IndexQuery)
+# String matching for compiled patterns (aggregate engine).
 regex.workspace = true
 memchr.workspace = true
-aho-corasick.workspace = true
 globset.workspace = true
 
 # Async (for load_live_drive on Windows)
