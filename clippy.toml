@@ -29,6 +29,32 @@
 # ── Test code relaxations ────────────────────────────────────────────────────
 # These allow restriction lints to fire only in production code while letting
 # test code use idiomatic Rust test patterns (unwrap, expect, panic, dbg!).
+#
+# The panic-family lints (`unwrap_used`, `expect_used`, `panic`) stay at
+# `deny` for prod code; see `docs/architecture/code-quality/panic_policy.md`
+# for the five-category taxonomy (A-E) and the per-site #[expect(...)]
+# annotation contract.
+#
+# The clone- and allocation-family lints (`redundant_clone`,
+# `clone_on_ref_ptr`, `cloned_instead_of_copied`, `inefficient_to_string`,
+# `unnecessary_to_owned`, `assigning_clones`, `rc_buffer`, `rc_mutex`, …)
+# likewise stay at `deny` for prod code; see
+# `docs/architecture/code-quality/allocation_policy.md` for the
+# five-category taxonomy (α-ε) and the per-site justification contract.
+# Audit script: `scripts/dev/clone_alloc_audit.sh`.
+#
+# The trait / generic / dispatch lints (`type_complexity`,
+# `too_many_arguments`, `trait_duplication_in_bounds`,
+# `wrong_self_convention`, `multiple_bound_locations`) likewise stay at
+# `deny` / `warn` for prod code; see
+# `docs/architecture/code-quality/trait_policy.md` for the four-criterion
+# trait justification taxonomy (J1-J4), the generic-function categories
+# (G1-LOCAL / G2-USEFUL / G3-SPREAD / G4-CASCADING / G5-CLOSURE), the
+# dispatch matrix (D1-D4 + S1-S3), and the seal/open decision tree.
+# Audit script: `scripts/dev/trait_generic_audit.sh`.
+#
+# For the broader lint posture see
+# `docs/architecture/code-quality/lint-posture.md`.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true

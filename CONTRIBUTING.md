@@ -218,6 +218,70 @@ Top-level `security:` is **not** an allowed type — the local `commit-msg` hook
 - Update docs when contributor-facing workflow or user-visible behavior changes.
 - **New Windows-gated code must pass `just lint-ci-windows` before PR.**  Strict clippy on `#[cfg(windows)]` paths is advisory during the Phase W2–W5 backlog cleanup (see `docs/architecture/windows-clippy-and-linux-cross-plan.md`) and becomes a hard gate at PR CI after W5.  New lints introduced into the backlog trigger an immediate reviewer ask.
 
+## Panic policy
+
+UFFS enforces a strict no-panic posture in production code via three workspace Clippy lints at `deny` level: `unwrap_used`, `expect_used`, and `panic`.  Test code is exempt (see `clippy.toml` `allow-*-in-tests = true`).
+
+The one-line rule: **library code never panics on user input or environment failure; binaries may panic during bootstrap; every other `panic!` / `unwrap()` / `expect()` in production code is a bug.**
+
+Every surviving prod `unwrap` / `expect` / `panic!` fits exactly one of five categories (A–E), each requiring a specific annotation shape:
+
+- **A** — Invariant violation IS a bug (upstream check guarantees the condition): keep as `expect("invariant: <specific condition>")` plus `#[expect(clippy::expect_used, reason = "<invariant + why upstream check guarantees it>")]`.
+- **B** — Caller error / validation failure: convert to typed error variant; propagate via `?`.
+- **C** — Environmental (IO, mutex poison, syscall): propagate via `?` after `map_err` to a typed error, preserving the source via `#[from]` or `#[source]`.
+- **D** — Bootstrap (one-time process startup, crash-correct): keep as `expect("BOOT INVARIANT: <condition>")` with `#[expect(...)]`.
+- **E** — Programmer bug at use site: keep as `panic!` with documented invariant in the enclosing function's `# Panics` doc section.
+
+Full taxonomy, anti-patterns, per-crate posture, and the per-site annotation contract live in [`docs/architecture/code-quality/panic_policy.md`](docs/architecture/code-quality/panic_policy.md).  Library crates do not return `anyhow::Error` from public APIs and do not return `Result<_, String>` (banned workspace-wide after Phase 5d); use a typed `thiserror::Error` enum with `#[non_exhaustive]` instead.
+
+## Allocation policy
+
+UFFS enforces a strict clone-and-allocation discipline in production code via five workspace Clippy lints at `deny` level: `redundant_clone`, `clone_on_ref_ptr`, `cloned_instead_of_copied`, `inefficient_to_string`, and `unnecessary_to_owned`.  Test code is exempt.
+
+The one-line rule: **hot paths (per-record / per-row / per-query) never allocate defensively; cold paths (error context, log lines, one-time setup) may allocate freely; every `.clone()` / `format!()` / `to_owned()` in production code must fit one of the five blessed categories (α / β / γ / δ / ε), and δ is a bug.**
+
+Every surviving prod `.clone()` / `format!()` / `to_owned()` fits exactly one of five categories, each requiring a specific annotation shape:
+
+- **α — Arc clone** (`Arc::clone(&x)` form): self-evident; no comment required.  `clone_on_ref_ptr = "deny"` enforces the explicit form.
+- **β — Ownership fence** (caller has `&T`, API needs `T`): 1–3 line `//` comment explaining why the alternative (`&T`, in-place mutation) doesn't work.
+- **γ — Error / log context** (allocation inside an error variant or `tracing!` event): brief reason; the *category* is self-evident from the context.
+- **δ — Hot-path anti-pattern** (clone of `String` / `Vec<T>` inside a per-record loop that could be eliminated): **FIX, do not suppress.**  Refactor the call site with a comment documenting the new (correct) borrow invariant.
+- **ε — Test helper** (`#[cfg(test)]`-only allocation): out of scope; test code is exempt.
+
+Full taxonomy, the per-site annotation contract, the workspace inventory script (`scripts/dev/clone_alloc_audit.sh`), and the per-phase decisions log live in [`docs/architecture/code-quality/allocation_policy.md`](docs/architecture/code-quality/allocation_policy.md).
+
+## Trait, generic, and dispatch policy
+
+UFFS enforces a strict trait / generic / dispatch discipline in production code via five workspace Clippy lints: `type_complexity`, `too_many_arguments`, `trait_duplication_in_bounds`, `wrong_self_convention` (all `deny`), and `multiple_bound_locations` (`warn`).  Test code is exempt.
+
+The one-line rule: **a trait must satisfy at least one of [J1] multiple impls / [J2] test substitution / [J3] stable extension / [J4] high-level decoupling — otherwise it's decoration.  Generics stay local.  `dyn` for plugin boundaries; static for closed sets.**
+
+Trait justification four-criterion taxonomy:
+
+- **[J1]** Multiple meaningful implementations (≥ 2 prod impls on `main`).
+- **[J2]** Test-substitution boundary (prod impl + ≥ 1 test fake).
+- **[J3]** Stable extension surface (rustdoc documents external impls).
+- **[J4]** High-level / infrastructure decoupling.
+
+A trait satisfying **none** of J1–J4 → demote to a concrete type and replace usages.
+
+Generic-function categories (G1-LOCAL / G2-USEFUL / G3-SPREAD / G4-CASCADING / G5-CLOSURE), dispatch matrix (D1-PLUGIN / D2-HETERO / D3-NOOP / D4-VTBL-COST), seal-vs-open decision tree, the per-trait registry, the workspace inventory script (`scripts/dev/trait_generic_audit.sh`), and the per-phase decisions log live in [`docs/architecture/code-quality/trait_policy.md`](docs/architecture/code-quality/trait_policy.md).
+
+## Feature flag and dependency policy
+
+UFFS keeps feature behavior additive and dependency duplication audited.  No new clippy lints; the contract is enforced by `cargo deny check`, `cargo machete`, `cargo vet`, and `cargo tree --workspace -d`, all wired into pre-push and `pr-fast.yml::security`.
+
+The one-line rule: **every feature is additive (enabling never removes a `pub` item); every default has a written justification; every optional dep is reachable via `dep:<name>` and at least one `#[cfg(feature = "…")]` use-site; every cross-version duplicate is either in `deny.toml [bans].skip-tree` with a one-line reason or accepted by the workspace's `multiple-versions = "warn"` posture and inventoried in `dependency_policy.md` §5.1.**
+
+Every feature added to the workspace must document the four-line playbook §988 contract in **both** the crate's root rustdoc (`# Features` section) and as a block comment above the `[features]` block in `Cargo.toml`:
+
+- **What it enables** — which module / item / subcommand / binary.
+- **What deps it adds** — `dep:<name>` gating + transitive feature pulls.
+- **API shape impact** — additive (default) | subtractive (forbidden).
+- **Semver claim** — adding items behind it is non-breaking; removing items behind it is breaking.
+
+The feature taxonomy (F1-additive-default-on / F2-additive-default-off / F3-orthogonal / F4-subtractive-FORBIDDEN / F5-feature-on-feature), the cross-version duplicate acceptance inventory, the per-crate feature registry, the workspace inventory script (`scripts/dev/feature_dep_audit.sh`), and the per-phase decisions log live in [`docs/architecture/code-quality/dependency_policy.md`](docs/architecture/code-quality/dependency_policy.md).
+
 ## Docs map
 
 - Root overview: `README.md`

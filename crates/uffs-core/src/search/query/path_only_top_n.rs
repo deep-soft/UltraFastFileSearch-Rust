@@ -63,7 +63,7 @@ use rayon::prelude::*;
 use super::super::backend::{self, DisplayRow, FilterMode, PhaseTimings};
 use super::super::field::FieldId;
 use super::super::filters::{SearchFilters, row_passes_filters};
-use super::super::tree::{self, DirCache, DirCacheExt as _};
+use super::super::tree::{self, DirCache};
 use super::numeric_top_n::sort_indices_by_name;
 use super::{make_display_row, passes_filter_mode, stack_volume_prefix};
 use crate::compact::DriveCompactIndex;
@@ -160,7 +160,7 @@ pub(super) fn collect_path_only_sorted_top_n<D: AsRef<DriveCompactIndex> + Sync>
         let drive = drive_ref.as_ref();
         let mut vp_buf = [0_u8; 4];
         let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
-        let mut dir_cache = DirCache::with_capacity(256);
+        let mut dir_cache = tree::dir_cache_with_capacity(256);
 
         // Roots = records whose parent is `u32::MAX` (typically the
         // drive root "." at FRS 5, though stray orphans are possible).
@@ -511,9 +511,14 @@ fn collect_path_only_via_ext_index<D: AsRef<DriveCompactIndex> + Sync>(
             continue;
         }
         let drive_idx_u16 = uffs_mft::len_to_u16(drive_idx);
-        // Clone the resolved ids so we can reborrow `search_filters`
-        // later if a future filter pushes more predicates.
-        for &ext_id in &search_filters.resolved_ext_ids.clone() {
+        // Borrow `resolved_ext_ids` immutably for the inner loop's
+        // lifetime: the body never touches `search_filters`, so the
+        // borrow is released when the inner loop ends, freeing the
+        // next outer iteration's call to `resolve_ext_ids_for_drive`
+        // (which needs `&mut search_filters`).  Replaces a defensive
+        // `.clone()` (Phase 6c category-δ) that was anticipating a
+        // future filter push that never landed.
+        for &ext_id in &search_filters.resolved_ext_ids {
             for &rec_idx_u32 in drive.ext_index.get(ext_id) {
                 let rec_idx = rec_idx_u32 as usize;
                 let Some(rec) = drive.records.get(rec_idx) else {
@@ -582,7 +587,7 @@ fn collect_path_only_via_ext_index<D: AsRef<DriveCompactIndex> + Sync>(
                 let volume_prefix = stack_volume_prefix(&mut vp_buf, drive.letter);
                 let cache = local_caches
                     .entry(drive_idx)
-                    .or_insert_with(|| DirCache::with_capacity(256));
+                    .or_insert_with(|| tree::dir_cache_with_capacity(256));
                 let path = tree::resolve_path_cached(drive, rec_idx as usize, volume_prefix, cache);
                 local_rows.push(make_display_row(rec_idx, drive.letter, rec, name, path));
                 local_candidates += 1;
