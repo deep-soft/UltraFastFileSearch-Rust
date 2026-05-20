@@ -16,6 +16,27 @@
 //! across sibling modules fragments the shared `DaemonConfig` /
 //! `EventSender` wiring and obscures the parent-task lifetime
 //! relationships between them.
+//!
+//! # Environment
+//!
+//! Env vars read by this crate (registry:
+//! `docs/architecture/code-quality/build_codegen_policy.md` §5, playbook
+//! §1049-1056).  Cache-tier knobs are read via `pub(crate) const FOO_ENV: &str
+//! = "UFFS_FOO_…";` indirections in `cache::policy`; the audit script
+//! `scripts/dev/build_codegen_audit.sh` detects these.
+//!
+//! | Env var | Type | Default | Notes |
+//! |---|---|---|---|
+//! | `CARGO_MANIFEST_DIR` | `path` | (set by Cargo) | Test-fixture path resolution.  CARGO semver class. |
+//! | `CARGO_PKG_VERSION` | `string` | (set by Cargo) | Read via `env!()` for status payload + log preludes.  CARGO semver class. |
+//! | `RUST_LOG` | `string` | `info` | `tracing-subscriber` filter directive; consulted in `main` when `UFFS_LOG` is unset.  STANDARD semver class (tracing convention). |
+//! | `UFFS_LOG` | `string` | `info` | UFFS-specific log level override for the daemon binary.  INTERNAL semver class. |
+//! | `UFFS_HOT_TO_WARM_IDLE_SECS` | `int` (seconds) | `60` | Cache tier `Hot → Warm` transition timer override (via `HOT_TO_WARM_IDLE_ENV` const indirection).  INTERNAL semver class. |
+//! | `UFFS_WARM_TO_PARKED_IDLE_SECS` | `int` (seconds) | `300` (5 min) | Cache tier `Warm → Parked` transition timer override (via `WARM_TO_PARKED_IDLE_ENV` const indirection).  INTERNAL semver class. |
+//! | `UFFS_PARKED_TO_COLD_IDLE_SECS` | `int` (seconds) | `86_400` (24 h) | Cache tier `Parked → Cold` transition timer override (via `PARKED_TO_COLD_IDLE_ENV` const indirection).  INTERNAL semver class. |
+//! | `UFFS_USN_REFRESH_INTERVAL_SECS` | `int` (seconds) | `300` (5 min) | USN journal refresh interval override (via `USN_REFRESH_INTERVAL_ENV` const indirection).  INTERNAL semver class. |
+//! | `UFFS_SEARCH_MAX_CONCURRENCY` | `int` (search permits) | auto: `max(2, cpus × 26 / (drives × 10))` | Overrides the auto-tuned search-permit target for `(cpus, drives)` topology (via `index::DriveIndex::SEARCH_CONCURRENCY_ENV` const indirection).  INTERNAL semver class. |
+//! | `XDG_RUNTIME_DIR` | `path` | (XDG: `/run/user/$UID`) | Linux daemon-socket location.  STANDARD semver class. |
 
 // Enable unstable Windows Unix domain socket support (Windows 10 1803+).
 #![cfg_attr(windows, feature(windows_unix_domain_sockets))]
@@ -668,6 +689,26 @@ fn spawn_ipc_servers(
     });
     tracing::info!("IPC server task spawned");
 
+    // Task ownership (Phase 10c): the Windows named-pipe IPC server is
+    // **fire-and-forget** — the `_pipe_task` `JoinHandle` is bound but
+    // never `.abort()`-ed.  Rationale (mirrors the parent fn rustdoc):
+    //
+    //   * **Owner:** the binding `_pipe_task` lives until end-of-scope in
+    //     `spawn_ipc_servers`; the task itself outlives the binding (Tokio detaches
+    //     a spawned task once its `JoinHandle` drops).
+    //   * **Shutdown:** none cooperative — the pipe `accept` loop has no
+    //     cancellation hook; the `await_shutdown_then_force_exit` watchdog
+    //     `process::exit`s the daemon, terminating the task with the runtime.
+    //   * **Error obs.:** body logs via `tracing::error!`; outer `JoinHandle` drop
+    //     discards the result.
+    //   * **Cancel behavior:** process-exit only.
+    //
+    // The sibling AF_UNIX task IS returned + held + `.abort()`-ed —
+    // that's the "primary" IPC transport on Unix.  On Windows, both
+    // transports coexist (AF_UNIX for tools using the cross-platform
+    // socket path; named-pipe for native Windows tooling); aborting
+    // just one and letting the other ride out process exit is a
+    // deliberate asymmetry.
     #[cfg(windows)]
     let _pipe_task = {
         let pipe_index = Arc::clone(idx);
