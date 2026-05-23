@@ -56,7 +56,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.5.100"
+version = "0.5.102"
 edition = "2024"
 # No `rust-version` claim: the workspace is structurally nightly-only.
 # `crates/uffs-polars` enables `polars/nightly` unconditionally, which
@@ -118,21 +118,21 @@ publish = false
 # proposed-plan output for 12 days because `release-plz update`
 # failed at `cargo package` with this very error.  See
 # `release-automation-baseline.md` §10 for the diagnostic trail.
-uffs-polars = { path = "crates/uffs-polars", version = "0.5.100" }
-uffs-security = { path = "crates/uffs-security", version = "0.5.100" }
-uffs-text = { path = "crates/uffs-text", version = "0.5.100" }
-uffs-time = { path = "crates/uffs-time", version = "0.5.100" }
-uffs-mft = { path = "crates/uffs-mft", version = "0.5.100" }
-uffs-format = { path = "crates/uffs-format", version = "0.5.100" }
-uffs-core = { path = "crates/uffs-core", version = "0.5.100" }
-uffs-client = { path = "crates/uffs-client", version = "0.5.100" }
+uffs-polars = { path = "crates/uffs-polars", version = "0.5.102" }
+uffs-security = { path = "crates/uffs-security", version = "0.5.102" }
+uffs-text = { path = "crates/uffs-text", version = "0.5.102" }
+uffs-time = { path = "crates/uffs-time", version = "0.5.102" }
+uffs-mft = { path = "crates/uffs-mft", version = "0.5.102" }
+uffs-format = { path = "crates/uffs-format", version = "0.5.102" }
+uffs-core = { path = "crates/uffs-core", version = "0.5.102" }
+uffs-client = { path = "crates/uffs-client", version = "0.5.102" }
 # `uffs-broker-protocol` carries the wire-protocol types shared between
 # `uffs-broker` (the elevated handle vendor, Windows-only binary) and
 # `uffs-daemon::broker_client` (the handle consumer).  Pure-logic
 # Layer-0 lib — cross-platform tests run on every CI lane.  Added in
 # F5 (issue #205) so neither side duplicates `BROKER_PIPE_NAME` /
 # wire-format byte literals.
-uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.5.100" }
+uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.5.102" }
 # NOTE: no `uffs-broker` workspace dependency alias on purpose —
 # `uffs-broker` is a binary-only crate (the only `[lib]` it carries is
 # this protocol module's now-extracted sibling); no other workspace
@@ -336,6 +336,18 @@ undocumented_unsafe_blocks = "deny"    # Document all unsafe (if any)
 multiple_unsafe_ops_per_block = "deny" # Limit unsafe operations
 unnecessary_safety_doc = "deny"        # Accurate safety docs
 unnecessary_safety_comment = "deny"    # Accurate safety comments
+
+# ───── Phase 10 concurrency discipline lints — see concurrency_policy.md §1 ─────
+# The `await_holding_*` family lives in clippy's `suspicious` group, which
+# defaults to `warn`.  We pin all three at `deny` explicitly so the policy
+# doc's enforcement claim is literally true (not "effectively at deny via
+# `-D warnings` in CI") and survives any future tightening of the workspace
+# `--deny warnings` shape.  Triggering one is **never** acceptable in prod
+# code — the canonical fix is the snapshot-then-await pattern documented in
+# `concurrency_policy.md §2.2`.
+await_holding_lock = "deny"         # No std::sync::Mutex/RwLock guard across .await
+await_holding_refcell_ref = "deny"  # No RefCell::borrow{,_mut}() guard across .await
+await_holding_invalid_type = "deny" # No Rc<T> / Cell<T> across .await (Send violation)
 
 # ───── DENY level lints — safety, correctness, discipline ─────
 # These MUST be clean in production code. clippy.toml relaxes test code
