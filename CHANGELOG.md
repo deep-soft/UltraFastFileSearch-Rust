@@ -14,6 +14,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — ship pipeline: force `cargo clean` after a `rustc` toolchain bump
+
+`just ship` step `00-toolchain-ensure` can bump the pinned nightly, but
+step `02-clean-artifacts` only cleaned on disk-pressure heuristics — so a
+fresh nightly reused a `target` dir built by the previous `rustc`, whose
+version-specific cross-crate metadata then made every build explode with
+`E0514` ("found crate compiled by a different version of rustc").
+
+- **The clean step now fingerprints the toolchain.** `context::active_rustc_id`
+  captures `rustc -vV`; the clean step stores it under
+  `CARGO_TARGET_DIR/.uffs-ci-rustc-fingerprint` and, on every run, forces a
+  `cargo clean` when the active toolchain differs from the one that built
+  the cache (before any build step runs). The fingerprint is re-recorded
+  after the decision so the next bump is detected.
+- **Disk-pressure auto-clean and the `--clean` / `--no-clean` flags are
+  preserved.** `--no-clean` downgrades a needed toolchain clean to a warning
+  and leaves the stale fingerprint so the next run re-detects it. The clean
+  policy is extracted into a pure, unit-tested `decide_clean` function.
+
+### Fixed — ship pipeline: release auto-commit no longer drifts local `main`
+
+The `just ship` flow (`scripts/ci-pipeline` → `git_ops::git_push`) used to
+create the `chore: development vX.Y.Z` auto-commit on the **current
+branch (`main`)** and then instruct the operator to run `git reset --hard
+origin/main` after the release PR squash-merged (because the squash
+rewrites the commit SHA).  That left local `main` ahead of / diverged
+from `origin/main` after every ship and required a destructive reset to
+recover.
+
+- **Auto-commit now lives on the `release/vX.Y.Z` branch, never on
+  `main`.** `git_push` switches onto the release branch
+  (`ensure_on_release_branch`, replacing `detect_current_branch`),
+  rebases it onto `origin/main`, opens the PR against `BASE_BRANCH`
+  (`main`), and then returns the working tree to `main`
+  (new `return_to_base_branch` helper).
+- **Local `main` no longer drifts**, so the post-merge step is a plain
+  `git pull --ff-only origin main` instead of `git reset --hard` — the
+  operator hint printed at the end of `git push` is updated to match.
+- `ensure_on_release_branch` uses a plain `git switch` (not `-C`) so a
+  resumed ship lands on the existing release branch that already holds
+  the auto-commit rather than resetting it to a commit-less `HEAD`.
+
+### Added — WinGet distribution: live install docs + auto-submission pipeline
+
+`SkyLLC.UFFS` is published on the Windows Package Manager community
+repository (microsoft/winget-pkgs#378294, v0.5.102), so `winget install
+SkyLLC.UFFS` now works.
+
+- **Docs promote WinGet as the recommended Windows install.** `README.md`
+  Download section gains the `winget install SkyLLC.UFFS` one-liner and
+  the stale "WinGet (coming)" note is removed;
+  `docs/user-manual/installation.md` gains a new §1 *WinGet (Windows —
+  Recommended)* and renumbers the downstream sections (Pre-Built Binaries
+  → §2 … Verify Installation → §6).
+- **`.github/workflows/winget-publish.yml`** — on every published
+  release (`release: released`), `winget-releaser` (komac under the hood)
+  opens a winget-pkgs PR bumping the manifest. The prior version's
+  nested-installer structure (`InstallerType: zip` /
+  `NestedInstallerType: portable`, the four `uffs`/`uffsd`/`uffsmcp`/
+  `uffs-mft` command aliases) carries over automatically. A
+  `workflow_dispatch` fallback re-submits a specific tag by hand.
+  - **One-time setup required:** add a `WINGET_TOKEN` repository secret —
+    a classic PAT with `public_repo` scope owned by the maintainer
+    account that holds the winget-pkgs fork (the action's `fork-user` is
+    pinned to `githubrobbi`, not the `skyllc-ai` org). The default
+    `GITHUB_TOKEN` cannot fork an external repo, so the workflow no-ops
+    until this secret exists.
+
 ### Added — Phase 8: operator-driven memory tiering (v0.6.0 staging)
 
 The full operator-facing memory-tiering surface — every command end-to-end
@@ -735,7 +803,7 @@ hunting for the wrong things.
 
 Plan §1 goal-4 ("no regression on CLI hot path vs the v0.5.35
 baseline") verified end-to-end on the Windows 7-drive reference
-box.  Current v0.5.105 (post-Phase-8 tiered architecture) is
+box.  Current v0.5.107 (post-Phase-8 tiered architecture) is
 **universally faster** than v0.5.35 across every benchmarked
 pattern, with the largest result set (`*.dll`, 44 529 rows)
 showing a **2.7× speedup**:
@@ -743,7 +811,7 @@ showing a **2.7× speedup**:
 ```
 Drive D, 7.07 M records, 30 rounds, HOT phase, p50 / p95 wall_ms:
 
-                              v0.5.35      v0.5.105       Δ p50
+                              v0.5.35      v0.5.107       Δ p50
     exact      (3 rows)       20 / 23   →  18 / 19      −10 %
     prefix     (8 732)        46 / 50   →  40 / 46      −13 %
     ext_rare   (11)           18 / 20   →  17 / 18       −6 %
@@ -919,7 +987,7 @@ log-message renames fail CI before reaching another 24-h soak.
   2026-05-13.  No new operator-surface features land on `main`
   until v0.6.0 ships.
 
-## [0.5.105] - 2026-05-08
+## [0.5.107] - 2026-05-08
 
 > **Note on the v0.5.91 gap.**  v0.5.91 was prepared and tagged but never
 > reached a published GitHub Release: the `release.yml` finalize step hit
@@ -928,7 +996,7 @@ log-message renames fail CI before reaching another 24-h soak.
 > partial release was deleted, the tag name became permanently locked by
 > GitHub's *immutable releases* feature (the pre-receive hook refuses any
 > future ref creation under that name even after a clean delete).  The
-> public release sequence therefore jumps `v0.5.90 → v0.5.105`; all
+> public release sequence therefore jumps `v0.5.90 → v0.5.107`; all
 > intended v0.5.91 changes are rolled forward into this release.
 
 ### Fixed
