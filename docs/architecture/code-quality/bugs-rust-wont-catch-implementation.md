@@ -94,7 +94,7 @@ means the acceptance criteria were checked off *and* the pipeline was green.
 | WI-1.2 | 1 TOCTOU | Randomised, `create_new` temp in `atomic_write` + daemon `--out` export | ✅ | `harden/bugs` | ✅ |
 | WI-5.1 | 5 Panic | Enable `arithmetic_side_effects`; `overflow-checks=true` for `dist` | ✅ | `harden/bugs` | ✅ |
 | WI-G.1 | Guard | CI grep-gate script forbidding the anti-patterns from returning | ✅ | `harden/bugs` | ✅ |
-| WI-4.1 | 4 Bytes | Single instrumented UTF-16 decoder; per-index `lossy_name_count` stat + warn | ⬜ | | |
+| WI-4.1 | 4 Bytes | Single instrumented UTF-16 decoder; per-index `lossy_name_count` stat + warn | ✅ | `harden/bugs-2` | ✅ |
 | WI-4.2 | 4 Bytes | Pass `OsString` (not `to_string_lossy`) to spawn argv / IPC paths | ⬜ | | |
 | WI-4.3 | 4 Bytes | Strict-parse subprocess stdout used for decisions (PID/name) | ✅ | `harden/bugs` | ✅ |
 | WI-4.4 | 4 Bytes | **RFC + impl:** lossless name storage (binary/WTF-8 column) | 🟨 RFC landed | `harden/bugs` | RFC ✅ / impl pending sign-off |
@@ -102,7 +102,7 @@ means the acceptance criteria were checked off *and* the pipeline was green.
 | WI-5.3 | 5 Panic | In-tree malformed-input fuzz/regression tests (parsers + cache deserialize) | ⬜ | | |
 | WI-6.1 | 6 Errors | `daemon_ctl` control writes: surface/log instead of bare `drop` | ✅ | `harden/bugs` | ✅ |
 | WI-6.2 | 6 Errors | Log dir-create failures (`log_init`, `mft/logging`) to stderr once | ✅ | `harden/bugs` | ✅ |
-| WI-6.3 | 6 Errors | Audit remaining `.ok()`/`let _ =`; add justification comments | ⬜ | | |
+| WI-6.3 | 6 Errors | Audit remaining `.ok()`/`let _ =`; add justification comments | ✅ | `harden/bugs-2` | ✅ |
 | WI-8.1 | 8 Trust | Broker: thread one process handle verify→`DuplicateHandle` (no PID re-open) | ⬜ | | |
 | WI-8.2 | 8 Trust | Document daemon-nonce security property (depends on WI-2.2) | ✅ | `harden/bugs` | ✅ |
 | WI-7.1 | 7 Parity | Parity corpus: pathological names; assert vs Windows enumeration | ⬜ | | |
