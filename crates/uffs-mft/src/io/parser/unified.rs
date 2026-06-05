@@ -128,6 +128,146 @@ pub(crate) fn decode_name_u16(units: &[u16]) -> (String, u32) {
     (out, count)
 }
 
+/// Re-encode a UTF-16LE byte slice **losslessly** as WTF-8 into `out`.
+///
+/// Unlike [`decode_utf16le_into`] (which replaces unpaired surrogates with
+/// U+FFFD for a valid-UTF-8 `String`), this preserves *every* code unit —
+/// well-formed text becomes ordinary UTF-8, and an **unpaired surrogate**
+/// (`0xD800..=0xDFFF` with no valid pairing) is emitted as its 3-byte WTF-8
+/// encoding (`1110_xxxx 10xx_xxxx 10xx_xxxx` over the raw 16-bit value). The
+/// result is therefore byte-faithful to the on-disk NTFS name and is what the
+/// byte-native search/trigram path matches against, so a file with an
+/// ill-formed name remains **findable by its true name** (WI-4.4). Surrogate
+/// *pairs* are combined into their astral scalar (normal 4-byte UTF-8).
+///
+/// Only called on the rare lossy path (when `decode_utf16le_into` reported a
+/// replacement), so its modest cost never touches the well-formed hot path.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "all arithmetic is on values masked to ≤ 0x10FFFF / 6-bit groups; \
+              the WTF-8 byte composition cannot overflow u8/u32"
+)]
+fn wtf8_from_utf16le(bytes: &[u8], out: &mut Vec<u8>) {
+    /// Low 6 bits of `x`, as a UTF-8 continuation byte (`10xx_xxxx`).
+    ///
+    /// `x & 0x3F` is in `0..=0x3F` and `0x80 | _` is in `0x80..=0xBF`, so the
+    /// `u8` cast is exact, never truncating.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "value is masked to 6 bits (≤ 0x3F) then OR'd with 0x80 → always ≤ 0xBF"
+    )]
+    const fn cont(x: u32) -> u8 {
+        (0x80_u32 | (x & 0x3F)) as u8
+    }
+
+    /// Leading byte: `prefix` OR the low `mask` bits of `cp_shifted`.
+    /// Callers pass a `mask` (5/4/3 bits) that bounds the residual to the
+    /// prefix's free bits, so the `u8` cast is exact.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "masked to ≤ 5 bits then OR'd with a fixed prefix → always ≤ 0xFF"
+    )]
+    const fn lead(prefix: u8, cp_shifted: u32, mask: u32) -> u8 {
+        prefix | (cp_shifted & mask) as u8
+    }
+
+    /// Push a single code point (or lone surrogate) as WTF-8 bytes.
+    fn push_wtf8(cp: u32, out: &mut Vec<u8>) {
+        match cp {
+            0x0000..=0x007F => {
+                // ASCII: single byte, value ≤ 0x7F fits u8 exactly.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "cp ≤ 0x7F in this arm → exact u8"
+                )]
+                out.push(cp as u8);
+            }
+            // 2-byte: 110x_xxxx 10xx_xxxx (5 payload bits in the lead).
+            0x0080..=0x07FF => {
+                out.push(lead(0xC0, cp >> 6, 0x1F));
+                out.push(cont(cp));
+            }
+            // 3-byte: BMP incl. lone surrogates 0xD800..=0xDFFF (4 lead bits).
+            0x0800..=0xFFFF => {
+                out.push(lead(0xE0, cp >> 12, 0x0F));
+                out.push(cont(cp >> 6));
+                out.push(cont(cp));
+            }
+            // 4-byte: astral from a valid surrogate pair (3 lead bits).
+            _ => {
+                out.push(lead(0xF0, cp >> 18, 0x07));
+                out.push(cont(cp >> 12));
+                out.push(cont(cp >> 6));
+                out.push(cont(cp));
+            }
+        }
+    }
+
+    let mut i = 0_usize;
+    while let Some(pair) = i
+        .checked_add(2)
+        .and_then(|end| bytes.get(i..end))
+        .and_then(|sl| <[u8; 2]>::try_from(sl).ok())
+    {
+        let code = u16::from_le_bytes(pair);
+        i = i.saturating_add(2);
+        if (0xD800..=0xDBFF).contains(&code) {
+            // High surrogate: combine with a following low surrogate if present.
+            if let Some(low) = i
+                .checked_add(2)
+                .and_then(|end| bytes.get(i..end))
+                .and_then(|sl| <[u8; 2]>::try_from(sl).ok())
+                .map(u16::from_le_bytes)
+                .filter(|low| (0xDC00..=0xDFFF).contains(low))
+            {
+                i = i.saturating_add(2);
+                let cp = 0x1_0000_u32
+                    + ((u32::from(code) - 0xD800_u32) << 10_u32)
+                    + (u32::from(low) - 0xDC00_u32);
+                push_wtf8(cp, out);
+            } else {
+                // Unpaired high surrogate — preserve verbatim as WTF-8.
+                push_wtf8(u32::from(code), out);
+            }
+        } else {
+            // BMP scalar or unpaired low surrogate — both preserved verbatim.
+            push_wtf8(u32::from(code), out);
+        }
+    }
+}
+
+/// Store a just-decoded name into the index's name buffer **losslessly**,
+/// returning `(byte_offset, stored_byte_len)`.
+///
+/// - `display` is the lossy `String` produced by [`decode_utf16le_into`]
+///   (U+FFFD for ill-formed parts) — used as-is for the common well-formed
+///   case, where its bytes are identical to the name's WTF-8.
+/// - `raw_utf16le` is the original on-disk UTF-16LE byte slice for the name.
+/// - `lossy` is the replacement count `decode_utf16le_into` reported.
+///
+/// When `lossy == 0` (the overwhelming common case) the `display` bytes are
+/// stored directly — zero extra work on the hot path. When `lossy > 0`, the
+/// raw UTF-16 is re-encoded to byte-faithful WTF-8 and *those* bytes are
+/// stored, so the file is findable by its true name (WI-4.4). The returned
+/// length is the **stored** byte length (WTF-8 length on the lossy path),
+/// which the caller records in the `IndexNameRef` so `get_name_bytes` slices
+/// exactly the stored name.
+fn store_name_lossless(
+    index: &mut MftIndex,
+    display: &str,
+    raw_utf16le: &[u8],
+    lossy: u32,
+) -> (u32, usize) {
+    if lossy == 0 {
+        let bytes = display.as_bytes();
+        (index.add_name_bytes(bytes), bytes.len())
+    } else {
+        let mut wtf8 = Vec::with_capacity(raw_utf16le.len());
+        wtf8_from_utf16le(raw_utf16le, &mut wtf8);
+        (index.add_name_bytes(&wtf8), wtf8.len())
+    }
+}
+
 /// Process-global tally of U+FFFD substitutions emitted by
 /// [`decode_name_u16`] across all NTFS-name decodes (Category 4, WI-4.1).
 ///
@@ -285,7 +425,7 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             .and_then(|byte_len| ns.checked_add(byte_len))
                             .and_then(|name_end| data.get(ns..name_end))
                         {
-                            decode_utf16le_into(nb, name_buf);
+                            let lossy = decode_utf16le_into(nb, name_buf);
 
                             // Push old first_name to chain
                             // Copy first_name before mutating (borrow checker)
@@ -297,13 +437,22 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                                 index.records[base_ri].first_name.next_entry = link_idx;
                             }
 
-                            // Overwrite first_name with the new name
-                            let name_off = index.add_name(name_buf);
+                            // Overwrite first_name with the new name. Store the
+                            // name LOSSLESSLY (WI-4.4): a well-formed name's
+                            // `String` bytes already equal its WTF-8, so the
+                            // common path is unchanged; an ill-formed name
+                            // (lossy > 0) is stored as byte-faithful WTF-8 of
+                            // the raw UTF-16 so it stays findable. `is_ascii` /
+                            // extension still derive from the lossy display
+                            // `name_buf` (a U+FFFD name is not ASCII and has no
+                            // meaningful extension).
+                            let (name_off, stored_len) =
+                                store_name_lossless(index, name_buf, nb, lossy);
                             let is_ascii = name_buf.is_ascii();
                             let ext_id = index.intern_extension(name_buf);
                             let name_ref = IndexNameRef::new(
                                 name_off,
-                                len_to_u16(name_buf.len()),
+                                len_to_u16(stored_len),
                                 is_ascii,
                                 ext_id,
                             );
@@ -380,6 +529,11 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
 
                     // Read stream name (non-$I30, named attributes)
                     let has_stream_name = !is_i30 && aname_len > 0;
+                    // WI-4.4: track whether the stream name decoded lossily and
+                    // the raw UTF-16LE range, so the store site below can retain
+                    // byte-faithful WTF-8 for an ill-formed stream name.
+                    let mut stream_name_lossy: u32 = 0;
+                    let mut stream_name_raw: Option<&[u8]> = None;
                     if has_stream_name {
                         // Fallible: a declared name length that overruns the
                         // record clears the buffer instead of panicking.
@@ -393,7 +547,8 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                             });
                         match name_bytes {
                             Some(bytes) => {
-                                decode_utf16le_into(bytes, name_buf);
+                                stream_name_lossy = decode_utf16le_into(bytes, name_buf);
+                                stream_name_raw = Some(bytes);
                             }
                             None => name_buf.clear(),
                         }
@@ -469,15 +624,20 @@ pub fn process_record(data: &[u8], frs: u64, index: &mut MftIndex, name_buf: &mu
                         // Named $DATA: ADS (user-visible stream).
                         // Output layer filters internal streams.
                         if has_stream_name && !name_buf.is_empty() {
-                            let sn_off = index.add_name(name_buf);
+                            // WI-4.4: store the stream name losslessly (WTF-8
+                            // for an ill-formed name; identical bytes for the
+                            // common case). `stream_name_raw` is `Some` whenever
+                            // `has_stream_name` decoded a non-empty buffer.
+                            let (sn_off, sn_len) = if let Some(raw) = stream_name_raw {
+                                store_name_lossless(index, name_buf, raw, stream_name_lossy)
+                            } else {
+                                let nb = name_buf.as_bytes();
+                                (index.add_name_bytes(nb), nb.len())
+                            };
                             let is_ascii = name_buf.is_ascii();
                             let ext_id = index.intern_extension(name_buf);
-                            let nr = IndexNameRef::new(
-                                sn_off,
-                                len_to_u16(name_buf.len()),
-                                is_ascii,
-                                ext_id,
-                            );
+                            let nr =
+                                IndexNameRef::new(sn_off, len_to_u16(sn_len), is_ascii, ext_id);
                             let si = len_to_u32(index.streams.len());
                             index.streams.push(IndexStreamInfo {
                                 size: SizeInfo {
@@ -601,52 +761,4 @@ fn rd_u64(buf: &[u8], off: usize) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{decode_name_u16, lossy_name_count};
-
-    #[test]
-    fn decode_name_u16_lossless_bmp_and_astral() {
-        // "Aé😀" — BMP + an astral char (valid surrogate pair). No loss.
-        // 'A'=0x0041, 'é'=0x00E9, '😀'=U+1F600 → D83D DE00.
-        let units = [0x0041_u16, 0x00E9, 0xD83D, 0xDE00];
-        let (name, count) = decode_name_u16(&units);
-        assert_eq!(count, 0, "well-formed UTF-16 must decode losslessly");
-        assert_eq!(name, "Aé😀");
-        assert!(!name.contains(char::REPLACEMENT_CHARACTER));
-    }
-
-    #[test]
-    fn decode_name_u16_unpaired_surrogate_is_counted_and_replaced() {
-        // A lone high surrogate (0xD800) with no following low surrogate —
-        // legal on NTFS, illegal in UTF-8. Must NOT panic; must substitute
-        // exactly one U+FFFD and report the count.
-        let units = [
-            0x0066_u16, // 'f'
-            0xD800,     // unpaired high
-            0x006F,     // 'o'
-        ];
-        let before = lossy_name_count();
-        let (name, count) = decode_name_u16(&units);
-        assert_eq!(count, 1, "one unpaired surrogate → one replacement");
-        assert!(
-            name.contains(char::REPLACEMENT_CHARACTER),
-            "decoded name must contain U+FFFD"
-        );
-        // The process-global tally increased by the replacement count, so the
-        // index-build warn/stat sees the loss (WI-4.1).
-        assert_eq!(
-            lossy_name_count(),
-            before + u64::from(count),
-            "global lossy tally must increase by the replacement count"
-        );
-    }
-
-    #[test]
-    fn decode_name_u16_lone_low_surrogate_is_counted() {
-        // A lone LOW surrogate (0xDC00) with no preceding high surrogate.
-        let units = [0xDC00_u16];
-        let (name, count) = decode_name_u16(&units);
-        assert_eq!(count, 1);
-        assert_eq!(name, "\u{FFFD}");
-    }
-}
+mod tests;
