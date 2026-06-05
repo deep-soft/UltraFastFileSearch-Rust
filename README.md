@@ -13,6 +13,8 @@
   <a href="https://github.com/skyllc-ai/UltraFastFileSearch/releases/latest"><img src="https://img.shields.io/github/downloads/skyllc-ai/UltraFastFileSearch/total?label=downloads" alt="Total Downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg" alt="License: MPL 2.0"></a>
   <a href="https://github.com/skyllc-ai/UltraFastFileSearch/releases/latest"><img src="https://img.shields.io/badge/platform-Windows-blue.svg" alt="Platform: Windows"></a>
+  <a href="https://opencollective.com/uffs-search"><img src="https://img.shields.io/badge/Sponsor-Open%20Collective-3385FF?logo=opencollective&logoColor=white" alt="Sponsor on Open Collective"></a>
+  <a href="https://ko-fi.com/ufffssearch"><img src="https://img.shields.io/badge/Tip-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white" alt="Tip on Ko-fi"></a>
 </p>
 
 **A benchmark-driven NTFS search engine for Windows.** UFFS reads the Master File Table directly, builds a compact persisted index, and keeps large NTFS estates searchable through a background daemon.
@@ -41,6 +43,7 @@ UFFS is built for **exact filename, path, and metadata search** at scales where 
 - 🔍 **40+ filters** — size, date, extension, type, attributes, path length, tree size, regex
 - 🧩 **One engine, multiple interfaces** — CLI, TUI, daemon, API, and MCP share the same index
 - 🧭 **Deterministic local scope** — built for exact NTFS filename/path/metadata search, not fuzzy ranking
+- 🔒 **No telemetry, fully local** — UFFS makes no outbound network calls; your index and queries never leave your machine (the optional MCP gateway binds a local-only port you explicitly enable)
 - 🖥️ **Cross-platform offline analysis** — live NTFS on Windows; offline MFT analysis on macOS and Linux
 
 ---
@@ -80,9 +83,13 @@ Each release ships pre-built binaries, a `CHECKSUMS.txt` (SHA256), per-crate SBO
 
 | Platform | Download | Notes |
 |---|---|---|
-| **Windows x64** | [`uffs-windows-x64.zip`](https://github.com/skyllc-ai/UltraFastFileSearch/releases/latest) | CLI + daemon + MCP + MFT tools. Recommended. |
-| **macOS Apple Silicon** | [`uffs-macos-arm64.zip`](https://github.com/skyllc-ai/UltraFastFileSearch/releases/latest) | Offline MFT analysis only. Includes `UFFS.app` bundle. |
-| **Linux x64** | [`uffs-linux-x64.zip`](https://github.com/skyllc-ai/UltraFastFileSearch/releases/latest) | Offline MFT analysis only. Includes `install.sh`. |
+| **Windows x64** | [`uffs-windows-x64.zip`](https://github.com/skyllc-ai/UltraFastFileSearch/releases/latest) | CLI + daemon + MCP + MFT tools + `uffs-tui` demo. Recommended. |
+| **macOS Apple Silicon** | [`uffs-macos-arm64.zip`](https://github.com/skyllc-ai/UltraFastFileSearch/releases/latest) | Offline MFT analysis only. Includes `UFFS.app` bundle + `uffs-tui` demo. |
+| **Linux x64** | [`uffs-linux-x64.zip`](https://github.com/skyllc-ai/UltraFastFileSearch/releases/latest) | Offline MFT analysis only. Includes `install.sh` + `uffs-tui` demo. |
+
+> 📦 **Three tiers per platform** — `…-min.zip` (just `uffs` + `uffsd` + the `uffs-tui` demo, for CI/scripting), the bare `….zip` (**recommended**: adds MCP + MFT tooling + docs), and `…-full.zip` (adds the `uffs-diag` diagnostic tools). Every tier bundles the free `uffs-tui` demo.
+
+> 🖥️ **Fastest way to try it — no CLI required.** Unzip any tier and run **`uffs-tui`**: the daemon auto-starts and you're browsing your own drives in a UI within seconds. The bundled TUI is the free demo (capped result counts, exports disabled — see `DEMO-LICENSE.txt`); full TUI/GUI are commercial.
 
 **Windows quick-install (one command) — via [WinGet](https://learn.microsoft.com/windows/package-manager/):**
 ```powershell
@@ -110,6 +117,8 @@ cargo build --release
 ```
 
 > 📖 **[Full installation guide](docs/user-manual/installation.md)** — WinGet, PATH setup, daemon autostart, Scoop (coming)
+
+> 🖥️ **Prefer a UI?** The free **`uffs-tui` demo is bundled in every release ZIP** above — just run `uffs-tui`. Standalone demo builds of the TUI **and GUI** (macOS, Linux, Windows) also live at **[uffs-demo/releases](https://github.com/githubrobbi/uffs-demo/releases/latest)** — limited result counts, exports disabled. They drive this same open-source daemon. Full versions are commercial (see [Maintainership & Commercial](#maintainership--commercial)).
 
 ---
 
@@ -268,7 +277,7 @@ UFFS is developed and maintained by **[Sky, LLC](https://github.com/skyllc-ai)**
 
 - **Commercial UFFS frontends** (polished GUI / premium TUI) are in development on top of this open-source engine. For waitlist or partnership inquiries: [`uffs@nios.net`](mailto:uffs@nios.net) or open a [discussion](https://github.com/skyllc-ai/UltraFastFileSearch/discussions) with the `commercial-interest` label.
 - **Hiring / collaboration.** This repository is also the public engineering portfolio of its maintainer; see the [Sky, LLC org page](https://github.com/skyllc-ai) for the full pitch and contact details.
-- **Sponsorship.** Formal sponsor channels (GitHub Sponsors, Ko-fi) are being set up. Star the repo and watch for the sponsor CTA to appear here once approvals land.
+- **Sponsorship.** UFFS is free and MPL-2.0 forever; sponsorships fund Windows code-signing, benchmark hardware, and release engineering. **Companies** (invoice / receipt via Sky, LLC): [Open Collective](https://opencollective.com/uffs-search). **One-time tip:** [Ko-fi](https://ko-fi.com/ufffssearch). Individual recurring tiers via **GitHub Sponsors** are being enrolled — the repo "Sponsor" button already lists the live channels above.
 
 ## Acknowledgments
 
