@@ -38,6 +38,7 @@ members = [
   # NOTE: uffs-tui and uffs-gui have moved to the private uffs-products repo.
   # ── Tools ──
   "crates/uffs-diag",          # 🔬 Retained workspace-only diagnostic tools (not shipped in dist/)
+  "crates/uffs-bench",         # 📊 Benchmark-suite orchestrator (robust-benchmark-flow-*.md)
   "scripts/ci-pipeline",       # 🛠️ Promoted CI pipeline driver (dev-flow-implementation-plan.md § 7)
   "scripts/ci/gen-hooks",      # 🧬 Gate-manifest hook generator (gates-manifest-plan.md Phase 2)
   "scripts/ci/gen-workflow",   # 🧪 Gate-manifest workflow structural validator (gates-manifest-plan.md Phase 3)
@@ -56,7 +57,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.5.113"
+version = "0.5.117"
 edition = "2024"
 # No `rust-version` claim: the workspace is structurally nightly-only.
 # `crates/uffs-polars` enables `polars/nightly` unconditionally, which
@@ -118,27 +119,30 @@ publish = false
 # proposed-plan output for 12 days because `release-plz update`
 # failed at `cargo package` with this very error.  See
 # `release-automation-baseline.md` §10 for the diagnostic trail.
-uffs-polars = { path = "crates/uffs-polars", version = "0.5.113" }
-uffs-security = { path = "crates/uffs-security", version = "0.5.113" }
-uffs-text = { path = "crates/uffs-text", version = "0.5.113" }
-uffs-time = { path = "crates/uffs-time", version = "0.5.113" }
-uffs-mft = { path = "crates/uffs-mft", version = "0.5.113" }
-uffs-format = { path = "crates/uffs-format", version = "0.5.113" }
-uffs-core = { path = "crates/uffs-core", version = "0.5.113" }
-uffs-client = { path = "crates/uffs-client", version = "0.5.113" }
+uffs-polars = { path = "crates/uffs-polars", version = "0.5.117" }
+uffs-security = { path = "crates/uffs-security", version = "0.5.117" }
+uffs-text = { path = "crates/uffs-text", version = "0.5.117" }
+uffs-time = { path = "crates/uffs-time", version = "0.5.117" }
+uffs-mft = { path = "crates/uffs-mft", version = "0.5.117" }
+uffs-format = { path = "crates/uffs-format", version = "0.5.117" }
+uffs-core = { path = "crates/uffs-core", version = "0.5.117" }
+uffs-client = { path = "crates/uffs-client", version = "0.5.117" }
 # `uffs-broker-protocol` carries the wire-protocol types shared between
 # `uffs-broker` (the elevated handle vendor, Windows-only binary) and
 # `uffs-daemon::broker_client` (the handle consumer).  Pure-logic
 # Layer-0 lib — cross-platform tests run on every CI lane.  Added in
 # F5 (issue #205) so neither side duplicates `BROKER_PIPE_NAME` /
 # wire-format byte literals.
-uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.5.113" }
+uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.5.117" }
 # NOTE: no `uffs-broker` workspace dependency alias on purpose —
 # `uffs-broker` is a binary-only crate (the only `[lib]` it carries is
 # this protocol module's now-extracted sibling); no other workspace
 # member consumes it as a library.
 # NOTE: no `uffs-diag` workspace dependency alias on purpose.
 # It is a top-level diagnostic/tool crate, not a shared runtime dependency.
+# NOTE: no `uffs-bench` workspace dependency alias on purpose either.
+# It is the top-level benchmark-suite orchestrator, consumed by no other
+# workspace member as a library.
 
 # ───── Polars (via facade crate for compilation isolation) ─────
 # Polars is pinned to a specific commit in crates/uffs-polars/Cargo.toml (rev = "...").

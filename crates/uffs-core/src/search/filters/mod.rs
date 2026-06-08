@@ -128,6 +128,16 @@ pub struct SearchFilters {
     /// Set of allowed months (1-12). Empty = no filter.
     /// Used for "every January" or "Q1" style queries.
     pub allowed_months: Vec<u32>,
+
+    // ── WI-4.4 malformed-name filter ────────────────────────────────
+    /// Filter on whether the record's own leaf name is ill-formed (its true
+    /// bytes are not valid UTF-8). `Some(true)` keeps only malformed names;
+    /// `Some(false)` keeps only well-formed names; `None` = no filter.
+    ///
+    /// Evaluated in the hot path against [`CompactRecord::name_bytes`] (the
+    /// lossless bytes), never the lossy `&str` view (which is always valid
+    /// UTF-8 and would match nothing).
+    pub malformed: Option<bool>,
 }
 
 /// Raw parameter inputs for constructing [`SearchFilters`].
@@ -347,6 +357,10 @@ impl SearchFilters {
             min_tree_allocated: params.min_tree_allocated,
             max_tree_allocated: params.max_tree_allocated,
             allowed_months: params.allowed_months.to_vec(),
+            // The malformed-name filter is set by the daemon's canonical
+            // predicate compiler (it is not a legacy positional param), so the
+            // param-based constructor leaves it disabled.
+            malformed: None,
         }
     }
 
@@ -713,6 +727,17 @@ impl SearchFilters {
                 return false;
             }
         }
+        // ── WI-4.4 malformed-name filter ───────────────────────────
+        // Evaluate against the LOSSLESS name bytes, not the lossy `name()`
+        // &str view: a lossy view is always valid UTF-8, so checking it would
+        // make this filter match nothing. `from_utf8` is a fast validation and
+        // only runs when the filter is active.
+        if let Some(want) = self.malformed {
+            let is_malformed = core::str::from_utf8(rec.name_bytes(names)).is_err();
+            if is_malformed != want {
+                return false;
+            }
+        }
         true
     }
 
@@ -750,6 +775,11 @@ impl SearchFilters {
             && self.min_tree_allocated.is_none()
             && self.max_tree_allocated.is_none()
             && self.allowed_months.is_empty()
+            // WI-4.4: a malformed-name toggle (`--malformed` / `--well-formed`)
+            // is a real filter — omitting it here makes the numeric match-all
+            // gate (`has_filters = !is_empty()`) skip `matches_record`, so the
+            // filter silently no-ops on `uffs "*" --malformed`.
+            && self.malformed.is_none()
     }
 }
 

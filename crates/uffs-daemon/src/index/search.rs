@@ -211,11 +211,12 @@ impl IndexManager {
             max_size: filters.max_size,
         };
 
-        let search_limit = if requires_post_filter || filters.needs_display_row_filter() {
-            None
-        } else {
-            effective_params.limit
-        };
+        let search_limit = resolve_search_limit(
+            requires_post_filter,
+            filters.needs_display_row_filter(),
+            filters.malformed == Some(true),
+            effective_params.limit,
+        );
 
         // ── Execute search on a blocking thread with timeout ────────
         // `search_index` uses rayon `par_iter`, which blocks the current
@@ -737,6 +738,35 @@ impl IndexManager {
         std::fs::rename(&tmp_path, target)?;
 
         Ok(rows.len())
+    }
+}
+
+/// Decide the backend scan limit (the cap applied *before* the daemon's
+/// final truncate-to-`user_limit`).
+///
+/// Filters evaluated *after* the per-drive scan must lift the cap
+/// (`None` = unbounded) on name/regex/tree patterns — those branches cap
+/// at `limit` *pattern* matches first, then filter, so a low-hit-rate
+/// filter would under-return.  `requires_post_filter` (wire predicate
+/// matched on the resolved `DisplayRow`) and `needs_display_row_filter`
+/// (path-contains / type) both already do this.
+///
+/// `malformed_positive` (`--malformed`, near-zero hit rate) joins them:
+/// the lift is safe for match-all because `collect_global_top_n_numeric`
+/// filters *before* its bounded top-N heap.  `--well-formed` is NOT
+/// lifted — the lift's `usize::MAX` flips that scan's `use_heap =
+/// limit < 1M` to `false`, so its fallback `Vec` collects every survivor
+/// (~the whole index here → OOM-class); it never under-returns anyway.
+const fn resolve_search_limit(
+    requires_post_filter: bool,
+    needs_display_row_filter: bool,
+    malformed_positive: bool,
+    user_limit: Option<u32>,
+) -> Option<u32> {
+    if requires_post_filter || needs_display_row_filter || malformed_positive {
+        None
+    } else {
+        user_limit
     }
 }
 

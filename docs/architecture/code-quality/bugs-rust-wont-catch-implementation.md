@@ -97,7 +97,7 @@ means the acceptance criteria were checked off *and* the pipeline was green.
 | WI-4.1 | 4 Bytes | Single instrumented UTF-16 decoder; per-index `lossy_name_count` stat + warn | ✅ | `harden/bugs-2` | ✅ |
 | WI-4.2 | 4 Bytes | Pass `OsString` (not `to_string_lossy`) to spawn argv / IPC paths | ✅ | `harden/wi-4.2-osstring-argv` | full `&[OsString]` spawn chain (incl. Windows `CreateProcessW`/`ShellExecuteW` via `encode_wide`) + 4 `from_utf16_lossy` decode sites (2 lossless, 2 AUDIT-OK); gate now fully green |
 | WI-4.3 | 4 Bytes | Strict-parse subprocess stdout used for decisions (PID/name) | ✅ | `harden/bugs` | ✅ |
-| WI-4.4 | 4 Bytes | **RFC + impl:** lossless name storage (binary/WTF-8 column) | 🟨 RFC landed | `harden/bugs` | RFC ✅ / impl pending sign-off |
+| WI-4.4 | 4 Bytes | **RFC + impl:** lossless name storage (binary/WTF-8 column) | ✅ | #358 + `feat/malformed-name-forensics` | bytes-native `MftIndex.names: Vec<u8>` (WTF-8) + `get_name_bytes` / `CompactRecord::name_bytes`; lossless `wtf8_from_utf16le`; cache v14/v11 bump; surrogate-named file is enumerated + byte-recoverable (not hidable). Storage landed in **#358**. Forensic surface (`--malformed`/`--well-formed`/`--malformed-path` filters + `malformed`/`malformed_path`/`name_hex` columns) added on `feat/malformed-name-forensics`, which also fixed two real ways a crooked name could still hide (crooked-dir path truncation in `resolve_path_cached_with_malformed`; `numeric_top_n` empty-lossy-name skip). RFC §8 records the bytes-native design. Live-Windows find+open is now scripted (`create-corrupted-name-tree.rs --verify`) — one elevated run pending (see §5). |
 | WI-5.2 | 5 Panic | Replace parser arithmetic with `checked_*`; remove parser `indexing_slicing` allows → `.get()` | ✅ | PR #349 (merged) | ✅ |
 | WI-5.3 | 5 Panic | In-tree malformed-input fuzz/regression tests (parsers + cache deserialize) | ✅ | `harden/wi-5.3-malformed-tests` | parser malformed-record test (PR #349) + deserializer truncation/boundary/seeded-fuzz corpus |
 | WI-6.1 | 6 Errors | `daemon_ctl` control writes: surface/log instead of bare `drop` | ✅ | `harden/bugs` | ✅ |
@@ -111,14 +111,15 @@ means the acceptance criteria were checked off *and* the pipeline was green.
 ### 1.2 Category coverage rollup (fill as phases close)
 
 > **Status (effort complete):** all 20 work items are ✅, landed across
-> PRs #345–#354 (Phase-A foundation `harden/bugs*` plus WI-4.2 #351, WI-5.2
-> #349, WI-5.3 #350, WI-8.1 #352, WI-7.1 #353, and the WI-G.1 pipeline wiring
-> #354). The lone exception is **WI-4.4**, which is 🟨 by design: its RFC
-> (`refactor/lossless-name-column-rfc.md`) is landed and the *elimination*
-> implementation is a tracked, maintainer-gated follow-up — WI-4.1 already
-> ships the required mitigation (loss is non-silent, measured, and tested).
-> The §2 "Definition of done" is therefore **met** (per its own clause 1,
-> which permits WI-4.4 to remain 🟨 behind an approved RFC).
+> PRs #345–#358 (Phase-A foundation `harden/bugs*` plus WI-4.2 #351, WI-5.2
+> #349, WI-5.3 #350, WI-8.1 #352, WI-7.1 #353, the WI-G.1 pipeline wiring
+> #354, and the WI-4.4 lossless-name storage #358). WI-4.4's *elimination*
+> half is now **implemented** (surrogate-named files can no longer hide), and
+> its forensic surface — `--malformed`/`--well-formed`/`--malformed-path`
+> filters plus `malformed`/`malformed_path`/`name_hex` columns, and two further
+> crooked-name hiding fixes — lands on `feat/malformed-name-forensics` (PR
+> pending; see §5). The only open item is the elevated-Windows `--verify` run.
+> The §2 "Definition of done" is therefore **met**.
 
 | # | Category | Mitigation definition (acceptance) | WIs | Coverage |
 |---|----------|------------------------------------|-----|:--------:|
@@ -138,6 +139,11 @@ means the acceptance criteria were checked off *and* the pipeline was green.
 > it ships as an RFC first (acceptance below). WI-4.1 makes the current loss
 > **non-silent, measured, and tested** — that is the required mitigation; WI-4.4
 > is the path to elimination and must not be silently dropped.
+>
+> **Update (2026-06-05):** implemented. WI-4.4 shipped **bytes-native** (not the
+> RFC's sidecar Option B) in #358; the forensic filter/column surface and two
+> crooked-name hiding fixes land on `feat/malformed-name-forensics`. Only the
+> elevated-Windows `--verify` run remains (see §5).
 
 > **Deviation (WI-5.1 — implementation reality):** the plan called for a
 > workspace `arithmetic_side_effects = "warn"`. That is **not viable** in this
@@ -711,7 +717,20 @@ it returns the "unverified / unknown" outcome (fail-closed), not a wrong match.
 
 ---
 
-### WI-4.4 — (RFC, then impl) Lossless name storage  🟨 tracked
+### WI-4.4 — (RFC, then impl) Lossless name storage  ✅ implemented
+
+> **Implemented (`feat/wi-4.4-lossless-names`).** Done **bytes-native**, not via
+> the RFC's Option B sidecar — see `refactor/lossless-name-column-rfc.md` §8 for
+> why (the search hot path was already byte-native; the only loss was the
+> upstream `MftIndex.names: String`). `MftIndex.names`/`MftIndexFragment.names`
+> are now `Vec<u8>` (WTF-8); `get_name` stays a lossy `&str` view, new
+> `get_name_bytes` / `CompactRecord::name_bytes` are the lossless accessors;
+> `wtf8_from_utf16le` + `store_name_lossless` retain ill-formed names
+> byte-faithfully; cache `INDEX_VERSION` 13→14 + `COMPACT_VERSION` 10→11
+> (pre-bump caches rebuild). A surrogate-named file is **enumerated and
+> byte-recoverable** (cannot hide from search). 11 new tests + 1031/548 existing
+> green; native + Windows clippy clean. The live-Windows "create a real
+> surrogate file → find+open" check below stays a Windows-CI follow-up.
 
 **Goal:** eliminate name loss entirely (true 100%), not just make it observable.
 
@@ -1233,3 +1252,37 @@ fanout commands with the gate present and passing. *Lesson: adding a pipeline
 validation step is not enough — confirm the running binary is rebuilt, or a
 stale artifact can silently skip it.*
 - **§G Guard:** grep-gate in CI. ✔ when WI-G.1 ✅.
+
+---
+
+## 5. Follow-up record — malformed-name forensics (2026-06-05)
+
+WI-4.4's *elimination* half landed in **#358** (lossless WTF-8 name storage;
+surrogate-named files are enumerated + byte-recoverable). This follow-up
+(`feat/malformed-name-forensics`) makes that loss-of-hiding **usable and
+provable**:
+
+- **Forensic query surface.** New `--malformed` / `--well-formed` /
+  `--malformed-path` filters and opt-in `malformed` / `malformed_path` /
+  `name_hex` columns. The `malformed` leaf predicate compiles to the hot-path
+  `SearchFilters` toggle (keeps the `--limit` fast path), evaluated against the
+  **lossless** `CompactRecord::name_bytes`; `malformed_path` is post-filtered
+  over the resolved parent chain. `name_hex` is the lowercase hex of the true
+  WTF-8 leaf bytes (projection-only; not in the binary shmem record). Opt-in
+  only — none are added to `--columns all`, so default output is byte-identical.
+- **Two real hiding bugs fixed (not test-only).**
+  `tree::resolve_path_cached_with_malformed` judged component emptiness on the
+  lossy `&str` (empty for an ill-formed name), so a surrogate-named directory
+  **truncated** the resolved path of everything beneath it; now judged on
+  `name_bytes`. `numeric_top_n` row materialization skipped records whose lossy
+  name was empty (`name.is_empty()`), dropping ill-formed-named records; now
+  gated on `rec.name_len == 0` (byte length). Both are WI-4.4 in spirit: a
+  crooked name can no longer hide a file or its descendants from search/resolve.
+- **Windows proof scripted.** `scripts/windows/create-corrupted-name-tree.rs
+  --verify` now also asserts `uffs search * --malformed` returns **exactly** the
+  ill-formed on-disk entries — the WI-4.4 find+open claim plus the new filter,
+  checked end-to-end. **Open item:** one elevated run on a real NTFS volume to
+  close the live-Windows acceptance.
+- **Verification:** whole-workspace clippy `--all-targets` clean (ultra-strict
+  lints); 1896 tests pass; native + `cargo xwin` (Windows) clippy clean;
+  anti-pattern + file-size gates green.
