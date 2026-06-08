@@ -118,6 +118,7 @@ fn bench_out_path() -> String {
 /// cpp_ext: if non-empty, C++ UFFS uses `* --ext=<val>` instead of glob
 /// validate: case-insensitive substring that every result line must contain
 ///           (empty = skip validation, e.g. full_scan)
+/// cpp_pattern: empty string means C++ does not support this pattern — skip.
 ///
 /// `ext_regex_alt` exercises the v0.5.66 regex-alternation → ExtensionIndex
 /// promotion (`extract_extensions_from_regex`).  UFFS takes the regex form
@@ -152,7 +153,9 @@ fn bench_out_path() -> String {
 const PATTERNS: &[(&str, &str, &str, &str, &str, &str)] = &[
     ("full_scan",     "*",                         "*",                    "*",           "",              ""),
     ("exact",         "notepad.exe",               "notepad.exe",          "notepad.exe", "",              "notepad"),
-    ("prefix",        "win*",                      "win*",                 "win*",        "",              "win"),
+    ("prefix",        "win*",                      "win*",                 "",            "",              "win"),
+    // ^^ cpp_pattern="" — uffs.com does not support trailing-wildcard prefix
+    //    glob (win* returns nothing/errors).  UFFS Rust vs Everything only.
     ("ext_rare",      "*.dbt",                     "ext:dbt",              "*.dbt",       "dbt",           ".dbt"),
     ("ext_dll",       "*.dll",                     "ext:dll",              "*.dll",       "dll",           ".dll"),
     ("ext_regex_alt", ">.*\\.(wav|idrc|cmake)$",   "*.wav|*.idrc|*.cmake", "*",           "wav,idrc,cmake", ""),
@@ -205,6 +208,11 @@ struct Cfg { uffs: PathBuf, uffs_cpp: Option<PathBuf>, es: Option<PathBuf>,
              drives: Vec<String>, rounds: usize,
              tools: Vec<Tool>, sinks: Vec<OutputSink>, skip_cold: bool,
              patterns: Option<Vec<String>>,
+             /// Named Everything instance to connect to via `-instance <name>`.
+             /// When the bench tool launches a private Everything.exe with
+             /// `-instance uffs-bench`, the default IPC window is absent and
+             /// es.exe must be told which instance to query.
+             es_instance: Option<String>,
              /// Optional summary CSV output path.  When `Some`, the post-run
              /// summary (one row per Tool × Phase × Sink × Drive × Pattern
              /// combination, with p50/p95/rows/bad/verdict) is written to
@@ -229,6 +237,24 @@ fn fms(ms: u64) -> String {
 fn p50(s: &[u64]) -> u64 { if s.is_empty() { 0 } else { s[s.len()/2] } }
 fn p95(s: &[u64]) -> u64 { if s.is_empty() { 0 } else { s[(s.len() as f64 * 0.95) as usize % s.len()] } }
 fn sw(runs: &[Timing]) -> Vec<u64> { let mut v: Vec<u64> = runs.iter().filter(|r| r.ok).map(|r| r.wall_ms).collect(); v.sort(); v }
+
+/// Shuffle three indices [0,1,2] using a minimal LCG seeded from a nanosecond
+/// timestamp.  No external deps — works inside `rust-script` with zero cargo
+/// overhead.  The LCG constants are the same ones used by glibc's `rand()`.
+fn lcg_shuffle3(seed: u64) -> [usize; 3] {
+    let mut s = seed ^ (seed >> 33);
+    let mut next = || -> u64 {
+        s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        s
+    };
+    let mut idx = [0usize, 1, 2];
+    // Fisher-Yates on 3 elements
+    let j = (next() % 3) as usize;
+    idx.swap(0, j);
+    let j = 1 + (next() % 2) as usize;
+    idx.swap(1, j);
+    idx
+}
 
 // ── Discovery ────────────────────────────────────────────────────────────────
 fn find_in(cs: &[PathBuf]) -> Option<PathBuf> { cs.iter().find(|p| p.exists()).cloned() }
@@ -276,6 +302,19 @@ fn uffs_stop(bin: &Path) {
     // that may leave shared memory / cache warm.
     let _ = Command::new(bin).args(["daemon","kill"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
     std::thread::sleep(Duration::from_secs(2));
+}
+/// Start the daemon with bench-safe idle-demote TTLs so it never demotes
+/// Hot→Warm or Warm→Parked mid-run.  These env vars are scoped to the
+/// daemon child process only — the bench script's own env is unchanged,
+/// and teardown's next `uffs daemon start` gets production defaults.
+fn uffs_start(bin: &Path) {
+    let _ = Command::new(bin)
+        .args(["daemon", "start"])
+        .env("UFFS_HOT_TO_WARM_IDLE_SECS",   "3600")
+        .env("UFFS_WARM_TO_PARKED_IDLE_SECS", "7200")
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status();
+    std::thread::sleep(Duration::from_millis(500));
 }
 fn uffs_purge_cache() {
     // Remove both cache locations:
@@ -351,6 +390,53 @@ fn count_and_validate(path: &str, needle: &str) -> (u64, u64) {
     (total, bad_lines.len() as u64)
 }
 fn cleanup_bench_file() { let p = bench_out_path(); let _ = std::fs::remove_file(&p); }
+fn cleanup_file(p: &str) { let _ = std::fs::remove_file(p); }
+
+/// Extract the path column from a tool's output file or byte buffer into a
+/// normalised (lowercase, trimmed) set of strings.  Headers, footers, and
+/// empty lines are stripped by `is_header_or_footer` so the set only
+/// contains actual filesystem paths.  Used for path-set superset checks.
+fn extract_paths_from_file(path: &str) -> std::collections::HashSet<String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => match std::fs::read(path) {
+            Ok(bytes) if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE => {
+                let u16s: Vec<u16> = bytes[2..].chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                String::from_utf16_lossy(&u16s)
+            }
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(_) => return std::collections::HashSet::new(),
+        },
+    };
+    content.lines()
+        .filter(|l| !is_header_or_footer(l))
+        .map(|l| {
+            // The Path column may be quoted CSV: strip surrounding quotes and
+            // take only the first comma-delimited field (path is always first).
+            let trimmed = l.trim().trim_matches('"');
+            trimmed.split(',').next().unwrap_or(trimmed).trim().to_lowercase()
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+
+/// Check that `subset` is a subset of `superset`; return a short summary
+/// string.  Reports the first few missing paths on a violation.
+fn check_subset(
+    subset_label: &str,
+    subset: &std::collections::HashSet<String>,
+    superset_label: &str,
+    superset: &std::collections::HashSet<String>,
+) -> Option<String> {
+    if subset.is_empty() || superset.is_empty() { return None; }
+    let missing: Vec<&String> = subset.iter().filter(|p| !superset.contains(*p)).collect();
+    if missing.is_empty() { return None; }
+    let preview: Vec<&str> = missing.iter().take(3).map(|s| s.as_str()).collect();
+    Some(format!("{subset_label}⊄{superset_label}: {} paths missing (e.g. {})",
+        missing.len(), preview.join(", ")))
+}
 
 /// Count data lines in a captured stdout byte buffer, filtering the same
 /// headers/footers as `count_and_validate` so the two validators stay aligned.
@@ -453,8 +539,11 @@ fn validate_output(sink: OutputSink, path: &str, stdout: &[u8], needle: &str) ->
 /// every UFFS invocation — useful for one-off profile captures without
 /// having to patch this script.
 fn run_uffs(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: OutputSink) -> Timing {
-    cleanup_bench_file();
-    let bpath = bench_out_path();
+    run_uffs_to(bin, drive, pattern, validate, sink, &bench_out_path())
+}
+fn run_uffs_to(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: OutputSink, bpath: &str) -> Timing {
+    cleanup_file(bpath);
+    let bpath = bpath.to_owned();
     // Path-only output for fair comparison with es.exe (which only outputs Filename).
     // --hide-system + --hide-ads bring UFFS result semantics in line with
     // Everything (which does not index NTFS system files or Alternate Data
@@ -529,14 +618,22 @@ fn parse_daemon_ms(s: &str) -> u64 {
 /// File sink: `-export-csv <file>`; Stdout sink: default CSV to stdout; Null
 /// sink: default to stdout then redirect via cmd.  No -n limit — all results
 /// are returned.
-fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: OutputSink) -> Timing {
-    cleanup_bench_file();
-    let bpath = bench_out_path();
+fn run_es_to(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: OutputSink, es_instance: Option<&str>, bpath: &str) -> Timing {
+    cleanup_file(bpath);
+    let bpath = bpath.to_owned();
     // es.exe expects path filter and search term as SEPARATE arguments:
     //   es.exe "C:\" ext:dll -export-csv file.csv
     // NOT as one combined string.
+    // When a named instance is in use (private bench instance launched with
+    // -instance <name>), prepend -instance <name> so es.exe connects to the
+    // correct IPC window instead of the default one.
     let drive_path = format!("{drive}:\\");
-    let mut args: Vec<String> = vec![drive_path];
+    let mut args: Vec<String> = Vec::new();
+    if let Some(inst) = es_instance {
+        args.push("-instance".into());
+        args.push(inst.into());
+    }
+    args.push(drive_path);
     if pattern != "*" { args.push(pattern.into()); }
     if matches!(sink, OutputSink::File) {
         args.push("-export-csv".into());
@@ -574,9 +671,9 @@ fn run_es(bin: &Path, drive: &str, pattern: &str, validate: &str, sink: OutputSi
 /// - `Stdout` / `Null`: drop `--out=` entirely.  With no `--out=` the freopen
 ///   path never fires, so piped-capture (Stdout) and `cmd /C "... > NUL"`
 ///   (Null) behave normally.
-fn run_uffs_cpp(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate: &str, sink: OutputSink) -> Timing {
-    cleanup_bench_file();
-    let bpath = bench_out_path();
+fn run_uffs_cpp_to(bin: &Path, drive: &str, pattern: &str, cpp_ext: &str, validate: &str, sink: OutputSink, bpath: &str) -> Timing {
+    cleanup_file(bpath);
+    let bpath = bpath.to_owned();
     let mut args: Vec<String> = Vec::new();
     if !cpp_ext.is_empty() {
         args.push("*".into());
@@ -663,6 +760,7 @@ fn parse_args() -> Cfg {
     let mut uffs_bin: Option<PathBuf> = None;
     let mut patterns_filter: Option<Vec<String>> = None;
     let mut out: Option<PathBuf> = None;
+    let mut es_instance: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -674,6 +772,7 @@ fn parse_args() -> Cfg {
             "--skip-cold" => { skip_cold = true; }
             "--uffs-bin" => { i += 1; uffs_bin = Some(PathBuf::from(&args[i])); }
             "--out" => { i += 1; out = Some(PathBuf::from(&args[i])); }
+            "--es-instance" => { i += 1; es_instance = Some(args[i].clone()); }
             "--help" | "-h" => { print_help(); std::process::exit(0); }
             other => {
                 if other.starts_with('-') {
@@ -707,7 +806,7 @@ fn parse_args() -> Cfg {
         .map(OutputSink::parse_list)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| vec![OutputSink::File]);
-    Cfg { uffs, uffs_cpp, es, drives, rounds, tools, sinks, skip_cold, patterns: patterns_filter, out }
+    Cfg { uffs, uffs_cpp, es, drives, rounds, tools, sinks, skip_cold, patterns: patterns_filter, es_instance, out }
 }
 
 fn print_help() {
@@ -727,6 +826,10 @@ fn print_help() {
     eprintln!("                        ext_rare, ext_dll, ext_regex_alt, substring");
     eprintln!("  --skip-cold           Skip UFFS COLD and WARM phases");
     eprintln!("  --uffs-bin <path>     Path to uffs.exe (Rust)");
+    eprintln!("  --es-instance <name>  Connect es.exe to a named Everything instance");
+    eprintln!("                        (passes -instance <name> to every es.exe call).");
+    eprintln!("                        Required when Everything.exe was launched with");
+    eprintln!("                        -instance <name> (e.g. uffs-bench private instance).");
     eprintln!("  --out <path>          Write the post-run summary table to CSV at <path>.");
     eprintln!("                        Columns: tool,phase,sink,drive,pattern,p50_ms,");
     eprintln!("                        p95_ms,rows,bad,verdict,rounds_ok,rounds_total.");
@@ -772,9 +875,11 @@ fn main() {
 
     // ── Daemon warmup (once for all drives) ─────────────────────────────
     if cfg.tools.contains(&Tool::Uffs) && cfg.skip_cold {
-        // When skipping COLD/WARM, ensure the daemon is running before HOT.
-        // The daemon loads ALL drives on startup, so one probe is enough.
+        // When skipping COLD/WARM, kill+restart with bench-safe TTLs then
+        // issue one probe so the daemon is fully loaded before HOT starts.
         eprint!("  Warming up UFFS daemon (all drives)...");  flush();
+        uffs_stop(&cfg.uffs);
+        uffs_start(&cfg.uffs);
         let _ = Command::new(&cfg.uffs)
             .args(["__uffs_warmup_probe__", "--limit", "1"])
             .stdout(Stdio::null()).stderr(Stdio::null())
@@ -818,6 +923,7 @@ fn main() {
                 if cfg.skip_pattern(label) { continue; }
                 eprint!("    {label:<12} ");  flush();
                 uffs_stop(&cfg.uffs);
+                uffs_start(&cfg.uffs);
                 let t = check_dnf(run_uffs(&cfg.uffs, drive, pat, validate, OutputSink::File));
                 let verdict = if t.dnf { "DNF" } else if t.bad_rows > 0 { "WRONG" } else if t.ok { "PASS" } else { "ERROR" };
                 let bad_str = if t.bad_rows > 0 { format!("  bad={}", t.bad_rows) } else { String::new() };
@@ -834,6 +940,7 @@ fn main() {
             // minimise I/O.  Done once per drive — the daemon stays warm
             // across every sink iteration below.
             eprint!("  UFFS HOT:  warming up daemon...");  flush();
+            uffs_start(&cfg.uffs);
             let _ = Command::new(&cfg.uffs)
                 .args(["__uffs_warmup_probe__", "--drive", drive, "--limit", "1"])
                 .stdout(Stdio::null()).stderr(Stdio::null())
@@ -841,107 +948,194 @@ fn main() {
             eprintln!(" ready.");
         }
 
-        // ── Per-sink HOT rotation (UFFS HOT + UFFS C++ + Everything) ──────
+        // ── Per-sink HOT rotation (interleaved rounds, randomised tool order) ─
+        //
+        // For each (sink, pattern) the tools run in a freshly shuffled order
+        // every round so no tool consistently benefits from OS file-system
+        // caching warmed up by a prior tool.  After every round the superset
+        // constraint is checked immediately:
+        //
+        //   uffs.exe rows  ≥  uffs.com rows  ≥  es.exe rows
+        //
+        // This reflects the fact that UFFS (Rust) covers all files including
+        // system files / ADS when --hide-system / --hide-ads are NOT passed
+        // (here they ARE, so the counts should be close), and that Everything
+        // does not index NTFS metadata files that uffs.com does include.
+        // A violation is printed as a warning per round — it does not abort —
+        // so timing data is preserved even when parity is off.
         for sink in cfg.sinks.iter().copied() {
             if cfg.sinks.len() > 1 {
                 println!("  ── sink={}  ──────────────────────────────────────────────", sink.label());
             }
 
-            // ── UFFS HOT ────────────────────────────────────────────────
-            if cfg.tools.contains(&Tool::Uffs) {
-                eprintln!("  UFFS HOT [sink={}]:  {} rounds", sink.label(), cfg.rounds);
-                for &(label, pat, _, _, _, validate) in PATTERNS {
-                    if cfg.skip_pattern(label) { continue; }
-                    eprint!("    {label:<12} ");  flush();
-                    let mut runs = Vec::new();
-                    for _ in 0..cfg.rounds {
-                        runs.push(check_dnf(run_uffs(&cfg.uffs, drive, pat, validate, sink)));
-                    }
-                    let s = sw(&runs);
-                    let mut dm: Vec<u64> = runs.iter().filter(|r| r.ok && r.daemon_ms > 0).map(|r| r.daemon_ms).collect();
-                    dm.sort();
-                    let any_bad = runs.iter().any(|r| r.bad_rows > 0);
-                    let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else { "PASS" };
-                    let daemon_str = if dm.is_empty() { String::new() } else { format!("  daemon_p50={}", fms(p50(&dm))) };
-                    let first_ok = runs.iter().find(|r| r.ok);
-                    let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
-                    eprintln!("p50={:>6}  p95={:>6}{}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), daemon_str, first_ok.map_or(0, |r| r.rows), bad_str, verdict);
-                    all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Hot, sink,
-                        drive: drive.clone(), pat: label.into(), runs });
-                }
-            }
+            for &(label, pat, es_pat, cpp_pat, cpp_ext, validate) in PATTERNS {
+                if cfg.skip_pattern(label) { continue; }
 
-            // ── UFFS C++ (uffs.com) ─────────────────────────────────────
-            if cfg.tools.contains(&Tool::UffsCpp) {
-                if let Some(ref cpp) = cfg.uffs_cpp {
-                    eprintln!("  UFFS C++ (MFT re-read, no --limit) [sink={}]:  {} rounds",
-                        sink.label(), cfg.rounds);
-                    for &(label, pat, _, _, cpp_ext, validate) in PATTERNS {
-                        if cfg.skip_pattern(label) { continue; }
-                        eprint!("    {label:<12} ");  flush();
-                        let mut runs = Vec::new();
-                        for _ in 0..cfg.rounds {
-                            runs.push(check_dnf(run_uffs_cpp(cpp, drive, pat, cpp_ext, validate, sink)));
-                        }
-                        let s = sw(&runs);
-                        let first_ok = runs.iter().find(|r| r.ok);
-                        let any_bad = runs.iter().any(|r| r.bad_rows > 0);
-                        let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
-                        let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
-                        eprintln!("p50={:>6}  p95={:>6}  rows={}{}  {}", fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows), bad_str, verdict);
-                        all_rows.push(Row { tool: Tool::UffsCpp, phase: Phase::Hot, sink,
-                            drive: drive.clone(), pat: label.into(), runs });
-                    }
-                }
-            }
+                // Skip full_scan for Everything (2GB IPC ceiling).
+                let es_skip = label == "full_scan";
+                // Skip patterns C++ does not support.
+                let cpp_skip = cpp_pat.is_empty();
 
-            // ── Everything ──────────────────────────────────────────────
-            if cfg.tools.contains(&Tool::Everything) {
-                if let Some(ref es) = cfg.es {
-                    eprintln!("  Everything HOT [sink={}]:  {} rounds (always-hot, daemon model)",
-                        sink.label(), cfg.rounds);
-                    for &(label, _, es_pat, _, _, validate) in PATTERNS {
-                        if cfg.skip_pattern(label) { continue; }
-                        // Skip full_scan for Everything — es.exe has a 2GB IPC
-                        // memory limit that crashes on drives with >2M entries.
-                        // See verify_parity.rs and Everything 1.4 known limitation.
-                        if label == "full_scan" {
-                            eprintln!("    {label:<12} SKIP (es.exe 2GB IPC limit)");
-                            continue;
+                let run_uffs_tool  = cfg.tools.contains(&Tool::Uffs);
+                let run_cpp_tool   = cfg.tools.contains(&Tool::UffsCpp) && cfg.uffs_cpp.is_some() && !cpp_skip;
+                let run_es_tool    = cfg.tools.contains(&Tool::Everything) && cfg.es.is_some() && !es_skip;
+
+                if !run_uffs_tool && !run_cpp_tool && !run_es_tool { continue; }
+
+                eprintln!("  HOT [{sink}] {label:<12}  {} rounds  (tools shuffled each round)",
+                    cfg.rounds, sink = sink.label());
+
+                let mut uffs_runs: Vec<Timing> = Vec::new();
+                let mut cpp_runs:  Vec<Timing> = Vec::new();
+                let mut es_runs:   Vec<Timing> = Vec::new();
+                let mut es_aborted = false;
+
+                // Per-tool output files for this pattern — kept alive for the
+                // duration of a round so path sets can be compared, then deleted.
+                // C++ cannot write to absolute paths, so all three use relative names.
+                let f_uffs = format!("bench_uffs_{label}.csv");
+                let f_cpp  = format!("bench_cpp_{label}.csv");
+                let f_es   = format!("bench_es_{label}.csv");
+
+                for round in 0..cfg.rounds {
+                    // Fresh random tool order every round — seeded from wall clock
+                    // nanoseconds so consecutive rounds get different seeds.
+                    let seed = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos() as u64 + round as u64 * 1_000_000_007)
+                        .unwrap_or(round as u64 + 1);
+                    let order = lcg_shuffle3(seed);
+
+                    let mut round_rows: [Option<u64>; 3] = [None; 3]; // [uffs, cpp, es]
+
+                    for &slot in &order {
+                        match slot {
+                            0 if run_uffs_tool => {
+                                let t = check_dnf(run_uffs_to(&cfg.uffs, drive, pat, validate, sink, &f_uffs));
+                                round_rows[0] = t.ok.then_some(t.rows);
+                                uffs_runs.push(t);
+                            }
+                            1 if run_cpp_tool => {
+                                let cpp = cfg.uffs_cpp.as_ref().unwrap();
+                                let t = check_dnf(run_uffs_cpp_to(cpp, drive, cpp_pat, cpp_ext, validate, sink, &f_cpp));
+                                round_rows[1] = t.ok.then_some(t.rows);
+                                cpp_runs.push(t);
+                            }
+                            2 if run_es_tool && !es_aborted => {
+                                let es = cfg.es.as_ref().unwrap();
+                                let t = check_dnf(run_es_to(es, drive, es_pat, validate, sink, cfg.es_instance.as_deref(), &f_es));
+                                if round == 0 && is_fast_deterministic_fail(&t) {
+                                    eprintln!("    [round {round}] es.exe fast-fail (exit={}); skipping remaining es rounds", t.err);
+                                    es_aborted = true;
+                                }
+                                round_rows[2] = t.ok.then_some(t.rows);
+                                es_runs.push(t);
+                            }
+                            _ => {}
                         }
-                        eprint!("    {label:<12} ");  flush();
-                        let mut runs = Vec::new();
-                        let mut aborted_early = false;
-                        for round in 0..cfg.rounds {
-                            let t = check_dnf(run_es(es, drive, es_pat, validate, sink));
-                            // If round 0 is a fast deterministic failure (e.g.
-                            // es.exe -export-csv IPC buffer overflow on result
-                            // sets past the ~150 K-row ceiling), the next 29
-                            // rounds will repeat the same exit code in the same
-                            // ~50 ms.  Short-circuit and mark the verdict as
-                            // ERROR; the summary table will still show the
-                            // observed (failing) run with rows=0.
-                            let abort = round == 0 && is_fast_deterministic_fail(&t);
-                            runs.push(t);
-                            if abort {
-                                aborted_early = true;
-                                break;
+                    }
+
+                    // ── Path-set superset check after every round (File sink only) ──
+                    // Superset contract:
+                    //   es.exe paths  ⊆  uffs.com paths  ⊆  uffs.exe paths
+                    // Stdout/Null sinks don't retain output files so we skip
+                    // the set check there; row counts are still shown.
+                    let round_order_labels: Vec<&str> = order.iter().map(|&s| match s {
+                        0 => "uffs", 1 => "cpp", 2 => "es", _ => "?"
+                    }).collect();
+
+                    let mut violations: Vec<String> = Vec::new();
+                    if matches!(sink, OutputSink::File) {
+                        let uffs_paths = extract_paths_from_file(&f_uffs);
+                        let cpp_paths  = extract_paths_from_file(&f_cpp);
+                        let es_paths   = extract_paths_from_file(&f_es);
+
+                        if run_es_tool && !es_aborted && run_uffs_tool
+                            && !uffs_paths.is_empty() && !es_paths.is_empty() {
+                            if let Some(v) = check_subset("es", &es_paths, "uffs", &uffs_paths) {
+                                violations.push(v);
                             }
                         }
-                        let s = sw(&runs);
-                        let first_ok = runs.iter().find(|r| r.ok);
-                        let any_bad = runs.iter().any(|r| r.bad_rows > 0);
-                        let verdict = if runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
-                        let bad_str = first_ok.filter(|r| r.bad_rows > 0).map_or(String::new(), |r| format!("  bad={}", r.bad_rows));
-                        let abort_str = if aborted_early {
-                            format!("  (fast-fail, skipped {} rounds)", cfg.rounds - 1)
-                        } else { String::new() };
-                        eprintln!("p50={:>6}  p95={:>6}  rows={}{}  {}{}",
-                            fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows),
-                            bad_str, verdict, abort_str);
-                        all_rows.push(Row { tool: Tool::Everything, phase: Phase::Hot, sink,
-                            drive: drive.clone(), pat: label.into(), runs });
+                        if run_es_tool && !es_aborted && run_cpp_tool
+                            && !cpp_paths.is_empty() && !es_paths.is_empty() {
+                            if let Some(v) = check_subset("es", &es_paths, "cpp", &cpp_paths) {
+                                violations.push(v);
+                            }
+                        }
+                        if run_cpp_tool && run_uffs_tool
+                            && !uffs_paths.is_empty() && !cpp_paths.is_empty() {
+                            if let Some(v) = check_subset("cpp", &cpp_paths, "uffs", &uffs_paths) {
+                                violations.push(v);
+                            }
+                        }
                     }
+
+                    // Clean up per-tool files for this round.
+                    cleanup_file(&f_uffs);
+                    cleanup_file(&f_cpp);
+                    cleanup_file(&f_es);
+
+                    if violations.is_empty() {
+                        eprintln!("    [round {:>2}] order=[{}]  rows: uffs={} cpp={} es={}  ✓ paths ok",
+                            round + 1,
+                            round_order_labels.join(","),
+                            round_rows[0].map_or("-".into(), |n| n.to_string()),
+                            round_rows[1].map_or("-".into(), |n| n.to_string()),
+                            round_rows[2].map_or("-".into(), |n| n.to_string()),
+                        );
+                    } else {
+                        eprintln!("    [round {:>2}] order=[{}]  rows: uffs={} cpp={} es={}  ⚠ PATH SUPERSET VIOLATION: {}",
+                            round + 1,
+                            round_order_labels.join(","),
+                            round_rows[0].map_or("-".into(), |n| n.to_string()),
+                            round_rows[1].map_or("-".into(), |n| n.to_string()),
+                            round_rows[2].map_or("-".into(), |n| n.to_string()),
+                            violations.join(" | "),
+                        );
+                    }
+                }
+
+                // ── Per-tool summary lines ────────────────────────────────
+                if run_uffs_tool && !uffs_runs.is_empty() {
+                    let s = sw(&uffs_runs);
+                    let mut dm: Vec<u64> = uffs_runs.iter().filter(|r| r.ok && r.daemon_ms > 0).map(|r| r.daemon_ms).collect();
+                    dm.sort();
+                    let daemon_str = if dm.is_empty() { String::new() } else { format!("  daemon_p50={}", fms(p50(&dm))) };
+                    let any_bad = uffs_runs.iter().any(|r| r.bad_rows > 0);
+                    let verdict = if uffs_runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else { "PASS" };
+                    let first_ok = uffs_runs.iter().find(|r| r.ok);
+                    eprintln!("    UFFS     p50={:>6}  p95={:>6}{}  rows={}  {}",
+                        fms(p50(&s)), fms(p95(&s)), daemon_str,
+                        first_ok.map_or(0, |r| r.rows), verdict);
+                    all_rows.push(Row { tool: Tool::Uffs, phase: Phase::Hot, sink,
+                        drive: drive.clone(), pat: label.into(), runs: uffs_runs });
+                }
+                if run_cpp_tool && !cpp_runs.is_empty() {
+                    let s = sw(&cpp_runs);
+                    let any_bad = cpp_runs.iter().any(|r| r.bad_rows > 0);
+                    let verdict = if cpp_runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if cpp_runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
+                    let first_ok = cpp_runs.iter().find(|r| r.ok);
+                    eprintln!("    UFFS-C++ p50={:>6}  p95={:>6}  rows={}  {}",
+                        fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows), verdict);
+                    all_rows.push(Row { tool: Tool::UffsCpp, phase: Phase::Hot, sink,
+                        drive: drive.clone(), pat: label.into(), runs: cpp_runs });
+                }
+                if run_es_tool && !es_runs.is_empty() {
+                    let s = sw(&es_runs);
+                    let any_bad = es_runs.iter().any(|r| r.bad_rows > 0);
+                    let abort_str = if es_aborted { format!("  (fast-fail, {} rounds)", es_runs.len()) } else { String::new() };
+                    let verdict = if es_runs.iter().any(|r| r.dnf) { "DNF" } else if any_bad { "WRONG" } else if es_runs.iter().all(|r| r.ok) { "PASS" } else { "ERROR" };
+                    let first_ok = es_runs.iter().find(|r| r.ok);
+                    eprintln!("    ES       p50={:>6}  p95={:>6}  rows={}  {}{}",
+                        fms(p50(&s)), fms(p95(&s)), first_ok.map_or(0, |r| r.rows), verdict, abort_str);
+                    all_rows.push(Row { tool: Tool::Everything, phase: Phase::Hot, sink,
+                        drive: drive.clone(), pat: label.into(), runs: es_runs });
+                }
+                if run_es_tool && es_skip {
+                    eprintln!("    {label:<12} ES SKIP (es.exe 2GB IPC limit)");
+                }
+                if run_cpp_tool && cpp_skip {
+                    eprintln!("    {label:<12} C++ SKIP (pattern not supported)");
                 }
             }
         }

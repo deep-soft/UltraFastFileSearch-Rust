@@ -20,7 +20,7 @@ use clap::{Parser, Subcommand};
 use crate::gate::Mode;
 
 /// Default tool ids when `--tools` is omitted (the full head-to-head set).
-pub const DEFAULT_TOOLS: [&str; 3] = ["uffs", "uffs_cpp", "everything"];
+pub const DEFAULT_TOOLS: [&str; 4] = ["uffs", "uffs_cpp", "everything", "everything_gui"];
 
 /// Optional subcommands; an absent subcommand runs the full benchmark suite.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
@@ -88,6 +88,11 @@ pub struct Cli {
     /// Resume from this stage onward (1-based).
     #[arg(long = "from-stage")]
     pub from_stage: Option<u32>,
+    /// Skip these stages entirely (comma-separated, 1-based, e.g.
+    /// `--skip-stages 1,2`). Useful during development to bypass
+    /// long-running measurement stages.
+    #[arg(long = "skip-stages", value_delimiter = ',')]
+    pub skip_stages: Vec<u32>,
 
     /// Resume an existing bundle directory (loads its `state.json`).
     #[arg(long)]
@@ -109,6 +114,11 @@ pub struct Cli {
     /// Keep any tools the suite acquired (default: remove at teardown).
     #[arg(long = "keep-tools")]
     pub keep_tools: bool,
+    /// Launch the bench-local Everything.exe instance as Administrator
+    /// (`Everything.exe -admin`).  Required on machines where NTFS volume
+    /// access is restricted to elevated processes.
+    #[arg(long = "es-admin")]
+    pub es_admin: bool,
 
     /// Optional subcommand (e.g. `fetch-competitors`); absent runs the suite.
     #[command(subcommand)]
@@ -171,7 +181,8 @@ mod tests {
         assert_eq!(cli.tools_or_default(), vec![
             "uffs",
             "uffs_cpp",
-            "everything"
+            "everything",
+            "everything_gui"
         ]);
     }
 
