@@ -230,25 +230,57 @@ pre-filled report scaffold. To promote it to a canonical benchmark report:
    §Known regressions section, and verify every table number against
    `full-suite.csv` and `cross-tool-summary.csv`.
 
-2. **Copy raw artifacts** into the tree:
+2. **Copy raw artifacts** into the tree — the measurements *and* the Stage-0
+   provenance set (storage inventory, env fingerprint, negotiated matrix,
+   ES RAM-budget data) that back the report's environment sections:
    ```powershell
-   copy LOG\bench\<timestamp>\full-suite.csv         docs\benchmarks\raw\<date>-vX.Y.Z_full-suite.csv
-   copy LOG\bench\<timestamp>\cross-tool-summary.csv docs\benchmarks\raw\<date>-vX.Y.Z_cross-tool.csv
-   copy LOG\bench\<timestamp>\parity.txt             docs\benchmarks\raw\<date>-vX.Y.Z_parity.txt
+   copy LOG\bench\<timestamp>\cross-tool-summary.csv     docs\benchmarks\raw\<date>-vX.Y.Z_cross-tool-summary.csv
+   copy LOG\bench\<timestamp>\full-suite.csv             docs\benchmarks\raw\<date>-vX.Y.Z_full-suite.csv
+   copy LOG\bench\<timestamp>\parity.txt                 docs\benchmarks\raw\<date>-vX.Y.Z_parity.txt
+   copy LOG\bench\<timestamp>\drives.json                docs\benchmarks\raw\<date>-vX.Y.Z_drives.json
+   copy LOG\bench\<timestamp>\env.json                   docs\benchmarks\raw\<date>-vX.Y.Z_env.json
+   copy LOG\bench\<timestamp>\matrix.json                docs\benchmarks\raw\<date>-vX.Y.Z_matrix.json
+   copy LOG\bench\<timestamp>\competitor-preflight.json  docs\benchmarks\raw\<date>-vX.Y.Z_competitor-preflight.json
    ```
+   Add an index row for each in `docs/benchmarks/raw/README.md`. Orchestrator
+   internals (`state.json`, `fingerprint-*.json`, `restore-manifest.json`) and
+   rendered views (`REPORT-DRAFT.md`, `env.md`, `summary.md`) stay in the
+   bundle — they are not raw captures.
 
-3. **Generate charts** from the CSV (see existing chart scripts in
-   `scripts/windows/`) and commit them under
-   `docs/benchmarks/charts/<date>-vX.Y.Z/`.
+3. **Promote the charts** — the suite already generated the brand-kit SVGs;
+   copy them out of the bundle:
+   ```powershell
+   copy LOG\bench\<timestamp>\charts\*.svg docs\benchmarks\charts\<date>-vX.Y.Z\
+   ```
+   To re-render promoted charts later (e.g. after chart-code improvements,
+   without re-measuring — works on any OS):
+   ```
+   cargo run --release -p uffs-bench -- render-charts `
+     --csv docs/benchmarks/raw/<date>-vX.Y.Z_cross-tool-summary.csv `
+     --out docs/benchmarks/charts/<date>-vX.Y.Z `
+     --uffs-label "UFFS vX.Y.Z" --es-label "Everything <ver>" --cpp-label "UFFS C++ (MFT re-read) <ver>"
+   ```
+   The carried-forward engineering charts (cold-parity, memory-scaling — see
+   `charts/README.md`) are copied verbatim from the previous snapshot
+   directory; they are not re-measured.
 
 4. **Move the current canonical report** to `docs/benchmarks/archive/`
-   (verbatim — no edits).
+   (verbatim — no edits beyond fixing relative link paths).
 
 5. **Commit the new report** as `docs/benchmarks/<date>-vX.Y.Z-<scope>.md`
    and update `docs/benchmarks/README.md` to point at it.
 
-6. **Update `competitors.toml`** if the competitor version changed:
+6. **Refresh `docs/benchmarks/baseline.json`** from the new report's cells —
+   the suite's `## vs baseline` section compares every future run against
+   this file, so it must always mirror the current canonical numbers.
+
+7. **Update `competitors.toml`** if the competitor version changed:
    `scripts/windows/competitors.toml`.
+
+8. **Cross-check evergreen surfaces** — the root `README.md` proof strip and
+   snapshot section, `docs/user-manual/performance.md` §5a, and the engine
+   docs (`01-overview`, `09-performance`, `11-performance-deep-dive`) cite
+   the canonical headline numbers and must be refreshed when they move.
 
 ---
 

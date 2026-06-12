@@ -187,6 +187,10 @@ use rayon as _;
 // FxHash for fast hashing (used in io.rs on Windows)
 #[cfg(not(windows))]
 use rustc_hash as _;
+// `serde_json` powers `--format json` for the Windows-only `info` / `drives`
+// commands (src/commands/windows/info.rs); silence the library's view of it.
+#[cfg(windows)]
+use serde_json as _;
 #[cfg(test)]
 use sha2 as _;
 use smallvec as _;

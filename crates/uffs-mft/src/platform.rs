@@ -167,6 +167,28 @@ mod tests {
     }
 
     #[test]
+    fn removable_and_virtual_take_conservative_hdd_profile() {
+        // Removable (USB / SD / MMC) and Virtual (VHD / RAM-backed): the bus or
+        // the opaque backing medium is the bottleneck, so both mirror the HDD
+        // profile — small chunks, few buffers, low concurrency, and never
+        // high-performance or parallel-parse-friendly.
+        for drive_type in [DriveType::Removable, DriveType::Virtual] {
+            assert_eq!(
+                drive_type.optimal_concurrency(),
+                DriveType::Hdd.optimal_concurrency()
+            );
+            assert_eq!(
+                drive_type.optimal_io_size(),
+                DriveType::Hdd.optimal_io_size()
+            );
+            assert_eq!(drive_type.optimal_chunk_size(), 1024 * 1024);
+            assert_eq!(drive_type.prefetch_buffers(), 2);
+            assert!(!drive_type.is_high_performance());
+            assert!(!drive_type.benefits_from_parallel_parsing());
+        }
+    }
+
+    #[test]
     fn optimal_settings_are_reasonable() {
         let nvme = DriveType::Nvme;
         let ssd = DriveType::Ssd;

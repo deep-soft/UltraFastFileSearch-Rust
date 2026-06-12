@@ -18,12 +18,13 @@
 //! is unit-testable under the `MockHost` on any OS.
 
 use alloc::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 mod bootstrap;
 mod daemon;
 mod es_instance;
 mod specs;
+mod stage_meta;
 
 use bootstrap::{load_or_new_state, resolve_bundle_dir, run_fetch_competitors};
 pub(crate) use specs::everything_ini_path;
@@ -32,6 +33,8 @@ use specs::{
     preflight_spec_from_cli,
 };
 
+pub(crate) use self::stage_meta::{stage_banner, stage_step_id};
+use self::stage_meta::{stage_selected, stage0_outputs};
 use crate::cards::{
     assembly_card, dry_run_result, es_launch_card, measurement_card, plan_card, report_scope,
     stage0_result, tool_selection_card, uffs_restart_card,
@@ -46,7 +49,7 @@ use crate::preflight::{self, PreflightResult};
 use crate::restore::RunGuard;
 use crate::stages::{self, StageCfg};
 use crate::state::{State, Status};
-use crate::{report, resolve, teardown};
+use crate::{report, resolve, run_state, storage, summary, teardown};
 
 /// Suite version stamped into bundle names and `state.json`.
 const SUITE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -107,47 +110,6 @@ const fn act_of(decision: Decision) -> Act {
         Decision::Skip => Act::Skip,
         Decision::Back | Decision::Abort => Act::Stop,
     }
-}
-
-/// Whether `stage` is selected by the `--only-stage` / `--from-stage` /
-/// `--skip-stages` filters.
-fn stage_selected(cli: &Cli, stage: u32) -> bool {
-    if cli.skip_stages.contains(&stage) {
-        return false;
-    }
-    match (cli.only_stage, cli.from_stage) {
-        (Some(only), _) => stage == only,
-        (None, Some(from)) => stage >= from,
-        (None, None) => true,
-    }
-}
-
-/// Resume-engine step id for a measurement stage.
-pub(crate) fn stage_step_id(stage: u32) -> String {
-    format!("stage{stage}/measure")
-}
-
-/// Operator-facing banner for a measurement stage.
-pub(crate) fn stage_banner(stage: u32) -> String {
-    let label = match stage {
-        1 => "CROSS-TOOL",
-        2 => "PARITY",
-        _ => "FULL SUITE",
-    };
-    format!("STAGE {stage}: {label}")
-}
-
-/// Artifact paths Stage 0 writes into the bundle (for the state record).
-fn stage0_outputs(bundle_dir: &Path) -> Vec<String> {
-    [
-        "env.json",
-        "env.md",
-        "competitor-preflight.json",
-        "matrix.json",
-    ]
-    .iter()
-    .map(|name| bundle_dir.join(name).display().to_string())
-    .collect()
 }
 
 /// Report any restore failures collected at teardown ("crumbs left behind").
@@ -230,6 +192,17 @@ impl Orchestrator<'_> {
         env::write(self.host, fp, &self.bundle_dir)?;
         preflight::write(self.host, preflight, &self.bundle_dir)?;
         matrix::write(self.host, matrix, &self.bundle_dir)?;
+        // Capture the full storage-device inventory (`uffs-mft drives`) for the
+        // report's `## Storage devices` section. Best-effort — never fails the run.
+        let drives = storage::capture_and_write(self.host, &self.bundle_dir);
+        // Synthesize the at-a-glance header from the live structured data (env
+        // fingerprint with the backfilled Everything GUI version, drive
+        // inventory, and the benched set).
+        let summary_md = summary::render_md(fp, &drives, &matrix.capable_drives);
+        let summary_path = self.bundle_dir.join(summary::SUMMARY_MD);
+        self.host
+            .write_file(&summary_path, summary_md.as_bytes())
+            .map_err(|err| BenchError::io(&summary_path, err))?;
         Ok(())
     }
 
@@ -453,6 +426,21 @@ impl Orchestrator<'_> {
             );
         }
         cap.es_ini_path = ini;
+        // Now the private instance is up, backfill its real version over IPC —
+        // the Stage 0a env capture ran before launch and could only record
+        // "ipc unavailable" for everything_gui — and announce it.
+        if cap.es_ini_path.is_some()
+            && let Some(version) = env::backfill_everything_gui_version(
+                self.host,
+                &mut cap.fp,
+                &resolve::es_exe(self.host),
+                es_instance::INSTANCE_NAME,
+            )
+        {
+            self.host.out(&format!(
+                "[es-instance] Everything {version} (version captured via IPC)"
+            ));
+        }
         // Second-pass preflight: re-probe ES now the instance is loaded.
         // Restrict candidate_drives to drives that survived the first pass
         // (UFFS-known) so H/I and other unknown drives are not re-warned.
@@ -619,9 +607,22 @@ impl Orchestrator<'_> {
         let measure_live = (1..=MEASUREMENT_STAGES).any(|stage| {
             stage_selected(self.cli, stage) && !state.should_skip(&stage_step_id(stage), hash)
         });
-        let mut capture = ((stage0_selected && !stage0_skip) || measure_live)
-            .then(|| self.capture(session))
-            .transpose()?;
+        let will_capture = (stage0_selected && !stage0_skip) || measure_live;
+        // Snapshot the host's as-found UFFS run-state (which drives the daemon
+        // had loaded, MCP up/down) and register its restore on the guard BEFORE
+        // `capture()` kills and restarts the daemon — otherwise the original
+        // state is already gone by the time stages run. Drains last (LIFO) at
+        // teardown, so the host is left exactly as found. Gated on the same
+        // `!cli.drives.is_empty()` condition under which `capture()` actually
+        // touches the daemon.
+        if will_capture && !self.cli.drives.is_empty() {
+            let uffs_exe = resolve::uffs_exe(self.host);
+            let as_found = run_state::capture(self.host, &uffs_exe);
+            self.host
+                .out(&format!("[run-state] as-found: {}", as_found.describe()));
+            run_state::register_restore(guard, &uffs_exe, as_found);
+        }
+        let mut capture = will_capture.then(|| self.capture(session)).transpose()?;
         // Show UFFS restart gate (kill + start with only capable drives), then
         // ES-instance gate, in that order — both before the plan card so the
         // final matrix is what gets locked into stage0.
@@ -719,10 +720,21 @@ impl Orchestrator<'_> {
 /// Returns an error if bundle creation, state load/save, or a Stage 0 artifact
 /// write fails. An operator abort/back is **not** an error (returns `Ok`).
 pub fn run(host: &dyn Host, cli: &Cli) -> Result<()> {
-    match cli.command {
+    match &cli.command {
         Some(Command::FetchCompetitors) => return run_fetch_competitors(host, cli),
         Some(Command::Restore) => return teardown::restore(host, cli),
         Some(Command::Verify) => return teardown::verify(host, cli),
+        Some(Command::RenderCharts {
+            csv,
+            out,
+            uffs_label,
+            es_label,
+            cpp_label,
+        }) => {
+            return crate::charts::render_charts_cli(
+                host, csv, out, uffs_label, es_label, cpp_label,
+            );
+        }
         None => {}
     }
 

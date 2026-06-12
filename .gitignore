@@ -89,7 +89,10 @@ dist/
 .idea/
 .vscode/
 .ai/
-.claude/
+# Claude Code: local state stays ignored, but the project hook config that
+# blocks gate-bypass flags is tracked and shared (scripts/hooks/claude_no_bypass.sh).
+.claude/*
+!.claude/settings.json
 .qodo/
 .reuse/
 .windsurf/
@@ -141,6 +144,20 @@ metadata.json
 # /docs/*/ or a broader pattern), this keeps the hub checked in.
 !/docs/benchmarks/
 !/docs/benchmarks/**
+
+# =============================================================================
+# Local benchmark artifacts (never commit run output)
+# =============================================================================
+# Bench artifacts are consolidated under $UFFS_BENCH_DIR (default: a temp dir);
+# these root-anchored rules are a defensive guard against stray in-repo writes
+# from older bench runs / scripts.  Root-anchored (leading `/`) so they never
+# touch the tracked `/docs/benchmarks/` hub above.
+/benchmarks/
+/out/bench/
+/uffs_bench_out.csv
+/bench_uffs_*.csv
+/bench_cpp_*.csv
+/bench_es_*.csv
 
 # =============================================================================
 # Local-only spec/prompt files
