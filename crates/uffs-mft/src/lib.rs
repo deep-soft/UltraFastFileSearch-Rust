@@ -187,6 +187,10 @@ use rayon as _;
 // FxHash for fast hashing (used in io.rs on Windows)
 #[cfg(not(windows))]
 use rustc_hash as _;
+// `serde_json` powers `--format json` for the Windows-only `info` / `drives`
+// commands (src/commands/windows/info.rs); silence the library's view of it.
+#[cfg(windows)]
+use serde_json as _;
 #[cfg(test)]
 use sha2 as _;
 use smallvec as _;
@@ -311,7 +315,7 @@ pub use platform::{DriveType, MftBitmap, MftExtent, SystemMemory, query_system_m
 // is_volume_read_only) are pub(crate) and consumed only via
 // `crate::platform::*` paths, so no crate-root re-export is needed.
 #[cfg(windows)]
-pub use platform::{VolumeHandle, detect_ntfs_drives};
+pub use platform::{VolumeHandle, detect_ntfs_drives, register_broker_handle};
 pub use raw::{
     LoadRawOptions, RawMftData, RawMftHeader, SaveRawOptions, load_raw_mft, load_raw_mft_header,
     save_raw_mft,

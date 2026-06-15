@@ -67,6 +67,10 @@ pub use system::{
     detect_boot_drive, detect_drive_type, detect_ntfs_drives, infer_drive_from_path, is_boot_drive,
     volume_root_path,
 };
+// Crate-internal: the USN journal open (FU-2b) and `$MFT` extent read (FU-3)
+// adopt the same broker volume handle the MFT read uses.
+#[cfg(windows)]
+pub(crate) use volume::try_adopt_broker_handle;
 #[cfg(windows)]
 pub(crate) use volume::{
     IOCP_WAIT_COMPLETION_DEADLINE, IOCP_WAIT_POLL_INTERVAL_MS, WAIT_TIMEOUT_ERROR_CODE,
@@ -76,7 +80,7 @@ pub(crate) use volume::{
 // `VolumeHandle::volume_data()` returns `&NtfsVolumeData` so the latter
 // must be at least as public as the former.
 #[cfg(windows)]
-pub use volume::{NtfsVolumeData, VolumeHandle};
+pub use volume::{NtfsVolumeData, VolumeHandle, register_broker_handle};
 
 #[cfg(test)]
 #[cfg(windows)]
@@ -164,6 +168,28 @@ mod tests {
         assert_eq!(drive_type.prefetch_buffers(), 2);
         assert!(!drive_type.is_high_performance());
         assert!(!drive_type.benefits_from_parallel_parsing());
+    }
+
+    #[test]
+    fn removable_and_virtual_take_conservative_hdd_profile() {
+        // Removable (USB / SD / MMC) and Virtual (VHD / RAM-backed): the bus or
+        // the opaque backing medium is the bottleneck, so both mirror the HDD
+        // profile — small chunks, few buffers, low concurrency, and never
+        // high-performance or parallel-parse-friendly.
+        for drive_type in [DriveType::Removable, DriveType::Virtual] {
+            assert_eq!(
+                drive_type.optimal_concurrency(),
+                DriveType::Hdd.optimal_concurrency()
+            );
+            assert_eq!(
+                drive_type.optimal_io_size(),
+                DriveType::Hdd.optimal_io_size()
+            );
+            assert_eq!(drive_type.optimal_chunk_size(), 1024 * 1024);
+            assert_eq!(drive_type.prefetch_buffers(), 2);
+            assert!(!drive_type.is_high_performance());
+            assert!(!drive_type.benefits_from_parallel_parsing());
+        }
     }
 
     #[test]

@@ -57,7 +57,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.5.117"
+version = "0.6.1"
 edition = "2024"
 # No `rust-version` claim: the workspace is structurally nightly-only.
 # `crates/uffs-polars` enables `polars/nightly` unconditionally, which
@@ -75,12 +75,17 @@ keywords = ["mft", "ntfs", "file-search", "windows", "polars"]
 categories = ["filesystem", "command-line-utilities"]
 # Default publish policy: most workspace members are internal-only tooling
 # / facade / orchestration crates that must never accidentally hit crates.io.
-# Five crates intentionally override this with explicit `publish = true`
-# (`uffs-broker`, `uffs-broker-protocol`, `uffs-security`, `uffs-text`,
-# `uffs-time`) — see `release-automation-baseline.md` §10 row 5 for the
-# full publishable-set rationale.  Non-publishable members opt into this
-# default via `publish.workspace = true` (rather than declaring their own
-# `publish = false`) so the root manifest stays the single source of truth.
+# Exactly TWO crates intentionally override this with explicit `publish = true`
+# (`uffs-text`, `uffs-time`) — they are dependency-free leaf crates that are
+# the only members currently cleared for crates.io.  `uffs-broker`,
+# `uffs-broker-protocol`, and `uffs-security` were once earmarked publishable
+# but have since been flipped back to `publish = false` (name-squat
+# reservations / internal-only; see each crate's per-manifest rationale and
+# `docs/refactor/crates-io-publishability-deep-dive.md` §7.3–7.5).  Verify the
+# live set any time with `cargo metadata --no-deps` (publishable == `publish`
+# is null/ANY).  Non-publishable members opt into this default via
+# `publish.workspace = true` (rather than declaring their own `publish = false`)
+# so the root manifest stays the single source of truth.
 # Phase 1 closure gap A — see `docs/dev/baseline/2026-05-12/phase_1_findings.md`.
 publish = false
 
@@ -119,21 +124,21 @@ publish = false
 # proposed-plan output for 12 days because `release-plz update`
 # failed at `cargo package` with this very error.  See
 # `release-automation-baseline.md` §10 for the diagnostic trail.
-uffs-polars = { path = "crates/uffs-polars", version = "0.5.117" }
-uffs-security = { path = "crates/uffs-security", version = "0.5.117" }
-uffs-text = { path = "crates/uffs-text", version = "0.5.117" }
-uffs-time = { path = "crates/uffs-time", version = "0.5.117" }
-uffs-mft = { path = "crates/uffs-mft", version = "0.5.117" }
-uffs-format = { path = "crates/uffs-format", version = "0.5.117" }
-uffs-core = { path = "crates/uffs-core", version = "0.5.117" }
-uffs-client = { path = "crates/uffs-client", version = "0.5.117" }
+uffs-polars = { path = "crates/uffs-polars", version = "0.6.1" }
+uffs-security = { path = "crates/uffs-security", version = "0.6.1" }
+uffs-text = { path = "crates/uffs-text", version = "0.6.1" }
+uffs-time = { path = "crates/uffs-time", version = "0.6.1" }
+uffs-mft = { path = "crates/uffs-mft", version = "0.6.1" }
+uffs-format = { path = "crates/uffs-format", version = "0.6.1" }
+uffs-core = { path = "crates/uffs-core", version = "0.6.1" }
+uffs-client = { path = "crates/uffs-client", version = "0.6.1" }
 # `uffs-broker-protocol` carries the wire-protocol types shared between
 # `uffs-broker` (the elevated handle vendor, Windows-only binary) and
 # `uffs-daemon::broker_client` (the handle consumer).  Pure-logic
 # Layer-0 lib — cross-platform tests run on every CI lane.  Added in
 # F5 (issue #205) so neither side duplicates `BROKER_PIPE_NAME` /
 # wire-format byte literals.
-uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.5.117" }
+uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.1" }
 # NOTE: no `uffs-broker` workspace dependency alias on purpose —
 # `uffs-broker` is a binary-only crate (the only `[lib]` it carries is
 # this protocol module's now-extracted sibling); no other workspace
@@ -145,8 +150,8 @@ uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.5.11
 # workspace member as a library.
 
 # ───── Polars (via facade crate for compilation isolation) ─────
-# Polars is pinned to a specific commit in crates/uffs-polars/Cargo.toml (rev = "...").
-# Run `just polars` to bump to the latest main HEAD.
+# Polars is a crates.io dependency pinned by SemVer in
+# crates/uffs-polars/Cargo.toml. Bump with `cargo update -p polars`.
 
 # ───── Async Runtime ─────
 # Net-free feature set so the CLI binary does not pull in `ws2_32.dll`
@@ -174,6 +179,7 @@ windows = { version = "0.62.2", features = [
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_Security_Cryptography",
+  "Win32_Security_WinTrust",
   "Win32_Storage",
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
@@ -183,6 +189,7 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Memory",
   "Win32_System_Pipes",
   "Win32_System_ProcessStatus",
+  "Win32_System_Services",
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_System_Time",
@@ -209,7 +216,7 @@ serde_json = "1.0.150"
 toml = "1.1.2"
 
 # ───── Data Structures ─────
-bitflags = "2.11.1"
+bitflags = "2.13.0"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 smallvec = "1.15.1"
 zerocopy = { version = "0.8", features = ["derive"] }
@@ -251,13 +258,13 @@ devicons = "0.6.12"
 colored = "3.1.1"
 
 # ───── Pattern Matching ─────
-regex = "1.12.3"
-memchr = "2.8.1"
+regex = "1.12.4"
+memchr = "2.8.2"
 aho-corasick = "1.1.4"
 globset = "0.4.18"
 
 # ───── Time ─────
-chrono = { version = "0.4.44", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 
 # ───── Directories / Path utilities ─────
 dirs-next = "2.0.0"
@@ -265,7 +272,7 @@ dirs-next = "2.0.0"
 # daemon binary when the client auto-spawns it.  Workspace-scoped for
 # version consistency across any future consumers (e.g. `uffs-client`
 # when async spawn lands).
-which = "8.0.2"
+which = "8.0.3"
 
 # ───── Hashing ─────
 rustc-hash = "2.1.2"

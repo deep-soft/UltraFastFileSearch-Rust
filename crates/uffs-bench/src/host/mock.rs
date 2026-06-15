@@ -39,6 +39,10 @@ pub enum Call {
     CreateDirAll(PathBuf),
     /// [`super::Host::run`] with the executable and its arguments.
     Run(String, Vec<String>),
+    /// [`super::Host::run_streaming`] with the executable and its arguments.
+    RunStreaming(String, Vec<String>),
+    /// [`super::Host::spawn`] with the executable and its arguments.
+    Spawn(String, Vec<String>),
     /// [`super::Host::read_key`] consumed one scripted keypress.
     ReadKey,
     /// [`super::Host::out`] emitted the given line.
@@ -251,6 +255,22 @@ impl super::Host for MockHost {
                 stdout: String::new(),
                 stderr: String::new(),
             }))
+    }
+
+    fn run_streaming(&self, exe: &str, args: &[&str]) -> io::Result<Option<i32>> {
+        self.record(Call::RunStreaming(
+            exe.to_owned(),
+            args.iter().map(|arg| (*arg).to_owned()).collect(),
+        ));
+        Ok(Some(0))
+    }
+
+    fn spawn(&self, exe: &str, args: &[&str]) -> io::Result<()> {
+        self.record(Call::Spawn(
+            exe.to_owned(),
+            args.iter().map(|arg| (*arg).to_owned()).collect(),
+        ));
+        Ok(())
     }
 
     fn env(&self, key: &str) -> Option<String> {

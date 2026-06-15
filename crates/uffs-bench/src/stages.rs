@@ -10,8 +10,9 @@
 //!
 //! - **Stage 1 (cross-tool)** shells out to `cross-tool-benchmark.rs` with
 //!   `--skip-cold`; the harness writes `bundle/cross-tool-summary.csv` itself.
-//! - **Stage 2 (parity)** shells out to `cold-parity-per-drive.ps1`; the script
-//!   transcribes to `bundle/parity.txt` (purging cache first when requested).
+//! - **Stage 2 (parity)** shells out to `cold-parity-per-drive.rs` via
+//!   `rust-script`; the harness writes `bundle/parity.txt` (purging cache first
+//!   when `--purge-cache` is set).
 //! - **Stage 3 (full suite)** times native UFFS queries directly (N rounds per
 //!   drive × pattern), reduces each cell with the unit-tested [`percentiles`]
 //!   helper, and emits `bundle/full-suite.csv` + `bundle/full-suite.txt`.
@@ -34,7 +35,7 @@ use crate::restore::RunGuard;
 /// Repo-relative path to the cross-tool harness shelled out to by Stage 1.
 pub const CROSS_TOOL_SCRIPT: &str = "scripts/windows/cross-tool-benchmark.rs";
 /// Repo-relative path to the parity harness shelled out to by Stage 2.
-pub const PARITY_SCRIPT: &str = "scripts/windows/cold-parity-per-drive.ps1";
+pub const PARITY_SCRIPT: &str = "scripts/windows/cold-parity-per-drive.rs";
 
 /// Bundle-relative name of the cross-tool summary CSV (written by the harness).
 const CROSS_TOOL_OUT: &str = "cross-tool-summary.csv";
@@ -138,22 +139,31 @@ impl Invocation {
         }
     }
 
-    /// Spawn the command through the [`Host`] seam.
+    /// Spawn the command through the [`Host`] seam, capturing all output.
     fn run(&self, host: &dyn Host) -> io::Result<ProcOutput> {
         let refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
         host.run(&self.exe, &refs)
     }
+
+    /// Spawn the command, inheriting the parent's stdout/stderr so output
+    /// flows live to the operator's terminal.  Returns a synthetic
+    /// [`ProcOutput`] with the exit code and empty captured streams.
+    fn run_streaming(&self, host: &dyn Host) -> io::Result<ProcOutput> {
+        let refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        let code = host.run_streaming(&self.exe, &refs)?;
+        Ok(ProcOutput {
+            code,
+            stdout: String::new(),
+            stderr: String::new(),
+        })
+    }
 }
 
-/// The `rust-script` launcher used to run the cross-tool harness (Stage 1).
+/// The `rust-script` launcher used to run the Stage 1 and Stage 2 harnesses.
 const RUST_SCRIPT_EXE: &str = "rust-script";
-/// The PowerShell launcher used to run the parity harness (Stage 2).
-const POWERSHELL_EXE: &str = "powershell";
 
 /// Card-facing label for the daemon run-state resource (R1).
 const DAEMON_RESOURCE: &str = "uffs daemon (run-state)";
-/// Restore-registry label for the daemon run-state undo (R1).
-const DAEMON_RESTORE: &str = "daemon run-state";
 
 /// Everything a measurement stage needs to plan and run.
 ///
@@ -179,6 +189,11 @@ pub struct StageCfg {
     pub patterns: Vec<PatternProbe>,
     /// The UFFS executable invoked for Stage 3 native timing.
     pub uffs_exe: String,
+    /// Named Everything instance to connect to via `es.exe -instance <name>`.
+    /// `None` means the default IPC window (system-wide Everything instance).
+    /// Set to `Some(INSTANCE_NAME)` when the bench tool launched a private
+    /// `Everything.exe -instance uffs-bench` so the harness can find it.
+    pub es_instance_name: Option<String>,
 }
 
 /// The card-facing plan for one measurement stage.
@@ -207,13 +222,17 @@ fn join_drives(drives: &[char]) -> String {
         .join(",")
 }
 
-/// Map a bench tool id to the cross-tool harness's accepted spelling.
+/// Map a bench CLI tool name to the token the cross-tool harness accepts,
+/// or `None` if the harness does not support that tool.
 ///
-/// The harness accepts `uffs`, `uffs-cpp`/`cpp`, and `everything`/`es`; the
-/// bench CLI uses underscored ids (`uffs_cpp`), so a single `_`→`-` rewrite
-/// (`uffs_cpp`→`uffs-cpp`) lands on an alias the harness understands.
-fn harness_tool(name: &str) -> String {
-    name.replace('_', "-")
+/// `everything_gui` (`Everything.exe`) has no CLI benchmarking interface
+/// the harness can drive; it is benchmarked indirectly via `es.exe` (the
+/// `everything` token).  All other names are passed through with `_` → `-`.
+fn harness_tool(name: &str) -> Option<String> {
+    match name {
+        "everything_gui" | "everything-gui" => None,
+        other => Some(other.replace('_', "-")),
+    }
 }
 
 /// Card note describing the daemon restore taken before mutating.
@@ -289,10 +308,14 @@ fn cross_tool_invocation(cfg: &StageCfg) -> Invocation {
     args.push(
         cfg.tools
             .iter()
-            .map(|tool| harness_tool(tool))
+            .filter_map(|tool| harness_tool(tool))
             .collect::<Vec<_>>()
             .join(","),
     );
+    if let Some(inst) = &cfg.es_instance_name {
+        args.push("--es-instance".to_owned());
+        args.push(inst.clone());
+    }
     args.push("--rounds".to_owned());
     args.push(cfg.rounds.to_string());
     args.push("--out".to_owned());
@@ -310,64 +333,31 @@ fn cross_tool_invocation(cfg: &StageCfg) -> Invocation {
 /// Build the Stage 2 parity harness invocation.
 fn parity_invocation(cfg: &StageCfg) -> Invocation {
     let out_path = cfg.bundle_dir.join(PARITY_OUT);
-    let mut args = vec![
-        "-NoProfile".to_owned(),
-        "-ExecutionPolicy".to_owned(),
-        "Bypass".to_owned(),
-        "-File".to_owned(),
-        PARITY_SCRIPT.to_owned(),
-    ];
-    if !cfg.drives.is_empty() {
-        args.push("-Drives".to_owned());
-        args.push(join_drives(&cfg.drives));
+    let mut args = vec![PARITY_SCRIPT.to_owned()];
+    if !cfg.capable_drives.is_empty() {
+        args.push("--drives".to_owned());
+        args.push(join_drives(&cfg.capable_drives));
     }
-    args.push("-Rounds".to_owned());
+    args.push("--rounds".to_owned());
     args.push(cfg.rounds.to_string());
-    args.push("-OutputFile".to_owned());
+    args.push("--output-file".to_owned());
     args.push(out_path.display().to_string());
-    // The parity script purges every drive cache before the cold warm-up.
+    // The parity harness purges every drive cache before the cold warm-up.
     if cfg.drop_cache {
-        args.push("-PurgeCacheFirst".to_owned());
+        args.push("--purge-cache".to_owned());
     }
     Invocation {
-        exe: POWERSHELL_EXE.to_owned(),
+        exe: RUST_SCRIPT_EXE.to_owned(),
         args,
     }
 }
 
-/// Whether a UFFS daemon is currently running (R1 snapshot probe).
-///
-/// Treats a clean `uffs daemon status` with non-empty output as "running"; an
-/// empty or error output (the `MockHost` default, and a stopped daemon) reads
-/// as "not running" so teardown only stops what a stage actually started.
-fn daemon_running(host: &dyn Host) -> bool {
-    match host.run("uffs", &["daemon", "status"]) {
-        Ok(out) => {
-            let text = out.stdout.to_lowercase();
-            out.success()
-                && !text.trim().is_empty()
-                && !text.contains("not running")
-                && !text.contains("no daemon")
-        }
-        Err(_) => false,
-    }
-}
-
-/// Snapshot the daemon run-state (R1) and register its restore *before* the
-/// stage starts or mutates the daemon.
-///
-/// Best-effort: the probe never fails, so this returns nothing; the restore it
-/// registers reports its own failure as a teardown crumb.
-fn snapshot_daemon(host: &dyn Host, guard: &mut RunGuard<'_>) {
-    let was_running = daemon_running(host);
-    guard.register(DAEMON_RESTORE, move |restore_host| {
-        let action = if was_running { "restart" } else { "stop" };
-        restore_host
-            .run("uffs", &["daemon", action])
-            .map(|_out| ())
-            .map_err(|err| BenchError::Command(format!("uffs daemon {action}: {err}")))
-    });
-}
+// The daemon run-state snapshot/restore (R1) moved to `crate::run_state`,
+// registered once in `crate::run` *before* the first daemon kill. Snapshotting
+// it per-stage here was too late — `capture()` already restarts the daemon
+// (scoped to the capable drives) before any stage runs, so the as-found drive
+// set was already gone. The old probe also captured only a *bool* and shelled
+// a bare `uffs` off `PATH`, so it never restored the operator's drive set.
 
 /// Snapshot the per-drive UFFS cache files (R2) into `bundle/backup` and
 /// register their restores *before* the stage purges them.
@@ -385,7 +375,7 @@ fn snapshot_cache(host: &dyn Host, guard: &mut RunGuard<'_>, cfg: &StageCfg) -> 
     let backup_dir = cfg.bundle_dir.join("backup");
     host.create_dir_all(&backup_dir)
         .map_err(|err| BenchError::io(&backup_dir, err))?;
-    for &drive in &cfg.drives {
+    for &drive in &cfg.capable_drives {
         for suffix in CACHE_SUFFIXES {
             let src = dir.join(format!("{drive}{suffix}"));
             if !host.path_exists(&src) {
@@ -549,24 +539,33 @@ fn step_from_output(out: &ProcOutput, output_path: &Path, label: &str) -> StepRe
     }
 }
 
-/// Stage 1 — cross-tool head-to-head (snapshot R1, run the harness).
-fn run_cross_tool(host: &dyn Host, guard: &mut RunGuard<'_>, cfg: &StageCfg) -> Result<StepResult> {
-    snapshot_daemon(host, guard);
+/// Stage 1 — cross-tool head-to-head (run the harness).
+///
+/// The daemon run-state restore (R1) is registered once, up front, in
+/// [`crate::run`] — before the daemon is first killed — so it is not re-taken
+/// per stage here (by stage time the as-found state is already gone).
+fn run_cross_tool(
+    host: &dyn Host,
+    _guard: &mut RunGuard<'_>,
+    cfg: &StageCfg,
+) -> Result<StepResult> {
     let out = cross_tool_invocation(cfg)
-        .run(host)
+        .run_streaming(host)
         .map_err(|err| BenchError::Command(format!("cross-tool harness: {err}")))?;
     let out_path = cfg.bundle_dir.join(CROSS_TOOL_OUT);
     Ok(step_from_output(&out, &out_path, "cross-tool"))
 }
 
-/// Stage 2 — per-drive parity (snapshot R1, +R2 when purging, run the script).
+/// Stage 2 — per-drive parity (+R2 cache backup when purging, run the script).
+///
+/// R1 daemon run-state is restored once via [`crate::run`] (see
+/// [`run_cross_tool`]); only the per-drive cache backup is stage-local.
 fn run_parity(host: &dyn Host, guard: &mut RunGuard<'_>, cfg: &StageCfg) -> Result<StepResult> {
-    snapshot_daemon(host, guard);
     if cfg.drop_cache {
         snapshot_cache(host, guard, cfg)?;
     }
     let out = parity_invocation(cfg)
-        .run(host)
+        .run_streaming(host)
         .map_err(|err| BenchError::Command(format!("parity harness: {err}")))?;
     let out_path = cfg.bundle_dir.join(PARITY_OUT);
     Ok(step_from_output(&out, &out_path, "parity"))
@@ -574,12 +573,11 @@ fn run_parity(host: &dyn Host, guard: &mut RunGuard<'_>, cfg: &StageCfg) -> Resu
 
 /// Stage 3 — native UFFS full-suite timing (snapshot R1, measure, emit
 /// CSV/TXT).
-fn run_native(host: &dyn Host, guard: &mut RunGuard<'_>, cfg: &StageCfg) -> Result<StepResult> {
-    snapshot_daemon(host, guard);
+fn run_native(host: &dyn Host, _guard: &mut RunGuard<'_>, cfg: &StageCfg) -> Result<StepResult> {
     let version = probe_version(host, &cfg.uffs_exe);
     let mut cells = Vec::new();
     let mut all_ok = true;
-    for &drive in &cfg.drives {
+    for &drive in &cfg.capable_drives {
         for probe in &cfg.patterns {
             let cell = measure_cell(host, cfg, drive, probe);
             all_ok = all_ok && cell.ok;
@@ -620,8 +618,8 @@ pub fn plan(stage: u32, cfg: &StageCfg) -> StagePlan {
             let mut resources = vec![DAEMON_RESOURCE.to_owned()];
             let mut backups = vec![daemon_backup_note()];
             if cfg.drop_cache {
-                resources.push(format!("uffs cache: {}", join_drives(&cfg.drives)));
-                backups.push(cache_backup_note(&cfg.drives));
+                resources.push(format!("uffs cache: {}", join_drives(&cfg.capable_drives)));
+                backups.push(cache_backup_note(&cfg.capable_drives));
             }
             StagePlan {
                 commands: vec![parity_invocation(cfg).display()],
@@ -632,7 +630,7 @@ pub fn plan(stage: u32, cfg: &StageCfg) -> StagePlan {
         }
         _ => {
             let commands = cfg
-                .drives
+                .capable_drives
                 .iter()
                 .flat_map(|&drive| {
                     cfg.patterns

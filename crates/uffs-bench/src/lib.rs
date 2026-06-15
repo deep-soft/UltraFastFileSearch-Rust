@@ -52,8 +52,10 @@
 // paths.
 extern crate alloc;
 
+pub mod baseline;
 pub mod bundle;
 pub mod cards;
+pub mod charts;
 pub mod cli;
 pub mod competitors;
 pub mod env;
@@ -64,10 +66,14 @@ pub mod host;
 pub mod matrix;
 pub mod preflight;
 pub mod report;
+pub mod resolve;
 pub mod restore;
 pub mod run;
+pub mod run_state;
 pub mod stages;
 pub mod state;
+pub mod storage;
+pub mod summary;
 pub mod teardown;
 pub mod tooling;
 

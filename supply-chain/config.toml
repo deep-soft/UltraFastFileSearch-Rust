@@ -20,73 +20,107 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
 
 [policy.polars]
-audit-as-crates-io = true
 
 [policy.polars-arrow]
-audit-as-crates-io = true
 
 [policy.polars-buffer]
-audit-as-crates-io = true
 
 [policy.polars-compute]
-audit-as-crates-io = true
 
 [policy.polars-config]
-audit-as-crates-io = true
 
 [policy.polars-core]
-audit-as-crates-io = true
 
 [policy.polars-dtype]
-audit-as-crates-io = true
 
 [policy.polars-error]
-audit-as-crates-io = true
 
 [policy.polars-expr]
-audit-as-crates-io = true
 
 [policy.polars-io]
-audit-as-crates-io = true
 
 [policy.polars-json]
-audit-as-crates-io = true
 
 [policy.polars-lazy]
-audit-as-crates-io = true
 
 [policy.polars-mem-engine]
-audit-as-crates-io = true
 
 [policy.polars-ooc]
-audit-as-crates-io = true
 
 [policy.polars-ops]
-audit-as-crates-io = true
 
 [policy.polars-parquet]
-audit-as-crates-io = true
 
 [policy.polars-plan]
-audit-as-crates-io = true
 
 [policy.polars-row]
-audit-as-crates-io = true
 
 [policy.polars-schema]
-audit-as-crates-io = true
 
 [policy.polars-sql]
-audit-as-crates-io = true
 
 [policy.polars-stream]
-audit-as-crates-io = true
 
 [policy.polars-time]
-audit-as-crates-io = true
 
 [policy.polars-utils]
-audit-as-crates-io = true
+
+[policy.uffs-bench]
+audit-as-crates-io = false
+
+[policy.uffs-broker]
+audit-as-crates-io = false
+
+[policy.uffs-broker-protocol]
+audit-as-crates-io = false
+
+[policy.uffs-ci-pipeline]
+audit-as-crates-io = false
+
+[policy.uffs-cli]
+audit-as-crates-io = false
+
+[policy.uffs-client]
+audit-as-crates-io = false
+
+[policy.uffs-core]
+audit-as-crates-io = false
+
+[policy.uffs-daemon]
+audit-as-crates-io = false
+
+[policy.uffs-diag]
+audit-as-crates-io = false
+
+[policy.uffs-format]
+audit-as-crates-io = false
+
+[policy.uffs-gen-hooks]
+audit-as-crates-io = false
+
+[policy.uffs-gen-workflow]
+audit-as-crates-io = false
+
+[policy.uffs-manifest-audit]
+audit-as-crates-io = false
+
+[policy.uffs-mcp]
+audit-as-crates-io = false
+
+[policy.uffs-mft]
+audit-as-crates-io = false
+
+[policy.uffs-polars]
+audit-as-crates-io = false
+
+[policy.uffs-security]
+audit-as-crates-io = false
+
+[policy.uffs-text]
+audit-as-crates-io = false
+
+[policy.uffs-time]
+audit-as-crates-io = false
 
 [[exemptions.aead]]
 version = "0.5.2"
@@ -410,7 +444,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.fastrand]]
 version = "2.4.1"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
 
 [[exemptions.find-msvc-tools]]
 version = "0.1.9"
@@ -729,71 +763,75 @@ version = "0.3.7"
 criteria = "safe-to-run"
 
 [[exemptions.polars]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-arrow]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-arrow-format]]
 version = "0.2.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.polars-async]]
+version = "0.54.4"
+criteria = "safe-to-deploy"
+
 [[exemptions.polars-buffer]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-compute]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-config]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-core]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-dtype]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-error]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-expr]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-io]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-json]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-lazy]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-mem-engine]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-ooc]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-ops]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-parquet]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-parquet-format]]
@@ -801,31 +839,31 @@ version = "0.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-plan]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-row]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-schema]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-sql]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-stream]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-time]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-utils]]
-version = "0.53.0@git:1e9a63b95923291cd8849d70d96b8cec4e96da6a"
+version = "0.54.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.polyval]]
