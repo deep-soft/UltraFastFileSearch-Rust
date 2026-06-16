@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2025-2026 SKY, LLC.
+# SPDX-License-Identifier: MPL-2.0
+
+# uffs-update: self-update **acquire** helper binary.
+#
+# Deliberately a SEPARATE binary from `uffs` so the HTTP/TLS stack
+# (reqwest + rustls) never bloats the lean, fast-starting CLI. `uffs
+# update` spawns this only for the download/verify step; everything else
+# (detect, snapshot) stays in `uffs-cli`.
+
+[package]
+name = "uffs-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# Internal tooling binary — not published to crates.io.
+publish.workspace = true
+
+[[bin]]
+name = "uffs-update"
+path = "src/main.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+[dependencies]
+anyhow.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+# Resolve the daemon lifecycle dir (`%LOCALAPPDATA%\uffs`) so quiesce can
+# poll the PID file as the "daemon stopped" signal — no process FFI.
+dirs-next.workspace = true
+# Blocking HTTP with rustls + the system trust store — workspace-inherited
+# so the feature set lives in one place. A one-shot CLI step, so the async
+# runtime overhead of a full client is unwarranted.
+reqwest.workspace = true
+# Broker identity (`SERVICE_NAME` / `PIPE_NAME`) for quiesce/restore — pure
+# cross-platform crate, so it lives here, not under cfg(windows).
+uffs-broker-protocol.workspace = true
+# Native Windows service control (quiesce stop / restore start) + the
+# broker-pipe readiness probe. Cross-platform (stubs off Windows), so the
+# quiesce/restore logic compiles everywhere without `sc.exe` text parsing.
+uffs-winsvc.workspace = true
+
+# Native owner-PID liveness for Phase H (no fragile `tasklist`/`kill`
+# shell-outs). Already in the lock → cargo-vet stays green.
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

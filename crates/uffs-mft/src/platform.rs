@@ -22,6 +22,12 @@ mod bitmap;
 /// workspace with a `#[repr(transparent)]` newtype that canonicalises
 /// case and rejects non-ASCII-letter input at the parse boundary.
 pub mod drive_letter;
+/// Drive-prefix splitting for search patterns.
+///
+/// The single canonical parser shared by the CLI parse layer and the
+/// daemon dispatch safety net, so both agree on what a leading `X:`
+/// means.
+pub mod drive_pattern;
 mod extents;
 /// Logical Cluster Number newtype — signed cluster identifier used
 /// by `FSCTL_GET_RETRIEVAL_POINTERS` and the on-disk data-run decoder.
@@ -31,6 +37,11 @@ mod extents;
 /// detection through [`Lcn::is_hole`] / [`Lcn::is_zero`] instead of
 /// open-coded `< 0` / `== 0` checks at every call site.
 pub mod lcn;
+/// Native Windows process introspection for the self-update detector.
+///
+/// Image path + pid enumeration — keeps the `unsafe` FFI out of `uffs-cli`.
+#[cfg(windows)]
+pub mod process;
 mod system;
 /// `$UpCase` table reading from live NTFS volume.
 pub mod upcase;
@@ -39,6 +50,7 @@ mod volume;
 
 pub use bitmap::MftBitmap;
 pub use drive_letter::{DriveLetter, DriveLetterError};
+pub use drive_pattern::split_drive_prefix;
 pub use extents::MftExtent;
 pub use lcn::Lcn;
 // Export DriveType unconditionally (needed for tests), but Windows-specific functions only on

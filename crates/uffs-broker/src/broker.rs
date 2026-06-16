@@ -29,6 +29,13 @@ mod service;
 #[cfg(windows)]
 use service::{install_service, uninstall_service};
 
+// Operator-facing `--status` / `--start` / `--stop` via native SCM
+// (`uffs-winsvc`), split out to keep this file under the 800-LOC ceiling.
+// Windows-only: `uffs-winsvc` is a `cfg(windows)` dependency of the broker.
+#[cfg(windows)]
+#[path = "broker/control.rs"]
+mod control;
+
 // Client process-handle acquisition + identity verification (WI-8.1), split
 // out to keep this file under the 800-LOC ceiling. See
 // `broker/process_handle.rs`.
@@ -36,13 +43,11 @@ use service::{install_service, uninstall_service};
 mod process_handle;
 #[cfg(windows)]
 use process_handle::{OwnedProcessHandle, query_process_image_name, verify_client_handle};
-
-// S5.2 Authenticode verification (WinVerifyTrust + per-image cache), split out
-// to keep this file under the 800-LOC ceiling. See `broker/authenticode.rs`.
-#[path = "broker/authenticode.rs"]
-mod authenticode;
+// S5.2 Authenticode verification (WinVerifyTrust + per-image cache). The single
+// implementation now lives in `uffs_security::authenticode`, shared with the
+// self-updater (DRY) instead of a broker-local copy.
 #[cfg(windows)]
-use authenticode::verify_authenticode;
+use uffs_security::authenticode::verify_authenticode;
 
 // `Send`-safe RAII handle wrapper (SBB-2) — lets a connected pipe instance move
 // into a per-connection worker thread (FU-5). See `broker/owned_handle.rs`.
@@ -91,6 +96,16 @@ pub(crate) fn run() -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == "--uninstall") {
         return uninstall_service();
     }
+    if args.iter().any(|arg| arg == "--status") {
+        control::status();
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--start") {
+        return control::start();
+    }
+    if args.iter().any(|arg| arg == "--stop") {
+        return control::stop();
+    }
     if args.iter().any(|arg| arg == "--run") {
         return run_foreground();
     }
@@ -111,9 +126,12 @@ pub(crate) fn run() -> anyhow::Result<()> {
     reason = "CLI help text written before tracing subscriber init"
 )]
 fn print_usage() {
-    eprintln!("uffs-broker: use --install, --uninstall, or --run");
+    eprintln!("uffs-broker: use --install, --uninstall, --status, --start, --stop, or --run");
     eprintln!("  --install     Install as Windows Service");
     eprintln!("  --uninstall   Remove Windows Service");
+    eprintln!("  --status      Show service state, pid, and pipe-serving status");
+    eprintln!("  --start       Start the service (waits for RUNNING)");
+    eprintln!("  --stop        Stop the service (waits for STOPPED)");
     eprintln!("  --run         Run in foreground (debugging)");
 }
 

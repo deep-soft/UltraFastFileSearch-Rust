@@ -25,6 +25,7 @@ members = [
   "crates/uffs-text",            # 📝 Unicode text processing, i18n foundation
   "crates/uffs-time",            # ⏱️ NTFS FILETIME arithmetic (pure, zero deps)
   "crates/uffs-broker-protocol", # 📟 Cross-platform broker wire-protocol types (F5)
+  "crates/uffs-winsvc",          # 🪟 Native Windows service control + broker-pipe probe (leaf)
   "crates/uffs-mft",             # 📦 MFT reading → Polars DataFrame
   "crates/uffs-format",          # 🧾 Shared CSV formatter (daemon + thin CLI)
   "crates/uffs-core",            # 🎯 Query engine + compact search engine
@@ -34,7 +35,8 @@ members = [
   "crates/uffs-mcp",    # 🤖 MCP stdio adapter for AI agents
   "crates/uffs-broker", # 🔑 Windows elevated handle broker (optional)
   # ── Surfaces ──
-  "crates/uffs-cli", # 🖥️  Command-line interface
+  "crates/uffs-cli",    # 🖥️  Command-line interface
+  "crates/uffs-update", # ⬆️  Self-update acquire helper (HTTP/TLS isolated from the CLI)
   # NOTE: uffs-tui and uffs-gui have moved to the private uffs-products repo.
   # ── Tools ──
   "crates/uffs-diag",          # 🔬 Retained workspace-only diagnostic tools (not shipped in dist/)
@@ -57,7 +59,7 @@ members = [
 # Workspace Package Metadata (inherited by all crates)
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace.package]
-version = "0.6.1"
+version = "0.6.3"
 edition = "2024"
 # No `rust-version` claim: the workspace is structurally nightly-only.
 # `crates/uffs-polars` enables `polars/nightly` unconditionally, which
@@ -124,21 +126,28 @@ publish = false
 # proposed-plan output for 12 days because `release-plz update`
 # failed at `cargo package` with this very error.  See
 # `release-automation-baseline.md` §10 for the diagnostic trail.
-uffs-polars = { path = "crates/uffs-polars", version = "0.6.1" }
-uffs-security = { path = "crates/uffs-security", version = "0.6.1" }
-uffs-text = { path = "crates/uffs-text", version = "0.6.1" }
-uffs-time = { path = "crates/uffs-time", version = "0.6.1" }
-uffs-mft = { path = "crates/uffs-mft", version = "0.6.1" }
-uffs-format = { path = "crates/uffs-format", version = "0.6.1" }
-uffs-core = { path = "crates/uffs-core", version = "0.6.1" }
-uffs-client = { path = "crates/uffs-client", version = "0.6.1" }
+uffs-polars = { path = "crates/uffs-polars", version = "0.6.3" }
+uffs-security = { path = "crates/uffs-security", version = "0.6.3" }
+uffs-text = { path = "crates/uffs-text", version = "0.6.3" }
+uffs-time = { path = "crates/uffs-time", version = "0.6.3" }
+uffs-mft = { path = "crates/uffs-mft", version = "0.6.3" }
+uffs-format = { path = "crates/uffs-format", version = "0.6.3" }
+uffs-core = { path = "crates/uffs-core", version = "0.6.3" }
+uffs-client = { path = "crates/uffs-client", version = "0.6.3" }
 # `uffs-broker-protocol` carries the wire-protocol types shared between
 # `uffs-broker` (the elevated handle vendor, Windows-only binary) and
 # `uffs-daemon::broker_client` (the handle consumer).  Pure-logic
 # Layer-0 lib — cross-platform tests run on every CI lane.  Added in
 # F5 (issue #205) so neither side duplicates `BROKER_PIPE_NAME` /
 # wire-format byte literals.
-uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.1" }
+uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.3" }
+# `uffs-winsvc` — native Windows service control (SCM query/start/stop) +
+# the non-connecting broker-pipe readiness probe.  Layer-0 leaf: its only
+# dependency is the `windows` crate (windows-target), with non-Windows
+# stubs so cross-platform consumers (uffs-update, uffs-cli) compile.
+# Single source of truth for the `sc`/SCM mechanics previously duplicated
+# across uffs-broker, uffs-update, and uffs-cli.
+uffs-winsvc = { path = "crates/uffs-winsvc", version = "0.6.3" }
 # NOTE: no `uffs-broker` workspace dependency alias on purpose —
 # `uffs-broker` is a binary-only crate (the only `[lib]` it carries is
 # this protocol module's now-extracted sibling); no other workspace
@@ -282,6 +291,15 @@ itoa = "1.0.18"
 sha2 = "0.11.0"
 hex = "0.4.3"
 
+# ───── Network (self-update acquire helper only) ─────
+# Blocking HTTP with rustls + the system trust store. `rustls-tls-native-roots`
+# matches the existing transitive reqwest config so no new crate enters the lock.
+reqwest = { version = "0.12", default-features = false, features = [
+  "blocking",
+  "rustls-tls-native-roots",
+  "json",
+] }
+
 # ───── Parallelism ─────
 rayon = "1.12.0"
 crossbeam-channel = "0.5.15"
@@ -300,7 +318,7 @@ hostname = "0.4.2"
 num_cpus = "1.17.0"
 # Random unique identifiers.  Only the `v4` (random) feature is enabled
 # workspace-wide; consumers that need v1/v5/v7 etc. re-add the feature.
-uuid = { version = "1.23.2", features = ["v4"] }
+uuid = { version = "1.23.3", features = ["v4"] }
 
 # ───── Security / Crypto ─────
 aes-gcm = "0.10"

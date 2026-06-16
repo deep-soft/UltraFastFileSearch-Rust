@@ -73,6 +73,10 @@ fn run() -> Result<()> {
         _ => {}
     }
 
+    // Phase H self-heal: if a prior update crashed mid-flight, finish or
+    // roll it back in the background. Costs one `stat` in steady state.
+    commands::update::maybe_self_heal();
+
     // Detect subcommand as first non-flag token.
     let first = tokens.first().copied().unwrap_or("");
     let subcmd_args = raw_args.get(2..).unwrap_or_default();
@@ -81,6 +85,7 @@ fn run() -> Result<()> {
         "aggregate" | "agg" => run_aggregate(subcmd_args)?,
         "daemon" => run_daemon(subcmd_args)?,
         "mcp" => commands::mcp_mgmt::mcp_from_args(subcmd_args)?,
+        "update" => commands::update::run_update(subcmd_args)?,
         "status" => {
             if subcmd_args.iter().any(|arg| arg == "--help" || arg == "-h") {
                 args::print_status_help();
