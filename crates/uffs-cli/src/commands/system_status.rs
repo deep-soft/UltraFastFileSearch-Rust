@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! `uffs status` — combined daemon + broker + MCP status in one view.
+//! `uffs --status` — combined daemon + broker + MCP status in one view.
 //!
 //! Shows four sections:
 //! - **Daemon**: PID, uptime, drives, queries
 //! - **Access Broker**: SCM state, pid, pipe-serving (native, locale-proof)
 //! - **MCP HTTP Gateway**: PID, transport, health, sessions, tool calls
-//! - **MCP Stdio Sessions**: active `uffs mcp run` processes (one per AI host)
+//! - **MCP Stdio Sessions**: active `uffs --mcp run` processes (one per AI
+//!   host)
 
 #[cfg(feature = "mcp-http-probe")]
 use anyhow::{Context as _, Result};
 use uffs_client::connect_sync::UffsClientSync;
 use uffs_client::protocol::response::{DaemonStatus, ShardTier};
 
-/// `uffs status` — show combined system status.
+/// `uffs --status` — show combined system status.
 ///
 /// # Errors
 ///
@@ -145,7 +146,7 @@ fn print_daemon_status() {
     }
 }
 
-/// Render the `Drives:` block of `uffs status`.
+/// Render the `Drives:` block of `uffs --status`.
 ///
 /// Phase 5 task 5.11: enumerate every shard in the registry (Hot /
 /// Warm / Parked / Cold) and tag each row with its tier marker.
@@ -203,7 +204,7 @@ fn print_drive_summary(drives: &[uffs_client::protocol::response::DriveInfo]) {
     }
 }
 
-/// Compact tier marker for `uffs status`'s drive list — fixed-width
+/// Compact tier marker for `uffs --status`'s drive list — fixed-width
 /// bracket label per tier so the per-drive lines align in the
 /// combined system view.  Phase 5 task 5.11.
 const fn compact_tier_marker(tier: Option<ShardTier>) -> &'static str {
@@ -298,7 +299,7 @@ fn print_mcp_http_status() {
         }
     }
     if gw_stale {
-        println!("  Run `uffs mcp reload` to restart with the current binary.");
+        println!("  Run `uffs --mcp reload` to restart with the current binary.");
     }
 }
 
@@ -355,7 +356,7 @@ fn print_mcp_stats(stats: &serde_json::Value) {
 
 /// Print MCP stdio session list.
 ///
-/// Scans for running `uffs mcp run` processes.  Each one is an AI-host
+/// Scans for running `uffs --mcp run` processes.  Each one is an AI-host
 /// (Augment, Claude Desktop, Cursor, etc.) connected via stdio transport.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn print_mcp_stdio_sessions() {
@@ -387,7 +388,7 @@ fn print_mcp_stdio_sessions() {
         );
     }
     if any_stale {
-        println!("  Run `uffs mcp reload` to restart stale sessions.");
+        println!("  Run `uffs --mcp reload` to restart stale sessions.");
     }
 }
 
@@ -403,7 +404,7 @@ struct StdioSession {
     is_stale: bool,
 }
 
-/// Find running `uffs mcp run` processes via `ps`.
+/// Find running `uffs --mcp run` processes via `ps`.
 ///
 /// Also detects stale binaries by comparing the on-disk mtime of each
 /// process's executable against the current running binary.
@@ -446,7 +447,7 @@ fn find_mcp_stdio_processes() -> Vec<StdioSession> {
         };
         let cmdline: String = fields.collect::<Vec<_>>().join(" ");
 
-        // Match `uffs mcp run` in any path.
+        // Match `uffs --mcp run` in any path.
         if !cmdline.contains("mcp") || !cmdline.contains("run") {
             continue;
         }

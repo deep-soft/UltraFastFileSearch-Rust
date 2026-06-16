@@ -4,8 +4,10 @@ SPDX-License-Identifier: MPL-2.0
 -->
 # UFFS CLI Grammar — search-first, `--command` for everything else
 
-**Status:** Design approved, implementation pending. This is the design +
-implementation + tracking doc for the `uffs` command-line grammar redesign.
+**Status:** **Implemented + validated** on `feat/cli-grammar` (§11 P0–P6 all
+done; doc audited against the code, no gaps). Decisions resolved (§12). This is
+the design + implementation + tracking doc for the `uffs` command-line grammar
+redesign.
 
 **TL;DR:** `uffs <anything>` searches for `<anything>` — *any* word, with no
 reserved words. Management operations are `--<command>` (double-dash), e.g.
@@ -79,21 +81,29 @@ uffs --update acquire --version v1  → updater, acquire action
 uffs --daemon start                 → daemon, start action
 ```
 
-### 3.2 The precision that makes it airtight: disjoint sets
+### 3.2 The precision that makes it airtight: the first token decides
 
 Search **already uses `--` flags** (`--sort`, `--ext`, `--drive`, `--limit`,
 `--format`, …). So the rule is **not** "any `--` is a command" — it is "**the
-first token is a known *command* word**". The **command set** and the
-**search-flag set** are deliberately **disjoint**, so there is never a clash:
+*first* token is a known *command* word**". That position rule is what makes it
+airtight:
 
 ```
-uffs --ext pdf       → search (--ext is a search flag, not a command)   ✅
+uffs --ext pdf       → search (--ext is a search flag, never a command)  ✅
 uffs --update        → updater (--update is in the command set)          ✅
 uffs --sort -size    → search (--sort is a search flag)                  ✅
 ```
 
-That disjointness is the trick: it lets a *pattern-less* search like
-`uffs --ext pdf` coexist with `uffs --update`.
+Most search flags (`--ext`, `--sort`, `--drive`, …) are **disjoint** from the
+command set, so they can never be confused. The **two deliberate exceptions**
+are `--stats` and `--agg`: each is a command **as the first token**
+(`uffs --stats`, `uffs --agg <preset>`) *and* an inline search modifier
+**after a pattern** (`uffs '*.log' --stats size`, `uffs '*' --agg "…"`). That
+is intentional — it is the *same* operation (stats / aggregation) in two
+positions — and the first-token rule resolves it unambiguously: a dual-use
+name in the first slot is the command; anywhere later it is the modifier. So
+the invariant is the **position**, not strict set-disjointness, and a
+*pattern-less* search like `uffs --ext pdf` still coexists with `uffs --update`.
 
 ### 3.3 The mental model (one sentence the user learns once)
 
@@ -103,6 +113,28 @@ That disjointness is the trick: it lets a *pattern-less* search like
 It is mildly unconventional (most CLIs use `--` for *options*), but for a
 search-first tool it is coherent and learnable, and it is the price of keeping
 `uffs <anything>` literally mean "search for anything".
+
+### 3.4 The two reserved single-dash exceptions: `-h` and `-V`
+
+There are **exactly two** single-dash tokens that are *not* patterns —
+`-h` (help) and `-V` (version) — and they are reserved **only as the first
+token**. This is a deliberate, enumerated exception to "single-dash = pattern":
+`-h`/`-V` are such universal CLI muscle-memory that the search-first leaders
+keep them too (ripgrep, fd both expose exactly `-h`/`-V` and nothing else
+short). Every *other* single-dash token stays a pattern.
+
+```
+uffs -h            → help        ✅ reserved (the only short help flag)
+uffs -V            → version     ✅ reserved (the only short version flag)
+uffs -x            → search "-x" ✅ every OTHER single dash is a pattern
+uffs -update       → search "-update"
+uffs -- -h         → search the literal "-h"   ← the escape hatch covers it
+```
+
+Searching for a file literally named `-h` is nonsensical, and `uffs -- -h`
+recovers it, so the cost of the exception is ~zero while the convenience is
+universal. The set is closed: `-h` and `-V` only — no other short flag, and
+**no** short *command* aliases (§12).
 
 ## 4. Uniform command model — every command, the same shape
 
@@ -133,8 +165,8 @@ different (each internally-consistent) conventions.
 | `uffs <pattern>` | `uffs <pattern>` *(unchanged)* — also explicit `uffs --search <pattern>` | — | `--sort --ext --drive --limit --format …` |
 | `uffs stats [path]` | `uffs --stats [path]` | — | `--top N` `--data-dir` `--mft-file` |
 | `uffs aggregate\|agg <preset>` | `uffs --agg <preset>` | — | `--format` |
-| `uffs daemon <a>` | `uffs --daemon <a>` | `start` `stop` `restart` `status` | `--data-dir` `--mft-file` `--elevate` |
-| `uffs mcp <a>` | `uffs --mcp <a>` | `run` `serve` `stop` `status` | `--bind` `--port` `--data-dir` |
+| `uffs daemon <a>` | `uffs --daemon <a>` | `start` `status` `stats` `stop` `kill` `restart` `load` `hibernate` `preload` `forget` `status_drives` | `--data-dir` `--mft-file` `--elevate` |
+| `uffs mcp <a>` | `uffs --mcp <a>` | `run` `start` `status` `stop` `kill` `restart` `reload` | `--bind` `--port` `--data-dir` |
 | `uffs update [--acquire\|--apply\|--snapshot]` + `uffs update doctor` | `uffs --update [<a>]` | *(none=detect)* `snapshot` `acquire` `apply` `doctor` `recover` | `--version` `--repair` `--offline` `--repo` |
 | `uffs status` | `uffs --status` | — | — |
 | `uffs --help / --version` | `uffs --help / --version` *(unchanged; global)* | — | — |
@@ -156,11 +188,34 @@ convenience alias is an open question, §12.)
 | `uffs -- --update` | search for the literal pattern `--update` (bare `--` = end-of-options) |
 | `uffs --search -- --update` | same, explicit search form |
 | `uffs --update --help` | update help (the `--help` after a command is command-scoped) |
-| `uffs --bogus` | error: unknown command `--bogus` (a `--`-leading first token that is *not* a command + *not* a search flag is a usage error, with a "did you mean …?" hint) |
+| `uffs --updat` (near a command) | CLI hint up front: "`--updat` is not a known search flag. Did you mean the command `uffs --update`?" — no daemon round-trip (see the note below) |
+| `uffs --bogus` (not near a command) | forwarded to search; the shared parser / daemon rejects the unknown flag with the authoritative error (no command hint) |
 
 The **only** thing not searchable bare is a filename literally beginning with
 `--` (e.g. `--update`), reachable with `uffs -- <pattern>`. Such filenames are
 pathological; the escape is the universal `--` separator.
+
+> **How the "did you mean a command?" hint stays thin — and keeps the daemon
+> ignorant of CLI commands.** Each layer suggests within its *own* vocabulary,
+> and neither learns the other's:
+>
+> - **Search-flag validation** is the **shared parser's** job
+>   (`uffs_client::protocol::SearchParams::from_cli_args`, the single source of
+>   truth used by both the daemon and — on the error path only — the CLI). It
+>   already returns a *structured* `UnknownFlag { flag }`.
+> - **Command suggestions** are the **CLI's** job, over its own ~8-token
+>   command set (`dispatch::COMMAND_TOKENS`, kept in lock-step with
+>   `from_token` by a test). When a first-token `--`-flag is *rejected by the
+>   shared parser* AND is within Levenshtein ≤ 2 of a command, the CLI prints
+>   the hint and stops — no daemon round-trip.
+>
+> So the CLI never duplicates the flag registry (it *calls* the shared parser),
+> and the **daemon never needs to know CLI commands** — the command list lives
+> only in the CLI. `--updat` → "did you mean `uffs --update`?"; `--bogus`
+> (near nothing) → the parser's authoritative "unknown flag" error;
+> `--newer-created` (a real flag) → parses fine, never mistaken for a command.
+> The gate on "rejected by the shared parser" is what guarantees a *valid* new
+> search flag is never mis-flagged as a command typo.
 
 ## 7. Why not the alternatives
 
@@ -219,8 +274,12 @@ impl Command {
 }
 ```
 
-A **debug-assert / unit test** enforces the disjointness invariant: no
-`Command` token may equal any known search-flag long name.
+A **unit test** (`search_flags_are_never_commands`) enforces the position
+invariant for the genuinely flag-only names: the disjoint search flags
+(`--ext`, `--sort`, `--drive`, `--limit`, …) must never resolve to a command.
+The two dual-use names (`--stats`, `--agg`) are intentionally *not* in that
+list — as a first token they ARE their command; the first-token rule (§3.2)
+keeps them unambiguous.
 
 ### 8.2 Per-command handlers (mostly re-wiring existing code)
 
@@ -263,9 +322,14 @@ that internal path; only the *external* entry tokens change.
    - `--update` → Update command.
    - `--ext` (first token) → Search mode (search flag, not a command).
    - `--` then `--update` → Search, pattern == "--update".
-   - `--bogus` → usage error.
-2. **Disjointness invariant test**: assert no `Command` token collides with any
-   search-flag long name (fails loudly if someone adds `--sort` as a command).
+   - `--updat` (near a command) → CLI command-typo hint ("did you mean
+     `uffs --update`?"), no daemon round-trip.
+   - `--bogus` (near nothing) → Search mode (forwarded to the shared parser /
+     daemon, which rejects the unknown flag — see §6's note; no command hint).
+2. **Position invariant test**: assert the *flag-only* names (`--sort`, `--ext`,
+   `--drive`, …) never resolve to a command (fails loudly if someone adds
+   `--sort` as a command). The dual-use `--stats`/`--agg` are excluded by
+   design (§3.2) — first token = command, later = modifier.
 3. **Per-command parse tests**: `--update acquire --version v1` → action=acquire,
    version=v1; `--daemon start` → action=start; etc.
 4. **Golden help-text test**: the new grammar renders + lists every command.
@@ -283,27 +347,52 @@ that internal path; only the *external* entry tokens change.
 
 ## 11. Tracking checklist
 
-- [ ] **P0 — Dispatcher.** `Command` enum + `from_token` + `run()` rewrite +
+- [x] **P0 — Dispatcher.** `Command` enum + `from_token` + `run()` rewrite +
       bare-`--` escape. Dispatcher unit tests + disjointness invariant test.
-- [ ] **P1 — Normalize `--update`.** Action-positional parsing
-      (snapshot/acquire/apply/doctor/recover); options as flags. Update its
+- [x] **P1 — Normalize `--update`.** Action-positional parsing
+      (snapshot/acquire/apply/doctor); options as flags. Updated its
       `print_help`. Tests.
-- [ ] **P2 — Wire the rest.** `--stats`, `--agg`, `--daemon`, `--mcp`,
-      `--status`, `--search`. Per-command help (`--<cmd> --help`).
-- [ ] **P3 — Top-level help + usage errors.** New `print_help`; "unknown command
-      `--x` (did you mean …?)"; golden help test.
-- [ ] **P4 — Docs.** CLAUDE.md, README, MCP instructions, this doc → Implemented.
-- [ ] **P5 — Validate.** Host + Windows-MSVC clippy clean; full nextest; manual
-      smoke of every command + a `uffs update` *search*.
+- [x] **P2 — Wire the rest.** `--stats`, `--agg`, `--daemon`, `--mcp`,
+      `--status`, `--search` all route via `dispatch_command` (the handlers
+      were already action-/positional-style; no parsing changes needed).
+- [x] **P3 — Top-level help + usage errors.** New top-level help (search-first
+      note + `--command` list); sub-command help titles/usage + the two
+      user-facing daemon error messages updated to `--daemon`; help golden
+      test updated. (A "did you mean …?" hint for `--bogus` is a nice-to-have
+      follow-up; today an unknown leading `--flag` errors via the search
+      parser, and `--update bogus` is rejected with the action list.)
+- [x] **P4 — Docs.** README command examples → `uffs --daemon …` (+ a
+      "`--command` = management; bare words search" note); CLAUDE.md and the
+      MCP server `instructions` had no old-grammar CLI refs; internal
+      doc-comments that named the conceptual `uffs daemon/mcp …` forms updated
+      to `uffs --daemon/--mcp …`; this doc → Implemented. (No internal
+      self-spawn was affected: the updater shells out to the separate
+      `uffs-update` binary, autostart to `uffsd`, MCP to `uffsmcp` — each with
+      its own grammar.)
+- [x] **P5 — Validate.** Host + Windows-MSVC prod clippy clean; full nextest
+      (uffs-cli + uffs-mcp) green; manual smoke of every command, the
+      `uffs update`/`uffs status`-as-search disambiguation, the `uffs --`
+      escape, `-h`/`-V`, and `--update recover`.
+- [x] **P6 — Gap-closure pass.** Audited this doc against the code: wired the
+      `recover` action (§5/§8.2) — `uffs --update recover` runs the
+      foreground self-heal (the helper's `recover` already existed; only the
+      CLI action was missing) + tests.
+- [x] **P7 — Command-typo hint (§6/§9).** Implemented the "did you mean a
+      command?" hint *thinly*: the CLI calls the shared `from_cli_args` parser
+      (single source of truth for flags) on the error path and, when a
+      first-token `--`-flag is rejected AND within Levenshtein ≤ 2 of a
+      command (`dispatch::suggest_command` over `COMMAND_TOKENS`, `strsim`),
+      prints the hint without a daemon round-trip. The daemon never learns CLI
+      commands; the CLI never duplicates the flag registry. Unit + integration
+      tests pin both directions (near-miss suggests; unrelated/valid flags do
+      not). Doc and implementation now fully aligned.
 
-## 12. Open questions / decisions
+## 12. Decisions (resolved 2026-06-16)
 
-1. **Top-level `--doctor`?** Keep `uffs --update doctor` only (uniform), or add
-   a `--doctor` convenience alias? *Lean: keep it an update action; revisit if
-   users reach for `uffs --doctor`.*
-2. **`--search` explicit form** — ship it (uniformity + a clean scripting form)
-   or leave search bare-only? *Lean: ship `--search` as the explicit twin of the
-   bare default.*
-3. **Short command aliases?** e.g. `-u` for `--update`. *Lean: no — short single
-   dashes are reserved for patterns/search-short-flags; keep commands `--long`
-   only to preserve the "single dash = data" rule.*
+1. **Top-level `--doctor`? → NO.** Doctor stays solely an action of `--update`
+   (`uffs --update doctor`) — uniform. (May change with user feedback.)
+2. **`--search` explicit form? → YES.** Ship `--search` as the explicit twin of
+   the bare-positional default.
+3. **Short command aliases (e.g. `-u`)? → NO.** Commands are `--long` only, so
+   single dashes stay reserved for patterns / search short-flags and the
+   "single dash = data" rule holds. (May change with user feedback.)
