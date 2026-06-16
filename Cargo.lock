@@ -4674,10 +4674,15 @@ name = "uffs-update"
 version = "0.6.2"
 dependencies = [
  "anyhow",
+ "dirs-next",
  "hex",
+ "libc",
  "reqwest",
  "serde",
+ "serde_json",
  "sha2 0.11.0",
+ "uffs-broker-protocol",
+ "windows 0.62.2",
 ]
 
 [[package]]

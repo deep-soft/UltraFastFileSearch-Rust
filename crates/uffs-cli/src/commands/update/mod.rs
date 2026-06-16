@@ -14,11 +14,14 @@
 //! Entry point: `run_update` (wired to `uffs update` in `main`).
 
 mod acquire;
+mod apply;
 mod binaries;
 mod channel;
+mod doctor;
 mod model;
 mod procinfo;
 mod report;
+mod self_heal;
 mod snapshot;
 
 use std::path::{Path, PathBuf};
@@ -33,16 +36,38 @@ pub(crate) fn run_update(args: &[String]) -> Result<()> {
         print_help();
         return Ok(());
     }
+    // `uffs update doctor [...]` — detect, freeze a snapshot, then hand off
+    // to the helper's end-to-end health check (which prints its own report).
+    if args.first().is_some_and(|arg| arg == "doctor") {
+        let report = detect();
+        let snapshot_path = snapshot::write_snapshot(&report)?;
+        return doctor::spawn(&snapshot_path, args);
+    }
     let report = detect();
     report::print_human(&report);
     if args.iter().any(|arg| arg == "--snapshot") {
         write_and_report_snapshot(&report);
     }
     print_phase_a_footer();
-    if args.iter().any(|arg| arg == "--acquire") {
-        acquire::spawn(flag_value(args, "--version").as_deref())?;
+    // `--apply` runs the full mutating update (acquire → apply); `--acquire`
+    // only stages + verifies. `--apply` implies the acquire step.
+    let do_apply = args.iter().any(|arg| arg == "--apply");
+    if do_apply || args.iter().any(|arg| arg == "--acquire") {
+        // Both read a snapshot to know the installed subset.
+        let snapshot_path = snapshot::write_snapshot(&report)?;
+        acquire::spawn(&snapshot_path, flag_value(args, "--version").as_deref())?;
+        if do_apply {
+            apply::spawn(&snapshot_path)?;
+        }
     }
     Ok(())
+}
+
+/// Phase H self-heal entry: spawn `uffs-update recover` if a live update
+/// journal is present. Best-effort and non-blocking, so a crash mid-update
+/// is healed on the next `uffs` invocation. Called once at CLI startup.
+pub(crate) fn maybe_self_heal() {
+    self_heal::trigger();
 }
 
 /// Return the value following `name` in `args` (`--name value`).
@@ -206,7 +231,9 @@ fn capture_broker(roots: &mut Vec<InstallRoot>, running: &mut Vec<RunningProcess
 fn print_help() {
     println!(
         "uffs update — self-update\n\n\
-         USAGE:\n  uffs update [--snapshot] [--acquire [--version <tag>]]\n\n\
+         USAGE:\n\
+         \x20 uffs update [--snapshot] [--acquire | --apply] [--version <tag>]\n\
+         \x20 uffs update doctor [--repair] [--offline] [--version <tag>]\n\n\
          Discovers where UFFS is installed (from the running CLI, daemon,\n\
          MCP gateway, and broker service), lists binaries + versions per\n\
          location, and shows the running processes' launch recipes.\n\n\
@@ -214,7 +241,15 @@ fn print_help() {
          \x20 --snapshot          Persist the detection + live daemon state to JSON.\n\
          \x20 --acquire           Download + SHA-256-verify the release into staging\n\
          \x20                     (via the uffs-update helper). Does NOT replace.\n\
-         \x20 --version <tag>     Acquire a specific release tag (default: latest).\n"
+         \x20 --apply             Run the FULL mutating update: acquire, then stop\n\
+         \x20                     services, atomically swap + smoke-test, commit,\n\
+         \x20                     and restart. Journaled + auto-rollback on failure.\n\
+         \x20 --version <tag>     Acquire/apply a specific release tag (default: latest).\n\n\
+         SUBCOMMANDS:\n\
+         \x20 doctor              End-to-end health check of the update flow\n\
+         \x20                     (versions, dirs, journal, backups, services,\n\
+         \x20                     broker pipe, release reachability). `--repair`\n\
+         \x20                     self-heals; `--offline` skips network checks.\n"
     );
 }
 

@@ -8,13 +8,24 @@
 //! download/verify step only; detect + snapshot stay in `uffs-cli`.
 //!
 //! ```text
-//! uffs-update acquire --repo <owner/name> --stage <dir>
-//!                     [--version <tag>] [--bundle <asset>] [--sums <asset>]
+//! uffs-update acquire --snapshot <path> --stage <dir>
+//!                     [--repo <owner/name>] [--version <tag>] [--sums <asset>]
 //! ```
 
 mod acquire;
+mod apply;
+mod doctor;
 mod github;
+mod journal;
+mod orchestrate;
+mod plan;
+mod proc;
+mod quiesce;
+mod recover;
+mod restore;
 mod verify;
+
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
@@ -25,28 +36,196 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("acquire") => run_acquire(args.get(1..).unwrap_or_default()),
+        Some("apply") => run_apply(args.get(1..).unwrap_or_default()),
+        Some("recover") => run_recover(args.get(1..).unwrap_or_default()),
+        Some("doctor") => run_doctor(args.get(1..).unwrap_or_default()),
+        Some("--version" | "-V") => {
+            print_version();
+            Ok(())
+        }
         Some("--help" | "-h") | None => {
             print_usage();
             Ok(())
         }
-        Some(other) => bail!("unknown subcommand `{other}` (try `acquire`)"),
+        Some(other) => {
+            bail!("unknown subcommand `{other}` (try `acquire` / `apply` / `recover` / `doctor`)")
+        }
     }
 }
 
-/// Parse the `acquire` flags and run it.
+/// Reclaim a prior self-replacement's leftover `.bak` (§19.7, R4) from the
+/// running orchestrator's own directory — but **only** when no update is
+/// in-flight (`update_dir/journal.json` absent), since a live journal means
+/// recovery owns those backups. Best-effort; never fails the caller.
+fn sweep_self_backups_if_idle(update_dir: &Path) {
+    if update_dir.join("journal.json").exists() {
+        return; // recovery owns the .bak files — do not touch
+    }
+    if let Some(self_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        let _swept = apply::sweep_stale_backups(&self_dir);
+    }
+}
+
+/// Parse the `apply` flags and run the full journal-driven flow:
+/// quiesce → backup/swap/smoke → commit → restore → prune. On any
+/// pre-commit failure the binaries are rolled back **and** the stopped
+/// services are restarted (INV-1: never leave a service down).
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn run_apply(args: &[String]) -> Result<()> {
+    let snapshot_path = PathBuf::from(required(flag(args, "--snapshot"), "--snapshot <path>")?);
+    let stage = PathBuf::from(required(flag(args, "--stage"), "--stage <dir>")?);
+    let update_dir = stage
+        .parent()
+        .map_or_else(|| stage.clone(), Path::to_path_buf);
+
+    // R4: reclaim any prior self-replacement's leftover `.bak` before we
+    // begin (no live journal yet for this run).
+    sweep_self_backups_if_idle(&update_dir);
+
+    let snapshot = plan::Snapshot::load(&snapshot_path)?;
+    let backup_dir = update_dir.join(format!("backup-{}", std::process::id()));
+    let journal_path = update_dir.join("journal.json");
+    let mut journal = orchestrate::journal_from_snapshot(journal_path, &snapshot, backup_dir);
+    // Record the snapshot so Phase H can restore service state on recovery.
+    journal.snapshot_ref = Some(snapshot_path.display().to_string());
+    journal.transition(journal::UpdateState::Acquired, "apply.acquired")?;
+
+    // R3 (§19.6): WinGet roots are delegated, not swapped — tell the user
+    // so a winget-managed install is never silently left at the old version.
+    if !journal.delegated_winget.is_empty() {
+        println!(
+            "note: {} WinGet-managed root(s) are delegated — run `winget upgrade` to update them:\n  {}",
+            journal.delegated_winget.len(),
+            journal.delegated_winget.join("\n  ")
+        );
+    }
+
+    // Pre-flight BEFORE touching any service: prove every staged binary
+    // is present and every target dir is writable. A failure here is
+    // zero-downtime — nothing is quiesced or swapped yet (§19, Phase D).
+    if let Err(err) = orchestrate::preflight(&journal, &stage) {
+        journal.transition(journal::UpdateState::Aborted, "preflight.failed")?;
+        journal.archive();
+        return Err(err);
+    }
+    journal.transition(journal::UpdateState::PreflightOk, "preflight.ok")?;
+
+    // Stop the resident services so their files unlock.
+    quiesce::quiesce(&mut journal, &snapshot)?;
+
+    // Swap + smoke + commit; on failure the binaries are already rolled
+    // back — now restart the services we stopped (INV-1) and abort.
+    if let Err(err) = orchestrate::apply_all(&mut journal, &stage, |target| {
+        apply::smoke_ok(target, orchestrate::SMOKE_ARG)
+    }) {
+        let failed = restore::restore(&snapshot);
+        journal.transition(
+            journal::UpdateState::Aborted,
+            &format!("apply.aborted; restart_failed=[{}]", failed.join(", ")),
+        )?;
+        journal.archive();
+        return Err(err);
+    }
+
+    // Committed: relaunch services into the new binaries.
+    let failed = restore::restore(&snapshot);
+    journal.transition(journal::UpdateState::Restored, "restore.done")?;
+    if !failed.is_empty() {
+        #[expect(clippy::print_stderr, reason = "CLI user-facing warning")]
+        {
+            eprintln!(
+                "warning: components failed to restart: [{}]",
+                failed.join(", ")
+            );
+        }
+    }
+
+    orchestrate::prune_all(&journal);
+    journal.transition(journal::UpdateState::Done, "apply.done")?;
+    journal.archive();
+    println!("Applied + committed → {}", journal.to_version);
+    Ok(())
+}
+
+/// Parse the `recover` flags and run Phase H against a journal.
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn run_recover(args: &[String]) -> Result<()> {
+    let journal_path = PathBuf::from(required(flag(args, "--journal"), "--journal <path>")?);
+    let message = match recover::recover(&journal_path)? {
+        recover::Recovery::NothingToDo => "nothing to do",
+        recover::Recovery::InProgress => "another update is in progress (owner alive)",
+        recover::Recovery::RolledForward => "interrupted update resumed → completed",
+        recover::Recovery::RolledBack => "interrupted update rolled back to the previous version",
+    };
+    println!("recover: {message}");
+    Ok(())
+}
+
+/// Default upstream repository for self-update artifacts.
+const DEFAULT_REPO: &str = "skyllc-ai/UltraFastFileSearch";
+
+/// Parse the `doctor` flags and run the end-to-end health check. Exits
+/// non-zero when a hard failure is found so it composes in scripts/CI.
+fn run_doctor(args: &[String]) -> Result<()> {
+    let opts = doctor::DoctorOpts {
+        snapshot: flag(args, "--snapshot").map(PathBuf::from),
+        stage: flag(args, "--stage").map(PathBuf::from),
+        repo: flag(args, "--repo").unwrap_or_else(|| DEFAULT_REPO.to_owned()),
+        tag: flag(args, "--version"),
+        repair: has_flag(args, "--repair"),
+        offline: has_flag(args, "--offline"),
+    };
+    if doctor::run(&opts) {
+        Ok(())
+    } else {
+        bail!("doctor found one or more failures")
+    }
+}
+
+/// Print the helper version.
+#[expect(clippy::print_stdout, reason = "intentional version output")]
+fn print_version() {
+    println!("uffs-update {}", env!("CARGO_PKG_VERSION"));
+}
+
+/// Parse the `acquire` flags and download + verify the installed-subset
+/// binaries from the snapshot.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn run_acquire(args: &[String]) -> Result<()> {
-    let repo = required(flag(args, "--repo"), "--repo <owner/name>")?;
-    let stage = required(flag(args, "--stage"), "--stage <dir>")?;
+    let snapshot_path = PathBuf::from(required(flag(args, "--snapshot"), "--snapshot <path>")?);
+    let stage = PathBuf::from(required(flag(args, "--stage"), "--stage <dir>")?);
+
+    // R4: a fresh acquire is the natural moment to reclaim a prior
+    // self-replacement's leftover `.bak` (the prior process has long
+    // exited), gated on no in-flight journal.
+    if let Some(update_dir) = stage.parent() {
+        sweep_self_backups_if_idle(update_dir);
+    }
+
+    let snapshot = plan::Snapshot::load(&snapshot_path)?;
+
+    // The installed subset across every unmanaged root, deduplicated.
+    let binaries = snapshot.installed_binaries();
+    if binaries.is_empty() {
+        bail!("no unmanaged binaries to acquire (WinGet roots are delegated to winget)");
+    }
+
     let plan = AcquirePlan {
-        repo,
+        repo: flag(args, "--repo").unwrap_or_else(|| DEFAULT_REPO.to_owned()),
         tag: flag(args, "--version"),
-        stage: std::path::PathBuf::from(stage),
-        bundle: flag(args, "--bundle").unwrap_or_else(|| AcquirePlan::default_bundle().to_owned()),
+        stage: stage.clone(),
         sums: flag(args, "--sums").unwrap_or_else(|| "SHA256SUMS".to_owned()),
+        binaries,
     };
     let staged = acquire::run(&plan)?;
-    println!("Acquired + verified: {}", staged.display());
+    println!(
+        "Acquired + verified {} binaries into {}",
+        staged.len(),
+        stage.display()
+    );
     Ok(())
 }
 
@@ -58,6 +237,11 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
+/// `true` if the bare flag `name` is present.
+fn has_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|arg| arg == name)
+}
+
 /// Turn a missing required flag into a clear error.
 fn required(value: Option<String>, what: &str) -> Result<String> {
     value.ok_or_else(|| anyhow::anyhow!("missing required {what}"))
@@ -67,11 +251,19 @@ fn required(value: Option<String>, what: &str) -> Result<String> {
 #[expect(clippy::print_stdout, reason = "intentional help output")]
 fn print_usage() {
     println!(
-        "uffs-update — self-update acquire helper\n\n\
-         USAGE:\n  uffs-update acquire --repo <owner/name> --stage <dir> \\\n\
-         \x20                     [--version <tag>] [--bundle <asset>] [--sums <asset>]\n\n\
-         Fetches the release, downloads the platform bundle + SHA256SUMS,\n\
-         verifies the bundle's SHA-256, and leaves it staged. It does not\n\
-         extract, verify Authenticode, or replace anything (apply phase).\n"
+        "uffs-update — self-update acquire + apply + recover + doctor helper\n\n\
+         USAGE:\n\
+         \x20 uffs-update acquire --snapshot <path> --stage <dir> \\\n\
+         \x20                     [--repo <owner/name>] [--version <tag>] [--sums <asset>]\n\
+         \x20 uffs-update apply   --snapshot <path> --stage <dir>\n\
+         \x20 uffs-update recover --journal <path>\n\
+         \x20 uffs-update doctor  [--snapshot <path>] [--stage <dir>] \\\n\
+         \x20                     [--repo <owner/name>] [--version <tag>] [--repair] [--offline]\n\n\
+         acquire: per the snapshot's installed subset, downloads each binary\n\
+         as an individual release asset + SHA256SUMS, SHA-256-verifies each,\n\
+         and leaves them staged. It does not replace anything (apply phase).\n\
+         doctor:  end-to-end health check of the update flow; `--repair`\n\
+         resumes/rolls-back an interrupted update, sweeps stale backups, and\n\
+         restarts any stopped service. Exits non-zero on a hard failure.\n"
     );
 }

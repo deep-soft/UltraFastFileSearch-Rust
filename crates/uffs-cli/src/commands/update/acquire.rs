@@ -16,7 +16,7 @@ use anyhow::{Context as _, Result, bail};
 use super::snapshot;
 
 /// Default upstream repository for self-update artifacts.
-const DEFAULT_REPO: &str = "skyllc-ai/UltraFastFileSearch";
+pub(super) const DEFAULT_REPO: &str = "skyllc-ai/UltraFastFileSearch";
 
 /// Platform file name of the helper binary.
 const fn helper_file_name() -> &'static str {
@@ -29,7 +29,7 @@ const fn helper_file_name() -> &'static str {
 
 /// Locate the `uffs-update` helper — next to the running `uffs` first,
 /// then on `PATH`.
-fn find_helper() -> Result<PathBuf> {
+pub(super) fn find_helper() -> Result<PathBuf> {
     let name = helper_file_name();
     if let Some(sibling) = std::env::current_exe()
         .ok()
@@ -42,17 +42,21 @@ fn find_helper() -> Result<PathBuf> {
         .with_context(|| format!("cannot find `{name}` — install it alongside `uffs`"))
 }
 
-/// Spawn the acquire helper for an optional target version tag.
+/// Spawn the acquire helper against a written snapshot, for an optional
+/// target version tag. The helper reads the snapshot to know the
+/// installed subset and downloads each binary individually.
 ///
 /// # Errors
 ///
 /// Fails if the helper cannot be located or it exits non-zero.
-pub(crate) fn spawn(version: Option<&str>) -> Result<()> {
+pub(crate) fn spawn(snapshot_path: &std::path::Path, version: Option<&str>) -> Result<()> {
     let helper = find_helper()?;
     let stage = snapshot::update_dir().join("stage");
     let mut command = Command::new(&helper);
     command
-        .args(["acquire", "--repo", DEFAULT_REPO, "--stage"])
+        .args(["acquire", "--repo", DEFAULT_REPO, "--snapshot"])
+        .arg(snapshot_path)
+        .arg("--stage")
         .arg(&stage);
     if let Some(tag) = version {
         command.args(["--version", tag]);
