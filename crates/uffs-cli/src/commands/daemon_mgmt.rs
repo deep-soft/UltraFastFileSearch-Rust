@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! `uffs daemon {status|stop|kill|restart}` subcommand handlers.
+//! `uffs --daemon {status|stop|kill|restart}` subcommand handlers.
 
 use anyhow::{Context as _, Result};
 use uffs_client::connect_sync::UffsClientSync;
@@ -41,7 +41,10 @@ pub(crate) fn daemon(action: &DaemonAction) -> Result<()> {
                 | DaemonAction::StatusDrives
                 | DaemonAction::Start { elevate: true, .. }
         );
-        if !is_read_only_or_uac_start && !uffs_mft::is_elevated() {
+        if !is_read_only_or_uac_start
+            && !uffs_mft::is_elevated()
+            && mutating_management_needs_elevation()
+        {
             #[cfg(windows)]
             anyhow::bail!(
                 "Daemon management commands require an elevated (Administrator) shell.\n\n\
@@ -52,7 +55,7 @@ pub(crate) fn daemon(action: &DaemonAction) -> Result<()> {
                  \x20 1. Relaunch PowerShell / cmd as Administrator\n\
                  \x20    (right-click \u{2192} \"Run as administrator\"), then retry.\n\
                  \x20 2. For `daemon start`, add --elevate to get a UAC prompt:\n\
-                 \x20      uffs daemon start --elevate\n\
+                 \x20      uffs --daemon start --elevate\n\
                  \x20 3. Install the broker service (one-time setup, no future UAC):\n\
                  \x20      uffs-broker --install"
             );
@@ -63,7 +66,7 @@ pub(crate) fn daemon(action: &DaemonAction) -> Result<()> {
                  A non-root process must not stop or restart it — doing so would\n\
                  kill the running daemon with no way to bring it back.\n\n\
                  To run this command, prefix it with sudo:\n\
-                 \x20  sudo uffs daemon <subcommand>"
+                 \x20  sudo uffs --daemon <subcommand>"
             );
             // Fallback for platforms that are neither Windows nor Unix
             // (e.g. WASM, bare-metal targets — should not arise in practice).
@@ -117,7 +120,45 @@ pub(crate) fn daemon(action: &DaemonAction) -> Result<()> {
     }
 }
 
-/// `uffs daemon start` — start the daemon, forwarding data-source flags
+/// Whether a *mutating* daemon-management action (stop/kill/restart/load/…)
+/// needs elevation, **given the running daemon's actual owner**.
+///
+/// The gate exists so a non-privileged caller cannot stop or restart a daemon
+/// it could not bring back. On **Unix** that is only true when the running
+/// daemon is owned by a *different* (typically root) user: a daemon we own —
+/// same effective uid — is ours to stop and restart, so no `sudo` is needed
+/// (the common macOS/Linux offline-capture workflow, and what `uffs --update
+/// apply` relies on). The daemon writes its PID file, so the file's owner is
+/// the daemon's uid; an unreadable/absent PID file means there is no daemon to
+/// protect → no elevation required.
+///
+/// On **Windows** (and any non-Unix target) `uffsd` runs elevated to read the
+/// live MFT, so managing it always needs an elevated token — behaviour is
+/// unchanged.
+#[cfg(unix)]
+fn mutating_management_needs_elevation() -> bool {
+    daemon_owner_needs_elevation(&pid_file_path(), uffs_mft::current_euid())
+}
+
+/// Pure core of [`mutating_management_needs_elevation`] (Unix): elevation is
+/// required iff the daemon's PID file exists and is owned by a uid other than
+/// `caller_euid`. An absent/unreadable PID file → no daemon to protect → no
+/// elevation. Split out so the owner comparison is unit-testable without a
+/// live daemon.
+#[cfg(unix)]
+fn daemon_owner_needs_elevation(pid_file: &std::path::Path, caller_euid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    std::fs::metadata(pid_file).is_ok_and(|meta| meta.uid() != caller_euid)
+}
+
+/// Non-Unix: managing the (elevated) daemon always needs an elevated token.
+#[cfg(not(unix))]
+const fn mutating_management_needs_elevation() -> bool {
+    true
+}
+
+/// `uffs --daemon start` — start the daemon, forwarding data-source flags
 /// as-is so the daemon resolves them internally (DRY).
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 #[expect(
@@ -135,7 +176,7 @@ fn daemon_start(
 ) -> Result<()> {
     // Already running?
     if UffsClientSync::connect_raw().is_ok() {
-        println!("Daemon is already running. Use `uffs daemon restart` to reload.");
+        println!("Daemon is already running. Use `uffs --daemon restart` to reload.");
         return Ok(());
     }
 
@@ -256,7 +297,7 @@ fn daemon_start(
     Ok(())
 }
 
-/// `uffs daemon status` — show daemon status, PID, loaded drives.
+/// `uffs --daemon status` — show daemon status, PID, loaded drives.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn daemon_status() -> Result<()> {
     let Ok(mut client) = UffsClientSync::connect_raw() else {
@@ -415,7 +456,7 @@ const fn tier_marker(tier: Option<ShardTier>) -> &'static str {
 /// Visible to sibling command modules (`daemon_tiering.rs`) so the
 /// graceful "daemon down" rendering stays consistent across every
 /// read-only daemon command — the operator sees the **same** stdout
-/// shape from `uffs daemon status` and `uffs daemon status_drives`
+/// shape from `uffs --daemon status` and `uffs --daemon status_drives`
 /// when the daemon happens to be down.  Mutating commands
 /// (`hibernate` / `preload` / `forget`) deliberately stay on the
 /// bail-with-error path because the operator should know their
@@ -429,7 +470,7 @@ pub(crate) fn print_not_running() {
     }
 }
 
-/// `uffs daemon stats` — show performance metrics.
+/// `uffs --daemon stats` — show performance metrics.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn daemon_stats() -> Result<()> {
     if let Ok(mut client) = UffsClientSync::connect_raw() {
@@ -496,13 +537,13 @@ fn compute_hit_rate_percent(hits: u64, lookups: u64) -> f64 {
     (hits as f64 / lookups as f64) * 100.0_f64
 }
 
-/// `uffs daemon stop` — graceful shutdown via RPC.
+/// `uffs --daemon stop` — graceful shutdown via RPC.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn daemon_stop() -> Result<()> {
     if let Ok(mut client) = UffsClientSync::connect_raw() {
         client
             .shutdown()
-            .with_context(|| "Shutdown RPC failed — try `uffs daemon kill` instead")?;
+            .with_context(|| "Shutdown RPC failed — try `uffs --daemon kill` instead")?;
         println!("Daemon shutdown requested.");
     } else {
         println!("Daemon is not running.");
@@ -510,7 +551,7 @@ fn daemon_stop() -> Result<()> {
     Ok(())
 }
 
-/// `uffs daemon kill` — hard kill via PID file or socket discovery + cleanup.
+/// `uffs --daemon kill` — hard kill via PID file or socket discovery + cleanup.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn daemon_kill() {
     let pid_path = pid_file_path();
@@ -561,7 +602,7 @@ fn kill_pid(pid: u32) {
     }
 }
 
-/// `uffs daemon restart` — stop, capture data sources, then re-launch.
+/// `uffs --daemon restart` — stop, capture data sources, then re-launch.
 ///
 /// If the daemon is running, queries its loaded drives to extract the
 /// original `--mft-file` paths, stops it, then re-spawns with the same
@@ -587,7 +628,7 @@ fn daemon_restart() -> Result<()> {
         client.shutdown().with_context(|| {
             format!(
                 "Graceful shutdown of PID {daemon_pid} failed.\n\
-                 Run `uffs daemon kill` first, then retry."
+                 Run `uffs --daemon kill` first, then retry."
             )
         })?;
 
@@ -639,7 +680,7 @@ fn daemon_restart() -> Result<()> {
 /// `std::env::var("X")` returns `Ok("")` when a shell has left `X` set to the
 /// empty string (common in PowerShell after a sub-script unsets a variable
 /// via assignment rather than `Remove-Item Env:\X`).  Treating that as a real
-/// value is what caused the silent `uffs daemon start` failure documented in
+/// value is what caused the silent `uffs --daemon start` failure documented in
 /// `LOG/Output`: the CLI forwarded `--log-level ""` and
 /// `--log-file uffsd.log` (relative path, from `""+"/uffsd.log"`) to uffsd,
 /// uffsd's `tracing_appender::rolling::never("", "uffsd.log")` then panicked
@@ -693,5 +734,52 @@ mod tests {
     #[test]
     fn non_empty_env_keeps_whitespace_only_values() {
         assert_eq!(non_empty_env(Some(" ".to_owned())), Some(" ".to_owned()));
+    }
+
+    // ── Privilege-aware daemon-management gate (Unix) ────────────────
+    //
+    // A daemon we own (same uid) is ours to stop/restart, so no `sudo` is
+    // needed — this is what unblocks `uffs --update apply` against a
+    // user-owned offline daemon on macOS/Linux.
+
+    #[cfg(unix)]
+    #[test]
+    fn own_daemon_pid_file_needs_no_elevation() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        // A file this test created is owned by the test's own euid; managing a
+        // daemon we own must NOT require elevation.
+        let dir = std::env::temp_dir().join(format!("uffs-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let pid_file = dir.join("daemon.pid");
+        std::fs::write(&pid_file, "1234\n").expect("write pid file");
+
+        let our_uid = std::fs::metadata(&pid_file).expect("stat").uid();
+        assert!(
+            !super::daemon_owner_needs_elevation(&pid_file, our_uid),
+            "a daemon owned by the caller must be manageable without sudo"
+        );
+
+        // A PID file owned by *root* (uid 0) while we run as non-root DOES
+        // require elevation — the daemon is not ours to restart.
+        if our_uid != 0 {
+            assert!(
+                super::daemon_owner_needs_elevation(&pid_file, 0),
+                "a root-owned daemon must require elevation for a non-root caller"
+            );
+        }
+
+        // Best-effort cleanup; bound (not a non-binding `let _`) so the
+        // must-use Result is consumed without tripping clippy either way.
+        let _cleanup = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absent_pid_file_needs_no_elevation() {
+        // No PID file → no daemon to protect → no elevation required (so
+        // `stop`/`start` against a stopped daemon never demands sudo).
+        let missing = std::env::temp_dir().join("uffs-gate-does-not-exist-xyz.pid");
+        assert!(!super::daemon_owner_needs_elevation(&missing, 4242));
     }
 }

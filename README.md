@@ -14,7 +14,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg" alt="License: MPL 2.0"></a>
   <a href="https://github.com/skyllc-ai/UltraFastFileSearch/releases/latest"><img src="https://img.shields.io/badge/platform-Windows-blue.svg" alt="Platform: Windows"></a>
   <a href="https://opencollective.com/uffs-search"><img src="https://img.shields.io/badge/Sponsor-Open%20Collective-3385FF?logo=opencollective&logoColor=white" alt="Sponsor on Open Collective"></a>
-  <a href="https://ko-fi.com/ufffssearch"><img src="https://img.shields.io/badge/Tip-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white" alt="Tip on Ko-fi"></a>
+  <a href="https://ko-fi.com/uffssearch"><img src="https://img.shields.io/badge/Tip-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white" alt="Tip on Ko-fi"></a>
 </p>
 
 **A benchmark-driven NTFS search engine for Windows.** UFFS reads the Master File Table directly, builds a compact persisted index, and keeps large NTFS estates searchable through a background daemon.
@@ -76,6 +76,8 @@ Every clip runs the **real binary** against real NTFS data with unedited timings
 ---
 
 ## Benchmark snapshot (v0.5.120 · June 2026)
+
+📖 **The story behind these numbers:** [*I benchmarked my Rust file search engine against Everything until I ran out of excuses*](https://skyllc-ai.github.io/blog/benchmarking-against-everything/) — the methodology I had to fix first, the bulk-export workload Everything's CLI can't run, and the two regressions published anyway.
 
 Measured 2026-06-11 on AMD Ryzen 9 3900XT, 64 GB RAM, Windows 11 Pro 24H2 — cross-tool on four NTFS volumes (C/D/F/G, 12.8 M records, the Everything-RAM-budget-negotiated set), full-scan on all seven (25.9 M records; that workload is UFFS-only, so the negotiation doesn't constrain it). Raw data: [`cross-tool-summary.csv`](docs/benchmarks/raw/2026-06-v0.5.120_cross-tool-summary.csv) · [`full-scan-all-drives.csv`](docs/benchmarks/raw/2026-06-v0.5.120_full-scan-all-drives.csv). Publication-grade report: [**docs/benchmarks/**](docs/benchmarks/).
 
@@ -161,9 +163,36 @@ cargo build --release
 
 ---
 
+## Updating
+
+UFFS updates itself — one command keeps the whole install current:
+
+```bash
+uffs --update          # update to the latest release if needed (no-op if current)
+uffs --update check    # is a new release available? (non-mutating)
+```
+
+It downloads, SHA-256-verifies, and atomically swaps every core binary
+(journaled, with auto-rollback). It reconciles **any** starting state to a
+complete latest install — behind, version-skewed, or even missing a binary — and
+does nothing when you're already current.
+
+```bash
+uffs --update doctor                    # health-check the install
+uffs --update repair                    # diagnose + self-heal
+uffs --update apply --version v0.6.5    # pin / roll back to a specific release
+```
+
+> **WinGet installs** update with `winget upgrade SkyLLC.UFFS` instead — UFFS
+> defers to WinGet for WinGet-managed installs.
+
+> 📖 **[Full update guide](docs/user-manual/updating.md)** — every action, version pinning/rollback, the health check, and edge cases.
+
+---
+
 ## Quick Start
 
-> **Windows elevation — three ways.** Reading the live MFT needs Administrator. Easiest: install the **Access Broker** once (`uffs-broker --install`, from an elevated shell) and every later non-elevated `uffs` search runs with **no UAC prompt**, surviving reboots. Otherwise, run from an **elevated** terminal, or let the first search offer a one-time `uffs daemon start --elevate` (a single UAC prompt). macOS/Linux offline analysis needs no elevation.
+> **Windows elevation — three ways.** Reading the live MFT needs Administrator. Easiest: install the **Access Broker** once (`uffs-broker --install`, from an elevated shell) and every later non-elevated `uffs` search runs with **no UAC prompt**, surviving reboots. Otherwise, run from an **elevated** terminal, or let the first search offer a one-time `uffs --daemon start --elevate` (a single UAC prompt). macOS/Linux offline analysis needs no elevation.
 
 ```bash
 # One-time (elevated): install the Access Broker → no UAC on any later search
@@ -182,15 +211,15 @@ uffs "*.log" --min-size 100MB --newer 7d --files-only
 # macOS/Linux: search offline MFT captures
 uffs "*.txt" --data-dir ~/uffs_data
 
-# Daemon management
-uffs daemon status
-uffs daemon restart
+# Daemon management ( `--<command>` = management; bare words are searches )
+uffs --daemon status
+uffs --daemon restart
 
 # Memory tiering — operator-driven controls (Phase 8)
-uffs daemon status_drives                 # per-drive tier + telemetry table
-uffs daemon hibernate                     # demote every drive to Cold (free RAM)
-uffs daemon preload C --pin-minutes 60    # pin a hot drive in RAM
-uffs daemon forget C --force              # evict + delete on-disk caches
+uffs --daemon status_drives               # per-drive tier + telemetry table
+uffs --daemon hibernate                   # demote every drive to Cold (free RAM)
+uffs --daemon preload C --pin-minutes 60  # pin a hot drive in RAM
+uffs --daemon forget C --force            # evict + delete on-disk caches
 ```
 
 > 📖 **[Installation](docs/user-manual/installation.md)** · **[5-minute tutorial](docs/user-manual/getting-started.md)** · **[CLI reference](docs/user-manual/cli-overview.md)** · **[40+ filters](docs/user-manual/filters.md)**
@@ -215,7 +244,7 @@ Operator commands let you tune this manually for known workload shapes — `prel
 ## Support UFFS
 
 <p align="center">
-  <a href="https://ko-fi.com/ufffssearch"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Tip on Ko-fi" height="38"></a>
+  <a href="https://ko-fi.com/uffssearch"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Tip on Ko-fi" height="38"></a>
   &nbsp;&nbsp;
   <a href="https://opencollective.com/uffs-search"><img src="https://opencollective.com/uffs-search/donate/button@2x.png?color=blue" alt="Donate on Open Collective" height="38"></a>
 </p>
@@ -228,11 +257,11 @@ UFFS is free, MPL-2.0, and stays that way — **no telemetry, no accounts, no pa
 
 | Supporter | Where | Best for |
 |---|---|---|
-| 💛 **One-time tip** | [Ko-fi](https://ko-fi.com/ufffssearch) | "this saved me an afternoon" |
+| 💛 **One-time tip** | [Ko-fi](https://ko-fi.com/uffssearch) | "this saved me an afternoon" |
 | 🏢 **Companies** (invoice / receipt via Sky, LLC) | [Open Collective](https://opencollective.com/uffs-search) | expensing it as a tool |
 | 🔁 **Recurring (individuals)** | GitHub Sponsors — *enrolling* | following the roadmap |
 
-The **"Sponsor"** button at the top of this repo lists every live channel. For custom arrangements, enterprise pilots, or partnership inquiries: [`uffs@nios.net`](mailto:uffs@nios.net).
+The **"Sponsor"** button at the top of this repo lists every live channel. For custom arrangements, enterprise pilots, or partnership inquiries: [`partnerships@uffs.io`](mailto:partnerships@uffs.io).
 
 ---
 
@@ -308,6 +337,7 @@ The older C++ implementation remains useful as a parity and regression baseline,
 | Topic | Link |
 |-------|------|
 | Installation | [docs/user-manual/installation.md](docs/user-manual/installation.md) |
+| Updating (self-update) | [docs/user-manual/updating.md](docs/user-manual/updating.md) |
 | Getting started (5 min) | [docs/user-manual/getting-started.md](docs/user-manual/getting-started.md) |
 | CLI overview & examples | [docs/user-manual/cli-overview.md](docs/user-manual/cli-overview.md) |
 | 40+ search filters | [docs/user-manual/filters.md](docs/user-manual/filters.md) |
@@ -344,7 +374,7 @@ See [LICENSES/MPL-2.0.txt](LICENSES/MPL-2.0.txt) for the full license text and [
 
 UFFS is developed and maintained by **[Sky, LLC](https://github.com/skyllc-ai)** — a systems-engineering shop focused on high-performance Rust tooling.
 
-- **Commercial UFFS frontends** (polished GUI / premium TUI) are in development on top of this open-source engine. For waitlist or partnership inquiries: [`uffs@nios.net`](mailto:uffs@nios.net) or open a [discussion](https://github.com/skyllc-ai/UltraFastFileSearch/discussions) with the `commercial-interest` label.
+- **Commercial UFFS frontends** (polished GUI / premium TUI) are in development on top of this open-source engine. For waitlist or partnership inquiries: [`partnerships@uffs.io`](mailto:partnerships@uffs.io) or open a [discussion](https://github.com/skyllc-ai/UltraFastFileSearch/discussions) with the `commercial-interest` label.
 - **Hiring / collaboration.** This repository is also the public engineering portfolio of its maintainer; see the [Sky, LLC org page](https://github.com/skyllc-ai) for the full pitch and contact details.
 - **Sponsorship.** UFFS is free and MPL-2.0 forever; sponsorships fund Windows code-signing, benchmark hardware, and release engineering — see [**Support UFFS**](#support-uffs) for the channels and what they fund.
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! `uffs mcp <action>` — thin shim that delegates to the `uffsmcp` binary.
+//! `uffs --mcp <action>` — thin shim that delegates to the `uffsmcp` binary.
 //!
 //! The actual MCP server logic lives in the `uffs-mcp` crate and its
 //! standalone `uffsmcp` binary.  This module simply exec's / spawns
@@ -11,7 +11,7 @@ use anyhow::{Context as _, Result};
 
 /// Execute an MCP management action by forwarding raw args to `uffsmcp`.
 ///
-/// This is the passthrough path — raw args after `uffs mcp` are forwarded
+/// This is the passthrough path — raw args after `uffs --mcp` are forwarded
 /// directly to the `uffsmcp` binary without any parsing.
 ///
 /// # Errors

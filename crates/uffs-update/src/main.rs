@@ -4,7 +4,7 @@
 //! `uffs-update` — the self-update **acquire** helper binary.
 //!
 //! A separate binary from `uffs` so the HTTP/TLS stack (reqwest + rustls)
-//! never bloats the lean CLI. `uffs update` spawns this for the
+//! never bloats the lean CLI. `uffs --update` spawns this for the
 //! download/verify step only; detect + snapshot stay in `uffs-cli`.
 //!
 //! ```text
@@ -31,14 +31,32 @@ use anyhow::{Result, bail};
 
 use crate::acquire::AcquirePlan;
 
-/// Entry point. Returns a non-zero exit on any failure.
-fn main() -> Result<()> {
+/// Entry point. Prints a clean `Error: …` chain (no Rust backtrace) and exits
+/// non-zero on any failure — a usage slip like `uffs-update --doctor` should
+/// read like advice, not a crash. Mirrors `uffs`'s `main` error rendering.
+#[expect(clippy::print_stderr, reason = "top-level CLI error output")]
+fn main() {
+    if let Err(err) = run() {
+        for (idx, cause) in err.chain().enumerate() {
+            if idx == 0 {
+                eprintln!("Error: {cause}");
+            } else {
+                eprintln!("  Caused by: {cause}");
+            }
+        }
+        std::process::exit(1);
+    }
+}
+
+/// Dispatch the subcommand. Returns a non-zero exit (via [`main`]) on failure.
+fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("acquire") => run_acquire(args.get(1..).unwrap_or_default()),
         Some("apply") => run_apply(args.get(1..).unwrap_or_default()),
         Some("recover") => run_recover(args.get(1..).unwrap_or_default()),
         Some("doctor") => run_doctor(args.get(1..).unwrap_or_default()),
+        Some("check") => run_check(args.get(1..).unwrap_or_default()),
         Some("--version" | "-V") => {
             print_version();
             Ok(())
@@ -48,7 +66,9 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(other) => {
-            bail!("unknown subcommand `{other}` (try `acquire` / `apply` / `recover` / `doctor`)")
+            bail!(
+                "unknown subcommand `{other}` (try `acquire` / `apply` / `recover` / `doctor` / `check`)"
+            )
         }
     }
 }
@@ -177,12 +197,28 @@ fn run_doctor(args: &[String]) -> Result<()> {
         tag: flag(args, "--version"),
         repair: has_flag(args, "--repair"),
         offline: has_flag(args, "--offline"),
+        verbose: has_flag(args, "--verbose") || has_flag(args, "-v"),
     };
     if doctor::run(&opts) {
         Ok(())
     } else {
         bail!("doctor found one or more failures")
     }
+}
+
+/// Resolve the latest (or `--version`-requested) release tag and print
+/// `latest=<tag>` for the CLI to compare against the installed version.
+/// Non-mutating, no download — a single release-metadata fetch so the
+/// ordinary-user `uffs --update` can short-circuit when already current.
+#[expect(
+    clippy::print_stdout,
+    reason = "machine-readable line consumed by the CLI"
+)]
+fn run_check(args: &[String]) -> Result<()> {
+    let repo = flag(args, "--repo").unwrap_or_else(|| DEFAULT_REPO.to_owned());
+    let release = github::fetch_release(&repo, flag(args, "--version").as_deref())?;
+    println!("latest={}", release.tag_name);
+    Ok(())
 }
 
 /// Print the helper version.
@@ -251,14 +287,18 @@ fn required(value: Option<String>, what: &str) -> Result<String> {
 #[expect(clippy::print_stdout, reason = "intentional help output")]
 fn print_usage() {
     println!(
-        "uffs-update — self-update acquire + apply + recover + doctor helper\n\n\
+        "uffs-update — self-update acquire + apply + recover + doctor + check helper\n\n\
          USAGE:\n\
          \x20 uffs-update acquire --snapshot <path> --stage <dir> \\\n\
          \x20                     [--repo <owner/name>] [--version <tag>] [--sums <asset>]\n\
          \x20 uffs-update apply   --snapshot <path> --stage <dir>\n\
          \x20 uffs-update recover --journal <path>\n\
          \x20 uffs-update doctor  [--snapshot <path>] [--stage <dir>] \\\n\
-         \x20                     [--repo <owner/name>] [--version <tag>] [--repair] [--offline]\n\n\
+         \x20                     [--repo <owner/name>] [--version <tag>] [--repair]\n\
+         \x20                     [--offline] [--verbose]\n\
+         \x20 uffs-update check   [--repo <owner/name>] [--version <tag>]\n\n\
+         check:   prints `latest=<tag>` (the latest release) for the CLI to\n\
+         compare against the installed version. Non-mutating, no download.\n\
          acquire: per the snapshot's installed subset, downloads each binary\n\
          as an individual release asset + SHA256SUMS, SHA-256-verifies each,\n\
          and leaves them staged. It does not replace anything (apply phase).\n\

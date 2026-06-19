@@ -81,8 +81,10 @@ mod tests {
     #[test]
     fn help_flag_prints_examples() {
         assert_success("help_flag", &["--help"], &[
-            "Search is the default action",
+            // Search-first grammar note + an example + a `--command`.
+            "Search-first",
             "uffs '*.txt'",
+            "--update",
         ]);
     }
 
@@ -91,6 +93,89 @@ mod tests {
         assert_success("version_flag", &["--version"], &[
             "uffs",
             env!("CARGO_PKG_VERSION"),
+        ]);
+    }
+
+    // ── The two reserved single-dash exceptions (`-h` / `-V`) ────────
+    //
+    // Per docs/architecture/cli-grammar.md §3.4, `-h` and `-V` are the
+    // ONLY single-dash tokens that are not search patterns. Pin both that
+    // they work AND that no other single-dash token is treated as help.
+
+    #[test]
+    fn short_help_flag_prints_help() {
+        assert_success("short_help", &["-h"], &[
+            "uffs - Ultra Fast File Search",
+            "USAGE:",
+        ]);
+    }
+
+    #[test]
+    fn short_version_flag_prints_binary_version() {
+        assert_success("short_version", &["-V"], &[
+            "uffs",
+            env!("CARGO_PKG_VERSION"),
+        ]);
+    }
+
+    #[test]
+    fn other_single_dash_token_is_a_pattern_not_help() {
+        // `-x` must NOT print help/version — it is a search pattern, so with
+        // no daemon it fails trying to connect (it never exits 0 with help).
+        assert_failure("single_dash_pattern", &["-x"], &["daemon"]);
+    }
+
+    // ── Command-typo hint (cli-grammar.md §6) ────────────────────────
+    //
+    // A `--`-flag the shared parser rejects that is a near-miss of a
+    // management command surfaces a "did you mean" hint up front — without
+    // the daemon (the CLI suggests over its own command set). Deterministic.
+
+    #[test]
+    fn flag_typo_near_a_command_suggests_it() {
+        assert_failure("flag_typo_command", &["--updat"], &[
+            "not a known search flag",
+            "Did you mean the command",
+            "uffs --update",
+        ]);
+    }
+
+    #[test]
+    fn unrelated_unknown_flag_gets_no_command_hint() {
+        // `--bogus` is not near any command, so it must NOT get a command
+        // hint — it falls through to search (here: a daemon-connect error,
+        // since there is no daemon in the test environment).
+        let output = run_cli("unrelated_unknown_flag", &["--bogus"]);
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !combined.contains("Did you mean the command"),
+            "`--bogus` must not produce a command suggestion: {combined}"
+        );
+    }
+
+    // ── `--update` action surface (cli-grammar.md §5) ────────────────
+    //
+    // Pin the full action set — incl. `recover` — so it can't silently
+    // drift from the design doc. Deterministic: no filesystem/network.
+
+    #[test]
+    fn update_help_lists_every_action_including_recover() {
+        assert_success("update_help", &["--update", "--help"], &[
+            "snapshot", "acquire", "apply", "doctor", "recover",
+        ]);
+    }
+
+    #[test]
+    fn update_rejects_unknown_action_and_lists_recover() {
+        // An unknown action errors with the accepted set, which must now
+        // include `recover` (the foreground self-heal action).
+        assert_failure("update_bogus_action", &["--update", "bogus"], &[
+            "unknown `--update` action",
+            "recover",
         ]);
     }
 
@@ -107,7 +192,7 @@ mod tests {
     fn stats_rejects_non_numeric_top() {
         assert_failure(
             "stats_invalid_top",
-            &["stats", "saved.parquet", "--top", "abc"],
+            &["--stats", "saved.parquet", "--top", "abc"],
             &["Bad --top"],
         );
     }

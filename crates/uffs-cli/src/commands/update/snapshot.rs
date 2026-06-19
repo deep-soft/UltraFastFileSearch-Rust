@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use super::model::DetectionReport;
-use super::procinfo;
+use super::{binaries, procinfo};
 
 /// Directory that holds update snapshots + staging
 /// (`<lifecycle_dir>/update`).
@@ -27,11 +27,14 @@ pub(crate) fn update_dir() -> PathBuf {
 /// # Errors
 ///
 /// Propagates any directory-create or file-write failure.
-pub(crate) fn write_snapshot(report: &DetectionReport) -> std::io::Result<PathBuf> {
+pub(crate) fn write_snapshot(
+    report: &DetectionReport,
+    to_version: Option<&str>,
+) -> std::io::Result<PathBuf> {
     let dir = update_dir();
     std::fs::create_dir_all(&dir)?;
     let captured_unix = unix_now();
-    let value = build_snapshot_value(report, &daemon_drive_state(), captured_unix);
+    let value = build_snapshot_value(report, &daemon_drive_state(), captured_unix, to_version);
     let path = dir.join(format!("snapshot-{captured_unix}.json"));
     let body = serde_json::to_string_pretty(&value)
         .unwrap_or_else(|_| "{\"schema\":2,\"error\":\"serialize\"}".to_owned());
@@ -74,20 +77,37 @@ fn build_snapshot_value(
     report: &DetectionReport,
     daemon_drives: &[Value],
     captured_unix: u64,
+    to_version: Option<&str>,
 ) -> Value {
+    // An apply snapshot (to_version set) reconciles each unmanaged root to the
+    // full core set: a missing core binary is appended with a null version so
+    // `acquire` downloads it and `apply` *adds* it. A doctor/non-apply snapshot
+    // (to_version = None) reports the install exactly as found.
+    let complete = to_version.is_some();
     let targets: Vec<Value> = report
         .roots
         .iter()
         .map(|root| {
+            let mut bins: Vec<Value> = root
+                .binaries
+                .iter()
+                .map(|binary| {
+                    json!({ "name": binary.name, "on_disk_version": binary.version })
+                })
+                .collect();
+            if complete && root.channel.label() == "unmanaged" {
+                for stem in binaries::KNOWN_BINARIES {
+                    if !root.binaries.iter().any(|binary| binary.name == stem) {
+                        bins.push(json!({ "name": stem, "on_disk_version": Value::Null }));
+                    }
+                }
+            }
             json!({
                 "root": root.dir.display().to_string(),
                 "channel": root.channel.label(),
                 "scope": root.scope.label(),
                 "anchored_by": root.anchored_by.iter().map(|anchor| anchor.label()).collect::<Vec<_>>(),
-                "binaries": root.binaries.iter().map(|binary| json!({
-                    "name": binary.name,
-                    "on_disk_version": binary.version,
-                })).collect::<Vec<_>>(),
+                "binaries": bins,
             })
         })
         .collect();
@@ -109,6 +129,9 @@ fn build_snapshot_value(
     json!({
         "schema": 2,
         "captured_unix": captured_unix,
+        // The release the apply is moving *to* (so the journal records it
+        // and `Applied + committed → <tag>` is faithful, not "unknown").
+        "to_version": to_version,
         "targets": targets,
         "running": running,
         "daemon": { "drives": daemon_drives },
@@ -149,7 +172,8 @@ mod tests {
     #[test]
     fn snapshot_shape_is_stable() {
         let drives = vec![json!({"letter": "C", "tier": "warm"})];
-        let value = build_snapshot_value(&sample_report(), &drives, 1_700_000_000_u64);
+        let value =
+            build_snapshot_value(&sample_report(), &drives, 1_700_000_000_u64, Some("0.6.3"));
         // `pointer` avoids panicking index ops; `json!(typed)` pins the
         // expected literal type (no default numeric fallback).
         let probe = |path: &str, expected: serde_json::Value| {
@@ -157,9 +181,15 @@ mod tests {
         };
         probe("/schema", json!(2_u64));
         probe("/captured_unix", json!(1_700_000_000_u64));
+        probe("/to_version", json!("0.6.3"));
         probe("/targets/0/channel", json!("unmanaged"));
         probe("/targets/0/anchored_by/1", json!("daemon"));
         probe("/targets/0/binaries/0/on_disk_version", json!("0.6.2"));
+        // Apply snapshot (to_version set) → the unmanaged root is completed to
+        // the full core set: missing core binaries are appended after the
+        // present ones, each with a null on-disk version (= "add it").
+        probe("/targets/0/binaries/1/name", json!("uffs"));
+        probe("/targets/0/binaries/1/on_disk_version", json!(null));
         probe("/running/0/component", json!("daemon"));
         probe("/running/0/pid", json!(4242_u32));
         probe("/running/0/command_line", json!("uffsd --no-retire"));

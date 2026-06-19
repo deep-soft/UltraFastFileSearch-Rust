@@ -44,12 +44,17 @@ pub(super) fn find_helper() -> Result<PathBuf> {
 
 /// Spawn the acquire helper against a written snapshot, for an optional
 /// target version tag. The helper reads the snapshot to know the
-/// installed subset and downloads each binary individually.
+/// installed subset and downloads each binary individually. `verbose`
+/// forwards `--verbose` so the helper can show per-binary detail.
 ///
 /// # Errors
 ///
 /// Fails if the helper cannot be located or it exits non-zero.
-pub(crate) fn spawn(snapshot_path: &std::path::Path, version: Option<&str>) -> Result<()> {
+pub(crate) fn spawn(
+    snapshot_path: &std::path::Path,
+    version: Option<&str>,
+    verbose: bool,
+) -> Result<()> {
     let helper = find_helper()?;
     let stage = snapshot::update_dir().join("stage");
     let mut command = Command::new(&helper);
@@ -61,6 +66,9 @@ pub(crate) fn spawn(snapshot_path: &std::path::Path, version: Option<&str>) -> R
     if let Some(tag) = version {
         command.args(["--version", tag]);
     }
+    if verbose {
+        command.arg("--verbose");
+    }
     let status = command
         .status()
         .with_context(|| format!("spawning {}", helper.display()))?;
@@ -68,4 +76,24 @@ pub(crate) fn spawn(snapshot_path: &std::path::Path, version: Option<&str>) -> R
         bail!("uffs-update acquire failed (exit {:?})", status.code());
     }
     Ok(())
+}
+
+/// Ask the helper for the latest release tag (`vX.Y.Z`) — a single
+/// non-mutating release-metadata fetch, no download. Returns `None` if the
+/// helper is missing or the lookup fails (e.g. offline); the caller then
+/// can't assert "already up to date" and falls back accordingly.
+pub(super) fn latest_version() -> Option<String> {
+    let helper = find_helper().ok()?;
+    let output = Command::new(&helper)
+        .args(["check", "--repo", DEFAULT_REPO])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("latest="))
+        .map(|tag| tag.trim().to_owned())
+        .filter(|tag| !tag.is_empty())
 }

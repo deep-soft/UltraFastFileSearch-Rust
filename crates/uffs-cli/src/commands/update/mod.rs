@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2025-2026 SKY, LLC.
 
-//! `uffs update` — self-update **Phase A: detect & capture** (design in
-//! `docs/dev/architecture/UFFS-Self-Update-Feasibility-and-Design.md` §5).
+//! `uffs --update [<action>]` — self-update (design in
+//! `docs/dev/architecture/UFFS-Self-Update-Feasibility-and-Design.md`; CLI
+//! grammar in `docs/architecture/cli-grammar.md`).
 //!
-//! This is the **detection slice only**: it discovers every install
-//! *root* from the live anchors (invoking CLI + running daemon / MCP /
-//! broker), enumerates the UFFS binaries in each, classifies the channel
-//! that placed them, validates each binary's on-disk version, and
-//! captures the running processes' launch recipes. It **mutates
-//! nothing** — stopping, replacing, and restoring land in later phases.
+//! **No action** is the ordinary-user command: update UFFS end-to-end. It runs
+//! Phase A (detect & capture) — discovering every install *root* from the live
+//! anchors (invoking CLI + running daemon / MCP / broker), enumerating each
+//! root's binaries + versions — then compares against the latest release; if a
+//! newer release is available (or the install is version-skewed) it
+//! acquires + applies (journaled, auto-rollback), otherwise it reports the
+//! install is current and touches nothing.
 //!
-//! Entry point: `run_update` (wired to `uffs update` in `main`).
+//! The actions expose the phases for inspection / scripting: `check` (is an
+//! update available? — non-mutating), `snapshot` (freeze the detected state),
+//! `acquire` (download + verify into staging), `apply` (the full mutating
+//! swap), `doctor` (health check), `recover` (finish an interrupted update).
+//!
+//! Entry point: `run_update` (dispatched from `--update` in `main`).
 
 mod acquire;
 mod apply;
@@ -26,41 +33,294 @@ mod snapshot;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use model::{Anchor, Channel, Component, DetectionReport, InstallRoot, RunningProcess, Scope};
 
-/// Run `uffs update`: detect (Phase A), optional snapshot (Phase B), and
-/// optional acquire (Phase C, via the `uffs-update` helper).
+/// Run `uffs --update [<action>]` — uniform `--<command> [action] [--options]`
+/// grammar (design: `docs/architecture/cli-grammar.md`). The action is the
+/// first positional token:
+///
+/// - *(none)* → **update end-to-end if one is needed** (the ordinary-user
+///   command): detect → compare to the latest release → acquire + apply, or
+///   report "already up to date" and touch nothing.
+/// - `check`    → is an update available? detect + compare (non-mutating).
+/// - `snapshot` → detect + freeze a snapshot (Phase B).
+/// - `acquire`  → + download + SHA-verify into staging (Phase C).
+/// - `apply`    → + the full mutating update (stop/swap/smoke/commit/restore).
+/// - `doctor`   → end-to-end health check (`--repair` / `--offline`).
+/// - `recover`  → finish/roll back an interrupted update in the foreground.
+///
+/// Options (`--version`, `--repair`, `--offline`) follow the action.
 pub(crate) fn run_update(args: &[String]) -> Result<()> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print_help();
         return Ok(());
     }
-    // `uffs update doctor [...]` — detect, freeze a snapshot, then hand off
-    // to the helper's end-to-end health check (which prints its own report).
-    if args.first().is_some_and(|arg| arg == "doctor") {
+
+    // The action is the first *positional* token (a leading flag or nothing
+    // means bare detect). Validate up front, before any detection/output.
+    let action = args
+        .first()
+        .map(String::as_str)
+        .filter(|tok| !tok.starts_with('-'));
+    if let Some(act) = action
+        && !matches!(
+            act,
+            "check" | "snapshot" | "acquire" | "apply" | "doctor" | "repair" | "recover" | "bins"
+        )
+    {
+        bail!(
+            "unknown `--update` action `{act}` — expected: check | snapshot | acquire | apply | doctor | repair | recover | bins"
+        );
+    }
+
+    // `-v` / `--verbose`: show the full per-binary + per-process breakdown
+    // (and forward verbosity to the spawned `uffs-update` helper). Default is
+    // a few plain-language lines for someone who just wants the gist.
+    let verbose = args.iter().any(|arg| arg == "-v" || arg == "--verbose");
+
+    // `bins` prints the canonical core binary stems (the single source of
+    // truth in `binaries::KNOWN_BINARIES`) for tooling — e.g. the `just`
+    // deploy recipes read the set from here instead of hardcoding it.
+    // Pure + non-mutating: no detection needed.
+    if action == Some("bins") {
+        binaries::print_core_stems();
+        return Ok(());
+    }
+
+    // `recover` finishes (or rolls back) an interrupted update in the
+    // foreground — the on-demand twin of the startup best-effort self-heal.
+    if action == Some("recover") {
+        return self_heal::run_foreground();
+    }
+
+    // `repair` is the first-class verb for `doctor --repair`; a bare `--repair`
+    // flag (with no action) means the same. Both route to the doctor health
+    // check with self-heal on — so the user never has to remember whether
+    // repair is a verb or a flag.
+    let repair = action == Some("repair") || args.iter().any(|arg| arg == "--repair");
+
+    // `doctor` (diagnose) and `repair` (diagnose + self-heal) share one flow:
+    // detect → freeze a snapshot → hand off to the helper's health check
+    // (which prints its own report). A health-check snapshot has no target.
+    if action == Some("doctor") || repair {
         let report = detect();
-        let snapshot_path = snapshot::write_snapshot(&report)?;
-        return doctor::spawn(&snapshot_path, args);
+        let snapshot_path = snapshot::write_snapshot(&report, None)?;
+        let mut forwarded: Vec<String> = args.to_vec();
+        if repair && !forwarded.iter().any(|arg| arg == "--repair") {
+            forwarded.push("--repair".to_owned());
+        }
+        // Helper health check (+ local self-heal when --repair): journal,
+        // backups, services, broker, release reach. Captured (not `?`-propagated)
+        // so a reported failure doesn't pre-empt the update-flow fix below.
+        let health = doctor::spawn(&snapshot_path, &forwarded);
+
+        // Update-class issues — out-of-date, version-skewed, or **missing a core
+        // binary** — are fixed by the update flow itself, which already owns the
+        // core set. So doctor *redirects* there rather than teaching the
+        // health-check helper that set. `--offline` skips this (assess needs the
+        // release feed). With `--repair` we run it; interactively we ask; piped
+        // we just point.
+        if !args.iter().any(|arg| arg == "--offline")
+            && matches!(assess(&report), UpdatePlan::Available { .. })
+        {
+            if repair || prompt_yes_no("Run `uffs --update` now to fix this?") {
+                return run_automatic_update(&report, verbose);
+            }
+            print_update_redirect_hint();
+        }
+        return health;
     }
+
     let report = detect();
-    report::print_human(&report);
-    if args.iter().any(|arg| arg == "--snapshot") {
-        write_and_report_snapshot(&report);
+    report::print_human(&report, verbose);
+    if verbose {
+        print_phase_a_footer();
     }
-    print_phase_a_footer();
-    // `--apply` runs the full mutating update (acquire → apply); `--acquire`
-    // only stages + verifies. `--apply` implies the acquire step.
-    let do_apply = args.iter().any(|arg| arg == "--apply");
-    if do_apply || args.iter().any(|arg| arg == "--acquire") {
-        // Both read a snapshot to know the installed subset.
-        let snapshot_path = snapshot::write_snapshot(&report)?;
-        acquire::spawn(&snapshot_path, flag_value(args, "--version").as_deref())?;
-        if do_apply {
-            apply::spawn(&snapshot_path)?;
+
+    match action {
+        // Bare `uffs --update` — the ordinary-user command: update end to end,
+        // but only if one is actually needed (never stop/restart services when
+        // already current).
+        None => run_automatic_update(&report, verbose),
+        // `check` — non-mutating: is an update available?
+        Some("check") => {
+            report_assessment(&assess(&report));
+            Ok(())
+        }
+        Some("snapshot") => {
+            write_and_report_snapshot(&report);
+            Ok(())
+        }
+        // `acquire` only stages + verifies; `apply` implies acquire then swaps.
+        Some("acquire" | "apply") => {
+            // The target this snapshot is for: an explicit `--version`, else
+            // the resolved latest — so the journal stamps `to_version`
+            // faithfully instead of "unknown".
+            let target = flag_value(args, "--version").or_else(acquire::latest_version);
+            let snapshot_path = snapshot::write_snapshot(&report, target.as_deref())?;
+            acquire::spawn(&snapshot_path, target.as_deref(), verbose)?;
+            if action == Some("apply") {
+                apply::spawn(&snapshot_path, verbose)?;
+            }
+            Ok(())
+        }
+        // `doctor`/`recover` returned earlier; any other token was rejected.
+        _ => Ok(()),
+    }
+}
+
+/// Whether an update is warranted, and the target tag.
+enum UpdatePlan {
+    /// Installed matches the latest release and there is no version skew.
+    UpToDate {
+        /// The latest release tag (e.g. `v0.6.5`).
+        latest: String,
+    },
+    /// An update is available (a newer release, or a skewed install to
+    /// realign).
+    Available {
+        /// The latest release tag to move to.
+        latest: String,
+    },
+    /// The release feed could not be reached (offline) — cannot decide.
+    Offline,
+}
+
+/// Compare the detected install against the latest release (one non-mutating
+/// metadata fetch via the helper) to decide whether an update is warranted.
+fn assess(report: &DetectionReport) -> UpdatePlan {
+    let installed = report::distinct_versions(report);
+    let skewed = installed.len() > 1;
+    // A core binary missing from a real install root makes it *incomplete* —
+    // an update reconciles the full core set back into place.
+    let incomplete = has_missing_core(report);
+    let Some(latest) = acquire::latest_version() else {
+        return UpdatePlan::Offline;
+    };
+    let newer = match installed.as_slice() {
+        // A single clean version: update only if the release is different.
+        [only] => normalize_tag(&latest) != *only,
+        // Zero or mixed versions → an update realigns the install.
+        _ => true,
+    };
+    if skewed || newer || incomplete {
+        UpdatePlan::Available { latest }
+    } else {
+        UpdatePlan::UpToDate { latest }
+    }
+}
+
+/// True when any **unmanaged** install root is missing a core binary — i.e.
+/// the install is incomplete relative to the canonical set
+/// (`binaries::KNOWN_BINARIES`, the single source of truth). `WinGet` roots are
+/// delegated to `winget upgrade`, so they are not reconciled here.
+fn has_missing_core(report: &DetectionReport) -> bool {
+    report
+        .roots
+        .iter()
+        .filter(|root| root.channel.label() == "unmanaged")
+        .any(|root| {
+            binaries::KNOWN_BINARIES
+                .iter()
+                .any(|stem| !root.binaries.iter().any(|bin| bin.name == *stem))
+        })
+}
+
+/// Point the user at the update flow — the fix for an out-of-date, skewed, or
+/// incomplete install (doctor detects; `uffs --update` repairs).
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn print_update_redirect_hint() {
+    println!(
+        "\n\u{2192} Run `uffs --update` to bring the install up to date and complete the core set."
+    );
+}
+
+/// Ask a yes/no question on an interactive terminal. Returns `false` **without
+/// prompting** when stdin is not a TTY (scripts / pipes / CI), so callers fall
+/// back to a printed hint instead of blocking on a read that can't be answered.
+#[expect(clippy::print_stdout, reason = "interactive CLI prompt")]
+fn prompt_yes_no(question: &str) -> bool {
+    use std::io::{IsTerminal as _, Write as _};
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    print!("\n{question} [y/N] ");
+    if std::io::stdout().flush().is_err() {
+        return false;
+    }
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Run the full end-to-end update when one is needed; otherwise report the
+/// install is current. Journaled + auto-rollback (delegated to `apply`).
+fn run_automatic_update(report: &DetectionReport, verbose: bool) -> Result<()> {
+    match assess(report) {
+        UpdatePlan::UpToDate { latest } => {
+            print_already_current(&latest);
+            Ok(())
+        }
+        UpdatePlan::Offline => {
+            print_offline_notice();
+            Ok(())
+        }
+        UpdatePlan::Available { latest } => {
+            print_updating(&latest);
+            let snapshot_path = snapshot::write_snapshot(report, Some(&latest))?;
+            acquire::spawn(&snapshot_path, None, verbose)?;
+            apply::spawn(&snapshot_path, verbose)?;
+            print_updated(&latest);
+            Ok(())
         }
     }
-    Ok(())
+}
+
+/// Print the verdict for the non-mutating `uffs --update check`.
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn report_assessment(plan: &UpdatePlan) {
+    match plan {
+        UpdatePlan::UpToDate { latest } => println!("\n\u{2713} Up to date ({latest})."),
+        UpdatePlan::Offline => print_offline_notice(),
+        UpdatePlan::Available { latest } => {
+            println!("\n\u{2b06} Update available: {latest} — run `uffs --update` to install.");
+        }
+    }
+}
+
+/// Strip a leading `v` from a release tag so `v0.6.5` compares to `0.6.5`.
+fn normalize_tag(tag: &str) -> &str {
+    tag.strip_prefix('v').unwrap_or(tag)
+}
+
+/// "Already up to date" (bare update, nothing to do).
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn print_already_current(latest: &str) {
+    println!("\n\u{2713} UFFS is already up to date ({latest}).");
+}
+
+/// "Updating …" banner before the mutating flow.
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn print_updating(latest: &str) {
+    println!("\nUpdating UFFS \u{2192} {latest} …");
+}
+
+/// "Updated" confirmation after a successful apply.
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn print_updated(latest: &str) {
+    println!("\n\u{2713} UFFS updated to {latest}.");
+}
+
+/// Couldn't reach the release feed — can't download, so can't update.
+#[expect(clippy::print_stdout, reason = "CLI user-facing output")]
+fn print_offline_notice() {
+    println!(
+        "\nCouldn't check for updates (offline?). Reconnect and re-run, \
+         or `uffs --update apply` to force."
+    );
 }
 
 /// Phase H self-heal entry: spawn `uffs-update recover` if a live update
@@ -81,7 +341,7 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 /// Write a Phase-B snapshot and report where it landed.
 #[expect(clippy::print_stdout, reason = "CLI user-facing output")]
 fn write_and_report_snapshot(report: &DetectionReport) {
-    match snapshot::write_snapshot(report) {
+    match snapshot::write_snapshot(report, None) {
         Ok(path) => println!("\nSnapshot written: {}", path.display()),
         Err(err) => {
             #[expect(clippy::print_stderr, reason = "CLI user-facing error")]
@@ -226,30 +486,54 @@ fn capture_broker(roots: &mut Vec<InstallRoot>, running: &mut Vec<RunningProcess
     }
 }
 
-/// Print the `uffs update` help text.
+/// Print the `uffs --update` help text.
 #[expect(clippy::print_stdout, reason = "intentional help output")]
 fn print_help() {
     println!(
-        "uffs update — self-update\n\n\
+        "uffs --update — update UFFS to the latest release\n\n\
          USAGE:\n\
-         \x20 uffs update [--snapshot] [--acquire | --apply] [--version <tag>]\n\
-         \x20 uffs update doctor [--repair] [--offline] [--version <tag>]\n\n\
-         Discovers where UFFS is installed (from the running CLI, daemon,\n\
-         MCP gateway, and broker service), lists binaries + versions per\n\
-         location, and shows the running processes' launch recipes.\n\n\
-         FLAGS:\n\
-         \x20 --snapshot          Persist the detection + live daemon state to JSON.\n\
-         \x20 --acquire           Download + SHA-256-verify the release into staging\n\
-         \x20                     (via the uffs-update helper). Does NOT replace.\n\
-         \x20 --apply             Run the FULL mutating update: acquire, then stop\n\
-         \x20                     services, atomically swap + smoke-test, commit,\n\
-         \x20                     and restart. Journaled + auto-rollback on failure.\n\
-         \x20 --version <tag>     Acquire/apply a specific release tag (default: latest).\n\n\
-         SUBCOMMANDS:\n\
-         \x20 doctor              End-to-end health check of the update flow\n\
-         \x20                     (versions, dirs, journal, backups, services,\n\
-         \x20                     broker pipe, release reachability). `--repair`\n\
-         \x20                     self-heals; `--offline` skips network checks.\n"
+         \x20 uffs --update [<action>] [--options]\n\n\
+         With no action, updates UFFS end-to-end: if a newer release is\n\
+         available (or the install is version-skewed) it downloads, verifies,\n\
+         and swaps every binary in place (journaled + auto-rollback); if you\n\
+         are already current it does nothing. The actions below expose the\n\
+         individual phases for inspection or scripting.\n\n\
+         ACTIONS:\n\
+         \x20 (none)              Update end-to-end (the default) — only if one\n\
+         \x20                     is needed; never touches services when current.\n\
+         \x20 check               Is an update available? Detect + compare to the\n\
+         \x20                     latest release. Non-mutating.\n\
+         \x20 snapshot            Detect + persist the state to JSON.\n\
+         \x20 acquire             + download + SHA-256-verify the release into\n\
+         \x20                     staging (via the uffs-update helper). No replace.\n\
+         \x20 apply               + the FULL mutating update: stop services,\n\
+         \x20                     atomically swap + smoke-test, commit, restart.\n\
+         \x20                     Journaled + auto-rollback on failure.\n\
+         \x20 doctor              End-to-end health check (versions, dirs, journal,\n\
+         \x20                     backups, services, broker pipe, release reach). If\n\
+         \x20                     out of date / skewed / missing a core binary, it\n\
+         \x20                     points to `uffs --update` (asks first on a TTY).\n\
+         \x20 repair              Diagnose + self-heal (= doctor --repair): resume/\n\
+         \x20                     roll back an interrupted update, sweep stale\n\
+         \x20                     backups, restart stopped services — and run the\n\
+         \x20                     update flow if the install is out of date.\n\
+         \x20 recover             Finish or roll back an interrupted update now\n\
+         \x20                     (foreground; the on-demand self-heal).\n\
+         \x20 bins                Print the core binary stems (one per line) —\n\
+         \x20                     the canonical set, for scripts/tooling.\n\n\
+         OPTIONS:\n\
+         \x20 -v, --verbose       Show the full breakdown — per-binary versions,\n\
+         \x20                     PIDs, launch commands, every doctor check.\n\
+         \x20 --version <tag>     Acquire/apply a specific release tag (default: latest).\n\
+         \x20 --repair            (doctor) self-heal what can be fixed (or use the\n\
+         \x20                     `repair` action above).\n\
+         \x20 --offline           (doctor) skip the network checks.\n\n\
+         EXAMPLES:\n\
+         \x20 uffs --update                 update now (if needed)\n\
+         \x20 uffs --update check           is a new release available?\n\
+         \x20 uffs --update doctor          health-check the update flow\n\
+         \x20 uffs --update repair          self-heal the update flow\n\
+         \x20 uffs --update apply --version v0.6.3   pin a specific release\n"
     );
 }
 
@@ -265,7 +549,17 @@ fn print_phase_a_footer() {
 #[cfg(test)]
 mod tests {
     use super::model::{Anchor, InstallRoot};
-    use super::upsert_root;
+    use super::{normalize_tag, upsert_root};
+
+    #[test]
+    fn normalize_tag_strips_leading_v_only() {
+        // `v0.6.5` (release tag) must compare equal to `0.6.5` (installed).
+        assert_eq!(normalize_tag("v0.6.5"), "0.6.5");
+        assert_eq!(normalize_tag("0.6.5"), "0.6.5");
+        // Only a *leading* v is stripped — nothing else is touched.
+        assert_eq!(normalize_tag("v1.2.3-rc.1"), "1.2.3-rc.1");
+        assert_eq!(normalize_tag(""), "");
+    }
 
     fn root_dirs(roots: &[InstallRoot]) -> Vec<String> {
         roots

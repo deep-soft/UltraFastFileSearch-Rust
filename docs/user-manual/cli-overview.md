@@ -5,7 +5,7 @@ NTFS Master File Tables directly and searches millions of files in
 milliseconds.
 
 **Search is the default action** — just type `uffs <pattern>`.  No
-subcommand required.
+command required; management lives under `--<command>` (§6).
 
 ![UFFS CLI: real searches, filters, and aggregations across millions of indexed files with measured latency](../../assets/demo/uffs-cli.gif)
 
@@ -22,11 +22,11 @@ subcommand required.
 
 ## 1  Search (Default Action)
 
-When no subcommand is specified, `uffs` performs a search.  The first
-positional argument is the pattern.
+When the first token is not a `--command`, `uffs` performs a search.  The
+first positional argument is the pattern.
 
 ```
-uffs [OPTIONS] <PATTERN>
+uffs <PATTERN> [OPTIONS]
 ```
 
 ### Pattern Syntax
@@ -83,7 +83,7 @@ uffs [OPTIONS] <PATTERN>
 
 ---
 
-## 3  Filters
+## 2  Filters
 
 All filters are detailed in the [Filters guide](filters.md).  Summary:
 
@@ -129,7 +129,7 @@ All filters are detailed in the [Filters guide](filters.md).  Summary:
 
 ---
 
-## 4  Sorting
+## 3  Sorting
 
 All 36+ sortable columns are detailed in the [Sorting guide](sorting.md).
 Summary:
@@ -147,7 +147,7 @@ See [Sorting §2](sorting.md) for the full list.
 
 ---
 
-## 5  Output Control
+## 4  Output Control
 
 All output options are detailed in the [Output Formats guide](output-formats.md).
 Summary:
@@ -165,10 +165,15 @@ Summary:
 
 ---
 
-## 6  Inline Aggregation Flags
+## 5  Inline Aggregation Flags
 
 These flags run server-side analytics alongside (or instead of) search
-results.  For the `uffs aggregate` subcommand, see §7 below.
+results.  For the `uffs --agg` command, see §6 below.
+
+> `--stats` and `--agg` are dual-use: as the **first token**
+> (`uffs --stats`, `uffs --agg <preset>`) they are commands; **after a
+> pattern** (`uffs '*.log' --stats size`) they are inline modifiers on a
+> search.  The first token decides — see [CLI Grammar](../architecture/cli-grammar.md).
 
 | Flag | Effect |
 |------|--------|
@@ -185,96 +190,85 @@ results.  For the `uffs aggregate` subcommand, see §7 below.
 
 ---
 
-## 7  Subcommands
+## 6  Commands
 
-### `uffs index`
+> Building/loading an index is **daemon-managed** — there is no standalone
+> `uffs index` command. Point the daemon at a live drive or a raw MFT with
+> `uffs --daemon start --data-dir <dir>` / `--mft-file <file>` (see
+> [Daemon](daemon.md)). For low-level NTFS volume/record inspection, use the
+> separate `uffs-mft` tool (`uffs-mft --help`).
 
-Build a Parquet index from one or more NTFS drives.
-
-```bash
-uffs index output.parquet              # Index ALL drives
-uffs index -d C output.parquet         # Index C: only
-uffs index --drives C,D,E out.parquet  # Index specific drives
-```
-
-### `uffs info`
-
-Show metadata about a saved index file.
-
-```bash
-uffs info index.parquet
-```
-
-### `uffs stats`
+### `uffs --stats`
 
 Show file statistics.  Without a path, connects to the daemon and
 runs the `overview` aggregate preset.  With a path, loads a parquet
 index file.
 
 ```bash
-uffs stats                    # Daemon mode (live overview)
-uffs stats index.parquet      # Parquet mode (--top 20 for largest files)
+uffs --stats                    # Daemon mode (live overview)
+uffs --stats index.parquet      # Parquet mode (--top 20 for largest files)
 ```
 
-### `uffs aggregate` (alias: `uffs agg`)
+### `uffs --agg` (alias: `uffs --aggregate`)
 
 Run server-side analytics on the filesystem index.  Returns aggregate
 results only — no file rows.
 
 ```bash
-uffs aggregate overview         # Full filesystem overview
-uffs aggregate by_extension     # Top 50 extensions
-uffs aggregate by_type          # Breakdown by file type
-uffs aggregate by_drive         # Per-drive totals
-uffs aggregate by_size          # Size distribution
-uffs aggregate by_age           # Age distribution
-uffs aggregate count            # Simple total count
+uffs --agg overview         # Full filesystem overview
+uffs --agg by_extension     # Top 50 extensions
+uffs --agg by_type          # Breakdown by file type
+uffs --agg by_drive         # Per-drive totals
+uffs --agg by_size          # Size distribution
+uffs --agg by_age           # Age distribution
+uffs --agg count            # Simple total count
 ```
 
 > **Full guide:** [Aggregation](aggregation.md)
 
-### `uffs daemon`
+### `uffs --daemon`
 
 Manage the UFFS background daemon.  The daemon starts automatically on
 first search — these commands give explicit control.
 
 ```bash
-uffs daemon start --data-dir ~/uffs_data   # Start with specific data
-uffs daemon status                          # Check status
-uffs daemon stats                           # Performance statistics
-uffs daemon stop                            # Graceful shutdown
-uffs daemon kill                            # Force kill + cleanup
-uffs daemon restart                         # Stop then restart
+uffs --daemon start --data-dir ~/uffs_data   # Start with specific data
+uffs --daemon status                          # Check status
+uffs --daemon stats                           # Performance statistics
+uffs --daemon stop                            # Graceful shutdown
+uffs --daemon kill                            # Force kill + cleanup
+uffs --daemon restart                         # Stop then restart
 ```
 
 > **Full guide:** [Daemon](daemon.md)
 
-### `uffs mcp`
+### `uffs --mcp`
 
 Manage the MCP server for AI agent integration.
 
 ```bash
-uffs mcp start                    # Start HTTP server on :8080
-uffs mcp start --port 9090        # Custom port
-uffs mcp status                   # Health + stats
-uffs mcp stop                     # Graceful shutdown
-uffs mcp reload                   # Reload all MCP sessions after binary update
+uffs --mcp run                      # Run on stdin/stdout (for AI hosts)
+uffs --mcp start                    # Start HTTP server on :8080 (background)
+uffs --mcp start --port 9090        # Custom port
+uffs --mcp status                   # Health + stats
+uffs --mcp stop                     # Graceful shutdown
+uffs --mcp reload                   # Reload all MCP sessions after binary update
 ```
 
 > **Full guide:** [MCP Server](mcp.md)
 
-### `uffs status`
+### `uffs --status`
 
 Show combined system status — daemon + MCP HTTP server health in one
 view.
 
 ```bash
-uffs status
+uffs --status
 ```
 
 ---
 
-## 8  Advanced / Diagnostic Flags
+## 7  Advanced / Diagnostic Flags
 
 These flags are for power users, profiling, and parity testing:
 
@@ -293,7 +287,7 @@ These flags are for power users, profiling, and parity testing:
 
 ---
 
-## 9  Examples
+## 8  Examples
 
 For a comprehensive recipe gallery organized by workflow (quick find,
 cleanup, developer/admin, attribute search, output piping), see

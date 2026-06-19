@@ -16,17 +16,42 @@ use super::model::BinaryInfo;
 
 /// Logical stems of every UFFS binary the updater knows about — i.e. the
 /// engine binaries this repo builds and publishes as release assets, so
-/// each can be acquired + swapped. The platform `.exe` suffix is added by
+/// each can be acquired + swapped.
+///
+/// **This is the single source of truth for the UFFS core binary set.**
+/// Every flow honours it: detection, self-update completeness, and tooling
+/// (the `just` deploy recipes query it via `uffs --update bins` rather than
+/// keeping their own list). Do not hardcode this set anywhere else — add a
+/// stem here and all flows pick it up.
+///
+/// The platform `.exe` suffix is added by
 /// [`exe_file_name`].
 ///
 /// `uffs-tui` is deliberately **excluded**: it ships from the separate
 /// `uffs-products` / `uffs-demo` repo with its own versioning and is not a
 /// release asset here, so the engine updater must not chase it.
+///
+/// `uffs-broker` is **Windows-only**: the release publishes no macOS/Linux
+/// broker asset, so off Windows it must NOT be a self-update target — else
+/// `acquire` would try to download a non-existent `uffs-broker-<plat>` asset
+/// (e.g. a stale broker stub left in `~/bin`). It is therefore included only
+/// when compiled for Windows.
+#[cfg(windows)]
 pub(crate) const KNOWN_BINARIES: [&str; 6] = [
     "uffs",        // CLI
     "uffsd",       // daemon
     "uffsmcp",     // MCP server
     "uffs-broker", // elevated handle broker (Windows service)
+    "uffs-update", // the self-update helper itself
+    "uffs-mft",    // MFT diagnostics binary (optional)
+];
+
+/// Non-Windows: the same set minus the Windows-only broker.
+#[cfg(not(windows))]
+pub(crate) const KNOWN_BINARIES: [&str; 5] = [
+    "uffs",        // CLI
+    "uffsd",       // daemon
+    "uffsmcp",     // MCP server
     "uffs-update", // the self-update helper itself
     "uffs-mft",    // MFT diagnostics binary (optional)
 ];
@@ -38,6 +63,17 @@ pub(crate) fn exe_file_name(stem: &str) -> String {
         format!("{stem}.exe")
     } else {
         stem.to_owned()
+    }
+}
+
+/// Print the canonical core binary stems, one per line (platform-aware:
+/// `uffs-broker` only on Windows). The machine-readable accessor behind
+/// `uffs --update bins`, so shell tooling (the `just` deploy recipes) reads
+/// the set from here instead of keeping a hardcoded copy that can drift.
+#[expect(clippy::print_stdout, reason = "machine-readable list for scripts")]
+pub(crate) fn print_core_stems() {
+    for stem in KNOWN_BINARIES {
+        println!("{stem}");
     }
 }
 
@@ -110,6 +146,9 @@ mod tests {
     fn parses_named_version_line() {
         assert_eq!(parse_version("uffs 0.6.2").as_deref(), Some("0.6.2"));
         assert_eq!(parse_version("uffsd 0.6.10\n").as_deref(), Some("0.6.10"));
+        // The broker prints a hyphenated name; the hyphen must not be mistaken
+        // for part of the version token (else its version probes back as `?`).
+        assert_eq!(parse_version("uffs-broker 0.6.9").as_deref(), Some("0.6.9"));
     }
 
     #[test]
@@ -131,19 +170,30 @@ mod tests {
 
     #[test]
     fn known_set_contains_engine_binaries_and_the_helper() {
-        for stem in [
-            "uffs",
-            "uffsd",
-            "uffsmcp",
-            "uffs-broker",
-            "uffs-update",
-            "uffs-mft",
-        ] {
+        // These are self-update targets on every platform.
+        for stem in ["uffs", "uffsd", "uffsmcp", "uffs-update", "uffs-mft"] {
             assert!(
                 KNOWN_BINARIES.contains(&stem),
                 "missing engine binary {stem}"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn known_set_includes_broker_on_windows() {
+        assert!(KNOWN_BINARIES.contains(&"uffs-broker"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn known_set_excludes_broker_off_windows() {
+        // The broker is Windows-only — off Windows it must not be a
+        // self-update target (no macOS/Linux broker release asset exists).
+        assert!(
+            !KNOWN_BINARIES.contains(&"uffs-broker"),
+            "uffs-broker is Windows-only and must not be acquired off Windows"
+        );
     }
 
     #[test]
