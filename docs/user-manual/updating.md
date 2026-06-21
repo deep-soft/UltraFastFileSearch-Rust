@@ -11,9 +11,14 @@ inconsistent — it downloads, SHA-256-verifies, and atomically swaps every core
 binary in place (journaled, with automatic rollback on failure). If you're
 already current, it does nothing and touches no services.
 
-> **WinGet installs:** if you installed via `winget install SkyLLC.UFFS`, update
-> with `winget upgrade SkyLLC.UFFS` instead — UFFS detects a WinGet-managed
-> install and defers to WinGet rather than swapping those files itself.
+> **WinGet installs:** use `uffs --update` here too — it updates the WinGet
+> install in place (the binaries live in a per-user `…\WinGet\Links` location
+> UFFS treats as an ordinary unmanaged install). Prefer it over `winget upgrade
+> SkyLLC.UFFS`, which can fail with `remove_all: Access is denied` because the
+> running daemon and broker hold the binaries open while WinGet tries to replace
+> them. `uffs --update` stops those services first, then swaps. If you do want
+> `winget upgrade`, stop UFFS first: elevated `uffs --daemon stop` +
+> `uffs-broker --stop`.
 
 ---
 
@@ -116,7 +121,12 @@ Add `--offline` to skip every network check (and the update redirect).
   try to restart it.
 - **Windows broker:** if `uffs --update doctor` warns the broker pipe isn't
   serving, install it from an elevated PowerShell with `uffs-broker --install`.
-  It's a self-update target too, so later updates keep it current.
+  The broker is a `LocalSystem` service, so refreshing **it** needs elevation: a
+  **non-elevated** `uffs --update` updates every binary *except* the broker —
+  the running broker keeps serving (its wire protocol is back-compatible) and
+  the update prints a reminder. Run `uffs --update` once from an **elevated**
+  shell to bring the broker up to date too. (Everything else — daemon included —
+  updates without elevation once the broker is installed.)
 - **Publisher: Unknown:** binaries aren't code-signed yet, so a fresh download
   may show a SmartScreen / UAC warning — see
   [Installation](installation.md) for verifying a download with `CHECKSUMS.txt`
