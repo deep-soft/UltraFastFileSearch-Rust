@@ -236,6 +236,161 @@ fn apply_usn_patch_renamed_record_has_new_name_in_blob() {
     );
 }
 
+/// Regression (v0.6.13 field report): a rename that changes the
+/// extension (`charlie.log` → `charlie.pdf`) must re-intern the new
+/// extension so the record is findable by `--ext pdf` and drops out of
+/// `--ext log`. The rename branch used to update only `name_offset` /
+/// `name_len`, leaving the stale `extension_id` behind.
+#[test]
+fn apply_usn_patch_rename_reinterns_extension() {
+    let mut drive = make_synthetic_drive();
+    // FRS 11 → compact_idx 2 ("bar.rs"). Rename it to "bar.pdf".
+    let changes = vec![FileChange {
+        frs: 11_u64.into(),
+        parent_frs: 5_u64.into(),
+        filename: "bar.pdf".to_owned(),
+        renamed: true,
+        ..FileChange::default()
+    }];
+    apply_usn_patch(&mut drive, &changes);
+
+    let pdf_ids = drive.resolve_ext_ids(&["pdf".to_owned()]);
+    assert_eq!(pdf_ids.len(), 1, "'pdf' must be interned after the rename");
+    let pdf_id = *pdf_ids.first().expect("one id");
+    let record = drive.records.as_slice().get(2).expect("record 2");
+    assert_eq!(
+        record.extension_id, pdf_id,
+        "renamed record must carry the new 'pdf' extension_id"
+    );
+    assert_eq!(
+        record.name_first_byte, b'b',
+        "first-byte cache must reflect the renamed name"
+    );
+    assert!(
+        drive.ext_index.get(pdf_id).contains(&2),
+        "ExtensionIndex.get(pdf) must include the renamed record"
+    );
+}
+
+/// Regression (v0.6.13 field report): FRS reuse. NTFS reuses an MFT
+/// record number after a delete, so a `created` event can land on a
+/// slot whose mapping still points at a *live* (stale) record — e.g.
+/// when the prior delete was coalesced away. The create must REPLACE
+/// that slot with the new file's identity, not silently skip it (which
+/// dropped the new file and was the root of the "delta.pdf vanished"
+/// and "recreate after delete loses files" reports).
+#[test]
+fn apply_usn_patch_create_replaces_live_reused_slot() {
+    let mut drive = make_synthetic_drive();
+    // FRS 11 → compact_idx 2 ("bar.rs", a LIVE record, name_len 6).
+    // A create for FRS 11 means the record number was reused.
+    let new_idx = 2_usize;
+    let changes = vec![FileChange {
+        frs: 11_u64.into(),
+        parent_frs: 5_u64.into(),
+        filename: "reused.pdf".to_owned(),
+        created: true,
+        ..FileChange::default()
+    }];
+    apply_usn_patch(&mut drive, &changes);
+
+    let record = drive.records.as_slice().get(new_idx).expect("record 2");
+    let name_start = record.name_offset as usize;
+    let name_end = name_start + record.name_len as usize;
+    let name_bytes = drive
+        .names
+        .as_slice()
+        .get(name_start..name_end)
+        .expect("name slice in blob");
+    assert_eq!(
+        name_bytes, b"reused.pdf",
+        "reused slot must hold the NEW file's name"
+    );
+    let pdf_ids = drive.resolve_ext_ids(&["pdf".to_owned()]);
+    let pdf_id = *pdf_ids.first().expect("'pdf' interned");
+    assert_eq!(record.extension_id, pdf_id, "reused slot tagged 'pdf'");
+    assert!(
+        drive.ext_index.get(pdf_id).contains(&2),
+        "ExtensionIndex.get(pdf) must include the reused record"
+    );
+}
+
+/// Metadata backfill: when the journal source attaches a `RecordMeta`
+/// (from a targeted MFT read), the created record carries the real
+/// size/timestamps/flags instead of the USN-only zeros. Covers both the
+/// append (new FRS) and the overwrite (reused slot) paths, plus rename.
+#[test]
+fn apply_usn_patch_applies_backfilled_metadata() {
+    use uffs_mft::usn::RecordMeta;
+
+    let meta = RecordMeta {
+        size: 1_637_013,
+        allocated: 1_638_400,
+        created: 1_700_000_000_000_000,
+        modified: 1_700_000_500_000_000,
+        accessed: 1_700_000_900_000_000,
+        flags: 0x20, // FILE_ATTRIBUTE_ARCHIVE
+    };
+
+    // Append path: brand-new FRS 13 with metadata.
+    let mut appended_drive = make_synthetic_drive();
+    let appended_idx = appended_drive.records.len();
+    apply_usn_patch(&mut appended_drive, &[FileChange {
+        frs: 13_u64.into(),
+        parent_frs: 5_u64.into(),
+        filename: "report.pdf".to_owned(),
+        created: true,
+        meta: Some(meta),
+        ..FileChange::default()
+    }]);
+    let appended = appended_drive
+        .records
+        .as_slice()
+        .get(appended_idx)
+        .expect("appended");
+    assert_eq!(
+        appended.size, meta.size,
+        "appended record carries real size"
+    );
+    assert_eq!(appended.modified, meta.modified, "and real modified time");
+    assert_eq!(appended.flags, meta.flags, "and real attribute flags");
+
+    // Overwrite path: a reused live slot (FRS 11 → idx 2) with metadata.
+    let mut overwrite_drive = make_synthetic_drive();
+    apply_usn_patch(&mut overwrite_drive, &[FileChange {
+        frs: 11_u64.into(),
+        parent_frs: 5_u64.into(),
+        filename: "reused.pdf".to_owned(),
+        created: true,
+        meta: Some(meta),
+        ..FileChange::default()
+    }]);
+    let overwritten = overwrite_drive
+        .records
+        .as_slice()
+        .get(2)
+        .expect("reused slot");
+    assert_eq!(
+        overwritten.size, meta.size,
+        "overwritten slot carries real size"
+    );
+    assert_eq!(overwritten.created, meta.created, "and real created time");
+
+    // No metadata (USN-only) still yields zeros — unchanged behaviour.
+    let mut bare_drive = make_synthetic_drive();
+    let bare_idx = bare_drive.records.len();
+    apply_usn_patch(&mut bare_drive, &[FileChange {
+        frs: 13_u64.into(),
+        parent_frs: 5_u64.into(),
+        filename: "bare.pdf".to_owned(),
+        created: true,
+        ..FileChange::default()
+    }]);
+    let bare = bare_drive.records.as_slice().get(bare_idx).expect("bare");
+    assert_eq!(bare.size, 0, "USN-only create stays zero-size");
+    assert_eq!(bare.modified, 0, "USN-only create stays zero-time");
+}
+
 /// Create contract: a newly-created FRS that doesn't map to an
 /// existing compact slot (`frs_to_compact[frs] == u32::MAX`) appends
 /// a fresh record at the end with the correct `parent_idx`,
@@ -274,6 +429,101 @@ fn apply_usn_patch_created_record_appended_with_correct_parent() {
     assert_eq!(
         record.name_first_byte, b'n',
         "first-byte cache must reflect the new name"
+    );
+}
+
+/// Regression (v0.6.13 field report): a file created via the USN journal
+/// patch must become findable by `--ext`.  The create branch used to
+/// hardcode `extension_id: 0`, so the rebuilt `ExtensionIndex` filed the
+/// new file under "no extension" — `uffs report.pdf` found it by name but
+/// `uffs report --ext pdf` returned nothing.  This pins the whole chain:
+/// the extension is interned into `ext_names`, the record carries the real
+/// `extension_id`, and the inverted index returns it for that id.
+#[test]
+fn apply_usn_patch_created_record_is_findable_by_extension() {
+    let mut drive = make_synthetic_drive();
+    let new_idx = drive.records.len();
+
+    // Pre-condition: "pdf" is unknown on this synthetic drive, so an
+    // `--ext pdf` query resolves to no ids (the bug's starting point).
+    assert!(
+        drive.resolve_ext_ids(&["pdf".to_owned()]).is_empty(),
+        "fixture must not already know the 'pdf' extension"
+    );
+
+    let changes = vec![FileChange {
+        frs: 13_u64.into(),
+        parent_frs: 5_u64.into(),
+        filename: "report.pdf".to_owned(),
+        created: true,
+        ..FileChange::default()
+    }];
+    let stats = apply_usn_patch(&mut drive, &changes);
+    assert_eq!(stats.created, 1, "the create should have applied");
+
+    // 1. The extension is now interned and resolvable.
+    let ids = drive.resolve_ext_ids(&["pdf".to_owned()]);
+    assert_eq!(ids.len(), 1, "'pdf' must resolve to exactly one ext id");
+    let pdf_id = *ids.first().expect("one id present");
+    assert_ne!(
+        pdf_id, 0,
+        "a real extension must not collapse to the no-ext id"
+    );
+
+    // 2. The new record carries that extension_id (not the hardcoded 0).
+    let record = drive
+        .records
+        .as_slice()
+        .get(new_idx)
+        .expect("created record reachable at the tail");
+    assert_eq!(
+        record.extension_id, pdf_id,
+        "created record must be tagged with the resolved 'pdf' id"
+    );
+
+    // 3. The rebuilt inverted index returns the new record for that id — this is
+    //    exactly what `--ext pdf` walks.
+    let matches = drive.ext_index.get(pdf_id);
+    assert!(
+        matches.contains(&u32::try_from(new_idx).expect("idx fits u32")),
+        "ExtensionIndex.get(pdf) must include the USN-created record"
+    );
+}
+
+/// Companion edge cases for [`DriveCompactIndex::intern_extension`] via the
+/// create path: a dotless name and a leading-dot dotfile both resolve to
+/// the reserved no-extension id (0) and never pollute `ext_names`.
+#[test]
+fn apply_usn_patch_dotless_and_dotfile_creates_have_no_extension() {
+    let mut drive = make_synthetic_drive();
+    let ext_names_before = drive.ext_names.len();
+
+    let changes = vec![
+        FileChange {
+            frs: 13_u64.into(),
+            parent_frs: 5_u64.into(),
+            filename: "Makefile".to_owned(), // dotless
+            created: true,
+            ..FileChange::default()
+        },
+        FileChange {
+            frs: 14_u64.into(),
+            parent_frs: 5_u64.into(),
+            filename: ".gitignore".to_owned(), // leading-dot dotfile
+            created: true,
+            ..FileChange::default()
+        },
+    ];
+    apply_usn_patch(&mut drive, &changes);
+
+    let makefile = drive.records.as_slice().get(4).expect("Makefile record");
+    let gitignore = drive.records.as_slice().get(5).expect(".gitignore record");
+    assert_eq!(makefile.extension_id, 0, "dotless name → no extension");
+    assert_eq!(gitignore.extension_id, 0, "dotfile → no extension");
+    assert_eq!(
+        drive.ext_names.len(),
+        ext_names_before,
+        "no-extension creates must not append to ext_names"
     );
 }
 
