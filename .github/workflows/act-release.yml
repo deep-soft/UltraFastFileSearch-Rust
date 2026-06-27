@@ -353,6 +353,12 @@ jobs:
             binary-suffix: ".exe"
             rustflags: "-C target-cpu=x86-64-v3"
             timeout: 75
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact-name: uffs-macos-x64
+            binary-suffix: ""
+            rustflags: "-C target-cpu=x86-64-v3 -C link-arg=-Wl,-dead_strip"
+            timeout: 75
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact-name: uffs-macos-arm64
