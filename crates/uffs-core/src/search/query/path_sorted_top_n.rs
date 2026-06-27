@@ -165,7 +165,7 @@ fn walk_tree_path_sorted<D: AsRef<DriveCompactIndex>>(
             // Enqueue children BEFORE the filter check — a directory
             // that fails the filter (e.g. `FilesOnly` drops dirs) may
             // still contain matching descendants that must be visited.
-            let child_slice = drive.children.get(idx as usize);
+            let child_slice = drive.children_of(idx);
             if !child_slice.is_empty() {
                 let mut sorted_children = child_slice.to_vec();
                 sort_indices_by_name(&mut sorted_children, drive, sort_desc);
@@ -264,7 +264,7 @@ fn collect_path_via_ext_index<D: AsRef<DriveCompactIndex> + Sync>(
         // `.clone()` (Phase 6c category-δ) that was anticipating a
         // re-aliasing scenario that the current code doesn't hit.
         for &ext_id in &search_filters.resolved_ext_ids {
-            for &rec_idx_u32 in drive.ext_index.get(ext_id) {
+            for &rec_idx_u32 in drive.records_with_ext(ext_id).iter() {
                 let rec_idx = rec_idx_u32 as usize;
                 let Some(rec) = drive.records.get(rec_idx) else {
                     continue;

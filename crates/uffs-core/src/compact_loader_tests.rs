@@ -16,6 +16,7 @@
 //! Extracted into a sibling submodule so `compact_loader.rs` stays
 //! well below the file-size policy ceiling.
 
+use alloc::sync::Arc;
 use std::path::PathBuf;
 
 use uffs_mft::usn::FileChange;
@@ -102,9 +103,9 @@ fn make_synthetic_drive() -> DriveCompactIndex {
         letter: uffs_mft::platform::DriveLetter::T,
         records: ColumnStorage::from_vec(records),
         names: ColumnStorage::from_vec(names),
-        trigram,
-        children,
-        ext_index,
+        trigram: Arc::new(trigram),
+        children: Arc::new(children),
+        ext_index: Arc::new(ext_index),
         fold,
         ext_names: vec![Box::from("")],
         source: IndexSource::MftFile(PathBuf::from("T:")),
@@ -112,6 +113,7 @@ fn make_synthetic_drive() -> DriveCompactIndex {
         bloom: None,
         path_trie: None,
         frs_to_compact,
+        delta: None,
     }
 }
 
@@ -267,8 +269,8 @@ fn apply_usn_patch_rename_reinterns_extension() {
         "first-byte cache must reflect the renamed name"
     );
     assert!(
-        drive.ext_index.get(pdf_id).contains(&2),
-        "ExtensionIndex.get(pdf) must include the renamed record"
+        drive.records_with_ext(pdf_id).contains(&2),
+        "records_with_ext(pdf) must include the renamed record"
     );
 }
 
@@ -310,7 +312,7 @@ fn apply_usn_patch_create_replaces_live_reused_slot() {
     let pdf_id = *pdf_ids.first().expect("'pdf' interned");
     assert_eq!(record.extension_id, pdf_id, "reused slot tagged 'pdf'");
     assert!(
-        drive.ext_index.get(pdf_id).contains(&2),
+        drive.records_with_ext(pdf_id).contains(&2),
         "ExtensionIndex.get(pdf) must include the reused record"
     );
 }
@@ -481,12 +483,12 @@ fn apply_usn_patch_created_record_is_findable_by_extension() {
         "created record must be tagged with the resolved 'pdf' id"
     );
 
-    // 3. The rebuilt inverted index returns the new record for that id — this is
-    //    exactly what `--ext pdf` walks.
-    let matches = drive.ext_index.get(pdf_id);
+    // 3. records_with_ext (base ∪ delta overlay) returns the new record for that id
+    //    — exactly what `--ext pdf` walks.
+    let matches = drive.records_with_ext(pdf_id);
     assert!(
         matches.contains(&u32::try_from(new_idx).expect("idx fits u32")),
-        "ExtensionIndex.get(pdf) must include the USN-created record"
+        "records_with_ext(pdf) must include the USN-created record"
     );
 }
 
@@ -557,7 +559,7 @@ fn apply_usn_patch_rebuilds_children_csr_excluding_deletes() {
 
     // Pre-state sanity: root (compact_idx 0) starts with three
     // children — compact_idx 1 ("foo.txt"), 2 ("bar.rs"), 3 ("baz.md").
-    let initial_root_children: Vec<u32> = drive.children.get(0).to_vec();
+    let initial_root_children: Vec<u32> = drive.children_of(0).into_owned();
     assert_eq!(
         initial_root_children.len(),
         3,
@@ -572,7 +574,7 @@ fn apply_usn_patch_rebuilds_children_csr_excluding_deletes() {
 
     apply_usn_patch(&mut drive, &changes);
 
-    let post_root_children: Vec<u32> = drive.children.get(0).to_vec();
+    let post_root_children: Vec<u32> = drive.children_of(0).into_owned();
     assert!(
         !post_root_children.contains(&1),
         "deleted compact_idx 1 must not appear in root's children CSR after rebuild"

@@ -267,7 +267,7 @@ fn walk_drive_asc(
         if output.len() >= limit {
             return;
         }
-        let child_slice = drive.children.get(dir_idx as usize);
+        let child_slice = drive.children_of(dir_idx);
         if child_slice.is_empty() {
             continue;
         }
@@ -382,7 +382,7 @@ fn walk_drive_desc(
                 );
             }
             DescTask::Recurse(dir_idx) => {
-                let child_slice = drive.children.get(dir_idx as usize);
+                let child_slice = drive.children_of(dir_idx);
                 if child_slice.is_empty() {
                     continue;
                 }
@@ -535,7 +535,7 @@ fn collect_path_only_via_ext_index<D: AsRef<DriveCompactIndex> + Sync>(
         // `.clone()` (Phase 6c category-δ) that was anticipating a
         // future filter push that never landed.
         for &ext_id in &search_filters.resolved_ext_ids {
-            for &rec_idx_u32 in drive.ext_index.get(ext_id) {
+            for &rec_idx_u32 in drive.records_with_ext(ext_id).iter() {
                 let rec_idx = rec_idx_u32 as usize;
                 let Some(rec) = drive.records.get(rec_idx) else {
                     continue;

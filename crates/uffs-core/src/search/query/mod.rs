@@ -424,7 +424,7 @@ pub(crate) fn search_compact_drive(
 
     let t_tri = std::time::Instant::now();
     let candidates = if !case_sensitive && trigram_needle.len() >= 3 {
-        drive.trigram.search(&trigram_needle, fold)
+        drive.trigram_search(&trigram_needle)
     } else {
         None
     };
@@ -484,7 +484,7 @@ fn expand_directory_descendants(drive: &DriveCompactIndex, indices: &mut Vec<u32
         {
             stack.push(idx);
             while let Some(dir_idx) = stack.pop() {
-                for &child_idx in drive.children.get(dir_idx as usize) {
+                for &child_idx in drive.children_of(dir_idx).iter() {
                     extra.push(child_idx);
                     if let Some(child_rec) = drive.records.get(child_idx as usize)
                         && child_rec.is_directory()
