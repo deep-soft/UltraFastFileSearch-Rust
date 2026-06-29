@@ -20,14 +20,14 @@
 //! The four functions in this module form one cohesive
 //! pipeline:
 //!
-//! 1. [`Self::info`] — the async public entry point.  Snapshots the registry,
-//!    hands the snapshot to the synchronous tree-walk, and wraps the resulting
-//!    `Option<Value>` in [`InfoResponse`].
-//! 2. [`Self::info_tree_lookup`] — the synchronous walker.  Drives the parse +
-//!    segment-by-segment match.
-//! 3. [`Self::parse_drive_prefix`] — helper that splits `"C:\\foo"` into
-//!    `(uffs_mft::platform::DriveLetter::C, "foo")`.
-//! 4. [`Self::build_info_json`] — turns a matching
+//! 1. [`IndexManager::info`] — the async public entry point.  Snapshots the
+//!    registry, hands the snapshot to the synchronous tree-walk, and wraps the
+//!    resulting `Option<Value>` in [`InfoResponse`].
+//! 2. [`IndexManager::info_tree_lookup`] — the synchronous walker.  Drives the
+//!    parse + segment-by-segment match.
+//! 3. [`IndexManager::parse_drive_prefix`] — helper that splits `"C:\\foo"`
+//!    into `(uffs_mft::platform::DriveLetter::C, "foo")`.
+//! 4. [`IndexManager::build_info_json`] — turns a matching
 //!    [`uffs_core::compact::CompactRecord`] into the JSON payload the response
 //!    carries.
 //!
@@ -105,13 +105,12 @@ impl IndexManager {
                                     drive,
                                     uffs_mft::u32_as_usize(root_idx),
                                     &volume_prefix,
+                                    uffs_core::compact::MalformedRender::Lossy,
                                 );
                                 return Some(Self::build_info_json(drive, rec, &resolved));
                             }
                             // Collect children for next segment.
-                            next_candidates.extend_from_slice(
-                                drive.children.get(uffs_mft::u32_as_usize(root_idx)),
-                            );
+                            next_candidates.extend_from_slice(&drive.children_of(root_idx));
                         }
                     }
                 }
@@ -127,12 +126,11 @@ impl IndexManager {
                                     drive,
                                     uffs_mft::u32_as_usize(child_idx),
                                     &volume_prefix,
+                                    uffs_core::compact::MalformedRender::Lossy,
                                 );
                                 return Some(Self::build_info_json(drive, rec, &resolved));
                             }
-                            next_candidates.extend_from_slice(
-                                drive.children.get(uffs_mft::u32_as_usize(child_idx)),
-                            );
+                            next_candidates.extend_from_slice(&drive.children_of(child_idx));
                         }
                     }
                 }

@@ -215,6 +215,14 @@ spawn_bg "commit-subjects" bash -c '
         bash scripts/ci/check_commit_subjects.sh range "$range"
     done <<< "$COMMIT_RANGES"
 '
+spawn_bg "commit-signatures" bash -c '
+    set -euo pipefail
+    [[ -z "${COMMIT_RANGES// /}" ]] && exit 0
+    while IFS= read -r range; do
+        [[ -z "$range" ]] && continue
+        bash scripts/ci/check_commit_subjects.sh range "$range"
+    done <<< "$COMMIT_RANGES"
+'
 if (( DEP_CHANGED )); then
     if ! command -v cargo-vet >/dev/null 2>&1; then
         printf '%s❌ cargo-vet required (Cargo.{toml,lock} or supply-chain/ changed)%s\n' "$C_RED" "$C_RESET" >&2
@@ -238,7 +246,7 @@ if (( CODE_CHANGED )); then
     run_seq "lint-ci-no-default" just lint-ci-no-default
     run_seq "lint-prod" just lint-prod
     run_seq "lint-tests" just lint-tests
-    run_seq "rustdoc" env RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --all-features --no-deps --locked
+    run_seq "rustdoc" env RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --all-features --no-deps --locked --document-private-items
     run_seq "doc-tests" env RUSTDOCFLAGS=-Dwarnings cargo test --doc --workspace --all-features --locked
     run_seq "tests" cargo nextest run --workspace --all-targets --all-features --no-run --locked --hide-progress-bar
     run_seq "smoke" cargo nextest run --workspace --profile pre-push-smoke --locked

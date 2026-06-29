@@ -534,7 +534,9 @@ impl ShardEntry {
         // body is fully mutable without remap ceremony.  The
         // `frs_to_compact` mapping rides along on the clone so
         // `apply_usn_patch` can patch it in lock-step with the
-        // records.
+        // records.  Phase 3 (incremental-index-maintenance) Arc-shares the
+        // immutable base CSR indexes, so this clone copies records + names +
+        // the small delta, not the hundreds-of-MB inverted indexes.
         let mut owned: DriveCompactIndex = (**body_arc).clone();
         let stats = uffs_core::compact_loader::apply_usn_patch(&mut owned, changes);
         Some((Arc::new(owned), stats))

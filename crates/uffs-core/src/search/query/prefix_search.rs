@@ -44,7 +44,7 @@ pub(crate) fn search_compact_drive_prefix(
     // Get trigram candidates using first 3 chars of prefix.
     // get() safely handles any byte boundaries; prefix is ASCII from pattern.
     let trigram_needle = prefix.get(..prefix.len().min(3)).unwrap_or(prefix);
-    let candidates = drive.trigram.search(trigram_needle, drive.fold);
+    let candidates = drive.trigram_search(trigram_needle);
 
     let tri_ms = t_tri.elapsed().as_millis();
     let tri_count = candidates.as_ref().map_or(0, Vec::len);
@@ -95,7 +95,12 @@ pub(crate) fn search_compact_drive_prefix(
     let match_count = match_indices.len();
 
     let t_resolve = std::time::Instant::now();
-    let rows = indices_to_rows(drive, &match_indices, volume_prefix);
+    let rows = indices_to_rows(
+        drive,
+        &match_indices,
+        volume_prefix,
+        filters.malformed_render(),
+    );
     let resolve_ms = t_resolve.elapsed().as_millis();
 
     if profile {

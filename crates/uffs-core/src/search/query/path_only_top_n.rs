@@ -267,7 +267,7 @@ fn walk_drive_asc(
         if output.len() >= limit {
             return;
         }
-        let child_slice = drive.children.get(dir_idx as usize);
+        let child_slice = drive.children_of(dir_idx);
         if child_slice.is_empty() {
             continue;
         }
@@ -382,7 +382,7 @@ fn walk_drive_desc(
                 );
             }
             DescTask::Recurse(dir_idx) => {
-                let child_slice = drive.children.get(dir_idx as usize);
+                let child_slice = drive.children_of(dir_idx);
                 if child_slice.is_empty() {
                     continue;
                 }
@@ -430,6 +430,7 @@ fn emit_if_passes(
     mal_cache: &mut MalformedCache,
     output: &mut Vec<DisplayRow>,
 ) -> bool {
+    let render = search_filters.malformed_render();
     let Some(rec) = drive.records.get(idx as usize) else {
         return false;
     };
@@ -446,6 +447,7 @@ fn emit_if_passes(
         volume_prefix,
         dir_cache,
         mal_cache,
+        render,
     );
     let forensics = row_forensics(rec, &drive.names, path_malformed);
     let row = make_display_row(idx, drive.letter, rec, name, path, forensics);
@@ -509,6 +511,7 @@ fn collect_path_only_via_ext_index<D: AsRef<DriveCompactIndex> + Sync>(
     // disqualify the fast path; see `SearchFilters::is_ext_only`).
     let hide_system = search_filters.hide_system;
     let hide_ads = search_filters.hide_ads;
+    let render = search_filters.malformed_render();
 
     // Collect (drive_idx, rec_idx) pairs for every candidate that
     // survives the per-record predicates.  We do NOT bound this
@@ -535,7 +538,7 @@ fn collect_path_only_via_ext_index<D: AsRef<DriveCompactIndex> + Sync>(
         // `.clone()` (Phase 6c category-δ) that was anticipating a
         // future filter push that never landed.
         for &ext_id in &search_filters.resolved_ext_ids {
-            for &rec_idx_u32 in drive.ext_index.get(ext_id) {
+            for &rec_idx_u32 in drive.records_with_ext(ext_id).iter() {
                 let rec_idx = rec_idx_u32 as usize;
                 let Some(rec) = drive.records.get(rec_idx) else {
                     continue;
@@ -615,6 +618,7 @@ fn collect_path_only_via_ext_index<D: AsRef<DriveCompactIndex> + Sync>(
                     volume_prefix,
                     cache,
                     mal_cache,
+                    render,
                 );
                 let forensics = row_forensics(rec, &drive.names, path_malformed);
                 local_rows.push(make_display_row(

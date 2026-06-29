@@ -89,9 +89,9 @@ fn make_test_body(letter: uffs_mft::platform::DriveLetter) -> DriveCompactIndex 
         letter,
         records: ColumnStorage::from_vec(records),
         names: ColumnStorage::from_vec(names),
-        trigram,
-        children,
-        ext_index,
+        trigram: Arc::new(trigram),
+        children: Arc::new(children),
+        ext_index: Arc::new(ext_index),
         fold,
         ext_names: vec![Box::from("")],
         source: IndexSource::MftFile(PathBuf::from(format!("{letter}:"))),
@@ -99,6 +99,7 @@ fn make_test_body(letter: uffs_mft::platform::DriveLetter) -> DriveCompactIndex 
         bloom: None,
         path_trie: None,
         frs_to_compact,
+        delta: None,
     }
 }
 

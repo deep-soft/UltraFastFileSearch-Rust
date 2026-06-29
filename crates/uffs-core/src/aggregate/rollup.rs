@@ -194,6 +194,8 @@ pub(crate) fn resolve_rollup_key(key: u32, mode: RollupMode, drive: &DriveCompac
     reason = "tests assert against fixtures with known shape; indexing panic = test failure"
 )]
 mod tests {
+    use alloc::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -233,7 +235,6 @@ mod tests {
 
         use crate::compact::{ChildrenIndex, CompactRecord, ExtensionIndex, IndexSource};
         use crate::trigram::TrigramIndex;
-
         // Build names blob: concatenated UTF-8 strings.
         let name_strs = [
             "root",
@@ -254,8 +255,6 @@ mod tests {
         let dir = 0x0010_u32; // FILE_ATTRIBUTE_DIRECTORY
         let records = vec![
             CompactRecord {
-                size: 0,
-                allocated: 0,
                 name_offset: offsets[0],
                 flags: dir,
                 parent_idx: 0,
@@ -263,8 +262,6 @@ mod tests {
                 ..Default::default()
             },
             CompactRecord {
-                size: 0,
-                allocated: 0,
                 name_offset: offsets[1],
                 flags: dir,
                 parent_idx: 0,
@@ -272,8 +269,6 @@ mod tests {
                 ..Default::default()
             },
             CompactRecord {
-                size: 0,
-                allocated: 0,
                 name_offset: offsets[2],
                 flags: dir,
                 parent_idx: 0,
@@ -290,8 +285,6 @@ mod tests {
                 ..Default::default()
             },
             CompactRecord {
-                size: 0,
-                allocated: 0,
                 name_offset: offsets[4],
                 flags: dir,
                 parent_idx: 1,
@@ -324,9 +317,9 @@ mod tests {
             letter: uffs_mft::platform::DriveLetter::C,
             records: crate::compact_storage::ColumnStorage::from_vec(records),
             names: crate::compact_storage::ColumnStorage::from_vec(names_blob),
-            trigram: TrigramIndex::empty(),
-            children,
-            ext_index: ExtensionIndex::build(&[]),
+            trigram: Arc::new(TrigramIndex::empty()),
+            children: Arc::new(children),
+            ext_index: Arc::new(ExtensionIndex::build(&[])),
             fold: uffs_text::case_fold::CaseFold::default_table(),
             ext_names: vec![],
             source: IndexSource::MftFile(PathBuf::from("C:")),
@@ -335,6 +328,7 @@ mod tests {
             path_trie: None,
             // unused by aggregation tests — see compact.rs::frs_to_compact docs.
             frs_to_compact: Vec::new(),
+            delta: None,
         }
     }
 

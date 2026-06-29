@@ -60,9 +60,13 @@ pub(crate) fn log_daemon_starting(config: &DaemonConfig) {
     // `warm_up_broker_handles` request milliseconds later failed with
     // ERROR_PIPE_BUSY (2026-06-13 VM finding).  Broker presence is now
     // established only by attempting the handle request itself.
+    // `git` is the short commit the binary was built from (emitted by this
+    // crate's build.rs; "unknown" when git was unavailable at build time) — it
+    // pins exactly which build a field log came from.
     tracing::info!(
         pid = std::process::id(),
         version = env!("CARGO_PKG_VERSION"),
+        git = option_env!("UFFS_GIT_SHA").unwrap_or("unknown"),
         mft_files = ?config.mft_files,
         drives = ?config.drives,
         data_dir = ?config.data_dir,
@@ -194,7 +198,7 @@ pub(crate) fn gather_mft_files(config: &DaemonConfig) -> Vec<PathBuf> {
 /// insensitive — `DriveLetter::parse` canonicalises to uppercase).
 ///
 /// `pub(crate)` so the regression-pin test in
-/// [`crate::tests`] can exercise the contract directly without
+/// `crate::tests` can exercise the contract directly without
 /// going through [`gather_mft_files`].
 pub(crate) fn drive_letter_matches(
     path: &std::path::Path,

@@ -51,6 +51,7 @@ impl DaemonFileReader<'_> {
             drive,
             record_idx,
             &volume_prefix,
+            uffs_core::compact::MalformedRender::Lossy,
         ))
     }
 }
@@ -147,7 +148,12 @@ fn materialize_dup_members(
             let record = drive.records.get(rec_idx)?;
             let name = record.name(&drive.names).to_owned();
             let volume_prefix = format!("{}:\\", drive.letter);
-            let path = uffs_core::search::tree::resolve_path(drive, rec_idx, &volume_prefix);
+            let path = uffs_core::search::tree::resolve_path(
+                drive,
+                rec_idx,
+                &volume_prefix,
+                uffs_core::compact::MalformedRender::Lossy,
+            );
 
             let mut fields = std::collections::HashMap::new();
             fields.insert("name".to_owned(), name);
@@ -233,7 +239,7 @@ pub(crate) struct AggregationRequest<'a> {
     pub drives_filter: &'a [uffs_mft::platform::DriveLetter],
     /// O(1)-per-record predicates: extension IDs, directory flag,
     /// size bounds.  Defaults to "no filter" via
-    /// [`AggregateFilter::default`].
+    /// [`uffs_core::aggregate::AggregateFilter::default`].
     pub record_filter: uffs_core::aggregate::AggregateFilter,
 }
 
@@ -415,8 +421,9 @@ impl IndexManager {
     ///
     /// The key mixes every input that can change the computed
     /// [`uffs_core::aggregate::AggregateOutput`]:
-    /// - `specs` — the compiled list of [`AggregateSpec`]s, including every
-    ///   `kind`, `label`, `top`, sample spec, and rollup field.
+    /// - `specs` — the compiled list of
+    ///   [`uffs_core::aggregate::AggregateSpec`]s, including every `kind`,
+    ///   `label`, `top`, sample spec, and rollup field.
     /// - `pattern` — glob/regex name matcher (`None` vs. `Some("")` are
     ///   distinguished by `Option::hash`).
     /// - `drives_filter` — the set of drive letters to scope the scan.
@@ -549,7 +556,7 @@ impl IndexManager {
 // Each `AggregateResultData` arm gets its own `wire_*` helper that
 // returns the 9-tuple consumed by `apply_pagination_and_finalize`.
 
-/// Convert a fully-resolved [`AggregateOutput::response::results`]
+/// Convert a fully-resolved [`uffs_core::aggregate::AggregateOutput`]'s results
 /// into the wire format expected by clients, applying cursor-based
 /// pagination per result-index.
 fn convert_aggregate_results_to_wire(
@@ -583,8 +590,9 @@ fn convert_aggregate_results_to_wire(
         .collect()
 }
 
-/// Build the [`AggregateResultWire`] for a single result, dispatching
-/// to one of the per-kind `wire_*` helpers and applying pagination.
+/// Build the [`uffs_client::protocol::aggregate_wire::AggregateResultWire`] for
+/// a single result, dispatching to one of the per-kind `wire_*` helpers and
+/// applying pagination.
 fn build_aggregate_result_wire(
     result: uffs_core::aggregate::finalize::AggregateResult,
     pagination: Option<&uffs_core::aggregate::pagination::PaginatedBuckets>,
@@ -655,7 +663,8 @@ type AggregateWireTuple = (
     Option<bool>,
 );
 
-/// Wire builder for [`AggregateResultData::Count`].
+/// Wire builder for
+/// [`uffs_core::aggregate::finalize::AggregateResultData::Count`].
 fn wire_count(value: u64) -> AggregateWireTuple {
     (
         "count".to_owned(),
@@ -670,7 +679,8 @@ fn wire_count(value: u64) -> AggregateWireTuple {
     )
 }
 
-/// Wire builder for [`AggregateResultData::Stats`].
+/// Wire builder for
+/// [`uffs_core::aggregate::finalize::AggregateResultData::Stats`].
 fn wire_stats(
     field: String,
     stats: &uffs_core::aggregate::finalize::StatsResult,
@@ -697,7 +707,8 @@ fn wire_stats(
     )
 }
 
-/// Wire builder for [`AggregateResultData::Buckets`].
+/// Wire builder for
+/// [`uffs_core::aggregate::finalize::AggregateResultData::Buckets`].
 fn wire_buckets(
     field: String,
     rows: Vec<uffs_core::aggregate::finalize::BucketRow>,
@@ -740,7 +751,8 @@ fn wire_buckets(
     )
 }
 
-/// Wire builder for [`AggregateResultData::Missing`].
+/// Wire builder for
+/// [`uffs_core::aggregate::finalize::AggregateResultData::Missing`].
 fn wire_missing(field: String, count: u64) -> AggregateWireTuple {
     (
         "missing".to_owned(),
@@ -755,7 +767,8 @@ fn wire_missing(field: String, count: u64) -> AggregateWireTuple {
     )
 }
 
-/// Wire builder for [`AggregateResultData::Distinct`].
+/// Wire builder for
+/// [`uffs_core::aggregate::finalize::AggregateResultData::Distinct`].
 fn wire_distinct(field: String, count: u64) -> AggregateWireTuple {
     (
         "distinct".to_owned(),
@@ -770,7 +783,8 @@ fn wire_distinct(field: String, count: u64) -> AggregateWireTuple {
     )
 }
 
-/// Wire builder for [`AggregateResultData::Rollup`].
+/// Wire builder for
+/// [`uffs_core::aggregate::finalize::AggregateResultData::Rollup`].
 fn wire_rollup(
     mode: String,
     rows: Vec<uffs_core::aggregate::finalize::BucketRow>,
@@ -827,11 +841,12 @@ fn wire_rollup(
     )
 }
 
-/// Wire builder for [`AggregateResultData::Duplicates`].
+/// Wire builder for
+/// [`uffs_core::aggregate::finalize::AggregateResultData::Duplicates`].
 ///
 /// Materialises sample rows from the daemon-side compact index, then
-/// builds a summary [`StatsWire`] mirroring the verifier's view of the
-/// duplicate set.
+/// builds a summary [`uffs_client::protocol::aggregate_wire::StatsWire`]
+/// mirroring the verifier's view of the duplicate set.
 #[expect(
     clippy::float_arithmetic,
     reason = "percentage calculation for waste_pct"
