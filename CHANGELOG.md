@@ -14,6 +14,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — one-line macOS/Linux installer (`install.sh`)
+
+`curl -fsSL https://raw.githubusercontent.com/skyllc-ai/UltraFastFileSearch/main/install.sh | bash`
+installs UFFS on macOS/Linux with no sudo and no build toolchain: it detects the
+platform, downloads the prebuilt binaries from the matching GitHub release,
+**verifies each against the release `SHA256SUMS`**, and drops them in
+`~/.local/bin`. Pin with `UFFS_VERSION`, retarget with `UFFS_INSTALL_DIR`. It is
+the posix counterpart to `winget install SkyLLC.UFFS` on Windows, and the
+symmetric companion to `uffs --uninstall`. PATH is never edited automatically
+(the shell owns it); the script prints the one line to add if the dir is not on
+PATH.
+
+## [0.6.17] - 2026-06-29
+
+### Added — `uffs --uninstall`: guided, complete removal of UFFS
+
+A single command removes UFFS and all of its data from the machine, as carefully
+as `uffs --update`. It analyzes the install (every binary shown in OS-resolution
+order, with the `ACTIVE` copy flagged), inventories every artifact with sizes
+(data, cache, legacy cache, config, the Windows broker service), runs a deep
+sweep that uses UFFS's own search to find stray `uffs*` files elsewhere (listed
+for review, never auto-removed), prints an itemized removal plan, and only
+removes after explicit consent (or `--yes`).
+
+- **Elevation-aware, and frugal about it.** It refuses up front (before any
+  effect) when a removal needs privilege the run lacks. On macOS/Linux a normal
+  user install needs **no `sudo`** (a real `access(W_OK)` check decides per
+  root); only a root-owned location or the Windows broker service / machine
+  install requires elevation.
+- **Channel-aware.** WinGet roots are delegated to `winget uninstall`, never
+  hand-deleted. Manual and dev-build installs are removed directly.
+- **Safe + idempotent.** `--dry-run` reviews without changing anything;
+  removal is best-effort (a locked/permission-denied item is reported, the rest
+  proceed) and idempotent (re-run to finish an interrupted one). Flags:
+  `--keep-config`, `--no-deep-sweep`, `--no-path`, `--scope`, `--json`. The
+  running binary self-deletes on exit; a post-removal step verifies the result.
+  See [docs/user-manual/uninstall.md](docs/user-manual/uninstall.md).
+
 ### Added — corrupt-name forensics: keep ill-formed names visible + `--normalize-malformed`
 
 NTFS allows file and directory names that are ill-formed UTF-16 (unpaired
@@ -2494,7 +2532,8 @@ thin clients over a unified `uffsd` process.
 ### Fixed
 - Various MFT parsing edge cases
 
-[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.15...HEAD
+[Unreleased]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.17...HEAD
+[0.6.17]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.15...v0.6.17
 [0.6.15]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.14...v0.6.15
 [0.6.14]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.13...v0.6.14
 [0.6.13]: https://github.com/skyllc-ai/UltraFastFileSearch/compare/v0.6.12...v0.6.13
